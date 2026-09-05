@@ -797,14 +797,28 @@ export function edgePoints(
 
   // Same row with room ahead: a straight line. A dogleg between two bars on
   // one line is a corner drawn for nothing.
-  if (y1 === y2 && x2 >= x1 + stub) {
+  if (y1 === y2 && x2 > x1) {
     return [{ x: x1, y: y1 }, { x: x2, y: y2 }];
   }
 
-  // Room to route forwards: out, across, in. The turn is held `stub` clear of
-  // both bars so the corner never touches the thing it is pointing at.
-  if (x2 >= x1 + stub * 2) {
-    const mid = Math.max(x1 + stub, Math.min((x1 + x2) / 2, x2 - stub));
+  // ⚠️ The bars TOUCH — the blocked task starts the day the blocker ends, which
+  // is the commonest dependency there is. A drop straight down is the whole
+  // picture. Owner report, 2026-09-05.
+  //
+  // This used to fall through to the detour below, because the detour's test
+  // was "is there room for two stubs" rather than "does the target start
+  // before the source ends". With no room the detour turned right 12px, ran
+  // back left past its own start, and dropped in — a squiggle drawn to avoid
+  // a conflict that is not there.
+  if (x2 === x1) {
+    return [{ x: x1, y: y1 }, { x: x2, y: y2 }];
+  }
+
+  // Room to route forwards: out, across, in. The vertical takes the midpoint
+  // between the two bars, which is `stub` clear of both whenever the gap is
+  // wide enough to be, and lands as a short neat drop when it is not.
+  if (x2 > x1) {
+    const mid = (x1 + x2) / 2;
     return [
       { x: x1, y: y1 },
       { x: mid, y: y1 },
@@ -813,18 +827,27 @@ export function edgePoints(
     ];
   }
 
-  // The blocked bar starts at or before the blocker ends — the conflict case,
-  // and the one a naive path draws backwards through both bars. Route out,
-  // into the gap between the rows, back, and in. It stays followable while it
-  // is wrong, which is when it matters most.
+  // The blocked bar starts BEFORE the blocker ends — the conflict case, and
+  // the one a naive path draws backwards through both bars. Route out, into
+  // the gap between the rows, back, and DOWN into the target from above. It
+  // stays followable while it is wrong, which is when it matters most.
+  //
+  // ⚠️ It used to overshoot to `x2 - stub` and hook back rightwards, so it
+  // could arrive from the left like every other edge. On a one-day overlap
+  // that hook is 12px wide between two 20px drops, and the fillets eat all
+  // three: the reader gets a knot under the bar. Owner report, 2026-09-05.
+  //
+  // Arriving from ABOVE is the rule the short cases already follow — the
+  // touching case above drops straight down — so this is one rule, not two:
+  // an edge arrives from the left when there is room ahead, and from above
+  // when there is not.
   const lane =
     y1 === y2 ? y1 + ROW_H / 2 : (y1 + y2) / 2;
   return [
     { x: x1, y: y1 },
     { x: x1 + stub, y: y1 },
     { x: x1 + stub, y: lane },
-    { x: x2 - stub, y: lane },
-    { x: x2 - stub, y: y2 },
+    { x: x2, y: lane },
     { x: x2, y: y2 },
   ];
 }
@@ -937,6 +960,52 @@ export function stagger(routes: readonly RoutedEdge[]): RoutedEdge[] {
     }
   }
 
+  /**
+   * ── The MERGE: arrows arriving at one bar join, they do not weave ─────────
+   *
+   * Owner report, 2026-09-05, third round: the same tangle at the other end.
+   * A bar with several dependencies is fed by arrows that each turn down at
+   * their own midpoint, so the one from the higher row runs its horizontal
+   * along the target row and straight THROUGH the vertical of the other. It is
+   * the trunk pathology read backwards.
+   *
+   * So it is fixed backwards. A merge is a tree with its root at the target:
+   * each arrow runs along its own row to ONE trunk held clear of the bar it
+   * feeds, joins it there, and the trunk arrives once. Every junction is a T,
+   * and a T is not a crossing.
+   *
+   * ⚠️ **A fan wins over a merge.** An edge can be a branch of one and a leg of
+   * the other, and it cannot put its vertical in two places. Ranking them keeps
+   * the choice deterministic, and it costs nothing to look at: the edge left on
+   * the fan meets the merge trunk at the target row and runs COLLINEAR into the
+   * bar with it, because both end at the same arrowhead. Overlap, not a cross.
+   */
+  const byTarget = new Map<string, RoutedEdge[]>();
+  for (const r of routes) {
+    if (r.points.length !== 4 || r.points[1].x !== r.points[2].x) continue;
+    const end = r.points[3];
+    const key = `${Math.round(end.x)}:${Math.round(end.y)}`;
+    const list = byTarget.get(key);
+    if (list) list.push(r);
+    else byTarget.set(key, [r]);
+  }
+  for (const group of byTarget.values()) {
+    if (group.length < 2) continue;
+    const merge = group[0].points[3].x - EDGE_STUB_PX;
+    for (const route of group) {
+      if (trunked.has(route.id)) continue;
+      trunked.add(route.id);
+      // Never behind the bar it leaves: a source ending inside the stub keeps
+      // its own channel rather than being routed back through itself.
+      if (merge <= route.points[0].x) continue;
+      if (route.points[1].x === merge) continue;
+      const pts = route.points.map((p) => ({ ...p }));
+      pts[1].x = merge;
+      pts[2].x = merge;
+      moved.set(route.id, pts);
+    }
+  }
+
   // Forward routes: the vertical run at points[1].x === points[2].x.
   const forward = routes
     .filter((r) => !trunked.has(r.id))
@@ -960,7 +1029,7 @@ export function stagger(routes: readonly RoutedEdge[]): RoutedEdge[] {
 
   // Backward routes: the horizontal lane at points[2].y === points[3].y.
   const backward = routes.filter(
-    (r) => r.points.length === 6 && r.points[2].y === r.points[3].y,
+    (r) => r.points.length === 5 && r.points[2].y === r.points[3].y,
   );
   for (const group of cluster(backward, (r) => r.points[2].y)) {
     if (group.length < 2) continue;
