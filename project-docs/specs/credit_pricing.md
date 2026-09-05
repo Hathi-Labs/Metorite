@@ -403,10 +403,23 @@ charge at settle time.
 
 ### 5.4 `MIN_CHARGE`
 
-1. A constant floors one billable operation at 5 credits.
-2. ⚠️ **`tier-embed` is exempt.** One embedding costs a fraction of a credit.
-   A 5-credit floor would charge 50000 credits to index 10000 documents. Bill
-   `tier-embed` per batch job, with one hold and one settle.
+1. `floor_charge` applies the floor. `MIN_CHARGE_ENV` carries the figure.
+2. 🔴 **It SHIPS AT ZERO, so the floor is inert until the owner sets it.**
+   How much an operation must cover is a commercial number, and §2 puts every
+   commercial number behind H-42.
+
+   ⚠️ **The first build shipped it at 5 and it changed real bills.** Thirteen
+   suites went red because their fixtures price in fractions of a credit. Each
+   failure was the floor working correctly on a number nobody had agreed to.
+   The mechanism is an agent's to build. The figure is the owner's to choose.
+3. ⚠️ **`embed` is exempt.** One embedding costs a fraction of a credit. A
+   5-credit floor would charge 50000 credits to index 10000 documents, against
+   perhaps 200 credits of real value.
+4. ⚠️ **The exemption is keyed on the TASK and never on the tier.** D61 makes
+   tiers free text and tasks an allowlist. A second embedding tier would
+   silently lose the exemption if the check read a tier slug.
+5. A zero stays zero. An absorbed task (D19.2) and an unpriced card both rate
+   to nothing on purpose. Lifting either to the floor invents a charge.
 
 ### 5.5 The fence (R7)
 
@@ -434,6 +447,26 @@ deferred revenue cannot be reported.
 4. `credit_ledger` grows `lot_id`, nullable (R6).
 5. The balance stays `SUM(delta)`. The lot table explains a balance and never
    replaces it.
+
+### 6.2a What slice 6 BUILT (added 2026-09-05)
+
+Migration 027 adds `credit_lot` and `credit_ledger.lot_id`. `store.open_lots`
+holds the order. `store.draw_from_lots` allocates a charge across lots and
+`store.add_credit_lot` records one.
+
+⚠️ **`NULLS LAST` on the expiry is load-bearing.** Postgres orders NULLs FIRST,
+so a bare `ORDER BY expires_at` burns the lot that never expires and lets a
+dated lot reach its expiry unused. That is the same loss the ordering exists to
+prevent, by another route.
+
+⚠️ **`add_credit_lot` writes NO ledger row.** The caller writes the balance.
+A lot that wrote its own row could disagree with the ledger, and the balance a
+customer reads is the ledger.
+
+**NOT built.** Nothing calls `draw_from_lots` on the metering path yet. No lot
+is created when credits are granted or bought. The table, the order and the
+column exist. Wiring them into the charge is a later slice, and until then
+`lot_id` stays NULL on every row.
 
 ### 6.3 The fence (R7)
 

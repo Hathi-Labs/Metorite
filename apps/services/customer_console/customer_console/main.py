@@ -119,6 +119,7 @@ from customer_console.credits import (
     decide_run_ceiling,
     decide_spend,
     estimate_hold,
+    floor_charge,
     quantize_credits,
     rate_call,
 )
@@ -1109,16 +1110,28 @@ def _rate_completion(
 
     try:
         return (
-            quantize_credits(
-                rate_call(
-                    card,
-                    TokenUsage(
-                        prompt_tokens=usage.prompt_tokens,
-                        completion_tokens=usage.completion_tokens,
-                        cached_tokens=usage.cached_tokens,
-                    ),
-                    quantity=quantity,
-                )
+            # 🔴 **The floor, applied AFTER rating and never inside it**
+            # (`credit_pricing.md` §5.4). `rate_call` answers what the card
+            # says this call is worth; the floor is a separate policy about
+            # what an operation must cover, and folding the two together
+            # would make the rate untestable without the policy.
+            #
+            # ⚠️ Keyed on the TASK, so `embed` keeps its exemption. A
+            # five-credit floor per call charges 50000 credits to index
+            # 10000 documents, against perhaps 200 credits of real value.
+            floor_charge(
+                quantize_credits(
+                    rate_call(
+                        card,
+                        TokenUsage(
+                            prompt_tokens=usage.prompt_tokens,
+                            completion_tokens=usage.completion_tokens,
+                            cached_tokens=usage.cached_tokens,
+                        ),
+                        quantity=quantity,
+                    )
+                ),
+                task=card.task,
             ),
             card.unit,
         )

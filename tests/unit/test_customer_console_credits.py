@@ -649,3 +649,68 @@ class TestTheUnbilledFleetRead:
         src = inspect.getsource(store.unbilled_fleet_total)
         assert "metering_fault IS NOT NULL" in src
         assert "refusal_reason" not in src
+
+
+# ── The per-operation floor (credit_pricing.md §5.4, slice 5) ───────────────
+
+
+class TestTheChargeFloor:
+    """🔴 The floor exists to cover overhead, and `tier-embed` must escape it.
+
+    One embedding costs a fraction of a credit. A five-credit floor per call
+    charges **50000 credits to index 10000 documents** against perhaps 200
+    credits of real value — a 250x overcharge on the one task a customer runs
+    in bulk by design.
+    """
+
+    def test_it_SHIPS_INERT_and_the_owner_arms_it(self, monkeypatch):
+        """⚠️ The mechanism is an agent's. The FIGURE is the owner's (H-42).
+
+        The first build of this slice shipped it at 5 and turned thirteen
+        suites red, each one the floor working correctly on a number nobody
+        had agreed to.
+        """
+        from customer_console import credits as c
+
+        monkeypatch.delenv(c.MIN_CHARGE_ENV, raising=False)
+        assert c.min_charge() == 0
+        assert c.floor_charge(Decimal("0.4"), task="chat") == Decimal("0.4")
+
+    def test_once_armed_it_floors_a_tiny_charge(self, monkeypatch):
+        from customer_console import credits as c
+
+        monkeypatch.setenv(c.MIN_CHARGE_ENV, "5")
+        assert c.floor_charge(Decimal("0.4"), task="chat") == Decimal(5)
+        assert c.floor_charge(Decimal("423"), task="chat") == Decimal("423")
+
+    def test_EMBED_is_exempt_even_when_armed(self, monkeypatch):
+        from customer_console import credits as c
+
+        monkeypatch.setenv(c.MIN_CHARGE_ENV, "5")
+        assert c.floor_charge(Decimal("0.4"), task="embed") == Decimal("0.4")
+
+    def test_the_exemption_is_keyed_on_the_TASK_not_the_tier(self):
+        """⚠️ D61 makes tiers free text and tasks an allowlist.
+
+        A second embedding tier would silently lose the exemption if this read
+        a tier slug.
+        """
+        from customer_console import credits as c
+
+        assert c.NO_MIN_CHARGE_TASKS == frozenset({"embed"})
+
+    def test_a_ZERO_stays_zero_even_when_armed(self, monkeypatch):
+        """⚠️ An absorbed task (D19.2) and an unpriced card both rate to
+        nothing on purpose. Lifting either to five credits invents a charge."""
+        from customer_console import credits as c
+
+        monkeypatch.setenv(c.MIN_CHARGE_ENV, "5")
+        assert c.floor_charge(Decimal(0), task="chat") == 0
+
+    def test_a_broken_value_reads_as_ZERO_and_never_raises(self, monkeypatch):
+        """A misconfigured floor must not fail completions."""
+        from customer_console import credits as c
+
+        for bad in ("banana", "-5", ""):
+            monkeypatch.setenv(c.MIN_CHARGE_ENV, bad)
+            assert c.min_charge() == 0, bad

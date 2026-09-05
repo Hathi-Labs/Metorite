@@ -601,6 +601,125 @@ def sweep_orphan_holds(
     return freed
 
 
+#: Which lot burns first when two share an expiry.
+#:
+#: 🔴 **FREE before PAID, so a customer never loses money they spent.** A trial
+#: grant and a purchased pack expiring the same day are not equivalent: burning
+#: the paid one first means the free one expires unused, and the customer paid
+#: for credits they never got to spend. Both rules here favour the customer,
+#: deliberately — the alternative is a support conversation about credits that
+#: vanished.
+_LOT_FREE_FIRST = ("trial", "promo", "grant")
+
+
+def open_lots(conn: Connection, *, org_id: str) -> list[Any]:
+    """Every lot with credits left, in the order they must burn.
+
+    **Soonest expiry first, then free before paid, then oldest first.**
+
+    ⚠️ **`NULLS LAST` on the expiry, and it is load-bearing.** A lot that never
+    expires must burn LAST, not first: burning it early lets a dated lot reach
+    its expiry unused, which is the exact loss the ordering exists to avoid.
+    A bare `ORDER BY expires_at` puts NULL first in Postgres and inverts the
+    rule.
+    """
+    return list(
+        conn.execute(
+            text(
+                """
+                SELECT id, source, credits, credits_used, price_paid_inr,
+                       expires_at,
+                       (credits - credits_used) AS remaining
+                FROM credit_lot
+                WHERE organization_id = CAST(:org AS uuid)
+                  AND credits_used < credits
+                ORDER BY expires_at ASC NULLS LAST,
+                         (source = ANY(:free)) DESC,
+                         id ASC
+                """
+            ),
+            {"org": org_id, "free": list(_LOT_FREE_FIRST)},
+        ).all()
+    )
+
+
+def draw_from_lots(
+    conn: Connection, *, org_id: str, credits: Decimal
+) -> list[dict[str, Any]]:
+    """Allocate a charge across lots, soonest-expiring first.
+
+    Returns what each lot gave, as ``[{"lot_id": .., "credits": ..}, ..]``.
+
+    ⚠️ **This UPDATES a projection and never the balance.** `SUM(delta)` on the
+    ledger stays the authority for what an organization holds. `credits_used`
+    exists so the NEXT draw knows which lot to reach for, and so a report can
+    say what a lot cost.
+
+    ⚠️ **A charge larger than every open lot draws them all and stops.** It
+    does not raise and it does not invent a lot. The hold in §5 is what
+    refuses an unaffordable call, and a second refusal here would fire on the
+    ordinary case where lots simply have not been backfilled yet.
+    """
+    if credits <= 0:
+        return []
+
+    drawn: list[dict[str, Any]] = []
+    left = credits
+    for lot in open_lots(conn, org_id=org_id):
+        if left <= 0:
+            break
+        take = min(left, Decimal(lot.remaining))
+        if take <= 0:
+            continue
+        conn.execute(
+            text(
+                "UPDATE credit_lot SET credits_used = credits_used + :take "
+                "WHERE id = :id"
+            ),
+            {"take": take, "id": lot.id},
+        )
+        drawn.append({"lot_id": lot.id, "credits": take, "source": lot.source})
+        left -= take
+    return drawn
+
+
+def add_credit_lot(
+    conn: Connection,
+    *,
+    org_id: str,
+    source: str,
+    credits: Decimal,
+    price_paid_inr: Decimal | None = None,
+    expires_at: Any | None = None,
+) -> int:
+    """Record a lot. Returns its id.
+
+    ⚠️ **Writes NO ledger row.** The caller writes the ledger, because the
+    ledger is the balance and this table only explains it. Doing both here
+    would let a lot exist that the balance does not reflect, which is the one
+    inconsistency the "explains, never replaces" rule exists to forbid.
+    """
+    return int(
+        conn.execute(
+            text(
+                """
+                INSERT INTO credit_lot
+                    (organization_id, source, credits, price_paid_inr, expires_at)
+                VALUES (CAST(:org AS uuid), :source, :credits, :price, :expires)
+                RETURNING id
+                """
+            ),
+            {
+                "org": org_id,
+                "source": source,
+                "credits": credits,
+                "price": price_paid_inr,
+                "expires": expires_at,
+            },
+        ).scalar_one()
+    )
+
+
 def credit_ref_row(conn: Connection, *, org_id: str, reason: str, ref: str) -> Any:
     """The EARLIEST ledger row carrying this (reason, ref), or None.
 

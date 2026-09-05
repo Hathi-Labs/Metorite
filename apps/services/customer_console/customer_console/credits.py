@@ -22,6 +22,9 @@ from decimal import ROUND_HALF_UP, Decimal
 
 __all__ = [
     "CREDIT_QUANTUM",
+    "DEFAULT_MIN_CHARGE",
+    "MIN_CHARGE_ENV",
+    "NO_MIN_CHARGE_TASKS",
     "LEDGER_REASONS",
     "LEDGER_REASON_ADJUSTMENT",
     "LEDGER_REASON_DISCOUNT_REDEMPTION",
@@ -45,6 +48,8 @@ __all__ = [
     "decide_run_ceiling",
     "decide_spend",
     "estimate_hold",
+    "floor_charge",
+    "min_charge",
     "quantize_credits",
     "rate_call",
 ]
@@ -219,6 +224,78 @@ def estimate_hold(
         + Decimal(max(max_output_tokens, 0)) / million * card.output_per_1m
     )
     return HoldEstimate(quantize_credits(worst), "worst_case")
+
+
+#: The environment variable the owner sets to arm the floor.
+MIN_CHARGE_ENV = "CUSTOMER_CONSOLE_MIN_CHARGE_CREDITS"
+
+#: 🔴 **SHIPS AT ZERO, which means the floor is inert until the owner sets
+#: it** (`credit_pricing.md` §5.4). A two-token classification call rates to a
+#: fraction of a credit and does not cover the overhead of serving it — but
+#: *how much* an operation must cover is a commercial number, and §2 of the
+#: specification puts every commercial number behind H-42.
+#:
+#: ⚠️ **The first build of this slice shipped it at 5 and it changed real
+#: bills.** Thirteen suites went red because their fixtures price in fractions
+#: of a credit, and each one was the floor working correctly on a number
+#: nobody had agreed to. The mechanism is an agent's to build. The figure is
+#: the owner's to choose, exactly as the rate card ships unpriced and the
+#: spend gate ships off.
+DEFAULT_MIN_CHARGE = Decimal(0)
+
+
+def min_charge() -> Decimal:
+    """The floor in force, from the environment. Zero unless the owner set it.
+
+    Read per call rather than at import, so a rotation takes effect without a
+    restart — the idiom `_spend_gate_enabled` already uses.
+
+    ⚠️ An unparseable or negative value reads as ZERO rather than raising. A
+    misconfigured floor must not fail completions, and zero is the shipped
+    state it falls back to.
+    """
+    import os
+
+    raw = os.environ.get(MIN_CHARGE_ENV, "").strip()
+    if not raw:
+        return DEFAULT_MIN_CHARGE
+    try:
+        value = Decimal(raw)
+    except (ArithmeticError, ValueError):
+        return DEFAULT_MIN_CHARGE
+    return value if value > 0 else DEFAULT_MIN_CHARGE
+
+#: 🔴 **Tasks the floor must NEVER touch, and this is not a nicety.**
+#:
+#: One embedding costs a fraction of a credit. A five-credit floor per call
+#: would charge **50000 credits to index 10000 documents** against perhaps 200
+#: credits of real value — a 250x overcharge, on the one task a customer runs
+#: in bulk by design. §3.4 of the design document names it in terms.
+#:
+#: ⚠️ **Keyed on the TASK and never on the tier.** D61 makes tiers free text
+#: and tasks an allowlist, so a second embedding tier — `tier-embed-fast`, a
+#: customer-specific slate — would silently lose the exemption if this read a
+#: tier slug. The task is the durable axis.
+#:
+#: ⚠️ The exemption is not "embeddings are free". `tier-embed` still rates and
+#: still bills what it rates. It is only the FLOOR that does not apply, because
+#: the floor assumes one call is one human action and an index is not.
+NO_MIN_CHARGE_TASKS: frozenset[str] = frozenset({"embed"})
+
+
+def floor_charge(credits: Decimal, *, task: str) -> Decimal:
+    """Apply the per-operation floor, or refuse to for a bulk task.
+
+    ⚠️ **A ZERO stays ZERO.** An absorbed task (D19.2) and an unpriced card
+    both rate to nothing on purpose, and lifting either to five credits would
+    invent a charge nobody agreed to. The floor exists to round a real but tiny
+    charge up to something that covers its overhead — not to mint one.
+    """
+    if credits <= 0:
+        return credits
+    if task in NO_MIN_CHARGE_TASKS:
+        return credits
+    return max(credits, min_charge())
 
 
 class UsagePartitionError(Exception):
