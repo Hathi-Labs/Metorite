@@ -83,7 +83,11 @@ import {
   dayPx,
   dayStep,
   dragRefusal,
+  CONTROL_SHIELD_PX,
+  AIM_KEEP_PX,
+  EDGE_GRACE_MS,
   EDGE_HIT_PX,
+  edgeHitOrder,
   edgeMidpoint,
   edgePoints,
   interval,
@@ -254,6 +258,49 @@ export function TimelineView({
    * same gesture.
    */
   const [hoverEdge, setHoverEdge] = useState<string | null>(null);
+
+  /**
+   * ── The aim LATCH, and why a plain mouseleave will not do ─────────────────
+   *
+   * The remove control sits half way ALONG the arrow, which is a dogleg. So the
+   * straight line a hand takes from the arrow to the control leaves the path —
+   * and the path is all there is: a 12px stroke with nothing either side of it.
+   * `onMouseLeave` fired part-way, `hoverEdge` cleared, and the control
+   * unmounted from under a cursor that was travelling toward it. Where a second
+   * arrow overlapped, the pointer landed on THAT stroke instead and the control
+   * reappeared on the wrong arrow, which is how the owner reported it on
+   * 2026-09-05.
+   *
+   * Measured before this landed: walking the pointer from the arrow to its own
+   * control in 16 steps, the control was absent for 10 of them.
+   *
+   * So leaving the stroke does not drop the aim immediately — it schedules the
+   * drop, and anything that means "still going there" cancels it: the stroke
+   * again, the shield around the control, or the control itself. Deliberately
+   * moving to a different arrow still works, because that arrow's own enter
+   * cancels the timer and claims the aim.
+   */
+  const releaseRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const aimEdge = useCallback((id: string) => {
+    if (releaseRef.current) clearTimeout(releaseRef.current);
+    releaseRef.current = null;
+    setHoverEdge(id);
+  }, []);
+  const releaseEdge = useCallback((id: string) => {
+    if (releaseRef.current) clearTimeout(releaseRef.current);
+    releaseRef.current = setTimeout(() => {
+      releaseRef.current = null;
+      setHoverEdge((current) => (current === id ? null : current));
+    }, EDGE_GRACE_MS);
+  }, []);
+  // A pending release must not outlive the view and set state on a dead tree.
+  useEffect(
+    () => () => {
+      if (releaseRef.current) clearTimeout(releaseRef.current);
+    },
+    [],
+  );
+
   const todayKey = today ?? dayKey(new Date());
 
   // The live drag, for listeners that were created once and must not close over
@@ -933,7 +980,49 @@ export function TimelineView({
                     <path d="M0,0 L6,3 L0,6 z" className="fill-primary" />
                   </marker>
                 </defs>
-                {links.map((edge) => {
+                {/* ── The aim corridor, and why it is its OWN layer ──────────
+                    Wide enough to travel ALONG the aimed arrow, not merely to
+                    point at it: the remove control sits half way along a
+                    dogleg, so the route to it cuts corners and a 12px stroke
+                    loses the pointer part-way.
+
+                    ⚠️ It is drawn BEFORE every edge group, so it sits UNDER
+                    all the narrow hit strokes. That layering is the whole
+                    trick. Rendered inside the aimed edge's own group it was on
+                    top — `edgeHitOrder` puts that group last — and a 44px
+                    invisible stroke then buried the neighbouring arrow, which
+                    could no longer be aimed at all (measured, 2026-09-05).
+                    Underneath, precision still wins: land on any arrow's real
+                    stroke and that arrow takes the aim, and the corridor only
+                    catches the pointer where no stroke is. */}
+                {(() => {
+                  if (!onUnlink || !hoverEdge) return null;
+                  const edge = links.find((e) => e.id === hoverEdge);
+                  if (!edge) return null;
+                  const from = indexById.get(edge.blocker_id);
+                  const to = indexById.get(edge.blocked_id);
+                  if (from === undefined || to === undefined) return null;
+                  const pts = edgePoints(
+                    { bar: barById.get(edge.blocker_id) ?? null, row: from },
+                    { bar: barById.get(edge.blocked_id) ?? null, row: to },
+                  );
+                  if (!pts) return null;
+                  return (
+                    <path
+                      d={roundedPath(pts)}
+                      fill="none"
+                      stroke="transparent"
+                      strokeWidth={AIM_KEEP_PX}
+                      style={{ pointerEvents: "stroke", cursor: "pointer" }}
+                      onMouseEnter={() => aimEdge(edge.id)}
+                      onMouseLeave={() => releaseEdge(edge.id)}
+                    />
+                  );
+                })()}
+                {/* ⚠️ Ordered, not raw. The aimed edge must paint LAST or it
+                    loses the pointer to whichever overlapping edge happens to
+                    sit later in `links` — see `edgeHitOrder`. */}
+                {edgeHitOrder(links, hoverEdge).map((edge) => {
                   const from = indexById.get(edge.blocker_id);
                   const to = indexById.get(edge.blocked_id);
                   if (from === undefined || to === undefined) return null;
@@ -985,12 +1074,8 @@ export function TimelineView({
                           stroke="transparent"
                           strokeWidth={EDGE_HIT_PX}
                           style={{ pointerEvents: "stroke", cursor: "pointer" }}
-                          onMouseEnter={() => setHoverEdge(edge.id)}
-                          onMouseLeave={() =>
-                            setHoverEdge((current) =>
-                              current === edge.id ? null : current,
-                            )
-                          }
+                          onMouseEnter={() => aimEdge(edge.id)}
+                          onMouseLeave={() => releaseEdge(edge.id)}
                         />
                       ) : null}
                       <path
@@ -1010,6 +1095,32 @@ export function TimelineView({
                           bad ? "pm-arrow-bad" : lit ? "pm-arrow-lit" : "pm-arrow"
                         })`}
                       />
+                      {/* The approach corridor.
+
+                          `edgeHitOrder` keeps the aimed edge on top along the
+                          path, which covers the journey. This covers the
+                          ARRIVAL: the control sits ON the line, so the last few
+                          pixels are exactly where a second arrow's stroke is
+                          most likely to be, and stepping off the aimed stroke
+                          there would hand the pointer away one pixel before the
+                          target.
+
+                          Hover only — deliberately NOT inside the group that
+                          carries `onClick`. A 22px halo that deletes a
+                          dependency is a mis-click waiting to happen; this one
+                          only keeps the edge aimed, and the control below stays
+                          the only thing that removes anything. */}
+                      {onUnlink && aimed && mid ? (
+                        <circle
+                          cx={mid.x}
+                          cy={mid.y}
+                          r={CONTROL_SHIELD_PX}
+                          fill="transparent"
+                          style={{ pointerEvents: "all" }}
+                          onMouseEnter={() => aimEdge(edge.id)}
+                          onMouseLeave={() => releaseEdge(edge.id)}
+                        />
+                      ) : null}
                       {onUnlink && aimed && mid ? (
                         <g
                           transform={`translate(${mid.x} ${mid.y})`}
@@ -1019,12 +1130,8 @@ export function TimelineView({
                             leaves the stroke, and without this the control
                             unmounts from under the cursor on the way to it.
                           */
-                          onMouseEnter={() => setHoverEdge(edge.id)}
-                          onMouseLeave={() =>
-                            setHoverEdge((current) =>
-                              current === edge.id ? null : current,
-                            )
-                          }
+                          onMouseEnter={() => aimEdge(edge.id)}
+                          onMouseLeave={() => releaseEdge(edge.id)}
                           onClick={(event) => {
                             event.stopPropagation();
                             onUnlink(edge.blocker_id, edge.id);

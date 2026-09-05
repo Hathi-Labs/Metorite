@@ -851,6 +851,79 @@ export function edgePath(
  */
 export const EDGE_HIT_PX = 12;
 
+/**
+ * How far from the remove control the pointer may stray and still keep the
+ * edge aimed.
+ *
+ * The control is `r=8`. This is the corridor around it, so the last few pixels
+ * of the journey cannot be stolen by an arrow underneath.
+ */
+export const CONTROL_SHIELD_PX = 22;
+
+/**
+ * How long an arrow stays aimed after the pointer leaves its stroke.
+ *
+ * The remove control sits half way ALONG a dogleg, so the straight line a hand
+ * takes to reach it leaves the 12px stroke. Without a grace window the control
+ * unmounts mid-journey — measured absent on 10 of 16 steps of that walk.
+ *
+ * Long enough to cross a corner, short enough that an arrow you have genuinely
+ * left stops glowing before you notice. It is not an animation: nothing moves
+ * during it, and the owner's no-motion ruling is about transitions.
+ */
+export const EDGE_GRACE_MS = 260;
+
+/**
+ * The hit corridor around the arrow you are ALREADY pointing at.
+ *
+ * `EDGE_HIT_PX` is 12, which is enough to point AT a line and not enough to
+ * travel ALONG one. The remove control sits half way along a dogleg, so the
+ * route to it cuts corners, and a 12px corridor loses the pointer part-way.
+ *
+ * Widened only while the edge is aimed, and only for that edge. An arrow you
+ * are not pointing at keeps its 12, so a fat invisible stroke never makes its
+ * neighbours unpointable — and `edgeHitOrder` puts the aimed one on top, so the
+ * corridor wins wherever two arrows share a path.
+ */
+export const AIM_KEEP_PX = 44;
+
+/**
+ * The edges, with the AIMED one drawn last.
+ *
+ * ⚠️ **This is a hit-testing rule, not a paint order preference.** SVG hands
+ * the pointer to the last-painted element, and two edges that leave the same
+ * bar share a path prefix — their `EDGE_HIT_PX` strokes lie on top of one
+ * another for that whole stretch. So whichever edge happened to sit later in
+ * `links` won the pointer everywhere they overlapped.
+ *
+ * The failure that reports as: hover one arrow, its remove control appears,
+ * move toward the control, and part-way there the pointer crosses the shared
+ * segment. The other edge's `onMouseEnter` fires, `hoverEdge` flips, and the
+ * control vanishes and reappears on the WRONG arrow — under a cursor that
+ * never left the first one. Owner report, 2026-09-05, with two edges fanning
+ * out of one blocker.
+ *
+ * Putting the aimed edge last makes it win every overlap it is part of, so an
+ * edge you are pointing at keeps the pointer until you genuinely leave it.
+ * Nothing else changes: where the aimed edge is not, the others are reachable
+ * exactly as before, and with nothing aimed the order is the input's own.
+ *
+ * Stable for the rest, so the drawing order of the edges you are NOT pointing
+ * at never shuffles under you.
+ */
+export function edgeHitOrder<T extends { id: string }>(
+  edges: readonly T[],
+  aimedId: string | null,
+): T[] {
+  if (!aimedId) return [...edges];
+  const index = edges.findIndex((edge) => edge.id === aimedId);
+  if (index === -1) return [...edges];
+  const out = [...edges];
+  const [aimed] = out.splice(index, 1);
+  out.push(aimed);
+  return out;
+}
+
 /** Total length of a polyline. The corners are ignored — see `edgeMidpoint`. */
 export function polylineLength(points: readonly Point[]): number {
   let total = 0;

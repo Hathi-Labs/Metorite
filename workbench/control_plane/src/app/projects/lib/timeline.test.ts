@@ -28,6 +28,9 @@ import { describe, expect, it } from "vitest";
 import type { TaskRow } from "./api";
 import { fromDayKey, shiftDay } from "./calendar";
 import {
+  AIM_KEEP_PX,
+  CONTROL_SHIELD_PX,
+  edgeHitOrder,
   LABEL_GAP_PX,
   labelSide,
   MIN_BAR_PX,
@@ -1371,5 +1374,69 @@ describe("labelSide — a narrow bar's label stays on the canvas", () => {
       }
       expect(place.maxWidthPx).toBeGreaterThanOrEqual(0);
     }
+  });
+});
+
+describe("edgeHitOrder — the aimed arrow keeps the pointer", () => {
+  // Owner report, 2026-09-05: two arrows leaving one blocker overlap for the
+  // whole shared prefix. Hovering one showed its remove control; moving toward
+  // that control crossed the shared segment, where the OTHER edge's hit stroke
+  // was painted later and therefore on top. Its `onMouseEnter` fired, the
+  // control vanished and reappeared on the wrong arrow, under a cursor that had
+  // never left the first one.
+  const EDGES = [{ id: "a" }, { id: "b" }, { id: "c" }];
+
+  it("puts the aimed edge last, so it wins every overlap", () => {
+    // SVG hands the pointer to the last-painted element.
+    expect(edgeHitOrder(EDGES, "a").map((e) => e.id)).toEqual(["b", "c", "a"]);
+  });
+
+  it("leaves the order alone when nothing is aimed", () => {
+    expect(edgeHitOrder(EDGES, null).map((e) => e.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("keeps the un-aimed edges in their own order", () => {
+    // Otherwise the arrows you are NOT pointing at reshuffle under the cursor
+    // every time the aimed one changes.
+    expect(edgeHitOrder(EDGES, "b").map((e) => e.id)).toEqual(["a", "c", "b"]);
+  });
+
+  it("is a no-op for an id it does not hold", () => {
+    expect(edgeHitOrder(EDGES, "gone").map((e) => e.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("never drops or duplicates an edge", () => {
+    for (const aimed of [null, "a", "b", "c", "nope"]) {
+      const out = edgeHitOrder(EDGES, aimed);
+      expect(out).toHaveLength(EDGES.length);
+      expect(new Set(out.map((e) => e.id)).size).toBe(EDGES.length);
+    }
+  });
+
+  it("does not mutate the array it was handed", () => {
+    const input = [{ id: "a" }, { id: "b" }];
+    edgeHitOrder(input, "a");
+    expect(input.map((e) => e.id)).toEqual(["a", "b"]);
+  });
+
+  it("keeps the aim corridor wider than the pointing stroke", () => {
+    // 12px is enough to point AT a line and not enough to travel ALONG one.
+    // The corridor is what carries the pointer to a control that sits half way
+    // along a dogleg. Measured before it existed: walking from the arrow to its
+    // own control in 16 steps, the control was absent for 10 of them; with the
+    // corridor, for none.
+    expect(AIM_KEEP_PX).toBeGreaterThan(EDGE_HIT_PX);
+    // And the shield around the control has to fit inside it, or the arrival is
+    // guarded by something wider than the approach.
+    expect(AIM_KEEP_PX).toBeGreaterThanOrEqual(CONTROL_SHIELD_PX);
+  });
+
+  it("gives the control a corridor wider than the control itself", () => {
+    // The control is r=8. The shield is what stops an arrow underneath from
+    // stealing the pointer in the last few pixels of the approach.
+    expect(CONTROL_SHIELD_PX).toBeGreaterThan(8);
+    // And wider than the hit stroke, or the corridor is narrower than the line
+    // it is protecting the arrival on.
+    expect(CONTROL_SHIELD_PX).toBeGreaterThan(EDGE_HIT_PX);
   });
 });
