@@ -65,6 +65,7 @@ import {
   type Bar,
   type Edge,
   LABEL_INSIDE_PX,
+  labelSide,
   ROW_H,
   type TimelineBand,
   type TimelineRow,
@@ -1123,6 +1124,10 @@ export function TimelineView({
                       <TimelineBar
                         task={row.task}
                         drawnBar={drawnBar}
+                        // The chart's own width, so a narrow bar's label can be
+                        // kept inside it. Without this the label ran off the
+                        // end — see `labelSide`.
+                        canvasPx={range.widthPx}
                         bad={bad}
                         blockerTitle={blockerTask?.title}
                         dragging={isDragging ? drag : null}
@@ -1401,6 +1406,7 @@ function LinkPreview({
 function TimelineBar({
   task,
   drawnBar,
+  canvasPx,
   bad,
   blockerTitle,
   dragging,
@@ -1411,6 +1417,8 @@ function TimelineBar({
 }: {
   task: TaskRow;
   drawnBar: Bar;
+  /** The chart's full width, which bounds where a floating label may sit. */
+  canvasPx: number;
   bad: boolean;
   blockerTitle?: string;
   dragging: DragState | null;
@@ -1422,6 +1430,7 @@ function TimelineBar({
   const inside = drawnBar.widthPx >= LABEL_INSIDE_PX;
   const title = bad && blockerTitle ? conflictLabel(blockerTitle) : task.title;
   const span = interval(task);
+  const place = labelSide(drawnBar, canvasPx);
 
   const tone = drawnBar.derived
     ? "border border-dashed border-border bg-muted text-muted-foreground"
@@ -1532,14 +1541,34 @@ function TimelineBar({
           this label sits — so the line runs between the letters and reads as a
           STRIKETHROUGH on the task's own name. An opaque backing occludes it.
           Routing the arrow around the label instead would mean the geometry
-          layer knowing how wide a piece of rendered text is. */}
+          layer knowing how wide a piece of rendered text is.
+
+          ⚠️ **It does NOT always go on the right.** This header used to say the
+          right side is "where there is always room", and that is false at the
+          end of the canvas. Measured at 1440 on 2026-09-05: "Landing page A/B:
+          price framing" rendered 57px past the scroller's right edge and was
+          clipped, because the label took `left: leftPx + widthPx + 8` with a
+          `max-w` and no bound against the chart. A bar in the last stretch of
+          the canvas is exactly the bar whose name you cannot otherwise read,
+          so losing that one is the worst case, not the harmless one.
+
+          So the side is chosen, and the width is capped by the room actually
+          there. No text is measured — `labelSide` picks a side from the bar's
+          own geometry, which is the arithmetic the comment above declines to
+          do on rendered glyphs. */}
       {inside ? null : (
         <button
           type="button"
           onClick={onOpen}
           title={title}
-          className="absolute top-1/2 max-w-[240px] -translate-y-1/2 truncate rounded bg-card px-1 py-0.5 text-left text-[11px] text-foreground hover:underline"
-          style={{ left: drawnBar.leftPx + drawnBar.widthPx + 8 }}
+          className={`absolute top-1/2 -translate-y-1/2 truncate rounded bg-card px-1 py-0.5 text-[11px] text-foreground hover:underline ${
+            place.side === "right" ? "text-left" : "text-right"
+          }`}
+          style={
+            place.side === "right"
+              ? { left: place.offsetPx, maxWidth: place.maxWidthPx }
+              : { right: place.offsetPx, maxWidth: place.maxWidthPx }
+          }
         >
           {task.title}
         </button>

@@ -28,6 +28,8 @@ import { describe, expect, it } from "vitest";
 import type { TaskRow } from "./api";
 import { fromDayKey, shiftDay } from "./calendar";
 import {
+  LABEL_GAP_PX,
+  labelSide,
   MIN_BAR_PX,
   PAD_DAYS,
   PX_PER_DAY,
@@ -1313,5 +1315,61 @@ describe("EDGE_HIT_PX — the reason the arrow is hittable", () => {
     // the bar's own drag zones have to win.
     expect(EDGE_HIT_PX).toBeGreaterThanOrEqual(8);
     expect(EDGE_HIT_PX).toBeLessThanOrEqual(12);
+  });
+});
+
+describe("labelSide — a narrow bar's label stays on the canvas", () => {
+  // The measured regression. `TimelineBar` positioned the label at
+  // `leftPx + widthPx + 8` with a `max-w` and no bound, and its own header
+  // claimed the right is "where there is always room". At 1440 on 2026-09-05 a
+  // bar near the right edge put its label 57px past the scroller and the name
+  // was clipped — on exactly the bar too narrow to carry its title inside.
+  const CANVAS = 1000;
+
+  it("keeps the label on the right when there is room", () => {
+    const place = labelSide({ leftPx: 100, widthPx: 24 }, CANVAS);
+    expect(place.side).toBe("right");
+    expect(place.offsetPx).toBe(132);
+  });
+
+  it("caps the width at the room actually there, never past the edge", () => {
+    // 40px of canvas left: the label may take 40, not its 240 maximum.
+    const place = labelSide({ leftPx: 940, widthPx: 12 }, CANVAS);
+    expect(place.offsetPx + place.maxWidthPx).toBeLessThanOrEqual(CANVAS);
+  });
+
+  it("flips to the left when the right cannot hold a readable label", () => {
+    const place = labelSide({ leftPx: 950, widthPx: 20 }, CANVAS);
+    expect(place.side).toBe("left");
+    // A CSS `right`, so the label's right edge sits one gap left of the bar.
+    expect(place.offsetPx).toBe(CANVAS - 950 + LABEL_GAP_PX);
+  });
+
+  it("never lets a flipped label cross the left edge either", () => {
+    const place = labelSide({ leftPx: 30, widthPx: 4 }, 60);
+    const rightEdge = 60 - place.offsetPx;
+    if (place.side === "left") expect(rightEdge - place.maxWidthPx).toBeGreaterThanOrEqual(0);
+    else expect(place.offsetPx + place.maxWidthPx).toBeLessThanOrEqual(60);
+  });
+
+  it("prefers the right on a tie, so an ordinary chart never moves a label", () => {
+    // Equal room both sides. Keeping the right means the common reading order
+    // stays bar-then-name, and only a genuinely cramped bar reads name-then-bar.
+    const place = labelSide({ leftPx: 100, widthPx: 800 }, 1000 + 8 + 92 - 8);
+    expect(place.side).toBe("right");
+  });
+
+  it("holds the invariant across the whole canvas", () => {
+    // The property, rather than four examples: wherever the bar sits, the label
+    // stays inside the chart on both sides.
+    for (let left = 0; left <= CANVAS - 10; left += 7) {
+      const place = labelSide({ leftPx: left, widthPx: 10 }, CANVAS);
+      if (place.side === "right") {
+        expect(place.offsetPx + place.maxWidthPx).toBeLessThanOrEqual(CANVAS);
+      } else {
+        expect(CANVAS - place.offsetPx - place.maxWidthPx).toBeGreaterThanOrEqual(0);
+      }
+      expect(place.maxWidthPx).toBeGreaterThanOrEqual(0);
+    }
   });
 });

@@ -164,6 +164,69 @@ export const MIN_BAR_PX = 10;
 /** A bar narrower than this cannot hold its own title, so the label sits beside it. */
 export const LABEL_INSIDE_PX = 72;
 
+/** How far a floating label sits from the bar it names. */
+export const LABEL_GAP_PX = 8;
+/** The most a floating label may take, however much room there is. */
+export const LABEL_MAX_PX = 240;
+/**
+ * The least room worth putting a label in.
+ *
+ * Below this the label is one word and an ellipsis, which names nothing. It
+ * goes to the other side instead, where there is usually the whole chart.
+ */
+export const LABEL_MIN_PX = 88;
+
+/** Where a narrow bar's floating label goes. */
+export interface LabelPlacement {
+  side: "right" | "left";
+  /** A CSS `left` when the side is right, a CSS `right` when it is left. */
+  offsetPx: number;
+  maxWidthPx: number;
+}
+
+/**
+ * Which side of a narrow bar its label goes, and how wide it may be.
+ *
+ * The label used to be unconditionally on the right, at `leftPx + widthPx + 8`,
+ * with a `max-w` and no bound against the canvas. `TimelineBar`'s own header
+ * asserted that the right is "where there is always room". That is false at the
+ * end of the chart. Measured at 1440 on 2026-09-05: a bar near the right edge
+ * put its label 57px past the scroller, and the name was clipped.
+ *
+ * That is the worst case rather than a harmless one. A bar too narrow to hold
+ * its title is exactly the bar nobody can identify without the label, and the
+ * rail's copy of the name can be a whole screen away across 6000px of canvas.
+ *
+ * No text is measured. The side comes from the bar's own geometry, and the cap
+ * is the room actually present on the chosen side. So a label can come out
+ * short, and can never cross an edge.
+ */
+export function labelSide(
+  bar: { leftPx: number; widthPx: number },
+  canvasPx: number,
+): LabelPlacement {
+  const roomRight = canvasPx - (bar.leftPx + bar.widthPx + LABEL_GAP_PX);
+  const roomLeft = bar.leftPx - LABEL_GAP_PX;
+
+  // Right unless it does not fit AND the left does better. A tie keeps the
+  // right, so an unremarkable chart never moves a label and the reading order
+  // stays bar-then-name.
+  if (roomRight >= LABEL_MIN_PX || roomRight >= roomLeft) {
+    return {
+      side: "right",
+      offsetPx: bar.leftPx + bar.widthPx + LABEL_GAP_PX,
+      maxWidthPx: Math.max(0, Math.min(LABEL_MAX_PX, roomRight)),
+    };
+  }
+  return {
+    side: "left",
+    // Measured from the canvas's RIGHT edge, because that is what CSS `right`
+    // is relative to. The label's right edge lands one gap left of the bar.
+    offsetPx: canvasPx - bar.leftPx + LABEL_GAP_PX,
+    maxWidthPx: Math.max(0, Math.min(LABEL_MAX_PX, roomLeft)),
+  };
+}
+
 const DAY_MS = 86_400_000;
 
 export interface TimelineRange {
