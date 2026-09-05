@@ -155,8 +155,30 @@ async def list_statuses(
             ),
             {"root": root},
         )).fetchall()
+        # How many tasks sit in each lane, within the scope this set governs.
+        #
+        # Returned WITH the lanes rather than from a second endpoint, because
+        # every consumer needs both together: the editor prints the count on
+        # the row, and a delete cannot be offered safely without it — the old
+        # screen learned the number from a 409 AFTER the click. One call, so
+        # the two halves cannot disagree about which lane holds what.
+        scope = await status_scope_ids(db, project_id)
+        counts = {
+            str(r.status_id): int(r.tasks)
+            for r in (await db.execute(
+                text(
+                    "SELECT status_id, count(*) AS tasks FROM pm_tasks "
+                    " WHERE project_id = ANY(CAST(:scope AS uuid[])) "
+                    " GROUP BY status_id"
+                ),
+                {"scope": scope},
+            )).fetchall()
+        }
         return {
-            "rows": [row_to_dict(r, StatusModel) for r in rows], "total": len(rows),
+            "rows": [row_to_dict(r, StatusModel) for r in rows],
+            "total": len(rows),
+            "counts": counts,
+            "owner_id": root,
         }
 
 
