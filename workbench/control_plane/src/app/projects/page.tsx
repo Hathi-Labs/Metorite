@@ -252,6 +252,10 @@ function ProjectNav({
   onCancelCreate,
   onPicked,
   actions,
+  onManageStatuses,
+  onManageFields,
+  onManageTags,
+  onManageLifecycle,
 }: {
   roots: ProjectRow[];
   selectedId: string | null;
@@ -276,6 +280,15 @@ function ProjectNav({
   onPicked?: () => void;
   /** WS-27bg — the run-state / archive menu. */
   actions?: ProjectMenuHandlers;
+  /**
+   * The four ROOT-scoped screens, offered on a space row's menu. Each takes
+   * the row the menu opened from, NOT the selected project — the whole point
+   * of a row menu is that it acts on the row you pointed at.
+   */
+  onManageStatuses: (space: ProjectRow) => void;
+  onManageFields: (space: ProjectRow) => void;
+  onManageTags: (space: ProjectRow) => void;
+  onManageLifecycle: (space: ProjectRow) => void;
 }) {
   return (
     <>
@@ -373,6 +386,24 @@ function ProjectNav({
         onCommitCreate={onCommitCreate}
         onCancelCreate={onCancelCreate}
         actions={actions}
+        // Each closes the phone's drawer, like every other row action here —
+        // a dialog opening behind an open drawer is a dialog nobody can see.
+        onManageStatuses={(space) => {
+          onManageStatuses(space);
+          onPicked?.();
+        }}
+        onManageFields={(space) => {
+          onManageFields(space);
+          onPicked?.();
+        }}
+        onManageTags={(space) => {
+          onManageTags(space);
+          onPicked?.();
+        }}
+        onManageLifecycle={(space) => {
+          onManageLifecycle(space);
+          onPicked?.();
+        }}
       />
     </>
   );
@@ -575,13 +606,19 @@ function ProjectsWorkspace() {
   // whole subtree shares one set; held here rather than in the panel because
   // the panel opens and closes far more often than these change.
   const [fields, setFields] = useState<FieldRow[]>([]);
-  const [managingFields, setManagingFields] = useState(false);
+  // ⚠️ These four hold the NODE the dialog is for, not a boolean (owner
+  // directive 2026-09-06). They used to be flags, and the dialog read
+  // `selected` — which was right while the header's overflow menu was the only
+  // door, because that menu IS the selected project's. A tree row's menu is
+  // not: right-clicking a space you have not selected must manage THAT space,
+  // and a flag plus `selected` would quietly have managed the other one.
+  const [managingFields, setManagingFields] = useState<ProjectRow | null>(null);
 
   // WS-27m — the selected node's tag registry. Root-scoped like the fields, and
   // held here for the same reason: the filter bar, the panel's picker and the
   // manager all read it, and three fetches of one list would disagree.
   const [tags, setTags] = useState<TagRow[]>([]);
-  const [managingTags, setManagingTags] = useState(false);
+  const [managingTags, setManagingTags] = useState<ProjectRow | null>(null);
 
   // The status editor (owner directive 2026-09-03). `statuses` above is already
   // held here for the board's lanes, so the dialog writes through the same
@@ -591,11 +628,13 @@ function ProjectsWorkspace() {
   // resolves the root itself (`admin._root_for`), so a subproject opens its
   // space's set rather than being refused. That is the point — one set per
   // space is what keeps two spaces comparable through the category.
-  const [managingStatuses, setManagingStatuses] = useState(false);
+  const [managingStatuses, setManagingStatuses] = useState<ProjectRow | null>(null);
 
   // WS-27z — the lifecycle-policy dialog. Root projects only: the policy is a
   // root setting the whole subtree inherits, and the gateway 422s a child.
-  const [managingLifecycle, setManagingLifecycle] = useState(false);
+  const [managingLifecycle, setManagingLifecycle] = useState<ProjectRow | null>(
+    null
+  );
   // The header's one overflow menu (owner ask 2026-08-31, Plane's header
   // discipline): management dialogs open from HERE, not from a row of
   // always-visible buttons beside the view switcher.
@@ -783,6 +822,28 @@ function ProjectsWorkspace() {
    * asks for and the reason the endpoint returns it: filing a project with
    * unfinished work in it is allowed, and the user should know they did it.
    */
+  /**
+   * Open one of the four space-scoped screens from a tree row.
+   *
+   * ⚠️ **It SELECTS the row as well as opening the dialog, and that is
+   * deliberate.** Statuses, tags and custom fields are root-scoped, and the
+   * page holds ONE copy of each for the node on screen — `setStatuses` feeds
+   * the board's lanes, `setTags` the filter bar and the task panel, `setFields`
+   * the panel's custom values. Editing space A's vocabulary while the page
+   * shows space B would write A's list into B's state, and the lanes behind
+   * the open dialog would then be someone else's.
+   *
+   * The dialog still receives the NODE rather than reading `selected`, because
+   * `setSelected` lands on the next render and the dialog has to name the
+   * right space on this one.
+   */
+  const manageSpace =
+    (open: (space: ProjectRow) => void) => (space: ProjectRow) => {
+      setApp(null);
+      setSelected(space);
+      open(space);
+    };
+
   const projectMenuActions: ProjectMenuHandlers = useMemo(
     () => ({
       onSetState: (project, state) => {
@@ -1065,6 +1126,10 @@ function ProjectsWorkspace() {
             onCancelCreate={() => setCreating(undefined)}
             onPicked={() => setSheet(null)}
             actions={projectMenuActions}
+            onManageStatuses={manageSpace(setManagingStatuses)}
+            onManageFields={manageSpace(setManagingFields)}
+            onManageTags={manageSpace(setManagingTags)}
+            onManageLifecycle={manageSpace(setManagingLifecycle)}
           />
         ) : (
           <ModeSwitch
@@ -1564,14 +1629,18 @@ function ProjectsWorkspace() {
       clearFilters: () => setFilters(EMPTY_FILTERS),
       toggleRail: () => setRailOpen((open) => !open),
       manage: (what) => {
-        if (what === "fields") setManagingFields(true);
-        else if (what === "tags") setManagingTags(true);
-        else if (what === "statuses") setManagingStatuses(true);
-        else if (what === "lifecycle") setManagingLifecycle(true);
+        // The palette acts on the SELECTED project, which is what the palette
+        // has always meant. `commandCtx.hasProject` already gates every one of
+        // these, so a null here is a command that was not offered.
+        if (!selected) return;
+        if (what === "fields") setManagingFields(selected);
+        else if (what === "tags") setManagingTags(selected);
+        else if (what === "statuses") setManagingStatuses(selected);
+        else if (what === "lifecycle") setManagingLifecycle(selected);
       },
       showShortcuts: () => setShowingShortcuts(true),
     }),
-    [router, setPanelMode],
+    [router, setPanelMode, selected],
   );
 
   const commandCtx: CommandContext = {
@@ -1592,10 +1661,10 @@ function ProjectsWorkspace() {
   const overlayOpen =
     searching ||
     showingShortcuts ||
-    managingFields ||
-    managingTags ||
-    managingStatuses ||
-    managingLifecycle;
+    Boolean(managingFields) ||
+    Boolean(managingTags) ||
+    Boolean(managingStatuses) ||
+    Boolean(managingLifecycle);
 
   // The listener is attached ONCE and reads through this, rather than being
   // re-subscribed on every filter keystroke. Written from an effect rather
@@ -2122,7 +2191,7 @@ function ProjectsWorkspace() {
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
               onClick={() => {
                 setManageOpen(false);
-                setManagingFields(true);
+                setManagingFields(selected);
               }}
             >
               <Icon name="SlidersHorizontal" className="h-3.5 w-3.5 text-muted-foreground" />
@@ -2136,7 +2205,7 @@ function ProjectsWorkspace() {
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
               onClick={() => {
                 setManageOpen(false);
-                setManagingStatuses(true);
+                setManagingStatuses(selected);
               }}
             >
               <Icon name="Columns3" className="h-3.5 w-3.5 text-muted-foreground" />
@@ -2148,7 +2217,7 @@ function ProjectsWorkspace() {
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
               onClick={() => {
                 setManageOpen(false);
-                setManagingTags(true);
+                setManagingTags(selected);
               }}
             >
               <Icon name="Tag" className="h-3.5 w-3.5 text-muted-foreground" />
@@ -2161,7 +2230,7 @@ function ProjectsWorkspace() {
                 className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
                 onClick={() => {
                   setManageOpen(false);
-                  setManagingLifecycle(true);
+                  setManagingLifecycle(selected);
                 }}
               >
                 <Icon name="Archive" className="h-3.5 w-3.5 text-muted-foreground" />
@@ -2597,11 +2666,11 @@ function ProjectsWorkspace() {
         <ShortcutsSheet onClose={() => setShowingShortcuts(false)} />
       ) : null}
 
-      {managingTags && selected ? (
+      {managingTags ? (
         <TagManager
-          projectId={selected.id}
-          projectName={selected.name}
-          onClose={() => setManagingTags(false)}
+          projectId={managingTags.id}
+          projectName={managingTags.name}
+          onClose={() => setManagingTags(null)}
           onChanged={setTags}
           // A rename or merge rewrites task rows, so the board is stale until
           // it reloads — the chips would otherwise show a name no card carries.
@@ -2611,11 +2680,11 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {managingStatuses && selected ? (
+      {managingStatuses ? (
         <StatusManager
-          projectId={selected.id}
-          projectName={selected.name}
-          onClose={() => setManagingStatuses(false)}
+          projectId={managingStatuses.id}
+          projectName={managingStatuses.name}
+          onClose={() => setManagingStatuses(null)}
           // `setStatuses` is the board's own lane source, so a rename or a
           // recolour repaints the lanes behind the open dialog.
           onChanged={setStatuses}
@@ -2628,10 +2697,10 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {managingLifecycle && selected ? (
+      {managingLifecycle ? (
         <LifecyclePolicy
-          project={selected}
-          onClose={() => setManagingLifecycle(false)}
+          project={managingLifecycle}
+          onClose={() => setManagingLifecycle(null)}
           onSaved={(fresh) => {
             // The header's selected row keeps the fresh values; the tree
             // re-reads so its copy does not disagree on the next select.
@@ -2643,11 +2712,11 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {managingFields && selected ? (
+      {managingFields ? (
         <FieldManager
-          projectId={selected.id}
-          projectName={selected.name}
-          onClose={() => setManagingFields(false)}
+          projectId={managingFields.id}
+          projectName={managingFields.name}
+          onClose={() => setManagingFields(null)}
           // Kept in sync while the dialog is open, so a field added here shows
           // on the next task opened without closing anything first.
           onChanged={setFields}
@@ -2763,6 +2832,10 @@ function ProjectsWorkspace() {
               onCommitCreate={(name) => void submitProject(name)}
               onCancelCreate={() => setCreating(undefined)}
               actions={projectMenuActions}
+              onManageStatuses={manageSpace(setManagingStatuses)}
+              onManageFields={manageSpace(setManagingFields)}
+              onManageTags={manageSpace(setManagingTags)}
+              onManageLifecycle={manageSpace(setManagingLifecycle)}
             />
           </nav>
         ) : null}
