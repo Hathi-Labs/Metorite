@@ -118,6 +118,7 @@ from customer_console.credits import (
     balance_of,
     decide_run_ceiling,
     decide_spend,
+    estimate_hold,
     quantize_credits,
     rate_call,
 )
@@ -5092,6 +5093,83 @@ def _vendor_per_unit(conn, model: str, *, unit: str | None) -> Decimal | None:
     ).scalar_one_or_none()
 
 
+#: What to assume a completion might return when the caller names no ceiling.
+#:
+#: ⚠️ **A reservation size, never a limit.** Nothing enforces this on the
+#: provider — it exists so an uncapped request reserves something generous
+#: rather than nothing. `credit_pricing.md` §7.3 records the cost of getting it
+#: wrong in the other direction: a hold far larger than the real charge rejects
+#: calls a customer could afford, and the fix there is a per-tier `max_tokens`
+#: cap, which is NOT in this slice.
+MAX_OUTPUT_FOR_HOLD = 4096
+
+
+def _place_call_hold(
+    conn,
+    *,
+    org_id: str,
+    request_id: str,
+    tier: str,
+    task: str,
+    messages: list[Any],
+    max_tokens: int | None,
+) -> HTTPException | None:
+    """Reserve the worst case for one completion. Returns a refusal or None.
+
+    🔴 **Never raises past its own body.** A reserve that failed on an
+    unexpected error would fail a completion the customer is entitled to, and
+    §5's whole argument is that a metering problem must never become a product
+    problem. An error here logs and lets the call through unreserved, which is
+    the same posture the meter takes.
+
+    ⚠️ **The prompt estimate is TOKENS, and we do not have a tokenizer here.**
+    Four characters per token is the usual rough figure, and it is an ESTIMATE
+    used only to size a reservation that is released minutes later — never to
+    bill. `credit_pricing.md` §10.1 records that tokenizers differ by vendor,
+    which is exactly why this number may not reach a charge.
+    """
+    try:
+        card = router_mod.resolve_tier_rate(conn, tier, task)
+    except UnpricedModel:
+        # The shipped state (H-42). Nothing to reserve against.
+        return None
+
+    # ⚠️ A rough character count, deliberately generous. Under-reserving is
+    # the failure that matters: it lets a call through that the settle cannot
+    # cover. Over-reserving costs a customer headroom for the length of one
+    # request, and the release gives it straight back.
+    chars = sum(len(str(m.get("content", ""))) for m in messages if isinstance(m, dict))
+    prompt_estimate = chars // 4 + 1
+
+    estimate = estimate_hold(
+        card,
+        prompt_tokens=prompt_estimate,
+        # ⚠️ No `max_tokens` means the provider's own ceiling, which we cannot
+        # see from here. `MAX_OUTPUT_FOR_HOLD` stands in for it — a number
+        # chosen to be larger than any real completion rather than accurate.
+        max_output_tokens=max_tokens or MAX_OUTPUT_FOR_HOLD,
+    )
+    if estimate.credits <= 0:
+        return None
+
+    try:
+        store.place_hold(
+            conn, org_id=org_id, request_id=request_id, credits=estimate.credits
+        )
+    except store.HoldRefused as refused:
+        return HTTPException(
+            status_code=402,
+            detail=(
+                f"insufficient credits: this call reserves {refused.needed} "
+                f"credits and the balance is {refused.balance}"
+            ),
+        )
+    except Exception:
+        # See the docstring. A broken reserve must not break a completion.
+        _log.exception("router.hold_failed", extra={"router_org": org_id})
+    return None
+
+
 def _record_completion(
     usage: ExtractedUsage,
     *,
@@ -5103,6 +5181,7 @@ def _record_completion(
     quantity: Decimal | None = None,
     declared_task: str | None = None,
     started_at: datetime | None = None,
+    request_id: str | None = None,
 ) -> None:
     """Write ONE usage row and draw the credits for it. Never raises.
 
@@ -5287,9 +5366,12 @@ def _record_completion(
             store.record_usage(
                 conn,
                 org_id=org_id,
-                # SERVER-generated. The caller's id is correlation only — see
-                # migration 005 and CompletionRequest.client_ref.
-                request_id=f"rtr-{uuid.uuid4().hex}",
+                # 🔴 The id the HOLD used, so the release can find its
+                # reservation (migration 026). Minted in the route beside
+                # `started_at`. A fresh one here would orphan every hold.
+                # Still SERVER-generated — the caller's `client_ref` is
+                # correlation only (migration 005).
+                request_id=request_id or f"rtr-{uuid.uuid4().hex}",
                 client_ref=client_ref,
                 billed_credits=billed,
                 user_email=caller.member,
@@ -5696,6 +5778,7 @@ async def _streamed_completion(
     byok: bool = False,
     declared_task: str | None = None,
     started_at: datetime | None = None,
+    request_id: str | None = None,
 ) -> AsyncIterator[bytes]:
     """Replay the first chunk, relay the rest, and meter the result once.
 
@@ -5739,6 +5822,7 @@ async def _streamed_completion(
             # A streamed `vision` call takes D-AI-2's lift exactly as a
             # buffered one does, so its row says `vision` too (§8.5 clause 4).
             declared_task=declared_task,
+            request_id=request_id,
             # 🔴 The window follows the moment the request STARTED, not the
             # moment the last frame arrived. A stream is exactly the call that
             # can span a boundary, and the vendor charges the window it
@@ -5792,6 +5876,12 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     # resolve from this moment and not from whenever metering happened to run
     # (`credit_pricing.md` §4.1 clause 6, migration 023).
     started_at = datetime.now(UTC)
+    # 🔴 **Minted HERE, not at metering time** (migration 026). The hold and
+    # the settle must carry the SAME `ref`, or the release cannot find the
+    # reservation it closes and the sweeper sees an orphan on every call.
+    # SERVER-generated, exactly as before — the caller's `client_ref` is
+    # correlation only and trusting it let a caller suppress their own meter.
+    request_id = f"rtr-{uuid.uuid4().hex}"
 
     # 🔴 **A CUSTOMER refusal leaves this block before it is raised** (§8.1
     # clause 3). The meter has to record the wall, and a row written on the
@@ -5799,6 +5889,7 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     # of the transaction rather than thrown through it. `_spend_refusal`
     # already works this way, and its docstring states the rule.
     refusal: HTTPException | None = None
+    hold_refusal: HTTPException | None = None
     credentials: dict[str, router_mod.Credential | None] = {}
 
     with get_engine().begin() as conn:
@@ -5819,6 +5910,29 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
             # completion — the GATE may refuse, the METER may not.
             refusal = _spend_refusal(conn, caller) if _spend_gate_enabled() else None
 
+            # 🔴 **The RESERVE** (migration 026, `credit_pricing.md` §5). The
+            # gate above answers "is there any headroom at all"; this answers
+            # "is there enough for THIS call", and takes it.
+            #
+            # ⚠️ Same transaction as the gate, and `place_hold` locks the
+            # organization row inside it. Two calls arriving together are
+            # serialised there — without it each reads the same balance, each
+            # passes, and the organization goes negative by the second one.
+            #
+            # ⚠️ Only behind the spend gate. The reserve is a spend refusal by
+            # another name, and arming it while the gate ships OFF would refuse
+            # customers the gate deliberately does not (H-42's ordering).
+            if refusal is None and _spend_gate_enabled():
+                hold_refusal = _place_call_hold(
+                    conn,
+                    org_id=org_id,
+                    request_id=request_id,
+                    tier=req.model,
+                    task=req.task,
+                    messages=req.messages,
+                    max_tokens=req.max_tokens,
+                )
+
     if unknown_tier is not None:
         _record_refusal(
             REFUSAL_TIER_UNKNOWN,
@@ -5829,6 +5943,10 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
             client_ref=req.client_ref,
         )
         raise unknown_tier
+
+    # The reserve's refusal is a spend refusal, and it travels the same road.
+    if refusal is None and hold_refusal is not None:
+        refusal = hold_refusal
 
     if refusal is not None:
         # Carried OUT of the transaction above, then recorded and delivered.
@@ -5984,6 +6102,7 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
                 # What the CUSTOMER asked for. The bill follows `resolved`.
                 declared_task=req.task,
                 started_at=started_at,
+                request_id=request_id,
             ),
             media_type="text/event-stream",
             headers=headers,
@@ -6019,6 +6138,7 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
         # charges the (chosen tier, `chat`) pair (§8.5 clause 4).
         declared_task=req.task,
         started_at=started_at,
+        request_id=request_id,
     )
 
     return response

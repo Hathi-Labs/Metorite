@@ -22,7 +22,12 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
-from customer_console.credits import LEDGER_REASON_USAGE
+from customer_console.credits import (
+    LEDGER_REASON_HOLD,
+    LEDGER_REASON_RELEASE,
+    LEDGER_REASON_SETTLE,
+    LEDGER_REASON_USAGE,
+)
 
 __all__ = [
     "activate_subscription",
@@ -413,6 +418,189 @@ def add_credit(
     )
 
 
+class HoldRefused(Exception):
+    """The balance could not cover this reservation."""
+
+    def __init__(self, needed: Decimal, balance: Decimal) -> None:
+        super().__init__(
+            f"needs {needed} credits, balance is {balance}"
+        )
+        self.needed = needed
+        self.balance = balance
+
+
+def place_hold(
+    conn: Connection,
+    *,
+    org_id: str,
+    request_id: str,
+    credits: Decimal,
+    floor: Decimal = Decimal(0),
+) -> bool:
+    """Reserve credits before the provider is called. ATOMIC.
+
+    🔴 **The lock is the whole point** (`credit_pricing.md` §5.3). Balance is
+    ``SUM(delta)``, not a column, so there is nothing to update and nothing to
+    contend on. Two calls arriving together therefore each read the same
+    balance, each pass the check, and the organization goes negative by the
+    size of the second one — under exactly the load where the gate matters.
+
+    ``SELECT ... FOR UPDATE`` on the ORGANIZATION row serialises the pair. The
+    second transaction blocks until the first commits, then reads a balance
+    that already carries the first hold.
+
+    ⚠️ **The organization row is the lock, not a balance row.** There is no
+    balance row to lock, and inventing one would be a second source of truth
+    for a number the ledger already defines — the exact mistake `balance_of`
+    exists to prevent.
+
+    ⚠️ **A zero hold writes NO row and answers True.** The card ships unpriced,
+    so every hold is zero until somebody prices the slate. A zero-delta row is
+    noise in the one table a customer reads during a dispute, and refusing on
+    zero would take the product down.
+
+    Returns True when the reservation is in place. Raises :class:`HoldRefused`
+    when the balance cannot cover it.
+    """
+    if credits <= 0:
+        return True
+
+    # The lock. Nothing reads this row's contents — taking it IS the effect.
+    conn.execute(
+        text("SELECT id FROM organization WHERE id = CAST(:org AS uuid) FOR UPDATE"),
+        {"org": org_id},
+    )
+    balance = conn.execute(
+        text(
+            "SELECT COALESCE(SUM(delta), 0) FROM credit_ledger "
+            "WHERE organization_id = CAST(:org AS uuid)"
+        ),
+        {"org": org_id},
+    ).scalar_one()
+    if Decimal(balance) - credits < -floor:
+        raise HoldRefused(credits, Decimal(balance))
+
+    # ⚠️ ON CONFLICT DO NOTHING, so a retried request re-reserves nothing.
+    # `credit_ledger_reason_ref_unique` carries the idempotency already.
+    conn.execute(
+        text(
+            """
+            INSERT INTO credit_ledger (organization_id, delta, reason, ref)
+            VALUES (CAST(:org AS uuid), :delta, :reason, :ref)
+            ON CONFLICT (organization_id, reason, ref)
+                WHERE ref IS NOT NULL DO NOTHING
+            """
+        ),
+        {
+            "org": org_id,
+            "delta": -credits,
+            "reason": LEDGER_REASON_HOLD,
+            "ref": request_id,
+        },
+    )
+    return True
+
+
+def release_hold(
+    conn: Connection, *, org_id: str, request_id: str
+) -> Decimal:
+    """Give a reservation back. Idempotent. Returns what was released.
+
+    ⚠️ **Reads the hold's OWN delta rather than being told the number.** A
+    caller that passed the amount could pass a different one than it reserved,
+    and the ledger would then carry a release that does not match its hold —
+    a discrepancy nobody could explain and no constraint would catch.
+    """
+    held = conn.execute(
+        text(
+            "SELECT delta FROM credit_ledger "
+            "WHERE organization_id = CAST(:org AS uuid) "
+            "  AND reason = :reason AND ref = :ref"
+        ),
+        {"org": org_id, "reason": LEDGER_REASON_HOLD, "ref": request_id},
+    ).scalar_one_or_none()
+    if held is None or Decimal(held) == 0:
+        return Decimal(0)
+
+    conn.execute(
+        text(
+            """
+            INSERT INTO credit_ledger (organization_id, delta, reason, ref)
+            VALUES (CAST(:org AS uuid), :delta, :reason, :ref)
+            ON CONFLICT (organization_id, reason, ref)
+                WHERE ref IS NOT NULL DO NOTHING
+            """
+        ),
+        {
+            "org": org_id,
+            # The hold is negative, so its inverse gives the reservation back.
+            "delta": -Decimal(held),
+            "reason": LEDGER_REASON_RELEASE,
+            "ref": request_id,
+        },
+    )
+    return -Decimal(held)
+
+
+def sweep_orphan_holds(
+    conn: Connection, *, older_than_seconds: int
+) -> list[dict[str, Any]]:
+    """Release every hold whose call never closed it. Returns what it freed.
+
+    🔴 **A crash between the hold and the settle strands credits**
+    (`credit_pricing.md` §5.3 clause 6). The customer cannot spend them and
+    nothing will ever reconcile them, because the request that reserved them
+    is gone.
+
+    ⚠️ **Every release here is logged LOUDLY by the caller**, and that is the
+    point of returning the rows rather than a count. A swept hold means a
+    request path died after reserving credits, and that is a defect report —
+    a sweeper that quietly tidied up would hide the thing it proves.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT h.organization_id::text AS org_id,
+                   h.ref                   AS ref,
+                   h.delta                 AS delta,
+                   h.created_at            AS created_at
+            FROM credit_ledger h
+            WHERE h.reason = :hold
+              AND h.ref IS NOT NULL
+              AND h.created_at < now() - make_interval(secs => :secs)
+              -- Open means no partner row closed it. A settle alone is not
+              -- enough: the release is what gives the reservation back.
+              AND NOT EXISTS (
+                  SELECT 1 FROM credit_ledger r
+                  WHERE r.organization_id = h.organization_id
+                    AND r.ref = h.ref
+                    AND r.reason = :release
+              )
+            ORDER BY h.created_at
+            """
+        ),
+        {
+            "hold": LEDGER_REASON_HOLD,
+            "release": LEDGER_REASON_RELEASE,
+            "secs": older_than_seconds,
+        },
+    ).all()
+
+    freed: list[dict[str, Any]] = []
+    for r in rows:
+        released = release_hold(conn, org_id=r.org_id, request_id=r.ref)
+        if released:
+            freed.append(
+                {
+                    "org_id": r.org_id,
+                    "ref": r.ref,
+                    "credits": released,
+                    "held_since": r.created_at,
+                }
+            )
+    return freed
+
+
 def credit_ref_row(conn: Connection, *, org_id: str, reason: str, ref: str) -> Any:
     """The EARLIEST ledger row carrying this (reason, ref), or None.
 
@@ -557,6 +745,23 @@ def record_usage(
             reason=LEDGER_REASON_USAGE,
             ref=request_id,
         )
+
+    # 🔴 **The RELEASE, in the SAME transaction as the usage row and the
+    # charge** (migration 026, `credit_pricing.md` §5). The hold reserved the
+    # worst case; the line above charged the real number; this gives the
+    # difference back.
+    #
+    # ⚠️ **One transaction, or a crash between the two leaves credits
+    # stranded** — which is the exact state the sweeper exists to repair, and
+    # the point of putting these together is that the sweeper should almost
+    # never have anything to do. `record_usage` already runs inside the
+    # caller's transaction, so this inherits that guarantee rather than
+    # opening a second one.
+    #
+    # ⚠️ A call that reserved nothing releases nothing. `release_hold` reads
+    # the hold's own delta and answers zero when there is no hold, so the
+    # unpriced path — every path today — writes no extra row.
+    release_hold(conn, org_id=org_id, request_id=request_id)
     return True
 
 

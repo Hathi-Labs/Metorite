@@ -26,10 +26,14 @@ __all__ = [
     "LEDGER_REASON_ADJUSTMENT",
     "LEDGER_REASON_DISCOUNT_REDEMPTION",
     "LEDGER_REASON_GRANT",
+    "LEDGER_REASON_HOLD",
     "LEDGER_REASON_MANUAL",
     "LEDGER_REASON_PURCHASE",
+    "LEDGER_REASON_RELEASE",
+    "LEDGER_REASON_SETTLE",
     "LEDGER_REASON_USAGE",
     "OverdraftPolicy",
+    "HoldEstimate",
     "RateCard",
     "RunCeiling",
     "SpendDecision",
@@ -40,6 +44,7 @@ __all__ = [
     "decide_member_cap",
     "decide_run_ceiling",
     "decide_spend",
+    "estimate_hold",
     "quantize_credits",
     "rate_call",
 ]
@@ -79,6 +84,30 @@ LEDGER_REASON_GRANT = "grant"
 #: all say `'manual'` for exactly this activation.
 LEDGER_REASON_MANUAL = "manual"
 
+# ── The hold cycle (migration 026, `credit_pricing.md` §5) ──────────────────
+#
+# 🔴 **Three rows for one call, and the third is what makes a crash safe.**
+#
+#     hold     -1792   reserved before the call, at the WORST case
+#     settle    -423   the real charge, written with the usage row
+#     release  +1792   the reservation given back
+#
+# Net: -423. A single mutable "reserved" column cannot survive a process that
+# dies between the provider answering and the meter running — the credits stay
+# reserved with nothing to reconcile them against. Three append-only rows leave
+# the ledger consistent at every point.
+#
+# ⚠️ All three carry the REQUEST ID as `ref`, so
+# `credit_ledger_reason_ref_unique` makes each one idempotent for free. A
+# retried request re-inserts nothing and re-charges nothing.
+
+#: Credits reserved before the provider is called. Always negative.
+LEDGER_REASON_HOLD = "hold"
+#: The real charge, written in the same transaction as the usage row.
+LEDGER_REASON_SETTLE = "settle"
+#: The reservation, given back. Always positive, always equal to its hold.
+LEDGER_REASON_RELEASE = "release"
+
 #: Every reason a ledger row may carry. Fenced structurally by
 #: ``test_customer_console_payments.py`` over the CALL SITES of
 #: ``store.add_credit`` — a real fence in this slice, because it reads code
@@ -94,6 +123,9 @@ LEDGER_REASONS: frozenset[str] = frozenset(
         LEDGER_REASON_ADJUSTMENT,
         LEDGER_REASON_GRANT,
         LEDGER_REASON_MANUAL,
+        LEDGER_REASON_HOLD,
+        LEDGER_REASON_SETTLE,
+        LEDGER_REASON_RELEASE,
     }
 )
 
@@ -118,6 +150,75 @@ def quantize_credits(credits: Decimal) -> Decimal:
     reads during a dispute.
     """
     return credits.quantize(CREDIT_QUANTUM, rounding=ROUND_HALF_UP)
+
+
+@dataclass(frozen=True)
+class HoldEstimate:
+    """What to reserve before a call, and why that number.
+
+    ``credits`` is what the hold takes. ``reason`` explains the shape it was
+    computed for, so an operator reading a large hold can see whether it was a
+    worst case or an exact figure.
+    """
+
+    credits: Decimal
+    reason: str
+
+    @property
+    def is_exact(self) -> bool:
+        """A deterministic job needs no release — the hold IS the charge."""
+        return self.reason == "exact"
+
+
+def estimate_hold(
+    card: RateCard | TierRate,
+    *,
+    prompt_tokens: int,
+    max_output_tokens: int,
+    quantity: Decimal | None = None,
+) -> HoldEstimate:
+    """Credits to reserve before the provider is called.
+
+    🔴 **Three cost shapes, and forcing them through one path is the mistake
+    this function exists to avoid** (`credit_pricing.md` §5.2).
+
+    * **Deterministic** — a transcription's duration is a property of the file,
+      so the charge is knowable before the call. Reserve exactly it, and no
+      release is owed. Audio is EASIER than text here, not harder.
+    * **Variable** — a chat completion's output length is unknowable, so
+      reserve the worst case on both sides.
+
+    ⚠️ **The worst case rates at the UNCACHED rate, always.** Assuming a cache
+    hit makes the hold too small, and a hold too small is an organization that
+    goes negative on the settle — which is the whole failure this reserve
+    exists to prevent. The cache discount reaches the customer at settle time,
+    where it is measured rather than hoped for.
+
+    ⚠️ **An unpriced card holds ZERO and does not raise.** The card ships
+    unpriced (H-42), and a reserve that refused every call until somebody
+    priced the slate would take the product down rather than protect it.
+    Pricing is what turns this on.
+    """
+    if not card.is_priced:
+        return HoldEstimate(Decimal(0), "unpriced")
+
+    if card.unit != "tokens":
+        if quantity is None:
+            # Nothing measured the quantity, so nothing can reserve for it.
+            # `rate_call` refuses this case at settle time and the metering
+            # caller downgrades it to "bill zero, loudly" — holding zero keeps
+            # those two answers consistent.
+            return HoldEstimate(Decimal(0), "unmeasured")
+        return HoldEstimate(
+            quantize_credits(quantity * card.credits_per_unit), "exact"
+        )
+
+    million = Decimal(1_000_000)
+    worst = (
+        Decimal(max(prompt_tokens, 0)) / million * card.input_per_1m
+        + Decimal(max(max_output_tokens, 0)) / million * card.output_per_1m
+    )
+    return HoldEstimate(quantize_credits(worst), "worst_case")
 
 
 class UsagePartitionError(Exception):

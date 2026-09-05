@@ -365,6 +365,42 @@ path.
 7. The worst case always rates at the **uncached** rate. Never assume a hit.
 8. `max_tokens` gains a per-tier cap, so the hold stays near the real charge.
 
+### 5.3a What slice 4 BUILT, and what it did not (added 2026-09-05)
+
+**Built.** Migration 026 adds `credit_ledger.hold_ref` and a partial index
+for open holds. `estimate_hold` is pure and sizes the reservation.
+
+`place_hold`, `release_hold` and `sweep_orphan_holds` live in `store.py`. The
+chat door reserves before it calls a vendor. `record_usage` releases in the
+SAME transaction as the charge.
+
+🔴 **The lock is the whole slice.** Balance is `SUM(delta)` and not a column,
+so there is nothing to contend on. `place_hold` takes `SELECT ... FOR UPDATE`
+on the **organization** row. Measured 2026-09-05: two threads each reserved
+600 of a 1000 balance. One held and one was refused, and the balance stayed at
+400. Without the lock both pass and the organization lands at -200.
+
+⚠️ **The reserve is armed by `CUSTOMER_CONSOLE_SPEND_GATE`, and that gate
+ships OFF.** A reserve is a spend refusal by another name. Arming it while the
+gate is off would refuse customers the gate deliberately does not. H-42 names
+the order: price the card, then flip the gate.
+
+⚠️ **`place_hold` hangs off the CHAT door alone.** The other three doors know
+their quantity before the call. A duration, a picture count and a character
+count are all measured. So those doors reserve nothing and take the exact
+charge at settle time.
+
+**NOT built, and named so nobody assumes otherwise.**
+
+1. §5.3 clause 8, the per-tier `max_tokens` cap. An uncapped request reserves
+   `MAX_OUTPUT_FOR_HOLD`, which is generous rather than accurate. §7.3 of
+   the design document holds the cost. A hold far larger than the real charge
+   refuses calls a customer could afford.
+2. The sweeper is a FUNCTION and nothing calls it on a schedule. A crash still
+   strands credits until somebody runs it.
+3. The prompt-token estimate is a character count divided by four. It sizes a
+   reservation and never a charge.
+
 ### 5.4 `MIN_CHARGE`
 
 1. A constant floors one billable operation at 5 credits.

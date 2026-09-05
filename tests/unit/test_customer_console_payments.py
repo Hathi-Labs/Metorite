@@ -139,11 +139,33 @@ FULFIL_ALLOW_LIST: frozenset[tuple[str, str]] = frozenset({
 #: doors, and §9's owner-ratification item 6 predicted exactly this growth.
 #: An entry that is NOT another Router serving route is the thing this list
 #: exists to stop.
+#:
+#: ⚠️ **The HOLD cycle joined it on 2026-09-05** (migration 026,
+#: `credit_pricing.md` §5). `place_hold` and `release_hold` write
+#: `credit_ledger` directly rather than through `add_credit`, so the four
+#: entries above did not cover them.
+#:
+#: 🔴 **Still one argument, and it holds word for word.** The customer's key
+#: opens the route, and our infrastructure decides the amount: the reservation
+#: is computed from a tier card the customer cannot reach and a message length
+#: we measure ourselves. The customer names no number and can suppress none.
+#: `release_hold` is stricter still — it reads the hold's OWN delta and can
+#: only give back exactly what was taken.
+#:
+#: ⚠️ `release_hold` reaches all FOUR doors because `record_usage` closes the
+#: reservation in the same transaction as the charge, and every serving door
+#: meters through `record_usage`. `place_hold` reaches only the chat door,
+#: because only a token-priced call has an unknowable cost to reserve against.
 METERING_EXEMPTION: frozenset[tuple[str, str]] = frozenset({
     ("chat_completions", "store.add_credit"),
     ("audio_transcriptions", "store.add_credit"),
     ("images_generations", "store.add_credit"),
     ("audio_speech", "store.add_credit"),
+    ("chat_completions", "store.place_hold"),
+    ("chat_completions", "store.release_hold"),
+    ("audio_transcriptions", "store.release_hold"),
+    ("images_generations", "store.release_hold"),
+    ("audio_speech", "store.release_hold"),
 })
 
 #: What the walk may cross. Five entries, two arguments, two fences.
@@ -920,14 +942,37 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
         the answer is almost certainly that the write belongs behind the
         internal token, which is what ``/usage/record`` had to become after
         verification minted 100,000 credits through it.
+        The HOLD cycle joined on 2026-09-05 (migration 026). `place_hold`
+        and `release_hold` write `credit_ledger` directly rather than through
+        `add_credit`, so the four entries above did not reach them — and it
+        is STILL the same argument. The reservation is computed from a tier
+        card the customer cannot reach and a message length we measure
+        ourselves. `release_hold` is stricter than any of them: it reads the
+        hold's own delta, so it can only give back exactly what was taken.
+
+        ⚠️ `place_hold` hangs off the CHAT door alone. The other three doors
+        know their quantity before the call — a duration, a picture count, a
+        character count — so they have nothing unknowable to reserve against
+        and take the exact charge at settle time (§5.2).
         """
         assert frozenset({
             ("chat_completions", "store.add_credit"),
             ("audio_transcriptions", "store.add_credit"),
             ("images_generations", "store.add_credit"),
             ("audio_speech", "store.add_credit"),
+            ("chat_completions", "store.place_hold"),
+            ("chat_completions", "store.release_hold"),
+            ("audio_transcriptions", "store.release_hold"),
+            ("images_generations", "store.release_hold"),
+            ("audio_speech", "store.release_hold"),
         }) == METERING_EXEMPTION
-        assert len(METERING_EXEMPTION) == 4
+        assert len(METERING_EXEMPTION) == 9
+        # 🔴 Every entry is still a ROUTER SERVING ROUTE. That is the
+        # property the count alone cannot state, and the one that matters.
+        assert {route for route, _ in METERING_EXEMPTION} == {
+            "chat_completions", "audio_transcriptions",
+            "images_generations", "audio_speech",
+        }
 
     def test_the_metering_exemption_is_still_needed_and_still_that_shape(self):
         """A dead exemption is one nobody notices has stopped being true.
@@ -3699,6 +3744,11 @@ class TestTheLedgerVocabulary:
         assert {
             "usage", "purchase", "discount_redemption", "adjustment", "grant",
             "manual",
+            # ⚠️ THREE MORE since migration 026 — the hold cycle. They are not
+            # a fourth commercial reason: `hold` and `release` net to zero over
+            # one call, and `settle` is the charge itself. A ledger row reading
+            # `hold` is a reservation, never revenue.
+            "hold", "settle", "release",
         } == credits.LEDGER_REASONS
 
     def test_the_launch_subscription_path_writes_no_ledger_rows(
