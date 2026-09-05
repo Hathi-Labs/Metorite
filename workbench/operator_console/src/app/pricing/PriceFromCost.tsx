@@ -29,6 +29,7 @@ import { useRouter } from "next/navigation";
 import type { AiCatalog } from "@/lib/contract";
 import {
   boundJobs,
+  defaultMarginPct,
   parseMarginPct,
   recordedVendorUsd,
   savedAssumptions,
@@ -41,7 +42,16 @@ import { chipClass, pricingTone } from "@/lib/tone";
 
 export default function PriceFromCost({ catalog }: { catalog: AiCatalog }) {
   const router = useRouter();
-  const [marginPct, setMarginPct] = useState("70");
+  // 🔴 **No default of 70 any more** (migration 028, §4.3). One knob cannot
+  // price eleven tiers: the design document asks for 2.5 on Fast and 1.4 on
+  // Powerful, because a cheap tier absorbs a fat multiplier invisibly and an
+  // expensive one cannot.
+  //
+  // ⚠️ **Empty until the owner sets a margin, and empty means NO SUGGESTION.**
+  // A hard-coded 70 was a commercial number nobody chose, presented as an
+  // answer. `tier_margin` ships empty (H-42), so the honest starting state is
+  // a blank box that asks rather than a figure that asserts.
+  const [marginPct, setMarginPct] = useState(defaultMarginPct(catalog));
   const [vendorUsd, setVendorUsd] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);

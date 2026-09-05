@@ -1970,6 +1970,12 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 )
             )
         ]
+        # 🔴 What each tier ACTUALLY earned, against the floor it was given
+        # (migration 028, `credit_pricing.md` §4.3). Grouped by TIER, because
+        # the question is whether a PRODUCT is priced right and one customer's
+        # mix says nothing about that.
+        tier_margins = store.margin_by_tier(conn, days=MARGIN_WINDOW_DAYS)
+
         # The credit's own price (017) — what one credit SELLS for, in
         # rupees, plus the planning rate margins convert dollars with.
         # ⚠️ Billing never reads this: a call bills CREDITS and the tier
@@ -2098,6 +2104,37 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
         "rates": rates,
         "tier_registry": tier_registry,
         "tier_rates": tier_rates,
+        # ⚠️ `realised_margin` is NULL until the operator saves a credit
+        # price. NULL is NEUTRAL and never zero: no saved price means no
+        # margin, not a bad one, and a zero would read as "selling at cost".
+        "tier_margins": [
+            {
+                "tier": m["tier"],
+                "calls": m["calls"],
+                "costed_calls": m["costed_calls"],
+                "credits": str(m["credits"]),
+                "cost_usd": str(m["cost_usd"]),
+                "margin_multiplier": (
+                    None if m["margin_multiplier"] is None
+                    else str(m["margin_multiplier"])
+                ),
+                "margin_floor": (
+                    None if m["margin_floor"] is None else str(m["margin_floor"])
+                ),
+                "realised_margin": (
+                    None if _realised is None else str(_realised)
+                ),
+            }
+            for m in tier_margins
+            for _realised in [
+                analytics.realised_margin(
+                    m["credits"],
+                    m["cost_usd"],
+                    inr_per_credit=(None if price_row is None else price_row[0]),
+                    usd_to_inr=(None if price_row is None else price_row[1]),
+                )
+            ]
+        ],
         "credit_price": None
         if price_row is None
         else {
@@ -5138,6 +5175,13 @@ def _vendor_per_unit(conn, model: str, *, unit: str | None) -> Decimal | None:
 #: calls a customer could afford, and the fix there is a per-tier `max_tokens`
 #: cap, which is NOT in this slice.
 MAX_OUTPUT_FOR_HOLD = 4096
+
+#: How far back the per-tier margin monitor looks (`credit_pricing.md` §4.3).
+#:
+#: ⚠️ Seven days, matching the design document's own query. Long enough that a
+#: quiet tier reports something, short enough that a price change shows up
+#: while somebody still remembers making it.
+MARGIN_WINDOW_DAYS = 7
 
 
 def _place_call_hold(

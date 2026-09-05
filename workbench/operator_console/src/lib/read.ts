@@ -112,6 +112,14 @@ type WireCatalog = {
     cached_input_per_1m?: string;
     credits_per_unit: string;
   }[];
+  // 028 — per-tier margin. Absent from a Console still mid-rollout.
+  tier_margins?: {
+    tier: string; calls: number; costed_calls: number;
+    credits: string; cost_usd: string;
+    margin_multiplier: string | null;
+    margin_floor: string | null;
+    realised_margin: string | null;
+  }[];
   // 017 — the credit's own price. Absent from a Console still mid-rollout.
   credit_price?: {
     inr_per_credit: string;
@@ -338,6 +346,19 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
     creditsPerUnit: r.credits_per_unit,
   }));
 
+  const tierMargins = (w.tier_margins ?? []).map((m) => ({
+    tier: m.tier,
+    calls: m.calls,
+    costedCalls: m.costed_calls,
+    credits: m.credits,
+    costUsd: m.cost_usd,
+    // ⚠️ `?? null`, never `String(...)`. A null must stay null — `String(null)`
+    // is "null", which would draw as a number.
+    marginMultiplier: m.margin_multiplier ?? null,
+    marginFloor: m.margin_floor ?? null,
+    realisedMargin: m.realised_margin ?? null,
+  }));
+
   const failovers = (w.failovers ?? []).map((f) => ({
     day: (f.day ?? "").slice(0, 10),
     tier: f.tier, task: f.task, model: f.model,
@@ -377,7 +398,7 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
 
   return {
     tasks: w.tasks, models, rates, tiers, accounts: [], accountsKnown: true,
-    failovers, feed, tierRates,
+    failovers, feed, tierRates, tierMargins,
     creditPrice: w.credit_price
       ? {
           inrPerCredit: w.credit_price.inr_per_credit,

@@ -6,6 +6,7 @@ import Shell, { Unconfigured } from "../Shell";
 import CreditPrice from "./CreditPrice";
 import PriceFromCost from "./PriceFromCost";
 import PriceList from "./PriceList";
+import MarginMonitor from "./MarginMonitor";
 import TierPricing from "./TierPricing";
 
 export const dynamic = "force-dynamic";
@@ -44,6 +45,7 @@ export default async function PricingPage() {
       <PriceList catalog={catalog.data} />
       <PriceFromCost catalog={catalog.data} />
       <TierPricing catalog={catalog.data} />
+      <MarginMonitor catalog={catalog.data} />
       <p className="note">
         New here? The go-live rail on the{" "}
         <a href="/">Organizations page</a> walks the whole setup order — keys,

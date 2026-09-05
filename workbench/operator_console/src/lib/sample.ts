@@ -484,6 +484,11 @@ export const SAMPLE_CATALOG: AiCatalog = {
   failovers: FAILOVERS,
   feed: FEED,
   tierRates: TIER_RATES,
+  // 028 — the sample board shows the margin monitor with NO numbers set,
+  // which is the shipped state: `tier_margin` ships empty and every figure in
+  // it is the owner's (H-42). A sample that invented multipliers would teach
+  // an operator that the slate is already priced.
+  tierMargins: [],
   creditPrice: {
     inrPerCredit: "1", usdToInr: "88",
     effectiveFrom: "2026-08-20T00:00:00Z",

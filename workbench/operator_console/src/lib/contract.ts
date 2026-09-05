@@ -229,6 +229,28 @@ export type TierRate = {
   creditsPerUnit: string;
 };
 
+/** What one tier actually earned, against the floor it was given (028).
+ *
+ * 🔴 **`realisedMargin` is NULL until the operator saves a credit price**, and
+ *  NULL is NEUTRAL. No saved price means no margin, not a bad one — a zero
+ *  would read as "we are selling at cost", which is a claim nobody made. */
+export type TierMargin = {
+  tier: string;
+  calls: number;
+  /** How many of those calls carry a MEASURED cost. The context that stops
+   *  `realisedMargin` reading as authority it does not have. */
+  costedCalls: number;
+  credits: string;
+  costUsd: string;
+  /** What we multiply cost by to SUGGEST a price. NULL means the owner has
+   *  set none, which is the shipped state — `tier_margin` ships empty. */
+  marginMultiplier: string | null;
+  /** The realised margin below which somebody should look, as a FRACTION.
+   *  NULL means no floor, and a tier with no floor never alarms. */
+  marginFloor: string | null;
+  realisedMargin: string | null;
+};
+
 export type ModelRate = {
   model: string;
   task: string;
@@ -366,6 +388,9 @@ export type AiCatalog = {
   feed: VendorFeed;
   /** What customers pay, per (tier, job) — D67. The card billing reads. */
   tierRates: TierRate[];
+  /** Per-tier realised margin against its floor (028). Empty from a Console
+   *  that predates the read — which is NOT "no tiers", and the board says so. */
+  tierMargins: TierMargin[];
   /** The credit's own rupee price — null until the owner sets it (H-42). */
   creditPrice: CreditPrice | null;
 };
@@ -373,5 +398,6 @@ export type AiCatalog = {
 export const EMPTY_CATALOG: AiCatalog = {
   tasks: [], models: [], rates: [], tiers: [], accounts: [],
   accountsKnown: true, failovers: [], feed: EMPTY_FEED, tierRates: [],
+  tierMargins: [],
   creditPrice: null,
 };

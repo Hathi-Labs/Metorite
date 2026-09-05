@@ -247,3 +247,71 @@ export function priceGroups(cat: AiCatalog): {
   ];
   return groups.filter((g) => g.rows.length > 0);
 }
+
+// ── The margin monitor (migration 028, credit_pricing.md §4.3) ─────────────
+
+/** How a realised margin reads against the floor it was given.
+ *
+ * 🔴 **`null` on either side is NEUTRAL, never a pass and never a failure.**
+ * A tier with no floor has not been given a threshold. A tier with no realised
+ * margin has no saved credit price to compute one from. Both are unanswered
+ * questions, and an alarm on an unanswered question teaches an operator to
+ * ignore alarms. */
+export function marginTone(
+  realised: string | null,
+  floor: string | null,
+): "alarm" | "ok" | "muted" {
+  if (realised === null || floor === null) return "muted";
+  const r = Number(realised);
+  const f = Number(floor);
+  if (!Number.isFinite(r) || !Number.isFinite(f)) return "muted";
+  return r < f ? "alarm" : "ok";
+}
+
+/** A margin as a percentage string, or a dash. Display only. */
+export function marginPct(value: string | null): string {
+  if (value === null) return "—";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  return `${(n * 100).toFixed(1)}%`;
+}
+
+/** The tiers worth showing on the monitor.
+ *
+ * ⚠️ **A tier with no traffic AND no margin set is dropped.** The slate is
+ * eleven tiers on a clean database and several hundred on one a test suite has
+ * been run against, and a monitor nobody can scan is a monitor nobody reads.
+ * A tier the owner has priced always survives, even at zero traffic — that is
+ * the row whose price nobody has checked. */
+export function monitorRows<
+  T extends { calls: number; marginMultiplier: string | null; marginFloor: string | null },
+>(rows: T[]): T[] {
+  return rows.filter(
+    (r) => r.calls > 0 || r.marginMultiplier !== null || r.marginFloor !== null,
+  );
+}
+
+/** The margin box's starting value, from what the owner has actually set.
+ *
+ * 🔴 **Empty when no tier carries a multiplier**, which is the shipped state —
+ * `tier_margin` ships empty and every figure in it is the owner's (H-42). The
+ * board used to open at 70 percent: a commercial number nobody chose,
+ * presented to an operator as an answer.
+ *
+ * ⚠️ **The MEDIAN when several tiers differ, never the mean.** These are
+ * multipliers, and the design document's own spread runs 1.4 to 2.5. A mean is
+ * dragged by whichever end has more tiers; the median lands on a value some
+ * tier actually carries. It is still only a starting point — the operator
+ * types the tier they mean. */
+export function defaultMarginPct(catalog: {
+  tierMargins: { marginMultiplier: string | null }[];
+}): string {
+  const ms = catalog.tierMargins
+    .map((m) => Number(m.marginMultiplier))
+    .filter((n) => Number.isFinite(n) && n >= 1)
+    .sort((a, b) => a - b);
+  if (ms.length === 0) return "";
+  const m = ms[Math.floor(ms.length / 2)];
+  // margin = 1 - 1/M, as a percentage.
+  return String(Math.round((1 - 1 / m) * 100));
+}

@@ -798,6 +798,88 @@ def add_credit_lot(
     )
 
 
+def margin_by_tier(
+    conn: Connection, *, days: int = 7
+) -> list[dict[str, Any]]:
+    """What each tier actually earned, against the floor it was given.
+
+    🔴 **Grouped by TIER and never by organization.** The question is whether a
+    PRODUCT is priced right, and one customer's mix says nothing about that.
+    An organization-shaped read would also inherit H-76's cap, which drops the
+    quiet rows — and a tier nobody used much is exactly the one whose price
+    nobody has checked.
+
+    ⚠️ **The COSTED slice only.** `SUM` skips a NULL cost, so a ratio of
+    all-calls credits over some-calls cost overstates the margin. `costed_calls`
+    rides along so a reader can see how much of the tier this figure speaks
+    for — the same rule `usage_by_org` already follows.
+
+    ⚠️ **A refusal is not a call and a metering fault is not revenue.** Both
+    are excluded: a refusal billed nothing because we said no, and a fault
+    billed nothing because we could not read the usage. Counting either as a
+    zero-margin call would drag every tier's figure down for reasons that have
+    nothing to do with its price.
+
+    ⚠️ **LEFT JOIN from the catalog**, so a tier with no traffic appears with
+    zeros rather than vanishing. A tier nobody called is a finding, not a gap.
+    """
+    return [
+        {
+            "tier": r.tier,
+            "calls": int(r.calls),
+            "costed_calls": int(r.costed_calls),
+            "credits": Decimal(r.credits),
+            "cost_usd": Decimal(r.cost_usd),
+            "margin_multiplier": r.margin_multiplier,
+            "margin_floor": r.margin_floor,
+        }
+        for r in conn.execute(
+            text(
+                """
+                SELECT t.slug AS tier,
+                       COUNT(u.id) FILTER (
+                           WHERE u.refusal_reason IS NULL
+                             AND u.metering_fault IS NULL
+                       ) AS calls,
+                       COUNT(u.id) FILTER (
+                           WHERE u.provider_cost_usd IS NOT NULL
+                             AND u.refusal_reason IS NULL
+                             AND u.metering_fault IS NULL
+                       ) AS costed_calls,
+                       COALESCE(SUM(u.billed_credits) FILTER (
+                           WHERE u.provider_cost_usd IS NOT NULL
+                             AND u.refusal_reason IS NULL
+                             AND u.metering_fault IS NULL
+                       ), 0) AS credits,
+                       COALESCE(SUM(u.provider_cost_usd) FILTER (
+                           WHERE u.refusal_reason IS NULL
+                             AND u.metering_fault IS NULL
+                       ), 0) AS cost_usd,
+                       m.margin_multiplier,
+                       m.margin_floor
+                FROM tier_catalog t
+                LEFT JOIN usage_event u
+                       ON u.tier = t.slug
+                      AND u.created_at >= now() - make_interval(days => :days)
+                -- The margin in force: newest row whose date has passed.
+                -- ⚠️ DISTINCT ON in a subquery, because this table is
+                -- INSERT-only and a bare join would return every past
+                -- intention beside the current one.
+                LEFT JOIN (
+                    SELECT DISTINCT ON (tier) tier, margin_multiplier, margin_floor
+                    FROM tier_margin
+                    WHERE effective_from <= now()
+                    ORDER BY tier, effective_from DESC
+                ) m ON m.tier = t.slug
+                GROUP BY t.slug, t.sort_order, m.margin_multiplier, m.margin_floor
+                ORDER BY t.sort_order, t.slug
+                """
+            ),
+            {"days": days},
+        ).all()
+    ]
+
+
 def credit_ref_row(conn: Connection, *, org_id: str, reason: str, ref: str) -> Any:
     """The EARLIEST ledger row carrying this (reason, ref), or None.
 

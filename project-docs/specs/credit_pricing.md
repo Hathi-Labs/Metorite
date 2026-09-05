@@ -326,8 +326,35 @@ number** (H-42).
 3. The console reads the multiplier per tier and stops defaulting to 70.
 4. A margin monitor reports realised margin per tier over seven days, and it
    compares against that tier's floor.
-5. The monitor reads `usage_by_org` with a **funded-customer** sort, not a
-   spend sort (H-76).
+5. ⚠️ **The monitor groups by TIER and never by organization.** The question
+   is whether a PRODUCT is priced right. One customer's mix says nothing about
+   that. An organization-shaped read would also inherit H-76's cap, which
+   drops the quiet rows. A tier nobody used much is exactly the one whose
+   price nobody has checked. *(This clause said "read `usage_by_org`
+   with a funded-customer sort" until 2026-09-05. That was wrong: it named a
+   per-organization read for a per-tier question.)*
+
+#### What slice 7 BUILT (added 2026-09-05)
+
+Migration 028 adds `tier_margin`, and it **ships empty**. `analytics.
+realised_margin` computes the fraction, `analytics.margin_alarms` finds the
+tiers below their floor, and `store.margin_by_tier` is the seven-day read. The
+Pricing page carries a **Margin monitor** panel.
+
+🔴 **`realised_margin` is the number `margin_ratio` deliberately refused to
+compute.** That refusal still stands for its own return, because credits and
+dollars are different units. Migration 017 changed the premise. The operator
+now SAVES a rupee price for a credit and a planning rate for dollars. So the
+conversion is a fact somebody asserted and not one this module invented.
+Without a saved price the answer is NULL, and NULL is neutral.
+
+⚠️ **The board no longer opens at 70 percent.** That was a commercial number
+nobody chose, shown to an operator as an answer. The box now starts from what
+the owner has actually set, and stays empty when they have set nothing.
+
+⚠️ **Two silences, two sentences.** "No tier has a floor" and "no credit
+price is saved" are different states with different fixes. The panel says
+which it is rather than drawing a healthy-looking empty table.
 
 ---
 
