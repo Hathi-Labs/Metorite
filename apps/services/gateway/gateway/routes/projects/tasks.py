@@ -53,6 +53,7 @@ from gateway.routes.projects.core import (
     now,
     record_activity,
     record_field_change,
+    remap_one_status,
     require_precondition,
     require_row,
     require_status_in_project,
@@ -60,6 +61,7 @@ from gateway.routes.projects.core import (
     root_project_id,
     router,
     row_to_dict,
+    status_owner_id,
     task_visibility_clause,
     touch_task,
     triage_exclusion_clause,
@@ -302,6 +304,12 @@ async def create_task(
             )
         root = await root_project_id(db, str(project_id))
         values["root_project_id"] = root
+        # The ROOT scopes the counter, the types and the tenant. A STATUS scopes
+        # to the nearest node that owns a set, which is the root until a
+        # subproject overrides it (migration 196). Two names for two questions,
+        # because the bug where they diverge is silent — everything works until
+        # somebody uses the feature.
+        status_home = await status_owner_id(db, str(project_id))
 
         parent_id = values.get("parent_task_id")
         if parent_id:
@@ -309,9 +317,11 @@ async def create_task(
         await assert_epic_has_no_parent(db, values.get("type_id"), parent_id)
 
         status = (
-            await require_status_in_project(db, root, str(values["status_id"]))
+            await require_status_in_project(
+                db, status_home, str(values["status_id"]),
+            )
             if values.get("status_id")
-            else await load_default_status(db, root)
+            else await load_default_status(db, status_home)
         )
         values["status_id"] = str(status.id)
         values["task_number"] = await next_task_number(db, root)
@@ -504,7 +514,17 @@ async def move_task(
             # learns from a 422 that it exists (R5: 404, never 403).
             await assert_move_keeps_privacy(db, task, str(payload.project_id))
             new_root = await root_project_id(db, str(payload.project_id))
+            # ⚠️ Tracked SEPARATELY from the root, because since migration 196
+            # the set can change while the root does not: moving a task from a
+            # subproject that overrides into a sibling that inherits stays
+            # inside one space and still crosses two status sets.
+            old_status_home = await status_owner_id(db, str(task.project_id))
+            new_status_home = await status_owner_id(db, str(payload.project_id))
             values["project_id"] = str(payload.project_id)
+            if new_status_home != old_status_home:
+                values["status_id"] = await remap_one_status(
+                    db, status_id=str(task.status_id), owner_id=new_status_home,
+                )
             if new_root != str(task.root_project_id):
                 # The destination's REQUIRED fields (migration 192), merged from
                 # what the task already carries plus what this call supplies.
@@ -525,7 +545,6 @@ async def move_task(
                     values["custom_fields"] = merged
 
                 values["root_project_id"] = new_root
-                values["status_id"] = str((await load_default_status(db, new_root)).id)
                 # The number belongs to the old root's sequence and would
                 # collide in the new one, so it is reallocated rather than
                 # carried. The old number is recorded on the timeline below —

@@ -387,6 +387,42 @@ MAX_PAGE_SIZE = 100
 #: granting it is registered as an owner gate.
 ORG_READ = "data:org:read"
 
+#: Who may reshape a project rather than work inside it — migration 196.
+#:
+#: Owner directive 2026-09-06: *"you need to have the appropriate permissions
+#: set in the organization by an admin to be able to make these high-level
+#: changes to the projects and the settings of the project (so that it is not
+#: mismanaged by the team)"*. Granted to `admin` and `manager` by that
+#: migration; `owner` already holds `*`.
+#:
+#: The boundary is not seniority, it is blast radius. Creating and moving TASKS
+#: stays open to anyone who has the project, because that is the work. Choosing
+#: which status set a project uses, or editing the lanes in it, changes
+#: everybody's board at once and can stamp `completed_at` across a whole
+#: category — an administrative act wearing an editor's clothes.
+SETTINGS_WRITE = "projects:settings:write"
+
+
+def assert_can_manage_settings(user: UserContext) -> None:
+    """Refuse a settings write to a caller without :data:`SETTINGS_WRITE`.
+
+    403 rather than 404: the caller can already SEE this project (every route
+    that calls this has loaded it through the visibility check first), so
+    hiding the endpoint would only tell them the same thing less clearly.
+    Naming the permission is what lets them ask their admin for it by name.
+    """
+    if user is not None and user.has_permission(SETTINGS_WRITE):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "Changing a project's settings needs the "
+            f"'{SETTINGS_WRITE}' permission. Ask an organization admin to "
+            "grant it to your role."
+        ),
+    )
+
+
 #: What a caller whose email the directory does not know is told when they try
 #: to CREATE something. Reads never say this — they simply see nothing (§D-MT-1).
 NO_ORGANIZATION = "Your account is not attached to an organization."
@@ -1688,6 +1724,223 @@ async def root_project_id(db: Any, project_id: str) -> str:
     )
 
 
+#: Every project that resolves its statuses to ``:pid`` — the node itself, plus
+#: descendants, stopping at any descendant that owns a set of its own.
+#:
+#: ⚠️ The ``NOT p.owns_statuses`` sits in the RECURSIVE arm, so the walk does not
+#: descend THROUGH an owner. That is the whole scoping rule: a subproject with
+#: its own lanes is outside its parent's blast radius, and so is everything
+#: under it. Putting the test in a WHERE at the end would collect the owner's
+#: children anyway, which is the bug this shape prevents.
+_STATUS_SCOPE_SQL = """
+WITH RECURSIVE scope AS (
+    SELECT id FROM pm_projects WHERE id = CAST(:pid AS uuid)
+    UNION ALL
+    SELECT p.id FROM pm_projects p
+      JOIN scope s ON p.parent_project_id = s.id
+     WHERE NOT p.owns_statuses
+)
+"""
+
+
+async def status_owner_id(db: Any, project_id: str) -> str:
+    """The node whose status set ``project_id`` uses.
+
+    The nearest node at or above it carrying ``owns_statuses`` — migration 196.
+    A root always carries it (that migration's CHECK), so the walk always ends.
+
+    ⚠️ **This REPLACES walking to the root** for anything status-shaped. Before
+    2026-09-06 the two were the same question and ``root_project_id`` answered
+    both; they are now different questions, and the task counter and the tenant
+    still want the root. Reaching for the wrong one is silent: it works
+    perfectly until somebody overrides a subproject.
+
+    One recursive query rather than a loop of round-trips, because this is on
+    the read path of every board. Bounded by :data:`MAX_DEPTH` inside the CTE
+    for the reason the cycle checks are bounded — a corrupted parent chain must
+    fail loudly rather than spin.
+    """
+    row = (await db.execute(
+        text(
+            # ⚠️ Named `status_chain`, NOT `chain`. `core.is_runnable_with_
+            # ancestors` already owns a CTE called `chain`, and the two are told
+            # apart by name in more than one place — the test fakes dispatch on
+            # it, and a shared name makes one query silently answer as the
+            # other. A distinct name is the cheapest fence available here.
+            "WITH RECURSIVE status_chain AS ("
+            "  SELECT id, parent_project_id, owns_statuses, 0 AS depth"
+            "    FROM pm_projects WHERE id = CAST(:id AS uuid)"
+            "  UNION ALL"
+            "  SELECT p.id, p.parent_project_id, p.owns_statuses, c.depth + 1"
+            "    FROM pm_projects p JOIN status_chain c"
+            "      ON p.id = c.parent_project_id"
+            "   WHERE c.depth < :max_depth"
+            ") SELECT id FROM status_chain WHERE owns_statuses"
+            " ORDER BY depth LIMIT 1"
+        ),
+        {"id": project_id, "max_depth": MAX_DEPTH},
+    )).fetchone()
+    if row is None:
+        # Either the node does not exist, or its whole chain owns nothing —
+        # which migration 196's CHECK makes impossible for an intact tree.
+        raise HTTPException(
+            status_code=404, detail="Project not found, or its tree has no statuses.",
+        )
+    return str(row.id)
+
+
+async def status_scope_ids(db: Any, project_id: str) -> list[str]:
+    """The projects whose tasks move when ``project_id`` changes its set."""
+    rows = (await db.execute(
+        text(_STATUS_SCOPE_SQL + "SELECT id FROM scope"), {"pid": project_id},
+    )).fetchall()
+    return [str(r.id) for r in rows]
+
+
+#: Where a task lands when its lane is not in the set it now resolves to.
+#:
+#: Name first, then the same category, then the first lane that is not triage.
+#: The name arm is what keeps a "Blocked" task blocked across a move — the old
+#: behaviour dumped every moved task into the destination's default and lost
+#: that, which read as the board forgetting where things were.
+_REMAP_TARGET_SQL = """
+COALESCE(
+  (SELECT n.id FROM pm_task_statuses n
+    WHERE n.project_id = CAST(:owner AS uuid)
+      AND lower(btrim(n.name)) = lower(btrim(old.name))
+    ORDER BY n.position, n.name LIMIT 1),
+  (SELECT n.id FROM pm_task_statuses n
+    WHERE n.project_id = CAST(:owner AS uuid)
+      AND n.category = old.category
+    ORDER BY n.position, n.name LIMIT 1),
+  (SELECT n.id FROM pm_task_statuses n
+    WHERE n.project_id = CAST(:owner AS uuid)
+      AND n.category <> :triage
+    ORDER BY n.position, n.name LIMIT 1)
+)
+"""
+
+
+async def remap_task_statuses(
+    db: Any,
+    *,
+    project_id: str,
+    owner_id: str,
+    mapping: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Move every task in scope that points outside ``owner_id``'s set.
+
+    Runs after anything that changes which set a project resolves to: the
+    inherit/override switch, a copy, and the two moves (a node between spaces,
+    a task between projects). One helper, so the four cannot disagree about
+    where a homeless task goes.
+
+    ``mapping`` is the answer a human gave in the mapping card — old status id →
+    new status id. It is applied FIRST, and the automatic rule then sweeps
+    whatever it did not cover. That ordering is deliberate: the card can only
+    ever improve on the automatic answer, and a card built from stale counts
+    cannot leave a task behind.
+
+    ⚠️ **Completion is corrected afterwards, and only for tasks that moved.**
+    Crossing into ``done``/``cancelled`` stamps ``completed_at``; crossing out
+    clears it. Doing it for every task in scope would re-stamp rows nothing
+    touched and rewrite their completion dates.
+
+    The caller owns the transaction. Every statement here must commit with the
+    ownership flag that made them necessary, or a failure leaves tasks in a set
+    the project no longer uses.
+    """
+    scope = await status_scope_ids(db, project_id)
+    if not scope:
+        return {"moved": 0, "completed": 0, "reopened": 0}
+
+    moved: set[str] = set()
+
+    if mapping:
+        rows = (await db.execute(
+            text(
+                "UPDATE pm_tasks t SET status_id = m.new_id "
+                # The two-argument unnest, which pairs the arrays positionally.
+                # Two separate unnests in a SELECT list is the older spelling
+                # and it cross-joins on unequal lengths instead of failing.
+                "  FROM unnest(CAST(:olds AS uuid[]), CAST(:news AS uuid[])) "
+                "       AS m(old_id, new_id) "
+                " WHERE t.status_id = m.old_id "
+                "   AND t.project_id = ANY(CAST(:scope AS uuid[])) "
+                "RETURNING t.id"
+            ),
+            {
+                "olds": list(mapping.keys()),
+                "news": list(mapping.values()),
+                "scope": scope,
+            },
+        )).fetchall()
+        moved.update(str(r.id) for r in rows)
+
+    rows = (await db.execute(
+        text(
+            "UPDATE pm_tasks t SET status_id = " + _REMAP_TARGET_SQL
+            + "  FROM pm_task_statuses old "
+            " WHERE old.id = t.status_id "
+            "   AND t.project_id = ANY(CAST(:scope AS uuid[])) "
+            "   AND old.project_id <> CAST(:owner AS uuid) "
+            "RETURNING t.id"
+        ),
+        {"owner": owner_id, "scope": scope, "triage": TRIAGE_CATEGORY},
+    )).fetchall()
+    moved.update(str(r.id) for r in rows)
+
+    if not moved:
+        return {"moved": 0, "completed": 0, "reopened": 0}
+
+    counts = (await db.execute(
+        text(
+            "UPDATE pm_tasks t SET completed_at = CASE "
+            "         WHEN s.category = ANY(:closing) "
+            "         THEN COALESCE(t.completed_at, now()) ELSE NULL END "
+            "  FROM pm_task_statuses s "
+            " WHERE s.id = t.status_id AND t.id = ANY(CAST(:ids AS uuid[])) "
+            # Only where the lane and the row disagree about being closed, so
+            # a task that was already complete keeps the date it completed on.
+            "   AND (s.category = ANY(:closing)) <> (t.completed_at IS NOT NULL) "
+            "RETURNING s.category = ANY(:closing) AS closed"
+        ),
+        {"ids": sorted(moved), "closing": sorted(CLOSING_CATEGORIES)},
+    )).fetchall()
+    return {
+        "moved": len(moved),
+        "completed": sum(1 for r in counts if r.closed),
+        "reopened": sum(1 for r in counts if not r.closed),
+    }
+
+
+async def remap_one_status(db: Any, *, status_id: str, owner_id: str) -> str:
+    """Where ONE task's lane lands in another set.
+
+    The same three-step rule :func:`remap_task_statuses` applies in bulk, for
+    the single-task case: moving a task between two projects that do not share
+    a set. It used to land in the destination's default, which lost the lane —
+    a "Blocked" task arrived as "To do" and the board looked like it had
+    forgotten. Name first keeps it blocked.
+    """
+    row = (await db.execute(
+        text(
+            "SELECT " + _REMAP_TARGET_SQL + " AS target "
+            "  FROM pm_task_statuses old WHERE old.id = CAST(:sid AS uuid)"
+        ),
+        {"sid": status_id, "owner": owner_id, "triage": TRIAGE_CATEGORY},
+    )).fetchone()
+    if row is None or row.target is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "The destination has no statuses, so there is nowhere for this "
+                "task to land."
+            ),
+        )
+    return str(row.target)
+
+
 async def assert_no_project_cycle(
     db: Any, project_id: str, new_parent_id: str | None,
 ) -> None:
@@ -1824,40 +2077,54 @@ async def next_task_number(db: Any, root_id: str) -> int:
 async def load_default_status(
     db: Any, root_id: str, category: str | None = None,
 ) -> Any:
-    """The status a task lands in: the flagged default, else the first lane.
+    """The status a task lands in: the FIRST lane, by position.
 
-    Falling back to the lowest ``position`` rather than failing is deliberate —
-    an owner who deletes the row that happened to carry ``is_default`` must not
-    discover it by being unable to create a task.
+    ⚠️ **There is no "default status" setting any more** (owner directive
+    2026-09-06). ``is_default`` used to be consulted first and the position was
+    only its fallback. Two answers to one question is one too many, and the
+    flag was the answer nobody could see — a column on a row, set from a button
+    that looked like a label.
 
-    ``category`` narrows the question from "which lane does a new task start
-    in" to "which lane of this STAGE", which is what a caller moving a task
-    ACROSS stages is actually asking. ``is_default`` is per-category
-    (``admin._clear_other_defaults``), so the two-step fallback holds inside a
-    category exactly as it does across the root: the owner's choice first, then
-    the lowest position, and only then a refusal.
+    It was also the answer that was wrong in practice. Measured on the dev
+    database 2026-09-03 and recorded in ``admin._clear_other_defaults``: five
+    roots, and all five carried their only default on ``backlog``. Three of the
+    four category columns therefore had no flagged answer at all and fell
+    through to the position anyway. The fallback was doing the work.
 
-    Without the argument a caller has to write the SQL again, and the copy that
-    already existed got it wrong — ``personal.complete`` selected the done lane
-    ``ORDER BY position LIMIT 1`` and never consulted ``is_default``, so an
-    owner who marked "Shipped" the default done status still had completions
-    land in whichever done row sorted first.
+    So position IS the rule, and position is a thing people already see and
+    already drag. The column stays on the table under R6 and goes in a later
+    release; nothing reads it for a status any more. Task TYPES keep their own
+    ``is_default`` — a type list has no order to read the answer out of.
+
+    ``category`` narrows the question from "where does a new task start" to
+    "which lane of this STAGE", which is what a caller moving a task ACROSS
+    stages is asking. Without the argument a caller writes the SQL again, and
+    the copy that already existed got it wrong.
+
+    ⚠️ **Triage is excluded when no category is named**, and that guard is new.
+    A triage lane used to be kept out of this answer by never carrying the flag
+    (``intake.load_triage_status`` says so), so removing the flag removed the
+    guard with it. A triage lane is the intake holding pen: a normally created
+    task must never land there, whatever position it happens to sit at.
     """
-    narrow = "AND category = :category " if category is not None else ""
+    clauses = ["project_id = CAST(:root AS uuid)"]
     params: dict[str, Any] = {"root": root_id}
     if category is not None:
+        clauses.append("category = :category")
         params["category"] = category
-    for clause in ("AND is_default ", ""):
-        row = (await db.execute(
-            text(
-                f"SELECT * FROM pm_task_statuses "
-                f"WHERE project_id = CAST(:root AS uuid) {narrow}{clause}"
-                f"ORDER BY position, name LIMIT 1"
-            ),
-            params,
-        )).fetchone()
-        if row is not None:
-            return row
+    else:
+        clauses.append("category <> :triage")
+        params["triage"] = TRIAGE_CATEGORY
+    row = (await db.execute(
+        text(
+            "SELECT * FROM pm_task_statuses WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY position, name LIMIT 1"
+        ),
+        params,
+    )).fetchone()
+    if row is not None:
+        return row
     if category is not None:
         raise HTTPException(
             status_code=422,
@@ -1914,8 +2181,12 @@ async def apply_status_transition(
     old_status = await require_row(
         db, "pm_task_statuses", str(task.status_id), "Status",
     )
+    # ⚠️ The owner of the task's OWN project, not its root. Until 2026-09-06 the
+    # two were the same node; a subproject that overrides its statuses makes
+    # them different, and reading the root here would refuse every lane the
+    # subproject actually has.
     new_status = await require_status_in_project(
-        db, str(task.root_project_id), str(new_status_id),
+        db, await status_owner_id(db, str(task.project_id)), str(new_status_id),
     )
 
     values: dict[str, Any] = {"status_id": str(new_status.id)}

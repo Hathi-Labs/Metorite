@@ -50,11 +50,13 @@ from gateway.routes.projects.core import (
     load_visible_project,
     record_activity,
     record_field_change,
+    remap_task_statuses,
     require_organization,
     resolve_visibility,
     root_project_id,
     router,
     row_to_dict,
+    status_owner_id,
     task_visibility_clause,
     update_row,
     validate_icon_slot,
@@ -640,6 +642,13 @@ async def create_node(
         # 404. Answering 403 first would confirm the project exists.
         values["organization_id"] = require_organization(vis)
 
+        # A SPACE owns its statuses; everything below it inherits until somebody
+        # says otherwise (migration 196). Written here rather than defaulted in
+        # the table because the default has to be false — the common row is a
+        # child — and a root that owns nothing resolves to no statuses at all,
+        # which that migration's CHECK refuses outright.
+        values["owns_statuses"] = parent_id is None
+
         row = await insert_row(db, "pm_projects", values)
         project_id = str(row.id)
 
@@ -743,9 +752,20 @@ async def move_node(
     """Re-parent or reorder a project.
 
     Moving a subtree re-stamps ``root_project_id`` on **every task beneath it**,
-    because that column is what scopes statuses, types and the task counter. A
-    move that left it stale would leave tasks pointing at another project's
-    status rows — visible immediately as lanes that do not exist on the board.
+    because that column is what scopes the types and the task counter.
+
+    ⚠️ **The re-stamp never moved a task between status LANES, and this
+    docstring used to claim it did.** ``root_project_id`` and ``status_id`` are
+    two columns: rewriting the first left every task pointing at the old space's
+    status rows — "lanes that do not exist on the board", the exact failure the
+    old text promised this prevented. Measured on the dev database 2026-09-06:
+    zero such tasks, because nobody had yet moved a project between two spaces.
+    A latent bug, not a theoretical one.
+
+    Fixed below by remapping through :func:`core.remap_task_statuses`, the same
+    helper the inherit/override switch uses, so the two cannot disagree about
+    where a homeless task goes. The counts come back in the response: a drag
+    must not open a modal mid-gesture, so it reports afterwards.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -772,6 +792,35 @@ async def move_node(
             subtree_depth=await _subtree_project_depth(db, project_id),
         )
 
+        # ⚠️ Read BEFORE the re-parent — afterwards the walk gives the new
+        # answer, and the promotion below needs the lanes this node had.
+        old_owner = await status_owner_id(db, project_id)
+
+        # A node promoted to a SPACE has nothing above it to inherit from, so it
+        # must own a set. Migration 196's CHECK enforces that, and the constraint
+        # fires on the very UPDATE that clears the parent — so the lanes are
+        # copied and the flag set FIRST. Copying rather than starting empty is
+        # the only answer that keeps the subtree's tasks where they were.
+        if new_parent is None and not getattr(moved, "owns_statuses", False):
+            await db.execute(
+                text(
+                    "INSERT INTO pm_task_statuses "
+                    "  (project_id, name, color, position, category) "
+                    "SELECT CAST(:me AS uuid), s.name, s.color, s.position, "
+                    "       s.category FROM pm_task_statuses s "
+                    " WHERE s.project_id = CAST(:src AS uuid) "
+                    "ON CONFLICT (project_id, name) DO NOTHING"
+                ),
+                {"me": project_id, "src": old_owner},
+            )
+            await db.execute(
+                text(
+                    "UPDATE pm_projects SET owns_statuses = true "
+                    " WHERE id = CAST(:id AS uuid)"
+                ),
+                {"id": project_id},
+            )
+
         values: dict[str, Any] = {"parent_project_id": new_parent}
         if payload.position is not None:
             values["position"] = payload.position
@@ -791,11 +840,27 @@ async def move_node(
             ),
             {"root": new_root, "pid": project_id},
         )
+
+        # The lanes, which `root_project_id` above does NOT touch. A no-op when
+        # the node carries its own set, because then nothing it holds points
+        # outside that set — which is exactly why owning one makes a move safe.
+        remapped = await remap_task_statuses(
+            db,
+            project_id=project_id,
+            owner_id=await status_owner_id(db, project_id),
+        )
+
         await record_activity(
             db, activity_type="system", created_by=actor(user),
-            project_id=project_id, body="Project moved",
+            project_id=project_id,
+            body=(
+                "Project moved"
+                if not remapped["moved"]
+                else f"Project moved; {remapped['moved']} task(s) changed status"
+            ),
         )
         result = row_to_dict(row, ProjectModel)
+        result["statuses_remapped"] = remapped
 
     await emit("pm.project.moved", {"project_id": project_id})
     return result

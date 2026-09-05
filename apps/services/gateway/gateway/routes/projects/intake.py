@@ -68,6 +68,7 @@ from gateway.routes.projects.core import (
     require_status_in_project,
     resolve_visibility,
     root_project_id,
+    status_owner_id,
     router,
     row_to_dict,
     task_visibility_clause,
@@ -276,7 +277,12 @@ async def capture_intake(
         # answers 404, never 403.
         await load_visible_project(db, vis, str(payload.project_id))
         root = await root_project_id(db, str(payload.project_id))
-        status = await load_triage_status(db, root)
+        # The triage lane belongs to the set this project USES, which is
+        # the nearest owner and not necessarily the root (migration 196).
+        # `root` still stamps `root_project_id`, which is a different job.
+        status = await load_triage_status(
+            db, await status_owner_id(db, str(payload.project_id)),
+        )
 
         task = await insert_row(db, "pm_tasks", {
             "project_id": str(payload.project_id),
@@ -390,7 +396,9 @@ async def accept_intake(
         wrapper = await _load_wrapper(db, task_id)
         _require_queue_state(wrapper)
 
-        root = str(task.root_project_id)
+        # The lane it is accepted INTO comes from the set the task's own
+        # project uses — the root only agrees until something overrides.
+        root = await status_owner_id(db, str(task.project_id))
         destination = (
             await require_status_in_project(db, root, str(payload.status_id))
             if payload.status_id
