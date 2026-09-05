@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  readCreditLots,
   formatPaise,
   seatsDigest,
   formatDate,
@@ -484,5 +485,50 @@ describe("the credit ledger read (manual payments)", () => {
     const actions = readFileSync(
       join(__dirname, "..", "app", "customers", "[slug]", "Actions.tsx"), "utf8");
     expect(actions).toContain('reason === "manual" && !ref.trim()');
+  });
+});
+
+// ── Credit lots (migration 027, credit_pricing.md §6) ──────────────────────
+
+describe("reading credit lots", () => {
+  it("distinguishes a MISSING key from an empty list", () => {
+    // 🔴 A Console predating migration 027 sends no `credit_lots` key. That is
+    // not "this customer has no lots", and drawing an empty table over a
+    // missing feature would say something untrue.
+    expect(readCreditLots({})).toBeUndefined();
+    expect(readCreditLots({ credit_lots: [] })).toEqual([]);
+  });
+
+  it("keeps a NULL price null and never the string 'null'", () => {
+    // ⚠️ Nobody paid, versus somebody paid nothing on purpose. A refund must
+    // tell them apart, so the board must draw them apart.
+    const [granted, promoted] = readCreditLots({
+      credit_lots: [
+        { id: 1, source: "grant", credits: "100", credits_used: "0",
+          remaining: "100", price_paid_inr: null, expires_at: null },
+        { id: 2, source: "promo", credits: "50", credits_used: "0",
+          remaining: "50", price_paid_inr: "0", expires_at: null },
+      ],
+    })!;
+    expect(granted.pricePaidInr).toBeNull();
+    expect(promoted.pricePaidInr).toBe("0");
+  });
+
+  it("keeps money as the STRING the Console sent", () => {
+    const [lot] = readCreditLots({
+      credit_lots: [
+        { id: 3, source: "purchase", credits: "110000", credits_used: "250",
+          remaining: "109750", price_paid_inr: "999.00",
+          expires_at: "2027-01-01T00:00:00+00:00" },
+      ],
+    })!;
+    expect(lot.pricePaidInr).toBe("999.00");
+    expect(lot.remaining).toBe("109750");
+    expect(lot.expiresAt).toBe("2027-01-01T00:00:00+00:00");
+  });
+
+  it("survives a malformed payload rather than throwing", () => {
+    expect(readCreditLots(null)).toBeUndefined();
+    expect(readCreditLots({ credit_lots: "nope" })).toBeUndefined();
   });
 });

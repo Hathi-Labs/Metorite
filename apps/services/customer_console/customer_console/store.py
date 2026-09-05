@@ -23,7 +23,12 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from customer_console.credits import (
+    LEDGER_REASON_ADJUSTMENT,
+    LEDGER_REASON_DISCOUNT_REDEMPTION,
+    LEDGER_REASON_GRANT,
     LEDGER_REASON_HOLD,
+    LEDGER_REASON_MANUAL,
+    LEDGER_REASON_PURCHASE,
     LEDGER_REASON_RELEASE,
     LEDGER_REASON_SETTLE,
     LEDGER_REASON_USAGE,
@@ -404,17 +409,90 @@ def run_spend(conn: Connection, *, org_id: str, run_id: str) -> Decimal:
     return Decimal(total)
 
 
+#: Which lot a ledger reason opens when credits arrive.
+#:
+#: 🔴 **A reason absent from this map opens NO lot, and two absences are
+#: deliberate.** `release` returns a reservation the customer already owned —
+#: it is not new credits and a lot for it would double-count. `hold` is its
+#: negative twin and never reaches this map at all.
+#:
+#: ⚠️ `manual` maps to `purchase` because it IS one: a paid term settled by
+#: bank transfer. It keeps its own LEDGER word so a bank settlement stays
+#: distinguishable from a processor capture, and that distinction lives in the
+#: ledger where a dispute reads it. The LOT answers a different question —
+#: did somebody pay for these — and the answer there is yes.
+_LOT_SOURCE_FOR_REASON: dict[str, str] = {
+    LEDGER_REASON_PURCHASE: "purchase",
+    LEDGER_REASON_MANUAL: "purchase",
+    LEDGER_REASON_DISCOUNT_REDEMPTION: "promo",
+    LEDGER_REASON_GRANT: "grant",
+    LEDGER_REASON_ADJUSTMENT: "grant",
+}
+
+#: Which reasons CONSUME credits, so a charge draws down the lots it spent.
+#:
+#: ⚠️ **`hold` is NOT here, and that is the whole distinction.** A hold is a
+#: reservation: the credits are unavailable but they are not spent, and drawing
+#: a lot down for one would consume value the customer may never use. Only the
+#: settle spends.
+_LOT_DRAWING_REASONS: frozenset[str] = frozenset({LEDGER_REASON_USAGE})
+
+
 def add_credit(
-    conn: Connection, *, org_id: str, delta: Decimal, reason: str, ref: str | None = None
+    conn: Connection,
+    *,
+    org_id: str,
+    delta: Decimal,
+    reason: str,
+    ref: str | None = None,
+    price_paid_inr: Decimal | None = None,
+    expires_at: Any | None = None,
 ) -> None:
+    """Write ONE ledger row, and keep the lots in step with it.
+
+    🔴 **The lot bookkeeping lives HERE, in the one ledger writer, and not at
+    the three call sites that grant credits.** A future fourth site would
+    otherwise arrive without lots and nobody would notice until a refund could
+    not be computed. `credit_pricing.md` §6 says the lot explains the balance,
+    and it can only do that if the two are written together.
+
+    ⚠️ **The balance is still `SUM(delta)`.** Nothing here changes what an
+    organization holds. A lot records what the credits COST and when they
+    LAPSE, and `draw_from_lots` records which of them a charge spent.
+    """
+    lot_id: int | None = None
+    if delta > 0:
+        source = _LOT_SOURCE_FOR_REASON.get(reason)
+        if source is not None:
+            lot_id = add_credit_lot(
+                conn,
+                org_id=org_id,
+                source=source,
+                credits=delta,
+                price_paid_inr=price_paid_inr,
+                expires_at=expires_at,
+            )
+    elif delta < 0 and reason in _LOT_DRAWING_REASONS:
+        drawn = draw_from_lots(conn, org_id=org_id, credits=-delta)
+        # ⚠️ The FIRST lot the charge touched. A charge that spans several is
+        # recorded fully in `credit_lot.credits_used`; this column names where
+        # it started, so a human reading one ledger row has somewhere to look.
+        lot_id = drawn[0]["lot_id"] if drawn else None
+
     conn.execute(
         text(
             """
-            INSERT INTO credit_ledger (organization_id, delta, reason, ref)
-            VALUES (:org, :delta, :reason, :ref)
+            INSERT INTO credit_ledger (organization_id, delta, reason, ref, lot_id)
+            VALUES (:org, :delta, :reason, :ref, :lot_id)
             """
         ),
-        {"org": org_id, "delta": delta, "reason": reason, "ref": ref},
+        {
+            "org": org_id,
+            "delta": delta,
+            "reason": reason,
+            "ref": ref,
+            "lot_id": lot_id,
+        },
     )
 
 

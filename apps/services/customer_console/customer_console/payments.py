@@ -760,6 +760,21 @@ def fulfil(conn: Connection, *, order_id: str, reference: str) -> None:
                 conn, org_id=order["organization_id"],
                 delta=Decimal(line["quantity"]), reason=reason,
                 ref=reference,
+                # 🔴 What this pack ACTUALLY cost, so a refund can be computed
+                # and deferred revenue reported (`credit_pricing.md` §6).
+                #
+                # ⚠️ Paise to rupees, once, here. `credit_lot.price_paid_inr`
+                # is NUMERIC(12, 2) in rupees while every money column on the
+                # order is an integer of paise — and `test_customer_console_
+                # payments.py` fences that paise rule. Converting at the
+                # boundary keeps both true.
+                #
+                # ⚠️ ZERO is a real answer and must not become NULL. A pack
+                # fulfilled at no charge — a full discount — was PAID FOR at
+                # zero, which is a different fact from a grant nobody paid for.
+                price_paid_inr=(
+                    Decimal(line["unit_price_paise"]) * Decimal(line["quantity"])
+                ) / Decimal(100),
             )
             continue
         store.grant_seats(

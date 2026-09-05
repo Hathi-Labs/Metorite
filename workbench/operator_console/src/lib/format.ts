@@ -424,3 +424,67 @@ export function plansNotice(
   }
   return null;
 }
+
+// ── Credit lots (migration 027, `credit_pricing.md` §6) ────────────────────
+//
+// 🔴 **What a balance CANNOT say.** `credit_balance` is one number. It cannot
+// say what those credits cost, when they lapse, or whether anybody paid for
+// them — so a refund cannot be computed and deferred revenue cannot be
+// reported. The lot answers all three.
+
+export type CreditLot = {
+  id: number;
+  /** `purchase` | `trial` | `promo` | `refund` | `grant`. */
+  source: string;
+  /** Money and credits as the STRINGS the Console sent. */
+  credits: string;
+  creditsUsed: string;
+  remaining: string;
+  /** ⚠️ **NULL means nobody paid. `"0"` means somebody paid nothing on
+   *  purpose** — a fully discounted pack. A refund must tell them apart, so
+   *  the board must draw them apart. */
+  pricePaidInr: string | null;
+  /** NULL means these credits do not expire, which is the shipped policy
+   *  until D74 is taken. */
+  expiresAt: string | null;
+};
+
+/** The lots on a billing summary, in the order they will BURN.
+ *
+ * ⚠️ **`undefined` when the Console sent no `credit_lots` key at all**, which
+ * is a Console predating migration 027. That is NOT the same as "this customer
+ * has no lots", and the board says which it is rather than drawing an empty
+ * table over a missing feature. */
+export function readCreditLots(body: unknown): CreditLot[] | undefined {
+  const raw = (body as { credit_lots?: unknown })?.credit_lots;
+  if (!Array.isArray(raw)) return undefined;
+  return raw.map((r) => {
+    const row = r as Record<string, unknown>;
+    return {
+      id: Number(row.id),
+      source: String(row.source ?? ""),
+      credits: String(row.credits ?? "0"),
+      creditsUsed: String(row.credits_used ?? "0"),
+      remaining: String(row.remaining ?? "0"),
+      // ⚠️ `?? null`, never `String(...)`. A null price must stay null —
+      // `String(null)` is "null", which would draw as a price.
+      pricePaidInr:
+        row.price_paid_inr === null || row.price_paid_inr === undefined
+          ? null
+          : String(row.price_paid_inr),
+      expiresAt:
+        row.expires_at === null || row.expires_at === undefined
+          ? null
+          : String(row.expires_at),
+    };
+  });
+}
+
+/** Plain words for a lot's source. An operator should not read a slug. */
+export const LOT_SOURCE_LABEL: Record<string, string> = {
+  purchase: "Bought",
+  trial: "Trial",
+  promo: "Promotion",
+  refund: "Refunded",
+  grant: "Granted",
+};

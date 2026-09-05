@@ -3929,11 +3929,34 @@ def billing_summary(org_slug: str, _: Operator) -> dict[str, Any]:
         balance = balance_of(store.credit_deltas(conn, org_id=org_id))
         roster = store.org_members(conn, org_id=org_id)
         held = store.live_seats_by_email(conn, org_id=org_id)
+        # 🔴 What the balance CANNOT say (`credit_pricing.md` §6): what these
+        # credits cost, when they lapse, and whether anybody paid for them.
+        lots = store.open_lots(conn, org_id=org_id)
 
     return {
         "organization_id": org_id,
         "seats": seats,
         "credit_balance": str(balance),
+        # ⚠️ Money as STRINGS, the same rule every price on this wire follows.
+        # ⚠️ `price_paid_inr` stays NULL where nobody paid — a grant and a
+        # zero-priced promotion are different facts and the console draws them
+        # differently.
+        "credit_lots": [
+            {
+                "id": lot.id,
+                "source": lot.source,
+                "credits": str(lot.credits),
+                "credits_used": str(lot.credits_used),
+                "remaining": str(lot.remaining),
+                "price_paid_inr": (
+                    None if lot.price_paid_inr is None else str(lot.price_paid_inr)
+                ),
+                "expires_at": _iso(lot.expires_at),
+            }
+            # The order they will BURN in, not an arbitrary one. An operator
+            # reading this list is reading the next thing to be spent.
+            for lot in lots
+        ],
         "members": [{**row, "seats": held.get(row["email"], [])} for row in roster],
     }
 

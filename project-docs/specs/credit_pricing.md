@@ -463,10 +463,28 @@ prevent, by another route.
 A lot that wrote its own row could disagree with the ledger, and the balance a
 customer reads is the ledger.
 
-**NOT built.** Nothing calls `draw_from_lots` on the metering path yet. No lot
-is created when credits are granted or bought. The table, the order and the
-column exist. Wiring them into the charge is a later slice, and until then
-`lot_id` stays NULL on every row.
+**WIRED, 2026-09-05.** The gap above is closed.
+
+🔴 **The bookkeeping lives in `add_credit`, the ONE ledger writer, and not at
+the three call sites that grant credits.** A fourth site would otherwise arrive
+without lots and nobody would notice until a refund could not be computed.
+
+1. Credits arriving open a lot. `_LOT_SOURCE_FOR_REASON` maps the ledger
+   reason to a lot source.
+2. ⚠️ **`release` opens NO lot.** It returns a reservation the customer
+   already owned, and a lot for it would double-count.
+3. ⚠️ **`hold` draws NO lot.** A reservation is not a spend. Drawing one down
+   would consume value the customer may never use. Only the settle spends.
+4. The buy path passes the real price, converted from paise once, at the
+   boundary. Zero stays zero and never becomes NULL.
+5. The customer page carries a **Credit lots** panel, in burn order.
+6. ⚠️ The panel tells a MISSING `credit_lots` key apart from an empty list. An
+   older Console sends no key, and an empty table over a missing feature would
+   say something untrue.
+
+**Still not built.** Nothing expires a lot. D74 has not been taken, so every
+lot ships with a NULL expiry. Only a lot an operator dates by hand exercises
+the ordering's expiry rule.
 
 ### 6.3 The fence (R7)
 
