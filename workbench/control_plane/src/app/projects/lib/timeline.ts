@@ -164,6 +164,69 @@ export const MIN_BAR_PX = 10;
 /** A bar narrower than this cannot hold its own title, so the label sits beside it. */
 export const LABEL_INSIDE_PX = 72;
 
+/** How far a floating label sits from the bar it names. */
+export const LABEL_GAP_PX = 8;
+/** The most a floating label may take, however much room there is. */
+export const LABEL_MAX_PX = 240;
+/**
+ * The least room worth putting a label in.
+ *
+ * Below this the label is one word and an ellipsis, which names nothing. It
+ * goes to the other side instead, where there is usually the whole chart.
+ */
+export const LABEL_MIN_PX = 88;
+
+/** Where a narrow bar's floating label goes. */
+export interface LabelPlacement {
+  side: "right" | "left";
+  /** A CSS `left` when the side is right, a CSS `right` when it is left. */
+  offsetPx: number;
+  maxWidthPx: number;
+}
+
+/**
+ * Which side of a narrow bar its label goes, and how wide it may be.
+ *
+ * The label used to be unconditionally on the right, at `leftPx + widthPx + 8`,
+ * with a `max-w` and no bound against the canvas. `TimelineBar`'s own header
+ * asserted that the right is "where there is always room". That is false at the
+ * end of the chart. Measured at 1440 on 2026-09-05: a bar near the right edge
+ * put its label 57px past the scroller, and the name was clipped.
+ *
+ * That is the worst case rather than a harmless one. A bar too narrow to hold
+ * its title is exactly the bar nobody can identify without the label, and the
+ * rail's copy of the name can be a whole screen away across 6000px of canvas.
+ *
+ * No text is measured. The side comes from the bar's own geometry, and the cap
+ * is the room actually present on the chosen side. So a label can come out
+ * short, and can never cross an edge.
+ */
+export function labelSide(
+  bar: { leftPx: number; widthPx: number },
+  canvasPx: number,
+): LabelPlacement {
+  const roomRight = canvasPx - (bar.leftPx + bar.widthPx + LABEL_GAP_PX);
+  const roomLeft = bar.leftPx - LABEL_GAP_PX;
+
+  // Right unless it does not fit AND the left does better. A tie keeps the
+  // right, so an unremarkable chart never moves a label and the reading order
+  // stays bar-then-name.
+  if (roomRight >= LABEL_MIN_PX || roomRight >= roomLeft) {
+    return {
+      side: "right",
+      offsetPx: bar.leftPx + bar.widthPx + LABEL_GAP_PX,
+      maxWidthPx: Math.max(0, Math.min(LABEL_MAX_PX, roomRight)),
+    };
+  }
+  return {
+    side: "left",
+    // Measured from the canvas's RIGHT edge, because that is what CSS `right`
+    // is relative to. The label's right edge lands one gap left of the bar.
+    offsetPx: canvasPx - bar.leftPx + LABEL_GAP_PX,
+    maxWidthPx: Math.max(0, Math.min(LABEL_MAX_PX, roomLeft)),
+  };
+}
+
 const DAY_MS = 86_400_000;
 
 export interface TimelineRange {
@@ -730,18 +793,32 @@ export function edgePoints(
   const y2 = to.row * ROW_H + ROW_H / 2;
   const x1 = from.bar.leftPx + from.bar.widthPx;
   const x2 = to.bar.leftPx;
-  const stub = 12;
+  const stub = EDGE_STUB_PX;
 
   // Same row with room ahead: a straight line. A dogleg between two bars on
   // one line is a corner drawn for nothing.
-  if (y1 === y2 && x2 >= x1 + stub) {
+  if (y1 === y2 && x2 > x1) {
     return [{ x: x1, y: y1 }, { x: x2, y: y2 }];
   }
 
-  // Room to route forwards: out, across, in. The turn is held `stub` clear of
-  // both bars so the corner never touches the thing it is pointing at.
-  if (x2 >= x1 + stub * 2) {
-    const mid = Math.max(x1 + stub, Math.min((x1 + x2) / 2, x2 - stub));
+  // ⚠️ The bars TOUCH — the blocked task starts the day the blocker ends, which
+  // is the commonest dependency there is. A drop straight down is the whole
+  // picture. Owner report, 2026-09-05.
+  //
+  // This used to fall through to the detour below, because the detour's test
+  // was "is there room for two stubs" rather than "does the target start
+  // before the source ends". With no room the detour turned right 12px, ran
+  // back left past its own start, and dropped in — a squiggle drawn to avoid
+  // a conflict that is not there.
+  if (x2 === x1) {
+    return [{ x: x1, y: y1 }, { x: x2, y: y2 }];
+  }
+
+  // Room to route forwards: out, across, in. The vertical takes the midpoint
+  // between the two bars, which is `stub` clear of both whenever the gap is
+  // wide enough to be, and lands as a short neat drop when it is not.
+  if (x2 > x1) {
+    const mid = (x1 + x2) / 2;
     return [
       { x: x1, y: y1 },
       { x: mid, y: y1 },
@@ -750,20 +827,223 @@ export function edgePoints(
     ];
   }
 
-  // The blocked bar starts at or before the blocker ends — the conflict case,
-  // and the one a naive path draws backwards through both bars. Route out,
-  // into the gap between the rows, back, and in. It stays followable while it
-  // is wrong, which is when it matters most.
+  // The blocked bar starts BEFORE the blocker ends — the conflict case, and
+  // the one a naive path draws backwards through both bars. Route out, into
+  // the gap between the rows, back, and DOWN into the target from above. It
+  // stays followable while it is wrong, which is when it matters most.
+  //
+  // ⚠️ It used to overshoot to `x2 - stub` and hook back rightwards, so it
+  // could arrive from the left like every other edge. On a one-day overlap
+  // that hook is 12px wide between two 20px drops, and the fillets eat all
+  // three: the reader gets a knot under the bar. Owner report, 2026-09-05.
+  //
+  // Arriving from ABOVE is the rule the short cases already follow — the
+  // touching case above drops straight down — so this is one rule, not two:
+  // an edge arrives from the left when there is room ahead, and from above
+  // when there is not.
   const lane =
     y1 === y2 ? y1 + ROW_H / 2 : (y1 + y2) / 2;
   return [
     { x: x1, y: y1 },
     { x: x1 + stub, y: y1 },
     { x: x1 + stub, y: lane },
-    { x: x2 - stub, y: lane },
-    { x: x2 - stub, y: y2 },
+    { x: x2, y: lane },
     { x: x2, y: y2 },
   ];
+}
+
+/**
+ * ── STAGGERING: two arrows must not share one corridor ────────────────────
+ *
+ * `edgePoints` routes each edge on its own, and its vertical run sits at the
+ * midpoint between the two bars. Two edges with similar endpoints therefore
+ * get near-identical midpoints and draw their vertical runs ON TOP of one
+ * another — one line hides the other, and where they diverge the pair reads as
+ * a single line that forks for no reason. Owner report, 2026-09-05.
+ *
+ * The fix is the standard one for orthogonal edge routing: a corridor is a set
+ * of parallel CHANNELS, and colliding runs each take their own. Nothing about
+ * an individual edge changes; what changes is that they are placed with
+ * knowledge of each other, which routing one at a time cannot do.
+ *
+ * Two kinds of run collide, and both are handled:
+ *
+ *  - the **vertical** x of a forward route (4 points), and
+ *  - the **horizontal** lane y of a backward route (6 points), which is the
+ *    conflict case, and exactly where several arrows converge.
+ *
+ * Centred on the group, so a lone edge never moves and a pair splits evenly
+ * either side of where it would have been. Deterministic: the order is the
+ * caller's, so the same board always draws the same way.
+ */
+export const CHANNEL_PX = 7;
+
+/** How far clear of a bar a route turns. One number, read by the router and
+ *  by the trunk below, so the two cannot disagree about where a corner goes. */
+export const EDGE_STUB_PX = 12;
+
+
+export interface RoutedEdge {
+  id: string;
+  points: Point[];
+}
+
+/** Consecutive runs of values within `CHANNEL_PX` of each other. */
+function cluster<T>(items: T[], value: (item: T) => number): T[][] {
+  const sorted = [...items].sort((a, b) => value(a) - value(b));
+  const groups: T[][] = [];
+  for (const item of sorted) {
+    const last = groups[groups.length - 1];
+    if (last && Math.abs(value(item) - value(last[last.length - 1])) < CHANNEL_PX) {
+      last.push(item);
+    } else {
+      groups.push([item]);
+    }
+  }
+  return groups;
+}
+
+/**
+ * The same edges, with colliding runs spread into parallel channels.
+ *
+ * Never reorders the result and never changes an endpoint — an arrow still
+ * leaves the same bar and still arrives at the same one. Only the middle moves.
+ */
+export function stagger(routes: readonly RoutedEdge[]): RoutedEdge[] {
+  const moved = new Map<string, Point[]>();
+  /**
+   * ── The TRUNK: arrows leaving one bar branch, they do not weave ───────────
+   *
+   * Owner report, 2026-09-05, second round: the branches "don't look neat" and
+   * the arrows leaving one bar cross each other. The shared first leg is fine —
+   * that was checked. The tangle is the fault.
+   *
+   * `edgePoints` turns each edge down at the MIDPOINT between its two bars, and
+   * that midpoint comes from the target's X. Two arrows leaving one bar
+   * therefore run along the same y and turn down at two different places, so
+   * the further one's horizontal passes straight through the nearer one's
+   * corner. Nesting the channels does not help: they were already nested in the
+   * reported case, and the junction is what reads as a crossing.
+   *
+   * A fan is a TREE, so it is drawn as one: siblings share a single trunk just
+   * clear of the bar they leave, and each peels off right at its own row. One
+   * line down, one branch per target, and nothing crosses anything — the
+   * shorter branch's trunk is contained in the longer one's rather than meeting
+   * it at an angle.
+   *
+   * A LONE arrow keeps the balanced midpoint, which is the better shape when
+   * there is nothing to branch with. So the two routings are not a mixture:
+   * one edge is a line, several from one bar are a tree.
+   */
+  const trunked = new Set<string>();
+  const bySource = new Map<string, RoutedEdge[]>();
+  for (const r of routes) {
+    if (r.points.length !== 4 || r.points[1].x !== r.points[2].x) continue;
+    const key = `${Math.round(r.points[0].x)}:${Math.round(r.points[0].y)}`;
+    const list = bySource.get(key);
+    if (list) list.push(r);
+    else bySource.set(key, [r]);
+  }
+  for (const group of bySource.values()) {
+    if (group.length < 2) continue;
+    const trunk = group[0].points[0].x + EDGE_STUB_PX;
+    for (const route of group) {
+      trunked.add(route.id);
+      // Never past the bar it points at: a target that starts inside the stub
+      // keeps its own channel rather than being dragged on top of itself.
+      if (trunk >= route.points[3].x) continue;
+      if (route.points[1].x === trunk) continue;
+      const pts = route.points.map((p) => ({ ...p }));
+      pts[1].x = trunk;
+      pts[2].x = trunk;
+      moved.set(route.id, pts);
+    }
+  }
+
+  /**
+   * ── The MERGE: arrows arriving at one bar join, they do not weave ─────────
+   *
+   * Owner report, 2026-09-05, third round: the same tangle at the other end.
+   * A bar with several dependencies is fed by arrows that each turn down at
+   * their own midpoint, so the one from the higher row runs its horizontal
+   * along the target row and straight THROUGH the vertical of the other. It is
+   * the trunk pathology read backwards.
+   *
+   * So it is fixed backwards. A merge is a tree with its root at the target:
+   * each arrow runs along its own row to ONE trunk held clear of the bar it
+   * feeds, joins it there, and the trunk arrives once. Every junction is a T,
+   * and a T is not a crossing.
+   *
+   * ⚠️ **A fan wins over a merge.** An edge can be a branch of one and a leg of
+   * the other, and it cannot put its vertical in two places. Ranking them keeps
+   * the choice deterministic, and it costs nothing to look at: the edge left on
+   * the fan meets the merge trunk at the target row and runs COLLINEAR into the
+   * bar with it, because both end at the same arrowhead. Overlap, not a cross.
+   */
+  const byTarget = new Map<string, RoutedEdge[]>();
+  for (const r of routes) {
+    if (r.points.length !== 4 || r.points[1].x !== r.points[2].x) continue;
+    const end = r.points[3];
+    const key = `${Math.round(end.x)}:${Math.round(end.y)}`;
+    const list = byTarget.get(key);
+    if (list) list.push(r);
+    else byTarget.set(key, [r]);
+  }
+  for (const group of byTarget.values()) {
+    if (group.length < 2) continue;
+    const merge = group[0].points[3].x - EDGE_STUB_PX;
+    for (const route of group) {
+      if (trunked.has(route.id)) continue;
+      trunked.add(route.id);
+      // Never behind the bar it leaves: a source ending inside the stub keeps
+      // its own channel rather than being routed back through itself.
+      if (merge <= route.points[0].x) continue;
+      if (route.points[1].x === merge) continue;
+      const pts = route.points.map((p) => ({ ...p }));
+      pts[1].x = merge;
+      pts[2].x = merge;
+      moved.set(route.id, pts);
+    }
+  }
+
+  // Forward routes: the vertical run at points[1].x === points[2].x.
+  const forward = routes
+    .filter((r) => !trunked.has(r.id))
+    .map((r) => ({ id: r.id, points: moved.get(r.id) ?? r.points }))
+    .filter((r) => r.points.length === 4 && r.points[1].x === r.points[2].x);
+  for (const group of cluster(forward, (r) => r.points[1].x)) {
+    if (group.length < 2) continue;
+    group.forEach((route, i) => {
+      const shift = (i - (group.length - 1) / 2) * CHANNEL_PX;
+      const pts = (moved.get(route.id) ?? route.points).map((p) => ({ ...p }));
+      // Clamped inside the two bars, so a channel can never route backwards
+      // through the thing it leaves or the thing it points at.
+      const lo = Math.min(pts[0].x, pts[3].x) + 1;
+      const hi = Math.max(pts[0].x, pts[3].x) - 1;
+      const x = Math.max(lo, Math.min(hi, pts[1].x + shift));
+      pts[1].x = x;
+      pts[2].x = x;
+      moved.set(route.id, pts);
+    });
+  }
+
+  // Backward routes: the horizontal lane at points[2].y === points[3].y.
+  const backward = routes.filter(
+    (r) => r.points.length === 5 && r.points[2].y === r.points[3].y,
+  );
+  for (const group of cluster(backward, (r) => r.points[2].y)) {
+    if (group.length < 2) continue;
+    group.forEach((route, i) => {
+      const shift = (i - (group.length - 1) / 2) * CHANNEL_PX;
+      const pts = (moved.get(route.id) ?? route.points).map((p) => ({ ...p }));
+      const y = pts[2].y + shift;
+      pts[2].y = y;
+      pts[3].y = y;
+      moved.set(route.id, pts);
+    });
+  }
+
+  return routes.map((r) => (moved.has(r.id) ? { id: r.id, points: moved.get(r.id)! } : r));
 }
 
 export function edgePath(
@@ -787,6 +1067,79 @@ export function edgePath(
  * leaves, and the bar's own drag zones must win there.
  */
 export const EDGE_HIT_PX = 12;
+
+/**
+ * How far from the remove control the pointer may stray and still keep the
+ * edge aimed.
+ *
+ * The control is `r=8`. This is the corridor around it, so the last few pixels
+ * of the journey cannot be stolen by an arrow underneath.
+ */
+export const CONTROL_SHIELD_PX = 22;
+
+/**
+ * How long an arrow stays aimed after the pointer leaves its stroke.
+ *
+ * The remove control sits half way ALONG a dogleg, so the straight line a hand
+ * takes to reach it leaves the 12px stroke. Without a grace window the control
+ * unmounts mid-journey — measured absent on 10 of 16 steps of that walk.
+ *
+ * Long enough to cross a corner, short enough that an arrow you have genuinely
+ * left stops glowing before you notice. It is not an animation: nothing moves
+ * during it, and the owner's no-motion ruling is about transitions.
+ */
+export const EDGE_GRACE_MS = 260;
+
+/**
+ * The hit corridor around the arrow you are ALREADY pointing at.
+ *
+ * `EDGE_HIT_PX` is 12, which is enough to point AT a line and not enough to
+ * travel ALONG one. The remove control sits half way along a dogleg, so the
+ * route to it cuts corners, and a 12px corridor loses the pointer part-way.
+ *
+ * Widened only while the edge is aimed, and only for that edge. An arrow you
+ * are not pointing at keeps its 12, so a fat invisible stroke never makes its
+ * neighbours unpointable — and `edgeHitOrder` puts the aimed one on top, so the
+ * corridor wins wherever two arrows share a path.
+ */
+export const AIM_KEEP_PX = 44;
+
+/**
+ * The edges, with the AIMED one drawn last.
+ *
+ * ⚠️ **This is a hit-testing rule, not a paint order preference.** SVG hands
+ * the pointer to the last-painted element, and two edges that leave the same
+ * bar share a path prefix — their `EDGE_HIT_PX` strokes lie on top of one
+ * another for that whole stretch. So whichever edge happened to sit later in
+ * `links` won the pointer everywhere they overlapped.
+ *
+ * The failure that reports as: hover one arrow, its remove control appears,
+ * move toward the control, and part-way there the pointer crosses the shared
+ * segment. The other edge's `onMouseEnter` fires, `hoverEdge` flips, and the
+ * control vanishes and reappears on the WRONG arrow — under a cursor that
+ * never left the first one. Owner report, 2026-09-05, with two edges fanning
+ * out of one blocker.
+ *
+ * Putting the aimed edge last makes it win every overlap it is part of, so an
+ * edge you are pointing at keeps the pointer until you genuinely leave it.
+ * Nothing else changes: where the aimed edge is not, the others are reachable
+ * exactly as before, and with nothing aimed the order is the input's own.
+ *
+ * Stable for the rest, so the drawing order of the edges you are NOT pointing
+ * at never shuffles under you.
+ */
+export function edgeHitOrder<T extends { id: string }>(
+  edges: readonly T[],
+  aimedId: string | null,
+): T[] {
+  if (!aimedId) return [...edges];
+  const index = edges.findIndex((edge) => edge.id === aimedId);
+  if (index === -1) return [...edges];
+  const out = [...edges];
+  const [aimed] = out.splice(index, 1);
+  out.push(aimed);
+  return out;
+}
 
 /** Total length of a polyline. The corners are ignored — see `edgeMidpoint`. */
 export function polylineLength(points: readonly Point[]): number {
