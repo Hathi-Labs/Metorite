@@ -1,5 +1,5 @@
 /**
- * Projects · what a right-click on a PROJECT row offers (WS-27bg slice 2).
+ * Projects · what the row menu on a PROJECT offers (WS-27bg slice 2).
  *
  * The third registry scope in this app, and the sibling of the two D-PM-23
  * already reconciled: `commands.ts` acts on the **page**, `taskMenu.ts` on the
@@ -18,6 +18,24 @@
  * a project nobody archived, ticking the wrong state) are assertions rather
  * than clicks nobody can run in a node test runner.
  *
+ * ## One menu, two ways in (owner directive 2026-09-06)
+ *
+ * The same list opens from a right-click AND from the row's own three-dot
+ * button. A menu reachable only by right-click is a menu most people never
+ * find, and the owner asked for both after using a product that offers both.
+ * The button is the discovery path and the right-click is the fast one, so
+ * they must not drift — which is why they share this one builder rather than
+ * each assembling their own items.
+ *
+ * ## Why a vocabulary appears on a SPACE row and nowhere else
+ *
+ * Statuses, tags and custom fields are ROOT-scoped: one set per space,
+ * inherited by every project and subproject under it. The tree row is a
+ * precise thing to click, so offering the status editor on a leaf would say
+ * the leaf has statuses of its own — the per-list override `StatusManager`
+ * records that we deliberately do not have. `nodeLevel()` already calls a
+ * root 'space', so the level test and the scope are the same test.
+ *
  * ## What this deliberately does NOT offer, and why
  *
  * **Delete.** `DELETE /projects/nodes/{id}` exists and is an unrecoverable
@@ -29,6 +47,13 @@
  * one-click irreversible cascade next to its reversible twin, in a menu people
  * are still learning.
  *
+ * **Copy link, Favourite, Duplicate, Sharing.** Four entries the owner's
+ * reference product carries that we have no feature behind: selection lives in
+ * page state with no `?project=` deep link to copy, nothing stores a favourite,
+ * no endpoint duplicates a subtree, and Projects has no sharing surface — the
+ * grants exist, the screen does not. A menu entry for a feature we do not have
+ * is a bug report waiting to be filed.
+ *
  * **The bulk close on Stop.** D-PM-26 says stopping a project should OFFER to
  * close its open tasks. That offer is a modal plus a bulk call plus a count the
  * user must be shown before agreeing, and it is deferred to its own slice
@@ -39,7 +64,7 @@
 import { PROJECT_STATES, PROJECT_STATE_ORDER } from "@/lib/statusAccent";
 
 import type { ProjectRow } from "./api";
-import { hasRunState, type NodeLevel, ownState } from "./tree";
+import { type ChildOption, hasRunState, type NodeLevel, ownState } from "./tree";
 
 /**
  * One menu entry, in terms with no React in them.
@@ -76,6 +101,10 @@ export interface ProjectMenuHandlers {
  * PATCH, toast and refetch), while "put this row into its rename field" is the
  * tree's own local state and belongs nowhere near the page. Merging them would
  * force the page to hold a `beginRename` it cannot implement.
+ *
+ * Every field below is optional, and an absent one drops its entry rather than
+ * greying it. A read-only tree therefore gets a menu of exactly what it can do,
+ * and the same builder serves both.
  */
 export interface ProjectMenuUi {
   /** Swap the row's label for its inline rename field. */
@@ -96,6 +125,19 @@ export interface ProjectMenuUi {
    * on a SPACE only, and optional so a read-only tree can omit it.
    */
   onOpenSettings?: () => void;
+  /**
+   * Create a child of this row. Paired with `createOptions` — the grammar
+   * decides WHICH children are legal (`childCreationOptions`), and passing the
+   * options in rather than re-deriving them here keeps that one decision in
+   * `tree.ts` where the `+` button already reads it.
+   */
+  onCreate?: (option: ChildOption) => void;
+  createOptions?: readonly ChildOption[];
+  /** The root-scoped vocabularies, and the archive policy. Space rows only. */
+  onManageFields?: () => void;
+  onManageStatuses?: () => void;
+  onManageTags?: () => void;
+  onManageLifecycle?: () => void;
 }
 
 /**
@@ -117,15 +159,24 @@ export function projectMenuItems(
   ui?: ProjectMenuUi,
   /**
    * Which level this row occupies. It decides what the menu may offer:
-   * a run state on a project/subproject, Space Settings on a space.
+   * a run state on a project/subproject, the space-scoped screens on a space.
    * Defaults to 'project' so an older caller keeps today's menu.
    */
   level: NodeLevel = "project"
 ): ProjectMenuItem[] {
   const current = ownState(project);
   const archived = Boolean(project.archived_at);
+  const isSpace = level === "space";
 
-  const items: ProjectMenuItem[] = [];
+  /**
+   * Groups, joined by separators at the end.
+   *
+   * Assembled this way rather than by pushing a `sep` after each block because
+   * every block here is conditional, and an inline separator after an empty
+   * block draws a rule against nothing — which is what a subproject's menu
+   * (no create options, no space screens) would have shown.
+   */
+  const groups: ProjectMenuItem[][] = [];
 
   // Rename leads, because it is the only entry here that edits the project
   // rather than filing or pausing it — and because until WS-27bg slice 2's
@@ -134,64 +185,123 @@ export function projectMenuItems(
   // archived project too: filing a project does not make its name wrong, and
   // the endpoint has never refused the write.
   if (ui) {
-    items.push({
-      kind: "item",
-      label: "Rename",
-      icon: "PenLine",
-      onSelect: ui.onBeginRename,
-    });
+    const edit: ProjectMenuItem[] = [
+      {
+        kind: "item",
+        label: "Rename",
+        icon: "PenLine",
+        onSelect: ui.onBeginRename,
+      },
+    ];
     // Beside Rename, because both edit what the node IS rather than filing or
     // pausing it. A move is the second such act the product has.
     if (ui.onMove) {
-      items.push({
+      edit.push({
         kind: "item",
         label: "Move to…",
         icon: "FolderInput",
         onSelect: ui.onMove,
       });
     }
-    items.push({ kind: "sep" });
+    groups.push(edit);
   }
 
-  // A SPACE opens its settings — name, icon, icon colour (migration 194).
-  // Offered only here, because only a space draws an icon of its own.
-  if (level === "space" && ui?.onOpenSettings) {
-    items.push({
-      kind: "item",
-      label: "Space settings",
-      icon: "Settings",
-      onSelect: ui.onOpenSettings,
-    });
-    items.push({ kind: "sep" });
+  // Create, from the same grammar the row's `+` button reads. A flat labelled
+  // group rather than a flyout: `ContextMenu` has no submenus on purpose, and
+  // "New folder" already names its own level, so a heading plus two items says
+  // everything a flyout would.
+  const options = ui?.onCreate ? (ui.createOptions ?? []) : [];
+  if (ui?.onCreate && options.length > 0) {
+    const create: ProjectMenuItem[] = [{ kind: "label", label: "Create" }];
+    for (const option of options) {
+      create.push({
+        kind: "item",
+        label: option.label,
+        icon: option.kind === "folder" ? "Folder" : "Plus",
+        onSelect: () => ui.onCreate?.(option),
+      });
+    }
+    groups.push(create);
+  }
+
+  // The space-scoped screens. All four are root-scoped, and `nodeLevel()`
+  // calls a root a space, so one test gates the lot.
+  if (isSpace && ui) {
+    const scoped: ProjectMenuItem[] = [];
+    if (ui.onOpenSettings) {
+      scoped.push({
+        kind: "item",
+        label: "Space settings",
+        icon: "Settings",
+        onSelect: ui.onOpenSettings,
+      });
+    }
+    // Statuses lead the vocabularies, as they do in the header menu: theirs is
+    // the one whose category half drives the roll-up, completion, and what
+    // /tasks shows.
+    if (ui.onManageStatuses) {
+      scoped.push({
+        kind: "item",
+        label: "Statuses",
+        icon: "Columns3",
+        onSelect: ui.onManageStatuses,
+      });
+    }
+    if (ui.onManageFields) {
+      scoped.push({
+        kind: "item",
+        label: "Custom fields",
+        icon: "SlidersHorizontal",
+        onSelect: ui.onManageFields,
+      });
+    }
+    if (ui.onManageTags) {
+      scoped.push({
+        kind: "item",
+        label: "Tags",
+        icon: "Tag",
+        onSelect: ui.onManageTags,
+      });
+    }
+    if (ui.onManageLifecycle) {
+      scoped.push({
+        kind: "item",
+        label: "Lifecycle policy",
+        icon: "History",
+        onSelect: ui.onManageLifecycle,
+      });
+    }
+    if (scoped.length > 0) groups.push(scoped);
   }
 
   // Only a project or a subproject owns a run state (owner directive
   // 2026-08-31). A space summarises and a folder groups; neither DOES work.
   // The server refuses the write — this is the courtesy in front of it.
-  if (!hasRunState(level)) {
-    items.push(...archiveItems(project, handlers, archived));
-    return items;
+  if (hasRunState(level)) {
+    const states: ProjectMenuItem[] = [{ kind: "label", label: "Run state" }];
+    for (const state of PROJECT_STATE_ORDER) {
+      const visual = PROJECT_STATES[state];
+      states.push({
+        kind: "item",
+        label: visual.label,
+        icon: visual.icon,
+        checked: state === current,
+        // Re-selecting the current state is a no-op the caller can skip, but
+        // the item stays offered: a menu that hides the state you are in makes
+        // the list jump between openings and hides where you actually are.
+        onSelect: () => handlers.onSetState(project, state),
+      });
+    }
+    groups.push(states);
   }
 
-  items.push({ kind: "label", label: "Run state" });
+  groups.push(archiveItems(project, handlers, archived));
 
-  for (const state of PROJECT_STATE_ORDER) {
-    const visual = PROJECT_STATES[state];
-    items.push({
-      kind: "item",
-      label: visual.label,
-      icon: visual.icon,
-      checked: state === current,
-      // Re-selecting the current state is a no-op the caller can skip, but the
-      // item stays offered: a menu that hides the state you are in makes the
-      // list jump between openings and hides where you actually are.
-      onSelect: () => handlers.onSetState(project, state),
-    });
+  const items: ProjectMenuItem[] = [];
+  for (const group of groups) {
+    if (items.length > 0) items.push({ kind: "sep" });
+    items.push(...group);
   }
-
-  items.push({ kind: "sep" });
-  items.push(...archiveItems(project, handlers, archived));
-
   return items;
 }
 
