@@ -75,6 +75,71 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-104 · 🔴 Provisioning a SECOND ORGANIZATION on production fails · [AGENT]
+- **Check:** on the production database, run
+  `SELECT count(*) FROM information_schema.columns WHERE table_name =
+  'org_role_permission' AND column_name = 'organization_id' AND is_nullable =
+  'NO';` and read `provision_org_roles` in
+  `infra/postgres/179_org_provisioning.sql`. A `1` from the query while that
+  function's INSERT still names only `(role_id, permission)` means this is open.
+- **What happens:** the seed inserts
+  `INSERT INTO org_role_permission (role_id, permission) SELECT rid, p …`.
+  The tenancy work added `organization_id` to that table and made it NOT NULL.
+  So the function raises
+  `null value in column "organization_id" … violates not-null constraint`
+  on any database where the tenancy phase has run — which is production.
+- **How it surfaced (2026-09-06):** migration 196 called
+  `provision_org_roles` for every existing organization to hand out a new
+  permission, and the deploy failed on that line. Nothing else had ever called
+  the function on production, because it only runs when a NEW org is created
+  and no new org has been created there since the tenancy phase landed.
+- **⚠️ Why it matters more than the failed deploy.** M1 is *a second org can
+  exist safely*. Today a second org cannot be **created** at all on production.
+  The failure is invisible until someone tries, and the first person to try is
+  the first customer after Fracktal.
+- **Why the tenancy files are the other half:** `apply_migrations.sh` globs
+  `NN_*.sql` in `infra/postgres` ONLY, so `infra/postgres/generated/*.sql` — the
+  files that add and tighten `organization_id` — are **not on the ladder**. A
+  fresh developer database and CI's ladder replay therefore do NOT have the
+  column, and production does. Any fix has to hold on both, which is why
+  migration 196 ended up writing its grant rows behind an `IF EXISTS` on the
+  column rather than calling the seed.
+- **The likely fix:** give the seed the organization id it already has as
+  `p_org_id`, behind the same column test, and add a test that provisions an
+  org against a database with the tenancy constraints applied. The existing
+  `test_org_provisioning.py` suite passes precisely because its database has no
+  such column.
+- **Added:** 2026-09-06, from the WS-27 status-sets deploy.
+
+### H-105 · ⚠️ Production migrations run with NO pre-migration backup · [OWNER]
+- **Check:** `grep -n SKIP_PRE_MIGRATION_BACKUP .github/workflows/deploy.yml`.
+  Any line setting it to `1` means this is open. Confirmed in the deploy log of
+  2026-09-06: `==> Pre-migration backup SKIPPED (SKIP_PRE_MIGRATION_BACKUP=1)`.
+- **What happens:** `scripts/apply_migrations.sh` takes a dump before replaying
+  the ladder and **fails closed** if it cannot — its header says so: *"if the
+  backup cannot be taken, the migrations do not run. The escape hatch is
+  explicit and has to be typed on purpose."* The deploy types it on purpose, on
+  every run.
+- **⚠️ Why this is not a small thing.** `work_plan.md` §3a rule 1 tells an agent
+  to *"confirm the pre-migration backup completed"* before applying a migration
+  to production, and to hold the evidence. That confirmation is **impossible**
+  as the pipeline stands — the honest answer is always "there was none". R6 also
+  says we cannot roll back, only forward or restore; with no dump there is
+  nothing to restore FROM.
+- **What it cost on 2026-09-06:** nothing, by luck. Migration 196 failed
+  half-way (the column and a CHECK committed, the grant did not), and the
+  recovery was a hand-written `DROP CONSTRAINT`. A migration that corrupted data
+  rather than failing outright would have had no floor under it.
+- **Decide:** either restore the backup on the deploy path and accept the ~11
+  minutes it costs, or state in writing that production deploys run without one
+  and amend §3a rule 1 so it stops asking agents for evidence that cannot exist.
+  Both are defensible; the current state is that the rule and the pipeline
+  disagree and the pipeline wins silently.
+- **Related:** H-98 (the standalone backup job covers no Console database and no
+  timer runs it). Together they mean the production database has **no scheduled
+  backup and no deploy-time backup**.
+- **Added:** 2026-09-06, from the WS-27 status-sets deploy.
+
 ### H-101 · The weekly skills sync cannot open its PR, and has failed since 2026-08-24 · [OWNER]
 - **Check:** `gh run list --workflow=skills-upstream-sync.yml --limit 3`. A
   `failure` on the most recent scheduled run means this is still open. The log
