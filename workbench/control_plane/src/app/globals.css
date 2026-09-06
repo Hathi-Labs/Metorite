@@ -401,6 +401,31 @@ body {
   mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3.5' stroke-linecap='round'%3E%3Cline x1='5' y1='12' x2='19' y2='12'/%3E%3C/svg%3E");
 }
 
+/* ── The <select> popup, as far as it can be reached ───────────────────────
+   Owner report, 2026-09-05: an open "Group by" list drew a white sheet with
+   purple rows, inside an app that is dark everywhere else.
+
+   Measured rather than guessed. The closed control was already right —
+   `#f8fafc` on `#121417`, with `color-scheme: dark` on the root, the body and
+   the element itself. The `option` background computed to `rgba(0,0,0,0)`.
+   With nothing behind the rows the browser paints the popup's own sheet, and
+   then substitutes its own text colour, because our near-white would be
+   invisible on it. The purple was the OS accent and not a token of ours.
+
+   So the rows had simply never been given a background to sit on. `Select`'s
+   own header calls the popup unreachable. That is true on macOS and in Safari,
+   which draw the whole list themselves, and it is NOT true in Chrome and Edge
+   on Windows and Linux, which honour these two declarations. Partial reach is
+   worth having, because partial reach is where the report came from.
+
+   ⚠️ Deliberately not a `.cc-control` rule. The popup is not inside the
+   control's box, so nothing scoped to that class can reach it. */
+select option,
+select optgroup {
+  background-color: var(--popover);
+  color: var(--popover-foreground);
+}
+
 .cc-control {
   position: relative;
   isolation: isolate;
