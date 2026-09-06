@@ -139,7 +139,71 @@ export interface StatusRow {
   color: string;
   position: number;
   category: string;
+  /**
+   * ⚠️ Still on the wire, read by nothing (owner directive 2026-09-06).
+   *
+   * The first lane by position is where work starts. A flag was a second
+   * answer to a question the order already answered, and it was the answer
+   * nobody could see — on the dev database it sat on `backlog` for every
+   * space, leaving three of four category columns with no answer at all.
+   * The column is dropped in a later release (R6).
+   */
   is_default: boolean;
+}
+
+/** Where a project's lanes come from — `projectsApi.statusSet`. */
+export interface StatusSetInfo {
+  project_id: string;
+  /** Does this node carry its own set, rather than using an ancestor's? */
+  owns: boolean;
+  owner_id: string;
+  owner_name: string;
+  /** False on a space: there is nothing above it to inherit from. */
+  can_inherit: boolean;
+  /** A set it owned before, kept so switching back restores those lanes. */
+  has_dormant_set: boolean;
+  /** Does the caller hold `projects:settings:write`? */
+  may_edit: boolean;
+}
+
+export interface StatusSetChange {
+  mode: "inherit" | "own";
+  /** `own` only — the node whose lanes to duplicate. */
+  copy_from?: string;
+  /** `{old status id: target lane NAME}`. See `setStatusSet` for why a name. */
+  mapping?: Record<string, string>;
+}
+
+/** One lane the scope's tasks sit in now, and where they would land. */
+export interface StatusMove {
+  status_id: string;
+  name: string;
+  category: string;
+  tasks: number;
+  /** The lane survives the switch by name AND category, so nothing moves. */
+  unchanged: boolean;
+  /** The pre-filled target lane NAME, or null when the rule found none. */
+  suggested: string | null;
+  /** Does the suggested lane close a task? Null when there is no suggestion. */
+  closes: boolean | null;
+  closed_now: boolean;
+}
+
+export interface StatusSetPreview {
+  lanes: StatusRow[];
+  moves: StatusMove[];
+  moving: number;
+  completing: number;
+  reopening: number;
+}
+
+export interface StatusSetResult {
+  project_id: string;
+  owns: boolean;
+  owner_id: string;
+  moved: number;
+  completed: number;
+  reopened: number;
 }
 
 export interface ActivityRow {
@@ -341,8 +405,60 @@ export const projectsApi = {
   grants: (projectId: string) =>
     call<{ rows: GrantRow[]; total: number }>(`nodes/${projectId}/grants`),
 
+  /**
+   * The lanes this node USES, plus how many tasks sit in each.
+   *
+   * `counts` is keyed by status id and scoped to the projects this set
+   * governs. It arrives with the lanes rather than from a second call because
+   * every consumer needs both at once — the editor prints the number on the
+   * row, and no delete can be offered safely without it.
+   */
   statuses: (projectId: string) =>
-    call<{ rows: StatusRow[]; total: number }>(`nodes/${projectId}/statuses`),
+    call<{
+      rows: StatusRow[];
+      total: number;
+      counts: Record<string, number>;
+      owner_id: string;
+    }>(`nodes/${projectId}/statuses`),
+
+  /**
+   * ── Which set a project uses (migration 196) ───────────────────────────────
+   *
+   * A project uses the set of the NEAREST node at or above it that owns one.
+   * A space always owns one, so the walk always ends. That is the whole model:
+   * inherit means "own nothing", override means "own a set", switch back means
+   * "stop owning", and copy means "own a set that started as a duplicate".
+   */
+  statusSet: (projectId: string) =>
+    call<StatusSetInfo>(`nodes/${projectId}/status-set`),
+
+  /**
+   * What a switch WOULD move, without moving it.
+   *
+   * Read-only on purpose — the card is opened far more often than it is
+   * confirmed, and a preview that wrote anything would make opening it a
+   * decision.
+   */
+  previewStatusSet: (projectId: string, payload: StatusSetChange) =>
+    call<StatusSetPreview>(`nodes/${projectId}/status-set/preview`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  /**
+   * Switch, and move the tasks, in ONE transaction.
+   *
+   * ⚠️ `mapping` travels as `{old status id: target lane NAME}`, not an id.
+   * When the switch is a copy the destination lanes do not exist yet — the
+   * human chooses before the rows are written — so an id is unavailable at
+   * exactly the moment of the decision. Names are unique per set, so one wire
+   * shape serves inherit, copy and a dormant set alike.
+   */
+  setStatusSet: (projectId: string, payload: StatusSetChange) =>
+    call<StatusSetResult>(`nodes/${projectId}/status-set`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 
   /**
    * ── The status vocabulary is WRITEABLE, and until now only from SQL ────────
@@ -353,10 +469,14 @@ export const projectsApi = {
    * `project_management_app.md` §9.12.3 was describing a "status manager" that
    * had a server and no surface.
    *
-   * Statuses are ROOT-scoped: pass any node and the server resolves the root
-   * (`admin._root_for`), so every project under a space shares one set. That is
-   * deliberate — the category is the only vocabulary two spaces share, and a
-   * per-project override would break every cross-project roll-up.
+   * ⚠️ Statuses used to be ROOT-scoped, and are not any more (migration 196,
+   * owner directive 2026-09-06). Pass any node and the server resolves the
+   * nearest node that OWNS a set — the root until something overrides.
+   *
+   * The old reason for refusing an override survives and is why the override
+   * is safe: the category is the only vocabulary two spaces share, and every
+   * cross-project number rests on it. Every lane in every set still carries
+   * one, so only the NAMES became local.
    */
   createStatus: (projectId: string, payload: Record<string, unknown>) =>
     call<StatusRow>(`nodes/${projectId}/statuses`, {
@@ -378,10 +498,15 @@ export const projectsApi = {
    * rather than "could not delete": the number is what tells the owner whether
    * to move three tasks or reconsider.
    */
-  deleteStatus: (statusId: string) =>
-    call<{ deleted: string; tasks_affected: number }>(`statuses/${statusId}`, {
-      method: "DELETE",
-    }),
+  /**
+   * `moveTo` is the answer the 409 above only asked for. Without it the
+   * refusal stands, so a caller that has not adopted it behaves as before.
+   */
+  deleteStatus: (statusId: string, moveTo?: string) =>
+    call<{ deleted: string; tasks_affected: number }>(
+      `statuses/${statusId}${moveTo ? `?move_to=${moveTo}` : ""}`,
+      { method: "DELETE" }
+    ),
 
   tasks: (params: Record<string, string | number | boolean | undefined>) => {
     const qs = new URLSearchParams();

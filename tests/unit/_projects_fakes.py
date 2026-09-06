@@ -87,6 +87,16 @@ _ANY_UUID = re.compile(
 )
 #: ``<col> = 'literal'``
 _LITERAL_EQ = re.compile(r"\b(?:\w+\.)?(\w+)\s*=\s*'([^']*)'")
+#: ``<col> <> :param`` — NOT equals.
+#:
+#: ⚠️ Added 2026-09-06 with `core.load_default_status`'s triage exclusion, and
+#: worth its own note: until then NO route used ``<>``, so this scanner had
+#: never needed to read one. An unread predicate is not skipped — some OTHER
+#: clause in the same WHERE sets `seen`, the "could not read" assertion never
+#: fires, and the ``<>`` silently matches every row. That is exactly the
+#: failure R8 warns about, and here it let a triage lane win the "where does a
+#: new task start" question in a suite that otherwise read entirely green.
+_NOT_EQ = re.compile(r"\b(?:\w+\.)?(\w+)\s*<>\s*:(\w+)\b")
 #: ``(<a> = CAST(:p AS uuid) OR <b> = CAST(:p AS uuid))`` — a row addressed
 #: from EITHER end, which is how `pm_task_links` is deleted (the caller may be
 #: the source or the target). Read as the OR it is: the generic scanner ANDs the
@@ -440,6 +450,10 @@ def _now() -> datetime:
 _DEFAULTS: dict[str, dict[str, Any]] = {
     "pm_projects": {
         "status": "active", "source": "manual", "parent_project_id": None,
+        # Migration 196. False is the DEFAULT the table declares; the
+        # factory below stamps true on a root, which is what the CHECK
+        # requires and what the resolution walk terminates on.
+        "owns_statuses": False,
         "position": None, "archived_at": None, "clickup_id": None,
         "clickup_kind": None, "task_prefix": None, "lead": None,
         "description": None,
@@ -613,6 +627,7 @@ class FakeProjectsDB:
         ``subject=None`` seeds a project nobody has been granted — the shape
         every 404 test needs.
         """
+        columns.setdefault("owns_statuses", parent is None)
         project = self.seed(
             "pm_projects", name=name, parent_project_id=parent,
             created_by="owner@fracktal.in", **columns,
@@ -1280,6 +1295,57 @@ class FakeProjectsDB:
         return _Result([SimpleNamespace(**r) for r in matched])
 
     def _select(self, statement: str, table: str, args: dict) -> _Result:
+        # `WITH RECURSIVE status_chain AS (…)` — migration 196's ownership
+        # walk (`core.status_owner_id`): the NEAREST node at or above this one
+        # that carries `owns_statuses`.
+        #
+        # Answered explicitly for the reason the `chain` block below records. A
+        # fall-through here returns no row, which the route turns into a 404,
+        # so every status read in the suite would fail as "project not found" —
+        # a plausible-looking answer to a question the fake cannot actually
+        # answer. Note the CTE is deliberately named `status_chain` and not
+        # `chain`, so the two dispatch separately rather than by accident.
+        if re.match(r"^\s*WITH\s+RECURSIVE\s+status_chain\b", statement, re.I):
+            pid = str(args.get("id") or "")
+            seen: set[str] = set()
+            while pid and pid not in seen:
+                seen.add(pid)
+                row = next(
+                    (r for r in self.rows("pm_projects") if str(r["id"]) == pid),
+                    None,
+                )
+                if row is None:
+                    break
+                if row.get("owns_statuses"):
+                    return _Result([SimpleNamespace(id=pid)])
+                pid = str(row.get("parent_project_id") or "")
+            return _Result([])
+
+        # `WITH RECURSIVE scope AS (…) SELECT id FROM scope` — the projects a
+        # status switch would move (`core.status_scope_ids`): this node, plus
+        # descendants, stopping AT any descendant that owns a set of its own.
+        if re.match(r"^\s*WITH\s+RECURSIVE\s+scope\b", statement, re.I):
+            start = str(args.get("pid") or "")
+            found: list[str] = []
+            queue = [start]
+            seen = set()
+            while queue:
+                current = queue.pop(0)
+                if not current or current in seen:
+                    continue
+                seen.add(current)
+                found.append(current)
+                for row in self.rows("pm_projects"):
+                    if str(row.get("parent_project_id") or "") != current:
+                        continue
+                    # The stop condition, and it belongs on the CHILD: a node
+                    # that owns a set is outside the blast radius, and so is
+                    # everything under it.
+                    if row.get("owns_statuses"):
+                        continue
+                    queue.append(str(row["id"]))
+            return _Result([SimpleNamespace(id=i) for i in found])
+
         # `WITH RECURSIVE chain AS (…) SELECT bool_and(…)` — WS-27bg's
         # ancestor-runnable verdict (`core.is_runnable_with_ancestors`).
         #
@@ -1873,6 +1939,9 @@ class FakeProjectsDB:
         for column, literal in _LITERAL_EQ.findall(top):
             seen = True
             rows = [r for r in rows if str(r.get(column)) == literal]
+        for column, param in _NOT_EQ.findall(top):
+            seen = True
+            rows = [r for r in rows if str(r.get(column)) != str(args.get(param))]
         for column, negated in _IS_NULL.findall(top):
             seen = True
             rows = [r for r in rows if (r.get(column) is not None) is bool(negated)]

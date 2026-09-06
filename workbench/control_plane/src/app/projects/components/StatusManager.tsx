@@ -49,7 +49,8 @@
  * store this product does not have. Left out rather than stubbed.
  */
 
-import Icon from "@/components/Icon";
+import { ContextMenu } from "@/components/ContextMenu";
+import Icon, { themedIcon } from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Input, Select } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
@@ -69,10 +70,10 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { StatusRow } from "../lib/api";
 import { projectsApi } from "../lib/api";
+import { StatusSetControl } from "./StatusSetControl";
 import { accentForStatus } from "../lib/accent";
 import {
   emptyCategories,
-  isLastInCategory,
   placeNew,
   reorder,
 } from "../lib/statusOrder";
@@ -118,10 +119,29 @@ export function StatusManager({
    *  every row would out-shout the names, which are what this screen is for. */
   const [painting, setPainting] = useState<string | null>(null);
 
+  /** Tasks per lane, keyed by status id. Arrives with the lanes. */
+  const [counts, setCounts] = useState<Record<string, number>>({});
+
+  /** The row whose overflow menu is open, and where to draw it. */
+  const [rowMenu, setRowMenu] = useState<
+    { id: string; x: number; y: number } | null
+  >(null);
+
+  /**
+   * The lane being removed, and where its tasks go.
+   *
+   * A lane holding tasks cannot simply be deleted, and the old screen said so
+   * through a 409 AFTER the click. The row now knows its own count, so the
+   * question is asked before it: "move its 6 tasks to…".
+   */
+  const [removing, setRemoving] = useState<StatusRow | null>(null);
+  const [moveTo, setMoveTo] = useState("");
+
   const load = async () => {
     try {
       const res = await projectsApi.statuses(projectId);
       setRows(res.rows);
+      setCounts(res.counts ?? {});
       onChanged(res.rows);
     } catch (err) {
       setError(String((err as Error).message));
@@ -250,15 +270,17 @@ export function StatusManager({
     );
   }
 
-  function makeDefault(status: StatusRow) {
-    void run(async () => {
-      await projectsApi.patchStatus(status.id, { is_default: true });
-      return `New work in ${
-        CATEGORY_LABEL[status.category] ?? status.category
-      } lands in “${status.name}”.`;
-    });
-  }
-
+  /**
+   * ⚠️ `makeDefault` used to sit here, and it is gone (owner directive
+   * 2026-09-06).
+   *
+   * A status has no default any more. The FIRST lane in a group is where work
+   * starts, so the order already on screen IS the answer and moving a lane to
+   * the top is how it changes. The flag was a second answer to the same
+   * question, and the one nobody could see: on the dev database it sat on
+   * `backlog` for every space, which left three of the four category columns
+   * with no answer at all. Two answers, one of them usually wrong.
+   */
   function move(status: StatusRow, direction: "up" | "down") {
     const patches = reorder(rows, status.id, direction);
     if (patches.length === 0) return;
@@ -273,12 +295,27 @@ export function StatusManager({
     });
   }
 
-  function remove(status: StatusRow) {
-    void run(async () => {
-      const gone = await projectsApi.deleteStatus(status.id);
-      void gone;
-      return `Removed “${status.name}”.`;
-    });
+  /**
+   * Remove a lane, moving whatever is in it somewhere first.
+   *
+   * `target` is required exactly when the lane holds tasks — the row's own
+   * count decides, so the question is asked before the click rather than
+   * reported by a 409 after it. The server enforces the same rule and the two
+   * refusals it will not take at all (the last lane, and the last CLOSING
+   * lane) come back as its own sentence.
+   */
+  function remove(status: StatusRow, target?: string) {
+    void run(
+      async () => {
+        const gone = await projectsApi.deleteStatus(status.id, target);
+        setRemoving(null);
+        setMoveTo("");
+        return gone.tasks_affected
+          ? `Removed “${status.name}” and moved ${gone.tasks_affected} task(s).`
+          : `Removed “${status.name}”.`;
+      },
+      { touchesTasks: Boolean(target) }
+    );
   }
 
   return (
@@ -286,7 +323,11 @@ export function StatusManager({
       open
       onClose={onClose}
       title="Statuses"
-      description={`Shared by ${projectName} and everything under it`}
+      // The scope is no longer a constant, so the header stops asserting
+      // one. `StatusSetControl` names the owner, and it is the thing that
+      // knows — a subtitle claiming "shared by everything under it" is
+      // wrong the moment a subproject overrides.
+      description={projectName}
       icon="Columns3"
       size="lg"
     >
@@ -301,18 +342,72 @@ export function StatusManager({
         </p>
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
-        {/* The one sentence that explains the whole screen. It is here rather
-            than in a tooltip because the grouping looks like a filter until
-            somebody tells you it is the mapping. */}
-        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-          Name your lanes whatever this space calls them. The{" "}
-          <span className="font-medium text-foreground">stage</span> each lane
-          sits under is what rolls up — it drives the space roll-up, the
-          overdue counts, and what <span className="font-medium text-foreground">Tasks</span>{" "}
-          shows, which is the stage and never the lane name.
-        </p>
+      {/* Where these lanes come from. It replaced three sentences of prose,
+          and says the same thing as a control you can act on. */}
+      <StatusSetControl
+        projectId={projectId}
+        busy={busy}
+        onError={setError}
+        onSwitched={(said) => {
+          setNotice(said);
+          setError(null);
+          void load();
+          // The switch moved tasks between lanes and may have completed some,
+          // so every board behind this dialog is stale.
+          onTasksTouched();
+        }}
+      />
 
+      {/* Where a lane's tasks go, asked BEFORE the lane is removed.
+
+          The old screen let you click the bin and answered with a 409 naming
+          a count. That told you the click was wrong without helping you make
+          it right. */}
+      {removing ? (
+        <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted px-3 py-2 text-xs">
+          <span className="text-foreground">
+            Move {counts[removing.id] ?? 0} task(s) out of “{removing.name}” to
+          </span>
+          <div className="w-40">
+            <Select
+              inputSize="sm"
+              aria-label="Where its tasks go"
+              value={moveTo}
+              onChange={(e) => setMoveTo(e.target.value)}
+            >
+              <option value="">Choose a status…</option>
+              {rows
+                .filter((r) => r.id !== removing.id)
+                .map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                    {closesTask(r.category) ? " — completes them" : ""}
+                  </option>
+                ))}
+            </Select>
+          </div>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={busy || !moveTo}
+            onClick={() => remove(removing, moveTo)}
+          >
+            Move and remove
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setRemoving(null);
+              setMoveTo("");
+            }}
+          >
+            Cancel
+          </Button>
+        </div>
+      ) : null}
+
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {loading ? (
           <p className="text-xs text-muted-foreground">Loading…</p>
         ) : (
@@ -328,9 +423,20 @@ export function StatusManager({
                       statusAccent({ category: group.category }).dot
                     }`}
                   />
-                  <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  <h3
+                    className="text-xs font-medium uppercase tracking-wide text-muted-foreground"
+                    title={group.hint}
+                  >
                     {group.label}
                   </h3>
+                  {/* The explanation, on ask. It used to be a paragraph under
+                      every heading — five of them, read once and then read
+                      past forever, on a screen whose job is to show a list. */}
+                  <Icon
+                    name="Info"
+                    className="h-3 w-3 shrink-0 text-muted-foreground/60"
+                    aria-label={group.hint}
+                  />
                   {group.rows.length > 0 ? (
                     <span className="text-[11px] text-muted-foreground">
                       {group.rows.length}
@@ -358,14 +464,10 @@ export function StatusManager({
                     </span>
                   )}
                 </header>
-                <p className="mb-1.5 mt-0.5 pl-4 text-[11px] leading-relaxed text-muted-foreground">
-                  {group.hint}
-                </p>
 
                 <ul className="space-y-1">
                   {group.rows.map((status, index) => {
                     const accent = accentForStatus(status);
-                    const last = isLastInCategory(rows, status.id);
                     return (
                       <li
                         key={status.id}
@@ -456,106 +558,109 @@ export function StatusManager({
                             already carries the colour, and the name is a
                             keystroke away. */}
 
-                        {status.is_default ? (
-                          <span
-                            className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
-                            title={`New ${
-                              CATEGORY_LABEL[status.category] ?? status.category
-                            } work lands here.`}
-                          >
-                            Default
-                          </span>
-                        ) : (
-                          <Button
-                            variant="text"
-                            size="none"
-                            className="shrink-0 px-1 py-0.5 text-[10px]"
-                            disabled={busy}
-                            title={`Make this the default ${
-                              CATEGORY_LABEL[status.category] ?? status.category
-                            } lane`}
-                            onClick={() => makeDefault(status)}
-                          >
-                            Set default
-                          </Button>
-                        )}
+                        {/* How many tasks are in this lane.
 
-                        {/* Stage. The mapping control, and the only edit here
-                            that can complete or re-open tasks.
-
-                            ⚠️ WRAPPED, and it has to be. `Select` renders
-                            `<div className="relative w-full">` around the
-                            element and passes `className` to the `<select>`
-                            only, so a caller cannot size it: `w-auto shrink-0`
-                            landed on the inner element and the wrapper still
-                            took `w-full`. Measured: the wrapper claimed 218px
-                            of a 486px row and squeezed the NAME button — the
-                            one thing this screen exists to edit — down to 8px.
-                            The fix belongs in the primitive, and changing a
-                            shared control's box model is not this change. */}
-                        <div className="w-28 shrink-0">
-                        <Select
-                          inputSize="sm"
-                          aria-label={`Stage of ${status.name}`}
-                          value={status.category}
-                          disabled={busy}
-                          onChange={(e) => recategorise(status, e.target.value)}
+                            Not decoration: it is what turns "remove this
+                            lane" from a click that returns a 409 into a
+                            question the screen can ask first. */}
+                        <span
+                          className="shrink-0 tabular-nums text-[11px] text-muted-foreground"
+                          title={`${counts[status.id] ?? 0} task(s) in this lane`}
                         >
-                          {EDITABLE_CATEGORIES.map((category) => (
-                            <option key={category} value={category}>
-                              {CATEGORY_LABEL[category] ?? category}
-                            </option>
-                          ))}
-                          {/* A stored category the create path does not offer
-                              still has to be selectable, or opening this
-                              dropdown would silently re-file the lane. */}
-                          {(EDITABLE_CATEGORIES as readonly string[]).includes(
-                            status.category
-                          ) ? null : (
-                            <option value={status.category}>
-                              {CATEGORY_LABEL[status.category] ?? status.category}
-                            </option>
-                          )}
-                        </Select>
-                        </div>
+                          {counts[status.id] ?? 0}
+                        </span>
 
-                        <div className="flex shrink-0 items-center">
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            icon="ChevronUp"
-                            aria-label={`Move ${status.name} up`}
-                            disabled={busy || index === 0}
-                            onClick={() => move(status, "up")}
+                        {/* Everything else this row can do, behind ONE control.
+
+                            ⚠️ The row used to carry five: a Default chip or a
+                            "Set default" button, a stage dropdown, two arrows
+                            and a bin. The dropdown was the worst of them — it
+                            named the stage the row was ALREADY filed under by
+                            sitting inside that group's heading, so every row
+                            stated its category twice and the name, which is the
+                            thing this screen exists to edit, was squeezed to
+                            fit. The group IS the stage. */}
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          icon="MoreHorizontal"
+                          aria-label={`Actions for ${status.name}`}
+                          disabled={busy}
+                          onClick={(e) => {
+                            const box =
+                              e.currentTarget.getBoundingClientRect();
+                            setRowMenu({
+                              id: status.id,
+                              x: box.left,
+                              y: box.bottom + 2,
+                            });
+                          }}
+                        />
+                        {rowMenu?.id === status.id ? (
+                          <ContextMenu
+                            x={rowMenu.x}
+                            y={rowMenu.y}
+                            onClose={() => setRowMenu(null)}
+                            items={[
+                              {
+                                kind: "item",
+                                label: "Rename",
+                                icon: themedIcon("PenLine"),
+                                onSelect: () => {
+                                  setEditing(status.id);
+                                  setEditName(status.name);
+                                },
+                              },
+                              ...(index > 0
+                                ? [
+                                    {
+                                      kind: "item" as const,
+                                      label: "Move up",
+                                      icon: themedIcon("ChevronUp"),
+                                      onSelect: () => move(status, "up"),
+                                    },
+                                  ]
+                                : []),
+                              ...(index < group.rows.length - 1
+                                ? [
+                                    {
+                                      kind: "item" as const,
+                                      label: "Move down",
+                                      icon: themedIcon("ChevronDown"),
+                                      onSelect: () => move(status, "down"),
+                                    },
+                                  ]
+                                : []),
+                              { kind: "sep" },
+                              { kind: "label", label: "Move to stage" },
+                              ...EDITABLE_CATEGORIES.map((category) => ({
+                                kind: "item" as const,
+                                label: CATEGORY_LABEL[category] ?? category,
+                                checked: category === status.category,
+                                onSelect: () =>
+                                  recategorise(status, category),
+                              })),
+                              { kind: "sep" },
+                              {
+                                kind: "item",
+                                label: "Remove",
+                                icon: themedIcon("Trash2"),
+                                danger: true,
+                                onSelect: () => {
+                                  // With tasks in it the lane needs a
+                                  // destination, so the row opens the
+                                  // question instead of guessing.
+                                  if (counts[status.id]) {
+                                    setRemoving(status);
+                                    setMoveTo("");
+                                    return;
+                                  }
+                                  remove(status);
+                                },
+                              },
+                            ]}
                           />
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            icon="ChevronDown"
-                            aria-label={`Move ${status.name} down`}
-                            disabled={busy || index === group.rows.length - 1}
-                            onClick={() => move(status, "down")}
-                          />
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            icon="Trash2"
-                            aria-label={`Remove ${status.name}`}
-                            disabled={busy || last}
-                            // Explained BEFORE the click. The server refuses
-                            // this too, but a disabled button with no reason is
-                            // how somebody concludes the screen is broken.
-                            title={
-                              last
-                                ? `The only ${
-                                    CATEGORY_LABEL[status.category] ??
-                                    status.category
-                                  } lane. Add another before removing this one.`
-                                : `Remove ${status.name}`
-                            }
-                            onClick={() => remove(status)}
-                          />
-                        </div>
+                        ) : null}
                       </li>
                     );
                   })}
@@ -629,10 +734,6 @@ export function StatusManager({
       {/* Two facts a member needs and cannot see anywhere else: the scope, and
           which stages are unrepresented. */}
       <div className="border-t border-border px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-        <p>
-          One set per space. Every project and subproject under {projectName}{" "}
-          shares it, so two spaces stay comparable through the stage.
-        </p>
         {gaps.length > 0 ? (
           <p className="mt-1 text-foreground">
             No lane reports as{" "}
