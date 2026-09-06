@@ -59,17 +59,23 @@ UPDATE pm_projects
  WHERE parent_project_id IS NULL
    AND owns_statuses IS DISTINCT FROM true;
 
--- The fence. Added after the backfill so it validates against real rows.
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint WHERE conname = 'pm_projects_root_owns_statuses'
-    ) THEN
-        ALTER TABLE pm_projects
-            ADD CONSTRAINT pm_projects_root_owns_statuses
-            CHECK (parent_project_id IS NOT NULL OR owns_statuses);
-    END IF;
-END $$;
+-- ⚠️ **The CHECK that belongs here is DEFERRED to a later release, and the
+-- reason is R6 written in blood.**
+--
+-- A `CHECK (parent_project_id IS NOT NULL OR owns_statuses)` was here, and it
+-- reached production on 2026-09-06. The deploy applies migrations BEFORE it
+-- restarts services — that ordering is the whole point of R6 — so for the
+-- window between the two, the OLD code met the NEW constraint. The old code
+-- does not stamp `owns_statuses`, so creating a space would have failed with a
+-- constraint violation. It was dropped by hand the same hour.
+--
+-- Expand now, tighten later: once the code that stamps the flag is serving,
+-- a follow-up migration can add the constraint safely. A constraint that only
+-- the NEW code satisfies cannot ship in the SAME release as that code.
+--
+-- The invariant it would have expressed is still real and is held in code:
+-- `tree.create_project` stamps the flag on a root, and `tree.move_node` stamps
+-- it on a node promoted to one.
 
 -- Resolution walks ancestors and asks this question at each step.
 CREATE INDEX IF NOT EXISTS idx_pm_projects_owns_statuses
@@ -123,14 +129,49 @@ CREATE INDEX IF NOT EXISTS idx_pm_projects_owns_statuses
 -- file in the same replay, so by the time the loop below calls it, the function
 -- already carries the new permission.
 
+-- ⚠️ **The rows are written here, NOT by calling `provision_org_roles`.**
+--
+-- Calling it was the obvious shape and it FAILED on production:
+--
+--     null value in column "organization_id" of relation
+--     "org_role_permission" violates not-null constraint
+--
+-- That seed's INSERT names only `(role_id, permission)`. On production the
+-- tenancy work added `org_role_permission.organization_id` and made it NOT
+-- NULL — and those files live in `infra/postgres/generated/`, which the ladder
+-- does NOT replay (it globs `NN_*.sql` in `infra/postgres` only). So the seed
+-- cannot insert on a tenancy-applied database at all.
+--
+-- ⚠️ That is a defect BIGGER than this migration: `provision_org_roles` is what
+-- a NEW organization is built from, so **provisioning a second organization on
+-- production is currently broken** — an M1 blocker. It is recorded in
+-- `project-docs/HANDOFF.md` rather than fixed quietly here, because a fix
+-- belongs with the people who own the tenancy phase and needs its own test.
+--
+-- What this file does instead is write exactly the rows it means, for the roles
+-- 179's seed now names, and it carries `organization_id` when the column is
+-- there. The `IF EXISTS` is not defensive noise: the ladder alone (CI's replay,
+-- a fresh developer database) has no such column, and production does.
+
 DO $$
-DECLARE
-    org_id UUID;
 BEGIN
-    -- Bring every EXISTING organization up to the seed. Idempotent: an org that
-    -- already holds the permission is untouched, and one that predates it gains
-    -- exactly the rows it is missing.
-    FOR org_id IN SELECT id FROM organization LOOP
-        PERFORM provision_org_roles(org_id);
-    END LOOP;
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_name = 'org_role_permission'
+           AND column_name = 'organization_id'
+    ) THEN
+        EXECUTE $grant$
+            INSERT INTO org_role_permission (role_id, permission, organization_id)
+            SELECT r.id, 'projects:settings:write', r.organization_id
+              FROM org_role r
+             WHERE r.slug IN ('admin', 'manager', 'agent_service')
+            ON CONFLICT DO NOTHING
+        $grant$;
+    ELSE
+        INSERT INTO org_role_permission (role_id, permission)
+        SELECT r.id, 'projects:settings:write'
+          FROM org_role r
+         WHERE r.slug IN ('admin', 'manager', 'agent_service')
+        ON CONFLICT DO NOTHING;
+    END IF;
 END $$;
