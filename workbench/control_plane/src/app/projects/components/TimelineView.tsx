@@ -65,6 +65,7 @@ import {
   type Bar,
   type Edge,
   LABEL_INSIDE_PX,
+  labelSide,
   ROW_H,
   type TimelineBand,
   type TimelineRow,
@@ -82,8 +83,14 @@ import {
   dayPx,
   dayStep,
   dragRefusal,
+  CONTROL_SHIELD_PX,
+  AIM_KEEP_PX,
+  EDGE_GRACE_MS,
   EDGE_HIT_PX,
+  edgeHitOrder,
   edgeMidpoint,
+  type RoutedEdge,
+  stagger,
   edgePoints,
   interval,
   monthCells,
@@ -253,6 +260,49 @@ export function TimelineView({
    * same gesture.
    */
   const [hoverEdge, setHoverEdge] = useState<string | null>(null);
+
+  /**
+   * ── The aim LATCH, and why a plain mouseleave will not do ─────────────────
+   *
+   * The remove control sits half way ALONG the arrow, which is a dogleg. So the
+   * straight line a hand takes from the arrow to the control leaves the path —
+   * and the path is all there is: a 12px stroke with nothing either side of it.
+   * `onMouseLeave` fired part-way, `hoverEdge` cleared, and the control
+   * unmounted from under a cursor that was travelling toward it. Where a second
+   * arrow overlapped, the pointer landed on THAT stroke instead and the control
+   * reappeared on the wrong arrow, which is how the owner reported it on
+   * 2026-09-05.
+   *
+   * Measured before this landed: walking the pointer from the arrow to its own
+   * control in 16 steps, the control was absent for 10 of them.
+   *
+   * So leaving the stroke does not drop the aim immediately — it schedules the
+   * drop, and anything that means "still going there" cancels it: the stroke
+   * again, the shield around the control, or the control itself. Deliberately
+   * moving to a different arrow still works, because that arrow's own enter
+   * cancels the timer and claims the aim.
+   */
+  const releaseRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const aimEdge = useCallback((id: string) => {
+    if (releaseRef.current) clearTimeout(releaseRef.current);
+    releaseRef.current = null;
+    setHoverEdge(id);
+  }, []);
+  const releaseEdge = useCallback((id: string) => {
+    if (releaseRef.current) clearTimeout(releaseRef.current);
+    releaseRef.current = setTimeout(() => {
+      releaseRef.current = null;
+      setHoverEdge((current) => (current === id ? null : current));
+    }, EDGE_GRACE_MS);
+  }, []);
+  // A pending release must not outlive the view and set state on a dead tree.
+  useEffect(
+    () => () => {
+      if (releaseRef.current) clearTimeout(releaseRef.current);
+    },
+    [],
+  );
+
   const todayKey = today ?? dayKey(new Date());
 
   // The live drag, for listeners that were created once and must not close over
@@ -365,6 +415,36 @@ export function TimelineView({
     }
     return out;
   }, [drawn, range, drag]);
+
+  /**
+   * Every edge's path, routed TOGETHER.
+   *
+   * `edgePoints` routes one edge at a time and puts its vertical run at the
+   * midpoint between the two bars, so two edges with similar endpoints drew
+   * their runs on top of one another — one hid the other, and where they
+   * diverged the pair read as a single line forking for no reason. `stagger`
+   * is the pass that can see them all at once and gives each collision its own
+   * channel.
+   *
+   * Computed here rather than in the map so the drawing, the hit stroke, the
+   * aim corridor and the midpoint of the remove control all read ONE path. Two
+   * of those computing their own would put the control off the line.
+   */
+  const routed = useMemo(() => {
+    const out: RoutedEdge[] = [];
+    for (const edge of links) {
+      const from = indexById.get(edge.blocker_id);
+      const to = indexById.get(edge.blocked_id);
+      if (from === undefined || to === undefined) continue;
+      const points = edgePoints(
+        { bar: barById.get(edge.blocker_id) ?? null, row: from },
+        { bar: barById.get(edge.blocked_id) ?? null, row: to },
+      );
+      if (!points) continue;
+      out.push({ id: edge.id, points });
+    }
+    return new Map(stagger(out).map((r) => [r.id, r.points]));
+  }, [links, indexById, barById]);
 
   const months = monthCells(range);
   const days = useMemo(() => dayCells(range, todayKey), [range, todayKey]);
@@ -932,14 +1012,44 @@ export function TimelineView({
                     <path d="M0,0 L6,3 L0,6 z" className="fill-primary" />
                   </marker>
                 </defs>
-                {links.map((edge) => {
-                  const from = indexById.get(edge.blocker_id);
-                  const to = indexById.get(edge.blocked_id);
-                  if (from === undefined || to === undefined) return null;
-                  const points = edgePoints(
-                    { bar: barById.get(edge.blocker_id) ?? null, row: from },
-                    { bar: barById.get(edge.blocked_id) ?? null, row: to },
+                {/* ── The aim corridor, and why it is its OWN layer ──────────
+                    Wide enough to travel ALONG the aimed arrow, not merely to
+                    point at it: the remove control sits half way along a
+                    dogleg, so the route to it cuts corners and a 12px stroke
+                    loses the pointer part-way.
+
+                    ⚠️ It is drawn BEFORE every edge group, so it sits UNDER
+                    all the narrow hit strokes. That layering is the whole
+                    trick. Rendered inside the aimed edge's own group it was on
+                    top — `edgeHitOrder` puts that group last — and a 44px
+                    invisible stroke then buried the neighbouring arrow, which
+                    could no longer be aimed at all (measured, 2026-09-05).
+                    Underneath, precision still wins: land on any arrow's real
+                    stroke and that arrow takes the aim, and the corridor only
+                    catches the pointer where no stroke is. */}
+                {(() => {
+                  if (!onUnlink || !hoverEdge) return null;
+                  const edge = links.find((e) => e.id === hoverEdge);
+                  if (!edge) return null;
+                  const pts = routed.get(edge.id);
+                  if (!pts) return null;
+                  return (
+                    <path
+                      d={roundedPath(pts)}
+                      fill="none"
+                      stroke="transparent"
+                      strokeWidth={AIM_KEEP_PX}
+                      style={{ pointerEvents: "stroke", cursor: "pointer" }}
+                      onMouseEnter={() => aimEdge(edge.id)}
+                      onMouseLeave={() => releaseEdge(edge.id)}
+                    />
                   );
+                })()}
+                {/* ⚠️ Ordered, not raw. The aimed edge must paint LAST or it
+                    loses the pointer to whichever overlapping edge happens to
+                    sit later in `links` — see `edgeHitOrder`. */}
+                {edgeHitOrder(links, hoverEdge).map((edge) => {
+                  const points = routed.get(edge.id);
                   if (!points) return null;
                   const d = roundedPath(points);
                   const mid = edgeMidpoint(points);
@@ -984,12 +1094,8 @@ export function TimelineView({
                           stroke="transparent"
                           strokeWidth={EDGE_HIT_PX}
                           style={{ pointerEvents: "stroke", cursor: "pointer" }}
-                          onMouseEnter={() => setHoverEdge(edge.id)}
-                          onMouseLeave={() =>
-                            setHoverEdge((current) =>
-                              current === edge.id ? null : current,
-                            )
-                          }
+                          onMouseEnter={() => aimEdge(edge.id)}
+                          onMouseLeave={() => releaseEdge(edge.id)}
                         />
                       ) : null}
                       <path
@@ -1009,6 +1115,32 @@ export function TimelineView({
                           bad ? "pm-arrow-bad" : lit ? "pm-arrow-lit" : "pm-arrow"
                         })`}
                       />
+                      {/* The approach corridor.
+
+                          `edgeHitOrder` keeps the aimed edge on top along the
+                          path, which covers the journey. This covers the
+                          ARRIVAL: the control sits ON the line, so the last few
+                          pixels are exactly where a second arrow's stroke is
+                          most likely to be, and stepping off the aimed stroke
+                          there would hand the pointer away one pixel before the
+                          target.
+
+                          Hover only — deliberately NOT inside the group that
+                          carries `onClick`. A 22px halo that deletes a
+                          dependency is a mis-click waiting to happen; this one
+                          only keeps the edge aimed, and the control below stays
+                          the only thing that removes anything. */}
+                      {onUnlink && aimed && mid ? (
+                        <circle
+                          cx={mid.x}
+                          cy={mid.y}
+                          r={CONTROL_SHIELD_PX}
+                          fill="transparent"
+                          style={{ pointerEvents: "all" }}
+                          onMouseEnter={() => aimEdge(edge.id)}
+                          onMouseLeave={() => releaseEdge(edge.id)}
+                        />
+                      ) : null}
                       {onUnlink && aimed && mid ? (
                         <g
                           transform={`translate(${mid.x} ${mid.y})`}
@@ -1018,12 +1150,8 @@ export function TimelineView({
                             leaves the stroke, and without this the control
                             unmounts from under the cursor on the way to it.
                           */
-                          onMouseEnter={() => setHoverEdge(edge.id)}
-                          onMouseLeave={() =>
-                            setHoverEdge((current) =>
-                              current === edge.id ? null : current,
-                            )
-                          }
+                          onMouseEnter={() => aimEdge(edge.id)}
+                          onMouseLeave={() => releaseEdge(edge.id)}
                           onClick={(event) => {
                             event.stopPropagation();
                             onUnlink(edge.blocker_id, edge.id);
@@ -1123,6 +1251,10 @@ export function TimelineView({
                       <TimelineBar
                         task={row.task}
                         drawnBar={drawnBar}
+                        // The chart's own width, so a narrow bar's label can be
+                        // kept inside it. Without this the label ran off the
+                        // end — see `labelSide`.
+                        canvasPx={range.widthPx}
                         bad={bad}
                         blockerTitle={blockerTask?.title}
                         dragging={isDragging ? drag : null}
@@ -1401,6 +1533,7 @@ function LinkPreview({
 function TimelineBar({
   task,
   drawnBar,
+  canvasPx,
   bad,
   blockerTitle,
   dragging,
@@ -1411,6 +1544,8 @@ function TimelineBar({
 }: {
   task: TaskRow;
   drawnBar: Bar;
+  /** The chart's full width, which bounds where a floating label may sit. */
+  canvasPx: number;
   bad: boolean;
   blockerTitle?: string;
   dragging: DragState | null;
@@ -1422,6 +1557,7 @@ function TimelineBar({
   const inside = drawnBar.widthPx >= LABEL_INSIDE_PX;
   const title = bad && blockerTitle ? conflictLabel(blockerTitle) : task.title;
   const span = interval(task);
+  const place = labelSide(drawnBar, canvasPx);
 
   const tone = drawnBar.derived
     ? "border border-dashed border-border bg-muted text-muted-foreground"
@@ -1532,14 +1668,34 @@ function TimelineBar({
           this label sits — so the line runs between the letters and reads as a
           STRIKETHROUGH on the task's own name. An opaque backing occludes it.
           Routing the arrow around the label instead would mean the geometry
-          layer knowing how wide a piece of rendered text is. */}
+          layer knowing how wide a piece of rendered text is.
+
+          ⚠️ **It does NOT always go on the right.** This header used to say the
+          right side is "where there is always room", and that is false at the
+          end of the canvas. Measured at 1440 on 2026-09-05: "Landing page A/B:
+          price framing" rendered 57px past the scroller's right edge and was
+          clipped, because the label took `left: leftPx + widthPx + 8` with a
+          `max-w` and no bound against the chart. A bar in the last stretch of
+          the canvas is exactly the bar whose name you cannot otherwise read,
+          so losing that one is the worst case, not the harmless one.
+
+          So the side is chosen, and the width is capped by the room actually
+          there. No text is measured — `labelSide` picks a side from the bar's
+          own geometry, which is the arithmetic the comment above declines to
+          do on rendered glyphs. */}
       {inside ? null : (
         <button
           type="button"
           onClick={onOpen}
           title={title}
-          className="absolute top-1/2 max-w-[240px] -translate-y-1/2 truncate rounded bg-card px-1 py-0.5 text-left text-[11px] text-foreground hover:underline"
-          style={{ left: drawnBar.leftPx + drawnBar.widthPx + 8 }}
+          className={`absolute top-1/2 -translate-y-1/2 truncate rounded bg-card px-1 py-0.5 text-[11px] text-foreground hover:underline ${
+            place.side === "right" ? "text-left" : "text-right"
+          }`}
+          style={
+            place.side === "right"
+              ? { left: place.offsetPx, maxWidth: place.maxWidthPx }
+              : { right: place.offsetPx, maxWidth: place.maxWidthPx }
+          }
         >
           {task.title}
         </button>

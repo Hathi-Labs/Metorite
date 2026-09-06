@@ -28,6 +28,15 @@ import { describe, expect, it } from "vitest";
 import type { TaskRow } from "./api";
 import { fromDayKey, shiftDay } from "./calendar";
 import {
+
+  CHANNEL_PX,
+  EDGE_STUB_PX,
+  stagger,
+  AIM_KEEP_PX,
+  CONTROL_SHIELD_PX,
+  edgeHitOrder,
+  LABEL_GAP_PX,
+  labelSide,
   MIN_BAR_PX,
   PAD_DAYS,
   PX_PER_DAY,
@@ -491,16 +500,56 @@ describe("edgePoints — where an edge turns", () => {
       { bar: barAt(100, 100), row: 0 },
       { bar: barAt(120, 60), row: 1 },
     ) as Point[];
-    expect(pts).toHaveLength(6);
+    expect(pts).toHaveLength(5);
     expect(pts[0]).toEqual({ x: 200, y: ROW_H / 2 });
     expect(pts.at(-1)).toEqual({ x: 120, y: ROW_H + ROW_H / 2 });
-    // It leaves rightwards and arrives leftwards — never backwards through a bar.
+    // It leaves rightwards and arrives from ABOVE — never backwards through a
+    // bar, and never with the hook it used to end on.
+    //
+    // ⚠️ This asserted six points and a leftward arrival until 2026-09-05. The
+    // route overshot to `x2 - stub` so it could come in from the left like
+    // every other edge, and on a one-day overlap that hook sat between two
+    // 20px drops with the fillets eating all three — a knot. Arriving from
+    // above is what the touching case already does, so the two agree now.
     expect(pts[1]!.x).toBeGreaterThan(pts[0]!.x);
-    expect(pts.at(-2)!.x).toBeLessThan(pts.at(-1)!.x);
+    expect(pts.at(-2)!.x).toBe(pts.at(-1)!.x);
+    expect(pts.at(-2)!.y).toBeLessThan(pts.at(-1)!.y);
     // And it detours through the gap BETWEEN the two rows.
     const lane = pts[2]!.y;
     expect(lane).toBeGreaterThan(ROW_H / 2);
     expect(lane).toBeLessThan(ROW_H + ROW_H / 2);
+  });
+
+  it("DROPS STRAIGHT DOWN when the bars touch", () => {
+    // The commonest dependency there is: the blocked task starts the day the
+    // blocker ends, so the two bars share an edge. Owner report, 2026-09-05.
+    // The old test for the detour was "is there room for two stubs", so this
+    // case took it: out 12px, back left past its own start, and down — a
+    // squiggle drawn to dodge a conflict that is not there.
+    const pts = edgePoints(
+      { bar: barAt(0, 100), row: 0 },
+      { bar: barAt(100, 60), row: 2 },
+    ) as Point[];
+    expect(pts).toHaveLength(2);
+    expect(pts[0]).toEqual({ x: 100, y: ROW_H / 2 });
+    expect(pts[1]).toEqual({ x: 100, y: 2 * ROW_H + ROW_H / 2 });
+  });
+
+  it("never turns BACKWARDS while the target still starts after the source", () => {
+    // The property the squiggle broke, swept across every gap from touching to
+    // roomy. An edge that runs left is telling the reader about a conflict, so
+    // it must not do so where there is none.
+    for (let gap = 0; gap <= 60; gap += 1) {
+      const pts = edgePoints(
+        { bar: barAt(0, 100), row: 0 },
+        { bar: barAt(100 + gap, 40), row: 3 },
+      ) as Point[];
+      for (let i = 1; i < pts.length; i += 1) {
+        expect(pts[i]!.x, `gap ${gap} turns back at point ${i}`).toBeGreaterThanOrEqual(
+          pts[i - 1]!.x,
+        );
+      }
+    }
   });
 
   it("is null when either end has no bar", () => {
@@ -1256,9 +1305,9 @@ describe("edgeMidpoint — where the remove control sits", () => {
     expect(mid).toEqual({ x: 20, y: 0 });
   });
 
-  it("walks the six-point conflict route rather than averaging it", () => {
+  it("walks the conflict route rather than averaging it", () => {
     // The shape `edgePoints` returns when the blocked bar starts before the
-    // blocker ends — out, down into the lane, back, and in. The midpoint must
+    // blocker ends — out, down into the lane, back, and down in. The midpoint must
     // land on the lane, which is the only part of that route with room for a
     // control.
     const stub = { singleDate: false, derived: false };
@@ -1266,7 +1315,7 @@ describe("edgeMidpoint — where the remove control sits", () => {
     const to = { bar: { leftPx: 20, widthPx: 60, ...stub }, row: 1 };
     const points = edgePoints(from, to);
     expect(points).not.toBeNull();
-    expect(points!.length).toBe(6);
+    expect(points!.length).toBe(5);
     const mid = edgeMidpoint(points!);
     const lane = (ROW_H / 2 + (ROW_H + ROW_H / 2)) / 2;
     expect(mid!.y).toBeCloseTo(lane, 5);
@@ -1313,5 +1362,323 @@ describe("EDGE_HIT_PX — the reason the arrow is hittable", () => {
     // the bar's own drag zones have to win.
     expect(EDGE_HIT_PX).toBeGreaterThanOrEqual(8);
     expect(EDGE_HIT_PX).toBeLessThanOrEqual(12);
+  });
+});
+
+describe("labelSide — a narrow bar's label stays on the canvas", () => {
+  // The measured regression. `TimelineBar` positioned the label at
+  // `leftPx + widthPx + 8` with a `max-w` and no bound, and its own header
+  // claimed the right is "where there is always room". At 1440 on 2026-09-05 a
+  // bar near the right edge put its label 57px past the scroller and the name
+  // was clipped — on exactly the bar too narrow to carry its title inside.
+  const CANVAS = 1000;
+
+  it("keeps the label on the right when there is room", () => {
+    const place = labelSide({ leftPx: 100, widthPx: 24 }, CANVAS);
+    expect(place.side).toBe("right");
+    expect(place.offsetPx).toBe(132);
+  });
+
+  it("caps the width at the room actually there, never past the edge", () => {
+    // 40px of canvas left: the label may take 40, not its 240 maximum.
+    const place = labelSide({ leftPx: 940, widthPx: 12 }, CANVAS);
+    expect(place.offsetPx + place.maxWidthPx).toBeLessThanOrEqual(CANVAS);
+  });
+
+  it("flips to the left when the right cannot hold a readable label", () => {
+    const place = labelSide({ leftPx: 950, widthPx: 20 }, CANVAS);
+    expect(place.side).toBe("left");
+    // A CSS `right`, so the label's right edge sits one gap left of the bar.
+    expect(place.offsetPx).toBe(CANVAS - 950 + LABEL_GAP_PX);
+  });
+
+  it("never lets a flipped label cross the left edge either", () => {
+    const place = labelSide({ leftPx: 30, widthPx: 4 }, 60);
+    const rightEdge = 60 - place.offsetPx;
+    if (place.side === "left") expect(rightEdge - place.maxWidthPx).toBeGreaterThanOrEqual(0);
+    else expect(place.offsetPx + place.maxWidthPx).toBeLessThanOrEqual(60);
+  });
+
+  it("prefers the right on a tie, so an ordinary chart never moves a label", () => {
+    // Equal room both sides. Keeping the right means the common reading order
+    // stays bar-then-name, and only a genuinely cramped bar reads name-then-bar.
+    const place = labelSide({ leftPx: 100, widthPx: 800 }, 1000 + 8 + 92 - 8);
+    expect(place.side).toBe("right");
+  });
+
+  it("holds the invariant across the whole canvas", () => {
+    // The property, rather than four examples: wherever the bar sits, the label
+    // stays inside the chart on both sides.
+    for (let left = 0; left <= CANVAS - 10; left += 7) {
+      const place = labelSide({ leftPx: left, widthPx: 10 }, CANVAS);
+      if (place.side === "right") {
+        expect(place.offsetPx + place.maxWidthPx).toBeLessThanOrEqual(CANVAS);
+      } else {
+        expect(CANVAS - place.offsetPx - place.maxWidthPx).toBeGreaterThanOrEqual(0);
+      }
+      expect(place.maxWidthPx).toBeGreaterThanOrEqual(0);
+    }
+  });
+});
+
+describe("edgeHitOrder — the aimed arrow keeps the pointer", () => {
+  // Owner report, 2026-09-05: two arrows leaving one blocker overlap for the
+  // whole shared prefix. Hovering one showed its remove control; moving toward
+  // that control crossed the shared segment, where the OTHER edge's hit stroke
+  // was painted later and therefore on top. Its `onMouseEnter` fired, the
+  // control vanished and reappeared on the wrong arrow, under a cursor that had
+  // never left the first one.
+  const EDGES = [{ id: "a" }, { id: "b" }, { id: "c" }];
+
+  it("puts the aimed edge last, so it wins every overlap", () => {
+    // SVG hands the pointer to the last-painted element.
+    expect(edgeHitOrder(EDGES, "a").map((e) => e.id)).toEqual(["b", "c", "a"]);
+  });
+
+  it("leaves the order alone when nothing is aimed", () => {
+    expect(edgeHitOrder(EDGES, null).map((e) => e.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("keeps the un-aimed edges in their own order", () => {
+    // Otherwise the arrows you are NOT pointing at reshuffle under the cursor
+    // every time the aimed one changes.
+    expect(edgeHitOrder(EDGES, "b").map((e) => e.id)).toEqual(["a", "c", "b"]);
+  });
+
+  it("is a no-op for an id it does not hold", () => {
+    expect(edgeHitOrder(EDGES, "gone").map((e) => e.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("never drops or duplicates an edge", () => {
+    for (const aimed of [null, "a", "b", "c", "nope"]) {
+      const out = edgeHitOrder(EDGES, aimed);
+      expect(out).toHaveLength(EDGES.length);
+      expect(new Set(out.map((e) => e.id)).size).toBe(EDGES.length);
+    }
+  });
+
+  it("does not mutate the array it was handed", () => {
+    const input = [{ id: "a" }, { id: "b" }];
+    edgeHitOrder(input, "a");
+    expect(input.map((e) => e.id)).toEqual(["a", "b"]);
+  });
+
+  it("keeps the aim corridor wider than the pointing stroke", () => {
+    // 12px is enough to point AT a line and not enough to travel ALONG one.
+    // The corridor is what carries the pointer to a control that sits half way
+    // along a dogleg. Measured before it existed: walking from the arrow to its
+    // own control in 16 steps, the control was absent for 10 of them; with the
+    // corridor, for none.
+    expect(AIM_KEEP_PX).toBeGreaterThan(EDGE_HIT_PX);
+    // And the shield around the control has to fit inside it, or the arrival is
+    // guarded by something wider than the approach.
+    expect(AIM_KEEP_PX).toBeGreaterThanOrEqual(CONTROL_SHIELD_PX);
+  });
+
+  it("gives the control a corridor wider than the control itself", () => {
+    // The control is r=8. The shield is what stops an arrow underneath from
+    // stealing the pointer in the last few pixels of the approach.
+    expect(CONTROL_SHIELD_PX).toBeGreaterThan(8);
+    // And wider than the hit stroke, or the corridor is narrower than the line
+    // it is protecting the arrival on.
+    expect(CONTROL_SHIELD_PX).toBeGreaterThan(EDGE_HIT_PX);
+  });
+});
+
+describe("stagger — two arrows must not share one corridor", () => {
+  // Owner report, 2026-09-05. `edgePoints` routes each edge alone and puts its
+  // vertical run at the midpoint between the bars, so edges with similar
+  // endpoints drew their runs on top of one another.
+  /**
+   * One forward route.
+   *
+   * ⚠️ `srcY` matters. Edges that share a SOURCE are a fan and get a trunk;
+   * the channel pass below is about edges from DIFFERENT bars whose runs
+   * happen to collide, so these fixtures must not accidentally be siblings.
+   */
+  const forward = (
+    id: string,
+    x: number,
+    srcY = 0,
+  ): { id: string; points: Point[] } => ({
+    id,
+    points: [
+      { x: 0, y: srcY },
+      { x, y: srcY },
+      { x, y: srcY + 40 },
+      { x: 200, y: srcY + 40 },
+    ],
+  });
+
+  it("leaves a lone edge exactly where it was", () => {
+    const one = [forward("a", 100)];
+    expect(stagger(one)[0].points).toEqual(one[0].points);
+  });
+
+  it("splits two colliding runs either side of where they were", () => {
+    const out = stagger([forward("a", 100), forward("b", 100, 200)]);
+    const xs = out.map((r) => r.points[1].x).sort((p, q) => p - q);
+    expect(xs[1] - xs[0]).toBe(CHANNEL_PX);
+    // Centred: the pair straddles the original, rather than both sliding away.
+    expect((xs[0] + xs[1]) / 2).toBe(100);
+  });
+
+  it("keeps the vertical run vertical", () => {
+    // Moving one point of the pair and not the other would draw a diagonal.
+    for (const r of stagger([forward("a", 100), forward("b", 103, 200)])) {
+      expect(r.points[1].x).toBe(r.points[2].x);
+    }
+  });
+
+  it("does not move edges that were already clear of each other", () => {
+    const far = [forward("a", 40), forward("b", 140, 200)];
+    expect(stagger(far).map((r) => r.points[1].x)).toEqual([40, 140]);
+  });
+
+  it("never moves an endpoint", () => {
+    // An arrow must still leave the bar it leaves and arrive where it arrives.
+    //
+    // ⚠️ This briefly allowed a vertical shift, for a "fan" that gave two
+    // arrows leaving one bar their own departure heights. The owner ruled the
+    // shared first leg fine and the CROSSING the fault — and the fan made the
+    // crossing worse, because a second horizontal at a different height cuts
+    // THROUGH the first edge's vertical instead of meeting it at a corner.
+    // Reverted, and the contract is strict again.
+    const input = [forward("a", 100), forward("b", 100, 200), forward("c", 101, 400)];
+    for (const r of stagger(input)) {
+      const before = input.find((i) => i.id === r.id)!;
+      expect(r.points[0]).toEqual(before.points[0]);
+      expect(r.points[3]).toEqual(before.points[3]);
+    }
+  });
+
+  it("puts siblings on ONE trunk, so branches never cross", () => {
+    // The report: arrows leaving one bar cross each other. They turned down at
+    // two different x, so the further one's horizontal ran straight through the
+    // nearer one's corner. A fan is a tree, so it is drawn as one.
+    const src = { x: 0, y: 0 };
+    const out = stagger([
+      { id: "near", points: [src, { x: 190, y: 0 }, { x: 190, y: 40 }, { x: 380, y: 40 }] },
+      { id: "far", points: [src, { x: 120, y: 0 }, { x: 120, y: 120 }, { x: 240, y: 120 }] },
+    ]);
+    const xs = out.map((r) => r.points[1].x);
+    expect(new Set(xs).size, `two trunks: ${xs.join(", ")}`).toBe(1);
+    expect(xs[0]).toBe(EDGE_STUB_PX);
+  });
+
+  it("keeps the vertical run vertical on the trunk", () => {
+    const src = { x: 0, y: 0 };
+    const out = stagger([
+      { id: "a", points: [src, { x: 190, y: 0 }, { x: 190, y: 40 }, { x: 380, y: 40 }] },
+      { id: "b", points: [src, { x: 120, y: 0 }, { x: 120, y: 120 }, { x: 240, y: 120 }] },
+    ]);
+    for (const r of out) expect(r.points[1].x).toBe(r.points[2].x);
+  });
+
+  it("leaves a LONE arrow on its balanced midpoint", () => {
+    // One edge is a line, several from one bar are a tree. A single arrow has
+    // nothing to branch with, and the midpoint is the better shape for it.
+    const only = [{ id: "a", points: [{ x: 0, y: 0 }, { x: 190, y: 0 }, { x: 190, y: 40 }, { x: 380, y: 40 }] }];
+    expect(stagger(only)[0].points[1].x).toBe(190);
+  });
+
+  it("does not drag a branch past the bar it points at", () => {
+    // A target starting inside the stub keeps its own channel rather than being
+    // routed on top of itself.
+    const src = { x: 0, y: 0 };
+    const tight = { id: "tight", points: [src, { x: 4, y: 0 }, { x: 4, y: 40 }, { x: 8, y: 40 }] };
+    const wide = { id: "wide", points: [src, { x: 120, y: 0 }, { x: 120, y: 120 }, { x: 240, y: 120 }] };
+    const out = stagger([tight, wide]);
+    for (const r of out) expect(r.points[1].x).toBeLessThan(r.points[3].x);
+  });
+
+  it("puts every dependency of one bar on ONE merge trunk", () => {
+    // Owner report, third round: the same tangle at the other end. Two arrows
+    // FEEDING one bar turned down at their own midpoints, so the higher one's
+    // horizontal ran through the lower one's vertical. A merge is a fan read
+    // backwards, so it gets a trunk read backwards.
+    const out = stagger([
+      { id: "high", points: [{ x: 0, y: 0 }, { x: 200, y: 0 }, { x: 200, y: 200 }, { x: 400, y: 200 }] },
+      { id: "low", points: [{ x: 50, y: 100 }, { x: 225, y: 100 }, { x: 225, y: 200 }, { x: 400, y: 200 }] },
+    ]);
+    const xs = out.map((r) => r.points[1].x);
+    expect(new Set(xs).size, `two trunks: ${xs.join(", ")}`).toBe(1);
+    expect(xs[0]).toBe(400 - EDGE_STUB_PX);
+    // Still vertical, and still arriving where it arrived.
+    for (const r of out) {
+      expect(r.points[1].x).toBe(r.points[2].x);
+      expect(r.points[3]).toEqual({ x: 400, y: 200 });
+    }
+  });
+
+  it("gives the fan the edge when it is also a merge", () => {
+    // One edge can be a branch of a fan and a leg of a merge, and it cannot put
+    // its vertical in two places. The fan wins, deterministically. The cost is
+    // only an overlap: that edge meets the merge trunk at the target row and
+    // runs into the bar collinear with it, because both end at one arrowhead.
+    const src = { x: 0, y: 0 };
+    const out = stagger([
+      { id: "both", points: [src, { x: 200, y: 0 }, { x: 200, y: 200 }, { x: 400, y: 200 }] },
+      { id: "sibling", points: [src, { x: 100, y: 0 }, { x: 100, y: 80 }, { x: 200, y: 80 }] },
+      { id: "feed", points: [{ x: 50, y: 100 }, { x: 225, y: 100 }, { x: 225, y: 200 }, { x: 400, y: 200 }] },
+    ]);
+    const at = (id: string) => out.find((r) => r.id === id)!.points[1].x;
+    expect(at("both")).toBe(EDGE_STUB_PX);
+    expect(at("sibling")).toBe(EDGE_STUB_PX);
+    expect(at("feed")).toBe(400 - EDGE_STUB_PX);
+  });
+
+  it("does not drag a feed back behind the bar it leaves", () => {
+    // The mirror of the branch guard. A source that ends inside the stub keeps
+    // its own channel rather than being routed backwards through itself.
+    const out = stagger([
+      { id: "room", points: [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 40 }, { x: 20, y: 40 }] },
+      { id: "tight", points: [{ x: 12, y: 80 }, { x: 16, y: 80 }, { x: 16, y: 40 }, { x: 20, y: 40 }] },
+    ]);
+    for (const r of out) expect(r.points[1].x).toBeGreaterThan(r.points[0].x);
+  });
+
+  it("keeps the channel between the two bars", () => {
+    // A shift wide enough to escape the span would route the arrow backwards
+    // through the bar it leaves.
+    const tight = [
+      { id: "a", points: [{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 2, y: 40 }, { x: 4, y: 40 }] },
+      { id: "b", points: [{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 2, y: 80 }, { x: 4, y: 80 }] },
+      { id: "c", points: [{ x: 0, y: 0 }, { x: 2, y: 0 }, { x: 2, y: 120 }, { x: 4, y: 120 }] },
+    ];
+    for (const r of stagger(tight)) {
+      expect(r.points[1].x).toBeGreaterThan(0);
+      expect(r.points[1].x).toBeLessThan(4);
+    }
+  });
+
+  it("spreads the lane of backward routes too", () => {
+    // The conflict case, and exactly where several arrows converge.
+    const back = (id: string, y: number) => ({
+      id,
+      points: [
+        { x: 100, y: 0 },
+        { x: 112, y: 0 },
+        { x: 112, y },
+        { x: 20, y },
+        { x: 20, y: 40 },
+      ],
+    });
+    const out = stagger([back("a", 20), back("b", 20)]);
+    const ys = out.map((r) => r.points[2].y).sort((p, q) => p - q);
+    expect(ys[1] - ys[0]).toBe(CHANNEL_PX);
+    // And the lane stays horizontal.
+    for (const r of out) expect(r.points[2].y).toBe(r.points[3].y);
+  });
+
+  it("returns every edge it was given, in the caller's order", () => {
+    const input = [forward("a", 100), forward("b", 100, 200), forward("c", 100, 400)];
+    expect(stagger(input).map((r) => r.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("does not mutate the routes it was handed", () => {
+    const input = [forward("a", 100), forward("b", 100, 200)];
+    stagger(input);
+    expect(input.map((r) => r.points[1].x)).toEqual([100, 100]);
   });
 });
