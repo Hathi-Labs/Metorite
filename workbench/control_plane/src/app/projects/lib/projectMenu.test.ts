@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { PROJECT_STATE_ORDER } from "@/lib/statusAccent";
 import type { ProjectRow } from "./api";
-import { projectMenuItems } from "./projectMenu";
+import { type ProjectMenuUi, projectMenuItems } from "./projectMenu";
 
 const project = (over: Partial<ProjectRow> = {}): ProjectRow => ({
   id: "p1",
@@ -175,5 +175,166 @@ describe("projectMenuItems", () => {
       onBeginRename: vi.fn(),
     });
     expect(labels(items)).toContain("Rename");
+  });
+});
+
+/**
+ * The row menu, widened (owner directive 2026-09-06).
+ *
+ * The owner asked for the same list from a right-click AND from a three-dot
+ * button, carrying the actions the product actually has. What is worth pinning
+ * is not that the entries exist — it is the two rules that decide WHICH row
+ * gets them, both of which are wrong-but-plausible in exactly the way a
+ * hand-written menu gets wrong.
+ */
+describe("projectMenuItems · the row menu's scope", () => {
+  const ui = (over: Partial<ProjectMenuUi> = {}): ProjectMenuUi => ({
+    onBeginRename: vi.fn(),
+    onMove: vi.fn(),
+    onOpenSettings: vi.fn(),
+    onCreate: vi.fn(),
+    createOptions: [
+      { kind: "project", label: "New project", level: "project" },
+    ],
+    onManageStatuses: vi.fn(),
+    onManageFields: vi.fn(),
+    onManageTags: vi.fn(),
+    onManageLifecycle: vi.fn(),
+    ...over,
+  });
+
+  const ROOT_SCOPED = [
+    "Space settings",
+    "Statuses",
+    "Custom fields",
+    "Tags",
+    "Lifecycle policy",
+  ];
+
+  const LEVELS = ["space", "folder", "project", "subproject"] as const;
+
+  it("keeps the root-scoped screens on a SPACE row, and offers them nowhere else", () => {
+    // Statuses, tags and fields are ONE set per space, inherited by the whole
+    // subtree — the per-list override `StatusManager` records that we
+    // deliberately do not have. A tree row is a precise thing to click, so
+    // offering the status editor on a leaf would say the leaf has statuses of
+    // its own, and the next person would file a bug when editing one leaf
+    // changed its siblings. `nodeLevel()` already calls a root 'space', so one
+    // test carries the whole scope.
+    const onSpace = labels(projectMenuItems(project(), handlers(), ui(), "space"));
+    for (const label of ROOT_SCOPED) expect(onSpace).toContain(label);
+
+    for (const level of LEVELS.filter((l) => l !== "space")) {
+      const elsewhere = labels(
+        projectMenuItems(project(), handlers(), ui(), level)
+      );
+      for (const label of ROOT_SCOPED) expect(elsewhere).not.toContain(label);
+    }
+  });
+
+  it("drops a screen the surface cannot open, rather than greying it", () => {
+    // An absent handler means the page did not wire that dialog. A disabled
+    // row would promise a screen no click can reach.
+    const partial = labels(
+      projectMenuItems(
+        project(),
+        handlers(),
+        {
+          onBeginRename: vi.fn(),
+          onManageTags: vi.fn(),
+        },
+        "space"
+      )
+    );
+    expect(partial).toContain("Tags");
+    expect(partial).not.toContain("Statuses");
+    expect(partial).not.toContain("Custom fields");
+    expect(partial).not.toContain("Space settings");
+    expect(partial).not.toContain("Lifecycle policy");
+  });
+
+  it("creates through the grammar's OWN option, never a kind it rebuilds", () => {
+    // A project and a subproject are both `kind: "project"`, so the kind alone
+    // cannot say which word the create form should show. Passing the whole
+    // option through is what stops the form saying "New project" while it
+    // creates a subproject — a bug this tree has already had once.
+    const option = {
+      kind: "folder",
+      label: "New folder",
+      level: "folder",
+    } as const;
+    const surface = ui({ createOptions: [option] });
+    const items = projectMenuItems(project(), handlers(), surface, "project");
+    const entry = items.find(
+      (i) => i.kind === "item" && (i as { label: string }).label === "New folder"
+    );
+    (entry as { onSelect: () => void }).onSelect();
+    expect(surface.onCreate).toHaveBeenCalledWith(option);
+  });
+
+  it("drops the Create heading when the grammar allows no child", () => {
+    // A subproject is the grammar's floor (migration 193), so
+    // `childCreationOptions` returns nothing for it. A heading over an empty
+    // list is the shape this menu must not take.
+    const items = projectMenuItems(
+      project(),
+      handlers(),
+      ui({ createOptions: [] }),
+      "subproject"
+    );
+    expect(
+      items.some((i) => i.kind === "label" && i.label === "Create")
+    ).toBe(false);
+  });
+
+  it("never draws a rule against nothing, at any level", () => {
+    // Every group in this menu is conditional, so the separators cannot be
+    // pushed inline after each block — a subproject (no create options, no
+    // space screens) would open on a rule, and carry two more in a row.
+    for (const level of LEVELS) {
+      for (const surface of [undefined, ui(), ui({ createOptions: [] })]) {
+        const items = projectMenuItems(project(), handlers(), surface, level);
+        const where = `${level}/${surface ? "editable" : "read-only"}`;
+
+        expect(items.length, where).toBeGreaterThan(0);
+        expect(items[0].kind, where).not.toBe("sep");
+        expect(items[items.length - 1].kind, where).not.toBe("sep");
+
+        for (let i = 1; i < items.length; i += 1) {
+          expect(
+            items[i].kind === "sep" && items[i - 1].kind === "sep",
+            `${where} — two rules in a row at ${i}`
+          ).toBe(false);
+        }
+
+        // A label is a heading, and a heading with no entry under it names an
+        // empty group.
+        items.forEach((item, i) => {
+          if (item.kind !== "label") return;
+          expect(items[i + 1]?.kind, `${where} — empty heading ${item.label}`).toBe(
+            "item"
+          );
+        });
+      }
+    }
+  });
+
+  it("gives the space menu no two entries the same glyph", () => {
+    // The longest the menu ever gets, and the one where a duplicate would
+    // actually mislead: "Lifecycle policy" is about archiving, and drawing it
+    // with the Archive glyph would put two archive icons in one list.
+    const icons = projectMenuItems(project(), handlers(), ui(), "space")
+      .filter((i) => i.kind === "item")
+      .map((i) => (i as { icon?: string }).icon);
+    expect(icons.every(Boolean)).toBe(true);
+    expect(new Set(icons).size).toBe(icons.length);
+  });
+
+  it("still refuses Delete, at every level and with every handler wired", () => {
+    for (const level of LEVELS) {
+      expect(
+        labels(projectMenuItems(project(), handlers(), ui(), level))
+      ).not.toContain("Delete");
+    }
   });
 });
