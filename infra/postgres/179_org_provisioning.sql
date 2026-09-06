@@ -96,7 +96,7 @@ BEGIN
              0, ARRAY['*']),
 
             -- admin: 130:193-207 + 131's integrations/memory + 133's publish +
-            -- 178's billing:purchase.
+            -- 178's billing:purchase + 196's projects:settings:write.
             ('admin', 'Admin',
              'Runs the platform: members, agents, integrations, and settings.',
              10, ARRAY[
@@ -108,10 +108,11 @@ BEGIN
                 'integrations:manage', 'data:org:read',
                 'integrations:use:*', 'memory:read_org', 'memory:write_org',
                 'workflows:publish',
+                'projects:settings:write',
                 'billing:purchase'
              ]),
 
-            -- manager: 130:210-223 + 131 + 133. NOT billing:purchase — 178's
+            -- manager: 130:210-223 + 131 + 133 + 196. NOT billing:purchase — 178's
             -- header argues that exclusion at length and seeding it here would
             -- make the argument decorative.
             ('manager', 'Manager',
@@ -123,7 +124,8 @@ BEGIN
                 'agents:run:*', 'apps:use:*', 'apps:create',
                 'data:org:read', 'admin:members:read',
                 'integrations:use:*', 'memory:read_org', 'memory:write_org',
-                'workflows:publish'
+                'workflows:publish',
+                'projects:settings:write'
              ]),
 
             -- member: 130:228-239 + 131's use/read half. Deliberately omits
@@ -145,7 +147,7 @@ BEGIN
              'External collaborator: chat and explicitly shared apps only.',
              40, ARRAY['feature:chat', 'apps:use:*']),
 
-            -- agent_service: 130:252-259 + 131 + 133 + 178. Never assigned to a
+            -- agent_service: 130:252-259 + 131 + 133 + 178 + 196. Never assigned
             -- person; it resolves to '*' in acb_auth.access.SERVICE_ACCESS
             -- regardless, and the rows are for anyone reading the table.
             ('agent_service', 'Agent Service',
@@ -154,6 +156,7 @@ BEGIN
                 'agents:run:*', 'data:org:read',
                 'integrations:use:*', 'memory:read_org', 'memory:write_org',
                 'workflows:publish',
+                'projects:settings:write',
                 'billing:purchase'
              ])
         ) AS t(slug, display_name, description, role_rank, permissions)

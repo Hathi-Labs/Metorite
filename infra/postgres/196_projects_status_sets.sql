@@ -89,7 +89,7 @@ CREATE INDEX IF NOT EXISTS idx_pm_projects_owns_statuses
 --
 -- Why this is the boundary. Creating and moving TASKS stays open to anyone with
 -- the project, because that is the work. Reshaping the lanes those tasks live
--- in changes everybody''s board at once and can stamp `completed_at` across a
+-- in changes everybody's board at once and can stamp `completed_at` across a
 -- whole category, which is an administrative act wearing an editor's clothes.
 --
 -- Named `projects:settings:*` rather than `projects:statuses:*` on purpose: the
@@ -99,25 +99,38 @@ CREATE INDEX IF NOT EXISTS idx_pm_projects_owns_statuses
 -- vocabulary nobody uses.
 --
 -- NARROWING, and that is the point: before this, anyone who could see a space
--- could reshape its statuses. owner already holds '*'.
+-- could reshape its statuses. `owner` already holds '*'.
+--
+-- ⚠️ **The GRANT ITSELF is not written here. It is in 179's seed.**
+--
+-- The first draft of this file inserted straight into `org_role_permission` for
+-- every existing organization, and two fences in `test_org_provisioning.py`
+-- caught it between them:
+--
+--   * `…reproduces_the_default_orgs_grant_set_exactly` — `provision_org_roles`
+--     is what a NEWLY provisioned org is built from, so a hand-written grant
+--     gives the permission to today's customers and silently withholds it from
+--     tomorrow's. M1 is "a second org can exist safely"; a role seed that drifts
+--     per-org is how that stops being true.
+--   * `…seeding_callables_are_defined_exactly_once` (D43-A) — redefining the
+--     function here instead would be a competing copy of the doctrine, which is
+--     the thing that rule exists to refuse.
+--
+-- Both are answered by editing the ONE home, 179, and replaying it. That is not
+-- a rewrite of an applied migration: `scripts/apply_migrations.sh` replays the
+-- whole ladder on every deploy ("safe to execute on every deploy"), and the seed
+-- is `CREATE OR REPLACE` over `ON CONFLICT DO NOTHING`. 179 runs before this
+-- file in the same replay, so by the time the loop below calls it, the function
+-- already carries the new permission.
 
 DO $$
 DECLARE
     org_id UUID;
-    rid    UUID;
-    role_slug TEXT;
 BEGIN
+    -- Bring every EXISTING organization up to the seed. Idempotent: an org that
+    -- already holds the permission is untouched, and one that predates it gains
+    -- exactly the rows it is missing.
     FOR org_id IN SELECT id FROM organization LOOP
-        -- admin runs the platform; manager owns the processes these lanes
-        -- describe. member and guest do the work inside them.
-        FOREACH role_slug IN ARRAY ARRAY['admin', 'manager', 'agent_service'] LOOP
-            SELECT id INTO rid FROM org_role
-             WHERE organization_id = org_id AND org_role.slug = role_slug;
-            IF rid IS NOT NULL THEN
-                INSERT INTO org_role_permission (role_id, permission)
-                VALUES (rid, 'projects:settings:write')
-                ON CONFLICT DO NOTHING;
-            END IF;
-        END LOOP;
+        PERFORM provision_org_roles(org_id);
     END LOOP;
 END $$;
