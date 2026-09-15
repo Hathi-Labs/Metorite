@@ -57,42 +57,73 @@ def db():
     eng.dispose()
 
 
+#: The tables the PROVISIONING PATH writes that production carries
+#: `organization_id NOT NULL` on, measured 2026-09-15.
+#:
+#: ⚠️ **This was `org_role_permission` ALONE until migration 201, and that is
+#: exactly how H-104's second head reached production.** The fixture modelled
+#: the one table migration 200 was about, so the suite passed while
+#: `provision_org_owner` still raised on `user_role` one statement later. A test
+#: that builds a PARTIAL copy of the failing environment is worth exactly as
+#: much as the copy — which was nothing for the statement it did not model.
+#:
+#: The other five production carries the column on (`app_user`,
+#: `org_membership`, `org_role`, `tenant_placement`,
+#: `user_permission_override`) are deliberately NOT tightened here: the
+#: provisioning functions already name the column on every one they write, and
+#: `app_user`'s column is real ladder schema with dependent objects, so touching
+#: it destroys rather than models.
+_TENANCY_TABLES = ("org_role_permission", "user_role")
+
+
 @pytest.fixture
 def tenancy_applied(db):
-    """Add the NOT NULL tenancy column, and take it away again afterwards.
+    """Make the provisioning path see PRODUCTION's shape, and put it back after.
 
-    ⚠️ **This fixture IS the test's subject.** Without it the suite would run on
-    the ladder's own shape, which is exactly the schema that hid this defect for
-    as long as it existed.
+    ⚠️ **This fixture IS the test's subject.** Without it the suite runs on the
+    ladder's own shape — the schema that hid this defect class for as long as it
+    existed, because `infra/postgres/generated/` is not on the ladder.
 
-    Scoped tightly and reversed in a `finally`, because the module-scoped ladder
-    database is shared: leaving a NOT NULL column behind would silently re-point
-    every other suite at the production shape, which is a change nobody asked
-    this fixture to make.
+    Adds only what is missing, BACKFILLS rather than deletes (the ladder's
+    seeded rows are what the other suites read), and drops only what it added.
     """
+    added: list[str] = []
     with db.begin() as c:
-        c.execute(text(
-            "ALTER TABLE org_role_permission "
-            "  ADD COLUMN IF NOT EXISTS organization_id UUID"
-        ))
-        # Existing ladder rows predate the column, so they must be owned before
-        # the constraint can be tightened — the same order phase 2 uses.
+        for table in _TENANCY_TABLES:
+            present = c.execute(
+                text(
+                    "SELECT 1 FROM information_schema.columns "
+                    " WHERE table_name = :t AND column_name = 'organization_id'"
+                ),
+                {"t": table},
+            ).first()
+            if present:
+                continue
+            c.execute(text(
+                f"ALTER TABLE {table} ADD COLUMN organization_id UUID"))
+            added.append(table)
+
+        # Own the pre-existing rows from whatever names their tenant, so the
+        # constraint can be tightened around real data rather than over a hole.
         c.execute(text(
             "UPDATE org_role_permission p SET organization_id = r.organization_id "
-            "  FROM org_role r "
-            " WHERE r.id = p.role_id AND p.organization_id IS NULL"
-        ))
+            "  FROM org_role r WHERE r.id = p.role_id "
+            " AND p.organization_id IS NULL"))
         c.execute(text(
-            "ALTER TABLE org_role_permission "
-            "  ALTER COLUMN organization_id SET NOT NULL"
-        ))
+            "UPDATE user_role ur SET organization_id = r.organization_id "
+            "  FROM org_role r WHERE r.id = ur.role_id "
+            " AND ur.organization_id IS NULL"))
+        for table in added:
+            c.execute(text(
+                f"ALTER TABLE {table} "
+                "  ALTER COLUMN organization_id SET NOT NULL"))
     try:
         yield
     finally:
         with db.begin() as c:
-            c.execute(text(
-                "ALTER TABLE org_role_permission DROP COLUMN IF EXISTS organization_id"
-            ))
+            for table in added:
+                c.execute(text(
+                    f"ALTER TABLE {table} DROP COLUMN organization_id"))
 
 
 def _slug() -> str:
