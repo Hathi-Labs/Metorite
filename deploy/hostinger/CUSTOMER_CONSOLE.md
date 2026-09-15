@@ -146,10 +146,30 @@ granted (§6 item (j)). `org_slug` is the slug the customer chose at signup.
 `active`, in-app).
 
 > **Pure operator onboarding** — creating the customer's tenant org WITHOUT them
-> self-signing-up — is NOT wired. It would need a small tenant-side CLI calling
-> `provision_local_organization(slug, owner_email=<customer>)` inside the tenant
-> container, then mirroring to the Console via the `/orgs/provision` deployment-key
-> arm. Add it only if the single self-signup step is unacceptable.
+> self-signing-up — **is wired since 2026-09-15.** It was not, for as long as
+> the Operator Console shipped a "New customer" button that looked like it did
+> it. That button writes the CONSOLE plane only. The owner then signed in, the
+> registry admitted them, and they landed on *"No organization is linked to this
+> email"* — `/me/access` reads the tenant plane, and no row was there.
+>
+> The box now closes the gap for itself. `POST /registry/orgs` answers a
+> deployment key with the organizations placed on it, and
+> `acb_auth.console_resolve.bootstrap_placed_orgs` provisions the tenant half of
+> every one this box holds no local row for. It goes through
+> `provision_local_organization`, the same seam self-serve signup uses, so there
+> is still exactly one tenant-creation path.
+>
+> **Two ways to run it:**
+>
+> * Set `CONSOLE_BOOTSTRAP_ENABLED=true` (and optionally
+>   `CONSOLE_BOOTSTRAP_INTERVAL_SECONDS`, default 60). The gateway then sweeps
+>   on a timer. That interval IS the worst case between creating a customer and
+>   that customer being able to sign in.
+> * Or run `uv run python -m scripts.bootstrap_placed_orgs` for one pass, now.
+>
+> The direction is deliberate. The Console never calls a box, and the Operator
+> Console may not reach a tenant deployment (`operator_console/src/lib/
+> console.ts`), so the box asks over the arrow that already exists.
 
 > Exact request fields: confirm against the route models in
 > `apps/services/customer_console/customer_console/main.py`

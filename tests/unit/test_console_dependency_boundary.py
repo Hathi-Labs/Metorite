@@ -265,12 +265,35 @@ _THE_SIGNUP_CALLER = "apps/services/gateway/gateway/routes/signup.py"
 _THE_SEAT_CALLER = "apps/services/gateway/gateway/routes/seats.py"
 _THE_INVITE_CALLER = "apps/services/gateway/gateway/routes/admin/members.py"
 _THE_ROUTER_CALLER = "apps/services/gateway/gateway/routes/v1_compat.py"
+#: ⚠️ **The SIXTH entry — ``gateway/main.py``, 2026-09-15 — and the argument for
+#: it, because the paragraph above is this list's own rule.**
+#:
+#: It imports exactly ONE name, ``start_console_bootstrap``, from the lifespan,
+#: and that function allocates no seat and names no person. It starts the
+#: inbound sweep that provisions the TENANT half of organizations the Customer
+#: Console already placed on this box — the repair for operator-created
+#: customers, who had a registry entry, a placement, seats and an owner on the
+#: Console and no tenant organization at all, so their owner signed in and was
+#: told *"No organization is linked to this email"*.
+#:
+#: **It is not a route**, which is what makes it different in kind from the five
+#: above: no request reaches it, so there is no caller to farm anything with. It
+#: reads the registry and writes only the tenant plane.
+#:
+#: ⚠️ The entry is NARROWED by
+#: ``test_the_lifespan_importer_touches_only_the_bootstrap_seam`` below — this
+#: list admits the file, and that test admits only the one name. Widening the
+#: list without that pairing would let a future edit call
+#: ``resolve_for_signin`` from startup, which is precisely the drift the list
+#: exists to catch.
+_THE_LIFESPAN_CALLER = "apps/services/gateway/gateway/main.py"
 _ALLOWED_CALLERS = (
     _THE_ONE_CALLER,
     _THE_SIGNUP_CALLER,
     _THE_SEAT_CALLER,
     _THE_INVITE_CALLER,
     _THE_ROUTER_CALLER,
+    _THE_LIFESPAN_CALLER,
 )
 
 
@@ -347,6 +370,39 @@ def test_resolve_is_reachable_only_from_the_signin_path() -> None:
         "`_with_resolved_access` (every authenticated request). "
         "customer_console.md §6 clause 11 · CP-2c slice 2 · WS-30 SC-2a · "
         "WS-31 CP-2f."
+    )
+
+
+def test_the_lifespan_importer_touches_only_the_bootstrap_seam():
+    """``gateway/main.py`` is on the list for ONE name, and this pins that.
+
+    The list above admits the FILE; this admits only ``start_console_bootstrap``
+    from it. Without this pairing, adding ``main.py`` there would let a future
+    edit call ``resolve_for_signin`` at startup — a seat allocated for nobody,
+    on every boot, which is exactly the drift the list exists to catch.
+
+    Startup is also the worst possible place for it: it runs before any request,
+    so there is no session email to allocate against, and nothing in the
+    lifespan's error isolation would make the mistake visible.
+    """
+    tree = _tree(_REPO / _THE_LIFESPAN_CALLER)
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if "console_resolve" in node.module:
+                imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if "console_resolve" in alias.name:
+                    imported.add(alias.name)
+
+    assert imported == {"start_console_bootstrap"}, (
+        f"{_THE_LIFESPAN_CALLER} imports {sorted(imported)} from "
+        "console_resolve. It is on the allowed-caller list for exactly one "
+        "name — `start_console_bootstrap`, which allocates no seat and names "
+        "no person. Anything else there is a new call site with no request "
+        "behind it; `resolve_for_signin` in particular would burn a seat for "
+        "nobody on every boot."
     )
 
 

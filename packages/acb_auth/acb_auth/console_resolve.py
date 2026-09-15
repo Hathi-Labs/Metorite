@@ -1044,6 +1044,288 @@ async def reconcile() -> ReconcileSummary:
     return ReconcileSummary(**summary)
 
 
+# ── The INBOUND bootstrap (2026-09-15) — the mirror image of `reconcile()` ───
+#
+# ⚠️ **The defect this closes: an operator-created customer could not use the
+# product.** `POST /orgs/provision`'s OPERATOR arm writes the Console plane only
+# — org, placement, seats, owner membership, trial. Nothing has ever written the
+# TENANT plane for it: `provision_local_organization` has exactly one production
+# caller and it is the self-serve signup route. So the owner signed in,
+# `resolve_for_signin` admitted them off a perfectly good registry answer,
+# `_record_answer` found no local `organization` row and logged
+# `unprovisioned_org`, and `/me/access` — which reads the tenant plane —
+# returned no organization. They landed on AccessGate's *"No organization is
+# linked to this email"*, while the Operator Console's success panel told the
+# operator they could sign in with no invite needed. The gap was recorded in
+# prose (`deploy/hostinger/CUSTOMER_CONSOLE.md`: "pure operator onboarding … is
+# NOT wired") while the button that does it shipped anyway.
+#
+# ⚠️ **Why a SWEEP and not a call at the moment of provisioning.** Three hops
+# were possible and two are closed by recorded constraints: this service is
+# never called BY the Console (nothing there makes an outbound deployment
+# request), and the Operator Console may not reach a tenant deployment at all
+# (`operator_console/src/lib/console.ts`). The third — creating the row inside
+# the sign-in callback, where `_record_answer` already notices it is missing —
+# is refused by that function's own docstring, for the right reason: it would
+# put tenant creation in a sign-in callback, driven by whoever can reach the
+# resolve route. So the box ASKS, over the arrow that already exists, and
+# provisions what it is supposed to be serving.
+#
+# ⚠️ **It is the same shape as `reconcile()` pointing the other way**, and it
+# lives HERE for that reason plus the standing one: a second Console client
+# anywhere is root `CLAUDE.md` §5's defect by name. `reconcile()` pushes
+# tenant-born orgs UP to the Console; this pulls Console-born orgs DOWN to the
+# tenant. Between them the two planes converge from either direction.
+#
+# ⚠️ **Ships dark, fail-closed.** Unwired ⇒ a logged no-op that touches neither
+# plane. It writes NO Console row, so it can never mint a customer; it only ever
+# creates the local half of one the Console already placed here.
+
+#: The one door this reads. Deployment-key only, `provision` capability.
+_PLACED_ORGS_PATH = "/registry/orgs"
+
+
+@dataclass(frozen=True)
+class BootstrapSummary:
+    """Counts from one inbound bootstrap pass, for the operator reading the CLI.
+
+    ``placed`` is what the Console says this deployment serves; ``already_local``
+    those that already had a tenant row (the steady state — almost always all of
+    them); ``provisioned`` the ones this pass created locally; ``skipped_no_owner``
+    Console rows with no owner membership yet, which cannot be completed here;
+    ``refused`` those the tenant plane refused (the one-email-one-org guard, or a
+    slug already owned by another address locally); ``failed`` any other error,
+    left for the next pass.
+    """
+
+    placed: int = 0
+    already_local: int = 0
+    provisioned: int = 0
+    skipped_no_owner: int = 0
+    refused: int = 0
+    failed: int = 0
+
+
+#: Does this slug already exist on the tenant plane? The same question
+#: `_record_answer` asks before it writes its projection, and deliberately the
+#: same SQL constant — one join key, one query.
+_LOCAL_SLUGS_SQL = "SELECT slug FROM organization"
+
+
+async def _post_placed_orgs() -> list[dict[str, Any]]:
+    """Ask the Console which organizations are placed on THIS deployment.
+
+    Presents the deployment key, exactly as `_post_provision` does — the key IS
+    the deployment, so the request carries no body and names nothing. A caller
+    cannot ask about a box that is not its own.
+
+    Raises:
+        ConsoleProvisionUnavailable: the Console produced no readable answer.
+            Every non-200 is transient here: this is a READ, so there is no
+            refusal it could be legitimately expressing.
+    """
+    settings = get_settings()
+    base = settings.customer_console_url.strip().rstrip("/")
+    key = settings.customer_console_deployment_key.strip()
+
+    try:
+        client = _new_http_client()
+        async with client:
+            response = await client.post(
+                f"{base}{_PLACED_ORGS_PATH}",
+                headers={"Authorization": f"Bearer {key}"},
+                json={},
+            )
+    except Exception as exc:
+        raise ConsoleProvisionUnavailable(str(exc)[:200]) from exc
+
+    if response.status_code != 200:
+        raise ConsoleProvisionUnavailable(f"HTTP {response.status_code}")
+    try:
+        body = response.json()
+    except Exception as exc:
+        raise ConsoleProvisionUnavailable("unreadable 200 body") from exc
+    if not isinstance(body, dict):
+        raise ConsoleProvisionUnavailable("a 200 body that is not an object")
+    organizations = body.get("organizations")
+    if not isinstance(organizations, list):
+        raise ConsoleProvisionUnavailable("a body with no organizations list")
+    return [o for o in organizations if isinstance(o, dict)]
+
+
+async def bootstrap_placed_orgs() -> BootstrapSummary:
+    """Provision, on the TENANT plane, every org the Console places here.
+
+    One idempotent pass, and the inverse of :func:`reconcile`. Ask the Console
+    for this deployment's roster, read the slugs the tenant plane already holds,
+    and for each difference call ``provision_local_organization`` — the SAME seam
+    the self-serve signup route uses, so there is no second tenant-creation path
+    and migration 179 stays the one act.
+
+    Idempotent twice over: the local-slug read skips what exists, and 179 itself
+    converges on one organization when called twice with one slug. So a pass that
+    dies halfway is simply re-run.
+
+    **It never writes the Console.** A failure here leaves the tenant plane
+    without a row and the org for the next pass. The Console's registry — which
+    is the authority for who exists and what they pay — is untouched either way.
+
+    Returns a :class:`BootstrapSummary` of counts. Cadence is the caller's; this
+    is a single pass, not a scheduler, exactly as ``reconcile()`` is.
+    """
+    if not is_wired():
+        # Ship-dark: an unwired box has no Console to ask, and every org it
+        # serves got here through self-serve signup, which provisions both
+        # planes itself. A logged no-op before any query or call.
+        _log.info("console_resolve.bootstrap_unwired_noop")
+        return BootstrapSummary()
+
+    try:
+        placed = await _post_placed_orgs()
+    except ConsoleProvisionUnavailable as exc:
+        # The Console is unreachable or answered something unreadable. Nothing
+        # is provisioned and nothing is wrong locally — a later pass converges.
+        _log.warning("console_resolve.bootstrap_unavailable", error=str(exc)[:200])
+        return BootstrapSummary()
+
+    from sqlalchemy import text
+
+    factory = _get_session_factory()
+    async with factory() as session:
+        local = {
+            row["slug"]
+            for row in (
+                await session.execute(text(_LOCAL_SLUGS_SQL))
+            ).mappings().all()
+        }
+
+    # Imported at call time, for the reason `reconcile()` gives: importing this
+    # module must not drag `acb_common.provisioning` in with it.
+    from acb_common.provisioning import (
+        OwnerBelongsElsewhere,
+        SlugOwnedByAnother,
+        mark_console_mirrored,
+        persist_org_billing_profile,
+        provision_local_organization,
+    )
+
+    summary = {"placed": len(placed), "already_local": 0, "provisioned": 0,
+               "skipped_no_owner": 0, "refused": 0, "failed": 0}
+
+    for org in placed:
+        slug = str(org.get("slug") or "").strip()
+        if not slug:
+            summary["failed"] += 1
+            continue
+        if slug in local:
+            summary["already_local"] += 1
+            continue
+
+        owner_email = str(org.get("owner_email") or "").strip()
+        if not owner_email:
+            # The Console's own crash-resume shape: an organization created
+            # before its owner membership. Provisioning it here WITHOUT an owner
+            # would leave a tenant org nobody can sign in to, which is a worse
+            # state than the one we are in — so report it and leave it.
+            summary["skipped_no_owner"] += 1
+            _log.warning("console_resolve.bootstrap_no_owner", slug=slug)
+            continue
+
+        try:
+            await provision_local_organization(
+                slug,
+                str(org.get("display_name") or "") or None,
+                owner_email=owner_email,
+            )
+        except (OwnerBelongsElsewhere, SlugOwnedByAnother) as exc:
+            # A REAL conflict on the tenant plane, and never something to force:
+            # the owner already belongs to another local org, or this slug is
+            # already owned locally by a different address. Both mean the two
+            # planes genuinely disagree about a person, which is an operator's
+            # problem to look at — not a sweep's to overwrite.
+            summary["refused"] += 1
+            _log.error(
+                "console_resolve.bootstrap_refused",
+                slug=slug, owner=owner_email, error=str(exc)[:200],
+            )
+            continue
+        except Exception as exc:
+            summary["failed"] += 1
+            _log.error(
+                "console_resolve.bootstrap_failed",
+                slug=slug, error=str(exc)[:200],
+            )
+            continue
+
+        # Best-effort, and in the same order the signup route writes them: the
+        # GST profile is persisted nowhere else on the tenant plane, and the
+        # mirror marker stops `reconcile()` from pushing this org straight back
+        # up to the Console it just came from.
+        await persist_org_billing_profile(
+            slug,
+            gstin=(str(org["gstin"]) if org.get("gstin") else None),
+            billing_state=(
+                str(org["billing_state"]) if org.get("billing_state") else None
+            ),
+        )
+        await mark_console_mirrored(slug)
+
+        summary["provisioned"] += 1
+        _log.info(
+            "console_resolve.bootstrap_provisioned",
+            slug=slug, owner=owner_email,
+        )
+
+    _log.info("console_resolve.bootstrap_pass", **summary)
+    return BootstrapSummary(**summary)
+
+
+async def _bootstrap_loop(interval_seconds: int) -> None:
+    """Run :func:`bootstrap_placed_orgs` forever, swallowing every pass error.
+
+    One failed pass must never kill the loop: the Console being briefly
+    unreachable is the ordinary case this exists to survive, and a loop that
+    dies on it would leave the next operator-created customer stranded with no
+    log line saying why.
+    """
+    import asyncio
+
+    while True:
+        try:
+            await bootstrap_placed_orgs()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _log.error(
+                "console_resolve.bootstrap_loop_error", error=str(exc)[:200]
+            )
+        await asyncio.sleep(interval_seconds)
+
+
+def start_console_bootstrap() -> Any:
+    """Start the inbound bootstrap loop, or return ``None`` if it is off.
+
+    ⚠️ **The flag is read HERE and nowhere else**, which is the rule
+    ``gateway/main.py``'s kill-switch note states: a gate that also appears as
+    an ``if`` at the call site is two readers that have to agree, and that is
+    how a loop ends up running with its flag off. The lifespan calls this
+    unconditionally.
+
+    Ships dark. Unset (the default) ⇒ no task, and the gateway is byte-identical
+    to before this existed. An unwired box is a second, independent no-op one
+    layer down.
+    """
+    import asyncio
+
+    settings = get_settings()
+    if settings.console_bootstrap_enabled != "true":
+        _log.info("console_resolve.bootstrap_disabled")
+        return None
+    interval = max(10, int(settings.console_bootstrap_interval_seconds))
+    _log.info("console_resolve.bootstrap_started", interval_seconds=interval)
+    return asyncio.create_task(_bootstrap_loop(interval))
+
+
 # ── The projection (migration 159 + 177) ────────────────────────────────────
 #
 # ⚠️ `user_identity.email` here is plain TEXT with a UNIQUE INDEX on

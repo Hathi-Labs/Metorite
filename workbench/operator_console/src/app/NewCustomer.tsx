@@ -116,7 +116,17 @@ export default function NewCustomer({
           <li>
             <strong>{ownerEmail.trim()}</strong> signs in at{" "}
             <strong>https://app.metorite.com</strong> with Google — no invite
-            link needed.
+            link needed.{" "}
+            {/* ⚠️ The qualifier is load-bearing, and its absence was a live
+                defect. This panel used to promise sign-in worked immediately.
+                It did not work at all: provisioning writes the CONSOLE plane,
+                and until the deployment's bootstrap sweep runs there is no
+                tenant organization, so the owner is told "No organization is
+                linked to this email". The sweep closes that within a minute
+                (CONSOLE_BOOTSTRAP_INTERVAL_SECONDS); saying so is what stops
+                an operator reading the gap as a broken account. */}
+            <strong>Give it about a minute</strong> — their workspace is
+            prepared on the server right after this.
           </li>
           <li>
             They can add their own people from Settings → Billing inside the

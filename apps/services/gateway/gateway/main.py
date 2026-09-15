@@ -329,6 +329,23 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.workflow_scheduler_skipped", error=str(exc))
 
+    # Start the inbound Customer Console bootstrap — the sweep that provisions,
+    # on THIS box's tenant plane, every organization the Console says is placed
+    # here. It repairs the operator-onboarding path: `POST /orgs/provision`'s
+    # operator arm writes the Console plane only, so a customer an operator
+    # created had no tenant organization, and its owner signed in only to be
+    # told "No organization is linked to this email".
+    #
+    # Gated by CONSOLE_BOOTSTRAP_ENABLED, read INSIDE the start function and
+    # never as an `if` here (the kill-switch rule at the top of this file). Same
+    # error isolation as its two siblings above.
+    try:
+        from acb_auth.console_resolve import start_console_bootstrap
+
+        start_console_bootstrap()
+    except Exception as exc:
+        _log.warning("gateway.console_bootstrap_skipped", error=str(exc))
+
     # Start the ingestion event-bus consumer — drains ingestion:{zoho,
     # gmail} through the same event-sink registry the receivers emit to
     # (FOUNDATION_BUILDOUT_CHECKLIST.md §BO-20, BO-20a; §BO-20.0 Option A: the

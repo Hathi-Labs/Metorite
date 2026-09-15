@@ -3139,6 +3139,67 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.post("/registry/orgs")
+def placed_orgs(caller: ProvisionCaller) -> dict[str, Any]:
+    """Every organization placed on the CALLING deployment. Read-only.
+
+    ⚠️ **The gap this closes: an operator-created customer could not use the
+    product.** ``POST /orgs/provision``'s operator arm writes the Console plane
+    — org, placement, seats, owner membership, trial — and nothing has ever
+    written the TENANT plane for it. ``provision_local_organization`` has
+    exactly one production caller, and it is the self-serve signup route. So
+    the owner signed in, ``resolve_for_signin`` admitted them off a perfectly
+    good registry answer, ``_record_answer`` found no local ``organization``
+    row and logged ``console_resolve.unprovisioned_org``, and ``/me/access`` —
+    which reads the tenant plane — returned no organization. They landed on
+    AccessGate's *"No organization is linked to this email"*, while the
+    Operator Console's success panel was telling the operator they could sign
+    in with no invite needed.
+
+    **Why the box ASKS instead of being told.** Every arrow between these two
+    planes runs deployment → Console. This service makes no outbound call to
+    any box, and ``operator_console/src/lib/console.ts`` forbids the Operator
+    Console from reaching a tenant deployment at all. Adding either direction
+    would be a new trust edge for a problem the existing arrow already solves:
+    the gateway holds a deployment key and already calls here, so it asks what
+    it should be serving and provisions the difference itself
+    (``acb_auth.console_resolve.bootstrap_placed_orgs``).
+
+    **Deployment key ONLY.** The operator arm is refused: this door answers
+    *"which customers am I serving"*, and the subject of that question is the
+    CREDENTIAL. An operator token carries no deployment identity, so under it
+    the question has no subject — and taking one from a body label would be a
+    second way to name a deployment on a door that does not need one.
+
+    **The ``provision`` capability, not a new one.** This read exists only to
+    drive provisioning, and it answers exactly the set that ``/orgs/provision``
+    already lets this key create. A key that may CREATE an organization here
+    can hardly be refused the list of the ones it created, and a fourth
+    capability for the read half of an existing one is the vocabulary sprawl
+    :data:`auth.MEMBER_ADMIN_CAPABILITY`'s note argues against.
+
+    **It writes nothing, and it is not audited.** A box reading its own roster
+    on a timer is not an event, and recording it would bury the writes that
+    are.
+    """
+    if caller is None:
+        # Refused on SHAPE, before anything is read: the operator scheme has no
+        # deployment of its own, so the question has no subject to answer for.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "this door answers for the calling deployment; an operator "
+                "token names no deployment and cannot ask it"
+            ),
+        )
+    with get_engine().begin() as conn:
+        return {
+            "organizations": store.deployment_placed_orgs(
+                conn, deployment_id=caller.deployment_id
+            )
+        }
+
+
 @app.post("/orgs/provision")
 def provision(req: ProvisionRequest, caller: ProvisionCaller, request: Request) -> dict[str, Any]:
     """Create an organization, its owner and its Core seats. Idempotent.
