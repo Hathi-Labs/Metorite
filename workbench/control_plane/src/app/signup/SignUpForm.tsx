@@ -71,9 +71,12 @@ const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
  * fence. Kept here only so the field can refuse before the round trip, exactly
  * as `GSTIN_RE` above mirrors `_GSTIN_RE`. Every Core seat granted at signup is
  * a free trial seat, so the bound is an abuse limit rather than a product
- * limit — a larger team is a sales conversation.
+ * limit — a larger team is a sales conversation, and an operator can raise the
+ * count at activation.
+ *
+ * OWNER-RULED 2026-09-15: ten.
  */
-const MAX_TEAM_SIZE = 50;
+const MAX_TEAM_SIZE = 10;
 
 /**
  * The slug vocabulary — **both halves imported, neither mirrored** (repair round

@@ -263,6 +263,6 @@ describe("the form ASKS how many people, instead of silently meaning one", () =>
   it("states the bound as a constant, not a literal buried in the markup", () => {
     // It is a MIRROR of `signup.py`'s `MAX_TEAM_SIZE`, and naming it is what
     // lets a reader find the fence it mirrors.
-    expect(form).toMatch(/const MAX_TEAM_SIZE = 50;/);
+    expect(form).toMatch(/const MAX_TEAM_SIZE = 10;/);
   });
 });
