@@ -1202,10 +1202,36 @@ class TestResponseShape:
         body = _resolve(client, box["key"], email=box["email"]).json()
 
         assert set(body) == {"identity_id", "organizations"}
+        # ⚠️ An EXACT set, and it FIRED on 2026-09-15 when CP-2j added
+        # `trial_ends_at`. That is this fence working. The answer's bound is
+        # "what sign-in needs", so every field has to be argued for rather than
+        # merely appear. `trial_ends_at` earns its place because the customer's
+        # OWN app renders it, and the alternative was making the tenant call a
+        # billing door it is not entitled to reach.
+        #
+        # What stays forbidden is unchanged: never a `role` (a second grant
+        # vocabulary, D12), and never money — pinned separately below.
         assert set(body["organizations"][0]) == {
             "organization_id", "slug", "placement", "status", "seat",
-            "capabilities"}
+            "capabilities", "trial_ends_at"}
         assert "admin" not in str(body)
+
+    def test_the_deployment_answer_carries_no_money(self, client, box):
+        """``trial_ends_at`` is a DEADLINE, and money is the line it must not
+        cross.
+
+        A date the customer is already living under is theirs to know. What
+        they owe, what a seat costs and what they have spent are the billing
+        door's business, and this answer has never carried them.
+        """
+        body = _resolve(client, box["key"], email=box["email"]).json()
+
+        org = body["organizations"][0]
+        for forbidden in (
+            "balance", "credits", "price", "amount", "invoice", "mrr",
+            "paise", "seats_purchased",
+        ):
+            assert forbidden not in org, forbidden
 
     def test_the_empty_answer_carries_nothing_but_an_empty_list(
         self, client, db

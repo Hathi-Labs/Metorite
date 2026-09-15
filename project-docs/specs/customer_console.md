@@ -5585,6 +5585,107 @@ It creates no second tenant-creation path, because migration 179 through
 `provision_local_organization` stays the one act. It is not a scheduler in the
 CP-2e sense. The loop is supervision, and the single pass is still the unit.
 
+**CP-2j · The customer learns their own commercial state.** ◐ **MINTED + BUILT
+2026-09-15** *(branch `trial-visibility`, stacked on `signup-flow-repair`.
+Owner directive, 2026-09-15: name the state and the days left)*.
+
+**Why it exists.** A self-serve signup lands on a 14-day trial and works at
+once. Until an operator confirms payment and activates the plan, nothing in the
+product said so. So the customer's first news of their commercial state was the
+day it stopped working.
+
+The operator half was already built. The customer table shows lifecycle status,
+subscription status, trial expiry and a countdown. A self-serve signup appears
+there by itself. What was missing was the other direction. The app never learned
+its own organization's state, so it could say nothing.
+
+**The model, decided 2026-09-15: value first, approval later.** The alternative
+was a `pending` state that gates access until an operator approves. The owner
+chose the trial. A trial that works is a better first impression than a wait.
+
+The approval step also exists already, as ACTIVATION. `ManualActivationRequest`
+composes the subscription, the seat grant and the credits for a payment that
+arrived out of band. So the operator's act is unchanged, and only the visibility
+is new.
+
+⚠️ **A `pending` lifecycle state stays UNBUILT and is not a non-goal by
+accident.** It is the right shape when self-serve opens to strangers rather than
+to customers we already know. It needs a new state on the machine, a change at
+the seat-cap sign-in door, and an owner decision. Do not build it as an
+extension of this.
+
+**The chain.** `GET /registry/resolve` gains `trial_ends_at` per organization.
+`_record_answer` caches it beside `registry_status` (migration 177) in the new
+`organization.registry_trial_ends_at` (migration 199). `GET /auth/me` surfaces
+both, and `AccountStateBanner` renders them.
+
+⚠️ **Why the projection and not a billing call.** The Console owns the
+subscription and `GET /me/billing` is the customer's door to it. That door is
+gated on `can_pay` and reached with the organization key, so it answers the
+BILLING page. This banner is not a billing page, and an admin sees it on every
+screen. Making the shell wait on a cross-plane call to render one sentence is
+the coupling the projection exists to avoid. Sign-in already carries the answer.
+
+**What the answer may carry, and the line it does not cross.** The resolve
+answer's bound is *what sign-in needs*, and `test_customer_console_resolve.py`
+pins its key set exactly. `trial_ends_at` earns a place because it is a deadline
+the person is already living under. Money does not: no balance, no price, no
+invoice, and that is fenced separately.
+
+**It gates NOTHING, and that is the rule most likely to be broken later.**
+`registry_status` is a cached word and `registry_trial_ends_at` a cached date,
+both refreshed at sign-in. Access stays `features` / `capabilities` /
+`is_admin`, resolved per call at the gateway. A surface that hid a pane on this
+cache would lock out a paying customer the gateway would have admitted. A stale
+row does it, and so does a clock skew.
+
+**ADMINS only.** Trial deadlines and payment state are the owner's business. A
+banner telling every engineer *"we haven't received your payment"* hands them a
+worry they cannot act on. It is also a company matter that is not theirs to see.
+
+**Absent renders NOTHING.** A box whose resolve flag has never been on holds no
+registry word, and the honest answer is silence rather than an invented state.
+`active` is silent too — a banner on every screen for a customer with nothing to
+do is how people learn to ignore banners.
+
+**The copy, per state.** `trial` names the state and the days left, and turns
+`warn` at three days. `past_due` says everything still works, because it does.
+Copy that reads like a shutdown makes people stop using a product nothing has
+locked.
+
+`suspended` says the data is safe and paying restores access. `cancelled` says
+the export window is open, which is the only reason sign-in stays open in that
+state at all.
+
+**Two defects this build hit, both worth recording.**
+
+`asyncpg` binds by PYTHON type before the SQL cast runs, so an ISO STRING for a
+`TIMESTAMPTZ` is refused. The projection write swallows its exceptions. So the column silently stayed NULL
+for ever and the banner rendered nothing, which looks exactly like an
+organization with no trial. A test caught it. The logs never would have.
+
+The new columns first shared a select with `slug` and `display_name`. On a box
+whose ladder had not reached 199 that raised, the route's broad handler set
+`organization = {}`, and every member lost their organization's identity. A
+banner's optional data took out the name beside it. The projection is its own
+guarded read now, and the row ACCESS is inside the guard, not only the query.
+
+**The R7 fences.** `accountStateBanner.test.ts` pins the copy per state and that
+the component never reads an access set. `test_deployment_resolve_cache.py`'s
+`TestTheTrialDeadlineIsCached` is R8 on the tenant ladder. The deadline lands,
+an absent one stays NULL, a later resolve refreshes it, and an EXPIRED one
+still admits. `test_admin_tenancy.py` pins the old-schema degradation.
+`test_customer_console_resolve.py` pins the answer's exact key set and the
+money line.
+
+**Owner-gated.** Nothing here. The banner is dark by construction on a box whose
+resolve flag is off, because there is no registry word to render.
+
+**Non-goals.** No `pending` state. No gate on a cached value. No money on the
+resolve answer. No second lifecycle vocabulary on the tenant — the box stores
+and applies the capability booleans, and the one word it now holds is for
+DISPLAY.
+
 **CP-2f · The Console member-write door — the ONLY way a colleague who was
 INVITED (rather than a founder who signed up) reaches the registry.** ◐
 **MINTED + BUILT 2026-08-24** *(branch `ws-30-invites`; decision **D50**; the

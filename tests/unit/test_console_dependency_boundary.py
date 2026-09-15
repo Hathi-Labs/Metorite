@@ -481,6 +481,34 @@ def _docstring_ids(tree: ast.Module) -> set[int]:
     return out
 
 
+#: Identifiers that CONTAIN a lifecycle word without being one. The match below
+#: is deliberately a SUBSTRING search — it catches prose, an f-string and a
+#: comparison alike — and that reach costs one exemption: a wire field and a
+#: column legitimately named after the trial.
+#:
+#: ⚠️ **Exempted by NAME, and stripped rather than allow-listed whole.** The
+#: strings that carry these are SQL blobs and dict keys, so an exact-equality
+#: exemption would not reach inside them. Removing the identifier first keeps
+#: the fence live for every OTHER use in the same string: a statement that both
+#: writes `registry_trial_ends_at` and compares a status to `'trial'` is still
+#: caught, which an allow-list of whole constants would have missed.
+#:
+#: What stays forbidden is unchanged: this box stores and applies the CAPABILITY
+#: BOOLEANS, and never decides from a status word (CP-2j, §6(d)).
+_LIFECYCLE_WORD_EXEMPT_IDENTIFIERS = (
+    "registry_trial_ends_at",
+    "trial_ends_at",
+)
+
+
+def _without_exempt_identifiers(value: str) -> str:
+    """*value* with the exempt identifiers removed. Longest first, so the
+    prefixed column name is taken before the bare field it contains."""
+    for identifier in _LIFECYCLE_WORD_EXEMPT_IDENTIFIERS:
+        value = value.replace(identifier, "")
+    return value
+
+
 def test_the_deployment_never_branches_on_a_lifecycle_string() -> None:
     """No CP-2b tenant module carries a lifecycle state as a string constant.
 
@@ -505,8 +533,9 @@ def test_the_deployment_never_branches_on_a_lifecycle_string() -> None:
                 and isinstance(node.value, str)
                 and id(node) not in skip
             ):
+                haystack = _without_exempt_identifiers(node.value)
                 for word in sorted(_LIFECYCLE_WORDS):
-                    if word in node.value:
+                    if word in haystack:
                         offenders.append(f"{rel}:{node.lineno} → {word!r}")
     assert offenders == [], (
         "lifecycle state name(s) as string constants in CP-2b tenant code:\n  "
