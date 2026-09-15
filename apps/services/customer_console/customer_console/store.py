@@ -1882,15 +1882,24 @@ def deployment_visible_orgs(
             #: reaches the wire as `null`, never as an invented string.
             "placement": r[3],
             "identity_id": str(r[4]),
+            #: When the free trial ends, or NULL. LEFT JOINed, because an
+            #: organization with no subscription row is a real (if broken)
+            #: state and must not vanish from a sign-in answer because of it.
+            #: Sign-in carries it so the customer's own app can say "trial, N
+            #: days left" without a second round trip to a billing door it is
+            #: not entitled to reach (CP-2j).
+            "trial_ends_at": r[5],
         }
         for r in conn.execute(
             text(
                 """
-                SELECT o.id, o.slug, o.status, p.database_target, ui.id
+                SELECT o.id, o.slug, o.status, p.database_target, ui.id,
+                       s.trial_ends_at
                 FROM user_identity ui
                 JOIN org_membership m ON m.user_identity_id = ui.id
                 JOIN organization o ON o.id = m.organization_id
                 JOIN org_placement p ON p.organization_id = o.id
+                LEFT JOIN org_subscription s ON s.organization_id = o.id
                 WHERE ui.email = :email AND p.deployment_id = :dep
                 ORDER BY o.slug
                 """

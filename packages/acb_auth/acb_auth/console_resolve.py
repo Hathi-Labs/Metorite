@@ -1524,6 +1524,7 @@ _WRITE_ORG_SQL = """
     UPDATE organization
        SET registry_status = :status,
            registry_capabilities = CAST(:caps AS JSONB),
+           registry_trial_ends_at = CAST(:trial_ends_at AS TIMESTAMPTZ),
            updated_at = now()
      WHERE id = CAST(:org AS UUID)
 """
@@ -1631,6 +1632,38 @@ async def _read_record(email: str) -> _Record | None:
     )
 
 
+def _as_datetime(raw: Any) -> Any:
+    """An ISO-8601 string from the wire as a ``datetime``, else ``None``.
+
+    ⚠️ **asyncpg binds parameters by PYTHON type, before the SQL cast runs**, so
+    a `CAST(:x AS TIMESTAMPTZ)` does not save a string: the driver refuses it
+    with *"expected a datetime.date or datetime.datetime"*. The projection write
+    is best-effort and swallows its exceptions, so this failed SILENTLY — the
+    column stayed NULL for ever and the banner it feeds rendered nothing, which
+    looks exactly like an organization with no trial. A test caught it, not the
+    logs.
+
+    Junk is ``None`` rather than a raise, for the reason every read in this
+    module degrades that way: a malformed date from the registry must not fail a
+    sign-in over a value that is only ever displayed.
+    """
+    from datetime import datetime
+
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, datetime):
+        return raw
+    if not isinstance(raw, str):
+        return None
+    try:
+        # `fromisoformat` handles the trailing "Z" from 3.11, and the Console's
+        # `_iso()` emits `datetime.isoformat()` anyway.
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        _log.warning("console_resolve.unparseable_trial_ends_at", value=raw[:40])
+        return None
+
+
 async def _record_answer(
     email: str, display_name: str, org: dict[str, Any]
 ) -> None:
@@ -1665,6 +1698,10 @@ async def _record_answer(
         if isinstance(v, bool)
     }
     status = org.get("status")
+    # CP-2j. Absent — an older Console, or an organization with no subscription
+    # row — reads as None, and the column then means "the registry has not told
+    # us". The surface renders nothing for that, never an invented deadline.
+    trial_ends_at = _as_datetime(org.get("trial_ends_at"))
 
     try:
         from sqlalchemy import text
@@ -1705,6 +1742,12 @@ async def _record_answer(
             await session.execute(
                 text(_WRITE_ORG_SQL),
                 {"status": status, "caps": json.dumps(capabilities),
+                 # CP-2j. NULL when the Console did not say (an older Console,
+                 # or an org with no subscription row): the column then means
+                 # "not told", and the surface renders nothing. CAST explicitly
+                 # — an untyped NULL through asyncpg leaves the server to infer
+                 # a type for a parameter with no value.
+                 "trial_ends_at": trial_ends_at,
                  "org": org_id},
             )
             await session.execute(
