@@ -2223,6 +2223,50 @@ line — never reclaim a number by deleting the other entry.
   Console backup gap) and merged first. Ids are never reused, so that one
   keeps the number. `test_handoff_queue` named the collision.
 
+### H-110 · Operator email OTP cannot send, because Supabase has no custom SMTP · [OWNER]
+- **Check:** ask Supabase project `uttxlicdccfkramtjfpi` for an OTP at an
+  address that is NOT a project member:
+  `POST /auth/v1/otp {"email":"…","create_user":true}`. A
+  **`400 email_address_invalid`** means this is open. Measured 2026-09-15.
+- **What is wrong.** The project uses Supabase's BUILT-IN email service, which
+  only delivers to the project's own members and refuses every other address
+  with `email_address_invalid`. So an operator who is not a Supabase team member
+  can never receive a sign-in email. Google is the only working operator door
+  today.
+- **The SECOND cost, already recorded in the code.** `lib/otp.ts` and
+  `EmailCodeForm.tsx` both record it: the default template carries a LINK and no
+  digits, and **the dashboard refuses to edit a template until custom SMTP is
+  configured**. So the six-digit code path cannot work either. Custom SMTP fixes
+  both in one act.
+- **The fix, and it is CONFIG and not code.** Point Supabase at the Resend
+  account the customer app already uses, in Authentication → Emails → SMTP:
+  host `smtp.resend.com`, port `465`, username `resend`, password the existing
+  `RESEND_API_KEY`, sender `no-reply@metorite.com`. That domain is verified —
+  a send probe from it returned a message id on 2026-09-15.
+- **Then two more dashboard acts.** Edit the Magic Link template to render
+  `{{ .Token }}` beside the link, so the code box works. Add
+  `https://operator.metorite.com/login/callback` to Authentication → URL
+  Configuration → Redirect URLs, or the emailed LINK cannot return anybody.
+  The route exists and answers 200.
+- **⚠️ Do NOT port Auth.js and Resend into the operator console instead.** The
+  operator session is a Supabase access token exchanged at
+  `POST /api/operator/session` for a `cc_sess_` cookie, and the Console
+  validates that token. Replacing it touches a security boundary across two
+  services, and re-opens D71. The SMTP change reaches the same end — one sender,
+  one verified domain, one deliverability provider — and changes no code.
+- **No code change is owed.** The form already says *"Click the link in that
+  email — or, if it shows a six-digit code, type it here"*, which stays correct
+  before and after.
+- **Why an agent must not do this:** it is a live authentication setting on a
+  third-party account (CLAUDE.md §3a rule 3). The Supabase MCP server exposes no
+  auth-configuration tool.
+- **Authority:** `operator_identity_and_access.md` §4.1b · D71.3 ·
+  `workbench/operator_console/src/lib/otp.ts`
+- **Added:** 2026-09-16 · signup-flow session, after the owner asked why
+  operator OTP cannot reuse the customer app's mechanism.
+- **Related:** H-54 (the operator provider values), H-56 (delete the passphrase
+  fallback after one real sign-in — `OPERATOR_PASSPHRASE_FALLBACK=1` today).
+
 ### H-108 · 🔴 The Console's database auto-pauses, which is a total onboarding outage · [OWNER]
 - **Check:** ask Supabase for project `uttxlicdccfkramtjfpi`. Anything other than
   `ACTIVE_HEALTHY`, or a free tier that pauses on inactivity, means this is open.
