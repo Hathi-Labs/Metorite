@@ -940,7 +940,7 @@ class TestTheTeamSizeGateCannotBeCrashed:
         real answers, and every case above would still pass."""
         from gateway.routes import signup as route
 
-        for n in (1, 9, 10, 49, 50):
+        for n in (1, 5, 9, 10):
             assert route._team_size(str(n)) == n
             assert route._team_size(n) == n
 

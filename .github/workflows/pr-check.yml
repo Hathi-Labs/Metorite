@@ -363,6 +363,7 @@ jobs:
             tests/unit/test_billing_purchase_capability.py \
             tests/unit/test_app_user_upserts.py \
             tests/unit/test_org_provisioning.py \
+            tests/unit/test_org_provisioning_tenancy.py \
             tests/unit/test_owner_bootstrap.py \
             tests/unit/test_credential_tenant_threading.py \
             tests/unit/test_h3_rls_promotion_rehearsal.py \

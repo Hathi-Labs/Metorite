@@ -69,6 +69,13 @@
 -- too (161 carries two such hits), so quoting the shape here would grow the
 -- baseline this migration exists to hold. Caught red by the fence, 2026-08-19.
 
+-- ⚠️ **SUPERSEDED BY MIGRATION 200 (2026-09-15). Do not edit this body.**
+-- Its grant INSERT named only `(role_id, permission)`, and the tenancy phase
+-- made `org_role_permission.organization_id` NOT NULL — so this version raises
+-- on production, and provisioning ANY new organization failed there (H-104).
+-- 200 carries the column when it exists. The ledger skips applied migrations,
+-- so a fix HAD to be a new file: editing this one reaches nothing.
+
 CREATE OR REPLACE FUNCTION provision_org_roles(p_org_id UUID)
 RETURNS void
 LANGUAGE plpgsql

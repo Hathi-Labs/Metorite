@@ -5542,6 +5542,16 @@ sign in. The Operator Console therefore names the symptom and the remedy, and
 promises no duration, because it cannot read a gateway flag.
 `scripts/bootstrap_placed_orgs.py` runs one pass by hand.
 
+**The self-serve seat bound is TEN. Owner-ruled 2026-09-15.** An agent proposed
+fifty and the owner set it, so it is a decision rather than a default now. Every
+Core seat a signup grants is a free TRIAL seat on an unpaid organization, so the
+number is an abuse bound on a public form.
+
+The OPERATOR arm has no bound at all, and that is the release valve. A company of
+forty signs up for ten, and an operator raises the count at activation. D19.3's
+hard cap is a different rule, and governs assignment beyond what the customer
+bought.
+
 **Migration 198 — `organization.signup_core_seats`.** This is not cosmetic. CP-2c
 now asks the founder for a team size, and step 0a's `AlreadyMember` blocks every
 resubmit once step 1 has committed. So **the CP-2e reconciler is the only repair
@@ -5567,14 +5577,17 @@ rule. Verify with `uv run pytest tests/unit/test_console_bootstrap.py` and
 `tests/unit/test_console_provision_slug_shape.py`. Never run the `tests/unit/`
 directory, per root `CLAUDE.md` §6's two recorded pytest hazards.
 
-**Owner-gated, and the ORDER matters.** Flipping `CONSOLE_BOOTSTRAP_ENABLED` on a
-live deployment is the `enforcement-flip` class. ⚠️ **H-104 blocks it.** The sweep
-calls `provision_organization`, and H-104 records that function raising
-`null value in column "organization_id"` on production.
+**Owner-gated.** Flipping `CONSOLE_BOOTSTRAP_ENABLED` on a live deployment is
+the `enforcement-flip` class, tracked as **H-106**.
 
-A flip before that fix logs one failure per customer per minute and repairs
-nothing. Fix H-104, then flip, then verify by evidence. Create a customer and
-watch `bootstrap_provisioned` appear. Tracked as **H-106**.
+✅ **H-104 blocked this until 2026-09-15, and no longer does.** The sweep calls
+`provision_organization`, and that function raised
+`null value in column "organization_id"` on production, so every pass would have
+logged a failure per customer per minute. Migration 200 fixed it.
+
+Verify by EVIDENCE, never by the flag being set. Create a customer in the
+Operator Console, then watch `bootstrap_provisioned` appear for that slug within
+`CONSOLE_BOOTSTRAP_INTERVAL_SECONDS`.
 
 **Non-goals.** It flips no flag. It opens no Console-to-deployment call, and no
 Operator-Console-to-deployment call. It writes nothing to the Console, so it can

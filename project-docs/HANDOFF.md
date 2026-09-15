@@ -75,42 +75,32 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-104 · 🔴 Provisioning a SECOND ORGANIZATION on production fails · [AGENT]
-- **Check:** on the production database, run
-  `SELECT count(*) FROM information_schema.columns WHERE table_name =
-  'org_role_permission' AND column_name = 'organization_id' AND is_nullable =
-  'NO';` and read `provision_org_roles` in
-  `infra/postgres/179_org_provisioning.sql`. A `1` from the query while that
-  function's INSERT still names only `(role_id, permission)` means this is open.
-- **What happens:** the seed inserts
-  `INSERT INTO org_role_permission (role_id, permission) SELECT rid, p …`.
-  The tenancy work added `organization_id` to that table and made it NOT NULL.
-  So the function raises
-  `null value in column "organization_id" … violates not-null constraint`
-  on any database where the tenancy phase has run — which is production.
-- **How it surfaced (2026-09-06):** migration 196 called
-  `provision_org_roles` for every existing organization to hand out a new
-  permission, and the deploy failed on that line. Nothing else had ever called
-  the function on production, because it only runs when a NEW org is created
-  and no new org has been created there since the tenancy phase landed.
-- **⚠️ Why it matters more than the failed deploy.** M1 is *a second org can
-  exist safely*. Today a second org cannot be **created** at all on production.
-  The failure is invisible until someone tries, and the first person to try is
-  the first customer after Fracktal.
-- **Why the tenancy files are the other half:** `apply_migrations.sh` globs
-  `NN_*.sql` in `infra/postgres` ONLY, so `infra/postgres/generated/*.sql` — the
-  files that add and tighten `organization_id` — are **not on the ladder**. A
-  fresh developer database and CI's ladder replay therefore do NOT have the
-  column, and production does. Any fix has to hold on both, which is why
-  migration 196 ended up writing its grant rows behind an `IF EXISTS` on the
-  column rather than calling the seed.
-- **The likely fix:** give the seed the organization id it already has as
-  `p_org_id`, behind the same column test, and add a test that provisions an
-  org against a database with the tenancy constraints applied. The existing
-  `test_org_provisioning.py` suite passes precisely because its database has no
-  such column.
-- **Added:** 2026-09-06, from the WS-27 status-sets deploy.
-
+### H-104 · The generated tenancy files are NOT on the migration ladder · [AGENT]
+- **Check:** `ls infra/postgres/generated/*.sql`, and read the glob in
+  `scripts/apply_migrations.sh` (it matches numbered files in `infra/postgres`
+  only). Files in that subdirectory, with a glob that does not reach them, means
+  this is open.
+- **✅ The half that BLOCKED M1 is fixed** (migration 200, 2026-09-15). The
+  symptom was that `provision_org_roles` raised
+  `null value in column "organization_id"` on production, so no new organization
+  could be created there at all. 200 carries the column when it exists.
+  `tests/unit/test_org_provisioning_tenancy.py` applies the NOT NULL column
+  itself and proves it, and it is RED without 200 with the exact production
+  error.
+- **What is STILL open, and it is the cause rather than the symptom.** A fresh
+  developer database and CI's replay have a DIFFERENT SCHEMA from production, so
+  every test runs on a shape production does not have. The next defect of this
+  class is invisible in exactly the same way this one was.
+- **Why it was not fixed with 200:** putting those files on the ladder changes
+  what every developer database and every CI run contains, and it needs its own
+  rehearsal. It is a bigger act than unblocking M1, and doing both in one PR
+  would hide the risky half behind the urgent one.
+- **The shape of the repair:** give the generated files numbered names on the
+  ladder, or teach the runner a second directory. Then delete the `ELSE` arm in
+  migration 200, which exists ONLY for the schema this divergence creates.
+- **Authority:** `saas_multitenancy.md` §11 MT-1j · migration 200's header
+- **Added:** 2026-09-06, from the WS-27 status-sets deploy · **narrowed
+  2026-09-15** when the provisioning half was fixed.
 ### H-105 · ⚠️ Production migrations run with NO pre-migration backup · [OWNER]
 - **Check:** `grep -n SKIP_PRE_MIGRATION_BACKUP .github/workflows/deploy.yml`.
   Any line setting it to `1` means this is open. Confirmed in the deploy log of
@@ -2216,33 +2206,18 @@ line — never reclaim a number by deleting the other entry.
   Console still leaves that customer unable to sign in. The code that repairs it
   ships dark. The interval (`CONSOLE_BOOTSTRAP_INTERVAL_SECONDS`, default 60) is
   the worst case between creating a customer and that customer working.
-- ⚠️ **H-104 BLOCKS THIS, and flipping first makes things look worse, not
-  better.** The sweep calls `provision_organization`. That is the exact function
-  H-104 says raises `null value in column "organization_id"` on production. So
-  every pass would log `console_resolve.bootstrap_failed` for every customer,
-  once a minute, for ever. Fix H-104 first, then flip, then verify by evidence:
-  create a customer and watch `bootstrap_provisioned` appear.
+- ✅ **UNBLOCKED 2026-09-15.** H-104's provisioning half is fixed by migration
+  200, so `provision_organization` now succeeds on a tenancy-applied database.
+  This is a normal `enforcement-flip` act again.
+- **Verify by EVIDENCE, never by the flag being set.** Create a customer in the
+  Operator Console, then watch `console_resolve.bootstrap_provisioned` appear
+  for that slug within `CONSOLE_BOOTSTRAP_INTERVAL_SECONDS` (default 60). A
+  `bootstrap_failed` line names the real cause.
 - **Meanwhile there is a manual path that has the same dependency:**
   `uv run python -m scripts.bootstrap_placed_orgs` — one pass, same failure while
   H-104 is open.
 - **Authority:** CLAUDE.md §3a gate `enforcement-flip` (grantable until
   2026-09-30) · `deploy/hostinger/CUSTOMER_CONSOLE.md`
-- **Added:** 2026-09-15 · signup-flow review session · PR for branch
-  `signup-flow-repair`
-
-### H-107 · Ratify (or overrule) the self-serve seat bound, `MAX_TEAM_SIZE = 50` · [OWNER]
-- **Check:** `grep -n "MAX_TEAM_SIZE = 50" apps/services/gateway/gateway/routes/signup.py`
-  → a hit, with no owner ruling recorded in `work_plan.md` §3, means this is open.
-- **Why:** the signup form now asks how many people will use Metorite. That number
-  becomes Core seats on a 14-day trial the same transaction opens. So the bound
-  decides how many FREE seats a stranger can mint from a public form. 50 is an
-  AGENT-PROPOSED DEFAULT (D16/D17 class) and wants a real answer.
-- **Two things it is NOT:** it is not D19.3's hard cap, which governs assignment
-  beyond what the customer bought. And it is not a product limit — a bigger team
-  is a sales conversation, and the operator arm has no bound at all.
-- 📌 The mirror in `workbench/control_plane/src/app/signup/SignUpForm.tsx` must
-  move with it.
-- **Authority:** `specs/customer_console.md` §6 CP-2c item 4 · CLAUDE.md §5 (D16/D17)
 - **Added:** 2026-09-15 · signup-flow review session · PR for branch
   `signup-flow-repair`
 
