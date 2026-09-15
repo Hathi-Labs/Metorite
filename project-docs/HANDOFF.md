@@ -2221,6 +2221,50 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-15 · signup-flow review session · PR for branch
   `signup-flow-repair`
 
+### H-108 · 🔴 The Console's database auto-pauses, which is a total onboarding outage · [OWNER]
+- **Check:** ask Supabase for project `uttxlicdccfkramtjfpi`. Anything other than
+  `ACTIVE_HEALTHY`, or a free tier that pauses on inactivity, means this is open.
+- **What happened on 2026-09-15.** The project was `INACTIVE`. The Customer
+  Console was running and `/health` was 200, because that endpoint touches
+  nothing. Every endpoint that READS 500'd. The gateway logged
+  `console_resolve.unreachable`. Sign-in resolve, self-serve signup and the
+  operator customer list were all down together. It was resumed on owner
+  authorisation the same day.
+- **Why it is an OWNER entry.** The fix is not the resume, it is the tier. A
+  registry that pauses on inactivity takes the whole onboarding path with it,
+  and it will do it again. A quiet week is the likeliest moment, and that is
+  exactly when nobody is watching.
+- **It was invisible for an unknown period.** `/health` stayed green throughout,
+  so no health check and no watchdog reported it. Whatever replaces this should
+  probe an endpoint that touches the database.
+- 📌 Related: **H-98**, the backup job that has never covered the Console
+  database. Also **H-109** below. The project names are inverted, which is the
+  likely reason the wrong database got backed up.
+- **Authority:** `work_plan.md` §2.0 row **M0.4b** · `customer_console.md` §8
+- **Added:** 2026-09-15 · signup-flow session, found by surveying the box
+
+### H-109 · The two Supabase project NAMES are inverted · [OWNER]
+- **Check:** list the Supabase projects. `wbjpwtxigkileyjsgahk` named
+  *"Metorite Application Database"* and `uttxlicdccfkramtjfpi` named
+  *"Metorite Tenant Database"* means this is open.
+- **What is actually true, measured 2026-09-15 from the box's own env.** The
+  GATEWAY is the tenant plane. It runs on `wbjpwtxigkileyjsgahk`, the project
+  named *"Application"*. The CUSTOMER CONSOLE is the cross-tenant
+  registry, and it runs on `uttxlicdccfkramtjfpi` — the project named
+  *"Tenant"*. Each is named after the other's job.
+- **Why it matters more than tidiness.** Every operator act that picks a
+  database by NAME picks the wrong one. **H-98** says the backup job has never
+  covered the Console database, and this is the most likely reason. Somebody
+  backing up "the tenant database" backed up the tenant plane, and believed
+  they were done.
+- **The planes are correctly SEPARATE** — this is a labelling defect, not an
+  architecture one. D15 holds.
+- **Why it is OWNER.** Renaming a Supabase project is an infrastructure act.
+  The names may also appear in dashboards, alerts and runbooks that must move
+  with them.
+- **Authority:** `saas_multitenancy.md` §0.9.2 (the two planes) · D15
+- **Added:** 2026-09-15 · signup-flow session, found by surveying the box
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

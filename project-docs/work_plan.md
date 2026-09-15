@@ -269,7 +269,8 @@ makes the customer path the one nobody tests.
 | M0.1 | Production identity & topology — `app.metorite.com`, wiped VPS, Supabase both planes | ✅ | D40 · D41 |
 | M0.2 | **Automatic delivery works** | ✅ **RE-MEASURED 2026-08-26 — see the correction below** | WS-25 |
 | M0.3 | Owner sign-in proven end to end (Google → NextAuth → gateway identity → owner of `default`) | 🔴 unverified by evidence | **H-18** |
-| M0.4 | The Customer Console SERVICE is on a box | 🔴 built, deployed nowhere | §6 **(a)** · D47 |
+| M0.4 | The Customer Console SERVICE is on a box | ✅ **CORRECTED 2026-09-15 by measurement** — `acb-customer-console.service` is active on `127.0.0.1:8090`, `/health` 200. The row read "built, deployed nowhere" for an unknown period. ⚠️ Its DATABASE is the open item — see M0.4b | §6 **(a)** · D47 |
+| **M0.4b** | 🆕 **The Console's database project auto-paused, and that is a total onboarding outage** | 🟡 Supabase `uttxlicdccfkramtjfpi` was `INACTIVE` on 2026-09-15; every Console read 500'd and the gateway logged `console_resolve.unreachable`. Resumed on owner authorisation the same day. ⚠️ **It can pause again** — a registry on an auto-pausing tier is a recurring outage, not an incident | 🔴 owner: decide the tier (**H-108**) |
 | M0.5 | The Console ladder travels with the deploy | 🔴 nothing invokes it | **H-24** · **H-25** |
 | M0.6 | Razorpay TEST account + the three env vars | 🔴 external account | **H-14** |
 | M0.7 | Fracktal onboards through `/orgs/provision` at ₹0 through the real rails | 🔴 needs M0.4 + M0.6 | D42 · D36.1 |
@@ -329,8 +330,8 @@ dark) and it means the remaining work is **flips and money decisions**, not code
 | # | What | State | Gate |
 |---|---|---|---|
 | M2.1 | Signup + provisioning API (lifecycle state machine, GST at signup) | ✅ CP-2a | |
-| M2.2 | Sign-in resolve — the product asks the registry who you are | ✅ CP-2b | 🔴 `CUSTOMER_CONSOLE_RESOLVE_ENABLED` §6 **(f)** |
-| M2.3 | The self-serve signup **form** | ◐ CP-2c built in four slices | 🔴 `SELF_SERVE_SIGNUP_ENABLED` §6 **(h)** |
+| M2.2 | Sign-in resolve — the product asks the registry who you are | ✅ CP-2b · **FLIPPED — measured `true` on the box 2026-09-15**, in both the gateway and the Next env. The gate below is spent | ✅ `CUSTOMER_CONSOLE_RESOLVE_ENABLED` = true |
+| M2.3 | The self-serve signup **form** | ◐ CP-2c built in four slices · **FLIPPED — measured `true` on the box 2026-09-15**, in both the gateway and the Next env | ✅ `SELF_SERVE_SIGNUP_ENABLED` = true |
 | **M2.3c** | 🆕 **The customer is told their own commercial state (CP-2j, migration 199).** A self-serve signup works at once on a 14-day trial, and nothing in the product said so — so their first news of it was the day it stopped working | ◐ **BUILT 2026-09-15**: the resolve answer carries `trial_ends_at`, the tenant caches it beside `registry_status`, and `AccountStateBanner` names the state and the days left to ADMINS. The operator half already existed — the customer table shows status, subscription and trial expiry | 🟢 no gate. Dark by construction where the resolve flag is off · ⚠️ a `pending` state stays UNBUILT and needs an owner decision |
 | M2.4 | Member invites — notification mail, Console membership at invite time, auto-activation | ◐ D50 · SC-2c built | 🔴 `MEMBER_INVITE_EMAIL_ENABLED` §6 |
 | **M2.3b** | 🆕 **Operator-created customers can actually sign in (CP-2i, migration 198).** The operator arm of `/orgs/provision` wrote the CONSOLE plane only, so a customer an operator created had NO tenant organization and its owner was told *"No organization is linked to this email"* — while the Operator Console promised they could sign in | ◐ **BUILT 2026-09-15**: `POST /registry/orgs` + `bootstrap_placed_orgs` + the gateway loop. The signup form also asks team size now, because the Console default of 1 seat let no founder invite anybody | 🔴 `CONSOLE_BOOTSTRAP_ENABLED` (**H-106**) — ✅ H-104's blocking half fixed by migration 200 · ✅ `MAX_TEAM_SIZE` owner-ruled at **10** |
