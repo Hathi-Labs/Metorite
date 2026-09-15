@@ -214,6 +214,54 @@ app = FastAPI(
 )
 
 
+# ── The organization-slug vocabulary ────────────────────────────────────────
+#
+# ⚠️ **A THIRD copy in a THIRD language, and it is pinned rather than trusted.**
+# The canonical set is `workbench/control_plane/src/lib/subdomain.ts`, and
+# `tests/unit/test_subdomain_host_vocabulary.py` READS that file and asserts
+# both Python twins equal it — the gateway's (`gateway/routes/signup.py`) and
+# this one. Editing one side without the others is a red test, which is the
+# whole reason a copy is allowed to exist here at all
+# (`workbench/control_plane/AGENTS.md` rule 5: a mirror goes stale and then
+# lies).
+#
+# ⚠️ **It is a copy because this service may not import the gateway's.** The
+# Customer Console is cross-tenant and depends on NO `acb_*` package by design —
+# its own dependency list argues that adding a package to a cross-tenant service
+# is a supply-chain decision, not a convenience (CP-9 §9.4). So the choice was a
+# fenced copy or an unfenced gap, and the gap is what shipped until now.
+
+#: The slug's shape — a DNS-label-safe subdomain. The twin of
+#: `gateway/routes/signup.py`'s `_SLUG_RE`, applied with `fullmatch`.
+_SLUG_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+#: Hostnames a customer may never own, because the platform already does — or
+#: intends to. Owner ruling B7, 2026-08-24 (`saas_multitenancy.md` §11 MT-1f).
+_RESERVED_SLUGS = frozenset({
+    "admin",
+    "api",
+    "app",
+    "assets",
+    "auth",
+    "billing",
+    "cdn",
+    "console",
+    "dev",
+    "docs",
+    "help",
+    "login",
+    "mail",
+    "operator",
+    "signin",
+    "signup",
+    "staging",
+    "static",
+    "status",
+    "ws",
+    "www",
+})
+
+
 # ── Schemas ─────────────────────────────────────────────────────────────────
 
 
@@ -239,6 +287,17 @@ class ProvisionRequest(BaseModel):
     mutation is still run against it.
     """
 
+    #: The organization's slug, and the CROSS-PLANE JOIN KEY. Shape-checked
+    #: here, at the one door both arms pass through.
+    #:
+    #: ⚠️ **This was a bare ``str`` until 2026-09-15, and the two arms disagreed
+    #: about what a slug is.** The gateway's self-serve door refuses `API`,
+    #: `docs`, `acme_co` and `acme-` before they reach the Console
+    #: (``gateway/routes/signup.py``'s ``_SLUG_RE`` + ``_RESERVED_SLUGS``). The
+    #: OPERATOR arm reaches this model directly and refused none of them, so an
+    #: operator could create the slug that names this very gateway's hostname —
+    #: the exact live defect owner ruling B7 closed on the other arm. Same rule,
+    #: one door, both arms.
     slug: str
     name: str
     #: Which deployment this organization is placed on — **named by the
@@ -266,6 +325,39 @@ class ProvisionRequest(BaseModel):
     billing_state: str | None = None
     owner_email: str
     core_seats: int = Field(default=1, ge=1)
+
+    @field_validator("slug")
+    @classmethod
+    def _slug_is_a_safe_label(cls, value: str) -> str:
+        """Refuse a slug the platform could never host, on EITHER arm.
+
+        422, not 400: this is pydantic's own shape refusal and it fires before
+        the handler, which is the right layer for a value that is malformed
+        rather than unavailable. The handler's 400/404/409 stay what they are —
+        they answer questions about *deployments and ownership*, which need a
+        database read. This one needs nothing.
+
+        ⚠️ The gateway's self-serve arm still refuses the same two things
+        FIRST, with its own ``InvalidSlug``/``ReservedSlug`` codes, so a founder
+        sees friendly copy rather than a 422. That is not a duplicate fence —
+        it is the form's affordance in front of this, the real one.
+        """
+        slug = (value or "").strip()
+        if not _SLUG_RE.fullmatch(slug):
+            raise ValueError(
+                "the slug must be a DNS-label-safe subdomain: lowercase "
+                "alphanumeric and internal hyphens, no leading or trailing "
+                "hyphen, at most 63 characters"
+            )
+        # AFTER the shape check, for the reason the gateway twin gives: a
+        # reserved label is perfectly well-formed, so calling it malformed
+        # sends the operator to fix a thing that is not wrong.
+        if slug in _RESERVED_SLUGS:
+            raise ValueError(
+                "that workspace address is reserved for the platform; "
+                "please choose a different one"
+            )
+        return slug
 
 
 class LifecycleRequest(BaseModel):
@@ -3045,6 +3137,106 @@ def revoke_provider_credential(
 def health() -> dict[str, str]:
     """Liveness. Deliberately unauthenticated and deliberately says nothing."""
     return {"status": "ok"}
+
+
+@app.post("/registry/orgs")
+def placed_orgs(caller: ProvisionCaller) -> dict[str, Any]:
+    """Every organization placed on the CALLING deployment. Read-only.
+
+    Spec: ``customer_console.md`` §6 CP-2i (the owning section) · board
+    ``work_plan.md`` §2.0 row M2.3b.
+
+    ⚠️ **The gap this closes: an operator-created customer could not use the
+    product.** ``POST /orgs/provision``'s operator arm writes the Console plane
+    — org, placement, seats, owner membership, trial — and nothing has ever
+    written the TENANT plane for it. ``provision_local_organization`` has
+    exactly one production caller, and it is the self-serve signup route. So
+    the owner signed in, ``resolve_for_signin`` admitted them off a perfectly
+    good registry answer, ``_record_answer`` found no local ``organization``
+    row and logged ``console_resolve.unprovisioned_org``, and ``/me/access`` —
+    which reads the tenant plane — returned no organization. They landed on
+    AccessGate's *"No organization is linked to this email"*, while the
+    Operator Console's success panel was telling the operator they could sign
+    in with no invite needed.
+
+    **Why the box ASKS instead of being told.** Every arrow between these two
+    planes runs deployment → Console. This service makes no outbound call to
+    any box, and ``operator_console/src/lib/console.ts`` forbids the Operator
+    Console from reaching a tenant deployment at all. Adding either direction
+    would be a new trust edge for a problem the existing arrow already solves:
+    the gateway holds a deployment key and already calls here, so it asks what
+    it should be serving and provisions the difference itself
+    (``acb_auth.console_resolve.bootstrap_placed_orgs``).
+
+    **Deployment key ONLY.** The operator arm is refused: this door answers
+    *"which customers am I serving"*, and the subject of that question is the
+    CREDENTIAL. An operator token carries no deployment identity, so under it
+    the question has no subject — and taking one from a body label would be a
+    second way to name a deployment on a door that does not need one.
+
+    **The ``provision`` capability, not a new one.** This read exists only to
+    drive provisioning, and it answers exactly the set that ``/orgs/provision``
+    already lets this key create. A key that may CREATE an organization here
+    can hardly be refused the list of the ones it created, and a fourth
+    capability for the read half of an existing one is the vocabulary sprawl
+    :data:`auth.MEMBER_ADMIN_CAPABILITY`'s note argues against.
+
+    **It writes nothing, and it is not audited.** A box reading its own roster
+    on a timer is not an event, and recording it would bury the writes that
+    are.
+    """
+    if caller is None:
+        # Refused on SHAPE, before anything is read: the operator scheme has no
+        # deployment of its own, so the question has no subject to answer for.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "this door answers for the calling deployment; an operator "
+                "token names no deployment and cannot ask it"
+            ),
+        )
+    with get_engine().begin() as conn:
+        rows = store.deployment_placed_orgs(
+            conn, deployment_id=caller.deployment_id
+        )
+    # ⚠️ **The lifecycle verdict is computed HERE, and travels as a BOOLEAN.**
+    # The box must never branch on a lifecycle WORD — that would be a second
+    # copy of this state machine spelled as an `if`, which §6(d) refuses and
+    # `test_console_dependency_boundary.py`'s `_LIFECYCLE_WORDS` fence catches.
+    # So this service answers the question rather than exporting the vocabulary.
+    #
+    # ⚠️ **`can_be_provisioned`, which is a synonym for nothing else** — the
+    # field's own note in `lifecycle.py` carries the argument, because both
+    # near-misses are real bugs and both were written before it existed.
+    # `can_write_seats` strands a SUSPENDED customer, who can pay but whose
+    # checkout lives inside the tenant app they would have no workspace for.
+    # `can_sign_in` and `can_pay` both admit CANCELLED, handing a departed
+    # customer a brand-new empty workspace with an active owner.
+    #
+    # Refusing `cancelled` and `deleted` is the point. A lifecycle transition
+    # touches neither `org_placement` nor `org_membership`, and only a purge
+    # removes them, so a departed customer stays in the query above
+    # indefinitely. Without this gate, arming the flag on an existing box would
+    # build workspaces for the entire historical backlog in one pass.
+    #
+    # Anyone who ALREADY has a tenant organization is untouched by all of this:
+    # the sweep skips them as already local, whatever their state.
+    #
+    # ⚠️ **`status` is dropped from the wire here.** The box may not branch on a
+    # lifecycle WORD (§6(d)), and a field it should not read is an invitation to
+    # read it. It travels as this one boolean or not at all.
+    return {
+        "organizations": [
+            {
+                key: value for key, value in row.items() if key != "status"
+            } | {
+                "provisionable": capabilities_of(
+                    row["status"]
+                ).can_be_provisioned
+            }
+            for row in rows
+        ]
+    }
 
 
 @app.post("/orgs/provision")

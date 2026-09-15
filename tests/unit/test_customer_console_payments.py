@@ -1178,16 +1178,38 @@ class TestTheLifecycleGate:
         for state, caps in lifecycle.STATES.items():
             assert caps.can_pay == (state != "deleted"), state
 
-    def test_can_pay_is_the_last_field(self):
+    def test_the_newest_capability_is_the_last_field(self):
         """Appended LAST, and the next one must be too (§9.3(5), nit 3).
 
         A field inserted anywhere but last silently re-maps every positional
         row's booleans — ``suspended`` would quietly become AI-enabled while
         every existing test kept passing. Which is why the rows below are
         keyword-constructed.
+
+        ⚠️ **This fence FIRED on 2026-09-15, and that is the only evidence it
+        works.** ``can_be_provisioned`` was appended after ``can_pay`` — the
+        inbound Console bootstrap needs a named answer to *"may a deployment
+        build this organization's workspace"* — and this went red exactly as
+        designed. It is updated to the NEW last field rather than relaxed:
+        ``can_pay`` stays pinned second-to-last, so a field slipped BETWEEN the
+        two is still red.
         """
         fields = list(lifecycle.OrgCapabilities.__dataclass_fields__)
-        assert fields[-1] == "can_pay"
+        assert fields[-1] == "can_be_provisioned"
+        assert fields[-2] == "can_pay"
+
+    def test_every_state_answers_the_newest_capability(self):
+        """No default, so a state row that forgets it fails to CONSTRUCT rather
+        than quietly inheriting the permissive answer — ``can_pay``'s own rule,
+        applied to the field that followed it."""
+        import dataclasses
+
+        field = lifecycle.OrgCapabilities.__dataclass_fields__[
+            "can_be_provisioned"
+        ]
+        assert field.default is dataclasses.MISSING
+        for state, caps in lifecycle.STATES.items():
+            assert isinstance(caps.can_be_provisioned, bool), state
 
     def test_the_states_table_is_keyword_constructed(self):
         """Source-level, because nothing else can see a POSITIONAL argument.

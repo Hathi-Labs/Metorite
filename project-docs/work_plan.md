@@ -332,6 +332,7 @@ dark) and it means the remaining work is **flips and money decisions**, not code
 | M2.2 | Sign-in resolve — the product asks the registry who you are | ✅ CP-2b | 🔴 `CUSTOMER_CONSOLE_RESOLVE_ENABLED` §6 **(f)** |
 | M2.3 | The self-serve signup **form** | ◐ CP-2c built in four slices | 🔴 `SELF_SERVE_SIGNUP_ENABLED` §6 **(h)** |
 | M2.4 | Member invites — notification mail, Console membership at invite time, auto-activation | ◐ D50 · SC-2c built | 🔴 `MEMBER_INVITE_EMAIL_ENABLED` §6 |
+| **M2.3b** | 🆕 **Operator-created customers can actually sign in (CP-2i, migration 198).** The operator arm of `/orgs/provision` wrote the CONSOLE plane only, so a customer an operator created had NO tenant organization and its owner was told *"No organization is linked to this email"* — while the Operator Console promised they could sign in | ◐ **BUILT 2026-09-15**: `POST /registry/orgs` + `bootstrap_placed_orgs` + the gateway loop. The signup form also asks team size now, because the Console default of 1 seat let no founder invite anybody | 🔴 `CONSOLE_BOOTSTRAP_ENABLED` — ⚠️ **H-104 first**, or every pass logs a failure (**H-106**) · 🔴 ratify `MAX_TEAM_SIZE` (**H-107**) |
 | M2.5 | The organization is explicit in the UI; one email may hold several memberships | ◐ **slice A built — and had no board row until this pass** (see **WS-35** below) | D51 · MT-1k B/C later |
 | M2.6 | Seats a customer admin drives from the app | ✅ LS-6…LS-9 | 🔴 LS-11 (seats on retired plans) |
 | M2.7 | Flat ₹500/user/month in the catalog | ✅ LS-10 (data half) | 🔴 pricing a live system |

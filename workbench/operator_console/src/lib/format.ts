@@ -374,18 +374,13 @@ export function statusHelp(status: string): string {
   }
 }
 
-// Suggest a URL-safe slug from a company name (lowercase, hyphen-separated).
-// Advisory autofill only — the operator can edit it, and the Console remains
-// the authority on validity/uniqueness.
-export function suggestSlug(name: string): string {
-  return name
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
-}
+// ⚠️ `suggestSlug` MOVED to `lib/slug.ts` on 2026-09-15, and it must not come
+// back here. The copy that lived at this spot cut at 40 characters where the
+// canonical vocabulary cuts at 63, and it never re-trimmed a trailing hyphen
+// after the cut — so it could suggest a value that is not a DNS label, into the
+// cross-plane join key, through a Console door that checked nothing.
+// `lib/slug.ts` is the fenced copy of the one vocabulary; import from there.
+// Fence: `tests/unit/test_subdomain_host_vocabulary.py`.
 
 // Why the Plan pickers can be empty, in the operator's language — or `null`
 // when the ladder arrived fine.

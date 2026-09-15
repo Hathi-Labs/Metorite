@@ -2209,6 +2209,43 @@ line — never reclaim a number by deleting the other entry.
   Console backup gap) and merged first. Ids are never reused, so that one
   keeps the number. `test_handoff_queue` named the collision.
 
+### H-106 · Flip `CONSOLE_BOOTSTRAP_ENABLED` — but ONLY after H-104 · [AGENT]
+- **Check:** `ssh metorite 'grep -c CONSOLE_BOOTSTRAP_ENABLED /opt/acb/app/.env'`
+  → `0`, or a value that is not `true`, means this is open.
+- **Why:** without the flag, an operator who creates a customer in the Operator
+  Console still leaves that customer unable to sign in. The code that repairs it
+  ships dark. The interval (`CONSOLE_BOOTSTRAP_INTERVAL_SECONDS`, default 60) is
+  the worst case between creating a customer and that customer working.
+- ⚠️ **H-104 BLOCKS THIS, and flipping first makes things look worse, not
+  better.** The sweep calls `provision_organization`. That is the exact function
+  H-104 says raises `null value in column "organization_id"` on production. So
+  every pass would log `console_resolve.bootstrap_failed` for every customer,
+  once a minute, for ever. Fix H-104 first, then flip, then verify by evidence:
+  create a customer and watch `bootstrap_provisioned` appear.
+- **Meanwhile there is a manual path that has the same dependency:**
+  `uv run python -m scripts.bootstrap_placed_orgs` — one pass, same failure while
+  H-104 is open.
+- **Authority:** CLAUDE.md §3a gate `enforcement-flip` (grantable until
+  2026-09-30) · `deploy/hostinger/CUSTOMER_CONSOLE.md`
+- **Added:** 2026-09-15 · signup-flow review session · PR for branch
+  `signup-flow-repair`
+
+### H-107 · Ratify (or overrule) the self-serve seat bound, `MAX_TEAM_SIZE = 50` · [OWNER]
+- **Check:** `grep -n "MAX_TEAM_SIZE = 50" apps/services/gateway/gateway/routes/signup.py`
+  → a hit, with no owner ruling recorded in `work_plan.md` §3, means this is open.
+- **Why:** the signup form now asks how many people will use Metorite. That number
+  becomes Core seats on a 14-day trial the same transaction opens. So the bound
+  decides how many FREE seats a stranger can mint from a public form. 50 is an
+  AGENT-PROPOSED DEFAULT (D16/D17 class) and wants a real answer.
+- **Two things it is NOT:** it is not D19.3's hard cap, which governs assignment
+  beyond what the customer bought. And it is not a product limit — a bigger team
+  is a sales conversation, and the operator arm has no bound at all.
+- 📌 The mirror in `workbench/control_plane/src/app/signup/SignUpForm.tsx` must
+  move with it.
+- **Authority:** `specs/customer_console.md` §6 CP-2c item 4 · CLAUDE.md §5 (D16/D17)
+- **Added:** 2026-09-15 · signup-flow review session · PR for branch
+  `signup-flow-repair`
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

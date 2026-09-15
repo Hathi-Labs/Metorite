@@ -148,6 +148,12 @@ _CAPABILITY_GATED_ROUTES: dict[str, str] = {
     "/registry/seats/overview": "seat_admin",
     # WS-31 CP-2f, 2026-08-24 — the member-write door, on the FOURTH capability.
     "/registry/members": "member_admin",
+    # 2026-09-15 — the inbound bootstrap's READ, on the SAME capability as
+    # `/orgs/provision`. Deliberately not a fifth capability: this door exists
+    # only to drive provisioning and answers exactly the set that door already
+    # lets the key CREATE, so a key that may create an organization here cannot
+    # sensibly be refused the list of the ones it created.
+    "/registry/orgs": "provision",
 }
 
 

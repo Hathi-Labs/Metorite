@@ -12,7 +12,6 @@ import {
   daysUntil,
   trialHint,
   statusHelp,
-  suggestSlug,
   plansNotice,
   lifecycleHint,
   TOMBSTONE_RE,
@@ -255,14 +254,6 @@ describe("statusHelp", () => {
     const actions = readFileSync(
       join(__dirname, "..", "app", "customers", "[slug]", "Actions.tsx"), "utf8");
     expect(actions).toContain("Sign-in KEEPS working so they can pay");
-  });
-});
-
-describe("suggestSlug", () => {
-  it("lowercases, hyphenates and strips accents/symbols", () => {
-    expect(suggestSlug("Fracktal Works Pvt. Ltd.")).toBe("fracktal-works-pvt-ltd");
-    expect(suggestSlug("  Café  Nine!  ")).toBe("cafe-nine");
-    expect(suggestSlug("---")).toBe("");
   });
 });
 

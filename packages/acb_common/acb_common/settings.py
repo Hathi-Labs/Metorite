@@ -283,6 +283,31 @@ class Settings(BaseSettings):
     # (§8 gate 8).
     self_serve_signup_enabled: str = ""
 
+    # ── The INBOUND Console bootstrap (2026-09-15) ────────────────────────────
+    #
+    # Gates the periodic sweep that provisions, on the TENANT plane, every
+    # organization the Customer Console says is PLACED on this deployment
+    # (`acb_auth.console_resolve.bootstrap_placed_orgs`).
+    #
+    # ⚠️ **What it repairs.** `POST /orgs/provision`'s OPERATOR arm writes the
+    # Console plane only, so a customer an operator created had no tenant
+    # organization at all: its owner signed in, was admitted by the registry,
+    # and landed on *"No organization is linked to this email"*. The sweep is
+    # the tenant plane catching up to the registry that already placed them.
+    #
+    # Ships dark, the `=== "true"` idiom above, and the sweep ALSO no-ops when
+    # the box is unwired — so an unset value and an unwired box are the same
+    # nothing. The loop is started from the gateway lifespan and the gate lives
+    # inside its start function, never as an `if` at the call site (the rule
+    # `gateway/main.py`'s kill-switch note gives: two readers that must agree is
+    # how a loop runs with its flag off).
+    console_bootstrap_enabled: str = ""
+    #: Seconds between passes. The interval IS the worst-case delay between an
+    #: operator creating a customer and that customer being able to sign in, so
+    #: it is deliberately short — the pass is one HTTP read plus one local
+    #: `SELECT slug`, and does nothing at all in the steady state.
+    console_bootstrap_interval_seconds: int = 60
+
     # Gmail (Phase 1, WBS 1.3)
     gmail_sa_json_path: str = ""         # service-account key file
     gmail_workspace_domain: str = ""     # e.g. fracktal.in
