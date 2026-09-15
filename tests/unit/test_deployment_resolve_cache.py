@@ -332,8 +332,13 @@ def _slug() -> str:
 
 def _answer(slug: str, *, status: str = "active", sign_in: bool = True,
             write_seats: bool = True, use_ai: bool = True,
-            organization_id: str | None = None) -> dict:
-    """One entry of the Console's 200 body, in the shipped shape (clause 12)."""
+            organization_id: str | None = None,
+            trial_ends_at: str | None = None) -> dict:
+    """One entry of the Console's 200 body, in the shipped shape (clause 12).
+
+    ``trial_ends_at`` defaults to None, which is also what an older Console
+    sends — so every existing case here exercises the absent path.
+    """
     return {
         "organization_id": organization_id or str(uuid.uuid4()),
         "slug": slug,
@@ -343,6 +348,7 @@ def _answer(slug: str, *, status: str = "active", sign_in: bool = True,
         "capabilities": {
             "sign_in": sign_in, "write_seats": write_seats, "use_ai": use_ai,
         },
+        "trial_ends_at": trial_ends_at,
     }
 
 
@@ -1773,3 +1779,125 @@ class TestTheWireAndTheDsn:
         assert "_ACB_TENANT_LADDER_URL_AT_LAUNCH" in os.environ
         assert os.environ["_ACB_TENANT_LADDER_URL_AT_LAUNCH"] == _URL
         assert os.environ.get("_ACB_DATABASE_URL_AT_LAUNCH", "") != _URL
+
+
+# ══ CP-2j · the trial deadline reaches the tenant projection ═════════════════
+
+class TestTheTrialDeadlineIsCached:
+    """Migration 199's column, end to end through the resolve write path.
+
+    The customer's own app renders *"Trial — 12 days left"*, and it reads this
+    projection rather than calling a billing door it is not entitled to reach.
+    So the value has to survive the resolve, or the banner says nothing.
+    """
+
+    async def test_the_deadline_lands_on_the_local_row(self, wired, db):
+        from acb_auth import console_resolve
+
+        email, slug = _email(), _slug()
+        _provision_org(db, slug)
+        deadline = "2026-10-01T00:00:00+00:00"
+        wired.answers(_answer(slug, status="trial", trial_ends_at=deadline))
+
+        decision = await console_resolve.resolve_for_signin(email)
+
+        assert decision.admit is True
+        with db.connect() as c:
+            stored = c.execute(
+                text(
+                    "SELECT registry_trial_ends_at FROM organization "
+                    " WHERE slug = :s"
+                ),
+                {"s": slug},
+            ).scalar()
+        assert stored is not None
+        assert stored.isoformat().startswith("2026-10-01")
+
+    async def test_an_absent_deadline_stays_NULL_rather_than_inventing_one(
+        self, wired, db
+    ):
+        """An older Console, or an org with no subscription row, says nothing.
+
+        NULL then means *"the registry has not told us"*, and the surface
+        renders nothing for it. A sentinel date here would reach the customer
+        as a real deadline nobody set.
+        """
+        from acb_auth import console_resolve
+
+        email, slug = _email(), _slug()
+        _provision_org(db, slug)
+        wired.answers(_answer(slug, status="active"))  # no trial_ends_at
+
+        await console_resolve.resolve_for_signin(email)
+
+        with db.connect() as c:
+            stored = c.execute(
+                text(
+                    "SELECT registry_trial_ends_at FROM organization "
+                    " WHERE slug = :s"
+                ),
+                {"s": slug},
+            ).scalar()
+        assert stored is None
+
+    async def test_a_later_resolve_REFRESHES_the_deadline(self, wired, db):
+        """It is a cache of the registry's last word, not a write-once record.
+
+        An operator who extends a trial must see that reach the customer's
+        banner at their next sign-in, or the number on screen is a lie with a
+        timestamp.
+        """
+        from acb_auth import console_resolve
+
+        email, slug = _email(), _slug()
+        _provision_org(db, slug)
+
+        wired.answers(_answer(slug, status="trial",
+                              trial_ends_at="2026-10-01T00:00:00+00:00"))
+        await console_resolve.resolve_for_signin(email)
+
+        # Force a genuine re-consult. `invalidate` clears the in-process cache,
+        # but the DB record is still inside its TTL, so the next call would take
+        # the `cache-fresh` path and write nothing — the freshness arithmetic
+        # this suite exists for.
+        from acb_common.settings import get_settings
+
+        console_resolve.invalidate(email)
+        _backdate(
+            db, email,
+            get_settings().customer_console_resolve_ttl_seconds + 60,
+        )
+
+        wired.answers(_answer(slug, status="trial",
+                              trial_ends_at="2026-11-15T00:00:00+00:00"))
+        await console_resolve.resolve_for_signin(email)
+
+        with db.connect() as c:
+            stored = c.execute(
+                text(
+                    "SELECT registry_trial_ends_at FROM organization "
+                    " WHERE slug = :s"
+                ),
+                {"s": slug},
+            ).scalar()
+        assert stored.isoformat().startswith("2026-11-15")
+
+    async def test_it_gates_NOTHING(self, wired, db):
+        """A cached date must never decide access.
+
+        An expired deadline with a `sign_in` capability still True is exactly
+        the clock-skew shape that would lock out a paying customer, so the
+        admission has to come from the capability block alone.
+        """
+        from acb_auth import console_resolve
+
+        email, slug = _email(), _slug()
+        _provision_org(db, slug)
+        wired.answers(
+            _answer(slug, status="trial",
+                    trial_ends_at="2020-01-01T00:00:00+00:00")
+        )
+
+        decision = await console_resolve.resolve_for_signin(email)
+
+        assert decision.admit is True

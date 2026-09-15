@@ -125,17 +125,37 @@ def _seed_migration() -> Path:
 
 
 def _per_org_callable() -> Path:
-    """MT-1j's parameterised seed — the one that pins no organization."""
+    """MT-1j's parameterised seed — the one that pins no organization.
+
+    ⚠️ **The LAST one on the ladder, not the only one** (amended 2026-09-15).
+    This asserted a single match until migration 200 redefined
+    ``provision_org_roles`` forward-only, which is how a PL/pgSQL function is
+    amended at all: there is no way to patch a body in place, and the runner
+    keeps a ledger and skips applied migrations, so editing 179 would have
+    reached nothing.
+
+    Two files therefore name the capability by design, and the ladder's ORDER
+    decides which is live — the same ruling
+    ``test_org_provisioning.py::SINGLY_DEFINED_FUNCTIONS`` took for the same
+    function on the same day. A fence that admits no redefinition is a fence
+    against fixing the seed, and 200 exists because the seed was broken on
+    production (H-104).
+
+    Still non-vacuous: zero matches is an error, and the file returned is the
+    one whose body actually runs.
+    """
     matches = [
         path
         for path in _migrations_naming_the_capability()
         if not _DEFAULT_SCOPED.search(path.read_text(encoding="utf-8"))
     ]
-    assert len(matches) == 1, (
-        f"expected exactly one organization-agnostic tenant migration granting "
-        f"{CAPABILITY!r}, found {[p.name for p in matches]}"
+    assert matches, (
+        f"expected at least one organization-agnostic tenant migration "
+        f"granting {CAPABILITY!r}, found none"
     )
-    return matches[0]
+    # `_migrations_naming_the_capability` sorts by filename, and the ladder
+    # applies in that order, so the last match is the body that survives.
+    return matches[-1]
 
 
 # ── The vocabulary half: no database needed ─────────────────────────────────

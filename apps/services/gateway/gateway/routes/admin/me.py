@@ -98,12 +98,65 @@ def _agent_names() -> list[str]:
     except Exception:  # noqa: BLE001
         return []
 
+async def _registry_projection(db, org_id: str) -> dict[str, str | None]:
+    """What the REGISTRY last said about this organization. Display only.
+
+    ``registry_status`` (migration 177) and ``registry_trial_ends_at`` (199) are
+    cached by the sign-in resolve, so the app can tell an admin *"Trial — 12
+    days left"* instead of leaving them to discover their commercial state on
+    the day something stops working (CP-2j).
+
+    ⚠️ **Neither is a gate, and nothing may make one of them.** Access is the
+    access set this endpoint already returns, resolved per call at the gateway.
+    A second gate keyed on a CACHED status — or worse, on a cached DATE — is how
+    a stale row or a clock skew locks out a customer who is paying.
+
+    ⚠️ **Its own try/except, and that is the point.** These columns are NEWER
+    than this endpoint. Folded into the organization SELECT above, a box whose
+    ladder has not reached 199 raised, the caller's broad handler set
+    ``organization = {}``, and every member lost their org's slug and display
+    name — a banner's optional data taking out the identity beside it. R6 says
+    old code meets new schema, and this is the other direction: new code meeting
+    an old schema degrades to silence, which is exactly what an absent projection
+    means anyway.
+    """
+    from sqlalchemy import text  # noqa: PLC0415
+
+    try:
+        row = (
+            await db.execute(
+                text(
+                    "SELECT registry_status, registry_trial_ends_at "
+                    "  FROM organization WHERE id = CAST(:id AS uuid)"
+                ),
+                {"id": org_id},
+            )
+        ).mappings().first()
+        if not row:
+            return {}
+        # ⚠️ The row READ is inside the guard, not just the query. An old
+        # schema can fail either way round — the SELECT can raise, or a row can
+        # come back without the columns — and a guard that covered only the
+        # first would still take the caller's whole organization block down.
+        deadline = row["registry_trial_ends_at"]
+        return {
+            "registry_status": row["registry_status"],
+            "trial_ends_at": (
+                deadline.isoformat() if deadline is not None else None
+            ),
+        }
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 
 @me_router.get("/me", summary="Current user's identity and effective access")
 async def get_me(user: UserContext = Depends(get_current_user)) -> dict[str, Any]:
     access = user.access
 
-    organization: dict[str, str] = {}
+    # `str | None` since CP-2j: `registry_status` and `trial_ends_at` are
+    # legitimately absent on a box whose resolve flag has never been on.
+    organization: dict[str, str | None] = {}
     catalog: list[str] = []
     try:
         async with _tenant_session() as db:
@@ -131,6 +184,8 @@ async def get_me(user: UserContext = Depends(get_current_user)) -> dict[str, Any
                     "slug": row["slug"],
                     "display_name": row["display_name"],
                 }
+                # CP-2j, and SEPARATE on purpose — see the helper.
+                organization.update(await _registry_projection(db, org_id))
             catalog = await _catalog_slugs(db)
     except Exception:  # noqa: BLE001
         # An unprovisioned org must not stop a member from loading the app —

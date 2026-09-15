@@ -138,15 +138,19 @@ _GSTIN_RE = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
 #: for a body that omits the field.
 DEFAULT_TEAM_SIZE = 1
 
-#: The upper bound on a self-serve team size. **AGENT-PROPOSED DEFAULT (D16/D17
-#: class), recorded for owner ratification.** Every Core seat granted here is a
-#: free TRIAL seat on an unpaid organization (the Console opens a 14-day trial in
-#: the same transaction), so an unbounded number on a public form is an abuse
-#: surface rather than a generosity. Fifty covers every company that plausibly
-#: self-serves; a larger one is a sales conversation, and the operator arm has no
-#: cap. D19.3's hard cap is a DIFFERENT rule — it governs assignment beyond
-#: purchased, not how many a signup may purchase.
-MAX_TEAM_SIZE = 50
+#: The upper bound on a self-serve team size. **OWNER-RULED 2026-09-15: TEN.**
+#: An agent proposed fifty and the owner set it here, so this is a decision and
+#: not a default any more — do not re-argue it in code.
+#:
+#: Every Core seat granted here is a free TRIAL seat on an unpaid organization,
+#: because the Console opens a 14-day trial in the same transaction. So the
+#: number is an abuse bound on a public form, and a bigger team is a sales
+#: conversation. The OPERATOR arm has no cap at all, which is the release valve:
+#: a company of forty signs up for ten and an operator raises it at activation.
+#:
+#: D19.3's hard cap is a DIFFERENT rule. It governs assignment beyond what the
+#: customer bought, never how many a signup may ask for.
+MAX_TEAM_SIZE = 10
 
 #: A team size sent as a STRING must be plain ASCII digits. See ``_team_size``
 #: for why neither ``str.isdigit`` nor ``str.isdecimal`` expresses this: one

@@ -4079,6 +4079,15 @@ def _resolve_for_deployment(req: ResolveRequest, caller: DeploymentCaller) -> di
                     "status": o["status"],
                     "seat": seat_outcomes[o["organization_id"]],
                     "capabilities": _capability_block(o["status"]),
+                    # CP-2j — when the free trial ends, or null. The customer's
+                    # OWN app renders this ("Trial — 12 days left"), so it rides
+                    # the answer the box already caches rather than making the
+                    # tenant call a billing door it is not entitled to reach.
+                    # It is not a balance, a price or an invoice, which is what
+                    # this answer's own bound forbids: it is the deadline the
+                    # person is already living under, and telling them is the
+                    # whole point.
+                    "trial_ends_at": _iso(o["trial_ends_at"]),
                 }
                 for o in admissible
             ],

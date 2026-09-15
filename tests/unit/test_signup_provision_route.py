@@ -524,7 +524,7 @@ class TestTheShapeClasses:
     @pytest.mark.parametrize(
         "bad",
         [
-            0, -1, 51, 9999, "abc", "7.5", 7.5, [], {},
+            0, -1, 11, 9999, "abc", "7.5", 7.5, [], {},
             # `isdigit()` admits these two and `int()` crashes on the first,
             # which let a shape violation escape as a 500 (review finding).
             "²",
@@ -590,7 +590,7 @@ class TestTheShapeClasses:
     def test_the_bound_is_named_rather_than_a_literal(self):
         """`MAX_TEAM_SIZE` is mirrored by `SignUpForm.tsx`, which can only
         mirror something that has a name."""
-        assert route.MAX_TEAM_SIZE == 50
+        assert route.MAX_TEAM_SIZE == 10
         assert route.DEFAULT_TEAM_SIZE == 1
 
     # ── The slug SHAPE gate (P2 repair) — a missing/blank/whitespace or

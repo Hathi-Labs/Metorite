@@ -18,7 +18,24 @@ export type Access = {
   user_id: string;
   authenticated: boolean;
   is_active: boolean;
-  organization: { id?: string; slug?: string; display_name?: string };
+  organization: {
+    id?: string;
+    slug?: string;
+    display_name?: string;
+    /**
+     * What the REGISTRY last said about this organization — `trial`, `active`,
+     * `past_due`, `suspended`, `cancelled` — or absent when this deployment has
+     * never asked (CP-2j, migrations 177 + 199).
+     *
+     * ⚠️ **DISPLAY ONLY. Never gate on it.** Access is `features` /
+     * `capabilities` / `is_admin`, resolved per call. This is a cached word,
+     * and a surface that hid a pane on a stale cache would lock out a paying
+     * customer the gateway would have admitted.
+     */
+    registry_status?: string | null;
+    /** ISO-8601 trial deadline, or absent/null when there is none to show. */
+    trial_ends_at?: string | null;
+  };
   roles: string[];
   legacy_role: string;
   /** Feature slugs this member may reach, e.g. ["chat", "email"]. */
