@@ -2245,27 +2245,45 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `work_plan.md` §2.0 row **M0.4b** · `customer_console.md` §8
 - **Added:** 2026-09-15 · signup-flow session, found by surveying the box
 
-### H-109 · The two Supabase project NAMES are inverted · [OWNER]
-- **Check:** list the Supabase projects. `wbjpwtxigkileyjsgahk` named
-  *"Metorite Application Database"* and `uttxlicdccfkramtjfpi` named
-  *"Metorite Tenant Database"* means this is open.
-- **What is actually true, measured 2026-09-15 from the box's own env.** The
-  GATEWAY is the tenant plane. It runs on `wbjpwtxigkileyjsgahk`, the project
-  named *"Application"*. The CUSTOMER CONSOLE is the cross-tenant
-  registry, and it runs on `uttxlicdccfkramtjfpi` — the project named
-  *"Tenant"*. Each is named after the other's job.
-- **Why it matters more than tidiness.** Every operator act that picks a
-  database by NAME picks the wrong one. **H-98** says the backup job has never
-  covered the Console database, and this is the most likely reason. Somebody
-  backing up "the tenant database" backed up the tenant plane, and believed
-  they were done.
-- **The planes are correctly SEPARATE** — this is a labelling defect, not an
+### H-109 · One word, "tenant", names both planes and points at each · [OWNER]
+- **Check:** ask whether `saas_multitenancy.md` still calls
+  `wbjpwtxigkileyjsgahk` the *tenant plane* while the Supabase project named
+  *"Metorite Tenant Database"* is `uttxlicdccfkramtjfpi`. Both true means this
+  is open.
+- **⚠️ CORRECTED 2026-09-16, by the owner.** This entry said the project names
+  were *"inverted"* and *"each is named after the other's job"*. **That was
+  wrong, and the agent that wrote it did not check the reading it was
+  dismissing.** The owner's naming is coherent:
+  - *"Application Database"* (`wbjpwtxigkileyjsgahk`) holds `app_user`,
+    `organization` and `pm_tasks` — the application's own data.
+  - *"Tenant Database"* (`uttxlicdccfkramtjfpi`) holds `operator`,
+    `deployment`, `org_subscription` and `seat_grant` — the register OF
+    tenants, which the Operator Console manages.
+  Read as *"the database that tracks tenants"*, the second name is exact.
+- **What is really wrong is a COLLISION, and it is in our prose.** The specs use
+  *tenant plane* to mean **where one tenant's rows live**, which is the
+  **Application** Database. The project name uses *tenant* to mean **the list of
+  tenants**, which is the other project. Two defensible meanings, one word, and
+  they point at opposite projects.
+- **Why it still matters.** An instruction that says *"the tenant database"*
+  resolves two ways. **H-98** says the backup job has never covered the Console
+  database. Somebody could have backed up "the tenant database" and meant the
+  other one. That is UNPROVEN. Check it before anybody repeats it as the cause.
+- **The cheap repair, and it keeps the owner's names.** Append the role to each
+  Supabase project name. Then no reader must resolve the word at all:
+  *"Metorite Application Database (tenant plane · customer data)"* and
+  *"Metorite Tenant Database (control plane · registry and operators)"*.
+  Renaming the PROJECTS outright is not needed and was never the defect.
+- **The alternative, which is larger:** stop saying *tenant plane* in the specs.
+  D15 and `saas_multitenancy.md` §0.9.2 rest on that term, so this is a
+  vocabulary change across the plan and is not free.
+- **The planes are correctly SEPARATE** — this is a labelling question, never an
   architecture one. D15 holds.
-- **Why it is OWNER.** Renaming a Supabase project is an infrastructure act.
-  The names may also appear in dashboards, alerts and runbooks that must move
-  with them.
+- **Why it is OWNER.** Renaming a Supabase project is an infrastructure act, and
+  the names may appear in dashboards, alerts and runbooks that must move too.
 - **Authority:** `saas_multitenancy.md` §0.9.2 (the two planes) · D15
-- **Added:** 2026-09-15 · signup-flow session, found by surveying the box
+- **Added:** 2026-09-15 · signup-flow session · **corrected 2026-09-16** when
+  the owner challenged the "inverted" claim and was right.
 
 # DONE — deleted, not archived
 
