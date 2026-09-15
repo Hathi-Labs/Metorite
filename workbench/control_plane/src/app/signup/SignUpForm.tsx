@@ -65,6 +65,17 @@ const REGISTERED_STATES: readonly { code: string; name: string }[] = [
 const GSTIN_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 
 /**
+ * The upper bound on the team size this form will submit.
+ *
+ * ⚠️ A MIRROR of `gateway/routes/signup.py`'s `MAX_TEAM_SIZE`, which is the
+ * fence. Kept here only so the field can refuse before the round trip, exactly
+ * as `GSTIN_RE` above mirrors `_GSTIN_RE`. Every Core seat granted at signup is
+ * a free trial seat, so the bound is an abuse limit rather than a product
+ * limit — a larger team is a sales conversation.
+ */
+const MAX_TEAM_SIZE = 50;
+
+/**
  * The slug vocabulary — **both halves imported, neither mirrored** (repair round
  * 1, 2026-08-24). `@/lib/subdomain` owns the shape (`SLUG_RE`) *and* the
  * reserved set (`RESERVED_LABELS`, owner ruling B7); `proxy.ts`'s host parser
@@ -149,6 +160,14 @@ export default function SignUpForm({
   const [slugTouched, setSlugTouched] = useState(false);
   const [state, setState] = useState("");
   const [gstin, setGstin] = useState("");
+  // How many people will use Metorite — the Core seats the new organization is
+  // born with. It exists because the answer used to be ONE, silently: the
+  // Console's default, which this flow never overrode. The founder took that
+  // seat, the WelcomeDialog told them to invite their team, and the first
+  // colleague's sign-in was refused at the cap with "ask your admin for an
+  // invite" — to the admin who had just invited them. Defaults to 1, so a solo
+  // founder is charged for nothing they did not ask for.
+  const [teamSize, setTeamSize] = useState("1");
   const [error, setError] = useState<string | null>(null);
   const [needsSignIn, setNeedsSignIn] = useState(false);
   const [pending, setPending] = useState(false);
@@ -160,8 +179,19 @@ export default function SignUpForm({
   const slugReserved = RESERVED.has(trimmedSlug.toLowerCase());
   const slugOk = slugShapeOk && !slugReserved;
   const gstinOk = trimmedGstin === "" || GSTIN_RE.test(trimmedGstin);
+  // Advisory UX only — `signup.py`'s `_team_size` is the fence, and it owns the
+  // bound. Mirrored here so a typo is caught before the round trip.
+  const teamSizeOk =
+    /^[0-9]+$/.test(teamSize.trim()) &&
+    Number(teamSize.trim()) >= 1 &&
+    Number(teamSize.trim()) <= MAX_TEAM_SIZE;
   const canSubmit =
-    displayName.trim() !== "" && slugOk && state !== "" && gstinOk && !pending;
+    displayName.trim() !== "" &&
+    slugOk &&
+    state !== "" &&
+    gstinOk &&
+    teamSizeOk &&
+    !pending;
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -170,7 +200,7 @@ export default function SignUpForm({
     try {
       // POSTs to the NEXT hop, never the gateway directly: the gateway's
       // provision route is BFF-internal and session-email-only, so the hop is
-      // what attaches the acting identity. The body carries only these four
+      // what attaches the acting identity. The body carries only these five
       // fields — the owner is the session email, added server-side (R11).
       const res = await fetch("/api/signup", {
         method: "POST",
@@ -180,6 +210,9 @@ export default function SignUpForm({
           display_name: displayName.trim(),
           registered_state: state,
           gstin: trimmedGstin,
+          // A NUMBER on the wire, not the input's string: the gateway accepts
+          // both, and sending the typed value keeps the contract obvious.
+          team_size: Number(teamSize.trim()),
         }),
       });
 
@@ -355,6 +388,34 @@ export default function SignUpForm({
                   </option>
                 ))}
               </Select>
+            </label>
+
+            <label className="flex flex-col gap-1 text-left">
+              <span className="text-xs font-medium text-muted-foreground">
+                How many people will use Metorite?
+              </span>
+              <Input
+                inputSize="lg"
+                type="number"
+                min={1}
+                max={MAX_TEAM_SIZE}
+                value={teamSize}
+                onChange={(e) => setTeamSize(e.target.value)}
+                autoComplete="off"
+              />
+              {teamSize.trim() !== "" && !teamSizeOk ? (
+                <span className="text-xs text-destructive">
+                  Enter a whole number between 1 and {MAX_TEAM_SIZE}.
+                </span>
+              ) : (
+                // The standing explanation. It has to say that inviting people
+                // LATER is fine, or the founder reads the field as a permanent
+                // commitment and picks a number to be safe.
+                <span className="text-xs text-muted-foreground">
+                  Sets how many seats your workspace starts with, you included.
+                  You can change this later from Settings.
+                </span>
+              )}
             </label>
 
             <label className="flex flex-col gap-1 text-left">

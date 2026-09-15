@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { suggestSlug } from "@/lib/format";
+import { slugProblem, suggestSlug } from "@/lib/slug";
 
 // The "create a new customer" ACTION on the customers list. Create-only: it
 // POSTs to the server-side `/api/operator/provision` BFF route, which holds the
@@ -81,8 +81,14 @@ export default function NewCustomer({
     if (r?.ok) setDone(true);
   }
 
+  // Advisory only — the Console's `ProvisionRequest` validator is the fence.
+  // Shown here so the operator fixes a bad slug before the round trip, rather
+  // than reading a pydantic 422 out of the relayed error panel.
+  const slugIssue = slugProblem(slug);
+
   const canSubmit =
     slug.trim().length > 0 &&
+    slugIssue === null &&
     name.trim().length > 0 &&
     ownerEmail.trim().length > 0 &&
     deploymentLabel.trim().length > 0 &&
@@ -156,10 +162,17 @@ export default function NewCustomer({
           setSlug(e.target.value);
         }}
       />
-      <div className="field-hint">
-        Lowercase letters, numbers and hyphens. Used in URLs and reports —
-        cannot be changed later.
-      </div>
+      {/* `.field-hint.warn` already means "what you are about to save will not
+          work yet", which is exactly this state. A new `.err` class would be a
+          second colour vocabulary for it (root `CLAUDE.md` §4). */}
+      {slugIssue ? (
+        <div className="field-hint warn">{slugIssue}</div>
+      ) : (
+        <div className="field-hint">
+          Lowercase letters, numbers and hyphens. Used in URLs and reports —
+          cannot be changed later.
+        </div>
+      )}
 
       <label htmlFor="nc-email">Owner&apos;s email</label>
       <input

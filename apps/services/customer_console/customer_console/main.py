@@ -214,6 +214,54 @@ app = FastAPI(
 )
 
 
+# ── The organization-slug vocabulary ────────────────────────────────────────
+#
+# ⚠️ **A THIRD copy in a THIRD language, and it is pinned rather than trusted.**
+# The canonical set is `workbench/control_plane/src/lib/subdomain.ts`, and
+# `tests/unit/test_subdomain_host_vocabulary.py` READS that file and asserts
+# both Python twins equal it — the gateway's (`gateway/routes/signup.py`) and
+# this one. Editing one side without the others is a red test, which is the
+# whole reason a copy is allowed to exist here at all
+# (`workbench/control_plane/AGENTS.md` rule 5: a mirror goes stale and then
+# lies).
+#
+# ⚠️ **It is a copy because this service may not import the gateway's.** The
+# Customer Console is cross-tenant and depends on NO `acb_*` package by design —
+# its own dependency list argues that adding a package to a cross-tenant service
+# is a supply-chain decision, not a convenience (CP-9 §9.4). So the choice was a
+# fenced copy or an unfenced gap, and the gap is what shipped until now.
+
+#: The slug's shape — a DNS-label-safe subdomain. The twin of
+#: `gateway/routes/signup.py`'s `_SLUG_RE`, applied with `fullmatch`.
+_SLUG_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+#: Hostnames a customer may never own, because the platform already does — or
+#: intends to. Owner ruling B7, 2026-08-24 (`saas_multitenancy.md` §11 MT-1f).
+_RESERVED_SLUGS = frozenset({
+    "admin",
+    "api",
+    "app",
+    "assets",
+    "auth",
+    "billing",
+    "cdn",
+    "console",
+    "dev",
+    "docs",
+    "help",
+    "login",
+    "mail",
+    "operator",
+    "signin",
+    "signup",
+    "staging",
+    "static",
+    "status",
+    "ws",
+    "www",
+})
+
+
 # ── Schemas ─────────────────────────────────────────────────────────────────
 
 
@@ -239,6 +287,17 @@ class ProvisionRequest(BaseModel):
     mutation is still run against it.
     """
 
+    #: The organization's slug, and the CROSS-PLANE JOIN KEY. Shape-checked
+    #: here, at the one door both arms pass through.
+    #:
+    #: ⚠️ **This was a bare ``str`` until 2026-09-15, and the two arms disagreed
+    #: about what a slug is.** The gateway's self-serve door refuses `API`,
+    #: `docs`, `acme_co` and `acme-` before they reach the Console
+    #: (``gateway/routes/signup.py``'s ``_SLUG_RE`` + ``_RESERVED_SLUGS``). The
+    #: OPERATOR arm reaches this model directly and refused none of them, so an
+    #: operator could create the slug that names this very gateway's hostname —
+    #: the exact live defect owner ruling B7 closed on the other arm. Same rule,
+    #: one door, both arms.
     slug: str
     name: str
     #: Which deployment this organization is placed on — **named by the
@@ -266,6 +325,39 @@ class ProvisionRequest(BaseModel):
     billing_state: str | None = None
     owner_email: str
     core_seats: int = Field(default=1, ge=1)
+
+    @field_validator("slug")
+    @classmethod
+    def _slug_is_a_safe_label(cls, value: str) -> str:
+        """Refuse a slug the platform could never host, on EITHER arm.
+
+        422, not 400: this is pydantic's own shape refusal and it fires before
+        the handler, which is the right layer for a value that is malformed
+        rather than unavailable. The handler's 400/404/409 stay what they are —
+        they answer questions about *deployments and ownership*, which need a
+        database read. This one needs nothing.
+
+        ⚠️ The gateway's self-serve arm still refuses the same two things
+        FIRST, with its own ``InvalidSlug``/``ReservedSlug`` codes, so a founder
+        sees friendly copy rather than a 422. That is not a duplicate fence —
+        it is the form's affordance in front of this, the real one.
+        """
+        slug = (value or "").strip()
+        if not _SLUG_RE.fullmatch(slug):
+            raise ValueError(
+                "the slug must be a DNS-label-safe subdomain: lowercase "
+                "alphanumeric and internal hyphens, no leading or trailing "
+                "hyphen, at most 63 characters"
+            )
+        # AFTER the shape check, for the reason the gateway twin gives: a
+        # reserved label is perfectly well-formed, so calling it malformed
+        # sends the operator to fix a thing that is not wrong.
+        if slug in _RESERVED_SLUGS:
+            raise ValueError(
+                "that workspace address is reserved for the platform; "
+                "please choose a different one"
+            )
+        return slug
 
 
 class LifecycleRequest(BaseModel):

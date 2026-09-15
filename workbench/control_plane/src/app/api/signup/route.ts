@@ -56,7 +56,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const str = (v: unknown) => (typeof v === "string" ? v : "");
 
-  // ONLY the four signup fields. Identity comes from the session (R11), so no
+  // ONLY the five signup fields. Identity comes from the session (R11), so no
   // email / org / deployment_label is ever placed here — a caller that smuggles
   // one is simply not relayed it.
   const forward = {
@@ -64,6 +64,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     display_name: str(body.display_name),
     registered_state: str(body.registered_state),
     gstin: str(body.gstin),
+    // How many people will use Metorite — the Core seats the new organization
+    // is born with. Relayed as the caller sent it and deliberately NOT coerced
+    // here: the gateway owns the range (`_team_size`, 1..MAX_TEAM_SIZE), and a
+    // second opinion in this hop is a second fence that can drift from the real
+    // one. Absent stays absent, so the gateway applies its own default.
+    team_size: body.team_size,
   };
 
   try {

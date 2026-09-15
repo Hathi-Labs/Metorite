@@ -165,8 +165,10 @@ class _CaptureConsole:
         self.calls: list[tuple] = []
 
     async def __call__(self, slug, name, owner_email, *, gstin=None,
-                       billing_state=None):
-        self.calls.append((slug, name, owner_email, gstin, billing_state))
+                       billing_state=None, core_seats=None):
+        self.calls.append(
+            (slug, name, owner_email, gstin, billing_state, core_seats)
+        )
         if self.exc is not None:
             raise self.exc
         return self.result
@@ -459,6 +461,111 @@ class TestTheShapeClasses:
 
         assert r.json()["admit"] is True
         assert capture.calls[0][3] == VALID_GSTIN  # gstin threaded through
+
+    # ── The TEAM SIZE gate (2026-09-15) — the Core seats the new org is born
+    # with. It exists because the answer used to be ONE, silently: this route
+    # never sent `core_seats`, so the Console applied its own default. The
+    # founder took that seat and the first colleague they invited was refused at
+    # the cap with "ask your admin for an invite" — to the admin who had just
+    # invited them.
+
+    def _admits(self, monkeypatch):
+        """Stub both planes and return the Console capture."""
+        monkeypatch.setattr(route, "membership_of", _areturn(None))
+        monkeypatch.setattr(route, "org_owner_of", _areturn(None))
+        monkeypatch.setattr(
+            route, "provision_local_organization", _areturn("org-id")
+        )
+        capture = _CaptureConsole(
+            result={"organization_id": "c", "slug": "acme"}
+        )
+        monkeypatch.setattr(route, "provision_org_on_console", capture)
+        return capture
+
+    def test_the_team_size_reaches_the_console_as_core_seats(
+        self, flag_on, monkeypatch, _stub_mirror_writes
+    ):
+        """The whole point: the number the founder gave BUYS that many seats."""
+        capture = self._admits(monkeypatch)
+
+        r = _client().post("/signup/provision", json=_body(team_size=7))
+
+        assert r.json()["admit"] is True
+        assert capture.calls[0][5] == 7
+
+    def test_a_body_with_no_team_size_still_provisions_ONE(
+        self, flag_on, monkeypatch, _stub_mirror_writes
+    ):
+        """The old wire shape keeps working, and keeps meaning what it meant.
+
+        A caller that predates the field must not start failing, and must not
+        silently start buying seats either.
+        """
+        capture = self._admits(monkeypatch)
+
+        r = _client().post("/signup/provision", json=_body())
+
+        assert r.json()["admit"] is True
+        assert capture.calls[0][5] == route.DEFAULT_TEAM_SIZE == 1
+
+    def test_a_digit_STRING_is_accepted(
+        self, flag_on, monkeypatch, _stub_mirror_writes
+    ):
+        """An HTML number input round-trips its value as text through
+        ``JSON.stringify`` whenever the form holds it in state as a string, so
+        the wire shape must not depend on which of the two the caller sends."""
+        capture = self._admits(monkeypatch)
+
+        r = _client().post("/signup/provision", json=_body(team_size="7"))
+
+        assert r.json()["admit"] is True
+        assert capture.calls[0][5] == 7
+
+    @pytest.mark.parametrize(
+        "bad", [0, -1, 51, 9999, "abc", "7.5", 7.5, [], {}, "  "]
+    )
+    def test_a_team_size_outside_the_range_is_400_InvalidTeamSize(
+        self, flag_on, bad
+    ):
+        r = _client().post("/signup/provision", json=_body(team_size=bad))
+        assert r.status_code == 400, bad
+        assert r.json()["code"] == "InvalidTeamSize", bad
+
+    def test_a_JSON_true_is_refused_rather_than_read_as_ONE(self, flag_on):
+        """``isinstance(True, int)`` is True in Python.
+
+        Without the explicit bool arm, a JSON ``true`` would provision an
+        organization with one seat and no complaint — a caller who sent
+        nonsense and got a working org is a caller who never learns.
+        """
+        r = _client().post("/signup/provision", json=_body(team_size=True))
+        assert r.status_code == 400
+        assert r.json()["code"] == "InvalidTeamSize"
+
+    def test_a_bad_team_size_touches_NEITHER_plane(self, flag_on, monkeypatch):
+        """Refused on SHAPE, before step 0/1/2 — so a bad number can never
+        leave a tenant organization behind for a signup that did not complete.
+        """
+        called: list[str] = []
+
+        async def _never(*a, **k):
+            called.append("provisioned")
+            return "org-id"
+
+        monkeypatch.setattr(route, "membership_of", _areturn(None))
+        monkeypatch.setattr(route, "org_owner_of", _areturn(None))
+        monkeypatch.setattr(route, "provision_local_organization", _never)
+
+        r = _client().post("/signup/provision", json=_body(team_size=0))
+
+        assert r.status_code == 400
+        assert called == []
+
+    def test_the_bound_is_named_rather_than_a_literal(self):
+        """`MAX_TEAM_SIZE` is mirrored by `SignUpForm.tsx`, which can only
+        mirror something that has a name."""
+        assert route.MAX_TEAM_SIZE == 50
+        assert route.DEFAULT_TEAM_SIZE == 1
 
     # ── The slug SHAPE gate (P2 repair) — a missing/blank/whitespace or
     # non-DNS-label-safe slug is a 400 shape refusal, never the transient

@@ -489,6 +489,7 @@ async def _post_provision(
     owner_email: str,
     gstin: str | None,
     billing_state: str | None,
+    core_seats: int | None = None,
 ) -> dict[str, Any]:
     """Present the deployment key to the ``/orgs/provision`` DEPLOYMENT-KEY arm.
 
@@ -497,6 +498,19 @@ async def _post_provision(
     same rule the resolve arm applies to ``org_slug``). ``gstin`` and
     ``billing_state`` thread straight to the Console org row; the Console side
     already accepts both (``main.py:169-170``), so no Console change is needed.
+
+    ⚠️ **``core_seats`` is sent now, and omitting it was a LIVE DEFECT.** The
+    Console defaults ``ProvisionRequest.core_seats`` to **1** and this client
+    never sent the field, so every self-serve organization was born with exactly
+    one Core seat. The founder takes that seat at their own first resolve. The
+    WelcomeDialog then tells them to invite their team, the colleague's first
+    sign-in hits ``_allocate_core_seat``'s cap 409, and ``resolve_for_signin``
+    renders it as *"ask your admin for an invite"* — to the admin who just
+    invited them. The signup form now asks how many people will use Metorite and
+    that count arrives here.
+
+    ``None`` omits the field, so the Console default applies and every caller
+    that does not pass it stays byte-identical.
     """
     settings = get_settings()
     base = settings.customer_console_url.strip().rstrip("/")
@@ -511,6 +525,11 @@ async def _post_provision(
         payload["gstin"] = gstin
     if billing_state:
         payload["billing_state"] = billing_state
+    # Omitted when None, so the Console's own default (1) still applies to any
+    # caller that has nothing to say about team size. `ge=1` is the Console's
+    # fence; the gateway route bounds the upper end before it reaches here.
+    if core_seats is not None:
+        payload["core_seats"] = core_seats
 
     try:
         client = _new_http_client()
@@ -547,6 +566,7 @@ async def provision_org_on_console(
     *,
     gstin: str | None = None,
     billing_state: str | None = None,
+    core_seats: int | None = None,
 ) -> dict[str, Any]:
     """Mirror a signup provision onto the Customer Console. Idempotent on slug.
 
@@ -554,6 +574,12 @@ async def provision_org_on_console(
     provisioned FIRST (the hard one-email-one-org guard), then this mirrors the
     org onto the Console so the registry can meter and cap it. Returns the
     Console's ``{organization_id, slug}`` on success.
+
+    Args:
+        core_seats: how many Core seats to grant on FIRST provision — the team
+            size the founder gave at signup. ``None`` omits the field and the
+            Console grants its default of 1. The Console grants seats only when
+            the org has none yet, so a retry never buys a second batch.
 
     Raises:
         ConsoleProvisionUnavailable: the box is not wired, or the Console did
@@ -567,7 +593,9 @@ async def provision_org_on_console(
         # the same logic — the caller has already committed the tenant plane, so
         # the org works dark, and a wired resubmit catches the Console up.
         raise ConsoleProvisionUnavailable("unwired")
-    return await _post_provision(slug, name, owner_email, gstin, billing_state)
+    return await _post_provision(
+        slug, name, owner_email, gstin, billing_state, core_seats
+    )
 
 
 # ── The seat-admin client (WS-30 SC-2a / customer_console.md §6 item (h), CP-2h) ─
