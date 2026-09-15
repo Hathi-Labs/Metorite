@@ -6,7 +6,7 @@
 --
 -- Batched UPDATE. Re-runnable and interruptible — each statement is idempotent, so a run that aborts can simply be run again. This is the slow phase; expect it to be the long pole on any table with real volume.
 --
--- Tables in this phase: 140
+-- Tables in this phase: 141
 --
 -- ⚠️ NOT COVERED BY THIS FILE — `organization_id` already means something
 -- else on these tables, so scoping them by that name would corrupt a
@@ -306,6 +306,9 @@ UPDATE pm_notifications SET organization_id = (SELECT id FROM organization WHERE
  WHERE organization_id IS NULL;
 
 UPDATE pm_project_grants SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
+UPDATE pm_project_watchers SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE pm_projects SET organization_id = (SELECT id FROM organization WHERE slug = 'default')

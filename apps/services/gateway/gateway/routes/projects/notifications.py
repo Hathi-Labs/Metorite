@@ -43,6 +43,9 @@ from gateway.routes.projects.core import (
     router,
     task_visibility_clause,
 )
+
+# `watchers` imports only from `core`, so this direction adds no cycle.
+from gateway.routes.projects.watchers import project_chain_watchers
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -256,7 +259,33 @@ async def task_audience(db: Any, task_id: str) -> list[str]:
         ),
         {"tid": task_id},
     )).fetchall()
-    return [r.who for r in rows if getattr(r, "who", None)]
+    direct = [r.who for r in rows if getattr(r, "who", None)]
+
+    # ── WS-27bk §9.12.2(b): PLUS the watchers of the task's PROJECT CHAIN ──
+    #
+    # Resolved HERE, per event, rather than expanded into task watcher rows
+    # when somebody subscribes. That is the whole design of migration 203: a
+    # task created after the subscription is covered by it, and one click
+    # never writes thousands of rows.
+    #
+    # A personal task has no project, and `project_chain_watchers` answers
+    # empty for that rather than raising — a notification for a personal task
+    # must still be delivered.
+    row = (await db.execute(
+        text("SELECT project_id FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
+        {"tid": task_id},
+    )).fetchone()
+    chain = await project_chain_watchers(db, getattr(row, "project_id", None))
+
+    # Deduped, and the union is deliberately NOT filtered here: `notify` still
+    # drops the actor and agents and runs every recipient through
+    # `resolve_visibility_for`. A project watcher who cannot see the task hears
+    # nothing, exactly like a task watcher who lost the grant.
+    seen: dict[str, None] = {}
+    for who in (*direct, *chain):
+        if who:
+            seen.setdefault(who, None)
+    return list(seen)
 
 
 # ── Reading ─────────────────────────────────────────────────────────────────

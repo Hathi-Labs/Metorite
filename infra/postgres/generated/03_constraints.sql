@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 140
+-- Tables in this phase: 141
 --
 -- ⚠️ NOT COVERED BY THIS FILE — `organization_id` already means something
 -- else on these tables, so scoping them by that name would corrupt a
@@ -1150,6 +1150,18 @@ ALTER TABLE pm_project_grants ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE pm_project_grants ADD CONSTRAINT pm_project_grants_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS pm_project_grants_org_idx ON pm_project_grants (organization_id);
+
+-- pm_project_watchers
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_project_watchers WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_project_watchers still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_project_watchers ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_project_watchers ADD CONSTRAINT pm_project_watchers_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_project_watchers_org_idx ON pm_project_watchers (organization_id);
 
 -- pm_projects
 DO $$
