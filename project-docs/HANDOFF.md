@@ -80,17 +80,41 @@ line — never reclaim a number by deleting the other entry.
   `scripts/apply_migrations.sh` (it matches numbered files in `infra/postgres`
   only). Files in that subdirectory, with a glob that does not reach them, means
   this is open.
-- **✅ The half that BLOCKED M1 is fixed** (migration 200, 2026-09-15). The
-  symptom was that `provision_org_roles` raised
-  `null value in column "organization_id"` on production, so no new organization
-  could be created there at all. 200 carries the column when it exists.
-  `tests/unit/test_org_provisioning_tenancy.py` applies the NOT NULL column
-  itself and proves it, and it is RED without 200 with the exact production
-  error.
-- **What is STILL open, and it is the cause rather than the symptom.** A fresh
+- **✅ The half that BLOCKED M1 is fixed — it took THREE migrations, not one.**
+  Each fix showed the next, because nothing could see past the one in hand.
+  Migrations 200, 201 and 202, all on 2026-09-15:
+  - **200** — `provision_org_roles` raised
+    `null value in column "organization_id"` on `org_role_permission`.
+  - **201** — `provision_org_owner` raised the same on `user_role`, one
+    statement later. 200's fence added the column to ONE table. Production
+    carries it on SEVEN, so that fence could not see this head.
+  - **202** — provisioning then succeeded as `postgres` and still FAILED as
+    `acb_app` with `new row violates row-level security policy`. A superuser
+    bypasses FORCE RLS, so a hand-run SQL check proves nothing about the path
+    the application takes.
+- **⚠️ Migration 185 was in the ledger and its fix was NOT in the function.**
+  185 binds `app.tenant_id` before the FORCE-RLS'd writes. Production ran 179's
+  body. `schema.generated.sql` carries that same pre-185 body, which is the
+  shape a snapshot restore leaves. **The ledger records that we RAN a file, and
+  never that the object still SAYS it.** For a `CREATE OR REPLACE` migration,
+  later drift is invisible and un-repairable in place. Editing 185 reaches
+  nothing, because the runner skips it on checksum. Only three functions in the
+  whole ladder are ever redefined, and all three are the provisioning ones.
+- **✅ Two fences now exist, and each one proves it can fail.**
+  `tests/unit/test_tenancy_insert_fence.py` counts every ladder `INSERT` into a
+  tenant-scoped table that omits `organization_id`. It found 30, records each
+  with a reason, and fails on a new one.
+  `tests/unit/test_org_provisioning_rls.py` provisions as a NON-OWNER role with
+  the real policy applied, which no earlier suite did.
+- **What is STILL open, and it is the cause and not the symptom.** A fresh
   developer database and CI's replay have a DIFFERENT SCHEMA from production, so
   every test runs on a shape production does not have. The next defect of this
-  class is invisible in exactly the same way this one was.
+  class is invisible in exactly the same way these three were.
+- **⚠️ Measured 2026-09-15: a fresh install now FAILS on a tenancy-applied
+  database.** Apply `generated/{01,02,03}` to a scratch tenant database, then
+  replay the ladder. 92 suites error, all of them on 130's seed block, which
+  inserts into `org_role_permission` without naming the column. Production never
+  replays 130, because it is in the ledger. A new box has no such protection.
 - **Why it was not fixed with 200:** putting those files on the ladder changes
   what every developer database and every CI run contains, and it needs its own
   rehearsal. It is a bigger act than unblocking M1, and doing both in one PR
@@ -98,7 +122,7 @@ line — never reclaim a number by deleting the other entry.
 - **The shape of the repair:** give the generated files numbered names on the
   ladder, or teach the runner a second directory. Then delete the `ELSE` arm in
   migration 200, which exists ONLY for the schema this divergence creates.
-- **Authority:** `saas_multitenancy.md` §11 MT-1j · migration 200's header
+- **Authority:** `saas_multitenancy.md` §11 MT-1j · the headers of migrations 200, 201 and 202
 - **Added:** 2026-09-06, from the WS-27 status-sets deploy · **narrowed
   2026-09-15** when the provisioning half was fixed.
 ### H-105 · ⚠️ Production migrations run with NO pre-migration backup · [OWNER]
@@ -2198,28 +2222,6 @@ line — never reclaim a number by deleting the other entry.
   from H-98 on 2026-09-05**, because `main` minted its own H-98 (the
   Console backup gap) and merged first. Ids are never reused, so that one
   keeps the number. `test_handoff_queue` named the collision.
-
-### H-106 · Flip `CONSOLE_BOOTSTRAP_ENABLED` — but ONLY after H-104 · [AGENT]
-- **Check:** `ssh metorite 'grep -c CONSOLE_BOOTSTRAP_ENABLED /opt/acb/app/.env'`
-  → `0`, or a value that is not `true`, means this is open.
-- **Why:** without the flag, an operator who creates a customer in the Operator
-  Console still leaves that customer unable to sign in. The code that repairs it
-  ships dark. The interval (`CONSOLE_BOOTSTRAP_INTERVAL_SECONDS`, default 60) is
-  the worst case between creating a customer and that customer working.
-- ✅ **UNBLOCKED 2026-09-15.** H-104's provisioning half is fixed by migration
-  200, so `provision_organization` now succeeds on a tenancy-applied database.
-  This is a normal `enforcement-flip` act again.
-- **Verify by EVIDENCE, never by the flag being set.** Create a customer in the
-  Operator Console, then watch `console_resolve.bootstrap_provisioned` appear
-  for that slug within `CONSOLE_BOOTSTRAP_INTERVAL_SECONDS` (default 60). A
-  `bootstrap_failed` line names the real cause.
-- **Meanwhile there is a manual path that has the same dependency:**
-  `uv run python -m scripts.bootstrap_placed_orgs` — one pass, same failure while
-  H-104 is open.
-- **Authority:** CLAUDE.md §3a gate `enforcement-flip` (grantable until
-  2026-09-30) · `deploy/hostinger/CUSTOMER_CONSOLE.md`
-- **Added:** 2026-09-15 · signup-flow review session · PR for branch
-  `signup-flow-repair`
 
 ### H-108 · 🔴 The Console's database auto-pauses, which is a total onboarding outage · [OWNER]
 - **Check:** ask Supabase for project `uttxlicdccfkramtjfpi`. Anything other than
