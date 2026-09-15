@@ -27,7 +27,25 @@ import pytest
 
 # tests/unit/test_marketing_site.py -> parents[2] == repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SITE_HTML = REPO_ROOT / "site" / "index.html"
+SITE_DIR = REPO_ROOT / "site"
+SITE_HTML = SITE_DIR / "index.html"
+
+
+def site_pages() -> list[Path]:
+    """EVERY page under ``site/``, discovered rather than listed.
+
+    The zero-surface rules bind the SUBTREE, not one file. Until the privacy
+    and terms pages were added (2026-09-16) this suite named ``index.html``
+    alone, so a second page could have carried a tracker, a cookie or a CDN
+    font and every test here would still have passed. A page nobody fences is
+    a page the rules do not reach.
+
+    The CTA tests below stay on ``index.html``, because only the apex page owes
+    a sign-up link.
+    """
+    found = sorted(SITE_DIR.glob("*.html"))
+    assert found, f"no HTML pages found under {SITE_DIR}"
+    return found
 
 MAX_BYTES = 100 * 1024  # 100 KB hard ceiling from the spec.
 ALLOWED_ORIGIN = "https://app.metorite.com"
@@ -69,10 +87,11 @@ def test_signin_link_is_its_own_exact_href() -> None:
 
 
 def test_no_script_tag() -> None:
-    html = _read_html()
-    assert "<script" not in html.lower(), (
-        "the marketing page must contain no <script tag (no JavaScript at all)"
-    )
+    for page in site_pages():
+        html = page.read_text(encoding="utf-8")
+        assert "<script" not in html.lower(), (
+            f"{page.name} must contain no <script tag (no JavaScript at all)"
+        )
 
 
 def test_no_foreign_origin_referenced() -> None:
@@ -88,9 +107,13 @@ def test_no_foreign_origin_referenced() -> None:
     # are all rejected. Values that reference no host — anchors (#top), relative
     # paths, and self-contained data: URIs (site/AGENTS.md permits inline SVG /
     # data: imagery) — name no origin and are allowed.
-    html = _read_html()
     offenders: list[str] = []
-    for value in _URL_ATTR.findall(html):
+    pairs = [
+        (page.name, value)
+        for page in site_pages()
+        for value in _URL_ATTR.findall(page.read_text(encoding="utf-8"))
+    ]
+    for page_name, value in pairs:
         v = value.strip()
         try:
             parts = urlsplit(v)
@@ -107,25 +130,30 @@ def test_no_foreign_origin_referenced() -> None:
             # thing, so treat it as an offender rather than letting it slip past.
             references_host, allowed = True, False
         if references_host and not allowed:
-            offenders.append(v)
+            offenders.append(f"{page_name}: {v}")
     assert not offenders, (
-        "the marketing page may only reference the exact origin "
-        f"{ALLOWED_ORIGIN}; foreign or malformed origins found: {offenders}"
+        "every page under site/ may only reference the exact origin "
+        f"{ALLOWED_ORIGIN}. Foreign or malformed origins found: {offenders}"
     )
 
 
 def test_no_cookie_use() -> None:
-    # A static page has no business setting cookies; guard the obvious vectors.
-    html = _read_html().lower()
-    assert "document.cookie" not in html, "the page must not touch cookies"
-    assert 'http-equiv="set-cookie"' not in html, "the page must not set cookies"
+    # A static page has no business setting cookies. Guard the obvious vectors,
+    # on every page in the subtree.
+    for page in site_pages():
+        html = page.read_text(encoding="utf-8").lower()
+        assert "document.cookie" not in html, f"{page.name} must not touch cookies"
+        assert 'http-equiv="set-cookie"' not in html, (
+            f"{page.name} must not set cookies"
+        )
 
 
 def test_size_under_100kb() -> None:
-    size = SITE_HTML.stat().st_size
-    assert size < MAX_BYTES, (
-        f"the marketing page is {size} bytes; it must stay under {MAX_BYTES}"
-    )
+    for page in site_pages():
+        size = page.stat().st_size
+        assert size < MAX_BYTES, (
+            f"{page.name} is {size} bytes; it must stay under {MAX_BYTES}"
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover - convenience runner
