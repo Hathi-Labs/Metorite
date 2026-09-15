@@ -51,7 +51,12 @@ import httpx
 from acb_auth.console_resolve import (
     BootstrapSummary,
     bootstrap_placed_orgs,
+    reconcile,
     start_console_bootstrap,
+)
+from acb_common.provisioning import (
+    persist_org_billing_profile,
+    provision_local_organization,
 )
 from sqlalchemy import create_engine, text
 
@@ -582,3 +587,323 @@ class TestThePlacedOrgsDoor:
         ) as client:
             response = await client.post("/registry/orgs", json={})
         assert response.status_code in (401, 403)
+
+
+def _console_seat_quantity(console_db, slug: str):
+    """The Core seats the Console granted this org, or None if it has no row.
+
+    A SUM, because `seat_grant` is append-only and signed — a reduction is a
+    negative grant, never an UPDATE (`001_customer_console.sql:174`). Reading a
+    single row would be right today only because provisioning grants once.
+    """
+    with console_db.connect() as c:
+        return c.execute(
+            text(
+                "SELECT sum(g.quantity_purchased) FROM seat_grant g "
+                "  JOIN organization o ON o.id = g.organization_id "
+                " WHERE o.slug = :s AND g.plan_slug = 'core'"
+            ),
+            {"s": slug},
+        ).scalar()
+
+
+# ══ 5 · the review findings, each with the failure it closes ═════════════════
+
+@_R8
+class TestACancelledCustomerGetsNoWorkspace:
+    """Review finding P1. The sweep built a live tenant for a dead customer.
+
+    A lifecycle transition updates ``organization.status`` and the subscription
+    and touches NEITHER ``org_placement`` NOR ``org_membership``. Only a purge
+    removes those, and purge is reachable from ``deleted`` alone. So a cancelled
+    customer stays in the door's answer indefinitely — and the sweep would give
+    them a brand-new EMPTY workspace with an ACTIVE owner, months after they
+    left. Arming the flag on an existing box would do it for the whole
+    historical backlog in one pass.
+    """
+
+    async def _set_status(self, console_db, slug, status):
+        with console_db.begin() as c:
+            c.execute(
+                text("UPDATE organization SET status = :st WHERE slug = :s"),
+                {"st": status, "s": slug},
+            )
+
+    @pytest.mark.parametrize("status", ["cancelled", "suspended", "deleted"])
+    async def test_a_customer_who_is_not_being_served_is_skipped(
+        self, tenant_db, console_db, wired, status
+    ):
+        slug, owner = _new_org()
+        await _console_only_customer(wired, slug, owner)
+        await self._set_status(console_db, slug, status)
+
+        async with tenant_engine_scope(_TENANT_URL):
+            summary = await bootstrap_placed_orgs()
+
+        assert summary.skipped_not_serving >= 1, status
+        assert slug not in _tenant_slugs(tenant_db), status
+
+    @pytest.mark.parametrize("status", ["trial", "active", "past_due"])
+    async def test_a_customer_who_IS_being_served_is_provisioned(
+        self, tenant_db, console_db, wired, status
+    ):
+        """The other half, and the one that makes the case above non-vacuous: a
+        gate that refused everything would pass every parametrisation there."""
+        slug, owner = _new_org()
+        await _console_only_customer(wired, slug, owner)
+        await self._set_status(console_db, slug, status)
+
+        async with tenant_engine_scope(_TENANT_URL):
+            await bootstrap_placed_orgs()
+
+        assert slug in _tenant_slugs(tenant_db), status
+
+    async def test_the_verdict_travels_as_a_BOOLEAN_not_a_lifecycle_word(
+        self, console_db, wired
+    ):
+        """§6(d): the box must never branch on a lifecycle word, or it holds a
+        second copy of the Console's state machine spelled as an ``if``."""
+        slug, owner = _new_org()
+        await _console_only_customer(wired, slug, owner)
+
+        async with httpx.AsyncClient(
+            transport=wired.transport, base_url="http://console.invalid"
+        ) as client:
+            response = await client.post(
+                "/registry/orgs",
+                headers={"Authorization": "Bearer " + wired.token},
+                json={},
+            )
+        row = next(
+            r for r in response.json()["organizations"] if r["slug"] == slug
+        )
+        assert row["provisionable"] is True
+
+    async def test_a_console_that_omits_the_field_provisions_NOTHING(
+        self, tenant_db, monkeypatch
+    ):
+        """Fail CLOSED on silence. A Console predating the field tells us
+        nothing, and building a workspace on nothing is the wrong direction."""
+        async def _answer():
+            return [{"slug": "no-verdict-" + uuid.uuid4().hex[:6],
+                     "owner_email": "x@y.example", "display_name": "X"}]
+
+        monkeypatch.setattr(
+            "acb_auth.console_resolve.is_wired", lambda: True
+        )
+        monkeypatch.setattr(
+            "acb_auth.console_resolve._post_placed_orgs", _answer
+        )
+
+        async with tenant_engine_scope(_TENANT_URL):
+            summary = await bootstrap_placed_orgs()
+
+        assert summary.provisioned == 0
+        assert summary.skipped_not_serving == 1
+
+
+@_R8
+class TestTheTeamSizeSurvivesTheRECOVERYPath:
+    """Review finding P1. The seat repair undid itself on its own retry path.
+
+    Step 0a's ``AlreadyMember`` blocks every resubmit once step 1 has committed,
+    so the CP-2e reconciler is the ONLY repair for a signup whose step 2 failed.
+    It rebuilds the Console call from tenant columns alone — and the team size
+    was persisted nowhere, so it re-drove with none, the Console applied its
+    default of ONE, and ``grant_seats`` runs once only. The organization was
+    stuck at one seat for ever: the exact dead end this branch exists to close,
+    reached through its own recovery.
+    """
+
+    async def test_signup_persists_the_team_size_on_the_tenant_row(
+        self, tenant_db
+    ):
+        slug, owner = _new_org()
+        async with tenant_engine_scope(_TENANT_URL):
+            await provision_local_organization(slug, "Acme Inc", owner)
+            await persist_org_billing_profile(
+                slug, gstin=None, billing_state=STATE, core_seats=12
+            )
+
+        with tenant_db.connect() as c:
+            assert c.execute(
+                text(
+                    "SELECT signup_core_seats FROM organization WHERE slug = :s"
+                ),
+                {"s": slug},
+            ).scalar() == 12
+
+    async def test_the_reconciler_re_drives_the_ASKED_seat_count(
+        self, tenant_db, console_db, wired
+    ):
+        """The whole finding, end to end: a signup whose Console mirror failed
+        is repaired with the seats the founder ASKED for, not with one."""
+        slug, owner = _new_org()
+        async with tenant_engine_scope(_TENANT_URL):
+            # Step 1 committed; step 2 never ran (the transient failure).
+            await provision_local_organization(slug, "Acme Inc", owner)
+            await persist_org_billing_profile(
+                slug, gstin=None, billing_state=STATE, core_seats=12
+            )
+            assert _console_seat_quantity(console_db, slug) is None
+
+            await reconcile()
+
+        assert _console_seat_quantity(console_db, slug) == 12
+
+    async def test_an_org_predating_the_column_still_reconciles(
+        self, tenant_db, console_db, wired
+    ):
+        """NULL means 'pre-dates the question'. The client omits the field, the
+        Console applies its own default, and nothing raises — R6's whole point,
+        since old rows meet new code here."""
+        slug, owner = _new_org()
+        async with tenant_engine_scope(_TENANT_URL):
+            await provision_local_organization(slug, "Acme Inc", owner)
+            await persist_org_billing_profile(
+                slug, gstin=None, billing_state=STATE, core_seats=None
+            )
+
+            summary = await reconcile()
+
+        assert summary.mirrored >= 1
+        assert _console_seat_quantity(console_db, slug) == 1
+
+
+class TestTheTeamSizeGateRefusesWhatIntRefuses:
+    """Review finding P2. ``isdigit()`` admits characters ``int()`` rejects, so
+    a shape violation escaped as a 500 instead of the documented 400."""
+
+    def test_a_superscript_digit_is_a_400_and_not_a_crash(self):
+        from gateway.routes import signup as route
+
+        # "²".isdigit() is True and int("²") raises ValueError.
+        assert "²".isdigit() and not "²".isdecimal()
+        answer = route._team_size("²")
+        assert not isinstance(answer, int)
+        assert answer.status_code == 400
+
+    def test_an_arabic_indic_digit_is_refused_rather_than_read_as_three(self):
+        from gateway.routes import signup as route
+
+        # int("٣") == 3. A signup form has no business reading that as a
+        # seat count, and isdecimal() is what stops it.
+        answer = route._team_size("٣")
+        assert not isinstance(answer, int)
+        assert answer.status_code == 400
+
+    def test_blank_and_whitespace_are_the_SAME_answer(self):
+        """Both say "I did not answer". One rule, one outcome — treating "" as
+        absent and "  " as malformed was one rule with two answers."""
+        from gateway.routes import signup as route
+
+        assert route._team_size("") == route.DEFAULT_TEAM_SIZE
+        assert route._team_size("   ") == route.DEFAULT_TEAM_SIZE
+        assert route._team_size(None) == route.DEFAULT_TEAM_SIZE
+
+
+class TestTheLoopTaskIsHeld:
+    """Review finding P2. The lifespan discarded the task handle, against this
+    repo's own two precedents — and an unreferenced task may be collected
+    mid-flight, with nothing able to cancel or inspect it."""
+
+    def test_the_module_holds_the_task_and_hands_it_back(self, monkeypatch):
+        import asyncio
+
+        from acb_auth import console_resolve
+        from acb_common.settings import get_settings
+
+        monkeypatch.setenv("CONSOLE_BOOTSTRAP_ENABLED", "true")
+        get_settings.cache_clear()
+
+        async def _run():
+            task = console_resolve.start_console_bootstrap()
+            assert task is not None
+            assert console_resolve.console_bootstrap_task() is task
+            # A second start must not add a second loop — two would double
+            # every pass and race each other's `local` read.
+            assert console_resolve.start_console_bootstrap() is task
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        try:
+            asyncio.run(_run())
+        finally:
+            console_resolve._bootstrap_task = None
+            get_settings.cache_clear()
+
+
+class TestAPermanentConsoleRefusalIsNotRetriedForever:
+    """Review finding P2. ``_post_provision`` called every non-200 transient.
+
+    That was true until ``ProvisionRequest`` grew a slug validator. A tenant org
+    whose slug it refuses now answers 422 on EVERY pass — logged as an outage to
+    retry, retried a minute later, indefinitely, with the real cause buried.
+    """
+
+    async def test_a_422_raises_REFUSED_rather_than_UNAVAILABLE(
+        self, monkeypatch
+    ):
+        from acb_auth import console_resolve
+
+        class _Resp:
+            status_code = 422
+            text = "slug must be DNS-label-safe"
+
+            def json(self):
+                return {"detail": "nope"}
+
+        class _Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, *a, **k):
+                return _Resp()
+
+        monkeypatch.setattr(
+            console_resolve, "_new_http_client", lambda: _Client()
+        )
+        monkeypatch.setattr(console_resolve, "is_wired", lambda: True)
+
+        with pytest.raises(console_resolve.ConsoleProvisionRefused):
+            await console_resolve.provision_org_on_console(
+                "bad slug", "Bad", "a@b.example"
+            )
+
+    async def test_a_500_is_still_UNAVAILABLE(self, monkeypatch):
+        """Non-vacuity: the split must not swallow the transient case it was
+        carved out of."""
+        from acb_auth import console_resolve
+
+        class _Resp:
+            status_code = 503
+            text = "down"
+
+            def json(self):
+                return {}
+
+        class _Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, *a, **k):
+                return _Resp()
+
+        monkeypatch.setattr(
+            console_resolve, "_new_http_client", lambda: _Client()
+        )
+        monkeypatch.setattr(console_resolve, "is_wired", lambda: True)
+
+        with pytest.raises(console_resolve.ConsoleProvisionUnavailable):
+            await console_resolve.provision_org_on_console(
+                "fine", "Fine", "a@b.example"
+            )

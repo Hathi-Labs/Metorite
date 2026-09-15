@@ -116,17 +116,7 @@ export default function NewCustomer({
           <li>
             <strong>{ownerEmail.trim()}</strong> signs in at{" "}
             <strong>https://app.metorite.com</strong> with Google — no invite
-            link needed.{" "}
-            {/* ⚠️ The qualifier is load-bearing, and its absence was a live
-                defect. This panel used to promise sign-in worked immediately.
-                It did not work at all: provisioning writes the CONSOLE plane,
-                and until the deployment's bootstrap sweep runs there is no
-                tenant organization, so the owner is told "No organization is
-                linked to this email". The sweep closes that within a minute
-                (CONSOLE_BOOTSTRAP_INTERVAL_SECONDS); saying so is what stops
-                an operator reading the gap as a broken account. */}
-            <strong>Give it about a minute</strong> — their workspace is
-            prepared on the server right after this.
+            link needed.
           </li>
           <li>
             They can add their own people from Settings → Billing inside the
@@ -136,6 +126,22 @@ export default function NewCustomer({
         <p className="muted">
           When they&apos;ve paid, open the customer and{" "}
           <strong>activate their plan</strong>.
+        </p>
+        {/* ⚠️ Says what to DO, not how long to wait, and the difference is the
+            whole repair. This panel used to promise sign-in worked right away.
+            It did not work at all: creating a customer writes the CONSOLE
+            plane, and their workspace is built on the server afterwards by the
+            deployment's bootstrap sweep. An earlier draft of this fix promised
+            "about a minute" instead — also wrong, because the sweep is behind
+            CONSOLE_BOOTSTRAP_ENABLED, this app cannot read a gateway flag
+            (lib/console.ts: never to a tenant deployment), and the flag is off
+            by default. So the honest thing is to name the symptom and the
+            remedy, which are true in both positions. */}
+        <p className="muted">
+          If they see <strong>“No organization is linked to this email”</strong>
+          , their workspace is still being prepared on the server. Wait a minute
+          and retry. If it persists, the deployment&apos;s bootstrap sweep is
+          not running — see <code>CONSOLE_BOOTSTRAP_ENABLED</code>.
         </p>
         <button type="button" onClick={() => window.location.reload()}>
           Done
@@ -149,7 +155,8 @@ export default function NewCustomer({
       <h2 style={{ marginTop: 0 }}>New customer</h2>
       <p className="muted">
         Creates the company with its owner and seats, and starts a free trial.
-        The owner can sign in immediately. Safe to retry — creating the same
+        Their workspace is prepared on the server just afterwards, so sign-in
+        works shortly after this. Safe to retry — creating the same
         company twice converges on one.
       </p>
 

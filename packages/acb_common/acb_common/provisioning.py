@@ -331,6 +331,7 @@ _PERSIST_BILLING_PROFILE_SQL = """
     UPDATE organization
        SET gstin = :gstin,
            billing_state = :billing_state,
+           signup_core_seats = :core_seats,
            updated_at = now()
      WHERE slug = :slug
 """
@@ -349,17 +350,28 @@ async def persist_org_billing_profile(
     *,
     gstin: str | None,
     billing_state: str | None,
+    core_seats: int | None = None,
 ) -> None:
-    """Persist a signup's GST profile onto the tenant ``organization`` row.
+    """Persist a signup's GST profile and team size onto the tenant org row.
 
     Called by the signup route AFTER step 1 (the tenant org now exists) and
     BEFORE step 2 (the Console mirror), so that a transient step-2 failure still
-    leaves ``gstin``/``billing_state`` recorded for the reconciler to re-drive on
-    — they are threaded to the Console in step 2 and persisted NOWHERE else on the
-    tenant plane (migration 179's INSERT writes only slug/display_name/domain).
+    leaves these recorded for the reconciler to re-drive on — they are threaded
+    to the Console in step 2 and persisted NOWHERE else on the tenant plane
+    (migration 179's INSERT writes only slug/display_name/domain).
 
-    Best-effort: a write failure is logged and swallowed. The org still exists and
-    still works dark; the profile simply degrades to NULL, which the sweep
+    Args:
+        core_seats: the team size the founder gave (migration 198). ⚠️ **Added
+            2026-09-15 because omitting it made the seat repair undo itself on
+            its own recovery path.** Step 0a's ``AlreadyMember`` blocks any
+            resubmit once step 1 has committed, so the reconciler is the ONLY
+            repair for a failed step 2 — and it rebuilds the Console call from
+            these columns alone. Without the count it re-drove with none, the
+            Console applied its default of 1, and ``grant_seats`` runs once
+            only, so the organization was stuck at one seat for ever.
+
+    Best-effort: a write failure is logged and swallowed. The org still exists
+    and still works dark; the profile degrades to NULL, which the sweep
     tolerates (customer_console.md CP-2e).
     """
     try:
@@ -371,7 +383,12 @@ async def persist_org_billing_profile(
         async with factory() as session:
             await session.execute(
                 text(_PERSIST_BILLING_PROFILE_SQL),
-                {"slug": slug, "gstin": gstin, "billing_state": billing_state},
+                {
+                    "slug": slug,
+                    "gstin": gstin,
+                    "billing_state": billing_state,
+                    "core_seats": core_seats,
+                },
             )
             await session.commit()
     except Exception as exc:

@@ -522,7 +522,16 @@ class TestTheShapeClasses:
         assert capture.calls[0][5] == 7
 
     @pytest.mark.parametrize(
-        "bad", [0, -1, 51, 9999, "abc", "7.5", 7.5, [], {}, "  "]
+        "bad",
+        [
+            0, -1, 51, 9999, "abc", "7.5", 7.5, [], {},
+            # `isdigit()` admits these two and `int()` crashes on the first,
+            # which let a shape violation escape as a 500 (review finding).
+            "²",
+            # An Arabic-Indic 3. `isdecimal()` admits it; a wire integer has
+            # one spelling, so the rule is written out as ASCII.
+            "٣",
+        ],
     )
     def test_a_team_size_outside_the_range_is_400_InvalidTeamSize(
         self, flag_on, bad
@@ -530,6 +539,23 @@ class TestTheShapeClasses:
         r = _client().post("/signup/provision", json=_body(team_size=bad))
         assert r.status_code == 400, bad
         assert r.json()["code"] == "InvalidTeamSize", bad
+
+    @pytest.mark.parametrize("blank", ["", "   ", None])
+    def test_a_blank_team_size_is_the_DEFAULT_not_a_refusal(
+        self, flag_on, monkeypatch, _stub_mirror_writes, blank
+    ):
+        """All three say "I did not answer", so all three take the default.
+
+        Treating `""` as absent and `"  "` as malformed was one rule with two
+        answers (review finding).
+        """
+        capture = self._admits(monkeypatch)
+
+        r = _client().post("/signup/provision", json=_body(team_size=blank))
+
+        assert r.status_code == 200
+        assert r.json()["admit"] is True
+        assert capture.calls[0][5] == route.DEFAULT_TEAM_SIZE
 
     def test_a_JSON_true_is_refused_rather_than_read_as_ONE(self, flag_on):
         """``isinstance(True, int)`` is True in Python.

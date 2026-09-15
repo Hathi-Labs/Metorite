@@ -3193,11 +3193,40 @@ def placed_orgs(caller: ProvisionCaller) -> dict[str, Any]:
             ),
         )
     with get_engine().begin() as conn:
-        return {
-            "organizations": store.deployment_placed_orgs(
-                conn, deployment_id=caller.deployment_id
-            )
-        }
+        rows = store.deployment_placed_orgs(
+            conn, deployment_id=caller.deployment_id
+        )
+    # ⚠️ **The lifecycle verdict is computed HERE, and travels as a BOOLEAN.**
+    # The box must never branch on a lifecycle WORD — that would be a second
+    # copy of this state machine spelled as an `if`, which §6(d) refuses and
+    # `test_console_dependency_boundary.py`'s `_LIFECYCLE_WORDS` fence catches.
+    # So this service answers the question rather than exporting the vocabulary.
+    #
+    # ⚠️ **`can_write_seats`, and the choice matters.** Creating an
+    # organization's workspace is the most fundamental growth there is, so it
+    # asks the same question the member-add and seat doors ask. That admits
+    # `trial`, `active` and `past_due`, and refuses `suspended`, `cancelled` and
+    # `deleted`.
+    #
+    # Refusing the last three is the point. `cancelled` keeps `can_sign_in` —
+    # deliberately, so the export window is possible — and lifecycle transitions
+    # touch neither `org_placement` nor `org_membership`, so a cancelled
+    # customer stays in the query above until a purge. Without this gate the
+    # sweep would build that customer a BRAND-NEW, EMPTY tenant workspace with
+    # an active owner, months after they left, and arming the flag on an
+    # existing box would do it for the whole historical backlog in one pass.
+    # There is nothing to export from an organization that never existed.
+    #
+    # A suspended or cancelled customer who ALREADY has a tenant organization is
+    # untouched by any of this: the sweep skips them as already local.
+    return {
+        "organizations": [
+            {**row, "provisionable": capabilities_of(
+                row["status"]
+            ).can_write_seats}
+            for row in rows
+        ]
+    }
 
 
 @app.post("/orgs/provision")

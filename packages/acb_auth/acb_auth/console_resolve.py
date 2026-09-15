@@ -233,6 +233,27 @@ class ConsoleProvisionUnavailable(Exception):
     outage, never a real "slug taken". CP-2c's signup route maps this to
     ``ConsoleUnavailable`` and a resubmit converges, because both planes are
     idempotent on the slug.
+
+    ⚠️ **Narrowed 2026-09-15**: a 400 or 422 is now
+    :class:`ConsoleProvisionRefused` instead, because it is not an outage. See
+    that class.
+    """
+
+
+class ConsoleProvisionRefused(Exception):
+    """The Customer Console REFUSED a provision on its shape. Permanent.
+
+    Split out of :class:`ConsoleProvisionUnavailable` on 2026-09-15, because
+    that class's "any non-200 is transient" reasoning stopped being true the day
+    ``ProvisionRequest`` grew a slug validator.
+
+    A tenant organization whose slug that validator refuses — a legacy row, or
+    one written before the rule existed — answers **422 on every pass, for
+    ever**. Treated as transient it was logged as an outage to retry and retried
+    a minute later, indefinitely, with nothing surfacing the real cause.
+
+    Nothing retries its way out of a malformed body. The reconciler counts this
+    as a refusal and reports it at ERROR, so somebody can fix the row.
     """
 
 
@@ -551,11 +572,27 @@ async def _post_provision(
             raise ConsoleProvisionUnavailable("a 200 body that is not an object")
         return body
 
-    # Anything that is not a readable 200 is TRANSIENT for a fresh tenant-born
-    # slug: the create-only guard cannot permanently refuse the same owner, so a
-    # 5xx / 401 / 408 / 429 — or any other non-200 — is an outage to retry, never
-    # a real "slug taken". Raising the same type for all of them is what keeps
-    # the route from ever answering a false `SlugTaken` off the Console plane.
+    # ⚠️ **A 400 or 422 is PERMANENT, and calling it transient made the
+    # reconciler loop for ever** (review finding, 2026-09-15). The blanket rule
+    # below was true when every refusal this door could produce was an outage or
+    # the create-only guard. It stopped being true the day `ProvisionRequest`
+    # grew a slug validator: a tenant organization whose slug that validator
+    # refuses — a legacy row, or one an operator wrote before the rule existed —
+    # answers 422 on EVERY pass, for ever, logged as "an outage to retry".
+    #
+    # Nothing retries its way out of a malformed body, so it is raised as a
+    # distinct type the reconciler counts as REFUSED and reports, rather than
+    # burying at warning level in a retry loop nobody reads.
+    if response.status_code in (400, 422):
+        raise ConsoleProvisionRefused(
+            f"HTTP {response.status_code}: {response.text[:200]}"
+        )
+
+    # Everything else is TRANSIENT for a fresh tenant-born slug: the create-only
+    # guard cannot permanently refuse the same owner, so a 5xx / 401 / 408 / 429
+    # is an outage to retry, never a real "slug taken". Raising the same type for
+    # all of them is what keeps the route from ever answering a false
+    # `SlugTaken` off the Console plane.
     raise ConsoleProvisionUnavailable(f"HTTP {response.status_code}")
 
 
@@ -930,11 +967,21 @@ async def invite_member_on_console(
 #: registry would route the first-party path through the customer Console — the
 #: bypass D36.2/D36.3 forbids. Every signup-born org is `first_party = false` by
 #: the 157 default, so this catches exactly them.
+#:
+#: ⚠️ ``signup_core_seats`` (migration 198) joined this SELECT on 2026-09-15,
+#: and its absence was a real defect rather than a missing nicety. This sweep is
+#: the ONLY repair for a signup whose step 2 failed — step 0a's
+#: ``AlreadyMember`` blocks every resubmit once step 1 has committed — so a
+#: column it does not read is a value the customer loses permanently. Re-driving
+#: without the count let the Console apply its default of ONE, and
+#: ``grant_seats`` runs once only, so the founder's organization was stuck at a
+#: single seat for ever.
 _SELECT_UNMIRRORED_ORGS_SQL = """
-    SELECT slug          AS slug,
-           display_name  AS display_name,
-           gstin         AS gstin,
-           billing_state AS billing_state
+    SELECT slug              AS slug,
+           display_name      AS display_name,
+           gstin             AS gstin,
+           billing_state     AS billing_state,
+           signup_core_seats AS signup_core_seats
       FROM organization
      WHERE console_mirrored_at IS NULL
        AND first_party = false
@@ -1020,7 +1067,28 @@ async def reconcile() -> ReconcileSummary:
                 owner_email,
                 gstin=row["gstin"],
                 billing_state=row["billing_state"],
+                # The team size the founder gave at signup (migration 198).
+                # NULL for a row predating the column, and the client omits the
+                # field then — so an old org keeps today's behaviour exactly.
+                core_seats=row["signup_core_seats"],
             )
+        except ConsoleProvisionRefused as exc:
+            # PERMANENT — the Console refused the body's shape (today: a slug
+            # its validator will not accept). Retrying cannot fix it, so it is
+            # reported at ERROR rather than buried in the retry log. Counted as
+            # `unavailable` because the marker stays NULL either way and this
+            # summary's fields are the operator's, not a taxonomy; the LOG is
+            # what distinguishes the two, and it is the thing somebody reads.
+            summary["unavailable"] += 1
+            _log.error(
+                "console_resolve.reconcile_refused",
+                slug=slug, error=str(exc)[:200],
+                detail=(
+                    "the Console refused this org's SHAPE and will refuse it "
+                    "on every future pass — a human has to fix the row"
+                ),
+            )
+            continue
         except ConsoleProvisionUnavailable as exc:
             # Transient (unwired mid-sweep, network, 5xx) OR the create-only guard
             # refusing a slug owned by a DIFFERENT identity on the Console — a
@@ -1091,16 +1159,19 @@ class BootstrapSummary:
 
     ``placed`` is what the Console says this deployment serves; ``already_local``
     those that already had a tenant row (the steady state — almost always all of
-    them); ``provisioned`` the ones this pass created locally; ``skipped_no_owner``
-    Console rows with no owner membership yet, which cannot be completed here;
-    ``refused`` those the tenant plane refused (the one-email-one-org guard, or a
-    slug already owned by another address locally); ``failed`` any other error,
-    left for the next pass.
+    them); ``provisioned`` the ones this pass created locally;
+    ``skipped_not_serving`` those the Console says must not be given a workspace
+    (a cancelled or suspended customer — see the door's own note);
+    ``skipped_no_owner`` Console rows with no owner membership yet, which cannot
+    be completed here; ``refused`` those the tenant plane refused (the
+    one-email-one-org guard, or a slug already owned by another address
+    locally); ``failed`` any other error, left for the next pass.
     """
 
     placed: int = 0
     already_local: int = 0
     provisioned: int = 0
+    skipped_not_serving: int = 0
     skipped_no_owner: int = 0
     refused: int = 0
     failed: int = 0
@@ -1210,7 +1281,8 @@ async def bootstrap_placed_orgs() -> BootstrapSummary:
     )
 
     summary = {"placed": len(placed), "already_local": 0, "provisioned": 0,
-               "skipped_no_owner": 0, "refused": 0, "failed": 0}
+               "skipped_not_serving": 0, "skipped_no_owner": 0,
+               "refused": 0, "failed": 0}
 
     for org in placed:
         slug = str(org.get("slug") or "").strip()
@@ -1219,6 +1291,16 @@ async def bootstrap_placed_orgs() -> BootstrapSummary:
             continue
         if slug in local:
             summary["already_local"] += 1
+            continue
+
+        # ⚠️ The Console's lifecycle verdict, as a BOOLEAN. This box must never
+        # branch on a lifecycle WORD — that is a second copy of the Console's
+        # state machine spelled as an `if` (§6(d), and the `_LIFECYCLE_WORDS`
+        # fence). Absent ⇒ FALSE: a Console that predates the field tells us
+        # nothing, and building a workspace on silence is the wrong direction.
+        if org.get("provisionable") is not True:
+            summary["skipped_not_serving"] += 1
+            _log.info("console_resolve.bootstrap_not_serving", slug=slug)
             continue
 
         owner_email = str(org.get("owner_email") or "").strip()
@@ -1270,6 +1352,13 @@ async def bootstrap_placed_orgs() -> BootstrapSummary:
         )
         await mark_console_mirrored(slug)
 
+        # Added to `local` so a slug the Console lists TWICE is provisioned once.
+        # The operator arm of `/orgs/provision` can leave two `role='owner'`
+        # rows (it skips the create-only guard), and the door's LEFT JOIN then
+        # returns that slug once per owner. Without this the second attempt goes
+        # to migration 179 and comes back as `bootstrap_refused` — an error
+        # naming a conflict that does not exist.
+        local.add(slug)
         summary["provisioned"] += 1
         _log.info(
             "console_resolve.bootstrap_provisioned",
@@ -1302,6 +1391,20 @@ async def _bootstrap_loop(interval_seconds: int) -> None:
         await asyncio.sleep(interval_seconds)
 
 
+#: The running loop's task. Held at module scope for the reason
+#: ``routes/workflows/scheduler.py`` holds ``_scheduler_task`` and
+#: ``tasks/scheduler.py`` holds ``_scheduler_tasks``: the event loop keeps only a
+#: WEAK reference to a task, so one nobody holds may be garbage-collected
+#: mid-flight. It is also the only handle anything has — without it the sweep
+#: cannot be cancelled at shutdown and nothing can ask whether it is running.
+_bootstrap_task: Any = None
+
+
+def console_bootstrap_task() -> Any:
+    """The running bootstrap loop's task, or ``None``. For tests and shutdown."""
+    return _bootstrap_task
+
+
 def start_console_bootstrap() -> Any:
     """Start the inbound bootstrap loop, or return ``None`` if it is off.
 
@@ -1317,13 +1420,20 @@ def start_console_bootstrap() -> Any:
     """
     import asyncio
 
+    global _bootstrap_task
+
     settings = get_settings()
     if settings.console_bootstrap_enabled != "true":
         _log.info("console_resolve.bootstrap_disabled")
         return None
+    if _bootstrap_task is not None and not _bootstrap_task.done():
+        # Already running. Starting a second loop would double every pass, and
+        # the two would race each other's `local` read.
+        return _bootstrap_task
     interval = max(10, int(settings.console_bootstrap_interval_seconds))
     _log.info("console_resolve.bootstrap_started", interval_seconds=interval)
-    return asyncio.create_task(_bootstrap_loop(interval))
+    _bootstrap_task = asyncio.create_task(_bootstrap_loop(interval))
+    return _bootstrap_task
 
 
 # ── The projection (migration 159 + 177) ────────────────────────────────────
