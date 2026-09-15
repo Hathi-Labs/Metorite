@@ -373,17 +373,32 @@ def test_resolve_is_reachable_only_from_the_signin_path() -> None:
     )
 
 
-def test_the_lifespan_importer_touches_only_the_bootstrap_seam():
-    """``gateway/main.py`` is on the list for ONE name, and this pins that.
+#: The ONLY names ``gateway/main.py`` may import from ``console_resolve``: the
+#: loop's start and its stop. Both are supervision, neither allocates a seat and
+#: neither names a person.
+_LIFESPAN_ALLOWED_NAMES = frozenset(
+    {"start_console_bootstrap", "stop_console_bootstrap"}
+)
 
-    The list above admits the FILE; this admits only ``start_console_bootstrap``
-    from it. Without this pairing, adding ``main.py`` there would let a future
-    edit call ``resolve_for_signin`` at startup — a seat allocated for nobody,
-    on every boot, which is exactly the drift the list exists to catch.
+
+def test_the_lifespan_importer_touches_only_the_bootstrap_seam():
+    """``gateway/main.py`` is on the list for TWO names, and this pins them.
+
+    The list above admits the FILE; this admits only the loop's start and stop.
+    Without this pairing, adding ``main.py`` there would let a future edit call
+    ``resolve_for_signin`` at startup — a seat allocated for nobody, on every
+    boot, which is exactly the drift the list exists to catch.
 
     Startup is also the worst possible place for it: it runs before any request,
     so there is no session email to allocate against, and nothing in the
     lifespan's error isolation would make the mistake visible.
+
+    ⚠️ **Widened ONE → TWO on 2026-09-15, additively and for a named reason.**
+    The loop shipped with a start and no stop, so a pending task outlived its
+    event loop and then blocked its own restart; ``stop_console_bootstrap`` is
+    the repair, and every sibling loop in that file already has one. The set is
+    enumerated rather than prefix-matched, so "anything starting with
+    ``console_bootstrap``" cannot quietly become the rule.
     """
     tree = _tree(_REPO / _THE_LIFESPAN_CALLER)
     imported: set[str] = set()
@@ -396,13 +411,20 @@ def test_the_lifespan_importer_touches_only_the_bootstrap_seam():
                 if "console_resolve" in alias.name:
                     imported.add(alias.name)
 
-    assert imported == {"start_console_bootstrap"}, (
+    assert imported <= _LIFESPAN_ALLOWED_NAMES, (
         f"{_THE_LIFESPAN_CALLER} imports {sorted(imported)} from "
-        "console_resolve. It is on the allowed-caller list for exactly one "
-        "name — `start_console_bootstrap`, which allocates no seat and names "
-        "no person. Anything else there is a new call site with no request "
-        "behind it; `resolve_for_signin` in particular would burn a seat for "
-        "nobody on every boot."
+        "console_resolve. It is on the allowed-caller list for exactly "
+        f"{sorted(_LIFESPAN_ALLOWED_NAMES)} — loop supervision, which allocates "
+        "no seat and names no person. Anything else there is a new call site "
+        "with no request behind it; `resolve_for_signin` in particular would "
+        "burn a seat for nobody on every boot."
+    )
+    # Non-vacuity: the file must still import the two, so this is not passing
+    # over a lifespan that stopped starting (or stopping) the loop at all.
+    assert imported == _LIFESPAN_ALLOWED_NAMES, (
+        f"{_THE_LIFESPAN_CALLER} imports {sorted(imported)} — the lifespan must "
+        "BOTH start and stop the loop. A start with no stop is what left a task "
+        "pending on a closed event loop, which then blocked its own restart."
     )
 
 

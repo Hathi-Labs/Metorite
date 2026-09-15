@@ -80,6 +80,29 @@ class OrgCapabilities:
     #: reason: a state row that forgets this field must fail to construct, not
     #: quietly inherit the permissive answer.
     can_pay: bool
+    #: A deployment may BUILD this organization's workspace — the tenant row,
+    #: its roles and its owner — when it has none yet (2026-09-15, the inbound
+    #: Console bootstrap).
+    #:
+    #: ⚠️ **It is a synonym for no field above, and each near-miss is a real
+    #: bug.** `can_write_seats` is False for `suspended`, and gating on it
+    #: strands exactly the customer who most needs to get back in: `can_pay` is
+    #: True for them, but the checkout lives INSIDE the tenant app, so a
+    #: suspended customer with no workspace cannot reach the page that would
+    #: un-suspend them. `can_sign_in` and `can_pay` are both True for
+    #: `cancelled`, and gating on either hands a departed customer a brand-new
+    #: EMPTY workspace with an active owner — there is nothing to export from an
+    #: organization that never existed, and export is the only reason
+    #: `cancelled` keeps its door open at all.
+    #:
+    #: So: TRUE while the customer is still served (`trial`, `active`,
+    #: `past_due`, `suspended`), FALSE once they have left (`cancelled`,
+    #: `deleted`).
+    #:
+    #: ⚠️ **APPENDED LAST, and the next field must be too** — `can_pay`'s note
+    #: above carries the argument and it applies unchanged. No default, for the
+    #: same reason.
+    can_be_provisioned: bool
 
 
 #: The states, and what each permits. Ordered as the lifecycle runs.
@@ -91,10 +114,12 @@ STATES: dict[str, OrgCapabilities] = {
     "trial": OrgCapabilities(
         state="trial", can_sign_in=True, can_use_ai=True,
         can_write_seats=True, data_retained=True, can_pay=True,
+        can_be_provisioned=True,
     ),
     "active": OrgCapabilities(
         state="active", can_sign_in=True, can_use_ai=True,
         can_write_seats=True, data_retained=True, can_pay=True,
+        can_be_provisioned=True,
     ),
     # Grace. Everything still works — a customer cut off at the first missed
     # payment does not pay, they churn. Warnings are the product surface here,
@@ -102,23 +127,27 @@ STATES: dict[str, OrgCapabilities] = {
     "past_due": OrgCapabilities(
         state="past_due", can_sign_in=True, can_use_ai=True,
         can_write_seats=True, data_retained=True, can_pay=True,
+        can_be_provisioned=True,
     ),
     # Features locked, door open, data kept — and the checkout OPEN, which is
     # the state this whole distinction exists for.
     "suspended": OrgCapabilities(
         state="suspended", can_sign_in=True, can_use_ai=False,
         can_write_seats=False, data_retained=True, can_pay=True,
+        can_be_provisioned=True,
     ),
     # The export window. Sign-in deliberately still works, or the export the
     # window exists for is impossible.
     "cancelled": OrgCapabilities(
         state="cancelled", can_sign_in=True, can_use_ai=False,
         can_write_seats=False, data_retained=True, can_pay=True,
+        can_be_provisioned=False,
     ),
     # Terminal. Reached only from `cancelled`, i.e. only after a window.
     "deleted": OrgCapabilities(
         state="deleted", can_sign_in=False, can_use_ai=False,
         can_write_seats=False, data_retained=False, can_pay=False,
+        can_be_provisioned=False,
     ),
 }
 

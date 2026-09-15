@@ -154,6 +154,11 @@ MAX_TEAM_SIZE = 50
 #: scripts. A wire integer has one spelling.
 _ASCII_DIGITS_RE = re.compile(r"[0-9]+")
 
+#: How many digits a team size may carry before it is refused WITHOUT being
+#: parsed. Derived from ``MAX_TEAM_SIZE`` so the two cannot drift, and it exists
+#: because ``int()`` RAISES rather than returns for a very long literal.
+_MAX_TEAM_SIZE_DIGITS = len(str(MAX_TEAM_SIZE))
+
 #: The slug's shape: a DNS-label-safe subdomain, forward-compatible with MT-1f's
 #: per-tenant ``<slug>.metorite.com`` — lowercase alphanumeric plus internal
 #: hyphens, no leading/trailing hyphen, at most 63 characters. Applied with
@@ -321,7 +326,22 @@ def _team_size(raw_value: Any) -> int | JSONResponse:
     elif isinstance(raw_value, str) and _ASCII_DIGITS_RE.fullmatch(
         raw_value.strip()
     ):
-        size = int(raw_value.strip())
+        # ⚠️ LENGTH first, `int()` second, and the order is the whole point.
+        # CPython refuses to parse an integer literal beyond
+        # `sys.get_int_max_str_digits()` (4300 by default) and raises
+        # ValueError — so `int("1" * 4301)` crashed out of this function and
+        # FastAPI answered 500, breaking this route's promise that every shape
+        # violation is a 400. `isdigit()` had the identical hole before it.
+        # `MAX_TEAM_SIZE` is two digits, so anything longer is out of range
+        # anyway and the bound below would refuse it: this only decides
+        # WHETHER IT IS ASKED AS A 400 OR A CRASH.
+        digits = raw_value.strip()
+        if len(digits) > _MAX_TEAM_SIZE_DIGITS:
+            return _bad_request(
+                INVALID_TEAM_SIZE,
+                f"the team size must be between 1 and {MAX_TEAM_SIZE}",
+            )
+        size = int(digits)
     else:
         return _bad_request(
             INVALID_TEAM_SIZE, "the team size must be a whole number"

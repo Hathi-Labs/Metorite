@@ -619,11 +619,14 @@ async def provision_org_on_console(
             the org has none yet, so a retry never buys a second batch.
 
     Raises:
-        ConsoleProvisionUnavailable: the box is not wired, or the Console did
-            not answer a readable 200. These are the ONLY failures a fresh
-            tenant-born slug can hit; the route maps them to
+        ConsoleProvisionUnavailable: TRANSIENT — the box is not wired, or the
+            Console answered a 5xx / 401 / 408 / 429. The route maps this to
             ``ConsoleUnavailable`` and a resubmit converges (both planes
             idempotent on the slug).
+        ConsoleProvisionRefused: PERMANENT — the Console refused the body's
+            SHAPE (a 400 or 422). Unreachable for a fresh tenant-born slug the
+            gateway shape-checked first, and reachable for a LEGACY row the
+            reconciler re-drives. Retrying cannot fix it.
     """
     if not is_wired():
         # Ship-dark: an unwired box has no Console to mirror onto. Transient by
@@ -1114,6 +1117,9 @@ async def reconcile() -> ReconcileSummary:
 
 # ── The INBOUND bootstrap (2026-09-15) — the mirror image of `reconcile()` ───
 #
+# Spec: `customer_console.md` §6 CP-2i (the owning section) · board
+# `work_plan.md` §2.0 row M2.3b.
+#
 # ⚠️ **The defect this closes: an operator-created customer could not use the
 # product.** `POST /orgs/provision`'s OPERATOR arm writes the Console plane only
 # — org, placement, seats, owner membership, trial. Nothing has ever written the
@@ -1426,14 +1432,54 @@ def start_console_bootstrap() -> Any:
     if settings.console_bootstrap_enabled != "true":
         _log.info("console_resolve.bootstrap_disabled")
         return None
-    if _bootstrap_task is not None and not _bootstrap_task.done():
-        # Already running. Starting a second loop would double every pass, and
-        # the two would race each other's `local` read.
-        return _bootstrap_task
+    running = _bootstrap_task
+    if running is not None and not running.done():
+        # ⚠️ **And it has to belong to THIS event loop.** `done()` alone was not
+        # enough: a task left pending when its loop closed — which happens every
+        # time one process runs the lifespan twice, as a `TestClient` context
+        # manager does — stays `done() == False` for ever. The guard then handed
+        # back a task from a dead loop, the sweep never ran again, and nothing
+        # said so.
+        try:
+            same_loop = running.get_loop() is asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover — called with no running loop
+            same_loop = False
+        if same_loop:
+            # Already running here. A second loop would double every pass and
+            # race the first one's `local` read.
+            return running
+        _log.info("console_resolve.bootstrap_restarted_on_new_loop")
     interval = max(10, int(settings.console_bootstrap_interval_seconds))
     _log.info("console_resolve.bootstrap_started", interval_seconds=interval)
     _bootstrap_task = asyncio.create_task(_bootstrap_loop(interval))
     return _bootstrap_task
+
+
+async def stop_console_bootstrap() -> None:
+    """Cancel the bootstrap loop and wait for it. Idempotent.
+
+    ⚠️ **Every sibling loop in ``gateway/main.py`` has one of these, and this
+    one did not** (review finding). Starting a task nobody stops is what left a
+    pending task behind a closed event loop, which then poisoned the
+    already-running guard above. It also means a shutdown does not wait on a
+    pass that is mid-flight.
+    """
+    import asyncio
+
+    global _bootstrap_task
+
+    task = _bootstrap_task
+    _bootstrap_task = None
+    if task is None or task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        # Shutdown swallows everything: a loop that failed on its way out must
+        # not take the process's shutdown path with it.
+        pass
+    _log.info("console_resolve.bootstrap_stopped")
 
 
 # ── The projection (migration 159 + 177) ────────────────────────────────────

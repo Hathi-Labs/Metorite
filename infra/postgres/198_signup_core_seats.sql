@@ -1,7 +1,8 @@
 -- ============================================================================
 -- 198_signup_core_seats.sql — the team size a signup asked for, kept
 -- ============================================================================
--- Spec: project-docs/specs/customer_console.md §6 CP-2c item 4 · CP-2e.
+-- Spec: project-docs/specs/customer_console.md §6 CP-2c item 4 · CP-2e · CP-2i
+-- (the owning section for the repair this column belongs to).
 --
 -- ⚠️ **This closes a hole the seat repair opened, and 181 is the precedent it
 -- is argued from rather than copied.**

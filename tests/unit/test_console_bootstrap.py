@@ -1,7 +1,8 @@
 """The INBOUND Console bootstrap — the tenant plane catches up to the registry.
 
-Spec: ``project-docs/specs/customer_console.md`` §6 CP-2c ·
-``saas_multitenancy.md`` §11 MT-1j · ``user_management_contract.md`` R11.
+Spec: ``project-docs/specs/customer_console.md`` §6 **CP-2i** (the owning
+section) · ``user_management_contract.md`` R11. Board: ``work_plan.md`` §2.0
+row **M2.3b**.
 
 ⚠️ **The defect this suite exists for. An operator-created customer could not
 use the product.** ``POST /orgs/provision``'s OPERATOR arm writes the Console
@@ -629,7 +630,7 @@ class TestACancelledCustomerGetsNoWorkspace:
                 {"st": status, "s": slug},
             )
 
-    @pytest.mark.parametrize("status", ["cancelled", "suspended", "deleted"])
+    @pytest.mark.parametrize("status", ["cancelled", "deleted"])
     async def test_a_customer_who_is_not_being_served_is_skipped(
         self, tenant_db, console_db, wired, status
     ):
@@ -643,7 +644,9 @@ class TestACancelledCustomerGetsNoWorkspace:
         assert summary.skipped_not_serving >= 1, status
         assert slug not in _tenant_slugs(tenant_db), status
 
-    @pytest.mark.parametrize("status", ["trial", "active", "past_due"])
+    @pytest.mark.parametrize(
+        "status", ["trial", "active", "past_due", "suspended"]
+    )
     async def test_a_customer_who_IS_being_served_is_provisioned(
         self, tenant_db, console_db, wired, status
     ):
@@ -658,7 +661,7 @@ class TestACancelledCustomerGetsNoWorkspace:
 
         assert slug in _tenant_slugs(tenant_db), status
 
-    async def test_the_verdict_travels_as_a_BOOLEAN_not_a_lifecycle_word(
+    async def test_the_verdict_travels_as_a_BOOLEAN(
         self, console_db, wired
     ):
         """§6(d): the box must never branch on a lifecycle word, or it holds a
@@ -907,3 +910,210 @@ class TestAPermanentConsoleRefusalIsNotRetriedForever:
             await console_resolve.provision_org_on_console(
                 "fine", "Fine", "a@b.example"
             )
+
+
+# ══ 6 · the SECOND review's findings ═════════════════════════════════════════
+
+class TestTheTeamSizeGateCannotBeCrashed:
+    """Review round 2. The ASCII fix still let `int()` raise, so a shape
+    violation still escaped as a 500 rather than the documented 400."""
+
+    def test_a_very_long_digit_string_is_a_400_and_not_a_crash(self):
+        from gateway.routes import signup as route
+
+        # CPython refuses to PARSE an integer literal past
+        # `sys.get_int_max_str_digits()` (4300) and raises ValueError — so the
+        # regex accepted this and `int()` blew up underneath it.
+        answer = route._team_size("1" * 4301)
+        assert not isinstance(answer, int)
+        assert answer.status_code == 400
+
+    def test_the_digit_bound_is_DERIVED_from_the_range(self):
+        """Two constants that must agree are one constant. `MAX_TEAM_SIZE` is
+        the rule; the digit bound is read off it."""
+        from gateway.routes import signup as route
+
+        assert route._MAX_TEAM_SIZE_DIGITS == len(str(route.MAX_TEAM_SIZE))
+
+    def test_every_value_in_range_still_passes(self):
+        """Non-vacuity: a length bound set one digit too tight would refuse
+        real answers, and every case above would still pass."""
+        from gateway.routes import signup as route
+
+        for n in (1, 9, 10, 49, 50):
+            assert route._team_size(str(n)) == n
+            assert route._team_size(n) == n
+
+
+class TestTheLifecycleGateIsItsOwnQuestion:
+    """Review round 2. `can_write_seats` stranded a SUSPENDED customer.
+
+    They can pay — `can_pay` is True and the module's own note says a suspended
+    customer must keep the route to paying — but the checkout lives INSIDE the
+    tenant app. So a suspended customer with no workspace cannot reach the page
+    that would un-suspend them, and the sweep would have skipped them for ever.
+    """
+
+    def test_the_four_served_states_may_be_provisioned(self):
+        from customer_console.lifecycle import capabilities_of
+
+        for state in ("trial", "active", "past_due", "suspended"):
+            assert capabilities_of(state).can_be_provisioned is True, state
+
+    def test_the_two_departed_states_may_NOT(self):
+        from customer_console.lifecycle import capabilities_of
+
+        for state in ("cancelled", "deleted"):
+            assert capabilities_of(state).can_be_provisioned is False, state
+
+    def test_it_is_a_synonym_for_NO_other_field(self):
+        """If it matched one, it should BE that one — and each near-miss here
+        is a bug that was actually written."""
+        from customer_console.lifecycle import STATES
+
+        mine = {s: c.can_be_provisioned for s, c in STATES.items()}
+        for other in (
+            "can_sign_in", "can_use_ai", "can_write_seats",
+            "data_retained", "can_pay",
+        ):
+            theirs = {s: getattr(c, other) for s, c in STATES.items()}
+            assert mine != theirs, other
+
+    def test_an_unknown_state_fails_CLOSED(self):
+        # `capabilities_of` maps anything unrecognised to `deleted`, so a
+        # hand-edit or a future state cannot read as "build them a workspace".
+        from customer_console.lifecycle import capabilities_of
+
+        assert capabilities_of("banana").can_be_provisioned is False
+        assert capabilities_of("").can_be_provisioned is False
+
+
+@_R8
+class TestASuspendedCustomerIsStillGivenAWorkspace:
+    """The round-2 finding, end to end on both databases."""
+
+    async def test_suspended_is_provisioned_so_they_can_reach_the_checkout(
+        self, tenant_db, console_db, wired
+    ):
+        slug, owner = _new_org()
+        await _console_only_customer(wired, slug, owner)
+        with console_db.begin() as c:
+            c.execute(
+                text(
+                    "UPDATE organization SET status = 'suspended' "
+                    " WHERE slug = :s"
+                ),
+                {"s": slug},
+            )
+
+        async with tenant_engine_scope(_TENANT_URL):
+            await bootstrap_placed_orgs()
+
+        assert slug in _tenant_slugs(tenant_db)
+
+    async def test_the_door_ships_NO_lifecycle_word(self, console_db, wired):
+        """§6(d): the box must not branch on a lifecycle word, and a field it
+        should not read is an invitation to read it. It travels as one boolean
+        or not at all."""
+        slug, owner = _new_org()
+        await _console_only_customer(wired, slug, owner)
+
+        async with httpx.AsyncClient(
+            transport=wired.transport, base_url="http://console.invalid"
+        ) as client:
+            response = await client.post(
+                "/registry/orgs",
+                headers={"Authorization": "Bearer " + wired.token},
+                json={},
+            )
+        row = next(
+            r for r in response.json()["organizations"] if r["slug"] == slug
+        )
+        assert "status" not in row
+        assert row["provisionable"] is True
+        # And no lifecycle word rides any other field.
+        words = {"trial", "active", "past_due", "suspended", "cancelled",
+                 "deleted"}
+        assert not (words & {str(v) for v in row.values()})
+
+
+class TestTheLoopIsStoppable:
+    """Review round 2. The lifespan started the sweep and never stopped it, so
+    a pending task outlived its event loop and then poisoned the guard."""
+
+    def test_a_task_from_a_DEAD_loop_does_not_block_a_restart(
+        self, monkeypatch
+    ):
+        """The concrete failure: one process running the lifespan twice — which
+        a `TestClient` context manager does — left a task pending on a loop that
+        had CLOSED. `done()` stays False on such a task, so the guard handed it
+        back as if running, the sweep never ran again, and nothing said so.
+
+        Built with explicit loops rather than `asyncio.run`, which cancels
+        pending tasks on its way out and so cannot reproduce it.
+        """
+        import asyncio
+
+        from acb_auth import console_resolve
+        from acb_common.settings import get_settings
+
+        monkeypatch.setenv("CONSOLE_BOOTSTRAP_ENABLED", "true")
+        get_settings.cache_clear()
+
+        loop_one = asyncio.new_event_loop()
+        loop_two = asyncio.new_event_loop()
+        try:
+            async def _start():
+                return console_resolve.start_console_bootstrap()
+
+            first = loop_one.run_until_complete(_start())
+            assert first is not None
+            # Close WITHOUT cancelling — the shape a lifespan with no stop
+            # leaves behind.
+            loop_one.close()
+            assert not first.done(), (
+                "premise: a task abandoned on a closed loop stays not-done"
+            )
+
+            second = loop_two.run_until_complete(_start())
+            assert second is not first, (
+                "a task from a closed loop was handed back as if running — "
+                "the sweep would never run again"
+            )
+            loop_two.run_until_complete(
+                console_resolve.stop_console_bootstrap()
+            )
+        finally:
+            console_resolve._bootstrap_task = None
+            for loop in (loop_one, loop_two):
+                if not loop.is_closed():
+                    loop.close()
+            get_settings.cache_clear()
+
+    def test_stop_is_idempotent_and_safe_when_nothing_started(self):
+        import asyncio
+
+        from acb_auth import console_resolve
+
+        async def _run():
+            await console_resolve.stop_console_bootstrap()
+            await console_resolve.stop_console_bootstrap()
+
+        console_resolve._bootstrap_task = None
+        asyncio.run(_run())
+        assert console_resolve.console_bootstrap_task() is None
+
+    def test_the_gateway_lifespan_STOPS_it_as_well_as_starting_it(self):
+        """Every sibling loop in that file has a stop after `yield`. This one
+        had none, which is what left the task behind."""
+        from pathlib import Path
+
+        main = (
+            Path(__file__).resolve().parents[2]
+            / "apps/services/gateway/gateway/main.py"
+        ).read_text(encoding="utf-8")
+        assert "start_console_bootstrap" in main
+        assert "stop_console_bootstrap" in main
+        assert main.index("start_console_bootstrap") < main.index(
+            "stop_console_bootstrap"
+        )

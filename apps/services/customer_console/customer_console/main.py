@@ -3143,6 +3143,9 @@ def health() -> dict[str, str]:
 def placed_orgs(caller: ProvisionCaller) -> dict[str, Any]:
     """Every organization placed on the CALLING deployment. Read-only.
 
+    Spec: ``customer_console.md`` §6 CP-2i (the owning section) · board
+    ``work_plan.md`` §2.0 row M2.3b.
+
     ⚠️ **The gap this closes: an operator-created customer could not use the
     product.** ``POST /orgs/provision``'s operator arm writes the Console plane
     — org, placement, seats, owner membership, trial — and nothing has ever
@@ -3202,28 +3205,35 @@ def placed_orgs(caller: ProvisionCaller) -> dict[str, Any]:
     # `test_console_dependency_boundary.py`'s `_LIFECYCLE_WORDS` fence catches.
     # So this service answers the question rather than exporting the vocabulary.
     #
-    # ⚠️ **`can_write_seats`, and the choice matters.** Creating an
-    # organization's workspace is the most fundamental growth there is, so it
-    # asks the same question the member-add and seat doors ask. That admits
-    # `trial`, `active` and `past_due`, and refuses `suspended`, `cancelled` and
-    # `deleted`.
+    # ⚠️ **`can_be_provisioned`, which is a synonym for nothing else** — the
+    # field's own note in `lifecycle.py` carries the argument, because both
+    # near-misses are real bugs and both were written before it existed.
+    # `can_write_seats` strands a SUSPENDED customer, who can pay but whose
+    # checkout lives inside the tenant app they would have no workspace for.
+    # `can_sign_in` and `can_pay` both admit CANCELLED, handing a departed
+    # customer a brand-new empty workspace with an active owner.
     #
-    # Refusing the last three is the point. `cancelled` keeps `can_sign_in` —
-    # deliberately, so the export window is possible — and lifecycle transitions
-    # touch neither `org_placement` nor `org_membership`, so a cancelled
-    # customer stays in the query above until a purge. Without this gate the
-    # sweep would build that customer a BRAND-NEW, EMPTY tenant workspace with
-    # an active owner, months after they left, and arming the flag on an
-    # existing box would do it for the whole historical backlog in one pass.
-    # There is nothing to export from an organization that never existed.
+    # Refusing `cancelled` and `deleted` is the point. A lifecycle transition
+    # touches neither `org_placement` nor `org_membership`, and only a purge
+    # removes them, so a departed customer stays in the query above
+    # indefinitely. Without this gate, arming the flag on an existing box would
+    # build workspaces for the entire historical backlog in one pass.
     #
-    # A suspended or cancelled customer who ALREADY has a tenant organization is
-    # untouched by any of this: the sweep skips them as already local.
+    # Anyone who ALREADY has a tenant organization is untouched by all of this:
+    # the sweep skips them as already local, whatever their state.
+    #
+    # ⚠️ **`status` is dropped from the wire here.** The box may not branch on a
+    # lifecycle WORD (§6(d)), and a field it should not read is an invitation to
+    # read it. It travels as this one boolean or not at all.
     return {
         "organizations": [
-            {**row, "provisionable": capabilities_of(
-                row["status"]
-            ).can_write_seats}
+            {
+                key: value for key, value in row.items() if key != "status"
+            } | {
+                "provisionable": capabilities_of(
+                    row["status"]
+                ).can_be_provisioned
+            }
             for row in rows
         ]
     }

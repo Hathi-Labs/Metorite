@@ -1,7 +1,8 @@
 """``POST /orgs/provision`` refuses a slug the platform could never host.
 
 Spec: ``project-docs/specs/saas_multitenancy.md`` §11 MT-1f (owner ruling
-**B7**) · ``customer_console.md`` CP-2c slice 1.
+**B7**, the vocabulary) · ``customer_console.md`` §6 **CP-2i** (the arm this
+closes).
 
 ⚠️ **The gap this closes.** ``/orgs/provision`` is a DUAL-ARM door. The
 deployment-key arm is driven by ``gateway/routes/signup.py``, which shape-checks

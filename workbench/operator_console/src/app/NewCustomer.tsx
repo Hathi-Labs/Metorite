@@ -154,9 +154,15 @@ export default function NewCustomer({
     <form className="panel form-panel" onSubmit={submit}>
       <h2 style={{ marginTop: 0 }}>New customer</h2>
       <p className="muted">
-        Creates the company with its owner and seats, and starts a free trial.
-        Their workspace is prepared on the server just afterwards, so sign-in
-        works shortly after this. Safe to retry — creating the same
+        {/* ⚠️ Says what this DOES, and promises nothing about when the owner
+            can sign in. It used to say "The owner can sign in immediately",
+            which was false: this writes the CONSOLE plane, and their workspace
+            is built afterwards by the deployment's bootstrap sweep — which is
+            behind CONSOLE_BOOTSTRAP_ENABLED, off by default, and unreadable
+            from this app by construction. The success panel carries the symptom
+            and the remedy; this paragraph must not undo it. */}
+        Creates the company with its owner and seats on the billing registry,
+        and starts a free trial. Safe to retry — creating the same
         company twice converges on one.
       </p>
 

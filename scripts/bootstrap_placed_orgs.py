@@ -1,7 +1,7 @@
 """The INBOUND Console bootstrap CLI — provision what the registry places here.
 
-Spec: project-docs/specs/customer_console.md §6 CP-2c · saas_multitenancy.md
-§11 MT-1j.
+Spec: project-docs/specs/customer_console.md §6 **CP-2i** (the owning section).
+Board: `work_plan.md` §2.0 row **M2.3b**.
 
 Runs ONE out-of-band pass of `acb_auth.console_resolve.bootstrap_placed_orgs`,
 which asks the Customer Console which organizations are PLACED on this

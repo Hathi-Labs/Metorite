@@ -419,6 +419,15 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         pass
 
+    # Stop the inbound Customer Console bootstrap. Unconditional, like every
+    # other supervised loop here: a flag-gated loop that never started is still
+    # stopped, so the shutdown path never has to know why it is absent.
+    try:
+        from acb_auth.console_resolve import stop_console_bootstrap
+        await stop_console_bootstrap()
+    except Exception:
+        pass
+
     # Stop the workflow schedule scanner
     try:
         from gateway.routes.workflows import stop_workflow_scheduler
