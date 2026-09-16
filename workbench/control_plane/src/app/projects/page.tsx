@@ -136,6 +136,7 @@ import {
   showsDashboard,
 } from "./lib/tree";
 import AnalyticsView from "./components/AnalyticsView";
+import ReportsView from "./components/ReportsView";
 import NodeDashboard from "./components/NodeDashboard";
 import SpaceSettings from "./components/SpaceSettings";
 import {
@@ -1081,7 +1082,8 @@ function ProjectsWorkspace() {
   const dashboardOnly =
     !app && Boolean(selected) && showsDashboard(selectedLevel);
   /** Any surface that is not a project's board — no views, no composer. */
-  const noProjectChrome = dashboardOnly || app === "analytics";
+  const noProjectChrome =
+    dashboardOnly || app === "analytics" || app === "reports";
 
   // The roll-up behind the dashboard AND behind a parent project's
   // aggregate header. Fetched for every level: a project with subprojects
@@ -2455,6 +2457,11 @@ function ProjectsWorkspace() {
     // anyway so the destination exists the moment the flag flips, and so
     // "not built" is a surface rather than a blank pane.
     renderState("empty", "AI chat is not built yet.")
+  ) : app === "reports" ? (
+    // §9.12.8 — a saved question, rendered on screen before anything sends.
+    // Its own reads; it shares only `finished`, to say how much there is to
+    // report on while the list is empty.
+    <ReportsView finished={finished} />
   ) : app === "analytics" ? (
     // Analytics — the portfolio roll-up in Plane's shape: a KPI strip over
     // a per-space state matrix (see AnalyticsView's header for sources).
