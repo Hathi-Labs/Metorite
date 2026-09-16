@@ -155,6 +155,8 @@ const NO_MONTH = {
   rows: [] as TaskRow[],
   links: [] as Edge[],
   undated: 0,
+  /** P-22 — the undated tasks themselves. The timeline gives each one a row. */
+  unscheduled: [] as TaskRow[],
   truncated: false,
 };
 
@@ -1359,12 +1361,18 @@ function ProjectsWorkspace() {
         // WS-27t — only the timeline draws arrows, and the calendar would pay
         // for a query it never reads.
         include_links: mode === "timeline",
+        // ⚠️ The TIMELINE only. A calendar cell is a day, so a task with no
+        // day has nowhere to be drawn there — the count is all that surface
+        // can honestly say. The timeline gives it a row and no bar, and that
+        // row is what you drag across to schedule it.
+        include_undated: mode === "timeline",
         ...toQuery(filters),
       });
       setMonth({
         rows: res.rows,
         links: res.links,
         undated: res.undated,
+        unscheduled: res.unscheduled,
         truncated: res.truncated,
       });
     } catch (err) {
@@ -1475,9 +1483,19 @@ function ProjectsWorkspace() {
    * `month.rows` over its own date span. Grouping the timeline by the board's
    * list would silently drop every task outside the board's window.
    */
+  // ⚠️ The unscheduled tasks are grouped WITH the dated ones (P-22).
+  //
+  // The timeline draws a row per grouped task, so a task missing from `groups`
+  // gets no row — and a row is exactly what an undated task needs, since the
+  // empty row is the surface you drag across to schedule it. Grouping only
+  // `month.rows` would have given the feature to flat timelines and withheld
+  // it from grouped ones, which is the kind of split nobody discovers until
+  // they group a board and their unscheduled work vanishes.
   const monthGroups = useMemo(
-    () => groupTasks(month.rows, groupBy, { statuses, projectName }),
-    [month.rows, groupBy, statuses, projectName]
+    () => groupTasks(
+      [...month.rows, ...month.unscheduled], groupBy, { statuses, projectName },
+    ),
+    [month.rows, month.unscheduled, groupBy, statuses, projectName]
   );
 
   // A selection that outlives its filter is how a bulk edit hits tasks nobody
@@ -2583,6 +2601,7 @@ function ProjectsWorkspace() {
             <TimelineView
               tasks={month.rows}
               links={month.links}
+              unscheduled={month.unscheduled}
               undated={month.undated}
               truncated={month.truncated}
               today={dayKey(new Date())}
