@@ -437,8 +437,18 @@ export function StatusManager({
                     className="h-3 w-3 shrink-0 text-muted-foreground/60"
                     aria-label={group.hint}
                   />
+                  {/* ⚠️ Say what the number COUNTS. It sat here bare, next to a
+                      stage name, in a product that shows TASK counts in the
+                      same shape on the board and the list — so "2" read as
+                      "two tasks" at least as readily as "two lanes" (owner
+                      report, 2026-09-16). */}
                   {group.rows.length > 0 ? (
-                    <span className="text-[11px] text-muted-foreground">
+                    <span
+                      className="text-[11px] text-muted-foreground"
+                      title={`${group.rows.length} status${
+                        group.rows.length === 1 ? "" : "es"
+                      } in ${group.label}`}
+                    >
                       {group.rows.length}
                     </span>
                   ) : null}

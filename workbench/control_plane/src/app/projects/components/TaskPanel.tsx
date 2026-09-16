@@ -722,7 +722,12 @@ export function TaskPanel({
                 icon="Users"
                 trailing={
                   assignees.length ? (
-                    <span className="text-[10px] text-muted-foreground">
+                    <span
+                      className="text-[10px] text-muted-foreground"
+                      title={`${assignees.length} assignee${
+                        assignees.length === 1 ? "" : "s"
+                      }`}
+                    >
                       {assignees.length}
                     </span>
                   ) : null
