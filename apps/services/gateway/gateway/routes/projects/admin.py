@@ -490,6 +490,52 @@ async def _moves_for(
     return moves
 
 
+#: Projects that BROKE AWAY from this node's set — the complement of
+#: :data:`core._STATUS_SCOPE_SQL`.
+#:
+#: The scope walk descends through children that do NOT own a set. These are
+#: the children of those nodes that DO. Anything deeper is a breakaway from a
+#: breakaway, and belongs to that project's own screen rather than to this one.
+_OVERRIDES_BELOW_SQL = """
+WITH RECURSIVE scope AS (
+    SELECT id FROM pm_projects WHERE id = CAST(:pid AS uuid)
+    UNION ALL
+    SELECT p.id FROM pm_projects p
+      JOIN scope s ON p.parent_project_id = s.id
+     WHERE NOT p.owns_statuses
+)
+SELECT p.id, p.name
+  FROM pm_projects p
+  JOIN scope s ON p.parent_project_id = s.id
+ WHERE p.owns_statuses
+ ORDER BY p.name
+"""
+
+
+async def _overrides_below(db: Any, project_id: str) -> list[dict]:
+    """Which projects under this one keep their own lanes.
+
+    ⚠️ **Nothing in the product could answer this.** An override is invisible
+    from outside: a space owner edits the space's lanes, and silently does not
+    reach the projects that opted out. You found out one project at a time, by
+    opening each dialog — which nobody does, so in practice you did not find
+    out at all.
+
+    That mattered little while statuses were root-scoped and an override could
+    not exist. Migration 196 made it ordinary, and left the reader with no way
+    to see it.
+
+    ⚠️ **IMMEDIATE breakaways only.** A project that overrides a project that
+    overrides this space is not this space's business — its lanes were never
+    going to come from here, and naming it would make this list grow with the
+    tree rather than with the decisions somebody took.
+    """
+    rows = (await db.execute(
+        text(_OVERRIDES_BELOW_SQL), {"pid": project_id},
+    )).fetchall()
+    return [{"id": str(r.id), "name": r.name} for r in rows]
+
+
 async def _inherit_target(db: Any, node: Any) -> tuple[str | None, str | None]:
     """Where inheriting would take ``node`` — its PARENT's status owner.
 
@@ -539,6 +585,12 @@ async def describe_status_set(
             "owner_name": owner_row.name,
             "inherit_from_id": inherit_from,
             "inherit_from_name": inherit_name,
+            # ⚠️ Asked of the OWNER, not of this node. The question the reader
+            # has is "I am about to edit these lanes — who sees the change?",
+            # and the answer is the owner's scope. A project that inherits is
+            # editing its ancestor's set, so the breakaways that matter are the
+            # ones that broke away from THAT.
+            "overrides": await _overrides_below(db, owner),
             # A space has nothing above it, so "inherit" is not a choice it can
             # make. The UI disables the control and says why rather than hiding
             # it — an absent option reads as a missing feature.

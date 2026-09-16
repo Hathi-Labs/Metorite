@@ -59,3 +59,36 @@ export function mergeWarning(merges: readonly Merge[]): string {
     .join(" ");
   return `${said} Switching back will not separate them again.`;
 }
+
+/**
+ * The exceptions to "everything under it inherits these lanes".
+ *
+ * ⚠️ **Written as a sentence, not a count.** "3 projects use their own
+ * statuses" tells a reader that they have a problem and not where it is —
+ * they would still open three dialogs to find out, which is the exact cost
+ * this exists to remove. Names are the useful half, so names come first.
+ *
+ * Past three it truncates, because a space with nine breakaways has a policy
+ * question rather than a list to read, and a paragraph inside a one-line note
+ * would push the lanes off the screen.
+ */
+export function overrideNote(names: readonly string[]): string {
+  if (names.length === 0) return "";
+  const shown = names.slice(0, 3);
+  const rest = names.length - shown.length;
+  let subject: string;
+  if (rest > 0) {
+    subject = `${shown.join(", ")} and ${rest} other${rest === 1 ? "" : "s"}`;
+  } else if (shown.length === 1) {
+    subject = shown[0];
+  } else {
+    subject = `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`;
+  }
+  // ⚠️ The verb AND the pronoun both agree, and the first cut got the pronoun
+  // wrong: "Mobile App keeps their own, so they will not change" reads as a
+  // mistake in a note whose whole job is to be trusted. A project is an it.
+  const one = names.length === 1;
+  return one
+    ? `${subject} keeps its own, so it will not change.`
+    : `${subject} keep their own, so they will not change.`;
+}

@@ -763,3 +763,73 @@ class TestSwitchingBackDoesNotUndoAMerge:
         # Neither is back where it started, and that is the point.
         assert home_a != "Blocked"
         assert home_b != "In review"
+
+
+# ── 8 · An override must be visible from ABOVE ──────────────────────────────
+
+class TestTheOverridesBelowAreListed:
+    """``_overrides_below`` — the complement of the scope walk.
+
+    ⚠️ **Nothing in the product could answer "who opted out of my lanes?"**
+    An override is invisible from outside. A space owner edits the space's set
+    and silently does not reach the projects that keep their own, and the only
+    way to find out was to open each project's dialog one at a time — which
+    nobody does, so in practice nobody found out.
+
+    Harmless while statuses were root-scoped, because an override could not
+    exist. Migration 196 made it ordinary and left the reader blind.
+    """
+
+    async def test_a_space_sees_the_project_that_broke_away(self, db, tree):
+        from gateway.routes.projects.admin import _overrides_below
+
+        said = await _overrides_below(db, tree["root"])
+        assert [row["id"] for row in said] == [tree["owner_kid"]]
+
+    async def test_a_set_nobody_left_lists_nothing(self, db, tree):
+        from gateway.routes.projects.admin import _overrides_below
+
+        # `owner_kid` owns a set, and `under_kid` inherits it rather than
+        # breaking away again.
+        assert await _overrides_below(db, tree["owner_kid"]) == []
+
+    async def test_it_names_the_project_rather_than_only_counting(self, db, tree):
+        from gateway.routes.projects.admin import _overrides_below
+
+        said = await _overrides_below(db, tree["root"])
+        assert said[0]["name"] == "owner-kid"
+
+    async def test_a_breakaway_from_a_BREAKAWAY_is_not_this_space_business(
+        self, db, tree,
+    ):
+        """⚠️ Immediate breakaways only, and the reason is not brevity.
+
+        A project under ``owner_kid`` that takes its own set was never going to
+        receive the space's lanes — ``owner_kid`` already intercepted them. So
+        it is not an exception to anything the SPACE does, and listing it would
+        grow this note with the shape of the tree rather than with the
+        decisions somebody actually took.
+        """
+        from gateway.routes.projects.admin import _overrides_below
+
+        deep = await db.execute(
+            text(
+                "INSERT INTO pm_projects (name, status, source, created_by,"
+                " organization_id, timezone, parent_project_id, owns_statuses)"
+                " VALUES ('deep-breakaway','active','manual',"
+                " 'statusset@example.test', CAST(:o AS uuid),'Asia/Kolkata',"
+                " CAST(:p AS uuid), true) RETURNING id"
+            ),
+            {"o": tree["org"], "p": tree["under_kid"]},
+        )
+        deep_id = str(deep.scalar_one())
+
+        from_space = [row["id"] for row in await _overrides_below(db, tree["root"])]
+        assert deep_id not in from_space
+        assert from_space == [tree["owner_kid"]]
+
+        # It IS `owner_kid`'s business, because `owner_kid` is the set it left.
+        from_kid = [
+            row["id"] for row in await _overrides_below(db, tree["owner_kid"])
+        ]
+        assert from_kid == [deep_id]

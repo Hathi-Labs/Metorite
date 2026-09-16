@@ -51,7 +51,7 @@ import Button from "@/components/ui/Button";
 import { Select } from "@/components/ui/Input";
 import { useEffect, useMemo, useState } from "react";
 
-import { findMerges, mergeWarning } from "../lib/statusSwitch";
+import { findMerges, mergeWarning, overrideNote } from "../lib/statusSwitch";
 import {
   type ProjectRow,
   type StatusSetChange,
@@ -305,6 +305,23 @@ export function StatusSetControl({
           {info.owns
             ? "This project keeps its own set — everything under it inherits these lanes."
             : `This project uses ${info.owner_name}'s set, so an edit here changes that project's lanes too.`}
+          {/* ⚠️ The EXCEPTIONS, named. Before this, an override was invisible
+              from outside: you edited a space's lanes, silently missed the
+              three projects that had opted out, and the only way to find out
+              was to open each project's own dialog one at a time — which
+              nobody does, so nobody found out.
+
+              It rides on the sentence that already states the reach rather
+              than becoming a panel of its own. "Everything under it" was the
+              half-truth; this is the other half, in the same breath. */}
+          {info.overrides.length > 0 ? (
+            <>
+              {" "}
+              <span className="text-foreground">
+                {overrideNote(info.overrides.map((o) => o.name))}
+              </span>
+            </>
+          ) : null}
         </p>
       ) : null}
 
