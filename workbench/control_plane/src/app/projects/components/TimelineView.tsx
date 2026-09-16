@@ -1367,7 +1367,12 @@ function BandHeading({
         />
         <span className={`h-2 w-2 shrink-0 rounded-full ${accent.dot}`} />
         <span className="truncate">{band.label}</span>
-        <span className="shrink-0 rounded-full bg-background/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+        <span
+          className="shrink-0 rounded-full bg-background/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground"
+          title={`${band.count} task${band.count === 1 ? "" : "s"} in ${
+            band.label
+          }`}
+        >
           {band.count}
         </span>
       </button>

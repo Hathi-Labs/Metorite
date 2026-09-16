@@ -621,7 +621,12 @@ export function TaskBoard({
                     {column.label}
                   </span>
                 </span>
-                <span className="shrink-0 rounded-full bg-background/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                <span
+                  className="shrink-0 rounded-full bg-background/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground"
+                  title={`${column.tasks.length} task${
+                    column.tasks.length === 1 ? "" : "s"
+                  } in ${column.label}`}
+                >
                   {column.tasks.length}
                 </span>
               </header>
@@ -662,7 +667,12 @@ export function TaskBoard({
                         {column.label}
                       </span>
                     </span>
-                    <span className="shrink-0 rounded-full bg-background/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                    <span
+                      className="shrink-0 rounded-full bg-background/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground"
+                      title={`${column.tasks.length} task${
+                        column.tasks.length === 1 ? "" : "s"
+                      } in ${column.label}`}
+                    >
                       {column.tasks.length}
                     </span>
                   </div>
