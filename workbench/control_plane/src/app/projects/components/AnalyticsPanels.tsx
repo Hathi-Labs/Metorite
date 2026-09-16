@@ -30,8 +30,11 @@
  * (*"what are these numbers here?"*) and `countTooltips.test.ts` fails the
  * build for a bare one.
  */
-import { accentForSlot } from "@/lib/categorical";
-import { accentForHue, statusAccent } from "@/lib/statusAccent";
+import {
+  type AccentHue,
+  accentForHue,
+  statusAccent,
+} from "@/lib/statusAccent";
 
 import type {
   LoadReport,
@@ -42,15 +45,26 @@ import type {
 /**
  * The ageing bands, in the order the server sends them.
  *
- * The labels are ours, because `under_7d` is a wire key rather than English.
- * They stay in one place so the legend and the bar cannot disagree.
+ * Two labels each, and both are load-bearing. `short` is what fits a
+ * four-column legend at desktop width — photographed 2026-09-16, the long
+ * form rendered as "Under …", "7 to 14 …", "Over 3…", which is a legend
+ * that labels nothing. `full` is what the tooltip says, so the meaning is
+ * one hover away and never lost.
+ *
+ * ⚠️ **`hue` is ORDINAL, and the first cut of this got it wrong.** The
+ * bands went through `accentForSlot`, the categorical ramp — which painted
+ * "14 to 30 days" GREEN and "over 30 days" violet. Green means fine
+ * everywhere else in this product, so the third-worst band read as the
+ * healthy one. Ageing is a severity scale, not a set of unrelated
+ * categories, and the ramp is only correct for the latter. These four rise
+ * monotonically: neutral, noted, warning, wrong.
  */
-const BAND_LABEL: Record<string, string> = {
-  under_7d: "Under 7 days",
-  "7_to_14d": "7 to 14 days",
-  "14_to_30d": "14 to 30 days",
-  over_30d: "Over 30 days",
-};
+const BANDS: { key: string; short: string; full: string; hue: AccentHue }[] = [
+  { key: "under_7d", short: "< 7d", full: "Under 7 days", hue: "gray" },
+  { key: "7_to_14d", short: "7–14d", full: "7 to 14 days", hue: "blue" },
+  { key: "14_to_30d", short: "14–30d", full: "14 to 30 days", hue: "amber" },
+  { key: "over_30d", short: "> 30d", full: "Over 30 days", hue: "red" },
+];
 
 /** Hours, as something a person reads without converting it. */
 function duration(hours: number | null): string {
@@ -123,8 +137,8 @@ function Bar({
 
 /** (a) Where is work stuck? */
 export function StuckPanel({ data }: { data: StuckReport }) {
-  const bands = Object.keys(BAND_LABEL).filter((k) => k in data.stale);
-  const staleTotal = bands.reduce((n, k) => n + (data.stale[k] ?? 0), 0);
+  const bands = BANDS.filter((b) => b.key in data.stale);
+  const staleTotal = bands.reduce((n, b) => n + (data.stale[b.key] ?? 0), 0);
   const overdueAccent = statusAccent({ category: "cancelled" });
 
   return (
@@ -134,28 +148,27 @@ export function StuckPanel({ data }: { data: StuckReport }) {
     >
       <Bar
         total={staleTotal}
-        segments={bands.map((key, i) => ({
-          key,
-          value: data.stale[key] ?? 0,
-          dot: accentForSlot(i).dot,
-          label: BAND_LABEL[key],
+        segments={bands.map((b) => ({
+          key: b.key,
+          value: data.stale[b.key] ?? 0,
+          dot: accentForHue(b.hue).dot,
+          label: b.full,
         }))}
       />
       <ul className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-4">
-        {bands.map((key, i) => (
-          <li key={key} className="flex items-center gap-1.5 text-[11px]">
+        {bands.map((b) => (
+          <li
+            key={b.key}
+            className="flex min-w-0 items-center gap-1.5 text-[11px]"
+            title={`${data.stale[b.key] ?? 0} open tasks last changed ${b.full.toLowerCase()} ago`}
+          >
             <span
-              className={`h-2 w-2 shrink-0 rounded-full ${accentForSlot(i).dot}`}
+              className={`h-2 w-2 shrink-0 rounded-full ${accentForHue(b.hue).dot}`}
               aria-hidden
             />
-            <span className="truncate text-muted-foreground">
-              {BAND_LABEL[key]}
-            </span>
-            <span
-              className="ml-auto font-medium tabular-nums"
-              title={`${data.stale[key] ?? 0} open tasks last changed ${BAND_LABEL[key].toLowerCase()} ago`}
-            >
-              {data.stale[key] ?? 0}
+            <span className="text-muted-foreground">{b.short}</span>
+            <span className="ml-auto font-medium tabular-nums">
+              {data.stale[b.key] ?? 0}
             </span>
           </li>
         ))}
@@ -231,9 +244,13 @@ export function LoadPanel({ data }: { data: LoadReport }) {
           <ul className="space-y-2">
             {data.people.map((row) => (
               <li key={row.assignee ?? "__unassigned"}>
-                <div className="flex items-baseline gap-2 text-[11px]">
+                <div className="flex min-w-0 items-baseline gap-2 text-[11px]">
                   <span
-                    className={`truncate ${row.assignee ? "" : "italic text-muted-foreground"}`}
+                    // ⚠️ `pr-px` is not a nicety. Photographed 2026-09-16,
+                    // "Unassigned" rendered as "Unassignea": an italic glyph
+                    // leans past its own advance width, and `truncate`'s
+                    // overflow clip cut the final letter at EVERY width.
+                    className={`min-w-0 truncate pr-px ${row.assignee ? "" : "italic text-muted-foreground"}`}
                     title={
                       row.assignee ??
                       "Open work with nobody assigned. On a real board this is usually the largest bar."
