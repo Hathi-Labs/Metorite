@@ -207,6 +207,25 @@ TRIAGE_CATEGORY = "triage"
 #: still due" read forever.
 CLOSING_CATEGORIES: frozenset[str] = frozenset({"done", "cancelled"})
 
+#: Which closing category means FINISHED, as opposed to abandoned.
+#:
+#: ⚠️ The two halves of `CLOSING_CATEGORIES` are interchangeable for every read
+#: about OPEN work — a cancelled task is not outstanding, and that is all those
+#: reads need to know. They stop being interchangeable the moment anything asks
+#: what was DELIVERED. A team that cancelled forty tasks did not finish forty
+#: tasks, and a metric that adds them makes cancellation the cheapest way to
+#: improve itself (§9.12.7(c)).
+#:
+#: It lives here rather than in the one endpoint that needs it, because which
+#: word means "finished" is a fact about the status vocabulary. A literal in a
+#: route module is the second vocabulary that `test_projects_analytics`'s
+#: shape fence exists to refuse.
+COMPLETED_CATEGORY = "done"
+
+#: The category a task carries while somebody is working on it — where a cycle
+#: time starts counting (§9.12.7(c)).
+STARTED_CATEGORY = "in_progress"
+
 #: `pm_activities.type` — mirrored from the migrations, and the mirror is
 #: CHECKED (`test_projects_activity_vocabulary`).
 #:
