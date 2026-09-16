@@ -177,6 +177,20 @@ interface LinkState {
 interface Props {
   tasks: TaskRow[];
   links: Edge[];
+  /**
+   * P-22 — the tasks with no dates at all, each drawn as a row with no bar.
+   *
+   * ⚠️ **The row IS the feature.** `onMouseDown` on a barless row already
+   * begins a `"create"` drag, and the footer already tells you to do it — but
+   * these rows never arrived from the server, so the instruction pointed at
+   * nothing. With every task undated the view rendered "No tasks to display"
+   * and offered no way out of that state (owner report, 2026-09-16).
+   *
+   * Paca's `roadmap-view.tsx` is where "listed on the left with no bar" comes
+   * from, and this component's own header has claimed it since WS-27t.
+   */
+  unscheduled?: readonly TaskRow[];
+  /** The TRUE total, which can exceed `unscheduled.length` — it is capped. */
   undated: number;
   truncated: boolean;
   /** WS-27x — the view's shown fields; chips a hidden field earned are not drawn. */
@@ -228,6 +242,7 @@ interface Props {
 export function TimelineView({
   tasks,
   links,
+  unscheduled,
   undated,
   truncated,
   today,
@@ -324,7 +339,18 @@ export function TimelineView({
 
   // Once per registry, not once per bar.
   const tagHues = useMemo(() => tagColours(tags ?? []), [tags]);
-  const rows = useMemo(() => timelineRows(tasks), [tasks]);
+  /**
+   * Dated tasks plus the unscheduled ones — every task that gets a ROW.
+   *
+   * ⚠️ `tasks` alone is the window's DATED work, which is the right input for
+   * the chart's range and its links. It is the wrong input for the row list:
+   * an undated task has no bar and still needs a line to sit on.
+   */
+  const allTasks = useMemo(
+    () => (unscheduled?.length ? [...tasks, ...unscheduled] : tasks),
+    [tasks, unscheduled]
+  );
+  const rows = useMemo(() => timelineRows(allTasks), [allTasks]);
   const range = useMemo(
     () => timelineRange(rows, todayKey, zoom, fetched),
     [rows, todayKey, zoom, fetched]
@@ -390,8 +416,9 @@ export function TimelineView({
     return map;
   }, [drawn]);
   const taskById = useMemo(
-    () => new Map(tasks.map((t) => [t.id, t])),
-    [tasks],
+    // Unscheduled rows included: the create-drag reads the task out of here.
+    () => new Map(allTasks.map((t) => [t.id, t])),
+    [allTasks],
   );
 
   /**
@@ -690,6 +717,9 @@ export function TimelineView({
     setLink(updated);
   }
 
+  // ⚠️ `drawn`, not `tasks`. A project where NOTHING has dates still has rows
+  // now, and bailing on the dated count is what made the timeline a dead end
+  // exactly when it had the most to offer (owner report, 2026-09-16).
   if (drawn.length === 0) {
     return (
       <p className="p-6 text-sm text-muted-foreground">

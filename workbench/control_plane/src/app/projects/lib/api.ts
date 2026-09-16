@@ -570,7 +570,20 @@ export const projectsApi = {
       links: { id: string; blocker_id: string; blocked_id: string }[];
       truncated: boolean;
       cap: number;
+      /** How many tasks in scope carry no dates at all. Always the TRUE total. */
       undated: number;
+      /**
+       * P-22 — the undated tasks themselves, for the TIMELINE only.
+       *
+       * Empty unless `include_undated`, and always present, on the same ruling
+       * as `links`. The calendar never asks: a cell is a day, and a task with
+       * no day has nowhere to be drawn there.
+       *
+       * ⚠️ Capped separately from `rows`, so `undated` can exceed this list's
+       * length. The count is the truth; this is as much of it as one screen
+       * can hold.
+       */
+      unscheduled: TaskRow[];
     }>(`calendar?${qs.toString()}`);
   },
 
