@@ -183,7 +183,14 @@ export function StatusSetControl({
 
   return (
     <div className="border-b border-border px-3 py-2.5">
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+      {/* ⚠️ The choice row holds the CHOICE and nothing else.
+          "Copy from…" used to sit here as a third flex sibling with `ml-auto`,
+          which said two wrong things: that it was a peer of the two options,
+          and — once the row wrapped — that it belonged to the right edge of a
+          dialog it had no other relationship with. The owner reported it as
+          looking "a little odd" (2026-09-16); it is below now, under the
+          option it actually depends on. */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
         <Choice
           on={!info.owns}
           disabled={disabled || !info.can_inherit}
@@ -219,9 +226,18 @@ export function StatusSetControl({
           }
           onPick={() => void ask({ mode: "own" })}
         />
+      </div>
 
-        {info.owns ? (
-          <div className="ml-auto w-52">
+      {/* Subordinate to the option above, and indented to say so. The label is
+          a sentence rather than a bare "Copy from…", because the pill alone
+          never said what copying would DO — it replaces these lanes with
+          another project's, which is a destructive act wearing a dropdown. */}
+      {info.owns ? (
+        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 pl-6">
+          <span className="text-[11px] text-muted-foreground">
+            Start from another project&apos;s lanes:
+          </span>
+          <div className="w-48">
             <Select
               inputSize="sm"
               aria-label="Copy statuses from another project"
@@ -232,7 +248,7 @@ export function StatusSetControl({
                 void ask({ mode: "own", copy_from: e.target.value });
               }}
             >
-              <option value="">Copy from…</option>
+              <option value="">Choose a project…</option>
               {sources.map((row) => (
                 <option key={row.id} value={row.id}>
                   {row.name}
@@ -240,8 +256,8 @@ export function StatusSetControl({
               ))}
             </Select>
           </div>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
 
       {/* ⚠️ ONE line, and the docstring above explains why it is not three.
           The owner asked for "a short brief ... in very brief" (2026-09-16)
@@ -252,8 +268,8 @@ export function StatusSetControl({
         <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
           These are the board&apos;s lanes, grouped by stage.{" "}
           {info.owns
-            ? "This project keeps its own set."
-            : `This project uses ${info.owner_name}'s set, and changes here reach everything under it.`}
+            ? "This project keeps its own set — everything under it inherits these lanes."
+            : `This project uses ${info.owner_name}'s set, so an edit here changes that project's lanes too.`}
         </p>
       ) : null}
 
