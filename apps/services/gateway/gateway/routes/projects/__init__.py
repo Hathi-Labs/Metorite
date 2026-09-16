@@ -51,6 +51,7 @@ from gateway.routes.projects import notifications as _notifications  # noqa: F40
 from gateway.routes.projects import personal as _personal  # noqa: F401
 from gateway.routes.projects import planning as _planning  # noqa: F401
 from gateway.routes.projects import recurrence as _recurrence  # noqa: F401
+from gateway.routes.projects import reports as _reports  # noqa: F401
 from gateway.routes.projects import relations as _relations  # noqa: F401
 from gateway.routes.projects import search as _search  # noqa: F401
 from gateway.routes.projects import tags as _tags  # noqa: F401

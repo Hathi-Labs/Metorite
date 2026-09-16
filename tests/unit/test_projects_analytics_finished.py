@@ -360,3 +360,85 @@ class TestTheReportGetsAClosedPeriod:
         # ISO Monday. `weekday()` is 0 for Monday.
         assert window.period_start.weekday() == 0
         assert window.period_end.weekday() == 6
+
+
+class TestOverdueIsByProject:
+    """⚠️ The query that was silently dead until 2026-09-17.
+
+    `stuck` answered `overdue` as a bare integer while the panel consuming it
+    declared a LIST. `number.length` is undefined and `undefined > 0` is
+    false, so the Overdue section rendered nothing and threw nothing — the
+    quietest possible failure. §9.12.7(a) asks for "Overdue by project" in
+    those words, so the server was the side that had drifted.
+
+    It runs with DATA here for that reason. The old read was exercised by no
+    test that put a late task in front of it.
+    """
+
+    async def test_it_names_the_project_the_late_work_is_in(self, db, tree):
+        from gateway.routes.projects.analytics import overdue_by_project_sql
+
+        with db.begin() as c:
+            for n in range(3):
+                tid = _finish(c, tree, "child", title=f"late-{n}", to="todo",
+                              at=_at(hours=1), frm="todo")
+                c.execute(
+                    text(
+                        "UPDATE pm_tasks SET due_at = now() - interval '5 days'"
+                        " WHERE id = CAST(:i AS uuid)"
+                    ),
+                    {"i": tid},
+                )
+            tid = _finish(c, tree, "parent", title="late-parent", to="todo",
+                          at=_at(hours=1), frm="todo")
+            c.execute(
+                text(
+                    "UPDATE pm_tasks SET due_at = now() - interval '1 day'"
+                    " WHERE id = CAST(:i AS uuid)"
+                ),
+                {"i": tid},
+            )
+        where = (
+            "t.project_id IN (WITH RECURSIVE sub AS ("
+            " SELECT id FROM pm_projects WHERE id = CAST(:pid AS uuid)"
+            " UNION ALL SELECT p.id FROM pm_projects p JOIN sub s"
+            " ON p.parent_project_id = s.id) SELECT id FROM sub)"
+            " AND t.archived_at IS NULL"
+            " AND s.category <> ALL(CAST(:closed AS text[]))"
+        )
+        with db.connect() as c:
+            rows = c.execute(
+                text(overdue_by_project_sql(where)),
+                {"pid": tree["parent"], "closed": ["cancelled", "done"]},
+            ).fetchall()
+        by_name = {r.name: int(r.overdue) for r in rows}
+        assert by_name[tree["child_name"]] == 3
+        assert by_name[tree["parent_name"]] == 1
+        # ⚠️ Worst first. The row a reader acts on is the top one.
+        assert rows[0].name == tree["child_name"]
+
+    async def test_a_FINISHED_overdue_task_is_not_late(self, db, tree):
+        """The lesson WS-27k's `overdue` already learned, re-fenced here."""
+        from gateway.routes.projects.analytics import overdue_by_project_sql
+
+        with db.begin() as c:
+            tid = _finish(c, tree, "parent", title="late but done",
+                          at=_at(hours=2))
+            c.execute(
+                text(
+                    "UPDATE pm_tasks SET due_at = now() - interval '9 days'"
+                    " WHERE id = CAST(:i AS uuid)"
+                ),
+                {"i": tid},
+            )
+        where = (
+            "t.project_id = CAST(:pid AS uuid)"
+            " AND t.archived_at IS NULL"
+            " AND s.category <> ALL(CAST(:closed AS text[]))"
+        )
+        with db.connect() as c:
+            rows = c.execute(
+                text(overdue_by_project_sql(where)),
+                {"pid": tree["parent"], "closed": ["cancelled", "done"]},
+            ).fetchall()
+        assert rows == []

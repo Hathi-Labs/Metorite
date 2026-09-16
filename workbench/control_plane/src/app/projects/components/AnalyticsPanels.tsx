@@ -233,9 +233,17 @@ export function StuckPanel({ data }: { data: StuckReport }) {
         </div>
       )}
 
-      {data.overdue.length > 0 && (
+      {/* ⚠️ `Array.isArray`, not a truthiness check. This field WAS a
+          number, and a `.length` on one is undefined rather than an error —
+          which is how the section went missing without anybody noticing. */}
+      {Array.isArray(data.overdue) && data.overdue.length > 0 && (
         <div className="mt-3 border-t border-border pt-2">
-          <p className="mb-1 text-[11px] text-muted-foreground">Overdue</p>
+          <p
+            className="mb-1 text-[11px] text-muted-foreground"
+            title={`${data.overdue_total} open tasks are past their due date, across ${data.overdue.length} project${data.overdue.length === 1 ? "" : "s"}`}
+          >
+            Overdue · {data.overdue_total}
+          </p>
           <ul className="space-y-0.5">
             {data.overdue.slice(0, 5).map((p) => (
               <li
