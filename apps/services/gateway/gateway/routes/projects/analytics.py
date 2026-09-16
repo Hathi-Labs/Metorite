@@ -70,41 +70,81 @@ STALE_BANDS: tuple[tuple[str, int, int | None], ...] = (
 MAX_NAMED = 20
 
 
+# ── Scope: one node, one subtree, or the whole portfolio ────────────────────
+
+
+async def scope_clause(
+    db: Any, vis: Any, project_id: str | None, include_subtree: bool,
+) -> str:
+    """The task-scope fragment these three endpoints share.
+
+    ⚠️ **`project_id=None` is the PORTFOLIO, and the spec requires it.**
+    §9.12.7's Done-when says each slice "answers for a subtree and for the
+    portfolio". All three shipped node-only, so the Analytics pane could not
+    call any of them — that pane reads the portfolio roll-up and holds no node
+    id at all.
+
+    An earlier note here argued that a portfolio read would be "every task in
+    the tenant". It is, and it is the same read `get_portfolio_summary`
+    already serves to the strip above these panels. The bound was never the
+    node: it is ``vis.task_clause()`` plus the tenant session, and dropping
+    the node changes neither. A panel that refuses the scope its own page is
+    showing only moves the count into the browser, which is the one thing the
+    module header forbids.
+
+    The node check lives here rather than in each caller, because it is part
+    of resolving the scope. Seeing a node is required to report on it, so an
+    unreadable id answers 404 instead of zeroes — zeroes would tell the caller
+    the project exists and has no work. The portfolio has no node to check,
+    and `vis` is what bounds it.
+    """
+    if project_id is None:
+        # ⚠️ Not "no filter". Every caller below appends the visibility clause
+        # and runs inside the tenant session, and those two are what make this
+        # the caller's portfolio instead of the database's.
+        return "TRUE"
+    await load_visible_project(db, vis, project_id)
+    if include_subtree:
+        return (
+            "t.project_id IN ("
+            "  WITH RECURSIVE sub AS ("
+            "    SELECT id FROM pm_projects WHERE id = CAST(:pid AS uuid)"
+            "    UNION ALL"
+            "    SELECT p.id FROM pm_projects p JOIN sub s"
+            "      ON p.parent_project_id = s.id"
+            "  ) SELECT id FROM sub)"
+        )
+    return "t.project_id = CAST(:pid AS uuid)"
+
+
+def scope_params(project_id: str | None) -> dict[str, Any]:
+    """`:pid`, and ONLY when the clause above names it.
+
+    A bound parameter with no placeholder is an error on some drivers and a
+    silent no-op on others. Neither is worth discovering in production.
+    """
+    return {} if project_id is None else {"pid": project_id}
+
+
 @router.get("/analytics/stuck")
 async def stuck(
-    project_id: str,
+    project_id: str | None = None,
     include_subtree: bool = True,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Where work is stuck, under one node.
+    """Where work is stuck, under one node or across the portfolio.
 
     Three answers in three grouped reads over the same scope: how long open
     work has sat untouched, what is blocked by something unfinished, and what
     is past due.
 
-    ``project_id`` is required. A dashboard with no scope would be a read of
-    every task in the tenant, which is a different endpoint with a different
-    cost, and nothing here needs it.
+    Omit ``project_id`` for the portfolio. See :func:`scope_clause`, which
+    also records why an earlier version of this docstring refused it.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        # Seeing the node is required to report on it, so an unreadable id
-        # answers 404 rather than empty numbers — zeroes would tell the caller
-        # the project exists and has no work.
-        await load_visible_project(db, vis, project_id)
 
-        if include_subtree:
-            scope_sql = (
-                "t.project_id IN ("
-                "  WITH RECURSIVE sub AS ("
-                "    SELECT id FROM pm_projects WHERE id = CAST(:pid AS uuid)"
-                "    UNION ALL"
-                "    SELECT p.id FROM pm_projects p JOIN sub s"
-                "      ON p.parent_project_id = s.id"
-                "  ) SELECT id FROM sub)"
-            )
-        else:
-            scope_sql = "t.project_id = CAST(:pid AS uuid)"
+        scope_sql = await scope_clause(db, vis, project_id, include_subtree)
 
         # The predicate every read below shares. Written once: three copies
         # would drift, and a dashboard whose panels disagree about what "open"
@@ -118,7 +158,7 @@ async def stuck(
         )
         params: dict[str, Any] = {
             **vis.params,
-            "pid": project_id,
+            **scope_params(project_id),
             "closed": sorted(CLOSING_CATEGORIES),
         }
 
@@ -210,6 +250,7 @@ async def stuck(
 
         return {
             "project_id": project_id,
+            "scope": "portfolio" if project_id is None else "node",
             "include_subtree": include_subtree,
             "stale": stale,
             "blocked_total": blocked_total,
@@ -296,7 +337,7 @@ def total_open_sql(open_where: str) -> str:
 
 @router.get("/analytics/load")
 async def load(
-    project_id: str,
+    project_id: str | None = None,
     include_subtree: bool = True,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -327,20 +368,8 @@ async def load(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, project_id)
 
-        if include_subtree:
-            scope_sql = (
-                "t.project_id IN ("
-                "  WITH RECURSIVE sub AS ("
-                "    SELECT id FROM pm_projects WHERE id = CAST(:pid AS uuid)"
-                "    UNION ALL"
-                "    SELECT p.id FROM pm_projects p JOIN sub s"
-                "      ON p.parent_project_id = s.id"
-                "  ) SELECT id FROM sub)"
-            )
-        else:
-            scope_sql = "t.project_id = CAST(:pid AS uuid)"
+        scope_sql = await scope_clause(db, vis, project_id, include_subtree)
 
         # The same predicate `stuck` uses, for the same reason: two panels on
         # one dashboard must not disagree about what "open" means.
@@ -353,7 +382,7 @@ async def load(
         )
         params: dict[str, Any] = {
             **vis.params,
-            "pid": project_id,
+            **scope_params(project_id),
             "closed": sorted(CLOSING_CATEGORIES),
         }
 
@@ -386,6 +415,7 @@ async def load(
         ]
         return {
             "project_id": project_id,
+            "scope": "portfolio" if project_id is None else "node",
             "include_subtree": include_subtree,
             "total_tasks": total_tasks,
             "people_total": len(people),
@@ -602,7 +632,7 @@ def _hours(value: Any) -> float | None:
 
 @router.get("/analytics/throughput")
 async def throughput(
-    project_id: str,
+    project_id: str | None = None,
     include_subtree: bool = True,
     weeks: int = Query(DEFAULT_WEEKS, ge=1, le=MAX_WEEKS),
     user: UserContext = Depends(get_current_user),
@@ -634,20 +664,8 @@ async def throughput(
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, project_id)
 
-        if include_subtree:
-            scope_sql = (
-                "t.project_id IN ("
-                "  WITH RECURSIVE sub AS ("
-                "    SELECT id FROM pm_projects WHERE id = CAST(:pid AS uuid)"
-                "    UNION ALL"
-                "    SELECT p.id FROM pm_projects p JOIN sub s"
-                "      ON p.parent_project_id = s.id"
-                "  ) SELECT id FROM sub)"
-            )
-        else:
-            scope_sql = "t.project_id = CAST(:pid AS uuid)"
+        scope_sql = await scope_clause(db, vis, project_id, include_subtree)
 
         # ⚠️ Deliberately WITHOUT `archived_at IS NULL` and without the
         # open-only status arm — see the docstring. Visibility and triage stay,
@@ -659,7 +677,7 @@ async def throughput(
         )
         params: dict[str, Any] = {
             **vis.params,
-            "pid": project_id,
+            **scope_params(project_id),
             "weeks": weeks,
             "closing": sorted(CLOSING_CATEGORIES),
             "done_cat": COMPLETED_CATEGORY,
@@ -690,6 +708,7 @@ async def throughput(
         ]
         return {
             "project_id": project_id,
+            "scope": "portfolio" if project_id is None else "node",
             "include_subtree": include_subtree,
             "weeks": weeks,
             "series": series,
