@@ -924,7 +924,25 @@ export function TimelineView({
                     className="absolute top-0 flex h-full items-center border-r border-border/60 px-2 text-xs font-medium text-foreground"
                     style={{ left: cell.px, width: cell.widthPx }}
                   >
-                    {cell.widthPx > 56 ? cell.label : ""}
+                    {/* ⚠️ STICKY, or the label leaves with its own month.
+                        The cell is absolutely placed and the label sat at its
+                        left edge, so scrolling a few days into September left
+                        "026" on screen — the tail of "Sep 2026" (seen
+                        2026-09-16). A month header you cannot read while you
+                        are inside that month is a header for somebody scrolled
+                        to its first day.
+
+                        It sticks past LEFT_COL because the task column is
+                        sticky at 0 and would otherwise cover it. Sticky only
+                        engages when the natural position is further left, so a
+                        month starting mid-chart still draws its label at its
+                        own edge. */}
+                    <span
+                      className="sticky whitespace-nowrap"
+                      style={{ left: LEFT_COL + 8 }}
+                    >
+                      {cell.widthPx > 56 ? cell.label : ""}
+                    </span>
                   </div>
                 ))}
               </div>
