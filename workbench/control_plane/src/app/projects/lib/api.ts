@@ -156,8 +156,23 @@ export interface StatusSetInfo {
   project_id: string;
   /** Does this node carry its own set, rather than using an ancestor's? */
   owns: boolean;
+  /** Where the lanes come from TODAY. Equals this node when `owns`. */
   owner_id: string;
   owner_name: string;
+  /**
+   * Where inheriting would take it — the status owner of the PARENT.
+   *
+   * ⚠️ Not the same as `owner_*`, and the difference is the whole reason this
+   * field exists. While a node inherits, the two agree, which is why one field
+   * served both for ten days. Once it owns its set, `owner_name` is the node
+   * ITSELF — so a control labelling the inherit option with it offered
+   * "Inherit from Mobile App" while configuring Mobile App (owner report,
+   * 2026-09-16).
+   *
+   * `null` on a space, which has nothing above it.
+   */
+  inherit_from_id: string | null;
+  inherit_from_name: string | null;
   /** False on a space: there is nothing above it to inherit from. */
   can_inherit: boolean;
   /** A set it owned before, kept so switching back restores those lanes. */

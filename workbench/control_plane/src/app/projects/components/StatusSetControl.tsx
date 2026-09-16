@@ -9,6 +9,15 @@
  *     ( ) Inherit from Product Engineering
  *     (o) Use its own statuses          [ Copy from… ]
  *
+ * ⚠️ **The name on the first line is the PARENT's owner, never this node's.**
+ * `info.owner_name` answers "where do the lanes come from today", which is this
+ * node itself the moment it owns a set — so using it here produced "Inherit
+ * from Mobile App" on Mobile App's own editor (owner report, 2026-09-16). The
+ * label has to name where the button would MOVE it, which is
+ * `inherit_from_name`. The two agree while a node inherits, which is precisely
+ * why the wrong one looked right in every screenshot taken before somebody
+ * clicked "Use its own statuses".
+ *
  * The model behind it is one sentence — *a project uses the status set of the
  * nearest node at or above it that owns one* — and this control is deliberately
  * the only place it is stated, because a control that says it is better than a
@@ -178,9 +187,13 @@ export function StatusSetControl({
         <Choice
           on={!info.owns}
           disabled={disabled || !info.can_inherit}
+          // ⚠️ `inherit_from_name`, NOT `owner_name`. The owner is where the
+          // lanes come from TODAY, which is this node itself once it owns a
+          // set — so this read "Inherit from Mobile App" while configuring
+          // Mobile App. The label must name where the button WOULD take it.
           label={
-            info.can_inherit
-              ? `Inherit from ${info.owner_name}`
+            info.can_inherit && info.inherit_from_name
+              ? `Inherit from ${info.inherit_from_name}`
               : "Inherit from a parent"
           }
           // A space has nothing above it, so this is not a choice it can make.
@@ -230,10 +243,31 @@ export function StatusSetControl({
         ) : null}
       </div>
 
+      {/* ⚠️ ONE line, and the docstring above explains why it is not three.
+          The owner asked for "a short brief ... in very brief" (2026-09-16)
+          after meeting this screen cold. What was missing is not the model in
+          the abstract — it is WHOSE lanes these are, which is the one fact a
+          reader cannot deduce from a list of coloured rows. */}
+      {!pending ? (
+        <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
+          These are the board&apos;s lanes, grouped by stage.{" "}
+          {info.owns
+            ? "This project keeps its own set."
+            : `This project uses ${info.owner_name}'s set, and changes here reach everything under it.`}
+        </p>
+      ) : null}
+
       {preview && pending ? (
         <div className="mt-3 rounded-lg border border-border">
           <p className="border-b border-border px-3 py-2 text-xs font-medium text-foreground">
             Move {preview.moving} task(s) into the new statuses
+          </p>
+          {/* The rule, where the reader meets its RESULT. Every row below is
+              pre-filled by it, and a table of pre-chosen answers with no
+              stated rule reads as a machine deciding for you. */}
+          <p className="border-b border-border px-3 py-1.5 text-[11px] leading-snug text-muted-foreground">
+            Each lane goes to one with the same name, or else the first at the
+            same stage. Change any row before you confirm.
           </p>
           <div className="max-h-56 overflow-y-auto">
             <table className="w-full text-xs">
