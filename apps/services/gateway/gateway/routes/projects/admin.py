@@ -28,6 +28,7 @@ from gateway.routes.projects.core import (
     EPIC_TYPE_NAME,
     SETTINGS_WRITE,
     STATUS_CATEGORIES,
+    TRIAGE_CATEGORY,
     StatusModel,
     TypeModel,
     _tenant_session,
@@ -454,8 +455,24 @@ async def _moves_for(
         # A lane that survives the switch by name AND category is not a move at
         # all. Listing it would ask the reader to confirm that nothing happens.
         same = keeps is not None and str(keeps.category) == str(row.category)
-        suggestion = keeps or next(
-            (l for l in lanes if str(l.category) == str(row.category)), None,
+        # ⚠️ THREE arms, because `core._REMAP_TARGET_SQL` has three. This read
+        # carried only the first two until 2026-09-16, so a lane matching
+        # neither by name nor by category previewed as a BLANK target — and the
+        # apply then moved its tasks to the first lane that is not triage. A
+        # "Backlog" task previewed as going nowhere and landed in "To do".
+        #
+        # A preview that under-describes a destructive act is worse than no
+        # preview, because it is the screen somebody reads before deciding.
+        # `test_projects_status_sets.py` compares the card against the apply on
+        # the same tasks, so the two cannot drift apart again.
+        suggestion = (
+            keeps
+            or next(
+                (x for x in lanes if str(x.category) == str(row.category)), None,
+            )
+            or next(
+                (x for x in lanes if str(x.category) != TRIAGE_CATEGORY), None,
+            )
         )
         moves.append({
             "status_id": str(row.id),
