@@ -19,7 +19,7 @@
  * does nothing is worse than no entry.
  */
 
-export type ProjectAppId = "analytics" | "ai-chat";
+export type ProjectAppId = "analytics" | "reports" | "ai-chat";
 
 export interface ProjectAppItem {
   id: ProjectAppId;
@@ -51,6 +51,15 @@ export const PROJECT_APP_SECTIONS: ProjectAppSection[] = [
         label: "Analytics",
         icon: "BarChart3",
         note: "Every space at a glance",
+        launch: "live",
+      },
+      {
+        id: "reports",
+        label: "Reports",
+        icon: "FileText",
+        note: "What gets delivered",
+        // §9.12.8 slice 1 renders in the app. Delivery is built and DARK —
+        // `PROJECT_REPORT_EMAIL_ENABLED` is off, and arming it is the owner's.
         launch: "live",
       },
       {

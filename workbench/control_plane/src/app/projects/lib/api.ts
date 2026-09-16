@@ -210,6 +210,65 @@ export interface FinishedReport {
   median_hours: number | null;
 }
 
+/**
+ * WS-27bk §9.12.8 — a saved report definition.
+ *
+ * ⚠️ It holds the QUESTION, never the answer. `config` is the period and the
+ * sections; the numbers arrive only from `renderReport`, which re-runs
+ * §9.12.7's own SQL. A cached total here would be the second set of numbers
+ * §9.12.8 exists to prevent.
+ */
+export interface ReportRow {
+  id: string;
+  /** `null` is the PORTFOLIO — the scope a weekly report usually wants. */
+  project_id: string | null;
+  scope: "portfolio" | "node";
+  name: string;
+  config: {
+    weeks: number;
+    /** On for a report: a weekly report describes a week that ENDED. */
+    skip_current_week: boolean;
+    include_subtree: boolean;
+    sections: string[];
+  };
+  created_by: string;
+  created_at: string;
+}
+
+/** What `GET /projects/reports/{id}/render` answers. */
+export interface RenderedReportBody {
+  report: ReportRow;
+  /** ⚠️ From the SERVER. Never re-derived from the browser's clock. */
+  period_start: string;
+  /** INCLUSIVE — the last day the window contains. */
+  period_end: string;
+  sections: {
+    finished?: {
+      projects: {
+        project_id: string;
+        name: string;
+        completed: number;
+        cancelled: number;
+      }[];
+      total_completed: number;
+      total_cancelled: number;
+    };
+    throughput?: {
+      series: { week_start: string; completed: number }[];
+      median_hours: number | null;
+      measured: number;
+    };
+    load?: {
+      people: { assignee: string | null; open_tasks: number; overdue: number }[];
+      total_tasks: number;
+    };
+    stuck?: {
+      overdue: { project_id: string; name: string; overdue: number }[];
+      overdue_total: number;
+    };
+  };
+}
+
 export interface TaskRow {
   id: string;
   project_id: string;
@@ -555,6 +614,18 @@ export const projectsApi = {
     ),
   finished: (nodeId?: string, weeks?: number) =>
     call<FinishedReport>(`analytics/finished${scopeQuery(nodeId, weeks)}`),
+
+  /** §9.12.8 — saved report definitions, and the render of one. */
+  reports: () => call<{ reports: ReportRow[] }>("reports"),
+  createReport: (body: { name: string; project_id?: string | null }) =>
+    call<ReportRow>("reports", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  renderReport: (id: string) =>
+    call<RenderedReportBody>(`reports/${id}/render`),
+  deleteReport: (id: string) =>
+    call<void>(`reports/${id}`, { method: "DELETE" }),
 
   /**
    * WS-27bk §9.12.4 — re-parent or reorder a node.
