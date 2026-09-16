@@ -37,6 +37,7 @@ import {
 } from "@/lib/statusAccent";
 
 import type {
+  FinishedReport,
   LoadReport,
   StuckReport,
   ThroughputReport,
@@ -65,6 +66,35 @@ const BANDS: { key: string; short: string; full: string; hue: AccentHue }[] = [
   { key: "14_to_30d", short: "14–30d", full: "14 to 30 days", hue: "amber" },
   { key: "over_30d", short: "> 30d", full: "Over 30 days", hue: "red" },
 ];
+
+/**
+ * A window, as something a person reads at a glance.
+ *
+ * ⚠️ ISO dates are what the SERVER sends and what a report must quote, but
+ * "2026-06-29 to 2026-09-20" broke after "2026-09-" in a narrow panel — a date
+ * split across two lines. This shortens it and keeps the year once.
+ *
+ * Formatted from the ISO string by hand rather than through `new Date()`:
+ * these are floating calendar dates, and `new Date("2026-09-20")` reads them
+ * as midnight UTC and moves them a day west of Greenwich. The same trap
+ * `TaskRow.due_on` carries.
+ */
+const MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ");
+
+function day(iso: string): string {
+  const [y, m, d] = iso.split("-");
+  return `${Number(d)} ${MONTHS[Number(m) - 1]} ${y}`;
+}
+
+function period(from: string, to: string): string {
+  const a = day(from);
+  const b = day(to);
+  // One year, said once: "29 Jun – 20 Sep 2026".
+  const ya = a.slice(a.lastIndexOf(" "));
+  return ya === b.slice(b.lastIndexOf(" "))
+    ? `${a.slice(0, a.lastIndexOf(" "))} – ${b}`
+    : `${a} – ${b}`;
+}
 
 /** Hours, as something a person reads without converting it. */
 function duration(hours: number | null): string {
@@ -155,7 +185,11 @@ export function StuckPanel({ data }: { data: StuckReport }) {
           label: b.full,
         }))}
       />
-      <ul className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-4">
+      {/* ⚠️ TWO columns at every width. Four fitted while this panel was
+          one of three; the fourth panel narrowed them all, and each label
+          then broke across two lines ("<  7d"). A legend that wraps
+          mid-label is harder to read than one that takes a second row. */}
+      <ul className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
         {bands.map((b) => (
           <li
             key={b.key}
@@ -416,6 +450,88 @@ export function ThroughputPanel({ data }: { data: ThroughputReport }) {
             </span>
           )}
         </p>
+      )}
+    </Panel>
+  );
+}
+
+/** (d) What did we finish? */
+export function FinishedPanel({ data }: { data: FinishedReport }) {
+  const done = statusAccent({ category: "done" });
+  const dropped = statusAccent({ category: "cancelled" });
+  const peak = Math.max(1, ...data.projects.map((p) => p.completed));
+
+  return (
+    <Panel
+      title="What we finished"
+      hint={`Completed by project, ${period(data.period_start, data.period_end)}.`}
+    >
+      {data.projects.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">
+          Nothing finished in this period.
+        </p>
+      ) : (
+        <>
+          <ul className="space-y-1.5">
+            {data.projects.slice(0, 8).map((p) => (
+              <li key={p.project_id}>
+                <div className="flex items-baseline gap-2 text-[11px]">
+                  <span className="min-w-0 truncate pr-px">{p.name}</span>
+                  <span
+                    className={`ml-auto font-medium tabular-nums ${done.text}`}
+                    title={
+                      `${p.completed} finished in ${p.name}` +
+                      (p.cancelled ? `, ${p.cancelled} cancelled` : "") +
+                      (p.median_hours !== null
+                        ? `, median ${duration(p.median_hours)}`
+                        : ", no measurable cycle time")
+                    }
+                  >
+                    {p.completed}
+                  </span>
+                  {p.cancelled > 0 && (
+                    <span
+                      className={`tabular-nums ${dropped.text}`}
+                      // ⚠️ Beside the completions, never added to them. A
+                      // team that cancelled nine did not finish nine.
+                      title={`${p.cancelled} cancelled in ${p.name}. Cancellations are never counted as finished work.`}
+                    >
+                      −{p.cancelled}
+                    </span>
+                  )}
+                </div>
+                <div className="mt-1">
+                  <Bar
+                    total={peak}
+                    segments={[
+                      {
+                        key: "done",
+                        value: p.completed,
+                        dot: done.dot,
+                        label: "Finished",
+                      },
+                    ]}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+          <p
+            className="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground"
+            title={
+              `${data.total_completed} tasks finished between ` +
+              `${data.period_start} and ${data.period_end}` +
+              (data.total_cancelled
+                ? `, and ${data.total_cancelled} were cancelled`
+                : "")
+            }
+          >
+            {data.total_completed} finished
+            {data.projects.length > 8 &&
+              ` across ${data.projects.length} projects`}
+            {data.total_cancelled > 0 && ` · ${data.total_cancelled} cancelled`}
+          </p>
+        </>
       )}
     </Panel>
   );

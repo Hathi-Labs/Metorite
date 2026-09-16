@@ -163,6 +163,38 @@ export interface ThroughputReport {
   summary: Omit<ThroughputWeek, "week_start">;
 }
 
+export interface FinishedProject {
+  project_id: string;
+  name: string;
+  completed: number;
+  cancelled: number;
+  median_hours: number | null;
+}
+
+export interface FinishedReport {
+  project_id: string | null;
+  scope: "portfolio" | "node";
+  weeks: number;
+  /**
+   * ⚠️ The REPORT's window, not the dashboard's. `true` drops the running
+   * week, because a weekly report describes a week that ended — see the
+   * route's `_window`.
+   */
+  skip_current_week: boolean;
+  /**
+   * ⚠️ Both dates come from the SERVER and must not be re-derived here. A
+   * client that works them out from its own clock disagrees across a timezone
+   * or a midnight, and two copies of one report then name different weeks.
+   */
+  period_start: string;
+  /** INCLUSIVE — the last day the window contains. */
+  period_end: string;
+  projects: FinishedProject[];
+  total_completed: number;
+  total_cancelled: number;
+  median_hours: number | null;
+}
+
 export interface TaskRow {
   id: string;
   project_id: string;
@@ -506,6 +538,8 @@ export const projectsApi = {
     call<ThroughputReport>(
       `analytics/throughput${scopeQuery(nodeId, weeks)}`
     ),
+  finished: (nodeId?: string, weeks?: number) =>
+    call<FinishedReport>(`analytics/finished${scopeQuery(nodeId, weeks)}`),
 
   /**
    * WS-27bk §9.12.4 — re-parent or reorder a node.

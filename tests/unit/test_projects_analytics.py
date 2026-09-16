@@ -140,9 +140,17 @@ class TestScope:
         assert "project_id: str," not in SOURCE
 
     def test_the_scope_is_resolved_in_ONE_place(self):
-        # Three endpoints, one helper. Three copies is three chances for the
-        # portfolio arm to go missing from one of them.
-        assert SOURCE.count("await scope_clause(db, vis, project_id") == 3
+        # One helper per endpoint, whatever the endpoint count is today.
+        #
+        # ⚠️ This asserted the literal 3 until slice (d) added a fourth, and
+        # the fence did its job — it failed, and it was RIGHT to. But a count
+        # that must be hand-edited beside every new route is a fence that
+        # teaches people to bump the number, which is the one edit that always
+        # passes. Counted against the routes instead, so a fifth endpoint that
+        # builds its own scope FAILS rather than needing a new literal.
+        endpoints = SOURCE.count('@router.get("/analytics/')
+        assert endpoints >= 4, "an analytics endpoint disappeared"
+        assert SOURCE.count("await scope_clause(db, vis, project_id") == endpoints
 
     def test_an_unreadable_node_404s_rather_than_reporting_zeroes(self):
         # Zeroes would tell the caller the project exists and is empty.
