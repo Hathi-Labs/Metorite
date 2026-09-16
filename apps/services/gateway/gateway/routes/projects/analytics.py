@@ -218,3 +218,170 @@ async def stuck(
             ],
             "overdue": overdue,
         }
+
+
+#: The most people named in one load response.
+#:
+#: Same ruling as :data:`MAX_NAMED`: a dashboard panel, not a page. The total
+#: travels beside the list so the panel can say "20 of 34" instead of implying
+#: that thirty-four people are twenty.
+MAX_PEOPLE = 20
+
+
+def load_sql(open_where: str) -> str:
+    """The per-assignee aggregate, as one string a test can RUN.
+
+    ⚠️ A function rather than an f-string inline in the route, so
+    ``test_projects_analytics_load.py`` executes THIS query against a real
+    Postgres instead of a transcription of it. The spec's Done-when for
+    §9.12.7 asks for exactly that, and a copied query agrees with itself
+    forever while the route drifts.
+
+    ``open_where`` is the caller's scope, visibility and open-only predicate.
+    It is interpolated because it is built from trusted fragments — the same
+    shape ``stuck`` uses — and every VALUE in it still travels as a bound
+    parameter.
+
+    `LEFT JOIN` and `coalesce` are what put unassigned work in the list instead
+    of dropping it. An inner join would silently answer a different question —
+    "who is overloaded, among tasks somebody already took" — and that question
+    hides the backlog nobody owns.
+
+    The buckets are DISJOINT, and the ``due_at IS NULL`` arm lands in ``later``
+    on purpose. Undated work is real work, and a fourth "no date" column would
+    split the one bar a reader wants to compare.
+    """
+    return (
+        f"SELECT coalesce(lower(a.assignee), '') AS who,"
+        f"       count(*) FILTER ("
+        f"         WHERE t.due_at IS NOT NULL AND t.due_at < now()"
+        f"       ) AS overdue,"
+        f"       count(*) FILTER ("
+        f"         WHERE t.due_at >= now()"
+        f"           AND t.due_at < now() + interval '7 days'"
+        f"       ) AS due_next_7d,"
+        f"       count(*) FILTER ("
+        f"         WHERE t.due_at IS NULL"
+        f"            OR t.due_at >= now() + interval '7 days'"
+        f"       ) AS later,"
+        f"       count(*) AS open_tasks"
+        f"  FROM pm_tasks t"
+        f"  JOIN pm_task_statuses s ON s.id = t.status_id"
+        f"  LEFT JOIN pm_task_assignees a ON a.task_id = t.id"
+        f" WHERE {open_where}"
+        f" GROUP BY 1"
+        # Most loaded first, then the overdue half as the tiebreak — two people
+        # with nine open tasks are not equally in trouble.
+        f" ORDER BY open_tasks DESC, overdue DESC, who"
+    )
+
+
+#: Open work in scope, counted over TASKS rather than summed per person.
+#:
+#: ⚠️ A task with two assignees appears twice in `load_sql`, so adding its
+#: `open_tasks` would report more open work than exists.
+def total_open_sql(open_where: str) -> str:
+    return (
+        f"SELECT count(DISTINCT t.id) FROM pm_tasks t"
+        f"  JOIN pm_task_statuses s ON s.id = t.status_id"
+        f" WHERE {open_where}"
+    )
+
+
+@router.get("/analytics/load")
+async def load(
+    project_id: str,
+    include_subtree: bool = True,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Who is overloaded, under one node — §9.12.7(b).
+
+    Open work per assignee, split by when it is due: **overdue**, due in the
+    **next seven days**, and **later** — where "later" also holds everything
+    with no due date at all.
+
+    ⚠️ **UNASSIGNED is a row, not an absence.** The spec says so and it is
+    right: on a real board it is usually the largest bar and the actual
+    finding. Reporting it as a gap in a list of people would hide the one
+    number somebody can act on today.
+
+    ⚠️ **Seven rolling days, NOT a calendar week, and the spec says "this
+    week".** Two reasons for the divergence, both practical. A calendar week
+    shrinks as the week runs, so the same board reads "overloaded" on Monday
+    and "clear" on Friday without anybody finishing anything. And a calendar
+    week needs a timezone, which here would be the PROJECT's — so a subtree
+    spanning two timezones has two different weeks in one aggregate. The field
+    is named `due_next_7d` rather than `this_week`, so the response cannot be
+    read as claiming a calendar week it never computed.
+
+    ⚠️ **A task with two assignees counts for BOTH.** It is genuinely on both
+    people's plates, and halving it would make every bar a fraction nobody can
+    act on. So the per-person numbers sum to more than `total_tasks`, which is
+    why that total is reported separately rather than inferred by adding.
+    """
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        await load_visible_project(db, vis, project_id)
+
+        if include_subtree:
+            scope_sql = (
+                "t.project_id IN ("
+                "  WITH RECURSIVE sub AS ("
+                "    SELECT id FROM pm_projects WHERE id = CAST(:pid AS uuid)"
+                "    UNION ALL"
+                "    SELECT p.id FROM pm_projects p JOIN sub s"
+                "      ON p.parent_project_id = s.id"
+                "  ) SELECT id FROM sub)"
+            )
+        else:
+            scope_sql = "t.project_id = CAST(:pid AS uuid)"
+
+        # The same predicate `stuck` uses, for the same reason: two panels on
+        # one dashboard must not disagree about what "open" means.
+        open_where = (
+            f"{scope_sql}"
+            f" AND t.archived_at IS NULL"
+            f" AND ({task_visibility_clause(vis, 't')})"
+            f" AND ({triage_exclusion_clause('t')})"
+            f" AND s.category <> ALL(CAST(:closed AS text[]))"
+        )
+        params: dict[str, Any] = {
+            **vis.params,
+            "pid": project_id,
+            "closed": sorted(CLOSING_CATEGORIES),
+        }
+
+        # ── Per person, bucketed by when it is due — see `load_sql`. ──────
+        rows = (
+            await db.execute(text(load_sql(open_where)), params)
+        ).fetchall()
+
+        # ⚠️ Counted over TASKS, not summed from the rows above. A task with
+        # two assignees appears twice up there, so adding `open_tasks` would
+        # report more open work than exists.
+        total_tasks = int(
+            (
+                await db.execute(text(total_open_sql(open_where)), params)
+            ).scalar()
+            or 0
+        )
+
+        people = [
+            {
+                # "" is the unassigned bucket. Named explicitly rather than
+                # left as an empty string the client has to recognise.
+                "assignee": row.who or None,
+                "open_tasks": int(row.open_tasks),
+                "overdue": int(row.overdue),
+                "due_next_7d": int(row.due_next_7d),
+                "later": int(row.later),
+            }
+            for row in rows
+        ]
+        return {
+            "project_id": project_id,
+            "include_subtree": include_subtree,
+            "total_tasks": total_tasks,
+            "people_total": len(people),
+            "people": people[:MAX_PEOPLE],
+        }
