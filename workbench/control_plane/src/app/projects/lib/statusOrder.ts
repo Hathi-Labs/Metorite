@@ -278,11 +278,16 @@ export function emptyCategories(rows: readonly Placeable[]): string[] {
  * Returns `null` when the project has no lane in that stage — a column the
  * board should not have drawn. The caller patches nothing rather than inventing
  * a lane.
+ *
+ * ⚠️ GENERIC on the row, so the caller gets its OWN type back rather than the
+ * three fields this module needs. `accentForGroup` reads the returned lane's
+ * `color`, which a widened `Placeable` return would have thrown away — the
+ * stage's colour comes from the lane it lands on.
  */
-export function landingLane(
-  rows: readonly Placeable[],
+export function landingLane<T extends Placeable>(
+  rows: readonly T[],
   category: string
-): Placeable | null {
+): T | null {
   const here = rows
     .filter((row) => row.category === category)
     .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
