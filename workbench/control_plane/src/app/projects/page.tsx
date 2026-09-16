@@ -33,6 +33,7 @@ import {
   type StuckReport,
   type LoadReport,
   type ThroughputReport,
+  type FinishedReport,
   type ViewRow,
   projectsApi,
   projectsKey,
@@ -596,6 +597,7 @@ function ProjectsWorkspace() {
   const [stuck, setStuck] = useState<StuckReport | null>(null);
   const [load, setLoad] = useState<LoadReport | null>(null);
   const [throughput, setThroughput] = useState<ThroughputReport | null>(null);
+  const [finished, setFinished] = useState<FinishedReport | null>(null);
   const toast = useToast();
 
   // WS-27k — filters go to the server, grouping is applied here. `activeView`
@@ -1137,6 +1139,7 @@ function ProjectsWorkspace() {
     setStuck(null);
     setLoad(null);
     setThroughput(null);
+    setFinished(null);
     // ⚠️ A rejected panel stays null and renders NOTHING, rather than
     // rendering zeroes. Zeroes would read as "no stuck work", which is the
     // opposite of "we could not ask".
@@ -1151,6 +1154,10 @@ function ProjectsWorkspace() {
     projectsApi.throughput().then(
       (r) => !cancelled && setThroughput(r),
       () => !cancelled && setThroughput(null)
+    );
+    projectsApi.finished().then(
+      (r) => !cancelled && setFinished(r),
+      () => !cancelled && setFinished(null)
     );
     return () => {
       cancelled = true;
@@ -2460,6 +2467,7 @@ function ProjectsWorkspace() {
           stuck={stuck}
           load={load}
           throughput={throughput}
+          finished={finished}
           onOpen={(id) => {
             const row = flatten(visibleRoots).find((e) => e.node.id === id);
             if (row) {

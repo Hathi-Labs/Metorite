@@ -28,13 +28,19 @@ import { statusAccent } from "@/lib/statusAccent";
 import { accentForSlot } from "@/lib/categorical";
 
 import type {
+  FinishedReport,
   LoadReport,
   NodeSummary,
   StuckReport,
   SummaryChild,
   ThroughputReport,
 } from "../lib/api";
-import { LoadPanel, StuckPanel, ThroughputPanel } from "./AnalyticsPanels";
+import {
+  FinishedPanel,
+  LoadPanel,
+  StuckPanel,
+  ThroughputPanel,
+} from "./AnalyticsPanels";
 import { spaceMarker } from "../lib/tree";
 
 /** The lanes as table columns, board order. Cancelled earns no column of
@@ -123,6 +129,7 @@ export default function AnalyticsView({
   stuck,
   load,
   throughput,
+  finished,
   onOpen,
 }: {
   /** The PORTFOLIO roll-up — every space the caller can see. */
@@ -137,6 +144,7 @@ export default function AnalyticsView({
   stuck: StuckReport | null;
   load: LoadReport | null;
   throughput: ThroughputReport | null;
+  finished: FinishedReport | null;
   onOpen: (id: string) => void;
 }) {
   /**
@@ -184,11 +192,12 @@ export default function AnalyticsView({
           The strip says how much work there is and the matrix says where it
           sits. These three say what is wrong with it, which is what somebody
           opening this pane came to find out. */}
-      {(stuck || load || throughput) && (
-        <div className="mb-5 grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
+      {(stuck || load || throughput || finished) && (
+        <div className="mb-5 grid gap-3 lg:grid-cols-2 2xl:grid-cols-4">
           {stuck && <StuckPanel data={stuck} />}
           {load && <LoadPanel data={load} />}
           {throughput && <ThroughputPanel data={throughput} />}
+          {finished && <FinishedPanel data={finished} />}
         </div>
       )}
 

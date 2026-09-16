@@ -5,12 +5,14 @@ Spec: ``project-docs/specs/project_management_app.md`` §9.12.7.
     GET /projects/analytics/stuck       → (a) where work is stuck
     GET /projects/analytics/load        → (b) who is overloaded
     GET /projects/analytics/throughput  → (c) are we getting faster
+    GET /projects/analytics/finished    → (d) what did we finish
 
 The owner asked four questions. (a) is ageing, blocked and overdue — the
 operational view, the one that says what needs attention today. (b) splits
 open work across the people carrying it. (c) reads the activity spine for
 throughput and cycle time, and is the first read here about the PAST rather
-than about now.
+than about now. (d) groups the SAME completions (c) counts by project instead
+of by week, and its shape is also §9.12.8's weekly report.
 
 ⚠️ **EVERY NUMBER IS A SERVER AGGREGATE, and that is not a preference.** The
 task list is paginated. A count taken in the browser over the rows on screen is
@@ -472,12 +474,41 @@ DEFAULT_WEEKS = 12
 #: Week-aligned rather than `now() - N weeks` so every bucket is a whole week.
 #: A ragged first bucket reads as a dip in throughput that nobody caused.
 _WEEK_NOW = "date_trunc('week', now() AT TIME ZONE 'UTC')"
-_PERIOD_START = (
-    f"(({_WEEK_NOW} - make_interval(weeks => :weeks - 1)) AT TIME ZONE 'UTC')"
-)
 
 
-def cycle_cte_sql(scope_where: str) -> str:
+def _window(skip_current_week: bool) -> tuple[str, str]:
+    """The half-open window `[start, end)`, as two `timestamptz` expressions.
+
+    ⚠️ **`skip_current_week` is the shape decision §9.12.7(d) was told to
+    make.** The dashboard wants the running week — it is this week's work and
+    leaving it out loses it. A REPORT wants the opposite. A weekly report sent
+    on Monday describes a week that ENDED, and a rolling window that still has
+    days left in it would re-report the same tasks on the next send, each time
+    with a different number beside them.
+
+    One flag rather than two date parameters, because every window here is a
+    whole number of weeks ending at a week boundary. Free-form dates would
+    admit a half week, which is the ragged bucket `weekly_sql` already refuses.
+
+    The end bound is inert for the dashboard: with the flag off it is next
+    Monday, which no `created_at` can reach. It is written anyway, so the
+    query states its own period instead of implying one.
+    """
+    back = 1 if skip_current_week else 0
+    last = f"({_WEEK_NOW} - make_interval(weeks => {back}))"
+    start = f"(({last} - make_interval(weeks => :weeks - 1)) AT TIME ZONE 'UTC')"
+    end = f"(({last} + interval '1 week') AT TIME ZONE 'UTC')"
+    return start, end
+
+
+#: The dashboard's window start. Kept as a name because three docstrings and
+#: the throughput tests refer to it.
+_PERIOD_START = _window(False)[0]
+
+
+def cycle_cte_sql(
+    scope_where: str, *, skip_current_week: bool = False,
+) -> str:
     """The shared definition of "a task finished", as a ``WITH`` prefix.
 
     Both reads below are built on this, so the weekly trend and the overall
@@ -520,19 +551,22 @@ def cycle_cte_sql(scope_where: str) -> str:
     counted as ``no_start`` instead, so the median's denominator sits beside it
     rather than being implied.
     """
+    start, end = _window(skip_current_week)
     return (
         f"WITH closings AS ("
-        f"  SELECT a.task_id, a.created_at AS finished_at,"
+        f"  SELECT a.task_id, t.project_id, a.created_at AS finished_at,"
         f"         a.meta->>'to_category' AS to_category"
         f"    FROM pm_activities a"
         f"    JOIN pm_tasks t ON t.id = a.task_id"
         f"   WHERE a.type = 'status_change'"
         f"     AND a.deleted_at IS NULL"
-        f"     AND a.created_at >= {_PERIOD_START}"
+        f"     AND a.created_at >= {start}"
+        f"     AND a.created_at < {end}"
         f"     AND a.meta->>'to_category' = ANY(CAST(:closing AS text[]))"
         f"     AND ({scope_where})"
         f"), per_task AS ("
-        f"  SELECT DISTINCT ON (task_id) task_id, finished_at, to_category"
+        f"  SELECT DISTINCT ON (task_id)"
+        f"         task_id, project_id, finished_at, to_category"
         f"    FROM closings"
         f"   ORDER BY task_id, (to_category = :done_cat) DESC, finished_at"
         f"), started AS ("
@@ -544,7 +578,7 @@ def cycle_cte_sql(scope_where: str) -> str:
         f"     AND a.task_id IN (SELECT task_id FROM per_task)"
         f"   GROUP BY 1"
         f"), cyc AS ("
-        f"  SELECT p.task_id, p.finished_at, p.to_category,"
+        f"  SELECT p.task_id, p.project_id, p.finished_at, p.to_category,"
         # A start recorded AFTER the finish is not a cycle. It means the history
         # is out of order, and subtracting would report a negative duration that
         # a median cheerfully takes at face value.
@@ -609,7 +643,9 @@ def weekly_sql(scope_where: str) -> str:
     )
 
 
-def cycle_summary_sql(scope_where: str) -> str:
+def cycle_summary_sql(
+    scope_where: str, *, skip_current_week: bool = False,
+) -> str:
     """The same six numbers over the whole window, in ONE bucket.
 
     ⚠️ Not derivable from :func:`weekly_sql`'s output. A median of weekly
@@ -617,7 +653,10 @@ def cycle_summary_sql(scope_where: str) -> str:
     a quiet week with one slow task would weigh the same as a busy week with
     forty fast ones.
     """
-    return f"{cycle_cte_sql(scope_where)} SELECT {_CYCLE_MEASURES} FROM cyc c"
+    return (
+        f"{cycle_cte_sql(scope_where, skip_current_week=skip_current_week)}"
+        f" SELECT {_CYCLE_MEASURES} FROM cyc c"
+    )
 
 
 def _hours(value: Any) -> float | None:
@@ -723,4 +762,172 @@ async def throughput(
                 "median_hours": _hours(summary.median_hours),
                 "p90_hours": _hours(summary.p90_hours),
             },
+        }
+
+
+# ── (d) What did we finish? — §9.12.7(d) ────────────────────────────────────
+#
+# ⚠️ **Built on `cycle_cte_sql`, and that is the whole design.** (c) and (d)
+# are the same question asked along two axes: (c) groups completions by week,
+# (d) groups the SAME completions by project. A second definition of "we
+# finished this" would let the throughput chart and the finished list print
+# different totals for one period, and both would look right.
+#
+# The spec says this slice also decides the body of §9.12.8's weekly report.
+# What that needed, and what it got, is `skip_current_week` — see `_window`.
+
+
+def finished_sql(scope_where: str, *, skip_current_week: bool = False) -> str:
+    """What finished in the window, by project.
+
+    One row per project that finished or cancelled anything, plus the name so
+    a report does not have to resolve ids afterwards.
+
+    ⚠️ **`cancelled` travels in its own column and never in `completed`.** The
+    same ruling as (c), and for the same reason: a team that cancelled forty
+    tasks did not finish forty tasks. A report that added them would be a
+    weekly email congratulating people for abandoning work.
+
+    ⚠️ **The project is the task's OWN project, not the root.** A subtree
+    read rolls up to the node the caller asked about, but "what did we finish"
+    wants the place the work actually lives. Rolling a subproject's work into
+    its parent hides which team did it, which is the one thing this list is
+    for.
+
+    ``INNER JOIN pm_projects`` rather than ``LEFT``: a completion whose
+    project vanished cannot be attributed, and a nameless row in a report is
+    worse than an absent one. The count that matters is ``total`` below, which
+    is taken over ``cyc`` and therefore still includes it.
+    """
+    return (
+        f"{cycle_cte_sql(scope_where, skip_current_week=skip_current_week)}"
+        f" SELECT c.project_id AS project_id, pr.name AS name,"
+        f"        count(*) FILTER (WHERE c.to_category = :done_cat)"
+        f"          AS completed,"
+        f"        count(*) FILTER (WHERE c.to_category <> :done_cat)"
+        f"          AS cancelled,"
+        f"        percentile_cont(0.5) WITHIN GROUP (ORDER BY c.hours)"
+        f"          FILTER (WHERE c.to_category = :done_cat) AS median_hours"
+        f"   FROM cyc c"
+        f"   JOIN pm_projects pr ON pr.id = c.project_id"
+        f"  GROUP BY 1, 2"
+        # Most finished first. A report reads top-down, and the project that
+        # shipped most is the one the first line should be about.
+        f" HAVING count(*) FILTER (WHERE c.to_category = :done_cat) > 0"
+        f"     OR count(*) FILTER (WHERE c.to_category <> :done_cat) > 0"
+        f"  ORDER BY completed DESC, cancelled DESC, name"
+    )
+
+
+def finished_period_sql(*, skip_current_week: bool = False) -> str:
+    """The window itself, as two dates.
+
+    ⚠️ A report MUST be able to say which days it covered, and it must not
+    compute them itself. A client that re-derives "the last four weeks" from
+    its own clock will disagree with the server across a timezone or a
+    midnight, and then two copies of one report name different weeks.
+
+    The end is reported INCLUSIVE — the last day the window contains — because
+    that is what a person reads. The query bound is half-open.
+    """
+    start, end = _window(skip_current_week)
+    return (
+        f"SELECT CAST({start} AS date) AS period_start,"
+        f"       CAST({end} AS date) - 1 AS period_end"
+    )
+
+
+@router.get("/analytics/finished")
+async def finished(
+    project_id: str | None = None,
+    include_subtree: bool = True,
+    weeks: int = Query(DEFAULT_WEEKS, ge=1, le=MAX_WEEKS),
+    skip_current_week: bool = False,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """What we finished, by project — §9.12.7(d).
+
+    The same completions `throughput` counts, grouped by project instead of by
+    week. Sharing `cycle_cte_sql` is deliberate: two definitions of "finished"
+    would let one dashboard print two totals for one period.
+
+    ⚠️ **`skip_current_week` is for the REPORT, and it is off here.** A
+    dashboard wants the running week, because that is this week's work. A
+    weekly report wants a week that ended — a rolling window with days left in
+    it re-reports the same tasks on the next send, with a different number
+    each time. §9.12.7(d) says this slice decides the report's shape, and this
+    flag is that decision.
+
+    The response carries `period_start` and `period_end` so a report can say
+    which days it covered. It must not work them out from its own clock: a
+    client that does will disagree with the server across a timezone or a
+    midnight, and two copies of one report will then name different weeks.
+    """
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+
+        scope_sql = await scope_clause(db, vis, project_id, include_subtree)
+        # The same predicate `throughput` uses, and deliberately without
+        # `archived_at IS NULL` for the same reason: this describes the past,
+        # and an archive sweep in September must not empty July.
+        scope_where = (
+            f"{scope_sql}"
+            f" AND ({task_visibility_clause(vis, 't')})"
+            f" AND ({triage_exclusion_clause('t')})"
+        )
+        params: dict[str, Any] = {
+            **vis.params,
+            **scope_params(project_id),
+            "weeks": weeks,
+            "closing": sorted(CLOSING_CATEGORIES),
+            "done_cat": COMPLETED_CATEGORY,
+            "started_cat": STARTED_CATEGORY,
+        }
+
+        rows = (
+            await db.execute(
+                text(finished_sql(scope_where, skip_current_week=skip_current_week)),
+                params,
+            )
+        ).fetchall()
+        window = (
+            await db.execute(
+                text(finished_period_sql(skip_current_week=skip_current_week)),
+                {"weeks": weeks},
+            )
+        ).one()
+        # ⚠️ Totalled from `cyc`, not by adding the rows above. The rows drop
+        # a completion whose project row has gone, and a report whose parts do
+        # not add to its own headline is a report nobody trusts twice.
+        totals = (
+            await db.execute(
+                text(
+                    cycle_summary_sql(
+                        scope_where, skip_current_week=skip_current_week,
+                    )
+                ),
+                params,
+            )
+        ).one()
+
+        return {
+            "project_id": project_id,
+            "scope": "portfolio" if project_id is None else "node",
+            "weeks": weeks,
+            "skip_current_week": skip_current_week,
+            "period_start": window.period_start.isoformat(),
+            "period_end": window.period_end.isoformat(),
+            "projects": [
+                {
+                    "project_id": str(row.project_id),
+                    "name": row.name,
+                    "completed": int(row.completed),
+                    "cancelled": int(row.cancelled),
+                    "median_hours": _hours(row.median_hours),
+                }
+                for row in rows
+            ],
+            "total_completed": int(totals.completed or 0),
+            "total_cancelled": int(totals.cancelled or 0),
+            "median_hours": _hours(totals.median_hours),
         }
