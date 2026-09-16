@@ -63,6 +63,28 @@ export function accentForGroup(
     // deliberate.
     if (status) return accentForStatus(status, index, total);
   }
+
+  // ⚠️ The STAGE axis paints from the CATEGORY, never from the column's index.
+  //
+  // Measured on a real board 2026-09-16, before this arm existed: the stage
+  // columns fell through to positional hues and came out Backlog grey, To do
+  // BLUE, In progress VIOLET, Done YELLOW. `CATEGORY_HUES` says gray, gray,
+  // blue, green. A Done column was wearing the hue /tasks uses for waiting,
+  // and a stage would change colour whenever a project added a lane before it.
+  //
+  // A stage is the one axis whose meaning is fixed across every project, which
+  // makes it the one axis that must NOT be positional: the same word has to be
+  // the same colour in two different spaces, or the shared vocabulary stops
+  // looking shared. §9.12.3, "Colour comes from CATEGORY_HUES. No new palette."
+  //
+  // `index`/`total` ride along so an UNKNOWN stage — a server ahead of this
+  // client — falls through to a positional hue rather than to flat gray.
+  // `statusAccent` tries category first and only then the positional step,
+  // which is the precedence its own docstring describes.
+  if (groupBy === "category") {
+    return statusAccent({ category: groupKey, index, total });
+  }
+
   return statusAccent({ index, total });
 }
 

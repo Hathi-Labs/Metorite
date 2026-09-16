@@ -91,3 +91,55 @@ describe("accentForGroup", () => {
     expect(new Set(hues).size).toBe(4);
   });
 });
+
+describe("accentForGroup on the STAGE axis (§9.12.3)", () => {
+  const NONE: never[] = [];
+
+  it("paints each stage from CATEGORY_HUES, not from its position", () => {
+    // The four stages, each asked for at a DIFFERENT index than its own, so a
+    // positional fallback cannot accidentally agree.
+    const backlog = accentForGroup("category", "backlog", 3, 4, NONE);
+    const todo = accentForGroup("category", "todo", 2, 4, NONE);
+    const prog = accentForGroup("category", "in_progress", 1, 4, NONE);
+    const done = accentForGroup("category", "done", 0, 4, NONE);
+
+    expect(backlog).toEqual(
+      statusAccent({ category: "backlog", index: 3, total: 4 })
+    );
+    expect(todo).toEqual(
+      statusAccent({ category: "todo", index: 2, total: 4 })
+    );
+    expect(prog).toEqual(
+      statusAccent({ category: "in_progress", index: 1, total: 4 })
+    );
+    expect(done).toEqual(
+      statusAccent({ category: "done", index: 0, total: 4 })
+    );
+  });
+
+  it("gives a stage the SAME colour wherever its column sits", () => {
+    // ⚠️ The regression this exists for. Adding a lane to an earlier stage
+    // shifts every later column's index. If colour followed the index, a
+    // project's Done column would change hue because somebody added a Backlog
+    // lane — and two spaces would paint the same stage differently.
+    const first = accentForGroup("category", "done", 0, 6, NONE);
+    const later = accentForGroup("category", "done", 5, 6, NONE);
+    expect(first).toEqual(later);
+  });
+
+  it("does not paint DONE the same as IN PROGRESS", () => {
+    // Non-vacuity: a broken CATEGORY_HUES that returned one hue for
+    // everything would pass both tests above.
+    expect(accentForGroup("category", "done", 0, 4, NONE)).not.toEqual(
+      accentForGroup("category", "in_progress", 0, 4, NONE)
+    );
+  });
+
+  it("falls back positionally for a stage nobody has a hue for", () => {
+    // A server ahead of this client. The column still draws, in a hue that
+    // does not claim to mean anything.
+    expect(accentForGroup("category", "hibernating", 2, 5, NONE)).toEqual(
+      statusAccent({ index: 2, total: 5 })
+    );
+  });
+});

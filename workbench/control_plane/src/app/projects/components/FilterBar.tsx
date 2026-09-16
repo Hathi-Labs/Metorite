@@ -83,6 +83,10 @@ const CATEGORIES: Array<[string, string]> = [
  */
 const GROUP_OPTION_LABELS: Record<GroupBy, string> = {
   status: "Group by status",
+  // "Stage", never "category". The database column is `category`; the word a
+  // member uses for Backlog / To do / In progress / Done is a stage, which is
+  // what `statusCategory.ts` calls it throughout its own prose.
+  category: "Group by stage",
   assignee: "Group by assignee",
   project: "Group by project",
   importance: "Group by priority",
@@ -92,6 +96,7 @@ const GROUP_OPTION_LABELS: Record<GroupBy, string> = {
 
 const LANE_OPTION_LABELS: Record<GroupBy, string> = {
   status: "Lanes by status",
+  category: "Lanes by stage",
   assignee: "Lanes by assignee",
   project: "Lanes by project",
   importance: "Lanes by priority",

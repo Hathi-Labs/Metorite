@@ -254,3 +254,37 @@ export function emptyCategories(rows: readonly Placeable[]): string[] {
   const used = new Set(rows.map((row) => row.category));
   return EDITABLE_CATEGORIES.filter((category) => !used.has(category));
 }
+
+/**
+ * Where a card LANDS when it is dropped on a stage rather than on a lane.
+ *
+ * Grouping by category draws one column per stage, so a drop names a stage and
+ * not a status — and `pm_tasks.status_id` is NOT NULL. Something has to choose,
+ * and the choice must be the same one every time or the board is a dice roll.
+ *
+ * **The first lane of that stage, by position.**
+ *
+ * ⚠️ **The spec says something else, and the spec is out of date.** §9.12.3
+ * reads *"sets the task's status to that project's DEFAULT status in that
+ * category — `is_default` is on the row"*. Owner directive 2026-09-06 retired
+ * that flag: the first lane by position is where work starts, and the flag was
+ * *"the answer nobody could see — on the dev database it sat on `backlog` for
+ * every space, leaving three of four category columns with no answer at all."*
+ *
+ * `is_default` is still on the wire and read by nothing, and it is dropped in a
+ * later release under R6. Keying a NEW feature to it would revive a retired
+ * mechanism and inherit the exact defect the directive describes.
+ *
+ * Returns `null` when the project has no lane in that stage — a column the
+ * board should not have drawn. The caller patches nothing rather than inventing
+ * a lane.
+ */
+export function landingLane(
+  rows: readonly Placeable[],
+  category: string
+): Placeable | null {
+  const here = rows
+    .filter((row) => row.category === category)
+    .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+  return here[0] ?? null;
+}

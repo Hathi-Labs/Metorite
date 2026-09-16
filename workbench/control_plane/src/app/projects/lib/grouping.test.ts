@@ -635,3 +635,110 @@ describe("the watching filter (WS-27bk §9.12.2)", () => {
     });
   });
 });
+
+describe("groupTasks by STAGE (§9.12.3)", () => {
+  /**
+   * A rich set: seven lanes over four stages, which is the shape the spec
+   * names and the shape migration 196 made ordinary.
+   */
+  const lane = (
+    id: string,
+    name: string,
+    category: string,
+    position: number
+  ): StatusRow => ({
+    id,
+    project_id: "p1",
+    name,
+    color: "#888888",
+    position,
+    category,
+    is_default: false,
+  });
+
+  const RICH = [
+    lane("l-back", "Backlog", "backlog", 0),
+    lane("l-todo", "To do", "todo", 1),
+    lane("l-prog", "In progress", "in_progress", 2),
+    lane("l-block", "Blocked", "in_progress", 3),
+    lane("l-review", "In review", "in_progress", 4),
+    lane("l-done", "Done", "done", 5),
+    lane("l-cancel", "Cancelled", "cancelled", 6),
+  ];
+  const richCtx = { statuses: RICH };
+
+  it("collapses SEVEN lanes into FIVE stages", () => {
+    // The spec's "twelve into four", at the size this project actually is.
+    const groups = groupTasks([], "category", richCtx);
+    expect(groups.map((g) => g.label)).toEqual([
+      "Backlog",
+      "To do",
+      "In progress",
+      "Done",
+      "Cancelled",
+    ]);
+  });
+
+  it("orders by the STAGE vocabulary, never by position", () => {
+    // ⚠️ The assertion that fails if somebody sorts these like lanes.
+    // `position` orders lanes INSIDE a stage and says nothing across them, so
+    // a set whose positions run backwards must still read left to right.
+    const backwards = [
+      lane("l-done", "Done", "done", 0),
+      lane("l-back", "Backlog", "backlog", 9),
+      lane("l-prog", "In progress", "in_progress", 5),
+    ];
+    const groups = groupTasks([], "category", { statuses: backwards });
+    expect(groups.map((g) => g.label)).toEqual([
+      "Backlog",
+      "In progress",
+      "Done",
+    ]);
+  });
+
+  it("puts every lane's tasks under its stage", () => {
+    const tasks = [
+      task({ id: "a", status_id: "l-prog" }),
+      task({ id: "b", status_id: "l-block" }),
+      task({ id: "c", status_id: "l-review" }),
+      task({ id: "d", status_id: "l-done" }),
+    ];
+    const groups = groupTasks(tasks, "category", richCtx);
+    const inProgress = groups.find((g) => g.key === "in_progress");
+    expect(inProgress?.tasks.map((t) => t.id)).toEqual(["a", "b", "c"]);
+    expect(groups.find((g) => g.key === "done")?.tasks.map((t) => t.id)).toEqual([
+      "d",
+    ]);
+  });
+
+  it("keeps a stage the project HAS but nothing sits in", () => {
+    // Same ruling as empty status lanes: a missing column reads as "this
+    // project has no in-progress state", not "nothing is in progress".
+    const groups = groupTasks([], "category", richCtx);
+    expect(groups.find((g) => g.key === "in_progress")).toBeTruthy();
+    expect(groups.find((g) => g.key === "in_progress")?.tasks).toEqual([]);
+  });
+
+  it("draws NO column for a stage the project has no lane in", () => {
+    // ⚠️ Not the same as the test above. A column nothing could ever land in
+    // is not information — and `landingLane` would have no lane to give a
+    // drop, so the card would bounce with no explanation.
+    const thin = [lane("l-todo", "To do", "todo", 0)];
+    const groups = groupTasks([], "category", { statuses: thin });
+    expect(groups.map((g) => g.key)).toEqual(["todo"]);
+  });
+
+  it("shows a stage this client does not know, rather than hiding its tasks", () => {
+    // A server ahead of this file. Dropping the group would make those tasks
+    // vanish from the board with no error anywhere.
+    const odd = [
+      lane("l-todo", "To do", "todo", 0),
+      lane("l-weird", "Parked", "hibernating", 1),
+    ];
+    const groups = groupTasks([task({ id: "z", status_id: "l-weird" })], "category", {
+      statuses: odd,
+    });
+    expect(groups.map((g) => g.key)).toEqual(["todo", "hibernating"]);
+    expect(groups.find((g) => g.key === "hibernating")?.tasks).toHaveLength(1);
+  });
+});

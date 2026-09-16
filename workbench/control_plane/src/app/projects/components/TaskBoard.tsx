@@ -301,7 +301,10 @@ export function TaskBoard({
       groupBy,
       colKey,
       laneKey === null ? null : subBy,
-      laneKey
+      laneKey,
+      // The STAGE axis names a stage, and `pm_tasks.status_id` is NOT NULL —
+      // the lanes are what turn one into the other (`landingLane`).
+      statuses
     );
     flash(task.id);
     onDrop(task, writes, patch);
