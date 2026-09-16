@@ -2277,6 +2277,40 @@ line — never reclaim a number by deleting the other entry.
   2026-09-05**, because `main` minted its own H-97 for the leaked database
   passwords and merged first. Ids are never reused, so that entry keeps the
   number. Filed from branch `ws-handoff-h96-h97`, which never opened a PR.
+### H-110 · Operator OTP sends now. Two dashboard acts are still unverified · [OWNER]
+- **Check:** ask Supabase project `uttxlicdccfkramtjfpi` for an OTP at an address
+  that is NOT a project member. `POST /auth/v1/otp {"email":"…","create_user":true}`.
+  A **200** means the send half is fixed. Then ask an operator whether the email
+  carried a six-digit code, and whether the link signed them in.
+- **⚠️ The send half is DONE.** The owner configured custom SMTP on 2026-09-16.
+  The same probe returned **400 `email_address_invalid`** before, and **200**
+  after. Supabase now sends through the Resend account the customer app uses.
+- **What this entry is reduced to.** Two dashboard settings that nobody has
+  confirmed. Each one is invisible until a real operator tries to sign in.
+  1. **The Magic Link template.** It must render `{{ .Token }}` beside the link.
+     Without the token the email carries a link and no digits. The six-digit box
+     in `EmailCodeForm.tsx` then has nothing to accept, and the form's own copy
+     says *"or, if it shows a six-digit code, type it here"*.
+  2. **The redirect allowlist.** Authentication → URL Configuration must carry
+     `https://operator.metorite.com/login/callback`. Without it the emailed LINK
+     returns nobody. The route exists and answers 200.
+- **⚠️ Do NOT port Auth.js and Resend into the operator console instead.** The
+  operator session is a Supabase access token. `POST /api/operator/session`
+  exchanges it for a `cc_sess_` cookie, and the Console validates that token.
+  Replacing it touches a security boundary across two services. It also reopens
+  D71. The SMTP route reached the same end and changed no code.
+- **No code change is owed.** The form copy stays correct before and after.
+- **Why an agent must not do this:** these are live authentication settings on a
+  third-party account (CLAUDE.md §3a rule 3). The Supabase MCP server exposes no
+  auth-configuration tool.
+- **Authority:** `operator_identity_and_access.md` §4.1b · D71.3 ·
+  `workbench/operator_console/src/lib/otp.ts`
+- **Added:** 2026-09-16 · signup-flow session, after the owner asked why operator
+  OTP cannot reuse the customer app's mechanism. **Reduced the same day**, once
+  the owner fixed the send half and a probe proved it.
+- **Related:** H-54 (the operator provider values), H-56 (delete the passphrase
+  fallback after one real sign-in — `OPERATOR_PASSPHRASE_FALLBACK=1` today).
+
 ### H-108 · 🔴 The Console's database auto-pauses, which is a total onboarding outage · [OWNER]
 - **Check:** ask Supabase for project `uttxlicdccfkramtjfpi`. Anything other than
   `ACTIVE_HEALTHY`, or a free tier that pauses on inactivity, means this is open.
