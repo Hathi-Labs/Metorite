@@ -490,6 +490,29 @@ async def _moves_for(
     return moves
 
 
+async def _inherit_target(db: Any, node: Any) -> tuple[str | None, str | None]:
+    """Where inheriting would take ``node`` — its PARENT's status owner.
+
+    ⚠️ **Not the node's current owner, and the difference is the bug this
+    exists for.** ``status_owner_id(node)`` answers *where do the lanes come
+    from today*, which is the node ITSELF once it owns a set. Labelling the
+    inherit control with that produced "Inherit from Mobile App" on Mobile
+    App's own editor (owner report, 2026-09-16).
+
+    A function rather than four lines inside the route, so
+    ``test_projects_status_sets.py`` can pin the real resolution instead of
+    re-deriving it — a transcribed copy agrees with itself forever.
+
+    Returns ``(None, None)`` for a space, which has nothing above it.
+    """
+    parent = getattr(node, "parent_project_id", None)
+    if parent is None:
+        return None, None
+    owner = await status_owner_id(db, str(parent))
+    row = await require_row(db, "pm_projects", owner, "Project")
+    return owner, row.name
+
+
 @router.get("/nodes/{project_id}/status-set")
 async def describe_status_set(
     project_id: str, user: UserContext = Depends(get_current_user),
@@ -500,6 +523,12 @@ async def describe_status_set(
         node = await load_visible_project(db, vis, project_id)
         owner = await status_owner_id(db, project_id)
         owner_row = await require_row(db, "pm_projects", owner, "Project")
+
+        # Where inheriting would take it — see `_inherit_target`. This is the
+        # same walk `_resolve_set_choice` performs for `mode="inherit"`, so the
+        # label names the node the button actually moves it to.
+        inherit_from, inherit_name = await _inherit_target(db, node)
+
         dormant = [] if getattr(node, "owns_statuses", False) else await _lanes_of(
             db, project_id,
         )
@@ -508,6 +537,8 @@ async def describe_status_set(
             "owns": bool(getattr(node, "owns_statuses", False)),
             "owner_id": owner,
             "owner_name": owner_row.name,
+            "inherit_from_id": inherit_from,
+            "inherit_from_name": inherit_name,
             # A space has nothing above it, so "inherit" is not a choice it can
             # make. The UI disables the control and says why rather than hiding
             # it — an absent option reads as a missing feature.

@@ -620,3 +620,146 @@ class TestThePreviewDescribesWhatTheApplyDoes:
         lanes = await _lanes_of(db, tree["owner_kid"])
         await _moves_for(db, tree["root"], lanes)
         assert await _lane_of(db, task) == "Backlog"
+
+
+# ── 6 · The control must name the node the button moves it to ───────────────
+
+class TestTheInheritTargetIsTheParentNotItself:
+    """``inherit_from_*`` on ``GET /nodes/{id}/status-set``.
+
+    ⚠️ **The bug this class exists for shipped because the two fields AGREE in
+    the common case.** ``owner_*`` answers *where do the lanes come from
+    today*. While a node inherits, that IS the node above it, so one field
+    served both readings and every screenshot looked right.
+
+    The moment a node owns its set, ``owner_name`` becomes the node itself —
+    and the control offered *"Inherit from Mobile App"* on Mobile App's own
+    editor (owner report, 2026-09-16). A label naming the thing you are
+    configuring, as the place to escape to, is worse than no label.
+
+    So the resolution is asked of the PARENT, which is the same walk
+    ``_resolve_set_choice`` already performs for ``mode="inherit"``.
+    """
+
+    async def _describe(self, db, project_id: str) -> dict:
+        """The ROUTE MODULE'S OWN resolution, imported rather than re-derived.
+
+        ``_inherit_target`` is the function the endpoint calls. Pinning it here
+        is what makes this suite fail if somebody points the label back at the
+        current owner — a transcribed copy of the walk would agree with itself
+        forever while the endpoint drifted.
+        """
+        from gateway.routes.projects.admin import _inherit_target
+        from gateway.routes.projects.core import status_owner_id
+
+        node = (await db.execute(
+            text(
+                "SELECT id, parent_project_id FROM pm_projects "
+                " WHERE id = CAST(:i AS uuid)"
+            ),
+            {"i": project_id},
+        )).fetchone()
+        inherit_from, inherit_name = await _inherit_target(db, node)
+        return {
+            "owner_id": await status_owner_id(db, project_id),
+            "inherit_from_id": inherit_from,
+            "inherit_from_name": inherit_name,
+        }
+
+    async def test_a_node_that_OWNS_its_set_points_at_its_parent(self, db, tree):
+        """The failing case. ``owner`` is itself, ``inherit_from`` is above."""
+        said = await self._describe(db, tree["owner_kid"])
+        assert said["owner_id"] == tree["owner_kid"]
+        assert said["inherit_from_id"] == tree["root"]
+        assert said["inherit_from_id"] != said["owner_id"]
+
+    async def test_a_node_that_INHERITS_agrees_with_its_owner(self, db, tree):
+        """The case that hid the bug: here the two fields are the same node."""
+        said = await self._describe(db, tree["child"])
+        assert said["owner_id"] == tree["root"]
+        assert said["inherit_from_id"] == tree["root"]
+
+    async def test_a_child_of_an_override_points_at_the_OVERRIDE(self, db, tree):
+        """Not the space. The walk stops at the nearest owner above it."""
+        said = await self._describe(db, tree["under_kid"])
+        assert said["inherit_from_id"] == tree["owner_kid"]
+
+    async def test_a_SPACE_has_nowhere_to_inherit_from(self, db, tree):
+        """`None`, so the control falls back to "Inherit from a parent"."""
+        said = await self._describe(db, tree["root"])
+        assert said["inherit_from_id"] is None
+        assert said["owner_id"] == tree["root"]
+
+
+# ── 7 · The round trip is LOSSY, and the UI must not promise otherwise ──────
+
+class TestSwitchingBackDoesNotUndoAMerge:
+    """Two lanes of one stage collapse into one, and cannot come apart again.
+
+    ⚠️ **Measured against the running gateway on 2026-09-16, during a review
+    the owner asked for.** A set carrying "Next up" and "Parked" — both
+    ``todo`` — switched to a parent holding ONE ``todo`` lane. Both landed
+    there. Switching back sent both to the same lane.
+
+    This is not a defect in the rule. Once two lanes are one, the information
+    that told them apart is gone, and no later walk can invent it. It IS a
+    defect in a hint that read *"Its previous lanes are still here"*, which is
+    true of the lanes and false of the tasks — the kind of promise somebody
+    tests once.
+
+    So the behaviour is pinned here, and the control now says it out loud.
+    ``statusSwitch.test.ts`` covers the warning that reports it before the act.
+    """
+
+    async def test_two_lanes_of_one_stage_land_together(self, db, tree):
+        from gateway.routes.projects.core import remap_task_statuses
+
+        # Both are `in_progress` in the space's set. The target has exactly one
+        # `in_progress` lane, so the category arm sends both to it.
+        blocked = await _task(
+            db, tree, tree["child"], tree["r_blocked"], "was-blocked",
+        )
+        review = await _task(
+            db, tree, tree["child"], tree["r_review"], "was-in-review",
+        )
+        # "Blocked" exists by NAME in the target, so force the category arm for
+        # both by mapping neither and using a lane the target lacks.
+        await remap_task_statuses(
+            db, project_id=tree["root"], owner_id=tree["owner_kid"],
+            mapping={tree["r_blocked"]: tree["k_prog"]},
+        )
+        assert await _lane_of(db, blocked) == "In progress"
+        assert await _lane_of(db, review) == "In progress"
+
+    async def test_coming_back_cannot_tell_them_apart(self, db, tree):
+        """⚠️ The claim the hint used to contradict.
+
+        Both tasks return to the SAME lane, because after the merge there is
+        nothing on either row that says which lane it came from.
+        """
+        from gateway.routes.projects.core import remap_task_statuses
+
+        blocked = await _task(
+            db, tree, tree["child"], tree["r_blocked"], "round-trip-a",
+        )
+        review = await _task(
+            db, tree, tree["child"], tree["r_review"], "round-trip-b",
+        )
+        # Out: both into the target's single in-progress lane.
+        await remap_task_statuses(
+            db, project_id=tree["root"], owner_id=tree["owner_kid"],
+            mapping={
+                tree["r_blocked"]: tree["k_prog"],
+                tree["r_review"]: tree["k_prog"],
+            },
+        )
+        # Back: the space's set again. The name arm finds "In progress".
+        await remap_task_statuses(
+            db, project_id=tree["root"], owner_id=tree["root"], mapping=None,
+        )
+        home_a = await _lane_of(db, blocked)
+        home_b = await _lane_of(db, review)
+        assert home_a == home_b == "In progress"
+        # Neither is back where it started, and that is the point.
+        assert home_a != "Blocked"
+        assert home_b != "In review"

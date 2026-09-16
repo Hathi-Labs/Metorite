@@ -9,6 +9,15 @@
  *     ( ) Inherit from Product Engineering
  *     (o) Use its own statuses          [ Copy from… ]
  *
+ * ⚠️ **The name on the first line is the PARENT's owner, never this node's.**
+ * `info.owner_name` answers "where do the lanes come from today", which is this
+ * node itself the moment it owns a set — so using it here produced "Inherit
+ * from Mobile App" on Mobile App's own editor (owner report, 2026-09-16). The
+ * label has to name where the button would MOVE it, which is
+ * `inherit_from_name`. The two agree while a node inherits, which is precisely
+ * why the wrong one looked right in every screenshot taken before somebody
+ * clicked "Use its own statuses".
+ *
  * The model behind it is one sentence — *a project uses the status set of the
  * nearest node at or above it that owns one* — and this control is deliberately
  * the only place it is stated, because a control that says it is better than a
@@ -42,6 +51,7 @@ import Button from "@/components/ui/Button";
 import { Select } from "@/components/ui/Input";
 import { useEffect, useMemo, useState } from "react";
 
+import { findMerges, mergeWarning } from "../lib/statusSwitch";
 import {
   type ProjectRow,
   type StatusSetChange,
@@ -102,6 +112,18 @@ export function StatusSetControl({
     [preview]
   );
   const unanswered = questions.filter((m) => !choices[m.status_id]);
+
+  /**
+   * Target lanes that TWO OR MORE source lanes land in, as `[target, sources]`.
+   *
+   * Read off `choices` rather than off the suggestions, so it tracks what the
+   * human has picked: resolving a merge by hand must make the warning go away,
+   * and creating one by hand must make it appear.
+   */
+  const merges = useMemo(
+    () => findMerges(questions, choices),
+    [questions, choices]
+  );
 
   async function ask(change: StatusSetChange) {
     setWorking(true);
@@ -172,15 +194,41 @@ export function StatusSetControl({
 
   const disabled = busy || working;
 
+  /**
+   * Which option the radios SHOW — the pending choice while one is open.
+   *
+   * ⚠️ **Without this the click appeared to do nothing.** Seen on a screenshot
+   * 2026-09-16: clicking "Inherit from ZZ Shot Space" raised the mapping card,
+   * and the radio stayed on "Use its own statuses" — because `info` is the
+   * SERVER's answer and nothing had been written yet. Technically honest, and
+   * it reads as a dead control. That is most of what the owner meant by
+   * *"switching ... I don't think it works properly"*.
+   *
+   * The card IS the pending state, so the radio should say so too. Cancel
+   * clears `pending` and the pair snaps back to what the server holds.
+   */
+  const showingInherit = pending ? pending.mode === "inherit" : !info.owns;
+
   return (
     <div className="border-b border-border px-3 py-2.5">
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+      {/* ⚠️ The choice row holds the CHOICE and nothing else.
+          "Copy from…" used to sit here as a third flex sibling with `ml-auto`,
+          which said two wrong things: that it was a peer of the two options,
+          and — once the row wrapped — that it belonged to the right edge of a
+          dialog it had no other relationship with. The owner reported it as
+          looking "a little odd" (2026-09-16); it is below now, under the
+          option it actually depends on. */}
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
         <Choice
-          on={!info.owns}
+          on={showingInherit}
           disabled={disabled || !info.can_inherit}
+          // ⚠️ `inherit_from_name`, NOT `owner_name`. The owner is where the
+          // lanes come from TODAY, which is this node itself once it owns a
+          // set — so this read "Inherit from Mobile App" while configuring
+          // Mobile App. The label must name where the button WOULD take it.
           label={
-            info.can_inherit
-              ? `Inherit from ${info.owner_name}`
+            info.can_inherit && info.inherit_from_name
+              ? `Inherit from ${info.inherit_from_name}`
               : "Inherit from a parent"
           }
           // A space has nothing above it, so this is not a choice it can make.
@@ -194,21 +242,37 @@ export function StatusSetControl({
           onPick={() => void ask({ mode: "inherit" })}
         />
         <Choice
-          on={info.owns}
+          on={!showingInherit}
           disabled={disabled}
           label="Use its own statuses"
+          // ⚠️ "still here" was true and read as more than it said. The LANES
+          // come back; the TASKS do not necessarily. Measured 2026-09-16: a
+          // set with "Next up" and "Parked" (both `todo`) switched out to a
+          // parent holding one `todo` lane, both landed there, and switching
+          // back could not tell them apart again — two lanes in, one lane out.
+          // A hint that implies a safe round trip, over an act that is lossy
+          // for tasks, is the kind of promise somebody only tests once.
           hint={
             info.owns
               ? undefined
               : info.has_dormant_set
-                ? "Its previous lanes are still here."
+                ? "Its previous lanes come back. Tasks move by name and stage, so they may not."
                 : undefined
           }
           onPick={() => void ask({ mode: "own" })}
         />
+      </div>
 
-        {info.owns ? (
-          <div className="ml-auto w-52">
+      {/* Subordinate to the option above, and indented to say so. The label is
+          a sentence rather than a bare "Copy from…", because the pill alone
+          never said what copying would DO — it replaces these lanes with
+          another project's, which is a destructive act wearing a dropdown. */}
+      {info.owns && !pending ? (
+        <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 pl-6">
+          <span className="text-[11px] text-muted-foreground">
+            Start from another project&apos;s lanes:
+          </span>
+          <div className="w-48">
             <Select
               inputSize="sm"
               aria-label="Copy statuses from another project"
@@ -219,7 +283,7 @@ export function StatusSetControl({
                 void ask({ mode: "own", copy_from: e.target.value });
               }}
             >
-              <option value="">Copy from…</option>
+              <option value="">Choose a project…</option>
               {sources.map((row) => (
                 <option key={row.id} value={row.id}>
                   {row.name}
@@ -227,13 +291,34 @@ export function StatusSetControl({
               ))}
             </Select>
           </div>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
+
+      {/* ⚠️ ONE line, and the docstring above explains why it is not three.
+          The owner asked for "a short brief ... in very brief" (2026-09-16)
+          after meeting this screen cold. What was missing is not the model in
+          the abstract — it is WHOSE lanes these are, which is the one fact a
+          reader cannot deduce from a list of coloured rows. */}
+      {!pending ? (
+        <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
+          These are the board&apos;s lanes, grouped by stage.{" "}
+          {info.owns
+            ? "This project keeps its own set — everything under it inherits these lanes."
+            : `This project uses ${info.owner_name}'s set, so an edit here changes that project's lanes too.`}
+        </p>
+      ) : null}
 
       {preview && pending ? (
         <div className="mt-3 rounded-lg border border-border">
           <p className="border-b border-border px-3 py-2 text-xs font-medium text-foreground">
             Move {preview.moving} task(s) into the new statuses
+          </p>
+          {/* The rule, where the reader meets its RESULT. Every row below is
+              pre-filled by it, and a table of pre-chosen answers with no
+              stated rule reads as a machine deciding for you. */}
+          <p className="border-b border-border px-3 py-1.5 text-[11px] leading-snug text-muted-foreground">
+            Each lane goes to one with the same name, or else the first at the
+            same stage. Change any row before you confirm.
           </p>
           <div className="max-h-56 overflow-y-auto">
             <table className="w-full text-xs">
@@ -269,6 +354,21 @@ export function StatusSetControl({
               </tbody>
             </table>
           </div>
+
+          {/* ⚠️ A MERGE is one-way, and the table cannot show it.
+              Each row reads correctly on its own — two rows both pointing at
+              "Waiting" are two true sentences — and nothing says the two lanes
+              become one. That matters because switching back cannot separate
+              them again: the lanes return, the tasks stay merged. Measured
+              2026-09-16 with "Next up" and "Parked", both `todo`. */}
+          {merges.length ? (
+            <p className="flex items-start gap-1.5 border-t border-border px-3 py-2 text-xs text-foreground">
+              <Icon name="TriangleAlert" className="mt-0.5 h-3 w-3 shrink-0" />
+              <span>
+                {mergeWarning(merges)}
+              </span>
+            </p>
+          ) : null}
 
           {/* The one effect that reaches outside Projects, said before the
               click rather than discovered afterwards. */}
