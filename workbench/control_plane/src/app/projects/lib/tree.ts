@@ -63,6 +63,27 @@ export function hasRunState(level: NodeLevel): boolean {
 }
 
 /**
+ * The levels that may carry a STATUS SET of their own.
+ *
+ * ⚠️ **Statuses stopped being root-scoped on 2026-09-06 (migration 196), and
+ * this predicate exists because one caller never heard.** Before that, one set
+ * per space was the whole model, so "is this a space" and "may this own
+ * statuses" were the same test and nothing needed a name. They are now
+ * different questions: `owns_statuses` lets any project keep its own lanes,
+ * and `StatusSetControl` is how it takes them.
+ *
+ * A space is always true — migration 196's CHECK makes a root own its set,
+ * because a root has nothing above it to inherit from.
+ *
+ * A FOLDER is false. It groups and holds no tasks, so a lane set on one would
+ * describe a board that cannot exist. This is the same line `hasRunState`
+ * draws, for the same reason, which is why both live here.
+ */
+export function hasStatusSet(level: NodeLevel): boolean {
+  return level !== "folder";
+}
+
+/**
  * The levels that show a DASHBOARD instead of the project views. A space is
  * not a project (owner directive 2026-08-31): it summarises everything
  * beneath it and has none of a project's views. A folder does the same.
