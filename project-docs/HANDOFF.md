@@ -2288,6 +2288,62 @@ line — never reclaim a number by deleting the other entry.
   2026-09-05**, because `main` minted its own H-97 for the leaked database
   passwords and merged first. Ids are never reused, so that entry keeps the
   number. Filed from branch `ws-handoff-h96-h97`, which never opened a PR.
+### H-111 · Arm the weekly report send, after deciding who receives it · [OWNER]
+- **Check:** on the box, `grep -c '^PROJECT_REPORT_EMAIL_ENABLED=true' /opt/acb/app/.env`.
+  A zero means this is open. Also `grep -c recipients infra/postgres/204_projects_reports.sql`
+  — a zero means the columns are still unbuilt.
+- **What exists.** §9.12.8 slices 1 and 2 are merged. A definition saves
+  (`pm_reports`, migration 204), renders in the app (the Reports pane), and
+  renders to an email body with no colour (`src/lib/reportEmail.ts`).
+  `sendReportEmail` THROWS while the flag is off, instead of returning
+  quietly. A send path that reports success while it sends nothing is how a
+  scheduled report runs unnoticed for a month.
+- **What is missing, and it is two things.** `pm_reports` carries no
+  `recipients` and no `schedule`. Both are additive nullable columns in a
+  later migration (R6). They stayed out on purpose. Slice 2 must not arm a
+  delivery path while nothing renders through it.
+- **⚠️ Why this is OWNER.** §3a rule 3 is explicit: *"do not send mail to a
+  real person"*. A job that emails colleagues on a timer is an outward act,
+  and the first send is the one nobody can take back. Two decisions come
+  before the flag. **Who receives a report**, and **whether a member may add
+  somebody else** to a recipient list.
+- **Related:** H-107's MX gap. `privacy@` and `support@` do not resolve, and a
+  report people reply to needs an address that works.
+
+### H-112 · `test_tenant_coverage`'s live checks are invisible to CI · [AGENT]
+- **Check:** `uv run pytest tests/unit/test_tenant_coverage.py -q` with
+  `DATABASE_URL` unset. Two tests SKIP. Their own skip message says why that
+  matters: *"a green run without it proves the SQL was written, not that it
+  works."*
+- **What happens.** CI never sets `DATABASE_URL` for that file. So
+  `test_live_catalog_has_column_force_and_policy` and
+  `test_app_role_cannot_bypass_rls` never run there. The committed-set test
+  beside them DOES run. It caught `pm_reports` on 2026-09-16, so the file is
+  not dead. It is half awake.
+- **Measured 2026-09-17.** Run against the scratch tenant database, both fail.
+  About 130 legacy tables carry no RLS there. That is the MT-1 phase-4 gap,
+  not a regression. The scratch database replays the numbered ladder and not
+  `infra/postgres/generated/`. `pm_reports` is not among them.
+- **Decide what the check should mean.** Either point it at a database that
+  HAS the generated phases, so it can fail honestly. Or state that phase 4 is
+  unapplied and mark the two tests expected-fail with that reason. Today they
+  are neither, which is the worst of the three.
+
+### H-113 · Wave 6 is next, and §9.12.9 needs two columns first · [AGENT]
+- **Check:** `grep -c "follow_up_at" infra/postgres/*.sql | grep -v ":0"`.
+  No output means this is unbuilt.
+- **What it is.** §9.12.9, follow-ups. The owner's shape: *"you are blocked on
+  somebody, so you set a date, and it comes back to you."*
+- **⚠️ It has two halves and they live in different places.** My reminder is
+  mine, so it belongs on `pm_task_personal`. That is the per-member overlay
+  which already holds `defer`. A nudge to the other person is shared, and it
+  goes through the notification path that exists. One place for both gets one
+  of them wrong.
+- **The surface is the triage rail, which exists.** A `Waiting on` section
+  lists what is due back, and what has returned.
+- **The one rule to keep.** The task's shared status never changes. The status
+  is the team's, and the follow-up is mine.
+
 ### H-110 · Operator OTP sends now. Two dashboard acts are still unverified · [OWNER]
 - **Check:** ask Supabase project `uttxlicdccfkramtjfpi` for an OTP at an address
   that is NOT a project member. `POST /auth/v1/otp {"email":"…","create_user":true}`.
