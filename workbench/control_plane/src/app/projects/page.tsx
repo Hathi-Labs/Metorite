@@ -896,11 +896,17 @@ function ProjectsWorkspace() {
    * `setSelected` lands on the next render and the dialog has to name the
    * right space on this one.
    */
+  // ⚠️ The name says "space" and three of its four callers still mean one —
+  // but `onManageStatuses` no longer does. Since migration 196 a subproject may
+  // own its lanes, so `projectMenu` offers Statuses on every level but a
+  // folder, and this helper receives whichever node was clicked. It already
+  // did the right thing (it selects and opens the node it is handed); only the
+  // parameter name assumed otherwise.
   const manageSpace =
-    (open: (space: ProjectRow) => void) => (space: ProjectRow) => {
+    (open: (node: ProjectRow) => void) => (node: ProjectRow) => {
       setApp(null);
-      setSelected(space);
-      open(space);
+      setSelected(node);
+      open(node);
     };
 
   const projectMenuActions: ProjectMenuHandlers = useMemo(

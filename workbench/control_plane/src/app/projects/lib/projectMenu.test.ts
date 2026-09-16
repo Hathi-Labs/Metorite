@@ -203,9 +203,11 @@ describe("projectMenuItems · the row menu's scope", () => {
     ...over,
   });
 
+  // ⚠️ "Statuses" is NOT in this list any more, and that is the point.
+  // Migration 196 (2026-09-06) let a project own its own lanes, so statuses
+  // stopped being root-scoped while these four did not.
   const ROOT_SCOPED = [
     "Space settings",
-    "Statuses",
     "Custom fields",
     "Tags",
     "Lifecycle policy",
@@ -214,13 +216,11 @@ describe("projectMenuItems · the row menu's scope", () => {
   const LEVELS = ["space", "folder", "project", "subproject"] as const;
 
   it("keeps the root-scoped screens on a SPACE row, and offers them nowhere else", () => {
-    // Statuses, tags and fields are ONE set per space, inherited by the whole
-    // subtree — the per-list override `StatusManager` records that we
-    // deliberately do not have. A tree row is a precise thing to click, so
-    // offering the status editor on a leaf would say the leaf has statuses of
-    // its own, and the next person would file a bug when editing one leaf
-    // changed its siblings. `nodeLevel()` already calls a root 'space', so one
-    // test carries the whole scope.
+    // Tags and fields are ONE set per space, inherited by the whole subtree. A
+    // tree row is a precise thing to click, so offering their editors on a leaf
+    // would say the leaf has a set of its own, and the next person would file a
+    // bug when editing one leaf changed its siblings. `nodeLevel()` already
+    // calls a root 'space', so one test carries the whole scope.
     const onSpace = labels(projectMenuItems(project(), handlers(), ui(), "space"));
     for (const label of ROOT_SCOPED) expect(onSpace).toContain(label);
 
@@ -230,6 +230,41 @@ describe("projectMenuItems · the row menu's scope", () => {
       );
       for (const label of ROOT_SCOPED) expect(elsewhere).not.toContain(label);
     }
+  });
+
+  it("offers Statuses on every level that can OWN a set, not just a space", () => {
+    // ⚠️ The regression this test exists for. Statuses sat in the `isSpace`
+    // block with the other four until 2026-09-16, ten days after migration 196
+    // made `owns_statuses` a per-project flag. The header overflow menu and the
+    // command palette both acted on the selected node, so the feature worked —
+    // from two of its three doors. The row somebody actually right-clicks was
+    // the one still refusing (owner report).
+    for (const level of ["space", "project", "subproject"] as const) {
+      const items = labels(projectMenuItems(project(), handlers(), ui(), level));
+      expect(items, `Statuses missing on a ${level}`).toContain("Statuses");
+    }
+  });
+
+  it("offers Statuses on a FOLDER never, because a folder holds no tasks", () => {
+    // A folder groups. A lane set on one would describe a board that cannot
+    // exist, which is the same line `hasRunState` draws.
+    const onFolder = labels(
+      projectMenuItems(project(), handlers(), ui(), "folder")
+    );
+    expect(onFolder).not.toContain("Statuses");
+  });
+
+  it("gives a subproject Statuses WITHOUT the space-only screens beside it", () => {
+    // The two halves of the split, asserted together: moving statuses out of
+    // the `isSpace` block must not drag the root-scoped four along with it.
+    const onSub = labels(
+      projectMenuItems(project(), handlers(), ui(), "subproject")
+    );
+    expect(onSub).toContain("Statuses");
+    expect(onSub).not.toContain("Space settings");
+    expect(onSub).not.toContain("Custom fields");
+    expect(onSub).not.toContain("Tags");
+    expect(onSub).not.toContain("Lifecycle policy");
   });
 
   it("drops a screen the surface cannot open, rather than greying it", () => {

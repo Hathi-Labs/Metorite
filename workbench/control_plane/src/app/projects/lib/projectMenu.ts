@@ -27,14 +27,20 @@
  * they must not drift — which is why they share this one builder rather than
  * each assembling their own items.
  *
- * ## Why a vocabulary appears on a SPACE row and nowhere else
+ * ## Which vocabulary appears on which row, and why they differ
  *
- * Statuses, tags and custom fields are ROOT-scoped: one set per space,
- * inherited by every project and subproject under it. The tree row is a
- * precise thing to click, so offering the status editor on a leaf would say
- * the leaf has statuses of its own — the per-list override `StatusManager`
- * records that we deliberately do not have. `nodeLevel()` already calls a
- * root 'space', so the level test and the scope are the same test.
+ * Tags and custom fields are ROOT-scoped: one set per space, inherited by
+ * everything under it. Offering their editors on a leaf would say the leaf has
+ * a set of its own, which it does not. `nodeLevel()` already calls a root
+ * 'space', so for those the level test and the scope are the same test.
+ *
+ * ⚠️ **Statuses are the exception, since migration 196 (2026-09-06).** A
+ * project may now own its lanes — `owns_statuses` — so "is this a space" and
+ * "may this own statuses" stopped being one question. `hasStatusSet()` is the
+ * second one, and it excludes only a folder. This menu kept the old test for
+ * ten days after the model changed, which left the feature reachable from the
+ * header menu and the command palette but not from the row somebody actually
+ * right-clicks (owner report, 2026-09-16).
  *
  * ## What this deliberately does NOT offer, and why
  *
@@ -64,7 +70,13 @@
 import { PROJECT_STATES, PROJECT_STATE_ORDER } from "@/lib/statusAccent";
 
 import type { ProjectRow } from "./api";
-import { type ChildOption, hasRunState, type NodeLevel, ownState } from "./tree";
+import {
+  type ChildOption,
+  hasRunState,
+  hasStatusSet,
+  type NodeLevel,
+  ownState,
+} from "./tree";
 
 /**
  * One menu entry, in terms with no React in them.
@@ -224,11 +236,22 @@ export function projectMenuItems(
     groups.push(create);
   }
 
-  // The space-scoped screens. All four are root-scoped, and `nodeLevel()`
-  // calls a root a space, so one test gates the lot.
-  if (isSpace && ui) {
+  // Statuses, and then the screens that really ARE space-scoped.
+  //
+  // ⚠️ **This block gated all four on `isSpace`, and for statuses that premise
+  // expired on 2026-09-06.** Migration 196 gave every project an
+  // `owns_statuses` flag, so a subproject may keep its own lanes. The header
+  // overflow menu and the command palette were both updated to act on the
+  // SELECTED node. This menu was not — so the one place somebody naturally
+  // right-clicks was the only door still enforcing the old rule, and the
+  // feature was reachable from two of its three entrances (owner report,
+  // 2026-09-16).
+  //
+  // Custom fields, tags and the lifecycle policy ARE still root-scoped, so
+  // they keep the `isSpace` test. Only statuses moved.
+  if (ui) {
     const scoped: ProjectMenuItem[] = [];
-    if (ui.onOpenSettings) {
+    if (isSpace && ui.onOpenSettings) {
       scoped.push({
         kind: "item",
         label: "Space settings",
@@ -239,7 +262,12 @@ export function projectMenuItems(
     // Statuses lead the vocabularies, as they do in the header menu: theirs is
     // the one whose category half drives the roll-up, completion, and what
     // /tasks shows.
-    if (ui.onManageStatuses) {
+    //
+    // ONE label on every level, deliberately. A row that inherits could say so
+    // here, but `StatusSetControl` names the owner the moment the dialog
+    // opens, and saying it twice in two vocabularies is how the two drift
+    // apart. The menu offers the door; the dialog describes the room.
+    if (hasStatusSet(level) && ui.onManageStatuses) {
       scoped.push({
         kind: "item",
         label: "Statuses",
@@ -247,7 +275,7 @@ export function projectMenuItems(
         onSelect: ui.onManageStatuses,
       });
     }
-    if (ui.onManageFields) {
+    if (isSpace && ui.onManageFields) {
       scoped.push({
         kind: "item",
         label: "Custom fields",
@@ -255,7 +283,7 @@ export function projectMenuItems(
         onSelect: ui.onManageFields,
       });
     }
-    if (ui.onManageTags) {
+    if (isSpace && ui.onManageTags) {
       scoped.push({
         kind: "item",
         label: "Tags",
@@ -263,7 +291,7 @@ export function projectMenuItems(
         onSelect: ui.onManageTags,
       });
     }
-    if (ui.onManageLifecycle) {
+    if (isSpace && ui.onManageLifecycle) {
       scoped.push({
         kind: "item",
         label: "Lifecycle policy",
