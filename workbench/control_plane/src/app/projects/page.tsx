@@ -33,6 +33,8 @@ import {
   type ViewRow,
   projectsApi,
   projectsKey,
+  projectWatchersApi,
+  type ProjectWatchState,
 } from "./lib/api";
 import { FieldManager } from "./components/FieldManager";
 import { MoveDialog } from "./components/MoveDialog";
@@ -639,6 +641,63 @@ function ProjectsWorkspace() {
   // discipline): management dialogs open from HERE, not from a row of
   // always-visible buttons beside the view switcher.
   const [manageOpen, setManageOpen] = useState(false);
+  /**
+   * WS-27bk §9.12.2(b) — whether the caller watches the SELECTED project.
+   *
+   * `null` means "not asked yet", and the menu item renders a neutral label
+   * for it rather than guessing "Watch". Guessing is how a toggle ends up
+   * telling somebody they are not subscribed when they are.
+   */
+  const [projectWatch, setProjectWatch] = useState<ProjectWatchState | null>(
+    null,
+  );
+
+  /**
+   * Ask once per selected project, and drop the answer the moment the
+   * selection changes.
+   *
+   * ⚠️ The `cancelled` flag is not ceremony. Clicking through a tree faster
+   * than the network answers would otherwise let an earlier project's reply
+   * land last and paint the wrong state onto the current one.
+   */
+  useEffect(() => {
+    const id = selected?.id;
+    if (!id) {
+      setProjectWatch(null);
+      return;
+    }
+    let cancelled = false;
+    setProjectWatch(null);
+    projectWatchersApi
+      .get(id)
+      .then((state) => {
+        if (!cancelled) setProjectWatch(state);
+      })
+      .catch(() => {
+        // A failed read leaves the item in its neutral "not asked" state. It
+        // must not read as "not watching", which is a claim we cannot make.
+        if (!cancelled) setProjectWatch(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected?.id]);
+
+  /** Toggle the caller's subscription to the selected project. */
+  const toggleProjectWatch = useCallback(async () => {
+    const id = selected?.id;
+    if (!id || !projectWatch) return;
+    const next = !projectWatch.watching;
+    // Optimistic: both writes are idempotent, so a lost race costs nothing.
+    setProjectWatch({ ...projectWatch, watching: next });
+    try {
+      if (next) await projectWatchersApi.watch(id);
+      else await projectWatchersApi.unwatch(id);
+      setProjectWatch(await projectWatchersApi.get(id));
+    } catch {
+      setProjectWatch(await projectWatchersApi.get(id).catch(() => null));
+    }
+  }, [selected?.id, projectWatch]);
   const manageRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!manageOpen) return;
@@ -2185,6 +2244,44 @@ function ProjectsWorkspace() {
               if (e.key === "Escape") setManageOpen(false);
             }}
           >
+            {/* WS-27bk §9.12.2(b). First, because it is the one item about
+                YOU rather than about the project's configuration — and the
+                only one a member reaches repeatedly.
+
+                ⚠️ Watching a project is NOT watching its tasks. The server
+                resolves the ancestor chain per notification, so a task added
+                tomorrow is covered by a subscription taken today. */}
+            <button
+              type="button"
+              role="menuitem"
+              disabled={projectWatch === null}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted disabled:opacity-50"
+              onClick={() => {
+                setManageOpen(false);
+                void toggleProjectWatch();
+              }}
+            >
+              <Icon
+                name={projectWatch?.watching ? "BellOff" : "Bell"}
+                className="h-3.5 w-3.5 text-muted-foreground"
+              />
+              {projectWatch === null
+                ? "Watch project"
+                : projectWatch.watching
+                  ? "Stop watching"
+                  : projectWatch.inherited
+                    ? "Watch directly"
+                    : "Watch project"}
+            </button>
+            {/* An inherited subscription is stated, never implied by a
+                disabled control: the member is already hearing about this
+                project, and only a parent explains why. */}
+            {projectWatch?.inherited && !projectWatch.watching ? (
+              <p className="px-2 pb-1 text-[11px] leading-snug text-muted-foreground">
+                You already follow this through a parent project.
+              </p>
+            ) : null}
+            <div className="my-1 h-px bg-border" role="separator" />
             <button
               type="button"
               role="menuitem"

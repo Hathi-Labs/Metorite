@@ -878,6 +878,41 @@ export const watchersApi = {
 };
 
 /**
+ * Watching a PROJECT (WS-27bk §9.12.2(b)).
+ *
+ * The same three verbs against a node, because a member who has learned the
+ * task toggle has learned this one.
+ *
+ * ⚠️ `inherited` is what stops the toggle from lying. Watching a parent
+ * already covers this project, so a control that read "not watching" would
+ * invite a second subscription that changes nothing. The server resolves the
+ * ancestor chain; the surface never walks it.
+ */
+export type ProjectWatchState = {
+  project_id: string;
+  watchers: string[];
+  watching: boolean;
+  inherited: boolean;
+};
+
+export const projectWatchersApi = {
+  get: (projectId: string) =>
+    call<ProjectWatchState>(`nodes/${projectId}/watchers`),
+
+  watch: (projectId: string) =>
+    call<{ project_id: string; watching: boolean }>(
+      `nodes/${projectId}/watch`,
+      { method: "PUT" }
+    ),
+
+  unwatch: (projectId: string) =>
+    call<{ project_id: string; watching: boolean }>(
+      `nodes/${projectId}/watch`,
+      { method: "DELETE" }
+    ),
+};
+
+/**
  * ⚠️ `importApi` was REMOVED 2026-08-24 (D52, board WS-39 S1) along with both
  * gateway endpoints. Metorite is the project-management system of record, so
  * there is nothing to import from. Do not re-add a client here — the
