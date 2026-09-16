@@ -219,6 +219,11 @@ jobs:
       # into GREEN, and only fails when the app is truly unreachable.
 
       - uses: actions/checkout@v4
+        # ⚠️ FULL history, for the ancestry test in `verify()` below.
+        # The default shallow clone holds one commit, so `merge-base`
+        # cannot answer whether the serving commit contains this one.
+        with:
+          fetch-depth: 0
 
       - name: Deploy + verify (up to 3 rounds)
         shell: bash
@@ -320,7 +325,24 @@ jobs:
             #   2. the PUBLIC workbench answers — that requires Caddy, and
             #      gating on the gateway alone once let a full outage ship
             #      green,
-            #   3. /version reports THIS commit.
+            #   3. /version reports this commit, OR one that CONTAINS it.
+            #
+            # ⚠️ (3) was exact equality until 2026-09-16, and that turned
+            # every pair of quick merges into a guaranteed-red run. The
+            # remote script resets the box to `origin/main`, so it lands
+            # main's tip AT THAT MOMENT, never the commit whose run called
+            # it. Merge A then B: A's run deploys, the box ends on B, and
+            # A's verify then waits 24 polls for a commit that will never
+            # serve. It burns all three rounds, roughly 105 minutes, and
+            # `cancel-in-progress: false` holds B's run behind it for the
+            # whole time. Production was correct within two minutes in
+            # every observed case.
+            #
+            # Equality never provided the protection, so relaxing it costs
+            # nothing. An OLDER serving commit still FAILS, which is the
+            # timeout-killed apply this check exists to catch. Only a
+            # DESCENDANT passes, and a descendant means this run's code is
+            # live.
             #
             # (3) is what makes a timeout-killed apply visible. The deploy
             # step's own comment already names that case — "a timeout kill is
@@ -338,9 +360,22 @@ jobs:
               fi
               wb_code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$WORKBENCH_URL/" 2>/dev/null || echo 000)
               got_sha=$(deployed_sha)
+              sha_note=""
+              sha_ok=0
+              if [ -n "$got_sha" ]; then
+                if [ "$got_sha" = "$GITHUB_SHA" ]; then
+                  sha_ok=1
+                elif git fetch -q --no-tags origin main 2>/dev/null && git merge-base --is-ancestor "$GITHUB_SHA" "$got_sha" 2>/dev/null; then
+                  # ⚠️ SUPERSEDED, and that is a PASS. The box holds a
+                  # LATER commit that CONTAINS this one, so every change
+                  # this run merged is serving. See the note on verify().
+                  sha_ok=1
+                  sha_note=" (superseded by $got_sha, which contains it)"
+                fi
+              fi
 
-              if [ "$gw_ok" = 1 ]                  && printf '%s' "$wb_code" | grep -qE '^[23]'                  && [ "$got_sha" = "$GITHUB_SHA" ]; then
-                echo "  ✅ gateway healthy; workbench / -> HTTP $wb_code; serving $got_sha (poll $i)"
+              if [ "$gw_ok" = 1 ]                  && printf '%s' "$wb_code" | grep -qE '^[23]'                  && [ "$sha_ok" = 1 ]; then
+                echo "  ✅ gateway healthy; workbench / -> HTTP $wb_code; serving $got_sha$sha_note (poll $i)"
                 return 0
               fi
               echo "  not there yet (gateway_ok=$gw_ok workbench=$wb_code sha=${got_sha:-none}, poll $i/24) — 10s…"
@@ -350,8 +385,8 @@ jobs:
             echo "     gateway_ok=$gw_ok  workbench=$wb_code"
             echo "     serving: ${got_sha:-<no /version response>}"
             echo "     wanted:  $GITHUB_SHA"
-            if [ -n "${got_sha:-}" ] && [ "$got_sha" != "$GITHUB_SHA" ]; then
-              echo "     ⚠️  The app is UP but on a DIFFERENT commit. The deploy did not"
+            if [ -n "${got_sha:-}" ] && [ "$sha_ok" != 1 ]; then
+              echo "     ⚠️  The app is UP but on an OLDER commit. The deploy did not"
               echo "         land — do not read the healthy app as a successful deploy."
             fi
             return 1
