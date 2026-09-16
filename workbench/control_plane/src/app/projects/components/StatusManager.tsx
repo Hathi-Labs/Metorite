@@ -741,16 +741,16 @@ export function StatusManager({
         )}
       </div>
 
-      {/* Two facts a member needs and cannot see anywhere else: the scope, and
-          which stages are unrepresented. */}
-      <div className="border-t border-border px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
-        {gaps.length > 0 ? (
-          <p className="mt-1 text-foreground">
-            No lane reports as{" "}
-            {gaps.map((c) => CATEGORY_LABEL[c] ?? c).join(", ")}.
-          </p>
-        ) : null}
-      </div>
+      {/* ⚠️ The gap footer is GONE, and it was saying everything twice.
+          Seen on a screenshot 2026-09-16: an empty Cancelled stage drew "No
+          cancelled lane." inside its own group AND "No lane reports as
+          Cancelled." in a footer below the list. Two sentences, one fact.
+
+          The in-group line wins on both counts. It sits where the gap is, and
+          it sits beside the "+ Add status" button that closes it — the footer
+          named a stage and then left the reader to go find it. The scope half
+          of this block's old job moved to `StatusSetControl` when migration
+          196 made ownership a per-project question. */}
     </Modal>
   );
 }

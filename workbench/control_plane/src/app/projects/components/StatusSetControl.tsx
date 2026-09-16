@@ -194,6 +194,21 @@ export function StatusSetControl({
 
   const disabled = busy || working;
 
+  /**
+   * Which option the radios SHOW — the pending choice while one is open.
+   *
+   * ⚠️ **Without this the click appeared to do nothing.** Seen on a screenshot
+   * 2026-09-16: clicking "Inherit from ZZ Shot Space" raised the mapping card,
+   * and the radio stayed on "Use its own statuses" — because `info` is the
+   * SERVER's answer and nothing had been written yet. Technically honest, and
+   * it reads as a dead control. That is most of what the owner meant by
+   * *"switching ... I don't think it works properly"*.
+   *
+   * The card IS the pending state, so the radio should say so too. Cancel
+   * clears `pending` and the pair snaps back to what the server holds.
+   */
+  const showingInherit = pending ? pending.mode === "inherit" : !info.owns;
+
   return (
     <div className="border-b border-border px-3 py-2.5">
       {/* ⚠️ The choice row holds the CHOICE and nothing else.
@@ -205,7 +220,7 @@ export function StatusSetControl({
           option it actually depends on. */}
       <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
         <Choice
-          on={!info.owns}
+          on={showingInherit}
           disabled={disabled || !info.can_inherit}
           // ⚠️ `inherit_from_name`, NOT `owner_name`. The owner is where the
           // lanes come from TODAY, which is this node itself once it owns a
@@ -227,7 +242,7 @@ export function StatusSetControl({
           onPick={() => void ask({ mode: "inherit" })}
         />
         <Choice
-          on={info.owns}
+          on={!showingInherit}
           disabled={disabled}
           label="Use its own statuses"
           // ⚠️ "still here" was true and read as more than it said. The LANES
@@ -252,7 +267,7 @@ export function StatusSetControl({
           a sentence rather than a bare "Copy from…", because the pill alone
           never said what copying would DO — it replaces these lanes with
           another project's, which is a destructive act wearing a dropdown. */}
-      {info.owns ? (
+      {info.owns && !pending ? (
         <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 pl-6">
           <span className="text-[11px] text-muted-foreground">
             Start from another project&apos;s lanes:
