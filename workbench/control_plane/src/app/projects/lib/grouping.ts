@@ -11,6 +11,8 @@
  * nothing in it) and each of those is one assertion here.
  */
 
+import { STATUS_CATEGORIES, categoryLabel } from "@/lib/statusCategory";
+
 import type { StatusRow, TaskRow } from "./api";
 import {
   DEFAULT_SHOWN,
@@ -20,6 +22,7 @@ import {
 
 export type GroupBy =
   | "status"
+  | "category"
   | "assignee"
   | "project"
   | "importance"
@@ -29,12 +32,19 @@ export type GroupBy =
 /** Mirrors the gateway's `filters.GROUP_BY`. */
 export const GROUP_OPTIONS: GroupBy[] = [
   "status",
+  "category",
   "assignee",
   "project",
   "importance",
   "tag",
   "none",
 ];
+
+// ⚠️ There is deliberately NO label map here. `FilterBar` owns the axis
+// wording, and it folds the verb into each option ("Group by stage", "Lanes by
+// stage") for a reason its own docstring gives. A bare noun map beside it would
+// be a fourth copy of the same vocabulary with nobody reading it — I wrote one,
+// found it had no caller, and deleted it.
 
 /**
  * The board's grouping axis when nobody has chosen one.
@@ -445,6 +455,42 @@ export function groupTasks(
       key: status.id,
       label: status.name,
       tasks: tasks.filter((t) => t.status_id === status.id),
+    }));
+  }
+
+  // ── Stage (§9.12.3) ──────────────────────────────────────────────────────
+  //
+  // Seven lanes over four stages become four columns. The value is not the
+  // shorter board: it is that two projects with DIFFERENT lane names share
+  // exactly one vocabulary, and this is it. Since migration 196 a subproject
+  // may keep its own lanes, so a subtree board can hold "Doing" and
+  // "In progress" meaning the same thing — and no name-keyed axis can say so.
+  //
+  // ⚠️ Order is the CATEGORY VOCABULARY's, never `position`. A stage is a
+  // stage, and stages have one true order; `position` orders lanes INSIDE a
+  // stage and says nothing across them. `STATUS_CATEGORIES` is that order.
+  //
+  // ⚠️ Empty stages are kept, for the same reason `status` keeps empty lanes:
+  // a board with no "In progress" column reads as "this project has no
+  // in-progress state", not as "nothing is in progress". But only for stages
+  // the project actually HAS a lane in — a column nothing could ever land in
+  // is not information, and `landingLane` would have nothing to give a drop.
+  if (by === "category") {
+    const byId = new Map(ctx.statuses.map((s) => [s.id, s]));
+    const present = new Set(ctx.statuses.map((s) => s.category));
+    const known = STATUS_CATEGORIES.filter((c) => present.has(c));
+    // A category the server knows and this client does not still draws, after
+    // the known ones, under its raw name — the same tail `groupByCategory`
+    // keeps, and for the same reason: lanes must never silently vanish.
+    const strays = [...present].filter(
+      (c) => !(STATUS_CATEGORIES as readonly string[]).includes(c)
+    ).sort();
+    return [...known, ...strays].map((category) => ({
+      key: category,
+      label: categoryLabel(category),
+      tasks: tasks.filter(
+        (t) => byId.get(t.status_id)?.category === category
+      ),
     }));
   }
 
