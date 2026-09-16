@@ -12,6 +12,14 @@
 // ⚠️ **So this moves the decimal point instead of multiplying.** Shifting a
 // digit string is exact at every scale, has no rounding mode to get wrong, and
 // needs no dependency.
+//
+// 🔴 **NO CALLER as of migration 030, and it is kept deliberately.** Its one
+// caller was `read.ts`, bridging the window where the wire carried both
+// scales. That window closed. The module stays because the NEXT scale change
+// will need exactly this — and because deleting it would delete the measured
+// finding with it: 4773 of the 20000 rates between 0.0001 and 2.0000 come back
+// wrong from `Number(v) * 1000`, and that fact is worth more than the fifty
+// lines it costs to keep.
 
 /** Multiply a decimal STRING by 1000 by moving the point. Exact.
  *

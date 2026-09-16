@@ -17,7 +17,7 @@ import Icon, { themedIcon } from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import { PROJECT_STATES, projectStateAccent } from "@/lib/statusAccent";
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useMemo, useState } from "react";
 
 import type { ProjectRow } from "../lib/api";
 import { type ProjectMenuHandlers, projectMenuItems } from "../lib/projectMenu";
@@ -253,7 +253,40 @@ interface Props {
   onCancelCreate?: () => void;
   /** WS-27bg — right-click actions. Omitted = a read-only tree, no menu. */
   actions?: ProjectMenuHandlers;
+  /**
+   * The four ROOT-scoped screens, offered on a space row only.
+   *
+   * Each is optional and an absent one drops its entry, so the page decides
+   * what the tree can reach rather than the tree deciding what the page must
+   * implement. They travel by context rather than by prop for the reason the
+   * drag does — see `TreeManage` below.
+   */
+  onManageStatuses?: (space: ProjectRow) => void;
+  onManageFields?: (space: ProjectRow) => void;
+  onManageTags?: (space: ProjectRow) => void;
+  onManageLifecycle?: (space: ProjectRow) => void;
 }
+
+/**
+ * ── The space screens, as context (owner directive 2026-09-06) ─────────────
+ *
+ * The same reasoning `TreeDrag` records, for the same reason: `Node` is
+ * recursive, and threading four more handlers through it would add four lines
+ * to three places and put page-level state into the shape of the tree. These
+ * four are not tree-shaped either — every one of them acts on the ONE row its
+ * menu opened from, wherever that row sits.
+ *
+ * An empty object is the read-only default, so every entry drops and the menu
+ * is exactly what the surface can do.
+ */
+interface TreeManageValue {
+  onManageStatuses?: (space: ProjectRow) => void;
+  onManageFields?: (space: ProjectRow) => void;
+  onManageTags?: (space: ProjectRow) => void;
+  onManageLifecycle?: (space: ProjectRow) => void;
+}
+
+const TreeManage = createContext<TreeManageValue>({});
 
 /**
  * ── The drag, as context (WS-27bk §9.12.4 slice 2) ─────────────────────────
@@ -398,6 +431,8 @@ function Node({
    * handler below is `undefined` and the row is not draggable at all.
    */
   const drag = useContext(TreeDrag);
+  /** The space-scoped screens this row's menu may open. Empty = none. */
+  const manage = useContext(TreeManage);
   const dragging = drag?.draggingId === node.id;
   const over = drag?.over;
   const litInto =
@@ -577,6 +612,30 @@ function Node({
                 It goes with the column, in the release that drops it. */}
           </button>
         )}
+        {actions && !renaming ? (
+          // The SAME menu the right-click opens, from a control you can see
+          // (owner directive 2026-09-06). A right-click is the fast path for
+          // people who already know the menu is there, and it is invisible to
+          // everyone else — so the actions had no discoverable entry at all.
+          //
+          // Always drawn, never hover-only: this same tree is the phone
+          // drawer's contents (WS-27ag), and a control that needs a hover is a
+          // control a touch device cannot reach.
+          <button
+            type="button"
+            aria-label={`Actions for ${node.name}`}
+            title="Actions"
+            onClick={(e) => {
+              // Anchored under the button rather than at the pointer, so the
+              // menu opens in the same place whichever way you asked for it.
+              const rect = e.currentTarget.getBoundingClientRect();
+              setMenu({ x: rect.left, y: rect.bottom + 2 });
+            }}
+            className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-background/60"
+          >
+            <Icon name="MoreHorizontal" className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
         {onAddChild && !renaming && addOptions.length > 0 ? (
           // A child is created HERE rather than from a dialog that asks
           // "which parent?" — the answer is already on screen, and asking for
@@ -633,6 +692,24 @@ function Node({
                 ? () => onOpenSettings(node)
                 : undefined,
               onMove: onMove ? () => onMove(node) : undefined,
+              // The same options the `+` button reads, so the two cannot
+              // offer different children of the same row.
+              onCreate: onAddChild
+                ? (option) => onAddChild(node, option)
+                : undefined,
+              createOptions: addOptions,
+              onManageStatuses: manage.onManageStatuses
+                ? () => manage.onManageStatuses?.(node)
+                : undefined,
+              onManageFields: manage.onManageFields
+                ? () => manage.onManageFields?.(node)
+                : undefined,
+              onManageTags: manage.onManageTags
+                ? () => manage.onManageTags?.(node)
+                : undefined,
+              onManageLifecycle: manage.onManageLifecycle
+                ? () => manage.onManageLifecycle?.(node)
+                : undefined,
             },
             level
           ).map((entry) =>
@@ -698,8 +775,18 @@ export function ProjectTree({
   onCommitCreate,
   onCancelCreate,
   actions,
+  onManageStatuses,
+  onManageFields,
+  onManageTags,
+  onManageLifecycle,
 }: Props) {
   const draftAtRoot = creating != null && creating.parentId === null;
+
+  /** One object for the whole tree, so a re-render does not re-key every row. */
+  const manageValue = useMemo<TreeManageValue>(
+    () => ({ onManageStatuses, onManageFields, onManageTags, onManageLifecycle }),
+    [onManageStatuses, onManageFields, onManageTags, onManageLifecycle]
+  );
 
   /**
    * The drag's state, held once for the whole tree.
@@ -749,6 +836,7 @@ export function ProjectTree({
   }
   return (
     <TreeDrag.Provider value={dragValue}>
+    <TreeManage.Provider value={manageValue}>
     <ul className="space-y-0.5">
       {roots.map((root, rootIndex) => (
         <Node
@@ -778,6 +866,7 @@ export function ProjectTree({
         />
       ) : null}
     </ul>
+    </TreeManage.Provider>
     </TreeDrag.Provider>
   );
 }

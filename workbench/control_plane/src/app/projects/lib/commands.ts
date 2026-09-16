@@ -131,7 +131,7 @@ export interface CommandActions {
   setPanelMode(mode: PanelMode): void;
   clearFilters(): void;
   toggleRail(): void;
-  manage(what: "fields" | "tags" | "lifecycle"): void;
+  manage(what: "fields" | "tags" | "statuses" | "lifecycle"): void;
   showShortcuts(): void;
 }
 
@@ -259,6 +259,19 @@ const PROJECT_COMMANDS: Command[] = [
     icon: "SlidersHorizontal",
     when: (ctx) => ctx.hasProject,
     run: (actions) => actions.manage("fields"),
+  },
+  {
+    id: "project.statuses",
+    label: "Statuses",
+    section: "Project",
+    // "Workflow" and "stage" are what people call this when they go looking
+    // for it, and "category" is what the data calls the half that rolls up.
+    keywords: ["workflow", "stages", "lanes", "columns", "category"],
+    icon: "Columns3",
+    // Any node, unlike the lifecycle policy: the gateway resolves the root, so
+    // a subproject opens its space's set rather than being refused.
+    when: (ctx) => ctx.hasProject,
+    run: (actions) => actions.manage("statuses"),
   },
   {
     id: "project.tags",

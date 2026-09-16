@@ -265,12 +265,35 @@ _THE_SIGNUP_CALLER = "apps/services/gateway/gateway/routes/signup.py"
 _THE_SEAT_CALLER = "apps/services/gateway/gateway/routes/seats.py"
 _THE_INVITE_CALLER = "apps/services/gateway/gateway/routes/admin/members.py"
 _THE_ROUTER_CALLER = "apps/services/gateway/gateway/routes/v1_compat.py"
+#: ⚠️ **The SIXTH entry — ``gateway/main.py``, 2026-09-15 — and the argument for
+#: it, because the paragraph above is this list's own rule.**
+#:
+#: It imports exactly ONE name, ``start_console_bootstrap``, from the lifespan,
+#: and that function allocates no seat and names no person. It starts the
+#: inbound sweep that provisions the TENANT half of organizations the Customer
+#: Console already placed on this box — the repair for operator-created
+#: customers, who had a registry entry, a placement, seats and an owner on the
+#: Console and no tenant organization at all, so their owner signed in and was
+#: told *"No organization is linked to this email"*.
+#:
+#: **It is not a route**, which is what makes it different in kind from the five
+#: above: no request reaches it, so there is no caller to farm anything with. It
+#: reads the registry and writes only the tenant plane.
+#:
+#: ⚠️ The entry is NARROWED by
+#: ``test_the_lifespan_importer_touches_only_the_bootstrap_seam`` below — this
+#: list admits the file, and that test admits only the one name. Widening the
+#: list without that pairing would let a future edit call
+#: ``resolve_for_signin`` from startup, which is precisely the drift the list
+#: exists to catch.
+_THE_LIFESPAN_CALLER = "apps/services/gateway/gateway/main.py"
 _ALLOWED_CALLERS = (
     _THE_ONE_CALLER,
     _THE_SIGNUP_CALLER,
     _THE_SEAT_CALLER,
     _THE_INVITE_CALLER,
     _THE_ROUTER_CALLER,
+    _THE_LIFESPAN_CALLER,
 )
 
 
@@ -350,6 +373,61 @@ def test_resolve_is_reachable_only_from_the_signin_path() -> None:
     )
 
 
+#: The ONLY names ``gateway/main.py`` may import from ``console_resolve``: the
+#: loop's start and its stop. Both are supervision, neither allocates a seat and
+#: neither names a person.
+_LIFESPAN_ALLOWED_NAMES = frozenset(
+    {"start_console_bootstrap", "stop_console_bootstrap"}
+)
+
+
+def test_the_lifespan_importer_touches_only_the_bootstrap_seam():
+    """``gateway/main.py`` is on the list for TWO names, and this pins them.
+
+    The list above admits the FILE; this admits only the loop's start and stop.
+    Without this pairing, adding ``main.py`` there would let a future edit call
+    ``resolve_for_signin`` at startup — a seat allocated for nobody, on every
+    boot, which is exactly the drift the list exists to catch.
+
+    Startup is also the worst possible place for it: it runs before any request,
+    so there is no session email to allocate against, and nothing in the
+    lifespan's error isolation would make the mistake visible.
+
+    ⚠️ **Widened ONE → TWO on 2026-09-15, additively and for a named reason.**
+    The loop shipped with a start and no stop, so a pending task outlived its
+    event loop and then blocked its own restart; ``stop_console_bootstrap`` is
+    the repair, and every sibling loop in that file already has one. The set is
+    enumerated rather than prefix-matched, so "anything starting with
+    ``console_bootstrap``" cannot quietly become the rule.
+    """
+    tree = _tree(_REPO / _THE_LIFESPAN_CALLER)
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if "console_resolve" in node.module:
+                imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if "console_resolve" in alias.name:
+                    imported.add(alias.name)
+
+    assert imported <= _LIFESPAN_ALLOWED_NAMES, (
+        f"{_THE_LIFESPAN_CALLER} imports {sorted(imported)} from "
+        "console_resolve. It is on the allowed-caller list for exactly "
+        f"{sorted(_LIFESPAN_ALLOWED_NAMES)} — loop supervision, which allocates "
+        "no seat and names no person. Anything else there is a new call site "
+        "with no request behind it; `resolve_for_signin` in particular would "
+        "burn a seat for nobody on every boot."
+    )
+    # Non-vacuity: the file must still import the two, so this is not passing
+    # over a lifespan that stopped starting (or stopping) the loop at all.
+    assert imported == _LIFESPAN_ALLOWED_NAMES, (
+        f"{_THE_LIFESPAN_CALLER} imports {sorted(imported)} — the lifespan must "
+        "BOTH start and stop the loop. A start with no stop is what left a task "
+        "pending on a closed event loop, which then blocked its own restart."
+    )
+
+
 # ── Clause 6 / §6(j) — the box branches on the OUTCOME, never on a string ────
 
 #: The Customer Console's org-lifecycle vocabulary. It belongs to ONE state
@@ -403,6 +481,34 @@ def _docstring_ids(tree: ast.Module) -> set[int]:
     return out
 
 
+#: Identifiers that CONTAIN a lifecycle word without being one. The match below
+#: is deliberately a SUBSTRING search — it catches prose, an f-string and a
+#: comparison alike — and that reach costs one exemption: a wire field and a
+#: column legitimately named after the trial.
+#:
+#: ⚠️ **Exempted by NAME, and stripped rather than allow-listed whole.** The
+#: strings that carry these are SQL blobs and dict keys, so an exact-equality
+#: exemption would not reach inside them. Removing the identifier first keeps
+#: the fence live for every OTHER use in the same string: a statement that both
+#: writes `registry_trial_ends_at` and compares a status to `'trial'` is still
+#: caught, which an allow-list of whole constants would have missed.
+#:
+#: What stays forbidden is unchanged: this box stores and applies the CAPABILITY
+#: BOOLEANS, and never decides from a status word (CP-2j, §6(d)).
+_LIFECYCLE_WORD_EXEMPT_IDENTIFIERS = (
+    "registry_trial_ends_at",
+    "trial_ends_at",
+)
+
+
+def _without_exempt_identifiers(value: str) -> str:
+    """*value* with the exempt identifiers removed. Longest first, so the
+    prefixed column name is taken before the bare field it contains."""
+    for identifier in _LIFECYCLE_WORD_EXEMPT_IDENTIFIERS:
+        value = value.replace(identifier, "")
+    return value
+
+
 def test_the_deployment_never_branches_on_a_lifecycle_string() -> None:
     """No CP-2b tenant module carries a lifecycle state as a string constant.
 
@@ -427,8 +533,9 @@ def test_the_deployment_never_branches_on_a_lifecycle_string() -> None:
                 and isinstance(node.value, str)
                 and id(node) not in skip
             ):
+                haystack = _without_exempt_identifiers(node.value)
                 for word in sorted(_LIFECYCLE_WORDS):
-                    if word in node.value:
+                    if word in haystack:
                         offenders.append(f"{rel}:{node.lineno} → {word!r}")
     assert offenders == [], (
         "lifecycle state name(s) as string constants in CP-2b tenant code:\n  "

@@ -46,6 +46,19 @@ _ROOT = Path(__file__).resolve().parents[2]
 _SUBDOMAIN_TS = _ROOT / "workbench/control_plane/src/lib/subdomain.ts"
 _SIGNUP_FORM_TSX = _ROOT / "workbench/control_plane/src/app/signup/SignUpForm.tsx"
 _GATEWAY_MAIN = _ROOT / "apps/services/gateway/gateway/main.py"
+#: The FOURTH consumer, added 2026-09-15: the Customer Console's
+#: ``ProvisionRequest`` validator — the one door BOTH provisioning arms pass
+#: through, and the arm an operator drives had no slug rule at all until then.
+#: Read as SOURCE rather than imported: importing ``customer_console.main``
+#: drags litellm and the payment seam into a fence this module's own header
+#: keeps deliberately DB-free and dependency-light.
+_CONSOLE_MAIN = _ROOT / (
+    "apps/services/customer_console/customer_console/main.py"
+)
+#: The FIFTH, pinned by ABSENCE: the Operator Console's slug suggestion, which
+#: carried a second and drifted implementation until 2026-09-15.
+_OPERATOR_SLUG_TS = _ROOT / "workbench/operator_console/src/lib/slug.ts"
+_OPERATOR_FORMAT_TS = _ROOT / "workbench/operator_console/src/lib/format.ts"
 
 
 def _read(path: Path) -> str:
@@ -63,6 +76,27 @@ def _ts_array(source: str, name: str) -> list[str]:
     )
     assert match is not None, f"{name} is not an exported array literal any more"
     return re.findall(r'"([^"]*)"', match.group(1))
+
+
+def _py_frozenset(source: str, name: str) -> list[str]:
+    """The string literals of a module-level ``frozenset({...})``, in order.
+
+    Source-parsed, not imported — see ``_CONSOLE_MAIN``'s note. Asserts the
+    declaration is still findable, so a restructure is RED here rather than a
+    silently empty set that makes every comparison below trivially true.
+    """
+    match = re.search(
+        rf"^{name}\s*=\s*frozenset\(\{{(.*?)\}}\)", source, re.DOTALL | re.M
+    )
+    assert match is not None, f"{name} is not a module-level frozenset any more"
+    return re.findall(r'"([^"]*)"', match.group(1))
+
+
+def _py_pattern(source: str, name: str) -> str:
+    """The raw pattern of a module-level ``re.compile(r"…")``."""
+    match = re.search(rf'^{name}\s*=\s*re\.compile\(r"(.+?)"\)', source, re.M)
+    assert match is not None, f"{name} is not a module-level re.compile any more"
+    return match.group(1)
 
 
 class TestTheReservedVocabularyIsOneList:
@@ -124,6 +158,73 @@ class TestTheReservedVocabularyIsOneList:
         # Non-vacuity: the form still USES the imported rule, so the assertions
         # above are not passing over a file that stopped validating slugs.
         assert "SLUG_RE.test(" in form
+
+    def test_the_CONSOLE_set_equals_the_typescript_list(self):
+        """The fourth consumer — and the arm that had NO rule until 2026-09-15.
+
+        ``POST /orgs/provision`` is the one door both provisioning arms pass
+        through. The gateway's self-serve arm shape-checked its slug before
+        forwarding; the OPERATOR arm reached ``ProvisionRequest`` directly, where
+        ``slug`` was a bare ``str``. So an operator could create ``api`` — the
+        slug that names the gateway's own hostname — which is the live defect
+        owner ruling B7 closed on the other arm only.
+        """
+        canonical = set(_ts_array(_read(_SUBDOMAIN_TS), "RESERVED_LABELS"))
+        assert set(_py_frozenset(_read(_CONSOLE_MAIN), "_RESERVED_SLUGS")) == (
+            canonical
+        )
+
+    def test_the_CONSOLE_shape_is_the_same_rule_as_the_gateway(self):
+        console = _py_pattern(_read(_CONSOLE_MAIN), "_SLUG_RE")
+        assert console == route._SLUG_RE.pattern
+
+    def test_the_CONSOLE_actually_ENFORCES_the_vocabulary_it_declares(self):
+        """Non-vacuity: two constants nothing reads would pass every case above.
+
+        The two cases before this one compare declarations. This one asserts
+        ``ProvisionRequest`` still runs them — a validator deleted while the
+        constants stayed is precisely the shape that reads enforced and is not.
+        """
+        source = _read(_CONSOLE_MAIN)
+        assert '@field_validator("slug")' in source
+        assert "_SLUG_RE.fullmatch(slug)" in source
+        assert "slug in _RESERVED_SLUGS" in source
+
+    def test_the_OPERATOR_console_keeps_no_second_slug_implementation(self):
+        """Pinned by ABSENCE — the fifth consumer, repaired 2026-09-15.
+
+        ``lib/format.ts`` carried its own ``suggestSlug``: it cut at 40
+        characters (the canonical one cuts at 63) and never re-trimmed a
+        trailing hyphen after the cut, so it could suggest a label the Console
+        now refuses. Two apps, two answers to one question — root ``CLAUDE.md``
+        §4's parallel-seam defect by name.
+
+        ⚠️ **The operator console may not IMPORT the canonical module.** D35.2
+        makes it a different application by construction, with no shared
+        workbench config. So it carries a fenced copy in ``lib/slug.ts``, pinned
+        by the two cases below, and ``format.ts`` must not re-grow one.
+        """
+        fmt = _read(_OPERATOR_FORMAT_TS)
+        assert "export function suggestSlug" not in fmt
+        assert r"[^a-z0-9]+" not in fmt
+
+    def test_the_OPERATOR_console_copy_is_pinned_to_the_canonical_one(self):
+        canonical_ts = _read(_SUBDOMAIN_TS)
+        operator_ts = _read(_OPERATOR_SLUG_TS)
+
+        canonical_re = re.search(
+            r"export const SLUG_RE\s*=\s*/(.+?)/;", canonical_ts
+        )
+        operator_re = re.search(
+            r"export const SLUG_RE\s*=\s*/(.+?)/;", operator_ts
+        )
+        assert operator_re is not None, "the operator copy lost SLUG_RE"
+        assert canonical_re is not None
+        assert operator_re.group(1) == canonical_re.group(1)
+
+        assert set(_ts_array(operator_ts, "RESERVED_LABELS")) == set(
+            _ts_array(canonical_ts, "RESERVED_LABELS")
+        )
 
 
 class TestTheBrowserNeverTalksToTheGatewayDirectly:

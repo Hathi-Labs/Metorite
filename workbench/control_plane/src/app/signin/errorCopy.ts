@@ -72,6 +72,33 @@ export function signInErrorMessage(code: string | null): string | null {
       // same for every caller, so it reveals nothing about any organization —
       // which is exactly what "taken" would, if the two shared one code.
       return "That workspace address is reserved for the platform. Please choose a different one.";
+    // ── The SHAPE refusals `gateway/routes/signup.py` answers with a 400 ──────
+    //
+    // Added 2026-09-15. `SignUpForm` renders whatever `code` the hop returns
+    // through this one seam, and these six were absent — so a person who got
+    // one read *"Authentication error: InvalidGstin"*, which names an internal
+    // symbol, calls a signup problem an authentication problem, and gives them
+    // nothing to do about it.
+    //
+    // ⚠️ They are hard to reach, and that is not a reason to leave them raw.
+    // The form gates every one client-side, so reaching one means the form and
+    // the gateway have DRIFTED — exactly the moment a person deserves a
+    // sentence rather than a symbol.
+    case "MissingSlug":
+      return "Please choose a workspace address for your organization.";
+    case "InvalidSlug":
+      return "That workspace address can't be used. Use lowercase letters, numbers and hyphens, with no leading or trailing hyphen.";
+    case "MissingState":
+      return "Please select the state your organization is registered in.";
+    case "InvalidGstin":
+      return "That GSTIN doesn't look valid. Check it, or leave it blank and add it later.";
+    case "InvalidTeamSize":
+      return "Please enter how many people will use Metorite, as a whole number.";
+    case "InvalidBody":
+      // R11: the request asserted a tenant or an identity. A person cannot
+      // cause this from the form, so it names no field — it is "this is our
+      // bug, not yours" copy, with the one action that might actually help.
+      return "Something went wrong with that request. Please reload the page and try again.";
     default:
       return `Authentication error: ${code}`;
   }

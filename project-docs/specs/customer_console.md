@@ -5441,6 +5441,264 @@ tenant guard · does NOT allocate a seat (it calls `provision_org_on_console`,
 never `resolve_for_signin`) · not a scheduler — cadence is the operator's, the
 function is a single idempotent pass · not the CRM `scripts/reconciler.py`.
 
+**CP-2i · The INBOUND Console bootstrap — the box builds the workspaces the
+registry places on it.** ◐ **MINTED + BUILT 2026-09-15** *(branch
+`signup-flow-repair`. A review of the whole signup flow found it, not a board
+row)*. **Number:** CP-2e to CP-2h were taken. This is the **mirror image of
+CP-2e**, and the two are read together.
+
+**The live defect it closes. An operator-created customer could not use the
+product.** The OPERATOR arm of `POST /orgs/provision` writes the **Console**
+plane only. It writes the organization, the placement, the seats, the owner
+membership and the trial subscription.
+
+Nothing ever wrote the **tenant** plane for it.
+`acb_common.provisioning.provision_local_organization` had exactly one
+production caller, and it is the self-serve signup route.
+
+So the owner signed in, and `resolve_for_signin` admitted them on a good
+registry answer. Then `console_resolve._record_answer` found no local
+`organization` row and logged `unprovisioned_org`. `GET /me/access` reads the
+tenant plane, so it returned no organization. The owner landed on `AccessGate`'s
+*"No organization is linked to this email"*.
+
+The Operator Console meanwhile told the operator that this owner could sign in
+with Google, and needed no invite. The gap was **written down and shipped
+anyway**. `deploy/hostinger/CUSTOMER_CONSOLE.md` said *"pure operator onboarding
+… is NOT wired"*, and the Operator Console shipped the button that does it.
+
+**Mechanism — a PULL. The direction is the decision.** Three hops were possible.
+Two are closed by rules already written down. The third is closed by a docstring.
+
+* **The Operator Console must not call a deployment.**
+  `operator_console/src/lib/console.ts` says it talks to `CUSTOMER_CONSOLE_URL`
+  only, *"never to a tenant deployment"*. CP-8's done-when carries that rule.
+* **The Console has never called a deployment.** `deployment.base_url` exists in
+  the schema. Nothing reads it for an outbound call. This service reaches only
+  the vendor feed, Supabase and Razorpay.
+* **The sign-in callback must not create the row.** `_record_answer` notices it
+  is missing, and its own docstring refuses to write it. Tenant creation there
+  is driven by whoever can reach the resolve route.
+
+So the **box asks**. The gateway holds a deployment key and already calls the
+Console. The sweep then provisions the difference itself.
+
+**The Console door.** `POST /registry/orgs`. Deployment-key only, on the
+**`provision` capability** and not a fifth one. The read exists only to drive
+provisioning, and it answers exactly the set that `/orgs/provision` already lets
+that key create.
+
+An operator token gets a **400**. The door answers *for the calling deployment*,
+and an operator credential names none, so the question has no subject. It writes
+nothing. It is not audited, because a box reading its own roster on a timer is
+not an event.
+
+**The lifecycle gate is its own question (`can_be_provisioned`).** The door
+returns a **boolean**, never a lifecycle word. §6(d) forbids the word, and
+`test_console_dependency_boundary.py`'s `_LIFECYCLE_WORDS` fence catches it. An
+absent field reads as FALSE, so an older Console provisions nothing.
+
+`OrgCapabilities` gains a **sixth field**, appended last under `can_pay`'s rule.
+No existing field answers this question, and both near-misses are real bugs.
+
+* `can_write_seats` is FALSE for `suspended`. Gating on it strands the customer
+  who most needs to get back in. `can_pay` is true for them, but the checkout
+  lives *inside* the tenant app. A suspended customer with no workspace cannot
+  reach the page that would un-suspend them.
+* `can_sign_in` and `can_pay` are both TRUE for `cancelled`. Gating on either
+  hands a departed customer a new EMPTY workspace with an active owner. There is
+  nothing to export from an organization that never existed, and export is the
+  only reason `cancelled` keeps its door open.
+
+So it is TRUE for `trial`, `active`, `past_due` and `suspended`. It is FALSE for
+`cancelled` and `deleted`.
+
+**The sweep.** `acb_auth.console_resolve.bootstrap_placed_orgs()` runs one
+idempotent pass. It lives beside `reconcile()` and uses the SAME single Console
+client, because a second Console client anywhere is root `CLAUDE.md` §5's defect
+by name.
+
+It reads the door, reads the local slugs, and calls
+`provision_local_organization` for each difference. That is the same seam
+self-serve signup uses, so migration 179 stays the ONE tenant-creation act. It
+then stamps `console_mirrored_at`, which stops `reconcile()` pushing the
+organization back to the Console it came from.
+
+**It refuses rather than forces.** An organization whose owner membership has not
+landed is **skipped**. Provisioning it ownerless would leave a tenant nobody can
+sign in to. No later pass would repair that, because the slug would then look
+local. A real tenant-plane conflict (`OwnerBelongsElsewhere`,
+`SlugOwnedByAnother`) is logged at ERROR for a human. It is never overwritten.
+
+**Ships dark, twice.** `CONSOLE_BOOTSTRAP_ENABLED` gates the gateway loop, and
+the default unset is OFF on the `=== "true"` idiom. `start_console_bootstrap`
+reads the flag, and the lifespan never reads it as an `if` — the rule
+`gateway/main.py`'s kill-switch note gives. An unwired box is a second no-op one
+layer down.
+
+`CONSOLE_BOOTSTRAP_INTERVAL_SECONDS` defaults to 60. That interval **is the worst
+case** between an operator creating a customer and that customer being able to
+sign in. The Operator Console therefore names the symptom and the remedy, and
+promises no duration, because it cannot read a gateway flag.
+`scripts/bootstrap_placed_orgs.py` runs one pass by hand.
+
+**The self-serve seat bound is TEN. Owner-ruled 2026-09-15.** An agent proposed
+fifty and the owner set it, so it is a decision rather than a default now. Every
+Core seat a signup grants is a free TRIAL seat on an unpaid organization, so the
+number is an abuse bound on a public form.
+
+The OPERATOR arm has no bound at all, and that is the release valve. A company of
+forty signs up for ten, and an operator raises the count at activation. D19.3's
+hard cap is a different rule, and governs assignment beyond what the customer
+bought.
+
+**Migration 198 — `organization.signup_core_seats`.** This is not cosmetic. CP-2c
+now asks the founder for a team size, and step 0a's `AlreadyMember` blocks every
+resubmit once step 1 has committed. So **the CP-2e reconciler is the only repair
+for a failed step 2**, and it rebuilds the Console call from tenant columns alone.
+
+Without the count it re-drove with none. The Console then applied its default of
+ONE, and `grant_seats` runs once only, so the organization was stuck at a single
+seat for ever. That is the exact dead end CP-2c's team-size question removes,
+reached through its own recovery path.
+
+The column is nullable and forward-only, with no default (181's ruling). NULL
+means *"pre-dates the question"*, and the client omits the field. It is a
+**record of what was asked**, and never the authority on seats held, because the
+Console owns that.
+
+**The R7 fences.** `tests/unit/test_console_bootstrap.py` is R8 on BOTH ladders
+with 0 skips. It runs against a real tenant ladder and the real Console app over
+an in-process ASGI transport. `tests/unit/test_console_provision_slug_shape.py`
+is deliberately DB-free, because pydantic validation opens no session.
+
+Both are named in `pr-check.yml`'s skip-guard in the same PR, per §7's standing
+rule. Verify with `uv run pytest tests/unit/test_console_bootstrap.py` and
+`tests/unit/test_console_provision_slug_shape.py`. Never run the `tests/unit/`
+directory, per root `CLAUDE.md` §6's two recorded pytest hazards.
+
+**Owner-gated.** Flipping `CONSOLE_BOOTSTRAP_ENABLED` on a live deployment is
+the `enforcement-flip` class, tracked as **H-106**.
+
+✅ **H-104 blocked this until 2026-09-15, and no longer does.** The sweep calls
+`provision_organization`, and that function raised
+`null value in column "organization_id"` on production, so every pass would have
+logged a failure per customer per minute. Migration 200 fixed it.
+
+Verify by EVIDENCE, never by the flag being set. Create a customer in the
+Operator Console, then watch `bootstrap_provisioned` appear for that slug within
+`CONSOLE_BOOTSTRAP_INTERVAL_SECONDS`.
+
+**Non-goals.** It flips no flag. It opens no Console-to-deployment call, and no
+Operator-Console-to-deployment call. It writes nothing to the Console, so it can
+never mint a customer — it reads the registry and writes only the tenant plane.
+It allocates no seat, and never calls `resolve_for_signin`.
+
+It creates no second tenant-creation path, because migration 179 through
+`provision_local_organization` stays the one act. It is not a scheduler in the
+CP-2e sense. The loop is supervision, and the single pass is still the unit.
+
+**CP-2j · The customer learns their own commercial state.** ◐ **MINTED + BUILT
+2026-09-15** *(branch `trial-visibility`, stacked on `signup-flow-repair`.
+Owner directive, 2026-09-15: name the state and the days left)*.
+
+**Why it exists.** A self-serve signup lands on a 14-day trial and works at
+once. Until an operator confirms payment and activates the plan, nothing in the
+product said so. So the customer's first news of their commercial state was the
+day it stopped working.
+
+The operator half was already built. The customer table shows lifecycle status,
+subscription status, trial expiry and a countdown. A self-serve signup appears
+there by itself. What was missing was the other direction. The app never learned
+its own organization's state, so it could say nothing.
+
+**The model, decided 2026-09-15: value first, approval later.** The alternative
+was a `pending` state that gates access until an operator approves. The owner
+chose the trial. A trial that works is a better first impression than a wait.
+
+The approval step also exists already, as ACTIVATION. `ManualActivationRequest`
+composes the subscription, the seat grant and the credits for a payment that
+arrived out of band. So the operator's act is unchanged, and only the visibility
+is new.
+
+⚠️ **A `pending` lifecycle state stays UNBUILT and is not a non-goal by
+accident.** It is the right shape when self-serve opens to strangers rather than
+to customers we already know. It needs a new state on the machine, a change at
+the seat-cap sign-in door, and an owner decision. Do not build it as an
+extension of this.
+
+**The chain.** `GET /registry/resolve` gains `trial_ends_at` per organization.
+`_record_answer` caches it beside `registry_status` (migration 177) in the new
+`organization.registry_trial_ends_at` (migration 199). `GET /auth/me` surfaces
+both, and `AccountStateBanner` renders them.
+
+⚠️ **Why the projection and not a billing call.** The Console owns the
+subscription and `GET /me/billing` is the customer's door to it. That door is
+gated on `can_pay` and reached with the organization key, so it answers the
+BILLING page. This banner is not a billing page, and an admin sees it on every
+screen. Making the shell wait on a cross-plane call to render one sentence is
+the coupling the projection exists to avoid. Sign-in already carries the answer.
+
+**What the answer may carry, and the line it does not cross.** The resolve
+answer's bound is *what sign-in needs*, and `test_customer_console_resolve.py`
+pins its key set exactly. `trial_ends_at` earns a place because it is a deadline
+the person is already living under. Money does not: no balance, no price, no
+invoice, and that is fenced separately.
+
+**It gates NOTHING, and that is the rule most likely to be broken later.**
+`registry_status` is a cached word and `registry_trial_ends_at` a cached date,
+both refreshed at sign-in. Access stays `features` / `capabilities` /
+`is_admin`, resolved per call at the gateway. A surface that hid a pane on this
+cache would lock out a paying customer the gateway would have admitted. A stale
+row does it, and so does a clock skew.
+
+**ADMINS only.** Trial deadlines and payment state are the owner's business. A
+banner telling every engineer *"we haven't received your payment"* hands them a
+worry they cannot act on. It is also a company matter that is not theirs to see.
+
+**Absent renders NOTHING.** A box whose resolve flag has never been on holds no
+registry word, and the honest answer is silence rather than an invented state.
+`active` is silent too — a banner on every screen for a customer with nothing to
+do is how people learn to ignore banners.
+
+**The copy, per state.** `trial` names the state and the days left, and turns
+`warn` at three days. `past_due` says everything still works, because it does.
+Copy that reads like a shutdown makes people stop using a product nothing has
+locked.
+
+`suspended` says the data is safe and paying restores access. `cancelled` says
+the export window is open, which is the only reason sign-in stays open in that
+state at all.
+
+**Two defects this build hit, both worth recording.**
+
+`asyncpg` binds by PYTHON type before the SQL cast runs, so an ISO STRING for a
+`TIMESTAMPTZ` is refused. The projection write swallows its exceptions. So the column silently stayed NULL
+for ever and the banner rendered nothing, which looks exactly like an
+organization with no trial. A test caught it. The logs never would have.
+
+The new columns first shared a select with `slug` and `display_name`. On a box
+whose ladder had not reached 199 that raised, the route's broad handler set
+`organization = {}`, and every member lost their organization's identity. A
+banner's optional data took out the name beside it. The projection is its own
+guarded read now, and the row ACCESS is inside the guard, not only the query.
+
+**The R7 fences.** `accountStateBanner.test.ts` pins the copy per state and that
+the component never reads an access set. `test_deployment_resolve_cache.py`'s
+`TestTheTrialDeadlineIsCached` is R8 on the tenant ladder. The deadline lands,
+an absent one stays NULL, a later resolve refreshes it, and an EXPIRED one
+still admits. `test_admin_tenancy.py` pins the old-schema degradation.
+`test_customer_console_resolve.py` pins the answer's exact key set and the
+money line.
+
+**Owner-gated.** Nothing here. The banner is dark by construction on a box whose
+resolve flag is off, because there is no registry word to render.
+
+**Non-goals.** No `pending` state. No gate on a cached value. No money on the
+resolve answer. No second lifecycle vocabulary on the tenant — the box stores
+and applies the capability booleans, and the one word it now holds is for
+DISPLAY.
+
 **CP-2f · The Console member-write door — the ONLY way a colleague who was
 INVITED (rather than a founder who signed up) reaches the registry.** ◐
 **MINTED + BUILT 2026-08-24** *(branch `ws-30-invites`; decision **D50**; the

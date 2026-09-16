@@ -101,8 +101,19 @@ describe("TimelineView", () => {
     // chart then reads as a row of unlabelled coloured squares.
     expect(PX_PER_DAY).toBeLessThan(LABEL_INSIDE_PX);
     const html = draw({ tasks: [SHORT], links: [], undated: 0 });
-    // Drawn outside the bar's own box: the label carries its own `left`.
-    expect(html).toMatch(/style="left:\d+px"[^>]*>Launch video shot list/);
+    // Drawn outside the bar's own box, carrying its own offset.
+    //
+    // ⚠️ This pinned `style="left:\d+px"` with the quote immediately after,
+    // which is the exact style string rather than the behaviour. Two things
+    // changed under it on 2026-09-05, both deliberate: the label now also
+    // carries a `max-width` capped to the room actually available, and it
+    // takes a `right` instead of a `left` when it would otherwise run off the
+    // end of the canvas (measured: 57px past, and clipped). The rule the test
+    // states is still the right rule, so the assertion moved to the rule.
+    expect(html).toMatch(/style="(left|right):\d+px[^"]*"[^>]*>Launch video shot list/);
+    // And the cap is present, because "beside the bar" is only true while the
+    // label is still on the chart.
+    expect(html).toMatch(/max-width:\d+px[^"]*"[^>]*>Launch video shot list/);
   });
 
   it("keeps a WIDE bar's title inside it", () => {

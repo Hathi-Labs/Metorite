@@ -117,13 +117,20 @@ function MixBar({ counts, total }: { counts: Record<string, number>; total: numb
     );
   }
   const categories = orderedCategories(counts);
+  // Named once, then given to BOTH the assistive-technology label and the
+  // hover text, so the two cannot describe the same bar differently.
+  const breakdown = categories
+    .map((c) => `${CATEGORY_LABELS[c] ?? c}: ${counts[c]}`)
+    .join(", ");
   return (
     <div
       className="flex h-1.5 w-full overflow-hidden rounded-full bg-muted"
       role="img"
-      aria-label={categories
-        .map((c) => `${CATEGORY_LABELS[c] ?? c}: ${counts[c]}`)
-        .join(", ")}
+      aria-label={breakdown}
+      // ⚠️ The same sentence a screen reader already got. This bar is 6px of
+      // unlabelled colour to everybody else — the one reader who could NOT
+      // find out what it meant was the one using a mouse.
+      title={breakdown}
     >
       {categories.map((category) => (
         <span
@@ -154,6 +161,11 @@ function CompletionFigure({ child }: { child: SummaryChild }) {
           ? statusAccent({ category: "done" }).text
           : "text-muted-foreground"
       }`}
+      // ⚠️ The DENOMINATOR is the surprising half, so the tooltip spells it
+      // out. Cancelled tasks are excluded, which means cancelling the last
+      // open task jumps this to 100% — correct, and baffling from a figure
+      // that only ever said "62%".
+      title={`${doneCount} of ${closable} done — cancelled tasks are not counted`}
     >
       {pct}%
     </span>

@@ -62,6 +62,7 @@ from acb_auth import UserContext, get_current_user
 from acb_auth.access import membership_of, org_owner_of
 from acb_auth.console_resolve import (
     CONSOLE_UNAVAILABLE,
+    ConsoleProvisionRefused,
     ConsoleProvisionUnavailable,
     provision_org_on_console,
 )
@@ -113,6 +114,11 @@ INVALID_SLUG = "InvalidSlug"
 #: about any organization, which is precisely what "taken" would if the two
 #: shared one code.
 RESERVED_SLUG = "ReservedSlug"
+#: A team size was present but is not a whole number in ``1..MAX_TEAM_SIZE``
+#: (400). Same shape-violation class as ``InvalidGstin``: the form offers a
+#: number input, so a value outside the range is a malformed REQUEST and never a
+#: signup outcome.
+INVALID_TEAM_SIZE = "InvalidTeamSize"
 
 #: R11: the tenant/identity claims a caller must not assert in the body. The
 #: owner is the SESSION email; the deployment is the Console key's own. Present
@@ -123,6 +129,39 @@ _FORBIDDEN_BODY_KEYS = frozenset({"email", "org", "deployment_label"})
 #: Optional, but validated when present so a typo is caught at signup rather
 #: than at the first invoice.
 _GSTIN_RE = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$")
+
+#: The Core seats a signup grants when the founder says nothing. ONE was the old
+#: behaviour and it was a dead end: the founder took the only seat, and the first
+#: colleague they invited was refused at the cap with *"ask your admin for an
+#: invite"*. One is still the right FLOOR — a solo founder buys nothing they do
+#: not need — so the form asks instead of guessing, and this is only the fallback
+#: for a body that omits the field.
+DEFAULT_TEAM_SIZE = 1
+
+#: The upper bound on a self-serve team size. **OWNER-RULED 2026-09-15: TEN.**
+#: An agent proposed fifty and the owner set it here, so this is a decision and
+#: not a default any more — do not re-argue it in code.
+#:
+#: Every Core seat granted here is a free TRIAL seat on an unpaid organization,
+#: because the Console opens a 14-day trial in the same transaction. So the
+#: number is an abuse bound on a public form, and a bigger team is a sales
+#: conversation. The OPERATOR arm has no cap at all, which is the release valve:
+#: a company of forty signs up for ten and an operator raises it at activation.
+#:
+#: D19.3's hard cap is a DIFFERENT rule. It governs assignment beyond what the
+#: customer bought, never how many a signup may ask for.
+MAX_TEAM_SIZE = 10
+
+#: A team size sent as a STRING must be plain ASCII digits. See ``_team_size``
+#: for why neither ``str.isdigit`` nor ``str.isdecimal`` expresses this: one
+#: admits characters ``int()`` crashes on, the other admits digits from other
+#: scripts. A wire integer has one spelling.
+_ASCII_DIGITS_RE = re.compile(r"[0-9]+")
+
+#: How many digits a team size may carry before it is refused WITHOUT being
+#: parsed. Derived from ``MAX_TEAM_SIZE`` so the two cannot drift, and it exists
+#: because ``int()`` RAISES rather than returns for a very long literal.
+_MAX_TEAM_SIZE_DIGITS = len(str(MAX_TEAM_SIZE))
 
 #: The slug's shape: a DNS-label-safe subdomain, forward-compatible with MT-1f's
 #: per-tenant ``<slug>.metorite.com`` — lowercase alphanumeric plus internal
@@ -230,6 +269,145 @@ def _slug_shape_refusal(slug: str) -> JSONResponse | None:
     return None
 
 
+def _gst_refusal(registered_state: str, gstin: str) -> JSONResponse | None:
+    """The GST gate: state REQUIRED, GSTIN optional but structural when present.
+
+    Extracted 2026-09-15 for the reason :func:`_slug_shape_refusal` was — the
+    handler sits against the ``C901`` complexity fence (15), and the team-size
+    gate added a branch. Both refusals keep their codes, their ordering and
+    their shape-violation class; only their home moved.
+    """
+    if not registered_state:
+        return _bad_request(
+            MISSING_STATE, "a registered billing state is required"
+        )
+    if gstin and not _GSTIN_RE.match(gstin):
+        return _bad_request(INVALID_GSTIN, "the GSTIN is structurally invalid")
+    return None
+
+
+def _team_size(raw_value: Any) -> int | JSONResponse:
+    """The team size the founder gave, or a 400 for anything that is not one.
+
+    Absent/blank ⇒ :data:`DEFAULT_TEAM_SIZE`, so a body that never learned about
+    this field keeps the old behaviour exactly. Otherwise it must be a whole
+    number in ``1..MAX_TEAM_SIZE``.
+
+    ⚠️ **``bool`` is refused before ``int``, and that ordering is the whole
+    reason this is not a one-liner.** ``isinstance(True, int)`` is True in
+    Python, so a JSON ``true`` would otherwise provision an organization with
+    one seat and no complaint.
+
+    A digit STRING is accepted because an HTML number input round-trips its
+    value as text through ``JSON.stringify`` whenever the form holds it in
+    state as a string — which is how the sibling ``core_seats`` field in the
+    Operator Console already behaves. Accepting it here means the wire shape
+    cannot be got subtly wrong by a caller that is otherwise correct.
+
+    ⚠️ **ASCII digits ONLY, and neither ``isdigit()`` nor ``isdecimal()`` says
+    that.** ``"²".isdigit()`` is True while ``int("²")`` raises ``ValueError``,
+    so that pair let a shape violation escape as a 500 — breaking this route's
+    promise that every shape violation is a 400. ``isdecimal()`` fixes that one
+    and still admits ``"٣"``, which ``int()`` reads as 3. Neither is wrong about
+    Unicode; both are the wrong question for a WIRE INTEGER, where the set of
+    acceptable spellings should be small, obvious and the same in every
+    language. So the rule is written out.
+
+    A blank or whitespace-only string is the same statement as an absent field
+    — *"I did not answer"* — so both take the default. Treating ``""`` as
+    absent and ``"  "`` as malformed would be one rule with two answers.
+    """
+    if raw_value is None or (
+        isinstance(raw_value, str) and raw_value.strip() == ""
+    ):
+        return DEFAULT_TEAM_SIZE
+    if isinstance(raw_value, bool):
+        return _bad_request(
+            INVALID_TEAM_SIZE, "the team size must be a whole number"
+        )
+    if isinstance(raw_value, int):
+        size = raw_value
+    elif isinstance(raw_value, str) and _ASCII_DIGITS_RE.fullmatch(
+        raw_value.strip()
+    ):
+        # ⚠️ LENGTH first, `int()` second, and the order is the whole point.
+        # CPython refuses to parse an integer literal beyond
+        # `sys.get_int_max_str_digits()` (4300 by default) and raises
+        # ValueError — so `int("1" * 4301)` crashed out of this function and
+        # FastAPI answered 500, breaking this route's promise that every shape
+        # violation is a 400. `isdigit()` had the identical hole before it.
+        # `MAX_TEAM_SIZE` is two digits, so anything longer is out of range
+        # anyway and the bound below would refuse it: this only decides
+        # WHETHER IT IS ASKED AS A 400 OR A CRASH.
+        digits = raw_value.strip()
+        if len(digits) > _MAX_TEAM_SIZE_DIGITS:
+            return _bad_request(
+                INVALID_TEAM_SIZE,
+                f"the team size must be between 1 and {MAX_TEAM_SIZE}",
+            )
+        size = int(digits)
+    else:
+        return _bad_request(
+            INVALID_TEAM_SIZE, "the team size must be a whole number"
+        )
+    if size < 1 or size > MAX_TEAM_SIZE:
+        return _bad_request(
+            INVALID_TEAM_SIZE,
+            f"the team size must be between 1 and {MAX_TEAM_SIZE}",
+        )
+    return size
+
+
+async def _mirror_to_console(
+    *,
+    slug: str,
+    display_name: str,
+    email: str,
+    gstin: str | None,
+    registered_state: str,
+    team_size: int,
+) -> dict[str, Any] | None:
+    """Step 2 — mirror the new org onto the Console. A refusal, or ``None``.
+
+    A fresh tenant-born slug cannot be permanently refused by the create-only
+    guard (it passes for the same owner), so the ordinary failure here is
+    transient — unwired, unreachable, a 5xx — and a resubmit converges because
+    both planes are idempotent on the slug.
+
+    Extracted for the reason :func:`_slug_shape_refusal` and
+    :func:`_gst_refusal` were: the handler sits against the ``C901`` complexity
+    fence, and the two typed refusals below are two more branches. It moves the
+    try/except out of the handler and changes neither the call nor the codes.
+    """
+    try:
+        await provision_org_on_console(
+            slug,
+            display_name,
+            email,
+            gstin=gstin,
+            billing_state=registered_state,
+            # The Core seats the new org is born with. Sent because the Console
+            # defaults to 1, which left the founder holding the only seat and
+            # every colleague they invited refused at the cap.
+            core_seats=team_size,
+        )
+    except ConsoleProvisionRefused as exc:
+        # The Console refused this body's SHAPE. Unreachable from THIS route by
+        # construction — `_slug_shape_refusal` applies the same rule first, and
+        # `test_subdomain_host_vocabulary` pins the two equal — so arriving here
+        # means those two have DRIFTED. Caught anyway, because the alternative
+        # is a 500 on a signup, and logged at ERROR so the drift is findable
+        # rather than rendered to the founder as a transient "try again".
+        _log.error(
+            "signup.console_refused_shape", slug=slug, error=str(exc)[:200]
+        )
+        return _refuse(CONSOLE_UNAVAILABLE)
+    except ConsoleProvisionUnavailable as exc:
+        _log.warning("signup.console_unavailable", error=str(exc)[:200])
+        return _refuse(CONSOLE_UNAVAILABLE)
+    return None
+
+
 @router.post("/provision")
 async def provision_signup(
     request: Request,
@@ -239,7 +417,8 @@ async def provision_signup(
 
     Always 200 for an OUTCOME (admit, or a refusal code the form renders), and
     400 only for a SHAPE violation (a body that asserts a tenant/identity, a
-    missing/malformed slug, a missing registered state, a malformed GSTIN). A
+    missing/malformed slug, a missing registered state, a malformed GSTIN, a
+    team size that is not a whole number in range). A
     4xx for an outcome would make "signup says no" indistinguishable from "the
     route is broken".
     """
@@ -289,12 +468,16 @@ async def provision_signup(
 
     # ── GST: registered state REQUIRED; GSTIN optional but structural when
     # present. Both 400s, both thread to the Console org row below.
-    if not registered_state:
-        return _bad_request(
-            MISSING_STATE, "a registered billing state is required"
-        )
-    if gstin and not _GSTIN_RE.match(gstin):
-        return _bad_request(INVALID_GSTIN, "the GSTIN is structurally invalid")
+    gst_refusal = _gst_refusal(registered_state, gstin)
+    if gst_refusal is not None:
+        return gst_refusal
+
+    # ── Team size → the Core seats step 2 buys. Validated in the SAME
+    # shape-violation class as the three above, and BEFORE either plane is
+    # touched, so a bad number never leaves a tenant org behind.
+    team_size = _team_size(raw.get("team_size"))
+    if isinstance(team_size, JSONResponse):
+        return team_size
 
     # The owner is the SESSION email and nothing else (R11).
     email = (user.email or "") if user else ""
@@ -349,26 +532,30 @@ async def provision_signup(
     # sweep to re-drive on — they thread to the Console below and are persisted
     # NOWHERE else on the tenant plane. Best-effort (never raises); a miss only
     # degrades them to NULL, which the sweep tolerates (customer_console.md CP-2e).
+    # ⚠️ `core_seats` is persisted HERE and nowhere else on the tenant plane, and
+    # leaving it out made this repair undo itself. Step 0a's `AlreadyMember`
+    # blocks every resubmit once step 1 has committed, so the CP-2e reconciler is
+    # the ONLY route back from a failed step 2 — and it rebuilds the Console call
+    # from these columns alone. Without the count it re-drove with none, the
+    # Console applied its default of 1, and `grant_seats` runs once only.
     await persist_org_billing_profile(
-        slug, gstin=gstin or None, billing_state=registered_state
+        slug,
+        gstin=gstin or None,
+        billing_state=registered_state,
+        core_seats=team_size,
     )
 
     # ── Step 2 · the CONSOLE plane, SECOND — the registry mirror ─────────────
-    # A fresh tenant-born slug cannot be permanently refused here (the
-    # create-only guard passes for the same owner); only transient failures
-    # (unwired / unreachable / 5xx) raise, and a resubmit converges because both
-    # planes are idempotent on the slug.
-    try:
-        await provision_org_on_console(
-            slug,
-            display_name or slug,
-            email,
-            gstin=gstin or None,
-            billing_state=registered_state,
-        )
-    except ConsoleProvisionUnavailable as exc:
-        _log.warning("signup.console_unavailable", error=str(exc)[:200])
-        return _refuse(CONSOLE_UNAVAILABLE)
+    console_refusal = await _mirror_to_console(
+        slug=slug,
+        display_name=display_name or slug,
+        email=email,
+        gstin=gstin or None,
+        registered_state=registered_state,
+        team_size=team_size,
+    )
+    if console_refusal is not None:
+        return console_refusal
 
     # ── Step 2.5 · stamp the Console-mirror marker (CP-2e) ───────────────────
     # Mirrored on both planes now, so record it and the reconciler's sweep skips
@@ -379,5 +566,5 @@ async def provision_signup(
 
     # Owner on both planes; the flow works dark (the tenant `app_user` admits
     # sign-in while the resolve flag is OFF).
-    _log.info("signup.provisioned", slug=slug)
+    _log.info("signup.provisioned", slug=slug, core_seats=team_size)
     return {"admit": True, "code": None, "slug": slug}

@@ -35,7 +35,6 @@ import {
   type Deps,
 } from "./console";
 import { OWED, SAMPLE_CATALOG } from "./sample";
-import { timesThousand } from "./scale";
 import { type Sourced, resolve } from "./source";
 
 // ── The live wire shapes, named so the mapping below reads as a mapping ─────
@@ -101,15 +100,11 @@ type WireCatalog = {
     task: string;
     unit: string;
     pricing_mode: string;
-    input_per_1k: string;
-    output_per_1k: string;
-    cached_input_per_1k: string;
-    // 024 release one — the per-MILLION scale. Optional, because this app and
-    // the Console deploy apart and a Console that predates the release sends
-    // only the per-thousand fields.
-    input_per_1m?: string;
-    output_per_1m?: string;
-    cached_input_per_1m?: string;
+    // 030 — per MILLION, and required. The per-thousand fields left the wire
+    // with the columns behind them.
+    input_per_1m: string;
+    output_per_1m: string;
+    cached_input_per_1m: string;
     credits_per_unit: string;
   }[];
   // 028 — per-tier margin. Absent from a Console still mid-rollout.
@@ -332,17 +327,12 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
     mode: r.pricing_mode,
     // The same STRINGS rule as `rates` above — this card is what customers
     // are billed, and a float round-trip is how a total stops matching.
-    inputPer1k: r.input_per_1k,
-    outputPer1k: r.output_per_1k,
-    cachedInputPer1k: r.cached_input_per_1k,
-    // 🔴 The scale of record (migration 025). ⚠️ The fallback is for a Console
-    // that has not shipped release one yet — this app and that service deploy
-    // apart, so new code can legitimately meet an old wire. Without it the
-    // board would draw a blank price where a real one exists.
-    inputPer1m: r.input_per_1m ?? timesThousand(r.input_per_1k),
-    outputPer1m: r.output_per_1m ?? timesThousand(r.output_per_1k),
-    cachedInputPer1m:
-      r.cached_input_per_1m ?? timesThousand(r.cached_input_per_1k),
+    // 🔴 ONE scale (migration 030). The per-thousand fields are gone from
+    // the column, the wire and this mapping together, and the fallback that
+    // bridged the rollout went with them.
+    inputPer1m: r.input_per_1m,
+    outputPer1m: r.output_per_1m,
+    cachedInputPer1m: r.cached_input_per_1m,
     creditsPerUnit: r.credits_per_unit,
   }));
 

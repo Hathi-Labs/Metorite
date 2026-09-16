@@ -195,6 +195,7 @@ describe("what is offered where", () => {
     const ids = availableCommands(ctx({ hasProject: false })).map((c) => c.id);
     expect(ids).not.toContain("project.fields");
     expect(ids).not.toContain("project.tags");
+    expect(ids).not.toContain("project.statuses");
     expect(ids).not.toContain("project.lifecycle");
     // ⚠️ `project.import` was the exception here — "import is how an empty
     // workspace stops being empty, so it stays". D52 (2026-08-24) removed the

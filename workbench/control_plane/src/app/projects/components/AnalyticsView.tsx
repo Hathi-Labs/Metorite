@@ -260,6 +260,12 @@ function SpaceRow({
           <td
             key={cat}
             className={`px-3 py-2 text-right ${count === 0 ? "text-muted-foreground/50" : "text-foreground"}`}
+            // A wide grid puts many columns between a cell and its heading, so
+            // the cell restates both halves rather than making the reader
+            // track back along the row.
+            title={`${child.name}: ${count} task${
+              count === 1 ? "" : "s"
+            } in ${COLUMN_LABELS[cat] ?? cat}`}
           >
             {count}
           </td>

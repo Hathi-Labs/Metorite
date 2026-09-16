@@ -253,6 +253,32 @@ async def test_auth_me_names_the_callers_own_organization(db: _FakeDB) -> None:
     assert (await me.get_me(user=BEN))["organization"]["slug"] == "beta"
 
 
+async def test_auth_me_survives_a_schema_without_the_registry_projection(
+    db: _FakeDB,
+) -> None:
+    """CP-2j. An OLD schema must cost the banner, never the identity.
+
+    ``registry_status`` (177) and ``registry_trial_ends_at`` (199) are newer
+    than this endpoint, and this fake's organization row carries neither — which
+    is exactly a box whose ladder has not reached them yet.
+
+    Folded into the organization SELECT, that raised, the route's broad handler
+    set ``organization = {}``, and every member lost their org's slug and
+    display name. A banner's OPTIONAL data took out the identity beside it, and
+    the only symptom was a header that said nothing.
+    """
+    answer = await me.get_me(user=ANA)
+
+    # The identity survives — this is the half that must never depend on the
+    # projection.
+    assert answer["organization"]["slug"] == "alpha"
+    assert answer["organization"]["display_name"]
+    # And the projection degrades to ABSENT, which is what the banner reads as
+    # "say nothing" rather than as a state.
+    assert answer["organization"].get("registry_status") is None
+    assert answer["organization"].get("trial_ends_at") is None
+
+
 async def test_auth_me_reports_no_organization_rather_than_a_default(
     db: _FakeDB,
 ) -> None:

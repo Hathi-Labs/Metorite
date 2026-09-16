@@ -199,6 +199,19 @@ async def get_calendar(
     # same question, and the app's standing rule (§11.8) is that a second
     # endpoint per surface is how the filters start disagreeing.
     include_links: bool = False,
+    # P-22. The UNDATED tasks themselves, not only their count.
+    #
+    # ⚠️ **Off by default, and the calendar must never ask.** A calendar cell
+    # is a day, so a task with no day has nowhere to be drawn — the count is
+    # the whole truth that surface can tell. The TIMELINE is different: an
+    # undated task gets a row and no bar (Paca's `roadmap-view.tsx`), and that
+    # empty row is the drawing surface you drag across to give it dates.
+    #
+    # ⚠️ Without this the timeline's own instruction was unreachable. The view
+    # says "drag across an empty row to give one dates", and the rows never
+    # arrived — so with every task undated it rendered "No tasks to display"
+    # and offered nothing to do (owner report, 2026-09-16).
+    include_undated: bool = False,
     # WS-27u. The intake queue must not leak onto the month either — the ONE
     # predicate is `core.triage_exclusion_clause`, applied below.
     include_triage: bool = False,
@@ -285,6 +298,26 @@ async def get_calendar(
             params,
         )).scalar() or 0
 
+        # ⚠️ Capped SEPARATELY from the window, and the count above still tells
+        # the whole truth. A thousand dated tasks must not squeeze the
+        # unscheduled list to nothing, and a thousand unscheduled ones must not
+        # push the dated window out — they are two lists answering two
+        # questions, and one shared cap would let either starve the other.
+        unscheduled: list[dict] = []
+        if include_undated:
+            rows_u = (await db.execute(
+                text(
+                    f"SELECT t.* FROM pm_tasks t WHERE {scoped} AND {UNDATED} "
+                    # The same tiebreak the window uses, for the same reason: a
+                    # list that reshuffles between loads reads as changed data.
+                    f"ORDER BY t.task_number NULLS LAST, t.id LIMIT :ucap"
+                ),
+                {**params, "ucap": MAX_WINDOW_ROWS},
+            )).fetchall()
+            unscheduled = [row_to_dict(r, TaskModel) for r in rows_u]
+            await attach_assignees(db, unscheduled)
+            await attach_relation_counts(db, unscheduled)
+
         return {
             "from": window_from.date().isoformat(),
             "to": window_to.date().isoformat(),
@@ -292,6 +325,9 @@ async def get_calendar(
             "truncated": truncated,
             "cap": MAX_WINDOW_ROWS,
             "undated": int(undated),
+            # Always present, empty when not asked for — the same ruling as
+            # `links` below, for the same reason.
+            "unscheduled": unscheduled,
             # Always present, empty when not asked for: a missing key and an
             # empty list read the same to a careless client, and "this window
             # has no dependencies" must not be confused with "nobody asked".

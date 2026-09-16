@@ -27,8 +27,10 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends
 from gateway.routes.projects.core import (
+    MAX_DEPTH,
     _tenant_session,
     actor,
+    load_visible_project,
     load_visible_task,
     resolve_visibility,
     router,
@@ -152,4 +154,158 @@ async def list_watchers(
     return {
         "watchers": watchers,
         "watching": actor(user).lower() in set(watchers),
+    }
+
+
+# ── Watching a PROJECT (WS-27bk §9.12.2(b)) ─────────────────────────────────
+#
+# ⚠️ **A project watch is its OWN row, and it never expands into task rows.**
+# The expansion would be wrong twice: it goes stale the moment somebody adds a
+# task, and it writes thousands of rows for one click. So the subscription is
+# one row against the node, and the CHAIN is resolved at fan-out time — which
+# is what makes a task created today reach a subscription taken a year ago.
+#
+# The three endpoints mirror the task verbs exactly, because a member who has
+# learned one has learned the other, and migration 203 mirrors 165's shape for
+# the same reason.
+
+#: Everyone watching any node on the path from ``:pid`` up to its root.
+#:
+#: ⚠️ **Walks UP, never DOWN.** Watching a parent hears about its children,
+#: which is the ask ("tell me about this project" covers the work inside it).
+#: Watching a child must NOT subscribe you to a sibling's traffic, and a
+#: downward walk from the root would do exactly that.
+#:
+#: Bounded by ``MAX_DEPTH`` like every other walk here: this runs on the
+#: notification path, and a corrupted parent chain must stop rather than spin.
+_CHAIN_WATCHERS_SQL = """
+WITH RECURSIVE chain AS (
+    SELECT id, parent_project_id, 1 AS depth
+      FROM pm_projects
+     WHERE id = CAST(:pid AS uuid)
+    UNION ALL
+    SELECT p.id, p.parent_project_id, c.depth + 1
+      FROM pm_projects p
+      JOIN chain c ON p.id = c.parent_project_id
+     WHERE c.depth < :max_depth
+)
+SELECT DISTINCT w.watcher
+  FROM pm_project_watchers w
+  JOIN chain c ON c.id = w.project_id
+"""
+
+
+async def project_chain_watchers(db: Any, project_id: object) -> list[str]:
+    """Watchers of ``project_id`` and of every ancestor above it, sorted.
+
+    One round trip rather than a Python loop per ancestor: this is on the
+    notification fan-out path, and ``root_project_id``'s loop shape is a WRITE
+    path helper where the extra reads are already paid for.
+
+    An absent or NULL ``project_id`` answers empty rather than raising — a
+    personal task has no project, and a notification for one must still be
+    delivered rather than 500.
+    """
+    if not project_id:
+        return []
+    rows = (await db.execute(
+        text(_CHAIN_WATCHERS_SQL),
+        {"pid": str(project_id), "max_depth": MAX_DEPTH},
+    )).fetchall()
+    return sorted(
+        r.watcher for r in rows if getattr(r, "watcher", None)
+    )
+
+
+async def project_watchers_of(db: Any, project_id: str) -> list[str]:
+    """Everyone subscribed to ONE node, sorted.
+
+    Deliberately not the chain: this answers "who watches this project", which
+    is what the header toggle renders. The chain is an audience question, and
+    it belongs to the fan-out.
+    """
+    rows = (await db.execute(
+        text(
+            "SELECT watcher FROM pm_project_watchers "
+            "WHERE project_id = CAST(:pid AS uuid) ORDER BY watcher"
+        ),
+        {"pid": project_id},
+    )).fetchall()
+    return [r.watcher for r in rows if getattr(r, "watcher", None)]
+
+
+@router.put("/nodes/{project_id}/watch")
+async def watch_project(
+    project_id: str, user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Subscribe the caller to a project. Idempotent — watching twice is watching.
+
+    The identity is the session's (R3), never a body field, for the same reason
+    the task verb refuses one: an endpoint that accepted a ``watcher`` would let
+    anyone subscribe anyone else to a subtree's whole event stream.
+    """
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        # R5: an invisible project is 404, never 403 — see load_visible_project.
+        await load_visible_project(db, vis, project_id)
+        who = actor(user).lower()
+        if watchable([who]):
+            await db.execute(
+                text(
+                    "INSERT INTO pm_project_watchers "
+                    "  (project_id, watcher, created_by) "
+                    "VALUES (CAST(:pid AS uuid), :who, :by) "
+                    "ON CONFLICT (project_id, watcher) DO NOTHING"
+                ),
+                {"pid": project_id, "who": who, "by": who},
+            )
+    return {"project_id": project_id, "watching": True}
+
+
+@router.delete("/nodes/{project_id}/watch")
+async def unwatch_project(
+    project_id: str, user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Unsubscribe the caller. Idempotent — a row that is not there stays gone.
+
+    Unwatching a project does not silence the tasks inside it that the caller
+    watches or is assigned in. The audience is a union, and each membership
+    stands on its own — the same contract the task verb keeps.
+    """
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        await load_visible_project(db, vis, project_id)
+        await db.execute(
+            text(
+                "DELETE FROM pm_project_watchers "
+                "WHERE project_id = CAST(:pid AS uuid) AND watcher = :who"
+            ),
+            {"pid": project_id, "who": actor(user).lower()},
+        )
+    return {"project_id": project_id, "watching": False}
+
+
+@router.get("/nodes/{project_id}/watchers")
+async def list_project_watchers(
+    project_id: str, user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Who watches this node, whether the caller does, and whether an ancestor
+    already covers them — one read, so the header toggle renders without a
+    second round trip.
+
+    ``inherited`` is what stops the toggle from lying. A member who watches the
+    parent already hears about this project, and a control that reads "not
+    watching" would invite a second subscription that changes nothing.
+    """
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        await load_visible_project(db, vis, project_id)
+        watchers = await project_watchers_of(db, project_id)
+        chain = await project_chain_watchers(db, project_id)
+    me = actor(user).lower()
+    return {
+        "project_id": project_id,
+        "watchers": watchers,
+        "watching": me in set(watchers),
+        "inherited": me in set(chain) and me not in set(watchers),
     }

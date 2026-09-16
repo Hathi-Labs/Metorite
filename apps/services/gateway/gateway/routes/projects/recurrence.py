@@ -43,6 +43,7 @@ from gateway.routes.projects.core import (
     resolve_visibility,
     router,
     update_row,
+    status_owner_id,
 )
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -361,7 +362,9 @@ async def spawn_successor(db: Any, task: Any, *, actor_id: str) -> str | None:
     # answer `create_task` gives — a second implementation of either would be a
     # second answer.
     values["status_id"] = str((
-        await load_default_status(db, str(task.root_project_id))
+        await load_default_status(
+            db, await status_owner_id(db, str(task.project_id)),
+        )
     ).id)
     values["task_number"] = await next_task_number(db, str(task.root_project_id))
 

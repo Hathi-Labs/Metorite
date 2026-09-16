@@ -1882,20 +1882,93 @@ def deployment_visible_orgs(
             #: reaches the wire as `null`, never as an invented string.
             "placement": r[3],
             "identity_id": str(r[4]),
+            #: When the free trial ends, or NULL. LEFT JOINed, because an
+            #: organization with no subscription row is a real (if broken)
+            #: state and must not vanish from a sign-in answer because of it.
+            #: Sign-in carries it so the customer's own app can say "trial, N
+            #: days left" without a second round trip to a billing door it is
+            #: not entitled to reach (CP-2j).
+            "trial_ends_at": r[5],
         }
         for r in conn.execute(
             text(
                 """
-                SELECT o.id, o.slug, o.status, p.database_target, ui.id
+                SELECT o.id, o.slug, o.status, p.database_target, ui.id,
+                       s.trial_ends_at
                 FROM user_identity ui
                 JOIN org_membership m ON m.user_identity_id = ui.id
                 JOIN organization o ON o.id = m.organization_id
                 JOIN org_placement p ON p.organization_id = o.id
+                LEFT JOIN org_subscription s ON s.organization_id = o.id
                 WHERE ui.email = :email AND p.deployment_id = :dep
                 ORDER BY o.slug
                 """
             ),
             {"email": email, "dep": deployment_id},
+        )
+    ]
+
+
+def deployment_placed_orgs(
+    conn: Connection, *, deployment_id: str
+) -> list[dict[str, Any]]:
+    """Every organization PLACED on this deployment, with its owner.
+
+    The sibling of :func:`deployment_visible_orgs`, and the difference is the
+    whole point: that one is bounded by an EMAIL (placement ∩ membership, to
+    answer *"may this person sign in"*), and this one is bounded by the
+    DEPLOYMENT alone, to answer *"which customers am I supposed to be serving?"*
+
+    ⚠️ **Why this exists.** The operator arm of ``POST /orgs/provision`` writes
+    the Console plane only. Nothing ever wrote the TENANT plane for an
+    operator-created customer, so its owner signed in, was admitted by the
+    registry, and landed on *"No organization is linked to this email"* —
+    ``/me/access`` reads the tenant plane, and there was no row there.
+    ``deploy/hostinger/CUSTOMER_CONSOLE.md`` recorded the gap in prose (*"pure
+    operator onboarding … is NOT wired"*) while the Operator Console shipped a
+    button that did it anyway, under a success panel promising the owner could
+    sign in immediately.
+
+    This read is what lets the DEPLOYMENT close that gap for itself, and the
+    direction is the reason it is a read rather than a call: this service makes
+    no outbound request to any box, and ``operator_console/src/lib/console.ts``
+    forbids the Operator Console from reaching a tenant deployment. So the box
+    asks, and the box provisions — over the arrow that already exists.
+
+    ``owner_email`` is the ``role = 'owner'`` membership, the same predicate
+    :func:`org_owned_by_other` keys on, so there is no second owner grammar.
+    LEFT JOINed on purpose: an organization created before its membership row
+    (provision's own crash-resume shape) is a real state and must be REPORTED
+    rather than hidden, because the caller needs to see it to know it is
+    incomplete.
+
+    ``ORDER BY o.slug`` so a caller comparing two answers, and a fence asserting
+    a list, do not depend on the planner.
+    """
+    return [
+        {
+            "slug": r[0],
+            "display_name": r[1],
+            "status": r[2],
+            "owner_email": r[3],
+            "gstin": r[4],
+            "billing_state": r[5],
+        }
+        for r in conn.execute(
+            text(
+                """
+                SELECT o.slug, o.name, o.status, ui.email, o.gstin,
+                       o.billing_state
+                FROM organization o
+                JOIN org_placement p ON p.organization_id = o.id
+                LEFT JOIN org_membership m
+                       ON m.organization_id = o.id AND m.role = 'owner'
+                LEFT JOIN user_identity ui ON ui.id = m.user_identity_id
+                WHERE p.deployment_id = :dep
+                ORDER BY o.slug
+                """
+            ),
+            {"dep": deployment_id},
         )
     ]
 

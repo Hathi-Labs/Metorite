@@ -335,8 +335,17 @@ VIEW_FILTER_KEYS: frozenset[str] = frozenset({
 
 #: What a board may group by. `status` is the board's own axis; the others are
 #: what §11.2 asked for by name.
+#:
+#: ⚠️ `category` is the STAGE axis (§9.12.3), and it stopped being decoration
+#: on 2026-09-06. The spec parked it as "value latent" because every root then
+#: held exactly four statuses — one per stage — so grouping by stage drew the
+#: same four columns as grouping by status. Migration 196 ended that: a
+#: subproject may keep its own lanes, so one subtree can hold "Doing" and
+#: "In progress" meaning the same thing. `category` is the only vocabulary two
+#: sets share, which makes it the only axis that stays legible across them, and
+#: the one every cross-project number in §9.12.7 will rest on.
 GROUP_BY: tuple[str, ...] = (
-    "status", "assignee", "project", "importance", "tag", "none",
+    "status", "category", "assignee", "project", "importance", "tag", "none",
 )
 
 #: WS-27x — the field keys a view's `shown_fields` may name. Mirrors the

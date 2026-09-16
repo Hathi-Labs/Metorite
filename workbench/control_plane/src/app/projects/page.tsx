@@ -33,11 +33,14 @@ import {
   type ViewRow,
   projectsApi,
   projectsKey,
+  projectWatchersApi,
+  type ProjectWatchState,
 } from "./lib/api";
 import { FieldManager } from "./components/FieldManager";
 import { MoveDialog } from "./components/MoveDialog";
 import { type TreeDropTarget, planTreeDrop } from "./lib/treeDrop";
 import { LifecyclePolicy } from "./components/LifecyclePolicy";
+import { StatusManager } from "./components/StatusManager";
 import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterBar } from "./components/FilterBar";
@@ -152,6 +155,8 @@ const NO_MONTH = {
   rows: [] as TaskRow[],
   links: [] as Edge[],
   undated: 0,
+  /** P-22 — the undated tasks themselves. The timeline gives each one a row. */
+  unscheduled: [] as TaskRow[],
   truncated: false,
 };
 
@@ -251,6 +256,10 @@ function ProjectNav({
   onCancelCreate,
   onPicked,
   actions,
+  onManageStatuses,
+  onManageFields,
+  onManageTags,
+  onManageLifecycle,
 }: {
   roots: ProjectRow[];
   selectedId: string | null;
@@ -275,6 +284,15 @@ function ProjectNav({
   onPicked?: () => void;
   /** WS-27bg — the run-state / archive menu. */
   actions?: ProjectMenuHandlers;
+  /**
+   * The four ROOT-scoped screens, offered on a space row's menu. Each takes
+   * the row the menu opened from, NOT the selected project — the whole point
+   * of a row menu is that it acts on the row you pointed at.
+   */
+  onManageStatuses: (space: ProjectRow) => void;
+  onManageFields: (space: ProjectRow) => void;
+  onManageTags: (space: ProjectRow) => void;
+  onManageLifecycle: (space: ProjectRow) => void;
 }) {
   return (
     <>
@@ -372,6 +390,24 @@ function ProjectNav({
         onCommitCreate={onCommitCreate}
         onCancelCreate={onCancelCreate}
         actions={actions}
+        // Each closes the phone's drawer, like every other row action here —
+        // a dialog opening behind an open drawer is a dialog nobody can see.
+        onManageStatuses={(space) => {
+          onManageStatuses(space);
+          onPicked?.();
+        }}
+        onManageFields={(space) => {
+          onManageFields(space);
+          onPicked?.();
+        }}
+        onManageTags={(space) => {
+          onManageTags(space);
+          onPicked?.();
+        }}
+        onManageLifecycle={(space) => {
+          onManageLifecycle(space);
+          onPicked?.();
+        }}
       />
     </>
   );
@@ -574,21 +610,96 @@ function ProjectsWorkspace() {
   // whole subtree shares one set; held here rather than in the panel because
   // the panel opens and closes far more often than these change.
   const [fields, setFields] = useState<FieldRow[]>([]);
-  const [managingFields, setManagingFields] = useState(false);
+  // ⚠️ These four hold the NODE the dialog is for, not a boolean (owner
+  // directive 2026-09-06). They used to be flags, and the dialog read
+  // `selected` — which was right while the header's overflow menu was the only
+  // door, because that menu IS the selected project's. A tree row's menu is
+  // not: right-clicking a space you have not selected must manage THAT space,
+  // and a flag plus `selected` would quietly have managed the other one.
+  const [managingFields, setManagingFields] = useState<ProjectRow | null>(null);
 
   // WS-27m — the selected node's tag registry. Root-scoped like the fields, and
   // held here for the same reason: the filter bar, the panel's picker and the
   // manager all read it, and three fetches of one list would disagree.
   const [tags, setTags] = useState<TagRow[]>([]);
-  const [managingTags, setManagingTags] = useState(false);
+  const [managingTags, setManagingTags] = useState<ProjectRow | null>(null);
+
+  // The status editor (owner directive 2026-09-03). `statuses` above is already
+  // held here for the board's lanes, so the dialog writes through the same
+  // state and a rename relabels every lane without a refetch.
+  //
+  // Reachable from any node, unlike the lifecycle policy below: the gateway
+  // resolves the root itself (`admin._root_for`), so a subproject opens its
+  // space's set rather than being refused. That is the point — one set per
+  // space is what keeps two spaces comparable through the category.
+  const [managingStatuses, setManagingStatuses] = useState<ProjectRow | null>(null);
 
   // WS-27z — the lifecycle-policy dialog. Root projects only: the policy is a
   // root setting the whole subtree inherits, and the gateway 422s a child.
-  const [managingLifecycle, setManagingLifecycle] = useState(false);
+  const [managingLifecycle, setManagingLifecycle] = useState<ProjectRow | null>(
+    null
+  );
   // The header's one overflow menu (owner ask 2026-08-31, Plane's header
   // discipline): management dialogs open from HERE, not from a row of
   // always-visible buttons beside the view switcher.
   const [manageOpen, setManageOpen] = useState(false);
+  /**
+   * WS-27bk §9.12.2(b) — whether the caller watches the SELECTED project.
+   *
+   * `null` means "not asked yet", and the menu item renders a neutral label
+   * for it rather than guessing "Watch". Guessing is how a toggle ends up
+   * telling somebody they are not subscribed when they are.
+   */
+  const [projectWatch, setProjectWatch] = useState<ProjectWatchState | null>(
+    null,
+  );
+
+  /**
+   * Ask once per selected project, and drop the answer the moment the
+   * selection changes.
+   *
+   * ⚠️ The `cancelled` flag is not ceremony. Clicking through a tree faster
+   * than the network answers would otherwise let an earlier project's reply
+   * land last and paint the wrong state onto the current one.
+   */
+  useEffect(() => {
+    const id = selected?.id;
+    if (!id) {
+      setProjectWatch(null);
+      return;
+    }
+    let cancelled = false;
+    setProjectWatch(null);
+    projectWatchersApi
+      .get(id)
+      .then((state) => {
+        if (!cancelled) setProjectWatch(state);
+      })
+      .catch(() => {
+        // A failed read leaves the item in its neutral "not asked" state. It
+        // must not read as "not watching", which is a claim we cannot make.
+        if (!cancelled) setProjectWatch(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected?.id]);
+
+  /** Toggle the caller's subscription to the selected project. */
+  const toggleProjectWatch = useCallback(async () => {
+    const id = selected?.id;
+    if (!id || !projectWatch) return;
+    const next = !projectWatch.watching;
+    // Optimistic: both writes are idempotent, so a lost race costs nothing.
+    setProjectWatch({ ...projectWatch, watching: next });
+    try {
+      if (next) await projectWatchersApi.watch(id);
+      else await projectWatchersApi.unwatch(id);
+      setProjectWatch(await projectWatchersApi.get(id));
+    } catch {
+      setProjectWatch(await projectWatchersApi.get(id).catch(() => null));
+    }
+  }, [selected?.id, projectWatch]);
   const manageRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!manageOpen) return;
@@ -772,6 +883,34 @@ function ProjectsWorkspace() {
    * asks for and the reason the endpoint returns it: filing a project with
    * unfinished work in it is allowed, and the user should know they did it.
    */
+  /**
+   * Open one of the four space-scoped screens from a tree row.
+   *
+   * ⚠️ **It SELECTS the row as well as opening the dialog, and that is
+   * deliberate.** Statuses, tags and custom fields are root-scoped, and the
+   * page holds ONE copy of each for the node on screen — `setStatuses` feeds
+   * the board's lanes, `setTags` the filter bar and the task panel, `setFields`
+   * the panel's custom values. Editing space A's vocabulary while the page
+   * shows space B would write A's list into B's state, and the lanes behind
+   * the open dialog would then be someone else's.
+   *
+   * The dialog still receives the NODE rather than reading `selected`, because
+   * `setSelected` lands on the next render and the dialog has to name the
+   * right space on this one.
+   */
+  // ⚠️ The name says "space" and three of its four callers still mean one —
+  // but `onManageStatuses` no longer does. Since migration 196 a subproject may
+  // own its lanes, so `projectMenu` offers Statuses on every level but a
+  // folder, and this helper receives whichever node was clicked. It already
+  // did the right thing (it selects and opens the node it is handed); only the
+  // parameter name assumed otherwise.
+  const manageSpace =
+    (open: (node: ProjectRow) => void) => (node: ProjectRow) => {
+      setApp(null);
+      setSelected(node);
+      open(node);
+    };
+
   const projectMenuActions: ProjectMenuHandlers = useMemo(
     () => ({
       onSetState: (project, state) => {
@@ -1054,6 +1193,10 @@ function ProjectsWorkspace() {
             onCancelCreate={() => setCreating(undefined)}
             onPicked={() => setSheet(null)}
             actions={projectMenuActions}
+            onManageStatuses={manageSpace(setManagingStatuses)}
+            onManageFields={manageSpace(setManagingFields)}
+            onManageTags={manageSpace(setManagingTags)}
+            onManageLifecycle={manageSpace(setManagingLifecycle)}
           />
         ) : (
           <ModeSwitch
@@ -1218,12 +1361,18 @@ function ProjectsWorkspace() {
         // WS-27t — only the timeline draws arrows, and the calendar would pay
         // for a query it never reads.
         include_links: mode === "timeline",
+        // ⚠️ The TIMELINE only. A calendar cell is a day, so a task with no
+        // day has nowhere to be drawn there — the count is all that surface
+        // can honestly say. The timeline gives it a row and no bar, and that
+        // row is what you drag across to schedule it.
+        include_undated: mode === "timeline",
         ...toQuery(filters),
       });
       setMonth({
         rows: res.rows,
         links: res.links,
         undated: res.undated,
+        unscheduled: res.unscheduled,
         truncated: res.truncated,
       });
     } catch (err) {
@@ -1334,9 +1483,19 @@ function ProjectsWorkspace() {
    * `month.rows` over its own date span. Grouping the timeline by the board's
    * list would silently drop every task outside the board's window.
    */
+  // ⚠️ The unscheduled tasks are grouped WITH the dated ones (P-22).
+  //
+  // The timeline draws a row per grouped task, so a task missing from `groups`
+  // gets no row — and a row is exactly what an undated task needs, since the
+  // empty row is the surface you drag across to schedule it. Grouping only
+  // `month.rows` would have given the feature to flat timelines and withheld
+  // it from grouped ones, which is the kind of split nobody discovers until
+  // they group a board and their unscheduled work vanishes.
   const monthGroups = useMemo(
-    () => groupTasks(month.rows, groupBy, { statuses, projectName }),
-    [month.rows, groupBy, statuses, projectName]
+    () => groupTasks(
+      [...month.rows, ...month.unscheduled], groupBy, { statuses, projectName },
+    ),
+    [month.rows, month.unscheduled, groupBy, statuses, projectName]
   );
 
   // A selection that outlives its filter is how a bulk edit hits tasks nobody
@@ -1553,13 +1712,18 @@ function ProjectsWorkspace() {
       clearFilters: () => setFilters(EMPTY_FILTERS),
       toggleRail: () => setRailOpen((open) => !open),
       manage: (what) => {
-        if (what === "fields") setManagingFields(true);
-        else if (what === "tags") setManagingTags(true);
-        else if (what === "lifecycle") setManagingLifecycle(true);
+        // The palette acts on the SELECTED project, which is what the palette
+        // has always meant. `commandCtx.hasProject` already gates every one of
+        // these, so a null here is a command that was not offered.
+        if (!selected) return;
+        if (what === "fields") setManagingFields(selected);
+        else if (what === "tags") setManagingTags(selected);
+        else if (what === "statuses") setManagingStatuses(selected);
+        else if (what === "lifecycle") setManagingLifecycle(selected);
       },
       showShortcuts: () => setShowingShortcuts(true),
     }),
-    [router, setPanelMode],
+    [router, setPanelMode, selected],
   );
 
   const commandCtx: CommandContext = {
@@ -1580,9 +1744,10 @@ function ProjectsWorkspace() {
   const overlayOpen =
     searching ||
     showingShortcuts ||
-    managingFields ||
-    managingTags ||
-    managingLifecycle;
+    Boolean(managingFields) ||
+    Boolean(managingTags) ||
+    Boolean(managingStatuses) ||
+    Boolean(managingLifecycle);
 
   // The listener is attached ONCE and reads through this, rather than being
   // re-subscribed on every filter keystroke. Written from an effect rather
@@ -2103,17 +2268,69 @@ function ProjectsWorkspace() {
               if (e.key === "Escape") setManageOpen(false);
             }}
           >
+            {/* WS-27bk §9.12.2(b). First, because it is the one item about
+                YOU rather than about the project's configuration — and the
+                only one a member reaches repeatedly.
+
+                ⚠️ Watching a project is NOT watching its tasks. The server
+                resolves the ancestor chain per notification, so a task added
+                tomorrow is covered by a subscription taken today. */}
+            <button
+              type="button"
+              role="menuitem"
+              disabled={projectWatch === null}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted disabled:opacity-50"
+              onClick={() => {
+                setManageOpen(false);
+                void toggleProjectWatch();
+              }}
+            >
+              <Icon
+                name={projectWatch?.watching ? "BellOff" : "Bell"}
+                className="h-3.5 w-3.5 text-muted-foreground"
+              />
+              {projectWatch === null
+                ? "Watch project"
+                : projectWatch.watching
+                  ? "Stop watching"
+                  : projectWatch.inherited
+                    ? "Watch directly"
+                    : "Watch project"}
+            </button>
+            {/* An inherited subscription is stated, never implied by a
+                disabled control: the member is already hearing about this
+                project, and only a parent explains why. */}
+            {projectWatch?.inherited && !projectWatch.watching ? (
+              <p className="px-2 pb-1 text-[11px] leading-snug text-muted-foreground">
+                You already follow this through a parent project.
+              </p>
+            ) : null}
+            <div className="my-1 h-px bg-border" role="separator" />
             <button
               type="button"
               role="menuitem"
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
               onClick={() => {
                 setManageOpen(false);
-                setManagingFields(true);
+                setManagingFields(selected);
               }}
             >
               <Icon name="SlidersHorizontal" className="h-3.5 w-3.5 text-muted-foreground" />
               Custom fields
+            </button>
+            {/* Statuses leads the vocabularies: it is the one whose category
+                half drives the roll-up, completion, and what /tasks shows. */}
+            <button
+              type="button"
+              role="menuitem"
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
+              onClick={() => {
+                setManageOpen(false);
+                setManagingStatuses(selected);
+              }}
+            >
+              <Icon name="Columns3" className="h-3.5 w-3.5 text-muted-foreground" />
+              Statuses
             </button>
             <button
               type="button"
@@ -2121,7 +2338,7 @@ function ProjectsWorkspace() {
               className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
               onClick={() => {
                 setManageOpen(false);
-                setManagingTags(true);
+                setManagingTags(selected);
               }}
             >
               <Icon name="Tag" className="h-3.5 w-3.5 text-muted-foreground" />
@@ -2134,7 +2351,7 @@ function ProjectsWorkspace() {
                 className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-muted"
                 onClick={() => {
                   setManageOpen(false);
-                  setManagingLifecycle(true);
+                  setManagingLifecycle(selected);
                 }}
               >
                 <Icon name="Archive" className="h-3.5 w-3.5 text-muted-foreground" />
@@ -2384,6 +2601,7 @@ function ProjectsWorkspace() {
             <TimelineView
               tasks={month.rows}
               links={month.links}
+              unscheduled={month.unscheduled}
               undated={month.undated}
               truncated={month.truncated}
               today={dayKey(new Date())}
@@ -2570,11 +2788,11 @@ function ProjectsWorkspace() {
         <ShortcutsSheet onClose={() => setShowingShortcuts(false)} />
       ) : null}
 
-      {managingTags && selected ? (
+      {managingTags ? (
         <TagManager
-          projectId={selected.id}
-          projectName={selected.name}
-          onClose={() => setManagingTags(false)}
+          projectId={managingTags.id}
+          projectName={managingTags.name}
+          onClose={() => setManagingTags(null)}
           onChanged={setTags}
           // A rename or merge rewrites task rows, so the board is stale until
           // it reloads — the chips would otherwise show a name no card carries.
@@ -2584,10 +2802,27 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {managingLifecycle && selected ? (
+      {managingStatuses ? (
+        <StatusManager
+          projectId={managingStatuses.id}
+          projectName={managingStatuses.name}
+          onClose={() => setManagingStatuses(null)}
+          // `setStatuses` is the board's own lane source, so a rename or a
+          // recolour repaints the lanes behind the open dialog.
+          onChanged={setStatuses}
+          // A re-categorise can stamp or clear `completed_at` across a whole
+          // lane, and a rename changes what every card reads. Either way the
+          // task rows on screen are stale until they reload.
+          onTasksTouched={() => {
+            if (selected) void loadProject(selected);
+          }}
+        />
+      ) : null}
+
+      {managingLifecycle ? (
         <LifecyclePolicy
-          project={selected}
-          onClose={() => setManagingLifecycle(false)}
+          project={managingLifecycle}
+          onClose={() => setManagingLifecycle(null)}
           onSaved={(fresh) => {
             // The header's selected row keeps the fresh values; the tree
             // re-reads so its copy does not disagree on the next select.
@@ -2599,11 +2834,11 @@ function ProjectsWorkspace() {
         />
       ) : null}
 
-      {managingFields && selected ? (
+      {managingFields ? (
         <FieldManager
-          projectId={selected.id}
-          projectName={selected.name}
-          onClose={() => setManagingFields(false)}
+          projectId={managingFields.id}
+          projectName={managingFields.name}
+          onClose={() => setManagingFields(null)}
           // Kept in sync while the dialog is open, so a field added here shows
           // on the next task opened without closing anything first.
           onChanged={setFields}
@@ -2719,6 +2954,10 @@ function ProjectsWorkspace() {
               onCommitCreate={(name) => void submitProject(name)}
               onCancelCreate={() => setCreating(undefined)}
               actions={projectMenuActions}
+              onManageStatuses={manageSpace(setManagingStatuses)}
+              onManageFields={manageSpace(setManagingFields)}
+              onManageTags={manageSpace(setManagingTags)}
+              onManageLifecycle={manageSpace(setManagingLifecycle)}
             />
           </nav>
         ) : null}

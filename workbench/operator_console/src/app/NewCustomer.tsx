@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { suggestSlug } from "@/lib/format";
+import { slugProblem, suggestSlug } from "@/lib/slug";
 
 // The "create a new customer" ACTION on the customers list. Create-only: it
 // POSTs to the server-side `/api/operator/provision` BFF route, which holds the
@@ -81,8 +81,14 @@ export default function NewCustomer({
     if (r?.ok) setDone(true);
   }
 
+  // Advisory only — the Console's `ProvisionRequest` validator is the fence.
+  // Shown here so the operator fixes a bad slug before the round trip, rather
+  // than reading a pydantic 422 out of the relayed error panel.
+  const slugIssue = slugProblem(slug);
+
   const canSubmit =
     slug.trim().length > 0 &&
+    slugIssue === null &&
     name.trim().length > 0 &&
     ownerEmail.trim().length > 0 &&
     deploymentLabel.trim().length > 0 &&
@@ -121,6 +127,22 @@ export default function NewCustomer({
           When they&apos;ve paid, open the customer and{" "}
           <strong>activate their plan</strong>.
         </p>
+        {/* ⚠️ Says what to DO, not how long to wait, and the difference is the
+            whole repair. This panel used to promise sign-in worked right away.
+            It did not work at all: creating a customer writes the CONSOLE
+            plane, and their workspace is built on the server afterwards by the
+            deployment's bootstrap sweep. An earlier draft of this fix promised
+            "about a minute" instead — also wrong, because the sweep is behind
+            CONSOLE_BOOTSTRAP_ENABLED, this app cannot read a gateway flag
+            (lib/console.ts: never to a tenant deployment), and the flag is off
+            by default. So the honest thing is to name the symptom and the
+            remedy, which are true in both positions. */}
+        <p className="muted">
+          If they see <strong>“No organization is linked to this email”</strong>
+          , their workspace is still being prepared on the server. Wait a minute
+          and retry. If it persists, the deployment&apos;s bootstrap sweep is
+          not running — see <code>CONSOLE_BOOTSTRAP_ENABLED</code>.
+        </p>
         <button type="button" onClick={() => window.location.reload()}>
           Done
         </button>
@@ -132,8 +154,15 @@ export default function NewCustomer({
     <form className="panel form-panel" onSubmit={submit}>
       <h2 style={{ marginTop: 0 }}>New customer</h2>
       <p className="muted">
-        Creates the company with its owner and seats, and starts a free trial.
-        The owner can sign in immediately. Safe to retry — creating the same
+        {/* ⚠️ Says what this DOES, and promises nothing about when the owner
+            can sign in. It used to say "The owner can sign in immediately",
+            which was false: this writes the CONSOLE plane, and their workspace
+            is built afterwards by the deployment's bootstrap sweep — which is
+            behind CONSOLE_BOOTSTRAP_ENABLED, off by default, and unreadable
+            from this app by construction. The success panel carries the symptom
+            and the remedy; this paragraph must not undo it. */}
+        Creates the company with its owner and seats on the billing registry,
+        and starts a free trial. Safe to retry — creating the same
         company twice converges on one.
       </p>
 
@@ -156,10 +185,17 @@ export default function NewCustomer({
           setSlug(e.target.value);
         }}
       />
-      <div className="field-hint">
-        Lowercase letters, numbers and hyphens. Used in URLs and reports —
-        cannot be changed later.
-      </div>
+      {/* `.field-hint.warn` already means "what you are about to save will not
+          work yet", which is exactly this state. A new `.err` class would be a
+          second colour vocabulary for it (root `CLAUDE.md` §4). */}
+      {slugIssue ? (
+        <div className="field-hint warn">{slugIssue}</div>
+      ) : (
+        <div className="field-hint">
+          Lowercase letters, numbers and hyphens. Used in URLs and reports —
+          cannot be changed later.
+        </div>
+      )}
 
       <label htmlFor="nc-email">Owner&apos;s email</label>
       <input

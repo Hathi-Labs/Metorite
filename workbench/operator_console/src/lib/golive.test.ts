@@ -125,7 +125,6 @@ describe("step 4 — prices", () => {
     tierRates: [{
       tier: "fast", task: "chat", unit: "tokens",
       mode: "absorbed" as const, inputPer1k: "0", outputPer1k: "0",
-      cachedInputPer1k: "0",
       // 024 — the same zero at the per-million scale. An absorbed tier is
       // free on purpose (D19.2), so zero here is a PRICE and not an absence.
       inputPer1m: "0", outputPer1m: "0", cachedInputPer1m: "0",

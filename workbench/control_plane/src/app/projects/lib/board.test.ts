@@ -269,3 +269,73 @@ describe("orderBearingView", () => {
     expect(orderBearingView([seeded[0]])).toBeNull();
   });
 });
+
+describe("dropping on a STAGE column (§9.12.3)", () => {
+  const lane = (id: string, name: string, category: string, position: number) => ({
+    id,
+    name,
+    category,
+    position,
+  });
+  // Three in-progress lanes, so "which one" has a real answer to get wrong.
+  const LANES = [
+    lane("l-back", "Backlog", "backlog", 0),
+    lane("l-prog", "In progress", "in_progress", 1),
+    lane("l-block", "Blocked", "in_progress", 2),
+    lane("l-review", "In review", "in_progress", 3),
+    lane("l-done", "Done", "done", 4),
+  ];
+
+  it("lands on the FIRST lane of the stage, by position", () => {
+    expect(buildColumnDropUpdate("category", "in_progress", LANES)).toEqual({
+      status_id: "l-prog",
+    });
+  });
+
+  it("does NOT use is_default, which the owner retired", () => {
+    // ⚠️ The spec still says "the project's DEFAULT status in that category".
+    // Owner directive 2026-09-06 retired that flag because it sat on `backlog`
+    // for every space, leaving three of four stages with no answer. Position
+    // order always has one. A lane marked default and sitting second must lose.
+    const flagged = [
+      { ...lane("l-prog", "In progress", "in_progress", 1) },
+      { ...lane("l-block", "Blocked", "in_progress", 2), is_default: true },
+    ];
+    expect(buildColumnDropUpdate("category", "in_progress", flagged)).toEqual({
+      status_id: "l-prog",
+    });
+  });
+
+  it("patches NOTHING for a stage with no lane, rather than inventing one", () => {
+    expect(buildColumnDropUpdate("category", "cancelled", LANES)).toBeNull();
+  });
+
+  it("patches nothing when no lanes were handed to it", () => {
+    // Every pre-existing caller passes two arguments. Silently choosing a lane
+    // from an empty list would be worse than doing nothing.
+    expect(buildColumnDropUpdate("category", "in_progress")).toBeNull();
+  });
+
+  it("a drop INSIDE its own stage writes no status at all", () => {
+    // ⚠️ The one that protects real work. Without a stage-aware
+    // `currentAxisKey`, dragging a "Blocked" card one inch inside the
+    // In-progress column patches it onto that stage's FIRST lane — silently
+    // demoting it to "In progress". A reorder must stay a reorder.
+    const blocked = { id: "t1", status_id: "l-block" };
+    expect(
+      buildCellDropPatch(blocked, "category", "in_progress", null, null, LANES)
+    ).toBeNull();
+  });
+
+  it("a drop into a DIFFERENT stage does write", () => {
+    const blocked = { id: "t1", status_id: "l-block" };
+    expect(
+      buildCellDropPatch(blocked, "category", "done", null, null, LANES)
+    ).toEqual({ status_id: "l-done" });
+  });
+
+  it("is not refused — a stage is a writable axis", () => {
+    expect(dropRefusal("category")).toBeNull();
+    expect(dropRefusal("status", "category")).toBeNull();
+  });
+});

@@ -439,38 +439,33 @@ const FEED: VendorFeed = {
 const TIER_RATES: TierRate[] = [
   {
     tier: "tier-fast", task: "chat", unit: "tokens", mode: "priced",
-    inputPer1k: "0.0080", outputPer1k: "0.0400",
-    cachedInputPer1k: "0.0008", creditsPerUnit: "0",
     inputPer1m: "8", outputPer1m: "40",
     cachedInputPer1m: "0.8",
+    creditsPerUnit: "0",
   },
   {
     tier: "tier-balanced", task: "chat", unit: "tokens", mode: "priced",
-    inputPer1k: "0.0300", outputPer1k: "0.1500",
-    cachedInputPer1k: "0.0030", creditsPerUnit: "0",
     inputPer1m: "30", outputPer1m: "150",
     cachedInputPer1m: "3",
+    creditsPerUnit: "0",
   },
   {
     tier: "tier-embed", task: "embed", unit: "tokens", mode: "absorbed",
-    inputPer1k: "0", outputPer1k: "0",
-    cachedInputPer1k: "0", creditsPerUnit: "0",
     inputPer1m: "0", outputPer1m: "0",
     cachedInputPer1m: "0",
+    creditsPerUnit: "0",
   },
   {
     tier: "tier-stt", task: "transcribe", unit: "minutes", mode: "priced",
-    inputPer1k: "0", outputPer1k: "0",
-    cachedInputPer1k: "0", creditsPerUnit: "0.4000",
     inputPer1m: "0", outputPer1m: "0",
     cachedInputPer1m: "0",
+    creditsPerUnit: "0",
   },
   {
     tier: "tier-image", task: "image", unit: "images", mode: "priced",
-    inputPer1k: "0", outputPer1k: "0",
-    cachedInputPer1k: "0", creditsPerUnit: "12.0000",
     inputPer1m: "0", outputPer1m: "0",
     cachedInputPer1m: "0",
+    creditsPerUnit: "0",
   },
 ];
 

@@ -109,14 +109,29 @@ def _numbered_migrations() -> list[Path]:
     ]
 
 
-#: The SEEDING-doctrine callable carries D43-A's *one* seeding doctrine — exactly
-#: one file may define it, so a competing copy fails rather than silently winning
-#: by sort order. The other two are EXEMPT because each is redefined forward-only
-#: in a LATER migration (R6, last-body-wins replay, not a scattered doctrine):
+#: ⚠️ **EMPTY since 2026-09-15, and the reason is the rule the other two already
+#: carried.** This held ``provision_org_roles``, on D43-A's *one seeding
+#: doctrine* — exactly one file may define it, so a competing copy fails rather
+#: than silently winning by sort order.
+#:
+#: Its two siblings were always exempt, because each is redefined forward-only in
+#: a LATER migration (R6, last-body-wins replay, not a scattered doctrine):
 #: ``provision_org_owner`` in 180 (slice 7's create-only guard) and
-#: ``provision_organization`` in 185 (WS-29 H6's app.tenant_id RLS bind). Only the
-#: grant-set seed carries the single-definition invariant.
-SINGLY_DEFINED_FUNCTIONS = ("provision_org_roles",)
+#: ``provision_organization`` in 185 (WS-29 H6's ``app.tenant_id`` RLS bind).
+#:
+#: **Migration 200 is the same act for the third** (H-104). The grant INSERT
+#: named only ``(role_id, permission)``, and the tenancy phase made
+#: ``org_role_permission.organization_id`` NOT NULL — so provisioning ANY new
+#: organization raised on production while passing here, because the ladder
+#: never replays the generated tenancy files. A function nobody may redefine is
+#: a function nobody may FIX, and the ledger skips applied migrations, so
+#: editing 179 in place would never have reached production.
+#:
+#: What the doctrine actually forbids is a COMPETING copy — two definitions
+#: where neither supersedes the other. ``test_all_three_callables_are_introduced
+#: _in_one_migration`` below still pins the introduction to one file, which is
+#: the half that keeps the doctrine from scattering.
+SINGLY_DEFINED_FUNCTIONS: tuple[str, ...] = ()
 
 
 def _defining_migrations(function_name: str) -> list[Path]:
@@ -274,11 +289,10 @@ class TestTheMigrationIsOnTheLadder:
     def test_the_seeding_callables_are_defined_exactly_once(self):
         """D43-A: ONE seeding doctrine, so a competing copy fails here.
 
-        Two callables are EXEMPT because each is redefined forward-only in a
-        later migration (R6, last-body-wins replay, not a scattered doctrine):
-        ``provision_org_owner`` in 180 (slice 7's create-only guard) and
-        ``provision_organization`` in 185 (WS-29 H6's app.tenant_id RLS bind).
-        Only the grant-set seed carries the single-definition invariant.
+        ⚠️ The set is EMPTY as of migration 200 — see
+        :data:`SINGLY_DEFINED_FUNCTIONS` for why all three callables are now
+        redefined forward-only. This stays as the shape a future singly-defined
+        callable slots into, rather than being deleted and re-derived.
         """
         for name in SINGLY_DEFINED_FUNCTIONS:
             homes = _defining_migrations(name)

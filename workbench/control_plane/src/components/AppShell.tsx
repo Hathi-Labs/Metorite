@@ -33,6 +33,7 @@ import { useActiveSessions } from "@/hooks/useActiveSessions";
 import { bindIdentity } from "@/lib/dataCache";
 import { isChromeless, visibleSections } from "@/lib/nav";
 import AccessGate from "@/components/AccessGate";
+import AccountStateBanner from "@/components/AccountStateBanner";
 import WelcomeDialog from "@/components/WelcomeDialog";
 import { useAccess } from "@/components/AccessProvider";
 import { ThemeToggleMenuItem } from "@/components/ThemeToggle";
@@ -154,7 +155,12 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     return (
       <div className="flex h-screen overflow-hidden">
         <Sidebar />
+        {/* CP-2j: the banner sits INSIDE the scrolling column, above the page,
+            so it scrolls away rather than eating vertical space on every
+            screen. It renders nothing for an `active` org, which is the
+            overwhelmingly common case. */}
         <main className="flex-1 min-w-0 overflow-auto">
+          <AccountStateBanner />
           <AccessGate>{children}</AccessGate>
         </main>
         <WelcomeDialog />
@@ -188,6 +194,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {/* Page content — pb-nav reserves the fixed bottom bar's FULL height
             (content + safe-area inset), so nothing hides under it */}
         <main className="flex-1 min-h-0 overflow-y-auto pb-nav">
+          <AccountStateBanner />
           <AccessGate>{children}</AccessGate>
         </main>
         <WelcomeDialog />

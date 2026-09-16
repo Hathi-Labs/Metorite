@@ -17,6 +17,7 @@ import { statusAccent, type StatusAccent } from "@/lib/statusAccent";
 
 import type { StatusRow } from "./api";
 import type { GroupBy } from "./grouping";
+import { landingLane } from "./statusOrder";
 
 /**
  * The accent for one status.
@@ -63,6 +64,48 @@ export function accentForGroup(
     // deliberate.
     if (status) return accentForStatus(status, index, total);
   }
+
+  // ⚠️ The STAGE axis is never POSITIONAL, and that half has not changed.
+  //
+  // Measured on a real board 2026-09-16, before this arm existed: the stage
+  // columns fell through to positional hues and came out Backlog grey, To do
+  // BLUE, In progress VIOLET, Done YELLOW — so a Done column wore the hue
+  // /tasks uses for waiting, and a stage changed colour whenever a project
+  // added a lane before it. A colour that moves when an unrelated lane appears
+  // is not a colour anybody can learn.
+  //
+  // What DID change is where the meaning comes from. §9.12.3 said
+  // `CATEGORY_HUES`, and that is now the fallback rather than the answer —
+  // see the block below. `index`/`total` still ride along so an unknown stage
+  // reaches a positional hue instead of flat gray, which is the precedence
+  // `statusAccent`'s own docstring describes.
+  if (groupBy === "category") {
+    // ⚠️ **The stage wears its LANDING LANE's colour, and no new storage was
+    // needed to say so.**
+    //
+    // The owner asked for stage colours that a member can configure, which are
+    // per project, and which inherit exactly as statuses do. I planned a column
+    // to hold them and then found the data already there: `pm_task_statuses`
+    // has carried `color` since migration 146, the status editor already lets
+    // anybody set it, a copy carries it (`s.color` in both copy sites), and
+    // inheritance is free because a lane IS the set.
+    //
+    // A second place to set a stage's colour would have been a second thing to
+    // keep in agreement with the first — and the first is the one the cards
+    // already wear. Deriving means the column and the cards under it can never
+    // disagree.
+    //
+    // `landingLane` is the SAME lane a drop on this column lands in, so the
+    // colour is a promise about where the card goes rather than a decoration.
+    //
+    // A stage with no lane falls back to `CATEGORY_HUES` — the shared
+    // vocabulary, which is what keeps a stage legible where no set applies.
+    const lane = landingLane(statuses, groupKey);
+    return lane
+      ? accentForStatus(lane, index, total)
+      : statusAccent({ category: groupKey, index, total });
+  }
+
   return statusAccent({ index, total });
 }
 

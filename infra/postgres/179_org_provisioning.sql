@@ -69,6 +69,13 @@
 -- too (161 carries two such hits), so quoting the shape here would grow the
 -- baseline this migration exists to hold. Caught red by the fence, 2026-08-19.
 
+-- ⚠️ **SUPERSEDED BY MIGRATION 200 (2026-09-15). Do not edit this body.**
+-- Its grant INSERT named only `(role_id, permission)`, and the tenancy phase
+-- made `org_role_permission.organization_id` NOT NULL — so this version raises
+-- on production, and provisioning ANY new organization failed there (H-104).
+-- 200 carries the column when it exists. The ledger skips applied migrations,
+-- so a fix HAD to be a new file: editing this one reaches nothing.
+
 CREATE OR REPLACE FUNCTION provision_org_roles(p_org_id UUID)
 RETURNS void
 LANGUAGE plpgsql
@@ -96,7 +103,7 @@ BEGIN
              0, ARRAY['*']),
 
             -- admin: 130:193-207 + 131's integrations/memory + 133's publish +
-            -- 178's billing:purchase.
+            -- 178's billing:purchase + 196's projects:settings:write.
             ('admin', 'Admin',
              'Runs the platform: members, agents, integrations, and settings.',
              10, ARRAY[
@@ -108,10 +115,11 @@ BEGIN
                 'integrations:manage', 'data:org:read',
                 'integrations:use:*', 'memory:read_org', 'memory:write_org',
                 'workflows:publish',
+                'projects:settings:write',
                 'billing:purchase'
              ]),
 
-            -- manager: 130:210-223 + 131 + 133. NOT billing:purchase — 178's
+            -- manager: 130:210-223 + 131 + 133 + 196. NOT billing:purchase — 178's
             -- header argues that exclusion at length and seeding it here would
             -- make the argument decorative.
             ('manager', 'Manager',
@@ -123,7 +131,8 @@ BEGIN
                 'agents:run:*', 'apps:use:*', 'apps:create',
                 'data:org:read', 'admin:members:read',
                 'integrations:use:*', 'memory:read_org', 'memory:write_org',
-                'workflows:publish'
+                'workflows:publish',
+                'projects:settings:write'
              ]),
 
             -- member: 130:228-239 + 131's use/read half. Deliberately omits
@@ -145,7 +154,7 @@ BEGIN
              'External collaborator: chat and explicitly shared apps only.',
              40, ARRAY['feature:chat', 'apps:use:*']),
 
-            -- agent_service: 130:252-259 + 131 + 133 + 178. Never assigned to a
+            -- agent_service: 130:252-259 + 131 + 133 + 178 + 196. Never assigned
             -- person; it resolves to '*' in acb_auth.access.SERVICE_ACCESS
             -- regardless, and the rows are for anyone reading the table.
             ('agent_service', 'Agent Service',
@@ -154,6 +163,7 @@ BEGIN
                 'agents:run:*', 'data:org:read',
                 'integrations:use:*', 'memory:read_org', 'memory:write_org',
                 'workflows:publish',
+                'projects:settings:write',
                 'billing:purchase'
              ])
         ) AS t(slug, display_name, description, role_rank, permissions)

@@ -135,6 +135,16 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # state CP-12 exists to end. The fence missed it because ResolveCaller
     # was absent from its _GATES tuple; both are fixed together.
     ("POST", "/registry/resolve"): _R(EDITOR),
+    # The inbound-bootstrap READ (CP-2i). It is deployment-key only — the
+    # handler 400s an operator, because the door answers "which customers am I
+    # serving" and an operator credential names no deployment. It still needs a
+    # row: `check_route` fails CLOSED, so without one a signed-in operator gets
+    # a mystery 403 instead of the sentence that explains the refusal, which is
+    # the exact failure `/registry/resolve` above spent a month in.
+    #
+    # VIEWER, not EDITOR: it writes nothing, mints nothing and consumes no
+    # seat. It is a read of the caller's own roster.
+    ("POST", "/registry/orgs"): _R(VIEWER),
     ("POST", "/registry/seats/release"): _R(EDITOR),
     ("POST", "/registry/members"): _R(EDITOR),
     # ⚠️ Editor covers a grant AT OR BELOW the threshold only. The amount is in

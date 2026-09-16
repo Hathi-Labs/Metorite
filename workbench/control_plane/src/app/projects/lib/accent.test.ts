@@ -91,3 +91,139 @@ describe("accentForGroup", () => {
     expect(new Set(hues).size).toBe(4);
   });
 });
+
+describe("accentForGroup on the STAGE axis (§9.12.3)", () => {
+  const NONE: never[] = [];
+
+  it("paints each stage from CATEGORY_HUES, not from its position", () => {
+    // The four stages, each asked for at a DIFFERENT index than its own, so a
+    // positional fallback cannot accidentally agree.
+    const backlog = accentForGroup("category", "backlog", 3, 4, NONE);
+    const todo = accentForGroup("category", "todo", 2, 4, NONE);
+    const prog = accentForGroup("category", "in_progress", 1, 4, NONE);
+    const done = accentForGroup("category", "done", 0, 4, NONE);
+
+    expect(backlog).toEqual(
+      statusAccent({ category: "backlog", index: 3, total: 4 })
+    );
+    expect(todo).toEqual(
+      statusAccent({ category: "todo", index: 2, total: 4 })
+    );
+    expect(prog).toEqual(
+      statusAccent({ category: "in_progress", index: 1, total: 4 })
+    );
+    expect(done).toEqual(
+      statusAccent({ category: "done", index: 0, total: 4 })
+    );
+  });
+
+  it("gives a stage the SAME colour wherever its column sits", () => {
+    // ⚠️ The regression this exists for. Adding a lane to an earlier stage
+    // shifts every later column's index. If colour followed the index, a
+    // project's Done column would change hue because somebody added a Backlog
+    // lane — and two spaces would paint the same stage differently.
+    const first = accentForGroup("category", "done", 0, 6, NONE);
+    const later = accentForGroup("category", "done", 5, 6, NONE);
+    expect(first).toEqual(later);
+  });
+
+  it("does not paint DONE the same as IN PROGRESS", () => {
+    // Non-vacuity: a broken CATEGORY_HUES that returned one hue for
+    // everything would pass both tests above.
+    expect(accentForGroup("category", "done", 0, 4, NONE)).not.toEqual(
+      accentForGroup("category", "in_progress", 0, 4, NONE)
+    );
+  });
+
+  it("falls back positionally for a stage nobody has a hue for", () => {
+    // A server ahead of this client. The column still draws, in a hue that
+    // does not claim to mean anything.
+    expect(accentForGroup("category", "hibernating", 2, 5, NONE)).toEqual(
+      statusAccent({ index: 2, total: 5 })
+    );
+  });
+});
+
+describe("a STAGE wears its landing lane's colour", () => {
+  const lane = (
+    id: string,
+    name: string,
+    category: string,
+    position: number,
+    color: string
+  ): StatusRow => ({
+    id,
+    project_id: "p1",
+    name,
+    color,
+    position,
+    category,
+    is_default: false,
+  });
+
+  // Three in-progress lanes, deliberately in three different colours, so
+  // "which lane decides" has a wrong answer available.
+  const LANES = [
+    lane("l-todo", "To do", "todo", 0, "blue"),
+    lane("l-prog", "In progress", "in_progress", 1, "amber"),
+    lane("l-block", "Blocked", "in_progress", 2, "red"),
+    lane("l-review", "In review", "in_progress", 3, "violet"),
+  ];
+
+  it("takes the colour the member chose, not the category default", () => {
+    // `CATEGORY_HUES` says in_progress is BLUE. This project's first
+    // in-progress lane is amber, and the member's choice wins.
+    expect(accentForGroup("category", "in_progress", 0, 4, LANES)).toEqual(
+      accentForStatus(LANES[1], 0, 4)
+    );
+    expect(accentForGroup("category", "in_progress", 0, 4, LANES)).not.toEqual(
+      statusAccent({ category: "in_progress", index: 0, total: 4 })
+    );
+  });
+
+  it("takes the LANDING lane, which is the one a drop lands on", () => {
+    // ⚠️ Not just "some lane of this stage". The column's colour is a promise
+    // about where a card dropped there will go, so it must be the same lane
+    // `landingLane` gives the drop — first by position, which is "In progress"
+    // (amber) and not "Blocked" (red).
+    const said = accentForGroup("category", "in_progress", 0, 4, LANES);
+    expect(said).toEqual(accentForStatus(LANES[1], 0, 4));
+    expect(said).not.toEqual(accentForStatus(LANES[2], 0, 4));
+  });
+
+  it("does not move when a LATER lane is recoloured", () => {
+    const repainted = LANES.map((l) =>
+      l.id === "l-block" ? { ...l, color: "green" } : l
+    );
+    expect(accentForGroup("category", "in_progress", 0, 4, repainted)).toEqual(
+      accentForGroup("category", "in_progress", 0, 4, LANES)
+    );
+  });
+
+  it("DOES move when the landing lane itself is recoloured", () => {
+    // Non-vacuity for the test above: a derivation that ignored colour
+    // entirely would pass that one and fail this one.
+    const repainted = LANES.map((l) =>
+      l.id === "l-prog" ? { ...l, color: "green" } : l
+    );
+    expect(accentForGroup("category", "in_progress", 0, 4, repainted)).not.toEqual(
+      accentForGroup("category", "in_progress", 0, 4, LANES)
+    );
+  });
+
+  it("falls back to the shared vocabulary for a stage with NO lane", () => {
+    // Nothing to derive from, so the category answers — which is what keeps a
+    // stage legible on a surface where no one project's set applies.
+    expect(accentForGroup("category", "done", 0, 4, LANES)).toEqual(
+      statusAccent({ category: "done", index: 0, total: 4 })
+    );
+  });
+
+  it("agrees with the CARDS under it", () => {
+    // The whole reason this derives rather than storing a second value: the
+    // column and the chips beneath it read the same row, so they cannot drift.
+    const column = accentForGroup("category", "todo", 2, 4, LANES);
+    const card = accentForStatus(LANES[0], 2, 4);
+    expect(column).toEqual(card);
+  });
+});

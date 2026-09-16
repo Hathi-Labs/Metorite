@@ -718,11 +718,19 @@ _FACTORY_OPEN_ALLOW: dict[str, tuple[int, str]] = {
         "The destructive DELETE itself is bound via `tenant_session()`.",
     ),
     "packages/acb_auth/acb_auth/console_resolve.py": (
-        5,
-        "the control-plane sign-in resolver's five reads — RLS-EXEMPT tables "
-        "only (`user_identity` / `org_membership` / `organization`); the console "
+        6,
+        "the control-plane sign-in resolver's reads — RLS-EXEMPT tables only "
+        "(`user_identity` / `org_membership` / `organization`); the console "
         "plane is cross-tenant by design (see `_ALLOWED_SYNC`'s customer_console "
-        "entry above for the same reasoning).",
+        "entry above for the same reasoning). ⚠️ Raised 5→6 on 2026-09-15 for "
+        "the inbound bootstrap's `SELECT slug FROM organization` "
+        "(`bootstrap_placed_orgs`) — the `resolve_identity` / `offboard` "
+        "argument exactly: it reads the EXEMPT `organization` table to learn "
+        "WHICH tenants this box already holds, so it cannot bind one. Binding "
+        "is impossible by construction rather than merely inconvenient — the "
+        "sweep exists to CREATE the missing tenants, so there is nothing to "
+        "bind to until it has run. Its write is not here: it goes through "
+        "`provision_local_organization`, i.e. migration 179's own statement.",
     ),
     "packages/acb_auth/acb_auth/email_otp.py": (
         1,

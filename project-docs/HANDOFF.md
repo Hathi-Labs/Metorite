@@ -75,6 +75,85 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-104 · The generated tenancy files are NOT on the migration ladder · [AGENT]
+- **Check:** `ls infra/postgres/generated/*.sql`, and read the glob in
+  `scripts/apply_migrations.sh` (it matches numbered files in `infra/postgres`
+  only). Files in that subdirectory, with a glob that does not reach them, means
+  this is open.
+- **✅ The half that BLOCKED M1 is fixed — it took THREE migrations, not one.**
+  Each fix showed the next, because nothing could see past the one in hand.
+  Migrations 200, 201 and 202, all on 2026-09-15:
+  - **200** — `provision_org_roles` raised
+    `null value in column "organization_id"` on `org_role_permission`.
+  - **201** — `provision_org_owner` raised the same on `user_role`, one
+    statement later. 200's fence added the column to ONE table. Production
+    carries it on SEVEN, so that fence could not see this head.
+  - **202** — provisioning then succeeded as `postgres` and still FAILED as
+    `acb_app` with `new row violates row-level security policy`. A superuser
+    bypasses FORCE RLS, so a hand-run SQL check proves nothing about the path
+    the application takes.
+- **⚠️ Migration 185 was in the ledger and its fix was NOT in the function.**
+  185 binds `app.tenant_id` before the FORCE-RLS'd writes. Production ran 179's
+  body. `schema.generated.sql` carries that same pre-185 body, which is the
+  shape a snapshot restore leaves. **The ledger records that we RAN a file, and
+  never that the object still SAYS it.** For a `CREATE OR REPLACE` migration,
+  later drift is invisible and un-repairable in place. Editing 185 reaches
+  nothing, because the runner skips it on checksum. Only three functions in the
+  whole ladder are ever redefined, and all three are the provisioning ones.
+- **✅ Two fences now exist, and each one proves it can fail.**
+  `tests/unit/test_tenancy_insert_fence.py` counts every ladder `INSERT` into a
+  tenant-scoped table that omits `organization_id`. It found 30, records each
+  with a reason, and fails on a new one.
+  `tests/unit/test_org_provisioning_rls.py` provisions as a NON-OWNER role with
+  the real policy applied, which no earlier suite did.
+- **What is STILL open, and it is the cause and not the symptom.** A fresh
+  developer database and CI's replay have a DIFFERENT SCHEMA from production, so
+  every test runs on a shape production does not have. The next defect of this
+  class is invisible in exactly the same way these three were.
+- **⚠️ Measured 2026-09-15: a fresh install now FAILS on a tenancy-applied
+  database.** Apply `generated/{01,02,03}` to a scratch tenant database, then
+  replay the ladder. 92 suites error, all of them on 130's seed block, which
+  inserts into `org_role_permission` without naming the column. Production never
+  replays 130, because it is in the ledger. A new box has no such protection.
+- **Why it was not fixed with 200:** putting those files on the ladder changes
+  what every developer database and every CI run contains, and it needs its own
+  rehearsal. It is a bigger act than unblocking M1, and doing both in one PR
+  would hide the risky half behind the urgent one.
+- **The shape of the repair:** give the generated files numbered names on the
+  ladder, or teach the runner a second directory. Then delete the `ELSE` arm in
+  migration 200, which exists ONLY for the schema this divergence creates.
+- **Authority:** `saas_multitenancy.md` §11 MT-1j · the headers of migrations 200, 201 and 202
+- **Added:** 2026-09-06, from the WS-27 status-sets deploy · **narrowed
+  2026-09-15** when the provisioning half was fixed.
+### H-105 · ⚠️ Production migrations run with NO pre-migration backup · [OWNER]
+- **Check:** `grep -n SKIP_PRE_MIGRATION_BACKUP .github/workflows/deploy.yml`.
+  Any line setting it to `1` means this is open. Confirmed in the deploy log of
+  2026-09-06: `==> Pre-migration backup SKIPPED (SKIP_PRE_MIGRATION_BACKUP=1)`.
+- **What happens:** `scripts/apply_migrations.sh` takes a dump before replaying
+  the ladder and **fails closed** if it cannot — its header says so: *"if the
+  backup cannot be taken, the migrations do not run. The escape hatch is
+  explicit and has to be typed on purpose."* The deploy types it on purpose, on
+  every run.
+- **⚠️ Why this is not a small thing.** `work_plan.md` §3a rule 1 tells an agent
+  to *"confirm the pre-migration backup completed"* before applying a migration
+  to production, and to hold the evidence. That confirmation is **impossible**
+  as the pipeline stands — the honest answer is always "there was none". R6 also
+  says we cannot roll back, only forward or restore; with no dump there is
+  nothing to restore FROM.
+- **What it cost on 2026-09-06:** nothing, by luck. Migration 196 failed
+  half-way (the column and a CHECK committed, the grant did not), and the
+  recovery was a hand-written `DROP CONSTRAINT`. A migration that corrupted data
+  rather than failing outright would have had no floor under it.
+- **Decide:** either restore the backup on the deploy path and accept the ~11
+  minutes it costs, or state in writing that production deploys run without one
+  and amend §3a rule 1 so it stops asking agents for evidence that cannot exist.
+  Both are defensible; the current state is that the rule and the pipeline
+  disagree and the pipeline wins silently.
+- **Related:** H-98 (the standalone backup job covers no Console database and no
+  timer runs it). Together they mean the production database has **no scheduled
+  backup and no deploy-time backup**.
+- **Added:** 2026-09-06, from the WS-27 status-sets deploy.
+
 ### H-101 · The weekly skills sync cannot open its PR, and has failed since 2026-08-24 · [OWNER]
 - **Check:** `gh run list --workflow=skills-upstream-sync.yml --limit 3`. A
   `failure` on the most recent scheduled run means this is still open. The log
@@ -2198,6 +2277,67 @@ line — never reclaim a number by deleting the other entry.
   2026-09-05**, because `main` minted its own H-97 for the leaked database
   passwords and merged first. Ids are never reused, so that entry keeps the
   number. Filed from branch `ws-handoff-h96-h97`, which never opened a PR.
+### H-108 · 🔴 The Console's database auto-pauses, which is a total onboarding outage · [OWNER]
+- **Check:** ask Supabase for project `uttxlicdccfkramtjfpi`. Anything other than
+  `ACTIVE_HEALTHY`, or a free tier that pauses on inactivity, means this is open.
+- **What happened on 2026-09-15.** The project was `INACTIVE`. The Customer
+  Console was running and `/health` was 200, because that endpoint touches
+  nothing. Every endpoint that READS 500'd. The gateway logged
+  `console_resolve.unreachable`. Sign-in resolve, self-serve signup and the
+  operator customer list were all down together. It was resumed on owner
+  authorisation the same day.
+- **Why it is an OWNER entry.** The fix is not the resume, it is the tier. A
+  registry that pauses on inactivity takes the whole onboarding path with it,
+  and it will do it again. A quiet week is the likeliest moment, and that is
+  exactly when nobody is watching.
+- **It was invisible for an unknown period.** `/health` stayed green throughout,
+  so no health check and no watchdog reported it. Whatever replaces this should
+  probe an endpoint that touches the database.
+- 📌 Related: **H-98**, the backup job that has never covered the Console
+  database. Also **H-109** below. The project names are inverted, which is the
+  likely reason the wrong database got backed up.
+- **Authority:** `work_plan.md` §2.0 row **M0.4b** · `customer_console.md` §8
+- **Added:** 2026-09-15 · signup-flow session, found by surveying the box
+
+### H-109 · One word, "tenant", names both planes and points at each · [OWNER]
+- **Check:** ask whether `saas_multitenancy.md` still calls
+  `wbjpwtxigkileyjsgahk` the *tenant plane* while the Supabase project named
+  *"Metorite Tenant Database"* is `uttxlicdccfkramtjfpi`. Both true means this
+  is open.
+- **⚠️ CORRECTED 2026-09-16, by the owner.** This entry said the project names
+  were *"inverted"* and *"each is named after the other's job"*. **That was
+  wrong, and the agent that wrote it did not check the reading it was
+  dismissing.** The owner's naming is coherent:
+  - *"Application Database"* (`wbjpwtxigkileyjsgahk`) holds `app_user`,
+    `organization` and `pm_tasks` — the application's own data.
+  - *"Tenant Database"* (`uttxlicdccfkramtjfpi`) holds `operator`,
+    `deployment`, `org_subscription` and `seat_grant` — the register OF
+    tenants, which the Operator Console manages.
+  Read as *"the database that tracks tenants"*, the second name is exact.
+- **What is really wrong is a COLLISION, and it is in our prose.** The specs use
+  *tenant plane* to mean **where one tenant's rows live**, which is the
+  **Application** Database. The project name uses *tenant* to mean **the list of
+  tenants**, which is the other project. Two defensible meanings, one word, and
+  they point at opposite projects.
+- **Why it still matters.** An instruction that says *"the tenant database"*
+  resolves two ways. **H-98** says the backup job has never covered the Console
+  database. Somebody could have backed up "the tenant database" and meant the
+  other one. That is UNPROVEN. Check it before anybody repeats it as the cause.
+- **The cheap repair, and it keeps the owner's names.** Append the role to each
+  Supabase project name. Then no reader must resolve the word at all:
+  *"Metorite Application Database (tenant plane · customer data)"* and
+  *"Metorite Tenant Database (control plane · registry and operators)"*.
+  Renaming the PROJECTS outright is not needed and was never the defect.
+- **The alternative, which is larger:** stop saying *tenant plane* in the specs.
+  D15 and `saas_multitenancy.md` §0.9.2 rest on that term, so this is a
+  vocabulary change across the plan and is not free.
+- **The planes are correctly SEPARATE** — this is a labelling question, never an
+  architecture one. D15 holds.
+- **Why it is OWNER.** Renaming a Supabase project is an infrastructure act, and
+  the names may appear in dashboards, alerts and runbooks that must move too.
+- **Authority:** `saas_multitenancy.md` §0.9.2 (the two planes) · D15
+- **Added:** 2026-09-15 · signup-flow session · **corrected 2026-09-16** when
+  the owner challenged the "inverted" claim and was right.
 
 # DONE — deleted, not archived
 

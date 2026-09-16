@@ -791,3 +791,56 @@ def test_the_edge_query_requires_both_ends_in_the_window() -> None:
     body = match.group(1)
     assert body.count("= ANY(CAST(:ids AS uuid[]))") == 2
     assert "l.link_type = 'blocks'" in body
+
+
+# ── P-22 · the UNDATED tasks themselves, not only their count ───────────────
+
+def test_the_month_route_declares_include_undated() -> None:
+    """⚠️ Structural, and it is not ceremony — see `include_watching` above.
+
+    FastAPI drops a query parameter that is not declared on the signature, and
+    it does so **silently**: the request succeeds, the flag reads as its
+    default, and the feature is simply absent. That is exactly how this gap
+    would come back.
+    """
+    import inspect
+
+    from gateway.routes.projects import calendar as cal
+
+    sig = inspect.signature(cal.get_calendar)
+    assert "include_undated" in sig.parameters
+    assert sig.parameters["include_undated"].default is False
+
+
+def test_the_undated_list_and_the_undated_COUNT_are_separate_things() -> None:
+    """The count stays true even when the list is capped.
+
+    A caller that reads `len(unscheduled)` as the total would under-report on a
+    project with more unscheduled work than one screen holds. The two are
+    capped independently on purpose, so the number keeps telling the truth
+    while the list tells as much of it as it can.
+    """
+    import inspect
+
+    from gateway.routes.projects import calendar as cal
+
+    body = inspect.getsource(cal.get_calendar)
+    # The window's cap and the unscheduled cap are read from the same constant
+    # but applied in two separate statements.
+    assert "ucap" in body, "the unscheduled list must carry its own cap"
+    assert body.count("MAX_WINDOW_ROWS") >= 2
+
+
+def test_the_calendar_never_asks_for_undated_rows() -> None:
+    """⚠️ A calendar cell is a DAY, so a dateless task has nowhere to go.
+
+    The page must ask only in `timeline` mode. Asking on the calendar would
+    fetch rows that surface cannot draw, and the count is the whole truth it
+    can tell.
+    """
+    from pathlib import Path
+
+    page = Path("workbench/control_plane/src/app/projects/page.tsx").read_text(
+        encoding="utf-8",
+    )
+    assert 'include_undated: mode === "timeline"' in page

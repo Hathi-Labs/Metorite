@@ -10,6 +10,7 @@
  */
 
 import { UNSET } from "./grouping";
+import { type Placeable, landingLane } from "./statusOrder";
 
 export interface PositionedTask {
   id: string;
@@ -151,11 +152,28 @@ export function orderBearingView<T extends { view_type: string }>(
  */
 export function buildColumnDropUpdate(
   columnBy: string | null | undefined,
-  groupKey: string | null
+  groupKey: string | null,
+  /**
+   * The project's lanes — required ONLY for the `category` axis, which names a
+   * stage and must resolve it to a concrete `status_id`.
+   *
+   * Optional so every existing caller keeps its two-argument shape. A
+   * `category` drop with no lanes to resolve against patches nothing, which is
+   * the same thing an unknown axis does.
+   */
+  statuses?: readonly Placeable[]
 ): Record<string, string | number | null> | null {
   switch (columnBy) {
     case "status":
       return { status_id: groupKey };
+    case "category": {
+      // A stage is not a field. `pm_tasks.status_id` is NOT NULL, so the drop
+      // has to choose a lane, and `landingLane` owns that rule — see its
+      // docstring for why it is NOT `is_default`.
+      if (!groupKey || !statuses) return null;
+      const lane = landingLane(statuses, groupKey);
+      return lane ? { status_id: lane.id } : null;
+    }
     case "type":
       return { type_id: groupKey };
     case "project":
@@ -208,7 +226,7 @@ export function dropRefusal(
     project:
       "Moving between projects crosses a grant boundary — use the task panel.",
   };
-  const WRITABLE = new Set(["status", "importance", "type", "none"]);
+  const WRITABLE = new Set(["status", "category", "importance", "type", "none"]);
 
   for (const axis of [columnBy, laneBy]) {
     if (!axis || axis === "none" || WRITABLE.has(axis)) continue;
@@ -227,11 +245,22 @@ export function currentAxisKey(
     project_id?: string | null;
     importance?: number | null;
   },
-  axis: string | null | undefined
+  axis: string | null | undefined,
+  /** Lanes, for the `category` axis alone — a stage is read THROUGH the lane. */
+  statuses?: readonly Placeable[]
 ): string | null {
   switch (axis) {
     case "status":
       return task.status_id ?? null;
+    case "category": {
+      // ⚠️ Without this a same-stage drop is not recognised as a no-op, and the
+      // card is PATCHED onto the stage's first lane — so dragging a "Blocked"
+      // card one inch inside its own column would silently demote it to
+      // "In progress". The skip in `buildCellDropPatch` is the only thing
+      // standing between a reorder and a status write.
+      if (!task.status_id || !statuses) return null;
+      return statuses.find((s) => s.id === task.status_id)?.category ?? null;
+    }
     case "type":
       return task.type_id ?? null;
     case "project":
@@ -261,7 +290,9 @@ export function buildCellDropPatch(
   columnBy: string | null | undefined,
   columnKey: string | null,
   laneBy?: string | null,
-  laneKey?: string | null
+  laneKey?: string | null,
+  /** Lanes, for the `category` axis alone — see `buildColumnDropUpdate`. */
+  statuses?: readonly Placeable[]
 ): Record<string, string | number | null> | null {
   const patch: Record<string, string | number | null> = {};
   for (const [axis, key] of [
@@ -269,8 +300,8 @@ export function buildCellDropPatch(
     [laneBy, laneKey],
   ] as const) {
     if (!axis || key === undefined || key === null) continue;
-    if (currentAxisKey(task, axis) === key) continue;
-    Object.assign(patch, buildColumnDropUpdate(axis, key) ?? {});
+    if (currentAxisKey(task, axis, statuses) === key) continue;
+    Object.assign(patch, buildColumnDropUpdate(axis, key, statuses) ?? {});
   }
   return Object.keys(patch).length ? patch : null;
 }

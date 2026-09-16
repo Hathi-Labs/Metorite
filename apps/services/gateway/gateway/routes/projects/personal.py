@@ -59,6 +59,7 @@ from gateway.routes.projects.core import (
     resolve_visibility,
     router,
     row_to_dict,
+    status_owner_id,
 )
 from gateway.routes.projects.filters import attach_assignees
 from pydantic import BaseModel
@@ -240,6 +241,10 @@ async def ensure_personal_project(db: Any, email: str) -> Any:
         "created_by": email,
         "source": "manual",
         "organization_id": organization_id,
+        # A personal project is a ROOT, so it owns its statuses — the four
+        # seeded below. Migration 196's CHECK refuses a root that owns nothing,
+        # because a root has nothing above it to inherit from.
+        "owns_statuses": True,
     })
     project_id = str(project.id)
 
@@ -253,15 +258,18 @@ async def ensure_personal_project(db: Any, email: str) -> Any:
         ),
         {"pid": project_id, "who": email},
     )
-    for name, category, position, is_default in (
-        ("Inbox", "backlog", 10, True),
-        ("Next", "todo", 20, False),
-        ("Doing", "in_progress", 30, False),
-        ("Done", "done", 40, False),
-    ):
+    # Ordered, and the order is the whole answer: a capture lands in the FIRST
+    # lane. There is no `is_default` on a status any more (2026-09-06) — see
+    # `core.load_default_status` — and "Inbox" leads because it is first.
+    for position, (name, category) in enumerate((
+        ("Inbox", "backlog"),
+        ("Next", "todo"),
+        ("Doing", "in_progress"),
+        ("Done", "done"),
+    )):
         await insert_row(db, "pm_task_statuses", {
             "project_id": project_id, "name": name, "category": category,
-            "position": position, "is_default": is_default,
+            "position": (position + 1) * 10,
         })
     return project
 
@@ -772,6 +780,15 @@ def _project_task(row: Any) -> tuple[dict[str, Any], str]:
     task["is_triaged"] = getattr(row, "p_disposition", None) is not None
     task["is_mine"] = bool(getattr(row, "is_mine", False))
     task["workflow_stage"] = getattr(row, "workflow_stage", None)
+    # The MAPPED half of the status, and the only half two projects share.
+    # `workflow_stage` is the project's own name for the lane — "IN PROCESS" in
+    # one space, "Building" in another — so a personal list spanning projects
+    # cannot group by it without inventing a group per space. The category is
+    # the vocabulary both spaces key off, and this query has selected it since
+    # WS-39 for `derive_disposition` (line 702) and then dropped it on the
+    # floor: `row_to_dict` copies model fields only, and `TaskModel` has no
+    # such field. Owner directive 2026-09-03 — Tasks sees the mapped status.
+    task["status_category"] = getattr(row, "status_category", None)
     task["subtask_count"] = int(getattr(row, "subtask_count", 0) or 0)
     _apply_overlay(task, row)
     return task, effective
@@ -1031,19 +1048,15 @@ async def complete_task(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
-        done = (await db.execute(
-            text(
-                "SELECT * FROM pm_task_statuses "
-                "WHERE project_id = CAST(:root AS uuid) AND category = 'done' "
-                "ORDER BY position LIMIT 1"
-            ),
-            {"root": str(task.root_project_id)},
-        )).fetchone()
-        if done is None:
-            raise HTTPException(
-                status_code=422,
-                detail="This project has no done status; add one first.",
-            )
+        # The owner's chosen done lane, not whichever one sorts first. This read
+        # was its own SQL and never consulted `is_default`, so a root holding
+        # both "Done" and "Shipped" completed into whichever carried the lower
+        # position regardless of which the owner had marked. `load_default_status`
+        # is the one place that question is answered, and it raises the same 422
+        # when the project has no done status at all.
+        done = await load_default_status(
+            db, await status_owner_id(db, str(task.project_id)), "done",
+        )
         moved = await apply_status_transition(
             db, task, str(done.id), created_by=email,
         )

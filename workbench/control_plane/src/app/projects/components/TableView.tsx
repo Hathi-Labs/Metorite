@@ -544,7 +544,12 @@ export function TableView({
                     className="px-3 py-1.5 text-left text-xs font-medium text-foreground"
                   >
                     {section.label}
-                    <span className="ml-2 font-normal text-muted-foreground">
+                    <span
+                      className="ml-2 font-normal text-muted-foreground"
+                      title={`${section.rows.length} task${
+                        section.rows.length === 1 ? "" : "s"
+                      } in ${section.label}`}
+                    >
                       {section.rows.length}
                     </span>
                   </th>
