@@ -51,6 +51,7 @@ import Button from "@/components/ui/Button";
 import { Select } from "@/components/ui/Input";
 import { useEffect, useMemo, useState } from "react";
 
+import { findMerges, mergeWarning } from "../lib/statusSwitch";
 import {
   type ProjectRow,
   type StatusSetChange,
@@ -111,6 +112,18 @@ export function StatusSetControl({
     [preview]
   );
   const unanswered = questions.filter((m) => !choices[m.status_id]);
+
+  /**
+   * Target lanes that TWO OR MORE source lanes land in, as `[target, sources]`.
+   *
+   * Read off `choices` rather than off the suggestions, so it tracks what the
+   * human has picked: resolving a merge by hand must make the warning go away,
+   * and creating one by hand must make it appear.
+   */
+  const merges = useMemo(
+    () => findMerges(questions, choices),
+    [questions, choices]
+  );
 
   async function ask(change: StatusSetChange) {
     setWorking(true);
@@ -217,11 +230,18 @@ export function StatusSetControl({
           on={info.owns}
           disabled={disabled}
           label="Use its own statuses"
+          // ⚠️ "still here" was true and read as more than it said. The LANES
+          // come back; the TASKS do not necessarily. Measured 2026-09-16: a
+          // set with "Next up" and "Parked" (both `todo`) switched out to a
+          // parent holding one `todo` lane, both landed there, and switching
+          // back could not tell them apart again — two lanes in, one lane out.
+          // A hint that implies a safe round trip, over an act that is lossy
+          // for tasks, is the kind of promise somebody only tests once.
           hint={
             info.owns
               ? undefined
               : info.has_dormant_set
-                ? "Its previous lanes are still here."
+                ? "Its previous lanes come back. Tasks move by name and stage, so they may not."
                 : undefined
           }
           onPick={() => void ask({ mode: "own" })}
@@ -319,6 +339,21 @@ export function StatusSetControl({
               </tbody>
             </table>
           </div>
+
+          {/* ⚠️ A MERGE is one-way, and the table cannot show it.
+              Each row reads correctly on its own — two rows both pointing at
+              "Waiting" are two true sentences — and nothing says the two lanes
+              become one. That matters because switching back cannot separate
+              them again: the lanes return, the tasks stay merged. Measured
+              2026-09-16 with "Next up" and "Parked", both `todo`. */}
+          {merges.length ? (
+            <p className="flex items-start gap-1.5 border-t border-border px-3 py-2 text-xs text-foreground">
+              <Icon name="TriangleAlert" className="mt-0.5 h-3 w-3 shrink-0" />
+              <span>
+                {mergeWarning(merges)}
+              </span>
+            </p>
+          ) : null}
 
           {/* The one effect that reaches outside Projects, said before the
               click rather than discovered afterwards. */}

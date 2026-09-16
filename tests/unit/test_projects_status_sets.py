@@ -689,3 +689,77 @@ class TestTheInheritTargetIsTheParentNotItself:
         said = await self._describe(db, tree["root"])
         assert said["inherit_from_id"] is None
         assert said["owner_id"] == tree["root"]
+
+
+# ── 7 · The round trip is LOSSY, and the UI must not promise otherwise ──────
+
+class TestSwitchingBackDoesNotUndoAMerge:
+    """Two lanes of one stage collapse into one, and cannot come apart again.
+
+    ⚠️ **Measured against the running gateway on 2026-09-16, during a review
+    the owner asked for.** A set carrying "Next up" and "Parked" — both
+    ``todo`` — switched to a parent holding ONE ``todo`` lane. Both landed
+    there. Switching back sent both to the same lane.
+
+    This is not a defect in the rule. Once two lanes are one, the information
+    that told them apart is gone, and no later walk can invent it. It IS a
+    defect in a hint that read *"Its previous lanes are still here"*, which is
+    true of the lanes and false of the tasks — the kind of promise somebody
+    tests once.
+
+    So the behaviour is pinned here, and the control now says it out loud.
+    ``statusSwitch.test.ts`` covers the warning that reports it before the act.
+    """
+
+    async def test_two_lanes_of_one_stage_land_together(self, db, tree):
+        from gateway.routes.projects.core import remap_task_statuses
+
+        # Both are `in_progress` in the space's set. The target has exactly one
+        # `in_progress` lane, so the category arm sends both to it.
+        blocked = await _task(
+            db, tree, tree["child"], tree["r_blocked"], "was-blocked",
+        )
+        review = await _task(
+            db, tree, tree["child"], tree["r_review"], "was-in-review",
+        )
+        # "Blocked" exists by NAME in the target, so force the category arm for
+        # both by mapping neither and using a lane the target lacks.
+        await remap_task_statuses(
+            db, project_id=tree["root"], owner_id=tree["owner_kid"],
+            mapping={tree["r_blocked"]: tree["k_prog"]},
+        )
+        assert await _lane_of(db, blocked) == "In progress"
+        assert await _lane_of(db, review) == "In progress"
+
+    async def test_coming_back_cannot_tell_them_apart(self, db, tree):
+        """⚠️ The claim the hint used to contradict.
+
+        Both tasks return to the SAME lane, because after the merge there is
+        nothing on either row that says which lane it came from.
+        """
+        from gateway.routes.projects.core import remap_task_statuses
+
+        blocked = await _task(
+            db, tree, tree["child"], tree["r_blocked"], "round-trip-a",
+        )
+        review = await _task(
+            db, tree, tree["child"], tree["r_review"], "round-trip-b",
+        )
+        # Out: both into the target's single in-progress lane.
+        await remap_task_statuses(
+            db, project_id=tree["root"], owner_id=tree["owner_kid"],
+            mapping={
+                tree["r_blocked"]: tree["k_prog"],
+                tree["r_review"]: tree["k_prog"],
+            },
+        )
+        # Back: the space's set again. The name arm finds "In progress".
+        await remap_task_statuses(
+            db, project_id=tree["root"], owner_id=tree["root"], mapping=None,
+        )
+        home_a = await _lane_of(db, blocked)
+        home_b = await _lane_of(db, review)
+        assert home_a == home_b == "In progress"
+        # Neither is back where it started, and that is the point.
+        assert home_a != "Blocked"
+        assert home_b != "In review"
