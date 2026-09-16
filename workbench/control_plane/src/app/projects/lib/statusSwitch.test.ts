@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { findMerges, mergeWarning } from "./statusSwitch";
+import { findMerges, mergeWarning, overrideNote } from "./statusSwitch";
 
 const rows = [
   { status_id: "a", name: "Next up" },
@@ -67,5 +67,43 @@ describe("mergeWarning", () => {
     const said = mergeWarning([["Waiting", ["Next up", "Parked"]]]);
     expect(said).toContain("Next up and Parked both become Waiting.");
     expect(said).toContain("Switching back will not separate them again.");
+  });
+});
+
+describe("overrideNote", () => {
+  it("is empty when nothing overrides, so the note adds no clause", () => {
+    expect(overrideNote([])).toBe("");
+  });
+
+  it("names ONE project, and agrees with itself about number", () => {
+    // ⚠️ "it", not "they". One project is an it, and a note that misnumbers
+    // its own sentence is a note nobody trusts about anything else.
+    expect(overrideNote(["Mobile App"])).toBe(
+      "Mobile App keeps its own, so it will not change."
+    );
+  });
+
+  it("names two with 'and', not a comma", () => {
+    expect(overrideNote(["Mobile App", "Website Rebuild"])).toBe(
+      "Mobile App and Website Rebuild keep their own, so they will not change."
+    );
+  });
+
+  it("names three in a list", () => {
+    expect(overrideNote(["A", "B", "C"])).toBe(
+      "A, B and C keep their own, so they will not change."
+    );
+  });
+
+  it("truncates past three rather than filling the dialog", () => {
+    // ⚠️ A space with nine breakaways has a policy question, not a list to
+    // read. A paragraph inside a one-line note pushes the lanes off screen.
+    expect(overrideNote(["A", "B", "C", "D", "E"])).toBe(
+      "A, B, C and 2 others keep their own, so they will not change."
+    );
+  });
+
+  it("says 'other' for exactly one beyond the cut", () => {
+    expect(overrideNote(["A", "B", "C", "D"])).toContain("and 1 other keep");
   });
 });

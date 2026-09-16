@@ -173,6 +173,18 @@ export interface StatusSetInfo {
    */
   inherit_from_id: string | null;
   inherit_from_name: string | null;
+  /**
+   * Projects under the OWNER that keep their own lanes — an edit here does not
+   * reach them.
+   *
+   * ⚠️ Read of the owner, not of this node. An inheriting project is editing
+   * its ancestor's set, so the breakaways that matter are that set's.
+   *
+   * Immediate breakaways only. A project that overrode a project that overrode
+   * this one was never getting these lanes, and listing it would grow this
+   * list with the tree rather than with the decisions somebody took.
+   */
+  overrides: { id: string; name: string }[];
   /** False on a space: there is nothing above it to inherit from. */
   can_inherit: boolean;
   /** A set it owned before, kept so switching back restores those lanes. */
