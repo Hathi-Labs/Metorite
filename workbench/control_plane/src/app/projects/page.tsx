@@ -30,6 +30,9 @@ import {
   type FieldRow,
   type TagRow,
   type NodeSummary,
+  type StuckReport,
+  type LoadReport,
+  type ThroughputReport,
   type ViewRow,
   projectsApi,
   projectsKey,
@@ -587,6 +590,12 @@ function ProjectsWorkspace() {
   // Analytics reads the portfolio roll-up — the same shape as a node's, so
   // one dashboard component draws both.
   const [portfolio, setPortfolio] = useState<NodeSummary | null>(null);
+  // §9.12.7's three reads. Held SEPARATELY rather than in one object: each
+  // one can fail or arrive on its own, and a single slot would make the whole
+  // dashboard wait for the slowest of them.
+  const [stuck, setStuck] = useState<StuckReport | null>(null);
+  const [load, setLoad] = useState<LoadReport | null>(null);
+  const [throughput, setThroughput] = useState<ThroughputReport | null>(null);
   const toast = useToast();
 
   // WS-27k — filters go to the server, grouping is applied here. `activeView`
@@ -1114,6 +1123,35 @@ function ProjectsWorkspace() {
       .catch(() => {
         if (!cancelled) setPortfolio(null);
       });
+    return () => {
+      cancelled = true;
+    };
+  }, [app, treeKey]);
+
+  // §9.12.7 (a), (b) and (c), for the PORTFOLIO — no node id, which is the
+  // scope this pane has always shown. Each read settles on its own, so one
+  // slow panel never blanks the other two.
+  useEffect(() => {
+    if (app !== "analytics") return;
+    let cancelled = false;
+    setStuck(null);
+    setLoad(null);
+    setThroughput(null);
+    // ⚠️ A rejected panel stays null and renders NOTHING, rather than
+    // rendering zeroes. Zeroes would read as "no stuck work", which is the
+    // opposite of "we could not ask".
+    projectsApi.stuck().then(
+      (r) => !cancelled && setStuck(r),
+      () => !cancelled && setStuck(null)
+    );
+    projectsApi.load().then(
+      (r) => !cancelled && setLoad(r),
+      () => !cancelled && setLoad(null)
+    );
+    projectsApi.throughput().then(
+      (r) => !cancelled && setThroughput(r),
+      () => !cancelled && setThroughput(null)
+    );
     return () => {
       cancelled = true;
     };
@@ -2419,6 +2457,9 @@ function ProjectsWorkspace() {
       {portfolio ? (
         <AnalyticsView
           summary={portfolio}
+          stuck={stuck}
+          load={load}
+          throughput={throughput}
           onOpen={(id) => {
             const row = flatten(visibleRoots).find((e) => e.node.id === id);
             if (row) {
