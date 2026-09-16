@@ -107,9 +107,24 @@ export interface StuckReport {
   scope: "portfolio" | "node";
   /** Open tasks by how long they have sat untouched. Bands are DISJOINT. */
   stale: Record<string, number>;
-  blocked: { id: string; title: string; project_id: string }[];
+  blocked: {
+    id: string;
+    title: string;
+    task_number: number | null;
+    due_at: string | null;
+  }[];
   blocked_total: number;
+  /**
+   * ⚠️ Overdue BY PROJECT, which is what §9.12.7(a) asks for.
+   *
+   * The server answered a bare integer here until 2026-09-17 while this type
+   * declared a list. Nothing threw: `number.length` is undefined and
+   * `undefined > 0` is false, so the Overdue section rendered nothing at all.
+   * A total also cannot answer the question the section is for, which is
+   * WHERE the late work is.
+   */
   overdue: { project_id: string; name: string; overdue: number }[];
+  overdue_total: number;
 }
 
 export interface LoadRow {

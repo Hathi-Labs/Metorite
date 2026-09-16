@@ -240,15 +240,9 @@ async def stuck(
             params,
         )).fetchall()
 
-        overdue = int((await db.execute(
-            text(
-                f"SELECT count(*) FROM pm_tasks t"
-                f"  JOIN pm_task_statuses s ON s.id = t.status_id"
-                f" WHERE {open_where}"
-                f"   AND t.due_at IS NOT NULL AND t.due_at < now()"
-            ),
-            params,
-        )).scalar() or 0)
+        overdue_rows = (await db.execute(
+            text(overdue_by_project_sql(open_where)), params,
+        )).fetchall()
 
         return {
             "project_id": project_id,
@@ -265,8 +259,55 @@ async def stuck(
                 }
                 for row in blocked_rows
             ],
-            "overdue": overdue,
+            # ⚠️ BY PROJECT, which is what §9.12.7(a) asks for — "Overdue by
+            # project". This answered a bare integer until 2026-09-17, and the
+            # panel that consumed it declared a LIST. `number.length` is
+            # undefined, `undefined > 0` is false, so the Overdue section
+            # rendered nothing at all and threw nothing either. A total with
+            # no breakdown also could not answer the question the section is
+            # for, which is WHERE the late work is.
+            "overdue": [
+                {
+                    "project_id": str(row.project_id),
+                    "name": row.name,
+                    "overdue": int(row.overdue),
+                }
+                for row in overdue_rows
+            ],
+            # The scalar keeps its meaning under a name that cannot be
+            # mistaken for the list.
+            "overdue_total": sum(int(r.overdue) for r in overdue_rows),
         }
+
+
+def overdue_by_project_sql(open_where: str) -> str:
+    """Open work past its due date, grouped by the project it lives in.
+
+    §9.12.7(a) asks for "Overdue by project" in those words, and a single
+    total cannot answer it: the useful finding is never "we have 14 late", it
+    is "11 of the 14 are in Mobile App".
+
+    Named and exported because `reports.py` needs the same number. A report
+    that counted overdue work itself would be the second set of numbers
+    §9.12.8 exists to prevent — so this is the one definition, and both
+    callers run it.
+
+    The project is the task's OWN, matching `finished_sql` for the same
+    reason: rolling a subproject's late work into its parent hides which team
+    is behind.
+    """
+    return (
+        f"SELECT t.project_id AS project_id, pr.name AS name,"
+        f"       count(*) AS overdue"
+        f"  FROM pm_tasks t"
+        f"  JOIN pm_task_statuses s ON s.id = t.status_id"
+        f"  JOIN pm_projects pr ON pr.id = t.project_id"
+        f" WHERE {open_where}"
+        f"   AND t.due_at IS NOT NULL AND t.due_at < now()"
+        f" GROUP BY 1, 2"
+        # Worst first. A dashboard row the reader acts on is the top one.
+        f" ORDER BY overdue DESC, name"
+    )
 
 
 #: The most people named in one load response.
