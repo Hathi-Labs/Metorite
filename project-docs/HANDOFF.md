@@ -126,9 +126,20 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-06, from the WS-27 status-sets deploy · **narrowed
   2026-09-15** when the provisioning half was fixed.
 ### H-105 · ⚠️ Production migrations run with NO pre-migration backup · [OWNER]
-- **Check:** `grep -n SKIP_PRE_MIGRATION_BACKUP .github/workflows/deploy.yml`.
-  Any line setting it to `1` means this is open. Confirmed in the deploy log of
-  2026-09-06: `==> Pre-migration backup SKIPPED (SKIP_PRE_MIGRATION_BACKUP=1)`.
+- **Check:** on the box, `grep -c '^SKIP_PRE_MIGRATION_BACKUP=' /opt/acb/app/.env`.
+  A non-zero count means this is open.
+  ⚠️ **The old Check read `.github/workflows/deploy.yml`, and that file no
+  longer mentions the flag — so the old Check passed while the entry was still
+  true.** Re-derived 2026-09-17. `scripts/vps_apply.sh` LIFTS the variable out
+  of `.env` (see its external-database seam note), so the workflow was never
+  where the answer lived. An entry whose Check has drifted onto a file that
+  moved is how this queue starts lying; the substance below is unchanged.
+- **Verified 2026-09-17:** `PG_MODE`, `PGHOST` and `SKIP_PRE_MIGRATION_BACKUP`
+  are all present in the production `.env` — the managed-Postgres shape
+  `vps_apply.sh` documents, where the provider's PITR is meant to replace the
+  local dump. **PITR itself could not be confirmed**: the Supabase MCP reports
+  project health and not backup configuration, so an agent still cannot produce
+  the evidence §3a rule 1 asks for. That is this entry, restated with a name.
 - **What happens:** `scripts/apply_migrations.sh` takes a dump before replaying
   the ladder and **fails closed** if it cannot — its header says so: *"if the
   backup cannot be taken, the migrations do not run. The escape hatch is
