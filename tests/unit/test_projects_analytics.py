@@ -123,11 +123,26 @@ class TestTheSqlKeepsItsShape:
 
 
 class TestScope:
-    def test_project_id_is_required(self):
-        # A dashboard with no scope is a read of every task in the tenant.
-        # Required, not defaulted, so the cost is always the caller's choice.
-        assert "project_id: str," in SOURCE
-        assert "project_id: str | None" not in SOURCE
+    def test_the_portfolio_is_a_scope_rather_than_a_missing_one(self):
+        # ⚠️ This test asserted the OPPOSITE until 2026-09-16: that
+        # `project_id` was required, "so the cost is always the caller's
+        # choice". That fence outlived its reasoning and then contradicted
+        # §9.12.7's own Done-when, which says each slice answers "for a
+        # subtree AND for the portfolio". It also left the Analytics pane
+        # unable to call any of these endpoints, because that pane reads the
+        # portfolio roll-up and holds no node id.
+        #
+        # The cost concern was real and is unchanged: the bound was never the
+        # node, it is the visibility clause and the tenant session. See
+        # `test_projects_analytics_scope.py`, which proves that against a real
+        # database with a second organization present.
+        assert "project_id: str | None = None," in SOURCE
+        assert "project_id: str," not in SOURCE
+
+    def test_the_scope_is_resolved_in_ONE_place(self):
+        # Three endpoints, one helper. Three copies is three chances for the
+        # portfolio arm to go missing from one of them.
+        assert SOURCE.count("await scope_clause(db, vis, project_id") == 3
 
     def test_an_unreadable_node_404s_rather_than_reporting_zeroes(self):
         # Zeroes would tell the caller the project exists and is empty.
