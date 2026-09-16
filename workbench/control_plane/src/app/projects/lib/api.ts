@@ -90,6 +90,79 @@ export interface NodeSummary {
   children: SummaryChild[];
 }
 
+/**
+ * WS-27bk §9.12.7 — the four analytics questions, as three endpoints.
+ *
+ * ⚠️ **Every number here is a SERVER aggregate, and none may be recomputed in
+ * the browser.** The task list is paginated, so a count taken over the rows on
+ * screen is a count of one page. It looks plausible and it is wrong, and
+ * nothing on the way says so. `analytics.py`'s module header is the other half
+ * of this rule.
+ *
+ * All three take an OPTIONAL node. Omit it for the portfolio, which is what
+ * the Analytics pane passes — that pane holds no node id at all.
+ */
+export interface StuckReport {
+  project_id: string | null;
+  scope: "portfolio" | "node";
+  /** Open tasks by how long they have sat untouched. Bands are DISJOINT. */
+  stale: Record<string, number>;
+  blocked: { id: string; title: string; project_id: string }[];
+  blocked_total: number;
+  overdue: { project_id: string; name: string; overdue: number }[];
+}
+
+export interface LoadRow {
+  /** `null` is the UNASSIGNED bar — usually the real finding, never a gap. */
+  assignee: string | null;
+  open_tasks: number;
+  overdue: number;
+  /**
+   * Seven ROLLING days, which is why it is not called `this_week`. A calendar
+   * week shrinks as the week runs, and it needs a timezone a subtree may not
+   * share. See the route's docstring.
+   */
+  due_next_7d: number;
+  later: number;
+}
+
+export interface LoadReport {
+  project_id: string | null;
+  scope: "portfolio" | "node";
+  /**
+   * ⚠️ Counted over TASKS, so it is SMALLER than the sum of `open_tasks`. A
+   * task with two assignees is on both plates and counts for both. Never
+   * derive this by adding the rows.
+   */
+  total_tasks: number;
+  people_total: number;
+  people: LoadRow[];
+}
+
+export interface ThroughputWeek {
+  /** ISO Monday, in UTC. A date, never an instant. */
+  week_start: string;
+  completed: number;
+  cancelled: number;
+  /** Completions that HAD a recorded start. The median's denominator. */
+  measured: number;
+  /** Completions with no `in_progress` ever recorded. Not a zero — absent. */
+  no_start: number;
+  /** `null` when nothing measurable finished. ⚠️ Never render null as 0. */
+  median_hours: number | null;
+  p90_hours: number | null;
+}
+
+export interface ThroughputReport {
+  project_id: string | null;
+  scope: "portfolio" | "node";
+  weeks: number;
+  series: ThroughputWeek[];
+  /** The last bucket is the current week, and the week is not over. */
+  current_week_partial: boolean;
+  summary: Omit<ThroughputWeek, "week_start">;
+}
+
 export interface TaskRow {
   id: string;
   project_id: string;
@@ -351,6 +424,20 @@ export function projectsKey(
   return cacheKey(`${PROJECTS_CACHE}${path}`, params);
 }
 
+/**
+ * The analytics scope, as a query string.
+ *
+ * ⚠️ An ABSENT `project_id` is the portfolio. Sending `project_id=` empty
+ * is not the same thing — FastAPI would read it as a string and answer 404 for
+ * a node that cannot exist. So the key is omitted rather than blanked.
+ */
+function scopeQuery(nodeId?: string, weeks?: number): string {
+  const parts: string[] = [];
+  if (nodeId) parts.push(`project_id=${encodeURIComponent(nodeId)}`);
+  if (weeks) parts.push(`weeks=${weeks}`);
+  return parts.length ? `?${parts.join("&")}` : "";
+}
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api/projects/${path}`, {
     ...init,
@@ -404,6 +491,21 @@ export const projectsApi = {
 
   /** The same shape one level up — every space the caller can see. */
   portfolio: () => call<NodeSummary>("summary"),
+
+  /**
+   * §9.12.7 analytics. `nodeId` omitted means the PORTFOLIO.
+   *
+   * ⚠️ These return finished numbers. Do not post-process them into other
+   * numbers in the browser — see the note on `StuckReport`.
+   */
+  stuck: (nodeId?: string) =>
+    call<StuckReport>(`analytics/stuck${scopeQuery(nodeId)}`),
+  load: (nodeId?: string) =>
+    call<LoadReport>(`analytics/load${scopeQuery(nodeId)}`),
+  throughput: (nodeId?: string, weeks?: number) =>
+    call<ThroughputReport>(
+      `analytics/throughput${scopeQuery(nodeId, weeks)}`
+    ),
 
   /**
    * WS-27bk §9.12.4 — re-parent or reorder a node.

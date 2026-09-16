@@ -27,7 +27,14 @@ import Icon from "@/components/Icon";
 import { statusAccent } from "@/lib/statusAccent";
 import { accentForSlot } from "@/lib/categorical";
 
-import type { NodeSummary, SummaryChild } from "../lib/api";
+import type {
+  LoadReport,
+  NodeSummary,
+  StuckReport,
+  SummaryChild,
+  ThroughputReport,
+} from "../lib/api";
+import { LoadPanel, StuckPanel, ThroughputPanel } from "./AnalyticsPanels";
 import { spaceMarker } from "../lib/tree";
 
 /** The lanes as table columns, board order. Cancelled earns no column of
@@ -113,10 +120,23 @@ function Stat({
 
 export default function AnalyticsView({
   summary,
+  stuck,
+  load,
+  throughput,
   onOpen,
 }: {
   /** The PORTFOLIO roll-up — every space the caller can see. */
   summary: NodeSummary;
+  /**
+   * §9.12.7's three reads, each `null` until it lands OR if it failed.
+   *
+   * ⚠️ A null panel renders nothing at all. It must never render zeroes:
+   * "no stuck work" and "we could not ask" are opposite findings, and a
+   * dashboard that confuses them is worse than one panel short.
+   */
+  stuck: StuckReport | null;
+  load: LoadReport | null;
+  throughput: ThroughputReport | null;
   onOpen: (id: string) => void;
 }) {
   /**
@@ -159,6 +179,18 @@ export default function AnalyticsView({
           }
         />
       </div>
+
+      {/* §9.12.7's three panels, ABOVE the per-space matrix.
+          The strip says how much work there is and the matrix says where it
+          sits. These three say what is wrong with it, which is what somebody
+          opening this pane came to find out. */}
+      {(stuck || load || throughput) && (
+        <div className="mb-5 grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
+          {stuck && <StuckPanel data={stuck} />}
+          {load && <LoadPanel data={load} />}
+          {throughput && <ThroughputPanel data={throughput} />}
+        </div>
+      )}
 
       {/* The insight table — Plane's per-project state matrix, over spaces. */}
       {children.length > 0 ? (
