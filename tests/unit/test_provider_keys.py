@@ -621,9 +621,16 @@ def test_a_viewer_may_list_but_never_install(client, eng):
     assert _install(client, token).status_code == 403
 
 
-def test_an_admin_without_an_elevation_window_cannot_install(client, eng):
+def test_an_admin_without_an_elevation_window_cannot_install(
+    client, eng, monkeypatch,
+):
     """Installing the key every customer's AI call is billed against is as
     sharp as a purge, so it needs the window as well as the role."""
+    # ⚠️ **D72 turned elevation OFF by default (2026-09-18).** This test is
+    # about the WINDOW, which is still the mechanism when a deployment asks
+    # for one — so it pins the flag ON rather than being deleted. The rank
+    # half it also covers is unaffected by D72 and still binds either way.
+    monkeypatch.setenv("OPERATOR_ELEVATION_REQUIRED", "true")
     from customer_console import operator_sessions, store
 
     email = f"admin-{uuid.uuid4().hex[:8]}@fracktal.in"

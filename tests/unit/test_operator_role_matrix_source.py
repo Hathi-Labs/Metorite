@@ -24,6 +24,8 @@ from __future__ import annotations
 import pathlib
 import re
 
+REPO = pathlib.Path(__file__).resolve().parents[2]
+
 _ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 _MAIN = (
@@ -96,3 +98,30 @@ def test_every_matrix_row_names_a_known_role():
 
     for key, rule in operator_roles.MATRIX.items():
         assert rule.min_role in ROLES, f"{key} demands an unknown role"
+
+
+def test_every_window_test_pins_the_flag():
+    """⚠️ The fence for the mistake D72 actually made.
+
+    Flipping the default broke tests in FOUR files. I ran a list I had
+    guessed at, found four failures in one file, fixed those, and pushed —
+    and CI found three more in three files I had not opened.
+
+    A default that other suites depend on cannot be changed by hunting the
+    fallout file by file. So: any suite that asserts a WINDOW refusal must
+    also pin `OPERATOR_ELEVATION_REQUIRED`, and this says so in CI rather
+    than leaving it to whoever changes the default next.
+    """
+    tests = REPO / "tests" / "unit"
+    # The vocabulary a window-dependent assertion is written in.
+    marks = ("without_a_window", "needs_the_WINDOW", "AND_window",
+             "NotElevated", "elevation_window")
+    missing = []
+    for path in sorted(tests.glob("test_*.py")):
+        body = path.read_text(encoding="utf-8")
+        if any(m in body for m in marks) and "OPERATOR_ELEVATION_REQUIRED" not in body:
+            missing.append(path.name)
+    assert not missing, (
+        "these suites assert a window refusal but do not pin the flag, so they"
+        " break silently when the D72 default changes: " + ", ".join(missing)
+    )
