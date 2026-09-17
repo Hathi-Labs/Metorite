@@ -537,6 +537,25 @@ class TaskModel(BaseModel):
     created_at: str | None = None
     updated_at: str | None = None
     archived_at: str | None = None
+    #: This task's place in ONE saved view's hand-arranged order, joined from
+    #: `pm_view_task_positions` when the caller names a `view_id`.
+    #:
+    #: ⚠️ **Read-only, and on `TaskModel` rather than `TaskIn` for that
+    #: reason.** It is a JOIN PRODUCT, not a `pm_tasks` column — putting it on
+    #: the input model would let a caller write a field the table does not
+    #: have. (It landed there for one commit. Caught by the test below, which
+    #: asks `TaskModel.model_fields`.) A drag writes order through
+    #: `PUT /views/{id}/positions`, and only through that.
+    #:
+    #: ⚠️ **Nothing read this table for weeks.** `GET /projects/tasks`
+    #: selected `t.*` and joined nothing, so every row arrived with
+    #: `view_position` undefined, `board.sortForView` sent them all down its
+    #: `created_at` branch, and a drag inside a column was a silent no-op —
+    #: the card animated back to where it started (H-64).
+    #:
+    #: ⚠️ `row_to_dict` FILTERS through this model, so a column added to the
+    #: SELECT and not to the model is dropped without a word.
+    view_position: float | None = None
 
 
 class TaskIn(BaseModel):

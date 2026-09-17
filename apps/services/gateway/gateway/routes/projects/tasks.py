@@ -133,6 +133,23 @@ class DeleteResponse(BaseModel):
 
 # ── List ────────────────────────────────────────────────────────────────────
 
+#: The read half of H-64, named so a test can run the real fragment.
+#:
+#: ⚠️ **`pm_view_task_positions` was written for weeks and read by nothing.**
+#: `GET /projects/tasks` selected `t.*` and joined no positions, so every row
+#: arrived with `view_position` undefined, `board.sortForView` sent them all
+#: down its `created_at` branch, and a drag inside a column was a silent
+#: no-op — the card animated back to where it started (H-64, filed
+#: 2026-08-26).
+#:
+#: LEFT, never inner: a task nobody has dragged has no row here, and an inner
+#: join would drop every such card — on a fresh board, all of them.
+VIEW_POSITION_JOIN = (
+    " LEFT JOIN pm_view_task_positions vp"
+    "   ON vp.task_id = t.id AND vp.view_id = CAST(:view_id AS uuid)"
+)
+
+
 @router.get("/tasks")
 async def list_tasks(
     user: UserContext = Depends(get_current_user),
@@ -165,6 +182,16 @@ async def list_tasks(
     # read would turn a filter into a way of asking what a colleague follows,
     # which is not a question this endpoint should answer.
     watching: bool = False,
+    # H-64. The saved view whose hand-arranged order to read back.
+    #
+    # ⚠️ **The board has WRITTEN `pm_view_task_positions` since WS-27 and
+    # nothing ever read it.** This endpoint selected `t.*` and joined nothing,
+    # so `view_position` arrived `undefined` on every row, `sortForView` sent
+    # every task down its `created_at` branch, and a drag inside a column was
+    # a silent no-op: the card animated back to where it started. `planDrop`
+    # then saw no positioned neighbour and materialised the WHOLE group on
+    # every drop — up to `MAX_POSITIONS` rows written, none of them read.
+    view_id: str | None = None,
 ) -> ListResponse:
     """The one task-list endpoint every surface reads through.
 
@@ -237,9 +264,21 @@ async def list_tasks(
         # is one of OUR two words, never caller text. Every entry ends with the
         # `(created_at, id)` tiebreaker (core.SORT_TIEBREAK), so the order is
         # total and a tie cannot straddle a page boundary.
+        # ⚠️ **LEFT JOIN, and the ORDER BY is untouched.** A task with no row
+        # in this view is unordered, not missing — an inner join would drop
+        # every card nobody has dragged yet, which on a fresh board is all of
+        # them. And the server keeps its own total order (`SORT_TIEBREAK`)
+        # because paging happens in SQL: ordering by a nullable position here
+        # would make page boundaries depend on who dragged what. The client
+        # sorts WITHIN a column, which is the only place the order means
+        # anything — `board.sortForView` holds that rule and is tested.
+        join = VIEW_POSITION_JOIN if view_id else ""
+        if view_id:
+            params["view_id"] = view_id
         rows = (await db.execute(
             text(
-                f"SELECT t.* FROM pm_tasks t{where} "
+                f"SELECT t.*{', vp.position AS view_position' if view_id else ''}"
+                f"  FROM pm_tasks t{join}{where} "
                 f"ORDER BY {column.format(dir=order)} "
                 f"LIMIT :limit OFFSET :offset"
             ),
