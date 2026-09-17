@@ -2344,32 +2344,30 @@ line — never reclaim a number by deleting the other entry.
   unapplied and mark the two tests expected-fail with that reason. Today they
   are neither, which is the worst of the three.
 
-### H-114 · 🔴 EVERY R8 test runs psycopg. The gateway runs asyncpg · [AGENT]
-- **Check:** `rg -n "postgresql\+psycopg" scripts/dev_db.sh` and
-  `rg -n "asyncpg" packages/acb_common/acb_common/db.py`. Both hit means the
-  gap is open. `acb_common.db` rewrites every DSN onto asyncpg, and
-  `dev_db.sh` hands every test a psycopg DSN.
-- **What it cost, measured 2026-09-17.** `/analytics/stuck` answered **500 at
-  every scope** from the day it merged. Two separate faults, and R8 caught
-  neither.
-  1. A band was named `7_to_14d` and went out as a bare SQL alias. Postgres
-     reads a leading digit as a numeric literal. Both drivers reject it, but
-     no test ever RAN the query — §9.12.7(a) shipped structural-only.
-  2. Under the first sat `CAST(:x AS interval)` bound with the string
-     `'0 days'`. **psycopg accepts it. asyncpg refuses it.** So a test that
-     ran the real query on a real Postgres would still have passed.
-- **⚠️ The knowledge already existed and the fence did not.** `delta.py` and
-  `filters.parse_when` both record this exact asyncpg trap in comments. A
-  comment in another module is not a fence.
-- **The narrow fix is in.** `stale_bands_sql` now binds ints through
-  `make_interval(days => :d)`, which is the idiom the rest of `analytics.py`
-  already uses for weeks.
-- **What is still open.** Every other R8 suite proves its SQL against the
-  wrong driver. Options, cheapest first: run one asyncpg smoke test per
-  route module; add a lint that refuses `CAST(:param AS interval)` and
-  `CAST(:param AS timestamptz)` in gateway SQL; or move the R8 fixtures onto
-  asyncpg. The lint is the only one that scales, and it names the two casts
-  we have actually been burned by.
+### H-114 · R8 suites still run psycopg. The gateway runs asyncpg · [AGENT]
+- **Check:** `uv run pytest tests/unit/test_projects_sql_asyncpg.py -q` with
+  `TENANT_LADDER_DATABASE_URL` set. If it SKIPS in CI, the strong half of the
+  fence does not fire there — which is H-112's gap, on a second file.
+- **What is CLOSED.** Projects SQL now has both halves of a fence.
+  `test_projects_sql_asyncpg.py` runs every `analytics.py` builder and both
+  `tree.py` reads on **asyncpg**, the driver `acb_common.db` rewrites every
+  production DSN onto. `test_sql_interval_shape.py` refuses
+  `CAST(:param AS interval)` anywhere under `gateway/` or `packages/`, needs
+  no database, and so runs in CI today.
+- **Measured, not assumed.** Reintroduce the shipped bug and the asyncpg
+  suite fails while all 19 psycopg tests in
+  `test_projects_analytics_load.py` pass. That is the gap, demonstrated.
+- **⚠️ What is STILL OPEN, and it is the larger half.** Only the Projects SQL
+  is covered. Every other route module — CRM, email, tasks, people, router —
+  proves its SQL on psycopg alone. The pattern to copy is the parametrised
+  `_cases()` list plus the per-test async engine. ⚠️ Use a **function-scoped**
+  engine with `NullPool`: a module-scoped one binds its pool to the first
+  test's event loop, and every later test fails with *"another operation is
+  in progress"*, which reads exactly like a SQL fault and is not one.
+- **Not linted: `CAST(:x AS timestamptz)`.** Binding a real `datetime`
+  through it is correct, and `email/automation/followups.py` does that. A
+  lint there would fail correct code and grow an allowlist. The asyncpg
+  suites are the answer for that half.
 
 ### H-113 · Wave 6 is next, and §9.12.9 needs two columns first · [AGENT]
 - **Check:** `grep -c "follow_up_at" infra/postgres/*.sql | grep -v ":0"`.
