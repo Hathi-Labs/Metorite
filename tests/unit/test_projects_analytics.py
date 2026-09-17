@@ -54,10 +54,28 @@ class TestStaleBands:
         assert len(names) == len(set(names))
 
     def test_names_are_safe_as_sql_identifiers(self):
-        # They are interpolated as column aliases, so anything but a plain
-        # identifier is an injection site rather than a typo.
+        """⚠️ This assertion USED TO PASS on a name Postgres cannot parse.
+
+        It asked `name.replace("_", "").isalnum()`, and `"7to14d".isalnum()`
+        is True. So `7_to_14d` sailed through, went out as a bare column
+        alias, and Postgres read it as a numeric literal with trailing junk.
+        `/analytics/stuck` answered 500 at EVERY scope from the day it merged
+        (2026-09-16) until 2026-09-17, and no test failed.
+
+        A fence that admits the value it exists to reject is worse than no
+        fence, because it is also a claim that somebody checked.
+        """
         for name, _, _ in STALE_BANDS:
-            assert name.replace("_", "").isalnum()
+            assert name, "an empty alias is not an identifier"
+            # The actual rule, and the half the old assertion missed: an
+            # unquoted SQL identifier may not BEGIN with a digit.
+            assert not name[0].isdigit(), (
+                f"{name!r} starts with a digit — Postgres reads that as a"
+                " numeric literal, not as a column alias"
+            )
+            assert name[0] == "_" or name[0].isalpha()
+            assert all(c == "_" or c.isalnum() for c in name)
+            assert name.islower(), "an unquoted identifier folds to lowercase"
 
 
 class TestTheSqlKeepsItsShape:

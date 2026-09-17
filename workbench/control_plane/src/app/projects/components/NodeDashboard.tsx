@@ -34,7 +34,20 @@
 import Icon from "@/components/Icon";
 import { statusAccent } from "@/lib/statusAccent";
 
-import type { NodeSummary, SummaryChild } from "../lib/api";
+import type {
+  FinishedReport,
+  LoadReport,
+  NodeSummary,
+  StuckReport,
+  SummaryChild,
+  ThroughputReport,
+} from "../lib/api";
+import {
+  FinishedPanel,
+  LoadPanel,
+  StuckPanel,
+  ThroughputPanel,
+} from "./AnalyticsPanels";
 import {
   type DashboardRow,
   dashboardRows,
@@ -356,10 +369,25 @@ function ProgressCard({ summary }: { summary: NodeSummary }) {
 export default function NodeDashboard({
   summary,
   onOpen,
+  stuck,
+  load,
+  throughput,
+  finished,
 }: {
   summary: NodeSummary;
   /** Drill into a child. The tree selection and this view stay in step. */
   onOpen: (id: string) => void;
+  /**
+   * §9.12.7's four questions, scoped to THIS node.
+   *
+   * ⚠️ Each is independently nullable, and null draws nothing. A rejected
+   * read must never render as zeroes — "no stuck work" and "we could not
+   * ask" are opposite findings that look identical as a 0.
+   */
+  stuck?: StuckReport | null;
+  load?: LoadReport | null;
+  throughput?: ThroughputReport | null;
+  finished?: FinishedReport | null;
 }) {
   const level = summary.level;
   // ⚠️ `by_category` is typed as present and is not guaranteed to be. A summary
@@ -475,6 +503,23 @@ export default function NodeDashboard({
           {(summary.tasks ?? 0) > 0 ? <ProgressCard summary={summary} /> : null}
         </div>
       </div>
+
+      {/* ⚠️ The four §9.12.7 questions, for THIS node — owner ask
+          2026-09-17. They have accepted a node scope since the portfolio
+          slice; until now only the Analytics pane asked, so every project
+          and subproject dashboard stopped at a roll-up and a progress bar.
+
+          Rendered only when there is work to describe. Four panels of
+          nothing on an empty project is a page that looks broken rather
+          than a project that has not started. */}
+      {(summary.tasks ?? 0) > 0 && (
+        <div className="mt-5 grid grid-cols-1 gap-3 lg:grid-cols-2">
+          {load ? <LoadPanel data={load} /> : null}
+          {stuck ? <StuckPanel data={stuck} /> : null}
+          {throughput ? <ThroughputPanel data={throughput} /> : null}
+          {finished ? <FinishedPanel data={finished} /> : null}
+        </div>
+      )}
     </div>
   );
 }

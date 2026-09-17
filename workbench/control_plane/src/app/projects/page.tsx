@@ -1132,11 +1132,26 @@ function ProjectsWorkspace() {
     };
   }, [app, treeKey]);
 
-  // §9.12.7 (a), (b) and (c), for the PORTFOLIO — no node id, which is the
-  // scope this pane has always shown. Each read settles on its own, so one
-  // slow panel never blanks the other two.
+  /**
+   * §9.12.7 (a) to (d), for whatever scope is on screen.
+   *
+   * ⚠️ **The SAME four reads now feed the Analytics pane AND every node
+   * dashboard** (owner ask 2026-09-17: *"in the analytics, as well as the
+   * overview of each project/subproject, I want to see the workload of the
+   * individual people who are working on the project"*). The endpoints have
+   * taken a node scope since the portfolio-scope slice; nothing was asking
+   * them for one, so the answer existed and no surface showed it.
+   *
+   * A second fetch path per surface would be a second place for the scope
+   * rule to be wrong, and the two would disagree in exactly the case nobody
+   * checks — a node whose numbers differ from the portfolio's.
+   *
+   * Each read settles on its own, so one slow panel never blanks the others.
+   */
+  const analyticsNode = app === "analytics" ? undefined : selected?.id;
+  const wantsAnalytics = app === "analytics" || dashboardOnly || overview;
   useEffect(() => {
-    if (app !== "analytics") return;
+    if (!wantsAnalytics) return;
     let cancelled = false;
     setStuck(null);
     setLoad(null);
@@ -1145,26 +1160,26 @@ function ProjectsWorkspace() {
     // ⚠️ A rejected panel stays null and renders NOTHING, rather than
     // rendering zeroes. Zeroes would read as "no stuck work", which is the
     // opposite of "we could not ask".
-    projectsApi.stuck().then(
+    projectsApi.stuck(analyticsNode).then(
       (r) => !cancelled && setStuck(r),
       () => !cancelled && setStuck(null)
     );
-    projectsApi.load().then(
+    projectsApi.load(analyticsNode).then(
       (r) => !cancelled && setLoad(r),
       () => !cancelled && setLoad(null)
     );
-    projectsApi.throughput().then(
+    projectsApi.throughput(analyticsNode).then(
       (r) => !cancelled && setThroughput(r),
       () => !cancelled && setThroughput(null)
     );
-    projectsApi.finished().then(
+    projectsApi.finished(analyticsNode).then(
       (r) => !cancelled && setFinished(r),
       () => !cancelled && setFinished(null)
     );
     return () => {
       cancelled = true;
     };
-  }, [app, treeKey]);
+  }, [wantsAnalytics, analyticsNode, treeKey]);
 
   // Selecting nothing is a real state (an empty portfolio), so the default is
   // applied only when the current selection has fallen out of the filtered set.
@@ -2503,6 +2518,10 @@ function ProjectsWorkspace() {
             const row = flatten(visibleRoots).find((e) => e.node.id === id);
             if (row) setSelected(row.node as ProjectRow);
           }}
+          stuck={stuck}
+          load={load}
+          throughput={throughput}
+          finished={finished}
         />
       ) : (
         renderState("loading", "Counting the work below…")
@@ -2649,6 +2668,10 @@ function ProjectsWorkspace() {
                   const row = flatten(visibleRoots).find((e) => e.node.id === id);
                   if (row) setSelected(row.node as ProjectRow);
                 }}
+                stuck={stuck}
+                load={load}
+                throughput={throughput}
+                finished={finished}
               />
             ) : (
               renderState("loading", "Counting the work below…")

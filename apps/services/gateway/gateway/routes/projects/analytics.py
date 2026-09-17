@@ -57,10 +57,25 @@ from sqlalchemy import text
 #: numbers do not add up to the total and a chart drawn from them lies about
 #: its own proportions. The last band is open-ended, which is where the
 #: genuinely forgotten work collects.
+#: ⚠️ **A NAME MUST NOT START WITH A DIGIT.** These are interpolated as bare
+#: SQL column aliases, and Postgres reads `7_to_14d` as a numeric literal with
+#: trailing junk — `PostgresSyntaxError`, which takes the WHOLE endpoint down.
+#:
+#: This shipped broken on 2026-09-16 and stayed broken until 2026-09-17.
+#: `/analytics/stuck` answered 500 at every scope from the day it merged, and
+#: nothing said so: the client treats a rejected panel as null and renders
+#: nothing, which is correct behaviour that made a dead endpoint invisible.
+#:
+#: Two fences failed together. `test_names_are_safe_as_sql_identifiers` asked
+#: `name.replace("_", "").isalnum()`, and `"7to14d".isalnum()` is True — the
+#: test passed on a name Postgres cannot parse. And §9.12.7(a) shipped with a
+#: STRUCTURAL suite and no R8 test, so nothing ever RAN this query. The
+#: header of `test_projects_analytics_load.py` predicted it in writing: *"a
+#: hand-run leaves nothing behind that fails later."*
 STALE_BANDS: tuple[tuple[str, int, int | None], ...] = (
     ("under_7d", 0, 7),
-    ("7_to_14d", 7, 14),
-    ("14_to_30d", 14, 30),
+    ("days_7_to_14", 7, 14),
+    ("days_14_to_30", 14, 30),
     ("over_30d", 30, None),
 )
 
@@ -170,29 +185,11 @@ async def stuck(
         # `pm_activities` and answering from it means a walk of the whole
         # spine per task. This is the cheap question that is still worth
         # asking, and §9.12.7(c) is where the spine gets read.
-        band_sql = " ".join(
-            f"count(*) FILTER (WHERE "
-            f"t.updated_at <= now() - CAST(:d{low} AS interval)"
-            + (
-                f" AND t.updated_at > now() - CAST(:d{high} AS interval)"
-                if high is not None
-                else ""
-            )
-            + f") AS {name},"
-            for name, low, high in STALE_BANDS
-        ).rstrip(",")
-        for _, low, high in STALE_BANDS:
-            params[f"d{low}"] = f"{low} days"
-            if high is not None:
-                params[f"d{high}"] = f"{high} days"
+        band_sql, band_params = stale_bands_sql(open_where)
+        params.update(band_params)
 
         stale_row = (await db.execute(
-            text(
-                f"SELECT {band_sql}"
-                f"  FROM pm_tasks t"
-                f"  JOIN pm_task_statuses s ON s.id = t.status_id"
-                f" WHERE {open_where}"
-            ),
+            text(band_sql),
             params,
         )).fetchone()
         stale = [
@@ -318,6 +315,53 @@ def overdue_by_project_sql(open_where: str) -> str:
 MAX_PEOPLE = 20
 
 
+def stale_bands_sql(open_where: str) -> tuple[str, dict[str, int]]:
+    """The ageing histogram, as a query a test can RUN — and its parameters.
+
+    ⚠️ **Extracted 2026-09-17, because nothing ever executed it.** §9.12.7(a)
+    shipped with a structural suite: the band names were asserted, the query
+    they build was not. It answered 500 at every scope for a day, and the
+    only reason nobody noticed is that a rejected panel correctly renders as
+    nothing rather than as zeroes.
+
+    Returns the SQL and the interval parameters together, so a caller cannot
+    build one without the other — the failure mode a second `for` loop over
+    `STALE_BANDS` invites.
+    """
+    bands = " ".join(
+        f"count(*) FILTER (WHERE "
+        f"t.updated_at <= now() - make_interval(days => :d{low})"
+        + (
+            f" AND t.updated_at > now() - make_interval(days => :d{high})"
+            if high is not None
+            else ""
+        )
+        + f") AS {name},"
+        for name, low, high in STALE_BANDS
+    ).rstrip(",")
+    # ⚠️ **INTS through `make_interval`, never a string through `CAST(:x AS
+    # interval)`.** The second shape works under psycopg and FAILS under
+    # asyncpg — *"invalid input for query argument: '0 days' (str object has
+    # no attribute days)"* — and the gateway runs asyncpg (`acb_common.db`
+    # rewrites every DSN onto it). This exact trap is recorded twice already,
+    # in `delta.py` and in `filters.parse_when`, and slice (a) walked into it
+    # anyway because no test ran the query on the driver production uses.
+    #
+    # `make_interval(weeks => :weeks)` is the idiom the rest of this module
+    # already uses. There is now one shape here, not two.
+    params: dict[str, int] = {}
+    for _, low, high in STALE_BANDS:
+        params[f"d{low}"] = int(low)
+        if high is not None:
+            params[f"d{high}"] = int(high)
+    return (
+        f"SELECT {bands}"
+        f"  FROM pm_tasks t"
+        f"  JOIN pm_task_statuses s ON s.id = t.status_id"
+        f" WHERE {open_where}"
+    ), params
+
+
 def load_sql(open_where: str) -> str:
     """The per-assignee aggregate, as one string a test can RUN.
 
@@ -354,7 +398,18 @@ def load_sql(open_where: str) -> str:
         f"         WHERE t.due_at IS NULL"
         f"            OR t.due_at >= now() + interval '7 days'"
         f"       ) AS later,"
-        f"       count(*) AS open_tasks"
+        f"       count(*) AS open_tasks,"
+        # ⚠️ ESTIMATED effort, never logged effort. Nothing in this product
+        # records hours actually worked — `pm_tasks` has `estimate_mins` and
+        # no actual. `pm_task_personal.actual_start/end` is the Calendar's
+        # per-member timeboxing, which is private, sparse, and not a project
+        # effort log. So every field below is a plan, and the client says so.
+        f"       coalesce(sum(t.estimate_mins), 0) AS est_mins,"
+        # The COVERAGE beside the sum, and it is not optional. `count(col)`
+        # skips NULL, so this is "how many of these tasks carry an estimate".
+        # A total of 40h over 3 estimated tasks out of 30 is not 40h of work,
+        # and a sum printed without its coverage says it is.
+        f"       count(t.estimate_mins) AS estimated"
         f"  FROM pm_tasks t"
         f"  JOIN pm_task_statuses s ON s.id = t.status_id"
         f"  LEFT JOIN pm_task_assignees a ON a.task_id = t.id"
@@ -375,6 +430,35 @@ def total_open_sql(open_where: str) -> str:
         f"SELECT count(DISTINCT t.id) FROM pm_tasks t"
         f"  JOIN pm_task_statuses s ON s.id = t.status_id"
         f" WHERE {open_where}"
+    )
+
+
+def effort_sql(where: str) -> str:
+    """Estimated effort over TASKS in scope, with the coverage beside it.
+
+    ⚠️ **"Spent" here is the ESTIMATE of finished work, not hours logged.**
+    Owner decision 2026-09-17, taken with the constraint on the table: there
+    is no time tracking anywhere in this product. `pm_tasks` carries
+    `estimate_mins` and no actual. So "spent" answers *"how much work did we
+    think the finished tasks were"*, and the client must never label it
+    "logged" or "actual".
+
+    ⚠️ **No assignee join, on purpose.** `load_sql` counts a two-assignee task
+    for BOTH people, which is right for a plate and wrong for a total. This
+    reads tasks, so the figures here are the node's and not a sum of the rows
+    above them — the same split `total_open_sql` already makes for counts.
+
+    `count(estimate_mins)` skips NULL, so `estimated` over `tasks` is the
+    coverage. Every consumer prints it. A sum with no coverage is a number
+    that looks complete and is not.
+    """
+    return (
+        f"SELECT coalesce(sum(t.estimate_mins), 0) AS mins,"
+        f"       count(t.estimate_mins) AS estimated,"
+        f"       count(*) AS tasks"
+        f"  FROM pm_tasks t"
+        f"  JOIN pm_task_statuses s ON s.id = t.status_id"
+        f" WHERE {where}"
     )
 
 
@@ -444,6 +528,33 @@ async def load(
             or 0
         )
 
+        # ── Effort, in both directions — see `effort_sql`. ───────────────
+        #
+        # ⚠️ Two reads rather than one grouped by open/closed. The `left` half
+        # must use the SAME `open_where` the rows above used, or the panel
+        # would state a remaining figure for a different set of tasks than the
+        # bars beside it. Sharing the fragment is what keeps them the same
+        # question.
+        left = (
+            await db.execute(text(effort_sql(open_where)), params)
+        ).one()
+
+        # "Spent" is DONE work only. Cancelled work consumed effort too, and
+        # counting it here would say the team delivered it — the same
+        # exclusion the Progress card already footnotes.
+        done_where = (
+            f"{scope_sql}"
+            f" AND t.archived_at IS NULL"
+            f" AND ({task_visibility_clause(vis, 't')})"
+            f" AND s.category = :done_cat"
+        )
+        spent = (
+            await db.execute(
+                text(effort_sql(done_where)),
+                {**params, "done_cat": COMPLETED_CATEGORY},
+            )
+        ).one()
+
         people = [
             {
                 # "" is the unassigned bucket. Named explicitly rather than
@@ -453,6 +564,11 @@ async def load(
                 "overdue": int(row.overdue),
                 "due_next_7d": int(row.due_next_7d),
                 "later": int(row.later),
+                # ⚠️ Estimated, never logged. `est_mins` is what somebody
+                # GUESSED this plate weighs, and `estimated` of `open_tasks`
+                # says how much of the plate was guessed at all.
+                "est_mins": int(row.est_mins or 0),
+                "estimated": int(row.estimated or 0),
             }
             for row in rows
         ]
@@ -463,6 +579,29 @@ async def load(
             "total_tasks": total_tasks,
             "people_total": len(people),
             "people": people[:MAX_PEOPLE],
+            # ⚠️ **Counted over TASKS, so it does not add up from `people`.**
+            # A two-assignee task sits on two plates above and is one task
+            # here. Reported as its own block for that reason.
+            #
+            # ⚠️ **`estimated` and `tasks` are not decoration.** They are the
+            # coverage, and the sum means nothing without them. 40h over 3 of
+            # 30 tasks is not 40h of remaining work.
+            "effort": {
+                "left_mins": int(left.mins or 0),
+                "left_estimated": int(left.estimated or 0),
+                "left_tasks": int(left.tasks or 0),
+                "spent_mins": int(spent.mins or 0),
+                "spent_estimated": int(spent.estimated or 0),
+                "spent_tasks": int(spent.tasks or 0),
+                # Said in the payload so no client has to know it, and no
+                # client can label these "logged" without contradicting the
+                # response it is drawing.
+                "basis": "estimate",
+            },
+            # Headcount, and it excludes the unassigned bucket — "nobody" is
+            # not a person, and counting it would report one extra worker on
+            # every project that has a backlog.
+            "people_named": sum(1 for p in people if p["assignee"]),
         }
 
 

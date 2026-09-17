@@ -2344,6 +2344,33 @@ line — never reclaim a number by deleting the other entry.
   unapplied and mark the two tests expected-fail with that reason. Today they
   are neither, which is the worst of the three.
 
+### H-114 · 🔴 EVERY R8 test runs psycopg. The gateway runs asyncpg · [AGENT]
+- **Check:** `rg -n "postgresql\+psycopg" scripts/dev_db.sh` and
+  `rg -n "asyncpg" packages/acb_common/acb_common/db.py`. Both hit means the
+  gap is open. `acb_common.db` rewrites every DSN onto asyncpg, and
+  `dev_db.sh` hands every test a psycopg DSN.
+- **What it cost, measured 2026-09-17.** `/analytics/stuck` answered **500 at
+  every scope** from the day it merged. Two separate faults, and R8 caught
+  neither.
+  1. A band was named `7_to_14d` and went out as a bare SQL alias. Postgres
+     reads a leading digit as a numeric literal. Both drivers reject it, but
+     no test ever RAN the query — §9.12.7(a) shipped structural-only.
+  2. Under the first sat `CAST(:x AS interval)` bound with the string
+     `'0 days'`. **psycopg accepts it. asyncpg refuses it.** So a test that
+     ran the real query on a real Postgres would still have passed.
+- **⚠️ The knowledge already existed and the fence did not.** `delta.py` and
+  `filters.parse_when` both record this exact asyncpg trap in comments. A
+  comment in another module is not a fence.
+- **The narrow fix is in.** `stale_bands_sql` now binds ints through
+  `make_interval(days => :d)`, which is the idiom the rest of `analytics.py`
+  already uses for weeks.
+- **What is still open.** Every other R8 suite proves its SQL against the
+  wrong driver. Options, cheapest first: run one asyncpg smoke test per
+  route module; add a lint that refuses `CAST(:param AS interval)` and
+  `CAST(:param AS timestamptz)` in gateway SQL; or move the R8 fixtures onto
+  asyncpg. The lint is the only one that scales, and it names the two casts
+  we have actually been burned by.
+
 ### H-113 · Wave 6 is next, and §9.12.9 needs two columns first · [AGENT]
 - **Check:** `grep -c "follow_up_at" infra/postgres/*.sql | grep -v ":0"`.
   No output means this is unbuilt.
