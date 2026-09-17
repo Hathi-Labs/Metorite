@@ -355,7 +355,7 @@ D70 moves the provider to Google Workspace and the claim to `hd`.
 | **D64.1** | ⛔ **AMENDED by D70.1.** Was: Supabase Auth, with the Microsoft provider, authenticates staff | D35.3's *intent* is kept — one directory, ours. D35.3's *mechanism* is dropped. We do not stand up a second identity integration to say the same thing |
 | **D64.2** | **Three checks admit an operator, and all three must pass** | The directory answers *who are you*. The operator registry answers *may you*. This is **D34.4 applied to staff**, not a new idea. ⛔ Check 1 reads `hd` since D70, not `tid` |
 | **D64.3** | **Three roles: `viewer`, `editor`, `admin`** | `admin` is the only role that administers operators |
-| **D64.4** | **No standing destructive privilege.** An `admin` holds the *right to elevate*, not the privilege | The elevation is time-boxed and needs a stated reason |
+| **D64.4** | ⛔ **AMENDED by D72 (2026-09-18) — elevation is OFF by default and the role alone decides.** Was: no standing destructive privilege; an `admin` holds the *right to elevate*, not the privilege | The mechanism is kept and tested, behind `OPERATOR_ELEVATION_REQUIRED`. The rank matrix is untouched. ⚠️ Revisit at the **first operator who is not an owner** — see `work_plan.md` §3 D72 |
 | **D64.5** | **Operators reach the commercial record only** | NG-1 and NG-2. Widening this is an owner decision |
 | **D64.6** | **Four-eyes and per-action step-up are deferred**, with the triggers written down | §9 |
 
