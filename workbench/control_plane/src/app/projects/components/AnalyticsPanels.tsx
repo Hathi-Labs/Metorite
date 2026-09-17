@@ -42,6 +42,8 @@ import type {
   StuckReport,
   ThroughputReport,
 } from "../lib/api";
+import { asList, bandCount, staleBands } from "../lib/analyticsRead";
+import { effortDisplay, personEffort } from "../lib/effort";
 
 /**
  * The ageing bands, in the order the server sends them.
@@ -62,8 +64,8 @@ import type {
  */
 const BANDS: { key: string; short: string; full: string; hue: AccentHue }[] = [
   { key: "under_7d", short: "< 7d", full: "Under 7 days", hue: "gray" },
-  { key: "7_to_14d", short: "7–14d", full: "7 to 14 days", hue: "blue" },
-  { key: "14_to_30d", short: "14–30d", full: "14 to 30 days", hue: "amber" },
+  { key: "days_7_to_14", short: "7–14d", full: "7 to 14 days", hue: "blue" },
+  { key: "days_14_to_30", short: "14–30d", full: "14 to 30 days", hue: "amber" },
   { key: "over_30d", short: "> 30d", full: "Over 30 days", hue: "red" },
 ];
 
@@ -167,8 +169,13 @@ function Bar({
 
 /** (a) Where is work stuck? */
 export function StuckPanel({ data }: { data: StuckReport }) {
-  const bands = BANDS.filter((b) => b.key in data.stale);
-  const staleTotal = bands.reduce((n, b) => n + (data.stale[b.key] ?? 0), 0);
+  // ⚠️ The server sends `stale` as a LIST of {band, n}. This read asked
+  // `b.key in data.stale`, which on an array tests INDICES — always false —
+  // so the histogram drew an empty bar and no legend at all. `staleBands`
+  // normalises either shape, and `analyticsRead.test.ts` pins both.
+  const sent = staleBands(data.stale);
+  const bands = BANDS.filter((b) => sent.some((x) => x.key === b.key));
+  const staleTotal = bands.reduce((n, b) => n + bandCount(sent, b.key), 0);
   const overdueAccent = statusAccent({ category: "cancelled" });
 
   return (
@@ -180,7 +187,7 @@ export function StuckPanel({ data }: { data: StuckReport }) {
         total={staleTotal}
         segments={bands.map((b) => ({
           key: b.key,
-          value: data.stale[b.key] ?? 0,
+          value: bandCount(sent, b.key),
           dot: accentForHue(b.hue).dot,
           label: b.full,
         }))}
@@ -194,7 +201,7 @@ export function StuckPanel({ data }: { data: StuckReport }) {
           <li
             key={b.key}
             className="flex min-w-0 items-center gap-1.5 text-[11px]"
-            title={`${data.stale[b.key] ?? 0} open tasks last changed ${b.full.toLowerCase()} ago`}
+            title={`${bandCount(sent, b.key)} open tasks last changed ${b.full.toLowerCase()} ago`}
           >
             <span
               className={`h-2 w-2 shrink-0 rounded-full ${accentForHue(b.hue).dot}`}
@@ -202,7 +209,7 @@ export function StuckPanel({ data }: { data: StuckReport }) {
             />
             <span className="text-muted-foreground">{b.short}</span>
             <span className="ml-auto font-medium tabular-nums">
-              {data.stale[b.key] ?? 0}
+              {bandCount(sent, b.key)}
             </span>
           </li>
         ))}
@@ -300,8 +307,30 @@ export function LoadPanel({ data }: { data: LoadReport }) {
                   >
                     {row.assignee ?? "Unassigned"}
                   </span>
+                  {/* ⚠️ Hours ONLY when this plate is sized. `personEffort`
+                      answers null otherwise — nine unsized tasks is not zero
+                      hours of work, and "0h" beside real figures says it is. */}
+                  {(() => {
+                    const eff = personEffort(row);
+                    if (!eff) return null;
+                    return (
+                      <span
+                        className="ml-auto shrink-0 tabular-nums text-muted-foreground"
+                        title={
+                          eff.cover.complete
+                            ? `${eff.label} estimated across all ${row.open_tasks} open tasks. An estimate — this product records no hours worked.`
+                            : `${eff.label} estimated across ${eff.cover.estimated} of ${row.open_tasks} open tasks. The other ${eff.cover.missing} carry no estimate, so the real figure is higher.`
+                        }
+                      >
+                        {eff.label}
+                        {!eff.cover.complete && (
+                          <span className="opacity-60">*</span>
+                        )}
+                      </span>
+                    );
+                  })()}
                   <span
-                    className="ml-auto font-medium tabular-nums"
+                    className={`${personEffort(row) ? "" : "ml-auto "}shrink-0 font-medium tabular-nums`}
                     title={`${row.open_tasks} open tasks: ${row.overdue} overdue, ${row.due_next_7d} due in the next 7 days, ${row.later} later or undated`}
                   >
                     {row.open_tasks}
@@ -347,9 +376,78 @@ export function LoadPanel({ data }: { data: LoadReport }) {
             {data.people_total}{" "}
             {data.people_total === 1 ? "person" : "people"}
           </p>
+          <EffortLine data={data} />
         </>
       )}
     </Panel>
+  );
+}
+
+/**
+ * Work left and work done, in ESTIMATED hours.
+ *
+ * ⚠️ **Estimated, never logged.** Owner decision 2026-09-17, taken knowing
+ * this product tracks no hours at all. "Done" is the estimate of what
+ * reached `done`. Every string here says so, and none may say "logged",
+ * "actual" or "tracked".
+ *
+ * ⚠️ **The asterisk carries the whole claim.** A remaining total drawn from
+ * a tenth of the tasks looks identical to a complete one, and a reader plans
+ * against it either way. `effort.ts` refuses to hand back a figure with no
+ * coverage at all, and this marks every figure that is partial.
+ */
+function EffortLine({ data }: { data: LoadReport }) {
+  const eff = effortDisplay(data.effort);
+  if (!eff) return null;
+
+  if (eff.kind === "none") {
+    // An invitation, not "0h". Measured 2026-09-17: the demo tree carried
+    // zero estimates across 37 tasks, which is where every project starts.
+    return (
+      <p
+        className="mt-1 text-[11px] text-muted-foreground"
+        title="Set an estimate on a task to see effort here. This product records no hours worked, so these figures are always plans."
+      >
+        {eff.unsized > 0
+          ? `No estimates yet — ${eff.unsized} open ${
+              eff.unsized === 1 ? "task carries" : "tasks carry"
+            } no size.`
+          : "No estimates yet."}
+      </p>
+    );
+  }
+
+  return (
+    <p className="mt-1 text-[11px] text-muted-foreground">
+      <span
+        title={`Estimated effort remaining, across ${eff.left.estimated} of ${eff.left.total} open tasks. A plan, not hours worked — this product records none.`}
+      >
+        <strong className="tabular-nums text-foreground">
+          {eff.leftLabel}
+        </strong>
+        {!eff.left.complete && <span className="opacity-60">*</span>} left
+      </span>
+      {eff.spent.total > 0 && (
+        <span
+          title={`Estimated effort of the ${eff.spent.total} finished tasks, of which ${eff.spent.estimated} carry an estimate. Cancelled work is excluded.`}
+        >
+          {" · "}
+          <span className="tabular-nums">{eff.spentLabel}</span>
+          {!eff.spent.complete && <span className="opacity-60">*</span>} done
+        </span>
+      )}
+      {eff.donePct !== null && (
+        <span className="tabular-nums"> · {eff.donePct}% of the estimate</span>
+      )}
+      {(!eff.left.complete || !eff.spent.complete) && (
+        <span
+          className="ml-1 opacity-70"
+          title={`* Partial. ${eff.left.missing} open and ${eff.spent.missing} finished tasks carry no estimate, so the real figures are higher.`}
+        >
+          * partial
+        </span>
+      )}
+    </p>
   );
 }
 

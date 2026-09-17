@@ -124,8 +124,20 @@ export interface NodeSummary {
 export interface StuckReport {
   project_id: string | null;
   scope: "portfolio" | "node";
-  /** Open tasks by how long they have sat untouched. Bands are DISJOINT. */
-  stale: Record<string, number>;
+  /**
+   * Open tasks by how long they have sat untouched. Bands are DISJOINT.
+   *
+   * ⚠️ **The server sends a LIST of `{band, n}`, and this said
+   * `Record<string, number>` until 2026-09-17.** The panel then asked
+   * `"under_7d" in data.stale`, which on an array tests indices, so it was
+   * always false and the histogram drew an empty bar with no legend.
+   * Nothing threw and nothing failed a typecheck — `api.call` casts.
+   *
+   * Typed loosely on purpose, and read through `analyticsRead.staleBands`,
+   * which accepts either shape. The same class of defect has now landed
+   * three times in this one panel.
+   */
+  stale: { band: string; n: number }[] | Record<string, number>;
   blocked: {
     id: string;
     title: string;
@@ -158,6 +170,39 @@ export interface LoadRow {
    */
   due_next_7d: number;
   later: number;
+  /**
+   * ⚠️ **ESTIMATED effort, never logged effort.** Nothing in this product
+   * records hours worked — `pm_tasks` has `estimate_mins` and no actual.
+   * This is what somebody GUESSED the plate weighs.
+   */
+  est_mins?: number;
+  /**
+   * How many of `open_tasks` carry an estimate at all. The coverage, and it
+   * is not optional: 40h over 3 of 30 tasks is not 40h of work.
+   */
+  estimated?: number;
+}
+
+/**
+ * Estimated effort in scope, in both directions.
+ *
+ * ⚠️ **`basis` is always `"estimate"` today, and the field exists so a client
+ * cannot quietly start calling this logged time.** There is no time tracking
+ * in the product. "Spent" is the estimate of work that reached `done`.
+ *
+ * ⚠️ **Counted over TASKS.** A two-assignee task is on two plates in
+ * `people` and is one task here, so these never add up from those rows.
+ */
+export interface EffortReport {
+  left_mins: number;
+  /** Open tasks carrying an estimate. */
+  left_estimated: number;
+  /** All open tasks. `left_estimated / left_tasks` is the coverage. */
+  left_tasks: number;
+  spent_mins: number;
+  spent_estimated: number;
+  spent_tasks: number;
+  basis: "estimate";
 }
 
 export interface LoadReport {
@@ -171,6 +216,14 @@ export interface LoadReport {
   total_tasks: number;
   people_total: number;
   people: LoadRow[];
+  /**
+   * ⚠️ Optional because the SERVER sends it always, and a client must still
+   * survive the deploy window where it does not. Absent means "not said",
+   * which is never the same as zero.
+   */
+  effort?: EffortReport;
+  /** People with a name on open work. Excludes the unassigned bucket. */
+  people_named?: number;
 }
 
 export interface ThroughputWeek {
