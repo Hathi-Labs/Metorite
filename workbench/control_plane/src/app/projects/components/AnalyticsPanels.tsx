@@ -49,8 +49,9 @@ import {
   type OutlookLine,
   type Tone,
   capacityLine,
+  forecastGap,
+  headlineVerdict,
   peopleLine,
-  slipLine,
   velocityLine,
 } from "../lib/outlook";
 
@@ -676,9 +677,10 @@ const TONE: Record<Tone, string> = {
 function Verdict({ label, line }: { label: string; line: OutlookLine }) {
   return (
     <div className="min-w-0">
-      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
-        {label}
-      </p>
+      {/* ⚠️ Sentence case, not tracked-out capitals. Rule 10 of the
+          visual-review catalogue names an ALL-CAPS eyebrow as one of the
+          commonest tells of generated design, and this panel had four. */}
+      <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
       <p className={`text-sm font-semibold ${TONE[line.tone]}`}>
         {line.headline}
       </p>
@@ -693,9 +695,10 @@ function Verdict({ label, line }: { label: string; line: OutlookLine }) {
 }
 
 export function OutlookPanel({ data }: { data: OutlookReport }) {
+  const verdict = headlineVerdict(data);
+  const gap = forecastGap(data);
   const velocity = velocityLine(data.velocity);
   const capacity = capacityLine(data.capacity);
-  const slip = slipLine(data);
   const people = peopleLine(data);
 
   return (
@@ -703,20 +706,41 @@ export function OutlookPanel({ data }: { data: OutlookReport }) {
       title="Will this land"
       hint="Forecast from what the team actually did, against what the plan would need. Estimated — this product records no hours worked."
     >
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      {/* ⚠️ THE ANSWER FIRST, and at a size nothing else on the page reaches.
+          Photographed 2026-09-17: six equal-weight facts and no verdict, with
+          "79 days late" — the most important number on the portfolio view —
+          set in the third quadrant at the same size as "3 people". BLUF, on
+          a screen: the conclusion, then the evidence for whoever checks it. */}
+      <div className="mb-3">
+        <p className={`text-2xl font-semibold leading-tight ${TONE[verdict.tone]}`}>
+          {verdict.headline}
+        </p>
+        <p className="mt-1 max-w-2xl text-xs leading-snug text-muted-foreground">
+          {verdict.detail}
+        </p>
+      </div>
+
+      {/* ⚠️ The two forecasts disagreed by five months on screen and nothing
+          said so. Both were calm coloured dates in the same size, and the
+          reader was left to subtract them and decide which to believe. */}
+      {gap ? (
+        <div
+          className={`mb-3 rounded-md border border-border bg-muted/40 px-2.5 py-2`}
+        >
+          <p className={`text-xs font-medium ${TONE[gap.tone]}`}>
+            The two forecasts are {gap.headline}
+          </p>
+          <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+            {gap.detail}
+          </p>
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-1 gap-x-4 gap-y-2.5 border-t border-border pt-2.5 sm:grid-cols-3">
         <Verdict label="At the current rate" line={velocity} />
         <Verdict label="If the plan holds" line={capacity} />
-        {slip ? <Verdict label="Against the plan" line={slip} /> : null}
         <Verdict label="Who is carrying it" line={people} />
       </div>
-      {/* ⚠️ The two forecasts answer DIFFERENT questions, and a reader who
-          thinks they are two attempts at one question will read their
-          disagreement as a bug. Said once, under both. */}
-      <p className="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground">
-        The first reads the team&apos;s actual rate, and subtracts the rate work
-        arrives. The second divides remaining estimated effort by the hours the
-        assigned people have. A gap between them is the plan meeting reality.
-      </p>
     </Panel>
   );
 }

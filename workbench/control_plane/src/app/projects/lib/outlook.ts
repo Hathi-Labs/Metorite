@@ -44,6 +44,136 @@ export type OutlookLine = {
 };
 
 /**
+ * How much of the backlog the PLAN actually covers.
+ *
+ * ⚠️ "Planned to finish 12 Mar" over 4 of 71 open tasks is a claim about 4
+ * tasks, and it reads identically to a claim about all 71. Any sentence that
+ * quotes the planned date carries this.
+ */
+function planCaveat(o: OutlookReport): string {
+  const plan = o.plan;
+  if (!plan || plan.tasks <= 0 || plan.dated >= plan.tasks) return "";
+  const pct = Math.round((plan.dated / plan.tasks) * 100);
+  return ` Only ${plan.dated} of ${plan.tasks} open tasks carry a due date (${pct}%).`;
+}
+
+
+/**
+ * THE ANSWER, in one sentence, before any evidence.
+ *
+ * ⚠️ **Photographed 2026-09-17 and this is what it found.** The panel drew
+ * six equal-weight facts and no verdict. The most important number on the
+ * portfolio view — *79 days late* — sat in the third quadrant of one card,
+ * in the same size and weight as "3 people". A reader had to synthesise four
+ * sentences to learn whether the project was in trouble.
+ *
+ * An executive read is not a denser dashboard. It is the conclusion first,
+ * with the evidence underneath for whoever wants to check it. That is the
+ * same order BLUF asks of prose, applied to a screen.
+ */
+export function headlineVerdict(o: OutlookReport): OutlookLine {
+  const v = o.velocity;
+  const slip = o.plan?.slip_days;
+
+  if (v.verdict === "nothing_left") {
+    return {
+      headline: "Nothing open",
+      detail: "Every task in this scope is closed.",
+      tone: "good",
+    };
+  }
+  if (v.verdict === "not_converging") {
+    // ⚠️ The loudest state the product has, and it earns it: no completion
+    // date exists, and the reason is one subtraction the reader should not
+    // have to do.
+    return {
+      headline: "Not converging",
+      detail: `Work is arriving faster than it is finished — adding ${v.created_per_week} a week against ${v.finished_per_week} finished. No completion date exists at this rate.`,
+      tone: "bad",
+    };
+  }
+  if (v.verdict === "no_history") {
+    return {
+      headline: "Too early to forecast",
+      detail: `${v.remaining_tasks} open, and fewer than three finished in ${v.weeks_sampled} weeks. Not enough to read a rate from.`,
+      tone: "quiet",
+    };
+  }
+  // Converging. The plan, when there is one, outranks the raw date — "79
+  // days late" is the finding and "18 Feb 2027" is only how we know.
+  if (typeof slip === "number" && slip > 0) {
+    return {
+      headline: `${slip} days late`,
+      detail:
+        `Forecast ${shortDate(v.finish_date)} against a plan of ${shortDate(o.plan.planned_finish)}, clearing ${v.net_per_week} a week net.` +
+        planCaveat(o),
+      tone: slip > 14 ? "bad" : "warn",
+    };
+  }
+  if (typeof slip === "number" && slip < 0) {
+    return {
+      headline: `${Math.abs(slip)} days early`,
+      detail: `Forecast ${shortDate(v.finish_date)} against a plan of ${shortDate(o.plan.planned_finish)}.`,
+      tone: "good",
+    };
+  }
+  return {
+    headline: `On track for ${shortDate(v.finish_date)}`,
+    detail: `${v.remaining_tasks} open, clearing ${v.net_per_week} a week net after new work arriving.`,
+    tone: "good",
+  };
+}
+
+/**
+ * What the two forecasts DISAGREEING means.
+ *
+ * ⚠️ **They sat five months apart on screen and nothing said so.** Both were
+ * rendered as calm coloured dates, in the same size, and the reader was left
+ * to subtract them and then work out which to believe. The gap is the most
+ * informative thing on the panel, and it was the one thing not written down.
+ *
+ * Returns `null` when there is nothing to compare, or when the two agree
+ * closely enough that saying anything would be noise.
+ */
+export function forecastGap(o: OutlookReport): OutlookLine | null {
+  const a = o.velocity?.weeks_remaining;
+  const b = o.capacity?.weeks_remaining;
+  if (
+    o.velocity?.verdict !== "converging" ||
+    o.capacity?.verdict !== "ok" ||
+    typeof a !== "number" ||
+    typeof b !== "number"
+  ) {
+    return null;
+  }
+  const gap = a - b;
+  // Under a month apart is two methods agreeing, not a finding.
+  if (Math.abs(gap) < 4) return null;
+
+  const cover = Math.round((o.capacity.estimate_coverage ?? 0) * 100);
+  // ⚠️ "1 weeks" — photographed 2026-09-17. A plural bug in a sentence whose
+  // whole job is to be believed costs more than it looks like it should.
+  const wk = (n: number) => `${n} ${n === 1 ? "week" : "weeks"}`;
+  if (gap > 0) {
+    // The team has more capacity on paper than its delivery rate uses.
+    return {
+      headline: wk(gap),
+      detail:
+        `The plan needs ${wk(b)} of the team's stated hours. The team's actual rate needs ${wk(a)}.` +
+        (cover < 80
+          ? ` Only ${cover}% of open tasks are sized, so the shorter figure may simply be missing work.`
+          : " Either capacity is going elsewhere, or the estimates are optimistic."),
+      tone: "warn",
+    };
+  }
+  return {
+    headline: wk(Math.abs(gap)),
+    detail: `The team is delivering faster than the estimates imply. The remaining hours would take ${wk(b)}; the actual rate clears it in ${wk(a)}.`,
+    tone: "good",
+  };
+}
+
+/**
  * The velocity forecast as a sentence.
  *
  * ⚠️ `not_converging` is `bad` and everything else that lacks a date is
@@ -131,49 +261,6 @@ export function capacityLine(c: CapacityForecast): OutlookLine {
     default:
       return { headline: "—", detail: "Not returned.", tone: "quiet" };
   }
-}
-
-/**
- * The plan, and how far the forecast has drifted from it.
- *
- * Returns `null` when there is nothing honest to say — no plan, or no
- * forecast to compare it against.
- */
-export function slipLine(o: OutlookReport): OutlookLine | null {
-  const { plan } = o;
-  if (!plan || !plan.planned_finish) return null;
-  const covered = plan.tasks > 0 ? Math.round((plan.dated / plan.tasks) * 100) : 0;
-  const caveat =
-    plan.dated < plan.tasks
-      ? ` Based on the ${plan.dated} of ${plan.tasks} open tasks that carry a due date (${covered}%).`
-      : "";
-
-  if (plan.slip_days === null || plan.slip_days === undefined) {
-    return {
-      headline: shortDate(plan.planned_finish),
-      detail: `The last due date on open work.${caveat}`,
-      tone: "quiet",
-    };
-  }
-  if (plan.slip_days > 0) {
-    return {
-      headline: `${plan.slip_days} days late`,
-      detail: `Planned ${shortDate(plan.planned_finish)}, forecast ${shortDate(o.velocity.finish_date)}.${caveat}`,
-      tone: plan.slip_days > 14 ? "bad" : "warn",
-    };
-  }
-  if (plan.slip_days < 0) {
-    return {
-      headline: `${Math.abs(plan.slip_days)} days early`,
-      detail: `Planned ${shortDate(plan.planned_finish)}, forecast ${shortDate(o.velocity.finish_date)}.${caveat}`,
-      tone: "good",
-    };
-  }
-  return {
-    headline: "On the plan",
-    detail: `Planned and forecast both ${shortDate(plan.planned_finish)}.${caveat}`,
-    tone: "good",
-  };
 }
 
 /**

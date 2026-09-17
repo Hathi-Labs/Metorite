@@ -11,9 +11,10 @@ import { describe, expect, it } from "vitest";
 import type { OutlookReport } from "./api";
 import {
   capacityLine,
+  forecastGap,
+  headlineVerdict,
   peopleLine,
   shortDate,
-  slipLine,
   velocityLine,
 } from "./outlook";
 
@@ -174,56 +175,6 @@ describe("capacityLine", () => {
   });
 });
 
-describe("slipLine", () => {
-  it("names the slip in days, with both dates", () => {
-    const line = slipLine(report());
-    expect(line?.headline).toBe("23 days late");
-    expect(line?.detail).toContain("17 Feb 2027");
-    expect(line?.detail).toContain("12 Mar 2027");
-    expect(line?.tone).toBe("bad");
-  });
-
-  it("a small slip warns rather than alarms", () => {
-    const line = slipLine(
-      report({ plan: { ...report().plan, slip_days: 3 } })
-    );
-    expect(line?.tone).toBe("warn");
-  });
-
-  it("reports running early", () => {
-    const line = slipLine(
-      report({ plan: { ...report().plan, slip_days: -11 } })
-    );
-    expect(line?.headline).toBe("11 days early");
-    expect(line?.tone).toBe("good");
-  });
-
-  it("⚠️ an unplanned project shows no slip at all", () => {
-    // Not "0 days late". A project with no due dates has not met its plan;
-    // it has no plan.
-    expect(
-      slipLine(report({ plan: { ...report().plan, planned_finish: null } }))
-    ).toBeNull();
-  });
-
-  it("⚠️ carries the due-date coverage into the sentence", () => {
-    // "Planned to finish 12 Mar" over 4 of 71 tasks is a claim about 4.
-    const line = slipLine(
-      report({ plan: { ...report().plan, dated: 4, tasks: 71 } })
-    );
-    expect(line?.detail).toContain("4 of 71");
-    expect(line?.detail).toContain("6%");
-  });
-
-  it("states the plan alone when there is no forecast to compare", () => {
-    const line = slipLine(
-      report({ plan: { ...report().plan, slip_days: null } })
-    );
-    expect(line?.headline).toBe("17 Feb 2027");
-    expect(line?.tone).toBe("quiet");
-  });
-});
-
 describe("peopleLine", () => {
   it("⚠️ nobody assigned is a finding, not an empty state", () => {
     const line = peopleLine(
@@ -259,5 +210,161 @@ describe("peopleLine", () => {
     );
     expect(line.detail).toContain("capacity is unknown");
     expect(line.tone).toBe("quiet");
+  });
+});
+
+describe("headlineVerdict — the answer before the evidence", () => {
+  it("⚠️ leads with the SLIP, not the forecast date", () => {
+    // Photographed 2026-09-17: "79 days late" sat in the third quadrant of
+    // one card, at the same size as "3 people". It is the finding; the date
+    // is only how we know it.
+    const v = headlineVerdict(report());
+    expect(v.headline).toBe("23 days late");
+    expect(v.detail).toContain("12 Mar 2027");
+    expect(v.detail).toContain("17 Feb 2027");
+    expect(v.tone).toBe("bad");
+  });
+
+  it("a small slip warns rather than alarms", () => {
+    const v = headlineVerdict(
+      report({ plan: { ...report().plan, slip_days: 4 } })
+    );
+    expect(v.tone).toBe("warn");
+  });
+
+  it("not converging outranks everything, including a plan", () => {
+    const v = headlineVerdict(
+      report({
+        velocity: {
+          ...report().velocity,
+          verdict: "not_converging",
+          finished_per_week: 4.2,
+          created_per_week: 5.1,
+          finish_date: null,
+        },
+      })
+    );
+    expect(v.headline).toBe("Not converging");
+    expect(v.detail).toContain("5.1");
+    expect(v.detail).toContain("4.2");
+    expect(v.tone).toBe("bad");
+  });
+
+  it("says on track when there is no plan to be late against", () => {
+    const v = headlineVerdict(
+      report({ plan: { ...report().plan, planned_finish: null, slip_days: null } })
+    );
+    expect(v.headline).toContain("On track for");
+    expect(v.tone).toBe("good");
+  });
+
+  it("reports running early", () => {
+    const v = headlineVerdict(
+      report({ plan: { ...report().plan, slip_days: -6 } })
+    );
+    expect(v.headline).toBe("6 days early");
+    expect(v.tone).toBe("good");
+  });
+
+  it("⚠️ carries the due-date coverage into the sentence", () => {
+    // Inherited from the removed `slipLine`. "Planned 17 Feb" over 4 of 71
+    // open tasks is a claim about 4, and it reads like a claim about 71.
+    const v = headlineVerdict(
+      report({ plan: { ...report().plan, dated: 4, tasks: 71 } })
+    );
+    expect(v.detail).toContain("4 of 71");
+    expect(v.detail).toContain("6%");
+  });
+
+  it("stays quiet about coverage when every task is dated", () => {
+    expect(headlineVerdict(report()).detail).not.toContain("carry a due date");
+  });
+
+  it("refuses when there is not enough history", () => {
+    const v = headlineVerdict(
+      report({ velocity: { ...report().velocity, verdict: "no_history" } })
+    );
+    expect(v.headline).toBe("Too early to forecast");
+    expect(v.tone).toBe("quiet");
+  });
+});
+
+describe("forecastGap — the disagreement IS the finding", () => {
+  it("⚠️ names the gap when the two methods diverge", () => {
+    // They sat five months apart on screen, both as calm coloured dates,
+    // and nothing said so.
+    const g = forecastGap(
+      report({
+        velocity: { ...report().velocity, weeks_remaining: 22 },
+        capacity: { ...report().capacity, weeks_remaining: 4 },
+      })
+    );
+    expect(g?.headline).toBe("18 weeks");
+    expect(g?.tone).toBe("warn");
+  });
+
+  it("blames thin coverage when that is the likelier cause", () => {
+    const g = forecastGap(
+      report({
+        velocity: { ...report().velocity, weeks_remaining: 22 },
+        capacity: {
+          ...report().capacity,
+          weeks_remaining: 4,
+          estimate_coverage: 0.4,
+        },
+      })
+    );
+    expect(g?.detail).toContain("40%");
+    expect(g?.detail).toContain("missing work");
+  });
+
+  it("⚠️ says ONE WEEK, not 1 weeks", () => {
+    // Photographed 2026-09-17. A plural bug in a sentence whose whole job is
+    // to be believed costs more than it looks like it should.
+    const g = forecastGap(
+      report({
+        velocity: { ...report().velocity, weeks_remaining: 23 },
+        capacity: { ...report().capacity, weeks_remaining: 1 },
+      })
+    );
+    expect(g?.detail).toContain("1 week of");
+    expect(g?.detail).not.toContain("1 weeks");
+  });
+
+  it("stays silent when the two agree closely enough", () => {
+    // Under a month apart is two methods agreeing, not a finding. Saying
+    // something here would be noise that trains people to ignore the box.
+    expect(
+      forecastGap(
+        report({
+          velocity: { ...report().velocity, weeks_remaining: 10 },
+          capacity: { ...report().capacity, weeks_remaining: 8 },
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("says nothing when either side refused to forecast", () => {
+    expect(
+      forecastGap(
+        report({ velocity: { ...report().velocity, verdict: "no_history" } })
+      )
+    ).toBeNull();
+    expect(
+      forecastGap(
+        report({ capacity: { ...report().capacity, verdict: "no_capacity" } })
+      )
+    ).toBeNull();
+  });
+
+  it("notes when the team is beating its own estimates", () => {
+    const g = forecastGap(
+      report({
+        velocity: { ...report().velocity, weeks_remaining: 4 },
+        capacity: { ...report().capacity, weeks_remaining: 20 },
+      })
+    );
+    expect(g?.tone).toBe("good");
+    expect(g?.detail).toContain("faster");
   });
 });
