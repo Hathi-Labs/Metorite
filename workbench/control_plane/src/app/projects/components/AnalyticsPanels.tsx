@@ -51,6 +51,7 @@ import {
   capacityLine,
   forecastGap,
   headlineVerdict,
+  isDrawableOutlook,
   peopleLine,
   velocityLine,
 } from "../lib/outlook";
@@ -129,9 +130,7 @@ function Panel({
   return (
     <section className="rounded-lg border border-border bg-card p-3">
       <header className="mb-3">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          {title}
-        </h3>
+        <h3 className="text-xs font-semibold text-foreground">{title}</h3>
         <p className="mt-0.5 text-[11px] text-muted-foreground">{hint}</p>
       </header>
       {children}
@@ -193,15 +192,35 @@ export function StuckPanel({ data }: { data: StuckReport }) {
       title="Where work is stuck"
       hint="Open tasks by how long they have sat without a change, what is blocked, and what is past due."
     >
-      <Bar
-        total={staleTotal}
-        segments={bands.map((b) => ({
-          key: b.key,
-          value: bandCount(sent, b.key),
-          dot: accentForHue(b.hue).dot,
-          label: b.full,
-        }))}
-      />
+      {/* ⚠️ A ONE-BAND BAR IS NOT A CHART. Photographed 2026-09-17: every
+          open task sat in `< 7d`, so this drew a featureless grey slab that
+          reads as a loading skeleton — the reader learns nothing and cannot
+          tell the panel from a broken one. A proportional bar earns its space
+          only when there is a proportion. */}
+      {bands.filter((b) => bandCount(sent, b.key) > 0).length > 1 ? (
+        <Bar
+          total={staleTotal}
+          segments={bands.map((b) => ({
+            key: b.key,
+            value: bandCount(sent, b.key),
+            dot: accentForHue(b.hue).dot,
+            label: b.full,
+          }))}
+        />
+      ) : staleTotal > 0 ? (
+        <p className="text-[11px] text-muted-foreground">
+          {(() => {
+            const only = bands.find((b) => bandCount(sent, b.key) > 0);
+            return only
+              ? `All ${staleTotal} open ${staleTotal === 1 ? "task" : "tasks"} were touched ${only.full.toLowerCase()} ago.`
+              : null;
+          })()}
+        </p>
+      ) : (
+        <p className="text-[11px] text-muted-foreground">
+          No open work in this scope.
+        </p>
+      )}
       {/* ⚠️ TWO columns at every width. Four fitted while this panel was
           one of three; the fourth panel narrowed them all, and each label
           then broke across two lines ("<  7d"). A legend that wraps
@@ -225,19 +244,19 @@ export function StuckPanel({ data }: { data: StuckReport }) {
         ))}
       </ul>
 
-      {data.blocked_total > 0 && (
+      {data.blocked_total > 0 && asList(data.blocked).length > 0 && (
         <div className="mt-3 border-t border-border pt-2">
           <p className="mb-1 text-[11px] text-muted-foreground">
             {/* ⚠️ "N of M", never a bare N. The list is capped at 20, and a
                 lone count would read as the whole of it. */}
             <span
-              title={`${data.blocked.length} shown of ${data.blocked_total} tasks blocked by work that is not finished`}
+              title={`${asList(data.blocked).length} shown of ${data.blocked_total} tasks blocked by work that is not finished`}
             >
-              Blocked: {data.blocked.length} of {data.blocked_total}
+              Blocked: {asList(data.blocked).length} of {data.blocked_total}
             </span>
           </p>
           <ul className="space-y-0.5">
-            {data.blocked.slice(0, 5).map((t) => (
+            {asList<{id: string; title: string; task_number: number | null; due_at: string | null}>(data.blocked).slice(0, 5).map((t) => (
               <li
                 key={t.id}
                 className="truncate text-[11px]"
@@ -285,6 +304,12 @@ export function StuckPanel({ data }: { data: StuckReport }) {
 
 /** (b) Who is overloaded? */
 export function LoadPanel({ data }: { data: LoadReport }) {
+  // ⚠️ `asList` at the boundary, not `Array.isArray` at each use site. Four
+  // separate defects in this pane have been a typed-as-present field arriving
+  // absent or as the wrong shape — `api.call` casts rather than validates, so
+  // the interface is a claim about the server and not a check on it. Measured
+  // 2026-09-17: `{people: null}` from this endpoint crashed the whole PAGE.
+  const people = asList<LoadReport["people"][number]>(data?.people);
   const overdue = accentForHue("red");
   const soon = accentForHue("amber");
   const later = accentForHue("gray");
@@ -294,14 +319,14 @@ export function LoadPanel({ data }: { data: LoadReport }) {
       title="Who is overloaded"
       hint="Open tasks per person, split by when they are due. Unassigned is a bar, not a gap."
     >
-      {data.people.length === 0 ? (
+      {people.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
           No open work in this scope.
         </p>
       ) : (
         <>
           <ul className="space-y-2">
-            {data.people.map((row) => (
+            {people.map((row) => (
               <li key={row.assignee ?? "__unassigned"}>
                 <div className="flex min-w-0 items-baseline gap-2 text-[11px]">
                   <span
@@ -461,21 +486,50 @@ function EffortLine({ data }: { data: LoadReport }) {
   );
 }
 
+/**
+ * "7 Sep" — one week bucket, for a chart axis.
+ *
+ * ⚠️ Parsed by hand, never through `new Date()`. These are floating calendar
+ * dates and `new Date("2026-09-07")` is midnight UTC — a day west of
+ * Greenwich, which names the wrong week on the reader's screen. The third
+ * place in this app to carry that note, after `ReportsView.periodLabel` and
+ * `outlook.shortDate`.
+ */
+function weekLabel(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const [, m, d] = iso.slice(0, 10).split("-");
+  const month = MONTHS_SHORT[Number(m) - 1];
+  return month ? `${Number(d)} ${month}` : "";
+}
+
+const MONTHS_SHORT = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split(" ");
+
+
 /** (c) Are we getting faster? */
 export function ThroughputPanel({ data }: { data: ThroughputReport }) {
   const done = statusAccent({ category: "done" });
   const dropped = statusAccent({ category: "cancelled" });
-  const peak = Math.max(1, ...data.series.map((w) => w.completed));
-  const { summary } = data;
+  const series = asList<ThroughputReport["series"][number]>(data?.series);
+  const peak = Math.max(1, ...series.map((w) => w.completed));
+  const summary = data?.summary ?? ({} as ThroughputReport["summary"]);
 
   return (
     <Panel
       title="Are we getting faster"
       hint="Tasks finished each week, and how long they took from first started to done."
     >
+      {/* ⚠️ A CHART WITH NO AXIS IS A PICTURE. Photographed 2026-09-17: six
+          green bars with no label anywhere, so a reader could see that the
+          last one was tallest and not which week it was, nor how many. The
+          scale and the ends of the axis are drawn; the middle is left to the
+          hover text, because six labels at this width would collide. */}
+      <div className="flex items-baseline justify-between text-[11px] text-muted-foreground">
+        <span title={`Peak week: ${peak} finished`}>{peak}</span>
+        <span>finished per week</span>
+      </div>
       <div className="flex h-24 items-end gap-1">
-        {data.series.map((w, i) => {
-          const last = i === data.series.length - 1;
+        {series.map((w, i) => {
+          const last = i === series.length - 1;
           const partial = last && data.current_week_partial;
           return (
             <div
@@ -502,6 +556,17 @@ export function ThroughputPanel({ data }: { data: ThroughputReport }) {
             </div>
           );
         })}
+      </div>
+      {/* The two ends of the axis, named. `weekLabel` parses by hand — these
+          are floating calendar dates, and `new Date("2026-09-07")` is
+          midnight UTC, a day west of Greenwich. */}
+      <div className="mt-1 flex items-baseline justify-between text-[11px] text-muted-foreground">
+        <span>{weekLabel(series[0]?.week_start)}</span>
+        <span>
+          {data.current_week_partial
+            ? "this week, so far"
+            : weekLabel(series[series.length - 1]?.week_start)}
+        </span>
       </div>
 
       <dl className="mt-3 grid grid-cols-3 gap-2 border-t border-border pt-2 text-[11px]">
@@ -575,21 +640,22 @@ export function ThroughputPanel({ data }: { data: ThroughputReport }) {
 export function FinishedPanel({ data }: { data: FinishedReport }) {
   const done = statusAccent({ category: "done" });
   const dropped = statusAccent({ category: "cancelled" });
-  const peak = Math.max(1, ...data.projects.map((p) => p.completed));
+  const projects = asList<FinishedReport["projects"][number]>(data?.projects);
+  const peak = Math.max(1, ...projects.map((p) => p.completed));
 
   return (
     <Panel
       title="What we finished"
       hint={`Completed by project, ${period(data.period_start, data.period_end)}.`}
     >
-      {data.projects.length === 0 ? (
+      {projects.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">
           Nothing finished in this period.
         </p>
       ) : (
         <>
           <ul className="space-y-1.5">
-            {data.projects.slice(0, 8).map((p) => (
+            {projects.slice(0, 8).map((p) => (
               <li key={p.project_id}>
                 <div className="flex items-baseline gap-2 text-[11px]">
                   <span className="min-w-0 truncate pr-px">{p.name}</span>
@@ -643,8 +709,7 @@ export function FinishedPanel({ data }: { data: FinishedReport }) {
             }
           >
             {data.total_completed} finished
-            {data.projects.length > 8 &&
-              ` across ${data.projects.length} projects`}
+            {projects.length > 8 && ` across ${projects.length} projects`}
             {data.total_cancelled > 0 && ` · ${data.total_cancelled} cancelled`}
           </p>
         </>
@@ -695,6 +760,10 @@ function Verdict({ label, line }: { label: string; line: OutlookLine }) {
 }
 
 export function OutlookPanel({ data }: { data: OutlookReport }) {
+  // ⚠️ Nothing, rather than a crash. A response this panel cannot read
+  // took the whole PAGE down on 2026-09-17 — not the panel, the page.
+  // `isDrawableOutlook` carries the four times this has happened here.
+  if (!isDrawableOutlook(data)) return null;
   const verdict = headlineVerdict(data);
   const gap = forecastGap(data);
   const velocity = velocityLine(data.velocity);

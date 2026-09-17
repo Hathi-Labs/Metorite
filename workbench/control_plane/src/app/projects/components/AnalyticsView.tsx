@@ -113,9 +113,7 @@ function Stat({
   const known = typeof value === "number" && Number.isFinite(value);
   return (
     <div className={`rounded-lg border border-border bg-card px-3 py-2 ${className}`}>
-      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
-        {label}
-      </p>
+      <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
       <p
         className={`text-lg font-semibold ${known ? (tone ?? "text-foreground") : "text-muted-foreground"}`}
         title={known ? undefined : `${label} did not come back from the server`}

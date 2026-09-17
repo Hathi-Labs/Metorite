@@ -69,9 +69,7 @@ function Section({
 }) {
   return (
     <section className="border-t border-border pt-3">
-      <h4 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-        {title}
-      </h4>
+      <h4 className="mb-2 text-[11px] font-semibold text-foreground">{title}</h4>
       {children}
     </section>
   );
