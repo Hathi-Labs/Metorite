@@ -2288,20 +2288,35 @@ line — never reclaim a number by deleting the other entry.
   2026-09-05**, because `main` minted its own H-97 for the leaked database
   passwords and merged first. Ids are never reused, so that entry keeps the
   number. Filed from branch `ws-handoff-h96-h97`, which never opened a PR.
-### H-111 · Arm the weekly report send, after deciding who receives it · [OWNER]
+### H-111 · Arm the weekly report send. The audience is DECIDED · [OWNER]
 - **Check:** on the box, `grep -c '^PROJECT_REPORT_EMAIL_ENABLED=true' /opt/acb/app/.env`.
-  A zero means this is open. Also `grep -c recipients infra/postgres/204_projects_reports.sql`
-  — a zero means the columns are still unbuilt.
+  A zero means this is open.
+  ⚠️ **The second half of this Check was wrong within one day of being
+  written.** It read `grep -c recipients infra/postgres/204_projects_reports.sql`
+  — and the recipients table landed in **205**, so it would have reported the
+  audience unbuilt forever. Corrected 2026-09-17, and it is the same drift
+  H-105 carried for eleven days. A Check that names a file is a Check that
+  rots when the work moves.
+- **⚠️ The two questions this entry was gated on are ANSWERED.** The owner
+  delegated them on 2026-09-17 and the answers are in migration 205 and in
+  `reports.py`. **A recipient is an address the directory already knows, never
+  free text** — anything else is an open mail relay from our one verified
+  sender. **Any member may add any member**, because the send renders once per
+  recipient with that recipient's own visibility, so adding somebody can never
+  show them more than they could already see.
 - **What exists.** §9.12.8 slices 1 and 2 are merged. A definition saves
   (`pm_reports`, migration 204), renders in the app (the Reports pane), and
   renders to an email body with no colour (`src/lib/reportEmail.ts`).
   `sendReportEmail` THROWS while the flag is off, instead of returning
   quietly. A send path that reports success while it sends nothing is how a
   scheduled report runs unnoticed for a month.
-- **What is missing, and it is two things.** `pm_reports` carries no
-  `recipients` and no `schedule`. Both are additive nullable columns in a
-  later migration (R6). They stayed out on purpose. Slice 2 must not arm a
-  delivery path while nothing renders through it.
+- **What is missing is now ONE thing: the job.** Nothing calls
+  `sendReportEmail`. The audience, the schedule column, `last_sent_at` and the
+  two locks all exist (migration 205). No timer reads them.
+- **Two locks, and you hold one.** A member can arm a report's schedule. Only
+  the deployment arms delivery. Both are off, and
+  `test_projects_report_recipients.py` fails if the second one turns on in
+  this repo.
 - **⚠️ Why this is OWNER.** §3a rule 3 is explicit: *"do not send mail to a
   real person"*. A job that emails colleagues on a timer is an outward act,
   and the first send is the one nobody can take back. Two decisions come
