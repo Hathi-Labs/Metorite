@@ -32,6 +32,7 @@ time nobody did anything.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -89,6 +90,26 @@ _DEFAULTS: dict[str, Any] = {
 }
 
 #: A name long enough to be useful and short enough for a subject line.
+#: The schedules the job can read. NULL in the table means "not scheduled",
+#: which is a different thing from a word the job does not recognise.
+SCHEDULES: tuple[str, ...] = ("weekly",)
+
+
+def delivery_armed() -> bool:
+    """Whether THIS deployment may send a report at all.
+
+    ⚠️ The second of two locks. A member can arm a report's schedule; only the
+    deployment can arm delivery, and §9.12.8 makes that the owner's: *"the
+    schedule is owner-gated to arm. Build it dark, default off."*
+
+    An exact match on `"true"`. `bool("false")` is `True`, and a flag that arms
+    on the string "false" is the worst possible default for something that
+    mails real people. The same rule `isReportEmailEnabled` applies on the
+    other side of the seam.
+    """
+    return os.environ.get("PROJECT_REPORT_EMAIL_ENABLED", "") == "true"
+
+
 MAX_NAME = 120
 
 
@@ -478,4 +499,213 @@ async def render_report(
             "period_start": window.period_start.isoformat(),
             "period_end": window.period_end.isoformat(),
             "sections": sections,
+        }
+
+
+# ── Who a report goes to — §9.12.8 slice 3 ──────────────────────────────────
+#
+# ⚠️ **Two rulings, delegated by the owner on 2026-09-17, and they answer each
+# other.**
+#
+# **A recipient is an address we ALREADY mail, never free text.** A free-text
+# field turns an internal analytics tool into an open mail relay: anybody who
+# can save a report could send company delivery figures to any address on the
+# internet, on a timer, from our one verified sender. That is an exfiltration
+# path, and a reputation risk to the only sending domain we have.
+#
+# **Any member may add any member, and the reason is not politeness.** The send
+# renders ONCE PER RECIPIENT, with that recipient's own visibility —
+# `render_report` already resolves visibility from the caller rather than the
+# author, and the job keeps that property by rendering per address rather than
+# once. So adding somebody to a report can never show them more than they could
+# already see by opening the app. A permission check on "may I add you" would
+# guard a door onto the room the person is already standing in.
+
+
+async def _known_member(db: Any, email: str) -> bool:
+    """Is this address one the directory already knows?
+
+    ⚠️ The tenant bound is RLS on `pm_reports`, not this lookup. `app_user`
+    is the login directory and its `email` is globally unique, so a match here
+    means "somebody signs in with this address", not "somebody in YOUR
+    organization does". The recipient row is written against a report that RLS
+    has already scoped, and the send renders with the recipient's own grants —
+    so a cross-tenant address would receive an empty report rather than
+    somebody else's numbers. Refusing it here is still right: a report that
+    mails a stranger is a mistake even when the mistake is empty.
+    """
+    row = (await db.execute(
+        text("SELECT 1 FROM app_user WHERE lower(email) = :e LIMIT 1"),
+        {"e": email},
+    )).fetchone()
+    return row is not None
+
+
+@router.get("/reports/{report_id}/recipients")
+async def list_recipients(
+    report_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        await _visible_report(db, vis, report_id)
+        rows = (await db.execute(
+            text(
+                "SELECT recipient, created_by, created_at"
+                "  FROM pm_report_recipients"
+                " WHERE report_id = CAST(:r AS uuid)"
+                " ORDER BY recipient"
+            ),
+            {"r": report_id},
+        )).fetchall()
+        return {
+            "report_id": report_id,
+            "recipients": [
+                {
+                    "recipient": r.recipient,
+                    "added_by": r.created_by,
+                    "added_at": r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in rows
+            ],
+        }
+
+
+@router.post("/reports/{report_id}/recipients", status_code=201)
+async def add_recipient(
+    report_id: str,
+    payload: dict[str, Any],
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Add one address to a report's audience.
+
+    Idempotent: adding twice is adding. The UNIQUE constraint carries that, so
+    this does not read first and then write — two requests racing would both
+    pass the read.
+    """
+    email = str(payload.get("recipient") or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(
+            status_code=422, detail="A recipient must be an email address.",
+        )
+    if email.startswith("agent:"):
+        # The CHECK refuses it too. Answering here names the actual mistake
+        # instead of surfacing a constraint violation as a 500.
+        raise HTTPException(
+            status_code=422,
+            detail="A report goes to a person, never to an agent.",
+        )
+
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        await _visible_report(db, vis, report_id)
+
+        if not await _known_member(db, email):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{email} is not an address this directory knows. A report"
+                    " goes to people who already sign in — see the note on"
+                    " free text in the route module."
+                ),
+            )
+
+        await db.execute(
+            text(
+                "INSERT INTO pm_report_recipients"
+                " (report_id, recipient, created_by)"
+                " VALUES (CAST(:r AS uuid), :e, :by)"
+                " ON CONFLICT (report_id, recipient) DO NOTHING"
+            ),
+            {"r": report_id, "e": email, "by": actor(user)},
+        )
+        return {"report_id": report_id, "recipient": email}
+
+
+@router.delete("/reports/{report_id}/recipients/{email}", status_code=204)
+async def remove_recipient(
+    report_id: str,
+    email: str,
+    user: UserContext = Depends(get_current_user),
+) -> None:
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        await _visible_report(db, vis, report_id)
+        await db.execute(
+            text(
+                "DELETE FROM pm_report_recipients"
+                " WHERE report_id = CAST(:r AS uuid) AND recipient = :e"
+            ),
+            {"r": report_id, "e": email.strip().lower()},
+        )
+
+
+@router.patch("/reports/{report_id}/schedule")
+async def set_schedule(
+    report_id: str,
+    payload: dict[str, Any],
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Arm or disarm a report's schedule.
+
+    ⚠️ **This flips a ROW, and the row is not what sends.** Nothing leaves the
+    building until `PROJECT_REPORT_EMAIL_ENABLED` is also true on the
+    deployment, and that is an owner act (§9.12.8: *"the schedule is owner-gated
+    to arm. Build it dark, default off."*). Two locks, and a member holds one.
+
+    A report with no recipients cannot be enabled. Arming a send to nobody
+    looks armed on every screen and delivers nothing, which is the failure this
+    whole feature is written to avoid.
+    """
+    enabled = payload.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(
+            status_code=422, detail="enabled must be true or false.",
+        )
+    schedule = payload.get("schedule", "weekly" if enabled else None)
+    if schedule is not None and schedule not in SCHEDULES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown schedule. Known: {', '.join(SCHEDULES)}.",
+        )
+
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        await _visible_report(db, vis, report_id)
+
+        if enabled:
+            count = int((await db.execute(
+                text(
+                    "SELECT count(*) FROM pm_report_recipients"
+                    " WHERE report_id = CAST(:r AS uuid)"
+                ),
+                {"r": report_id},
+            )).scalar() or 0)
+            if count == 0:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Add at least one recipient before you turn this on."
+                        " A schedule with no audience reads as armed and"
+                        " delivers nothing."
+                    ),
+                )
+
+        row = await update_row(
+            db,
+            "pm_reports",
+            report_id,
+            {
+                "enabled": enabled,
+                "schedule": schedule if enabled else None,
+                "updated_at": text("now()"),
+            },
+        )
+        return {
+            **_report_dict(row),
+            # ⚠️ Read from the environment, never hardcoded. A member who
+            # just turned this on would otherwise believe mail is going out.
+            # A literal `False` here would become a lie the moment somebody
+            # arms the deployment, and nobody would think to change it.
+            "delivery_armed_on_this_deployment": delivery_armed(),
         }
