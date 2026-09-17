@@ -39,11 +39,20 @@ import {
 import type {
   FinishedReport,
   LoadReport,
+  OutlookReport,
   StuckReport,
   ThroughputReport,
 } from "../lib/api";
 import { asList, bandCount, staleBands } from "../lib/analyticsRead";
 import { effortDisplay, personEffort } from "../lib/effort";
+import {
+  type OutlookLine,
+  type Tone,
+  capacityLine,
+  peopleLine,
+  slipLine,
+  velocityLine,
+} from "../lib/outlook";
 
 /**
  * The ageing bands, in the order the server sends them.
@@ -639,6 +648,75 @@ export function FinishedPanel({ data }: { data: FinishedReport }) {
           </p>
         </>
       )}
+    </Panel>
+  );
+}
+
+/**
+ * Will this land, and when — the executive read (wave 7).
+ *
+ * ⚠️ **Four sentences, not four numbers.** Owner ask 2026-09-17 was for an
+ * estimated completion date and *"other important information that might be
+ * needed by an executive team, CEO, or project/product manager"*. The server
+ * refuses to forecast far more often than it forecasts, and each refusal is
+ * a finding — "scope is growing faster than delivery" is worth more than any
+ * date this endpoint could print. So every state renders as a sentence.
+ * `outlook.ts` holds the wording and `outlook.test.ts` pins it.
+ *
+ * ⚠️ **Nothing here is a logged hour.** This product records none.
+ */
+const TONE: Record<Tone, string> = {
+  // Through `statusAccent`, never a raw palette class (AGENTS.md rule 5).
+  good: statusAccent({ category: "done" }).text,
+  bad: statusAccent({ category: "cancelled" }).text,
+  warn: accentForHue("amber").text,
+  quiet: "text-muted-foreground",
+};
+
+function Verdict({ label, line }: { label: string; line: OutlookLine }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
+        {label}
+      </p>
+      <p className={`text-sm font-semibold ${TONE[line.tone]}`}>
+        {line.headline}
+      </p>
+      {/* ⚠️ The detail is NOT a tooltip. A refusal that only explains itself
+          on hover is a refusal most readers never understand — and hover
+          does not exist on a phone. */}
+      <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+        {line.detail}
+      </p>
+    </div>
+  );
+}
+
+export function OutlookPanel({ data }: { data: OutlookReport }) {
+  const velocity = velocityLine(data.velocity);
+  const capacity = capacityLine(data.capacity);
+  const slip = slipLine(data);
+  const people = peopleLine(data);
+
+  return (
+    <Panel
+      title="Will this land"
+      hint="Forecast from what the team actually did, against what the plan would need. Estimated — this product records no hours worked."
+    >
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <Verdict label="At the current rate" line={velocity} />
+        <Verdict label="If the plan holds" line={capacity} />
+        {slip ? <Verdict label="Against the plan" line={slip} /> : null}
+        <Verdict label="Who is carrying it" line={people} />
+      </div>
+      {/* ⚠️ The two forecasts answer DIFFERENT questions, and a reader who
+          thinks they are two attempts at one question will read their
+          disagreement as a bug. Said once, under both. */}
+      <p className="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground">
+        The first reads the team&apos;s actual rate, and subtracts the rate work
+        arrives. The second divides remaining estimated effort by the hours the
+        assigned people have. A gap between them is the plan meeting reality.
+      </p>
     </Panel>
   );
 }

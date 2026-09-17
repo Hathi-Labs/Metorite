@@ -34,6 +34,8 @@ the closed set must not leave this endpoint reporting finished work as late.
 
 from __future__ import annotations
 
+import math
+from datetime import date, timedelta
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -849,6 +851,135 @@ def _hours(value: Any) -> float | None:
     return None if value is None else round(float(value), 2)
 
 
+# ── Will this land, and when? — the executive read ──────────────────────────
+#
+# ⚠️ **NO TIME TRACKING EXISTS, and this is built knowing it.** Owner
+# direction, 2026-09-17: *"we'll try to estimate, depending on the start and
+# end dates, due dates, etc., and the estimated number of hours... we can
+# estimate the temporal characteristics of each project without needing to
+# use time tracking."* Everything below derives from data we already hold:
+# `pm_activities` for what actually happened, `pm_tasks.estimate_mins` and
+# `due_at` for the plan, and `gtd_people` for who can do the work.
+#
+# ⚠️ **TWO FORECASTS, DELIBERATELY, AND THEY ANSWER DIFFERENT QUESTIONS.**
+# Velocity says *"at the rate this team actually goes"*. Capacity says *"if
+# the team simply worked the plan"*. Where they disagree, the disagreement is
+# the finding — a plan that needs 40h/week from somebody who has 12 is not a
+# plan, and only the second number can say so.
+#
+# ⚠️ **SCOPE GROWTH IS PART OF THE ANSWER, NOT A FOOTNOTE.** Owner decision,
+# 2026-09-17: when a project adds work faster than it finishes work, this
+# refuses to print a date and says why. Remaining ÷ velocity always yields a
+# date, and that date silently slips every week while nobody is told the
+# reason. "Not converging" is the finding an executive needs.
+
+
+def velocity_sql(scope_where: str) -> str:
+    """Finished per week and CREATED per week, over the same week spine.
+
+    ⚠️ **Both halves, over one spine, in one read.** Two queries over two
+    windows would let the arrival rate and the completion rate describe
+    different fortnights, and their difference is the whole point.
+
+    A quiet week must be a ZERO, not an absent row — the lesson `weekly_sql`
+    records. `generate_series` puts every week on the axis and the LEFT JOINs
+    leave the empty ones at zero, so a fortnight where nothing shipped reads
+    as a fortnight where nothing shipped.
+
+    ⚠️ The CURRENT week is excluded by both arms. It is partial by
+    construction, and a half-finished week dragged into an average makes
+    every Monday look like a collapse — `weekly_sql` flags it instead because
+    a chart can show a partial bar. An average cannot.
+    """
+    return (
+        f"{cycle_cte_sql(scope_where, skip_current_week=True)}"
+        f", weeks AS ("
+        f"  SELECT generate_series("
+        f"    {_WEEK_NOW} - make_interval(weeks => :weeks),"
+        f"    {_WEEK_NOW} - interval '1 week', interval '1 week') AS week"
+        f")"
+        # Arrivals are read off `pm_tasks.created_at` rather than off the
+        # activity spine: a task's birth is not a status_change, so the spine
+        # has no row for it. Same scope and same visibility as the closings.
+        f", born AS ("
+        f"  SELECT date_trunc('week', t.created_at AT TIME ZONE 'UTC') AS week,"
+        f"         count(*) AS n"
+        f"    FROM pm_tasks t"
+        f"   WHERE {scope_where}"
+        f"     AND t.archived_at IS NULL"
+        f"   GROUP BY 1"
+        f")"
+        f" SELECT w.week AS week,"
+        f"        count(c.task_id) AS finished,"
+        f"        coalesce(max(b.n), 0) AS created"
+        f"   FROM weeks w"
+        f"   LEFT JOIN cyc c"
+        f"     ON date_trunc('week', c.finished_at AT TIME ZONE 'UTC') = w.week"
+        f"    AND c.to_category = :done_cat"
+        f"   LEFT JOIN born b ON b.week = w.week"
+        f"  GROUP BY w.week"
+        f"  ORDER BY w.week"
+    )
+
+
+def planned_finish_sql(open_where: str) -> str:
+    """The last due date on open work, and how much of it carries one.
+
+    ⚠️ **The coverage is not decoration.** "Planned to finish 12 Mar" over a
+    backlog where 4 of 71 tasks have a due date is a claim about 4 tasks. The
+    client prints the share or does not print the date.
+    """
+    return (
+        f"SELECT max(t.due_at) AS planned_finish,"
+        f"       count(t.due_at) AS dated,"
+        f"       count(*) AS tasks"
+        f"  FROM pm_tasks t"
+        f"  JOIN pm_task_statuses s ON s.id = t.status_id"
+        f" WHERE {open_where}"
+    )
+
+
+def team_capacity_sql(open_where: str) -> str:
+    """Weekly hours available to the people who actually hold open work here.
+
+    ⚠️ **Scoped to the assignees of THIS node's open work, never to the whole
+    directory.** A company of forty has forty people's hours, and none of that
+    is capacity for this project. The join is what makes the number mean
+    something.
+
+    ⚠️ **`capacity_hours_per_week` is the stated fact and wins.**
+    `working_hours` is the fallback — a JSONB record of days and a start and
+    end, from which a week's hours are arithmetic. Neither is required, so
+    `known` travels beside the total: a sum over 2 of 7 people is not the
+    team's capacity, and it looks identical to one that is.
+    """
+    return (
+        f"WITH holders AS ("
+        f"  SELECT DISTINCT lower(a.assignee) AS email"
+        f"    FROM pm_tasks t"
+        f"    JOIN pm_task_statuses s ON s.id = t.status_id"
+        f"    JOIN pm_task_assignees a ON a.task_id = t.id"
+        f"   WHERE {open_where}"
+        # An agent is not a person with working hours (R10's vocabulary).
+        f"     AND a.assignee NOT LIKE 'agent:%%'"
+        f")"
+        f" SELECT count(*) AS people,"
+        f"        count(p.capacity_hours_per_week) AS with_stated,"
+        f"        coalesce(sum(p.capacity_hours_per_week), 0) AS stated_hours,"
+        # ⚠️ Counted, not summed — the fallback's arithmetic happens in
+        # Python through `work_schedule.working_hours_between`, which is the
+        # ONE place that knows what a `working_hours` record means. A second
+        # interpretation of that JSONB in SQL is how the two start to differ.
+        f"        count(p.working_hours) AS with_schedule,"
+        f"        count(p.end_date) FILTER ("
+        f"          WHERE p.end_date IS NOT NULL AND p.end_date <= "
+        f"                (now() + make_interval(days => :horizon_days))::date"
+        f"        ) AS leaving_soon"
+        f"   FROM holders h"
+        f"   LEFT JOIN gtd_people p ON lower(p.email) = h.email"
+    )
+
+
 @router.get("/analytics/throughput")
 async def throughput(
     project_id: str | None = None,
@@ -1111,3 +1242,274 @@ async def finished(
             "total_cancelled": int(totals.cancelled or 0),
             "median_hours": _hours(totals.median_hours),
         }
+
+#: How many whole weeks of history the forecast reads.
+#:
+#: Six is a compromise the numbers force. Fewer and one good fortnight reads
+#: as a trend. More and a team that changed shape two months ago is forecast
+#: from the team it used to be.
+FORECAST_WEEKS = 6
+
+#: How far ahead "leaving soon" looks, for an engagement that ends.
+LEAVING_HORIZON_DAYS = 90
+
+#: Below this, a forecast is arithmetic on a rumour.
+#:
+#: ⚠️ Two finished weeks is not a velocity, it is two numbers. The verdict
+#: `no_history` is a better answer than a date with no support, because a date
+#: gets quoted in a meeting and a refusal does not.
+MIN_FINISHED_FOR_FORECAST = 3
+
+
+def project_forecast(
+    *,
+    remaining_tasks: int,
+    finished: list[int],
+    created: list[int],
+) -> dict[str, Any]:
+    """Will this land, and when — from what the team ACTUALLY did.
+
+    Pure, and separate from the route so it can be tested without a database.
+    Every branch below is a refusal the caller must be able to reproduce.
+
+    ⚠️ **SCOPE GROWTH IS PART OF THE ANSWER.** Owner decision, 2026-09-17.
+    `remaining ÷ finished_per_week` always yields a date. That date is a lie
+    whenever the backlog is growing, and it is a quiet one: it slips a little
+    every week and nobody is told why. So the rate that matters is
+    **net = finished minus created**, and when net is zero or negative this
+    returns `not_converging` and NO date at all. A project adding 5.1 tasks a
+    week while finishing 4.2 has no completion date, and saying so is the
+    single most useful thing this endpoint does.
+
+    ⚠️ **It refuses more often than it answers, on purpose.** `no_history`,
+    `nothing_left` and `not_converging` are findings. A number invented to
+    fill the space would be quoted in a meeting and believed.
+    """
+    weeks = max(len(finished), len(created))
+    fin_total = sum(finished)
+    made_total = sum(created)
+    per_week_fin = round(fin_total / weeks, 2) if weeks else 0.0
+    per_week_made = round(made_total / weeks, 2) if weeks else 0.0
+    net = round(per_week_fin - per_week_made, 2)
+
+    base: dict[str, Any] = {
+        "weeks_sampled": weeks,
+        "finished_per_week": per_week_fin,
+        "created_per_week": per_week_made,
+        "net_per_week": net,
+        "remaining_tasks": remaining_tasks,
+        "weeks_remaining": None,
+        "finish_date": None,
+    }
+
+    if remaining_tasks <= 0:
+        # Nothing open. Not a forecast at all, and a date here would be a
+        # prediction about work that does not exist.
+        return {**base, "verdict": "nothing_left"}
+
+    if fin_total < MIN_FINISHED_FOR_FORECAST:
+        return {**base, "verdict": "no_history"}
+
+    if net <= 0:
+        # ⚠️ The finding. No date is produced, and the two rates travel so a
+        # reader can see WHY rather than being told a forecast failed.
+        return {**base, "verdict": "not_converging"}
+
+    weeks_left = math.ceil(remaining_tasks / net)
+    return {
+        **base,
+        "verdict": "converging",
+        "weeks_remaining": weeks_left,
+        "finish_date": (
+            date.today() + timedelta(weeks=weeks_left)
+        ).isoformat(),
+    }
+
+
+def capacity_forecast(
+    *, left_mins: int, left_estimated: int, left_tasks: int, hours_per_week: float,
+) -> dict[str, Any]:
+    """The other question: how long if the team simply WORKED THE PLAN.
+
+    ⚠️ **This is not a second opinion on the same question.** Velocity says
+    *"at the rate this team actually goes"*. This says *"if the estimates are
+    right and everybody is free to work them"*. Where the two disagree, the
+    disagreement is the finding — a plan needing 40 hours a week from
+    somebody who has 12 is not a plan, and only this number can say so.
+
+    ⚠️ **It refuses without coverage.** Remaining hours summed over a third of
+    the backlog is a third of the answer, and it looks exactly like the whole
+    one. `estimate_coverage` travels so the client can print the caveat or
+    print nothing.
+    """
+    coverage = (
+        round(left_estimated / left_tasks, 3) if left_tasks > 0 else 1.0
+    )
+    out: dict[str, Any] = {
+        "hours_per_week": round(hours_per_week, 1),
+        "hours_left": round(left_mins / 60, 1),
+        "estimate_coverage": coverage,
+        "weeks_remaining": None,
+        "finish_date": None,
+    }
+    if left_tasks <= 0:
+        return {**out, "verdict": "nothing_left"}
+    if left_estimated <= 0:
+        return {**out, "verdict": "no_estimates"}
+    if hours_per_week <= 0:
+        # Nobody's capacity is known. Dividing by an assumed 40 would put a
+        # confident date on a number the product never asked anybody for.
+        return {**out, "verdict": "no_capacity"}
+    weeks_left = math.ceil((left_mins / 60) / hours_per_week)
+    return {
+        **out,
+        "verdict": "ok",
+        "weeks_remaining": weeks_left,
+        "finish_date": (
+            date.today() + timedelta(weeks=weeks_left)
+        ).isoformat(),
+    }
+
+
+def slip_days(planned: Any, projected: str | None) -> int | None:
+    """How late the forecast is against the plan. Negative means early.
+
+    `None` when either side is missing — an unplanned project cannot slip,
+    and neither can one with no forecast.
+    """
+    if planned is None or not projected:
+        return None
+    plan = planned.date() if hasattr(planned, "date") else planned
+    try:
+        proj = date.fromisoformat(projected)
+    except (TypeError, ValueError):
+        return None
+    return (proj - plan).days
+
+
+@router.get("/analytics/outlook")
+async def outlook(
+    project_id: str | None = None,
+    include_subtree: bool = True,
+    weeks: int = FORECAST_WEEKS,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Will this land, when, and what would have to be true — §9.12.7 wave 7.
+
+    Owner ask, 2026-09-17: an estimated completion date, the number of people,
+    the work left and the work spent, *"and other important information that
+    might be needed by an executive team, CEO, or project/product manager"*.
+
+    ⚠️ **Built with no time tracking, and the owner set that constraint
+    deliberately** — *"we can estimate the temporal characteristics of each
+    project without needing to use time tracking"*. Every number here comes
+    from data the product already holds: `pm_activities` for what happened,
+    `estimate_mins` and `due_at` for the plan, `gtd_people` for who can work.
+
+    ⚠️ **Two forecasts, and they are not redundant.** `velocity` reads the
+    team's actual rate and subtracts the rate work ARRIVES, so a growing
+    backlog reports `not_converging` instead of a date that quietly slips.
+    `capacity` reads remaining estimated hours against the hours the assigned
+    people actually have. Velocity says what will happen. Capacity says what
+    the plan would need. An executive wants both, and their gap most of all.
+
+    ⚠️ **Every block carries its own coverage, and refuses rather than
+    guesses.** Verdicts are `no_history`, `no_estimates`, `no_capacity`,
+    `not_converging`, `nothing_left`. A missing figure is a finding; an
+    invented one gets quoted in a meeting.
+    """
+    weeks = max(2, min(26, int(weeks)))
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        scope_sql = await scope_clause(db, vis, project_id, include_subtree)
+
+        # The one `open` definition this whole module shares. Two panels on
+        # one screen must not disagree about what is still to do.
+        open_where = (
+            f"{scope_sql}"
+            f" AND t.archived_at IS NULL"
+            f" AND ({task_visibility_clause(vis, 't')})"
+            f" AND ({triage_exclusion_clause('t')})"
+            f" AND s.category <> ALL(CAST(:closed AS text[]))"
+        )
+        params: dict[str, Any] = {
+            **vis.params,
+            **scope_params(project_id),
+            "closed": sorted(CLOSING_CATEGORIES),
+        }
+        period = {
+            **vis.params,
+            **scope_params(project_id),
+            "weeks": weeks,
+            "closing": sorted(CLOSING_CATEGORIES),
+            "done_cat": COMPLETED_CATEGORY,
+            "started_cat": STARTED_CATEGORY,
+        }
+
+        rows = (await db.execute(
+            text(velocity_sql(f"{scope_sql} AND ({task_visibility_clause(vis, 't')})")),
+            period,
+        )).fetchall()
+
+        remaining = int((await db.execute(
+            text(total_open_sql(open_where)), params,
+        )).scalar() or 0)
+
+        left = (await db.execute(
+            text(effort_sql(open_where)), params,
+        )).one()
+
+        planned = (await db.execute(
+            text(planned_finish_sql(open_where)), params,
+        )).one()
+
+        cap = (await db.execute(
+            text(team_capacity_sql(open_where)),
+            {**params, "horizon_days": LEAVING_HORIZON_DAYS},
+        )).one()
+
+    velocity = project_forecast(
+        remaining_tasks=remaining,
+        finished=[int(r.finished or 0) for r in rows],
+        created=[int(r.created or 0) for r in rows],
+    )
+    capacity = capacity_forecast(
+        left_mins=int(left.mins or 0),
+        left_estimated=int(left.estimated or 0),
+        left_tasks=int(left.tasks or 0),
+        hours_per_week=float(cap.stated_hours or 0),
+    )
+    return {
+        "project_id": project_id,
+        "scope": "portfolio" if project_id is None else "node",
+        "include_subtree": include_subtree,
+        "weeks": weeks,
+        "velocity": velocity,
+        "capacity": capacity,
+        "plan": {
+            "planned_finish": (
+                planned.planned_finish.isoformat()
+                if planned.planned_finish else None
+            ),
+            # ⚠️ The coverage. "Planned to finish 12 Mar" over a backlog where
+            # 4 of 71 tasks carry a due date is a claim about 4 tasks.
+            "dated": int(planned.dated or 0),
+            "tasks": int(planned.tasks or 0),
+            "slip_days": slip_days(
+                planned.planned_finish, velocity.get("finish_date"),
+            ),
+        },
+        "people": {
+            "holding_open_work": int(cap.people or 0),
+            # `stated_hours` over `with_stated` people. A sum over 2 of 7 is
+            # not the team's capacity and looks identical to one that is.
+            "with_stated_capacity": int(cap.with_stated or 0),
+            "with_schedule_only": int(cap.with_schedule or 0),
+            "hours_per_week": float(cap.stated_hours or 0),
+            # ⚠️ An engagement that ends inside the forecast window is a risk
+            # no velocity can see. `gtd_people.end_date` already exists for
+            # "assignment past it is a mistake" (spec §6.1); this is the same
+            # fact asked at project scale.
+            "leaving_within_90d": int(cap.leaving_soon or 0),
+        },
+    }

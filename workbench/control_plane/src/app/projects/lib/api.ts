@@ -121,6 +121,71 @@ export interface NodeSummary {
  * All three take an OPTIONAL node. Omit it for the portfolio, which is what
  * the Analytics pane passes — that pane holds no node id at all.
  */
+/**
+ * WS-27bk wave 7 — will this land, when, and what would have to be true.
+ *
+ * ⚠️ **Built with NO time tracking.** Owner direction 2026-09-17: derive the
+ * temporal shape of a project from what we already store — the activity
+ * spine, `estimate_mins`, `due_at`, and `gtd_people`. Nothing here is a
+ * logged hour, and nothing may be labelled as one.
+ */
+export interface VelocityForecast {
+  /** Whole weeks of history read. The current week is excluded — it is partial. */
+  weeks_sampled: number;
+  finished_per_week: number;
+  /** ⚠️ The half a naive forecast ignores. Work ARRIVING. */
+  created_per_week: number;
+  /** finished minus created. Zero or less and the backlog never empties. */
+  net_per_week: number;
+  remaining_tasks: number;
+  weeks_remaining: number | null;
+  /** ISO date, or null. Null is a FINDING — read `verdict` for which one. */
+  finish_date: string | null;
+  verdict:
+    | "converging"
+    /** ⚠️ Scope is growing at least as fast as delivery. No date exists. */
+    | "not_converging"
+    | "no_history"
+    | "nothing_left";
+}
+
+export interface CapacityForecast {
+  /** Stated weekly hours of the people holding open work here. */
+  hours_per_week: number;
+  hours_left: number;
+  /** 0–1. Share of open tasks carrying an estimate. */
+  estimate_coverage: number;
+  weeks_remaining: number | null;
+  finish_date: string | null;
+  verdict: "ok" | "no_estimates" | "no_capacity" | "nothing_left";
+}
+
+export interface OutlookReport {
+  project_id: string | null;
+  scope: "portfolio" | "node";
+  weeks: number;
+  /** What WILL happen, at the rate this team actually goes. */
+  velocity: VelocityForecast;
+  /** What the plan would NEED, if the estimates are right. */
+  capacity: CapacityForecast;
+  plan: {
+    planned_finish: string | null;
+    /** ⚠️ `dated` of `tasks`. A planned finish over 4 of 71 is about 4. */
+    dated: number;
+    tasks: number;
+    /** Projected minus planned, in days. Negative is early. */
+    slip_days: number | null;
+  };
+  people: {
+    holding_open_work: number;
+    with_stated_capacity: number;
+    with_schedule_only: number;
+    hours_per_week: number;
+    /** An engagement ending inside the window — a risk no velocity can see. */
+    leaving_within_90d: number;
+  };
+}
+
 export interface StuckReport {
   project_id: string | null;
   scope: "portfolio" | "node";
@@ -686,6 +751,8 @@ export const projectsApi = {
     ),
   finished: (nodeId?: string, weeks?: number) =>
     call<FinishedReport>(`analytics/finished${scopeQuery(nodeId, weeks)}`),
+  outlook: (nodeId?: string) =>
+    call<OutlookReport>(`analytics/outlook${scopeQuery(nodeId)}`),
 
   /** §9.12.8 — saved report definitions, and the render of one. */
   reports: () => call<{ reports: ReportRow[] }>("reports"),

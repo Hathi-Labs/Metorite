@@ -136,6 +136,15 @@ def _cases() -> list[tuple[str, str, dict]]:
             A.finished_period_sql(skip_current_week=True),
             {"weeks": 4},
         ),
+        # Wave 7 — the outlook read. Added here in the SAME pull request that
+        # introduced them, which is the whole point of having this file.
+        ("velocity_sql", A.velocity_sql(WHERE), _PERIOD),
+        ("planned_finish_sql", A.planned_finish_sql(WHERE), {}),
+        (
+            "team_capacity_sql",
+            A.team_capacity_sql(WHERE),
+            {"horizon_days": 90},
+        ),
     ]
 
 
