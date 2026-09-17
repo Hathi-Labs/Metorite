@@ -2422,7 +2422,7 @@ function ProjectsWorkspace() {
   // reader those numbers are not this project's alone, which is otherwise
   // an invisible difference between two identical-looking boards.
   const aggregateNote =
-    selectedLevel === "project" && (summary?.children.length ?? 0) > 0
+    selectedLevel === "project" && (summary?.children?.length ?? 0) > 0
       ? `Includes ${summary!.projects} subproject${
           summary!.projects === 1 ? "" : "s"
         }`

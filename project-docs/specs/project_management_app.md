@@ -680,6 +680,32 @@ Every count passes through the caller's own task-visibility clause. A
 roll-up that added rows the reader cannot open is a disclosure channel in a
 summary's clothes.
 
+⚠️ **A parent's OWN tasks are a row, and the row comes first.** Owner
+question, 2026-09-17: *"If a project has subprojects, and the project itself
+has tasks in addition to subprojects."* The subtree walk starts below the
+node, so the node is never among its own descendants. The totals counted its
+tasks and no child row carried them. A project with 12 of its own tasks and
+13 below it showed 25 over rows that added to 13.
+
+The endpoint returns an `own` block beside `children`, and it guarantees
+this: `own.tasks + sum(children.tasks) == tasks`. The dashboard draws `own`
+as the first row, labelled **Direct work**.
+
+**The row is absent in two cases, and each one is a rule.** A leaf has no
+children, so its own work is the whole dashboard and the Progress card
+already states it. A parent that delegates everything owns nothing, and a
+row reading 0 beside real rows looks like a figure that failed to load.
+
+⚠️ **A scope toggle was rejected in its place.** A toggle hides the answer
+behind a control, so the arithmetic only reconciles if the reader thinks to
+click. The failure here is a page that does not add up on FIRST read.
+
+**Fences:** `tests/unit/test_projects_node_summary.py` pins the server
+invariant against a real Postgres (R8).
+`src/app/projects/lib/dashboardRows.test.ts` pins when the row draws. Both
+halves matter. A correct `own` block that the client declines to draw is the
+same defect one layer up.
+
 **Space Settings** changes the name, the icon and the icon colour. Open it
 with a right-click on the space. `pm_projects.icon` holds a themed icon
 NAME, and `pm_projects.icon_slot` holds a slot from 1 to 8 on the
