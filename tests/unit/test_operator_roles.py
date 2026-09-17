@@ -268,10 +268,17 @@ def test_an_editor_may_not_grant_above_the_threshold(client, eng):
     assert r.status_code == 403, r.text
 
 
-def test_an_admin_grant_above_the_threshold_needs_the_WINDOW(client, eng):
+def test_an_admin_grant_above_the_threshold_needs_the_WINDOW(
+    client, eng, monkeypatch,
+):
     """Spec §5: "Grant credits above the threshold" is **elevated** - admin
     AND a live window. Until 2026-08-30 this test asserted plain-admin 200,
     encoding the exact weakening the console review caught."""
+    # ⚠️ **D72 turned elevation OFF by default (2026-09-18).** This test is
+    # about the WINDOW, which is still the mechanism when a deployment asks
+    # for one — so it pins the flag ON rather than being deleted. The rank
+    # half it also covers is unaffected by D72 and still binds either way.
+    monkeypatch.setenv("OPERATOR_ELEVATION_REQUIRED", "true")
     from customer_console import operator_roles
 
     slug = _org(eng)

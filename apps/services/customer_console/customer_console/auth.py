@@ -321,6 +321,15 @@ def _enforce_role(request: Request, identity: StaffIdentity) -> None:
     if not rule.elevated:
         return
 
+    # ⚠️ **D72 (2026-09-18) — elevation is OFF unless a deployment asks for
+    # it.** The rank check above already ran and still binds; this is the
+    # second factor on top of a rank the person holds. With two operators who
+    # are both owners, it stood between the owner and a reversible act rather
+    # than between an attacker and the data. `operator_elevation` carries the
+    # reasoning and the trigger to turn it back on.
+    if not operator_elevation.elevation_required():
+        return
+
     # D64.4 — the sharp edges need a WINDOW as well as the role. The window is
     # read per request, so one that expired mid-session stops the next action
     # rather than the next sign-in.

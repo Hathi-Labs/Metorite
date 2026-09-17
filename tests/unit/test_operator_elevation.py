@@ -24,6 +24,30 @@ from sqlalchemy import create_engine, text
 
 from tests.unit._customer_console_ladder import apply_ladder
 
+REPO = pathlib.Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(autouse=True)
+def _elevation_on(monkeypatch):
+    """⚠️ **D72 turned elevation OFF by default. This module tests the ON path.**
+
+    Every test below exercises the WINDOW — that it is demanded, that it
+    expires, that closing it early ends the privilege. The mechanism still
+    exists and must still work, because the trigger to turn it back on is
+    written down: the first operator who is not an owner of the company.
+
+    Four of these tests failed the moment the default flipped, which is the
+    fence doing its job — a reversal of D64.4 should not pass silently. They
+    are kept and pinned to the flag rather than deleted, so re-enabling
+    elevation cannot quietly ship broken.
+
+    `TestElevationIsOffByDefault` below passes an explicit env dict, and
+    `TestTheOwnerCanJustDoIt` clears the variable, so both read the DEFAULT
+    rather than this fixture.
+    """
+    monkeypatch.setenv("OPERATOR_ELEVATION_REQUIRED", "true")
+
+
 _URL = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
 
 pytestmark = pytest.mark.skipif(
@@ -334,3 +358,133 @@ def test_this_suite_is_named_in_the_spec_verification_block() -> None:
         _ROOT / "project-docs" / "specs" / "operator_identity_and_access.md"
     ).read_text(encoding="utf-8")
     assert "tests/unit/test_operator_elevation.py" in spec
+
+
+# ── D72: elevation is OFF by default (owner decision, 2026-09-18) ───────────
+#
+# ⚠️ **This amends D64.4, and the reason is the company rather than the
+# threat.** D64.4 was written for a staff directory with mixed roles, where a
+# hijacked admin tab is a real and separate risk. There are two operators
+# today, both `admin`, both owners. The window stood between the owner and a
+# reversible act — and the owner did not recognise the 403 as their own
+# control while onboarding a customer.
+#
+# What these tests pin is the HALF THAT DID NOT CHANGE. A flag that quietly
+# relaxed the rank matrix as well would be a much larger change wearing this
+# one's clothes.
+
+
+class TestElevationIsOffByDefault:
+    def test_a_deployment_that_says_nothing_demands_no_window(self):
+        from customer_console.operator_elevation import elevation_required
+
+        assert elevation_required({}) is False
+
+    def test_it_turns_back_on_with_one_variable(self):
+        from customer_console.operator_elevation import (
+            ELEVATION_FLAG,
+            elevation_required,
+        )
+
+        for raw in ("1", "true", "TRUE", "yes", "on"):
+            assert elevation_required({ELEVATION_FLAG: raw}) is True
+
+    def test_anything_else_reads_as_off(self):
+        from customer_console.operator_elevation import (
+            ELEVATION_FLAG,
+            elevation_required,
+        )
+
+        for raw in ("", "0", "false", "no", "off", "maybe"):
+            assert elevation_required({ELEVATION_FLAG: raw}) is False
+
+
+class TestTheRankMatrixIsUNTOUCHED:
+    """⚠️ The half D72 does not change. Elevation was the SECOND factor on a
+    rank the person already held; the rank itself still binds."""
+
+    def test_a_viewer_is_still_refused_a_sharp_route(self):
+        from customer_console import operator_roles
+        from customer_console.operators import VIEWER
+
+        with pytest.raises(operator_roles.RoleForbidden):
+            operator_roles.check_route(VIEWER, "POST", "/orgs/lifecycle")
+
+    def test_an_editor_is_still_refused_an_admin_route(self):
+        from customer_console import operator_roles
+        from customer_console.operators import EDITOR
+
+        with pytest.raises(operator_roles.RoleForbidden):
+            operator_roles.check_route(EDITOR, "POST", "/orgs/lifecycle")
+
+    def test_an_admin_may_reach_it(self):
+        from customer_console import operator_roles
+        from customer_console.operators import ADMIN
+
+        rule = operator_roles.check_route(ADMIN, "POST", "/orgs/lifecycle")
+        # ⚠️ The marker STAYS true. It records which routes are sharp, which is
+        # still correct and still worth having written down. D72 decides
+        # whether a window is DEMANDED, not which routes would demand one.
+        assert rule.elevated is True
+
+    def test_an_editor_is_still_refused_a_large_credit_grant(self):
+        """The rank half of the credit guard, which D72 also leaves alone."""
+        from decimal import Decimal
+
+        from customer_console import operator_roles
+        from customer_console.operators import EDITOR
+
+        with pytest.raises(operator_roles.RoleForbidden):
+            operator_roles.check_credit_amount(
+                EDITOR, Decimal(operator_roles.DEFAULT_CREDIT_ELEVATION) + 1
+            )
+
+
+class TestTheSwitchIsReadAtBOTHEnforcementPoints:
+    """Two places demand a window. A flag wired into one of them leaves the
+    other refusing, which is the confusing half-state this replaces."""
+
+    def test_the_session_matrix_reads_it(self):
+        src = (
+            REPO / "apps/services/customer_console/customer_console/auth.py"
+        ).read_text(encoding="utf-8")
+        assert "operator_elevation.elevation_required()" in src
+
+    def test_the_credit_guard_reads_it(self):
+        src = (
+            REPO / "apps/services/customer_console/customer_console/main.py"
+        ).read_text(encoding="utf-8")
+        assert "operator_elevation.elevation_required()" in src
+
+
+class TestTheOwnerCanJustDoIt:
+    """⚠️ D72's actual claim, end to end, through the real app.
+
+    The owner hit a 403 activating a customer's account and could not tell it
+    was their own control. These run with the flag OFF — the default every
+    deployment now gets — and prove an admin reaches the sharp routes with no
+    window at all.
+    """
+
+    def test_an_admin_suspends_with_NO_window(self, client, eng, monkeypatch):
+        monkeypatch.delenv("OPERATOR_ELEVATION_REQUIRED", raising=False)
+        _, _, admin = _make(eng, "admin")
+        # No `/operators/elevate` call anywhere above this line.
+        r = _suspend(client, admin, _org(eng))
+        assert r.status_code == 200, r.text
+
+    def test_an_editor_is_STILL_refused_the_same_route(
+        self, client, eng, monkeypatch,
+    ):
+        """The rank half, with the flag off. If this ever passes, D72 has
+        become a much larger change than the one that was asked for."""
+        monkeypatch.delenv("OPERATOR_ELEVATION_REQUIRED", raising=False)
+        _, _, editor = _make(eng, "editor")
+        assert _suspend(client, editor, _org(eng)).status_code == 403
+
+    def test_a_viewer_is_STILL_refused_the_same_route(
+        self, client, eng, monkeypatch,
+    ):
+        monkeypatch.delenv("OPERATOR_ELEVATION_REQUIRED", raising=False)
+        _, _, viewer = _make(eng, "viewer")
+        assert _suspend(client, viewer, _org(eng)).status_code == 403

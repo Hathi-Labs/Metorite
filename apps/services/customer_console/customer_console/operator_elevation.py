@@ -30,11 +30,13 @@ _log = logging.getLogger("platform.operators")
 
 __all__ = [
     "DEFAULT_TTL_MINUTES",
+    "ELEVATION_FLAG",
     "MIN_REASON_CHARS",
     "ElevationRefused",
     "NotElevated",
     "check_reason",
     "check_window",
+    "elevation_required",
     "may_elevate",
     "ttl",
 ]
@@ -46,6 +48,50 @@ DEFAULT_TTL_MINUTES = 30
 #: A reason shorter than this is not a reason. The floor is deliberately low —
 #: the point is to make somebody type an intent, not to police prose.
 MIN_REASON_CHARS = 12
+
+
+#: ⚠️ **ELEVATION IS OFF BY DEFAULT — D72, owner decision 2026-09-18.**
+#:
+#: D64.4 said *"no standing destructive privilege"*: an admin held the right to
+#: elevate, not the privilege. This amends that. The owner's reasoning, taken
+#: after hitting it while onboarding a customer:
+#:
+#: > *"Really basic. Simple role-based, and since I only have admins, I want to
+#: > be able to do whatever."*
+#:
+#: **What changed is the company, not the threat.** D64.4 was written for a
+#: staff directory with mixed roles, where a hijacked admin tab is a real and
+#: separate risk. There are TWO operators today, both `admin`, and both are
+#: owners of the business. The window was not standing between an attacker and
+#: the data — it was standing between the owner and a routine, reversible act,
+#: and the owner could not recognise the refusal as their own control.
+#:
+#: **The rank check is untouched.** `viewer` and `editor` are still refused by
+#: the §5 matrix exactly as before. What this removes is the second factor on
+#: top of a rank the person already holds.
+#:
+#: ⚠️ **The `elevated=True` markers in the MATRIX STAY, and deleting them is
+#: not the same change.** They record which nine routes are the sharp ones, and
+#: that judgement is still correct and still worth having written down. This
+#: flag decides whether a window is DEMANDED; the marker decides which routes
+#: would demand one.
+#:
+#: **Turn it back on with `OPERATOR_ELEVATION_REQUIRED=true`.** The trigger to
+#: revisit, named now so it is not left to memory: **the first operator who is
+#: not an owner of the company.** At that point the threat D64.4 describes is
+#: real again and this is one environment variable.
+ELEVATION_FLAG = "OPERATOR_ELEVATION_REQUIRED"
+
+
+def elevation_required(env: dict[str, str] | None = None) -> bool:
+    """Does a sharp route demand an open window as well as the rank? (D72)
+
+    Defaults **False**. A deployment that says nothing gets simple role-based
+    access, which is what the owner asked for.
+    """
+    source = os.environ if env is None else env
+    raw = (source.get(ELEVATION_FLAG) or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 class ElevationRefused(Exception):

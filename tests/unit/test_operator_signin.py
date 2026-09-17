@@ -1279,8 +1279,15 @@ def _mkorg(eng, slug: str) -> None:
             {"s": slug, "n": slug})
 
 
-def test_a_big_grant_is_elevated_admin_AND_window(client, eng, issuer):
+def test_a_big_grant_is_elevated_admin_AND_window(
+    client, eng, issuer, monkeypatch,
+):
     """Spec §5: above the threshold a grant is ELEVATED, not merely admin."""
+    # ⚠️ **D72 turned elevation OFF by default (2026-09-18).** This test is
+    # about the WINDOW, which is still the mechanism when a deployment asks
+    # for one — so it pins the flag ON rather than being deleted. The rank
+    # half it also covers is unaffected by D72 and still binds either way.
+    monkeypatch.setenv("OPERATOR_ELEVATION_REQUIRED", "true")
     email = _email()
     _register(eng, email, role="admin")
     issuer["serve"](_payload(email))

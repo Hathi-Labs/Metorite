@@ -5080,6 +5080,11 @@ def _require_credit_privilege(staff: StaffIdentity, credits: Decimal) -> None:
         raise HTTPException(status_code=403, detail="Forbidden") from None
     if credits <= operator_roles.credit_elevation():
         return
+    # ⚠️ D72 — the same switch as `auth._enforce_role`. The RANK half above
+    # still binds, so an editor is still refused a grant above the threshold.
+    # What is off is the window on top of an admin's own rank.
+    if not operator_elevation.elevation_required():
+        return
     with get_engine().begin() as conn:
         window = store.operator_elevation_live(conn, staff.operator_id)
     try:
