@@ -66,6 +66,7 @@ from gateway.routes.projects.core import (
     triage_exclusion_clause,
     update_row,
 )
+from pydantic import BaseModel
 from sqlalchemy import text
 
 #: The sections a definition may ask for, and the order they render in.
@@ -204,8 +205,40 @@ async def _visible_report(db: Any, vis: Any, report_id: str) -> Any:
     return row
 
 
+class ReportModel(BaseModel):
+    """One saved report, as the wire sees it.
+
+    ⚠️ **This model did not exist, and `_report_dict` called
+    `row_to_dict(row)` with no model at all.** `row_to_dict(row, model)` has
+    always taken two arguments, so EVERY call raised `TypeError` and
+    `POST /projects/reports` answered 500 from the day §9.12.8 slice 1
+    merged. `GET /projects/reports` looked healthy only because the list was
+    empty — the first saved report would have taken it down too.
+
+    Nothing caught it because `test_projects_reports.py` reads the module's
+    SOURCE. It asserts the route exists and the SQL has the right shape; it
+    never calls the route. That is the same gap that shipped
+    `/analytics/stuck` broken, two features apart.
+    """
+
+    id: str
+    #: NULL means the PORTFOLIO. `_report_dict` says so as `scope` rather
+    #: than leaving two clients to infer it two different ways.
+    project_id: str | None = None
+    name: str
+    config: dict[str, Any] = {}
+    #: Migration 205. Both default off — a member arms the schedule, and only
+    #: the deployment arms delivery.
+    schedule: str | None = None
+    enabled: bool = False
+    last_sent_at: Any | None = None
+    created_by: str | None = None
+    created_at: Any | None = None
+    updated_at: Any | None = None
+
+
 def _report_dict(row: Any) -> dict[str, Any]:
-    out = row_to_dict(row)
+    out = row_to_dict(row, ReportModel)
     out["config"] = normalise_report_config(out.get("config"))
     out["project_id"] = (
         str(row.project_id) if row.project_id is not None else None

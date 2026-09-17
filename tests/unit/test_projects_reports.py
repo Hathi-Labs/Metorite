@@ -263,3 +263,121 @@ class TestThePortfolioReportKeepsItsTenant:
                     ),
                     {"o": org},
                 )
+
+
+# ── The wire shape, against a real row ──────────────────────────────────────
+#
+# ⚠️ **`POST /projects/reports` answered 500 from the day slice 1 merged, and
+# this file stayed green.** `_report_dict` called `row_to_dict(row)` with one
+# argument; the helper has always taken two. Every create raised TypeError.
+# `GET /projects/reports` looked healthy ONLY because the list was empty — the
+# first saved report would have taken it down as well.
+#
+# Everything above this line reads the module's SOURCE. It proves the route is
+# declared and the SQL has the right shape, and it cannot prove the route runs.
+# That is the same gap that shipped `/analytics/stuck` broken two features
+# earlier. These tests call the real serialiser with a real row.
+
+
+class TestTheSerialiserAgainstARealRow:
+    def test_a_saved_report_serialises(self, db):
+        """The test that was missing. It needs no assertion about values —
+        `_report_dict` either runs or it raises, and it raised."""
+        from gateway.routes.projects.reports import _report_dict
+
+        with db.begin() as c:
+            org = str(c.execute(
+                text("SELECT id FROM organization ORDER BY created_at LIMIT 1")
+            ).scalar_one())
+            rid = str(c.execute(
+                text(
+                    "INSERT INTO pm_reports (organization_id, name, config,"
+                    " created_by) VALUES (CAST(:o AS uuid), :n, '{}'::jsonb,"
+                    " 'rep@example.test') RETURNING id"
+                ),
+                {"o": org, "n": f"ser-{uuid.uuid4().hex[:6]}"},
+            ).scalar_one())
+            row = c.execute(
+                text("SELECT * FROM pm_reports WHERE id = CAST(:i AS uuid)"),
+                {"i": rid},
+            ).one()
+            out = _report_dict(row)
+            c.execute(
+                text("DELETE FROM pm_reports WHERE id = CAST(:i AS uuid)"),
+                {"i": rid},
+            )
+
+        assert out["id"] == rid
+        # NULL project_id means the portfolio, and the response SAYS so rather
+        # than leaving two clients to infer it two different ways.
+        assert out["project_id"] is None
+        assert out["scope"] == "portfolio"
+        # Defaults from migration 205 — both locks off.
+        assert out["enabled"] is False
+        assert out["schedule"] is None
+
+    def test_a_node_scoped_report_says_node(self, db):
+        from gateway.routes.projects.reports import _report_dict
+
+        with db.begin() as c:
+            org = str(c.execute(
+                text("SELECT id FROM organization ORDER BY created_at LIMIT 1")
+            ).scalar_one())
+            pid = str(c.execute(
+                text(
+                    "INSERT INTO pm_projects (name, status, source, created_by,"
+                    " organization_id, timezone, owns_statuses)"
+                    " VALUES (:n,'active','manual','rep@example.test',"
+                    " CAST(:o AS uuid),'Asia/Kolkata',true) RETURNING id"
+                ),
+                {"n": f"rep-node-{uuid.uuid4().hex[:6]}", "o": org},
+            ).scalar_one())
+            rid = str(c.execute(
+                text(
+                    "INSERT INTO pm_reports (project_id, organization_id, name,"
+                    " config, created_by) VALUES (CAST(:p AS uuid),"
+                    " CAST(:o AS uuid), :n, '{}'::jsonb, 'rep@example.test')"
+                    " RETURNING id"
+                ),
+                {"p": pid, "o": org, "n": f"ser-{uuid.uuid4().hex[:6]}"},
+            ).scalar_one())
+            row = c.execute(
+                text("SELECT * FROM pm_reports WHERE id = CAST(:i AS uuid)"),
+                {"i": rid},
+            ).one()
+            out = _report_dict(row)
+            c.execute(
+                text("DELETE FROM pm_reports WHERE id = CAST(:i AS uuid)"),
+                {"i": rid},
+            )
+            c.execute(
+                text("DELETE FROM pm_projects WHERE id = CAST(:i AS uuid)"),
+                {"i": pid},
+            )
+
+        assert out["scope"] == "node"
+        assert out["project_id"] == pid
+
+    def test_every_column_the_table_has_is_carried(self, db):
+        """⚠️ Drift catcher. A migration that adds a column to `pm_reports`
+        and forgets `ReportModel` drops that column silently from every
+        response — the model filters, it does not fail."""
+        from gateway.routes.projects.reports import ReportModel
+
+        with db.begin() as c:
+            cols = {
+                r.column_name for r in c.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns"
+                        " WHERE table_name = 'pm_reports'"
+                    )
+                )
+            }
+        known = set(ReportModel.model_fields)
+        # `organization_id` is deliberately absent: the tenant is RLS's job
+        # and no client has any use for the id.
+        missing = cols - known - {"organization_id"}
+        assert not missing, (
+            f"pm_reports has columns ReportModel does not carry: {missing}."
+            " Add them to the model, or say here why they stay server-side."
+        )
