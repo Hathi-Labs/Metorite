@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 142
+-- Tables in this phase: 143
 --
 -- ⚠️ NOT COVERED BY THIS FILE — `organization_id` already means something
 -- else on these tables, so scoping them by that name would corrupt a
@@ -1186,6 +1186,18 @@ ALTER TABLE pm_recurrences ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE pm_recurrences ADD CONSTRAINT pm_recurrences_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS pm_recurrences_org_idx ON pm_recurrences (organization_id);
+
+-- pm_report_recipients
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_report_recipients WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_report_recipients still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_report_recipients ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_report_recipients ADD CONSTRAINT pm_report_recipients_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_report_recipients_org_idx ON pm_report_recipients (organization_id);
 
 -- pm_reports
 DO $$
