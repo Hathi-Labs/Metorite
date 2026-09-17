@@ -8,8 +8,9 @@ from contextlib import asynccontextmanager
 from acb_auth import (UserContext, UserRole, get_current_user,
                       require_authenticated, require_role)
 from acb_common import configure_logging, get_logger, get_settings
-from acb_common.db import clear_tenant, release_tenant
-from fastapi import BackgroundTasks, Depends, FastAPI
+from acb_common.db import TenantUnbound, clear_tenant, release_tenant
+from fastapi import BackgroundTasks, Depends, FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from gateway.build_info import build_sha
@@ -629,6 +630,55 @@ app = FastAPI(
     redoc_url="/redoc" if _docs_enabled else None,
     openapi_url="/openapi.json" if _docs_enabled else None,
 )
+
+# ── TenantUnbound answers JSON, not a plain-text 500 ────────────────────────
+#
+# ⚠️ **1,120 of these in three days, and every one reached the browser as the
+# five words `Internal Server Error`.** Starlette's default 500 body is plain
+# text, so a client that does `res.json()` gets
+# *"Unexpected token 'I', \"Internal S\"... is not valid JSON"* — a parser
+# error standing in front of the real one. Owner report, 2026-09-17, on the
+# Projects app; the same crash was also hitting `/apps/pins` and the chat
+# message routes.
+#
+# **What actually happens.** `acb_auth.deps` branch 1b answers a Bearer-matched
+# call that carries NO `X-User-Email` with a service context, and it never
+# calls `bind_tenant`. Any tenant-scoped route then raises here. That is why it
+# is intermittent, why it is spread across unrelated apps, and why it fires for
+# signed-in users whose org membership is perfectly healthy.
+#
+# ⚠️ **THE STATUS STAYS 500, DELIBERATELY.** A 401 would read as "sign in
+# again" and the proxy would act on it — logging people out over a header that
+# was merely late is a worse failure than the one being fixed. Reaching a
+# tenant-scoped route with no tenant is OUR defect, and 5xx is the honest
+# class for it. What changes is that the body is now readable and the log line
+# names the path, so H-115 can be found rather than guessed at.
+#
+# ⚠️ This is the SYMPTOM. The cause is branch 1b, and it is filed as H-115.
+@app.exception_handler(TenantUnbound)
+async def _tenant_unbound(request: Request, exc: TenantUnbound) -> JSONResponse:
+    _log.error(
+        "tenant.unbound",
+        extra={
+            "tenant_path": request.url.path,
+            # The header whose absence sends branch 1b down the service path.
+            # Logged as present/absent, never the address itself.
+            "tenant_had_user_header": bool(request.headers.get("x-user-email")),
+        },
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": (
+                "No organization is bound to this request, so the data it asks"
+                " for cannot be scoped. This is a fault on our side, not a"
+                " problem with your account. Reload the page — if it repeats,"
+                " the request is reaching the server without its session."
+            ),
+            "code": "tenant_unbound",
+        },
+    )
+
 
 # ── Tenant scope (MT-1c / H2) ── every HTTP request runs inside its own tenant
 # scope: opened empty here, filled in by `_with_resolved_access` when the auth
