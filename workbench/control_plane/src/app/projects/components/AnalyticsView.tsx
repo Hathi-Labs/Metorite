@@ -31,6 +31,7 @@ import type {
   FinishedReport,
   LoadReport,
   NodeSummary,
+  OutlookReport,
   StuckReport,
   SummaryChild,
   ThroughputReport,
@@ -38,6 +39,7 @@ import type {
 import {
   FinishedPanel,
   LoadPanel,
+  OutlookPanel,
   StuckPanel,
   ThroughputPanel,
 } from "./AnalyticsPanels";
@@ -130,6 +132,7 @@ export default function AnalyticsView({
   load,
   throughput,
   finished,
+  outlook,
   onOpen,
 }: {
   /** The PORTFOLIO roll-up — every space the caller can see. */
@@ -145,6 +148,14 @@ export default function AnalyticsView({
   load: LoadReport | null;
   throughput: ThroughputReport | null;
   finished: FinishedReport | null;
+  /**
+   * Wave 7 — the forecast, at PORTFOLIO scope.
+   *
+   * ⚠️ Its refusals are findings, not empty states. `not_converging`
+   * across the whole portfolio is the most important sentence this pane
+   * can print, and it appears where no date would.
+   */
+  outlook: OutlookReport | null;
   onOpen: (id: string) => void;
 }) {
   /**
@@ -192,6 +203,14 @@ export default function AnalyticsView({
           The strip says how much work there is and the matrix says where it
           sits. These three say what is wrong with it, which is what somebody
           opening this pane came to find out. */}
+      {/* ⚠️ The forecast LEADS, full width. It is the one panel that answers
+          the question somebody opens a portfolio view to ask, and the four
+          below are the evidence behind it. */}
+      {outlook && (
+        <div className="mb-3">
+          <OutlookPanel data={outlook} />
+        </div>
+      )}
       {(stuck || load || throughput || finished) && (
         <div className="mb-5 grid gap-3 lg:grid-cols-2 2xl:grid-cols-4">
           {stuck && <StuckPanel data={stuck} />}

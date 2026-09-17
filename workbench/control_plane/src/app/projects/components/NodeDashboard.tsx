@@ -38,6 +38,7 @@ import type {
   FinishedReport,
   LoadReport,
   NodeSummary,
+  OutlookReport,
   StuckReport,
   SummaryChild,
   ThroughputReport,
@@ -45,6 +46,7 @@ import type {
 import {
   FinishedPanel,
   LoadPanel,
+  OutlookPanel,
   StuckPanel,
   ThroughputPanel,
 } from "./AnalyticsPanels";
@@ -373,6 +375,7 @@ export default function NodeDashboard({
   load,
   throughput,
   finished,
+  outlook,
 }: {
   summary: NodeSummary;
   /** Drill into a child. The tree selection and this view stay in step. */
@@ -388,6 +391,8 @@ export default function NodeDashboard({
   load?: LoadReport | null;
   throughput?: ThroughputReport | null;
   finished?: FinishedReport | null;
+  /** Wave 7 — will this land, and when. Its own refusals are findings. */
+  outlook?: OutlookReport | null;
 }) {
   const level = summary.level;
   // ⚠️ `by_category` is typed as present and is not guaranteed to be. A summary
@@ -514,6 +519,14 @@ export default function NodeDashboard({
           than a project that has not started. */}
       {(summary.tasks ?? 0) > 0 && (
         <div className="mt-5 grid grid-cols-1 gap-3 lg:grid-cols-2">
+          {/* ⚠️ The forecast leads. It is the one panel that answers the
+              question an executive opened this page to ask, and the other
+              four are how it got there. */}
+          {outlook ? (
+            <div className="lg:col-span-2">
+              <OutlookPanel data={outlook} />
+            </div>
+          ) : null}
           {load ? <LoadPanel data={load} /> : null}
           {stuck ? <StuckPanel data={stuck} /> : null}
           {throughput ? <ThroughputPanel data={throughput} /> : null}

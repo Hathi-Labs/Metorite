@@ -32,6 +32,7 @@ import {
   type NodeSummary,
   type StuckReport,
   type LoadReport,
+  type OutlookReport,
   type ThroughputReport,
   type FinishedReport,
   type ViewRow,
@@ -597,6 +598,7 @@ function ProjectsWorkspace() {
   // dashboard wait for the slowest of them.
   const [stuck, setStuck] = useState<StuckReport | null>(null);
   const [load, setLoad] = useState<LoadReport | null>(null);
+  const [outlook, setOutlook] = useState<OutlookReport | null>(null);
   const [throughput, setThroughput] = useState<ThroughputReport | null>(null);
   const [finished, setFinished] = useState<FinishedReport | null>(null);
   const toast = useToast();
@@ -1157,6 +1159,7 @@ function ProjectsWorkspace() {
     setLoad(null);
     setThroughput(null);
     setFinished(null);
+    setOutlook(null);
     // ⚠️ A rejected panel stays null and renders NOTHING, rather than
     // rendering zeroes. Zeroes would read as "no stuck work", which is the
     // opposite of "we could not ask".
@@ -1175,6 +1178,10 @@ function ProjectsWorkspace() {
     projectsApi.finished(analyticsNode).then(
       (r) => !cancelled && setFinished(r),
       () => !cancelled && setFinished(null)
+    );
+    projectsApi.outlook(analyticsNode).then(
+      (r) => !cancelled && setOutlook(r),
+      () => !cancelled && setOutlook(null)
     );
     return () => {
       cancelled = true;
@@ -2490,6 +2497,7 @@ function ProjectsWorkspace() {
           load={load}
           throughput={throughput}
           finished={finished}
+          outlook={outlook}
           onOpen={(id) => {
             const row = flatten(visibleRoots).find((e) => e.node.id === id);
             if (row) {
@@ -2522,6 +2530,7 @@ function ProjectsWorkspace() {
           load={load}
           throughput={throughput}
           finished={finished}
+          outlook={outlook}
         />
       ) : (
         renderState("loading", "Counting the work below…")
@@ -2672,6 +2681,7 @@ function ProjectsWorkspace() {
                 load={load}
                 throughput={throughput}
                 finished={finished}
+                outlook={outlook}
               />
             ) : (
               renderState("loading", "Counting the work below…")

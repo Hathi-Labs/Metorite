@@ -39,11 +39,21 @@ import {
 import type {
   FinishedReport,
   LoadReport,
+  OutlookReport,
   StuckReport,
   ThroughputReport,
 } from "../lib/api";
 import { asList, bandCount, staleBands } from "../lib/analyticsRead";
 import { effortDisplay, personEffort } from "../lib/effort";
+import {
+  type OutlookLine,
+  type Tone,
+  capacityLine,
+  forecastGap,
+  headlineVerdict,
+  peopleLine,
+  velocityLine,
+} from "../lib/outlook";
 
 /**
  * The ageing bands, in the order the server sends them.
@@ -639,6 +649,98 @@ export function FinishedPanel({ data }: { data: FinishedReport }) {
           </p>
         </>
       )}
+    </Panel>
+  );
+}
+
+/**
+ * Will this land, and when — the executive read (wave 7).
+ *
+ * ⚠️ **Four sentences, not four numbers.** Owner ask 2026-09-17 was for an
+ * estimated completion date and *"other important information that might be
+ * needed by an executive team, CEO, or project/product manager"*. The server
+ * refuses to forecast far more often than it forecasts, and each refusal is
+ * a finding — "scope is growing faster than delivery" is worth more than any
+ * date this endpoint could print. So every state renders as a sentence.
+ * `outlook.ts` holds the wording and `outlook.test.ts` pins it.
+ *
+ * ⚠️ **Nothing here is a logged hour.** This product records none.
+ */
+const TONE: Record<Tone, string> = {
+  // Through `statusAccent`, never a raw palette class (AGENTS.md rule 5).
+  good: statusAccent({ category: "done" }).text,
+  bad: statusAccent({ category: "cancelled" }).text,
+  warn: accentForHue("amber").text,
+  quiet: "text-muted-foreground",
+};
+
+function Verdict({ label, line }: { label: string; line: OutlookLine }) {
+  return (
+    <div className="min-w-0">
+      {/* ⚠️ Sentence case, not tracked-out capitals. Rule 10 of the
+          visual-review catalogue names an ALL-CAPS eyebrow as one of the
+          commonest tells of generated design, and this panel had four. */}
+      <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
+      <p className={`text-sm font-semibold ${TONE[line.tone]}`}>
+        {line.headline}
+      </p>
+      {/* ⚠️ The detail is NOT a tooltip. A refusal that only explains itself
+          on hover is a refusal most readers never understand — and hover
+          does not exist on a phone. */}
+      <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+        {line.detail}
+      </p>
+    </div>
+  );
+}
+
+export function OutlookPanel({ data }: { data: OutlookReport }) {
+  const verdict = headlineVerdict(data);
+  const gap = forecastGap(data);
+  const velocity = velocityLine(data.velocity);
+  const capacity = capacityLine(data.capacity);
+  const people = peopleLine(data);
+
+  return (
+    <Panel
+      title="Will this land"
+      hint="Forecast from what the team actually did, against what the plan would need. Estimated — this product records no hours worked."
+    >
+      {/* ⚠️ THE ANSWER FIRST, and at a size nothing else on the page reaches.
+          Photographed 2026-09-17: six equal-weight facts and no verdict, with
+          "79 days late" — the most important number on the portfolio view —
+          set in the third quadrant at the same size as "3 people". BLUF, on
+          a screen: the conclusion, then the evidence for whoever checks it. */}
+      <div className="mb-3">
+        <p className={`text-2xl font-semibold leading-tight ${TONE[verdict.tone]}`}>
+          {verdict.headline}
+        </p>
+        <p className="mt-1 max-w-2xl text-xs leading-snug text-muted-foreground">
+          {verdict.detail}
+        </p>
+      </div>
+
+      {/* ⚠️ The two forecasts disagreed by five months on screen and nothing
+          said so. Both were calm coloured dates in the same size, and the
+          reader was left to subtract them and decide which to believe. */}
+      {gap ? (
+        <div
+          className={`mb-3 rounded-md border border-border bg-muted/40 px-2.5 py-2`}
+        >
+          <p className={`text-xs font-medium ${TONE[gap.tone]}`}>
+            The two forecasts are {gap.headline}
+          </p>
+          <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">
+            {gap.detail}
+          </p>
+        </div>
+      ) : null}
+
+      <div className="grid grid-cols-1 gap-x-4 gap-y-2.5 border-t border-border pt-2.5 sm:grid-cols-3">
+        <Verdict label="At the current rate" line={velocity} />
+        <Verdict label="If the plan holds" line={capacity} />
+        <Verdict label="Who is carrying it" line={people} />
+      </div>
     </Panel>
   );
 }
