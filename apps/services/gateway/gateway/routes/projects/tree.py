@@ -32,22 +32,22 @@ from gateway.routes.projects.core import (
     NODE_KINDS,
     PROJECT_SOURCES,
     RUN_STATES,
-    assert_node_grammar,
-    assert_run_state_allowed,
-    node_kind,
-    node_level,
     GrantModel,
     ProjectIn,
     ProjectModel,
     _tenant_session,
     actor,
     assert_no_project_cycle,
+    assert_node_grammar,
+    assert_run_state_allowed,
     clean_payload,
     count_where,
     diff_changes,
     emit,
     insert_row,
     load_visible_project,
+    node_kind,
+    node_level,
     record_activity,
     record_field_change,
     remap_task_statuses,
@@ -59,9 +59,9 @@ from gateway.routes.projects.core import (
     status_owner_id,
     task_visibility_clause,
     update_row,
-    validate_icon_slot,
     validate_choice,
     validate_grant_subject,
+    validate_icon_slot,
     validate_lifecycle_settings,
 )
 from pydantic import BaseModel
@@ -391,6 +391,136 @@ async def get_portfolio_summary(
     }
 
 
+#: Every PROJECT below a node, each carrying the id of the DIRECT child of
+#: that node it sits under. ``branch_id`` rides down the recursion so the
+#: dashboard can group a grandchild's tasks onto the row a user clicks.
+#:
+#: ⚠️ The walk starts BELOW ``:pid`` — the node is never among its own
+#: descendants. :func:`fold_node_summary` carries the consequence.
+NODE_DESCENDANTS_SQL = (
+    "WITH RECURSIVE sub AS ("
+    "  SELECT id, parent_project_id, name, kind, status,"
+    "         archived_at, id AS branch_id"
+    "    FROM pm_projects WHERE parent_project_id ="
+    "         CAST(:pid AS uuid)"
+    "  UNION ALL"
+    "  SELECT p.id, p.parent_project_id, p.name, p.kind,"
+    "         p.status, p.archived_at, s.branch_id"
+    "    FROM pm_projects p JOIN sub s"
+    "      ON p.parent_project_id = s.id"
+    ") SELECT * FROM sub"
+)
+
+
+def node_counts_sql(visibility_clause: str) -> str:
+    """One grouped read over the whole subtree — project by category.
+
+    Named rather than inlined so a test can run the REAL query against a real
+    database (R8). The counts and the fold beside it had no test at all until
+    2026-09-17, on either side of the wire.
+    """
+    return (
+        "SELECT t.project_id, s.category, count(*) AS n,"
+        # CLOSING_CATEGORIES, not a second literal list: a category added to
+        # the closed set must not leave this one counting finished work late.
+        "       count(*) FILTER ("
+        "         WHERE t.due_at IS NOT NULL"
+        "           AND t.due_at < now()"
+        "           AND s.category <> ALL(CAST(:closed AS text[]))"
+        "       ) AS overdue"
+        "  FROM pm_tasks t"
+        "  JOIN pm_task_statuses s ON s.id = t.status_id"
+        " WHERE t.project_id = ANY(CAST(:ids AS uuid[]))"
+        "   AND t.archived_at IS NULL"
+        f"   AND ({visibility_clause})"
+        " GROUP BY t.project_id, s.category"
+    )
+
+
+def fold_node_summary(
+    project_id: str,
+    rows: Any,
+    descendants: Any,
+) -> dict[str, Any]:
+    """Fold the grouped counts into totals, the node's OWN work, and children.
+
+    Pure, and separated from the route for one reason: nothing tested the
+    roll-up. ``/nodes/{id}/summary`` had no test on either side of the wire,
+    and that is how the hole below survived from 2026-08-31 to 2026-09-17.
+
+    ⚠️ **A parent project's OWN tasks are not in any child row, and they are
+    in the totals.** That is the case the owner asked about — *"the project
+    itself has tasks in addition to subprojects"*. The walk starts BELOW
+    ``project_id``, so the node never appears among its own descendants, and
+    the child loop reads only descendants. The node's own line was computed
+    into ``per_branch[project_id]`` and then dropped on the floor.
+
+    What the reader saw: a KPI strip counting 25 tasks over child rows adding
+    to 13, with no row anywhere carrying the other 12. The arithmetic fails
+    silently — every individual number is correct, and the page as a whole
+    lies. So ``own`` is returned as its own block, and the invariant this
+    function now guarantees is::
+
+        own["tasks"] + sum(child["tasks"] for child in children) == tasks
+
+    ⚠️ ``own`` is ALWAYS present, including when it is zero and when the node
+    has no children. An absent key means "the server did not say", and a
+    client cannot tell that from "the node owns no work" — the same confusion
+    `NodeDashboard`'s Stat tile already had to grow a dash for. The client
+    decides whether to DRAW it. The server does not decide by omitting it.
+    """
+    by_id = {str(r.id): r for r in descendants}
+
+    totals: dict[str, int] = {}
+    overdue_total = 0
+    # Keyed by the DIRECT child the work sits under — `branch_id` rode down
+    # the recursive walk for exactly this. The node's own tasks key on
+    # `project_id`, which is no child's id, so they cannot collide.
+    per_branch: dict[str, dict] = {}
+    for row in rows:
+        category = str(row.category or "todo")
+        totals[category] = totals.get(category, 0) + int(row.n)
+        overdue_total += int(row.overdue or 0)
+        pid = str(row.project_id)
+        branch = pid if pid == project_id else str(
+            getattr(by_id.get(pid), "branch_id", pid),
+        )
+        entry = per_branch.setdefault(
+            branch, {"tasks": 0, "overdue": 0, "by_category": {}},
+        )
+        entry["tasks"] += int(row.n)
+        entry["overdue"] += int(row.overdue or 0)
+        entry["by_category"][category] = (
+            entry["by_category"].get(category, 0) + int(row.n)
+        )
+
+    children = []
+    for row in descendants:
+        if str(row.parent_project_id) != project_id:
+            continue
+        stats = per_branch.get(str(row.id), {})
+        children.append({
+            "id": str(row.id),
+            "name": row.name,
+            "kind": node_kind(getattr(row, "kind", None)),
+            "status": row.status,
+            "archived": row.archived_at is not None,
+            "tasks": stats.get("tasks", 0),
+            "overdue": stats.get("overdue", 0),
+            "by_category": stats.get("by_category", {}),
+        })
+
+    return {
+        "tasks": sum(totals.values()),
+        "overdue": overdue_total,
+        "by_category": totals,
+        "own": per_branch.get(
+            project_id, {"tasks": 0, "overdue": 0, "by_category": {}},
+        ),
+        "children": children,
+    }
+
+
 @router.get("/nodes/{project_id}/summary")
 async def get_node_summary(
     project_id: str, user: UserContext = Depends(get_current_user),
@@ -427,46 +557,16 @@ async def get_node_summary(
         # hold no work), each with the id of the child of `project_id` it
         # sits under, so the dashboard can group by the row a user clicks.
         descendants = (await db.execute(
-            text(
-                "WITH RECURSIVE sub AS ("
-                "  SELECT id, parent_project_id, name, kind, status,"
-                "         archived_at, id AS branch_id"
-                "    FROM pm_projects WHERE parent_project_id ="
-                "         CAST(:pid AS uuid)"
-                "  UNION ALL"
-                "  SELECT p.id, p.parent_project_id, p.name, p.kind,"
-                "         p.status, p.archived_at, s.branch_id"
-                "    FROM pm_projects p JOIN sub s"
-                "      ON p.parent_project_id = s.id"
-                ") SELECT * FROM sub"
-            ),
-            {"pid": project_id},
+            text(NODE_DESCENDANTS_SQL), {"pid": project_id},
         )).fetchall()
 
         # The node itself counts too: a project that carries subprojects
         # aggregates ITS OWN tasks with theirs, which is what "selecting the
         # project aggregates the subproject data" means.
         scope_ids = [project_id] + [str(r.id) for r in descendants]
-        by_id = {str(r.id): r for r in descendants}
 
         rows = (await db.execute(
-            text(
-                f"SELECT t.project_id, s.category, count(*) AS n,"
-                # CLOSING_CATEGORIES, not a second literal list: a category
-                # added to the closed set must not leave this one counting
-                # finished work as late.
-                f"       count(*) FILTER ("
-                f"         WHERE t.due_at IS NOT NULL"
-                f"           AND t.due_at < now()"
-                f"           AND s.category <> ALL(CAST(:closed AS text[]))"
-                f"       ) AS overdue"
-                f"  FROM pm_tasks t"
-                f"  JOIN pm_task_statuses s ON s.id = t.status_id"
-                f" WHERE t.project_id = ANY(CAST(:ids AS uuid[]))"
-                f"   AND t.archived_at IS NULL"
-                f"   AND ({task_visibility_clause(vis, 't')})"
-                f" GROUP BY t.project_id, s.category"
-            ),
+            text(node_counts_sql(task_visibility_clause(vis, "t"))),
             {
                 **vis.params,
                 "ids": scope_ids,
@@ -474,59 +574,18 @@ async def get_node_summary(
             },
         )).fetchall()
 
-    # Fold the grouped rows up two ways: the node's own totals, and one
-    # line per direct child. Done in Python because the second fold keys on
-    # `branch_id`, which the SQL above already carried down the walk.
-    totals: dict[str, int] = {}
-    overdue_total = 0
-    per_branch: dict[str, dict] = {}
-    for row in rows:
-        category = str(row.category or "todo")
-        totals[category] = totals.get(category, 0) + int(row.n)
-        overdue_total += int(row.overdue or 0)
-        pid = str(row.project_id)
-        branch = pid if pid == project_id else str(
-            getattr(by_id.get(pid), "branch_id", pid),
-        )
-        entry = per_branch.setdefault(
-            branch, {"tasks": 0, "overdue": 0, "by_category": {}},
-        )
-        entry["tasks"] += int(row.n)
-        entry["overdue"] += int(row.overdue or 0)
-        entry["by_category"][category] = (
-            entry["by_category"].get(category, 0) + int(row.n)
-        )
-
-    children = []
-    for row in descendants:
-        if str(row.parent_project_id) != project_id:
-            continue
-        stats = per_branch.get(str(row.id), {})
-        children.append({
-            "id": str(row.id),
-            "name": row.name,
-            "kind": node_kind(getattr(row, "kind", None)),
-            "status": row.status,
-            "archived": row.archived_at is not None,
-            "tasks": stats.get("tasks", 0),
-            "overdue": stats.get("overdue", 0),
-            "by_category": stats.get("by_category", {}),
-        })
-
+    folded = fold_node_summary(project_id, rows, descendants)
     return {
         "id": project_id,
         "name": node.name,
         "level": level,
-        "tasks": sum(totals.values()),
-        "overdue": overdue_total,
-        "by_category": totals,
         # Projects only — a folder holds no work of its own, so counting it
         # as one would inflate every space's project count.
         "projects": sum(
             1 for r in descendants
             if node_kind(getattr(r, "kind", None)) == "project"
         ),
-        "children": children,
+        **folded,
     }
 
 

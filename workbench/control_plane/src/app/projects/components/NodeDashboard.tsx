@@ -35,6 +35,12 @@ import Icon from "@/components/Icon";
 import { statusAccent } from "@/lib/statusAccent";
 
 import type { NodeSummary, SummaryChild } from "../lib/api";
+import {
+  type DashboardRow,
+  dashboardRows,
+  emptyCopy,
+  rowsReconcile,
+} from "../lib/dashboardRows";
 import { nodeKind } from "../lib/tree";
 
 /** The order lanes read in — the same left-to-right a board uses. */
@@ -149,10 +155,16 @@ function MixBar({ counts, total }: { counts: Record<string, number>; total: numb
  * at 0% is not failing, and painting it the cancelled hue would say it is.
  * Done wears the done tone only when everything closable is closed.
  */
-function CompletionFigure({ child }: { child: SummaryChild }) {
-  const closable = child.tasks - (child.by_category.cancelled ?? 0);
+function CompletionFigure({
+  tasks,
+  by_category,
+}: {
+  tasks: number;
+  by_category: Record<string, number>;
+}) {
+  const closable = tasks - (by_category.cancelled ?? 0);
   if (closable <= 0) return null;
-  const doneCount = child.by_category.done ?? 0;
+  const doneCount = by_category.done ?? 0;
   const pct = Math.round((doneCount / closable) * 100);
   return (
     <span
@@ -171,6 +183,59 @@ function CompletionFigure({ child }: { child: SummaryChild }) {
     </span>
   );
 }
+
+/**
+ * The node's OWN work — the tasks that sit in no subproject.
+ *
+ * ⚠️ **Why this row exists at all:** the strip above counts the whole
+ * subtree, and until 2026-09-17 no row on the page carried the node's own
+ * share of it. A project with twelve of its own tasks and thirteen below it
+ * showed 25 over rows adding to 13 (owner report). `dashboardRows` holds the
+ * rule for when it draws, and why.
+ *
+ * ⚠️ **Not a button, and the difference is deliberate.** Every other row
+ * navigates somewhere. This one is already where you are, so a click would
+ * either do nothing or quietly re-scope the board — and a control that looks
+ * identical to its neighbours while behaving differently is worse than a
+ * control that plainly is not one. Scoping the board to direct work is a
+ * real affordance and it belongs on the board, not disguised as a row here.
+ */
+function OwnRow({ row, level }: { row: Extract<DashboardRow, { kind: "own" }>; level: NodeSummary["level"] }) {
+  const noun = level === "space" || level === "folder" ? "here" : "this project";
+  return (
+    <div
+      // A dashed rule rather than the solid one its neighbours carry: the
+      // shape says "same list, different kind of thing" without a second
+      // colour or a badge (AGENTS.md rule 5).
+      className="flex w-full flex-col gap-1.5 rounded-lg border border-dashed border-border bg-card px-3 py-2.5 text-left"
+      title={`${row.tasks} tasks sit directly on ${noun}, in no subproject. The figures above count these as well.`}
+    >
+      <div className="flex min-w-0 items-center gap-2">
+        <Icon
+          name="CornerDownRight"
+          className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+        />
+        <span className="min-w-0 flex-1 truncate text-sm font-medium text-muted-foreground">
+          Direct work
+        </span>
+        {row.overdue > 0 ? (
+          <span className={`shrink-0 text-xs ${statusAccent({ category: "cancelled" }).text}`}>
+            {row.overdue} late
+          </span>
+        ) : null}
+        {/* ⚠️ Photographed 2026-09-17: this row was the only one on the page
+            with no percentage, and a figure missing from one row of a list
+            reads as a figure that FAILED, not as one that does not apply. */}
+        <CompletionFigure tasks={row.tasks} by_category={row.by_category} />
+        <span className="shrink-0 text-xs text-muted-foreground">
+          {row.tasks} {row.tasks === 1 ? "task" : "tasks"}
+        </span>
+      </div>
+      <MixBar counts={row.by_category} total={row.tasks} />
+    </div>
+  );
+}
+
 
 function ChildRow({
   child,
@@ -209,7 +274,7 @@ function ChildRow({
             {child.overdue} late
           </span>
         ) : null}
-        <CompletionFigure child={child} />
+        <CompletionFigure tasks={child.tasks} by_category={child.by_category} />
         <span className="shrink-0 text-xs text-muted-foreground">
           {child.tasks} {child.tasks === 1 ? "task" : "tasks"}
         </span>
@@ -225,17 +290,6 @@ const LEVEL_TITLES: Record<NodeSummary["level"], string> = {
   folder: "Folder overview",
   project: "Project overview",
   subproject: "Subproject overview",
-};
-
-const EMPTY_COPY: Record<NodeSummary["level"], string> = {
-  portfolio: "No spaces yet. Create one with the + beside Spaces.",
-  space:
-    "This space is empty. Add a project or a folder with the + on its row.",
-  folder: "This folder is empty. Add a project with the + on its row.",
-  project:
-    "No subprojects. The task views hold everything this project owns.",
-  subproject:
-    "Nothing sits below a subproject — the tree stops here by design.",
 };
 
 /**
@@ -322,6 +376,17 @@ export default function NodeDashboard({
    */
   const hasChildren = Array.isArray(summary.children);
   const children = hasChildren ? summary.children : [];
+  /**
+   * The lines the children column draws — the node's OWN work first, then
+   * its children. `dashboardRows` holds the rule and the reasoning, and
+   * `dashboardRows.test.ts` pins it. The column is empty exactly when a
+   * leaf project has no subprojects, which is what `EMPTY_COPY` describes.
+   */
+  const rows = dashboardRows(summary);
+  const reconciles = rowsReconcile(summary);
+  const unaccounted =
+    (summary.tasks ?? 0) -
+    rows.reduce((sum, r) => sum + (r.kind === "own" ? r.tasks : r.child.tasks), 0);
   const done = by.done ?? 0;
   const inProgress = by.in_progress ?? 0;
   // "To do" in the wide sense a reader means it: everything not yet started.
@@ -373,24 +438,36 @@ export default function NodeDashboard({
 
       <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-5">
         <div className="md:col-span-3">
-          {children.length > 0 ? (
+          {rows.length > 0 ? (
             <div className="space-y-1.5">
-              {children.map((child) => (
-                <ChildRow
-                  key={child.id}
-                  child={child}
-                  level={level}
-                  onOpen={onOpen}
-                />
-              ))}
+              {rows.map((row) =>
+                row.kind === "own" ? (
+                  <OwnRow key="__own" row={row} level={level} />
+                ) : (
+                  <ChildRow
+                    key={row.child.id}
+                    child={row.child}
+                    level={level}
+                    onOpen={onOpen}
+                  />
+                )
+              )}
+              {/* ⚠️ The guard the original defect had no way to trip. Twelve
+                  tasks went missing from this column in silence, and every
+                  number on the page stayed individually correct. A surface
+                  that can lose a figure should be able to SAY it lost one,
+                  rather than leave the reader to do arithmetic that fails. */}
+              {!reconciles ? (
+                <p className="px-1 pt-1 text-[11px] text-muted-foreground">
+                  These rows do not account for {unaccounted}{" "}
+                  {unaccounted === 1 ? "task" : "tasks"} the figures above
+                  count.
+                </p>
+              ) : null}
             </div>
           ) : (
             <p className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
-              {/* ⚠️ A level this map does not know rendered an EMPTY dashed
-                  box — a container with nothing in it, which reads as a
-                  half-built feature. The fallback is deliberately vague
-                  because the honest answer is that we do not know. */}
-              {EMPTY_COPY[level] ?? "Nothing to show here."}
+              {emptyCopy(summary)}
             </p>
           )}
         </div>

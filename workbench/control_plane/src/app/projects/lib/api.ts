@@ -88,6 +88,25 @@ export interface NodeSummary {
   /** Descendant PROJECTS. Folders are not counted — they hold no work. */
   projects: number;
   children: SummaryChild[];
+  /**
+   * The node's OWN tasks — the ones that sit in no subproject.
+   *
+   * ⚠️ **`tasks` above counts these, and no `children` row does.** The
+   * subtree walk starts BELOW the node, so a project carrying subprojects
+   * AND its own work showed a total that no row on the page added up to
+   * (owner report, 2026-09-17). This block is the row that was missing.
+   *
+   * The server guarantees `own.tasks + sum(children[].tasks) === tasks`.
+   *
+   * ⚠️ Typed optional because the server sends it ALWAYS, and a client must
+   * still survive the deploy window where it does not. Absent means "the
+   * server did not say", which is not zero — `NodeDashboard` draws neither.
+   */
+  own?: {
+    tasks: number;
+    overdue: number;
+    by_category: Record<string, number>;
+  };
 }
 
 /**
