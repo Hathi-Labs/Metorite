@@ -33,7 +33,8 @@
 import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
-import { Input, Select } from "@/components/ui/Input";
+import { Input } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { useEffect, useState } from "react";
 
@@ -288,21 +289,19 @@ export function FilterBar({
           />
         </div>
 
-        <div className="w-[9rem]">
-          <Select
-            aria-label="Status"
-            inputSize="sm"
-            className={filters.statusCategory ? OFF_DEFAULT : AT_DEFAULT}
-            value={filters.statusCategory}
-            onChange={(e) => set({ statusCategory: e.target.value })}
-          >
-            {CATEGORIES.map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </Select>
-        </div>
+        {/* ⚠️ A BUTTON, not a select (H-94, owner 2026-08-26). These are not
+            fields waiting for input — they are a current state you can
+            change. `SelectButton` draws a two-headed arrow at the default and
+            a single one off it, so the row answers "what have I changed?"
+            from the glyphs before the colour is read. */}
+        <SelectButton
+          label="Status"
+          widthClass="w-[9rem]"
+          className={filters.statusCategory ? OFF_DEFAULT : AT_DEFAULT}
+          value={filters.statusCategory}
+          onChange={(next) => set({ statusCategory: next })}
+          options={CATEGORIES.map(([value, label]) => ({ value, label }))}
+        />
 
         {/* ── Assignee (WS-27af) ───────────────────────────────────────────
             One axis, one control. This was two toggle buttons — "Mine" and
@@ -321,46 +320,37 @@ export function FilterBar({
             the viewer's own address rather than a server-side flag, so a saved
             view carries whose work it meant instead of resolving to whoever
             opens it later. */}
-        <div className="w-40">
-          <Select
-            inputSize="sm"
-            aria-label="Assignee"
-            className={
-              filters.unassigned || filters.assignee ? OFF_DEFAULT : AT_DEFAULT
-            }
-            value={filters.unassigned ? UNSET : filters.assignee}
-            onChange={(e) => {
-              const picked = e.target.value;
-              // `unassigned` is its own server flag, so the two are set as a
-              // pair — every path here writes both and they cannot drift into
-              // "nobody's tasks, assigned to Priya".
-              set(
-                picked === UNSET
-                  ? { assignee: "", unassigned: true }
-                  : { assignee: picked, unassigned: false }
-              );
-            }}
-          >
-            <option value="">Anyone</option>
-            {me ? <option value={me}>Me</option> : null}
-            <option value={UNSET}>Unassigned</option>
-            {people.length > 0 ? (
-              <optgroup label="Assignees">
-                {people.map((who) => (
-                  <option key={who} value={who}>
-                    {personLabel(who)}
-                  </option>
-                ))}
-              </optgroup>
-            ) : null}
-            {/* A saved view can name somebody who holds nothing right now.
-                Without this the select would render blank and silently read
-                as "Anyone" while still filtering to them. */}
-            {orphanAssignee ? (
-              <option value={orphanAssignee}>{personLabel(orphanAssignee)}</option>
-            ) : null}
-          </Select>
-        </div>
+        <SelectButton
+          label="Assignee"
+          widthClass="w-40"
+          className={
+            filters.unassigned || filters.assignee ? OFF_DEFAULT : AT_DEFAULT
+          }
+          value={filters.unassigned ? UNSET : filters.assignee}
+          onChange={(picked) => {
+            // `unassigned` is its own server flag, so the two are set as a
+            // pair — every path here writes both and they cannot drift into
+            // "nobody's tasks, assigned to Priya".
+            set(
+              picked === UNSET
+                ? { assignee: "", unassigned: true }
+                : { assignee: picked, unassigned: false }
+            );
+          }}
+          options={[
+            { value: "", label: "Anyone" },
+            ...(me ? [{ value: me, label: "Me" }] : []),
+            { value: UNSET, label: "Unassigned" },
+            ...people.map((who) => ({ value: who, label: personLabel(who) })),
+            // ⚠️ A saved view can name somebody who holds nothing right now.
+            // Without this row the control would show its own label and read
+            // as "Anyone" while the filter is still applied — a control lying
+            // about the state it is in.
+            ...(orphanAssignee
+              ? [{ value: orphanAssignee, label: personLabel(orphanAssignee) }]
+              : []),
+          ]}
+        />
         <Button
           variant={filters.overdue ? "primary" : "secondary"}
           size="sm"
@@ -398,52 +388,46 @@ export function FilterBar({
             grouping, and a saved view carries both axes whichever canvas
             saved it. */}
         {honoursGroupBy(mode) ? (
-          <div className="w-[11rem]">
-            <Select
-              aria-label="Group by"
-              inputSize="sm"
-              className={groupBy === DEFAULT_GROUP_BY ? AT_DEFAULT : OFF_DEFAULT}
-              value={groupBy}
-              onChange={(e) => onGroupBy(e.target.value as GroupBy)}
-            >
-              {GROUP_OPTIONS.filter((option) =>
-                axisOffered(option, groupBy)
-              ).map((option) => (
-                <option key={option} value={option}>
-                  {GROUP_OPTION_LABELS[option]}
-                </option>
-              ))}
-            </Select>
-          </div>
+          <SelectButton
+            label="Group by"
+            widthClass="w-[11rem]"
+            className={groupBy === DEFAULT_GROUP_BY ? AT_DEFAULT : OFF_DEFAULT}
+            value={groupBy}
+            defaultValue={DEFAULT_GROUP_BY}
+            onChange={(next) => onGroupBy(next as GroupBy)}
+            options={GROUP_OPTIONS.filter((option) =>
+              axisOffered(option, groupBy)
+            ).map((option) => ({
+              value: option,
+              label: GROUP_OPTION_LABELS[option],
+            }))}
+          />
         ) : null}
 
         {/* WS-27y — the board's second axis. The main axis is withheld from
             the options: a board laned by its own columns means nothing, and
             `fromConfig` would normalise it away anyway. */}
         {honoursLanes(mode) ? (
-          <div className="w-[11rem]">
-            <Select
-              aria-label="Sub-group by (swimlanes)"
-              inputSize="sm"
-              className={
-                (subGroupBy === groupBy ? "none" : subGroupBy) === "none"
-                  ? AT_DEFAULT
-                  : OFF_DEFAULT
-              }
-              value={subGroupBy === groupBy ? "none" : subGroupBy}
-              onChange={(e) => onSubGroupBy(e.target.value as GroupBy)}
-            >
-              {GROUP_OPTIONS.filter(
-                (option) =>
-                  (option === "none" || option !== groupBy) &&
-                  axisOffered(option, subGroupBy)
-              ).map((option) => (
-                <option key={option} value={option}>
-                  {LANE_OPTION_LABELS[option]}
-                </option>
-              ))}
-            </Select>
-          </div>
+          <SelectButton
+            label="Sub-group by (swimlanes)"
+            widthClass="w-[11rem]"
+            className={
+              (subGroupBy === groupBy ? "none" : subGroupBy) === "none"
+                ? AT_DEFAULT
+                : OFF_DEFAULT
+            }
+            value={subGroupBy === groupBy ? "none" : subGroupBy}
+            defaultValue="none"
+            onChange={(next) => onSubGroupBy(next as GroupBy)}
+            options={GROUP_OPTIONS.filter(
+              (option) =>
+                (option === "none" || option !== groupBy) &&
+                axisOffered(option, subGroupBy)
+            ).map((option) => ({
+              value: option,
+              label: LANE_OPTION_LABELS[option],
+            }))}
+          />
         ) : null}
 
         {/* WS-27x — which fields this view shows. ONE set feeding two

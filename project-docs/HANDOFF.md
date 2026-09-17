@@ -2167,11 +2167,15 @@ line — never reclaim a number by deleting the other entry.
   conversion below is still owed.
 - **Why:** The owner gave four more directions in the session that consolidated
   the row. Work stopped part-way, so the row is in a state nobody designed.
-  1. **"Assignees" becomes a button, not a select.** A click shows the items.
-  2. **Every dropdown in the row becomes a button.** At the default value, draw a
-     two-headed arrow in place of the single down arrow.
-  3. **The search field collapses to an icon** at the left of the row. Remove the
-     placeholder text. A click opens the real field.
+  1. ✅ **DONE 2026-09-18.** "Assignees" is a button, not a select.
+  2. ✅ **DONE 2026-09-18.** Every dropdown in the row is a button, with a
+     two-headed arrow at the default and a single one off it. The primitive is
+     `src/components/ui/SelectButton.tsx`, built on `outsideClick.ts` rather
+     than the substrate — see the ⚠️ below, which it obeys. `arrowFor` is
+     extracted and pinned by `SelectButton.test.ts`; a rendered assertion is
+     unavailable because `vitest.config.ts` is `environment: "node"`.
+  3. 🔴 **STILL OWED. The search field collapses to an icon** at the left of the
+     row. Remove the placeholder text. A click opens the real field.
   ⚠️ **MOTION IS OFF THE TABLE (owner, 2026-08-26).** Direction 3 first asked for
   a transition, and that half is withdrawn. A `MOTION.md` landed here the same
   day and the owner removed it. Build the collapse as a state change with no
