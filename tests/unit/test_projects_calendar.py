@@ -209,6 +209,12 @@ NOT_ON_THE_CALENDAR = {
     # The window IS the shape; a calendar has no pages, no sort key and no
     # parent-task drill-down.
     "page", "sort", "direction", "parent_task_id",
+    # ⚠️ **`view_id` is an ORDERING join, not a filter** (H-64). It reads one
+    # saved view's hand-arranged `pm_view_task_positions` so a board column can
+    # honour a drag. A calendar is laid out by DATE — there is no column for a
+    # hand order to be an order OF, so accepting it would declare a parameter
+    # the endpoint could not act on. Excluded rather than added, deliberately.
+    "view_id",
 }
 
 
