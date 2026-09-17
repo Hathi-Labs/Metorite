@@ -99,22 +99,23 @@ function Stat({
   label,
   value,
   tone,
+  title,
   className = "",
 }: {
   label: string;
   value?: number;
   tone?: string;
+  /** What this figure counts. The dash below still wins when it is absent. */
+  title?: string;
   className?: string;
 }) {
   const known = typeof value === "number" && Number.isFinite(value);
   return (
     <div className={`rounded-lg border border-border bg-card px-3 py-2 ${className}`}>
-      <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
-        {label}
-      </p>
+      <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
       <p
         className={`text-lg font-semibold ${known ? (tone ?? "text-foreground") : "text-muted-foreground"}`}
-        title={known ? undefined : `${label} did not come back from the server`}
+        title={known ? title : `${label} did not come back from the server`}
       >
         {known ? value : "—"}
       </p>
@@ -323,9 +324,7 @@ function ProgressCard({ summary }: { summary: NodeSummary }) {
   return (
     <div className="rounded-lg border border-border bg-card p-3">
       <div className="mb-2 flex items-baseline justify-between gap-2">
-        <p className="text-[11px] uppercase tracking-wider text-muted-foreground">
-          Progress
-        </p>
+        <p className="text-[11px] font-medium text-muted-foreground">Progress</p>
         <p className="text-xs text-muted-foreground">
           <span className="font-medium text-foreground">{done}</span>
           {`/${closable} closed`}
@@ -427,15 +426,16 @@ export default function NodeDashboard({
 
   return (
     <div className="flex-1 overflow-y-auto p-4">
-      <p className="mb-3 text-[11px] uppercase tracking-wider text-muted-foreground">
+      <p className="mb-3 text-[11px] font-medium text-muted-foreground">
         {LEVEL_TITLES[level]}
       </p>
 
-      {/* ⚠️ FIVE tiles, and 5 divides by neither 2 nor 3. So the last one sat
-          alone on its own row at phone and tablet width — an orphan, which
-          reads as a tile that failed to load rather than as the fifth of five.
-          It spans the leftover columns instead, until all five fit in one row. */}
-      <div className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+      {/* ⚠️ SIX tiles, and six is why the orphan is gone. Five divided by
+          neither 2 nor 3, so the last tile used to sit alone on its own row
+          at phone and tablet width — an orphan, which reads as a tile that
+          failed to load. Six divides by both, and the `col-span` patch that
+          papered over it is deleted rather than kept beside the real fix. */}
+      <div className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <Stat
           label={
             level === "portfolio"
@@ -452,15 +452,26 @@ export default function NodeDashboard({
               : summary.projects
           }
         />
+        {/* ⚠️ The TOTAL, and it is not decoration. The rows below add up to
+            this — Direct work plus every child — and until there was a total
+            on screen a reader had no way to check that, which is the whole
+            reason the Direct work row exists. The portfolio strip has carried
+            a Tasks tile since it shipped; a node had none. */}
+        <Stat
+          label="Tasks"
+          value={summary.tasks}
+          title={
+            hasChildren && children.length > 0
+              ? "Every task in this subtree, the node's own included. The rows below add up to this."
+              : "Every task in this scope."
+          }
+        />
         <Stat label="To do" value={todo} />
         <Stat label="In progress" value={inProgress} />
         <Stat label="Done" value={done} />
         <Stat
           label="Overdue"
           value={summary.overdue}
-          // The fifth of five: fills the leftover column at 2-up rather than
-          // sitting alone on a row of its own.
-          className="col-span-2 sm:col-span-1"
           tone={
             summary.overdue > 0
               ? statusAccent({ category: "cancelled" }).text
@@ -517,6 +528,20 @@ export default function NodeDashboard({
           Rendered only when there is work to describe. Four panels of
           nothing on an empty project is a page that looks broken rather
           than a project that has not started. */}
+      {/* ⚠️ A LAYOUT THAT STOPS. Photographed 2026-09-17 with every analytics
+          read rejected: the roll-up drew, and then the page simply ended in
+          a screen of empty space. Each panel correctly renders nothing rather
+          than zeroes — but ALL of them rendering nothing is indistinguishable
+          from a project with nothing to say, and the reader cannot tell which
+          they are looking at. Rule 8 of the visual-review catalogue. */}
+      {(summary.tasks ?? 0) > 0 &&
+      !stuck && !load && !throughput && !finished && !outlook ? (
+        <p className="mt-5 rounded-lg border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
+          Analytics could not be loaded just now. The figures above are
+          unaffected — they come from a different read.
+        </p>
+      ) : null}
+
       {(summary.tasks ?? 0) > 0 && (
         <div className="mt-5 grid grid-cols-1 gap-3 lg:grid-cols-2">
           {/* ⚠️ The forecast leads. It is the one panel that answers the

@@ -44,6 +44,35 @@ export type OutlookLine = {
 };
 
 /**
+ * Is this response complete enough to draw at all?
+ *
+ * ⚠️ **Found by ROUTING `/analytics/outlook` TO `{}` AND LOOKING, 2026-09-17.**
+ * `headlineVerdict` read `o.velocity.verdict` and threw
+ * *"Cannot read properties of undefined"*, which took the entire Projects
+ * page down — not the panel, the page. In production that is the layout
+ * boundary and a blank pane.
+ *
+ * ⚠️ **This is the FOURTH time this exact class has hit this component**, and
+ * the cause is the same every time: `api.call` CASTS the response rather than
+ * validating it, so a TypeScript interface here is a claim about the server
+ * and not a check on it. `stuck.overdue` was a scalar typed as a list.
+ * `stuck.stale` was a list typed as a record. Two panels read a field behind
+ * only a `!data` guard. And now this.
+ *
+ * So the check lives at the boundary, once, and the panel draws nothing when
+ * it fails. Nothing is the honest rendering of a response we cannot read —
+ * the same rule the pane already applies to a rejected fetch.
+ */
+export function isDrawableOutlook(o: OutlookReport | null | undefined): boolean {
+  if (!o || typeof o !== "object") return false;
+  // `velocity` is the only block with no sensible default: every sentence on
+  // the panel is keyed off its verdict.
+  const v = (o as OutlookReport).velocity;
+  return Boolean(v && typeof v === "object" && typeof v.verdict === "string");
+}
+
+
+/**
  * How much of the backlog the PLAN actually covers.
  *
  * ⚠️ "Planned to finish 12 Mar" over 4 of 71 open tasks is a claim about 4
@@ -51,7 +80,7 @@ export type OutlookLine = {
  * quotes the planned date carries this.
  */
 function planCaveat(o: OutlookReport): string {
-  const plan = o.plan;
+  const plan = o?.plan;
   if (!plan || plan.tasks <= 0 || plan.dated >= plan.tasks) return "";
   const pct = Math.round((plan.dated / plan.tasks) * 100);
   return ` Only ${plan.dated} of ${plan.tasks} open tasks carry a due date (${pct}%).`;
@@ -72,8 +101,17 @@ function planCaveat(o: OutlookReport): string {
  * same order BLUF asks of prose, applied to a screen.
  */
 export function headlineVerdict(o: OutlookReport): OutlookLine {
-  const v = o.velocity;
-  const slip = o.plan?.slip_days;
+  // Every read below is optional-chained. The outer guard proves
+  // `velocity.verdict` exists; it proves nothing about `plan`.
+  const v = o?.velocity;
+  const slip = o?.plan?.slip_days;
+  if (!v?.verdict) {
+    return {
+      headline: "—",
+      detail: "No forecast came back from the server.",
+      tone: "quiet",
+    };
+  }
 
   if (v.verdict === "nothing_left") {
     return {
@@ -113,7 +151,7 @@ export function headlineVerdict(o: OutlookReport): OutlookLine {
   if (typeof slip === "number" && slip < 0) {
     return {
       headline: `${Math.abs(slip)} days early`,
-      detail: `Forecast ${shortDate(v.finish_date)} against a plan of ${shortDate(o.plan.planned_finish)}.`,
+      detail: `Forecast ${shortDate(v.finish_date)} against a plan of ${shortDate(o.plan?.planned_finish)}.`,
       tone: "good",
     };
   }
@@ -136,11 +174,11 @@ export function headlineVerdict(o: OutlookReport): OutlookLine {
  * closely enough that saying anything would be noise.
  */
 export function forecastGap(o: OutlookReport): OutlookLine | null {
-  const a = o.velocity?.weeks_remaining;
-  const b = o.capacity?.weeks_remaining;
+  const a = o?.velocity?.weeks_remaining;
+  const b = o?.capacity?.weeks_remaining;
   if (
-    o.velocity?.verdict !== "converging" ||
-    o.capacity?.verdict !== "ok" ||
+    o?.velocity?.verdict !== "converging" ||
+    o?.capacity?.verdict !== "ok" ||
     typeof a !== "number" ||
     typeof b !== "number"
   ) {
@@ -150,7 +188,7 @@ export function forecastGap(o: OutlookReport): OutlookLine | null {
   // Under a month apart is two methods agreeing, not a finding.
   if (Math.abs(gap) < 4) return null;
 
-  const cover = Math.round((o.capacity.estimate_coverage ?? 0) * 100);
+  const cover = Math.round((o.capacity?.estimate_coverage ?? 0) * 100);
   // ⚠️ "1 weeks" — photographed 2026-09-17. A plural bug in a sentence whose
   // whole job is to be believed costs more than it looks like it should.
   const wk = (n: number) => `${n} ${n === 1 ? "week" : "weeks"}`;
@@ -181,6 +219,9 @@ export function forecastGap(o: OutlookReport): OutlookLine | null {
  * finish at the current rate" must not wear the same colour.
  */
 export function velocityLine(v: VelocityForecast): OutlookLine {
+  if (!v?.verdict) {
+    return { headline: "—", detail: "Not returned.", tone: "quiet" };
+  }
   const rates = `Finishing ${v.finished_per_week}/wk · adding ${v.created_per_week}/wk, over ${v.weeks_sampled} weeks.`;
   switch (v.verdict) {
     case "converging":
@@ -220,6 +261,9 @@ export function velocityLine(v: VelocityForecast): OutlookLine {
 
 /** The capacity forecast as a sentence. */
 export function capacityLine(c: CapacityForecast): OutlookLine {
+  if (!c?.verdict) {
+    return { headline: "—", detail: "Not returned.", tone: "quiet" };
+  }
   const cover = Math.round((c.estimate_coverage ?? 0) * 100);
   switch (c.verdict) {
     case "ok":
@@ -271,7 +315,7 @@ export function capacityLine(c: CapacityForecast): OutlookLine {
  * them, and the forecast above will not notice until after it happens.
  */
 export function peopleLine(o: OutlookReport): OutlookLine {
-  const p = o.people;
+  const p = o?.people;
   const n = p?.holding_open_work ?? 0;
   if (n === 0) {
     return {

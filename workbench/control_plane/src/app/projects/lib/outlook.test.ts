@@ -13,6 +13,7 @@ import {
   capacityLine,
   forecastGap,
   headlineVerdict,
+  isDrawableOutlook,
   peopleLine,
   shortDate,
   velocityLine,
@@ -366,5 +367,57 @@ describe("forecastGap — the disagreement IS the finding", () => {
     );
     expect(g?.tone).toBe("good");
     expect(g?.detail).toContain("faster");
+  });
+});
+
+describe("⚠️ reading a response this panel cannot trust", () => {
+  // Found by routing /analytics/outlook to `{}` and LOOKING, 2026-09-17.
+  // `headlineVerdict` read `o.velocity.verdict` and threw, which took the
+  // whole Projects PAGE down — not the panel, the page. Fourth time this
+  // class has hit this component: `api.call` casts, it does not validate.
+
+  it("refuses to draw an empty object", () => {
+    expect(isDrawableOutlook({} as never)).toBe(false);
+  });
+
+  it("refuses null, undefined and a scalar", () => {
+    expect(isDrawableOutlook(null)).toBe(false);
+    expect(isDrawableOutlook(undefined)).toBe(false);
+    expect(isDrawableOutlook(7 as never)).toBe(false);
+  });
+
+  it("refuses a velocity block with no verdict", () => {
+    expect(
+      isDrawableOutlook({ velocity: { finished_per_week: 3 } } as never)
+    ).toBe(false);
+  });
+
+  it("draws a real report", () => {
+    expect(isDrawableOutlook(report())).toBe(true);
+  });
+
+  it("⚠️ every line builder survives a missing block rather than throwing", () => {
+    // The guard above proves `velocity.verdict`. It proves nothing about
+    // `plan`, `capacity` or `people`, and each of those is read downstream.
+    const bare = { velocity: { verdict: "converging" } } as never;
+    expect(() => headlineVerdict(bare)).not.toThrow();
+    expect(() => forecastGap(bare)).not.toThrow();
+    expect(() => peopleLine(bare)).not.toThrow();
+    expect(() => capacityLine(undefined as never)).not.toThrow();
+    expect(() => velocityLine(undefined as never)).not.toThrow();
+  });
+
+  it("says so plainly when the forecast block is absent", () => {
+    const v = headlineVerdict({ plan: {} } as never);
+    expect(v.headline).toBe("—");
+    expect(v.detail).toContain("No forecast");
+    expect(v.tone).toBe("quiet");
+  });
+
+  it("a converging report with NO plan block still reads", () => {
+    const v = headlineVerdict({
+      velocity: { ...report().velocity },
+    } as never);
+    expect(v.headline).toContain("On track for");
   });
 });
