@@ -271,6 +271,12 @@ NOT_ON_THE_EXPORT = {
     # A page is a screen's unit. Half a filter's tasks in a file IS the silent
     # truncation this endpoint refuses; the cap is a refusal instead.
     "page", "page_size",
+    # ⚠️ **`view_id` is an ORDERING join, not a filter** (H-64). It reads one
+    # saved view's hand-arranged `pm_view_task_positions` so a board column
+    # can honour a drag. A CSV has one order — the export's own — and adding
+    # a second would make the file's row order depend on who last dragged a
+    # card. Excluded rather than added, deliberately.
+    "view_id",
 }
 
 

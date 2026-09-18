@@ -1295,6 +1295,23 @@ function ProjectsWorkspace() {
     if (!drawerOpen) setSheet(null);
   }, [drawerOpen]);
 
+  /**
+   * The saved view whose hand-arranged order the board reads and writes.
+   *
+   * ⚠️ Named ONCE and derived from `views`, because three places need the
+   * same answer and they must not disagree: the task read asks for this
+   * view's positions, the drag handler writes them, and the delete button
+   * refuses to remove it. `orderBearingView` holds the rule.
+   *
+   * `null` until the views read lands. `loadProject` omits the parameter
+   * then and re-reads when it arrives — one extra round trip on a cold
+   * first paint, and the cache answers every switch after it.
+   */
+  const boardViewId = useMemo(
+    () => orderBearingView(views)?.id ?? null,
+    [views]
+  );
+
   const loadProject = useCallback(
     async (project: ProjectRow) => {
       setError(null);
@@ -1309,6 +1326,20 @@ function ProjectsWorkspace() {
         // WS-27x — the table's header sort; {} when none, so every other
         // surface keeps the endpoint's default ordering.
         ...sortQuery(tableSort),
+        // H-64. The view whose hand-arranged order to read back.
+        //
+        // ⚠️ **The drag handler has written this view's positions since
+        // WS-27 and nothing ever asked for them.** Without it every row
+        // arrives with `view_position` undefined, `sortForView` sends them
+        // all down its `created_at` branch, and a drag inside a column is a
+        // silent no-op.
+        //
+        // ⚠️ Omitted rather than sent as `undefined` when views have not
+        // landed yet. `cacheKey` sorts the params into the read key, so a
+        // present-but-undefined entry would be a DIFFERENT question from the
+        // same read a moment later, and the cached rows could never be
+        // reused. It resolves on the next pass, when `views` arrives.
+        ...(boardViewId ? { view_id: boardViewId } : {}),
       };
       const statusesKey = projectsKey(`nodes/${project.id}/statuses`);
       const tasksKey = projectsKey("tasks", taskParams);
@@ -1346,7 +1377,7 @@ function ProjectsWorkspace() {
         if (!heldTasks) setTasks([]);
       }
     },
-    [filters, tableSort]
+    [filters, tableSort, boardViewId]
   );
 
   useEffect(() => {

@@ -45,6 +45,7 @@ from gateway.routes.projects.core import (
     COMPLETED_CATEGORY,
     STARTED_CATEGORY,
 )
+from gateway.routes.projects.tasks import VIEW_POSITION_JOIN
 from gateway.routes.projects.tree import (
     NODE_DESCENDANTS_SQL,
     node_counts_sql,
@@ -206,3 +207,25 @@ async def test_make_interval_with_an_INT_is_the_shape_that_works(async_engine):
             )
         ).scalar_one()
     assert got.days == 7
+
+
+async def test_the_board_order_join_runs_on_asyncpg(async_engine):
+    """H-64's read half, on the driver production uses.
+
+    ⚠️ Added in the SAME pull request that introduced the join. That is what
+    this file is for — `/analytics/stuck` shipped 500ing because its query was
+    never run on asyncpg, and a fence only pays for itself if new SQL goes
+    into it on arrival rather than after the next outage.
+    """
+    async with async_engine.begin() as conn:
+        await conn.execute(
+            text(
+                f"SELECT t.id, vp.position AS view_position"
+                f"  FROM pm_tasks t{VIEW_POSITION_JOIN}"
+                f" WHERE t.id = CAST(:tid AS uuid)"
+            ),
+            {
+                "tid": "00000000-0000-0000-0000-000000000000",
+                "view_id": "00000000-0000-0000-0000-000000000000",
+            },
+        )
