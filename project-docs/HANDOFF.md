@@ -2278,25 +2278,48 @@ line — never reclaim a number by deleting the other entry.
   are neither, which is the worst of the three.
 
 ### H-114 · R8 suites still run psycopg. The gateway runs asyncpg · [AGENT]
-- **Check:** `uv run pytest tests/unit/test_projects_sql_asyncpg.py -q` with
-  `TENANT_LADDER_DATABASE_URL` set. If it SKIPS in CI, the strong half of the
-  fence does not fire there — which is H-112's gap, on a second file.
-- **What is CLOSED.** Projects SQL now has both halves of a fence.
-  `test_projects_sql_asyncpg.py` runs every `analytics.py` builder and both
-  `tree.py` reads on **asyncpg**, the driver `acb_common.db` rewrites every
-  production DSN onto. `test_sql_interval_shape.py` refuses
-  `CAST(:param AS interval)` anywhere under `gateway/` or `packages/`, needs
-  no database, and so runs in CI today.
-- **Measured, not assumed.** Reintroduce the shipped bug and the asyncpg
-  suite fails while all 19 psycopg tests in
-  `test_projects_analytics_load.py` pass. That is the gap, demonstrated.
-- **⚠️ What is STILL OPEN, and it is the larger half.** Only the Projects SQL
-  is covered. Every other route module — CRM, email, tasks, people, router —
-  proves its SQL on psycopg alone. The pattern to copy is the parametrised
-  `_cases()` list plus the per-test async engine. ⚠️ Use a **function-scoped**
-  engine with `NullPool`: a module-scoped one binds its pool to the first
-  test's event loop, and every later test fails with *"another operation is
-  in progress"*, which reads exactly like a SQL fault and is not one.
+- **Check:** `uv run pytest tests/unit/test_projects_sql_asyncpg.py
+  tests/unit/test_auth_sql_asyncpg.py -q` with `TENANT_LADDER_DATABASE_URL`
+  set. If either SKIPS in CI, the strong half of the fence does not fire
+  there — which is H-112's gap, on two files now.
+- **What is CLOSED — TWO modules now.**
+  1. **Projects.** `test_projects_sql_asyncpg.py` runs every `analytics.py`
+     builder and both `tree.py` reads on **asyncpg**, the driver
+     `acb_common.db` rewrites every production DSN onto.
+  2. **The sign-in path, added 2026-09-18.** `test_auth_sql_asyncpg.py` runs
+     all **38** SQL statements in `acb_auth` — `access.py`, `console_resolve.py`
+     and `email_otp.py` — each with the parameter TYPES its real call site
+     binds. It went ahead of the route modules on blast radius: a broken route
+     breaks one pane, and a broken statement in `access.py` breaks sign-in for
+     everybody, because every request resolves identity and access before it
+     reaches any route.
+  3. `test_sql_interval_shape.py` refuses `CAST(:param AS interval)` anywhere
+     under `gateway/` or `packages/`, needs no database, and so runs in CI
+     today.
+- **⚠️ The auth suite carries its OWN completeness fence.** A new `_SQL`
+  constant in any of those three modules fails `test_every_SQL_constant_in_
+  these_modules_is_covered` by name. Without it the suite stops being complete
+  the first time somebody adds a statement, and a partial fence reads exactly
+  like a whole one.
+- **Measured, not assumed.** Retyping one `datetime` bind to an ISO string —
+  the precise psycopg-accepts / asyncpg-refuses divergence — turns **5** of the
+  38 red, and all five are `CAST(… AS TIMESTAMPTZ)` statements the lint below
+  cannot cover. Dropping one case from the list turns the completeness fence
+  red with that statement's name.
+- **⚠️ What is STILL OPEN.** The route modules — **CRM, email, tasks, people,
+  notes, chat, admin, workflows, whatsapp** — still prove their SQL on psycopg
+  alone. The pattern to copy is now in two files: a parametrised `_cases()`
+  list, a module-scoped `apply_ladder` fixture, and a **function-scoped** async
+  engine with `NullPool`. ⚠️ A module-scoped engine binds its pool to the first
+  test's event loop and every later test fails with *"another operation is in
+  progress"*, which reads exactly like a SQL fault and is not one.
+  ⚠️ Many route modules hold their SQL **inline inside route functions** rather
+  than as module constants, so they cannot be run without the route. Extracting
+  those is the real cost of the remaining work, and it is worth doing anyway:
+  an unextractable statement is also an untestable one.
+  ⚠️ **Roll back.** Half of the auth statements are writes. `begin()` as a
+  context manager COMMITS on a clean exit, so the transaction is driven by hand
+  and rolled back in a `finally`.
 - **Not linted: `CAST(:x AS timestamptz)`.** Binding a real `datetime`
   through it is correct, and `email/automation/followups.py` does that. A
   lint there would fail correct code and grow an allowlist. The asyncpg
