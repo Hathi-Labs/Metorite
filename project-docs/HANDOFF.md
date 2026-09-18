@@ -2277,7 +2277,7 @@ line — never reclaim a number by deleting the other entry.
   unapplied and mark the two tests expected-fail with that reason. Today they
   are neither, which is the worst of the three.
 
-### H-116 · 🔴 The access-request queue cannot record an unprovisioned person · [AGENT]
+### H-118 · 🔴 The access-request queue cannot record an unprovisioned person · [AGENT]
 - **Check:** `sudo journalctl -u acb-gateway --since today | grep -c
   access_request_record_failed` on the box. Non-zero means this is open. Or ask
   the app database for `access_request` rows — an empty table while people are
@@ -2315,6 +2315,10 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `colleague_onboarding.md` §6 (N6a) ·
   `acb_auth/access.py` `_record_signin_request` / `_ACCESS_REQUEST_UPSERT_SQL`
 - **Added:** 2026-09-18 · found in the post-deploy log check, not by a test.
+  *(Minted H-116. Renumbered to H-118 the same day: branch `operator-console`
+  had already taken 116 for a plan-guard defect, in a worktree with no pull
+  request open. That branch was written first, so this one moves — the rule
+  H-94's own note records.)*
 
 ### H-117 · An outage tells a member they belong to no organization · [AGENT]
 - **Check:** `rg -n "no_organization" apps/services/gateway/gateway/main.py` →
