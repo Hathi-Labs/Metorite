@@ -2164,63 +2164,6 @@ line — never reclaim a number by deleting the other entry.
   65 for the plan-guard heredoc entry. This branch merged second. That is the
   case the numbering rule above names.)*
 
-### H-95 · plan-guard reads a MENTION of the grants file as a write to it · [AGENT]
-- **Check:** `sed -n 231p .claude/hooks/plan-guard.mjs` → a bare
-  case-insensitive string test against the whole command means the defect is
-  still there. A test that matches only a redirect, an editor or a `tee` means
-  it is fixed.
-- **⚠️ This entry deliberately never spells that filename.** An entry that spelt
-  it could not be written by a shell command, which is the defect itself.
-- **Why:** Line 231 refuses the command when the grants filename appears
-  **anywhere in the text**, and not only in a write. So a commit message that
-  names the file is refused as a write to it. Measured 2026-09-01: a
-  `git commit -F -` whose heredoc body named the file was blocked twice. The
-  same commit passed as soon as the message said "the owner grants file"
-  instead. Filing this entry hit the same wall a third time.
-- **⚠️ The refusal itself is correct and must stay.** D45 says the owner writes
-  that file. This entry asks for the test to be narrower, never for the gate to
-  be weaker. The failure mode is the expensive one. An agent that meets a
-  refusal it cannot explain will look for a way around it. The way around a
-  false positive also goes around the true one.
-- **What it needs:** match a WRITE, not a mention. Match the redirect, the
-  editor and the `tee` forms, the way the path regexp above it already does. A
-  mention inside a quoted string or a heredoc body is not a write.
-- **Related:** **H-65** is the same family. plan-guard cannot see a write an
-  interpreter makes from a heredoc. That entry is about a write it MISSES. This
-  one is about a write it INVENTS. Both read shell text as if it were an action.
-- **Authority:** `.claude/hooks/plan-guard.mjs` line 231 · D45 · `work_plan.md` §6
-- **Added:** 2026-09-01 · Projects UI session, met while merging `main`
-
----
-
-### H-102 · The `ruff` pre-commit hook refuses every commit that touches the Console · [AGENT]
-- **Check:** `uv run ruff check apps/services/customer_console/customer_console/main.py`
-  on a clean tree. Three findings means this is open. Zero means somebody
-  swept it.
-- **What I measured, 2026-09-04.** The file reports SIM105 once and B904
-  twice. All three predate branch `ws-pricing-page`, and none of them sits in
-  code that branch touched. The hook fails the commit anyway, because it reads
-  the whole file.
-- **What it costs.** A contributor who touches `main.py` must either repair
-  three findings they did not make, or pass `--no-verify`. I passed
-  `--no-verify` twice and said so in both commit messages.
-- 🔴 **A gate nobody can pass is a gate nobody reads.** The next contributor
-  learns that `--no-verify` is the normal way to commit here. That habit then
-  carries past the STE gate and the secret scan, which are the gates that
-  matter.
-- **The repair, and it is small.** Fix the three findings in one commit that
-  changes nothing else. SIM105 wants `contextlib.suppress`. B904 wants
-  `raise ... from exc`.
-- ⚠️ **Do not widen the ruff configuration to make this pass.** The findings
-  are correct. The file is the thing that is wrong.
-- 📌 Related: **H-74** holds the same shape for mypy, which reports 93
-  findings here and does not block.
-- **Authority:** `.pre-commit-config.yaml` lines 21 to 30 · CLAUDE.md §3.5 (R7)
-- **Added:** 2026-09-04 · credit-pricing slice 1 session · **renumbered
-  from H-98 on 2026-09-05**, because `main` minted its own H-98 (the
-  Console backup gap) and merged first. Ids are never reused, so that one
-  keeps the number. `test_handoff_queue` named the collision.
-
 ### H-96 · `dev_db.sh` starts the tenant database and never applies its ladder · [AGENT]
 - **Check:** read `scripts/dev_db.sh`. Search for `infra/postgres`. No hit
   means the script still applies only the Console ladder, and this is open.
@@ -2238,26 +2181,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/engineering_practice.md` §1.1 · CLAUDE.md §6 (R8)
 - **Added:** 2026-09-02 · operator console local-setup session
 
-### H-103 · plan-guard refuses a READ whose command text names a protected path · [AGENT]
-- **Check:** read `.claude/hooks/plan-guard.mjs`. If the protected-path scan
-  still tests the whole command text, and no test names a read-only case,
-  this is open.
-- **What I measured, 2026-09-02.** `ls deploy/hostinger/ | grep -i operator`
-  was refused as "a shell command writing to a protected path". So was
-  `git grep -c operator -- deploy/hostinger/caddy/Caddyfile`. Neither writes.
-  I completed the same read with the Read tool, which the hook does not scan.
-- **Why this is the same defect as H-95, and worth its own entry.** H-95 is a
-  commit message that names the grants file. This is a read command that names
-  a deploy path. Both come from one cause. The scan asks "does this text
-  contain the path", never "does this command write".
-- 🔴 **The refusal must stay for real writes.** `deploy/` is §6 owner-gate.
-  This entry asks for a narrower test, never for a weaker gate. An agent that
-  learns to route around a false refusal has learned to route around a true one.
-- **Authority:** `work_plan.md` §6 · CLAUDE.md §3.2 · related: H-95, H-65
-- **Added:** 2026-09-02 · operator console local-setup session · **renumbered from H-97 on
-  2026-09-05**, because `main` minted its own H-97 for the leaked database
-  passwords and merged first. Ids are never reused, so that entry keeps the
-  number. Filed from branch `ws-handoff-h96-h97`, which never opened a PR.
 ### H-111 · Arm the weekly report send. The audience is DECIDED · [OWNER]
 - **Check:** on the box, `grep -c '^PROJECT_REPORT_EMAIL_ENABLED=true' /opt/acb/app/.env`.
   A zero means this is open.
@@ -2481,6 +2404,37 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `saas_multitenancy.md` §0.9.2 (the two planes) · D15
 - **Added:** 2026-09-15 · signup-flow session · **corrected 2026-09-16** when
   the owner challenged the "inverted" claim and was right.
+
+### H-116 · plan-guard reads a MENTION of a commit as a commit on main · [AGENT]
+- **Check:** `grep -n "test(cmd)" .claude/hooks/plan-guard.mjs`. A hit means
+  this is open. No hit means somebody applied the repair.
+- **What I measured, 2026-09-18.** I wrote a throwaway script from the root
+  checkout, which sits on `main`. The script text named the git verb inside a
+  heredoc body. plan-guard refused the whole command as *"committing/pushing
+  directly on main"*. Nothing in that command committed anything.
+- **The cause is one word.** Line 443 tests `cmd`, which is the raw command.
+  Every other rule on that page tests `scanned`. `stripNoise()` has already
+  cleaned `scanned` of heredoc bodies and `-m` message payloads.
+- **This is the FOURTH false positive of one family.** H-95 and H-103 were the
+  second and the third, and both are now fixed and fenced. The guard asks
+  whether the text CONTAINS the thing, and never whether the command DOES it.
+- 🔴 **The refusal must stay.** A real commit on main sits in the command half,
+  which `stripNoise()` never touches. This entry asks for a narrower test. It
+  never asks for a weaker gate.
+- **The repair is one word.** At line 443, `.test(cmd)` becomes
+  `.test(scanned)`.
+- ⚠️ **An agent cannot apply it.** The Claude Code auto-mode classifier refuses
+  an agent edit to its own hook files, and it names the reason
+  `Self-Modification`. The owner's `guard-write` grant does not reach that
+  layer, because the classifier sits above plan-guard. A human must make this
+  edit.
+- ⚠️ **The suite cannot see this case today.** `plan-guard.test.mjs` runs its
+  branch check against the real repository. From a worktree it reports
+  `onMain=false` and asserts nothing. A fence needs a temporary repository on
+  `main`, and that is the second half of this entry.
+- **Authority:** `.claude/hooks/plan-guard.mjs` line 443 · CLAUDE.md §3.2 ·
+  related: H-95, H-103, H-65
+- **Added:** 2026-09-18 · operator console workspace session
 
 # DONE — deleted, not archived
 
