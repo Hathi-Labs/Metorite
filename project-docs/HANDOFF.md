@@ -2277,52 +2277,6 @@ line — never reclaim a number by deleting the other entry.
   unapplied and mark the two tests expected-fail with that reason. Today they
   are neither, which is the worst of the three.
 
-### H-115 · A person with NO organization is told nothing useful · [AGENT]
-- **Check:** open the app signed in as an address with no `org_membership` row.
-  A generic error on every pane means the surfacing half is still owed. The
-  gateway half answers `403 no_organization` since 2026-09-18.
-- **⚠️ THE CAUSE THIS ENTRY FIRST NAMED WAS WRONG, and it was wrong in a way
-  that would have sent the next reader to the wrong file.** It said branch 1b
-  answered a Bearer-matched call carrying no `X-User-Email` with a service
-  context and never bound. Measured on the box 2026-09-18, none of that held:
-  1. Every failing request **carried** `X-User-Email`. Branch **1a** ran.
-     `auth.identity_domain_mismatch` is logged three times immediately before
-     each 500, naming the address — the entry had already dismissed those
-     warnings as noise, and they were the signpost.
-  2. They arrive at **:23 seconds past every minute**, 60 an hour for nine
-     hours overnight. That is one browser tab on a 60-second poll, not "0.3%
-     of requests spread across surfaces". No systemd timer on the box runs
-     every minute, which is what ruled the job theory out.
-  3. `serviceHeaders()` — the one way to get a bearer with no identity — has
-     **zero call sites** in the control plane. `gatewayHeaders` throws
-     `NoIdentityError` rather than send a bare bearer. So the proxy cannot
-     produce branch 1b's shape at all.
-- **What it really was.** The address resolved to no organization, because the
-  organization did not exist yet. `org_membership` for it was created
-  **2026-09-17 17:55:57 UTC**; the last `TenantUnbound` in the log is 18:06,
-  and there have been none since. `resolve_identity` returned `(None, None)`,
-  `_with_resolved_access` bound nothing, and every tenant-scoped route raised.
-- **⚠️ This is the ORDINARY state of every new customer** between "signs in"
-  and "an admin adds them", so the onboarding path walks straight through it.
-  It is not rare and it is not a race.
-- **What is done.** `gateway.main._tenant_unbound` now splits. A request with a
-  user header gets **403 `no_organization`** and a body that says an
-  administrator has to add them — not the old 500 claiming it was our fault and
-  telling them to reload, which was untrue and could not help. A request with
-  no user header keeps its 500: a job or consumer reaching a tenant-scoped
-  route really is our defect. `resolve_identity`'s bare `except` now logs
-  `auth.identity_resolve_failed`, so a database that refused the read is no
-  longer indistinguishable from a person who is genuinely not a member —
-  without that, an outage reads as an accusation.
-- **What is STILL OPEN.** The client does not yet turn `no_organization` into a
-  screen. A person in this state sees a generic error on every pane rather than
-  one sentence telling them what is wrong. That is the remaining work, and it
-  belongs with whoever owns the shell, not with Projects.
-- **Authority:** `saas_multitenancy.md` §0.1 / MT-1c · `acb_auth/access.py`
-  `resolve_identity` · `acb_common/db.py:273` · `gateway/main.py`
-- **Added:** 2026-09-17. **Cause corrected and the gateway half closed
-  2026-09-18**, after reading the box rather than the code.
-
 ### H-114 · R8 suites still run psycopg. The gateway runs asyncpg · [AGENT]
 - **Check:** `uv run pytest tests/unit/test_projects_sql_asyncpg.py -q` with
   `TENANT_LADDER_DATABASE_URL` set. If it SKIPS in CI, the strong half of the

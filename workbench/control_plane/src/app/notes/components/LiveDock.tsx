@@ -14,6 +14,8 @@
  */
 
 import Icon from "@/components/Icon";
+import { useAccess } from "@/components/AccessProvider";
+import { shouldPollWorkspace } from "@/lib/access";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { listLiveSessions } from "../lib/api";
@@ -25,8 +27,22 @@ export function LiveDock() {
   const pathname = usePathname();
   const [sessions, setSessions] = useState<LiveSession[]>([]);
   const localMeetingId = useRecordingStore((s) => s.meetingId);
+  const { access, loading: accessLoading } = useAccess();
+  /**
+   * ⚠️ **A person with no organization must not be polled at, and this dock
+   * polled hardest of the three.** It sits in `AppShell` above every layout
+   * boundary, so it mounts for someone who is looking at the join-vs-create
+   * chooser and nothing else — and at 10 seconds that is 360 tenant-scoped
+   * requests an hour on behalf of a person who has no tenant.
+   *
+   * Same predicate as `Sidebar`'s, and that is the point: the defect it was
+   * written for was two components deciding this separately, with one of them
+   * not deciding it at all. See `access.shouldPollWorkspace`.
+   */
+  const canPoll = shouldPollWorkspace(access, accessLoading);
 
   useEffect(() => {
+    if (!canPoll) return;
     let alive = true;
     async function poll() {
       try {
@@ -43,7 +59,9 @@ export function LiveDock() {
       alive = false;
       clearInterval(t);
     };
-  }, []);
+    // `canPoll`, not `[]` — it flips when somebody is added to an org, and
+    // presence has to start then rather than on the next full reload.
+  }, [canPoll]);
 
   // Don't shadow the local recorder's own dock, and don't nag while you're
   // already looking at the session (its console or its recording screen).
