@@ -58,10 +58,25 @@ export function Input({ inputSize = "md", icon, className = "", ...rest }: Input
   if (!icon) return field;
   return (
     <div className="relative w-full">
+      {/*
+        ⚠️ `z-10` is LOAD-BEARING, and without it this icon has never been
+        drawn at all.
+
+        The field carries an opaque `bg-background`, and it paints OVER an
+        absolutely positioned sibling that has no stacking order of its own.
+        So `icon` reserved its 32px of `pl-8` and then hid the glyph behind
+        the field — for the whole life of this prop, at all three call sites
+        (`FilterBar`, `TriageRail`, `MoveDialog`).
+
+        Measured 2026-09-18, in the visual rig: the magnifier appeared the
+        instant the input's background was set to `transparent`, and not
+        before. It reads as a missing icon name, and it is not one — the
+        `<svg>` is in the DOM at 14×14, visible, `opacity: 1`.
+      */}
       <Icon
         name={icon}
         size={14}
-        className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"
+        className="pointer-events-none absolute left-2.5 top-1/2 z-10 -translate-y-1/2 text-muted-foreground"
       />
       {field}
     </div>

@@ -36,7 +36,7 @@ import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
 import { Checkbox } from "@/components/ui/Checkbox";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { FieldRow, TagRow, ViewRow } from "../lib/api";
 import {
@@ -50,6 +50,7 @@ import {
   describeDivergence,
   isFiltered,
   personLabel,
+  searchOpen,
   viewDivergence,
 } from "../lib/grouping";
 import { type ViewMode, honoursGroupBy, honoursLanes } from "../lib/commands";
@@ -117,12 +118,21 @@ const LANE_OPTION_LABELS: Record<GroupBy, string> = {
  * grouped by assignee looked exactly like a board grouped by status until you
  * read the control.
  *
- * ⚠️ Colour only, and never a cue that changes the control's BOX. The search
- * field in this row is `flex-1` and absorbs whatever its siblings give up, so a
- * border-width or ring cue would move the search bar every time a filter
- * changed. A weight cue is unavailable for a different reason: `.cc-control`
- * sets `font-weight` from `--label-weight` in unlayered CSS, which beats a
- * utility class.
+ * ⚠️ Colour only, and never a cue that changes the control's BOX. Every item
+ * in this row is a fixed width, so a cue that changed one control's geometry
+ * would re-wrap the row each time a filter changed.
+ *
+ * ⚠️ This note used to read *"the search field is `flex-1` and absorbs
+ * whatever its siblings give up"*, which was true and was also the defect.
+ * The box paid for every sibling that appeared: measured 2026-09-18 on `main`,
+ * the Clear button took **74px** off it at 1920px, and its width ran
+ * 262 / 238 / 214px at 1280 / 1440 / 1600 — NARROWER as the window grew. It is
+ * 256px at all four now, and Clear costs it 0px. Do not give anything in this
+ * row `flex-1` again.
+ *
+ * A weight cue is unavailable for a different reason: `.cc-control` sets
+ * `font-weight` from `--label-weight` in unlayered CSS, which beats a utility
+ * class.
  */
 const OFF_DEFAULT = "border-primary/50 bg-primary/10 text-primary";
 const AT_DEFAULT = "";
@@ -231,6 +241,12 @@ export function FilterBar({
   // every keystroke turns a five-letter word into five round trips, and the
   // board flickering through four wrong answers reads as a broken filter.
   const [draft, setDraft] = useState(filters.q);
+  // H-94 direction 3 — the search field is an icon until it is asked for.
+  // ⚠️ `opened` is the TOGGLE, never the answer: `searchOpen` refuses to close
+  // over text, so a live `q` keeps the field on screen whatever this holds.
+  // See `grouping.searchOpen` for why that rule lives there and not here.
+  const [opened, setOpened] = useState(false);
+  const searchField = useRef<HTMLInputElement | null>(null);
   const [naming, setNaming] = useState(false);
   const [viewName, setViewName] = useState("");
   // WS-27x — the shown-fields picker's popover.
@@ -241,6 +257,14 @@ export function FilterBar({
   const [exporting, setExporting] = useState(false);
 
   useEffect(() => setDraft(filters.q), [filters.q]);
+
+  // A field you have to click into twice is a field you stop using. Focus on
+  // the OPEN edge only — keyed to `opened`, not to `open`, so re-rendering
+  // while somebody types in a field that a live `q` is holding open does not
+  // keep stealing the caret back to the start.
+  useEffect(() => {
+    if (opened) searchField.current?.focus();
+  }, [opened]);
 
   useEffect(() => {
     if (draft === filters.q) return;
@@ -270,6 +294,9 @@ export function FilterBar({
   // Resolved from the list rather than trusted: `activeViewId` outlives a
   // project switch and a delete, and a chip lit for a view that is no longer
   // in `views` would offer to update something that is not there.
+  // ⚠️ `opened || there is text` — and the text wins. `searchOpen` carries why.
+  const open = searchOpen({ opened, draft });
+
   const activeView = views.find((view) => view.id === activeViewId) ?? null;
   const drift = activeView
     ? viewDivergence({ filters, groupBy, lanes, shownFields }, activeView.config)
@@ -278,16 +305,59 @@ export function FilterBar({
   return (
     <div className="border-b border-border px-3 py-2">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="min-w-[10rem] flex-1">
-          <Input
+        {/* ── Search, collapsed to its icon (H-94 direction 3) ─────────────
+            Owner, 2026-08-26: the field collapses to an icon at the left of
+            the row, carries no placeholder, and a click opens the real field.
+
+            ⚠️ **NO MOTION.** Owner directive the same day, restated in H-94:
+            a `MOTION.md` landed in this tree and the owner removed it. This is
+            a state change, and it has no duration and no easing curve. Do not
+            add one, and do not re-open the question without asking.
+
+            ⚠️ **The width is FIXED, and that is the second defect on this row
+            being closed.** The box used to be `min-w-[10rem] flex-1` — the one
+            growing item in a `flex flex-wrap` container, so it paid for every
+            sibling that appeared. Measured before this change: the Clear
+            button took **76px** from it at 1920px, and 0px at 1280, 1440 and
+            1600, where the row wraps and the two land on different lines. A
+            search box that changes width when you filter is a search box that
+            moves under the cursor. No item in this row grows now, so no
+            sibling can charge another for appearing. */}
+        {open ? (
+          <div className="w-64">
+            <Input
+              ref={searchField}
+              icon="Search"
+              inputSize="sm"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              // ⚠️ No placeholder (owner). `aria-label` is what names this
+              // field now, so it is not decoration — remove it and the control
+              // is unreachable by name.
+              aria-label="Search tasks"
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setOpened(false);
+              }}
+              // Closing on blur is safe ONLY because `searchOpen` refuses to
+              // close over text. A field holding a live `q` stays open here.
+              onBlur={() => setOpened(false)}
+            />
+          </div>
+        ) : (
+          // `secondary`, matching Overdue and Watching beside it — a bordered
+          // box reads as a control you can press. A ghost icon in a row of
+          // bordered ones reads as decoration, and this one is the only way
+          // back to the field.
+          <Button
+            variant="secondary"
+            size="icon-sm"
             icon="Search"
-            inputSize="sm"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="Search titles and descriptions…"
             aria-label="Search tasks"
+            aria-expanded={false}
+            title="Search titles and descriptions"
+            onClick={() => setOpened(true)}
           />
-        </div>
+        )}
 
         {/* ⚠️ A BUTTON, not a select (H-94, owner 2026-08-26). These are not
             fields waiting for input — they are a current state you can
