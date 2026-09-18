@@ -21,7 +21,6 @@
 // shipped state, and a table of zeros would look like a fault.
 
 import type { ProviderSpend } from "@/lib/contract";
-import { providerGlyph } from "@/lib/categorical";
 import { chipClass } from "@/lib/tone";
 
 /** USD with enough places to be checkable, and grouped so it is readable.
@@ -53,6 +52,18 @@ export default function VendorSpend({
   spend: ProviderSpend[];
   days: number;
 }) {
+  // 🔴 **Split, because a table of zeroes buries the bill.** The read sorts by
+  // cost, so real spend is already on top — but nineteen rows of $0.00 push it
+  // off a screen, and the one number this panel exists for stops being the
+  // first thing anybody sees.
+  //
+  // ⚠️ **A zero here is AMBIGUOUS and the summary line says so.** The query
+  // COALESCEs a NULL sum to 0, so "cost nothing" and "we could not cost it"
+  // arrive identical. Calling these vendors free would be a claim nobody
+  // measured, so the line below says "no cost recorded" instead.
+  const billed = spend.filter((r) => Number(r.costUsd) > 0);
+  const unbilled = spend.filter((r) => !(Number(r.costUsd) > 0));
+
   const total = sum(spend, "costUsd");
   const measured = sum(spend, "measuredUsd");
   // ⚠️ Guarded against a zero total, which is the empty state — not a bug, and
@@ -64,22 +75,33 @@ export default function VendorSpend({
       <div className="panel-head">
         <h2>What the vendors cost us</h2>
         <p>
-          Our own bill over the last {days} days, by vendor — the number every
-          margin is measured against. A customer&apos;s own key (BYOK) never
-          appears here: those tokens run on their account, not ours.
+          Our own bill over the last {days}&nbsp;days, by vendor — the number
+          every margin is measured against. A customer&apos;s own key (BYOK)
+          never appears here: those tokens run on their account, not ours.
         </p>
       </div>
 
-      {spend.length === 0 ? (
+      {/* ⚠️ Guarded on BILLED, not on `spend`. A window where every vendor
+          served calls we could not cost has rows but no bill, and the banner
+          would have read "$0.00 across 0 vendors" over an empty table. The
+          note below still reports those vendors. */}
+      {billed.length === 0 ? (
         <p className="field-hint">
-          No calls we paid for in this window. That is the shipped state until
-          a tier serves its first request.
+          {spend.length === 0
+            ? "No calls we paid for in this window. That is the shipped state until a tier serves its first request."
+            : `${spend.length} ${spend.length === 1 ? "vendor" : "vendors"} served calls, and none of them carry a recorded cost — so there is no bill to show yet. Record vendor prices in Models, or use a vendor that states its own cost.`}
         </p>
       ) : (
         <>
-          <div className="banner ok" role="status">
+          {/* ⚠️ `info`, and NOT `ok`. There is no `.banner.ok` in
+              `globals.css` — the classes are info, warn and danger. A tone
+              this stylesheet does not define falls through to the base
+              `.banner`, whose `strong` is `var(--warn)`, so a sentence
+              reporting good news drew as a warning. It typechecked and every
+              test passed. Only looking at it found this. */}
+          <div className="banner info" role="status">
             <strong>{usd(String(total))}</strong> across{" "}
-            {spend.length === 1 ? "one vendor" : `${spend.length} vendors`}.{" "}
+            {billed.length === 1 ? "one vendor" : `${billed.length} vendors`}.{" "}
             {fullyMeasured ? (
               <>
                 Every dollar of it was stated by the vendor, so it reconciles
@@ -107,7 +129,7 @@ export default function VendorSpend({
               </tr>
             </thead>
             <tbody>
-              {spend.map((r) => {
+              {billed.map((r) => {
                 const rowTotal = Number(r.costUsd);
                 const rowMeasured = Number(r.measuredUsd);
                 const allMeasured =
@@ -117,10 +139,14 @@ export default function VendorSpend({
                   rowMeasured >= rowTotal;
                 return (
                   <tr key={r.provider}>
-                    <td className="mono">
-                      <span aria-hidden="true">{providerGlyph(r.provider)}</span>{" "}
-                      {r.provider}
-                    </td>
+                    {/* ⚠️ **No monogram here, deliberately.** `.glyph` is only
+                        styled INSIDE `.chip` and `.facet` (globals.css), so a
+                        bare one renders as a naked capital beside the name —
+                        "O openrouter" reads as a typo. The other callers all
+                        sit in a card or a chip where a visual anchor earns its
+                        place. A four-column money table has one identifier
+                        that matters and it is already the first column. */}
+                    <td className="mono">{r.provider}</td>
                     <td className="mono">{r.calls}</td>
                     <td className="mono">{usd(r.costUsd)}</td>
                     <td>
@@ -142,6 +168,21 @@ export default function VendorSpend({
               })}
             </tbody>
           </table>
+
+          {unbilled.length > 0 && (
+            <p className="field-hint">
+              <strong>
+                {unbilled.length}{" "}
+                {unbilled.length === 1 ? "vendor" : "vendors"} served calls with
+                no cost recorded
+              </strong>{" "}
+              — {unbilled.map((r) => r.provider).join(", ")}. That is not the
+              same as costing nothing: a call we could not price and a call that
+              was genuinely free both arrive as a zero here. Their margins read
+              as unknown until a price is recorded in{" "}
+              <a href="/models">Models</a>, or the vendor starts stating its own.
+            </p>
+          )}
 
           <p className="note">
             A vendor that reports its own cost needs no price kept in{" "}
