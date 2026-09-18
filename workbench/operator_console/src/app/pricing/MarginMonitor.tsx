@@ -15,7 +15,13 @@
 // ⚠️ A SERVER component: every judgement is pure (`lib/priceboard.ts`).
 
 import type { AiCatalog } from "@/lib/contract";
-import { marginPct, marginTone, monitorRows } from "@/lib/priceboard";
+import {
+  costBasis,
+  costBasisLabel,
+  marginPct,
+  marginTone,
+  monitorRows,
+} from "@/lib/priceboard";
 import { chipClass } from "@/lib/tone";
 
 export default function MarginMonitor({ catalog }: { catalog: AiCatalog }) {
@@ -81,6 +87,10 @@ export default function MarginMonitor({ catalog }: { catalog: AiCatalog }) {
               <th>Tier</th>
               <th>Calls</th>
               <th>Costed</th>
+              {/* 🔴 Migration 031. Whether the Earned figure beside it is a
+                  measurement or our own arithmetic. Without this the two look
+                  identical on the page, and only one of them can go stale. */}
+              <th>Basis</th>
               <th>Earned</th>
               <th>Floor</th>
               <th>Intended ×</th>
@@ -89,6 +99,7 @@ export default function MarginMonitor({ catalog }: { catalog: AiCatalog }) {
           <tbody>
             {rows.map((r) => {
               const tone = marginTone(r.realisedMargin, r.marginFloor);
+              const basis = costBasis(r);
               return (
                 <tr key={r.tier}>
                   <td className="mono">{r.tier}</td>
@@ -102,6 +113,26 @@ export default function MarginMonitor({ catalog }: { catalog: AiCatalog }) {
                     }
                   >
                     {r.costedCalls}
+                  </td>
+                  {/* ⚠️ A dash when nothing was costed. There is no figure to
+                      qualify, and a word there would imply one exists. */}
+                  <td>
+                    {basis === "none" ? (
+                      <span className="muted">—</span>
+                    ) : (
+                      <span
+                        className={chipClass(
+                          basis === "measured"
+                            ? "ok"
+                            : basis === "mixed"
+                              ? "warn"
+                              : "neutral",
+                        )}
+                        title={costBasisLabel(basis)}
+                      >
+                        {basis}
+                      </span>
+                    )}
                   </td>
                   <td>
                     {tone === "muted" ? (

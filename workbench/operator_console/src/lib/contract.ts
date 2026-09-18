@@ -231,9 +231,17 @@ export type TierRate = {
 export type TierMargin = {
   tier: string;
   calls: number;
-  /** How many of those calls carry a MEASURED cost. The context that stops
+  /** How many of those calls carry a cost at all. The context that stops
    *  `realisedMargin` reading as authority it does not have. */
   costedCalls: number;
+  /** How many of the COSTED calls carry a cost the VENDOR stated, rather than
+   *  one we derived from `model_profile` (migration 031).
+   *
+   * 🔴 **A subset of `costedCalls`, and the difference is trust.** A derived
+   *  cost is only as fresh as the last edit to our own price table, so a
+   *  margin resting on it can be wrong in a direction nobody can see. A stated
+   *  cost cannot. Equal to `costedCalls` means the figure is fully measured. */
+  measuredCalls: number;
   credits: string;
   costUsd: string;
   /** What we multiply cost by to SUGGEST a price. NULL means the owner has

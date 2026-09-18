@@ -800,6 +800,13 @@ def margin_by_tier(conn: Connection, *, days: int = 7) -> list[dict[str, Any]]:
     rides along so a reader can see how much of the tier this figure speaks
     for — the same rule `usage_by_org` already follows.
 
+    🔴 **`measured_calls` says how much of that is a MEASUREMENT** (migration
+    031). A costed call carries either a cost the vendor stated or one we
+    derived from `model_profile`, and the second is only as fresh as the last
+    time somebody edited that table. A margin built on stale prices is wrong in
+    a direction nobody can see, so the count travels beside the figure rather
+    than the two being averaged into one number that hides which it was.
+
     ⚠️ **A refusal is not a call and a metering fault is not revenue.** Both
     are excluded: a refusal billed nothing because we said no, and a fault
     billed nothing because we could not read the usage. Counting either as a
@@ -814,6 +821,7 @@ def margin_by_tier(conn: Connection, *, days: int = 7) -> list[dict[str, Any]]:
             "tier": r.tier,
             "calls": int(r.calls),
             "costed_calls": int(r.costed_calls),
+            "measured_calls": int(r.measured_calls),
             "credits": Decimal(r.credits),
             "cost_usd": Decimal(r.cost_usd),
             "margin_multiplier": r.margin_multiplier,
@@ -832,6 +840,15 @@ def margin_by_tier(conn: Connection, *, days: int = 7) -> list[dict[str, Any]]:
                              AND u.refusal_reason IS NULL
                              AND u.metering_fault IS NULL
                        ) AS costed_calls,
+                       -- Migration 031. Of the costed calls, how many carry a
+                       -- cost the VENDOR stated rather than one we derived.
+                       -- ⚠️ A subset of `costed_calls`, never of `calls`: an
+                       -- uncosted call has no source to report.
+                       COUNT(u.id) FILTER (
+                           WHERE u.cost_source = 'vendor'
+                             AND u.refusal_reason IS NULL
+                             AND u.metering_fault IS NULL
+                       ) AS measured_calls,
                        COALESCE(SUM(u.billed_credits) FILTER (
                            WHERE u.provider_cost_usd IS NOT NULL
                              AND u.refusal_reason IS NULL

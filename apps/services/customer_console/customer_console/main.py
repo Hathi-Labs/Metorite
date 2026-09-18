@@ -2230,6 +2230,10 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 "tier": m["tier"],
                 "calls": m["calls"],
                 "costed_calls": m["costed_calls"],
+                # Migration 031. How many of the costed calls carry a cost the
+                # vendor stated, so the console can say whether a margin is
+                # measured or derived instead of implying it is all measured.
+                "measured_calls": m["measured_calls"],
                 "credits": str(m["credits"]),
                 "cost_usd": str(m["cost_usd"]),
                 "margin_multiplier": (

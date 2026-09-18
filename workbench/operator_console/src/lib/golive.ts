@@ -19,7 +19,7 @@
 
 import type { AiCatalog } from "./contract";
 import { type ChainContext, tierNextStep } from "./fallback";
-import { armedProviders } from "./providers";
+import { armedProviders, reportsCost } from "./providers";
 import type { Tone } from "./tone";
 
 export type StepState = "done" | "partial" | "todo" | "info";
@@ -48,7 +48,17 @@ export function stepTone(s: StepState): Tone {
 export function goLiveSteps(cat: AiCatalog): GoLiveStep[] {
   const armed = armedProviders(cat.accounts);
   const declared = cat.models.filter((m) => m.declared);
-  const unprofiled = declared.filter((m) => m.inputPer1M === null);
+  // 🔴 **A model on a REPORTING vendor needs no recorded price** (migration
+  // 031). Until OpenRouter, every unpriced model was a real hole: nothing
+  // could cost its calls. A vendor that states its own charge fills that hole
+  // with nobody typing a number, so nagging for one sends an operator to do
+  // work that changes nothing. `reportsCost` is the single list.
+  const unprofiled = declared.filter(
+    (m) => m.inputPer1M === null && !reportsCost(m.provider),
+  );
+  const costedByVendor = declared.filter(
+    (m) => m.inputPer1M === null && reportsCost(m.provider),
+  );
 
   const ctx: ChainContext = { models: cat.models, armed };
   const tierVerdict = tierNextStep(cat.tiers, ctx);
@@ -109,8 +119,13 @@ export function goLiveSteps(cat: AiCatalog): GoLiveStep[] {
             ? `${declared.length} declared · ${unprofiled.length} missing ` +
               "vendor prices. A call on those cannot be COSTED, so their " +
               "margin reads as unknown until the price is entered."
-            : `${declared.length} declared, each with the vendor's prices ` +
-              "recorded — every call is costed.",
+            : costedByVendor.length > 0
+              ? `${declared.length} declared. ${costedByVendor.length} are ` +
+                "on a vendor that reports what each call cost, so they need " +
+                "no price from you — the rest have theirs recorded. Every " +
+                "call is costed."
+              : `${declared.length} declared, each with the vendor's prices ` +
+                "recorded — every call is costed.",
       href: "/models",
       linkText: "Models",
     },

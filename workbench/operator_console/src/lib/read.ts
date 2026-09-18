@@ -110,6 +110,9 @@ type WireCatalog = {
   // 028 — per-tier margin. Absent from a Console still mid-rollout.
   tier_margins?: {
     tier: string; calls: number; costed_calls: number;
+    // 031 — optional for the same reason the block is: a Console mid-rollout
+    // does not send it, and `read.ts` reads it as zero measured calls.
+    measured_calls?: number;
     credits: string; cost_usd: string;
     margin_multiplier: string | null;
     margin_floor: string | null;
@@ -340,6 +343,10 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
     tier: m.tier,
     calls: m.calls,
     costedCalls: m.costed_calls,
+    // ⚠️ `?? 0`, because a Console that predates migration 031 sends no such
+    // field. Zero is the honest reading of an older service: it never recorded
+    // a source, so it can claim no measured calls.
+    measuredCalls: m.measured_calls ?? 0,
     credits: m.credits,
     costUsd: m.cost_usd,
     // ⚠️ `?? null`, never `String(...)`. A null must stay null — `String(null)`
