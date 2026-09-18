@@ -32,7 +32,7 @@ import json
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, NamedTuple
 
 from sqlalchemy import text
@@ -682,6 +682,19 @@ class ExtractedUsage:
     #: `credit_pricing.md` §3 refuses the impossible case and stores this
     #: instead — the fleet gets MEASURED before anybody changes the arithmetic.
     cache_convention: str | None = None
+    #: What the VENDOR said this call cost, in USD, or None when it said
+    #: nothing. A MEASUREMENT, and it outranks anything we compute.
+    #:
+    #: 🔴 **Why reading it is worth a field.** :func:`vendor_cost_usd`
+    #: multiplies our own recorded prices by tokens we counted, so it is only
+    #: ever as fresh as the last ``model_profile`` edit. A vendor that reports
+    #: its own charge removes that dependency for every call it answers — no
+    #: price drift, no pricing window, no cache-convention arithmetic.
+    #:
+    #: ⚠️ **Decimal, converted through ``str``.** The provider hands litellm a
+    #: float. ``Decimal(0.000075)`` carries the binary error into money maths
+    #: and ``Decimal("0.000075")`` does not. ``feed.py`` states the same rule.
+    vendor_reported_cost_usd: Decimal | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -981,9 +994,61 @@ def usage_from_response(response: Any) -> ExtractedUsage:
             completion_tokens=int(completion) if isinstance(completion, int) else 0,
             cached_tokens=cached,
             cache_convention=convention,
+            vendor_reported_cost_usd=vendor_reported_cost_usd(response),
         )
     except Exception:
         return ExtractedUsage()
+
+
+#: Where litellm leaves a provider-reported cost. OpenRouter returns
+#: ``usage.cost`` and litellm's OpenRouter transform copies it here.
+#:
+#: ⚠️ **Read as ONE string in ONE place.** It is litellm's internal shape, not
+#: a public contract, so a second copy of this key somewhere else is a second
+#: thing to find the day litellm renames it.
+_LITELLM_COST_KEY = "llm_provider-x-litellm-response-cost"
+
+
+def vendor_reported_cost_usd(response: Any) -> Decimal | None:
+    """What the vendor said this call cost, or ``None`` when it said nothing.
+
+    🔴 **A MEASUREMENT, not our arithmetic.** OpenRouter reports ``usage.cost``
+    — the amount it actually billed us — and litellm's OpenRouter transform
+    lifts it into ``_hidden_params``. litellm asks for it on every OpenRouter
+    call by itself, so nothing in the request has to opt in.
+
+    ⚠️ **Silence is ``None``, never zero.** Most vendors report no cost at all,
+    and a zero would say "this call was free" to every margin query that reads
+    it. D-AI-7 rule 3: unknown is never zero.
+
+    ⚠️ **A reported zero IS kept.** A free-tier model legitimately costs
+    nothing, and that is a measurement we should record as one. Only an absent
+    or unreadable value becomes ``None``.
+
+    ⚠️ **Never raises.** Metering is best-effort and must not fail a completion
+    the customer already holds — the same posture the rest of this module takes.
+    """
+    try:
+        hidden = getattr(response, "_hidden_params", None)
+        if not isinstance(hidden, dict):
+            return None
+        headers = hidden.get("additional_headers")
+        if not isinstance(headers, dict):
+            return None
+        raw = headers.get(_LITELLM_COST_KEY)
+        if raw is None or isinstance(raw, bool):
+            return None
+        if not isinstance(raw, (int, float, str, Decimal)):
+            return None
+        # Through `str`, so a float's binary error never enters money maths.
+        cost = Decimal(str(raw))
+        # A negative charge is not a thing a vendor does. Reading one means we
+        # misunderstood the field, and a wrong number is worse than no number.
+        if cost < 0:
+            return None
+        return cost.quantize(Decimal("0.00000001"))
+    except (InvalidOperation, ValueError, TypeError, AttributeError):
+        return None
 
 
 # ── Streaming relay (CP-4b) ─────────────────────────────────────────────────

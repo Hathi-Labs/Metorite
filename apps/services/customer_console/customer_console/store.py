@@ -30,7 +30,6 @@ from customer_console.credits import (
     LEDGER_REASON_MANUAL,
     LEDGER_REASON_PURCHASE,
     LEDGER_REASON_RELEASE,
-    LEDGER_REASON_SETTLE,
     LEDGER_REASON_USAGE,
 )
 
@@ -500,9 +499,7 @@ class HoldRefused(Exception):
     """The balance could not cover this reservation."""
 
     def __init__(self, needed: Decimal, balance: Decimal) -> None:
-        super().__init__(
-            f"needs {needed} credits, balance is {balance}"
-        )
+        super().__init__(f"needs {needed} credits, balance is {balance}")
         self.needed = needed
         self.balance = balance
 
@@ -579,9 +576,7 @@ def place_hold(
     return True
 
 
-def release_hold(
-    conn: Connection, *, org_id: str, request_id: str
-) -> Decimal:
+def release_hold(conn: Connection, *, org_id: str, request_id: str) -> Decimal:
     """Give a reservation back. Idempotent. Returns what was released.
 
     ⚠️ **Reads the hold's OWN delta rather than being told the number.** A
@@ -620,9 +615,7 @@ def release_hold(
     return -Decimal(held)
 
 
-def sweep_orphan_holds(
-    conn: Connection, *, older_than_seconds: int
-) -> list[dict[str, Any]]:
+def sweep_orphan_holds(conn: Connection, *, older_than_seconds: int) -> list[dict[str, Any]]:
     """Release every hold whose call never closed it. Returns what it freed.
 
     🔴 **A crash between the hold and the settle strands credits**
@@ -721,9 +714,7 @@ def open_lots(conn: Connection, *, org_id: str) -> list[Any]:
     )
 
 
-def draw_from_lots(
-    conn: Connection, *, org_id: str, credits: Decimal
-) -> list[dict[str, Any]]:
+def draw_from_lots(conn: Connection, *, org_id: str, credits: Decimal) -> list[dict[str, Any]]:
     """Allocate a charge across lots, soonest-expiring first.
 
     Returns what each lot gave, as ``[{"lot_id": .., "credits": ..}, ..]``.
@@ -750,10 +741,7 @@ def draw_from_lots(
         if take <= 0:
             continue
         conn.execute(
-            text(
-                "UPDATE credit_lot SET credits_used = credits_used + :take "
-                "WHERE id = :id"
-            ),
+            text("UPDATE credit_lot SET credits_used = credits_used + :take WHERE id = :id"),
             {"take": take, "id": lot.id},
         )
         drawn.append({"lot_id": lot.id, "credits": take, "source": lot.source})
@@ -798,9 +786,7 @@ def add_credit_lot(
     )
 
 
-def margin_by_tier(
-    conn: Connection, *, days: int = 7
-) -> list[dict[str, Any]]:
+def margin_by_tier(conn: Connection, *, days: int = 7) -> list[dict[str, Any]]:
     """What each tier actually earned, against the floor it was given.
 
     🔴 **Grouped by TIER and never by organization.** The question is whether a
@@ -958,14 +944,15 @@ def record_usage(
                  agent, module_slug, model, tier, prompt_tokens,
                  completion_tokens, cached_tokens, provider_cost_usd, run_id, client_ref,
                  task, quantity, unit, served_rank, byok_served, refusal_reason,
-                 metering_fault, cache_convention, window_at_call, context_tier)
+                 metering_fault, cache_convention, window_at_call, context_tier,
+                 cost_source)
             VALUES
                 (:org, :request_id, :billed, :user_email, :agent, :module_slug,
                  :model, :tier, :prompt_tokens, :completion_tokens,
                  :cached_tokens, :provider_cost_usd, :run_id, :client_ref,
                  :task, :quantity, :unit, :served_rank, :byok_served,
                  :refusal_reason, :metering_fault, :cache_convention,
-                 :window_at_call, :context_tier)
+                 :window_at_call, :context_tier, :cost_source)
             ON CONFLICT (organization_id, request_id) DO NOTHING
             RETURNING id
             """
@@ -983,6 +970,12 @@ def record_usage(
             "completion_tokens": fields.get("completion_tokens", 0),
             "cached_tokens": fields.get("cached_tokens", 0),
             "provider_cost_usd": fields.get("provider_cost_usd"),
+            # Migration 031. How `provider_cost_usd` was arrived at: 'vendor'
+            # when the provider reported it, 'computed' when we derived it.
+            # NULL from any caller that does not say, which is every caller
+            # written before this column existed — an estimate must never
+            # inherit the word 'vendor' by default.
+            "cost_source": fields.get("cost_source"),
             "run_id": fields.get("run_id"),
             "client_ref": fields.get("client_ref"),
             # CP-10 slice 2 columns. NULL on a row written before this
@@ -1253,9 +1246,7 @@ def visible_tiers(conn: Connection) -> list[dict[str, Any]]:
 USAGE_MAX_DAYS = 365
 
 
-def unbilled_fleet_total(
-    conn: Connection, *, days: int = SPEND_WINDOW_DAYS
-) -> dict[str, int]:
+def unbilled_fleet_total(conn: Connection, *, days: int = SPEND_WINDOW_DAYS) -> dict[str, int]:
     """Consumption we served and did not bill, over EVERY organization.
 
     🔴 **This read exists because computing it from the page would never
@@ -1909,9 +1900,7 @@ def deployment_visible_orgs(
     ]
 
 
-def deployment_placed_orgs(
-    conn: Connection, *, deployment_id: str
-) -> list[dict[str, Any]]:
+def deployment_placed_orgs(conn: Connection, *, deployment_id: str) -> list[dict[str, Any]]:
     """Every organization PLACED on this deployment, with its owner.
 
     The sibling of :func:`deployment_visible_orgs`, and the difference is the

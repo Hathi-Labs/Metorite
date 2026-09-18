@@ -5644,6 +5644,12 @@ def _record_completion(
                     task=resolved.task,
                     quantity=quantity,
                 )
+            # WHERE the cost came from (migration 031). Set beside every branch
+            # that sets `cost`, because a number with no provenance is what
+            # H-85 is about — a measured margin and a guessed one must not read
+            # the same in a report.
+            cost_source: str | None = None
+
             if metering_fault:
                 # ⚠️ NULL, not zero. A broken partition breaks OUR cost sum by
                 # the same arithmetic it breaks the charge with, and zero would
@@ -5661,6 +5667,27 @@ def _record_completion(
                     )
                 billed = Decimal(0)
                 cost = Decimal(0)
+                # §3.4: the tokens ran on the customer's OWN vendor account, so
+                # the zero is a fact about who paid and not a measurement we
+                # took. It is neither of migration 031's two words.
+                cost_source = None
+            elif usage.vendor_reported_cost_usd is not None:
+                # 🔴 **THE VENDOR TOLD US, so stop calculating** (migration 031).
+                # OpenRouter reports what it actually billed for this call.
+                # That is a measurement, and it outranks every number we could
+                # derive: no `model_profile` price to keep fresh, no pricing
+                # window to resolve, no cache convention to reason about.
+                #
+                # ⚠️ Deliberately ABOVE both computed branches, so it applies to
+                # a per-unit call the same as a token one. A vendor that prices
+                # by the picture still knows what the picture cost.
+                #
+                # ⚠️ `window_at_call` and `context_tier` stay NULL here, and
+                # that is correct rather than missing. They exist to explain how
+                # a DERIVED cost was reached. Nothing needs to explain a figure
+                # the vendor stated.
+                cost = usage.vendor_reported_cost_usd
+                cost_source = "vendor"
             elif quantity is not None:
                 # A per-unit call. The vendor sells it by minute, by picture
                 # or by character, so our cost comes off the column that
@@ -5675,6 +5702,9 @@ def _record_completion(
                         unit=_task_unit(conn, resolved.task),
                     ),
                 )
+                # `None` when nobody has priced the model. Unknown carries no
+                # source, because there is no number to attribute.
+                cost_source = "computed" if cost is not None else None
             else:
                 # ⚠️ The tokens the PROVIDER reported, and the moment the call
                 # STARTED — never an estimate and never "now". Migration 024's
@@ -5693,6 +5723,7 @@ def _record_completion(
                     output_per_1m=prices["output"],
                     cached_per_1m=prices["cached"],
                 )
+                cost_source = "computed" if cost is not None else None
             store.record_usage(
                 conn,
                 org_id=org_id,
@@ -5723,6 +5754,10 @@ def _record_completion(
                 completion_tokens=usage.completion_tokens,
                 cached_tokens=usage.cached_tokens,
                 provider_cost_usd=cost,
+                # Migration 031. Measured by the vendor, or derived by us —
+                # recorded beside the number, so a margin report never mixes
+                # the two without saying so (H-85).
+                cost_source=cost_source,
                 served_rank=getattr(resolved, "rank", 1),
                 byok_served=byok,
                 # ⚠️ NOT `refusal_reason`. The call SERVED — the customer holds
