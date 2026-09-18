@@ -53,7 +53,7 @@ import os
 import re
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -1337,12 +1337,11 @@ def operator_sign_in(req: SigninRequest, request: Request) -> dict[str, Any]:
             if row is None and operators.bootstrap_allowed(
                 identity.email, identity.tid
             ):
-                try:
+                # A refusal means the registry already holds a row, so the
+                # normal path applies and `admit` below refuses on the
+                # registry check.
+                with suppress(operators.BootstrapRefused):
                     operators.bootstrap(conn)
-                except operators.BootstrapRefused:
-                    # The registry already holds a row, so the normal path
-                    # applies and `admit` below refuses on the registry check.
-                    pass
                 row = store.operator_by_email(conn, identity.email)
 
             operator = operators.admit(
@@ -3544,7 +3543,7 @@ def set_lifecycle(req: LifecycleRequest, staff: Operator) -> dict[str, Any]:
         try:
             assert_transition(current, req.target)
         except TransitionRefused as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         # Entering `cancelled` opens the export window. Recorded as a date on
         # the row, so "how long do they have" is answerable by anyone rather
@@ -5343,7 +5342,7 @@ def _vendor_prices(
     """
     row = conn.execute(
         text(
-            f"SELECT {', '.join(_PROFILE_RATE_COLUMNS)} "  # noqa: S608 - a fixed tuple, never input
+            f"SELECT {', '.join(_PROFILE_RATE_COLUMNS)} "  # a fixed tuple, never input
             "FROM model_profile WHERE model = :m"
         ),
         {"m": model},
@@ -5816,12 +5815,14 @@ def _chain_credentials(
             continue
         try:
             credentials[vendor] = provider_credential(conn, provider=vendor, org_id=org_id)
-        except Exception:
+        except Exception as exc:
             # A missing or rotated encryption key must fail CLOSED with the
             # same 503 shape the other secrets use — not a 500 that reads
             # as a bug.
             _log.exception("router.credential_unavailable")
-            raise HTTPException(status_code=503, detail="provider credentials unavailable")
+            raise HTTPException(
+                status_code=503, detail="provider credentials unavailable"
+            ) from exc
     return credentials
 
 
@@ -6198,6 +6199,61 @@ async def _streamed_completion(
         await router_mod.aclose_quietly(source)
 
 
+def _preflight_gates(
+    conn,
+    *,
+    chain: list[ResolvedTier],
+    req: CompletionRequest,
+    caller: Caller,
+    org_id: str,
+    request_id: str,
+) -> tuple[dict[str, router_mod.Credential | None], HTTPException | None, HTTPException | None]:
+    """Load the chain's credentials, then run CP-6's two pre-call refusals.
+
+    Returns the credentials, the balance refusal and the reserve refusal.
+
+    🔴 **Neither refusal is RAISED here** (§8.1 clause 3). A row written on the
+    serving connection rolls back with the raise, so both travel back to the
+    route as values and are delivered there, after the transaction closes.
+
+    📌 Extracted from `chat_completions` for C901 (H-102). It moves no
+    behaviour: same transaction, same order, same two gates.
+    """
+    credentials = _chain_credentials(conn, chain, org_id=org_id)
+
+    # CP-6. BEFORE the provider call, which is the only place a refusal
+    # is worth anything: after it we have already spent the money.
+    # Metering afterwards stays best-effort and never fails a
+    # completion — the GATE may refuse, the METER may not.
+    refusal = _spend_refusal(conn, caller) if _spend_gate_enabled() else None
+
+    # 🔴 **The RESERVE** (migration 027, `credit_pricing.md` §5). The
+    # gate above answers "is there any headroom at all"; this answers
+    # "is there enough for THIS call", and takes it.
+    #
+    # ⚠️ Same transaction as the gate, and `place_hold` locks the
+    # organization row inside it. Two calls arriving together are
+    # serialised there — without it each reads the same balance, each
+    # passes, and the organization goes negative by the second one.
+    #
+    # ⚠️ Only behind the spend gate. The reserve is a spend refusal by
+    # another name, and arming it while the gate ships OFF would refuse
+    # customers the gate deliberately does not (H-42's ordering).
+    hold_refusal: HTTPException | None = None
+    if refusal is None and _spend_gate_enabled():
+        hold_refusal = _place_call_hold(
+            conn,
+            org_id=org_id,
+            request_id=request_id,
+            tier=req.model,
+            task=req.task,
+            messages=req.messages,
+            max_tokens=req.max_tokens,
+        )
+
+    return credentials, refusal, hold_refusal
+
+
 @app.post("/v1/chat/completions")
 def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     """Proxy one completion, gate it, and charge it.
@@ -6254,36 +6310,16 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
         unknown_tier = wall.error
 
         if unknown_tier is None:
-            credentials = _chain_credentials(conn, chain, org_id=org_id)
-
-            # CP-6. BEFORE the provider call, which is the only place a refusal
-            # is worth anything: after it we have already spent the money.
-            # Metering afterwards stays best-effort and never fails a
-            # completion — the GATE may refuse, the METER may not.
-            refusal = _spend_refusal(conn, caller) if _spend_gate_enabled() else None
-
-            # 🔴 **The RESERVE** (migration 027, `credit_pricing.md` §5). The
-            # gate above answers "is there any headroom at all"; this answers
-            # "is there enough for THIS call", and takes it.
-            #
-            # ⚠️ Same transaction as the gate, and `place_hold` locks the
-            # organization row inside it. Two calls arriving together are
-            # serialised there — without it each reads the same balance, each
-            # passes, and the organization goes negative by the second one.
-            #
-            # ⚠️ Only behind the spend gate. The reserve is a spend refusal by
-            # another name, and arming it while the gate ships OFF would refuse
-            # customers the gate deliberately does not (H-42's ordering).
-            if refusal is None and _spend_gate_enabled():
-                hold_refusal = _place_call_hold(
-                    conn,
-                    org_id=org_id,
-                    request_id=request_id,
-                    tier=req.model,
-                    task=req.task,
-                    messages=req.messages,
-                    max_tokens=req.max_tokens,
-                )
+            # Credentials and CP-6's two refusals, in one place. `_preflight_gates`
+            # holds the order and the reason each gate sits where it does.
+            credentials, refusal, hold_refusal = _preflight_gates(
+                conn,
+                chain=chain,
+                req=req,
+                caller=caller,
+                org_id=org_id,
+                request_id=request_id,
+            )
 
     if unknown_tier is not None:
         _record_refusal(
