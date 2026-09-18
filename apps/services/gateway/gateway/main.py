@@ -641,31 +641,65 @@ app = FastAPI(
 # Projects app; the same crash was also hitting `/apps/pins` and the chat
 # message routes.
 #
-# **What actually happens.** `acb_auth.deps` branch 1b answers a Bearer-matched
-# call that carries NO `X-User-Email` with a service context, and it never
-# calls `bind_tenant`. Any tenant-scoped route then raises here. That is why it
-# is intermittent, why it is spread across unrelated apps, and why it fires for
-# signed-in users whose org membership is perfectly healthy.
+# ⚠️ **THE CAUSE RECORDED HERE ON 2026-09-17 WAS WRONG, and the correction is
+# the reason this handler now answers two different ways.**
 #
-# ⚠️ **THE STATUS STAYS 500, DELIBERATELY.** A 401 would read as "sign in
-# again" and the proxy would act on it — logging people out over a header that
-# was merely late is a worse failure than the one being fixed. Reaching a
-# tenant-scoped route with no tenant is OUR defect, and 5xx is the honest
-# class for it. What changes is that the body is now readable and the log line
-# names the path, so H-115 can be found rather than guessed at.
+# It said: *"branch 1b answers a Bearer-matched call carrying no `X-User-Email`
+# with a service context and never binds"*. Measured on the box 2026-09-18,
+# that is not what happened once:
 #
-# ⚠️ This is the SYMPTOM. The cause is branch 1b, and it is filed as H-115.
+#   * The failing requests all carried `X-User-Email`. Branch **1a** ran, not
+#     1b. `auth.identity_domain_mismatch` is logged three times immediately
+#     before each 500, naming the address.
+#   * They arrive at **:23 seconds past every minute**, 60 an hour for nine
+#     hours overnight. That is one browser tab left open on a 60-second poll,
+#     not "0.3% of requests spread across surfaces".
+#   * The address was a real person whose organization did not exist yet.
+#     `org_membership` for it was created 2026-09-17 17:55:57 UTC. The last
+#     `TenantUnbound` in the log is 18:06, and there have been none since.
+#
+# **So the real defect is this:** a signed-in person who resolves to NO
+# organization gets a 500 on every tenant-scoped route, with a body telling
+# them it is our fault and to reload — which it is not, and which will not
+# help. `resolve_identity` returns `(None, None)` for them, `_with_resolved_
+# access` binds nothing, and every route raises here. It is the ordinary state
+# of anyone between "signs in" and "an admin adds them", so the onboarding path
+# walks straight through it.
+#
+# ⚠️ **Which is why the status now SPLITS, and why it is 403 and not 401.**
+# A 401 would read as *"sign in again"*, and signing someone out changes
+# nothing about a missing membership. 403 says: you are who you say you are,
+# and there is nothing here for you yet. `access.ts` maps 401/403 to
+# `unauthorized` for one local check and no code path signs anyone out on a
+# status, so this cannot log a person out.
+#
+# A call with NO user header is the other case, and it keeps its 500: a job, a
+# consumer or a service call that reached a tenant-scoped route is our defect,
+# and 5xx is the honest class for it.
 @app.exception_handler(TenantUnbound)
 async def _tenant_unbound(request: Request, exc: TenantUnbound) -> JSONResponse:
+    # Present/absent only, never the address itself.
+    identified = bool(request.headers.get("x-user-email"))
     _log.error(
         "tenant.unbound",
         extra={
             "tenant_path": request.url.path,
-            # The header whose absence sends branch 1b down the service path.
-            # Logged as present/absent, never the address itself.
-            "tenant_had_user_header": bool(request.headers.get("x-user-email")),
+            "tenant_had_user_header": identified,
         },
     )
+    if identified:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": (
+                    "This account is not a member of any organization, so"
+                    " there is no workspace to read. If you were invited just"
+                    " now, reload the page. If not, an administrator has to"
+                    " add you to one."
+                ),
+                "code": "no_organization",
+            },
+        )
     return JSONResponse(
         status_code=500,
         content={
