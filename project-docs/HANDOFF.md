@@ -2277,6 +2277,76 @@ line — never reclaim a number by deleting the other entry.
   unapplied and mark the two tests expected-fail with that reason. Today they
   are neither, which is the worst of the three.
 
+### H-118 · 🔴 The access-request queue cannot record an unprovisioned person · [AGENT]
+- **Check:** `sudo journalctl -u acb-gateway --since today | grep -c
+  access_request_record_failed` on the box. Non-zero means this is open. Or ask
+  the app database for `access_request` rows — an empty table while people are
+  being onboarded is the same answer.
+- **Measured on production 2026-09-18, 13:02:47 UTC**, twice, for
+  `nithin@hathilabs.com` — a real person mid-onboarding:
+  `asyncpg.exceptions.InvalidTextRepresentationError: invalid input syntax for
+  type uuid: ""` on `INSERT INTO access_request`.
+- **The cause is structural, not a typo.** `access_request.organization_id` is
+  `uuid NOT NULL DEFAULT (current_setting('app.tenant_id', true))::uuid`. The
+  table is tenant-scoped. But `_record_signin_request` fires for somebody who
+  is **unprovisioned** — that is the whole point of the queue — so no tenant is
+  bound, `app.tenant_id` is empty, and the cast refuses it.
+  **The queue cannot record the one kind of person it exists to record.**
+- **What it costs.** Silently. `_record_signin_request` is best-effort by
+  design and never raises, so the sign-in still answers correctly and the owner
+  simply never learns that somebody asked for access. Nothing on screen is
+  wrong. The row is just never there.
+- **⚠️ Deciding the fix means deciding what an access request BELONGS to.**
+  A request from somebody in no organization is not a tenant's row. Two shapes,
+  and they are not equivalent:
+  1. The queue is a **platform** table, not a tenant one — drop the tenant
+     column and its RLS, and accept that the owner reads it unscoped.
+  2. The request is **addressed to** an organization (resolved from the email
+     domain, or from the invite it answers), and the column is filled
+     explicitly rather than defaulted from a GUC that is empty by construction.
+  Shape 2 keeps RLS and is the bigger change. Ask before building either.
+- **⚠️ `test_auth_sql_asyncpg.py` runs this exact statement and it PASSES.**
+  The fence did not catch it, and knowing why matters more than the row does:
+  the suite's transaction is not the production one, so `app.tenant_id` is
+  unset rather than empty, and `current_setting(…, true)` answers NULL there
+  instead of `''`. A fence that binds the right TYPES can still miss a defect
+  that lives in the SESSION STATE around the statement. That is a real limit of
+  the H-114 pattern and it should be written into the next suite.
+- **Authority:** `colleague_onboarding.md` §6 (N6a) ·
+  `acb_auth/access.py` `_record_signin_request` / `_ACCESS_REQUEST_UPSERT_SQL`
+- **Added:** 2026-09-18 · found in the post-deploy log check, not by a test.
+  *(Minted H-116. Renumbered to H-118 the same day: branch `operator-console`
+  had already taken 116 for a plan-guard defect, in a worktree with no pull
+  request open. That branch was written first, so this one moves — the rule
+  H-94's own note records.)*
+
+### H-117 · An outage tells a member they belong to no organization · [AGENT]
+- **Check:** `rg -n "no_organization" apps/services/gateway/gateway/main.py` →
+  the 403 arm answers on the presence of a user header alone.
+- **Why:** `_tenant_unbound` (shipped 2026-09-18, #293) answers **403
+  `no_organization`** whenever a request carries `X-User-Email` and no tenant
+  is bound. That is right for the ordinary case and WRONG during an outage:
+  `resolve_identity` also returns `(None, None)` when the database refuses the
+  read, so a member of long standing is told, in so many words, that they are
+  not a member of any organization.
+- **It is not hypothetical.** `EMAXCONNSESSION — max clients reached in session
+  mode, pool_size: 15` fired twice at 13:06:08 UTC on 2026-09-18, and
+  `auth.identity_resolve_failed` fired with it. That log line exists precisely
+  to tell the two apart — it was added in the same pull request — but it only
+  helps the operator. The member still reads the accusation.
+- **What it needs.** The distinction already exists at the point of failure and
+  is thrown away before the handler sees it. Carry it: mark the request when
+  `resolve_identity` raised rather than found nothing, and answer **503** for
+  that arm. A person should be told "we could not reach your workspace", never
+  "you have none".
+- **Related:** the pool blip above is its own question — two events in one
+  second during a restart is not yet a pattern, and `pool_size: 15` is the
+  Supabase session-mode pooler's limit, not ours. Watch it before tuning it.
+- **Authority:** `gateway/main.py` `_tenant_unbound` ·
+  `acb_auth/access.py` `resolve_identity` · D-MT-1c
+- **Added:** 2026-09-18 · the risk was named in #293's own description, and the
+  first day in production produced it.
+
 ### H-114 · R8 suites still run psycopg. The gateway runs asyncpg · [AGENT]
 - **Check:** `uv run pytest tests/unit/test_projects_sql_asyncpg.py
   tests/unit/test_auth_sql_asyncpg.py -q` with `TENANT_LADDER_DATABASE_URL`
