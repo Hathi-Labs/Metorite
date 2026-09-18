@@ -237,29 +237,31 @@ _SLUG_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 #: Hostnames a customer may never own, because the platform already does — or
 #: intends to. Owner ruling B7, 2026-08-24 (`saas_multitenancy.md` §11 MT-1f).
-_RESERVED_SLUGS = frozenset({
-    "admin",
-    "api",
-    "app",
-    "assets",
-    "auth",
-    "billing",
-    "cdn",
-    "console",
-    "dev",
-    "docs",
-    "help",
-    "login",
-    "mail",
-    "operator",
-    "signin",
-    "signup",
-    "staging",
-    "static",
-    "status",
-    "ws",
-    "www",
-})
+_RESERVED_SLUGS = frozenset(
+    {
+        "admin",
+        "api",
+        "app",
+        "assets",
+        "auth",
+        "billing",
+        "cdn",
+        "console",
+        "dev",
+        "docs",
+        "help",
+        "login",
+        "mail",
+        "operator",
+        "signin",
+        "signup",
+        "staging",
+        "static",
+        "status",
+        "ws",
+        "www",
+    }
+)
 
 
 # ── Schemas ─────────────────────────────────────────────────────────────────
@@ -354,8 +356,7 @@ class ProvisionRequest(BaseModel):
         # sends the operator to fix a thing that is not wrong.
         if slug in _RESERVED_SLUGS:
             raise ValueError(
-                "that workspace address is reserved for the platform; "
-                "please choose a different one"
+                "that workspace address is reserved for the platform; please choose a different one"
             )
         return slug
 
@@ -1334,9 +1335,7 @@ def operator_sign_in(req: SigninRequest, request: Request) -> dict[str, Any]:
             # who signs in. `bootstrap_allowed` keeps the directory comparison
             # in `directory` mode and pins to `OPERATOR_BOOTSTRAP_EMAIL`
             # exactly in `registry` mode. Every doubt reads False.
-            if row is None and operators.bootstrap_allowed(
-                identity.email, identity.tid
-            ):
+            if row is None and operators.bootstrap_allowed(identity.email, identity.tid):
                 # A refusal means the registry already holds a row, so the
                 # normal path applies and `admit` below refuses on the
                 # registry check.
@@ -1974,9 +1973,7 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 # forbids a rename in place. They ARE the peak rate.
                 "vendor_input_offpeak_per_1m_usd": None if r[13] is None else str(r[13]),
                 "vendor_output_offpeak_per_1m_usd": None if r[14] is None else str(r[14]),
-                "vendor_cached_input_offpeak_per_1m_usd": (
-                    None if r[15] is None else str(r[15])
-                ),
+                "vendor_cached_input_offpeak_per_1m_usd": (None if r[15] is None else str(r[15])),
                 # `HH:MM` on the wire. A `time` would serialise as `16:30:00`
                 # and the operator typed `16:30`.
                 "offpeak_start_utc": None if r[16] is None else r[16].strftime("%H:%M"),
@@ -1985,9 +1982,7 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 "context_tier_threshold": r[18],
                 "vendor_input_long_per_1m_usd": None if r[19] is None else str(r[19]),
                 "vendor_output_long_per_1m_usd": None if r[20] is None else str(r[20]),
-                "vendor_cached_input_long_per_1m_usd": (
-                    None if r[21] is None else str(r[21])
-                ),
+                "vendor_cached_input_long_per_1m_usd": (None if r[21] is None else str(r[21])),
                 "description": r[6],
                 "reads_images": r[7],
                 "thinks_first": r[8],
@@ -2238,15 +2233,10 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 "credits": str(m["credits"]),
                 "cost_usd": str(m["cost_usd"]),
                 "margin_multiplier": (
-                    None if m["margin_multiplier"] is None
-                    else str(m["margin_multiplier"])
+                    None if m["margin_multiplier"] is None else str(m["margin_multiplier"])
                 ),
-                "margin_floor": (
-                    None if m["margin_floor"] is None else str(m["margin_floor"])
-                ),
-                "realised_margin": (
-                    None if _realised is None else str(_realised)
-                ),
+                "margin_floor": (None if m["margin_floor"] is None else str(m["margin_floor"])),
+                "realised_margin": (None if _realised is None else str(_realised)),
             }
             for m in tier_margins
             for _realised in [
@@ -2503,16 +2493,13 @@ def _tier_rate_scales(req: TierRateRequest) -> dict[str, Decimal]:
     "not sent" and silently reach for the other field.
     """
     return {
-        "input": (
-            req.input_per_1m if req.input_per_1m is not None
-            else req.input_per_1k * _PER_1K
-        ),
+        "input": (req.input_per_1m if req.input_per_1m is not None else req.input_per_1k * _PER_1K),
         "output": (
-            req.output_per_1m if req.output_per_1m is not None
-            else req.output_per_1k * _PER_1K
+            req.output_per_1m if req.output_per_1m is not None else req.output_per_1k * _PER_1K
         ),
         "cached": (
-            req.cached_input_per_1m if req.cached_input_per_1m is not None
+            req.cached_input_per_1m
+            if req.cached_input_per_1m is not None
             else req.cached_input_per_1k * _PER_1K
         ),
     }
@@ -3195,9 +3182,7 @@ def placed_orgs(caller: ProvisionCaller) -> dict[str, Any]:
             ),
         )
     with get_engine().begin() as conn:
-        rows = store.deployment_placed_orgs(
-            conn, deployment_id=caller.deployment_id
-        )
+        rows = store.deployment_placed_orgs(conn, deployment_id=caller.deployment_id)
     # ⚠️ **The lifecycle verdict is computed HERE, and travels as a BOOLEAN.**
     # The box must never branch on a lifecycle WORD — that would be a second
     # copy of this state machine spelled as an `if`, which §6(d) refuses and
@@ -3226,13 +3211,8 @@ def placed_orgs(caller: ProvisionCaller) -> dict[str, Any]:
     # read it. It travels as this one boolean or not at all.
     return {
         "organizations": [
-            {
-                key: value for key, value in row.items() if key != "status"
-            } | {
-                "provisionable": capabilities_of(
-                    row["status"]
-                ).can_be_provisioned
-            }
+            {key: value for key, value in row.items() if key != "status"}
+            | {"provisionable": capabilities_of(row["status"]).can_be_provisioned}
             for row in rows
         ]
     }
@@ -4251,9 +4231,7 @@ def billing_summary(org_slug: str, _: Operator) -> dict[str, Any]:
                 "credits": str(lot.credits),
                 "credits_used": str(lot.credits_used),
                 "remaining": str(lot.remaining),
-                "price_paid_inr": (
-                    None if lot.price_paid_inr is None else str(lot.price_paid_inr)
-                ),
+                "price_paid_inr": (None if lot.price_paid_inr is None else str(lot.price_paid_inr)),
                 "expires_at": _iso(lot.expires_at),
             }
             # The order they will BURN in, not an arbitrary one. An operator
@@ -5350,8 +5328,11 @@ def _vendor_prices(
     if row is None:
         # Unknown model: no rates, and no claim about a window we cannot see.
         return {
-            "input": None, "output": None, "cached": None,
-            "window": None, "context": None,
+            "input": None,
+            "output": None,
+            "cached": None,
+            "window": None,
+            "context": None,
         }
 
     profile = dict(zip(_PROFILE_RATE_COLUMNS, row, strict=True))
@@ -5504,9 +5485,7 @@ def _place_call_hold(
         return None
 
     try:
-        store.place_hold(
-            conn, org_id=org_id, request_id=request_id, credits=estimate.credits
-        )
+        store.place_hold(conn, org_id=org_id, request_id=request_id, credits=estimate.credits)
     except store.HoldRefused as refused:
         return HTTPException(
             status_code=402,
@@ -5820,9 +5799,7 @@ def _chain_credentials(
             # same 503 shape the other secrets use — not a 500 that reads
             # as a bug.
             _log.exception("router.credential_unavailable")
-            raise HTTPException(
-                status_code=503, detail="provider credentials unavailable"
-            ) from exc
+            raise HTTPException(status_code=503, detail="provider credentials unavailable") from exc
     return credentials
 
 
