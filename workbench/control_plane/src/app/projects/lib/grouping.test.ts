@@ -20,6 +20,7 @@ import {
   groupTasks,
   isFiltered,
   personLabel,
+  searchOpen,
   type ViewState,
   describeDivergence,
   toConfig,
@@ -740,5 +741,57 @@ describe("groupTasks by STAGE (§9.12.3)", () => {
     });
     expect(groups.map((g) => g.key)).toEqual(["todo", "hibernating"]);
     expect(groups.find((g) => g.key === "hibernating")?.tasks).toHaveLength(1);
+  });
+});
+
+/**
+ * ── The search field's collapse rule (H-94 direction 3)
+ *
+ * Owner direction, 2026-08-26: the search field collapses to an icon at the
+ * left of the row, and a click opens the real field.
+ *
+ * ⚠️ One rule carries the whole risk: **an applied search must never be
+ * collapsed out of sight.** The icon would then read as "not searching" while
+ * `q=` was still cutting the board down — the same defect this file's
+ * `orphanAssignee` note describes, a control lying about the state it is in.
+ *
+ * ⚠️ **Why a pure function rather than a rendered assertion.**
+ * `vitest.config.ts` is `environment: "node"`, so there is no DOM here. The
+ * alternative was a source-text fence, and this tree has now watched two of
+ * those pass on the value they existed to reject — `"7to14d".isalnum()` and a
+ * regex that could not see an f-string hole.
+ */
+describe("searchOpen", () => {
+  it("is CLOSED at rest — an icon, not a field", () => {
+    expect(searchOpen({ opened: false, draft: "" })).toBe(false);
+  });
+
+  it("opens when the icon is clicked", () => {
+    expect(searchOpen({ opened: true, draft: "" })).toBe(true);
+  });
+
+  it("⚠️ REFUSES to close over an applied search", () => {
+    // The defect this function exists to prevent. Blur and Escape both set
+    // `opened` to false; neither may hide a live filter.
+    expect(searchOpen({ opened: false, draft: "bug" })).toBe(true);
+  });
+
+  it("agrees with `toQuery` about what counts as a search", () => {
+    // Whitespace is not a filter — `toQuery` drops it — so the field holding
+    // three spaces is free to collapse. Two opinions about "is this a search"
+    // would part company the first time one of them changed, so this asserts
+    // the agreement rather than describing it in a comment.
+    const spaces = { ...EMPTY_FILTERS, q: "   " };
+    expect(isFiltered(spaces)).toBe(false);
+    expect(searchOpen({ opened: false, draft: "   " })).toBe(false);
+
+    const real = { ...EMPTY_FILTERS, q: "  bug  " };
+    expect(isFiltered(real)).toBe(true);
+    expect(searchOpen({ opened: false, draft: "  bug  " })).toBe(true);
+  });
+
+  it("is not fooled by text that merely looks empty", () => {
+    expect(searchOpen({ opened: false, draft: "0" })).toBe(true);
+    expect(searchOpen({ opened: false, draft: "\t" })).toBe(false);
   });
 });

@@ -2127,43 +2127,6 @@ line — never reclaim a number by deleting the other entry.
   the same next-free id against different bases, which is R1 one level up. This
   entry merged second, so this entry moved.
 
-### H-94 · The Projects filter row is half-converted · [AGENT]
-- **Check:** `rg -n "OFF_DEFAULT|<Select" workbench/control_plane/src/app/projects/components/FilterBar.tsx`
-  → hits on `<Select` mean the controls are still selects, and the button
-  conversion below is still owed.
-- **Why:** The owner gave four more directions in the session that consolidated
-  the row. Work stopped part-way, so the row is in a state nobody designed.
-  1. ✅ **DONE 2026-09-18.** "Assignees" is a button, not a select.
-  2. ✅ **DONE 2026-09-18.** Every dropdown in the row is a button, with a
-     two-headed arrow at the default and a single one off it. The primitive is
-     `src/components/ui/SelectButton.tsx`, built on `outsideClick.ts` rather
-     than the substrate — see the ⚠️ below, which it obeys. `arrowFor` is
-     extracted and pinned by `SelectButton.test.ts`; a rendered assertion is
-     unavailable because `vitest.config.ts` is `environment: "node"`.
-  3. 🔴 **STILL OWED. The search field collapses to an icon** at the left of the
-     row. Remove the placeholder text. A click opens the real field.
-  ⚠️ **MOTION IS OFF THE TABLE (owner, 2026-08-26).** Direction 3 first asked for
-  a transition, and that half is withdrawn. A `MOTION.md` landed here the same
-  day and the owner removed it. Build the collapse as a state change with no
-  animation. Do not add a duration or an easing curve to this row, and do not
-  re-open the question. Ask the owner if you believe motion is needed.
-- **⚠️ Read first:** `@base-ui/react` is the ONE substrate (D-PM-15), and
-  `src/components/ui/Modal.tsx` is the only file that may import it. A button
-  that opens a list is a popover. Do not hand-roll one, and do not import a
-  second library. `src/lib/outsideClick.ts` is the answer for a popover we do
-  not build on the substrate.
-- **⚠️ Also still owed on this row:** the Clear button takes 76px from the search
-  box at 1920px. It is a sibling in the same `flex flex-wrap` container. The
-  search box is the only `flex-1` in that container, so it pays for everything
-  that appears or disappears. Measured: 0px at 1280, 1440 and 1600, and −76px at
-  1920. Direction 4 above may remove this by construction. Measure, do not assume.
-- **Authority:** `AGENTS.md` rule 8 (the substrate) ·
-  `specs/project_management_app.md` §11.2 item 3 · board row WS-27
-- **Added:** 2026-08-26 · Projects UI session (owner stopped work to push)
-  *(minted H-65. Renumbered to H-94 on 2026-09-01, because `main` had taken
-  65 for the plan-guard heredoc entry. This branch merged second. That is the
-  case the numbering rule above names.)*
-
 ### H-95 · plan-guard reads a MENTION of the grants file as a write to it · [AGENT]
 - **Check:** `sed -n 231p .claude/hooks/plan-guard.mjs` → a bare
   case-insensitive string test against the whole command means the defect is

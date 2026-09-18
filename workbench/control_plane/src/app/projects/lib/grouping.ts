@@ -245,6 +245,33 @@ export function isFiltered(filters: Filters): boolean {
 }
 
 /**
+ * Is the filter row's search field OPEN, or is it the icon it collapses to?
+ *
+ * Owner direction, 2026-08-26 (H-94 direction 3): *"the search field collapses
+ * to an icon at the left of the row. Remove the placeholder text. A click opens
+ * the real field."* The row carries nine controls, and the search box was the
+ * widest of them while holding nothing most of the time.
+ *
+ * ⚠️ **A search that is APPLIED can never be collapsed out of sight.** That is
+ * the reason this is a function rather than one `open` boolean in the
+ * component. An icon hiding a live `q=` is the defect `FilterBar` already names
+ * twice elsewhere — a control that reads as "off" while its filter still
+ * applies. So the TEXT wins over the toggle, and never the other way round.
+ *
+ * ⚠️ **`.trim()` here is not tidiness.** `toQuery` above drops a whitespace-only
+ * `q`, so a field holding three spaces filters nothing. Any other test would
+ * give this file two opinions about what counts as a search, and the two would
+ * part company the first time one of them changed.
+ *
+ * Kept here and not in `search.ts`: that module is the SEARCH PALETTE
+ * (WS-27r), a different feature that queries across projects. This is the board
+ * filter, which is what `Filters` and `toQuery` above already describe.
+ */
+export function searchOpen(input: { opened: boolean; draft: string }): boolean {
+  return input.opened || input.draft.trim().length > 0;
+}
+
+/**
  * ── The saved view's live state, and whether it still matches (WS-27ab item 2)
  *
  * Everything a view stores, held together. The four values only mean anything
