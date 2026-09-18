@@ -3555,3 +3555,67 @@ def provider_credential_revoke(
         {"provider": provider, "org": organization_id},
     )
     return int(result.rowcount or 0)
+
+
+def spend_by_provider(conn: Connection, *, days: int = SPEND_WINDOW_DAYS) -> list[dict[str, Any]]:
+    """What each VENDOR cost us over the window. **Operator-only.**
+
+    🔴 **The other half of the money, and nothing showed it before.** Every
+    other spend read in this module answers "what did a CUSTOMER use". This
+    answers "what do WE owe", which is the number a margin is only meaningful
+    against. `usage_by_org` groups by who consumed. This groups by who invoices
+    us.
+
+    ⚠️ **The vendor is the `model` prefix, which is how the Router resolves
+    it.** `model.split('/', 1)[0]` is the vendor everywhere in this system
+    (CP-4), so the same split answers here. A row whose model carries no slash
+    is grouped under its whole name rather than dropped — an unattributed cost
+    is still a cost, and hiding it would understate the bill.
+
+    ⚠️ **`measured_usd` is the part a vendor actually STATED** (migration 031).
+    The rest is our own arithmetic over `model_profile`, which is only as fresh
+    as the last edit to it. Reconciling against an invoice uses the measured
+    figure. The total is the estimate.
+
+    ⚠️ **BYOK is excluded, and that is the point.** Those tokens ran on the
+    customer's own vendor account (§3.4), so they appear on the customer's bill
+    and never on ours. Counting them here would inflate what we owe.
+
+    ⚠️ **A refusal is not a call and a metering fault is not a cost.** Both are
+    excluded, for the reason `margin_by_tier` gives.
+    """
+    return [
+        {
+            "provider": r.provider,
+            "calls": int(r.calls),
+            "measured_calls": int(r.measured_calls),
+            "cost_usd": Decimal(r.cost_usd),
+            "measured_usd": Decimal(r.measured_usd),
+        }
+        for r in conn.execute(
+            text(
+                """
+                SELECT split_part(u.model, '/', 1) AS provider,
+                       COUNT(u.id) AS calls,
+                       COUNT(u.id) FILTER (
+                           WHERE u.cost_source = 'vendor'
+                       ) AS measured_calls,
+                       COALESCE(SUM(u.provider_cost_usd), 0) AS cost_usd,
+                       COALESCE(SUM(u.provider_cost_usd) FILTER (
+                           WHERE u.cost_source = 'vendor'
+                       ), 0) AS measured_usd
+                FROM usage_event u
+                WHERE u.created_at >= now() - make_interval(days => :days)
+                  AND u.refusal_reason IS NULL
+                  AND u.metering_fault IS NULL
+                  AND u.byok_served = false
+                  AND u.model IS NOT NULL
+                  AND u.model <> ''
+                GROUP BY split_part(u.model, '/', 1)
+                ORDER BY COALESCE(SUM(u.provider_cost_usd), 0) DESC,
+                         split_part(u.model, '/', 1)
+                """
+            ),
+            {"days": days},
+        )
+    ]

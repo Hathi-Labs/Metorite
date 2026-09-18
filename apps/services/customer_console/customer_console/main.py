@@ -3033,6 +3033,42 @@ def list_provider_credentials(staff: Operator, include_revoked: bool = False) ->
     }
 
 
+@app.get("/providers/spend")
+def provider_spend(staff: Operator, days: int = store.SPEND_WINDOW_DAYS) -> dict[str, Any]:
+    """What each vendor cost US over the window. **Operator-only.**
+
+    🔴 **The console could see what customers spend and not what we owe.** Every
+    other spend read answers "what did a customer use". Nothing answered "what
+    is the bill", which is the number every margin is only meaningful against.
+
+    ⚠️ **`measured_usd` is the reconcilable part** (migration 031). It is the
+    sum of costs a vendor actually stated, so it is the figure to hold an
+    invoice against. The `cost_usd` total includes calls we costed ourselves
+    from `model_profile`, which is an estimate and can be stale.
+    """
+    # A window nobody can widen without meaning to. The read is a full scan of
+    # the usage partition, and an unbounded `days` is how a console page times
+    # out against a year of rows.
+    window = max(1, min(int(days), 365))
+    with get_engine().begin() as conn:
+        rows = store.spend_by_provider(conn, days=window)
+    return {
+        "days": window,
+        "providers": [
+            {
+                "provider": r["provider"],
+                "calls": r["calls"],
+                "measured_calls": r["measured_calls"],
+                # ⚠️ Strings, like every other money field this API returns.
+                # A float here would round a Decimal on the way out.
+                "cost_usd": str(r["cost_usd"]),
+                "measured_usd": str(r["measured_usd"]),
+            }
+            for r in rows
+        ],
+    }
+
+
 @app.post("/providers/credentials")
 def install_provider_credential(req: ProviderCredentialRequest, staff: Operator) -> dict[str, Any]:
     """Install a provider credential. Fernet at rest, INSERT only.

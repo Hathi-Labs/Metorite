@@ -403,3 +403,24 @@ export const EMPTY_CATALOG: AiCatalog = {
   tierMargins: [],
   creditPrice: null,
 };
+
+/** What ONE vendor cost us over the window — migration 031, the operator side
+ *  of the money.
+ *
+ * 🔴 **Not a customer figure.** Every other spend type here answers what a
+ *  customer USED. This answers what we OWE, which is the number a margin is
+ *  only meaningful against.
+ *
+ * ⚠️ **Two totals, and they are different facts.** `costUsd` is every costed
+ *  call, including the ones we costed ourselves from `model_profile` — an
+ *  estimate that can be stale. `measuredUsd` is only the calls where the
+ *  vendor STATED the charge, so it is the figure to hold an invoice against.
+ *  Equal totals mean the whole bill is reconcilable. */
+export type ProviderSpend = {
+  provider: string;
+  calls: number;
+  measuredCalls: number;
+  /** USD, as a string — money never round-trips through a float. */
+  costUsd: string;
+  measuredUsd: string;
+};
