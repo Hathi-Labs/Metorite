@@ -7,7 +7,7 @@
  * A board full of tasks with no badges looks like a board full of simple tasks.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
@@ -444,31 +444,66 @@ describe("🔴 every chip surface must pass the type registry", () => {
   //
   // `CalendarView` built its `typeHues` map and then called `visibleChips`
   // with FOUR arguments, so the type chip drew on the board and the list and
-  // never on the calendar. Nothing caught it: the fifth parameter is
-  // optional so `tsc` is happy, and `noUnusedLocals` is off so the dead memo
-  // was silent too.
+  // never on the calendar. Nothing caught it: the fifth parameter is optional
+  // so `tsc` is happy, and `noUnusedLocals` is off so the dead memo was
+  // silent too. Writing this scan immediately found a THIRD surface with the
+  // same omission.
   //
-  // A source scan, because the defect is an omitted ARGUMENT — there is no
-  // behavioural assertion that distinguishes "this surface has no types" from
-  // "this surface forgot to pass them".
-  const SURFACES = [
-    "TaskBoard.tsx",
-    "TaskList.tsx",
-    "CalendarView.tsx",
-    "TimelineView.tsx",
-  ];
+  // A source scan, because the defect is an omitted ARGUMENT — no behavioural
+  // assertion distinguishes "this surface has no types" from "this surface
+  // forgot to pass them".
+  //
+  // ⚠️ Two ways it fails CLOSED, which the next author will meet:
+  //   * `[^)]*` stops at the first `)`, so a legitimate
+  //     `visibleChips(task, shown, Date.now(), tagHues, typeHues)` truncates
+  //     and goes red.
+  //   * It pins a variable NAME, so a correct surface calling its map
+  //     `types` goes red.
+  // Both are noisy rather than silent, which is the right direction.
+
+  const DIR = new URL("../components/", import.meta.url);
+
+  /**
+   * ⚠️ DISCOVERED, not listed.
+   *
+   * The first version named four files. A fifth chip surface added later
+   * would have escaped the fence entirely, and so would a move of the chip
+   * strip into a shared child — the scan would still find the old files,
+   * find no calls in them, and pass on an empty list.
+   */
+  const surfaces = readdirSync(DIR)
+    .filter((name) => name.endsWith(".tsx"))
+    .map((name) => ({
+      name,
+      source: readFileSync(new URL(name, DIR), "utf-8"),
+    }))
+    .filter((file) => file.source.includes("visibleChips("));
+
+  it("finds the surfaces it is supposed to guard", () => {
+    // Guards against the whole scan going vacuous — if the chip strip moves
+    // or is renamed, this fails loudly instead of the fence quietly
+    // shrinking to nothing.
+    const found = surfaces.map((f) => f.name).sort();
+    expect(found).toEqual(
+      expect.arrayContaining([
+        "CalendarView.tsx",
+        "TaskBoard.tsx",
+        "TaskList.tsx",
+        "TimelineView.tsx",
+      ]),
+    );
+  });
 
   it("passes the registry at every visibleChips call site", () => {
-    for (const name of SURFACES) {
-      const source = readFileSync(
-        new URL(`../components/${name}`, import.meta.url),
-        "utf-8",
-      );
-      // Every call, with whitespace and newlines collapsed so a multi-line
-      // call reads the same as a one-line one — which is exactly how the
-      // calendar's slipped through a bulk edit.
+    for (const { name, source } of surfaces) {
+      // Whitespace collapsed, so a multi-line call reads the same as a
+      // one-line one — which is exactly how the calendar's slipped through
+      // a bulk edit that only matched the single-line form.
       const flat = source.replace(/\s+/g, " ");
       const calls = flat.match(/visibleChips\([^)]*\)/g) ?? [];
+      // Never vacuous: a file in this list contains the text, so it must
+      // yield at least one parsed call.
+      expect(calls.length, `${name}: no parsed visibleChips call`).toBeGreaterThan(0);
       for (const call of calls) {
         expect(
           call,

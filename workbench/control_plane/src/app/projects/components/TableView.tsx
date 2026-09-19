@@ -31,7 +31,7 @@ import { AvatarStack } from "@/components/TaskMeta";
 import { Input } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import { Checkbox } from "@/components/ui/Checkbox";
-import { durationLabel } from "@/lib/taskCard";
+import { TASK_SOURCES, type TaskSource, durationLabel } from "@/lib/taskCard";
 import { useMemo, useRef, useState } from "react";
 
 import { accentForStatus } from "../lib/accent";
@@ -331,7 +331,19 @@ export function TableView({
         // SAME view printed the real word — the screen and the file
         // disagreeing about one column. The stored word, not a label, for
         // `importance`'s reason: the display vocabulary lives in the chip.
-        return task.source && task.source !== "manual" ? task.source : "—";
+        // ⚠️ The chip's LABEL, not the stored word, and never "—".
+        //
+        // `readOnlyCell` renders `importanceLabel(...)` four arms above, so
+        // "screen shows the label, file shows the stored value" is already
+        // this switch's rule and `export._render` already obeys it. The first
+        // version printed the raw column, so the table read "import" beside a
+        // chip reading "Imported" — and mapped `manual` to "—", which in
+        // every other arm here means NO VALUE. `source` is NOT NULL DEFAULT
+        // 'manual', so that made "manual" and "missing" indistinguishable.
+        //
+        // An unknown future value reads as "Manual" rather than leaking the
+        // raw column, which matches the chip's silence for one.
+        return TASK_SOURCES[task.source as TaskSource]?.label ?? "Manual";
       case "assignees":
         return task.assignees?.length ? (
           <AvatarStack people={task.assignees} label={personLabel} />

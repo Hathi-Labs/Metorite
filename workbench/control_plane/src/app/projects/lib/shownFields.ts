@@ -69,17 +69,22 @@ export const CUSTOM_FIELD_PREFIX = "custom.";
 /** The set a view with no stored `shown_fields` means. */
 export const DEFAULT_SHOWN: readonly string[] = [
   "status",
-  // WS-27bh. ⚠️ Shown by DEFAULT, and that is the acceptance criterion rather
-  // than a preference: §9.9.2 asks that "an Epic is distinguishable from a
-  // Task at a glance", and a chip behind a picker nobody opens is not.
-  // A member who does not want it turns it off in Fields, and a member with a
-  // SAVED view keeps exactly the columns they saved — this list is only the
-  // default for a view that has expressed no opinion.
-  "type",
-  // WS-27bh. On by default like `type`, and cheap: `manual` earns no chip
-  // and is the overwhelming majority of rows, so the common card gains
-  // nothing to read while an emailed or agent-made task announces itself.
-  "source",
+  // ⚠️ **`type` and `source` are deliberately NOT here**, and an earlier
+  // version of this slice put `type` in on the argument that §9.9.2 asks for
+  // "an Epic distinguishable from a Task at a glance". That argument was
+  // hollow: **nothing in the product writes `pm_tasks.type_id`.** The API
+  // accepts it and the admin routes manage the registry, but no drawer, form
+  // or cell sets one, and `board.ts`'s column-drop arm is unreachable because
+  // `grouping.ts` offers no `type` axis. So there are no Epics to
+  // distinguish.
+  //
+  // One vocabulary gates the chip and the TABLE COLUMN together, so "chip on
+  // by default" forced "column on by default" — a Type column reading "—" on
+  // every row, and a default CSV with an empty column in it. That is the
+  // "column of nothing" this slice set out to prevent.
+  //
+  // The chips stay built and cost nothing; they light up the day a type
+  // picker ships. A member who wants either column ticks it in Fields.
   "assignees",
   "due_at",
   "importance",

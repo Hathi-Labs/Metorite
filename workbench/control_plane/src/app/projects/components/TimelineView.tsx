@@ -205,7 +205,16 @@ interface Props {
   /** S6 — the project's tag registry, so a tag chip is the colour its owner
    *  chose here too. One tag, one colour, on every surface of the project. */
   tags?: readonly TagRow[];
-  /** WS-27bh — the root's task types, so a card can name what it IS. */
+  /**
+   * WS-27bh — the root's task types.
+   *
+   * ⚠️ **The rail does NOT draw a type chip today**, and this prop is
+   * still correct to pass: `RAIL_CHIPS` filters the chip strip down to
+   * urgency and a date, so the registry arrives and is discarded. It is
+   * threaded anyway so all four chip surfaces call `visibleChips`
+   * identically, which is what lets `card.test.ts`'s scan stay one rule.
+   * A reader of the page's call site has no other way to learn this.
+   */
   taskTypes?: readonly TaskTypeRow[];
   today?: string;
   /**

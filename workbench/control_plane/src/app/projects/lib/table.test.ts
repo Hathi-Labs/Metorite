@@ -112,11 +112,9 @@ describe("tableColumns", () => {
   it("draws the default set in the vocabulary's order", () => {
     expect(tableColumns(DEFAULT_SHOWN, []).map((c) => c.key)).toEqual([
       "status",
-      // WS-27bh — `type` joined DEFAULT_SHOWN, so the table draws it by
-      // default too. `TableView` gained the matching cell in the same change;
-      // without that cell this column renders "—" on every row.
-      "type",
-      "source",
+      // ⚠️ No `type` and no `source`. Both chips exist, and neither key is in
+      // DEFAULT_SHOWN — nothing writes `pm_tasks.type_id`, so the columns
+      // would read "—" on every row. See `shownFields.ts` for the argument.
       "assignees",
       "due_at",
       "importance",
