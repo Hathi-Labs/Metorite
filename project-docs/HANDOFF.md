@@ -773,8 +773,17 @@ line — never reclaim a number by deleting the other entry.
   call reached it. H-8 put it on the row menu. A member who holds a
   `group:<slug>` read grant on a space can now delete that space, every project
   under it, every task and every grant.
-- **`archive_node` uses the identical guard**, and archive is reversible. That
-  is the whole difference, and it is why this one is filed and that one is not.
+- **⚠️ MEASURED, and it is wider than one route.** `grep -rn "require_permission"
+  apps/services/gateway/gateway/routes/projects/` returns **nothing**. No route
+  in the Projects app carries a permission check. Rename, move, archive and
+  every task write are all authorised by visibility alone.
+- **So this is the app's authorisation model, not a hole in one endpoint.**
+  Delete is simply the first act that cannot be taken back. Rename, move and
+  archive were already reachable by any viewer, and all three are reversible.
+- **What that means for the fix.** Adding a guard to `delete_node` alone would
+  mint a second authority vocabulary in an app that has none (CLAUDE.md §5).
+  The question is whether Projects needs a WRITE axis beside D12's visibility
+  axis. That is one decision for the app, and not a patch on one route.
 - **The decision.** Which subject may delete. Three candidates, and they are not
   the same: the project creator, a role, or a write grant that does not exist
   yet. Visibility is *who can see*, and D12 says it is not *who may act*.
