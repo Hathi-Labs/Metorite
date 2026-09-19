@@ -43,11 +43,28 @@ interface Props {
   busy: boolean;
   onClear: () => void;
   onApply: (request: ReturnType<typeof buildRequest>) => void;
+  /**
+   * WS-27bl §9.13.4 — open the move card for the whole selection.
+   *
+   * ⚠️ Separate from `onApply`, and it must stay separate. A bulk EDIT is a
+   * patch applied to rows; a bulk MOVE crosses two vocabularies and has to be
+   * agreed to after the member sees the mapping. Folding it into the patch
+   * would let somebody move fifty tasks from a dropdown.
+   */
+  onMove?: () => void;
   /** The last outcome sentence, or null. */
   notice: string | null;
 }
 
-export function BulkBar({ count, statuses, busy, onClear, onApply, notice }: Props) {
+export function BulkBar({
+  count,
+  statuses,
+  busy,
+  onClear,
+  onApply,
+  onMove,
+  notice,
+}: Props) {
   const [draft, setDraft] = useState<BulkDraft>(EMPTY_DRAFT);
   const request = buildRequest(Array.from({ length: count }, (_, i) => `#${i}`), draft);
 
@@ -58,6 +75,18 @@ export function BulkBar({ count, statuses, busy, onClear, onApply, notice }: Pro
     <div className="border-b border-border bg-muted px-3 py-2">
       <div className="flex flex-wrap items-center gap-2">
         <Badge tone="primary">{count} selected</Badge>
+
+        {onMove ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="FolderInput"
+            disabled={busy}
+            onClick={onMove}
+          >
+            Move to project…
+          </Button>
+        ) : null}
 
         <select
           aria-label="Set status"

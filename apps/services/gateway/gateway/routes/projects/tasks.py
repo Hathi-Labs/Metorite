@@ -54,6 +54,7 @@ from gateway.routes.projects.core import (
     record_activity,
     record_field_change,
     remap_one_status,
+    remap_one_type,
     require_precondition,
     require_row,
     require_status_in_project,
@@ -584,6 +585,16 @@ async def move_task(
                     values["custom_fields"] = merged
 
                 values["root_project_id"] = new_root
+                # WS-27bl. Types are root-scoped too, and this path carried
+                # `type_id` across untouched until 2026-09-19 — the task then
+                # pointed at a row in the OLD root's registry and its type
+                # silently stopped resolving. Same helper as `/tasks/move`, so
+                # the narrow path and the mapping-aware one cannot disagree
+                # about what a move does to a type.
+                if getattr(task, "type_id", None):
+                    values["type_id"] = await remap_one_type(
+                        db, type_id=str(task.type_id), root_id=new_root,
+                    )
                 # The number belongs to the old root's sequence and would
                 # collide in the new one, so it is reallocated rather than
                 # carried. The old number is recorded on the timeline below —

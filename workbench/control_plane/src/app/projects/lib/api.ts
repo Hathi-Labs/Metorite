@@ -36,6 +36,76 @@ export interface DeleteProjectResult {
   cascaded: { projects: number; tasks: number; grants: number };
 }
 
+/** WS-27bl — the body both move endpoints take. */
+export interface MoveRequest {
+  task_ids: string[];
+  destination_project_id: string;
+  /** Old status id → new status id. The member's answer beats the automatic one. */
+  status_map?: Record<string, string>;
+  /** Source `field_key` → destination `field_key`. */
+  field_map?: Record<string, string>;
+  /** The member saw what would be dropped and agreed (D-PM-29). */
+  accept_drops?: boolean;
+  /**
+   * The field keys the preview SHOWED as dropping.
+   *
+   * ⚠️ Not redundant with `accept_drops`. That flag is a bare yes to a
+   * question asked earlier; if the destination changes in between, the drop
+   * set grows and a stale yes would accept the extra loss too. Sending the
+   * shown set lets the server answer 409 instead.
+   */
+  accepted_drops?: string[];
+}
+
+export interface MoveMapRow<T> {
+  from: T;
+  to: T | null;
+}
+
+/**
+ * What `POST /tasks/move/preview` answers.
+ *
+ * ⚠️ `drops` is keyed by the SOURCE `field_key` and lists the tasks that would
+ * actually lose a value — which is NOT the same as `orphan_fields`. A field
+ * with no home costs nothing on a task that never filled it in, and warning
+ * about that would be a warning about nothing.
+ */
+export interface MovePlan {
+  source_project_id: string;
+  destination_project_id: string;
+  source_root_id: string;
+  destination_root_id: string;
+  crosses_status_set: boolean;
+  crosses_root: boolean;
+  task_count: number;
+  statuses: MoveMapRow<{ id: string; name: string; category: string }>[];
+  /**
+   * The DESTINATION's own lanes, for the per-row override.
+   *
+   * ⚠️ Carried on the plan rather than fetched by the card, because the page
+   * only ever holds the SELECTED project's statuses — and the destination is
+   * never the selected project.
+   */
+  destination_statuses: { id: string; name: string; category: string }[];
+  /** Destination fields the selection does not satisfy (migration 192). */
+  required_missing: string[];
+  field_map: Record<string, string>;
+  orphan_fields: { field_key: string; name: string; field_type: string }[];
+  drops: Record<
+    string,
+    { task_id: string; task_number?: number | null; value: unknown }[]
+  >;
+  types: MoveMapRow<{ id: string; name?: string | null }>[];
+  tags: { carried: string[]; unregistered: string[] };
+}
+
+export interface MoveResult {
+  moved: number;
+  task_ids: string[];
+  destination_project_id: string;
+  dropped_fields: string[];
+}
+
 export interface ProjectRow {
   id: string;
   name: string;
@@ -1013,6 +1083,26 @@ export const projectsApi = {
    * confirmation on this side and none on the server's: the route deletes what
    * it is given. The dialog is the whole guard.
    */
+  /**
+   * WS-27bl §9.13 — what a move WOULD do. Writes nothing.
+   *
+   * ⚠️ Always call this before `moveTasks`. The server resolves both
+   * vocabularies and only it can see them at once; the card renders what it
+   * says rather than guessing, so "what you were shown" and "what happened"
+   * are one computation.
+   */
+  previewMove: (payload: MoveRequest) =>
+    call<MovePlan>("tasks/move/preview", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  moveTasks: (payload: MoveRequest) =>
+    call<MoveResult>("tasks/move", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
   deleteProject: (projectId: string) =>
     call<DeleteProjectResult>(`nodes/${projectId}`, { method: "DELETE" }),
 
