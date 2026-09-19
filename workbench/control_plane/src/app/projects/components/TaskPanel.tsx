@@ -33,11 +33,24 @@
  * context, energy and the founder priority matrix live on `pm_task_personal`
  * and are not this surface's data.
  *
- * ⚠️ **One column, always.** The panel is `max-w-md` docked on desktop and
- * full-screen on a phone (`projects/page.tsx` lifts the cap). A `sm:grid-cols-2`
- * would key off the VIEWPORT, so it would split the 448px docked column on a 4K
- * monitor — which is exactly the collision `/tasks`' detail hit when it was
- * docked at 380px. The surface, not the viewport, decides the column count.
+ * ⚠️ **The SURFACE decides the column count, never the viewport.** A
+ * `sm:grid-cols-2` keys off the WINDOW, so it would split the 448px docked
+ * column on a 4K monitor — exactly the collision `/tasks`' detail hit when it
+ * was docked at 380px.
+ *
+ * That rule stands; what changed on 2026-09-19 is that it now has a second
+ * answer rather than only "one column, always". `twoColumn` reads the panel's
+ * OWN width stop: at `full` (max-w-3xl, 768px) the sections pair up, and at
+ * Peek (320px) and Side (448px) they do not. `/tasks`' detail takes the same
+ * decision through its `focused` flag, so the two apps split at the same kind
+ * of moment rather than at the same number of pixels.
+ *
+ * ⚠️ **The sections do not MOVE between the two shapes.** An earlier attempt
+ * lifted them into a main/aside split, which meant writing every section
+ * twice — one per branch — and the next edit landed in one copy only. They
+ * pair inside the containers they already live in, so there is no second copy
+ * to drift. Prose and the timeline span both columns; a paragraph set in half
+ * a panel is one nobody finishes.
  *
  * ## Peek → side → full (WS-27ab item 1)
  *
@@ -210,6 +223,21 @@ function SectionLabel({
  *
  * `trailing` is the right-hand slot of the label row (an accent dot, a count).
  */
+/**
+ * The container class for a group of sections that may pair up.
+ *
+ * One helper rather than the same ternary written at each container, so the
+ * two groups cannot drift into different gaps or different breakpoints.
+ *
+ * `items-start` matters: without it the grid stretches both cells to the
+ * taller one, and a short Details block grows a field of empty card.
+ */
+const PAIRED_SECTIONS = (twoColumn: boolean): string =>
+  twoColumn
+    ? "grid grid-cols-2 items-start gap-4 px-3 py-3"
+    : "flex flex-col gap-4 px-3 py-3";
+
+
 function FieldCell({
   label,
   icon,
@@ -250,6 +278,16 @@ export function TaskPanel({
   // WS-27ak(3) — the confirmation channel. `changeStatus` below is the one
   // mutation on this panel wired to it in that slice.
   const toast = useToast();
+  /**
+   * Two columns, decided by the SURFACE rather than the viewport.
+   *
+   * `full` is `max-w-3xl` (768px), the first stop with room for two readable
+   * columns. `/tasks`' detail takes the same decision through its `focused`
+   * flag, so the two apps split at the same kind of moment rather than at
+   * the same number of pixels.
+   */
+  const twoColumn = mode === "full";
+
   const [timeline, setTimeline] = useState<ActivityRow[]>([]);
   const [comment, setComment] = useState("");
   const [notDelivered, setNotDelivered] = useState<string | null>(null);
@@ -687,8 +725,22 @@ export function TaskPanel({
           under it. ItemDetail scrolls the whole detail, and so does this now —
           only the header and the comment composer are pinned. */}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="flex flex-col gap-4 px-3 py-3">
-          <section>
+        {/* ⚠️ **Two columns are decided by the SURFACE, never by the viewport.**
+            This file's header records why, and it is the rule `/tasks`' detail
+            already follows with its `focused` flag: an `sm:grid-cols-2` keys
+            off the WINDOW, so on a 4K monitor it would split the 448px docked
+            panel into two 220px columns — the exact collision `/tasks` hit
+            when it was docked at 380px. `twoColumn` reads the panel's own
+            width stop instead, so the split happens at `full` and nowhere
+            else, and Peek and Side keep the single column they need.
+
+            ⚠️ The SECTIONS DO NOT MOVE. An earlier attempt lifted them into
+            a main/aside split and had to write each one twice, once per
+            branch — and the very next edit landed in one copy only. Pairing
+            them inside the containers they already live in gets the same
+            halving of the panel's length with no second copy to drift. */}
+        <div className={PAIRED_SECTIONS(twoColumn)}>
+          <section className={twoColumn ? "min-w-0" : undefined}>
             <SectionLabel icon="SlidersHorizontal">Details</SectionLabel>
             {/* `grid-cols-1`, with no responsive variant on purpose — see the
                 width note in this file's header. */}
@@ -791,7 +843,21 @@ export function TaskPanel({
           </section>
 
           {task.description ? (
-            <section>
+            // Prose spans both columns: a description set in a 50% column
+            // beside a field stack is a paragraph nobody finishes.
+            //
+            // ⚠️ `order-last` is what makes the pairing work, and it is why
+            // no JSX had to move. Description sits BETWEEN Details and
+            // Properties in the DOM, so in a grid it landed on its own row
+            // and pushed Properties onto a third — one column of content
+            // with an empty column beside it. `order` re-places it for
+            // auto-flow without touching the reading order that Peek and
+            // Side still use.
+            <section
+              className={
+                twoColumn ? "order-last col-span-2 min-w-0" : undefined
+              }
+            >
               <SectionLabel icon="AlignLeft">Description</SectionLabel>
               <p className="whitespace-pre-wrap text-sm text-foreground">
                 {task.description}
@@ -804,7 +870,7 @@ export function TaskPanel({
               would compete with the ones those components already render.
               Promoting those labels onto `SectionLabel` means editing
               `TagPicker`/`RepeatEditor`, which S5 does not own. */}
-          <section>
+          <section className={twoColumn ? "min-w-0" : undefined}>
             <SectionLabel icon="Tag">Properties</SectionLabel>
             <div className="space-y-3">
               {/* Saved on every change rather than behind a button: a chip is a
@@ -836,11 +902,11 @@ export function TaskPanel({
             never grows an empty heading. */}
         <CustomFieldValues task={task} fields={fields} onChanged={onChanged} />
 
-        <div className="flex flex-col gap-4 px-3 py-3">
+        <div className={PAIRED_SECTIONS(twoColumn)}>
           {/* Both halves existed in the schema since WS-27a with no surface:
               links could be created and deleted but never listed, and subtasks
               could be created but never shown. */}
-          <section>
+          <section className={twoColumn ? "min-w-0" : undefined}>
             <SectionLabel icon="GitBranch">Links &amp; subtasks</SectionLabel>
             <div className="space-y-2">
               {onOpenTask ? (
@@ -868,7 +934,7 @@ export function TaskPanel({
             </div>
           </section>
 
-          <section>
+          <section className={twoColumn ? "min-w-0" : undefined}>
             <SectionLabel icon="Paperclip">
               Files{files.length ? ` · ${files.length}` : ""}
             </SectionLabel>
@@ -898,7 +964,13 @@ export function TaskPanel({
                     {f.name}
                   </a>
                   <span className="shrink-0 text-muted-foreground">
-                    {Math.max(1, Math.round(f.size / 1024))} KB
+                    {/* `Math.round(undefined / 1024)` is NaN and
+                        `Math.max(1, NaN)` is NaN, so a row whose size the
+                        server did not send rendered "NaN KB" at the member.
+                        An unknown size says nothing rather than lying. */}
+                    {Number.isFinite(f.size)
+                      ? `${Math.max(1, Math.round(f.size / 1024))} KB`
+                      : ""}
                   </span>
                   <button
                     type="button"
@@ -959,7 +1031,9 @@ export function TaskPanel({
             </Button>
           </section>
 
-          <section>
+          {/* The timeline spans: it is a list of sentences, and half a
+              panel is not enough line length for one. */}
+          <section className={twoColumn ? "col-span-2 min-w-0" : undefined}>
             <SectionLabel icon="History">Activity</SectionLabel>
             <ol className="space-y-3">
               {timeline.map((activity) => (
