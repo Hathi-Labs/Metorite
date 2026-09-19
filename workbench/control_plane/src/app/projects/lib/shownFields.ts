@@ -22,6 +22,7 @@
 export const FIELD_KEYS = [
   "status",
   "type",
+  "source",
   "assignees",
   "start_date",
   "due_at",
@@ -39,6 +40,7 @@ export type FieldKey = (typeof FIELD_KEYS)[number];
 export const FIELD_LABELS: Record<FieldKey, string> = {
   status: "Status",
   type: "Type",
+  source: "Source",
   assignees: "Assignees",
   start_date: "Start",
   due_at: "Due",

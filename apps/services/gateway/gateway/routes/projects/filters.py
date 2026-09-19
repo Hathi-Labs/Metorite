@@ -357,7 +357,7 @@ SHOWN_FIELDS: tuple[str, ...] = (
     # `FIELD_KEYS`. `shownFields.ts` warns why: a key added on one side only
     # is "a preference the server silently strips on the next save" — the
     # member ticks Type, it draws, and their next saved view drops it.
-    "status", "type", "assignees", "start_date", "due_at", "importance",
+    "status", "type", "source", "assignees", "start_date", "due_at", "importance",
     "subtasks", "blocked", "tags", "attachments", "estimate", "created_at",
 )
 

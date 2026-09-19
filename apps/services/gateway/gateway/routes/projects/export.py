@@ -128,6 +128,7 @@ MAX_EXPORT_ROWS = 5000
 FIELD_LABELS: dict[str, str] = {
     "status": "Status",
     "type": "Type",
+    "source": "Source",
     "assignees": "Assignees",
     "start_date": "Start",
     "due_at": "Due",
@@ -201,6 +202,11 @@ def _render(
     """
     if key == "status":
         return statuses.get(str(task.get("status_id") or ""), "")
+    if key == "source":
+        # The stored word, not the chip's label. Same judgement as
+        # `importance` above: the display vocabulary lives in the browser,
+        # and a spreadsheet wants the value it can filter on.
+        return task.get("source") or ""
     if key == "type":
         # An id with no row yields "" rather than the uuid. A type deleted
         # after the task was written is the ordinary case, not an error, and

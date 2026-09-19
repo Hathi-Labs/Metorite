@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 
 import { accentForHue } from "@/lib/statusAccent";
-import { chipKind, taskMeta } from "@/lib/taskCard";
+import { TASK_SOURCES, chipKind, taskMeta } from "@/lib/taskCard";
 
 import type { TaskRow } from "./api";
 import {
@@ -55,6 +55,7 @@ describe("taskFacts", () => {
       ),
     ).toEqual({
       type: null,
+      source: null,
       dueAt: hours(-2),
       completedAt: hours(-1),
       subtasks: { done: 1, total: 3 },
@@ -70,6 +71,7 @@ describe("taskFacts", () => {
   it("defaults the counts a card must not guess at", () => {
     expect(taskFacts(row())).toEqual({
       type: null,
+      source: null,
       dueAt: undefined,
       completedAt: undefined,
       subtasks: null,
@@ -395,5 +397,42 @@ describe("taskDeepLink", () => {
 
   it("is origin-relative when no origin is given, and encodes the id", () => {
     expect(taskDeepLink({ id: "a b" })).toBe("/projects?task=a%20b");
+  });
+});
+
+describe("the task SOURCE chip (WS-27bh)", () => {
+  const sourceChip = (source: string | null) =>
+    cardChips(row({ source } as Partial<TaskRow>)).find((c) => c.key === "source");
+
+  it("names the origins that are not manual", () => {
+    expect(sourceChip("email")?.label).toBe("Email");
+    expect(sourceChip("agent")?.label).toBe("Agent");
+    expect(sourceChip("automation")?.label).toBe("Automation");
+    expect(sourceChip("import")?.label).toBe("Imported");
+  });
+
+  it("⚠️ draws NOTHING for a manual task", () => {
+    // `manual` is the overwhelming majority of rows. A badge on every card
+    // is a badge nobody reads, and it would crowd out the chips that vary.
+    expect(sourceChip("manual")).toBeUndefined();
+    expect(sourceChip(null)).toBeUndefined();
+  });
+
+  it("⚠️ draws nothing for a value the vocabulary does not know", () => {
+    // The CHECK constraint can gain a value before this table does. An
+    // unknown source must be silent, never a chip reading the raw column.
+    expect(sourceChip("telepathy")).toBeUndefined();
+  });
+
+  it("covers exactly the non-manual half of the migration-146 CHECK", () => {
+    // The fence against the vocabularies drifting apart. `pm_tasks.source`
+    // is CHECK (source IN ('manual','import','email','agent','automation')),
+    // and every value but `manual` earns a chip.
+    expect(Object.keys(TASK_SOURCES).sort()).toEqual([
+      "agent",
+      "automation",
+      "email",
+      "import",
+    ]);
   });
 });

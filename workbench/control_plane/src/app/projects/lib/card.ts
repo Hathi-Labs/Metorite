@@ -73,6 +73,7 @@ export function taskFacts(
     // deleted after the task was written is exactly the case the tag colour
     // lookup already survives.
     type: task.type_id ? (types?.get(task.type_id) ?? null) : null,
+    source: task.source ?? null,
     dueAt: task.due_at,
     completedAt: task.completed_at,
     subtasks: task.subtasks ?? null,
@@ -167,6 +168,7 @@ export function cardChips(
  */
 export const CHIP_FIELD: Record<string, string> = {
   type: "type",
+  source: "source",
   blocked: "blocked",
   importance: "importance",
   due: "due_at",

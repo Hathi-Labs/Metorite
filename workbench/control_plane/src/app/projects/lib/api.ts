@@ -445,6 +445,11 @@ export interface TaskRow {
   task_number?: number | null;
   parent_task_id?: string | null;
   type_id?: string | null;
+  /**
+   * WS-27bh — `manual | import | email | agent | automation` (migration 146).
+   * `TaskModel` has always sent it; nothing declared it, so nothing read it.
+   */
+  source?: string | null;
   status_id: string;
   title: string;
   description?: string | null;

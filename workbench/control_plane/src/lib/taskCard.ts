@@ -105,12 +105,41 @@ export interface TypeFact {
   color?: string | null;
 }
 
+/**
+ * WS-27bh — where a task CAME FROM, for the origins that are not `manual`.
+ *
+ * `pm_tasks.source` is `manual | import | email | agent | automation`
+ * (migration 146). `manual` is every task somebody typed, so a badge on it
+ * would be a badge on almost every card, saying nothing.
+ *
+ * ⚠️ **NOT `/tasks`' `SourceBadge`, and the spec's instruction to promote
+ * that one is STALE.** §9.9.2 said to reuse it rather than author a fourth
+ * copy, written 2026-08-13. That badge answers "is this row LOCAL or SYNCED
+ * from a connected PM tool" — the dual-source model of the ClickUp era. D52
+ * retired ClickUp outright on 2026-08-24: there is no connector and nothing
+ * syncs, so every Projects row is local and that badge would say "Local" on
+ * all of them. Same word, different question. Reusing it would have put a
+ * true-but-meaningless badge on every card.
+ */
+export const TASK_SOURCES = {
+  import: { label: "Imported", icon: "Upload" },
+  email: { label: "Email", icon: "Mail" },
+  agent: { label: "Agent", icon: "Bot" },
+  automation: { label: "Automation", icon: "Zap" },
+} as const;
+
+export type TaskSource = keyof typeof TASK_SOURCES;
+
 export interface TaskFacts {
   /**
    * WS-27bh. An Epic must be distinguishable from a Task at a glance, and
    * `type_id` has been on every row since migration 146 with no surface.
    */
   type?: TypeFact | null;
+  /**
+   * WS-27bh — the origin, when it is not `manual`. See {@link TASK_SOURCES}.
+   */
+  source?: string | null;
   dueAt?: string | null;
   completedAt?: string | null;
   /** WS-27s — filled for every row of the list endpoint. */
@@ -260,6 +289,21 @@ export function taskMeta(facts: TaskFacts, nowMs = Date.now()): MetaChip[] {
       tone: "muted",
       hue: resolveHue({ color: type.color }),
       title: `Type: ${type.name}`,
+    });
+  }
+
+  // Beside the type, because both say what the row IS rather than how it is
+  // going. `manual` earns nothing: it is the overwhelming majority, and a
+  // badge every card carries is a badge nobody reads.
+  const source = facts.source;
+  if (source && source in TASK_SOURCES) {
+    const known = TASK_SOURCES[source as TaskSource];
+    chips.push({
+      key: "source",
+      icon: known.icon,
+      label: known.label,
+      tone: "muted",
+      title: `Created by ${known.label.toLowerCase()}`,
     });
   }
 
