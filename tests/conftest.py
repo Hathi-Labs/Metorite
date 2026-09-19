@@ -108,3 +108,136 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     w("")
     w("  bash scripts/dev_db.sh                       # start the scratch DBs")
     w('  eval "$(bash scripts/dev_db.sh --export)"    # then re-run this suite')
+
+
+# ── H-91: the scratch database must not grow without bound ──────────────────
+#
+# 🔴 **Every provisioning fixture leaked an organization per test.** About
+# twenty of them post `/orgs/provision` with a fresh slug and remove nothing.
+# Measured 2026-09-19 on one developer's scratch database: 7,766 organizations,
+# 14,134 `control_audit` rows, 259 provider credentials.
+#
+# 🔴 **It is a MEASUREMENT defect, not a disk-space one.** The Operator Console
+# reads the same database. Those rows drew 210 ghost tiers and 248 vendors onto
+# the console's own pages, which stretched /providers to 25,000 pixels, and a
+# page-size decision was nearly taken on a number the fixtures produced.
+#
+# ⚠️ **SESSION-scoped teardown, deliberately not per-test.** A per-test sweep
+# would change what every existing test sees between cases, and several of the
+# 26 suites build state across cases on purpose. This runs once, after the last
+# test, so it changes no test's behaviour — it only stops the growth.
+#
+# ⚠️ **A DELETE on `organization` alone RAISES.** Most dependants cascade, but
+# `payment_order`, `discount_code` and `discount_redemption` are NO ACTION and
+# block, while `control_audit` and `provisioning_run` are SET NULL and would
+# survive as orphans. The order below is that fact, written down.
+#
+# ⚠️ **The ids are CAST, and the sweep REPORTS its rowcount.** The first
+# version passed a list of UUID objects to `= ANY(:ids)`, which matched
+# nothing, and a DELETE that matches nothing raises nothing — so it ran
+# happily and removed not one row. Silence was its only failure mode.
+#
+# ⚠️ **TWO CONCURRENT RUNS against one scratch database interfere**, and
+# this sweep is one more way they do: it deletes every organization that
+# appeared while it was running, which includes the other run's. Met on
+# 2026-09-20, when a full `tests/unit/` run in another checkout was writing to
+# the same database. Two runs already share `tier_catalog` and
+# `provider_credential`, so they were never isolated -- give a second run its
+# own database with `METORITE_SCRATCH_CONSOLE_PORT`.
+#
+# Set `METORITE_KEEP_SCRATCH=1` to inspect a run's rows afterwards.
+
+#: Each is `(table, sql)`, in DEPENDENCY order -- children first.
+#:
+#: 🔴 **The order is the database's, not a guess.** Measured from
+#: `pg_constraint` on 2026-09-20, after the first version deleted
+#: `payment_order` before `discount_redemption` and the foreign key stopped it:
+#:
+#:   discount_redemption -> discount_code, organization, payment_order
+#:   payment_order_line  -> payment_order
+#:   payment_order       -> organization
+#:   discount_code       -> organization
+#:   control_audit       -> organization   (SET NULL, so it orphans)
+#:   provisioning_run    -> organization   (SET NULL, so it orphans)
+#:
+#: ⚠️ **A redemption reaches my organizations by THREE paths.** Its own
+#: column, the order it settled, and the code it spent. Deleting only by the
+#: first leaves a row that then blocks the other two.
+_IDS = "CAST(:ids AS uuid[])"
+_SWEEP = (
+    ("discount_redemption",
+     "DELETE FROM discount_redemption WHERE "
+     f"  organization_id = ANY({_IDS}) "
+     f"  OR order_id IN (SELECT id FROM payment_order WHERE organization_id = ANY({_IDS})) "
+     "  OR discount_code_id IN (SELECT id FROM discount_code "
+     f"                         WHERE organization_id = ANY({_IDS}))"),
+    ("payment_order_line",
+     "DELETE FROM payment_order_line WHERE order_id IN ("
+     f"  SELECT id FROM payment_order WHERE organization_id = ANY({_IDS}))"),
+    ("payment_order",
+     f"DELETE FROM payment_order WHERE organization_id = ANY({_IDS})"),
+    ("discount_code",
+     f"DELETE FROM discount_code WHERE organization_id = ANY({_IDS})"),
+    ("control_audit",
+     f"DELETE FROM control_audit WHERE organization_id = ANY({_IDS})"),
+    ("provisioning_run",
+     f"DELETE FROM provisioning_run WHERE organization_id = ANY({_IDS})"),
+    ("organization",
+     f"DELETE FROM organization WHERE id = ANY({_IDS})"),
+)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _sweep_scratch_organizations():
+    """Delete the organizations THIS run created, and nothing else.
+
+    Keyed on the id set seen before the first test, so a row somebody staged by
+    hand before running the suite survives. A truncate would be simpler and it
+    would also destroy the thing a developer was looking at.
+    """
+    dsn = os.environ.get("CUSTOMER_CONSOLE_DATABASE_URL", "").strip()
+    if not dsn or os.environ.get("METORITE_KEEP_SCRATCH", "").strip():
+        yield
+        return
+
+    from sqlalchemy import create_engine, text
+
+    eng = create_engine(dsn.replace("postgresql+asyncpg:", "postgresql+psycopg:"))
+    try:
+        with eng.begin() as c:
+            before = {str(r[0]) for r in c.execute(text("SELECT id FROM organization"))}
+    except Exception:
+        # No database, no ladder, no sweep. A teardown must never be the
+        # reason a suite fails to start.
+        eng.dispose()
+        yield
+        return
+
+    yield
+
+    try:
+        with eng.begin() as c:
+            after = {str(r[0]) for r in c.execute(text("SELECT id FROM organization"))}
+            mine = sorted(after - before)
+            if not mine:
+                return
+            removed = {}
+            for table, sql in _SWEEP:
+                removed[table] = c.execute(text(sql), {"ids": mine}).rowcount
+            left = c.execute(
+                text("SELECT count(*) FROM organization WHERE id = ANY(CAST(:ids AS uuid[]))"),
+                {"ids": mine},
+            ).scalar_one()
+        # Reported, because a sweep that quietly does nothing is the bug this
+        # replaces. The organization count is the one that has to reach zero.
+        print(
+            "\nH-91 sweep: this run created "
+            f"{len(mine)} organization(s); removed "
+            f"{removed.get('organization', 0)}, {left} left behind"
+        )
+        if left:
+            print(f"  H-91 sweep INCOMPLETE — rows by table: {removed}")
+    except Exception as exc:  # pragma: no cover - diagnostics only
+        print(f"\nH-91 sweep could not run: {exc!r}")
+    finally:
+        eng.dispose()

@@ -17,6 +17,7 @@ no route could call it. The last section of this file DRIVES
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import pathlib
 import uuid
@@ -1388,6 +1389,50 @@ class TestASpeechRowRecordsTheCharactersWeSent:
         _, key = org_key
         assert _speak(client, key).status_code == 200
         assert _rows(db, org_id)[0].billed_credits == Decimal(0)
+
+    def test_the_UNMEASURED_ALARM_can_be_JOINED_to_the_row_it_wrote(
+            self, client, db, org_key, org_id, bound_tts, priced_tts,
+            provider, caplog):
+        """H-85. The alarm named the model, the tier and the task, and
+        `usage_event` is keyed `(organization_id, request_id)`.
+
+        🔴 **So the alarm could not be joined to the row it was about.**
+        Nobody could tell one customer's unmeasured call from another's, or
+        find the row that billed zero because of this line. This test takes
+        the alarm's own two fields and looks the row up with them.
+
+        ⚠️ **The ids must be the SAME one.** Two separately minted ids would
+        make the join LOOK available and match nothing, which is worse than
+        no join at all — so this reads the row by the alarm's id and asserts
+        it exists, rather than comparing two values it fetched separately.
+        """
+        provider["reply"] = {"content": b"", "media_type": "audio/mpeg"}
+        _, key = org_key
+
+        with caplog.at_level(logging.WARNING, logger="platform.router"):
+            assert _speak(client, key).status_code == 200
+
+        alarms = [r for r in caplog.records
+                  if r.getMessage() == "router.unmeasured_quantity"]
+        assert len(alarms) == 1, "the unmeasured call raised no alarm"
+        alarm = alarms[0]
+
+        assert getattr(alarm, "router_org", None) == org_id
+        request_id = getattr(alarm, "router_request", None)
+        assert request_id, "the alarm names no request"
+
+        # The join the entry asks for, done for real.
+        with db.begin() as c:
+            row = c.execute(text(
+                "SELECT quantity, billed_credits FROM usage_event "
+                "WHERE organization_id = CAST(:o AS uuid) "
+                "  AND request_id = :r"),
+                {"o": org_id, "r": request_id}).fetchone()
+        assert row is not None, (
+            "the alarm names a request id that matches no usage row -- "
+            "the alarm and the writer minted different ids")
+        assert row.quantity == Decimal(0)
+        assert row.billed_credits == Decimal(0)
 
     def test_audio_that_DID_come_back_still_bills_the_characters(
             self, client, db, org_key, org_id, bound_tts, priced_tts):

@@ -418,6 +418,108 @@ def test_a_primary_answer_is_NOT_reported_as_a_failover(
     assert [f for f in catalog["failovers"] if f["tier"] == tier] == []
 
 
+def test_a_VISION_LIFT_at_rank_2_is_NOT_reported_as_a_failover(
+        client, db, org, vendor, serve):
+    """H-82. D-AI-2 drops blind steps BEFORE the walk, so rank 2 can serve
+    with nothing having failed.
+
+    🔴 **This read called all of it a failover.** A tier binding a blind rank 1
+    and a seeing rank 2 serves EVERY vision call at rank 2, so the tiers page
+    reported up to 100 percent of that tier's vision traffic as a chain that
+    had to fall back. Nothing had.
+
+    ⚠️ **The WRITE is correct and this test asserts it stays correct.** The
+    row really did serve at rank 2, and `resolve_chain` builds that rank from
+    the column. The defect was entirely in who read it as a failure — so the
+    row is checked first, and the catalog second.
+    """
+    _slug, org_id, key = org
+    tier = f"tier-pt-{uuid.uuid4().hex[:6]}"
+    blind = f"{vendor}/pt-blind-{uuid.uuid4().hex[:6]}"
+    seeing = f"{vendor}/pt-sees-{uuid.uuid4().hex[:6]}"
+    _stage(db, tier=tier, models=[blind, seeing], profile=None)
+
+    # The flag that makes the lift drop rank 1. FALSE and NULL both mean
+    # "does not see", and FALSE is the sharper case: somebody answered.
+    with db.begin() as c:
+        for m, sees in ((blind, False), (seeing, True)):
+            c.execute(
+                text("INSERT INTO model_profile (model, reads_images) "
+                     "VALUES (:m, :s) ON CONFLICT (model) DO UPDATE SET "
+                     "reads_images = EXCLUDED.reads_images"),
+                {"m": m, "s": sees})
+
+    r = client.post("/v1/chat/completions", headers=key, json={
+        "model": tier, "task": "vision",
+        "messages": [{"role": "user", "content": "what is in this picture"}]})
+    assert r.status_code == 200, r.text
+
+    # The write is unchanged: rank 2 really served, and the row says so.
+    # Without this the test would pass on a read that simply returns nothing.
+    with db.begin() as c:
+        row = c.execute(text(
+            "SELECT served_rank, task FROM usage_event "
+            "WHERE organization_id = :o AND tier = :t "
+            "ORDER BY created_at DESC LIMIT 1"),
+            {"o": org_id, "t": tier}).fetchone()
+    assert row is not None, "the lift recorded no usage row at all"
+    assert row.served_rank == 2, "the lift did not serve at rank 2"
+    assert row.task == "vision"
+
+    # And the read no longer calls it a failure. The pair joins to no
+    # `tier_binding` row, because this tier binds `chat` and never `vision`.
+    catalog = client.get("/catalog/models", headers=OP).json()
+    assert [f for f in catalog["failovers"] if f["tier"] == tier] == []
+
+
+def test_a_REAL_failover_on_a_VISION_BINDING_is_still_reported(
+        client, db, org, vendor, serve):
+    """H-82's other half: the fix must not silence a genuine vision failover.
+
+    A tier that binds `vision` ITSELF joins to `tier_binding` on that task, so
+    its rank-2 rows are real failovers and keep reporting. A filter that
+    dropped these would trade an over-report for a blind spot.
+    """
+    _slug, _org_id, key = org
+    tier = f"tier-pt-{uuid.uuid4().hex[:6]}"
+    primary = f"{vendor}/pt-v1-{uuid.uuid4().hex[:6]}"
+    backup = f"{vendor}/pt-v2-{uuid.uuid4().hex[:6]}"
+
+    with db.begin() as c:
+        eff = c.execute(text("SELECT now()")).scalar_one()
+        c.execute(text("INSERT INTO tier_catalog (slug, label) VALUES (:t, :t) "
+                       "ON CONFLICT DO NOTHING"), {"t": tier})
+        for rank, m in enumerate((primary, backup), start=1):
+            c.execute(
+                text("INSERT INTO model_capability (model, task, invocation) "
+                     "VALUES (:m, 'vision', 'acompletion') "
+                     "ON CONFLICT DO NOTHING"), {"m": m})
+            c.execute(
+                text("INSERT INTO tier_binding (tier, task, model, rank, "
+                     "effective_from) VALUES (:t, 'vision', :m, :r, :eff)"),
+                {"t": tier, "m": m, "r": rank, "eff": eff})
+
+    class _Down(Exception):
+        status_code = 503
+
+    async def _flaky(**kwargs):
+        if kwargs["model"] == primary:
+            raise _Down("down")
+        return dict(RESPONSE)
+
+    router_mod.set_provider_call(_flaky)
+    r = client.post("/v1/chat/completions", headers=key, json={
+        "model": tier, "task": "vision",
+        "messages": [{"role": "user", "content": "what is in this picture"}]})
+    assert r.status_code == 200, r.text
+
+    catalog = client.get("/catalog/models", headers=OP).json()
+    mine = [f for f in catalog["failovers"] if f["tier"] == tier]
+    assert mine, "a real vision failover stopped being reported"
+    assert mine[0]["rank"] == 2
+    assert mine[0]["model"] == backup
+
+
 # ── H-76's second half: silence judged over EVERY organization ──────────────
 
 def test_a_quiet_funded_customer_below_the_cap_is_still_reported(
