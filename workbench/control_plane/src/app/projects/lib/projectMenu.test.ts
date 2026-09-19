@@ -151,7 +151,24 @@ describe("projectMenuItems", () => {
       (i) => i.kind === "item" && (i as { label: string }).label === "Delete"
     );
     (entry as { onSelect: () => void }).onSelect();
-    expect(onDelete).toHaveBeenCalledWith(row);
+    expect(onDelete).toHaveBeenCalledWith(row, "project");
+  });
+
+  it("⚠️ hands Delete the row's LEVEL, so a space is not called a project", () => {
+    // Owner directive 2026-08-31: a space is not a project. The row alone
+    // cannot say which it is — a level is kind PLUS depth — so the menu, which
+    // knows the depth, has to carry it. Without this the confirmation titles
+    // the largest destructive act in the product "Delete project".
+    for (const level of ["space", "folder", "project", "subproject"] as const) {
+      const onDelete = vi.fn();
+      const row = project();
+      const items = projectMenuItems(row, { ...handlers(), onDelete }, undefined, level);
+      const entry = items.find(
+        (i) => i.kind === "item" && (i as { label: string }).label === "Delete"
+      );
+      (entry as { onSelect: () => void }).onSelect();
+      expect(onDelete).toHaveBeenCalledWith(row, level);
+    }
   });
 
   it("offers Delete on an archived project too", () => {

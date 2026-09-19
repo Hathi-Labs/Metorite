@@ -6,19 +6,29 @@
  * in a way no click can catch: a confirmation that accepts the wrong word, and
  * a sentence that under-reports what a cascade is about to destroy.
  *
- * ## What the dialog may and may not claim
+ * ## 🔴 The dialog may NEVER claim that a node is empty
+ *
+ * This is the rule the whole module exists for, and the first version of it
+ * broke the rule in the one branch nobody reads twice.
  *
  * `DELETE /projects/nodes/{id}` cascades over the subtree, every task in it and
- * every grant. The counts come from `GET /nodes/{id}/summary`, which is the
- * read the dashboards already use — no second aggregate, and no count taken
- * over rows in the browser (`api.ts` says why).
+ * every grant. The counts come from `GET /nodes/{id}/summary`. **The two do not
+ * count the same rows, and the gap is ordinary history rather than an edge
+ * case:**
  *
- * ⚠️ **`NodeSummary.projects` counts descendant PROJECTS and deliberately not
- * folders**, because a folder holds no work. A cascade does not make that
- * distinction — it takes the folders too. So the sentence below names what is
- * COUNTABLE and never claims to be the whole inventory, and the dialog says
- * "and everything under it" beside it. A confirmation that under-counts is
- * worse than one that declines to count: it reads as a complete list.
+ * 1. **Archived tasks.** `node_counts_sql` (`tree.py`) filters
+ *    `t.archived_at IS NULL`. `delete_node` counts `pm_tasks` with no such
+ *    filter. A project under a lifecycle policy accumulates archived tasks for
+ *    years, so a two-year-old project can summarise as 0 tasks and delete 500.
+ * 2. **Folders.** `NodeSummary.projects` counts descendants whose kind is
+ *    `project`. A space holding three folders reports 0. The cascade takes the
+ *    folders.
+ *
+ * So the counts are a FLOOR, never an inventory. The dialog states the removal
+ * unconditionally and offers the counts as a lower bound beside it. It must
+ * not print "holds no subprojects and no tasks", which is a positive claim of
+ * emptiness that the server is free to contradict a second later — and which
+ * is exactly what a member skims past on the way to the button.
  */
 
 import type { NodeSummary } from "./api";
@@ -29,11 +39,11 @@ function plural(n: number, one: string, many: string): string {
 }
 
 /**
- * What is about to be destroyed, as clauses a sentence can join.
+ * The LIVE, VISIBLE work under this node, as clauses a sentence can join.
  *
- * Empty when the node holds nothing countable — the caller then says so in its
- * own words rather than rendering "0 subprojects and 0 tasks", which reads as
- * a warning about nothing and trains people to click through the dialog.
+ * ⚠️ A floor, not an inventory — see the module header. Empty means only that
+ * the summary counted nothing, which is NOT the same as the node being empty,
+ * and no caller may render it as such.
  */
 export function deletionClauses(summary: NodeSummary | null): string[] {
   if (!summary) return [];
@@ -76,3 +86,12 @@ export function confirmsDeletion(typed: string, name: string): boolean {
   if (target === "") return false;
   return typed.trim().toLocaleLowerCase() === target;
 }
+
+/**
+ * The caveat that must accompany any count this module produces.
+ *
+ * Exported as a constant rather than written into the dialog so that a second
+ * surface showing these counts cannot show them without it.
+ */
+export const COUNT_CAVEAT =
+  "Counts cover live work you can see. Archived tasks and folders are not counted, and are deleted too.";

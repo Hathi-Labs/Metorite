@@ -408,8 +408,8 @@ function ProjectNav({
                 ...actions,
                 ...(actions.onDelete
                   ? {
-                      onDelete: (project: ProjectRow) => {
-                        actions.onDelete?.(project);
+                      onDelete: (project: ProjectRow, level: NodeLevel) => {
+                        actions.onDelete?.(project, level);
                         onPicked?.();
                       },
                     }
@@ -614,8 +614,14 @@ function ProjectsWorkspace() {
   //: H-8 — the row whose delete confirmation is open, and whether the call is
   //: in flight. Shaped exactly like the move pair above, because the two are
   //: the same interaction: a row menu raises a dialog, the page owns the write.
-  const [deletingNode, setDeletingNode] = useState<ProjectRow | null>(null);
+  const [deletingNode, setDeletingNode] = useState<
+    { project: ProjectRow; level: NodeLevel } | null
+  >(null);
   const [deleting, setDeleting] = useState(false);
+  //: The server's refusal, held HERE rather than in the page's `error` strip.
+  //: That strip renders inside the work area, under this modal's backdrop, so
+  //: a 403 re-armed the button and said nothing.
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   // Analytics reads the portfolio roll-up — the same shape as a node's, so
   // one dashboard component draws both.
   const [portfolio, setPortfolio] = useState<NodeSummary | null>(null);
@@ -1046,7 +1052,10 @@ function ProjectsWorkspace() {
       // Raises the dialog and nothing else. `DeleteProjectDialog` reads the
       // counts and takes the name; `deleteNode` performs the write only once
       // it has both.
-      onDelete: (project) => setDeletingNode(project),
+      onDelete: (project, level) => {
+        setDeleteError(null);
+        setDeletingNode({ project, level });
+      },
     }),
     [toast]
   );
@@ -2097,7 +2106,7 @@ function ProjectsWorkspace() {
         pathTo(roots, selected.id).some((row) => row.id === node.id));
 
     setDeleting(true);
-    setError(null);
+    setDeleteError(null);
     try {
       const res = await projectsApi.deleteProject(node.id);
       setDeletingNode(null);
@@ -2117,7 +2126,8 @@ function ProjectsWorkspace() {
     } catch (err) {
       // The dialog stays OPEN on a refusal, for `moveNodeTo`'s reason: the
       // choice was made and the server's answer is the one worth showing.
-      setError(String((err as Error).message));
+      // ⚠️ Into `deleteError`, NOT the page's `error` — see that state's note.
+      setDeleteError(String((err as Error).message));
     } finally {
       setDeleting(false);
     }
@@ -2980,9 +2990,14 @@ function ProjectsWorkspace() {
           render. That is a defect on an existing feature and is filed rather
           than fixed here; this one simply does not repeat it. */}
       <DeleteProjectDialog
-        project={deletingNode}
+        project={deletingNode?.project ?? null}
+        level={deletingNode?.level}
+        error={deleteError}
         busy={deleting}
-        onClose={() => setDeletingNode(null)}
+        onClose={() => {
+          setDeletingNode(null);
+          setDeleteError(null);
+        }}
         onConfirm={(project) => void deleteNode(project)}
       />
 

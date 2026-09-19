@@ -7,10 +7,17 @@
  * None of them is visible to a click test.
  */
 
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import type { NodeSummary } from "./api";
-import { confirmsDeletion, deletionClauses, joinClauses } from "./projectDelete";
+import {
+  COUNT_CAVEAT,
+  confirmsDeletion,
+  deletionClauses,
+  joinClauses,
+} from "./projectDelete";
 
 const summary = (over: Partial<NodeSummary> = {}): NodeSummary => ({
   id: "p1",
@@ -94,5 +101,51 @@ describe("joinClauses", () => {
 
   it("is empty for no clauses", () => {
     expect(joinClauses([])).toBe("");
+  });
+});
+
+describe("🔴 the dialog may never claim a node is empty", () => {
+  // The rule this module exists for, and the one the first version broke.
+  //
+  // `node_counts_sql` filters `t.archived_at IS NULL`; `delete_node` counts
+  // `pm_tasks` with no such filter. A project under a lifecycle policy can
+  // therefore summarise as 0 tasks and delete 500 of them. A sentence that
+  // reads "holds no subprojects and no tasks" is a positive claim of
+  // emptiness the server contradicts a second later.
+  //
+  // A source scan, because no behavioural assertion can tell a correct
+  // sentence from a plausible one — the defect was ENGLISH, not logic.
+  const source = readFileSync(
+    new URL("../components/DeleteProjectDialog.tsx", import.meta.url),
+    "utf-8",
+  );
+  /**
+   * Comments stripped before the scan.
+   *
+   * The dialog's own comment QUOTES the sentence this rule forbids, because
+   * explaining a defect needs to name it. Scanning the raw file made the
+   * fence fire on its own rationale — correct behaviour, wrong scope. What
+   * the rule is about is what a member READS.
+   */
+  const dialog = source
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/^\s*\/\/.*$/gm, " ");
+
+  it("states the removal unconditionally, with no emptiness branch", () => {
+    expect(dialog).not.toMatch(/holds no/i);
+    expect(dialog).not.toMatch(/\bis empty\b/i);
+    expect(dialog).not.toMatch(/nothing (under|inside|in) it/i);
+  });
+
+  it("carries the caveat wherever it shows a count", () => {
+    // Exported as a constant precisely so a second surface cannot show the
+    // counts without it.
+    expect(dialog).toContain("COUNT_CAVEAT");
+    expect(COUNT_CAVEAT).toMatch(/archived/i);
+    expect(COUNT_CAVEAT).toMatch(/folder/i);
+  });
+
+  it("names the counts as a floor, not a total", () => {
+    expect(dialog).toMatch(/At least/);
   });
 });

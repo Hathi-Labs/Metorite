@@ -122,10 +122,16 @@ export interface ProjectMenuHandlers {
    * and the counts are only knowable from a read, so the surface asks first —
    * see this module's header for why the ranking matters more than the entry.
    *
+   * ⚠️ **`level` travels with the row, because the row alone cannot say what
+   * it is.** A level is kind PLUS depth, and only the caller knows the depth.
+   * Without it the confirmation calls a space a "project" — and a space is not
+   * a project (owner directive, 2026-08-31). Destroying one is the largest
+   * destructive act in the product and must not be worded as a leaf's.
+   *
    * Optional: a tree the caller cannot write to omits it, and the entry does
    * not appear at all.
    */
-  onDelete?: (project: ProjectRow) => void;
+  onDelete?: (project: ProjectRow, level: NodeLevel) => void;
 }
 
 /**
@@ -360,7 +366,7 @@ export function projectMenuItems(
         label: "Delete",
         icon: "Trash2",
         danger: true,
-        onSelect: () => onDelete(project),
+        onSelect: () => onDelete(project, level),
       },
     ]);
   }

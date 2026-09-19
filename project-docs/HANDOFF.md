@@ -761,6 +761,29 @@ line — never reclaim a number by deleting the other entry.
   so CLAUDE.md §5 says record it, do not refactor it
 - **Added:** 2026-08-14 · PR #439
 
+### H-121 · 🔴 A READ grant can now destroy a space · [OWNER]
+- **Check:** `grep -n "async def delete_node" -A 6 apps/services/gateway/gateway/routes/projects/tree.py`
+  → `load_visible_project` and nothing else means this is open.
+- **Why it is urgent now.** `DELETE /projects/nodes/{id}` cascades over the
+  subtree, every task and every grant. Its only guard is **read** visibility.
+  `resolve_visibility` returns a read closure. It carries no write axis and no
+  role axis.
+- **⚠️ This slice widened NO server rule. It made the gap live.** Until
+  2026-09-19 the cascade had no control in the product, so only a direct API
+  call reached it. H-8 put it on the row menu. A member who holds a
+  `group:<slug>` read grant on a space can now delete that space, every project
+  under it, every task and every grant.
+- **`archive_node` uses the identical guard**, and archive is reversible. That
+  is the whole difference, and it is why this one is filed and that one is not.
+- **The decision.** Which subject may delete. Three candidates, and they are not
+  the same: the project creator, a role, or a write grant that does not exist
+  yet. Visibility is *who can see*, and D12 says it is not *who may act*.
+- **Until it is answered**, the menu entry is reachable by anybody who can open
+  the row. Hiding it client-side is NOT a fix. The endpoint stays open.
+- **Authority:** `routes/projects/tree.py` `delete_node` · D12 · R5 ·
+  `specs/project_management_app.md` §11 (the superseded-delete note)
+- **Added:** 2026-09-19 · found by the adversarial review of the H-8 diff.
+
 ### H-120 · "Move to…" opens NOTHING on a phone · [AGENT]
 - **Check:** `grep -n "if (isMobile) {" workbench/control_plane/src/app/projects/page.tsx`
   → note the line. Then find `movingNode ? (`. It sits **after** that early

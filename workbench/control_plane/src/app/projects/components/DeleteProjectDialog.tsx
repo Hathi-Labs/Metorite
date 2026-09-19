@@ -34,11 +34,30 @@ import Input from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 
 import { type NodeSummary, type ProjectRow, projectsApi } from "../lib/api";
-import { confirmsDeletion, deletionClauses, joinClauses } from "../lib/projectDelete";
+import { COUNT_CAVEAT, confirmsDeletion, deletionClauses, joinClauses } from "../lib/projectDelete";
+import type { NodeLevel } from "../lib/tree";
+
+/**
+ * What this row IS, in the words the product uses.
+ *
+ * ⚠️ "A SPACE IS NOT A PROJECT" is an owner directive (2026-08-31), and a
+ * confirmation that calls a space a project understates the largest
+ * destructive act in the product.
+ */
+const LEVEL_NOUN: Record<NodeLevel, string> = {
+  space: "space",
+  folder: "folder",
+  project: "project",
+  subproject: "subproject",
+};
 
 interface Props {
   /** The row to delete. `null` closes the dialog. */
   project: ProjectRow | null;
+  /** What that row is. The menu knows; the row alone does not. */
+  level?: NodeLevel;
+  /** The server's refusal, shown IN the dialog. See the note on `onConfirm`. */
+  error?: string | null;
   onClose: () => void;
   /** Confirmed. The page owns the call, the toast and the refetch. */
   onConfirm: (project: ProjectRow) => void;
@@ -46,7 +65,14 @@ interface Props {
   busy?: boolean;
 }
 
-export function DeleteProjectDialog({ project, onClose, onConfirm, busy }: Props) {
+export function DeleteProjectDialog({
+  project,
+  level = "project",
+  error,
+  onClose,
+  onConfirm,
+  busy,
+}: Props) {
   const [typed, setTyped] = useState("");
   const [summary, setSummary] = useState<NodeSummary | null>(null);
   const [failed, setFailed] = useState(false);
@@ -82,12 +108,13 @@ export function DeleteProjectDialog({ project, onClose, onConfirm, busy }: Props
   const counted = joinClauses(clauses);
   const ready = summary !== null;
   const confirmed = confirmsDeletion(typed, project.name);
+  const noun = LEVEL_NOUN[level];
 
   return (
     <Modal
       open
       onClose={onClose}
-      title="Delete project"
+      title={`Delete ${noun}`}
       icon="Trash2"
       size="sm"
       description={`This cannot be undone. ${project.name} and everything under it is removed for everybody in the organisation.`}
@@ -99,7 +126,7 @@ export function DeleteProjectDialog({ project, onClose, onConfirm, busy }: Props
       <div className="space-y-3 p-3 text-xs">
         {failed ? (
           <p className="rounded border border-destructive/40 bg-destructive/10 p-2 text-destructive">
-            Couldn&rsquo;t read what is inside this project, so there is no safe
+            Couldn&rsquo;t read what is inside this {noun}, so there is no safe
             way to confirm the delete. Close this and try again.
           </p>
         ) : !ready ? (
@@ -107,16 +134,38 @@ export function DeleteProjectDialog({ project, onClose, onConfirm, busy }: Props
             Counting what is inside {project.name}…
           </p>
         ) : (
-          <p className="text-foreground">
-            {counted
-              ? /* "and everything under it" is not padding. The counts exclude
-                   folders and grants, which the cascade still takes, and a
-                   sentence that stopped at the numbers would read as the
-                   complete inventory. */
-                `Deleting ${project.name} also deletes ${counted}, and everything else under it.`
-              : `${project.name} holds no subprojects and no tasks.`}
-          </p>
+          <>
+            {/* ⚠️ UNCONDITIONAL, and it never mentions a count. The removal is
+                the fact; the numbers are a lower bound on it. An earlier
+                version printed "holds no subprojects and no tasks" whenever
+                the summary counted zero — a positive claim of emptiness that
+                the server contradicts for any project whose tasks have been
+                archived by a lifecycle sweep. */}
+            <p className="text-foreground">
+              Deleting {project.name} removes it, everything under it, and who
+              can see it.
+            </p>
+            {counted ? (
+              <p className="text-foreground">
+                At least {counted} go with it.
+              </p>
+            ) : null}
+            <p className="text-muted-foreground">{COUNT_CAVEAT}</p>
+          </>
         )}
+
+        {/* The server's refusal, IN the dialog. The page's own error strip
+            renders inside the work area, which sits UNDER this modal's
+            backdrop — so a 403 used to re-arm the button and say nothing, and
+            the member clicked again. */}
+        {error ? (
+          <p
+            role="alert"
+            className="rounded border border-destructive/40 bg-destructive/10 p-2 text-destructive"
+          >
+            {error}
+          </p>
+        ) : null}
 
         <label className="block space-y-1">
           <span className="text-muted-foreground">
@@ -149,7 +198,7 @@ export function DeleteProjectDialog({ project, onClose, onConfirm, busy }: Props
           disabled={!ready || !confirmed}
           onClick={() => onConfirm(project)}
         >
-          Delete project
+          Delete {noun}
         </Button>
       </div>
     </Modal>

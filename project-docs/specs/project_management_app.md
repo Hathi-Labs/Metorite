@@ -7228,6 +7228,19 @@ Frontend only — **no migration, no API change**; slice 1's endpoints are the o
   control in the UI** — so that criterion is satisfied most strongly by adding the reversible
   action and leaving the irreversible one exactly as unreachable as it was. Putting both into a
   menu people are still learning is how somebody loses a department.
+  > 🟢 **SUPERSEDED 2026-09-19 (H-8). Delete IS on the menu now.** The narrowing above
+  > held for one slice and then became the defect. A member who made a project by mistake
+  > could not remove it, and no other surface could either. The ranking is kept, and the
+  > DISTANCE now carries it: archive is one click, and delete is a menu entry that is last
+  > and alone, then a dialog, then a count, then the project name typed back.
+  > ⚠️ **The dialog may never say a node is empty.** `node_counts_sql` filters
+  > `archived_at IS NULL` and `delete_node` does not, so a project under a lifecycle policy
+  > summarises as 0 tasks and deletes hundreds. The counts are a floor, and the copy says so.
+  > `projectDelete.test.ts` holds the fence.
+  > 🔴 **One thing is NOT closed: the cascade is authorised by READ visibility alone.**
+  > `delete_node` calls `load_visible_project` and nothing else. So a `group:<slug>` read grant
+  > now reaches a destructive act. `archive_node` uses the same guard, and this slice widened
+  > no server rule — it made the gap live. See **H-121**.
 * **The bulk close on Stop is deferred.** D-PM-26 says stopping should *offer* to close open
   tasks. That is a modal, a bulk call and a count shown before agreement — a slice, not a menu
   item, and smuggling it in as a side effect of a state change is the exact shape D-PM-26
