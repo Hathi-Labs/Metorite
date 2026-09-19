@@ -39,6 +39,8 @@ import {
   formatVendorPrice,
   kindFacets,
   providerFacets,
+  headProviderFacets,
+  pageOf,
   resultLine,
   sortModels,
   statusOf,
@@ -152,6 +154,11 @@ export default function ModelBrowser({
 }) {
   const [f, setF] = useState<Filters>(NO_FILTERS);
   const [sort, setSort] = useState<SortKey>("name");
+  // ⚠️ **Keyed on the FILTERS, not a bare boolean.** An operator who narrows
+  // the list is asking a new question, and carrying "show everything" into it
+  // re-renders the wall they just escaped. Holding the key the expansion was
+  // granted for collapses it on any filter change, with no effect to forget.
+  const [expandedFor, setExpandedFor] = useState<string | null>(null);
 
   const shown = useMemo(
     () => sortModels(filterModels(models, f, armed), sort),
@@ -162,6 +169,15 @@ export default function ModelBrowser({
   const providers = useMemo(
     () => providerFacets(models, f, armed), [models, f, armed]);
   const byId = useMemo(() => feedById(feed), [feed]);
+  const headProviders = useMemo(
+    () => headProviderFacets(providers, f.providers),
+    [providers, f.providers],
+  );
+  const filterKey = JSON.stringify(f);
+  const page = useMemo(
+    () => pageOf(shown, expandedFor === filterKey),
+    [shown, expandedFor, filterKey],
+  );
   const dirty =
     f.query.trim() !== "" || f.kinds.length + f.providers.length + f.statuses.length > 0;
 
@@ -250,7 +266,7 @@ export default function ModelBrowser({
 
         <div className="facetrow">
           <span className="facetlabel">From</span>
-          {providers.map((p) => (
+          {headProviders.shown.map((p) => (
             <button
               key={p.value}
               type="button"
@@ -264,6 +280,13 @@ export default function ModelBrowser({
               <span className="count">{p.count}</span>
             </button>
           ))}
+          {/* ⚠️ Says what is hidden AND how to reach it. "and 18 more" with no
+              route to them reads as a broken row. */}
+          {headProviders.hidden > 0 && (
+            <span className="muted small">
+              and {headProviders.hidden} more — type a vendor name to filter
+            </span>
+          )}
         </div>
 
         <div className="facetrow">
@@ -293,10 +316,24 @@ export default function ModelBrowser({
       <p className="resultline">{resultLine(shown.length, models.length, f)}</p>
 
       <div className="modelgrid">
-        {shown.map((m) => (
+        {page.shown.map((m) => (
           <Card key={m.id} m={m} f={byId.get(m.id)} armed={armed} />
         ))}
       </div>
+
+      {/* 🔴 Every card builds a feed lookup and a drift comparison. Rendering
+          two hundred of them before anybody sees the first is why this page
+          measured 13483px on a catalog of forty-three. */}
+      {page.hidden > 0 && (
+        <p className="resultline">
+          <button type="button" className="linklike" onClick={() => setExpandedFor(filterKey)}>
+            Show {page.hidden} more
+          </button>{" "}
+          <span className="muted small">
+            — or narrow the list with the search box and the filters above.
+          </span>
+        </p>
+      )}
 
       {/* ⚠️ Rendered here ONLY when it was not drawn above. Two copies would
           be two sets of "Add" buttons for the same rows. */}

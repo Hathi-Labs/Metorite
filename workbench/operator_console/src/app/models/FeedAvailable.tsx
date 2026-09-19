@@ -20,7 +20,15 @@ import { KIND_LABEL, type FeedModel, type VendorFeed } from "@/lib/contract";
 import { availableByVendor, declareBodies } from "@/lib/feed";
 import { formatVendorPrice } from "@/lib/modelSearch";
 
-const PER_VENDOR_CAP = 40;
+/** How many rows to draw per vendor before pointing at the search box.
+ *
+ * ⚠️ **Was 40, lowered 2026-09-19.** Forty reads fine with one vendor and
+ * badly with three: 517 models across three keys drew 120 rows and made this
+ * panel the largest thing on a page that already measured 13483px. The search
+ * box above narrows within a vendor, and the note under each table says what
+ * is held back — so a lower cap costs reach nothing and buys the whole panel
+ * back onto a screen. */
+const PER_VENDOR_CAP = 12;
 
 /** The task in operator words; litellm's word when we cannot serve it. */
 function jobWord(f: FeedModel): string {

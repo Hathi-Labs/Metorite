@@ -156,6 +156,63 @@ export function providerFacets(
   }));
 }
 
+/** How many vendor chips to draw before the row is worse than no row.
+ *
+ * ⚠️ *Agent default.* Twelve fills roughly two lines at 1440px, which is where
+ * a filter row still reads as a row rather than as a wall. Measured
+ * 2026-09-19: thirty vendors drew five lines and pushed the catalog below the
+ * fold on a page whose whole job is the catalog. */
+export const PROVIDER_FACET_HEAD = 12;
+
+/** The vendor chips worth drawing, and how many were held back.
+ *
+ * 🔴 **Busiest FIRST, and a SELECTED vendor always survives.** Cutting an
+ * alphabetical list at twelve would hide the vendor somebody is filtering by,
+ * and the row would then contradict the results underneath it.
+ *
+ * ⚠️ **A hidden chip is not a lost filter** — the search box matches a
+ * provider name, so every vendor stays reachable. This trims the row.
+ */
+export function headProviderFacets(
+  facets: Facet<string>[],
+  selected: string[],
+  head: number = PROVIDER_FACET_HEAD,
+): { shown: Facet<string>[]; hidden: number } {
+  if (facets.length <= head) return { shown: facets, hidden: 0 };
+  const picked = [...facets]
+    .sort(
+      (a, b) =>
+        Number(selected.includes(b.value)) - Number(selected.includes(a.value)) ||
+        b.count - a.count ||
+        a.value.localeCompare(b.value),
+    )
+    .slice(0, Math.max(head, selected.length));
+  return { shown: picked, hidden: facets.length - picked.length };
+}
+
+/** How many model cards to draw before asking. */
+export const MODEL_PAGE = 24;
+
+/** The page of cards to draw, and how many sit behind it.
+ *
+ * 🔴 **A catalog is unbounded and this page was not.** Forty-three declared
+ * models drew a 13483px page on 2026-09-19. One OpenRouter key declares two
+ * hundred, which is five times that — and the browser builds every card, every
+ * feed lookup and every drift comparison before anybody sees the first one.
+ *
+ * ⚠️ **`expanded` shows everything, and it is the operator's choice.** A hard
+ * cap with no way past it makes a model invisible, and "search for it" is no
+ * answer when you do not know its name.
+ */
+export function pageOf<T>(
+  rows: T[],
+  expanded: boolean,
+  size: number = MODEL_PAGE,
+): { shown: T[]; hidden: number } {
+  if (expanded || rows.length <= size) return { shown: rows, hidden: 0 };
+  return { shown: rows.slice(0, size), hidden: rows.length - size };
+}
+
 /** The line above the list. Says what is shown and, when nothing is, why. */
 export function resultLine(shown: number, total: number, f: Filters): string {
   if (total === 0) return "No models in the catalog yet.";

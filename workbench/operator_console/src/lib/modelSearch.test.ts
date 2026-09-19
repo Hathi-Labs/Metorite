@@ -8,13 +8,17 @@ import { describe, expect, it } from "vitest";
 
 import { MODEL_KINDS, type CatalogModel } from "./contract";
 import {
+  MODEL_PAGE,
   NO_FILTERS,
+  PROVIDER_FACET_HEAD,
   filterModels,
+  headProviderFacets,
   formatTokens,
   formatVendorPrice,
   kindFacets,
   matchesKinds,
   matchesQuery,
+  pageOf,
   providerFacets,
   resultLine,
   sortModels,
@@ -251,5 +255,82 @@ describe("display", () => {
     expect(formatVendorPrice(3, 15)).toBe("$3 in / $15 out");
     expect(formatVendorPrice(0.13, null)).toBe("$0.13 in / ? out");
     expect(formatVendorPrice(null, null)).toBe("—");
+  });
+});
+
+// ── Keeping the page a page ────────────────────────────────────────────────
+//
+// 🔴 Measured 2026-09-19: forty-three declared models drew a 13483px page,
+// with a thirty-chip vendor row above it. One OpenRouter key declares two
+// hundred models. Both of these trim what is DRAWN and neither removes a way
+// to reach anything.
+
+describe("headProviderFacets", () => {
+  const F = (value: string, count: number) => ({ value, count });
+
+  it("draws every chip when the row is already short", () => {
+    const all = [F("a", 3), F("b", 2)];
+    expect(headProviderFacets(all, [], 12)).toEqual({ shown: all, hidden: 0 });
+  });
+
+  it("keeps the BUSIEST vendors and reports the rest", () => {
+    const all = [F("quiet", 1), F("busy", 90), F("mid", 10)];
+    const got = headProviderFacets(all, [], 2);
+    expect(got.shown.map((s) => s.value)).toEqual(["busy", "mid"]);
+    expect(got.hidden).toBe(1);
+  });
+
+  it("🔴 a SELECTED vendor always survives the cut", () => {
+    // Otherwise the row hides the vendor the results are filtered by, and it
+    // contradicts the list underneath it.
+    const all = [F("busy", 90), F("mid", 10), F("quiet", 1)];
+    const got = headProviderFacets(all, ["quiet"], 2);
+    expect(got.shown.map((s) => s.value)).toContain("quiet");
+  });
+
+  it("never cuts below the number of selected vendors", () => {
+    const all = [F("a", 9), F("b", 8), F("c", 7), F("d", 6)];
+    const got = headProviderFacets(all, ["c", "d"], 1);
+    expect(got.shown.map((s) => s.value).sort()).toEqual(["c", "d"]);
+    expect(got.hidden).toBe(2);
+  });
+
+  it("breaks a count tie by name, so the row does not reshuffle", () => {
+    const all = [F("b", 5), F("a", 5), F("c", 1)];
+    expect(headProviderFacets(all, [], 2).shown.map((s) => s.value)).toEqual([
+      "a",
+      "b",
+    ]);
+  });
+});
+
+describe("pageOf", () => {
+  const rows = Array.from({ length: 30 }, (_, i) => i);
+
+  it("draws a short list whole", () => {
+    expect(pageOf([1, 2, 3], false, 24)).toEqual({ shown: [1, 2, 3], hidden: 0 });
+  });
+
+  it("caps a long list and reports what is behind it", () => {
+    const got = pageOf(rows, false, 24);
+    expect(got.shown).toHaveLength(24);
+    expect(got.hidden).toBe(6);
+    // The FIRST rows, in order — the sort above already decided which matter.
+    expect(got.shown[0]).toBe(0);
+  });
+
+  it("🔴 expanded draws everything, because a hard cap hides a model", () => {
+    // "Search for it" is no answer when you do not know the model's name.
+    expect(pageOf(rows, true, 24)).toEqual({ shown: rows, hidden: 0 });
+  });
+
+  it("hides nothing at exactly the page size", () => {
+    expect(pageOf(rows.slice(0, 24), false, 24).hidden).toBe(0);
+  });
+
+  it("carries sane defaults", () => {
+    expect(MODEL_PAGE).toBeGreaterThan(0);
+    expect(PROVIDER_FACET_HEAD).toBeGreaterThan(0);
+    expect(pageOf(rows, false).shown).toHaveLength(MODEL_PAGE);
   });
 });
