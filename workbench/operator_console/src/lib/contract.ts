@@ -231,9 +231,17 @@ export type TierRate = {
 export type TierMargin = {
   tier: string;
   calls: number;
-  /** How many of those calls carry a MEASURED cost. The context that stops
+  /** How many of those calls carry a cost at all. The context that stops
    *  `realisedMargin` reading as authority it does not have. */
   costedCalls: number;
+  /** How many of the COSTED calls carry a cost the VENDOR stated, rather than
+   *  one we derived from `model_profile` (migration 031).
+   *
+   * 🔴 **A subset of `costedCalls`, and the difference is trust.** A derived
+   *  cost is only as fresh as the last edit to our own price table, so a
+   *  margin resting on it can be wrong in a direction nobody can see. A stated
+   *  cost cannot. Equal to `costedCalls` means the figure is fully measured. */
+  measuredCalls: number;
   credits: string;
   costUsd: string;
   /** What we multiply cost by to SUGGEST a price. NULL means the owner has
@@ -394,4 +402,25 @@ export const EMPTY_CATALOG: AiCatalog = {
   accountsKnown: true, failovers: [], feed: EMPTY_FEED, tierRates: [],
   tierMargins: [],
   creditPrice: null,
+};
+
+/** What ONE vendor cost us over the window — migration 031, the operator side
+ *  of the money.
+ *
+ * 🔴 **Not a customer figure.** Every other spend type here answers what a
+ *  customer USED. This answers what we OWE, which is the number a margin is
+ *  only meaningful against.
+ *
+ * ⚠️ **Two totals, and they are different facts.** `costUsd` is every costed
+ *  call, including the ones we costed ourselves from `model_profile` — an
+ *  estimate that can be stale. `measuredUsd` is only the calls where the
+ *  vendor STATED the charge, so it is the figure to hold an invoice against.
+ *  Equal totals mean the whole bill is reconcilable. */
+export type ProviderSpend = {
+  provider: string;
+  calls: number;
+  measuredCalls: number;
+  /** USD, as a string — money never round-trips through a float. */
+  costUsd: string;
+  measuredUsd: string;
 };

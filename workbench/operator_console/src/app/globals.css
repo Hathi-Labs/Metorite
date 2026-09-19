@@ -1610,15 +1610,106 @@ pre.token {
   width: 100%;
   margin: 0;
 }
+/* The card's badge column: retirement beside supply status.
+   ⚠ A column, not a row — two chips side by side push the
+   model name into a wrap at card width. */
+/* A tier section's own header, now that it opens and closes.
+   ⚠ The summary carries the h2, so the heading stays a heading and
+   the marker is ours (list-style:none removes the native one). */
+.tiersection-fold > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+.tiersection-fold > summary h2 {
+  display: inline;
+  margin: 0;
+}
+.tiersection-fold > summary::-webkit-details-marker { display: none; }
+.tiersection-fold > summary::before {
+  content: "▸";
+  color: var(--muted);
+  font-size: 11px;
+}
+.tiersection-fold[open] > summary::before { content: "▾"; }
+/* The lede sits under the summary, not inside it: a two-line paragraph in
+   a flex summary pushes the count off the baseline. */
+.tiersection-fold > .sectionlede {
+  margin: 6px 0 12px;
+  color: var(--muted);
+  max-width: 70ch;
+}
+
+.modelcard .cardbadges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+/* Which tiers serve from this model. Sits above the details button so it
+   reads as a property of the model, not an action on it. */
+.modelcard .modeluse {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
 .feedvendor {
   margin-top: 16px;
 }
-.feedvendor h3 {
+/* ⚠️ The vendor heading became a <summary> (accordion, 2026-09-19). The rule
+   below keeps the SAME look and adds only what a summary needs: a pointer,
+   and no default triangle-plus-inline-box layout fighting the flex row. */
+.feedvendor > summary,
+.provider-more > summary {
   display: flex;
   align-items: center;
   gap: 8px;
   margin: 0 0 6px;
   font-size: 13.5px;
+  cursor: pointer;
+  list-style: none;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2, var(--panel));
+}
+.feedvendor > summary:hover,
+.provider-more > summary:hover {
+  border-color: var(--border-strong);
+}
+/* Our own marker, because `list-style: none` removes the native one and a
+   row that opens with no affordance reads as a dead heading. */
+.feedvendor > summary::before,
+.provider-more > summary::before {
+  /* ⚠ The LITERAL character, never a CSS escape. Written through a
+     shell heredoc the backslash was eaten and this rule shipped a control
+     character plus the letters B8, which is what every vendor row drew. */
+  content: "▸";
+  color: var(--muted);
+  font-size: 11px;
+  transition: none;
+}
+.feedvendor[open] > summary::before,
+.provider-more[open] > summary::before {
+  content: "▾";
+}
+.feedvendor > summary::-webkit-details-marker,
+.provider-more > summary::-webkit-details-marker {
+  display: none;
+}
+.provider-more {
+  margin-top: 12px;
+}
+.provider-more > summary {
+  color: var(--muted);
 }
 .feedvendor td .chip {
   margin-left: 8px;

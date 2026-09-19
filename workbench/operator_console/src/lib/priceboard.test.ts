@@ -23,6 +23,8 @@ import {
   marginPct,
   monitorRows,
   defaultMarginPct,
+  costBasis,
+  costBasisLabel,
 } from "./priceboard";
 import { SAMPLE_CATALOG } from "./sample";
 
@@ -352,5 +354,51 @@ describe("the margin box's starting value", () => {
     expect(
       defaultMarginPct({ tierMargins: [{ marginMultiplier: "0.5" }] }),
     ).toBe("");
+  });
+});
+
+// ── Cost basis: is this margin a measurement, or our own arithmetic? ────────
+//
+// 🔴 Migration 031. A derived cost is only as fresh as the last edit to
+// `model_profile`, so a margin resting on one can be wrong in a direction
+// nobody can see. A vendor-stated cost cannot. The monitor must say which.
+
+describe("costBasis", () => {
+  it("is MEASURED when every costed call carries a vendor-stated cost", () => {
+    expect(costBasis({ costedCalls: 10, measuredCalls: 10 })).toBe("measured");
+  });
+
+  it("is ESTIMATED when none of them do", () => {
+    expect(costBasis({ costedCalls: 10, measuredCalls: 0 })).toBe("estimated");
+  });
+
+  it("is MIXED when only some do", () => {
+    expect(costBasis({ costedCalls: 10, measuredCalls: 4 })).toBe("mixed");
+  });
+
+  it("is NONE when nothing was costed, which is not a failure", () => {
+    // A tier with no traffic has nothing to qualify, and a warning there
+    // would teach an operator to ignore the column.
+    expect(costBasis({ costedCalls: 0, measuredCalls: 0 })).toBe("none");
+  });
+
+  it("clamps a measured count that exceeds the costed count", () => {
+    // A Console mid-deploy could report either field first. Rendering
+    // "measured" off a nonsense pair would be certainty we never had.
+    expect(costBasis({ costedCalls: 5, measuredCalls: 99 })).toBe("measured");
+    expect(costBasis({ costedCalls: 0, measuredCalls: 99 })).toBe("none");
+  });
+
+  it("treats a negative count as zero rather than trusting it", () => {
+    expect(costBasis({ costedCalls: 10, measuredCalls: -3 })).toBe("estimated");
+  });
+
+  it("gives every basis but NONE a sentence, and NONE none", () => {
+    // The label is a tooltip. An empty one on a drawn chip would be a chip
+    // that explains nothing.
+    expect(costBasisLabel("measured")).not.toBe("");
+    expect(costBasisLabel("mixed")).not.toBe("");
+    expect(costBasisLabel("estimated")).not.toBe("");
+    expect(costBasisLabel("none")).toBe("");
   });
 });

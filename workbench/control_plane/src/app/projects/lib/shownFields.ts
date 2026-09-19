@@ -21,6 +21,8 @@
 
 export const FIELD_KEYS = [
   "status",
+  "type",
+  "source",
   "assignees",
   "start_date",
   "due_at",
@@ -37,6 +39,8 @@ export type FieldKey = (typeof FIELD_KEYS)[number];
 
 export const FIELD_LABELS: Record<FieldKey, string> = {
   status: "Status",
+  type: "Type",
+  source: "Source",
   assignees: "Assignees",
   start_date: "Start",
   due_at: "Due",
@@ -65,6 +69,22 @@ export const CUSTOM_FIELD_PREFIX = "custom.";
 /** The set a view with no stored `shown_fields` means. */
 export const DEFAULT_SHOWN: readonly string[] = [
   "status",
+  // ⚠️ **`type` and `source` are deliberately NOT here**, and an earlier
+  // version of this slice put `type` in on the argument that §9.9.2 asks for
+  // "an Epic distinguishable from a Task at a glance". That argument was
+  // hollow: **nothing in the product writes `pm_tasks.type_id`.** The API
+  // accepts it and the admin routes manage the registry, but no drawer, form
+  // or cell sets one, and `board.ts`'s column-drop arm is unreachable because
+  // `grouping.ts` offers no `type` axis. So there are no Epics to
+  // distinguish.
+  //
+  // One vocabulary gates the chip and the TABLE COLUMN together, so "chip on
+  // by default" forced "column on by default" — a Type column reading "—" on
+  // every row, and a default CSV with an empty column in it. That is the
+  // "column of nothing" this slice set out to prevent.
+  //
+  // The chips stay built and cost nothing; they light up the day a type
+  // picker ships. A member who wants either column ticks it in Fields.
   "assignees",
   "due_at",
   "importance",

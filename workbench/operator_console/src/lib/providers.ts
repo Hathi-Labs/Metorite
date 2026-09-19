@@ -75,7 +75,20 @@ export function coverageLine(creds: ProviderAccount[]): string {
       "Install one below."
     );
   }
-  return `Platform account armed for: ${armed.join(", ")}.`;
+  // 🔴 **A COUNT, not the whole list.** This named every armed vendor inline
+  // and drew a five-line paragraph of slugs above the page — measured
+  // 2026-09-19 — which is the same information every card below already
+  // carries, in a form nobody can scan. The names go up to four, because
+  // "armed for anthropic, deepseek" is a fact somebody reads; thirty names is
+  // a wall that hides the one sentence that matters underneath it.
+  const HEAD = 4;
+  if (armed.length <= HEAD) {
+    return `Platform account armed for: ${armed.join(", ")}.`;
+  }
+  return (
+    `Platform account armed for ${armed.length} vendors, including ` +
+    `${armed.slice(0, HEAD).join(", ")}. Every card below says which.`
+  );
 }
 
 /** Would installing this provider REPLACE a live credential?
@@ -171,6 +184,33 @@ export function groupByProvider(
   );
 }
 
+// ── Vendors that tell us what a call cost ───────────────────────────────────
+
+/** Vendors that report the ACTUAL cost of a call, inside their response.
+ *
+ * 🔴 **Why this changes what the console asks of an operator.** For every
+ * other vendor we cost a call by multiplying our own recorded `model_profile`
+ * prices by tokens we counted, so a model with no recorded price cannot be
+ * costed and its margin reads unknown. A reporting vendor removes that chore:
+ * it states the charge, the Router records it as `cost_source='vendor'`
+ * (migration 031), and nobody keeps a price fresh.
+ *
+ * ⚠️ **ONE list, and it is a UI judgement only.** The Router never consults
+ * it — it records whatever cost arrived, from any vendor. This exists so the
+ * console stops NAGGING for prices a reporting vendor makes unnecessary. A
+ * second copy of this set anywhere would be a second thing to update.
+ *
+ * ⚠️ **Membership is not a promise about any one call.** A reporting vendor
+ * can still answer without a cost, and that call falls back to the computed
+ * path exactly as before. So this SOFTENS a warning. It never hides a fact.
+ */
+const COST_REPORTING = new Set(["openrouter"]);
+
+/** Does this vendor tell us what a call cost? */
+export function reportsCost(provider: string): boolean {
+  return COST_REPORTING.has(provider.trim().toLowerCase());
+}
+
 /** Where one vendor stands, in one word. The filter chips count these.
  *
  * ⚠️ **`untouched` and `dropped` are different facts and must not merge.**
@@ -178,6 +218,21 @@ export function groupByProvider(
  * a decision somebody took, and drawing it as "not set up" invites the next
  * operator to quietly undo it. */
 export type GroupStatus = "connected" | "byok-only" | "dropped" | "untouched";
+
+/** Has anybody actually set this vendor up?
+ *
+ * 🔴 **One rule, two readers.** `ProviderAdmin` judged this inline for its
+ * filter chips, and the card sections needed the same judgement to separate
+ * what is configured from what is not. A second copy is how the chip count and
+ * the section split start disagreeing.
+ *
+ * ⚠️ **`dropped` is NOT set up.** A vendor whose only key was revoked cannot
+ * serve a call, which is the question this answers. The card still says
+ * "dropped" rather than "not set up", because WHY it is unusable is a
+ * different fact and the two must not merge. */
+export function isConfigured(s: GroupStatus): boolean {
+  return s === "connected" || s === "byok-only";
+}
 
 export function groupStatus(g: ProviderGroup): GroupStatus {
   if (g.platform) return "connected";

@@ -29,6 +29,7 @@ import {
   type TaskRow,
   type FieldRow,
   type TagRow,
+  type TaskTypeRow,
   type NodeSummary,
   type StuckReport,
   type LoadReport,
@@ -678,6 +679,9 @@ function ProjectsWorkspace() {
   // held here for the same reason: the filter bar, the panel's picker and the
   // manager all read it, and three fetches of one list would disagree.
   const [tags, setTags] = useState<TagRow[]>([]);
+  //: WS-27bh — the selected root's EFFECTIVE task types, so a card can draw
+  //: what a task IS rather than the uuid it carries.
+  const [taskTypes, setTaskTypes] = useState<TaskTypeRow[]>([]);
   const [managingTags, setManagingTags] = useState<ProjectRow | null>(null);
 
   // The status editor (owner directive 2026-09-03). `statuses` above is already
@@ -1562,6 +1566,7 @@ function ProjectsWorkspace() {
     if (!selected) {
       setFields([]);
       setTags([]);
+      setTaskTypes([]);
       return;
     }
     let live = true;
@@ -1582,6 +1587,16 @@ function ProjectsWorkspace() {
       })
       .catch(() => {
         if (live) setTags([]);
+      });
+    // WS-27bh. Same rule as the two above: a board that draws no type chip
+    // beats a board that refuses to load because the registry did not arrive.
+    projectsApi
+      .types(selected.id)
+      .then((res) => {
+        if (live) setTaskTypes(res.rows);
+      })
+      .catch(() => {
+        if (live) setTaskTypes([]);
       });
     return () => {
       live = false;
@@ -2888,6 +2903,7 @@ function ProjectsWorkspace() {
               today={dayKey(new Date())}
               shownFields={shownFields}
               tags={tags}
+              taskTypes={taskTypes}
               zoom={zoom}
               window={timeWindow}
               // S5 — the same grouping the board and list read. `groups` is
@@ -2921,6 +2937,7 @@ function ProjectsWorkspace() {
               projectId={selected.id}
               shownFields={shownFields}
               tags={tags}
+              taskTypes={taskTypes}
               onCreated={() => void loadMonth()}
               onSelect={(task) => void openWithStatuses(task)}
               onMove={(task, patch) => void moveTask(task, patch)}
@@ -2935,6 +2952,7 @@ function ProjectsWorkspace() {
               groupBy={groupBy}
               statuses={statuses}
               fields={fields}
+              taskTypes={taskTypes}
               shownFields={shownFields}
               sort={tableSort}
               onSort={setTableSort}
@@ -2966,6 +2984,7 @@ function ProjectsWorkspace() {
               }
               statuses={statuses}
               tags={tags}
+              taskTypes={taskTypes}
               projectName={projectName}
               projectId={selected.id}
               shownFields={shownFields}
@@ -2988,6 +3007,7 @@ function ProjectsWorkspace() {
               onClearFilters={() => changeFilters(EMPTY_FILTERS)}
               statuses={statuses}
               tags={tags}
+              taskTypes={taskTypes}
               projectId={selected.id}
               shownFields={shownFields}
               onCreated={() => void loadProject(selected)}

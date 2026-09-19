@@ -34,10 +34,11 @@ import { AvatarStack, TaskMeta } from "@/components/TaskMeta";
 import { useMemo, useState } from "react";
 
 import { accentForGroup, accentForStatus } from "../lib/accent";
-import type { StatusRow, TagRow, TaskRow } from "../lib/api";
+import type { StatusRow, TagRow,
+  TaskTypeRow, TaskRow } from "../lib/api";
 import { projectsApi } from "../lib/api";
 import { sortForView } from "../lib/board";
-import { tagColours, taskDeepLink, taskRef, visibleChips } from "../lib/card";
+import { tagColours, taskDeepLink, taskRef, typeFacts, visibleChips } from "../lib/card";
 import { clampCursor, stepCursor } from "../lib/cursor";
 import { emptyStateCopy } from "../lib/emptyState";
 import {
@@ -69,6 +70,8 @@ interface Props {
   statuses: StatusRow[];
   /** S6 — the project's tag registry, for the colour of a tag chip alone. */
   tags?: readonly TagRow[];
+  /** WS-27bh — the root's task types, so a card can name what it IS. */
+  taskTypes?: readonly TaskTypeRow[];
   /** WS-27y — where a quick-added task is created (the selected node). */
   projectId: string;
   /** WS-27x — the view's shown fields; chips a hidden field earned are not drawn. */
@@ -91,6 +94,7 @@ export function TaskList({
   onClearFilters,
   statuses,
   tags,
+  taskTypes,
   projectId,
   shownFields,
   onCreated,
@@ -119,6 +123,7 @@ export function TaskList({
   const total = groups.reduce((sum, group) => sum + group.tasks.length, 0);
   // Once per registry, not once per row.
   const tagHues = useMemo(() => tagColours(tags ?? []), [tags]);
+  const typeHues = useMemo(() => typeFacts(taskTypes ?? []), [taskTypes]);
 
   // The cursor's world: rendered order, each id once (a two-owner task is
   // drawn in two sections but is one row to the keyboard, as to WS-27n).
@@ -391,7 +396,7 @@ export function TaskList({
                   ) : null}
                   <td className="px-3 py-2 text-muted-foreground">
                     <TaskMeta
-                      chips={visibleChips(task, shownFields, undefined, tagHues)}
+                      chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)}
                     />
                   </td>
                 </tr>

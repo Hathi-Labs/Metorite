@@ -54,7 +54,16 @@ export default async function ModelsPage() {
           price on the tier, and the owner's IA pass gave money its own
           page. This page is the SUPPLY side: what exists, what it can do,
           what WE pay. */}
-      <ModelBrowser models={catalog.data.models} feed={catalog.data.feed} armed={armed} />
+      {/* ⚠️ `tiers` is passed for READING only — this page binds nothing. A
+          card uses it to say whether any tier serves from that model, which is
+          the difference between a load-bearing model and an idle one. The
+          binding itself still lives at /tiers. */}
+      <ModelBrowser
+        models={catalog.data.models}
+        feed={catalog.data.feed}
+        armed={armed}
+        tiers={catalog.data.tiers}
+      />
       <DeclareModel
         tasks={catalog.data.tasks}
         accounts={catalog.data.accounts}

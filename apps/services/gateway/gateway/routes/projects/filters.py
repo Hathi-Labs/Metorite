@@ -353,7 +353,11 @@ GROUP_BY: tuple[str, ...] = (
 #: table's columns and the chip gate read; this tuple is the server's copy so
 #: a stored view cannot accumulate junk keys.
 SHOWN_FIELDS: tuple[str, ...] = (
-    "status", "assignees", "start_date", "due_at", "importance",
+    # ⚠️ `type` added with WS-27bh, in the SAME change as the client's
+    # `FIELD_KEYS`. `shownFields.ts` warns why: a key added on one side only
+    # is "a preference the server silently strips on the next save" — the
+    # member ticks Type, it draws, and their next saved view drops it.
+    "status", "type", "source", "assignees", "start_date", "due_at", "importance",
     "subtasks", "blocked", "tags", "attachments", "estimate", "created_at",
 )
 

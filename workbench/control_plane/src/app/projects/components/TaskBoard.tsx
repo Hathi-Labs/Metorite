@@ -43,7 +43,8 @@ import { dropIndexFor, gapKey } from "@/lib/boardDrop";
 import { Fragment, useMemo, useState } from "react";
 
 import { accentForGroup, accentForStatus } from "../lib/accent";
-import type { StatusRow, TagRow, TaskRow } from "../lib/api";
+import type { StatusRow, TagRow,
+  TaskTypeRow, TaskRow } from "../lib/api";
 import { projectsApi } from "../lib/api";
 import {
   buildCellDropPatch,
@@ -52,7 +53,7 @@ import {
   planDrop,
   sortForView,
 } from "../lib/board";
-import { tagColours, taskDeepLink, taskRef, visibleChips } from "../lib/card";
+import { tagColours, taskDeepLink, taskRef, typeFacts, visibleChips } from "../lib/card";
 import { clampCursor, stepCursor } from "../lib/cursor";
 import { emptyStateCopy } from "../lib/emptyState";
 import {
@@ -104,6 +105,8 @@ interface Props {
    * rather than the wrong colour.
    */
   tags?: readonly TagRow[];
+  /** WS-27bh — the root's task types, so a card can name what it IS. */
+  taskTypes?: readonly TaskTypeRow[];
   projectName?: (id: string) => string;
   /** Where a quick-added task is created (the selected node). */
   projectId: string;
@@ -135,6 +138,7 @@ export function TaskBoard({
   onShowEmptyLanes,
   statuses,
   tags,
+  taskTypes,
   projectName,
   projectId,
   shownFields,
@@ -177,6 +181,7 @@ export function TaskBoard({
 
   // Once per registry, not once per card: a board draws hundreds of rows.
   const tagHues = useMemo(() => tagColours(tags ?? []), [tags]);
+  const typeHues = useMemo(() => typeFacts(taskTypes ?? []), [taskTypes]);
 
   /**
    * WS-27ad — the column's colour.
@@ -544,7 +549,7 @@ export function TaskBoard({
             already carried and the card threw away: the priority the view's
             `shown_fields` has always asked for, and the tags by NAME in the
             colour their registry gives them, instead of a bare count. */}
-        <TaskMeta chips={visibleChips(task, shownFields, undefined, tagHues)} />
+        <TaskMeta chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)} />
         <span className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
           <span>{taskRef(task)}</span>
           <AvatarStack people={task.assignees} label={personLabel} />

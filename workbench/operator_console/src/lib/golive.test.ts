@@ -98,6 +98,55 @@ describe("step 2 — models", () => {
     expect(step(CAT({ models: [MODEL({ declared: false })] }), "models").state)
       .toBe("todo");
   });
+
+  // ── Migration 031: a vendor that reports its own cost ─────────────────────
+  //
+  // 🔴 The rail used to demand a recorded price for EVERY model, because
+  // nothing else could cost a call. OpenRouter states what it charged, so
+  // asking an operator to type that price is asking for work that changes
+  // nothing — and a rail that assigns pointless work stops being read.
+
+  it("is DONE for an unpriced model when the vendor reports its own cost", () => {
+    const s = step(
+      CAT({ models: [MODEL({ provider: "openrouter", inputPer1M: null })] }),
+      "models",
+    );
+    expect(s.state).toBe("done");
+    expect(s.detail).toContain("no price from you");
+  });
+
+  it("still demands a price from a vendor that reports nothing", () => {
+    const s = step(
+      CAT({ models: [MODEL({ provider: "deepseek", inputPer1M: null })] }),
+      "models",
+    );
+    expect(s.state).toBe("partial");
+  });
+
+  it("a MIXED slate is judged by the models that actually need a price", () => {
+    const s = step(
+      CAT({
+        models: [
+          MODEL({ id: "openrouter/a", provider: "openrouter", inputPer1M: null }),
+          MODEL({ id: "deepseek/b", provider: "deepseek", inputPer1M: null }),
+        ],
+      }),
+      "models",
+    );
+    expect(s.state).toBe("partial");
+    expect(s.detail).toContain("1 missing");
+  });
+
+  it("does not soften the step when the reporting vendor already has prices", () => {
+    // Nothing is missing, so the plain wording stands — the softer sentence
+    // would name a reason that did not apply.
+    const s = step(
+      CAT({ models: [MODEL({ provider: "openrouter", inputPer1M: 3 })] }),
+      "models",
+    );
+    expect(s.state).toBe("done");
+    expect(s.detail).not.toContain("no price from you");
+  });
 });
 
 describe("step 4 — prices", () => {

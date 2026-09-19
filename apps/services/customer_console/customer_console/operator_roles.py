@@ -106,6 +106,13 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # reason `GET /keys` is: knowing which vendors serve our customers is
     # ordinary operational knowledge, and hiding it teaches people to ask.
     ("GET", "/providers/credentials"): _R(VIEWER),
+    # What each vendor cost US over the window (migration 031). VIEWER, on the
+    # same argument the row above makes: this is our own operating cost and not
+    # any customer's data. An operator who cannot see the bill cannot judge
+    # whether a price we charge is sound, and that judgement is ordinary work.
+    # The read groups by vendor, names no organization, and excludes BYOK —
+    # those tokens ran on a customer's own account and are not our spend.
+    ("GET", "/providers/spend"): _R(VIEWER),
     ("POST", "/registry/seats/overview"): _R(VIEWER),
     # The audit trail (CP-12f). VIEWER on purpose, and it is the same
     # argument `GET /operators` makes: a record of who did what to our

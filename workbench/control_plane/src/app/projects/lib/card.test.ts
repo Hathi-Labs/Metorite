@@ -7,10 +7,12 @@
  * A board full of tasks with no badges looks like a board full of simple tasks.
  */
 
+import { readFileSync, readdirSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import { accentForHue } from "@/lib/statusAccent";
-import { chipKind, taskMeta } from "@/lib/taskCard";
+import { TASK_SOURCES, chipKind, taskMeta } from "@/lib/taskCard";
 
 import type { TaskRow } from "./api";
 import {
@@ -20,6 +22,7 @@ import {
   taskDeepLink,
   taskFacts,
   taskRef,
+  typeFacts,
   visibleChips,
 } from "./card";
 import { DEFAULT_SHOWN, FIELD_KEYS } from "./shownFields";
@@ -53,6 +56,8 @@ describe("taskFacts", () => {
         }),
       ),
     ).toEqual({
+      type: null,
+      source: null,
       dueAt: hours(-2),
       completedAt: hours(-1),
       subtasks: { done: 1, total: 3 },
@@ -67,6 +72,8 @@ describe("taskFacts", () => {
 
   it("defaults the counts a card must not guess at", () => {
     expect(taskFacts(row())).toEqual({
+      type: null,
+      source: null,
       dueAt: undefined,
       completedAt: undefined,
       subtasks: null,
@@ -74,6 +81,42 @@ describe("taskFacts", () => {
       tags: [],
       estimateMins: undefined,
     });
+  });
+
+  // ── The task TYPE (WS-27bh) ─────────────────────────────────────
+
+  it("resolves type_id through the registry", () => {
+    const types = typeFacts([
+      { id: "t1", name: "Epic", icon: "Mountain", color: "#7c3aed" },
+    ]);
+    expect(taskFacts(row({ type_id: "t1" }), undefined, types).type).toEqual({
+      name: "Epic",
+      icon: "Mountain",
+      color: "#7c3aed",
+    });
+  });
+
+  it("⚠️ yields NO type when the id is not in the registry", () => {
+    // A type deleted after the task was written. The card must not fall back
+    // to drawing the uuid, which is what a naive `?? task.type_id` does — and
+    // a uuid on a card looks like a bug in the data, not in the lookup.
+    const types = typeFacts([{ id: "t1", name: "Epic" }]);
+    expect(taskFacts(row({ type_id: "gone" }), undefined, types).type).toBeNull();
+    expect(taskFacts(row({ type_id: "t1" }), undefined, undefined).type).toBeNull();
+  });
+
+  it("yields no type when the row carries none", () => {
+    const types = typeFacts([{ id: "t1", name: "Epic" }]);
+    expect(taskFacts(row(), undefined, types).type).toBeNull();
+  });
+
+  it("keys the registry by ID, not by name", () => {
+    // A tag rides the row by NAME, so `tagColours` keys by a lowercased name.
+    // A type rides it as `type_id`. Keying this by name would need a second
+    // lookup that does not exist, and every chip would silently vanish.
+    const types = typeFacts([{ id: "t1", name: "Epic" }]);
+    expect(types.get("t1")?.name).toBe("Epic");
+    expect(types.get("Epic")).toBeUndefined();
   });
 
   it("claims no attachments, because the list endpoint does not count them", () => {
@@ -356,5 +399,117 @@ describe("taskDeepLink", () => {
 
   it("is origin-relative when no origin is given, and encodes the id", () => {
     expect(taskDeepLink({ id: "a b" })).toBe("/projects?task=a%20b");
+  });
+});
+
+describe("the task SOURCE chip (WS-27bh)", () => {
+  const sourceChip = (source: string | null) =>
+    cardChips(row({ source } as Partial<TaskRow>)).find((c) => c.key === "source");
+
+  it("names the origins that are not manual", () => {
+    expect(sourceChip("email")?.label).toBe("Email");
+    expect(sourceChip("agent")?.label).toBe("Agent");
+    expect(sourceChip("automation")?.label).toBe("Automation");
+    expect(sourceChip("import")?.label).toBe("Imported");
+  });
+
+  it("⚠️ draws NOTHING for a manual task", () => {
+    // `manual` is the overwhelming majority of rows. A badge on every card
+    // is a badge nobody reads, and it would crowd out the chips that vary.
+    expect(sourceChip("manual")).toBeUndefined();
+    expect(sourceChip(null)).toBeUndefined();
+  });
+
+  it("⚠️ draws nothing for a value the vocabulary does not know", () => {
+    // The CHECK constraint can gain a value before this table does. An
+    // unknown source must be silent, never a chip reading the raw column.
+    expect(sourceChip("telepathy")).toBeUndefined();
+  });
+
+  it("covers exactly the non-manual half of the migration-146 CHECK", () => {
+    // The fence against the vocabularies drifting apart. `pm_tasks.source`
+    // is CHECK (source IN ('manual','import','email','agent','automation')),
+    // and every value but `manual` earns a chip.
+    expect(Object.keys(TASK_SOURCES).sort()).toEqual([
+      "agent",
+      "automation",
+      "email",
+      "import",
+    ]);
+  });
+});
+
+describe("🔴 every chip surface must pass the type registry", () => {
+  // The defect this pins, found by review 2026-09-19.
+  //
+  // `CalendarView` built its `typeHues` map and then called `visibleChips`
+  // with FOUR arguments, so the type chip drew on the board and the list and
+  // never on the calendar. Nothing caught it: the fifth parameter is optional
+  // so `tsc` is happy, and `noUnusedLocals` is off so the dead memo was
+  // silent too. Writing this scan immediately found a THIRD surface with the
+  // same omission.
+  //
+  // A source scan, because the defect is an omitted ARGUMENT — no behavioural
+  // assertion distinguishes "this surface has no types" from "this surface
+  // forgot to pass them".
+  //
+  // ⚠️ Two ways it fails CLOSED, which the next author will meet:
+  //   * `[^)]*` stops at the first `)`, so a legitimate
+  //     `visibleChips(task, shown, Date.now(), tagHues, typeHues)` truncates
+  //     and goes red.
+  //   * It pins a variable NAME, so a correct surface calling its map
+  //     `types` goes red.
+  // Both are noisy rather than silent, which is the right direction.
+
+  const DIR = new URL("../components/", import.meta.url);
+
+  /**
+   * ⚠️ DISCOVERED, not listed.
+   *
+   * The first version named four files. A fifth chip surface added later
+   * would have escaped the fence entirely, and so would a move of the chip
+   * strip into a shared child — the scan would still find the old files,
+   * find no calls in them, and pass on an empty list.
+   */
+  const surfaces = readdirSync(DIR)
+    .filter((name) => name.endsWith(".tsx"))
+    .map((name) => ({
+      name,
+      source: readFileSync(new URL(name, DIR), "utf-8"),
+    }))
+    .filter((file) => file.source.includes("visibleChips("));
+
+  it("finds the surfaces it is supposed to guard", () => {
+    // Guards against the whole scan going vacuous — if the chip strip moves
+    // or is renamed, this fails loudly instead of the fence quietly
+    // shrinking to nothing.
+    const found = surfaces.map((f) => f.name).sort();
+    expect(found).toEqual(
+      expect.arrayContaining([
+        "CalendarView.tsx",
+        "TaskBoard.tsx",
+        "TaskList.tsx",
+        "TimelineView.tsx",
+      ]),
+    );
+  });
+
+  it("passes the registry at every visibleChips call site", () => {
+    for (const { name, source } of surfaces) {
+      // Whitespace collapsed, so a multi-line call reads the same as a
+      // one-line one — which is exactly how the calendar's slipped through
+      // a bulk edit that only matched the single-line form.
+      const flat = source.replace(/\s+/g, " ");
+      const calls = flat.match(/visibleChips\([^)]*\)/g) ?? [];
+      // Never vacuous: a file in this list contains the text, so it must
+      // yield at least one parsed call.
+      expect(calls.length, `${name}: no parsed visibleChips call`).toBeGreaterThan(0);
+      for (const call of calls) {
+        expect(
+          call,
+          `${name}: visibleChips must receive the type registry`,
+        ).toContain("typeHues");
+      }
+    }
   });
 });

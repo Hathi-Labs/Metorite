@@ -125,46 +125,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `saas_multitenancy.md` §11 MT-1j · the headers of migrations 200, 201 and 202
 - **Added:** 2026-09-06, from the WS-27 status-sets deploy · **narrowed
   2026-09-15** when the provisioning half was fixed.
-### H-105 · ⚠️ Production migrations run with NO pre-migration backup · [OWNER]
-- **Check:** on the box, `grep -c '^SKIP_PRE_MIGRATION_BACKUP=' /opt/acb/app/.env`.
-  A non-zero count means this is open.
-  ⚠️ **The old Check read `.github/workflows/deploy.yml`, and that file no
-  longer mentions the flag — so the old Check passed while the entry was still
-  true.** Re-derived 2026-09-17. `scripts/vps_apply.sh` LIFTS the variable out
-  of `.env` (see its external-database seam note), so the workflow was never
-  where the answer lived. An entry whose Check has drifted onto a file that
-  moved is how this queue starts lying; the substance below is unchanged.
-- **Verified 2026-09-17:** `PG_MODE`, `PGHOST` and `SKIP_PRE_MIGRATION_BACKUP`
-  are all present in the production `.env` — the managed-Postgres shape
-  `vps_apply.sh` documents, where the provider's PITR is meant to replace the
-  local dump. **PITR itself could not be confirmed**: the Supabase MCP reports
-  project health and not backup configuration, so an agent still cannot produce
-  the evidence §3a rule 1 asks for. That is this entry, restated with a name.
-- **What happens:** `scripts/apply_migrations.sh` takes a dump before replaying
-  the ladder and **fails closed** if it cannot — its header says so: *"if the
-  backup cannot be taken, the migrations do not run. The escape hatch is
-  explicit and has to be typed on purpose."* The deploy types it on purpose, on
-  every run.
-- **⚠️ Why this is not a small thing.** `work_plan.md` §3a rule 1 tells an agent
-  to *"confirm the pre-migration backup completed"* before applying a migration
-  to production, and to hold the evidence. That confirmation is **impossible**
-  as the pipeline stands — the honest answer is always "there was none". R6 also
-  says we cannot roll back, only forward or restore; with no dump there is
-  nothing to restore FROM.
-- **What it cost on 2026-09-06:** nothing, by luck. Migration 196 failed
-  half-way (the column and a CHECK committed, the grant did not), and the
-  recovery was a hand-written `DROP CONSTRAINT`. A migration that corrupted data
-  rather than failing outright would have had no floor under it.
-- **Decide:** either restore the backup on the deploy path and accept the ~11
-  minutes it costs, or state in writing that production deploys run without one
-  and amend §3a rule 1 so it stops asking agents for evidence that cannot exist.
-  Both are defensible; the current state is that the rule and the pipeline
-  disagree and the pipeline wins silently.
-- **Related:** H-98 (the standalone backup job covers no Console database and no
-  timer runs it). Together they mean the production database has **no scheduled
-  backup and no deploy-time backup**.
-- **Added:** 2026-09-06, from the WS-27 status-sets deploy.
-
 ### H-101 · The weekly skills sync cannot open its PR, and has failed since 2026-08-24 · [OWNER]
 - **Check:** `gh run list --workflow=skills-upstream-sync.yml --limit 3`. A
   `failure` on the most recent scheduled run means this is still open. The log
@@ -219,45 +179,6 @@ line — never reclaim a number by deleting the other entry.
   approves it.
 - **Authority:** `CLAUDE.md` §3a (the window) · D45 · this session, 2026-09-02
 - **Added:** 2026-09-02 · guardrail-relaxation session, at close-out
-
-### H-98 · The backup job has NEVER covered the Console database, and no timer runs it · [OWNER]
-- **Check:** run three commands on the box. Every one must change before this
-  entry closes.
-  1. `grep -c CUSTOMER_CONSOLE_DATABASE_URL /opt/acb/app/scripts/backup_db.sh`
-     → `0` means the Console database stays out of scope.
-  2. `systemctl list-timers --all | grep acb-backup` → no line means nothing
-     schedules the job.
-  3. `systemctl show acb-backup.service -p Result` → `exit-code` means the last
-     run failed.
-- **Why:** the owner lost the Console data on 2026-09-01 and held no backup.
-  The owner did not need that data. The next loss can cost more.
-- 🔴 **Four failures compound, and each one hides the next.** An agent measured
-  all four on `srv1914284`, 2026-09-02:
-  1. `scripts/backup_db.sh` reads `DATABASE_URL` and nothing else. It holds
-     ZERO references to `CUSTOMER_CONSOLE_DATABASE_URL`. So the job skips every
-     organization, operator and provider credential.
-  2. The newest dump names `pg_container: acb-postgres`, a LOCAL docker
-     container, and not Supabase. Its manifest counts `app_user: 0`,
-     `email_messages: 0`, `gtd_items: 0`, `meeting: 0` and `agent_run: 0`.
-  3. `systemctl list-timers` shows no timer for the unit. Only Debian's own
-     `dpkg-db-backup.timer` runs. So nothing schedules the job.
-  4. `acb-backup.service` last started on 2026-08-25 and exited non-zero.
-     Nothing retried it. Nothing reported it.
-- 📌 **The empty dump is the worst of the four.** A job that fails loudly stops
-  nobody for long. A job that writes a manifest full of zeros reads as success.
-- 📌 **This is NOT the cause of H-89.** The dumps live in `/opt/acb/backups`,
-  outside the checkout, so the backup unit does not write the root-owned files
-  in `workbench/operator_console/`. H-89 stays open and unexplained.
-- **The AGENT half:** point `backup_db.sh` at both DSNs, and make a zero row
-  count fail the job. ⚠️ The timer belongs in `deploy/`, which is §6
-  owner-gate, so an agent writes the script and the owner installs the timer.
-- **The OWNER half, and take it first:** decide whether the control plane needs
-  a backup of ours at all. Supabase takes a daily backup on a paid plan. That
-  answer turns the agent half from "build it" into "delete the unit".
-- **Authority:** `work_plan.md` §6 (deploy reach) · `scripts/backup_db.sh` ·
-  `deploy/hostinger/`
-- **Added:** 2026-09-02 · operator-identity env session, found while an agent
-  read the box after the Supabase move
 
 ### H-97 · 🔴 FOUR database passwords have reached agent transcripts · [OWNER]
 - **Check:** has somebody rotated all four credentials below since 2026-09-02?
@@ -459,6 +380,13 @@ line — never reclaim a number by deleting the other entry.
   2026-08-31**. The router-guards slice took that id first.
 
 ### H-85 · Make an UNMEASURED call reconcilable to the row it wrote · [AGENT]
+- ⚠️ **STILL OPEN on 2026-09-19, and a comment elsewhere overstates
+  it.** Migration `031_cost_source.sql` says it "closes half of H-85". That
+  is loose. `cost_source` records how a usage ROW arrived at its cost. This
+  entry is about the `router.unmeasured_quantity` ALARM naming neither the
+  organization nor the request id, so nobody can join it to the row it
+  belongs to. Related, not the same. The Check below was re-run today and
+  both `extra` blocks still carry only model, tier and task.
 - **Check:** `rg -n 'router.unmeasured_quantity' -A4 apps/services/customer_console/customer_console/main.py`.
   An `extra` block carrying no organization and no request id means this entry
   is still real.
@@ -761,9 +689,14 @@ line — never reclaim a number by deleting the other entry.
   so CLAUDE.md §5 says record it, do not refactor it
 - **Added:** 2026-08-14 · PR #439
 
-### H-121 · 🔴 A READ grant can now destroy a space · [OWNER]
-- **Check:** `grep -n "async def delete_node" -A 6 apps/services/gateway/gateway/routes/projects/tree.py`
-  → `load_visible_project` and nothing else means this is open.
+### H-121 · 🟡 DOCUMENTED, DEFERRED — a READ grant can destroy a space · [OWNER]
+- **⚠️ The owner DEFERRED this on 2026-09-19 and asked for a record instead.**
+  The design now lives in `specs/org_access_control.md` **§8d**, and the board
+  carries it as **WS-40**. Do not build it. Read §8d.4 first — it holds the four
+  questions an owner answers before anybody writes code.
+- **This entry is what remains: the risk, so that it is not lost.**
+- **Check:** `grep -rn "require_permission" apps/services/gateway/gateway/routes/projects/`
+  → no output means no Projects route gates a write, and this is still open.
 - **Why it is urgent now.** `DELETE /projects/nodes/{id}` cascades over the
   subtree, every task and every grant. Its only guard is **read** visibility.
   `resolve_visibility` returns a read closure. It carries no write axis and no
@@ -784,13 +717,22 @@ line — never reclaim a number by deleting the other entry.
   mint a second authority vocabulary in an app that has none (CLAUDE.md §5).
   The question is whether Projects needs a WRITE axis beside D12's visibility
   axis. That is one decision for the app, and not a patch on one route.
-- **The decision.** Which subject may delete. Three candidates, and they are not
-  the same: the project creator, a role, or a write grant that does not exist
-  yet. Visibility is *who can see*, and D12 says it is not *who may act*.
+- **⚠️ Measured 2026-09-19, and CORRECTED the same day.** `require_permission`
+  returns nothing under `projects/`, `email/` or `notes/`. Visibility alone
+  authorises every write there.
+- **🟢 One content app DOES gate writes**, and an earlier version of this entry
+  wrongly said none did. `workflows/publish.py` guards publish, rollback and
+  disable with `workflows:publish`. So the shape to copy is `<app>:<verb>`, and
+  it is already in the tree.
+- **The decision.** Which subject may act. Three candidates, and they are not
+  the same: the row's creator, a role, or a per-node write grant that does not
+  exist yet. Visibility is *who can see*, and D12 says it is not *who may act*.
+  §8d.4 states all four questions.
 - **Until it is answered**, the menu entry is reachable by anybody who can open
   the row. Hiding it client-side is NOT a fix. The endpoint stays open.
-- **Authority:** `routes/projects/tree.py` `delete_node` · D12 · R5 ·
-  `specs/project_management_app.md` §11 (the superseded-delete note)
+- **Authority:** `specs/org_access_control.md` §8d (the design record) ·
+  `work_plan.md` §2 **WS-40** · `routes/projects/tree.py` `delete_node` ·
+  D12 · R5 · `specs/project_management_app.md` §11
 - **Added:** 2026-09-19 · found by the adversarial review of the H-8 diff.
 
 ### H-124 · The move has no end-to-end test, and that is where its P0s live · [AGENT]
@@ -1053,6 +995,13 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-26 · guardrails + handoff session
 
 ### H-60 · Every deploy gives live users a ~3 minute 502 · [AGENT]
+- 🔴 **MET AGAIN 2026-09-19, on the PR #297 deploy.** A probe of the
+  workbench on :3001 returned **500** while the old process was still
+  serving. Its pid changed from 1119154 to 1121629 and the next probe
+  returned 307. Three passes afterwards were all 307, `NRestarts=0` on
+  every unit, and `app.metorite.com` answered 307. So this is the window
+  this entry describes and not a crash loop — but it is still a real
+  outage that a customer sees on every single merge.
 - **Check:** merge anything, then `curl -s -o /dev/null -w "%{http_code}" https://app.metorite.com/`
   during the deploy window. A `500` or `502` means this is live. A `307` means the
   box is up.
@@ -2105,6 +2054,13 @@ line — never reclaim a number by deleting the other entry.
   2026-09-05** against run `33937646678`, credit-pricing merge session
 
 ### H-91 · The provisioning fixtures leak an organization per test, and that is what fills the scratch database · [AGENT]
+- 🔴 **The leak reaches the UI, and it cost a day of measurement.**
+  Measured 2026-09-19 on a scratch database: 105 ghost tiers, 67 vendor
+  chips, 43 declared models and 30 provider-filter chips — nearly all of
+  them fixture rows named `ptv*`, `tp*` and `cp*`. Every page-size and
+  control-count number taken that day had to be read past them, and twice
+  a design decision was nearly taken on a number the fixtures produced.
+  The entry reads as a disk-space problem. It is also a measurement one.
 - **Check:** count `organization` on the console scratch database, run
   `uv run pytest tests/unit/test_customer_console_router.py -q`, then count
   again. A rise means this entry is still real. ⚠️ Do NOT check by reading
@@ -2232,62 +2188,6 @@ line — never reclaim a number by deleting the other entry.
   the same next-free id against different bases, which is R1 one level up. This
   entry merged second, so this entry moved.
 
-### H-95 · plan-guard reads a MENTION of the grants file as a write to it · [AGENT]
-- **Check:** `sed -n 231p .claude/hooks/plan-guard.mjs` → a bare
-  case-insensitive string test against the whole command means the defect is
-  still there. A test that matches only a redirect, an editor or a `tee` means
-  it is fixed.
-- **⚠️ This entry deliberately never spells that filename.** An entry that spelt
-  it could not be written by a shell command, which is the defect itself.
-- **Why:** Line 231 refuses the command when the grants filename appears
-  **anywhere in the text**, and not only in a write. So a commit message that
-  names the file is refused as a write to it. Measured 2026-09-01: a
-  `git commit -F -` whose heredoc body named the file was blocked twice. The
-  same commit passed as soon as the message said "the owner grants file"
-  instead. Filing this entry hit the same wall a third time.
-- **⚠️ The refusal itself is correct and must stay.** D45 says the owner writes
-  that file. This entry asks for the test to be narrower, never for the gate to
-  be weaker. The failure mode is the expensive one. An agent that meets a
-  refusal it cannot explain will look for a way around it. The way around a
-  false positive also goes around the true one.
-- **What it needs:** match a WRITE, not a mention. Match the redirect, the
-  editor and the `tee` forms, the way the path regexp above it already does. A
-  mention inside a quoted string or a heredoc body is not a write.
-- **Related:** **H-65** is the same family. plan-guard cannot see a write an
-  interpreter makes from a heredoc. That entry is about a write it MISSES. This
-  one is about a write it INVENTS. Both read shell text as if it were an action.
-- **Authority:** `.claude/hooks/plan-guard.mjs` line 231 · D45 · `work_plan.md` §6
-- **Added:** 2026-09-01 · Projects UI session, met while merging `main`
-
----
-
-### H-102 · The `ruff` pre-commit hook refuses every commit that touches the Console · [AGENT]
-- **Check:** `uv run ruff check apps/services/customer_console/customer_console/main.py`
-  on a clean tree. Three findings means this is open. Zero means somebody
-  swept it.
-- **What I measured, 2026-09-04.** The file reports SIM105 once and B904
-  twice. All three predate branch `ws-pricing-page`, and none of them sits in
-  code that branch touched. The hook fails the commit anyway, because it reads
-  the whole file.
-- **What it costs.** A contributor who touches `main.py` must either repair
-  three findings they did not make, or pass `--no-verify`. I passed
-  `--no-verify` twice and said so in both commit messages.
-- 🔴 **A gate nobody can pass is a gate nobody reads.** The next contributor
-  learns that `--no-verify` is the normal way to commit here. That habit then
-  carries past the STE gate and the secret scan, which are the gates that
-  matter.
-- **The repair, and it is small.** Fix the three findings in one commit that
-  changes nothing else. SIM105 wants `contextlib.suppress`. B904 wants
-  `raise ... from exc`.
-- ⚠️ **Do not widen the ruff configuration to make this pass.** The findings
-  are correct. The file is the thing that is wrong.
-- 📌 Related: **H-74** holds the same shape for mypy, which reports 93
-  findings here and does not block.
-- **Authority:** `.pre-commit-config.yaml` lines 21 to 30 · CLAUDE.md §3.5 (R7)
-- **Added:** 2026-09-04 · credit-pricing slice 1 session · **renumbered
-  from H-98 on 2026-09-05**, because `main` minted its own H-98 (the
-  Console backup gap) and merged first. Ids are never reused, so that one
-  keeps the number. `test_handoff_queue` named the collision.
 
 ### H-96 · `dev_db.sh` starts the tenant database and never applies its ladder · [AGENT]
 - **Check:** read `scripts/dev_db.sh`. Search for `infra/postgres`. No hit
@@ -2306,26 +2206,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/engineering_practice.md` §1.1 · CLAUDE.md §6 (R8)
 - **Added:** 2026-09-02 · operator console local-setup session
 
-### H-103 · plan-guard refuses a READ whose command text names a protected path · [AGENT]
-- **Check:** read `.claude/hooks/plan-guard.mjs`. If the protected-path scan
-  still tests the whole command text, and no test names a read-only case,
-  this is open.
-- **What I measured, 2026-09-02.** `ls deploy/hostinger/ | grep -i operator`
-  was refused as "a shell command writing to a protected path". So was
-  `git grep -c operator -- deploy/hostinger/caddy/Caddyfile`. Neither writes.
-  I completed the same read with the Read tool, which the hook does not scan.
-- **Why this is the same defect as H-95, and worth its own entry.** H-95 is a
-  commit message that names the grants file. This is a read command that names
-  a deploy path. Both come from one cause. The scan asks "does this text
-  contain the path", never "does this command write".
-- 🔴 **The refusal must stay for real writes.** `deploy/` is §6 owner-gate.
-  This entry asks for a narrower test, never for a weaker gate. An agent that
-  learns to route around a false refusal has learned to route around a true one.
-- **Authority:** `work_plan.md` §6 · CLAUDE.md §3.2 · related: H-95, H-65
-- **Added:** 2026-09-02 · operator console local-setup session · **renumbered from H-97 on
-  2026-09-05**, because `main` minted its own H-97 for the leaked database
-  passwords and merged first. Ids are never reused, so that entry keeps the
-  number. Filed from branch `ws-handoff-h96-h97`, which never opened a PR.
 ### H-111 · Arm the weekly report send. The audience is DECIDED · [OWNER]
 - **Check:** on the box, `grep -c '^PROJECT_REPORT_EMAIL_ENABLED=true' /opt/acb/app/.env`.
   A zero means this is open.
@@ -2567,9 +2447,10 @@ line — never reclaim a number by deleting the other entry.
 - **It was invisible for an unknown period.** `/health` stayed green throughout,
   so no health check and no watchdog reported it. Whatever replaces this should
   probe an endpoint that touches the database.
-- 📌 Related: **H-98**, the backup job that has never covered the Console
-  database. Also **H-109** below. The project names are inverted, which is the
-  likely reason the wrong database got backed up.
+- 📌 **H-98 is CLOSED (2026-09-19).** The backup job now dumps the Console
+  database as a second cluster, and a verified run sits on the box. Also
+  **H-109** below. The project names are inverted, which is the likely reason
+  the wrong database got backed up.
 - **Authority:** `work_plan.md` §2.0 row **M0.4b** · `customer_console.md` §8
 - **Added:** 2026-09-15 · signup-flow session, found by surveying the box
 
@@ -2594,9 +2475,10 @@ line — never reclaim a number by deleting the other entry.
   tenants**, which is the other project. Two defensible meanings, one word, and
   they point at opposite projects.
 - **Why it still matters.** An instruction that says *"the tenant database"*
-  resolves two ways. **H-98** says the backup job has never covered the Console
-  database. Somebody could have backed up "the tenant database" and meant the
-  other one. That is UNPROVEN. Check it before anybody repeats it as the cause.
+  resolves two ways. **H-98 closed on 2026-09-19** and the job now covers the
+  Console database, but the ambiguity that hid the gap has not moved. Somebody
+  could have backed up "the tenant database" and meant the other one. That is
+  UNPROVEN. Check it before anybody repeats it as the cause.
 - **The cheap repair, and it keeps the owner's names.** Append the role to each
   Supabase project name. Then no reader must resolve the word at all:
   *"Metorite Application Database (tenant plane · customer data)"* and
@@ -2612,6 +2494,106 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `saas_multitenancy.md` §0.9.2 (the two planes) · D15
 - **Added:** 2026-09-15 · signup-flow session · **corrected 2026-09-16** when
   the owner challenged the "inverted" claim and was right.
+
+### H-116 · plan-guard reads a MENTION of a commit as a commit on main · [AGENT]
+- **Check:** `grep -n "test(cmd)" .claude/hooks/plan-guard.mjs`. A hit means
+  this is open. No hit means somebody applied the repair.
+- **What I measured, 2026-09-18.** I wrote a throwaway script from the root
+  checkout, which sits on `main`. The script text named the git verb inside a
+  heredoc body. plan-guard refused the whole command as *"committing/pushing
+  directly on main"*. Nothing in that command committed anything.
+- **The cause is one word.** Line 443 tests `cmd`, which is the raw command.
+  Every other rule on that page tests `scanned`. `stripNoise()` has already
+  cleaned `scanned` of heredoc bodies and `-m` message payloads.
+- **This is the FOURTH false positive of one family.** H-95 and H-103 were the
+  second and the third, and both are now fixed and fenced. The guard asks
+  whether the text CONTAINS the thing, and never whether the command DOES it.
+- 🔴 **The refusal must stay.** A real commit on main sits in the command half,
+  which `stripNoise()` never touches. This entry asks for a narrower test. It
+  never asks for a weaker gate.
+- **The repair is one word.** At line 443, `.test(cmd)` becomes
+  `.test(scanned)`.
+- ⚠️ **An agent cannot apply it.** The Claude Code auto-mode classifier refuses
+  an agent edit to its own hook files, and it names the reason
+  `Self-Modification`. The owner's `guard-write` grant does not reach that
+  layer, because the classifier sits above plan-guard. A human must make this
+  edit.
+- ⚠️ **The suite cannot see this case today.** `plan-guard.test.mjs` runs its
+  branch check against the real repository. From a worktree it reports
+  `onMain=false` and asserts nothing. A fence needs a temporary repository on
+  `main`, and that is the second half of this entry.
+- **Authority:** `.claude/hooks/plan-guard.mjs` line 443 · CLAUDE.md §3.2 ·
+  related: H-95, H-103, H-65
+- **Added:** 2026-09-18 · operator console workspace session
+
+### H-122 · The Operator Console has NO browser rig, and its suite renders nothing · [AGENT]
+- **Check:** `grep -c playwright workbench/operator_console/package.json`. A
+  zero means this is open.
+- **What I measured, 2026-09-18.** `visual-review` renders `control_plane`. The
+  Operator Console is a second Next.js app and carries no Playwright, no `e2e/`
+  and no renderer in `vitest.config.ts`, which is `environment: "node"`. So its
+  719 passing tests say nothing about how any screen draws.
+- **What that cost, on one panel.** I stood the stack up by hand and looked.
+  Five defects that every test passed over. A `banner ok` class that
+  `globals.css` does not define, so a good-news banner drew amber through the
+  base `.banner` rule. A JSX-collapsed space reading *"the last 30days"*. A `.glyph`
+  span outside `.chip`, rendering a naked capital beside each name. Nineteen
+  rows burying the four that carried the money. An empty state that could print
+  *"$0.00 across 0 vendors"* above an empty table.
+- ⚠️ **A hand-built rig can report a FALSE PASS, and mine nearly did.** I
+  toggled a `.light` class, which is `control_plane`'s mechanism. This app
+  themes through `data-theme`. Five identical images came back and I almost
+  read them as a light-mode pass.
+- ⚠️ **Looking proves how a screen DRAWS, never who can reach it.** I drove the
+  console with the shared operator token. `auth.py` states that it carries no
+  role and the matrix cannot judge it. So the panel rendered perfectly through
+  the one door that skips the role check my endpoint was missing, and CI caught
+  the 403 afterwards.
+- **What it needs.** Playwright in `workbench/operator_console`, a harness that
+  stubs `/api/operator/**`, and contexts for `data-theme` and width. Density
+  and accent do not apply here — this app carries one fixed accent token and no
+  `--ui-scale`.
+- 📌 Related: **H-27** says nothing runs `control_plane`'s `e2e/`. That is a rig
+  nobody runs. This is a rig that does not exist.
+- **Authority:** CLAUDE.md §4 (the look-at-it gate) ·
+  `workbench/operator_console/AGENTS.md`
+- **Added:** 2026-09-18 · operator console vendor-spend session
+  *(minted H-117. Renumbered to H-122 on 2026-09-19, because `main`
+  had taken 117 for the no-organization outage and merged first. Ids
+  are never reused, so that entry keeps the number.)*
+
+### H-123 · Backups exist now, and live only on the box they protect · [OWNER]
+- **Check:** on the box, `sudo grep -c '^BACKUP_REMOTE=' /opt/acb/app/.env`.
+  A zero means every dump still lives on one disk, and this is open.
+- 🔴 **Filed because closing two entries orphaned their caveats.** H-98
+  and H-105 closed on 2026-09-19. The nightly timer runs, and the job covers
+  the Console database. A restore is verified. That day's deploy took a
+  pre-migration dump. Both entries carried this warning as a sub-point, so
+  deleting them deleted the only record of it.
+- 🔴 **CORRECTION, same day: the TIMER was never armed.** H-98 and
+  H-105 closed on the strength of `Result=success`, a verified restore and
+  14 dumps on disk. All three were true. The timer was
+  `UnitFileState=disabled` throughout, with an empty
+  `NextElapseUSecRealtime`, so no night was ever covered. Today's run was a
+  manual one. `systemctl enable --now acb-backup.timer` armed it at 12:17
+  UTC, and it now prints NEXT `Sun 2026-09-20 02:30:16 UTC`.
+- **The lesson, so it is not learned twice.** A manual `systemctl start`
+  proves the SERVICE. It says nothing about the SCHEDULE. Read
+  `systemctl list-timers <unit> --all` and require a NEXT date.
+  `Result=success` is also the default for a service that never ran.
+- **What is still true.** `backup_db.sh` says it on every run: a backup on
+  the same disk as the database survives a bad migration and a dropped
+  table. It does not survive the disk, the box, or the provider account.
+- ⚠️ **Supabase PITR is UNCONFIRMED and is a separate claim.** The
+  Supabase MCP reports project health, not backup configuration, so an
+  agent cannot produce the evidence. Our logical dumps stand on their own
+  and are not the provider's point-in-time recovery.
+- **Why OWNER.** Choosing where the copies go is a money and third-party
+  decision: another host, an object store, or the provider's own retention.
+  📌 Once a destination exists, setting `BACKUP_REMOTE` is the whole
+  change — the script already rsyncs to it and warns while it is unset.
+- **Authority:** `scripts/backup_db.sh` · `deploy/hostinger/BACKUP-RESTORE.md`
+- **Added:** 2026-09-19 · operator console session, after the backup repair
 
 # DONE — deleted, not archived
 

@@ -291,6 +291,51 @@ export function monitorRows<
   );
 }
 
+/** How far a tier's margin rests on MEASURED cost rather than derived cost.
+ *
+ * 🔴 **The question this answers: can I act on this number?** A derived cost
+ * multiplies our own `model_profile` prices by tokens we counted, so it is only
+ * as fresh as the last time somebody edited that table. A vendor-stated cost
+ * cannot go stale. A margin that mixes the two reads as one kind of fact and is
+ * two, which is what migration 031 exists to stop.
+ *
+ * - `measured`  — every costed call carries a cost the vendor stated.
+ * - `mixed`     — some do.
+ * - `estimated` — none do, so the figure rests entirely on our own prices.
+ * - `none`      — nothing was costed, so there is no figure to qualify.
+ *
+ * ⚠️ **`none` is not a failure.** A tier with no traffic, or one whose calls
+ * could not be costed, has nothing to say here and must not draw a warning.
+ */
+export type CostBasis = "measured" | "mixed" | "estimated" | "none";
+
+export function costBasis(row: {
+  costedCalls: number;
+  measuredCalls: number;
+}): CostBasis {
+  if (row.costedCalls <= 0) return "none";
+  // ⚠️ Clamped, because `measuredCalls` arrives from a service that may predate
+  // the column, and a count above the costed total would be nonsense we must
+  // not render as certainty.
+  const measured = Math.max(0, Math.min(row.measuredCalls, row.costedCalls));
+  if (measured === 0) return "estimated";
+  return measured === row.costedCalls ? "measured" : "mixed";
+}
+
+/** The one-line explanation beside a margin figure. Empty when there is none. */
+export function costBasisLabel(basis: CostBasis): string {
+  switch (basis) {
+    case "measured":
+      return "measured — the vendor stated every cost";
+    case "mixed":
+      return "part measured, part from our own recorded prices";
+    case "estimated":
+      return "from our own recorded prices, not the vendor's";
+    case "none":
+      return "";
+  }
+}
+
 /** The margin box's starting value, from what the owner has actually set.
  *
  * 🔴 **Empty when no tier carries a multiplier**, which is the shipped state —

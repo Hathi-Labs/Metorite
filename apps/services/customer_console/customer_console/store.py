@@ -30,7 +30,6 @@ from customer_console.credits import (
     LEDGER_REASON_MANUAL,
     LEDGER_REASON_PURCHASE,
     LEDGER_REASON_RELEASE,
-    LEDGER_REASON_SETTLE,
     LEDGER_REASON_USAGE,
 )
 
@@ -500,9 +499,7 @@ class HoldRefused(Exception):
     """The balance could not cover this reservation."""
 
     def __init__(self, needed: Decimal, balance: Decimal) -> None:
-        super().__init__(
-            f"needs {needed} credits, balance is {balance}"
-        )
+        super().__init__(f"needs {needed} credits, balance is {balance}")
         self.needed = needed
         self.balance = balance
 
@@ -579,9 +576,7 @@ def place_hold(
     return True
 
 
-def release_hold(
-    conn: Connection, *, org_id: str, request_id: str
-) -> Decimal:
+def release_hold(conn: Connection, *, org_id: str, request_id: str) -> Decimal:
     """Give a reservation back. Idempotent. Returns what was released.
 
     ⚠️ **Reads the hold's OWN delta rather than being told the number.** A
@@ -620,9 +615,7 @@ def release_hold(
     return -Decimal(held)
 
 
-def sweep_orphan_holds(
-    conn: Connection, *, older_than_seconds: int
-) -> list[dict[str, Any]]:
+def sweep_orphan_holds(conn: Connection, *, older_than_seconds: int) -> list[dict[str, Any]]:
     """Release every hold whose call never closed it. Returns what it freed.
 
     🔴 **A crash between the hold and the settle strands credits**
@@ -721,9 +714,7 @@ def open_lots(conn: Connection, *, org_id: str) -> list[Any]:
     )
 
 
-def draw_from_lots(
-    conn: Connection, *, org_id: str, credits: Decimal
-) -> list[dict[str, Any]]:
+def draw_from_lots(conn: Connection, *, org_id: str, credits: Decimal) -> list[dict[str, Any]]:
     """Allocate a charge across lots, soonest-expiring first.
 
     Returns what each lot gave, as ``[{"lot_id": .., "credits": ..}, ..]``.
@@ -750,10 +741,7 @@ def draw_from_lots(
         if take <= 0:
             continue
         conn.execute(
-            text(
-                "UPDATE credit_lot SET credits_used = credits_used + :take "
-                "WHERE id = :id"
-            ),
+            text("UPDATE credit_lot SET credits_used = credits_used + :take WHERE id = :id"),
             {"take": take, "id": lot.id},
         )
         drawn.append({"lot_id": lot.id, "credits": take, "source": lot.source})
@@ -798,9 +786,7 @@ def add_credit_lot(
     )
 
 
-def margin_by_tier(
-    conn: Connection, *, days: int = 7
-) -> list[dict[str, Any]]:
+def margin_by_tier(conn: Connection, *, days: int = 7) -> list[dict[str, Any]]:
     """What each tier actually earned, against the floor it was given.
 
     🔴 **Grouped by TIER and never by organization.** The question is whether a
@@ -813,6 +799,13 @@ def margin_by_tier(
     all-calls credits over some-calls cost overstates the margin. `costed_calls`
     rides along so a reader can see how much of the tier this figure speaks
     for — the same rule `usage_by_org` already follows.
+
+    🔴 **`measured_calls` says how much of that is a MEASUREMENT** (migration
+    031). A costed call carries either a cost the vendor stated or one we
+    derived from `model_profile`, and the second is only as fresh as the last
+    time somebody edited that table. A margin built on stale prices is wrong in
+    a direction nobody can see, so the count travels beside the figure rather
+    than the two being averaged into one number that hides which it was.
 
     ⚠️ **A refusal is not a call and a metering fault is not revenue.** Both
     are excluded: a refusal billed nothing because we said no, and a fault
@@ -828,6 +821,7 @@ def margin_by_tier(
             "tier": r.tier,
             "calls": int(r.calls),
             "costed_calls": int(r.costed_calls),
+            "measured_calls": int(r.measured_calls),
             "credits": Decimal(r.credits),
             "cost_usd": Decimal(r.cost_usd),
             "margin_multiplier": r.margin_multiplier,
@@ -846,6 +840,15 @@ def margin_by_tier(
                              AND u.refusal_reason IS NULL
                              AND u.metering_fault IS NULL
                        ) AS costed_calls,
+                       -- Migration 031. Of the costed calls, how many carry a
+                       -- cost the VENDOR stated rather than one we derived.
+                       -- ⚠️ A subset of `costed_calls`, never of `calls`: an
+                       -- uncosted call has no source to report.
+                       COUNT(u.id) FILTER (
+                           WHERE u.cost_source = 'vendor'
+                             AND u.refusal_reason IS NULL
+                             AND u.metering_fault IS NULL
+                       ) AS measured_calls,
                        COALESCE(SUM(u.billed_credits) FILTER (
                            WHERE u.provider_cost_usd IS NOT NULL
                              AND u.refusal_reason IS NULL
@@ -958,14 +961,15 @@ def record_usage(
                  agent, module_slug, model, tier, prompt_tokens,
                  completion_tokens, cached_tokens, provider_cost_usd, run_id, client_ref,
                  task, quantity, unit, served_rank, byok_served, refusal_reason,
-                 metering_fault, cache_convention, window_at_call, context_tier)
+                 metering_fault, cache_convention, window_at_call, context_tier,
+                 cost_source)
             VALUES
                 (:org, :request_id, :billed, :user_email, :agent, :module_slug,
                  :model, :tier, :prompt_tokens, :completion_tokens,
                  :cached_tokens, :provider_cost_usd, :run_id, :client_ref,
                  :task, :quantity, :unit, :served_rank, :byok_served,
                  :refusal_reason, :metering_fault, :cache_convention,
-                 :window_at_call, :context_tier)
+                 :window_at_call, :context_tier, :cost_source)
             ON CONFLICT (organization_id, request_id) DO NOTHING
             RETURNING id
             """
@@ -983,6 +987,12 @@ def record_usage(
             "completion_tokens": fields.get("completion_tokens", 0),
             "cached_tokens": fields.get("cached_tokens", 0),
             "provider_cost_usd": fields.get("provider_cost_usd"),
+            # Migration 031. How `provider_cost_usd` was arrived at: 'vendor'
+            # when the provider reported it, 'computed' when we derived it.
+            # NULL from any caller that does not say, which is every caller
+            # written before this column existed — an estimate must never
+            # inherit the word 'vendor' by default.
+            "cost_source": fields.get("cost_source"),
             "run_id": fields.get("run_id"),
             "client_ref": fields.get("client_ref"),
             # CP-10 slice 2 columns. NULL on a row written before this
@@ -1253,9 +1263,7 @@ def visible_tiers(conn: Connection) -> list[dict[str, Any]]:
 USAGE_MAX_DAYS = 365
 
 
-def unbilled_fleet_total(
-    conn: Connection, *, days: int = SPEND_WINDOW_DAYS
-) -> dict[str, int]:
+def unbilled_fleet_total(conn: Connection, *, days: int = SPEND_WINDOW_DAYS) -> dict[str, int]:
     """Consumption we served and did not bill, over EVERY organization.
 
     🔴 **This read exists because computing it from the page would never
@@ -1909,9 +1917,7 @@ def deployment_visible_orgs(
     ]
 
 
-def deployment_placed_orgs(
-    conn: Connection, *, deployment_id: str
-) -> list[dict[str, Any]]:
+def deployment_placed_orgs(conn: Connection, *, deployment_id: str) -> list[dict[str, Any]]:
     """Every organization PLACED on this deployment, with its owner.
 
     The sibling of :func:`deployment_visible_orgs`, and the difference is the
@@ -3549,3 +3555,67 @@ def provider_credential_revoke(
         {"provider": provider, "org": organization_id},
     )
     return int(result.rowcount or 0)
+
+
+def spend_by_provider(conn: Connection, *, days: int = SPEND_WINDOW_DAYS) -> list[dict[str, Any]]:
+    """What each VENDOR cost us over the window. **Operator-only.**
+
+    🔴 **The other half of the money, and nothing showed it before.** Every
+    other spend read in this module answers "what did a CUSTOMER use". This
+    answers "what do WE owe", which is the number a margin is only meaningful
+    against. `usage_by_org` groups by who consumed. This groups by who invoices
+    us.
+
+    ⚠️ **The vendor is the `model` prefix, which is how the Router resolves
+    it.** `model.split('/', 1)[0]` is the vendor everywhere in this system
+    (CP-4), so the same split answers here. A row whose model carries no slash
+    is grouped under its whole name rather than dropped — an unattributed cost
+    is still a cost, and hiding it would understate the bill.
+
+    ⚠️ **`measured_usd` is the part a vendor actually STATED** (migration 031).
+    The rest is our own arithmetic over `model_profile`, which is only as fresh
+    as the last edit to it. Reconciling against an invoice uses the measured
+    figure. The total is the estimate.
+
+    ⚠️ **BYOK is excluded, and that is the point.** Those tokens ran on the
+    customer's own vendor account (§3.4), so they appear on the customer's bill
+    and never on ours. Counting them here would inflate what we owe.
+
+    ⚠️ **A refusal is not a call and a metering fault is not a cost.** Both are
+    excluded, for the reason `margin_by_tier` gives.
+    """
+    return [
+        {
+            "provider": r.provider,
+            "calls": int(r.calls),
+            "measured_calls": int(r.measured_calls),
+            "cost_usd": Decimal(r.cost_usd),
+            "measured_usd": Decimal(r.measured_usd),
+        }
+        for r in conn.execute(
+            text(
+                """
+                SELECT split_part(u.model, '/', 1) AS provider,
+                       COUNT(u.id) AS calls,
+                       COUNT(u.id) FILTER (
+                           WHERE u.cost_source = 'vendor'
+                       ) AS measured_calls,
+                       COALESCE(SUM(u.provider_cost_usd), 0) AS cost_usd,
+                       COALESCE(SUM(u.provider_cost_usd) FILTER (
+                           WHERE u.cost_source = 'vendor'
+                       ), 0) AS measured_usd
+                FROM usage_event u
+                WHERE u.created_at >= now() - make_interval(days => :days)
+                  AND u.refusal_reason IS NULL
+                  AND u.metering_fault IS NULL
+                  AND u.byok_served = false
+                  AND u.model IS NOT NULL
+                  AND u.model <> ''
+                GROUP BY split_part(u.model, '/', 1)
+                ORDER BY COALESCE(SUM(u.provider_cost_usd), 0) DESC,
+                         split_part(u.model, '/', 1)
+                """
+            ),
+            {"days": days},
+        )
+    ]

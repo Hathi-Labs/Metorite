@@ -27,6 +27,7 @@ import {
   groupByProvider,
   groupLine,
   groupStatus,
+  isConfigured,
   isLive,
   isPlatform,
   wouldRotate,
@@ -389,5 +390,61 @@ describe("what the card must NOT invent", () => {
     // coverage anyway — which is the page's original sin, fenced above.
     expect(ADMIN).toContain("uses their own account");
     expect(ADMIN).toMatch(/function ByokRow\(/);
+  });
+});
+
+// ── Which vendors are actually set up? ─────────────────────────────────────
+//
+// 🔴 ONE rule, two readers: the filter chips and the card sections. A second
+// copy is how a chip count and the list it produces start disagreeing.
+
+describe("isConfigured", () => {
+  it("a live platform key is set up", () => {
+    expect(isConfigured("connected")).toBe(true);
+  });
+
+  it("BYOK-only is set up — somebody's calls run on it", () => {
+    expect(isConfigured("byok-only")).toBe(true);
+  });
+
+  it("🔴 a DROPPED vendor is NOT set up", () => {
+    // Its only key was revoked, so it cannot serve a call — which is the
+    // question this answers. The card still says "dropped" rather than "not
+    // set up", because WHY it is unusable is a different fact.
+    expect(isConfigured("dropped")).toBe(false);
+  });
+
+  it("untouched is not set up", () => {
+    expect(isConfigured("untouched")).toBe(false);
+  });
+});
+
+describe("coverageLine stops listing every vendor", () => {
+  const P = (provider: string) => ({
+    id: provider, provider, label: null, apiBase: null, orgSlug: null,
+    createdAt: "2026-09-19", revokedAt: null,
+    health: "unknown" as const, lastCheckedAt: null, healthNote: null,
+  });
+
+  it("names them while the list is short enough to read", () => {
+    const line = coverageLine([P("anthropic"), P("deepseek")]);
+    expect(line).toContain("anthropic");
+    expect(line).toContain("deepseek");
+    expect(line).not.toContain("including");
+  });
+
+  it("🔴 counts instead of listing once the list becomes a wall", () => {
+    // Measured 2026-09-19: this drew a five-line paragraph of slugs above the
+    // page, repeating what every card below already says.
+    const many = ["a", "b", "c", "d", "e", "f"].map(P);
+    const line = coverageLine(many);
+    expect(line).toContain("6 vendors");
+    expect(line).toContain("including");
+    // The tail is NOT named — that is the whole point.
+    expect(line).not.toContain("f,");
+  });
+
+  it("the zero case still says every AI call fails", () => {
+    expect(coverageLine([])).toContain("every AI call fails");
   });
 });
