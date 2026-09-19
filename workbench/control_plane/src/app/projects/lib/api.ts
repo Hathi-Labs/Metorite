@@ -19,6 +19,23 @@ export interface ArchiveResult {
   open_tasks: number;
 }
 
+/**
+ * What `DELETE /nodes/{id}` reports back.
+ *
+ * ⚠️ **These counts are read by the server BEFORE the delete and are the only
+ * honest ones available** — afterwards the rows are gone. They are what the
+ * toast reports. They are NOT what the confirmation dialog shows: that has to
+ * ask before the write, which is `summary()`'s job.
+ *
+ * `cascaded.projects` INCLUDES the project named in the call, so it is one
+ * larger than the "subprojects" the dialog counted. The wording on each side
+ * says which it means.
+ */
+export interface DeleteProjectResult {
+  deleted: string;
+  cascaded: { projects: number; tasks: number; grants: number };
+}
+
 export interface ProjectRow {
   id: string;
   name: string;
@@ -988,6 +1005,16 @@ export const projectsApi = {
 
   unarchiveProject: (projectId: string) =>
     call<ArchiveResult>(`nodes/${projectId}/unarchive`, { method: "POST" }),
+
+  /**
+   * H-8 — the unrecoverable cascade, given a control at last.
+   *
+   * ⚠️ Every caller must go through `DeleteProjectDialog`. There is no
+   * confirmation on this side and none on the server's: the route deletes what
+   * it is given. The dialog is the whole guard.
+   */
+  deleteProject: (projectId: string) =>
+    call<DeleteProjectResult>(`nodes/${projectId}`, { method: "DELETE" }),
 
   /**
    * The directory-backed assignee picker (WS-28e, people_center_app.md §6.1).

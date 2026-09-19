@@ -42,16 +42,22 @@
  * header menu and the command palette but not from the row somebody actually
  * right-clicks (owner report, 2026-09-16).
  *
- * ## What this deliberately does NOT offer, and why
+ * ## Delete, and why it is last
  *
- * **Delete.** `DELETE /projects/nodes/{id}` exists and is an unrecoverable
- * cascade over the subtree, every task and every grant. It has never had a
- * control in the UI, and this ticket does not give it one — *"archive is the
- * default affordance and delete is deliberately harder to reach"* (spec §9.8.4)
- * is satisfied most strongly by archive being reachable and delete staying
- * exactly as unreachable as it was. Adding both in one slice would put a
- * one-click irreversible cascade next to its reversible twin, in a menu people
- * are still learning.
+ * `DELETE /projects/nodes/{id}` is an unrecoverable cascade over the subtree,
+ * every task and every grant. It had no control in the UI at all until this
+ * slice, which satisfied *"archive is the default affordance and delete is
+ * deliberately harder to reach"* (spec §9.8.4) by making delete unreachable —
+ * and also left a member unable to remove a project they created by mistake.
+ *
+ * So it is offered, and the ranking is the whole design. Delete is the LAST
+ * entry, alone in its own group below Archive, and it carries `danger` so it
+ * draws in the destructive colour. It opens a dialog that reads the real
+ * subtree counts before asking, and will not enable its button until the
+ * project's name is typed back. Archive is one click; delete is a menu, a
+ * dialog, a count and a name. That distance IS the ranking the spec asks for.
+ *
+ * ## What this deliberately does NOT offer, and why
  *
  * **Copy link, Favourite, Duplicate, Sharing.** Four entries the owner's
  * reference product carries that we have no feature behind: selection lives in
@@ -91,6 +97,12 @@ export type ProjectMenuItem =
       label: string;
       icon?: string;
       checked?: boolean;
+      /**
+       * Draw this entry in the destructive colour. `ContextMenu` has carried
+       * the flag since it was promoted; nothing on a project menu had earned
+       * it until Delete.
+       */
+      danger?: boolean;
       onSelect: () => void;
     }
   | { kind: "label"; label: string }
@@ -103,6 +115,17 @@ export interface ProjectMenuHandlers {
   onUnarchive: (project: ProjectRow) => void;
   /** Commit a new name. The surface owns the write, the toast and the refetch. */
   onRename: (project: ProjectRow, name: string) => void;
+  /**
+   * Open the delete confirmation for this project.
+   *
+   * ⚠️ **It opens a dialog. It does NOT delete.** The cascade is unrecoverable
+   * and the counts are only knowable from a read, so the surface asks first —
+   * see this module's header for why the ranking matters more than the entry.
+   *
+   * Optional: a tree the caller cannot write to omits it, and the entry does
+   * not appear at all.
+   */
+  onDelete?: (project: ProjectRow) => void;
 }
 
 /**
@@ -324,6 +347,23 @@ export function projectMenuItems(
   }
 
   groups.push(archiveItems(project, handlers, archived));
+
+  // LAST, and alone in its group, so a separator always stands between Delete
+  // and the reversible act above it. Every other group here is conditional,
+  // which is why this cannot be appended to the archive group and trusted to
+  // look separated — on a folder's menu the two would have been adjacent.
+  if (handlers.onDelete) {
+    const onDelete = handlers.onDelete;
+    groups.push([
+      {
+        kind: "item",
+        label: "Delete",
+        icon: "Trash2",
+        danger: true,
+        onSelect: () => onDelete(project),
+      },
+    ]);
+  }
 
   const items: ProjectMenuItem[] = [];
   for (const group of groups) {

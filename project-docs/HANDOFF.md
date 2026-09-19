@@ -761,18 +761,69 @@ line — never reclaim a number by deleting the other entry.
   so CLAUDE.md §5 says record it, do not refactor it
 - **Added:** 2026-08-14 · PR #439
 
+### H-120 · "Move to…" opens NOTHING on a phone · [AGENT]
+- **Check:** `grep -n "if (isMobile) {" workbench/control_plane/src/app/projects/page.tsx`
+  → note the line. Then find `movingNode ? (`. It sits **after** that early
+  return, so the phone branch never renders it.
+- **Why it is invisible.** The menu entry is drawn, the click lands, and the
+  handler sets `movingNode`. No dialog exists in the phone tree to render it.
+  Nothing errors and nothing appears. A member reads it as a dead menu item.
+- **Measured 2026-09-19** in the visual rig, at 390px. The row menu opens, the
+  drawer closes, and the screen does not change.
+- **The fix, and the trap in it.** Move the mount into `overlays`, which BOTH
+  returns render. `DeleteProjectDialog` is mounted there for this reason and
+  its comment records it. ⚠️ On a phone the tree IS the drawer sheet, so the
+  entry must also close the drawer, or the dialog opens behind it.
+- **⚠️ Check every other dialog in the desktop return the same way.** This is
+  one instance of a pattern, not one bug. Nothing in the tree tests layout.
+- **Authority:** `app/projects/page.tsx` · `DESIGN_SYSTEM.md` §8 · H-8
+- **Added:** 2026-09-19 · found while building the Delete affordance (H-8).
+
+### H-119 · Decide which lane closes a task when a project STOPS · [OWNER]
+- **Check:** `grep -n "bulk" workbench/control_plane/src/app/projects/page.tsx`
+  → no stop-time bulk close means this is still open.
+- **Why an owner.** D-PM-26 says a stop must OFFER to close the open tasks. The
+  offer needs a lane, and the lane carries a meaning. **Done** and **Cancelled**
+  read differently in every report we send.
+- **Why it cannot just be built.** `POST /projects/tasks/bulk` takes a lane
+  **name**. Migration 196 lets each project own its lanes. So one name cannot
+  close a subtree, and a server-side read must choose per project.
+- **The two shapes.** (1) The server picks each project's first closing-category
+  lane. (2) A stop means cancelled, and the category picks the lane. Shape 2 is
+  a product call.
+- **Authority:** D-PM-26 · `specs/project_management_app.md` §9.8.4 · H-8
+- **Added:** 2026-09-19 · found while building the Delete affordance (H-8).
+
 ### H-8 · Still owed on WS-27bg slice 2, and WS-27bg slice 3 / WS-27bh unbuilt · [AGENT]
 - **Check:** the WS-27 row in `work_plan.md` §2 — it names what is built. Read
   it rather than this entry; this entry only says *look there*.
-- **Why:** A project still cannot be **renamed**; the bulk-close-on-Stop offer
-  and the Delete affordance are unbuilt. Slice 3 (overdue suppression across four
-  predicates) and WS-27bh (task-type chip, derived urgency + the "Urgent" →
-  "Critical" relabel, recurring indicator, source badge) are queued behind them.
-  ⚠️ WS-27bh's source badge must **promote** `/tasks`' existing `SourceBadge`,
-  not author a fourth copy.
+- **Why:** Two of the three acts this entry named are now built. **Rename**
+  landed earlier, and the entry did not record it. **Delete** landed on
+  2026-09-19: the row menu offers it last, alone, in the destructive colour,
+  and `DeleteProjectDialog` reads the subtree counts and takes the project
+  name back before it writes.
+- **⚠️ What is still owed here is the bulk close on Stop, and it is BLOCKED.**
+  D-PM-26 says that a stop must offer to close the open tasks. The offer cannot
+  be built on the endpoints we have. `POST /projects/tasks/bulk` takes a lane
+  **name**, and migration 196 lets each project own its lanes. So one name
+  cannot close a subtree.
+- **The decision somebody must take.** Which lane closes a task when a project
+  stops. Two shapes:
+  1. The server picks each project's first lane with a closing category. This
+     needs a new endpoint and no decision from the owner.
+  2. Stopping means **cancelled**, not **done**, and the lane is chosen by that
+     category. This is a product call, because the two read differently in
+     every report.
+  Ask before you build either. See **H-119**.
+- **Also still unbuilt:** slice 3 (overdue suppression across four predicates)
+  and WS-27bh (task-type chip, derived urgency and the "Urgent" → "Critical"
+  relabel, recurring indicator, source badge).
+  ⚠️ WS-27bh's source badge must **promote** `/tasks`' existing `SourceBadge`.
+  Do not author a fourth copy.
 - **Authority:** `work_plan.md` §2 WS-27 row · `specs/project_management_app.md`
-  §9.9
-- **Added:** 2026-08-14 · session that built WS-27bj
+  §9.8.4 · §9.9 · D-PM-26
+- **Added:** 2026-08-14 · session that built WS-27bj. *(Rewritten 2026-09-19:
+  rename and delete are done, and the bulk close turned out to be blocked.)*
 
 ### H-10 · HALF the R1 blind window is still open — the cross-branch collision · [AGENT]
 - **Check:** `rg -n "merge_group|merge-base origin/main" .github/workflows/pr-check.yml`
@@ -2395,20 +2446,22 @@ line — never reclaim a number by deleting the other entry.
   lint there would fail correct code and grow an allowlist. The asyncpg
   suites are the answer for that half.
 
-### H-113 · Wave 6 is next, and §9.12.9 needs two columns first · [AGENT]
-- **Check:** `grep -c "follow_up_at" infra/postgres/*.sql | grep -v ":0"`.
-  No output means this is unbuilt.
-- **What it is.** §9.12.9, follow-ups. The owner's shape: *"you are blocked on
-  somebody, so you set a date, and it comes back to you."*
-- **⚠️ It has two halves and they live in different places.** My reminder is
-  mine, so it belongs on `pm_task_personal`. That is the per-member overlay
-  which already holds `defer`. A nudge to the other person is shared, and it
-  goes through the notification path that exists. One place for both gets one
-  of them wrong.
-- **The surface is the triage rail, which exists.** A `Waiting on` section
-  lists what is due back, and what has returned.
-- **The one rule to keep.** The task's shared status never changes. The status
-  is the team's, and the follow-up is mine.
+### H-113 · Wave 6 needs only its NUDGE. The columns shipped in 188 · [AGENT]
+- **⚠️ This entry was wrong, and the correction is the point.** It said
+  §9.12.9 needs two new columns, and its Check looked for `follow_up_at`. That
+  name never existed. Migration **188** already shipped `waiting_on`,
+  `delegated_at`, `expected_by` and `last_nudged_at` on `pm_task_personal`,
+  with a partial index built for the "what is due back" read.
+- **Check:** `grep -n "last_nudged_at" apps/services/gateway/gateway/routes/projects/personal.py`
+  → the field is accepted and **nothing writes it**. That is the open half.
+- **What is already built.** The Tasks app sets and draws all of it —
+  `DelegateDialog`, `WaitingForView` and `ItemDetail` carry the date, the
+  person and the overdue badge.
+- **What is open.** The optional nudge. One notification to the person you
+  wait on, through `routes/projects/notifications.py` `notify()`, which
+  exists. It is off by default, and it stamps `last_nudged_at` once.
+  ⚠️ In-app only. A mail to a real person is owner-gated (CLAUDE.md §3a).
+- **Corrected:** 2026-09-19 · found while auditing wave 6 for dispatch.
 
 ### H-110 · Operator OTP sends now. Two dashboard acts are still unverified · [OWNER]
 - **Check:** ask Supabase project `uttxlicdccfkramtjfpi` for an OTP at an address
