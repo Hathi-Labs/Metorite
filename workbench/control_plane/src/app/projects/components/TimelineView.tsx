@@ -55,9 +55,10 @@ import { TaskMeta } from "@/components/TaskMeta";
 import Button from "@/components/ui/Button";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { StatusRow, TagRow, TaskRow } from "../lib/api";
+import type { StatusRow, TagRow,
+  TaskTypeRow, TaskRow } from "../lib/api";
 import { accentForGroup } from "../lib/accent";
-import { tagColours, visibleChips } from "../lib/card";
+import { tagColours, typeFacts, visibleChips } from "../lib/card";
 import type { GroupBy, TaskGroup } from "../lib/grouping";
 import { anchorDay, dayKey, rescheduleTo, shiftDay } from "../lib/calendar";
 import {
@@ -128,6 +129,12 @@ const LEFT_COL = 340;
  * and the priority vocabulary are the same ones every other surface reads —
  * this is a filter on the shared seam, not a second chip vocabulary.
  */
+// ⚠️ The rail draws TWO chips and filters the rest, so a type chip cannot
+// survive even though `visibleChips` is handed the registry. That is
+// deliberate — a timeline bar has room for urgency and a date, not a
+// vocabulary. The registry is still passed so all four chip surfaces call
+// `visibleChips` identically and `card.test.ts`'s scan stays a simple rule;
+// if this list ever grows to include "type", it works with no other change.
 const RAIL_CHIPS: readonly string[] = ["importance", "due"];
 /** Two header tiers, each ROW_H/2-ish. Kept as one number the chart and the
  *  task column both read, so the two cannot start at different heights. */
@@ -198,6 +205,17 @@ interface Props {
   /** S6 — the project's tag registry, so a tag chip is the colour its owner
    *  chose here too. One tag, one colour, on every surface of the project. */
   tags?: readonly TagRow[];
+  /**
+   * WS-27bh — the root's task types.
+   *
+   * ⚠️ **The rail does NOT draw a type chip today**, and this prop is
+   * still correct to pass: `RAIL_CHIPS` filters the chip strip down to
+   * urgency and a date, so the registry arrives and is discarded. It is
+   * threaded anyway so all four chip surfaces call `visibleChips`
+   * identically, which is what lets `card.test.ts`'s scan stay one rule.
+   * A reader of the page's call site has no other way to learn this.
+   */
+  taskTypes?: readonly TaskTypeRow[];
   today?: string;
   /**
    * S3 — the zoom and the span of dates the page FETCHED at it.
@@ -248,6 +266,7 @@ export function TimelineView({
   today,
   shownFields,
   tags,
+  taskTypes,
   zoom = "month",
   window: fetched,
   onZoom,
@@ -339,6 +358,7 @@ export function TimelineView({
 
   // Once per registry, not once per bar.
   const tagHues = useMemo(() => tagColours(tags ?? []), [tags]);
+  const typeHues = useMemo(() => typeFacts(taskTypes ?? []), [taskTypes]);
   /**
    * Dated tasks plus the unscheduled ones — every task that gets a ROW.
    *
@@ -896,11 +916,12 @@ export function TimelineView({
                 <div className="shrink-0">
                   <TaskMeta
                     chips={visibleChips(
-                      row.task,
-                      shownFields,
-                      undefined,
-                      tagHues
-                    ).filter((chip) => RAIL_CHIPS.includes(chip.key))}
+            row.task,
+            shownFields,
+            undefined,
+            tagHues,
+            typeHues
+          ).filter((chip) => RAIL_CHIPS.includes(chip.key))}
                   />
                 </div>
               </div>

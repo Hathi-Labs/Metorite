@@ -31,11 +31,11 @@ import { AvatarStack } from "@/components/TaskMeta";
 import { Input } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import { Checkbox } from "@/components/ui/Checkbox";
-import { durationLabel } from "@/lib/taskCard";
+import { TASK_SOURCES, type TaskSource, durationLabel } from "@/lib/taskCard";
 import { useMemo, useRef, useState } from "react";
 
 import { accentForStatus } from "../lib/accent";
-import type { FieldRow, StatusRow, TaskRow } from "../lib/api";
+import type { FieldRow, StatusRow, TaskRow, TaskTypeRow } from "../lib/api";
 import { projectsApi } from "../lib/api";
 import { parseAssignees } from "../lib/assignees";
 import { sortForView } from "../lib/board";
@@ -77,6 +77,16 @@ interface Props {
   statuses: StatusRow[];
   /** WS-27l — the root's custom field definitions, for custom columns. */
   fields: FieldRow[];
+  /**
+   * WS-27bh — the root's task types.
+   *
+   * ⚠️ Needed because `type` joined `DEFAULT_SHOWN`, so this table now draws
+   * a Type column for a view that expressed no opinion. Without the registry
+   * the cell falls through to the custom-field arm and renders "—" on every
+   * row: a column of nothing, which reads as missing DATA rather than a
+   * missing prop.
+   */
+  taskTypes?: readonly TaskTypeRow[];
   /** WS-27x — the view's shown fields; columns are derived from it. */
   shownFields: readonly string[];
   /** Header sort — held by the page, which owns the fetch it drives. */
@@ -92,6 +102,7 @@ interface Props {
 
 export function TableView({
   groups,
+  taskTypes,
   groupBy,
   statuses,
   fields,
@@ -115,6 +126,15 @@ export function TableView({
   const statusById = useMemo(
     () => new Map(statuses.map((s) => [s.id, s])),
     [statuses]
+  );
+
+  // A Map, like `statusById` above. The first version ran `.find()` inside
+  // `readOnlyCell`, i.e. once per row per render — O(rows × types). The cost
+  // is small today; the inconsistency beside a Map four lines up is the part
+  // worth fixing.
+  const typeById = useMemo(
+    () => new Map((taskTypes ?? []).map((t) => [t.id, t])),
+    [taskTypes]
   );
 
   const columns = useMemo(
@@ -297,6 +317,33 @@ export function TableView({
           "—"
         );
       }
+      case "type": {
+        // Name, not uuid — and no name rather than the uuid when the type was
+        // deleted after the task was written. `taskFacts` takes the same
+        // decision for the card chip; both refuse to render an id.
+        const type = task.type_id ? typeById.get(task.type_id) : undefined;
+        return type ? type.name : "—";
+      }
+      case "source":
+        // ⚠️ `source` joined FIELD_KEYS, so the Fields menu offers a Source
+        // column. Without this arm the switch fell to the custom-field
+        // default and drew "—" on every row, while the CSV export of the
+        // SAME view printed the real word — the screen and the file
+        // disagreeing about one column. The stored word, not a label, for
+        // `importance`'s reason: the display vocabulary lives in the chip.
+        // ⚠️ The chip's LABEL, not the stored word, and never "—".
+        //
+        // `readOnlyCell` renders `importanceLabel(...)` four arms above, so
+        // "screen shows the label, file shows the stored value" is already
+        // this switch's rule and `export._render` already obeys it. The first
+        // version printed the raw column, so the table read "import" beside a
+        // chip reading "Imported" — and mapped `manual` to "—", which in
+        // every other arm here means NO VALUE. `source` is NOT NULL DEFAULT
+        // 'manual', so that made "manual" and "missing" indistinguishable.
+        //
+        // An unknown future value reads as "Manual" rather than leaking the
+        // raw column, which matches the chip's silence for one.
+        return TASK_SOURCES[task.source as TaskSource]?.label ?? "Manual";
       case "assignees":
         return task.assignees?.length ? (
           <AvatarStack people={task.assignees} label={personLabel} />

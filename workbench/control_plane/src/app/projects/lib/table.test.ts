@@ -112,6 +112,9 @@ describe("tableColumns", () => {
   it("draws the default set in the vocabulary's order", () => {
     expect(tableColumns(DEFAULT_SHOWN, []).map((c) => c.key)).toEqual([
       "status",
+      // ⚠️ No `type` and no `source`. Both chips exist, and neither key is in
+      // DEFAULT_SHOWN — nothing writes `pm_tasks.type_id`, so the columns
+      // would read "—" on every row. See `shownFields.ts` for the argument.
       "assignees",
       "due_at",
       "importance",

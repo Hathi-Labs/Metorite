@@ -27,7 +27,8 @@ import { TaskMeta } from "@/components/TaskMeta";
 import Button from "@/components/ui/Button";
 import { useMemo, useState } from "react";
 
-import type { TagRow, TaskRow } from "../lib/api";
+import type { TagRow,
+  TaskTypeRow, TaskRow } from "../lib/api";
 import { projectsApi } from "../lib/api";
 import {
   type CalendarGrid,
@@ -40,7 +41,7 @@ import {
   placeTasks,
   rescheduleTo,
 } from "../lib/calendar";
-import { tagColours, visibleChips } from "../lib/card";
+import { tagColours, typeFacts, visibleChips } from "../lib/card";
 import { quickAddPrefill } from "../lib/quickAdd";
 import { QuickAdd } from "./QuickAdd";
 import { useFlash } from "./useFlash";
@@ -73,6 +74,8 @@ interface Props {
   /** S6 — the project's tag registry, so a tag chip is the colour its owner
    *  chose here too. One tag, one colour, on every surface of the project. */
   tags?: readonly TagRow[];
+  /** WS-27bh — the root's task types, so a card can name what it IS. */
+  taskTypes?: readonly TaskTypeRow[];
   projectId: string;
   onCreated: (task: TaskRow) => void;
   onSelect: (task: TaskRow) => void;
@@ -94,6 +97,7 @@ export function CalendarView({
   projectId,
   shownFields,
   tags,
+  taskTypes,
   onCreated,
   onSelect,
   onMove,
@@ -106,6 +110,7 @@ export function CalendarView({
   const { flash, attach } = useFlash();
   // Once per registry, not once per card.
   const tagHues = useMemo(() => tagColours(tags ?? []), [tags]);
+  const typeHues = useMemo(() => typeFacts(taskTypes ?? []), [taskTypes]);
 
   /** Days the viewer has unfolded. Per DAY rather than per cell index, so
    *  stepping to the next period does not carry an expansion onto whatever
@@ -288,7 +293,15 @@ export function CalendarView({
                           task,
                           shownFields,
                           undefined,
-                          tagHues
+                          tagHues,
+                          // ⚠️ The fifth argument. Without it this surface
+                          // built `typeHues` and passed nothing, so the type
+                          // chip drew on the board and the list and NEVER on
+                          // the calendar. `visibleChips`' last parameter is
+                          // optional, so tsc cannot catch the omission, and
+                          // `noUnusedLocals` is off so the dead memo was
+                          // silent too. Found by review, 2026-09-19.
+                          typeHues
                         )}
                       />
                     </button>
