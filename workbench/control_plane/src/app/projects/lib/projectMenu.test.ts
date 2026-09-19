@@ -84,14 +84,100 @@ describe("projectMenuItems", () => {
     expect(labels(projectMenuItems(filed, handlers()))).not.toContain("Archive");
   });
 
-  it("does not offer Delete", () => {
-    // Not an oversight. DELETE is an unrecoverable cascade over the subtree,
-    // every task and every grant, and it has never had a control. Archive is
-    // the reversible twin and is the affordance this slice adds; putting both
-    // in one new menu is how somebody loses a department.
+  // ── Delete (H-8) ─────────────────────────────────────────────
+
+  it("does not offer Delete to a surface that supplied no handler", () => {
+    // A read-only tree gets a menu of exactly what it can do — the rule every
+    // optional in this module follows. The entry is dropped, not greyed.
     expect(labels(projectMenuItems(project(), handlers()))).not.toContain(
       "Delete"
     );
+  });
+
+  it("offers Delete LAST, and behind a separator", () => {
+    // The ranking IS the design (spec §9.8.4): archive is the default
+    // affordance and delete is the harder one to reach. An entry that drifted
+    // up next to Archive would put an unrecoverable cascade beside its
+    // reversible twin, which is the arrangement this ordering exists to avoid.
+    const items = projectMenuItems(project(), { ...handlers(), onDelete: vi.fn() });
+    const last = items[items.length - 1];
+    expect(last.kind).toBe("item");
+    expect((last as { label: string }).label).toBe("Delete");
+    expect(items[items.length - 2]?.kind).toBe("sep");
+  });
+
+  it("⚠️ separates Delete even on a menu with no other optional groups", () => {
+    // The failing arrangement this pins: a folder's menu has no create
+    // options and no run state, so appending Delete to the archive GROUP
+    // instead of its own would have drawn Archive and Delete adjacent, with
+    // no rule between them — on the one menu where the mistake is invisible
+    // in the common case.
+    const items = projectMenuItems(
+      project(),
+      { ...handlers(), onDelete: vi.fn() },
+      undefined,
+      "folder"
+    );
+    const names = labels(items);
+    expect(names).toEqual(["Archive", "Delete"]);
+    const archiveAt = items.findIndex(
+      (i) => i.kind === "item" && (i as { label: string }).label === "Archive"
+    );
+    const deleteAt = items.findIndex(
+      (i) => i.kind === "item" && (i as { label: string }).label === "Delete"
+    );
+    expect(items[archiveAt + 1]?.kind).toBe("sep");
+    expect(deleteAt).toBe(archiveAt + 2);
+  });
+
+  it("marks Delete as destructive, and marks nothing else", () => {
+    // `ContextMenu` draws `danger` in the destructive colour. A second entry
+    // carrying it would spend the one signal the menu has.
+    const items = projectMenuItems(project(), { ...handlers(), onDelete: vi.fn() });
+    const dangerous = items
+      .filter((i) => i.kind === "item" && (i as { danger?: boolean }).danger)
+      .map((i) => (i as { label: string }).label);
+    expect(dangerous).toEqual(["Delete"]);
+  });
+
+  it("hands Delete the project under the pointer, and does not delete on build", () => {
+    // Building a menu must never perform the act. The handler is called on
+    // select and at no other time.
+    const onDelete = vi.fn();
+    const row = project({ id: "p9" });
+    const items = projectMenuItems(row, { ...handlers(), onDelete });
+    expect(onDelete).not.toHaveBeenCalled();
+    const entry = items.find(
+      (i) => i.kind === "item" && (i as { label: string }).label === "Delete"
+    );
+    (entry as { onSelect: () => void }).onSelect();
+    expect(onDelete).toHaveBeenCalledWith(row, "project");
+  });
+
+  it("⚠️ hands Delete the row's LEVEL, so a space is not called a project", () => {
+    // Owner directive 2026-08-31: a space is not a project. The row alone
+    // cannot say which it is — a level is kind PLUS depth — so the menu, which
+    // knows the depth, has to carry it. Without this the confirmation titles
+    // the largest destructive act in the product "Delete project".
+    for (const level of ["space", "folder", "project", "subproject"] as const) {
+      const onDelete = vi.fn();
+      const row = project();
+      const items = projectMenuItems(row, { ...handlers(), onDelete }, undefined, level);
+      const entry = items.find(
+        (i) => i.kind === "item" && (i as { label: string }).label === "Delete"
+      );
+      (entry as { onSelect: () => void }).onSelect();
+      expect(onDelete).toHaveBeenCalledWith(row, level);
+    }
+  });
+
+  it("offers Delete on an archived project too", () => {
+    // Filing a project is not a reason to lose the ability to remove it, and
+    // an archived project is the likeliest one somebody wants gone.
+    const filed = project({ archived_at: "2026-09-01T00:00:00Z" });
+    const names = labels(projectMenuItems(filed, { ...handlers(), onDelete: vi.fn() }));
+    expect(names).toContain("Unarchive");
+    expect(names).toContain("Delete");
   });
 
   it("passes the project under the pointer to every handler, and nothing else", () => {

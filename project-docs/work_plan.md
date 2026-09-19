@@ -406,7 +406,7 @@ promote an app by granting its feature.**
 | Personal Center | **Calendar** | WS-21 · **WS-39** | Its own pane since D54. Behaviour (F2/F3, Focus Shield, timeboxing) stays WS-21. ⚠️ `gtd_time_blocks` and `calendar_accounts` **do not exist** — two specs cite them as built |
 | Personal Center | My Profile | WS-28 | — |
 | Personal Center | My Access | — | — |
-| Apps | **Projects** | WS-27 | Rename / bulk-close / delete unbuilt (**H-8**) · org-wide vocabulary admin surface missing (**H-4**) · delta-feed cursor gap (**H-7**) · 🆕 **WS-27bk** — the nine-feature plan, spec §9.12, minted 2026-08-31, **nothing built**. Four of them are UI-only, because the endpoints already exist. Assign-to-AI is PARKED by the owner |
+| Apps | **Projects** | WS-27 | Rename and delete **BUILT** (delete 2026-09-19, PR #298) · bulk-close-on-Stop **BLOCKED** on which lane a stop closes into (**H-119**) · 🔴 the delete cascade is authorised by READ visibility alone (**H-121**) (**H-8**) · org-wide vocabulary admin surface missing (**H-4**) · delta-feed cursor gap (**H-7**) · 🆕 **WS-27bk** — the nine-feature plan, spec §9.12, minted 2026-08-31, **nothing built**. Four of them are UI-only, because the endpoints already exist. Assign-to-AI is PARKED by the owner |
 | AI Studio | **Chat** | WS-8 · WS-10 | S1 `subject:` compartments |
 | Admin | Approvals | WS-1 | `ACTION_BROKER_ENFORCE` **unsafe** until BO-1d |
 | Admin | **Organisation** | WS-34 · WS-32 | **OI-2 is a hard prerequisite for customer #2** (org logo is cross-tenant today) · theme-switch check owed (**H-19**) |
@@ -1131,10 +1131,15 @@ replacing the folder glyph that carried no information in a tree where every row
 with inherited states at half emphasis. A right-click menu on the tree (the promoted
 `ContextMenu`) gives the run-state picker and Archive/Unarchive on the promise-bound toast —
 **the first project-editing control this app has ever had**. 🔴 **Narrowed with reasons, not
-silently**: Delete is deliberately NOT added (it is an unrecoverable cascade that has never had
-a control, so "archive is the default affordance and delete is harder to reach" is satisfied
-most strongly by leaving it unreachable); the bulk-close-on-Stop offer is deferred to its own
-slice because a modal + bulk call + a count shown before agreement is not a menu item; **rename
+silently**: 🟢 **Delete WAS deliberately left off the menu, and that narrowing is
+SUPERSEDED as of 2026-09-19 (H-8, PR #298) — Delete is on the menu now.** Leaving it
+unreachable also left a member unable to remove a project they created by mistake. The ranking
+is kept and the DISTANCE carries it: archive is one click, and delete is a menu entry that is
+last and alone, then a dialog, then a count, then the project name typed back. ⚠️ The
+cascade is still authorised by READ visibility alone, which is **H-121** and is the app's
+model rather than one route's hole. The bulk-close-on-Stop offer is deferred to its own
+slice because a modal + bulk call + a count shown before agreement is not a menu item, and it
+is now **BLOCKED** on which lane a stop closes into (**H-119**); **rename
 was still owed at this point and is now BUILT** — `ws-27bg-project-rename` (**PR #47**, built
 2026-08-21, rebased 2026-08-25, **not merged and not deployed**) adds inline rename on the tree
 row; frontend only, no migration and no API change, because `PATCH /projects/nodes/{id}` already
