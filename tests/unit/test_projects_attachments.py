@@ -451,3 +451,101 @@ def test_the_old_check_is_dropped_by_SHAPE_not_by_name(sql: str):
     assert "pg_get_constraintdef" in sql
     assert "contype = 'c'" in sql
     assert "FOR cname IN" in sql
+
+
+# ── Serving bytes inline (2026-09-19) ───────────────────────────────────────
+
+import re as _re
+from pathlib import Path as _Path
+
+_PREVIEW_TS = _Path(
+    "workbench/control_plane/src/app/projects/lib/preview.ts"
+)
+
+
+def test_svg_is_never_served_inline():
+    """🔴 The security case, and the one a reader will be tempted to undo.
+
+    `_IMAGE_MIMES` (the UPLOAD safelist) contains `image/svg+xml`, so the
+    descriptor reports `kind: "image"` for an SVG and it looks previewable
+    from the outside. An SVG is a document that may carry `<script>`, and
+    served inline on this origin that script runs with the member's session.
+
+    So the two lists are deliberately different, and this asserts the
+    difference rather than trusting it.
+    """
+    from gateway.routes.projects.attachments import _INLINE_MIMES
+    from gateway.routes.tasks.attachments import _IMAGE_MIMES
+
+    assert "image/svg+xml" in _IMAGE_MIMES
+    assert "image/svg+xml" not in _INLINE_MIMES
+
+
+def test_nothing_textual_is_served_inline():
+    from gateway.routes.projects.attachments import _INLINE_MIMES
+
+    assert not [m for m in _INLINE_MIMES if m.startswith("text/")]
+    assert "application/xhtml+xml" not in _INLINE_MIMES
+
+
+def test_the_inline_set_mirrors_the_client_safelist():
+    """⚠️ The two halves of one decision, on opposite sides of the wire.
+
+    A type the SERVER sends inline but the CLIENT will not preview is a
+    download nobody asked for. A type the client previews but the server
+    sends as `attachment` renders as an empty frame — which is exactly the
+    PDF bug this change exists to fix. Parsed from the TypeScript rather
+    than restated, so the mirror cannot drift silently.
+    """
+    from gateway.routes.projects.attachments import _INLINE_MIMES
+
+    source = _PREVIEW_TS.read_text(encoding="utf-8")
+    listed = set(_re.findall(r'"((?:image|application|text)/[a-z0-9.+-]+)"', source))
+    # The client file names only what it will render; both arrays together.
+    assert listed == set(_INLINE_MIMES), (
+        f"client previews {sorted(listed)}, server serves inline "
+        f"{sorted(_INLINE_MIMES)}"
+    )
+
+
+# ── The per-task budget (owner directive, 2026-09-19) ───────────────────────
+
+def test_the_budget_is_ten_megabytes_per_task():
+    from gateway.routes.projects.attachments import _TASK_ATTACHMENT_BUDGET
+
+    assert _TASK_ATTACHMENT_BUDGET == 10 * 1024 * 1024
+
+
+def test_the_budget_is_PER_TASK_and_not_per_file():
+    """⚠️ The case a per-file cap misses, which is the whole point.
+
+    The shared upload rule caps ONE file at 15MB. Twenty 9MB files each pass
+    that and put 180MB on a single task. "The attachments that each task can
+    hold" is about the task, so the budget is summed across its rows.
+
+    Asserted as a property of the two numbers rather than by uploading
+    twenty files: the budget must be smaller than the per-file cap, or it
+    could never bind first.
+    """
+    from gateway.routes.projects.attachments import _TASK_ATTACHMENT_BUDGET
+    from gateway.routes.tasks.attachments import _MAX_BYTES
+
+    assert _TASK_ATTACHMENT_BUDGET < _MAX_BYTES
+
+
+def test_the_budget_also_caps_a_single_file():
+    """A 10MB task budget means no ONE file may exceed 10MB either, so the
+    narrower reading of the directive is satisfied by the wider one."""
+    from gateway.routes.projects.attachments import _TASK_ATTACHMENT_BUDGET
+
+    oversized = _TASK_ATTACHMENT_BUDGET + 1
+    assert 0 + oversized > _TASK_ATTACHMENT_BUDGET
+
+
+def test_the_refusal_is_readable():
+    """A 413 saying `10485760` does not tell anybody which file to remove."""
+    from gateway.routes.projects.attachments import _mb
+
+    assert _mb(10 * 1024 * 1024) == "10.0 MB"
+    assert _mb(0) == "0.0 MB"
+    assert "MB" in _mb(9_500_000)

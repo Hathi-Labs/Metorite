@@ -87,12 +87,14 @@ import {
   watchersApi,
 } from "../lib/api";
 import { taskDeepLink, taskRef } from "../lib/card";
+import { previewKind, readableSize } from "../lib/preview";
 import { isAutomated } from "../lib/lifecycle";
 import { AssigneePicker } from "./AssigneePicker";
 import { CustomFieldValues } from "./CustomFieldValues";
 import { TagPicker } from "./TagPicker";
 import { RepeatEditor } from "./RepeatEditor";
 import { RelationsBlock } from "./RelationsBlock";
+import { AttachmentViewer } from "./AttachmentViewer";
 import { changeLabel } from "../lib/customFields";
 import {
   assigneeLabel,
@@ -287,6 +289,10 @@ export function TaskPanel({
    * the same number of pixels.
    */
   const twoColumn = mode === "full";
+
+  //: The attachment whose viewer is open. One at a time — two open previews
+  //: is two things asking for the same attention.
+  const [viewing, setViewing] = useState<AttachmentRow | null>(null);
 
   const [timeline, setTimeline] = useState<ActivityRow[]>([]);
   const [comment, setComment] = useState("");
@@ -939,51 +945,72 @@ export function TaskPanel({
               Files{files.length ? ` · ${files.length}` : ""}
             </SectionLabel>
             <div className="space-y-1">
-              {files.map((f) => (
-                <div
-                  key={f.attachment_id}
-                  className="flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1.5 text-xs"
-                >
-                  {f.kind === "image" ? (
-                    <Icon
-                      name="Image"
-                      className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                    />
-                  ) : (
-                    <Icon
-                      name="Paperclip"
-                      className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                    />
-                  )}
-                  <a
-                    href={f.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="min-w-0 flex-1 truncate text-foreground hover:underline"
+              {files.map((f) => {
+                const kind = previewKind(f.mime);
+                const size = readableSize(f.size);
+                return (
+                  <div
+                    key={f.attachment_id}
+                    className="flex items-center gap-2 rounded-md border border-border bg-card p-1.5 text-xs"
                   >
-                    {f.name}
-                  </a>
-                  <span className="shrink-0 text-muted-foreground">
-                    {/* `Math.round(undefined / 1024)` is NaN and
-                        `Math.max(1, NaN)` is NaN, so a row whose size the
-                        server did not send rendered "NaN KB" at the member.
-                        An unknown size says nothing rather than lying. */}
-                    {Number.isFinite(f.size)
-                      ? `${Math.max(1, Math.round(f.size / 1024))} KB`
-                      : ""}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    aria-label={`Remove ${f.name}`}
-                    title="Removes it from this task; the file itself is kept"
-                    onClick={() => void detach(f.attachment_id)}
-                    className="shrink-0 text-muted-foreground hover:text-foreground"
-                  >
-                    <Icon name="X" className="h-3 w-3" />
-                  </button>
-                </div>
-              ))}
+                    {/* ⚠️ The thumbnail is a BUTTON, not a link.
+                        A link opened a tab and lost the task, which is the
+                        wrong answer for the common case: a screenshot on a
+                        bug, which you want beside the description you are
+                        reading. Open-in-a-tab is still one click away, in
+                        the viewer. */}
+                    <button
+                      type="button"
+                      onClick={() => setViewing(f)}
+                      aria-label={`Open ${f.name}`}
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    >
+                      {kind === "image" ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={f.url}
+                          alt=""
+                          // `alt=""` on purpose: the name is right beside it,
+                          // and a screen reader reading the filename twice is
+                          // noise. The button carries the accessible name.
+                          loading="lazy"
+                          className="h-9 w-9 shrink-0 rounded border border-border object-cover"
+                        />
+                      ) : (
+                        <span
+                          className="flex h-9 w-9 shrink-0 items-center justify-center rounded border border-border bg-muted"
+                          aria-hidden
+                        >
+                          <Icon
+                            name={kind === "document" ? "FileText" : "Paperclip"}
+                            className="h-4 w-4 text-muted-foreground"
+                          />
+                        </span>
+                      )}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-foreground">
+                          {f.name}
+                        </span>
+                        <span className="block truncate text-[10px] text-muted-foreground">
+                          {[kind === "none" ? "Downloads" : "Preview", size]
+                            .filter(Boolean)
+                            .join(" \u00b7 ")}
+                        </span>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      aria-label={`Remove ${f.name}`}
+                      title="Removes it from this task; the file itself is kept"
+                      onClick={() => void detach(f.attachment_id)}
+                      className="shrink-0 text-muted-foreground hover:text-foreground"
+                    >
+                      <Icon name="X" className="h-3 w-3" />
+                    </button>
+                  </div>
+                );
+              })}
               {/* What is going up right now, by name. */}
               {uploading.map((name) => (
                 <div
@@ -1109,6 +1136,18 @@ export function TaskPanel({
           Comment
         </Button>
       </div>
+      {/* The viewer is mounted at the panel root rather than inside the
+          Files section, so it is not clipped by the scroll container and
+          does not move when that section reflows into the other column. */}
+      <AttachmentViewer
+        file={viewing}
+        busy={busy}
+        onClose={() => setViewing(null)}
+        onRemove={(id) => {
+          setViewing(null);
+          void detach(id);
+        }}
+      />
     </aside>
   );
 }
