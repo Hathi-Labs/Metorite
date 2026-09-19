@@ -34,13 +34,14 @@ import {
   STATUS_LABEL,
   type Filters,
   type SortKey,
+  ATTENTION_STATUSES,
+  attentionCount,
   filterModels,
   formatTokens,
   formatVendorPrice,
   kindFacets,
-  providerFacets,
-  headProviderFacets,
   pageOf,
+  usefulKindFacets,
   resultLine,
   sortModels,
   statusOf,
@@ -166,12 +167,16 @@ export default function ModelBrowser({
   );
   const kinds = useMemo(
     () => kindFacets(models, f, MODEL_KINDS, armed), [models, f, armed]);
-  const providers = useMemo(
-    () => providerFacets(models, f, armed), [models, f, armed]);
   const byId = useMemo(() => feedById(feed), [feed]);
-  const headProviders = useMemo(
-    () => headProviderFacets(providers, f.providers),
-    [providers, f.providers],
+  // ⚠️ Only the capability chips with models behind them, and NONE at all when
+  // one kind is left: filtering a list to its only kind returns the same list.
+  const liveKinds = useMemo(
+    () => usefulKindFacets(kinds, f.kinds),
+    [kinds, f.kinds],
+  );
+  const attention = useMemo(
+    () => attentionCount(models, f, armed),
+    [models, f, armed],
   );
   const filterKey = JSON.stringify(f);
   const page = useMemo(
@@ -243,73 +248,74 @@ export default function ModelBrowser({
         </label>
       </div>
 
+      {/* 🔴 **THREE ROWS OF PILLS BECAME ONE.** The page carried "Can", "From"
+          and "State" — about forty-five controls above the first model — and
+          the owner could not tell what any of the three asked. Measured
+          2026-09-19: of seven capability chips only two ever had models, and
+          the thirty vendor chips each returned one or two rows out of
+          forty-three. A filter whose every option returns two of forty-three
+          is a list wearing a filter's clothes.
+
+          What replaced them:
+            · capability  — typed. `matchesQuery` reads the kind labels now.
+            · vendor      — typed. It always matched `m.provider`.
+            · state       — ONE toggle. Three of the four chips asked the same
+                            question, and the fourth asked for the models with
+                            no problem, which is what the page already shows.
+
+          The capability row survives ONLY where it earns its place: more than
+          one kind with models behind it. */}
       <div className="facets">
-        <div className="facetrow">
-          <span className="facetlabel">Can</span>
-          {kinds.map((k) => (
-            <button
-              key={k.value}
-              type="button"
-              className="facet"
-              aria-pressed={f.kinds.includes(k.value)}
-              // ⚠️ Disabled at zero, not hidden. A chip that disappears makes
-              // the row jump under the pointer and hides that the capability
-              // exists at all.
-              disabled={k.count === 0 && !f.kinds.includes(k.value)}
-              onClick={() => setF({ ...f, kinds: toggle(f.kinds, k.value as ModelKind) })}
-            >
-              {KIND_LABEL[k.value]}
-              <span className="count">{k.count}</span>
-            </button>
-          ))}
-        </div>
+        {/* ⚠️ **No row LABEL.** "Can", "From" and "State" were the three words
+            the owner could not read, and a chip reading "Speech to text" says
+            what it is without one. A label earns its place when the options
+            are ambiguous alone; these are not. */}
+        {liveKinds.length > 0 && (
+          <div className="facetrow">
+            {liveKinds.map((k) => (
+              <button
+                key={k.value}
+                type="button"
+                className="facet"
+                aria-pressed={f.kinds.includes(k.value)}
+                onClick={() => setF({ ...f, kinds: toggle(f.kinds, k.value) })}
+              >
+                {KIND_LABEL[k.value]}
+                <span className="count">{k.count}</span>
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="facetrow">
-          <span className="facetlabel">From</span>
-          {headProviders.shown.map((p) => (
+          {/* ⚠️ Drawn only when there IS something to attend to. A toggle
+              reading "0 need attention" is a control that can only ever
+              return an empty list. */}
+          {attention > 0 && (
             <button
-              key={p.value}
               type="button"
               className="facet"
-              aria-pressed={f.providers.includes(p.value)}
-              disabled={p.count === 0 && !f.providers.includes(p.value)}
-              onClick={() => setF({ ...f, providers: toggle(f.providers, p.value) })}
+              aria-pressed={f.statuses.length > 0}
+              onClick={() =>
+                setF({
+                  ...f,
+                  statuses: f.statuses.length > 0 ? [] : ATTENTION_STATUSES,
+                })
+              }
             >
-              <span className="glyph">{providerGlyph(p.value)}</span>
-              {p.value}
-              <span className="count">{p.count}</span>
+              Needs attention
+              <span className="count">{attention}</span>
             </button>
-          ))}
-          {/* ⚠️ Says what is hidden AND how to reach it. "and 18 more" with no
-              route to them reads as a broken row. */}
-          {headProviders.hidden > 0 && (
-            <span className="muted small">
-              and {headProviders.hidden} more — type a vendor name to filter
-            </span>
           )}
-        </div>
-
-        <div className="facetrow">
-          <span className="facetlabel">State</span>
-          {(["costed", "costblind", "nokey", "undeclared"] as const).map((s) => (
-            <button
-              key={s}
-              type="button"
-              className="facet"
-              aria-pressed={f.statuses.includes(s)}
-              onClick={() => setF({ ...f, statuses: toggle(f.statuses, s) })}
-            >
-              {STATUS_LABEL[s]}
-              <span className="count">
-                {filterModels(models, { ...f, statuses: [s] }, armed).length}
-              </span>
-            </button>
-          ))}
           {dirty && (
             <button type="button" className="linklike" onClick={() => setF(NO_FILTERS)}>
-              Clear all
+              Clear
             </button>
           )}
+          <span className="muted small">
+            Search matches the name, the vendor, what it is good at, and what it
+            can do — try &ldquo;deepseek&rdquo; or &ldquo;reads images&rdquo;.
+          </span>
         </div>
       </div>
 

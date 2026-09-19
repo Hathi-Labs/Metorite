@@ -6,20 +6,20 @@
 
 import { describe, expect, it } from "vitest";
 
-import { MODEL_KINDS, type CatalogModel } from "./contract";
+import { MODEL_KINDS, type CatalogModel, type ModelKind } from "./contract";
 import {
+  ATTENTION_STATUSES,
   MODEL_PAGE,
   NO_FILTERS,
-  PROVIDER_FACET_HEAD,
   filterModels,
-  headProviderFacets,
+  attentionCount,
   formatTokens,
   formatVendorPrice,
   kindFacets,
   matchesKinds,
   matchesQuery,
   pageOf,
-  providerFacets,
+  usefulKindFacets,
   resultLine,
   sortModels,
   statusOf,
@@ -141,14 +141,6 @@ describe("the facet counts", () => {
     expect(facets.vision).toBe(2);
   });
 
-  it("provider facets are counted with the query still applied", () => {
-    const f = { ...NO_FILTERS, query: "cheap" };
-    const facets = Object.fromEntries(
-      providerFacets(CATALOG, f).map((x) => [x.value, x.count]),
-    );
-    expect(facets.anthropic).toBe(1);
-    expect(facets.openai).toBe(0);
-  });
 });
 
 describe("status", () => {
@@ -265,45 +257,6 @@ describe("display", () => {
 // hundred models. Both of these trim what is DRAWN and neither removes a way
 // to reach anything.
 
-describe("headProviderFacets", () => {
-  const F = (value: string, count: number) => ({ value, count });
-
-  it("draws every chip when the row is already short", () => {
-    const all = [F("a", 3), F("b", 2)];
-    expect(headProviderFacets(all, [], 12)).toEqual({ shown: all, hidden: 0 });
-  });
-
-  it("keeps the BUSIEST vendors and reports the rest", () => {
-    const all = [F("quiet", 1), F("busy", 90), F("mid", 10)];
-    const got = headProviderFacets(all, [], 2);
-    expect(got.shown.map((s) => s.value)).toEqual(["busy", "mid"]);
-    expect(got.hidden).toBe(1);
-  });
-
-  it("🔴 a SELECTED vendor always survives the cut", () => {
-    // Otherwise the row hides the vendor the results are filtered by, and it
-    // contradicts the list underneath it.
-    const all = [F("busy", 90), F("mid", 10), F("quiet", 1)];
-    const got = headProviderFacets(all, ["quiet"], 2);
-    expect(got.shown.map((s) => s.value)).toContain("quiet");
-  });
-
-  it("never cuts below the number of selected vendors", () => {
-    const all = [F("a", 9), F("b", 8), F("c", 7), F("d", 6)];
-    const got = headProviderFacets(all, ["c", "d"], 1);
-    expect(got.shown.map((s) => s.value).sort()).toEqual(["c", "d"]);
-    expect(got.hidden).toBe(2);
-  });
-
-  it("breaks a count tie by name, so the row does not reshuffle", () => {
-    const all = [F("b", 5), F("a", 5), F("c", 1)];
-    expect(headProviderFacets(all, [], 2).shown.map((s) => s.value)).toEqual([
-      "a",
-      "b",
-    ]);
-  });
-});
-
 describe("pageOf", () => {
   const rows = Array.from({ length: 30 }, (_, i) => i);
 
@@ -330,7 +283,97 @@ describe("pageOf", () => {
 
   it("carries sane defaults", () => {
     expect(MODEL_PAGE).toBeGreaterThan(0);
-    expect(PROVIDER_FACET_HEAD).toBeGreaterThan(0);
     expect(pageOf(rows, false).shown).toHaveLength(MODEL_PAGE);
+  });
+});
+
+// ── The filter rows the owner could not read ───────────────────────────────
+//
+// 🔴 Three rows, about forty-five controls, above the first model. Measured
+// 2026-09-19: five of seven capability chips had nothing behind them on any
+// install, and each of thirty vendor chips returned one or two rows of
+// forty-three. These are the judgements that replaced them.
+
+describe("search reaches capability, so the Can row does not have to", () => {
+  const vision = m("anthropic/claude", ["chat", "vision"]);
+
+  it("matches the LABEL an operator would type", () => {
+    // "reads images", not "vision" — the words that are on the screen.
+    expect(matchesQuery(vision, "reads images")).toBe(true);
+  });
+
+  it("matches the SLUG an engineer would type", () => {
+    expect(matchesQuery(vision, "vision")).toBe(true);
+  });
+
+  it("still ANDs the words across every field", () => {
+    expect(matchesQuery(vision, "anthropic reads images")).toBe(true);
+    expect(matchesQuery(vision, "openai reads images")).toBe(false);
+  });
+
+  it("does not match a capability the model lacks", () => {
+    expect(matchesQuery(m("p/plain", ["chat"]), "reads images")).toBe(false);
+  });
+});
+
+describe("usefulKindFacets", () => {
+  const K = (value: ModelKind, count: number) => ({ value, count });
+
+  it("drops the chips with nothing behind them", () => {
+    const got = usefulKindFacets(
+      [K("chat", 42), K("vision", 0), K("transcribe", 1)],
+      [],
+    );
+    expect(got.map((g) => g.value)).toEqual(["chat", "transcribe"]);
+  });
+
+  it("🔴 returns NO row when one kind is left", () => {
+    // Filtering a list to the only kind it contains returns the same list.
+    // The control does nothing but take space and invite a click.
+    expect(usefulKindFacets([K("chat", 42), K("vision", 0)], [])).toEqual([]);
+  });
+
+  it("keeps a SELECTED kind at zero, so the row cannot vanish mid-filter", () => {
+    const got = usefulKindFacets([K("chat", 42), K("vision", 0)], ["vision"]);
+    expect(got.map((g) => g.value)).toEqual(["chat", "vision"]);
+  });
+
+  it("is empty for an empty catalog", () => {
+    expect(usefulKindFacets([], [])).toEqual([]);
+  });
+});
+
+describe("attentionCount", () => {
+  it("counts everything that is NOT costed", () => {
+    const models = [
+      m("p/a", ["chat"], { inputPer1M: 3 }),           // costed
+      m("p/b", ["chat"], { inputPer1M: null }),        // costs blind
+      m("nokey/c", ["chat"], { inputPer1M: 3 }),       // no key installed
+      m("p/d", ["chat"], { declared: false }),         // not connected
+    ];
+    expect(attentionCount(models, NO_FILTERS, ["p"])).toBe(3);
+  });
+
+  it("is zero when every model is costed, so the toggle can hide itself", () => {
+    expect(
+      attentionCount([m("p/a", ["chat"], { inputPer1M: 3 })], NO_FILTERS, ["p"]),
+    ).toBe(0);
+  });
+
+  it("respects the OTHER filters, so the number matches the list it makes", () => {
+    const models = [
+      m("p/keep", ["chat"], { inputPer1M: null }),
+      m("p/drop", ["chat"], { inputPer1M: null }),
+    ];
+    expect(attentionCount(models, { ...NO_FILTERS, query: "keep" }, ["p"])).toBe(1);
+  });
+
+  it("names the three unready states and never includes costed", () => {
+    expect(ATTENTION_STATUSES).not.toContain("costed");
+    expect([...ATTENTION_STATUSES].sort()).toEqual([
+      "costblind",
+      "nokey",
+      "undeclared",
+    ]);
   });
 });

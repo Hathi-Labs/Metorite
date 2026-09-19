@@ -7,7 +7,7 @@
 // hold it — this app's suite carries no React renderer, so anything expressed
 // in JSX is untested by construction.
 
-import type { CatalogModel, ModelKind } from "./contract";
+import { KIND_LABEL, type CatalogModel, type ModelKind } from "./contract";
 
 export type ModelStatus = "costed" | "undeclared" | "nokey" | "costblind";
 
@@ -61,13 +61,25 @@ export const NO_FILTERS: Filters = {
  *
  * ⚠️ **The DESCRIPTION is searched too.** An operator looking for a cheap
  * transcription model types "cheap", not a model id. Restricting the match to
- * the id makes the box useless for the only query it is really used for. */
+ * the id makes the box useless for the only query it is really used for.
+ *
+ * 🔴 **The KIND LABELS are in the haystack, added 2026-09-19.** Capability was
+ * reachable only through a row of chips, so "which models read images" needed
+ * a chip and could not be typed. Measured the same day: that row carried seven
+ * chips and only two ever had models behind them — five read `0` on every
+ * install. Putting the labels here is what let the row go.
+ *
+ * ⚠️ **The LABEL, not the slug.** An operator types "reads images", not
+ * "vision". The slug is matched too, because it costs nothing and an engineer
+ * reading `model_capability` types that instead. */
 export function matchesQuery(m: CatalogModel, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
   // Every whitespace-separated word must appear SOMEWHERE. "claude fast"
   // should find a fast Claude, and an OR would return every Claude.
-  const hay = `${m.id} ${m.label} ${m.provider} ${m.description}`.toLowerCase();
+  const kinds = m.kinds.map((k) => `${k} ${KIND_LABEL[k]}`).join(" ");
+  const hay =
+    `${m.id} ${m.label} ${m.provider} ${m.description} ${kinds}`.toLowerCase();
   return q.split(/\s+/).every((word) => hay.includes(word));
 }
 
@@ -146,49 +158,59 @@ export function kindFacets(
   }));
 }
 
-export function providerFacets(
-  models: CatalogModel[], f: Filters, armed: string[] = [],
-): Facet<string>[] {
-  const all = [...new Set(models.map((m) => m.provider))].sort();
-  return all.map((p) => ({
-    value: p,
-    count: filterModels(models, { ...f, providers: [p] }, armed).length,
-  }));
-}
-
-/** How many vendor chips to draw before the row is worse than no row.
+/** The states that mean somebody has work to do on this model.
  *
- * ⚠️ *Agent default.* Twelve fills roughly two lines at 1440px, which is where
- * a filter row still reads as a row rather than as a wall. Measured
- * 2026-09-19: thirty vendors drew five lines and pushed the catalog below the
- * fold on a page whose whole job is the catalog. */
-export const PROVIDER_FACET_HEAD = 12;
-
-/** The vendor chips worth drawing, and how many were held back.
+ * 🔴 **Four chips became one question, 2026-09-19.** The state row let you
+ * filter to `costed`, `costs blind`, `no key installed` and `not connected`
+ * separately. Three of those are the same question — "what is not ready" —
+ * and the fourth is "show me the ones with no problem", which is what the
+ * unfiltered page already shows. Four controls for one question is why the
+ * row read as a puzzle.
  *
- * 🔴 **Busiest FIRST, and a SELECTED vendor always survives.** Cutting an
- * alphabetical list at twelve would hide the vendor somebody is filtering by,
- * and the row would then contradict the results underneath it.
- *
- * ⚠️ **A hidden chip is not a lost filter** — the search box matches a
- * provider name, so every vendor stays reachable. This trims the row.
+ * ⚠️ **`costed` is deliberately absent.** It is the healthy state, every card
+ * carries its own badge, and a filter for "show me what is fine" answers
+ * nothing an operator acts on.
  */
-export function headProviderFacets(
-  facets: Facet<string>[],
-  selected: string[],
-  head: number = PROVIDER_FACET_HEAD,
-): { shown: Facet<string>[]; hidden: number } {
-  if (facets.length <= head) return { shown: facets, hidden: 0 };
-  const picked = [...facets]
-    .sort(
-      (a, b) =>
-        Number(selected.includes(b.value)) - Number(selected.includes(a.value)) ||
-        b.count - a.count ||
-        a.value.localeCompare(b.value),
-    )
-    .slice(0, Math.max(head, selected.length));
-  return { shown: picked, hidden: facets.length - picked.length };
+export const ATTENTION_STATUSES: ModelStatus[] = [
+  "costblind",
+  "nokey",
+  "undeclared",
+];
+
+/** How many models need somebody's attention.
+ *
+ * ⚠️ Counted through `filterModels`, never a second rule, so the number on the
+ * toggle and the list it produces cannot disagree. */
+export function attentionCount(
+  models: CatalogModel[],
+  f: Filters,
+  armed: string[],
+): number {
+  return filterModels(models, { ...f, statuses: ATTENTION_STATUSES }, armed)
+    .length;
 }
+
+/** The capability chips worth drawing: the ones with models behind them.
+ *
+ * 🔴 **A chip that always reads `0` is a control that has never once been
+ * useful.** Measured 2026-09-19: of seven kind chips, `chat` had 42 models,
+ * `transcribe` had 1, and the other five had none on any install.
+ *
+ * ⚠️ **One kind left means NO row.** Filtering a list to the only kind it
+ * contains returns the same list, so the control does nothing but take space
+ * and invite a click. Capability is still typeable — `matchesQuery` reads the
+ * kind labels.
+ */
+export function usefulKindFacets(
+  facets: Facet<ModelKind>[],
+  selected: ModelKind[],
+): Facet<ModelKind>[] {
+  const live = facets.filter(
+    (k) => k.count > 0 || selected.includes(k.value),
+  );
+  return live.length > 1 ? live : [];
+}
+
 
 /** How many model cards to draw before asking. */
 export const MODEL_PAGE = 24;
