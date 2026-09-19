@@ -4,10 +4,7 @@ import { readAiCatalog } from "@/lib/read";
 import { staffSession } from "@/lib/session";
 import Shell, { Unconfigured } from "../Shell";
 import CreditPrice from "./CreditPrice";
-import PriceFromCost from "./PriceFromCost";
-import PriceList from "./PriceList";
-import MarginMonitor from "./MarginMonitor";
-import TierPricing from "./TierPricing";
+import PriceBoard from "./PriceBoard";
 
 export const dynamic = "force-dynamic";
 
@@ -19,8 +16,15 @@ export const dynamic = "force-dynamic";
 // keep" — a commercial one. On one screen the second question was a panel
 // under the first and the owner could not find it.
 //
+// 🔴 **Two sections since 2026-09-20, and it was five.** The five were a
+// read-only price list, a suggestion board, a hand form and a margin monitor,
+// plus the credit price. Four of them answered ONE question — "what do we
+// charge for this tier, and is it enough?" — in four places, and three of them
+// separately reported the same unsaved credit price. `PriceBoard` puts the
+// whole decision on the tier's own card, which is the unit being priced.
+//
 // ⚠️ **This page still prices per (tier, task) — D67 is untouched.** The key
-// did not move; the panel did. A failover changes our cost, never the
+// did not move; the panels did. A failover changes our cost, never the
 // customer's price.
 //
 // ⚠️ **Setup order lives on the go-live rail, not here.** The rail on the
@@ -37,15 +41,12 @@ export default async function PricingPage() {
   return (
     <Shell
       title="Pricing"
-      lede="What a customer pays for AI, in credits, per tier — and the margin each price leaves over what the vendors charge us."
+      lede="What a customer pays for AI, per tier — and what that leaves us over the vendor's price."
       origin={catalog.origin}
       note={catalog.note}
     >
       <CreditPrice price={catalog.data.creditPrice} />
-      <PriceList catalog={catalog.data} />
-      <PriceFromCost catalog={catalog.data} />
-      <TierPricing catalog={catalog.data} />
-      <MarginMonitor catalog={catalog.data} />
+      <PriceBoard catalog={catalog.data} />
       <p className="note">
         New here? The go-live rail on the{" "}
         <a href="/">Organizations page</a> walks the whole setup order — keys,
