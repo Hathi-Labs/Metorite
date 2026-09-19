@@ -17,8 +17,12 @@ import { useRouter } from "next/navigation";
 
 import { categoricalChip, providerGlyph } from "@/lib/categorical";
 import { KIND_LABEL, type FeedModel, type VendorFeed } from "@/lib/contract";
-import { availableByVendor, declareBodies } from "@/lib/feed";
-import { formatVendorPrice } from "@/lib/modelSearch";
+import {
+  availableByVendor,
+  canFillFromFeed,
+  declareBodies,
+  feedPriceLabel,
+} from "@/lib/feed";
 
 /** How many rows to draw per vendor before pointing at the search box.
  *
@@ -29,6 +33,23 @@ import { formatVendorPrice } from "@/lib/modelSearch";
  * is held back — so a lower cap costs reach nothing and buys the whole panel
  * back onto a screen. */
 const PER_VENDOR_CAP = 12;
+
+/** How many of these the feed cannot price AT ALL.
+ *
+ * 🔴 **Adding one lands a model that is COSTS BLIND.** The Add button looked
+ * identical whether the feed knew a price or not, so the click quietly created
+ * the exact state the page above it nags about.
+ *
+ * ⚠️ **NOT the models showing a dash in the price column — that was my first
+ * reading and it was wrong.** `groq/whisper-large-v3` carries a per-SECOND
+ * rate and `groq/canopylabs/orpheus-v1-english` a per-CHARACTER one. Both are
+ * priced; the column simply read token rates and nothing else.
+ * `feedPriceLabel` shows them now, and this count is the genuinely unpriced
+ * tail — the same judgement `canFillFromFeed` makes, so the two cannot
+ * disagree. */
+function unpricedCount(rows: FeedModel[]): number {
+  return rows.filter((f) => !canFillFromFeed(f)).length;
+}
 
 /** The task in operator words; litellm's word when we cannot serve it. */
 function jobWord(f: FeedModel): string {
@@ -119,24 +140,48 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
 
       {err && <p className="result err">{err}</p>}
 
+      {/* 🔴 **ONE LINE PER VENDOR, CLOSED.** Four vendors drew four flat
+          tables and about fifty rows before anybody had chosen a vendor —
+          a wall, and the owner said so. Closed, this panel is four lines:
+          pick a vendor, then look at its models.
+
+          ⚠️ **Native `details`, not a state toggle.** It is keyboard and
+          screen-reader correct with no work, and it survives a re-render. The
+          `open` prop only OVERRIDES the default — a vendor the reader opened
+          by hand stays open until the search changes.
+
+          ⚠️ **A search OPENS every vendor that matched.** A closed accordion
+          hiding the thing you just searched for is the worst of both designs.
+          One vendor opens too, because a single closed row is a click that
+          could only ever have one outcome. */}
       {[...groups.entries()].map(([vendor, rows]) => (
-        <div key={vendor} className="feedvendor">
-          <h3>
+        <details
+          key={vendor}
+          className="feedvendor"
+          open={query.trim() !== "" || groups.size === 1}
+        >
+          <summary>
             <span className={categoricalChip(vendor)}>
               <span className="glyph">{providerGlyph(vendor)}</span>
               {vendor}
             </span>
             <span className="muted small">
               {rows.length} model{rows.length === 1 ? "" : "s"}
+              {unpricedCount(rows) > 0 && (
+                <> · {unpricedCount(rows)} with no price</>
+              )}
             </span>
-          </h3>
+          </summary>
           <table>
             <thead>
               <tr>
                 <th>Model</th>
                 <th>Job</th>
                 <th>Reads at most</th>
-                <th>We would pay, per 1M</th>
+                {/* ⚠️ Not "per 1M". A transcribe model is sold by the minute
+                    and a speech model by the character — the unit belongs to
+                    the row, and `feedPriceLabel` names it there. */}
+                <th>We would pay</th>
                 <th aria-label="Add" />
               </tr>
             </thead>
@@ -161,9 +206,19 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
                       : f.contextWindow.toLocaleString("en-US")}
                   </td>
                   <td>
-                    {formatVendorPrice(
-                      f.inputPer1M === null ? null : Number(f.inputPer1M),
-                      f.outputPer1M === null ? null : Number(f.outputPer1M),
+                    {/* ⚠️ Says WHY the dash is there. A bare "—" beside an Add
+                        button that behaves identically taught nothing — the
+                        model lands costs-blind and the reader finds out on the
+                        page above. */}
+                    {feedPriceLabel(f) !== null ? (
+                      <span className="mono small">{feedPriceLabel(f)}</span>
+                    ) : (
+                      <span
+                        className="chip warn"
+                        title="The feed carries no price for this model. Adding it lands a costs-blind model, and its margin reads as unknown until somebody records a price by hand."
+                      >
+                        no price upstream
+                      </span>
                     )}
                   </td>
                   <td>
@@ -172,8 +227,17 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
                         type="button"
                         disabled={busy !== null}
                         onClick={() => add(f)}
+                        title={
+                          canFillFromFeed(f)
+                            ? undefined
+                            : "Adds the model, but it will be costs blind — the feed has no price for it"
+                        }
                       >
-                        {busy === f.id ? "Adding…" : "+ Add"}
+                        {busy === f.id
+                          ? "Adding…"
+                          : canFillFromFeed(f)
+                            ? "+ Add"
+                            : "+ Add anyway"}
                       </button>
                     ) : (
                       <span
@@ -194,7 +258,7 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
               rest.
             </p>
           )}
-        </div>
+        </details>
       ))}
 
       {groups.size === 0 && (

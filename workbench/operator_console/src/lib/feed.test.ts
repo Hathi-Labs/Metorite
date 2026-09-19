@@ -18,6 +18,7 @@ import {
   blindButFillable,
   canFillFromFeed,
   declareBodies,
+  feedPriceLabel,
   driftFor,
   feedById,
   fillCount,
@@ -673,5 +674,77 @@ describe("blindButFillable", () => {
 
   it("is empty on an empty catalog", () => {
     expect(blindButFillable([], FEED({ rows: [] }), ARMED)).toEqual([]);
+  });
+});
+
+// ── What the feed says a model costs, in ITS unit ──────────────────────────
+//
+// 🔴 The price column read the two token rates and nothing else, so every
+// per-unit model drew a dash — and a dash means "we do not know". Measured
+// 2026-09-19: groq/whisper-large-v3 carries a per-second rate and
+// groq/canopylabs/orpheus-v1-english a per-character one. Both were priced.
+
+describe("feedPriceLabel", () => {
+  it("reads a token-priced model as in and out", () => {
+    expect(feedPriceLabel(F({}))).toBe("$0.28 in / $0.42 out");
+  });
+
+  it("names the unit for a per-MINUTE model", () => {
+    const stt = F({
+      inputPer1M: null, outputPer1M: null, cachedInputPer1M: null,
+      perMinuteUsd: "0.0018498",
+    });
+    expect(feedPriceLabel(stt)).toBe("$0.0018498 per minute");
+  });
+
+  it("names the unit for a per-CHARACTER model", () => {
+    const tts = F({
+      inputPer1M: null, outputPer1M: null, cachedInputPer1M: null,
+      perCharacterUsd: "0.000022",
+    });
+    expect(feedPriceLabel(tts)).toBe("$0.000022 per character");
+  });
+
+  it("names the unit for a per-IMAGE model", () => {
+    const img = F({
+      inputPer1M: null, outputPer1M: null, cachedInputPer1M: null,
+      perImageUsd: "0.04",
+    });
+    expect(feedPriceLabel(img)).toBe("$0.04 per image");
+  });
+
+  it("🔴 the UNIT is never dropped — three orders separate them", () => {
+    // "$0.000022" beside a token price is meaningless without "per character".
+    const tts = F({
+      inputPer1M: null, outputPer1M: null, cachedInputPer1M: null,
+      perCharacterUsd: "0.000022",
+    });
+    expect(feedPriceLabel(tts)).toContain("per character");
+  });
+
+  it("writes a tiny price as PLAIN DIGITS, never exponent notation", () => {
+    // `String(3e-7)` is "3e-7", which is not a number an operator can check.
+    const tiny = F({ inputPer1M: "0.0000003", outputPer1M: null, cachedInputPer1M: null });
+    expect(feedPriceLabel(tiny)).toBe("$0.0000003 in / — out");
+  });
+
+  it("returns NULL only when the feed knows nothing at all", () => {
+    const blind = F({
+      inputPer1M: null, outputPer1M: null, cachedInputPer1M: null,
+      perMinuteUsd: null, perCharacterUsd: null, perImageUsd: null,
+    });
+    expect(feedPriceLabel(blind)).toBeNull();
+  });
+
+  it("agrees with canFillFromFeed, so the dash and the warning cannot differ", () => {
+    const cases = [
+      F({}),
+      F({ inputPer1M: null, outputPer1M: null, cachedInputPer1M: null, perMinuteUsd: "0.006" }),
+      F({ inputPer1M: null, outputPer1M: null, cachedInputPer1M: null }),
+      F({ inputPer1M: "0", outputPer1M: "0", cachedInputPer1M: null }),
+    ];
+    for (const c of cases) {
+      expect(feedPriceLabel(c) !== null).toBe(canFillFromFeed(c));
+    }
   });
 });

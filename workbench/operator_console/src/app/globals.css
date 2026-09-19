@@ -1613,12 +1613,52 @@ pre.token {
 .feedvendor {
   margin-top: 16px;
 }
-.feedvendor h3 {
+/* ⚠️ The vendor heading became a <summary> (accordion, 2026-09-19). The rule
+   below keeps the SAME look and adds only what a summary needs: a pointer,
+   and no default triangle-plus-inline-box layout fighting the flex row. */
+.feedvendor > summary,
+.provider-more > summary {
   display: flex;
   align-items: center;
   gap: 8px;
   margin: 0 0 6px;
   font-size: 13.5px;
+  cursor: pointer;
+  list-style: none;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2, var(--panel));
+}
+.feedvendor > summary:hover,
+.provider-more > summary:hover {
+  border-color: var(--border-strong);
+}
+/* Our own marker, because `list-style: none` removes the native one and a
+   row that opens with no affordance reads as a dead heading. */
+.feedvendor > summary::before,
+.provider-more > summary::before {
+  /* ⚠ The LITERAL character, never a CSS escape. Written through a
+     shell heredoc the backslash was eaten and this rule shipped a control
+     character plus the letters B8, which is what every vendor row drew. */
+  content: "▸";
+  color: var(--muted);
+  font-size: 11px;
+  transition: none;
+}
+.feedvendor[open] > summary::before,
+.provider-more[open] > summary::before {
+  content: "▾";
+}
+.feedvendor > summary::-webkit-details-marker,
+.provider-more > summary::-webkit-details-marker {
+  display: none;
+}
+.provider-more {
+  margin-top: 12px;
+}
+.provider-more > summary {
+  color: var(--muted);
 }
 .feedvendor td .chip {
   margin-left: 8px;

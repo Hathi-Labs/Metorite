@@ -138,6 +138,43 @@ export function canFillFromFeed(f: FeedModel | undefined): boolean {
   );
 }
 
+/** What the feed says this model costs, in whatever unit it is sold by.
+ *
+ * 🔴 **The price column said "—" about models it HAD a price for.** It read
+ * only the two token rates, so every per-unit model drew a dash — and a dash
+ * means "we do not know". Measured 2026-09-19: `groq/whisper-large-v3` carries
+ * a per-second rate and `groq/canopylabs/orpheus-v1-english` a per-character
+ * one, and both showed as unpriced beside an Add button.
+ *
+ * ⚠️ **Returns `null` only when the feed truly knows nothing.** That is the
+ * case worth a warning, and it is the same judgement `canFillFromFeed` makes,
+ * so the dash and the warning can never disagree.
+ *
+ * ⚠️ **The unit is NAMED.** "$0.0000220" beside a token price is meaningless
+ * without "per character" — three orders of magnitude separate them.
+ */
+export function feedPriceLabel(f: FeedModel): string | null {
+  const num = (v: string | null) =>
+    v !== null && v.trim() !== "" && Number(v) > 0 ? Number(v) : null;
+
+  const inTok = num(f.inputPer1M);
+  const outTok = num(f.outputPer1M);
+  if (inTok !== null || outTok !== null) {
+    const a = inTok === null ? "—" : `$${fixedDecimal(inTok)}`;
+    const b = outTok === null ? "—" : `$${fixedDecimal(outTok)}`;
+    return `${a} in / ${b} out`;
+  }
+
+  const perMin = num(f.perMinuteUsd);
+  if (perMin !== null) return `$${fixedDecimal(perMin)} per minute`;
+  const perChar = num(f.perCharacterUsd);
+  if (perChar !== null) return `$${fixedDecimal(perChar)} per character`;
+  const perImg = num(f.perImageUsd);
+  if (perImg !== null) return `$${fixedDecimal(perImg)} per image`;
+
+  return null;
+}
+
 /** Every declared model the feed could cost right now, and nobody has.
  *
  * 🔴 **The bulk of the setup work, and it is all copying.** Measured against
