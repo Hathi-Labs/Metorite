@@ -622,6 +622,10 @@ function ProjectsWorkspace() {
   //: That strip renders inside the work area, under this modal's backdrop, so
   //: a 403 re-armed the button and said nothing.
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  //: Bumped on every open. The `key` above needs it: closing and reopening the
+  //: SAME row leaves the id unchanged, so the id alone would not remount and
+  //: the stale-armed frame would survive exactly where it is easiest to hit.
+  const [deleteOpenedAt, setDeleteOpenedAt] = useState(0);
   // Analytics reads the portfolio roll-up — the same shape as a node's, so
   // one dashboard component draws both.
   const [portfolio, setPortfolio] = useState<NodeSummary | null>(null);
@@ -1054,6 +1058,7 @@ function ProjectsWorkspace() {
       // it has both.
       onDelete: (project, level) => {
         setDeleteError(null);
+        setDeleteOpenedAt((n) => n + 1);
         setDeletingNode({ project, level });
       },
     }),
@@ -2098,6 +2103,10 @@ function ProjectsWorkspace() {
    * subproject whose whole branch is gone, and every panel keyed on it then
    * reads an id the server no longer knows. So the test is ancestry, taken
    * from the tree BEFORE the refetch, while the path still exists.
+   *
+   * ⚠️ The open TASK panel is a second holder of a dead id and needs no test:
+   * the cascade took every task under the node, so an open panel is closed
+   * unconditionally.
    */
   async function deleteNode(node: ProjectRow) {
     const selectionIsInside =
@@ -2111,6 +2120,11 @@ function ProjectsWorkspace() {
       const res = await projectsApi.deleteProject(node.id);
       setDeletingNode(null);
       if (selectionIsInside) setSelected(null);
+      // The panel holds a TASK, and the cascade took every task in the
+      // subtree. Clearing the selection does not close it, so the panel kept
+      // a dead id and every read it made 404'd. The task-delete path already
+      // does this; the project-delete path has to as well.
+      setOpenTask(null);
       setTreeKey((k) => k + 1);
       // The counts come off the RESPONSE, which the server read before the
       // write. The dialog's numbers were a different read at a different
@@ -2989,7 +3003,17 @@ function ProjectsWorkspace() {
           the menu entry is there, the click lands, and no dialog exists to
           render. That is a defect on an existing feature and is filed rather
           than fixed here; this one simply does not repeat it. */}
+      {/* ⚠️ `key` IS THE SAFETY MECHANISM, not a list-rendering habit.
+          This dialog is mounted unconditionally and returns null when closed,
+          so it never unmounts and its state survives a close. Its reset lives
+          in a passive effect, which React runs AFTER the commit paints — so
+          reopening on the same row rendered one frame with the previous
+          `typed` and `summary` still set, and the destructive button ARMED.
+          One paint, on the one act in this app that cannot be undone.
+          Keying on the id makes the reset structural: a different row, or the
+          same row opened again, is a new instance with fresh state. */}
       <DeleteProjectDialog
+        key={`delete:${deletingNode?.project.id ?? "none"}:${deleteOpenedAt}`}
         project={deletingNode?.project ?? null}
         level={deletingNode?.level}
         error={deleteError}

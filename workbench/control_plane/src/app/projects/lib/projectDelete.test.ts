@@ -149,3 +149,49 @@ describe("🔴 the dialog may never claim a node is empty", () => {
     expect(dialog).toMatch(/At least/);
   });
 });
+
+describe("🔴 the dialog's state may not survive a close", () => {
+  // Found by the independent verifier, and it is the sharpest defect the
+  // slice had.
+  //
+  // `DeleteProjectDialog` is mounted unconditionally in `overlays` and
+  // returns null when closed, so it NEVER unmounts. Its reset of `typed`,
+  // `summary` and `failed` lives in a passive effect, which React runs after
+  // the commit paints. Open Delete on a project, type the name, cancel, open
+  // it again: for one frame `typed` still matched and `summary` was still
+  // set, so `ready && confirmed` held and the destructive button was ARMED
+  // with the previous read's counts behind it.
+  //
+  // A `key` makes the reset structural instead of scheduled. This scans for
+  // it because the repo has no DOM test environment — `vitest.config.ts` is
+  // `environment: "node"` and neither jsdom nor happy-dom is installed — so
+  // there is no way to render the reopen and assert on it.
+  const page = readFileSync(
+    new URL("../page.tsx", import.meta.url),
+    "utf-8",
+  );
+
+  it("remounts the dialog per open, so stale state cannot arm the button", () => {
+    const mount = page.slice(page.indexOf("<DeleteProjectDialog"));
+    const props = mount.slice(0, mount.indexOf("/>"));
+    expect(props).toMatch(/key=\{/);
+  });
+
+  it("keys on the OPEN, not the row alone", () => {
+    // Reopening the same project leaves its id unchanged. A key of the id
+    // alone would not remount, and the same-row reopen is the easiest of the
+    // two paths to hit.
+    const mount = page.slice(page.indexOf("<DeleteProjectDialog"));
+    const props = mount.slice(0, mount.indexOf("/>"));
+    expect(props).toMatch(/deleteOpenedAt/);
+    expect(page).toMatch(/setDeleteOpenedAt\(\(n\) => n \+ 1\)/);
+  });
+
+  it("closes an open task panel, which also holds a dead id", () => {
+    // The cascade takes every task in the subtree. Clearing the project
+    // selection does not close the task panel.
+    const fn = page.slice(page.indexOf("async function deleteNode"));
+    const body = fn.slice(0, fn.indexOf("\n  }\n"));
+    expect(body).toContain("setOpenTask(null)");
+  });
+});
