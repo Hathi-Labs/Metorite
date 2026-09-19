@@ -51,6 +51,7 @@ import {
   statusOf,
   toggle,
 } from "@/lib/modelSearch";
+import { HELP_FACTS, HELP_STATUS, HELP_TOOLBAR } from "@/lib/help";
 import { chipClass, type Tone } from "@/lib/tone";
 import FeedAvailable from "./FeedAvailable";
 import FillAllBlind from "./FillAllBlind";
@@ -113,7 +114,10 @@ function Card({
               {retiring.label}
             </span>
           )}
-          <span className={chipClass(STATUS_TONE[status])}>
+          <span
+            className={chipClass(STATUS_TONE[status])}
+            title={HELP_STATUS[status]}
+          >
             {STATUS_LABEL[status]}
           </span>
         </div>
@@ -148,18 +152,18 @@ function Card({
 
       <dl className="modelfacts">
         <div>
-          <dt>Reads at most</dt>
+          <dt title={HELP_FACTS.contextWindow}>Reads at most</dt>
           <dd>{formatTokens(m.contextWindow)}</dd>
         </div>
         <div>
-          <dt>Writes at most</dt>
+          <dt title={HELP_FACTS.maxOutput}>Writes at most</dt>
           <dd>{formatTokens(m.maxOutput)}</dd>
         </div>
         <div>
           {/* ⚠️ "We pay" is not decoration. This is the VENDOR's price, and
               the rate card is what we charge — two numbers on two tables, and
               reading one as the other inverts a margin. */}
-          <dt>We pay, per 1M</dt>
+          <dt title={HELP_FACTS.vendorPrice}>We pay, per 1M</dt>
           <dd>{formatVendorPrice(m.inputPer1M, m.outputPer1M)}</dd>
         </div>
       </dl>
@@ -171,7 +175,10 @@ function Card({
 
           ⚠️ The unused line is MUTED, not a warning. A declared model nobody
           has bound yet is the normal middle of the setup order, not a fault. */}
-      <p className="modeluse">
+      <p
+        className="modeluse"
+        title={used.length === 0 ? HELP_FACTS.unused : HELP_FACTS.tierUse}
+      >
         {used.length === 0 ? (
           <span className="muted small">No tier uses this yet</span>
         ) : (
@@ -283,13 +290,15 @@ export default function ModelBrowser({
           type="search"
           placeholder="Search by name, provider, or what it is good at…"
           aria-label="Search models"
+          title={HELP_TOOLBAR.search}
           value={f.query}
           onChange={(e) => setF({ ...f, query: e.target.value })}
         />
-        <label className="sortpick">
+        <label className="sortpick" title={HELP_TOOLBAR.sort}>
           <span className="muted small">Sort</span>
           <select
             aria-label="Sort models"
+            title={HELP_TOOLBAR.sort}
             value={sort}
             onChange={(e) => setSort(e.target.value as SortKey)}
           >
@@ -332,6 +341,7 @@ export default function ModelBrowser({
                 type="button"
                 className="facet"
                 aria-pressed={f.kinds.includes(k.value)}
+                title={HELP_TOOLBAR.kindChip}
                 onClick={() => setF({ ...f, kinds: toggle(f.kinds, k.value) })}
               >
                 {KIND_LABEL[k.value]}
@@ -350,6 +360,7 @@ export default function ModelBrowser({
               type="button"
               className="facet"
               aria-pressed={f.statuses.length > 0}
+              title={HELP_TOOLBAR.attention}
               onClick={() =>
                 setF({
                   ...f,
@@ -362,7 +373,12 @@ export default function ModelBrowser({
             </button>
           )}
           {dirty && (
-            <button type="button" className="linklike" onClick={() => setF(NO_FILTERS)}>
+            <button
+              type="button"
+              className="linklike"
+              title={HELP_TOOLBAR.clear}
+              onClick={() => setF(NO_FILTERS)}
+            >
               Clear
             </button>
           )}
@@ -393,7 +409,12 @@ export default function ModelBrowser({
           measured 13483px on a catalog of forty-three. */}
       {page.hidden > 0 && (
         <p className="resultline">
-          <button type="button" className="linklike" onClick={() => setExpandedFor(filterKey)}>
+          <button
+            type="button"
+            className="linklike"
+            title={HELP_TOOLBAR.showMore}
+            onClick={() => setExpandedFor(filterKey)}
+          >
             Show {page.hidden} more
           </button>{" "}
           <span className="muted small">

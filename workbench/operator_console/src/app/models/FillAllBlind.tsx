@@ -27,6 +27,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 import type { CatalogModel, VendorFeed } from "@/lib/contract";
+import { HELP_FILL } from "@/lib/help";
 import { declareBodies, feedById } from "@/lib/feed";
 
 export default function FillAllBlind({
@@ -87,7 +88,13 @@ export default function FillAllBlind({
       {blind.length === 1 ? "it" : "every one of them"}. Until a model carries a
       price, its calls cannot be costed and its margin reads as unknown.
       <div className="rowline" style={{ marginTop: 10 }}>
-        <button type="button" className="primary" disabled={busy} onClick={fillAll}>
+        <button
+          type="button"
+          className="primary"
+          disabled={busy}
+          onClick={fillAll}
+          title={HELP_FILL.fillAll}
+        >
           {busy
             ? `Filling ${blind.length}…`
             : `Fill ${blind.length === 1 ? "it" : `all ${blind.length}`} from the feed`}

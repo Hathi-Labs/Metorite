@@ -22,6 +22,7 @@ const VERBS = [
   "aimage_generation",
 ];
 
+import { HELP_DECLARE } from "@/lib/help";
 export default function DeclareModel({
   tasks,
   accounts = [],
@@ -65,7 +66,7 @@ export default function DeclareModel({
 
   return (
     <details className="advanced">
-      <summary>Add a model to the catalog</summary>
+      <summary title={HELP_DECLARE.open}>Add a model to the catalog</summary>
 
       <p className="field-hint">
         A model has to be declared before any tier can use it. The provider verb
@@ -75,7 +76,9 @@ export default function DeclareModel({
 
       <div className="formrow">
         <div className="field grow">
-          <label htmlFor="cap-model">Model id</label>
+          <label htmlFor="cap-model" title={HELP_DECLARE.modelId}>
+            Model id
+          </label>
           <input
             id="cap-model"
             placeholder="openai/gpt-4o"
@@ -85,8 +88,10 @@ export default function DeclareModel({
           {warning && <span className="field-hint warn">{warning}</span>}
         </div>
         <div className="field">
-          <label htmlFor="cap-task">What it does</label>
-          <select id="cap-task" value={task} onChange={(e) => setTask(e.target.value)}>
+          <label htmlFor="cap-task" title={HELP_DECLARE.task}>
+            What it does
+          </label>
+          <select id="cap-task" title={HELP_DECLARE.task} value={task} onChange={(e) => setTask(e.target.value)}>
             {tasks.map((t) => (
               <option key={t.slug} value={t.slug}>
                 {t.label}
@@ -95,8 +100,10 @@ export default function DeclareModel({
           </select>
         </div>
         <div className="field">
-          <label htmlFor="cap-verb">Provider verb</label>
-          <select id="cap-verb" value={verb} onChange={(e) => setVerb(e.target.value)}>
+          <label htmlFor="cap-verb" title={HELP_DECLARE.verb}>
+            Provider verb
+          </label>
+          <select id="cap-verb" title={HELP_DECLARE.verb} value={verb} onChange={(e) => setVerb(e.target.value)}>
             {VERBS.map((v) => (
               <option key={v} value={v}>
                 {v}
@@ -105,7 +112,7 @@ export default function DeclareModel({
           </select>
         </div>
         <div className="field">
-          <label>
+          <label title={HELP_DECLARE.streams}>
             <input
               type="checkbox"
               checked={streams}
@@ -114,7 +121,12 @@ export default function DeclareModel({
             answers a word at a time
           </label>
         </div>
-        <button type="button" disabled={busy || !model.trim()} onClick={declare}>
+        <button
+          type="button"
+          disabled={busy || !model.trim()}
+          title={HELP_DECLARE.submit}
+          onClick={declare}
+        >
           Add
         </button>
       </div>

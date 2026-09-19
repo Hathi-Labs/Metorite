@@ -17,6 +17,7 @@ import { useRouter } from "next/navigation";
 
 import { categoricalChip, providerGlyph } from "@/lib/categorical";
 import { KIND_LABEL, type FeedModel, type VendorFeed } from "@/lib/contract";
+import { HELP_AVAILABLE } from "@/lib/help";
 import {
   availableByVendor,
   canFillFromFeed,
@@ -133,6 +134,7 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
           type="search"
           placeholder="Narrow by name or job — whisper, embedding, r1…"
           aria-label="Search available models"
+          title={HELP_AVAILABLE.search}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -160,7 +162,7 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
           className="feedvendor"
           open={query.trim() !== "" || groups.size === 1}
         >
-          <summary>
+          <summary title={HELP_AVAILABLE.vendor}>
             <span className={categoricalChip(vendor)}>
               <span className="glyph">{providerGlyph(vendor)}</span>
               {vendor}
@@ -175,13 +177,13 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
           <table>
             <thead>
               <tr>
-                <th>Model</th>
-                <th>Job</th>
-                <th>Reads at most</th>
+                <th title={HELP_AVAILABLE.colModel}>Model</th>
+                <th title={HELP_AVAILABLE.colJob}>Job</th>
+                <th title={HELP_AVAILABLE.colContext}>Reads at most</th>
                 {/* ⚠️ Not "per 1M". A transcribe model is sold by the minute
                     and a speech model by the character — the unit belongs to
                     the row, and `feedPriceLabel` names it there. */}
-                <th>We would pay</th>
+                <th title={HELP_AVAILABLE.colPrice}>We would pay</th>
                 <th aria-label="Add" />
               </tr>
             </thead>
@@ -229,8 +231,8 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
                         onClick={() => add(f)}
                         title={
                           canFillFromFeed(f)
-                            ? undefined
-                            : "Adds the model, but it will be costs blind — the feed has no price for it"
+                            ? HELP_AVAILABLE.add
+                            : HELP_AVAILABLE.addUnpriced
                         }
                       >
                         {busy === f.id
