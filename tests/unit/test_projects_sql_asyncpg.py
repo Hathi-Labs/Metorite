@@ -304,3 +304,37 @@ async def test_the_lock_does_not_serialise_unrelated_tasks(async_engine):
         )
         await first.rollback()
         await second.rollback()
+
+
+async def test_the_lock_key_does_not_depend_on_how_the_id_is_SPELLED(
+    async_engine,
+):
+    """⚠️ The three tests above bind the same string to both sides, so none of
+    them can see this.
+
+    `hashtext` hashes TEXT. Postgres accepts a uuid in upper case, mixed case
+    and braced form and normalises all of them, so every other statement in
+    the request — the budget SUM, the INSERT, `load_visible_task` — agrees
+    that two spellings are ONE task. If the lock key were the raw path string
+    they would take two different locks, both read the same pre-upload SUM,
+    and the race the lock exists to close would reopen for anyone who varied
+    the case of one character.
+    """
+    stmt = text(pm_attachments._BUDGET_LOCK_SQL)
+    ns = pm_attachments._BUDGET_LOCK_NS
+    lower = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+    upper = lower.upper()
+
+    async with async_engine.connect() as first, async_engine.connect() as second:
+        await first.execute(stmt, {"ns": ns, "tid": lower})
+        waiting = asyncio.create_task(
+            second.execute(stmt, {"ns": ns, "tid": upper}))
+        await asyncio.sleep(0.4)
+        assert not waiting.done(), (
+            "the same task id in a different case took a DIFFERENT lock — "
+            "the lock key is the raw request string rather than the "
+            "normalised uuid the rows are keyed by"
+        )
+        await first.rollback()
+        await asyncio.wait_for(waiting, timeout=5)
+        await second.rollback()

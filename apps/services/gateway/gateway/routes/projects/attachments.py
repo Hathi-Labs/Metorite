@@ -108,7 +108,16 @@ _BUDGET_LOCK_NS = 8274
 #: statement it does not recognise — it would accept this however it were
 #: misspelled. `test_projects_sql_asyncpg.py` runs it on a real Postgres and
 #: proves it excludes (R8).
-_BUDGET_LOCK_SQL = "SELECT pg_advisory_xact_lock(:ns, hashtext(:tid))"
+#:
+#: ⚠️ **`CAST(:tid AS uuid)::text`, not `:tid`.** `hashtext` hashes TEXT, and
+#: Postgres accepts a uuid in several spellings — upper case, mixed case,
+#: braced — normalising all of them. Every other statement in this request
+#: casts, so two requests spelling one task id differently both succeed while
+#: taking DIFFERENT locks, and the race this closes reopens. Casting first
+#: makes the lock key the same value the rows are keyed by.
+_BUDGET_LOCK_SQL = (
+    "SELECT pg_advisory_xact_lock(:ns, hashtext(CAST(:tid AS uuid)::text))"
+)
 
 
 def _mb(size: int) -> str:
@@ -220,16 +229,23 @@ async def attach_file(
             raise HTTPException(
                 status_code=413,
                 # ⚠️ Two messages, because "Remove something first" is advice
-                # a member cannot act on when the task holds nothing. A single
-                # file larger than the whole budget is refused on its own
-                # terms, and the only useful next step is a smaller file.
+                # a member cannot act on when removing everything still would
+                # not fit this file.
+                #
+                # The split is on the FILE, not on `used`. Splitting on
+                # `used == 0` sent a member down a path that could not work:
+                # the per-file cap is 15MB and the budget is 10MB, so a 12MB
+                # file on a task holding 1MB read "1.0 MB is already attached,
+                # remove something first" — and after removing it the same
+                # file was refused again. The property that decides which
+                # advice is TRUE is whether the file alone exceeds the budget.
                 detail=(
                     (
                         f"This file is {_mb(len(content))} and one task may "
                         f"hold {_mb(_TASK_ATTACHMENT_BUDGET)} in total. "
                         f"Attach a smaller file."
                     )
-                    if used == 0
+                    if len(content) > _TASK_ATTACHMENT_BUDGET
                     else (
                         f"This task's attachments would reach "
                         f"{_mb(used + len(content))} and the limit is "
