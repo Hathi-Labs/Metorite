@@ -75,7 +75,7 @@ class OrgPersonModel(BaseModel):
     capacity_hours_per_week: int | None = None
     current_load_hours_per_week: int | None = None
     available_hours_per_week: int | None = None
-    provider_user_id: str | None = None   # ClickUp user id (assignment target)
+    provider_user_id: str | None = None  # ClickUp user id (assignment target)
 
     # ── The profile (WS-28g / P-3, spec §3) ─────────────────────────────────
     # Grouped by the spec's sections rather than by type, because the section
@@ -111,7 +111,7 @@ class OrgPersonModel(BaseModel):
     phone: str | None = None
     emergency_contact: dict[str, Any] | None = None
     personal_email: str | None = None
-    birthday: str | None = None          # MM-DD, never a date of birth (D-PC-9)
+    birthday: str | None = None  # MM-DD, never a date of birth (D-PC-9)
 
 
 #: The HR-sensitive half of a person record — everything the owner's N4
@@ -199,8 +199,7 @@ def _iso(value: Any) -> str | None:
     return iso() if callable(iso) else str(value)
 
 
-def _row_to_person(row: Any, *, include_hr: bool,
-                   include_private: bool = False) -> OrgPersonModel:
+def _row_to_person(row: Any, *, include_hr: bool, include_private: bool = False) -> OrgPersonModel:
     """Row → model, with the HR half carried or projected away.
 
     ``include_hr`` is keyword-only and has **no default**: every call site has
@@ -302,11 +301,16 @@ async def list_people(
         clauses.append(match + ")")
         params["q"] = f"%{q.strip()}%"
     async with _tenant_session() as db:
-        rows = (await db.execute(
-            text("SELECT * FROM gtd_people WHERE " + " AND ".join(clauses)
-                 + " ORDER BY department, name"),
-            params,
-        )).fetchall()
+        rows = (
+            await db.execute(
+                text(
+                    "SELECT * FROM gtd_people WHERE "
+                    + " AND ".join(clauses)
+                    + " ORDER BY department, name"
+                ),
+                params,
+            )
+        ).fetchall()
         return [_row_to_person(r, include_hr=hr) for r in rows]
 
 
@@ -327,15 +331,20 @@ async def fetch_people_for_clarify(db: Any) -> list[dict[str, Any]]:
     falling back to the free-text ``reports_to`` display name — so the clarify
     LLM can prefer same-team owners or route approvals up the chain."""
     try:
-        rows = (await db.execute(text(
-            """SELECT p.id, p.name, p.email, p.clickup_user_id, p.skills,
+        rows = (
+            await db.execute(
+                text(
+                    """SELECT p.id, p.name, p.email, p.clickup_user_id, p.skills,
                       p.available_hours_per_week, p.capacity_hours_per_week,
                       p.current_load_hours_per_week, p.role, p.title, p.domain,
                       p.years_experience, p.reports_to, p.department, p.team,
                       m.name AS manager_name
                  FROM gtd_people p
                  LEFT JOIN gtd_people m ON m.id = p.manager_id
-                WHERE p.status = 'active'"""))).fetchall()
+                WHERE p.status = 'active'"""
+                )
+            )
+        ).fetchall()
     except Exception:
         return []
     return [
@@ -380,6 +389,7 @@ class PersonWrite(BaseModel):
     something nobody can do. Both directions are failures, so the test compares
     the two sets rather than one containment.
     """
+
     name: str | None = None
     email: str | None = None
     role: str | None = None
@@ -411,7 +421,7 @@ class PersonWrite(BaseModel):
     # §3.2 (admin class)
     employee_id: str | None = None
     employment_type: str | None = None
-    start_date: str | None = None        # ISO 'YYYY-MM-DD'
+    start_date: str | None = None  # ISO 'YYYY-MM-DD'
     end_date: str | None = None
     seniority: str | None = None
     cost_center: str | None = None
@@ -419,24 +429,45 @@ class PersonWrite(BaseModel):
     # §3.5 (self class, private read tier)
     phone: str | None = None
     emergency_contact: dict[str, Any] | None = None
-    birthday: str | None = None          # 'MM-DD' — D-PC-9
+    birthday: str | None = None  # 'MM-DD' — D-PC-9
 
 
 #: Columns the update builder passes straight through: no cast, no shaping.
 _PLAIN_UPDATE_COLUMNS: tuple[str, ...] = (
-    "name", "email", "role", "title", "department", "team", "reports_to",
-    "status", "domain", "resume_summary", "years_experience",
+    "name",
+    "email",
+    "role",
+    "title",
+    "department",
+    "team",
+    "reports_to",
+    "status",
+    "domain",
+    "resume_summary",
+    "years_experience",
     "clickup_user_id",
-    "preferred_name", "pronouns", "location", "timezone", "bio",
-    "employee_id", "employment_type", "seniority", "cost_center",
-    "personal_email", "phone", "birthday", "max_concurrent_tasks",
+    "preferred_name",
+    "pronouns",
+    "location",
+    "timezone",
+    "bio",
+    "employee_id",
+    "employment_type",
+    "seniority",
+    "cost_center",
+    "personal_email",
+    "phone",
+    "birthday",
+    "max_concurrent_tasks",
 )
 
 #: JSONB columns. `text()` declares no column type, so asyncpg needs both the
 #: cast and a JSON *string* — a bare dict has no codec (the defect
 #: `tests/live/live_ws27l.py` exists to pin).
 _JSONB_UPDATE_COLUMNS: tuple[str, ...] = (
-    "working_hours", "links", "emergency_contact",
+    "working_hours",
+    "links",
+    "emergency_contact",
 )
 
 #: `TEXT[]` columns. Bound as a Python list — never json-encoded, which would
@@ -453,16 +484,28 @@ _DATE_UPDATE_COLUMNS: tuple[str, ...] = ("start_date", "end_date")
 #: immediately after. Derived from the payload model rather than listed twice,
 #: so a column added to `PersonWrite` cannot be silently dropped on create:
 #: it is "everything writable that the create INSERT does not name".
-_CREATE_INSERT_COLUMNS: frozenset[str] = frozenset({
-    "name", "email", "role", "title", "department", "team", "reports_to",
-    "manager_id", "status", "skills", "domain", "resume_summary",
-    "years_experience", "capacity_hours_per_week",
-    "current_load_hours_per_week", "clickup_user_id",
-})
-
-_PROFILE_ONLY_COLUMNS: frozenset[str] = (
-    frozenset(PersonWrite.model_fields) - _CREATE_INSERT_COLUMNS
+_CREATE_INSERT_COLUMNS: frozenset[str] = frozenset(
+    {
+        "name",
+        "email",
+        "role",
+        "title",
+        "department",
+        "team",
+        "reports_to",
+        "manager_id",
+        "status",
+        "skills",
+        "domain",
+        "resume_summary",
+        "years_experience",
+        "capacity_hours_per_week",
+        "current_load_hours_per_week",
+        "clickup_user_id",
+    }
 )
+
+_PROFILE_ONLY_COLUMNS: frozenset[str] = frozenset(PersonWrite.model_fields) - _CREATE_INSERT_COLUMNS
 
 
 def _available(capacity: int | None, load: int | None) -> int | None:
@@ -495,7 +538,10 @@ def _as_date(column: str, value: Any) -> Any:
 
 
 def build_person_update(
-    fields: dict[str, Any], row: Any, *, actor: str,
+    fields: dict[str, Any],
+    row: Any,
+    *,
+    actor: str,
 ) -> tuple[list[str], dict[str, Any]]:
     """``SET`` clauses + binds for a person update. **One builder, two doors.**
 
@@ -525,9 +571,7 @@ def build_person_update(
     for col in _ARRAY_UPDATE_COLUMNS:
         if col in fields:
             set_parts.append(f"{col} = :{col}")
-            params[col] = [
-                str(v).strip() for v in (fields[col] or []) if str(v).strip()
-            ]
+            params[col] = [str(v).strip() for v in (fields[col] or []) if str(v).strip()]
     for col in _DATE_UPDATE_COLUMNS:
         if col in fields:
             set_parts.append(f"{col} = :{col}")
@@ -546,10 +590,10 @@ def build_person_update(
         params["skills_source"] = json.dumps(src)
 
     # Recompute free hours whenever capacity or load moves.
-    cap = fields.get("capacity_hours_per_week",
-                     getattr(row, "capacity_hours_per_week", None))
-    load = fields.get("current_load_hours_per_week",
-                      getattr(row, "current_load_hours_per_week", None))
+    cap = fields.get("capacity_hours_per_week", getattr(row, "capacity_hours_per_week", None))
+    load = fields.get(
+        "current_load_hours_per_week", getattr(row, "current_load_hours_per_week", None)
+    )
     if "capacity_hours_per_week" in fields:
         set_parts.append("capacity_hours_per_week = :capacity")
         params["capacity"] = fields["capacity_hours_per_week"]
@@ -563,9 +607,9 @@ def build_person_update(
 
 
 async def _get_person_row(db: Any, person_id: str) -> Any:
-    row = (await db.execute(
-        text("SELECT * FROM gtd_people WHERE id = :id"), {"id": person_id}
-    )).fetchone()
+    row = (
+        await db.execute(text("SELECT * FROM gtd_people WHERE id = :id"), {"id": person_id})
+    ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Person not found")
     return row
@@ -600,8 +644,9 @@ def _clean_email(email: str | None) -> str | None:
     return clean or None
 
 
-async def _email_taken_by(db: Any, email: str | None, *,
-                          exclude_id: str | None = None) -> str | None:
+async def _email_taken_by(
+    db: Any, email: str | None, *, exclude_id: str | None = None
+) -> str | None:
     """The name of the person already holding this address, or ``None``.
 
     Migration 148 put a partial UNIQUE on `lower(email)` so an email→person
@@ -625,8 +670,92 @@ async def _email_taken_by(db: Any, email: str | None, *,
     return str(row.name) if row is not None else None
 
 
-@router.post("/people", response_model=OrgPersonModel, status_code=201,
-             dependencies=[require_people_write()])
+async def ensure_directory_row(
+    db: Any,
+    *,
+    email: str,
+    display_name: str,
+    status: str = "active",
+) -> bool:
+    """Give a provisioned member the ``gtd_people`` row their profile needs.
+
+    Returns True when this call inserted one, False when a row already existed
+    or the address was unusable. Idempotent, and safe to call on every invite.
+
+    **Why this exists.** ``people_center_app.md`` §2 keeps two stores on
+    purpose: ``app_user`` answers *may they sign in*, ``gtd_people`` answers
+    *who are they*. The split is right, and it is not the bug. The bug is that
+    **nothing ever wrote the second one for a member.** §2 lists the writers as
+    an import, a resume upload, or a hand-added row — so a person signed in,
+    opened ``/people/me``, and was told an administrator had to add them. That
+    included the founder, in an organization where no administrator but them
+    existed. Measured on production 2026-09-19: zero rows in the directory,
+    and the org owner among the people with none.
+
+    **It stays a MINIMAL row.** Name, address and status, and nothing else. The
+    surface this unblocks is the one where a person describes themselves, so
+    guessing a department or a title here would put words in their mouth that
+    they did not choose and may not be able to change.
+
+    ⚠️ **A directory row is still not a login, and a login is still not a
+    directory row.** §2's two permissive halves both survive: a contractor may
+    hold a row with no ``app_user``, and a service identity may sign in with no
+    row. What changes is only that provisioning a HUMAN member now writes both.
+
+    ⚠️ ``ON CONFLICT DO NOTHING`` on migration 148's ``lower(email)`` index,
+    which is **global rather than per-tenant**. So an address already held by
+    ANOTHER organization makes this a silent no-op. That is the pre-existing
+    shape of the index, not a decision taken here, and it is a finding for the
+    board rather than something to fix on this path.
+
+    ⚠️ **``source_key`` is set here, and leaving it NULL was a live bug.**
+    Migration 148 carries a SECOND unique index, on ``source_key``, and a
+    replay of that migration's backfill computes the value as
+    ``<source>:<lower(name)>``. Two members who share a name then collide, and
+    the replay aborts. A real database raised it on the first run and a
+    hermetic fake would never have seen it (R8, again).
+
+    Keyed on the ADDRESS rather than the name, because for THIS source the
+    address is what is actually unique — which is the honest per-source key
+    148's own header asks for. It also takes the row out of that backfill's
+    ``WHERE source_key IS NULL``, so the replay skips it entirely.
+
+    ``organization_id`` is deliberately absent from the column list: the
+    generated tenancy layer defaults it to ``current_setting('app.tenant_id')``,
+    so the row lands in the caller's tenant exactly as ``create_person``'s
+    INSERT does. This must run inside a tenant session (R5).
+    """
+    clean = _clean_email(email)
+    if not clean:
+        return False
+    name = (display_name or "").strip() or clean.split("@")[0]
+    if status not in PEOPLE_STATUSES:
+        status = "active"
+    result = await db.execute(
+        text(
+            """INSERT INTO gtd_people
+                   (id, name, email, status, skills, source, source_key,
+                    updated_by, updated_at)
+               VALUES
+                   (:id, :name, :email, :status, ARRAY[]::text[], 'member',
+                    'member:' || :email, :by, now())
+               ON CONFLICT (lower(email)) WHERE email IS NOT NULL
+               DO NOTHING"""
+        ),
+        {
+            "id": str(uuid4()),
+            "name": name,
+            "email": clean,
+            "status": status,
+            "by": "member-provisioning",
+        },
+    )
+    return bool(result.rowcount)
+
+
+@router.post(
+    "/people", response_model=OrgPersonModel, status_code=201, dependencies=[require_people_write()]
+)
 async def create_person(
     body: PersonWrite,
     user: UserContext = Depends(get_current_user),
@@ -660,10 +789,11 @@ async def create_person(
         holder = await _email_taken_by(db, body.email)
         if holder:
             raise HTTPException(
-                status_code=409,
-                detail=f"{body.email} already belongs to {holder}.")
-        await db.execute(text(
-            """INSERT INTO gtd_people
+                status_code=409, detail=f"{body.email} already belongs to {holder}."
+            )
+        await db.execute(
+            text(
+                """INSERT INTO gtd_people
                (id, name, email, role, title, department, team, reports_to,
                 manager_id, status, skills, skills_source, domain, resume_summary,
                 years_experience, capacity_hours_per_week,
@@ -674,39 +804,57 @@ async def create_person(
                 CAST(:manager_id AS UUID), :status, :skills,
                 CAST(:skills_source AS JSONB), :domain, :resume_summary,
                 :years_experience, :capacity, :load, :available,
-                :clickup_user_id, 'manual', :updated_by, now())"""),
-            {"id": pid, "name": name, "email": _clean_email(body.email),
-             "role": body.role,
-             "title": body.title, "department": body.department, "team": body.team,
-             "reports_to": body.reports_to, "manager_id": body.manager_id,
-             "status": body.status or "active", "skills": skills,
-             "skills_source": json.dumps(skills_source), "domain": body.domain,
-             "resume_summary": body.resume_summary,
-             "years_experience": body.years_experience,
-             "capacity": body.capacity_hours_per_week,
-             "load": body.current_load_hours_per_week, "available": available,
-             "clickup_user_id": body.clickup_user_id, "updated_by": _uid(user)})
+                :clickup_user_id, 'manual', :updated_by, now())"""
+            ),
+            {
+                "id": pid,
+                "name": name,
+                "email": _clean_email(body.email),
+                "role": body.role,
+                "title": body.title,
+                "department": body.department,
+                "team": body.team,
+                "reports_to": body.reports_to,
+                "manager_id": body.manager_id,
+                "status": body.status or "active",
+                "skills": skills,
+                "skills_source": json.dumps(skills_source),
+                "domain": body.domain,
+                "resume_summary": body.resume_summary,
+                "years_experience": body.years_experience,
+                "capacity": body.capacity_hours_per_week,
+                "load": body.current_load_hours_per_week,
+                "available": available,
+                "clickup_user_id": body.clickup_user_id,
+                "updated_by": _uid(user),
+            },
+        )
         # The INSERT above carries the columns that existed before WS-28g. The
         # profile columns are applied by the shared builder in the SAME
         # transaction rather than by extending the INSERT — one place decides
         # how a JSONB, an array or a date reaches Postgres, and a create that
         # accepted `timezone` in its payload and dropped it on the floor is
         # precisely the silent-discard D-PC-5 refuses.
-        extra = {k: v for k, v in body.model_dump(exclude_unset=True).items()
-                 if k in _PROFILE_ONLY_COLUMNS}
+        extra = {
+            k: v
+            for k, v in body.model_dump(exclude_unset=True).items()
+            if k in _PROFILE_ONLY_COLUMNS
+        }
         if extra:
             set_parts, params = build_person_update(
-                extra, await _get_person_row(db, pid), actor=_uid(user))
+                extra, await _get_person_row(db, pid), actor=_uid(user)
+            )
             params["id"] = pid
             await db.execute(
-                text(f"UPDATE gtd_people SET {', '.join(set_parts)} WHERE id = :id"),
-                params)
+                text(f"UPDATE gtd_people SET {', '.join(set_parts)} WHERE id = :id"), params
+            )
         if skills:
             # WS-28h / D-PC-6: the child table is the source, the array the
             # projection — so a create that carries skills seeds the table in
             # the SAME transaction, or the very first save would already
             # disagree with it.
             from gateway.person_skills import sync_from_array
+
             await sync_from_array(db, pid, skills, _uid(user))
         person = await _get_person_row(db, pid)
     # The insert is committed above; the capability re-embed runs AFTER it in
@@ -720,8 +868,9 @@ async def create_person(
     return _row_to_person(person, include_hr=True, include_private=True)
 
 
-@router.patch("/people/{person_id}", response_model=OrgPersonModel,
-              dependencies=[require_people_write()])
+@router.patch(
+    "/people/{person_id}", response_model=OrgPersonModel, dependencies=[require_people_write()]
+)
 async def update_person(
     person_id: str,
     body: PersonWrite,
@@ -746,13 +895,13 @@ async def update_person(
             holder = await _email_taken_by(db, fields["email"], exclude_id=person_id)
             if holder:
                 raise HTTPException(
-                    status_code=409,
-                    detail=f"{fields['email']} already belongs to {holder}.")
+                    status_code=409, detail=f"{fields['email']} already belongs to {holder}."
+                )
         set_parts, params = build_person_update(fields, row, actor=_uid(user))
         params["id"] = person_id
         await db.execute(
-            text(f"UPDATE gtd_people SET {', '.join(set_parts)} WHERE id = :id"),
-            params)
+            text(f"UPDATE gtd_people SET {', '.join(set_parts)} WHERE id = :id"), params
+        )
         if "skills" in fields:
             # WS-28h / D-PC-6: reconcile the structured table to the flat list
             # in the SAME transaction. Retained skills keep their level/years —
@@ -760,8 +909,8 @@ async def update_person(
             # structured editor set — and the projection re-derives the array,
             # so it cannot be observed disagreeing with the table.
             from gateway.person_skills import sync_from_array
-            await sync_from_array(db, person_id, fields["skills"] or [],
-                                  _uid(user))
+
+            await sync_from_array(db, person_id, fields["skills"] or [], _uid(user))
         person = await _get_person_row(db, person_id)
     # The edit is committed above; the capability re-embed runs AFTER it in its
     # own transaction (best-effort; H2 restructure).
@@ -779,8 +928,11 @@ class ResumeIngestResult(BaseModel):
     person: OrgPersonModel
 
 
-@router.post("/people/{person_id}/resume", response_model=ResumeIngestResult,
-             dependencies=[require_people_write()])
+@router.post(
+    "/people/{person_id}/resume",
+    response_model=ResumeIngestResult,
+    dependencies=[require_people_write()],
+)
 async def ingest_resume(
     person_id: str,
     file: UploadFile,
@@ -794,8 +946,8 @@ async def ingest_resume(
     ext = Path(fname).suffix.lower()
     if ext not in _RESUME_EXT:
         raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported résumé type '{ext}'. Use PDF, DOCX or TXT.")
+            status_code=400, detail=f"Unsupported résumé type '{ext}'. Use PDF, DOCX or TXT."
+        )
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Empty file")
@@ -807,8 +959,9 @@ async def ingest_resume(
         # not this row's array.
         await _get_person_row(db, person_id)
         # Vocabulary = every skill the org already knows (broadens keyword hits).
-        vocab_rows = (await db.execute(text(
-            "SELECT DISTINCT unnest(skills) AS s FROM gtd_people"))).fetchall()
+        vocab_rows = (
+            await db.execute(text("SELECT DISTINCT unnest(skills) AS s FROM gtd_people"))
+        ).fetchall()
         known = [r.s for r in vocab_rows if r.s]
         parsed = await parse_resume(content, fname, file.content_type, known)
 
@@ -824,16 +977,26 @@ async def ingest_resume(
             "years_experience": parsed.get("years_experience"),
             "domain": parsed.get("domain"),
         }
-        await db.execute(text(
-            """INSERT INTO gtd_person_resumes
+        await db.execute(
+            text(
+                """INSERT INTO gtd_person_resumes
                (id, person_id, filename, mime, size_bytes, storage_path,
                 parsed_text, extracted, uploaded_by)
                VALUES (:id, :pid, :fn, :mime, :size, :path, :ptext,
-                       CAST(:extracted AS JSONB), :by)"""),
-            {"id": rid, "pid": person_id, "fn": fname,
-             "mime": file.content_type, "size": len(content),
-             "path": str(dest), "ptext": parsed.get("text", "")[:200000],
-             "extracted": json.dumps(extracted), "by": _uid(user)})
+                       CAST(:extracted AS JSONB), :by)"""
+            ),
+            {
+                "id": rid,
+                "pid": person_id,
+                "fn": fname,
+                "mime": file.content_type,
+                "size": len(content),
+                "path": str(dest),
+                "ptext": parsed.get("text", "")[:200000],
+                "extracted": json.dumps(extracted),
+                "by": _uid(user),
+            },
+        )
 
         # WS-28h / D-PC-6: the parse writes STRUCTURED rows — skills as
         # evidence='resume' child rows, credentials deduplicated — and the
@@ -842,20 +1005,28 @@ async def ingest_resume(
         # contains and silent about everything else, so nothing a human put in
         # is removed, and a skill already present keeps its level untouched.
         from gateway.person_skills import merge_from_resume
+
         added = await merge_from_resume(
-            db, person_id, parsed["skills"], parsed.get("credentials", []),
-            _uid(user))
+            db, person_id, parsed["skills"], parsed.get("credentials", []), _uid(user)
+        )
         # Fill summary/years/domain only when currently empty.
-        await db.execute(text(
-            """UPDATE gtd_people SET
+        await db.execute(
+            text(
+                """UPDATE gtd_people SET
                  resume_summary = COALESCE(resume_summary, :summary),
                  years_experience = COALESCE(years_experience, :years),
                  domain = COALESCE(domain, :domain),
                  updated_by = :by, updated_at = now()
-               WHERE id = :id"""),
-            {"summary": parsed.get("experience_summary"),
-             "years": parsed.get("years_experience"),
-             "domain": parsed.get("domain"), "by": _uid(user), "id": person_id})
+               WHERE id = :id"""
+            ),
+            {
+                "summary": parsed.get("experience_summary"),
+                "years": parsed.get("years_experience"),
+                "domain": parsed.get("domain"),
+                "by": _uid(user),
+                "id": person_id,
+            },
+        )
         person = await _get_person_row(db, person_id)
     # The résumé + merge are committed above. New skills / résumé depth change
     # the capability text → re-embed, AFTER the commit, in its own transaction
@@ -863,8 +1034,11 @@ async def ingest_resume(
     async with _tenant_session() as db:
         await _reembed_capability(db, person_id)
     return ResumeIngestResult(
-        resume_id=rid, added_skills=added, extracted=extracted,
-        person=_row_to_person(person, include_hr=True, include_private=True))
+        resume_id=rid,
+        added_skills=added,
+        extracted=extracted,
+        person=_row_to_person(person, include_hr=True, include_private=True),
+    )
 
 
 async def _reembed_capability(db: Any, person_id: str) -> None:
@@ -873,6 +1047,7 @@ async def _reembed_capability(db: Any, person_id: str) -> None:
     hiccup never fails the write that already committed."""
     try:
         from gateway.routes.tasks.capability import embed_person
+
         await embed_person(db, person_id)
     except Exception:
         pass

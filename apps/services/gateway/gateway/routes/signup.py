@@ -53,6 +53,7 @@ the gateway env). Not exactly ``"true"`` ⇒ ``SignupDisabled``, no organization
 created, fail closed. ``console_resolve`` does NOT read this flag; the resolve
 path is byte-identical under both positions.
 """
+
 from __future__ import annotations
 
 import re
@@ -67,6 +68,7 @@ from acb_auth.console_resolve import (
     provision_org_on_console,
 )
 from acb_common import get_logger, get_settings
+from acb_common.db import tenant_session
 from acb_common.provisioning import (
     OwnerBelongsElsewhere,
     SlugOwnedByAnother,
@@ -76,6 +78,7 @@ from acb_common.provisioning import (
 )
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from gateway.routes.tasks.people import ensure_directory_row
 
 _log = get_logger("gateway.signup")
 
@@ -199,29 +202,31 @@ _SLUG_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 #: Console, D35; ``billing``; ``auth``/``login``; ``assets``/``ws``/``dev``/
 #: ``staging``). Safe only because self-serve signup is dark, so no customer can
 #: already hold one — a later widening must check the org table first.
-_RESERVED_SLUGS = frozenset({
-    "admin",
-    "api",
-    "app",
-    "assets",
-    "auth",
-    "billing",
-    "cdn",
-    "console",
-    "dev",
-    "docs",
-    "help",
-    "login",
-    "mail",
-    "operator",
-    "signin",
-    "signup",
-    "staging",
-    "static",
-    "status",
-    "ws",
-    "www",
-})
+_RESERVED_SLUGS = frozenset(
+    {
+        "admin",
+        "api",
+        "app",
+        "assets",
+        "auth",
+        "billing",
+        "cdn",
+        "console",
+        "dev",
+        "docs",
+        "help",
+        "login",
+        "mail",
+        "operator",
+        "signin",
+        "signup",
+        "staging",
+        "static",
+        "status",
+        "ws",
+        "www",
+    }
+)
 
 
 def _refuse(code: str, **extra: Any) -> dict[str, Any]:
@@ -263,8 +268,7 @@ def _slug_shape_refusal(slug: str) -> JSONResponse | None:
     if slug in _RESERVED_SLUGS:
         return _bad_request(
             RESERVED_SLUG,
-            "that workspace address is reserved for the platform; "
-            "please choose a different one",
+            "that workspace address is reserved for the platform; please choose a different one",
         )
     return None
 
@@ -278,9 +282,7 @@ def _gst_refusal(registered_state: str, gstin: str) -> JSONResponse | None:
     their shape-violation class; only their home moved.
     """
     if not registered_state:
-        return _bad_request(
-            MISSING_STATE, "a registered billing state is required"
-        )
+        return _bad_request(MISSING_STATE, "a registered billing state is required")
     if gstin and not _GSTIN_RE.match(gstin):
         return _bad_request(INVALID_GSTIN, "the GSTIN is structurally invalid")
     return None
@@ -317,19 +319,13 @@ def _team_size(raw_value: Any) -> int | JSONResponse:
     — *"I did not answer"* — so both take the default. Treating ``""`` as
     absent and ``"  "`` as malformed would be one rule with two answers.
     """
-    if raw_value is None or (
-        isinstance(raw_value, str) and raw_value.strip() == ""
-    ):
+    if raw_value is None or (isinstance(raw_value, str) and raw_value.strip() == ""):
         return DEFAULT_TEAM_SIZE
     if isinstance(raw_value, bool):
-        return _bad_request(
-            INVALID_TEAM_SIZE, "the team size must be a whole number"
-        )
+        return _bad_request(INVALID_TEAM_SIZE, "the team size must be a whole number")
     if isinstance(raw_value, int):
         size = raw_value
-    elif isinstance(raw_value, str) and _ASCII_DIGITS_RE.fullmatch(
-        raw_value.strip()
-    ):
+    elif isinstance(raw_value, str) and _ASCII_DIGITS_RE.fullmatch(raw_value.strip()):
         # ⚠️ LENGTH first, `int()` second, and the order is the whole point.
         # CPython refuses to parse an integer literal beyond
         # `sys.get_int_max_str_digits()` (4300 by default) and raises
@@ -347,9 +343,7 @@ def _team_size(raw_value: Any) -> int | JSONResponse:
             )
         size = int(digits)
     else:
-        return _bad_request(
-            INVALID_TEAM_SIZE, "the team size must be a whole number"
-        )
+        return _bad_request(INVALID_TEAM_SIZE, "the team size must be a whole number")
     if size < 1 or size > MAX_TEAM_SIZE:
         return _bad_request(
             INVALID_TEAM_SIZE,
@@ -398,14 +392,52 @@ async def _mirror_to_console(
         # means those two have DRIFTED. Caught anyway, because the alternative
         # is a 500 on a signup, and logged at ERROR so the drift is findable
         # rather than rendered to the founder as a transient "try again".
-        _log.error(
-            "signup.console_refused_shape", slug=slug, error=str(exc)[:200]
-        )
+        _log.error("signup.console_refused_shape", slug=slug, error=str(exc)[:200])
         return _refuse(CONSOLE_UNAVAILABLE)
     except ConsoleProvisionUnavailable as exc:
         _log.warning("signup.console_unavailable", error=str(exc)[:200])
         return _refuse(CONSOLE_UNAVAILABLE)
     return None
+
+
+async def _write_founder_directory_row(
+    *, organization_id: str, slug: str, email: str, display_name: str
+) -> None:
+    """Give the person who just created the org their `/people/me` row.
+
+    Without it the founder opens *My Profile* and reads "An administrator can
+    add you" — in an organization where they are the only administrator there
+    is. Measured on production 2026-09-19: the owner of the live tenant had no
+    row, and neither did anybody else.
+
+    ⚠️ **Its OWN tenant session.** The organization was created seconds ago and
+    nothing has bound ``app.tenant_id`` on this request. ``gtd_people``'s
+    ``organization_id`` defaults from that setting, so an unbound insert would
+    write a NULL tenant — the one outcome worse than no row at all.
+
+    Best-effort, and AFTER the authoritative commit, like every other mirror in
+    this flow. A signup that worked must never fail on a profile row, and
+    ``invite_member`` writes the same row for everybody who follows the
+    founder in.
+
+    Extracted from :func:`provision_signup` rather than inlined: the route was
+    already at the complexity ceiling, and one more ``try`` pushed it over.
+    """
+    try:
+        async with tenant_session(organization_id) as db:
+            # `status` is left to the helper's own default on purpose. The
+            # founder is active by definition, and
+            # `test_console_dependency_boundary` forbids a lifecycle state
+            # NAME as a string constant in this file. That fence cannot tell a
+            # people-directory status from a deployment lifecycle state, and
+            # it is right not to try.
+            await ensure_directory_row(
+                db,
+                email=email,
+                display_name=display_name,
+            )
+    except Exception as exc:
+        _log.warning("signup.founder_directory_row_failed", slug=slug, error=str(exc)[:200])
 
 
 @router.post("/provision")
@@ -503,7 +535,7 @@ async def provision_signup(
     # raced its own pre-flight, mapped to the SAME two codes so a race is
     # indistinguishable from the pre-flighted case at the wire.
     try:
-        await provision_local_organization(
+        organization_id = await provision_local_organization(
             slug, display_name or None, owner_email=email
         )
     except OwnerBelongsElsewhere:
@@ -525,6 +557,14 @@ async def provision_signup(
         # nothing" contract), so the org works dark only once step 1 commits.
         _log.error("signup.tenant_provision_failed", error=str(exc)[:200])
         return _refuse(CONSOLE_UNAVAILABLE)
+
+    # ── Step 1.4 · the FOUNDER's directory row ───────────────────────────────
+    await _write_founder_directory_row(
+        organization_id=str(organization_id),
+        slug=slug,
+        email=email,
+        display_name=display_name or "",
+    )
 
     # ── Step 1.5 · persist the GST profile on the tenant org (CP-2e) ─────────
     # AFTER step 1 (the org now exists) and BEFORE step 2, so a transient step-2

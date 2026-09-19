@@ -152,7 +152,13 @@ export class PeopleApiError extends Error {
 }
 
 async function call<T>(path: string): Promise<T> {
-  const res = await fetch(`/api/people/${path}`);
+  // `path` is "" for the directory LIST, and "?q=…" when it carries filters.
+  // Both must reach `/api/people` with NO trailing slash: the proxy route is
+  // an optional catch-all, and Next 308-redirects `/api/people/` before the
+  // route is ever consulted. Gluing the slash on unconditionally is the bug
+  // that made the list answer with a 404 HTML page for its whole life.
+  const suffix = path === "" || path.startsWith("?") ? path : `/${path}`;
+  const res = await fetch(`/api/people${suffix}`);
   const text = await res.text();
   const body = text ? JSON.parse(text) : null;
   if (!res.ok) {

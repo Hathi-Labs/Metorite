@@ -1,5 +1,16 @@
 /**
- * GET/PATCH/POST /api/people/[…path]
+ * GET/PATCH/POST /api/people/[[…path]]
+ *
+ * ⚠️ **An OPTIONAL catch-all, and that is load-bearing.** The directory LIST
+ * is `GET /people/` upstream, so the browser asks for `/api/people` with NO
+ * path segment. A required catch-all (`[...path]`) matches one segment or
+ * more and never the bare path, so Next answered its own 404 HTML page, the
+ * client called `JSON.parse` on `<!DOCTYPE html>` and every visit to the
+ * directory showed "Unexpected token '<'". The list had never once loaded.
+ *
+ * The second symptom was worse than the first: `can_manage` rides on that
+ * same response, so the "Add person" control never drew and an admin had no
+ * way to add anybody. Fenced by `people/lib/proxyRoute.test.ts`.
  *
  * Proxies People Center requests to the FastAPI gateway's /people/* API. The
  * browser talks to the Next server, which holds the session and forwards an
@@ -26,8 +37,11 @@ import { GATEWAY_URL, gatewayHeaders, requireIdentity } from "@/lib/gateway";
 
 export const dynamic = "force-dynamic";
 
-function buildUpstreamUrl(path: string[], req: NextRequest): string {
-  const base = `${GATEWAY_URL}/people/${path.join("/")}`;
+function buildUpstreamUrl(path: string[] | undefined, req: NextRequest): string {
+  // `path` is undefined for the bare `/api/people` — the directory list. The
+  // gateway serves that as `GET /people/`, trailing slash and all, which is
+  // exactly what an empty join produces here. Do not "tidy" the slash away.
+  const base = `${GATEWAY_URL}/people/${(path ?? []).join("/")}`;
   const qs = req.nextUrl.searchParams.toString();
   return qs ? `${base}?${qs}` : base;
 }
@@ -35,7 +49,7 @@ function buildUpstreamUrl(path: string[], req: NextRequest): string {
 async function forward(
   method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
   req: NextRequest,
-  params: Promise<{ path: string[] }>
+  params: Promise<{ path?: string[] }>
 ): Promise<NextResponse> {
   const { path } = await params;
   const upstream = buildUpstreamUrl(path, req);
@@ -86,7 +100,7 @@ async function forward(
 
 export async function GET(
   req: NextRequest,
-  ctx: { params: Promise<{ path: string[] }> }
+  ctx: { params: Promise<{ path?: string[] }> }
 ) {
   // Identity is resolved BEFORE forwarding. `gatewayHeaders()` throwing is what
   // makes an unguarded call fail closed, but that throw lands in the catch
@@ -99,7 +113,7 @@ export async function GET(
 
 export async function PATCH(
   req: NextRequest,
-  ctx: { params: Promise<{ path: string[] }> }
+  ctx: { params: Promise<{ path?: string[] }> }
 ) {
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
@@ -108,7 +122,7 @@ export async function PATCH(
 
 export async function POST(
   req: NextRequest,
-  ctx: { params: Promise<{ path: string[] }> }
+  ctx: { params: Promise<{ path?: string[] }> }
 ) {
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
@@ -118,7 +132,7 @@ export async function POST(
 /** WS-28p: `PUT /people/schedule` — the org's working week, admin-gated upstream. */
 export async function PUT(
   req: NextRequest,
-  ctx: { params: Promise<{ path: string[] }> }
+  ctx: { params: Promise<{ path?: string[] }> }
 ) {
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
@@ -128,7 +142,7 @@ export async function PUT(
 /** WS-28q: removing a display image. No body, so nothing is forwarded. */
 export async function DELETE(
   req: NextRequest,
-  ctx: { params: Promise<{ path: string[] }> }
+  ctx: { params: Promise<{ path?: string[] }> }
 ) {
   const me = await requireIdentity();
   if (me instanceof NextResponse) return me;
