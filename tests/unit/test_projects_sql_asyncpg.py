@@ -32,6 +32,7 @@ have been written later, or not at all.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
@@ -40,6 +41,7 @@ pytest.importorskip("sqlalchemy")
 pytest.importorskip("asyncpg")
 
 from gateway.routes.projects import analytics as A
+from gateway.routes.projects import attachments as pm_attachments
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -229,3 +231,76 @@ async def test_the_board_order_join_runs_on_asyncpg(async_engine):
                 "view_id": "00000000-0000-0000-0000-000000000000",
             },
         )
+
+
+# ── The attachment budget's lock ────────────────────────────────────────────
+#
+# ⚠️ **The hermetic suite cannot see this one at all.** `FakeDB.execute`
+# answers an empty result for any statement it does not recognise, so it
+# accepts the lock however it is spelled — and a lock that is a no-op looks
+# identical to a lock that works, right up to the moment two uploads land
+# together. Only a real Postgres can say whether it EXCLUDES.
+
+
+async def test_the_budget_lock_runs_on_asyncpg(async_engine):
+    """It parses, with the bound-parameter shape the route actually sends.
+
+    `tid` arrives as a string and not a uuid object, because that is what
+    `POST /tasks/{task_id}/attachments` binds.
+    """
+    async with async_engine.begin() as conn:
+        await conn.execute(
+            text(pm_attachments._BUDGET_LOCK_SQL),
+            {"ns": pm_attachments._BUDGET_LOCK_NS,
+             "tid": "3f2504e0-4f89-11d3-9a0c-0305e82c3301"},
+        )
+
+
+async def test_two_uploads_to_one_task_cannot_hold_the_lock_together(
+    async_engine,
+):
+    """The reason the lock is there: the budget check is read-then-write.
+
+    Without it, five files dropped on one task upload in parallel, each reads
+    the same pre-upload SUM, all five pass, and a 10MB task holds 45MB. This
+    proves the second transaction WAITS rather than reading past the first.
+    """
+    stmt = text(pm_attachments._BUDGET_LOCK_SQL)
+    args = {"ns": pm_attachments._BUDGET_LOCK_NS,
+            "tid": "3f2504e0-4f89-11d3-9a0c-0305e82c3301"}
+
+    async with async_engine.connect() as first, async_engine.connect() as second:
+        await first.execute(stmt, args)
+        waiting = asyncio.create_task(second.execute(stmt, args))
+        # Long enough that a no-op lock finishes, short enough to stay cheap.
+        await asyncio.sleep(0.4)
+        assert not waiting.done(), (
+            "the second transaction took the lock while the first held it — "
+            "the budget SUM and its INSERT are not serialised, so parallel "
+            "uploads to one task can each pass the same stale check"
+        )
+        await first.rollback()
+        # And it must not wait FOREVER: the first ending releases it.
+        await asyncio.wait_for(waiting, timeout=5)
+        await second.rollback()
+
+
+async def test_the_lock_does_not_serialise_unrelated_tasks(async_engine):
+    """Keyed on the task, or every upload in the org queues behind one.
+
+    A hash collision between two task ids would show up here as a hang, and
+    that is the honest cost of hashing a uuid into the lock space.
+    """
+    stmt = text(pm_attachments._BUDGET_LOCK_SQL)
+    ns = pm_attachments._BUDGET_LOCK_NS
+
+    async with async_engine.connect() as first, async_engine.connect() as second:
+        await first.execute(
+            stmt, {"ns": ns, "tid": "3f2504e0-4f89-11d3-9a0c-0305e82c3301"})
+        await asyncio.wait_for(
+            second.execute(
+                stmt, {"ns": ns, "tid": "8f14e45f-ceea-467a-9ae7-1f0f1b2c3d4e"}),
+            timeout=5,
+        )
+        await first.rollback()
+        await second.rollback()

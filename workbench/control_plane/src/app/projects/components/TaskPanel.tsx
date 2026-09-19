@@ -21,8 +21,10 @@
  * Material's pill buttons or Graphite's uppercase labels, which is AGENTS.md
  * rule 3 and is now fenced by conformance rule 7.
  *
- * So the grammar here is `ItemDetail`'s: `SectionLabel` for a section,
- * `FieldCell` for a labelled cell (the chrome its `MetaEdit` draws closed).
+ * So the grammar here is `ItemDetail`'s: `CollapsibleSection` for a section
+ * (it replaced a local `SectionLabel` when the sections learned to fold, and
+ * it carries the same heading grammar), and `FieldCell` for a labelled cell
+ * (the chrome its `MetaEdit` draws closed).
  * What is NOT copied is the interaction — Projects' controls are always
  * visible rather than click-to-edit, because changing that is an interaction
  * change wearing a composition change's clothes.
@@ -196,22 +198,6 @@ function describe(activity: ActivityRow, defs: FieldRow[] = []): string {
 }
 
 /**
- * A section heading — `ItemDetail`'s grammar, re-derived from that file
- * (`text-[11px] font-semibold uppercase tracking-wide text-muted-foreground`,
- * optional leading glyph).
- *
- * ⚠️ It is a deliberate second copy, and it should not stay one. The shared
- * home for it is `src/components/`, promoted together with `ItemDetail`'s — and
- * that edit touches `app/tasks
-/**
- * One labelled cell in the details block — the chrome `ItemDetail`'s `MetaEdit`
- * draws in its closed state, without the click-to-edit flip: this panel's
- * controls are live, and hiding them behind a click would be an interaction
- * change, not a composition one.
- *
- * `trailing` is the right-hand slot of the label row (an accent dot, a count).
- */
-/**
  * The container class for a group of sections that may pair up.
  *
  * One helper rather than the same ternary written at each container, so the
@@ -225,7 +211,20 @@ const PAIRED_SECTIONS = (twoColumn: boolean): string =>
     ? "grid grid-cols-2 items-start gap-4 px-3 py-3"
     : "flex flex-col gap-4 px-3 py-3";
 
-
+/**
+ * One labelled cell in the details block — the chrome `ItemDetail`'s `MetaEdit`
+ * draws in its closed state, without the click-to-edit flip: this panel's
+ * controls are live, and hiding them behind a click would be an interaction
+ * change, not a composition one.
+ *
+ * `trailing` is the right-hand slot of the label row (an accent dot, a count).
+ *
+ * ⚠️ Its label hard-codes `uppercase`, and `CollapsibleSection`'s heading no
+ * longer does — a section heading is a control now, so `.cc-control` takes its
+ * casing from `--control-label-transform`. The two disagree under a theme that
+ * sets `none`, and this side is the wrong one. Not patched here, because it
+ * touches every panel in the app rather than this file.
+ */
 function FieldCell({
   label,
   icon,
@@ -896,7 +895,7 @@ export function TaskPanel({
           {/* Tags and recurrence draw their own small labels, so they are
               sub-fields of one section rather than two sections whose headings
               would compete with the ones those components already render.
-              Promoting those labels onto `SectionLabel` means editing
+              Promoting those labels onto `CollapsibleSection` means editing
               `TagPicker`/`RepeatEditor`, which S5 does not own. */}
           <CollapsibleSection
               label="Properties"

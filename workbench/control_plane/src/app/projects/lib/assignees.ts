@@ -138,11 +138,6 @@ export interface PickerResponse {
 }
 
 /**
- * The one line under a suggestion: load when visible, "no login" when true,
- * warnings always. Empty string when there is nothing to say — a row with a
- * blank subtitle beats one reading "undefined".
- */
-/**
  * The picker's two groups, from whatever the suggest endpoint returned.
  *
  * 🔴 **Defensive on purpose, and the reason is a measured crash.** The
@@ -166,7 +161,11 @@ export function pickerGroups(
   ].filter((group) => group.rows.length > 0);
 }
 
-
+/**
+ * The one line under a suggestion: load when visible, "no login" when true,
+ * warnings always. Empty string when there is nothing to say — a row with a
+ * blank subtitle beats one reading "undefined".
+ */
 export function describePickerRow(row: PickerRow): string {
   const parts: string[] = [];
   if (!row.has_login && row.kind === "person") {

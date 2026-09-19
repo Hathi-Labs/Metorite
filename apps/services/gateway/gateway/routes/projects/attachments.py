@@ -92,6 +92,24 @@ _INLINE_MIMES: frozenset[str] = frozenset({
 #: belongs to the upload path `/tasks` shares.
 _TASK_ATTACHMENT_BUDGET = 10 * 1024 * 1024
 
+#: Advisory-lock namespace for the budget check, so the SUM and the INSERT
+#: that follows it are one unit. Postgres advisory locks share ONE global
+#: space, so the first argument keeps this arm from colliding with any other
+#: caller's key. The value is arbitrary and only has to stay put — change it
+#: and two releases running side by side stop excluding each other.
+_BUDGET_LOCK_NS = 8274
+
+#: Taken before the budget SUM and held to the end of the transaction, so the
+#: read and the INSERT that follows it cannot interleave with another upload
+#: to the same task.
+#:
+#: ⚠️ A module constant so a test can run THIS string. Inline, the only fence
+#: available was a hermetic fake, and the fake answers an empty result for any
+#: statement it does not recognise — it would accept this however it were
+#: misspelled. `test_projects_sql_asyncpg.py` runs it on a real Postgres and
+#: proves it excludes (R8).
+_BUDGET_LOCK_SQL = "SELECT pg_advisory_xact_lock(:ns, hashtext(:tid))"
+
 
 def _mb(size: int) -> str:
     """Bytes as a person reads them, for a refusal they can act on.
@@ -165,6 +183,25 @@ async def attach_file(
         # Counted from the rows, not from a stored running total: a total
         # column is a second source of truth that drifts the first time a
         # detach does not decrement it.
+        #
+        # ⚠️ **The lock below is what makes the count mean anything.** Read
+        # and write are two statements, so without it the check is a
+        # read-then-write race — and the race is the NORMAL case, not an
+        # attack. Drop five files on one task and the browser uploads them in
+        # parallel. Under READ COMMITTED each transaction reads the same
+        # pre-upload SUM, all five pass, and a 10MB task ends up holding 45MB.
+        #
+        # An advisory lock keyed on the task, rather than `SELECT ... FOR
+        # UPDATE` on `pm_tasks`: the row lock would make an upload contend
+        # with an unrelated edit to the same task, and this needs to exclude
+        # only other uploads. It is held to the end of the transaction, so the
+        # SUM and the INSERT below are one unit. Two tasks whose hashes
+        # collide serialise needlessly, which costs latency and never
+        # correctness.
+        await db.execute(
+            text(_BUDGET_LOCK_SQL),
+            {"ns": _BUDGET_LOCK_NS, "tid": task_id},
+        )
         # Aliased and read by NAME rather than through `.scalar()`: the
         # column name is what every fake in the suite can answer, and a
         # single-value read that works on one driver and not on a test
@@ -182,11 +219,24 @@ async def attach_file(
         if used + len(content) > _TASK_ATTACHMENT_BUDGET:
             raise HTTPException(
                 status_code=413,
+                # ⚠️ Two messages, because "Remove something first" is advice
+                # a member cannot act on when the task holds nothing. A single
+                # file larger than the whole budget is refused on its own
+                # terms, and the only useful next step is a smaller file.
                 detail=(
-                    f"This task's attachments would reach "
-                    f"{_mb(used + len(content))} and the limit is "
-                    f"{_mb(_TASK_ATTACHMENT_BUDGET)}. "
-                    f"{_mb(used)} is already attached. Remove something first."
+                    (
+                        f"This file is {_mb(len(content))} and one task may "
+                        f"hold {_mb(_TASK_ATTACHMENT_BUDGET)} in total. "
+                        f"Attach a smaller file."
+                    )
+                    if used == 0
+                    else (
+                        f"This task's attachments would reach "
+                        f"{_mb(used + len(content))} and the limit is "
+                        f"{_mb(_TASK_ATTACHMENT_BUDGET)}. "
+                        f"{_mb(used)} is already attached. Remove something "
+                        f"first."
+                    )
                 ),
             )
 

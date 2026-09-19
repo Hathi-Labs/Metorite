@@ -57,8 +57,14 @@ export function AssigneePicker({
    * "nothing matches what you typed", "the request failed" and "the
    * directory is empty" all drew exactly nothing. Every one of them reads as
    * a dead control, which is what was reported: the field does not populate.
+   *
+   * ⚠️ **"Still fetching" is `res === null`, NOT a `loading` flag.** There was
+   * a `loading` boolean here and it was set INSIDE the debounce callback, so
+   * for the first `DEBOUNCE_MS` of every fresh open nothing was loading and
+   * no response had arrived — and the picker told the member "Nobody in the
+   * directory yet" on a tenant full of people. `res === null` cannot have
+   * that gap: it means "no answer yet" from the first render onwards.
    */
-  const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -67,7 +73,6 @@ export function AssigneePicker({
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => {
       void (async () => {
-        setLoading(true);
         setFailed(false);
         try {
           setRes(await projectsApi.suggestAssignees(
@@ -78,8 +83,6 @@ export function AssigneePicker({
           // control that appears to do nothing.
           setRes(null);
           setFailed(true);
-        } finally {
-          setLoading(false);
         }
       })();
     }, DEBOUNCE_MS);
@@ -127,7 +130,7 @@ export function AssigneePicker({
               is indistinguishable from a broken one, and free text still
               works in all of them — the server accepts any non-empty
               string, so this list never gates what may be assigned. */}
-          {loading && groups.length === 0 ? (
+          {res === null && !failed ? (
             <p className="px-2 py-1.5 text-[11px] text-muted-foreground">
               Looking for teammates…
             </p>
