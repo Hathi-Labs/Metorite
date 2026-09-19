@@ -1610,6 +1610,28 @@ pre.token {
   width: 100%;
   margin: 0;
 }
+/* The card's badge column: retirement beside supply status.
+   ⚠ A column, not a row — two chips side by side push the
+   model name into a wrap at card width. */
+.modelcard .cardbadges {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+/* Which tiers serve from this model. Sits above the details button so it
+   reads as a property of the model, not an action on it. */
+.modelcard .modeluse {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
 .feedvendor {
   margin-top: 16px;
 }

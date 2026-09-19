@@ -19,6 +19,9 @@ import {
   matchesKinds,
   matchesQuery,
   pageOf,
+  rankWord,
+  retirementOf,
+  tiersUsing,
   usefulKindFacets,
   resultLine,
   sortModels,
@@ -375,5 +378,105 @@ describe("attentionCount", () => {
       "nokey",
       "undeclared",
     ]);
+  });
+});
+
+// ── The two questions a card could not answer ──────────────────────────────
+
+describe("retirementOf", () => {
+  // Fixed "today" — a test that reads the clock fails on one day a year.
+  const TODAY = new Date(Date.UTC(2026, 8, 19)); // 2026-09-19
+
+  it("🔴 a date ALREADY PAST is danger, in the past tense", () => {
+    // Measured 2026-09-19: 337 models in the live feed are past their date.
+    // The model may already be refusing calls — this is not a forecast.
+    const r = retirementOf("2026-02-19", TODAY);
+    expect(r?.tone).toBe("danger");
+    expect(r?.label).toBe("retired 2026-02-19");
+    expect(r?.days).toBeLessThan(0);
+  });
+
+  it("an imminent date warns and counts the days", () => {
+    const r = retirementOf("2026-10-19", TODAY);
+    expect(r?.tone).toBe("warn");
+    expect(r?.label).toBe("retires in 30 days");
+  });
+
+  it("today itself says so, rather than 'in 0 days'", () => {
+    expect(retirementOf("2026-09-19", TODAY)?.label).toBe("retires today");
+  });
+
+  it("🔴 is SILENT past ninety days, so the card does not cry wolf", () => {
+    // A 2027 date is a fact nobody can act on today, and a card that warns
+    // about everything trains an operator to read none of it.
+    expect(retirementOf("2027-06-01", TODAY)).toBeNull();
+  });
+
+  it("the ninety-day edge is inclusive", () => {
+    expect(retirementOf("2026-12-18", TODAY)?.tone).toBe("warn");
+    expect(retirementOf("2026-12-19", TODAY)).toBeNull();
+  });
+
+  it("no date and a malformed date are both silent", () => {
+    expect(retirementOf(null, TODAY)).toBeNull();
+    expect(retirementOf("not-a-date", TODAY)).toBeNull();
+  });
+});
+
+describe("tiersUsing", () => {
+  const TIERS = [
+    {
+      slug: "fast", label: "Fast",
+      jobs: [{ task: "chat", chain: [
+        { model: "deepseek/chat", rank: 1 },
+        { model: "groq/llama", rank: 2 },
+      ] }],
+    },
+    {
+      slug: "powerful", label: "Powerful",
+      jobs: [{ task: "chat", chain: [{ model: "deepseek/chat", rank: 2 }] }],
+    },
+  ];
+
+  it("finds every tier that points at the model", () => {
+    const got = tiersUsing("deepseek/chat", TIERS);
+    expect(got.map((g) => g.tier)).toEqual(["Fast", "Powerful"]);
+  });
+
+  it("🔴 carries the RANK, because primary and backup are different jobs", () => {
+    // A primary serves every call. A backup serves only during an outage, so
+    // swapping one is a far smaller act than swapping the other.
+    const got = tiersUsing("deepseek/chat", TIERS);
+    expect(got[0]).toMatchObject({ tier: "Fast", rank: 1 });
+    expect(got[1]).toMatchObject({ tier: "Powerful", rank: 2 });
+  });
+
+  it("sorts primaries before fallbacks", () => {
+    const got = tiersUsing("deepseek/chat", TIERS);
+    expect(got.map((g) => g.rank)).toEqual([1, 2]);
+  });
+
+  it("returns EMPTY for a model nothing points at", () => {
+    // The whole point: an idle model must be distinguishable from a
+    // load-bearing one before somebody changes it.
+    expect(tiersUsing("anthropic/unused", TIERS)).toEqual([]);
+  });
+
+  it("is empty when no tier is configured at all", () => {
+    expect(tiersUsing("deepseek/chat", [])).toEqual([]);
+  });
+});
+
+describe("rankWord", () => {
+  it("says what an operator would say", () => {
+    expect(rankWord(1)).toBe("1st choice");
+    expect(rankWord(2)).toBe("backup");
+    expect(rankWord(3)).toBe("backup 2");
+  });
+
+  it("treats a zero or negative rank as the primary, never a crash", () => {
+    // `served_rank` is 1-based everywhere, but a hand-typed binding is a
+    // thing this repo has met before.
+    expect(rankWord(0)).toBe("1st choice");
   });
 });

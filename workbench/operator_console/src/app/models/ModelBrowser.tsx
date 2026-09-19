@@ -41,6 +41,10 @@ import {
   formatVendorPrice,
   kindFacets,
   pageOf,
+  rankWord,
+  retirementOf,
+  tiersUsing,
+  type TierLike,
   usefulKindFacets,
   resultLine,
   sortModels,
@@ -73,14 +77,23 @@ const SORTS: { key: SortKey; label: string }[] = [
 ];
 
 function Card({
-  m, f, armed,
+  m, f, armed, tiers, today,
 }: {
   m: CatalogModel; f: FeedModel | undefined; armed: string[];
+  tiers: TierLike[];
+  /** Passed in, never read from a clock here — a pure card is a testable one
+   *  and `retirementOf` must be given its "now". */
+  today: Date;
 }) {
   const status = statusOf(m, armed);
   // The vendor moved a price under a typed profile (014). The chip is the
   // ALERT; the numbers and the copy button live in "Edit details".
   const drift = driftFor(m, f);
+  // 🔴 The vendor's switch-off date. 337 models in the live feed are already
+  // past theirs, and a card that does not say so lets somebody bind one.
+  const retiring = retirementOf(f?.deprecatedOn ?? null, today);
+  // 🔴 Whether anything actually serves from this model.
+  const used = tiersUsing(m.id, tiers);
   return (
     <article className="modelcard">
       <header>
@@ -88,9 +101,22 @@ function Card({
           <h3>{m.label}</h3>
           <span className="mono small muted">{m.id}</span>
         </div>
-        <span className={chipClass(STATUS_TONE[status])}>
-          {STATUS_LABEL[status]}
-        </span>
+        <div className="cardbadges">
+          {/* ⚠️ Retirement sits BESIDE the supply status, not inside it. A
+              model can be perfectly costed and about to stop existing, and
+              collapsing the two would lose whichever came second. */}
+          {retiring && (
+            <span
+              className={chipClass(retiring.tone)}
+              title={`The vendor's own retirement date for this model is ${f?.deprecatedOn}.`}
+            >
+              {retiring.label}
+            </span>
+          )}
+          <span className={chipClass(STATUS_TONE[status])}>
+            {STATUS_LABEL[status]}
+          </span>
+        </div>
       </header>
 
       {drift.length > 0 && (
@@ -138,6 +164,28 @@ function Card({
         </div>
       </dl>
 
+      {/* 🔴 **Does this model MATTER?** A model some tier serves from is
+          load-bearing — changing it moves customer traffic. A model no tier
+          points at is doing nothing. The two drew identically, so the page
+          gave no way to tell them apart before acting.
+
+          ⚠️ The unused line is MUTED, not a warning. A declared model nobody
+          has bound yet is the normal middle of the setup order, not a fault. */}
+      <p className="modeluse">
+        {used.length === 0 ? (
+          <span className="muted small">No tier uses this yet</span>
+        ) : (
+          used.slice(0, 3).map((u) => (
+            <span key={`${u.tier}:${u.task}:${u.rank}`} className="chip">
+              {u.tier} · {rankWord(u.rank)}
+            </span>
+          ))
+        )}
+        {used.length > 3 && (
+          <span className="muted small">and {used.length - 3} more</span>
+        )}
+      </p>
+
       <ModelDetails m={m} feedRow={f} />
     </article>
   );
@@ -147,12 +195,18 @@ export default function ModelBrowser({
   models,
   feed,
   armed,
+  tiers,
 }: {
   models: CatalogModel[];
   feed: VendorFeed;
   /** Providers with a live platform key — decides the `nokey` state. */
   armed: string[];
+  /** The chains, so a card can say whether anything serves from it. */
+  tiers: TierLike[];
 }) {
+  // ⚠️ ONE clock for the whole render. Calling `new Date()` inside each card
+  // would let two cards disagree about today across a midnight boundary.
+  const today = new Date();
   const [f, setF] = useState<Filters>(NO_FILTERS);
   const [sort, setSort] = useState<SortKey>("name");
   // ⚠️ **Keyed on the FILTERS, not a bare boolean.** An operator who narrows
@@ -323,7 +377,14 @@ export default function ModelBrowser({
 
       <div className="modelgrid">
         {page.shown.map((m) => (
-          <Card key={m.id} m={m} f={byId.get(m.id)} armed={armed} />
+          <Card
+            key={m.id}
+            m={m}
+            f={byId.get(m.id)}
+            armed={armed}
+            tiers={tiers}
+            today={today}
+          />
         ))}
       </div>
 

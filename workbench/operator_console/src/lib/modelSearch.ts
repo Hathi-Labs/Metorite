@@ -8,6 +8,7 @@
 // in JSX is untested by construction.
 
 import { KIND_LABEL, type CatalogModel, type ModelKind } from "./contract";
+import type { Tone } from "./tone";
 
 export type ModelStatus = "costed" | "undeclared" | "nokey" | "costblind";
 
@@ -156,6 +157,96 @@ export function kindFacets(
     value: k,
     count: filterModels(models, { ...f, kinds: [...f.kinds, k] }, armed).length,
   }));
+}
+
+/** How close a model is to the date its vendor switches it off.
+ *
+ * 🔴 **A declared model's card never said this, and the risk is large.**
+ * Measured against the live feed on 2026-09-19: 798 models carry a retirement
+ * date, 337 of them ALREADY PAST and 214 inside ninety days. Declare one of
+ * those and the tier pointing at it fails the day the vendor pulls it, with
+ * nothing on this page having said so. The "available" table showed the badge;
+ * the card you look at afterwards did not.
+ *
+ * ⚠️ **Silent past ninety days, deliberately.** A 2027 date is a fact nobody
+ * can act on today, and a card that warns about everything trains an operator
+ * to read none of it. Past and imminent are what change a decision.
+ *
+ * ⚠️ **"retired" in the past tense, and DANGER.** A date that has gone by is
+ * not a warning about the future — the model may already be refusing calls.
+ */
+export type Retirement = { label: string; tone: Tone; days: number };
+
+export function retirementOf(
+  deprecatedOn: string | null,
+  today: Date,
+): Retirement | null {
+  if (!deprecatedOn) return null;
+  const when = Date.parse(`${deprecatedOn}T00:00:00Z`);
+  if (Number.isNaN(when)) return null;
+  const midnight = Date.UTC(
+    today.getUTCFullYear(),
+    today.getUTCMonth(),
+    today.getUTCDate(),
+  );
+  const days = Math.round((when - midnight) / 86_400_000);
+  if (days < 0) {
+    return { label: `retired ${deprecatedOn}`, tone: "danger", days };
+  }
+  if (days <= 90) {
+    return {
+      label: days === 0 ? "retires today" : `retires in ${days} days`,
+      tone: "warn",
+      days,
+    };
+  }
+  return null;
+}
+
+/** Which tiers point at this model, and where in each chain it sits.
+ *
+ * 🔴 **The card could not answer "does this one matter?"** A declared model
+ * that some tier serves from is load-bearing — changing or removing it moves
+ * customer traffic. A declared model no tier points at is doing nothing at
+ * all. Both drew identically, so the page gave an operator no way to tell the
+ * two apart before acting.
+ *
+ * ⚠️ **Rank is carried, because first and second choice are different jobs.**
+ * A tier's primary serves every call. Its backup serves only during an outage,
+ * so swapping one is a far smaller act than swapping the other.
+ *
+ * ⚠️ **Sorted by rank then tier**, so a model's own card always lists the
+ * places it is a primary before the places it is a fallback.
+ */
+export type TierUse = { tier: string; task: string; rank: number };
+
+export function tiersUsing(modelId: string, tiers: TierLike[]): TierUse[] {
+  const out: TierUse[] = [];
+  for (const t of tiers) {
+    for (const j of t.jobs) {
+      for (const step of j.chain) {
+        if (step.model === modelId) {
+          out.push({ tier: t.label || t.slug, task: j.task, rank: step.rank });
+        }
+      }
+    }
+  }
+  return out.sort((a, b) => a.rank - b.rank || a.tier.localeCompare(b.tier));
+}
+
+/** The shape `tiersUsing` needs — deliberately narrower than `Tier`, so the
+ *  function is testable without building a whole catalog. */
+export type TierLike = {
+  slug: string;
+  label: string;
+  jobs: { task: string; chain: { model: string; rank: number }[] }[];
+};
+
+/** Where a model sits in one tier's chain, in an operator's words. */
+export function rankWord(rank: number): string {
+  if (rank <= 1) return "1st choice";
+  if (rank === 2) return "backup";
+  return `backup ${rank - 1}`;
 }
 
 /** The states that mean somebody has work to do on this model.
