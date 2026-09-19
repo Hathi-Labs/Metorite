@@ -2455,6 +2455,65 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `scripts/backup_db.sh` · `deploy/hostinger/BACKUP-RESTORE.md`
 - **Added:** 2026-09-19 · operator console session, after the backup repair
 
+### H-124 · Backfill the directory rows for members who predate 2026-09-20 · [AGENT]
+- **Check, repo half:** `rg -l "INSERT INTO gtd_people" infra/postgres/` → no
+  migration that reads `app_user` means this is open.
+- **Check, data half:** run this on the box. A count above zero means this is
+  open. ⚠️ A session with no reach to the box cannot run it. Say so. Do not
+  report a pass.
+
+  ```sql
+  SELECT count(*) FROM app_user u
+   WHERE u.status = 'active'
+     AND NOT EXISTS (SELECT 1 FROM gtd_people p
+                      WHERE lower(p.email) = lower(u.email));
+  ```
+- **Why:** PR #306 made member provisioning write the directory row. It fixed
+  the cause, not the data. Every member created before 2026-09-20 still has no
+  row. Each one opens *My Profile* and reads "An administrator can add you".
+  Production held zero directory rows on 2026-09-19, the owner included.
+- **⚠️ Ordered AFTER H-104, and that is why PR #306 stopped here.** The test
+  ladder skips `infra/postgres/generated/`, so nobody knows whether
+  `gtd_people` carries `organization_id` in production. A backfill cannot put a
+  row in the correct tenant until somebody settles that.
+- 📌 A small organization needs no migration. The administrator presses **Add
+  person** on `/people`, which PR #306 also repaired.
+- **Authority:** `project-docs/specs/people_center_app.md` §2 · PR #306
+- **Added:** 2026-09-20 · the My Profile session
+
+### H-125 · Migration 148's email index spans EVERY tenant · [AGENT]
+- **Check:** `rg -A 2 "uq_gtd_people_email_lower" infra/postgres/148_people_key_shape.sql`
+  → an index on `(lower(email))` that does not name `organization_id` means
+  this is open.
+- **Why:** two organizations cannot hold the same address in `gtd_people`. A
+  contractor who works for two customers is the ordinary case. The second
+  tenant's member silently gets no directory row, because
+  `ensure_directory_row` uses `ON CONFLICT DO NOTHING`. Row level security
+  hides the other tenant's row, so nobody can see the reason.
+- **⚠️ Ordered AFTER H-104.** The index cannot name a column that has not
+  reached production.
+- **Authority:** `infra/postgres/148_people_key_shape.sql:87` ·
+  `project-docs/specs/saas_multitenancy.md`
+- **Added:** 2026-09-20 · the My Profile session, found while writing PR #306
+
+### H-126 · `build_sha()` returns None in EVERY git worktree · [AGENT]
+- **Check:** from a worktree, `uv run pytest tests/unit/test_build_info.py -q`
+  → a failure that names `build_sha() disagrees with git rev-parse HEAD` means
+  this is open. The same command passes in the main checkout.
+- **Why:** `_sha_from_git_dir` reads `HEAD`, finds `ref: refs/heads/<branch>`,
+  then looks for that ref below the worktree gitdir. A worktree keeps its
+  branch refs in the COMMON git dir, which its `commondir` file names. The
+  function does not follow that file. `build_info.py` already handles the
+  `.git` FILE, so the repair is one more hop and not a rewrite.
+- **⚠️ This greets every session.** CLAUDE.md §4 tells each one to start in a
+  worktree, so each one meets a red suite that is not theirs. That is how
+  people learn to ignore a failing test.
+- 📌 **Production is unaffected.** The box is a plain clone, so `/version`
+  reports the real SHA. The damage is to trust in the suite, not to the deploy.
+- **Authority:** `apps/services/gateway/gateway/build_info.py:128` ·
+  `tests/unit/test_build_info.py`
+- **Added:** 2026-09-20 · the My Profile session
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
