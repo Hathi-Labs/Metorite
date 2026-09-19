@@ -106,6 +106,37 @@ export function fillCount(m: CatalogModel, f: FeedModel | undefined): number {
   return n;
 }
 
+/** Can this declared model be costed straight from the feed, with no typing?
+ *
+ * 🔴 **The question the Models page never asked.** A declared model with no
+ * profile draws "costs blind" and offers a fifteen-box form. For most of them
+ * the answer already sits in `vendor_price_feed`, under the SAME id the Router
+ * routes on. Measured 2026-09-19: `deepseek/deepseek-chat` read costs-blind
+ * while the feed held 0.28 in, 0.42 out and a 131072 window. Asking somebody
+ * to type a number we already hold is the whole complaint.
+ *
+ * ⚠️ **TRUE only when the feed can actually answer.** A row carrying no usable
+ * price fills nothing, and an offer that leaves the model still costs-blind is
+ * worse than no offer: it spends a click and teaches that the button does not
+ * work. `groq/whisper-large-v3-turbo` is the live example — declared, in the
+ * feed, and priced by nobody.
+ *
+ * ⚠️ **Token OR per-unit, because a transcribe model has no token price.**
+ * Either kind makes the call costable, so either is enough.
+ */
+export function canFillFromFeed(f: FeedModel | undefined): boolean {
+  if (!f) return false;
+  const usable = (v: string | null) =>
+    v !== null && v.trim() !== "" && Number(v) > 0;
+  return (
+    usable(f.inputPer1M) ||
+    usable(f.outputPer1M) ||
+    usable(f.perMinuteUsd) ||
+    usable(f.perCharacterUsd) ||
+    usable(f.perImageUsd)
+  );
+}
+
 /** The values "Copy the vendor's facts" writes into the form boxes.
  *  Strings because that is what the inputs hold — empty means unknown.
  *

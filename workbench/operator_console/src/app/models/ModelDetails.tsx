@@ -17,9 +17,10 @@
 // other inverts a margin — so the label says "we pay" and the unit is on it.
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 import type { CatalogModel, FeedModel } from "@/lib/contract";
-import { driftFor, prefillFrom } from "@/lib/feed";
+import { canFillFromFeed, declareBodies, driftFor, prefillFrom } from "@/lib/feed";
 import { windowProblem, wrapsMidnight } from "@/lib/window";
 
 /** Blank means UNKNOWN and travels as null. A typed value travels as the
@@ -46,6 +47,7 @@ export default function ModelDetails({
    *  never been fetched or does not know the model. */
   feedRow?: FeedModel;
 }) {
+  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [label, setLabel] = useState(m.label === m.id ? "" : m.label);
   const [ctx, setCtx] = useState(m.contextWindow?.toString() ?? "");
@@ -94,6 +96,46 @@ export default function ModelDetails({
 
   const known =
     m.contextWindow !== null || m.inputPer1M !== null || m.description !== "";
+
+  /** Copy the feed's facts and save, in one act.
+   *
+   * ⚠️ **Posts the SAME route and the SAME body shape `save()` posts.** A
+   * second write path to `model_profile` would be a second set of rules about
+   * what a blank means, and the two would disagree within a month. The only
+   * difference here is where the values come from: `declareBodies` builds
+   * exactly what "Available from your vendors" already sends for an
+   * undeclared model, so a model costed this way is indistinguishable from
+   * one added through that list.
+   *
+   * ⚠️ **`router.refresh()` and not a local edit.** The card's numbers come
+   * from the page's server read. Setting state here would show a costed model
+   * that the next navigation reveals as still blind.
+   */
+  async function fillFromFeedAndSave() {
+    if (!feedRow) return;
+    setBusy(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/operator/catalog/profiles", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(declareBodies(feedRow).profile),
+      });
+      if (res.ok) {
+        setResult({ ok: true, text: "Costed from the feed." });
+        router.refresh();
+      } else {
+        setResult({ ok: false, text: await res.text() });
+      }
+    } catch {
+      setResult({
+        ok: false,
+        text: "The Console did not answer. Nothing saved — check the network and try again.",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function save() {
     const boxes: [string, string][] = [
@@ -182,10 +224,45 @@ export default function ModelDetails({
   }
 
   if (!open) {
+    // 🔴 **One click, not five.** A declared model with no profile draws
+    // "costs blind" and used to offer only the fifteen-box form. The feed
+    // usually already holds those numbers, under the SAME id the Router routes
+    // on — `deepseek/deepseek-chat` sat costs-blind on 2026-09-19 while the
+    // feed carried 0.28 in, 0.42 out and a 131072 window.
+    //
+    // The form has carried a "copy the vendor's facts" button all along,
+    // INSIDE it. That is the defect: open the form, meet fifteen boxes, find
+    // the copy button, save. Nobody reached step three. This lifts the same
+    // copy onto the card and saves in one act.
+    //
+    // ⚠️ **Offered only when the feed can ANSWER** (`canFillFromFeed`). A
+    // button that leaves the model still costs-blind spends a click and
+    // teaches that the button does not work.
+    //
+    // ⚠️ **Never offered once a model is costed.** Overwriting a figure
+    // somebody entered, from one click and with no diff shown, is how a
+    // deliberate correction silently reverts. "Edit details" carries the
+    // drift comparison for that case, and keeps the save deliberate.
+    const offerFill = !known && canFillFromFeed(feedRow);
     return (
-      <button type="button" className="linklike add-job" onClick={() => setOpen(true)}>
-        {known ? "Edit details" : "+ Add details"}
-      </button>
+      <div className="rowline">
+        {offerFill && (
+          <button
+            type="button"
+            className="primary"
+            disabled={busy}
+            onClick={fillFromFeedAndSave}
+          >
+            {busy ? "Filling…" : "Fill from the vendor feed"}
+          </button>
+        )}
+        <button type="button" className="linklike add-job" onClick={() => setOpen(true)}>
+          {known ? "Edit details" : offerFill ? "or enter by hand" : "+ Add details"}
+        </button>
+        {result && (
+          <span className={result.ok ? "ok-t" : "warn-t"}>{result.text}</span>
+        )}
+      </div>
     );
   }
 

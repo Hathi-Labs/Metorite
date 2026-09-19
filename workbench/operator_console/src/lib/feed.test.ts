@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 import type { CatalogModel, FeedModel, VendorFeed } from "./contract";
 import {
   availableByVendor,
+  canFillFromFeed,
   declareBodies,
   driftFor,
   feedById,
@@ -510,5 +511,80 @@ describe("the pricing board's per-unit half (H-78)", () => {
     // the live claim may not repeat them.
     expect(src).toContain("This read");
     expect(src.split("This read")[0]).not.toContain("does not carry");
+  });
+});
+
+// ── Can the feed cost this model without anybody typing? ────────────────────
+//
+// 🔴 Migration-free, but it is the judgement behind the Models page's biggest
+// complaint. A declared model with no profile drew "costs blind" and offered
+// a fifteen-box form, while `vendor_price_feed` already held the answer under
+// the same id. This decides when the one-click offer appears.
+
+describe("canFillFromFeed", () => {
+  it("is TRUE for a model the feed prices by the token", () => {
+    // The live case, measured 2026-09-19: deepseek/deepseek-chat sat
+    // costs-blind while the feed carried 0.28 in and 0.42 out.
+    expect(canFillFromFeed(F({}))).toBe(true);
+  });
+
+  it("is TRUE on an output price alone", () => {
+    expect(
+      canFillFromFeed(F({ inputPer1M: null, cachedInputPer1M: null })),
+    ).toBe(true);
+  });
+
+  it("is TRUE for a PER-UNIT model, which has no token price at all", () => {
+    // A transcribe model is costed by the minute. Requiring a token price
+    // would hide the offer from exactly the models that need it most.
+    expect(
+      canFillFromFeed(
+        F({
+          inputPer1M: null,
+          outputPer1M: null,
+          cachedInputPer1M: null,
+          perMinuteUsd: "0.006",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("is FALSE when the feed knows the model but prices nothing", () => {
+    // 🔴 The button must not appear here. `groq/whisper-large-v3-turbo` is
+    // the live example: declared, in the feed, priced by nobody. An offer
+    // that leaves the model still costs-blind spends a click and teaches
+    // that the button does not work.
+    expect(
+      canFillFromFeed(
+        F({ inputPer1M: null, outputPer1M: null, cachedInputPer1M: null }),
+      ),
+    ).toBe(false);
+  });
+
+  it("is FALSE when the feed has never seen the model", () => {
+    expect(canFillFromFeed(undefined)).toBe(false);
+  });
+
+  it("refuses a zero, an empty string and whitespace as prices", () => {
+    // A zero is not a price we can bill against, and a blank is the feed
+    // saying it does not know. Neither fills a box.
+    for (const bad of ["0", "0.00", "", "   "]) {
+      expect(
+        canFillFromFeed(
+          F({ inputPer1M: bad, outputPer1M: bad, cachedInputPer1M: bad }),
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it("does not count a CACHED price on its own", () => {
+    // A cache-read rate with no base rate cannot cost an uncached call, which
+    // is most of them. `vendor_cost_usd` returns None for that shape, so the
+    // model would still read costs-blind after the click.
+    expect(
+      canFillFromFeed(
+        F({ inputPer1M: null, outputPer1M: null, cachedInputPer1M: "0.07" }),
+      ),
+    ).toBe(false);
   });
 });
