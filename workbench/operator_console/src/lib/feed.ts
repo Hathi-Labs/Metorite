@@ -11,6 +11,7 @@
 // existed, through the same `/catalog/profiles` seam.
 
 import type { CatalogModel, FeedModel, VendorFeed } from "./contract";
+import { statusOf } from "./modelSearch";
 import { fixedDecimal } from "./pricing";
 import type { Tone } from "./tone";
 
@@ -134,6 +135,33 @@ export function canFillFromFeed(f: FeedModel | undefined): boolean {
     usable(f.perMinuteUsd) ||
     usable(f.perCharacterUsd) ||
     usable(f.perImageUsd)
+  );
+}
+
+/** Every declared model the feed could cost right now, and nobody has.
+ *
+ * 🔴 **The bulk of the setup work, and it is all copying.** Measured against
+ * the live feed on 2026-09-19: 31 of 43 declared models read "costs blind"
+ * while `vendor_price_feed` held a price for most of them. Filling those one
+ * card at a time is the manual labour this page keeps asking for.
+ *
+ * ⚠️ **Built on `statusOf`, never a second rule.** The badge on the card and
+ * the list behind the button must agree, or the count offers work the page
+ * does not show. `costblind` already means declared, callable, and unpriced —
+ * so a model with no vendor key is correctly NOT here: its problem is the key,
+ * and a price would not fix it.
+ *
+ * ⚠️ **Only where the feed can ANSWER** (`canFillFromFeed`). A count that
+ * includes models the feed cannot price promises work the click will not do.
+ */
+export function blindButFillable(
+  models: CatalogModel[],
+  feed: VendorFeed,
+  armed: string[],
+): CatalogModel[] {
+  const byId = feedById(feed);
+  return models.filter(
+    (m) => statusOf(m, armed) === "costblind" && canFillFromFeed(byId.get(m.id)),
   );
 }
 

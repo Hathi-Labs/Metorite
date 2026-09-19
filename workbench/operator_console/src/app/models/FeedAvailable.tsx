@@ -84,7 +84,10 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
   }
 
   return (
-    <section className="panel">
+    // ⚠️ `id` is the jump target the feed strip links to. This panel can sit
+    // thousands of pixels down, and without an anchor the only way to it is
+    // scrolling past the whole declared catalog.
+    <section className="panel" id="available">
       <div className="panel-head">
         <h2>Available from your vendors</h2>
         <p>

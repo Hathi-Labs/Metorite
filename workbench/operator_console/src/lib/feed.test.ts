@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 import type { CatalogModel, FeedModel, VendorFeed } from "./contract";
 import {
   availableByVendor,
+  blindButFillable,
   canFillFromFeed,
   declareBodies,
   driftFor,
@@ -586,5 +587,91 @@ describe("canFillFromFeed", () => {
         F({ inputPer1M: null, outputPer1M: null, cachedInputPer1M: "0.07" }),
       ),
     ).toBe(false);
+  });
+});
+
+// ── Which declared models can the feed cost right now? ─────────────────────
+//
+// 🔴 This count drives a BULK write. If it over-reports, the button promises
+// work it will not do; if it under-reports, somebody types prices we already
+// hold. Both failures look like the console being wrong about itself.
+
+describe("blindButFillable", () => {
+  const ARMED = ["deepseek"];
+
+  it("selects a declared, unpriced model the feed can price", () => {
+    const got = blindButFillable(
+      [M({ id: "deepseek/deepseek-chat", inputPer1M: null })],
+      FEED({ rows: [F({ id: "deepseek/deepseek-chat" })] }),
+      ARMED,
+    );
+    expect(got.map((m) => m.id)).toEqual(["deepseek/deepseek-chat"]);
+  });
+
+  it("skips a model that is already COSTED", () => {
+    // 🔴 The rule that makes a bulk fill safe. A model somebody priced is not
+    // in the list, so the button cannot overwrite a deliberate correction —
+    // and a bulk overwrite is unreviewable across thirty models at once.
+    const got = blindButFillable(
+      [M({ id: "deepseek/deepseek-chat", inputPer1M: 99 })],
+      FEED({ rows: [F({ id: "deepseek/deepseek-chat" })] }),
+      ARMED,
+    );
+    expect(got).toEqual([]);
+  });
+
+  it("skips a model whose vendor has NO key, because a price will not fix it", () => {
+    // `statusOf` ranks nokey above costblind: a model we cannot call at all
+    // has a worse problem than an unknown price. Filling it would report
+    // progress on a model that still fails every call.
+    const got = blindButFillable(
+      [M({ id: "deepseek/deepseek-chat", inputPer1M: null })],
+      FEED({ rows: [F({ id: "deepseek/deepseek-chat" })] }),
+      [],
+    );
+    expect(got).toEqual([]);
+  });
+
+  it("skips a model the feed knows but cannot price", () => {
+    const got = blindButFillable(
+      [M({ id: "groq/whisper", provider: "groq", inputPer1M: null })],
+      FEED({
+        rows: [
+          F({
+            id: "groq/whisper",
+            provider: "groq",
+            inputPer1M: null,
+            outputPer1M: null,
+            cachedInputPer1M: null,
+          }),
+        ],
+      }),
+      ["groq"],
+    );
+    expect(got).toEqual([]);
+  });
+
+  it("skips a model the feed has never seen", () => {
+    const got = blindButFillable(
+      [M({ id: "deepseek/unknown-model", inputPer1M: null })],
+      FEED({ rows: [] }),
+      ARMED,
+    );
+    expect(got).toEqual([]);
+  });
+
+  it("reads the AVAILABLE half of the feed too, not only the synced rows", () => {
+    // `feedById` merges both. A declared model whose row sits in `available`
+    // is still priceable, and missing it would under-report the count.
+    const got = blindButFillable(
+      [M({ id: "deepseek/deepseek-chat", inputPer1M: null })],
+      FEED({ rows: [], available: [F({ id: "deepseek/deepseek-chat" })] }),
+      ARMED,
+    );
+    expect(got.map((m) => m.id)).toEqual(["deepseek/deepseek-chat"]);
+  });
+
+  it("is empty on an empty catalog", () => {
+    expect(blindButFillable([], FEED({ rows: [] }), ARMED)).toEqual([]);
   });
 });

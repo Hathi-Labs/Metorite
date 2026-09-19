@@ -28,7 +28,7 @@ import {
   type ModelKind,
   type VendorFeed,
 } from "@/lib/contract";
-import { driftFor, feedById } from "@/lib/feed";
+import { blindButFillable, driftFor, feedById } from "@/lib/feed";
 import {
   NO_FILTERS,
   STATUS_LABEL,
@@ -46,6 +46,7 @@ import {
 } from "@/lib/modelSearch";
 import { chipClass, type Tone } from "@/lib/tone";
 import FeedAvailable from "./FeedAvailable";
+import FillAllBlind from "./FillAllBlind";
 import FeedStrip from "./FeedStrip";
 import ModelDetails from "./ModelDetails";
 
@@ -184,9 +185,23 @@ export default function ModelBrowser({
     );
   }
 
+  // 🔴 **The feed list goes ABOVE the catalog until something is costed.**
+  // "Available from your vendors" used to start 5474px down a 13257px page,
+  // under four and a half screens of cards — so the one-click path was
+  // unreachable in the exact state it exists for.
+  //
+  // ⚠️ **Ordered on "nothing is costed yet", NOT on "anything is blind".** The
+  // second condition flips while you work: filling the last blind model would
+  // rearrange the page under the cursor at the moment of the click. This one
+  // changes once, when the first model gets a price.
+  const nothingCosted = models.every((m) => statusOf(m, armed) !== "costed");
+  const blind = blindButFillable(models, feed, armed);
+
   return (
     <>
       <FeedStrip feed={feed} />
+      <FillAllBlind blind={blind} feed={feed} />
+      {nothingCosted && <FeedAvailable feed={feed} />}
       <div className="toolbar">
         <input
           className="search"
@@ -283,7 +298,9 @@ export default function ModelBrowser({
         ))}
       </div>
 
-      <FeedAvailable feed={feed} />
+      {/* ⚠️ Rendered here ONLY when it was not drawn above. Two copies would
+          be two sets of "Add" buttons for the same rows. */}
+      {!nothingCosted && <FeedAvailable feed={feed} />}
     </>
   );
 }
