@@ -2109,6 +2109,25 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
         # served_rank above 1 is a customer request the primary did not
         # answer — the one durable proof a chain earns its keep. Aggregated
         # by day so a bad afternoon reads as one row, not four hundred.
+        #
+        # 🔴 **`served_rank > 1` ALONE over-reports, and H-82 is the repair.**
+        # D-AI-2's lift drops the blind steps of a chat chain BEFORE the walk
+        # starts (`router.resolve_vision_chain`). A tier binding a blind rank 1
+        # and a seeing rank 2 therefore serves EVERY vision call at rank 2,
+        # with nothing having failed, and this read called all of it a
+        # failover — up to 100 percent of that tier's vision traffic.
+        #
+        # ⚠️ **The RANK is true; only the meaning slipped.** `resolve_chain`
+        # builds the rank from the column and never from a list index, so the
+        # write stays exactly as it is. What changes is who reads it as a
+        # failure.
+        #
+        # 📌 **The discriminator is the JOIN, and it is the one the entry
+        # names.** A lift bills the CHOSEN tier with `task = vision` while that
+        # tier binds no vision task, so the pair joins to no `tier_binding`
+        # row. A real failover always joins: the rank it served is a rank
+        # somebody bound. A tier that binds `vision` itself keeps reporting its
+        # own failovers, because that pair does join.
         failovers = [
             {
                 "day": _iso(r[0]),
@@ -2120,13 +2139,15 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
             }
             for r in conn.execute(
                 text(
-                    "SELECT date_trunc('day', created_at) AS day, tier, task, "
-                    "       model, served_rank, COUNT(*) "
-                    "FROM usage_event "
-                    "WHERE served_rank > 1 "
-                    "  AND created_at >= now() - INTERVAL '14 days' "
-                    "GROUP BY 1, tier, task, model, served_rank "
-                    "ORDER BY 1 DESC, tier, task LIMIT 50"
+                    "SELECT date_trunc('day', u.created_at) AS day, u.tier, u.task, "
+                    "       u.model, u.served_rank, COUNT(*) "
+                    "FROM usage_event u "
+                    "WHERE u.served_rank > 1 "
+                    "  AND u.created_at >= now() - INTERVAL '14 days' "
+                    "  AND EXISTS (SELECT 1 FROM tier_binding b "
+                    "              WHERE b.tier = u.tier AND b.task = u.task) "
+                    "GROUP BY 1, u.tier, u.task, u.model, u.served_rank "
+                    "ORDER BY 1 DESC, u.tier, u.task LIMIT 50"
                 )
             )
         ]
@@ -5772,7 +5793,7 @@ def _record_completion(
                 # `started_at`. A fresh one here would orphan every hold.
                 # Still SERVER-generated — the caller's `client_ref` is
                 # correlation only (migration 005).
-                request_id=request_id or f"rtr-{uuid.uuid4().hex}",
+                request_id=request_id or _new_request_id(),
                 client_ref=client_ref,
                 billed_credits=billed,
                 user_email=caller.member,
@@ -6897,19 +6918,18 @@ def audio_transcriptions(
         # grow a second opinion about what a vendor 500 means.
         raise _upstream_refusal(failed) from failed
 
+    # H-85: minted HERE so the alarm below and the row further down name the
+    # same call. One id, passed to both.
+    request_id = _new_request_id()
+
     seconds = router_mod.duration_seconds(response)
     if seconds is None:
         # ⚠️ BILL ZERO, LOUDLY (clause 3). The customer already holds the
         # transcript, so the only choice left is whether we also lose the
         # row. We keep the row — it is the evidence — and this line is how
         # an unmeasured call becomes visible instead of merely cheap.
-        _log.warning(
-            "router.unmeasured_quantity",
-            extra={
-                "router_model": resolved.model,
-                "router_tier": resolved.tier,
-                "router_task": TRANSCRIBE_TASK,
-            },
+        _unmeasured(
+            resolved, TRANSCRIBE_TASK, org_id=org_id, request_id=request_id
         )
         minutes = Decimal(0)
     else:
@@ -6924,6 +6944,7 @@ def audio_transcriptions(
         client_ref=client_ref,
         byok=_byok_served(resolved),
         quantity=minutes,
+        request_id=request_id,
     )
 
     # 📌 The caller reads a transcript, never the verbose body the meter
@@ -7110,17 +7131,45 @@ def _serving_prelude(
     return attempts, credentials, invocations
 
 
-def _unmeasured(resolved: ResolvedTier, task: str) -> None:
+def _new_request_id() -> str:
+    """The id a usage row is idempotent on, spelled in ONE place.
+
+    ⚠️ It was minted inline inside :func:`_record_completion`, which meant it
+    did not exist until after the row was written. H-85 needs it EARLIER, so
+    the alarm and the row can name the same call.
+    """
+    return f"rtr-{uuid.uuid4().hex}"
+
+
+def _unmeasured(
+    resolved: ResolvedTier, task: str, *, org_id: str, request_id: str
+) -> None:
     """Say out loud that nothing measured this call (clause 5, clause 6).
 
     The customer already holds the pictures or the audio, so the only choice
     left is whether we also lose the row. We keep the row and bill zero, and
     this line is how an unmeasured call becomes visible instead of merely
     cheap.
+
+    🔴 **It names the ORGANIZATION and the REQUEST (H-85).** It logged the
+    model, the tier and the task, and `usage_event` is keyed
+    ``(organization_id, request_id)`` — so the alarm could not be joined to
+    the row it was about. Nobody could tell one customer's unmeasured call
+    from another's, or find the row that billed zero because of this line.
+
+    ⚠️ **The caller mints the request id and passes the SAME one to
+    :func:`_record_completion`.** Two ids would be worse than none: the join
+    would look available and would silently match nothing.
     """
     _log.warning(
         "router.unmeasured_quantity",
-        extra={"router_model": resolved.model, "router_tier": resolved.tier, "router_task": task},
+        extra={
+            "router_model": resolved.model,
+            "router_tier": resolved.tier,
+            "router_task": task,
+            "router_org": org_id,
+            "router_request": request_id,
+        },
     )
 
 
@@ -7217,9 +7266,12 @@ def images_generations(req: ImageRequest, caller: KeyCaller) -> Any:
         # ONE mapping, shared with every serving route.
         raise _upstream_refusal(failed) from failed
 
+    # H-85: one id for the alarm and the row alike.
+    request_id = _new_request_id()
+
     pictures = router_mod.image_count(response)
     if pictures is None:
-        _unmeasured(resolved, IMAGE_TASK)
+        _unmeasured(resolved, IMAGE_TASK, org_id=org_id, request_id=request_id)
         pictures = Decimal(0)
 
     # Metering is best-effort and NEVER fails the call.
@@ -7231,6 +7283,7 @@ def images_generations(req: ImageRequest, caller: KeyCaller) -> Any:
         client_ref=req.client_ref,
         byok=_byok_served(resolved),
         quantity=pictures,
+        request_id=request_id,
     )
 
     return response
@@ -7343,6 +7396,9 @@ def audio_speech(req: SpeechRequest, caller: KeyCaller) -> Response:
     # already bills what came BACK, and this door now agrees with it.
     audio, media_type = router_mod.speech_audio(response)
 
+    # H-85: one id for the alarm and the row alike.
+    request_id = _new_request_id()
+
     if audio:
         characters = Decimal(len(spoken))
     else:
@@ -7350,7 +7406,7 @@ def audio_speech(req: SpeechRequest, caller: KeyCaller) -> Response:
         # measured this call and we guess at no length. The customer keeps
         # the 200 — an empty body their own player reports is better than a
         # 500 — and they keep their credits with it.
-        _unmeasured(resolved, SPEAK_TASK)
+        _unmeasured(resolved, SPEAK_TASK, org_id=org_id, request_id=request_id)
         characters = Decimal(0)
 
     # Metering is best-effort and NEVER fails the call.
@@ -7362,6 +7418,7 @@ def audio_speech(req: SpeechRequest, caller: KeyCaller) -> Response:
         client_ref=req.client_ref,
         byok=_byok_served(resolved),
         quantity=characters,
+        request_id=request_id,
     )
 
     return Response(content=audio, media_type=media_type)
