@@ -380,6 +380,13 @@ line — never reclaim a number by deleting the other entry.
   2026-08-31**. The router-guards slice took that id first.
 
 ### H-85 · Make an UNMEASURED call reconcilable to the row it wrote · [AGENT]
+- ⚠️ **STILL OPEN on 2026-09-19, and a comment elsewhere overstates
+  it.** Migration `031_cost_source.sql` says it "closes half of H-85". That
+  is loose. `cost_source` records how a usage ROW arrived at its cost. This
+  entry is about the `router.unmeasured_quantity` ALARM naming neither the
+  organization nor the request id, so nobody can join it to the row it
+  belongs to. Related, not the same. The Check below was re-run today and
+  both `extra` blocks still carry only model, tier and task.
 - **Check:** `rg -n 'router.unmeasured_quantity' -A4 apps/services/customer_console/customer_console/main.py`.
   An `extra` block carrying no organization and no request id means this entry
   is still real.
@@ -966,6 +973,13 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-26 · guardrails + handoff session
 
 ### H-60 · Every deploy gives live users a ~3 minute 502 · [AGENT]
+- 🔴 **MET AGAIN 2026-09-19, on the PR #297 deploy.** A probe of the
+  workbench on :3001 returned **500** while the old process was still
+  serving. Its pid changed from 1119154 to 1121629 and the next probe
+  returned 307. Three passes afterwards were all 307, `NRestarts=0` on
+  every unit, and `app.metorite.com` answered 307. So this is the window
+  this entry describes and not a crash loop — but it is still a real
+  outage that a customer sees on every single merge.
 - **Check:** merge anything, then `curl -s -o /dev/null -w "%{http_code}" https://app.metorite.com/`
   during the deploy window. A `500` or `502` means this is live. A `307` means the
   box is up.
@@ -2018,6 +2032,13 @@ line — never reclaim a number by deleting the other entry.
   2026-09-05** against run `33937646678`, credit-pricing merge session
 
 ### H-91 · The provisioning fixtures leak an organization per test, and that is what fills the scratch database · [AGENT]
+- 🔴 **The leak reaches the UI, and it cost a day of measurement.**
+  Measured 2026-09-19 on a scratch database: 105 ghost tiers, 67 vendor
+  chips, 43 declared models and 30 provider-filter chips — nearly all of
+  them fixture rows named `ptv*`, `tp*` and `cp*`. Every page-size and
+  control-count number taken that day had to be read past them, and twice
+  a design decision was nearly taken on a number the fixtures produced.
+  The entry reads as a disk-space problem. It is also a measurement one.
 - **Check:** count `organization` on the console scratch database, run
   `uv run pytest tests/unit/test_customer_console_router.py -q`, then count
   again. A rise means this entry is still real. ⚠️ Do NOT check by reading
@@ -2518,6 +2539,28 @@ line — never reclaim a number by deleting the other entry.
   *(minted H-117. Renumbered to H-122 on 2026-09-19, because `main`
   had taken 117 for the no-organization outage and merged first. Ids
   are never reused, so that entry keeps the number.)*
+
+### H-123 · Backups exist now, and live only on the box they protect · [OWNER]
+- **Check:** on the box, `sudo grep -c '^BACKUP_REMOTE=' /opt/acb/app/.env`.
+  A zero means every dump still lives on one disk, and this is open.
+- 🔴 **Filed because closing two entries orphaned their caveats.** H-98
+  and H-105 closed on 2026-09-19. The nightly timer runs, and the job covers
+  the Console database. A restore is verified. That day's deploy took a
+  pre-migration dump. Both entries carried this warning as a sub-point, so
+  deleting them deleted the only record of it.
+- **What is still true.** `backup_db.sh` says it on every run: a backup on
+  the same disk as the database survives a bad migration and a dropped
+  table. It does not survive the disk, the box, or the provider account.
+- ⚠️ **Supabase PITR is UNCONFIRMED and is a separate claim.** The
+  Supabase MCP reports project health, not backup configuration, so an
+  agent cannot produce the evidence. Our logical dumps stand on their own
+  and are not the provider's point-in-time recovery.
+- **Why OWNER.** Choosing where the copies go is a money and third-party
+  decision: another host, an object store, or the provider's own retention.
+  📌 Once a destination exists, setting `BACKUP_REMOTE` is the whole
+  change — the script already rsyncs to it and warns while it is unset.
+- **Authority:** `scripts/backup_db.sh` · `deploy/hostinger/BACKUP-RESTORE.md`
+- **Added:** 2026-09-19 · operator console session, after the backup repair
 
 # DONE — deleted, not archived
 
