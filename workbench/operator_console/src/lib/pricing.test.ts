@@ -192,7 +192,7 @@ describe("assumptions are the SAVED frame, stored by no surface", () => {
     const HERE = join(__dirname);
     const pricing = readFileSync(join(HERE, "pricing.ts"), "utf8");
     const panel = readFileSync(
-      join(HERE, "..", "app", "pricing", "TierPricing.tsx"), "utf8");
+      join(HERE, "..", "app", "pricing", "PriceBoard.tsx"), "utf8");
     for (const src of [pricing, panel]) {
       expect(src).not.toContain("localStorage");
       expect(src).not.toContain("sessionStorage");
@@ -208,12 +208,12 @@ describe("the /pricing page wiring", () => {
   const HERE = join(__dirname);
   const read = (p: string) => readFileSync(join(HERE, p), "utf8");
 
-  it("🔴 /pricing mounts the cockpit, and /tiers no longer does", () => {
+  it("🔴 /pricing mounts the board, and /tiers no longer does", () => {
     // The move is only real if the old page LOST the panel. Two mounts
     // would be two places to set a price, and they would drift.
-    expect(read("../app/pricing/page.tsx")).toContain("<TierPricing");
+    expect(read("../app/pricing/page.tsx")).toContain("<PriceBoard");
     const tiersPage = read("../app/tiers/page.tsx");
-    expect(tiersPage).not.toContain("TierPricing");
+    expect(tiersPage).not.toContain("PriceBoard");
     // The board still tells the operator where prices went.
     expect(tiersPage).toContain("/pricing");
   });
@@ -224,40 +224,44 @@ describe("the /pricing page wiring", () => {
     expect(header).toContain('label: "Pricing"');
   });
 
-  it("the hand form carries no second price table and no what-if boxes", () => {
-    // The price list and the method board own reading; this panel only
-    // WRITES. A second table or a second pair of ₹ boxes is the echo the
-    // owner flagged ("is this section repeated?").
-    const panel = read("../app/pricing/TierPricing.tsx");
+  it("the board carries no what-if boxes for the credit price", () => {
+    // One saved frame, read everywhere. A second pair of ₹ boxes is the
+    // echo the owner flagged ("is this section repeated?") -- and a local
+    // frame that disagrees with the saved one prices against nothing.
+    const panel = read("../app/pricing/PriceBoard.tsx");
     expect(panel).not.toContain("Show the prices");
-    expect(panel).not.toContain("assumptions");
+    expect(panel).not.toContain("ONE CREDIT IS");
+    expect(panel).not.toContain("inrPerCredit:");
   });
 
   it("🔴 a priced card refuses BLANK boxes — 0 is typed, never assumed", () => {
     // The form once coerced every blank to "0", so a skipped cached box
     // billed cache hits FREE. Unknown never bills as free; free is typed.
-    const panel = read("../app/pricing/TierPricing.tsx");
+    const panel = read("../app/pricing/PriceBoard.tsx");
     expect(panel).toContain("a blank box is not a decision");
     expect(panel.indexOf("a blank box is not a decision"))
       .toBeLessThan(panel.indexOf("await fetch("));
   });
 
-  it("the hand form refreshes the page it claims to change", () => {
-    // "The card takes effect now" while the price list above still showed
-    // the old card was a lie of staleness.
-    const panel = read("../app/pricing/TierPricing.tsx");
-    expect(panel).toContain("if (res.ok) router.refresh();");
+  it("the board refreshes the page it claims to change", () => {
+    // "It takes effect now" while the card above still showed the old
+    // price was a lie of staleness. The board refreshes on success only:
+    // a refresh after a refusal would redraw the same stale card and
+    // look like the save worked.
+    const panel = read("../app/pricing/PriceBoard.tsx");
+    expect(panel).toContain("router.refresh()");
+    expect(panel).toMatch(/if \(ok\) \{[\s\S]{0,120}router\.refresh\(\)/);
   });
 
-  it("🔴 the credit price panel sits ABOVE the cockpit it seeds (017)", () => {
+  it("🔴 the credit price panel sits ABOVE the board it seeds (017)", () => {
     const page = read("../app/pricing/page.tsx");
     expect(page).toContain("<CreditPrice");
     expect(page.indexOf("<CreditPrice")).toBeLessThan(
-      page.indexOf("<TierPricing"));
+      page.indexOf("<PriceBoard"));
   });
 
-  it("the hand form's hints read the SAVED price, nothing local", () => {
-    const panel = read("../app/pricing/TierPricing.tsx");
-    expect(panel).toContain("savedAssumptions(creditPrice)");
+  it("the board's hints read the SAVED price, nothing local", () => {
+    const panel = read("../app/pricing/PriceBoard.tsx");
+    expect(panel).toContain("savedAssumptions(catalog.creditPrice)");
   });
 });

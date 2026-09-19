@@ -20,6 +20,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import type { CreditPrice as Price } from "@/lib/contract";
+import { formatDate } from "@/lib/format";
 import { chipClass } from "@/lib/tone";
 
 /** "1.500000" → "1.5" — the wire is exact, the input box is for humans. */
@@ -88,7 +89,7 @@ export default function CreditPrice({ price }: { price: Price | null }) {
         <p className="resultline">
           1 credit = ₹{trim(price.inrPerCredit)} · $1 = ₹{trim(price.usdToInr)}
           {price.effectiveFrom &&
-            ` — since ${new Date(price.effectiveFrom).toLocaleDateString()}`}
+            ` — since ${formatDate(price.effectiveFrom)}`}
           {example && (
             <>
               . A customer who pays ₹5,000 by transfer buys{" "}
@@ -99,9 +100,13 @@ export default function CreditPrice({ price }: { price: Price | null }) {
         </p>
       ) : (
         <p className="resultline">
-          <span className={chipClass("warn")}>not set</span> Until this is
-          saved, the margins below run on hand-typed assumptions, and a bank
-          transfer has no official credit conversion (H-42).
+          {/* ⚠️ The chip, and NOT the explanation. The board's headline
+              directly below states what an unsaved credit price blocks, and
+              this panel used to say it again in its own words — two
+              statements of one fact, three inches apart. The panel that holds
+              the fix keeps the label; the headline keeps the reason. */}
+          <span className={chipClass("warn")}>not set</span> A bank transfer
+          has no official credit conversion until this is saved (H-42).
         </p>
       )}
 

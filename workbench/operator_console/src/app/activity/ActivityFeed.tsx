@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { formatDateTime } from "@/lib/format";
+
 // The audit feed — WS-31 CP-12f.
 //
 // ⚠️ **The cursor is EPHEMERAL and lives only in this component's state.**
@@ -25,11 +27,10 @@ type Row = {
   org_name: string | null;
 };
 
-function when(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
-}
+// ⚠️ `toLocaleString()` lived here and read the RUNTIME's locale, so the
+// server and the browser formatted the same instant differently. See
+// `formatDateTime` for what that costs.
+const when = formatDateTime;
 
 // `breakglass` is the shared token: it bypasses every role and every window.
 // It should be rare, so it is marked rather than left to blend in.

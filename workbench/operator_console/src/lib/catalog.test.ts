@@ -17,8 +17,11 @@ import { describeRate, singular, type ModelRate } from "./catalog";
 
 const SRC = join(__dirname, "..");
 const BROWSER = readFileSync(join(SRC, "app", "models", "ModelBrowser.tsx"), "utf8");
-// The pricing cockpit owns /pricing — the money page (owner IA, 2026-08-30).
-const RATECARD = readFileSync(join(SRC, "app", "pricing", "TierPricing.tsx"), "utf8");
+// The price board owns /pricing — the money page (owner IA, 2026-08-30).
+// One card per tier since 2026-09-20. It absorbed the four panels that
+// used to split the one question between them.
+const RATECARD = readFileSync(join(SRC, "app", "pricing", "PriceBoard.tsx"), "utf8");
+const PRICEHELP = readFileSync(join(SRC, "lib", "help.ts"), "utf8");
 const DECLARE = readFileSync(join(SRC, "app", "models", "DeclareModel.tsx"), "utf8");
 const TIERS = readFileSync(join(SRC, "app", "tiers", "TierBoard.tsx"), "utf8");
 const PAGE = readFileSync(join(SRC, "app", "models", "page.tsx"), "utf8");
@@ -118,16 +121,21 @@ describe("the surface", () => {
     // operator must not read the zeros as an oversight to quietly fix.
     // The unpriced warning moved to the method board with the
     // consolidation; the hand form keeps the vendor-price phrase.
-    const BOARD = readFileSync(
-      join(SRC, "app", "pricing", "PriceFromCost.tsx"), "utf8");
-    expect(code(BOARD)).toContain("no price");
+    expect(code(RATECARD)).toContain("no price");
   });
 
   it("keeps the vendor's price and OUR price apart, in words", () => {
     // ⚠️ Two numbers, two tables, and reading one as the other inverts a
     // margin. The catalog says what we PAY; the rate card says what we CHARGE.
     expect(code(BROWSER)).toContain("We pay");
-    expect(code(RATECARD)).toContain("not what the vendor charges us");
+    // 🔴 The board draws the two as SEPARATE labelled rows on every
+    // card, which is a stronger separation than the sentence this once
+    // checked: a reader cannot skim past a row label the way they skim
+    // past a clause in the middle of a paragraph.
+    expect(code(RATECARD)).toContain("costs us");
+    expect(code(RATECARD)).toContain("we charge");
+    // And the hover on each says whose side the number is on, in words.
+    expect(PRICEHELP).toContain("never what a customer pays");
   });
 
   it("relays a refusal VERBATIM, on both surfaces that write", () => {

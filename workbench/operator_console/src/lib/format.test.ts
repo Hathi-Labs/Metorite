@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   readCreditLots,
   formatPaise,
   seatsDigest,
   formatDate,
+  formatDateTime,
   lifecycleActions,
   canActivate,
   seatsTotals,
@@ -521,5 +522,62 @@ describe("reading credit lots", () => {
   it("survives a malformed payload rather than throwing", () => {
     expect(readCreditLots(null)).toBeUndefined();
     expect(readCreditLots({ credit_lots: "nope" })).toBeUndefined();
+  });
+});
+
+describe("formatDateTime", () => {
+  it("slices the ISO instant and names the zone", () => {
+    expect(formatDateTime("2026-09-20T14:05:09.123Z")).toBe("2026-09-20 14:05 UTC");
+  });
+
+  it("answers a dash for null, never a coerced epoch", () => {
+    expect(formatDateTime(null)).toBe("—");
+    expect(formatDateTime("")).toBe("—");
+  });
+
+  it("shows an unparseable value verbatim rather than guessing", () => {
+    expect(formatDateTime("yesterday")).toBe("yesterday");
+  });
+
+  it("\U0001F534 is DETERMINISTIC — it must not read the runtime's locale or zone", () => {
+    // Next renders on the server first. `toLocaleString()` made Node print
+    // "20/9/2026" and the browser "20/09/2026", which is a hydration mismatch:
+    // React throws away the server HTML for that subtree. Measured on
+    // /pricing, 2026-09-20.
+    const src = readFileSync(join(__dirname, "format.ts"), "utf8");
+    const body = src.slice(src.indexOf("export function formatDateTime"));
+    expect(body).not.toContain("toLocaleString");
+    expect(body).not.toContain("toLocaleDateString");
+    expect(body).not.toContain("new Date(");
+  });
+
+  it("\U0001F534 no surface formats a date through the runtime's own locale", () => {
+    // The fence for the whole app, not just this helper. A bare
+    // `toLocale*String()` with NO argument reads the environment, and that is
+    // the defect. One WITH a locale ("en-IN" grouping, "en-US" counts) is a
+    // deliberate choice and stays allowed.
+    const root = join(__dirname, "..");
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) {
+          walk(p);
+        } else if (/\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) {
+          // Comments stripped FIRST. A file that explains why it does not do
+          // something must not fail the fence that checks it does not --
+          // catalog.test.ts records this trap at "seven times and counting",
+          // and this fence walked straight into it on its first run.
+          const body = readFileSync(p, "utf8")
+            .replace(/\/\*[\s\S]*?\*\//g, " ")
+            .replace(/^\s*\/\/.*$/gm, " ");
+          if (/toLocale(Date|Time)?String\(\s*\)/.test(body)) {
+            offenders.push(p.slice(root.length + 1));
+          }
+        }
+      }
+    };
+    walk(root);
+    expect(offenders).toEqual([]);
   });
 });
