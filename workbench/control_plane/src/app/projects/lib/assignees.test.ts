@@ -8,6 +8,7 @@ import {
   withAssignee,
   withoutAssignee,
   describePickerRow,
+  pickerGroups,
 } from "./assignees";
 
 describe("normalize", () => {
@@ -156,5 +157,40 @@ describe("describePickerRow (WS-28e)", () => {
 
   it("is empty when there is nothing to say", () => {
     expect(describePickerRow(base)).toBe("");
+  });
+});
+
+describe("pickerGroups — the crash that blanked the whole panel", () => {
+  const row = (name: string) =>
+    ({ assignee: `${name}@x.io`, name, kind: "person", has_login: true,
+       top_skills: [], warnings: [] }) as never;
+
+  it("groups people and agents", () => {
+    const groups = pickerGroups({
+      people: [row("Ana")], agents: [row("triage")],
+    } as never);
+    expect(groups.map((g) => g.heading)).toEqual(["People", "Agents"]);
+  });
+
+  it("drops an empty group rather than drawing an empty heading", () => {
+    const groups = pickerGroups({ people: [row("Ana")], agents: [] } as never);
+    expect(groups.map((g) => g.heading)).toEqual(["People"]);
+  });
+
+  it("🔴 survives a response missing its keys entirely", () => {
+    // The measured crash: the component read `res.people.length`, a response
+    // of the wrong shape threw, and the throw escaped to the layout boundary
+    // so the ENTIRE task panel rendered empty. An older server, a proxied
+    // error page or a shape change all produce this.
+    expect(pickerGroups({} as never)).toEqual([]);
+    expect(pickerGroups({ people: null, agents: undefined } as never)).toEqual([]);
+  });
+
+  it("survives a response whose groups are not arrays", () => {
+    expect(pickerGroups({ people: "nope", agents: 7 } as never)).toEqual([]);
+  });
+
+  it("returns nothing before anything has loaded", () => {
+    expect(pickerGroups(null)).toEqual([]);
   });
 });

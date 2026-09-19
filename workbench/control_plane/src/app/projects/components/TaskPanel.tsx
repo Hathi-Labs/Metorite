@@ -33,11 +33,24 @@
  * context, energy and the founder priority matrix live on `pm_task_personal`
  * and are not this surface's data.
  *
- * ⚠️ **One column, always.** The panel is `max-w-md` docked on desktop and
- * full-screen on a phone (`projects/page.tsx` lifts the cap). A `sm:grid-cols-2`
- * would key off the VIEWPORT, so it would split the 448px docked column on a 4K
- * monitor — which is exactly the collision `/tasks`' detail hit when it was
- * docked at 380px. The surface, not the viewport, decides the column count.
+ * ⚠️ **The SURFACE decides the column count, never the viewport.** A
+ * `sm:grid-cols-2` keys off the WINDOW, so it would split the 448px docked
+ * column on a 4K monitor — exactly the collision `/tasks`' detail hit when it
+ * was docked at 380px.
+ *
+ * That rule stands; what changed on 2026-09-19 is that it now has a second
+ * answer rather than only "one column, always". `twoColumn` reads the panel's
+ * OWN width stop: at `full` (max-w-3xl, 768px) the sections pair up, and at
+ * Peek (320px) and Side (448px) they do not. `/tasks`' detail takes the same
+ * decision through its `focused` flag, so the two apps split at the same kind
+ * of moment rather than at the same number of pixels.
+ *
+ * ⚠️ **The sections do not MOVE between the two shapes.** An earlier attempt
+ * lifted them into a main/aside split, which meant writing every section
+ * twice — one per branch — and the next edit landed in one copy only. They
+ * pair inside the containers they already live in, so there is no second copy
+ * to drift. Prose and the timeline span both columns; a paragraph set in half
+ * a panel is one nobody finishes.
  *
  * ## Peek → side → full (WS-27ab item 1)
  *
@@ -59,6 +72,7 @@ import Button from "@/components/ui/Button";
 import { Input, Select, Textarea } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import { StatusChip } from "@/components/StatusChip";
+import { CollapsibleSection } from "@/components/ui/Collapsible";
 import { useEffect, useRef, useState } from "react";
 
 import { accentForStatus } from "../lib/accent";
@@ -74,12 +88,20 @@ import {
   watchersApi,
 } from "../lib/api";
 import { taskDeepLink, taskRef } from "../lib/card";
+import {
+  type FoldableSection,
+  readFolded,
+  toggleFold,
+  writeFolded,
+} from "../lib/sectionFold";
+import { previewKind, readableSize } from "../lib/preview";
 import { isAutomated } from "../lib/lifecycle";
 import { AssigneePicker } from "./AssigneePicker";
 import { CustomFieldValues } from "./CustomFieldValues";
 import { TagPicker } from "./TagPicker";
 import { RepeatEditor } from "./RepeatEditor";
 import { RelationsBlock } from "./RelationsBlock";
+import { AttachmentViewer } from "./AttachmentViewer";
 import { changeLabel } from "../lib/customFields";
 import {
   assigneeLabel,
@@ -180,28 +202,7 @@ function describe(activity: ActivityRow, defs: FieldRow[] = []): string {
  *
  * ⚠️ It is a deliberate second copy, and it should not stay one. The shared
  * home for it is `src/components/`, promoted together with `ItemDetail`'s — and
- * that edit touches `app/tasks/**`, which another slice holds open. Whoever
- * takes it adds the row to `src/lib/sharedTaskUi.test.ts`'s SEAM so a third
- * copy fails.
- *
- * Takes an icon NAME, not a component: `<Icon name="…">` is the house idiom and
- * the active theme picks the pack.
- */
-function SectionLabel({
-  icon,
-  children,
-}: {
-  icon?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <h3 className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-      {icon ? <Icon name={icon} className="h-3 w-3" /> : null}
-      {children}
-    </h3>
-  );
-}
-
+ * that edit touches `app/tasks
 /**
  * One labelled cell in the details block — the chrome `ItemDetail`'s `MetaEdit`
  * draws in its closed state, without the click-to-edit flip: this panel's
@@ -210,6 +211,21 @@ function SectionLabel({
  *
  * `trailing` is the right-hand slot of the label row (an accent dot, a count).
  */
+/**
+ * The container class for a group of sections that may pair up.
+ *
+ * One helper rather than the same ternary written at each container, so the
+ * two groups cannot drift into different gaps or different breakpoints.
+ *
+ * `items-start` matters: without it the grid stretches both cells to the
+ * taller one, and a short Details block grows a field of empty card.
+ */
+const PAIRED_SECTIONS = (twoColumn: boolean): string =>
+  twoColumn
+    ? "grid grid-cols-2 items-start gap-4 px-3 py-3"
+    : "flex flex-col gap-4 px-3 py-3";
+
+
 function FieldCell({
   label,
   icon,
@@ -250,6 +266,52 @@ export function TaskPanel({
   // WS-27ak(3) — the confirmation channel. `changeStatus` below is the one
   // mutation on this panel wired to it in that slice.
   const toast = useToast();
+  /**
+   * Two columns, decided by the SURFACE rather than the viewport.
+   *
+   * `full` is `max-w-3xl` (768px), the first stop with room for two readable
+   * columns. `/tasks`' detail takes the same decision through its `focused`
+   * flag, so the two apps split at the same kind of moment rather than at
+   * the same number of pixels.
+   */
+  const twoColumn = mode === "full";
+
+  //: The attachment whose viewer is open. One at a time — two open previews
+  //: is two things asking for the same attention.
+  const [viewing, setViewing] = useState<AttachmentRow | null>(null);
+
+  /**
+   * Which sections this member has folded away.
+   *
+   * ⚠️ Read in an EFFECT, not in a lazy initialiser. `localStorage` does not
+   * exist while this renders on the server, and a first paint that disagreed
+   * with the second is a hydration mismatch — the same reason `panelMode` is
+   * read the way it is, four fields below.
+   */
+  const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
+
+  useEffect(() => {
+    // Same suppression and the same reason as `panelMode` on the page: the
+    // read must happen after mount or the server's paint disagrees with the
+    // client's, and that is a hydration mismatch.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setFolded(readFolded());
+  }, []);
+
+  function setSectionOpen(section: FoldableSection, open: boolean) {
+    setFolded((current) => {
+      const next = toggleFold(current, section, open);
+      writeFolded(next);
+      return next;
+    });
+  }
+
+  /** The props every foldable section shares. */
+  const fold = (section: FoldableSection) => ({
+    open: !folded.has(section),
+    onOpenChange: (open: boolean) => setSectionOpen(section, open),
+  });
+
   const [timeline, setTimeline] = useState<ActivityRow[]>([]);
   const [comment, setComment] = useState("");
   const [notDelivered, setNotDelivered] = useState<string | null>(null);
@@ -687,9 +749,27 @@ export function TaskPanel({
           under it. ItemDetail scrolls the whole detail, and so does this now —
           only the header and the comment composer are pinned. */}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="flex flex-col gap-4 px-3 py-3">
-          <section>
-            <SectionLabel icon="SlidersHorizontal">Details</SectionLabel>
+        {/* ⚠️ **Two columns are decided by the SURFACE, never by the viewport.**
+            This file's header records why, and it is the rule `/tasks`' detail
+            already follows with its `focused` flag: an `sm:grid-cols-2` keys
+            off the WINDOW, so on a 4K monitor it would split the 448px docked
+            panel into two 220px columns — the exact collision `/tasks` hit
+            when it was docked at 380px. `twoColumn` reads the panel's own
+            width stop instead, so the split happens at `full` and nowhere
+            else, and Peek and Side keep the single column they need.
+
+            ⚠️ The SECTIONS DO NOT MOVE. An earlier attempt lifted them into
+            a main/aside split and had to write each one twice, once per
+            branch — and the very next edit landed in one copy only. Pairing
+            them inside the containers they already live in gets the same
+            halving of the panel's length with no second copy to drift. */}
+        <div className={PAIRED_SECTIONS(twoColumn)}>
+          <CollapsibleSection
+              label="Details"
+              icon="SlidersHorizontal"
+              className={twoColumn ? "min-w-0" : undefined}
+              {...fold("details")}
+            >
             {/* `grid-cols-1`, with no responsive variant on purpose — see the
                 width note in this file's header. */}
             <div className="grid grid-cols-1 gap-2">
@@ -788,15 +868,29 @@ export function TaskPanel({
                 />
               </FieldCell>
             </div>
-          </section>
+          </CollapsibleSection>
 
           {task.description ? (
-            <section>
-              <SectionLabel icon="AlignLeft">Description</SectionLabel>
+            // Prose spans both columns: a description set in a 50% column
+            // beside a field stack is a paragraph nobody finishes.
+            //
+            // ⚠️ `order-last` is what makes the pairing work, and it is why
+            // no JSX had to move. Description sits BETWEEN Details and
+            // Properties in the DOM, so in a grid it landed on its own row
+            // and pushed Properties onto a third — one column of content
+            // with an empty column beside it. `order` re-places it for
+            // auto-flow without touching the reading order that Peek and
+            // Side still use.
+            <CollapsibleSection
+              label="Description"
+              icon="AlignLeft"
+              className={twoColumn ? "order-last col-span-2 min-w-0" : undefined}
+              {...fold("description")}
+            >
               <p className="whitespace-pre-wrap text-sm text-foreground">
                 {task.description}
               </p>
-            </section>
+            </CollapsibleSection>
           ) : null}
 
           {/* Tags and recurrence draw their own small labels, so they are
@@ -804,8 +898,12 @@ export function TaskPanel({
               would compete with the ones those components already render.
               Promoting those labels onto `SectionLabel` means editing
               `TagPicker`/`RepeatEditor`, which S5 does not own. */}
-          <section>
-            <SectionLabel icon="Tag">Properties</SectionLabel>
+          <CollapsibleSection
+              label="Properties"
+              icon="Tag"
+              className={twoColumn ? "min-w-0" : undefined}
+              {...fold("properties")}
+            >
             <div className="space-y-3">
               {/* Saved on every change rather than behind a button: a chip is a
                   single decision, and a Save beside it would be a second click
@@ -826,7 +924,7 @@ export function TaskPanel({
               />
               <RepeatEditor taskId={task.id} />
             </div>
-          </section>
+          </CollapsibleSection>
         </div>
 
         {/* Custom fields bring their own section chrome — a top rule, their own
@@ -836,12 +934,16 @@ export function TaskPanel({
             never grows an empty heading. */}
         <CustomFieldValues task={task} fields={fields} onChanged={onChanged} />
 
-        <div className="flex flex-col gap-4 px-3 py-3">
+        <div className={PAIRED_SECTIONS(twoColumn)}>
           {/* Both halves existed in the schema since WS-27a with no surface:
               links could be created and deleted but never listed, and subtasks
               could be created but never shown. */}
-          <section>
-            <SectionLabel icon="GitBranch">Links &amp; subtasks</SectionLabel>
+          <CollapsibleSection
+              label="Links & subtasks"
+              icon="GitBranch"
+              className={twoColumn ? "min-w-0" : undefined}
+              {...fold("links")}
+            >
             <div className="space-y-2">
               {onOpenTask ? (
                 <RelationsBlock
@@ -866,52 +968,82 @@ export function TaskPanel({
                 aria-label="Add a subtask"
               />
             </div>
-          </section>
+          </CollapsibleSection>
 
-          <section>
-            <SectionLabel icon="Paperclip">
-              Files{files.length ? ` · ${files.length}` : ""}
-            </SectionLabel>
+          <CollapsibleSection
+              label="Files"
+              icon="Paperclip"
+              count={files.length}
+              className={twoColumn ? "min-w-0" : undefined}
+              {...fold("files")}
+            >
             <div className="space-y-1">
-              {files.map((f) => (
-                <div
-                  key={f.attachment_id}
-                  className="flex items-center gap-2 rounded-md border border-border bg-card px-2 py-1.5 text-xs"
-                >
-                  {f.kind === "image" ? (
-                    <Icon
-                      name="Image"
-                      className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                    />
-                  ) : (
-                    <Icon
-                      name="Paperclip"
-                      className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                    />
-                  )}
-                  <a
-                    href={f.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="min-w-0 flex-1 truncate text-foreground hover:underline"
+              {files.map((f) => {
+                const kind = previewKind(f.mime);
+                const size = readableSize(f.size);
+                return (
+                  <div
+                    key={f.attachment_id}
+                    className="flex items-center gap-2 rounded-md border border-border bg-card p-1.5 text-xs"
                   >
-                    {f.name}
-                  </a>
-                  <span className="shrink-0 text-muted-foreground">
-                    {Math.max(1, Math.round(f.size / 1024))} KB
-                  </span>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    aria-label={`Remove ${f.name}`}
-                    title="Removes it from this task; the file itself is kept"
-                    onClick={() => void detach(f.attachment_id)}
-                    className="shrink-0 text-muted-foreground hover:text-foreground"
-                  >
-                    <Icon name="X" className="h-3 w-3" />
-                  </button>
-                </div>
-              ))}
+                    {/* ⚠️ The thumbnail is a BUTTON, not a link.
+                        A link opened a tab and lost the task, which is the
+                        wrong answer for the common case: a screenshot on a
+                        bug, which you want beside the description you are
+                        reading. Open-in-a-tab is still one click away, in
+                        the viewer. */}
+                    <button
+                      type="button"
+                      onClick={() => setViewing(f)}
+                      aria-label={`Open ${f.name}`}
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    >
+                      {kind === "image" ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={f.url}
+                          alt=""
+                          // `alt=""` on purpose: the name is right beside it,
+                          // and a screen reader reading the filename twice is
+                          // noise. The button carries the accessible name.
+                          loading="lazy"
+                          className="h-9 w-9 shrink-0 rounded border border-border object-cover"
+                        />
+                      ) : (
+                        <span
+                          className="flex h-9 w-9 shrink-0 items-center justify-center rounded border border-border bg-muted"
+                          aria-hidden
+                        >
+                          <Icon
+                            name={kind === "document" ? "FileText" : "Paperclip"}
+                            className="h-4 w-4 text-muted-foreground"
+                          />
+                        </span>
+                      )}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-foreground">
+                          {f.name}
+                        </span>
+                        <span className="block truncate text-[10px] text-muted-foreground">
+                          {[kind === "none" ? "Downloads" : "Preview", size]
+                            .filter(Boolean)
+                            .join(" \u00b7 ")}
+                        </span>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      aria-label={`Remove ${f.name}`}
+                      title="Removes it from this task; the file itself is kept"
+                      onClick={() => void detach(f.attachment_id)}
+                      className="shrink-0 text-muted-foreground hover:text-foreground"
+                    >
+                      <Icon name="X" className="h-3 w-3" />
+                    </button>
+                  </div>
+                );
+              })}
               {/* What is going up right now, by name. */}
               {uploading.map((name) => (
                 <div
@@ -957,10 +1089,17 @@ export function TaskPanel({
             >
               {uploading.length > 0 ? "Uploading…" : "Attach files"}
             </Button>
-          </section>
+          </CollapsibleSection>
 
-          <section>
-            <SectionLabel icon="History">Activity</SectionLabel>
+          {/* The timeline spans: it is a list of sentences, and half a
+              panel is not enough line length for one. */}
+          <CollapsibleSection
+              label="Activity"
+              icon="History"
+              count={timeline.length}
+              className={twoColumn ? "col-span-2 min-w-0" : undefined}
+              {...fold("activity")}
+            >
             <ol className="space-y-3">
               {timeline.map((activity) => (
                 <li key={activity.id} className="text-sm">
@@ -991,7 +1130,7 @@ export function TaskPanel({
                 </li>
               ) : null}
             </ol>
-          </section>
+          </CollapsibleSection>
         </div>
       </div>
 
@@ -1035,6 +1174,18 @@ export function TaskPanel({
           Comment
         </Button>
       </div>
+      {/* The viewer is mounted at the panel root rather than inside the
+          Files section, so it is not clipped by the scroll container and
+          does not move when that section reflows into the other column. */}
+      <AttachmentViewer
+        file={viewing}
+        busy={busy}
+        onClose={() => setViewing(null)}
+        onRemove={(id) => {
+          setViewing(null);
+          void detach(id);
+        }}
+      />
     </aside>
   );
 }

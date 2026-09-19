@@ -58,6 +58,49 @@ from gateway.routes.tasks.attachments import (
 )
 from sqlalchemy import text
 
+#: The types served INLINE, so the browser renders them in place.
+#:
+#: 🔴 **A SAFELIST, and `image/svg+xml` is deliberately absent although the
+#: upload calls it an image** (`_IMAGE_MIMES` above includes it, so the
+#: descriptor already reports `kind: "image"` for one). An SVG is a DOCUMENT
+#: that may carry `<script>`; rendered inline on this origin that script runs
+#: with the member's session cookie. It downloads. So does every `text/*`,
+#: for the same reason, and so does anything not named here.
+#:
+#: A new type is added by a person deciding it is safe, never by a pattern
+#: that happens to match.
+#:
+#: Mirrors `workbench/control_plane/src/app/projects/lib/preview.ts`, which
+#: decides what the panel OFFERS to preview. A type in one list and not the
+#: other is either a download the UI promises to render, or a render the UI
+#: never offers.
+_INLINE_MIMES: frozenset[str] = frozenset({
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/avif",
+    "application/pdf",
+})
+
+#: How much a SINGLE TASK's attachments may add up to (owner directive,
+#: 2026-09-19).
+#:
+#: ⚠️ **Per task, not per file.** A per-file cap alone lets twenty 9MB files
+#: onto one task, and "the attachments that each task can hold" is about the
+#: task. It subsumes the shared per-file check, which stays because that rule
+#: belongs to the upload path `/tasks` shares.
+_TASK_ATTACHMENT_BUDGET = 10 * 1024 * 1024
+
+
+def _mb(size: int) -> str:
+    """Bytes as a person reads them, for a refusal they can act on.
+
+    A 413 saying `10485760` tells somebody nothing about which file to remove.
+    """
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
 
 def descriptor(row: Any) -> dict[str, Any]:
     """The shape the UI renders — the same field names the capture flow uses."""
@@ -107,6 +150,44 @@ async def attach_file(
                 status_code=413,
                 detail=f"Attachment too large ({len(content)} bytes; "
                        f"max {_MAX_BYTES}).",
+            )
+
+        # ⚠️ The budget is PER TASK, not per file (owner directive,
+        # 2026-09-19: "limit the max size of the attachments that each task
+        # can hold to 10mb"). A per-file cap alone lets twenty 9MB files onto
+        # one task, which is the thing the instruction is about.
+        #
+        # It subsumes the per-file check above: nothing can exceed the budget
+        # on its own. That check is left in place because it belongs to the
+        # shared upload rule and also guards `/tasks`, whose budget is its
+        # own decision and not this one.
+        #
+        # Counted from the rows, not from a stored running total: a total
+        # column is a second source of truth that drifts the first time a
+        # detach does not decrement it.
+        # Aliased and read by NAME rather than through `.scalar()`: the
+        # column name is what every fake in the suite can answer, and a
+        # single-value read that works on one driver and not on a test
+        # double is a fence that cannot run.
+        budget_row = (await db.execute(
+            text(
+                "SELECT COALESCE(SUM(a.size_bytes), 0) AS used "
+                "  FROM pm_task_attachments ta "
+                "  JOIN gtd_attachments a ON a.id = ta.attachment_id "
+                " WHERE ta.task_id = CAST(:tid AS uuid)"
+            ),
+            {"tid": task_id},
+        )).fetchone()
+        used = int(getattr(budget_row, "used", 0) or 0)
+        if used + len(content) > _TASK_ATTACHMENT_BUDGET:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"This task's attachments would reach "
+                    f"{_mb(used + len(content))} and the limit is "
+                    f"{_mb(_TASK_ATTACHMENT_BUDGET)}. "
+                    f"{_mb(used)} is already attached. Remove something first."
+                ),
             )
 
         att_id = str(uuid4())
@@ -210,9 +291,30 @@ async def serve_attachment(
         )).fetchone()
     if row is None or not Path(row.path).is_file():
         raise HTTPException(status_code=404, detail="Attachment not found")
+    mime = (row.mime or "application/octet-stream").split(";")[0].strip().lower()
+    inline = mime in _INLINE_MIMES
     return FileResponse(
-        row.path, media_type=row.mime or "application/octet-stream",
-        filename=row.name,
+        row.path,
+        media_type=row.mime or "application/octet-stream",
+        # ⚠️ `filename=` alone sets `Content-Disposition: attachment`, which
+        # forces a DOWNLOAD — a PDF handed to an <iframe> under that header
+        # never renders, which is why the panel could only ever link out.
+        #
+        # A safelisted type is therefore served `inline`; everything else
+        # keeps the download. The filename rides along either way, so "Save
+        # as" still offers the right one.
+        headers={
+            "Content-Disposition": (
+                f'inline; filename="{row.name}"'
+                if inline
+                else f'attachment; filename="{row.name}"'
+            ),
+            # 🔴 Load-bearing, not hygiene. Without it a file stored as
+            # `text/plain` whose bytes look like HTML can be content-sniffed
+            # into HTML and executed on OUR origin with the member's session
+            # attached — the attack the safelist above exists to prevent.
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
