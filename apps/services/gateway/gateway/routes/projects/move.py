@@ -47,28 +47,30 @@ from fastapi import Depends, HTTPException
 from gateway.routes.projects.bulk import MAX_BULK, dedupe_ids
 from gateway.routes.projects.core import (
     _REMAP_TARGET_SQL,
-    apply_status_transition,
-    assert_move_keeps_privacy,
+    CLOSING_CATEGORIES,
     TRIAGE_CATEGORY,
     _tenant_session,
     actor,
+    assert_move_keeps_privacy,
     emit,
     from_jsonb,
     load_visible_project,
     load_visible_task,
     next_task_number,
     node_kind,
+    now,
     record_activity,
     remap_one_type,
     require_status_in_project,
     resolve_visibility,
     root_project_id,
-    vocabulary_scope,
     router,
     status_owner_id,
     update_row,
+    vocabulary_scope,
 )
 from gateway.routes.projects.custom_fields import (
+    _is_blank,
     assert_required_fields_present,
     load_definitions,
 )
@@ -90,14 +92,48 @@ COMPATIBLE_TYPES: dict[str, frozenset[str]] = {
     "date": frozenset({"date"}),
     "boolean": frozenset({"boolean"}),
     "url": frozenset({"url"}),
-    "select": frozenset({"select", "multi_select"}),
+    # ⚠️ `select` does NOT widen into `multi_select`. The earlier comment here
+    # claimed "one chosen option is a legal list of one, and nothing about the
+    # value changes" — and those two clauses contradict each other. A list of
+    # one is `["High"]`, and `_coerce_multi_select` refuses a bare string. The
+    # widening would have written a value the destination's own coercer
+    # rejects, which is the failure this table exists to prevent.
+    "select": frozenset({"select"}),
     "multi_select": frozenset({"multi_select"}),
 }
 
 
-def compatible(source_type: str, dest_type: str) -> bool:
-    """May a value of ``source_type`` be written into a ``dest_type`` field?"""
-    return dest_type in COMPATIBLE_TYPES.get(source_type, frozenset())
+#: The choice types, whose OPTIONS have to agree as well as their type.
+CHOICE_TYPES = frozenset({"select", "multi_select"})
+
+
+def compatible(
+    source_type: str,
+    dest_type: str,
+    source_options: Any = None,
+    dest_options: Any = None,
+) -> bool:
+    """May a value of ``source_type`` be written into a ``dest_type`` field?
+
+    ⚠️ **For a choice field the TYPE is not enough, and assuming it was is a
+    real defect this module shipped once.** Two spaces can each hold a
+    `select` named "Severity" with `[Low, High]` and `[S1, S2, S3]`. The types
+    match, so the value `"High"` was copied straight across — and
+    `_coerce_select` refuses exactly that value on every later write. The
+    task then carried a value its own field rejects: unfilterable,
+    uneditable except by hand, and reported as landed rather than dropped.
+
+    So a choice field carries only when the destination's options are a
+    SUPERSET of the source's. Anything else is an orphan, which means the
+    member is told.
+    """
+    if dest_type not in COMPATIBLE_TYPES.get(source_type, frozenset()):
+        return False
+    if source_type not in CHOICE_TYPES:
+        return True
+    have = {str(o) for o in (source_options or [])}
+    allowed = {str(o) for o in (dest_options or [])}
+    return have <= allowed
 
 
 def shared_source(tasks: list[Any]) -> str:
@@ -158,7 +194,7 @@ def resolve_field_map(
     # Two source fields can legitimately resolve to ONE destination field, and
     # it is the ORDINARY case rather than a curiosity: `pm_custom_fields` is
     # UNIQUE on (project_id, field_key) and on nothing else, so two rows may
-    # share a NAME — and WS-27bj's org-wide ∪ root-local union produces exactly
+    # share a NAME — and WS-27bj's org-wide plus root-local union produces exactly
     # that, an org-wide `priority` beside a root-local `prio`, both called
     # "Priority". One matches by key, the other by name, and both aimed at the
     # same target.
@@ -179,7 +215,12 @@ def resolve_field_map(
         # An exact key match is the stronger claim and is resolved first, so a
         # name match can never displace it — see the second pass below.
         target = by_key.get(key) or by_name.get(str(definition["name"]).strip().lower())
-        if target is None or not compatible(source_type, str(target["field_type"])):
+        if target is None or not compatible(
+            source_type,
+            str(target["field_type"]),
+            definition.get("options"),
+            target.get("options"),
+        ):
             orphans.append(definition)
             continue
         target_key = str(target["field_key"])
@@ -399,19 +440,58 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
     source_defs = await load_definitions(db, source_root)
     dest_defs = await load_definitions(db, dest_root)
     auto_fields, orphan_defs = resolve_field_map(source_defs, dest_defs)
-    chosen = {**auto_fields, **(payload.field_map or {})}
+    # ⚠️ A caller-supplied entry clears the SAME bar the resolved ones do.
+    #
+    # `chosen` used to merge `payload.field_map` straight over the resolved
+    # map, and `apply_field_map` only ever checks `target in dest_keys`. So a
+    # client could post `{"<a number key>": "<a boolean key>"}` and write a
+    # value the destination's own coercer refuses — the exact hole closed for
+    # `status_map` in the same commit that left this one open.
+    src_by_key = {str(d["field_key"]): d for d in source_defs}
+    dst_by_key = {str(d["field_key"]): d for d in dest_defs}
+    chosen = dict(auto_fields)
+    for raw_from, raw_to in (payload.field_map or {}).items():
+        src = src_by_key.get(str(raw_from))
+        dst = dst_by_key.get(str(raw_to))
+        if src is None or dst is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Cannot map {raw_from!r} to {raw_to!r}: one of them is "
+                    "not a field of its project."
+                ),
+            )
+        if not compatible(
+            str(src["field_type"]), str(dst["field_type"]),
+            src.get("options"), dst.get("options"),
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Cannot map {src['name']!r} to {dst['name']!r}: a "
+                    f"{src['field_type']} value does not fit a "
+                    f"{dst['field_type']} field."
+                ),
+            )
+        chosen[str(raw_from)] = str(raw_to)
     dest_keys = frozenset(str(d["field_key"]) for d in dest_defs)
 
     # What each task would actually lose, which is NOT the same as the orphan
     # DEFINITIONS: a field with no home costs nothing on a task that never
     # filled it in, and warning about that would be a warning about nothing.
     drops: dict[str, Any] = {}
+    #: Each task's values AS THEY WOULD LAND, computed once and read twice —
+    #: by the drop report and by the required-field check.
+    landed_by_task: list[dict[str, Any]] = []
     # ⚠️ Only when the ROOT changes. `custom_fields` is untouched otherwise, so
     # computing drops for a same-root move made the endpoint demand
     # `accept_drops`, label the button "Move and drop", and then report a loss
     # that never happened — for a stale JSONB key from a deleted field.
     for task in tasks if dest_root != source_root else []:
-        _, dropped = apply_field_map(from_jsonb(task.custom_fields), chosen, dest_keys)
+        landed, dropped = apply_field_map(
+            from_jsonb(task.custom_fields), chosen, dest_keys,
+        )
+        landed_by_task.append(landed)
         for key, value in dropped.items():
             drops.setdefault(key, []).append({
                 "task_id": str(task.id),
@@ -448,21 +528,23 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
     # `tasks.py` refuses a single move without them (migration 192), so
     # omitting the check here let the bulk path land tasks the narrow path
     # rejects. Reported by the preview AND enforced by the apply.
+    # ⚠️ `_is_blank`, not a hand-rolled emptiness test.
+    #
+    # The first version used `in (None, "")`, which calls `"   "` and `[]`
+    # PRESENT while `assert_required_fields_present` calls them blank. So the
+    # bulk path would have landed a task the single-task path refuses — which
+    # is the very disagreement this check was added to close. One predicate,
+    # imported from the module that owns it.
+    #
+    # Computed from `landed_by_task`, which the drop loop already built: the
+    # first version re-ran `apply_field_map` once per (required field x task),
+    # i.e. 20000 times for a 500-task move into a root with 40 required fields.
     required_missing: list[str] = []
     if dest_root != source_root:
-        required = [
-            d for d in dest_defs if d.get("required")
-        ]
-        for definition in required:
+        for definition in (d for d in dest_defs if d.get("required")):
             key = str(definition["field_key"])
-            short = [
-                str(t.task_number or t.id) for t in tasks
-                if apply_field_map(
-                    from_jsonb(t.custom_fields), chosen, dest_keys,
-                )[0].get(key) in (None, "")
-            ]
-            if short:
-                required_missing.append(definition.get("name") or key)
+            if any(_is_blank(landed.get(key)) for landed in landed_by_task):
+                required_missing.append(str(definition.get("name") or key))
 
     # 🔴 The destination's OWN lanes, returned with the plan.
     #
@@ -537,6 +619,53 @@ async def preview_move(
         return _public(await _plan(db, vis, payload))
 
 
+def _refuse_unless_agreed(plan: dict[str, Any], payload: MoveIn) -> None:
+    """Every refusal that depends on what the member was SHOWN.
+
+    Lifted out of :func:`move_tasks` because the endpoint's complexity is
+    almost entirely these three, and a reader looking for what the move DOES
+    should not wade through what it refuses first.
+    """
+    if plan["source_project_id"] == plan["destination_project_id"]:
+        raise HTTPException(
+            status_code=422, detail="Those tasks are already there.",
+        )
+    if plan["required_missing"]:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "The destination requires "
+                + ", ".join(plan["required_missing"])
+                + ", which these tasks do not carry. Fill them in first."
+            ),
+        )
+    # D-PM-29. A caller cannot lose a value by omitting a flag it never knew
+    # about, so the refusal names the keys and the remedy.
+    if plan["drops"] and not payload.accept_drops:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This move drops values with no field in the destination: "
+                + ", ".join(sorted(plan["drops"]))
+                + ". Send accept_drops to confirm."
+            ),
+        )
+    # ⚠️ Bound to the plan the member saw. A bare `accept_drops` is a yes to a
+    # question asked earlier; if a field was deleted in between, the drop set
+    # grows and a stale yes would accept the extra loss too.
+    if payload.accepted_drops is not None:
+        unexpected = sorted(set(plan["drops"]) - set(payload.accepted_drops))
+        if unexpected:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "The destination changed since you looked. This would now "
+                    "also drop " + ", ".join(unexpected)
+                    + ". Open the move again to see what it costs."
+                ),
+            )
+
+
 @router.post("/tasks/move")
 async def move_tasks(
     payload: MoveIn, user: UserContext = Depends(get_current_user),
@@ -551,43 +680,14 @@ async def move_tasks(
         vis = await resolve_visibility(db, user)
         plan = await _plan(db, vis, payload)
 
-        if plan["source_project_id"] == plan["destination_project_id"]:
-            raise HTTPException(
-                status_code=422, detail="Those tasks are already there.",
-            )
-        # D-PM-29. A caller cannot lose a value by omitting a flag it never
-        # knew about, so the refusal names the keys and the remedy.
-        if plan["drops"] and not payload.accept_drops:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "This move drops values with no field in the destination: "
-                    + ", ".join(sorted(plan["drops"]))
-                    + ". Send accept_drops to confirm."
-                ),
-            )
-        if payload.accepted_drops is not None:
-            unexpected = sorted(set(plan["drops"]) - set(payload.accepted_drops))
-            if unexpected:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "The destination changed since you looked. This would "
-                        "now also drop " + ", ".join(unexpected)
-                        + ". Open the move again to see what it costs."
-                    ),
-                )
+        _refuse_unless_agreed(plan, payload)
 
-        if plan["required_missing"]:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "The destination requires "
-                    + ", ".join(plan["required_missing"])
-                    + ", which these tasks do not carry. Fill them in first."
-                ),
-            )
-
+        # Every destination lane's category, so the completion correction
+        # above has the one fact it needs without a second read.
+        category_of: dict[str, str] = {
+            str(lane["id"]): str(lane["category"])
+            for lane in plan["destination_statuses"]
+        }
         status_to = {
             str(row["from"]["id"]): str(row["to"]["id"])
             for row in plan["statuses"] if row["to"]
@@ -602,9 +702,14 @@ async def move_tasks(
         # validates its caller-supplied mapping the same way; this endpoint
         # did not until review found it.
         for source_id, wanted in (payload.status_map or {}).items():
-            await require_status_in_project(
-                db, plan["destination_root_id"], str(wanted),
-            )
+            # ⚠️ The status HOME, not the destination ROOT. Since migration 196
+            # a subproject may own its lanes, so the two differ — and the root
+            # is wrong in both directions: it refuses every lane the card just
+            # offered (those come from `dest_home`), and it accepts a root lane
+            # the destination board does not render. `core.py` states this rule
+            # for this exact call. My first fix read the root and disagreed
+            # with the lane list four functions above it.
+            await require_status_in_project(db, plan["dest_home"], str(wanted))
             status_to[str(source_id)] = str(wanted)
         type_to = {
             str(row["from"]["id"]): (row["to"]["id"] if row["to"] else None)
@@ -615,8 +720,10 @@ async def move_tasks(
         for task in plan["tasks"]:
             values: dict[str, Any] = {"project_id": plan["destination_project_id"]}
 
+            landing_category: str | None = None
             if plan["crosses_status_set"]:
                 landing = status_to.get(str(task.status_id))
+                landing_category = category_of.get(str(landing or ""))
                 if not landing:
                     raise HTTPException(
                         status_code=422,
@@ -634,6 +741,12 @@ async def move_tasks(
                     plan["field_map"],
                     plan["dest_keys"],
                 )
+                # The guard `tasks.py` calls, on the values as they LAND.
+                # `required_missing` above is the preview's answer; this is
+                # the one that refuses, so the two cannot drift.
+                await assert_required_fields_present(
+                    db, plan["destination_root_id"], landed,
+                )
                 values["custom_fields"] = landed
                 values["root_project_id"] = plan["destination_root_id"]
                 # The number belongs to the old root's sequence and would
@@ -647,24 +760,33 @@ async def move_tasks(
                     values["type_id"] = type_to.get(str(task.type_id))
 
             old_number = task.task_number
-            landing = values.pop("status_id", None)
             lost_type = (
                 plan["crosses_root"]
                 and task.type_id
                 and not type_to.get(str(task.type_id))
             )
-            await update_row(db, "pm_tasks", str(task.id), values)
+            # ⚠️ **NOT `apply_status_transition`, and the reason is exact.**
+            # That helper resolves the lane's owner from `task.project_id` —
+            # the task's OWN project, which inside this loop is still the
+            # SOURCE, because nothing has been written yet. Every lane here
+            # belongs to the DESTINATION's set, so it refused each one with
+            # "That status does not belong to this project" and rolled the
+            # whole move back. It was the only case that sets a landing, so
+            # the fix broke the entire feature. Found by review, 2026-09-19.
+            #
+            # It also spawns a recurrence successor on a close, which would
+            # mint fifty tasks nobody asked for out of one bulk move.
+            #
+            # `remap_task_statuses` is the precedent for a BULK remap and it
+            # does neither: it writes the lane and corrects completion from
+            # the lane's CATEGORY. Same rule here, one task at a time.
+            if landing_category is not None:
+                closing = landing_category in CLOSING_CATEGORIES
+                was_closed = task.completed_at is not None
+                if closing != was_closed:
+                    values["completed_at"] = now() if closing else None
 
-            # ⚠️ The status goes through `apply_status_transition`, not a bare
-            # column write. It is the helper that corrects `completed_at` —
-            # a task landing in an open lane from a done one kept its
-            # completion date, so reports counted it finished while the board
-            # drew it open. `core.py` says "every mutator that can move a
-            # status calls this"; this one did not.
-            if landing:
-                await apply_status_transition(
-                    db, task, str(landing), created_by=actor(user),
-                )
+            await update_row(db, "pm_tasks", str(task.id), values)
 
             if dropped:
                 await record_activity(

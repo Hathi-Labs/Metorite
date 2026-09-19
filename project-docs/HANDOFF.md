@@ -793,6 +793,27 @@ line — never reclaim a number by deleting the other entry.
   `specs/project_management_app.md` §11 (the superseded-delete note)
 - **Added:** 2026-09-19 · found by the adversarial review of the H-8 diff.
 
+### H-122 · The move has no end-to-end test, and that is where its P0s live · [AGENT]
+- **Check:** `grep -rn "move_tasks" tests/unit/test_projects_move_routes.py`
+  → only the refusals. No test drives a cross-status-set move to completion.
+- **⚠️ BOTH P0-class defects WS-27bl shipped lived in the endpoint bodies.**
+  One silently overwrote a custom value. The other — introduced by the FIX for
+  a P2 — routed the status through `apply_status_transition`, which reads the
+  lane owner off `task.project_id`, still the SOURCE inside the loop. Every
+  cross-set move raised 422 and rolled back. **The feature was dead and 30
+  green tests said nothing.**
+- **Why the hermetic suite cannot close it.** The landing lane resolves through
+  `_REMAP_TARGET_SQL`, a COALESCE over three correlated subqueries.
+  `FakeProjectsDB` cannot evaluate that. Teaching it to would re-implement the
+  rule in Python and assert against the mirror — what the harness header warns
+  about, and what R8 exists to prevent.
+- **What is needed.** One end-to-end against a real Postgres: seed two roots
+  with different lanes, move a task, assert it lands in a DESTINATION lane with
+  `completed_at` correct. `scripts/dev_db.sh` provides the database and
+  `test_projects_move_sql_asyncpg.py` has the engine fixture to copy.
+- **Authority:** `specs/project_management_app.md` §9.13 · R8 · H-114
+- **Added:** 2026-09-19 · filed by the session that shipped the defects.
+
 ### H-120 · "Move to…" opens NOTHING on a phone · [AGENT]
 - **Check:** `grep -n "if (isMobile) {" workbench/control_plane/src/app/projects/page.tsx`
   → note the line. Then find `movingNode ? (`. It sits **after** that early

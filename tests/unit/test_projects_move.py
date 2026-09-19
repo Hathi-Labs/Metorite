@@ -68,11 +68,34 @@ class TestCompatible:
         for kind in COMPATIBLE_TYPES:
             assert compatible(kind, kind)
 
-    def test_select_widens_into_multi_select_only(self):
-        # One chosen option is a legal list of one, and nothing about the
-        # stored value changes.
-        assert compatible("select", "multi_select")
+    def test_select_does_NOT_widen_into_multi_select(self):
+        """⚠️ This test asserted the opposite until review, 2026-09-19.
+
+        The claim was "one chosen option is a legal list of one, and nothing
+        about the value changes" — and those two clauses contradict each
+        other. A list of one is `["High"]`, and `_coerce_multi_select`
+        refuses a bare string. The widening would have written a value the
+        destination's own coercer rejects, which is precisely what this
+        table exists to prevent.
+        """
+        assert not compatible("select", "multi_select")
         assert not compatible("multi_select", "select")
+
+    def test_a_choice_field_carries_only_if_the_OPTIONS_fit(self):
+        """A type match is not a mapping for a choice field.
+
+        Two spaces each hold a `select` named "Severity", one with
+        [Low, High] and one with [S1, S2, S3]. Copying "High" across leaves
+        a value `_coerce_select` refuses on every later write: unfilterable,
+        and uneditable except by hand.
+        """
+        assert compatible("select", "select", ["Low", "High"], ["Low", "High", "Mid"])
+        assert not compatible("select", "select", ["Low", "High"], ["S1", "S2"])
+        # A subset is fine; the destination may offer more.
+        assert compatible("select", "select", ["Low"], ["Low", "High"])
+
+    def test_a_non_choice_field_ignores_options(self):
+        assert compatible("text", "text", ["ignored"], [])
 
     def test_NOTHING_widens_into_text(self):
         """⚠️ The rule that stops every map succeeding.
