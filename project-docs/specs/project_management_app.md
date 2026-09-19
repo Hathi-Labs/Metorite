@@ -4517,6 +4517,20 @@ So this ticket is mostly **surface plus two corrections**, not new machinery.
 >   row on the task, so a move is legible afterwards. The old `task_number` is
 >   already recorded; this joins it.
 > * **`MAX_BULK` is reused, not re-declared** (CLAUDE.md §5).
+> * 🔴 **Every guard the single-task path calls, this one calls too.**
+>   `assert_move_keeps_privacy` (team → personal strips every grant holder),
+>   `assert_required_fields_present` (migration 192), `require_status_in_project`
+>   (a caller-supplied lane must belong to the destination) and
+>   `apply_status_transition` (which corrects `completed_at`). A bulk path that
+>   lands what the narrow path refuses is two rules, not one.
+> * 🔴 **Two source fields may resolve to ONE destination field, and the
+>   loser is a DROP rather than a silent overwrite.** `pm_custom_fields` is
+>   unique on `(project_id, field_key)` alone, so two definitions may share a
+>   name — which WS-27bj's org-wide ∪ root-local union makes ordinary. The
+>   exact-key match wins; the other is reported.
+> * **The preview returns the destination's own lanes.** Without them the
+>   override dropdown has nothing to offer but the automatic answer, and
+>   D-PM-31's "adjustable" is unreachable.
 > * **R8** — the preview's resolution query is verified against a real Postgres,
 >   not a fake. It is the query the whole feature's correctness rests on.
 >

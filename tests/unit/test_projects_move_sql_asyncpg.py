@@ -126,6 +126,23 @@ async def test_the_status_name_lookup_runs_on_asyncpg(conn):
 
 
 @pytest.mark.asyncio
+async def test_the_destination_lane_list_runs_on_asyncpg(conn):
+    """The destination's own lanes, which the override dropdown renders.
+
+    Added 2026-09-19 with the fix for the shipped no-op: the card could only
+    ever offer one option because the page held the wrong project's statuses.
+    """
+    await conn.execute(
+        text(
+            "SELECT id, name, category FROM pm_task_statuses "
+            " WHERE project_id = CAST(:owner AS uuid) "
+            " ORDER BY position, name"
+        ),
+        {"owner": _ABSENT},
+    )
+
+
+@pytest.mark.asyncio
 async def test_the_destination_tag_read_runs_on_asyncpg(conn):
     await conn.execute(
         text("SELECT name FROM pm_tags WHERE project_id = CAST(:root AS uuid)"),
@@ -146,7 +163,7 @@ def test_every_SQL_statement_in_move_py_is_covered():
     source = MOVE_PY.read_text(encoding="utf-8")
     # `text(` opens every statement in the module. The count is the contract.
     statements = len(re.findall(r"\btext\(", source))
-    covered = 4  # the four `text(` sites in move.py, exercised above
+    covered = 5  # the five `text(` sites in move.py, exercised above
     assert statements == covered, (
         f"move.py now has {statements} SQL statements and this file covers "
         f"{covered}. Add the new one as a case above — a fence that silently "

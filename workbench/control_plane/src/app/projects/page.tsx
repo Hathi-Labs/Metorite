@@ -2165,7 +2165,7 @@ function ProjectsWorkspace() {
   async function moveTasksTo(
     destinationId: string,
     statusMap: Record<string, string>,
-    acceptDrops: boolean,
+    acceptedDrops: string[] | null,
   ) {
     const ids = movingTasks ?? [];
     setMovingTasksBusy(true);
@@ -2175,7 +2175,10 @@ function ProjectsWorkspace() {
         task_ids: [...ids],
         destination_project_id: destinationId,
         status_map: statusMap,
-        accept_drops: acceptDrops,
+        accept_drops: acceptedDrops !== null,
+        // What the card actually SHOWED as dropping. The server answers 409
+        // if the destination changed and the real loss is now larger.
+        ...(acceptedDrops ? { accepted_drops: acceptedDrops } : {}),
       });
       setMovingTasks(null);
       setPicked(new Set());
@@ -3080,17 +3083,14 @@ function ProjectsWorkspace() {
         key={`move:${movingTasks?.join(",") ?? "none"}`}
         taskIds={movingTasks}
         roots={roots}
-        statusesFor={(projectId) =>
-          projectId === selected?.id ? statuses : undefined
-        }
         busy={movingTasksBusy}
         error={moveTasksError}
         onClose={() => {
           setMovingTasks(null);
           setMoveTasksError(null);
         }}
-        onConfirm={(destinationId, statusMap, acceptDrops) =>
-          void moveTasksTo(destinationId, statusMap, acceptDrops)
+        onConfirm={(destinationId, statusMap, acceptedDrops) =>
+          void moveTasksTo(destinationId, statusMap, acceptedDrops)
         }
       />
 

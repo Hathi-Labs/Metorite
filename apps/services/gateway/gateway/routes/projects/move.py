@@ -47,6 +47,8 @@ from fastapi import Depends, HTTPException
 from gateway.routes.projects.bulk import MAX_BULK, dedupe_ids
 from gateway.routes.projects.core import (
     _REMAP_TARGET_SQL,
+    apply_status_transition,
+    assert_move_keeps_privacy,
     TRIAGE_CATEGORY,
     _tenant_session,
     actor,
@@ -58,13 +60,18 @@ from gateway.routes.projects.core import (
     node_kind,
     record_activity,
     remap_one_type,
+    require_status_in_project,
     resolve_visibility,
     root_project_id,
+    vocabulary_scope,
     router,
     status_owner_id,
     update_row,
 )
-from gateway.routes.projects.custom_fields import load_definitions
+from gateway.routes.projects.custom_fields import (
+    assert_required_fields_present,
+    load_definitions,
+)
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -146,14 +153,43 @@ def resolve_field_map(
 
     mapping: dict[str, str] = {}
     orphans: list[dict[str, Any]] = []
-    for definition in source_defs:
+    # 🔴 Which destination keys are already spoken for.
+    #
+    # Two source fields can legitimately resolve to ONE destination field, and
+    # it is the ORDINARY case rather than a curiosity: `pm_custom_fields` is
+    # UNIQUE on (project_id, field_key) and on nothing else, so two rows may
+    # share a NAME — and WS-27bj's org-wide ∪ root-local union produces exactly
+    # that, an org-wide `priority` beside a root-local `prio`, both called
+    # "Priority". One matches by key, the other by name, and both aimed at the
+    # same target.
+    #
+    # Without this, the second value overwrote the first in `landed` and the
+    # loser never entered `drops` — so no warning, no `accept_drops` gate and
+    # no timeline row. Which value survived followed JSONB key order, so it
+    # differed task by task inside ONE bulk move. Found by review, 2026-09-19.
+    claimed: dict[str, str] = {}
+    # Exact-key matches first, so the order `load_definitions` happens to
+    # return cannot decide which of two contenders wins a shared target.
+    ordered = sorted(
+        source_defs, key=lambda d: 0 if str(d["field_key"]) in by_key else 1
+    )
+    for definition in ordered:
         key = str(definition["field_key"])
         source_type = str(definition["field_type"])
+        # An exact key match is the stronger claim and is resolved first, so a
+        # name match can never displace it — see the second pass below.
         target = by_key.get(key) or by_name.get(str(definition["name"]).strip().lower())
-        if target is not None and compatible(source_type, str(target["field_type"])):
-            mapping[key] = str(target["field_key"])
-        else:
+        if target is None or not compatible(source_type, str(target["field_type"])):
             orphans.append(definition)
+            continue
+        target_key = str(target["field_key"])
+        if target_key in claimed:
+            # Contested. The loser is an ORPHAN, which means the member is told
+            # its value will be dropped instead of losing it silently.
+            orphans.append(definition)
+            continue
+        claimed[target_key] = key
+        mapping[key] = target_key
     return mapping, orphans
 
 
@@ -177,7 +213,11 @@ def apply_field_map(
     dropped: dict[str, Any] = {}
     for key, value in values.items():
         target = mapping.get(key, key if key in dest_keys else None)
-        if target is not None and target in dest_keys:
+        # 🔴 `target in landed` is the second half of the collision guard.
+        # `resolve_field_map` stops two DEFINITIONS claiming one target, and
+        # this stops a hand-supplied `field_map` doing the same. A caller
+        # posts the map, so the rule cannot live only where we build it.
+        if target is not None and target in dest_keys and target not in landed:
             landed[target] = value
         else:
             dropped[key] = value
@@ -200,6 +240,15 @@ class MoveIn(BaseModel):
     #: move that WOULD drop a value is refused, so a caller cannot lose data by
     #: omitting a flag it never knew about.
     accept_drops: bool = False
+    #: ⚠️ The field keys the member was SHOWN as dropping, from the preview.
+    #:
+    #: `accept_drops` alone is a bare yes to a question asked earlier. If an
+    #: administrator deletes a destination field between the preview and the
+    #: apply, the drop set grows and a stale yes would accept the extra loss
+    #: too. Sending the shown set lets the server refuse a move that would
+    #: drop MORE than was agreed to. Omitted means "no list", and the bare
+    #: flag then behaves as before.
+    accepted_drops: list[str] | None = None
 
 
 async def _selection(db: Any, vis: Any, raw_ids: list[str]) -> list[Any]:
@@ -321,6 +370,20 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
     dest = await _destination(db, vis, payload.destination_project_id)
     dest_id = str(dest.id)
 
+    # 🔴 The guard `tasks.py` has always called on the single-task path, and
+    # this one did not until review found it (2026-09-19).
+    #
+    # `tree.py` filters `personal_owner IS NULL`, so a team task moved into a
+    # personal project leaves the company board and every grant holder loses
+    # it, with nothing on screen to say why. `load_visible_task` admits a task
+    # to its ASSIGNEE, so a caller with no grant on the source project could
+    # have done this to MAX_BULK tasks in one call.
+    #
+    # In `_plan`, so the PREVIEW refuses it too — a card must not offer a move
+    # the apply would reject.
+    for task in tasks:
+        await assert_move_keeps_privacy(db, task, dest_id)
+
     source_root = str(tasks[0].root_project_id)
     dest_root = await root_project_id(db, dest_id)
     source_home = await status_owner_id(db, source_project_id)
@@ -343,7 +406,11 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
     # DEFINITIONS: a field with no home costs nothing on a task that never
     # filled it in, and warning about that would be a warning about nothing.
     drops: dict[str, Any] = {}
-    for task in tasks:
+    # ⚠️ Only when the ROOT changes. `custom_fields` is untouched otherwise, so
+    # computing drops for a same-root move made the endpoint demand
+    # `accept_drops`, label the button "Move and drop", and then report a loss
+    # that never happened — for a stale JSONB key from a deleted field.
+    for task in tasks if dest_root != source_root else []:
         _, dropped = apply_field_map(from_jsonb(task.custom_fields), chosen, dest_keys)
         for key, value in dropped.items():
             drops.setdefault(key, []).append({
@@ -365,16 +432,62 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
     carried = sorted({tag for t in tasks for tag in (t.tags or [])})
     unregistered: list[str] = []
     if carried and dest_root != source_root:
+        # ⚠️ `vocabulary_scope()`, not `project_id = :root`. A tag may be
+        # ORG-WIDE (`project_id IS NULL`, migration 175), and the narrow read
+        # reported every one of them as unregistered — telling the member a
+        # tag they can see in the destination "is not a tag" there.
         known = {
             str(r.name).lower() for r in (await db.execute(
-                text("SELECT name FROM pm_tags WHERE project_id = CAST(:root AS uuid)"),
+                text(f"SELECT name FROM pm_tags WHERE {vocabulary_scope()}"),
                 {"root": dest_root},
             )).fetchall()
         }
         unregistered = [tag for tag in carried if tag.lower() not in known]
 
+    # P1 — the destination's REQUIRED fields the selection does not satisfy.
+    # `tasks.py` refuses a single move without them (migration 192), so
+    # omitting the check here let the bulk path land tasks the narrow path
+    # rejects. Reported by the preview AND enforced by the apply.
+    required_missing: list[str] = []
+    if dest_root != source_root:
+        required = [
+            d for d in dest_defs if d.get("required")
+        ]
+        for definition in required:
+            key = str(definition["field_key"])
+            short = [
+                str(t.task_number or t.id) for t in tasks
+                if apply_field_map(
+                    from_jsonb(t.custom_fields), chosen, dest_keys,
+                )[0].get(key) in (None, "")
+            ]
+            if short:
+                required_missing.append(definition.get("name") or key)
+
+    # 🔴 The destination's OWN lanes, returned with the plan.
+    #
+    # Without them the card's per-row override was a shipped no-op: the page
+    # could only supply the SELECTED project's statuses, and the destination
+    # is never the selected project (moving there is refused as "already
+    # there"). So every dropdown rendered exactly one option — the automatic
+    # landing — and D-PM-31's "adjustable" was unreachable. Found by review,
+    # 2026-09-19.
+    dest_lanes = [
+        {"id": str(r.id), "name": r.name, "category": r.category}
+        for r in (await db.execute(
+            text(
+                "SELECT id, name, category FROM pm_task_statuses "
+                " WHERE project_id = CAST(:owner AS uuid) "
+                " ORDER BY position, name"
+            ),
+            {"owner": dest_home},
+        )).fetchall()
+    ]
+
     return {
         "tasks": tasks,
+        "required_missing": required_missing,
+        "destination_statuses": dest_lanes,
         "source_project_id": source_project_id,
         "destination_project_id": dest_id,
         "source_root_id": source_root,
@@ -453,6 +566,27 @@ async def move_tasks(
                     + ". Send accept_drops to confirm."
                 ),
             )
+        if payload.accepted_drops is not None:
+            unexpected = sorted(set(plan["drops"]) - set(payload.accepted_drops))
+            if unexpected:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "The destination changed since you looked. This would "
+                        "now also drop " + ", ".join(unexpected)
+                        + ". Open the move again to see what it costs."
+                    ),
+                )
+
+        if plan["required_missing"]:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "The destination requires "
+                    + ", ".join(plan["required_missing"])
+                    + ", which these tasks do not carry. Fill them in first."
+                ),
+            )
 
         status_to = {
             str(row["from"]["id"]): str(row["to"]["id"])
@@ -461,7 +595,17 @@ async def move_tasks(
         # The member's answer wins over the automatic one, and the automatic one
         # covers what the card did not -- `remap_task_statuses` orders it this
         # way so a card built from stale counts cannot leave a task behind.
-        status_to.update(payload.status_map or {})
+        # 🔴 A caller-supplied landing is validated against the destination's
+        # tree before it is trusted. `pm_tasks.status_id` has an FK, so any
+        # real uuid passes it — including another department's lane, and
+        # (because RI runs with RLS bypassed) another TENANT's. `admin.py`
+        # validates its caller-supplied mapping the same way; this endpoint
+        # did not until review found it.
+        for source_id, wanted in (payload.status_map or {}).items():
+            await require_status_in_project(
+                db, plan["destination_root_id"], str(wanted),
+            )
+            status_to[str(source_id)] = str(wanted)
         type_to = {
             str(row["from"]["id"]): (row["to"]["id"] if row["to"] else None)
             for row in plan["types"]
@@ -503,16 +647,48 @@ async def move_tasks(
                     values["type_id"] = type_to.get(str(task.type_id))
 
             old_number = task.task_number
+            landing = values.pop("status_id", None)
+            lost_type = (
+                plan["crosses_root"]
+                and task.type_id
+                and not type_to.get(str(task.type_id))
+            )
             await update_row(db, "pm_tasks", str(task.id), values)
+
+            # ⚠️ The status goes through `apply_status_transition`, not a bare
+            # column write. It is the helper that corrects `completed_at` —
+            # a task landing in an open lane from a done one kept its
+            # completion date, so reports counted it finished while the board
+            # drew it open. `core.py` says "every mutator that can move a
+            # status calls this"; this one did not.
+            if landing:
+                await apply_status_transition(
+                    db, task, str(landing), created_by=actor(user),
+                )
 
             if dropped:
                 await record_activity(
                     db, activity_type="system", created_by=actor(user),
                     task_id=str(task.id),
+                    # 🔴 The VALUES, not just the keys. D-PM-29 promises the
+                    # old value is readable in history and the card repeats
+                    # that promise to the member; `"; ".join(sorted(dropped))`
+                    # yielded the KEYS and kept none of it.
                     body=(
                         "Dropped on move, no field in the destination: "
-                        + "; ".join(sorted(dropped))
+                        + "; ".join(f"{k}={dropped[k]!r}" for k in sorted(dropped))
                     ),
+                    meta={"dropped_custom_fields": dropped},
+                )
+            if lost_type:
+                await record_activity(
+                    db, activity_type="system", created_by=actor(user),
+                    task_id=str(task.id),
+                    body=(
+                        "Task type cleared on move: the destination has no "
+                        "type of that name"
+                    ),
+                    meta={"cleared_type_id": str(task.type_id)},
                 )
             await record_activity(
                 db, activity_type="system", created_by=actor(user),

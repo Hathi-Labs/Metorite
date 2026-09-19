@@ -165,3 +165,68 @@ class TestApplyFieldMap:
 
     def test_nothing_in_nothing_out(self):
         assert apply_field_map({}, {}, frozenset()) == ({}, {})
+
+
+# ── The review's findings, each pinned (2026-09-19) ─────────────────────────
+
+class TestTwoSourceFieldsOneTarget:
+    """🔴 P0. Two source fields resolving to ONE destination field.
+
+    `pm_custom_fields` is UNIQUE on (project_id, field_key) and nothing else,
+    so two definitions may share a NAME — and WS-27bj's org-wide ∪ root-local
+    union makes that the ordinary case, not a curiosity: an org-wide
+    `priority` beside a root-local `prio`, both called "Priority".
+
+    Before the fix, one matched by key and the other by name, both aimed at
+    the same target, and the second silently overwrote the first in `landed`.
+    The loser never entered `drops`, so no warning, no `accept_drops` gate,
+    no timeline row — and which value survived followed JSONB key order, so
+    it differed task by task inside ONE bulk move.
+    """
+
+    SOURCE = [
+        field("priority", "Priority"),
+        field("prio", "Priority"),
+    ]
+    DEST = [field("priority", "Priority")]
+
+    def test_only_one_source_claims_the_target(self):
+        mapping, orphans = resolve_field_map(self.SOURCE, self.DEST)
+        assert mapping == {"priority": "priority"}
+        assert [o["field_key"] for o in orphans] == ["prio"]
+
+    def test_the_EXACT_key_match_wins_whatever_the_order(self):
+        # Otherwise the winner depends on whatever order `load_definitions`
+        # happened to return, which is not a rule anybody can reason about.
+        for source in (self.SOURCE, list(reversed(self.SOURCE))):
+            mapping, _ = resolve_field_map(source, self.DEST)
+            assert mapping == {"priority": "priority"}
+
+    def test_the_loser_is_REPORTED_as_a_drop_not_silently_lost(self):
+        mapping, _ = resolve_field_map(self.SOURCE, self.DEST)
+        landed, dropped = apply_field_map(
+            {"priority": "P1-critical", "prio": "P4-someday"},
+            mapping,
+            frozenset({"priority"}),
+        )
+        assert landed == {"priority": "P1-critical"}
+        assert dropped == {"prio": "P4-someday"}
+
+    def test_a_HAND_SUPPLIED_map_cannot_collide_either(self):
+        """The caller posts `field_map`, so the rule cannot live only where
+        the server builds it."""
+        landed, dropped = apply_field_map(
+            {"a": "first", "b": "second"},
+            {"a": "target", "b": "target"},
+            frozenset({"target"}),
+        )
+        assert landed == {"target": "first"}
+        assert dropped == {"b": "second"}
+
+    def test_nothing_is_ever_lost_without_appearing_somewhere(self):
+        """The invariant the whole feature rests on: every input value is
+        either landed or dropped, never neither."""
+        values = {"priority": "P1", "prio": "P4", "orphan": "x"}
+        mapping, _ = resolve_field_map(self.SOURCE, self.DEST)
+        landed, dropped = apply_field_map(values, mapping, frozenset({"priority"}))
+        assert len(landed) + len(dropped) == len(values)

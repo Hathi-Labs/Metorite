@@ -35,12 +35,7 @@ import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import { Select } from "@/components/ui/Input";
 
-import {
-  type MovePlan,
-  type ProjectRow,
-  type StatusRow,
-  projectsApi,
-} from "../lib/api";
+import { type MovePlan, projectsApi } from "../lib/api";
 import { LEVEL_ICONS, type ProjectNode, nodeKind, nodeLevel } from "../lib/tree";
 
 interface Props {
@@ -48,14 +43,12 @@ interface Props {
   taskIds: readonly string[] | null;
   /** Every node the member can see, for the destination picker. */
   roots: readonly ProjectNode[];
-  /** The destination's lanes, once one is picked — for the override dropdowns. */
-  statusesFor?: (projectId: string) => readonly StatusRow[] | undefined;
   onClose: () => void;
   /** Confirmed. The page owns the call, the toast and the refetch. */
   onConfirm: (
     destinationId: string,
     statusMap: Record<string, string>,
-    acceptDrops: boolean
+    acceptedDrops: string[] | null
   ) => void;
   busy?: boolean;
   /** The server's refusal, rendered IN the card — see H-120's sibling note. */
@@ -116,7 +109,6 @@ function MapHeader({ source, destination }: { source: string; destination: strin
 export function MoveTasksDialog({
   taskIds,
   roots,
-  statusesFor,
   onClose,
   onConfirm,
   busy,
@@ -165,7 +157,11 @@ export function MoveTasksDialog({
   const drops = Object.entries(plan?.drops ?? {});
   const lostTypes = (plan?.types ?? []).filter((row) => !row.to);
   const unregistered = plan?.tags.unregistered ?? [];
-  const destStatuses = destination ? (statusesFor?.(destination) ?? []) : [];
+  // ⚠️ From the PLAN, not from the page. The page holds only the selected
+  // project's lanes and the destination is never the selected project, so the
+  // old source answered `undefined` every time — every dropdown rendered one
+  // option and the override was a shipped no-op.
+  const destStatuses = plan?.destination_statuses ?? [];
   /**
    * Every source field and where it lands, mapped ones first.
    *
@@ -270,8 +266,14 @@ export function MoveTasksDialog({
                         }))
                       }
                     >
-                      {destStatuses.length === 0 && row.to ? (
+                      {/* A lane the automatic rule chose that is somehow not
+                          in the list still renders, so the row never shows a
+                          blank selection. */}
+                      {row.to && !destStatuses.some((s) => s.id === row.to?.id) ? (
                         <option value={row.to.id}>{row.to.name}</option>
+                      ) : null}
+                      {!row.to ? (
+                        <option value="">Pick a lane…</option>
                       ) : null}
                       {destStatuses.map((status) => (
                         <option key={status.id} value={status.id}>
@@ -377,7 +379,11 @@ export function MoveTasksDialog({
           variant={drops.length > 0 ? "destructive" : "primary"}
           onClick={() =>
             plan &&
-            onConfirm(plan.destination_project_id, overrides, drops.length > 0)
+            onConfirm(
+              plan.destination_project_id,
+              overrides,
+              drops.length > 0 ? drops.map(([key]) => key) : null
+            )
           }
         >
           {drops.length > 0 ? "Move and drop" : "Move"}

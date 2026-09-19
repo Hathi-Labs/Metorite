@@ -46,6 +46,15 @@ export interface MoveRequest {
   field_map?: Record<string, string>;
   /** The member saw what would be dropped and agreed (D-PM-29). */
   accept_drops?: boolean;
+  /**
+   * The field keys the preview SHOWED as dropping.
+   *
+   * ⚠️ Not redundant with `accept_drops`. That flag is a bare yes to a
+   * question asked earlier; if the destination changes in between, the drop
+   * set grows and a stale yes would accept the extra loss too. Sending the
+   * shown set lets the server answer 409 instead.
+   */
+  accepted_drops?: string[];
 }
 
 export interface MoveMapRow<T> {
@@ -70,6 +79,16 @@ export interface MovePlan {
   crosses_root: boolean;
   task_count: number;
   statuses: MoveMapRow<{ id: string; name: string; category: string }>[];
+  /**
+   * The DESTINATION's own lanes, for the per-row override.
+   *
+   * ⚠️ Carried on the plan rather than fetched by the card, because the page
+   * only ever holds the SELECTED project's statuses — and the destination is
+   * never the selected project.
+   */
+  destination_statuses: { id: string; name: string; category: string }[];
+  /** Destination fields the selection does not satisfy (migration 192). */
+  required_missing: string[];
   field_map: Record<string, string>;
   orphan_fields: { field_key: string; name: string; field_type: string }[];
   drops: Record<
