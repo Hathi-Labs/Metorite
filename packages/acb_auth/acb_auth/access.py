@@ -1071,6 +1071,20 @@ async def resolve_identity(email: str | None) -> tuple[str | None, str | None]:
                 )
             ).mappings().first()
     except Exception:  # noqa: BLE001
+        # ⚠️ **Say so.** The return value is `(None, None)` either way, so a
+        # database that refused this read is INDISTINGUISHABLE downstream from
+        # a person who is genuinely not a member — and downstream now tells
+        # that person, in so many words, that they belong to no organization
+        # (`gateway.main._tenant_unbound`). Getting that wrong turns an outage
+        # into an accusation, so the two cases have to differ somewhere, and a
+        # log line is the cheapest place.
+        #
+        # Still swallowed, deliberately: raising here would brick sign-in on a
+        # transient blip, which is the failure this `except` was added for.
+        _log.exception(
+            "auth.identity_resolve_failed",
+            extra={"identity_email_present": True},
+        )
         return None, None
     if row is None:
         return None, None

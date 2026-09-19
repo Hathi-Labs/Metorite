@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { useSession, signOut } from "next-auth/react";
 import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
 import { useAccess } from "@/components/AccessProvider";
+import { shouldPollWorkspace } from "@/lib/access";
 import Icon from "@/components/Icon";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
 import ThemeToggle from "@/components/ThemeToggle";
@@ -38,6 +39,16 @@ export default function Sidebar() {
     accessLoading ? null : access.features,
     access.is_admin,
   );
+  /**
+   * ONE predicate for "is there a workspace behind this person yet", used by
+   * the two polls below AND by the `return null` further down.
+   *
+   * ⚠️ They were two separate conditions, and the polls simply did not have
+   * one — which is how this sidebar came to be hidden and still hammering a
+   * tenant-scoped API once a minute. Reading the same function in both places
+   * is what stops that shape coming back.
+   */
+  const canPoll = shouldPollWorkspace(access, accessLoading);
 
   // Per-section fold state, persisted so the layout survives reloads. Stored
   // as a map of FOLDED ids — unknown/new sections therefore default to open.
@@ -68,6 +79,11 @@ export default function Sidebar() {
 
   // Poll agent list for behind_by counts — shows "N updates" badge on Agents
   useEffect(() => {
+    // ⚠️ A person with NO organization must not be polled at. The `return null`
+    // below hides this whole sidebar for them, and hiding a component does not
+    // stop its effects — that is what put a 500 a minute into the production
+    // log for nine hours. See `access.shouldPollWorkspace`.
+    if (!canPoll) return;
     let alive = true;
     const check = async () => {
       try {
@@ -93,10 +109,15 @@ export default function Sidebar() {
       alive = false;
       clearInterval(interval);
     };
-  }, []);
+    // ⚠️ `canPoll`, not `[]`. It flips the moment an admin adds this person to
+    // an org and they press "check again", and the badges have to start then
+    // rather than on the next full reload.
+  }, [canPoll]);
 
-  // Pinned Custom Apps — same polling shape as the agent-updates badge above.
+  // Pinned Custom Apps — same polling shape as the agent-updates badge above,
+  // and gated on the same thing for the same reason.
   useEffect(() => {
+    if (!canPoll) return;
     let alive = true;
     const check = async () => {
       try {
@@ -116,7 +137,10 @@ export default function Sidebar() {
       alive = false;
       clearInterval(interval);
     };
-  }, []);
+    // ⚠️ `canPoll`, not `[]`. It flips the moment an admin adds this person to
+    // an org and they press "check again", and the badges have to start then
+    // rather than on the next full reload.
+  }, [canPoll]);
 
   // A signed-in person with NO organization is mid-onboarding, not in a
   // workspace — AccessGate is showing them the join-vs-create chooser, and a
@@ -125,7 +149,11 @@ export default function Sidebar() {
   // org is unmistakable": no org, no workspace chrome). Gated on the
   // resolution having LANDED — hiding on `loading` would flash the whole
   // layout on every ordinary sign-in. AFTER every hook, deliberately.
-  if (!accessLoading && access.authenticated && !access.organization?.slug) {
+  //
+  // ⚠️ The condition used to be spelt out here and NOWHERE ELSE, so the polls
+  // above had no equivalent and kept running behind this `null`. Same function
+  // now, so "hidden" and "quiet" cannot part company again.
+  if (!canPoll) {
     return null;
   }
 

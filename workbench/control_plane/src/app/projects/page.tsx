@@ -42,6 +42,7 @@ import {
   type ProjectWatchState,
 } from "./lib/api";
 import { FieldManager } from "./components/FieldManager";
+import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
 import { MoveDialog } from "./components/MoveDialog";
 import { type TreeDropTarget, planTreeDrop } from "./lib/treeDrop";
 import { LifecyclePolicy } from "./components/LifecyclePolicy";
@@ -395,7 +396,27 @@ function ProjectNav({
         creating={creating}
         onCommitCreate={onCommitCreate}
         onCancelCreate={onCancelCreate}
-        actions={actions}
+        // ⚠️ `onDelete` is wrapped for the reason the block below states in
+        // full: it RAISES A DIALOG, and on a phone this tree is the drawer
+        // sheet, so the dialog would open behind it. Every other entry in
+        // `actions` writes and closes its own menu — those are safe as they
+        // are, and wrapping them would close the drawer for a state change
+        // somebody wants to make twice in a row.
+        actions={
+          actions
+            ? {
+                ...actions,
+                ...(actions.onDelete
+                  ? {
+                      onDelete: (project: ProjectRow, level: NodeLevel) => {
+                        actions.onDelete?.(project, level);
+                        onPicked?.();
+                      },
+                    }
+                  : {}),
+              }
+            : undefined
+        }
         // Each closes the phone's drawer, like every other row action here —
         // a dialog opening behind an open drawer is a dialog nobody can see.
         onManageStatuses={(space) => {
@@ -590,6 +611,21 @@ function ProjectsWorkspace() {
   /** WS-27bk §9.12.4 — the node whose "Move to…" picker is open. */
   const [movingNode, setMovingNode] = useState<ProjectRow | null>(null);
   const [moving, setMoving] = useState(false);
+  //: H-8 — the row whose delete confirmation is open, and whether the call is
+  //: in flight. Shaped exactly like the move pair above, because the two are
+  //: the same interaction: a row menu raises a dialog, the page owns the write.
+  const [deletingNode, setDeletingNode] = useState<
+    { project: ProjectRow; level: NodeLevel } | null
+  >(null);
+  const [deleting, setDeleting] = useState(false);
+  //: The server's refusal, held HERE rather than in the page's `error` strip.
+  //: That strip renders inside the work area, under this modal's backdrop, so
+  //: a 403 re-armed the button and said nothing.
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  //: Bumped on every open. The `key` above needs it: closing and reopening the
+  //: SAME row leaves the id unchanged, so the id alone would not remount and
+  //: the stale-armed frame would survive exactly where it is easiest to hit.
+  const [deleteOpenedAt, setDeleteOpenedAt] = useState(0);
   // Analytics reads the portfolio roll-up — the same shape as a node's, so
   // one dashboard component draws both.
   const [portfolio, setPortfolio] = useState<NodeSummary | null>(null);
@@ -1016,6 +1052,14 @@ function ProjectsWorkspace() {
             error: "Couldn't rename the project",
           }
         );
+      },
+      // Raises the dialog and nothing else. `DeleteProjectDialog` reads the
+      // counts and takes the name; `deleteNode` performs the write only once
+      // it has both.
+      onDelete: (project, level) => {
+        setDeleteError(null);
+        setDeleteOpenedAt((n) => n + 1);
+        setDeletingNode({ project, level });
       },
     }),
     [toast]
@@ -2046,6 +2090,64 @@ function ProjectsWorkspace() {
   }
 
   /**
+   * H-8 — delete a project and everything under it. Confirmed already.
+   *
+   * ⚠️ **Not undoable, and deliberately not offered as such.** Every other
+   * destructive act in this page records an `undoApi` entry; this one cannot,
+   * because the inverse of a cascade is a restore and there is no endpoint that
+   * performs one. Recording an undo that would fail is worse than recording
+   * none — it tells somebody the act was reversible after it was not.
+   *
+   * ⚠️ **The selection may be INSIDE what was just deleted.** Clearing only
+   * when the deleted row IS the selected one leaves the page holding a
+   * subproject whose whole branch is gone, and every panel keyed on it then
+   * reads an id the server no longer knows. So the test is ancestry, taken
+   * from the tree BEFORE the refetch, while the path still exists.
+   *
+   * ⚠️ The open TASK panel is a second holder of a dead id and needs no test:
+   * the cascade took every task under the node, so an open panel is closed
+   * unconditionally.
+   */
+  async function deleteNode(node: ProjectRow) {
+    const selectionIsInside =
+      !!selected &&
+      (selected.id === node.id ||
+        pathTo(roots, selected.id).some((row) => row.id === node.id));
+
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const res = await projectsApi.deleteProject(node.id);
+      setDeletingNode(null);
+      if (selectionIsInside) setSelected(null);
+      // The panel holds a TASK, and the cascade took every task in the
+      // subtree. Clearing the selection does not close it, so the panel kept
+      // a dead id and every read it made 404'd. The task-delete path already
+      // does this; the project-delete path has to as well.
+      setOpenTask(null);
+      setTreeKey((k) => k + 1);
+      // The counts come off the RESPONSE, which the server read before the
+      // write. The dialog's numbers were a different read at a different
+      // moment, and reporting those would be reporting the question rather
+      // than the answer. `cascaded.projects` counts this project too.
+      toast.show({
+        variant: "success",
+        title:
+          res.cascaded.tasks > 0
+            ? `Deleted ${node.name} — ${res.cascaded.projects} project(s) and ${res.cascaded.tasks} task(s) removed`
+            : `Deleted ${node.name}`,
+      });
+    } catch (err) {
+      // The dialog stays OPEN on a refusal, for `moveNodeTo`'s reason: the
+      // choice was made and the server's answer is the one worth showing.
+      // ⚠️ Into `deleteError`, NOT the page's `error` — see that state's note.
+      setDeleteError(String((err as Error).message));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  /**
    * WS-27bk §9.12.4 slice 2 — a completed drag in the rail.
    *
    * ⚠️ **The planner decides, and it already refused the illegal ones.** A
@@ -2893,6 +2995,36 @@ function ProjectsWorkspace() {
    *  branches cannot end up offering different dialogs. */
   const overlays = (
     <>
+      {/* H-8 — the delete confirmation.
+          ⚠️ **Here, and NOT beside `MoveDialog`, on purpose.** This page has
+          two returns: the phone branch above and the desktop one below. Only
+          `overlays` is rendered by both. `MoveDialog` is mounted in the
+          desktop return alone, so "Move to…" opens nothing at all on a phone —
+          the menu entry is there, the click lands, and no dialog exists to
+          render. That is a defect on an existing feature and is filed rather
+          than fixed here; this one simply does not repeat it. */}
+      {/* ⚠️ `key` IS THE SAFETY MECHANISM, not a list-rendering habit.
+          This dialog is mounted unconditionally and returns null when closed,
+          so it never unmounts and its state survives a close. Its reset lives
+          in a passive effect, which React runs AFTER the commit paints — so
+          reopening on the same row rendered one frame with the previous
+          `typed` and `summary` still set, and the destructive button ARMED.
+          One paint, on the one act in this app that cannot be undone.
+          Keying on the id makes the reset structural: a different row, or the
+          same row opened again, is a new instance with fresh state. */}
+      <DeleteProjectDialog
+        key={`delete:${deletingNode?.project.id ?? "none"}:${deleteOpenedAt}`}
+        project={deletingNode?.project ?? null}
+        level={deletingNode?.level}
+        error={deleteError}
+        busy={deleting}
+        onClose={() => {
+          setDeletingNode(null);
+          setDeleteError(null);
+        }}
+        onConfirm={(project) => void deleteNode(project)}
+      />
+
       <SearchPalette
         open={searching}
         onClose={() => setSearching(false)}

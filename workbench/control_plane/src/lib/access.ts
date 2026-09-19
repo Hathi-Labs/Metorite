@@ -221,6 +221,41 @@ export function isOrgless(access: Access): boolean {
   return access.authenticated && !access.organization?.slug;
 }
 
+/**
+ * May the shell POLL a tenant-scoped endpoint yet?
+ *
+ * ⚠️ **Hiding a component does not stop its effects, and that cost us nine
+ * hours of production 500s.** `Sidebar` returns `null` for an org-less person —
+ * correctly, and deliberately *after* every hook, because the Rules of Hooks
+ * leave no other place to put it. Its two `setInterval(…, 60_000)` polls
+ * (`/api/agent/list`, `/api/apps/pins`) therefore kept firing behind the
+ * join-vs-create chooser, at a tenant-scoped API, for a person with no tenant.
+ *
+ * Measured on the box 2026-09-18 — :23 seconds past every minute, 60 an hour
+ * for nine hours overnight, each one a 500 with a full traceback in the
+ * production log. It was read at the time as scattered user traffic, and it was
+ * one hidden sidebar in one open tab.
+ *
+ * ⚠️ **It gates on ORG-LESS, not on `authenticated`.** An unauthenticated
+ * viewer never mounts this shell — `/signin` takes AppShell's chromeless
+ * branch — and widening the test to cover them would also stop polling during
+ * a non-authoritative resolve (LS-5), which is a working session.
+ *
+ * ⚠️ **While `loading`, the answer is YES.** The predicate is *"not KNOWN to be
+ * org-less"*, not *"known to be in an org"*. Before the first resolve lands
+ * nobody knows, and stopping there would cost every ordinary member their
+ * first minute of badge updates to a state that is about to say "yes". One
+ * request against an empty resolve is a request; a 60-second interval against
+ * a settled one is the defect.
+ *
+ * This is also exactly the condition on which `Sidebar` renders at all, so the
+ * two cannot drift into "hidden but still polling" again — which is the shape
+ * the bug had.
+ */
+export function shouldPollWorkspace(access: Access, loading: boolean): boolean {
+  return loading || !isOrgless(access);
+}
+
 export function canSeePath(access: Access, pathname: string): boolean {
   if (isAlwaysAllowed(pathname)) return true;
   // Admin surfaces are gated on the resolved admin flag, not a feature slug —

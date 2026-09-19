@@ -125,46 +125,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `saas_multitenancy.md` §11 MT-1j · the headers of migrations 200, 201 and 202
 - **Added:** 2026-09-06, from the WS-27 status-sets deploy · **narrowed
   2026-09-15** when the provisioning half was fixed.
-### H-105 · ⚠️ Production migrations run with NO pre-migration backup · [OWNER]
-- **Check:** on the box, `grep -c '^SKIP_PRE_MIGRATION_BACKUP=' /opt/acb/app/.env`.
-  A non-zero count means this is open.
-  ⚠️ **The old Check read `.github/workflows/deploy.yml`, and that file no
-  longer mentions the flag — so the old Check passed while the entry was still
-  true.** Re-derived 2026-09-17. `scripts/vps_apply.sh` LIFTS the variable out
-  of `.env` (see its external-database seam note), so the workflow was never
-  where the answer lived. An entry whose Check has drifted onto a file that
-  moved is how this queue starts lying; the substance below is unchanged.
-- **Verified 2026-09-17:** `PG_MODE`, `PGHOST` and `SKIP_PRE_MIGRATION_BACKUP`
-  are all present in the production `.env` — the managed-Postgres shape
-  `vps_apply.sh` documents, where the provider's PITR is meant to replace the
-  local dump. **PITR itself could not be confirmed**: the Supabase MCP reports
-  project health and not backup configuration, so an agent still cannot produce
-  the evidence §3a rule 1 asks for. That is this entry, restated with a name.
-- **What happens:** `scripts/apply_migrations.sh` takes a dump before replaying
-  the ladder and **fails closed** if it cannot — its header says so: *"if the
-  backup cannot be taken, the migrations do not run. The escape hatch is
-  explicit and has to be typed on purpose."* The deploy types it on purpose, on
-  every run.
-- **⚠️ Why this is not a small thing.** `work_plan.md` §3a rule 1 tells an agent
-  to *"confirm the pre-migration backup completed"* before applying a migration
-  to production, and to hold the evidence. That confirmation is **impossible**
-  as the pipeline stands — the honest answer is always "there was none". R6 also
-  says we cannot roll back, only forward or restore; with no dump there is
-  nothing to restore FROM.
-- **What it cost on 2026-09-06:** nothing, by luck. Migration 196 failed
-  half-way (the column and a CHECK committed, the grant did not), and the
-  recovery was a hand-written `DROP CONSTRAINT`. A migration that corrupted data
-  rather than failing outright would have had no floor under it.
-- **Decide:** either restore the backup on the deploy path and accept the ~11
-  minutes it costs, or state in writing that production deploys run without one
-  and amend §3a rule 1 so it stops asking agents for evidence that cannot exist.
-  Both are defensible; the current state is that the rule and the pipeline
-  disagree and the pipeline wins silently.
-- **Related:** H-98 (the standalone backup job covers no Console database and no
-  timer runs it). Together they mean the production database has **no scheduled
-  backup and no deploy-time backup**.
-- **Added:** 2026-09-06, from the WS-27 status-sets deploy.
-
 ### H-101 · The weekly skills sync cannot open its PR, and has failed since 2026-08-24 · [OWNER]
 - **Check:** `gh run list --workflow=skills-upstream-sync.yml --limit 3`. A
   `failure` on the most recent scheduled run means this is still open. The log
@@ -219,45 +179,6 @@ line — never reclaim a number by deleting the other entry.
   approves it.
 - **Authority:** `CLAUDE.md` §3a (the window) · D45 · this session, 2026-09-02
 - **Added:** 2026-09-02 · guardrail-relaxation session, at close-out
-
-### H-98 · The backup job has NEVER covered the Console database, and no timer runs it · [OWNER]
-- **Check:** run three commands on the box. Every one must change before this
-  entry closes.
-  1. `grep -c CUSTOMER_CONSOLE_DATABASE_URL /opt/acb/app/scripts/backup_db.sh`
-     → `0` means the Console database stays out of scope.
-  2. `systemctl list-timers --all | grep acb-backup` → no line means nothing
-     schedules the job.
-  3. `systemctl show acb-backup.service -p Result` → `exit-code` means the last
-     run failed.
-- **Why:** the owner lost the Console data on 2026-09-01 and held no backup.
-  The owner did not need that data. The next loss can cost more.
-- 🔴 **Four failures compound, and each one hides the next.** An agent measured
-  all four on `srv1914284`, 2026-09-02:
-  1. `scripts/backup_db.sh` reads `DATABASE_URL` and nothing else. It holds
-     ZERO references to `CUSTOMER_CONSOLE_DATABASE_URL`. So the job skips every
-     organization, operator and provider credential.
-  2. The newest dump names `pg_container: acb-postgres`, a LOCAL docker
-     container, and not Supabase. Its manifest counts `app_user: 0`,
-     `email_messages: 0`, `gtd_items: 0`, `meeting: 0` and `agent_run: 0`.
-  3. `systemctl list-timers` shows no timer for the unit. Only Debian's own
-     `dpkg-db-backup.timer` runs. So nothing schedules the job.
-  4. `acb-backup.service` last started on 2026-08-25 and exited non-zero.
-     Nothing retried it. Nothing reported it.
-- 📌 **The empty dump is the worst of the four.** A job that fails loudly stops
-  nobody for long. A job that writes a manifest full of zeros reads as success.
-- 📌 **This is NOT the cause of H-89.** The dumps live in `/opt/acb/backups`,
-  outside the checkout, so the backup unit does not write the root-owned files
-  in `workbench/operator_console/`. H-89 stays open and unexplained.
-- **The AGENT half:** point `backup_db.sh` at both DSNs, and make a zero row
-  count fail the job. ⚠️ The timer belongs in `deploy/`, which is §6
-  owner-gate, so an agent writes the script and the owner installs the timer.
-- **The OWNER half, and take it first:** decide whether the control plane needs
-  a backup of ours at all. Supabase takes a daily backup on a paid plan. That
-  answer turns the agent half from "build it" into "delete the unit".
-- **Authority:** `work_plan.md` §6 (deploy reach) · `scripts/backup_db.sh` ·
-  `deploy/hostinger/`
-- **Added:** 2026-09-02 · operator-identity env session, found while an agent
-  read the box after the Supabase move
 
 ### H-97 · 🔴 FOUR database passwords have reached agent transcripts · [OWNER]
 - **Check:** has somebody rotated all four credentials below since 2026-09-02?
@@ -761,18 +682,115 @@ line — never reclaim a number by deleting the other entry.
   so CLAUDE.md §5 says record it, do not refactor it
 - **Added:** 2026-08-14 · PR #439
 
+### H-121 · 🟡 DOCUMENTED, DEFERRED — a READ grant can destroy a space · [OWNER]
+- **⚠️ The owner DEFERRED this on 2026-09-19 and asked for a record instead.**
+  The design now lives in `specs/org_access_control.md` **§8d**, and the board
+  carries it as **WS-40**. Do not build it. Read §8d.4 first — it holds the four
+  questions an owner answers before anybody writes code.
+- **This entry is what remains: the risk, so that it is not lost.**
+- **Check:** `grep -rn "require_permission" apps/services/gateway/gateway/routes/projects/`
+  → no output means no Projects route gates a write, and this is still open.
+- **Why it is urgent now.** `DELETE /projects/nodes/{id}` cascades over the
+  subtree, every task and every grant. Its only guard is **read** visibility.
+  `resolve_visibility` returns a read closure. It carries no write axis and no
+  role axis.
+- **⚠️ This slice widened NO server rule. It made the gap live.** Until
+  2026-09-19 the cascade had no control in the product, so only a direct API
+  call reached it. H-8 put it on the row menu. A member who holds a
+  `group:<slug>` read grant on a space can now delete that space, every project
+  under it, every task and every grant.
+- **⚠️ MEASURED, and it is wider than one route.** `grep -rn "require_permission"
+  apps/services/gateway/gateway/routes/projects/` returns **nothing**. No route
+  in the Projects app carries a permission check. Rename, move, archive and
+  every task write are all authorised by visibility alone.
+- **So this is the app's authorisation model, not a hole in one endpoint.**
+  Delete is simply the first act that cannot be taken back. Rename, move and
+  archive were already reachable by any viewer, and all three are reversible.
+- **What that means for the fix.** Adding a guard to `delete_node` alone would
+  mint a second authority vocabulary in an app that has none (CLAUDE.md §5).
+  The question is whether Projects needs a WRITE axis beside D12's visibility
+  axis. That is one decision for the app, and not a patch on one route.
+- **⚠️ Measured 2026-09-19, and CORRECTED the same day.** `require_permission`
+  returns nothing under `projects/`, `email/` or `notes/`. Visibility alone
+  authorises every write there.
+- **🟢 One content app DOES gate writes**, and an earlier version of this entry
+  wrongly said none did. `workflows/publish.py` guards publish, rollback and
+  disable with `workflows:publish`. So the shape to copy is `<app>:<verb>`, and
+  it is already in the tree.
+- **The decision.** Which subject may act. Three candidates, and they are not
+  the same: the row's creator, a role, or a per-node write grant that does not
+  exist yet. Visibility is *who can see*, and D12 says it is not *who may act*.
+  §8d.4 states all four questions.
+- **Until it is answered**, the menu entry is reachable by anybody who can open
+  the row. Hiding it client-side is NOT a fix. The endpoint stays open.
+- **Authority:** `specs/org_access_control.md` §8d (the design record) ·
+  `work_plan.md` §2 **WS-40** · `routes/projects/tree.py` `delete_node` ·
+  D12 · R5 · `specs/project_management_app.md` §11
+- **Added:** 2026-09-19 · found by the adversarial review of the H-8 diff.
+
+### H-120 · "Move to…" opens NOTHING on a phone · [AGENT]
+- **Check:** `grep -n "if (isMobile) {" workbench/control_plane/src/app/projects/page.tsx`
+  → note the line. Then find `movingNode ? (`. It sits **after** that early
+  return, so the phone branch never renders it.
+- **Why it is invisible.** The menu entry is drawn, the click lands, and the
+  handler sets `movingNode`. No dialog exists in the phone tree to render it.
+  Nothing errors and nothing appears. A member reads it as a dead menu item.
+- **Measured 2026-09-19** in the visual rig, at 390px. The row menu opens, the
+  drawer closes, and the screen does not change.
+- **The fix, and the trap in it.** Move the mount into `overlays`, which BOTH
+  returns render. `DeleteProjectDialog` is mounted there for this reason and
+  its comment records it. ⚠️ On a phone the tree IS the drawer sheet, so the
+  entry must also close the drawer, or the dialog opens behind it.
+- **⚠️ Check every other dialog in the desktop return the same way.** This is
+  one instance of a pattern, not one bug. Nothing in the tree tests layout.
+- **Authority:** `app/projects/page.tsx` · `DESIGN_SYSTEM.md` §8 · H-8
+- **Added:** 2026-09-19 · found while building the Delete affordance (H-8).
+
+### H-119 · Decide which lane closes a task when a project STOPS · [OWNER]
+- **Check:** `grep -n "bulk" workbench/control_plane/src/app/projects/page.tsx`
+  → no stop-time bulk close means this is still open.
+- **Why an owner.** D-PM-26 says a stop must OFFER to close the open tasks. The
+  offer needs a lane, and the lane carries a meaning. **Done** and **Cancelled**
+  read differently in every report we send.
+- **Why it cannot just be built.** `POST /projects/tasks/bulk` takes a lane
+  **name**. Migration 196 lets each project own its lanes. So one name cannot
+  close a subtree, and a server-side read must choose per project.
+- **The two shapes.** (1) The server picks each project's first closing-category
+  lane. (2) A stop means cancelled, and the category picks the lane. Shape 2 is
+  a product call.
+- **Authority:** D-PM-26 · `specs/project_management_app.md` §9.8.4 · H-8
+- **Added:** 2026-09-19 · found while building the Delete affordance (H-8).
+
 ### H-8 · Still owed on WS-27bg slice 2, and WS-27bg slice 3 / WS-27bh unbuilt · [AGENT]
 - **Check:** the WS-27 row in `work_plan.md` §2 — it names what is built. Read
   it rather than this entry; this entry only says *look there*.
-- **Why:** A project still cannot be **renamed**; the bulk-close-on-Stop offer
-  and the Delete affordance are unbuilt. Slice 3 (overdue suppression across four
-  predicates) and WS-27bh (task-type chip, derived urgency + the "Urgent" →
-  "Critical" relabel, recurring indicator, source badge) are queued behind them.
-  ⚠️ WS-27bh's source badge must **promote** `/tasks`' existing `SourceBadge`,
-  not author a fourth copy.
+- **Why:** Two of the three acts this entry named are now built. **Rename**
+  landed earlier, and the entry did not record it. **Delete** landed on
+  2026-09-19: the row menu offers it last, alone, in the destructive colour,
+  and `DeleteProjectDialog` reads the subtree counts and takes the project
+  name back before it writes.
+- **⚠️ What is still owed here is the bulk close on Stop, and it is BLOCKED.**
+  D-PM-26 says that a stop must offer to close the open tasks. The offer cannot
+  be built on the endpoints we have. `POST /projects/tasks/bulk` takes a lane
+  **name**, and migration 196 lets each project own its lanes. So one name
+  cannot close a subtree.
+- **The decision somebody must take.** Which lane closes a task when a project
+  stops. Two shapes:
+  1. The server picks each project's first lane with a closing category. This
+     needs a new endpoint and no decision from the owner.
+  2. Stopping means **cancelled**, not **done**, and the lane is chosen by that
+     category. This is a product call, because the two read differently in
+     every report.
+  Ask before you build either. See **H-119**.
+- **Also still unbuilt:** slice 3 (overdue suppression across four predicates)
+  and WS-27bh (task-type chip, derived urgency and the "Urgent" → "Critical"
+  relabel, recurring indicator, source badge).
+  ⚠️ WS-27bh's source badge must **promote** `/tasks`' existing `SourceBadge`.
+  Do not author a fourth copy.
 - **Authority:** `work_plan.md` §2 WS-27 row · `specs/project_management_app.md`
-  §9.9
-- **Added:** 2026-08-14 · session that built WS-27bj
+  §9.8.4 · §9.9 · D-PM-26
+- **Added:** 2026-08-14 · session that built WS-27bj. *(Rewritten 2026-09-19:
+  rename and delete are done, and the bulk close turned out to be blocked.)*
 
 ### H-10 · HALF the R1 blind window is still open — the cross-branch collision · [AGENT]
 - **Check:** `rg -n "merge_group|merge-base origin/main" .github/workflows/pr-check.yml`
@@ -2127,42 +2145,6 @@ line — never reclaim a number by deleting the other entry.
   the same next-free id against different bases, which is R1 one level up. This
   entry merged second, so this entry moved.
 
-### H-94 · The Projects filter row is half-converted · [AGENT]
-- **Check:** `rg -n "OFF_DEFAULT|<Select" workbench/control_plane/src/app/projects/components/FilterBar.tsx`
-  → hits on `<Select` mean the controls are still selects, and the button
-  conversion below is still owed.
-- **Why:** The owner gave four more directions in the session that consolidated
-  the row. Work stopped part-way, so the row is in a state nobody designed.
-  1. ✅ **DONE 2026-09-18.** "Assignees" is a button, not a select.
-  2. ✅ **DONE 2026-09-18.** Every dropdown in the row is a button, with a
-     two-headed arrow at the default and a single one off it. The primitive is
-     `src/components/ui/SelectButton.tsx`, built on `outsideClick.ts` rather
-     than the substrate — see the ⚠️ below, which it obeys. `arrowFor` is
-     extracted and pinned by `SelectButton.test.ts`; a rendered assertion is
-     unavailable because `vitest.config.ts` is `environment: "node"`.
-  3. 🔴 **STILL OWED. The search field collapses to an icon** at the left of the
-     row. Remove the placeholder text. A click opens the real field.
-  ⚠️ **MOTION IS OFF THE TABLE (owner, 2026-08-26).** Direction 3 first asked for
-  a transition, and that half is withdrawn. A `MOTION.md` landed here the same
-  day and the owner removed it. Build the collapse as a state change with no
-  animation. Do not add a duration or an easing curve to this row, and do not
-  re-open the question. Ask the owner if you believe motion is needed.
-- **⚠️ Read first:** `@base-ui/react` is the ONE substrate (D-PM-15), and
-  `src/components/ui/Modal.tsx` is the only file that may import it. A button
-  that opens a list is a popover. Do not hand-roll one, and do not import a
-  second library. `src/lib/outsideClick.ts` is the answer for a popover we do
-  not build on the substrate.
-- **⚠️ Also still owed on this row:** the Clear button takes 76px from the search
-  box at 1920px. It is a sibling in the same `flex flex-wrap` container. The
-  search box is the only `flex-1` in that container, so it pays for everything
-  that appears or disappears. Measured: 0px at 1280, 1440 and 1600, and −76px at
-  1920. Direction 4 above may remove this by construction. Measure, do not assume.
-- **Authority:** `AGENTS.md` rule 8 (the substrate) ·
-  `specs/project_management_app.md` §11.2 item 3 · board row WS-27
-- **Added:** 2026-08-26 · Projects UI session (owner stopped work to push)
-  *(minted H-65. Renumbered to H-94 on 2026-09-01, because `main` had taken
-  65 for the plan-guard heredoc entry. This branch merged second. That is the
-  case the numbering rule above names.)*
 
 ### H-96 · `dev_db.sh` starts the tenant database and never applies its ladder · [AGENT]
 - **Check:** read `scripts/dev_db.sh`. Search for `infra/postgres`. No hit
@@ -2237,77 +2219,140 @@ line — never reclaim a number by deleting the other entry.
   unapplied and mark the two tests expected-fail with that reason. Today they
   are neither, which is the worst of the three.
 
-### H-115 · 🔴 A request with no `X-User-Email` binds NO tenant, and 5xxs · [AGENT]
-- **Check:** `rg -n "email=\"system:internal\"" packages/acb_auth/acb_auth/deps.py`
-  → the branch that returns it without calling `bind_tenant` is still there.
-  On the box: `sudo journalctl -u acb-gateway --since "1 day ago" | grep -c TenantUnbound`.
-- **Measured 2026-09-17 on production.** 1120 over three days, 50 in the last
-  day, about 0.3% of requests. Spread across unrelated surfaces —
-  `/apps/pins` 12, chat messages 11, `/projects/tree` 3, several analytics
-  reads. So it is not one app's bug.
-- **The cause.** `acb_auth/deps.py` branch 1b answers a Bearer-matched call
-  carrying NO `X-User-Email` with
-  `UserContext(email="system:internal", role=AGENT, access=SERVICE_ACCESS)`
-  and never calls `bind_tenant`. Any tenant-scoped route then raises
-  `TenantUnbound`. Branch 1a, the browser path, binds correctly.
-- **⚠️ Ruled out, so nobody re-checks them.** The affected users have ACTIVE
-  `org_membership` rows, so identity resolution is healthy. The
-  `auth.identity_domain_mismatch` warnings flooding the log beside these are
-  only LOGGED and never a rejection — noise, not cause.
-- **What is already done.** The SYMPTOM only: `gateway/main.py` now answers
-  `TenantUnbound` with JSON rather than Starlette's plain-text
-  `Internal Server Error`, which a client's `res.json()` could not parse. The
-  log line names the path and whether the header was present.
-- **What is open, and it needs a decision before code.** Why does the proxy
-  sometimes omit the header? Two shapes, and they are not equivalent:
-  1. **The proxy should never forward a tenant-scoped call without it** — a
-     request fired before the session resolves should wait or be dropped.
-  2. **Branch 1b should refuse a tenant-scoped route outright**, rather than
-     handing back a service context that cannot be scoped. ⚠️ This one is a
-     real behaviour change for cron jobs and consumers that legitimately use
-     the internal token, so it needs the job list checked first.
-- **Authority:** `saas_multitenancy.md` §0.1 / MT-1c · `acb_auth/deps.py`
-  branch 1b · `acb_common/db.py:273`
+### H-118 · 🔴 The access-request queue cannot record an unprovisioned person · [AGENT]
+- **Check:** `sudo journalctl -u acb-gateway --since today | grep -c
+  access_request_record_failed` on the box. Non-zero means this is open. Or ask
+  the app database for `access_request` rows — an empty table while people are
+  being onboarded is the same answer.
+- **Measured on production 2026-09-18, 13:02:47 UTC**, twice, for
+  `nithin@hathilabs.com` — a real person mid-onboarding:
+  `asyncpg.exceptions.InvalidTextRepresentationError: invalid input syntax for
+  type uuid: ""` on `INSERT INTO access_request`.
+- **The cause is structural, not a typo.** `access_request.organization_id` is
+  `uuid NOT NULL DEFAULT (current_setting('app.tenant_id', true))::uuid`. The
+  table is tenant-scoped. But `_record_signin_request` fires for somebody who
+  is **unprovisioned** — that is the whole point of the queue — so no tenant is
+  bound, `app.tenant_id` is empty, and the cast refuses it.
+  **The queue cannot record the one kind of person it exists to record.**
+- **What it costs.** Silently. `_record_signin_request` is best-effort by
+  design and never raises, so the sign-in still answers correctly and the owner
+  simply never learns that somebody asked for access. Nothing on screen is
+  wrong. The row is just never there.
+- **⚠️ Deciding the fix means deciding what an access request BELONGS to.**
+  A request from somebody in no organization is not a tenant's row. Two shapes,
+  and they are not equivalent:
+  1. The queue is a **platform** table, not a tenant one — drop the tenant
+     column and its RLS, and accept that the owner reads it unscoped.
+  2. The request is **addressed to** an organization (resolved from the email
+     domain, or from the invite it answers), and the column is filled
+     explicitly rather than defaulted from a GUC that is empty by construction.
+  Shape 2 keeps RLS and is the bigger change. Ask before building either.
+- **⚠️ `test_auth_sql_asyncpg.py` runs this exact statement and it PASSES.**
+  The fence did not catch it, and knowing why matters more than the row does:
+  the suite's transaction is not the production one, so `app.tenant_id` is
+  unset rather than empty, and `current_setting(…, true)` answers NULL there
+  instead of `''`. A fence that binds the right TYPES can still miss a defect
+  that lives in the SESSION STATE around the statement. That is a real limit of
+  the H-114 pattern and it should be written into the next suite.
+- **Authority:** `colleague_onboarding.md` §6 (N6a) ·
+  `acb_auth/access.py` `_record_signin_request` / `_ACCESS_REQUEST_UPSERT_SQL`
+- **Added:** 2026-09-18 · found in the post-deploy log check, not by a test.
+  *(Minted H-116. Renumbered to H-118 the same day: branch `operator-console`
+  had already taken 116 for a plan-guard defect, in a worktree with no pull
+  request open. That branch was written first, so this one moves — the rule
+  H-94's own note records.)*
+
+### H-117 · An outage tells a member they belong to no organization · [AGENT]
+- **Check:** `rg -n "no_organization" apps/services/gateway/gateway/main.py` →
+  the 403 arm answers on the presence of a user header alone.
+- **Why:** `_tenant_unbound` (shipped 2026-09-18, #293) answers **403
+  `no_organization`** whenever a request carries `X-User-Email` and no tenant
+  is bound. That is right for the ordinary case and WRONG during an outage:
+  `resolve_identity` also returns `(None, None)` when the database refuses the
+  read, so a member of long standing is told, in so many words, that they are
+  not a member of any organization.
+- **It is not hypothetical.** `EMAXCONNSESSION — max clients reached in session
+  mode, pool_size: 15` fired twice at 13:06:08 UTC on 2026-09-18, and
+  `auth.identity_resolve_failed` fired with it. That log line exists precisely
+  to tell the two apart — it was added in the same pull request — but it only
+  helps the operator. The member still reads the accusation.
+- **What it needs.** The distinction already exists at the point of failure and
+  is thrown away before the handler sees it. Carry it: mark the request when
+  `resolve_identity` raised rather than found nothing, and answer **503** for
+  that arm. A person should be told "we could not reach your workspace", never
+  "you have none".
+- **Related:** the pool blip above is its own question — two events in one
+  second during a restart is not yet a pattern, and `pool_size: 15` is the
+  Supabase session-mode pooler's limit, not ours. Watch it before tuning it.
+- **Authority:** `gateway/main.py` `_tenant_unbound` ·
+  `acb_auth/access.py` `resolve_identity` · D-MT-1c
+- **Added:** 2026-09-18 · the risk was named in #293's own description, and the
+  first day in production produced it.
 
 ### H-114 · R8 suites still run psycopg. The gateway runs asyncpg · [AGENT]
-- **Check:** `uv run pytest tests/unit/test_projects_sql_asyncpg.py -q` with
-  `TENANT_LADDER_DATABASE_URL` set. If it SKIPS in CI, the strong half of the
-  fence does not fire there — which is H-112's gap, on a second file.
-- **What is CLOSED.** Projects SQL now has both halves of a fence.
-  `test_projects_sql_asyncpg.py` runs every `analytics.py` builder and both
-  `tree.py` reads on **asyncpg**, the driver `acb_common.db` rewrites every
-  production DSN onto. `test_sql_interval_shape.py` refuses
-  `CAST(:param AS interval)` anywhere under `gateway/` or `packages/`, needs
-  no database, and so runs in CI today.
-- **Measured, not assumed.** Reintroduce the shipped bug and the asyncpg
-  suite fails while all 19 psycopg tests in
-  `test_projects_analytics_load.py` pass. That is the gap, demonstrated.
-- **⚠️ What is STILL OPEN, and it is the larger half.** Only the Projects SQL
-  is covered. Every other route module — CRM, email, tasks, people, router —
-  proves its SQL on psycopg alone. The pattern to copy is the parametrised
-  `_cases()` list plus the per-test async engine. ⚠️ Use a **function-scoped**
-  engine with `NullPool`: a module-scoped one binds its pool to the first
-  test's event loop, and every later test fails with *"another operation is
-  in progress"*, which reads exactly like a SQL fault and is not one.
+- **Check:** `uv run pytest tests/unit/test_projects_sql_asyncpg.py
+  tests/unit/test_auth_sql_asyncpg.py -q` with `TENANT_LADDER_DATABASE_URL`
+  set. If either SKIPS in CI, the strong half of the fence does not fire
+  there — which is H-112's gap, on two files now.
+- **What is CLOSED — TWO modules now.**
+  1. **Projects.** `test_projects_sql_asyncpg.py` runs every `analytics.py`
+     builder and both `tree.py` reads on **asyncpg**, the driver
+     `acb_common.db` rewrites every production DSN onto.
+  2. **The sign-in path, added 2026-09-18.** `test_auth_sql_asyncpg.py` runs
+     all **38** SQL statements in `acb_auth` — `access.py`, `console_resolve.py`
+     and `email_otp.py` — each with the parameter TYPES its real call site
+     binds. It went ahead of the route modules on blast radius: a broken route
+     breaks one pane, and a broken statement in `access.py` breaks sign-in for
+     everybody, because every request resolves identity and access before it
+     reaches any route.
+  3. `test_sql_interval_shape.py` refuses `CAST(:param AS interval)` anywhere
+     under `gateway/` or `packages/`, needs no database, and so runs in CI
+     today.
+- **⚠️ The auth suite carries its OWN completeness fence.** A new `_SQL`
+  constant in any of those three modules fails `test_every_SQL_constant_in_
+  these_modules_is_covered` by name. Without it the suite stops being complete
+  the first time somebody adds a statement, and a partial fence reads exactly
+  like a whole one.
+- **Measured, not assumed.** Retyping one `datetime` bind to an ISO string —
+  the precise psycopg-accepts / asyncpg-refuses divergence — turns **5** of the
+  38 red, and all five are `CAST(… AS TIMESTAMPTZ)` statements the lint below
+  cannot cover. Dropping one case from the list turns the completeness fence
+  red with that statement's name.
+- **⚠️ What is STILL OPEN.** The route modules — **CRM, email, tasks, people,
+  notes, chat, admin, workflows, whatsapp** — still prove their SQL on psycopg
+  alone. The pattern to copy is now in two files: a parametrised `_cases()`
+  list, a module-scoped `apply_ladder` fixture, and a **function-scoped** async
+  engine with `NullPool`. ⚠️ A module-scoped engine binds its pool to the first
+  test's event loop and every later test fails with *"another operation is in
+  progress"*, which reads exactly like a SQL fault and is not one.
+  ⚠️ Many route modules hold their SQL **inline inside route functions** rather
+  than as module constants, so they cannot be run without the route. Extracting
+  those is the real cost of the remaining work, and it is worth doing anyway:
+  an unextractable statement is also an untestable one.
+  ⚠️ **Roll back.** Half of the auth statements are writes. `begin()` as a
+  context manager COMMITS on a clean exit, so the transaction is driven by hand
+  and rolled back in a `finally`.
 - **Not linted: `CAST(:x AS timestamptz)`.** Binding a real `datetime`
   through it is correct, and `email/automation/followups.py` does that. A
   lint there would fail correct code and grow an allowlist. The asyncpg
   suites are the answer for that half.
 
-### H-113 · Wave 6 is next, and §9.12.9 needs two columns first · [AGENT]
-- **Check:** `grep -c "follow_up_at" infra/postgres/*.sql | grep -v ":0"`.
-  No output means this is unbuilt.
-- **What it is.** §9.12.9, follow-ups. The owner's shape: *"you are blocked on
-  somebody, so you set a date, and it comes back to you."*
-- **⚠️ It has two halves and they live in different places.** My reminder is
-  mine, so it belongs on `pm_task_personal`. That is the per-member overlay
-  which already holds `defer`. A nudge to the other person is shared, and it
-  goes through the notification path that exists. One place for both gets one
-  of them wrong.
-- **The surface is the triage rail, which exists.** A `Waiting on` section
-  lists what is due back, and what has returned.
-- **The one rule to keep.** The task's shared status never changes. The status
-  is the team's, and the follow-up is mine.
+### H-113 · Wave 6 needs only its NUDGE. The columns shipped in 188 · [AGENT]
+- **⚠️ This entry was wrong, and the correction is the point.** It said
+  §9.12.9 needs two new columns, and its Check looked for `follow_up_at`. That
+  name never existed. Migration **188** already shipped `waiting_on`,
+  `delegated_at`, `expected_by` and `last_nudged_at` on `pm_task_personal`,
+  with a partial index built for the "what is due back" read.
+- **Check:** `grep -n "last_nudged_at" apps/services/gateway/gateway/routes/projects/personal.py`
+  → the field is accepted and **nothing writes it**. That is the open half.
+- **What is already built.** The Tasks app sets and draws all of it —
+  `DelegateDialog`, `WaitingForView` and `ItemDetail` carry the date, the
+  person and the overdue badge.
+- **What is open.** The optional nudge. One notification to the person you
+  wait on, through `routes/projects/notifications.py` `notify()`, which
+  exists. It is off by default, and it stamps `last_nudged_at` once.
+  ⚠️ In-app only. A mail to a real person is owner-gated (CLAUDE.md §3a).
+- **Corrected:** 2026-09-19 · found while auditing wave 6 for dispatch.
 
 ### H-110 · Operator OTP sends now. Two dashboard acts are still unverified · [OWNER]
 - **Check:** ask Supabase project `uttxlicdccfkramtjfpi` for an OTP at an address
@@ -2359,9 +2404,10 @@ line — never reclaim a number by deleting the other entry.
 - **It was invisible for an unknown period.** `/health` stayed green throughout,
   so no health check and no watchdog reported it. Whatever replaces this should
   probe an endpoint that touches the database.
-- 📌 Related: **H-98**, the backup job that has never covered the Console
-  database. Also **H-109** below. The project names are inverted, which is the
-  likely reason the wrong database got backed up.
+- 📌 **H-98 is CLOSED (2026-09-19).** The backup job now dumps the Console
+  database as a second cluster, and a verified run sits on the box. Also
+  **H-109** below. The project names are inverted, which is the likely reason
+  the wrong database got backed up.
 - **Authority:** `work_plan.md` §2.0 row **M0.4b** · `customer_console.md` §8
 - **Added:** 2026-09-15 · signup-flow session, found by surveying the box
 
@@ -2386,9 +2432,10 @@ line — never reclaim a number by deleting the other entry.
   tenants**, which is the other project. Two defensible meanings, one word, and
   they point at opposite projects.
 - **Why it still matters.** An instruction that says *"the tenant database"*
-  resolves two ways. **H-98** says the backup job has never covered the Console
-  database. Somebody could have backed up "the tenant database" and meant the
-  other one. That is UNPROVEN. Check it before anybody repeats it as the cause.
+  resolves two ways. **H-98 closed on 2026-09-19** and the job now covers the
+  Console database, but the ambiguity that hid the gap has not moved. Somebody
+  could have backed up "the tenant database" and meant the other one. That is
+  UNPROVEN. Check it before anybody repeats it as the cause.
 - **The cheap repair, and it keeps the owner's names.** Append the role to each
   Supabase project name. Then no reader must resolve the word at all:
   *"Metorite Application Database (tenant plane · customer data)"* and
@@ -2436,7 +2483,7 @@ line — never reclaim a number by deleting the other entry.
   related: H-95, H-103, H-65
 - **Added:** 2026-09-18 · operator console workspace session
 
-### H-117 · The Operator Console has NO browser rig, and its suite renders nothing · [AGENT]
+### H-122 · The Operator Console has NO browser rig, and its suite renders nothing · [AGENT]
 - **Check:** `grep -c playwright workbench/operator_console/package.json`. A
   zero means this is open.
 - **What I measured, 2026-09-18.** `visual-review` renders `control_plane`. The
@@ -2468,6 +2515,9 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** CLAUDE.md §4 (the look-at-it gate) ·
   `workbench/operator_console/AGENTS.md`
 - **Added:** 2026-09-18 · operator console vendor-spend session
+  *(minted H-117. Renumbered to H-122 on 2026-09-19, because `main`
+  had taken 117 for the no-organization outage and merged first. Ids
+  are never reused, so that entry keeps the number.)*
 
 # DONE — deleted, not archived
 
