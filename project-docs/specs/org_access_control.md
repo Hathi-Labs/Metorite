@@ -407,6 +407,81 @@ Two things keep the list honest, both tested: a `PUBLIC_ROUTES` entry matching n
 
 ---
 
+## 8d. The CONTENT apps have no write authority — documented 2026-09-19, deferred by the owner
+
+🟡 **NOT BEING BUILT. The owner deferred it on 2026-09-19 and asked for a
+record.** This section is that record. Nothing here is dispatchable until the
+owner says so. Board row **WS-40**. Action entry **H-121**.
+
+### 8d.1 The measurement
+
+§1 says this spec builds "**one enforcement path the whole platform shares**".
+It is built, and `require_permission` is real. Here is every place the gateway
+uses it, counted on 2026-09-19:
+
+| Permission | Where |
+|---|---|
+| `admin:members:invite` · `admin:members:manage` · `admin:roles:manage` · `admin:access:manage` · `admin:settings:manage` | the admin routes |
+| `agents:manage` | `routes/agent.py` |
+| `feature:integrations` · `feature:models` | `routes/oauth.py` · `routes/settings.py` |
+
+**Every one of them is an ADMIN or a SETTINGS act.** Not one content app uses
+the seam. `grep -rn "require_permission" apps/services/gateway/gateway/routes/projects/`
+returns nothing, and so do the same greps for CRM, Email, Tasks and Notes.
+
+### 8d.2 What authorises a content write today
+
+Visibility, and nothing else. A route resolves the caller, loads the row the
+caller can SEE, and then writes it. So in the Projects app, anybody who can
+open a project can also rename it, move it, archive it, change its run state,
+and edit every task in it.
+
+⚠️ **This is not a hole in one endpoint. It is the model.** A guard added to
+one route would mint a second authority vocabulary beside the one this spec
+already owns, which CLAUDE.md §5 forbids.
+
+### 8d.3 Why it surfaced now
+
+Until 2026-09-19 every content write a member could reach was reversible. A
+rename can be renamed back. An archive has an unarchive. So visibility-only
+authority cost nothing that anybody noticed.
+
+**H-8 shipped Delete for a project (PR #298), and Delete is a cascade over the
+subtree, every task and every grant.** The endpoint was always there. The act
+was not reachable from the product. Now it is, so a member holding a
+`group:<slug>` READ grant can destroy a space.
+
+The delete dialog asks for the project's name and reads the real counts first.
+That is a guard against a MISTAKE. It is not authority, and it must never be
+described as authority.
+
+### 8d.4 The four questions to answer before anybody builds this
+
+1. **What is the permission vocabulary for a content app?** The seam is
+   string-keyed. `projects:write` and `projects:delete` fit the existing shape.
+   A per-verb permission for five apps is twenty new strings, and a role that
+   nobody can reason about is not a control.
+2. **Does authority sit on the ORG or on the NODE?** §3's roles are org-wide.
+   D12's grants are per-node. "Alice may delete in Marketing and nowhere else"
+   needs the second, and `pm_project_grants` already carries a `subject`.
+3. **Is delete a role, or is it ownership?** `pm_projects.created_by` exists.
+   "The person who made it may remove it" needs no new vocabulary at all, and
+   it answers the mistake case without answering the authority case.
+4. **What happens to every existing member on the day it turns on?** A
+   default-deny flip makes every content app read-only for anybody whose role
+   does not carry the new permission. §8c took the same decision for
+   authentication, and §7 is the rollout pattern to copy.
+
+### 8d.5 What must be true of the answer
+
+- **One vocabulary.** It extends `permissions.py`, and it does not start a
+  second resolver. §5 is the enforcement path.
+- **The two axes stay separate.** D12 says visibility is *who can see*.
+  Authority is *who may act*. This adds the second axis. It does not redefine
+  the first, and it does not merge them.
+- **Ship dark.** Default OFF behind a flag, per CLAUDE.md §4.
+- **R7.** Whatever rule lands names the test that makes breaking it fail.
+
 ## 9. Open questions
 
 1. **Agent visibility vs. runnability.** Phase 1 gates *running* an agent. Should a member also be unable to *see* that an agent exists? Listing is currently a weaker signal than running, but agent names leak org structure.

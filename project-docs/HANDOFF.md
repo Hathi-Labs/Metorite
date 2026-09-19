@@ -761,9 +761,14 @@ line — never reclaim a number by deleting the other entry.
   so CLAUDE.md §5 says record it, do not refactor it
 - **Added:** 2026-08-14 · PR #439
 
-### H-121 · 🔴 A READ grant can now destroy a space · [OWNER]
-- **Check:** `grep -n "async def delete_node" -A 6 apps/services/gateway/gateway/routes/projects/tree.py`
-  → `load_visible_project` and nothing else means this is open.
+### H-121 · 🟡 DOCUMENTED, DEFERRED — a READ grant can destroy a space · [OWNER]
+- **⚠️ The owner DEFERRED this on 2026-09-19 and asked for a record instead.**
+  The design now lives in `specs/org_access_control.md` **§8d**, and the board
+  carries it as **WS-40**. Do not build it. Read §8d.4 first — it holds the four
+  questions an owner answers before anybody writes code.
+- **This entry is what remains: the risk, so that it is not lost.**
+- **Check:** `grep -rn "require_permission" apps/services/gateway/gateway/routes/projects/`
+  → no output means no Projects route gates a write, and this is still open.
 - **Why it is urgent now.** `DELETE /projects/nodes/{id}` cascades over the
   subtree, every task and every grant. Its only guard is **read** visibility.
   `resolve_visibility` returns a read closure. It carries no write axis and no
@@ -784,13 +789,19 @@ line — never reclaim a number by deleting the other entry.
   mint a second authority vocabulary in an app that has none (CLAUDE.md §5).
   The question is whether Projects needs a WRITE axis beside D12's visibility
   axis. That is one decision for the app, and not a patch on one route.
-- **The decision.** Which subject may delete. Three candidates, and they are not
-  the same: the project creator, a role, or a write grant that does not exist
-  yet. Visibility is *who can see*, and D12 says it is not *who may act*.
+- **⚠️ WIDER THAN PROJECTS, measured 2026-09-19.** `require_permission` is used
+  by the admin, agent and settings routes **only**. No route under `projects/`,
+  `crm/`, `email/`, `tasks/` or `notes/` uses it. Visibility alone authorises
+  every content write in the product.
+- **The decision.** Which subject may act. Three candidates, and they are not
+  the same: the row's creator, a role, or a per-node write grant that does not
+  exist yet. Visibility is *who can see*, and D12 says it is not *who may act*.
+  §8d.4 states all four questions.
 - **Until it is answered**, the menu entry is reachable by anybody who can open
   the row. Hiding it client-side is NOT a fix. The endpoint stays open.
-- **Authority:** `routes/projects/tree.py` `delete_node` · D12 · R5 ·
-  `specs/project_management_app.md` §11 (the superseded-delete note)
+- **Authority:** `specs/org_access_control.md` §8d (the design record) ·
+  `work_plan.md` §2 **WS-40** · `routes/projects/tree.py` `delete_node` ·
+  D12 · R5 · `specs/project_management_app.md` §11
 - **Added:** 2026-09-19 · found by the adversarial review of the H-8 diff.
 
 ### H-120 · "Move to…" opens NOTHING on a phone · [AGENT]
