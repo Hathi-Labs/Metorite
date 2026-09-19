@@ -64,6 +64,52 @@ export const HELP_TOOLBAR = {
     "makes the page slow before the first one is readable.",
 } as const;
 
+/** Tiers and their backups — where the word a customer picks meets the model
+ *  we actually call. */
+export const HELP_TIERS = {
+  outage:
+    "Switch a vendor off to see which tiers would stop answering. It changes " +
+    "nothing — it is a question, not a switch.",
+  outageChip:
+    "Pretend this vendor is down. Tiers whose whole chain runs on it stop; " +
+    "tiers with a step elsewhere fail over to it.",
+  outageMore:
+    "The vendors listed serve the most jobs. The rest each serve fewer, so " +
+    "switching one off would lose less than any chip shown here.",
+  section:
+    "Open or close this group. The count is how many tiers are in it.",
+  job:
+    "The one job this tier serves. The Router refuses a model that was not " +
+    "declared for it, so audio can never reach a chat model.",
+  moveUp:
+    "Try this model earlier. The step at position 1 serves every call; the " +
+    "rest only run when the step above them fails.",
+  moveDown: "Try this model later, after the step now above it.",
+  remove:
+    "Take this model out of the chain. Nothing is saved until you press " +
+    "Save, and removing the last step leaves the tier unable to serve.",
+  addBackup:
+    "Add a second model to try when the first stops answering. A tier with " +
+    "one model has no failover: when that model is down or rate limited, " +
+    "the job stops for every customer on the tier.",
+  noBackup:
+    "One model only. When it is down or rate limited this job stops for " +
+    "every customer on this tier, and there is nowhere for the Router to go.",
+  noPrice:
+    "No rate card for this tier and job, so calls through it bill nothing. " +
+    "Price it on the Pricing page.",
+  sameProvider:
+    "Every step runs on one vendor. The VENDOR is the thing that goes down, " +
+    "so this is one point of failure written several times. Add a step from " +
+    "a different provider.",
+  notRegistered:
+    "A binding names this tier but `tier_catalog` does not. It serves, and " +
+    "it cannot be priced until somebody registers it.",
+  rank:
+    "Where this model sits in the chain. 1 serves every call; 2 runs only " +
+    "when 1 fails, and so on.",
+} as const;
+
 /** Declaring a model by hand — the escape hatch when the feed has never heard
  *  of it. Most models should come from "available from your vendors" instead. */
 export const HELP_DECLARE = {

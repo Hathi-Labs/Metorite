@@ -14,6 +14,7 @@ import {
   HELP_FEED,
   HELP_FILL,
   HELP_STATUS,
+  HELP_TIERS,
   HELP_TOOLBAR,
 } from "./help";
 
@@ -25,6 +26,7 @@ const ALL: Record<string, Record<string, string>> = {
   HELP_STATUS,
   HELP_AVAILABLE,
   HELP_DETAILS,
+  HELP_TIERS,
 };
 
 /** Every entry, as [dictionary, key, text]. */

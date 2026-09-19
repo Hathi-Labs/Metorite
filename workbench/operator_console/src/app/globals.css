@@ -1613,6 +1613,35 @@ pre.token {
 /* The card's badge column: retirement beside supply status.
    ⚠ A column, not a row — two chips side by side push the
    model name into a wrap at card width. */
+/* A tier section's own header, now that it opens and closes.
+   ⚠ The summary carries the h2, so the heading stays a heading and
+   the marker is ours (list-style:none removes the native one). */
+.tiersection-fold > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+.tiersection-fold > summary h2 {
+  display: inline;
+  margin: 0;
+}
+.tiersection-fold > summary::-webkit-details-marker { display: none; }
+.tiersection-fold > summary::before {
+  content: "▸";
+  color: var(--muted);
+  font-size: 11px;
+}
+.tiersection-fold[open] > summary::before { content: "▾"; }
+/* The lede sits under the summary, not inside it: a two-line paragraph in
+   a flex summary pushes the count off the baseline. */
+.tiersection-fold > .sectionlede {
+  margin: 6px 0 12px;
+  color: var(--muted);
+  max-width: 70ch;
+}
+
 .modelcard .cardbadges {
   display: flex;
   flex-direction: column;

@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 
 import type { CatalogModel, Tier, TierJob } from "./contract";
 import {
+  vendorsByBlastRadius,
   type ChainContext,
   canServe,
   chainLabel,
@@ -396,5 +397,71 @@ describe("TierBoard structure", () => {
     // server props — the saved backup vanished and read as a failed save.
     expect(src).toContain("if (res.ok) router.refresh();");
     expect(src).not.toMatch(/delete d\[`\$\{tier\}::\$\{task\}`\]/);
+  });
+});
+
+// ── Which vendor going down would hurt most? ───────────────────────────────
+//
+// 🔴 Measured 2026-09-19: the outage question drew 67 chips across ten rows,
+// alphabetically. The first chip a reader saw served one ghost tier; the one
+// serving every chat band was nine rows down.
+
+describe("vendorsByBlastRadius", () => {
+  const T = (registered: boolean, ...chains: string[][]) => ({
+    registered,
+    jobs: chains.map((models) => ({
+      chain: models.map((model, i) => ({ model, rank: i + 1 })),
+    })),
+  });
+
+  it("ranks the vendor serving more REGISTERED jobs first", () => {
+    const got = vendorsByBlastRadius([
+      T(true, ["deepseek/a"], ["deepseek/b"]),
+      T(true, ["groq/a"]),
+    ]);
+    expect(got[0].provider).toBe("deepseek");
+    expect(got[0].registeredJobs).toBe(2);
+  });
+
+  it("🔴 a registered job outranks any number of ghosts", () => {
+    // A ghost serves, so it counts — but the product is what an operator is
+    // deciding about, and it must not be pushed below the noise.
+    const got = vendorsByBlastRadius([
+      T(false, ["ghostvendor/a"], ["ghostvendor/b"], ["ghostvendor/c"]),
+      T(true, ["realvendor/a"]),
+    ]);
+    expect(got[0].provider).toBe("realvendor");
+  });
+
+  it("still COUNTS an unregistered binding, because it serves", () => {
+    const got = vendorsByBlastRadius([T(false, ["ghostvendor/a"])]);
+    expect(got[0].jobs).toBe(1);
+    expect(got[0].registeredJobs).toBe(0);
+  });
+
+  it("🔴 counts one job ONCE even when a vendor holds primary AND backup", () => {
+    // That vendor can only take the job down once. Counting the chain steps
+    // would rank it above a vendor that really does serve two jobs.
+    const got = vendorsByBlastRadius([T(true, ["deepseek/a", "deepseek/b"])]);
+    expect(got[0].jobs).toBe(1);
+  });
+
+  it("counts a job once per vendor when the chain spans two", () => {
+    const got = vendorsByBlastRadius([T(true, ["deepseek/a", "groq/b"])]);
+    expect(got.map((g) => g.jobs)).toEqual([1, 1]);
+  });
+
+  it("reads a model id with no slash as its own vendor", () => {
+    const got = vendorsByBlastRadius([T(true, ["bare-model"])]);
+    expect(got[0].provider).toBe("bare-model");
+  });
+
+  it("breaks a tie by name, so the row does not reshuffle", () => {
+    const got = vendorsByBlastRadius([T(true, ["b/x"]), T(true, ["a/x"])]);
+    expect(got.map((g) => g.provider)).toEqual(["a", "b"]);
+  });
+
+  it("is empty when nothing is bound", () => {
+    expect(vendorsByBlastRadius([])).toEqual([]);
   });
 });

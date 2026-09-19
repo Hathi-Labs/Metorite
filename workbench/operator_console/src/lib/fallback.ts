@@ -340,3 +340,57 @@ export function unusedModels(tiers: Tier[], models: CatalogModel[]): string[] {
     .map((m) => m.id)
     .sort();
 }
+
+/** How many vendor chips the outage question can ask before it stops being a
+ *  question.
+ *
+ * ⚠️ *Agent default.* Twelve fills about two lines at 1440px. Measured
+ * 2026-09-19: the simulator drew 67 chips across ten rows, and a control that
+ * needs ten rows of options is a list, not a question. */
+export const OUTAGE_VENDOR_HEAD = 12;
+
+/** The vendors an outage would actually hurt, worst first.
+ *
+ * 🔴 **Ranked by BLAST RADIUS, not alphabetically.** The question this control
+ * asks is "what would we lose". Sorting by name puts a vendor that serves one
+ * ghost tier above one that serves every chat band, so the first chips a
+ * reader sees are the least interesting ones on the page.
+ *
+ * ⚠️ **A REGISTERED tier counts for more than a ghost, but a ghost still
+ * counts.** An unregistered binding cannot be priced and still SERVES, so
+ * dropping it from the count would understate a real outage. Registered jobs
+ * are weighted above unregistered ones instead, which orders the list without
+ * hiding anything.
+ */
+export function vendorsByBlastRadius(
+  tiers: { registered?: boolean; jobs: { chain: { model: string }[] }[] }[],
+): { provider: string; jobs: number; registeredJobs: number }[] {
+  const seen = new Map<string, { jobs: number; registeredJobs: number }>();
+  for (const t of tiers) {
+    for (const j of t.jobs) {
+      // ⚠️ One count per (vendor, job), not per chain STEP. A vendor holding
+      // both the primary and the backup of one job can only take that job down
+      // once, and counting twice would rank it above a vendor that really does
+      // serve two.
+      const vendors = new Set(
+        j.chain.map((s) =>
+          s.model.includes("/") ? s.model.split("/")[0] : s.model,
+        ),
+      );
+      for (const v of vendors) {
+        const cur = seen.get(v) ?? { jobs: 0, registeredJobs: 0 };
+        cur.jobs += 1;
+        if (t.registered) cur.registeredJobs += 1;
+        seen.set(v, cur);
+      }
+    }
+  }
+  return [...seen.entries()]
+    .map(([provider, c]) => ({ provider, ...c }))
+    .sort(
+      (a, b) =>
+        b.registeredJobs - a.registeredJobs ||
+        b.jobs - a.jobs ||
+        a.provider.localeCompare(b.provider),
+    );
+}
