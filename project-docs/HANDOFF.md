@@ -793,7 +793,7 @@ line — never reclaim a number by deleting the other entry.
   `specs/project_management_app.md` §11 (the superseded-delete note)
 - **Added:** 2026-09-19 · found by the adversarial review of the H-8 diff.
 
-### H-122 · The move has no end-to-end test, and that is where its P0s live · [AGENT]
+### H-124 · The move has no end-to-end test, and that is where its P0s live · [AGENT]
 - **Check:** `grep -rn "move_tasks" tests/unit/test_projects_move_routes.py`
   → only the refusals. No test drives a cross-status-set move to completion.
 - **⚠️ BOTH P0-class defects WS-27bl shipped lived in the endpoint bodies.**
@@ -813,6 +813,9 @@ line — never reclaim a number by deleting the other entry.
   `test_projects_move_sql_asyncpg.py` has the engine fixture to copy.
 - **Authority:** `specs/project_management_app.md` §9.13 · R8 · H-114
 - **Added:** 2026-09-19 · filed by the session that shipped the defects.
+  ⚠️ **Minted as H-122 and renumbered to H-124 on merge.** PR #302 merged
+  first and took 122 for the Operator Console rig. This is the collision
+  `test_handoff_queue.py` exists to catch, and it caught it.
 
 ### H-120 · "Move to…" opens NOTHING on a phone · [AGENT]
 - **Check:** `grep -n "if (isMobile) {" workbench/control_plane/src/app/projects/page.tsx`
@@ -844,39 +847,6 @@ line — never reclaim a number by deleting the other entry.
   the one surface that would reveal the stall is how its work goes missing.
 - **Delete this entry** once somebody has read it. Kept for one cycle because
   H-8 and the WS-27 board row both pointed here.
-
-### H-120 · "Move to…" opens NOTHING on a phone · [AGENT]
-- **Check:** `grep -n "if (isMobile) {" workbench/control_plane/src/app/projects/page.tsx`
-  → note the line. Then find `movingNode ? (`. It sits **after** that early
-  return, so the phone branch never renders it.
-- **Why it is invisible.** The menu entry is drawn, the click lands, and the
-  handler sets `movingNode`. No dialog exists in the phone tree to render it.
-  Nothing errors and nothing appears. A member reads it as a dead menu item.
-- **Measured 2026-09-19** in the visual rig, at 390px. The row menu opens, the
-  drawer closes, and the screen does not change.
-- **The fix, and the trap in it.** Move the mount into `overlays`, which BOTH
-  returns render. `DeleteProjectDialog` is mounted there for this reason and
-  its comment records it. ⚠️ On a phone the tree IS the drawer sheet, so the
-  entry must also close the drawer, or the dialog opens behind it.
-- **⚠️ Check every other dialog in the desktop return the same way.** This is
-  one instance of a pattern, not one bug. Nothing in the tree tests layout.
-- **Authority:** `app/projects/page.tsx` · `DESIGN_SYSTEM.md` §8 · H-8
-- **Added:** 2026-09-19 · found while building the Delete affordance (H-8).
-
-### H-119 · Decide which lane closes a task when a project STOPS · [OWNER]
-- **Check:** `grep -n "bulk" workbench/control_plane/src/app/projects/page.tsx`
-  → no stop-time bulk close means this is still open.
-- **Why an owner.** D-PM-26 says a stop must OFFER to close the open tasks. The
-  offer needs a lane, and the lane carries a meaning. **Done** and **Cancelled**
-  read differently in every report we send.
-- **Why it cannot just be built.** `POST /projects/tasks/bulk` takes a lane
-  **name**. Migration 196 lets each project own its lanes. So one name cannot
-  close a subtree, and a server-side read must choose per project.
-- **The two shapes.** (1) The server picks each project's first closing-category
-  lane. (2) A stop means cancelled, and the category picks the lane. Shape 2 is
-  a product call.
-- **Authority:** D-PM-26 · `specs/project_management_app.md` §9.8.4 · H-8
-- **Added:** 2026-09-19 · found while building the Delete affordance (H-8).
 
 ### H-8 · Still owed on WS-27bg slice 2, and WS-27bg slice 3 / WS-27bh unbuilt · [AGENT]
 - **Check:** the WS-27 row in `work_plan.md` §2 — it names what is built. Read
