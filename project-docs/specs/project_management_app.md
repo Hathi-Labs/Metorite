@@ -4529,6 +4529,17 @@ So this ticket is mostly **surface plus two corrections**, not new machinery.
 > * The dialog shows the destination picker, then the resolved mapping, then
 >   what will be lost, then the button. ⚠️ **The losses are named before the
 >   button, never in a toast afterwards** (D-PM-29).
+> * ⚠️ **Every mapping table NAMES both ends** — "From: <source> (now)" and
+>   "To: <destination> (after)" — for statuses AND for custom fields (owner
+>   directive, 2026-09-19). An arrow alone leaves the reader to infer the
+>   direction, on the one screen where reading it backwards silently rewrites
+>   every task in the selection. The destination name resolves from the PICKED
+>   node, never from the plan's id: the member chose it from that list, so it
+>   is always resolvable, while an id may name a node the loaded tree does not
+>   hold and the header would degrade to a bare "To".
+> * **The field mapping is shown, not only its losses.** A member moving work
+>   needs to see where a value LANDS as much as which ones vanish, and an
+>   orphan is listed with an explicit "dropped" rather than omitted.
 > * It uses `Modal`, `Button` and the promoted `ContextMenu`. No hand-rolled
 >   dialog (WS-27ak).
 > * ⚠️ **It is mounted where BOTH page returns render it** — `overlays`, not the
