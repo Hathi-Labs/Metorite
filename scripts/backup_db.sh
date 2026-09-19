@@ -132,8 +132,15 @@ pg pg_dumpall -U "$PG_USER" --globals-only > "$DEST/globals.sql"
 # maintenance database `postgres` is excluded — UNLESS it IS the app database
 # (see APP_DB above; the exclusion once dumped nothing on a Supabase-named box
 # and the migration gate refused a live deploy, 2026-08-25).
+# ⚠️ **`acb_verify_%` is EXCLUDED, added 2026-09-19.** The deep verify below
+# restores into a scratch database of that name. Two runs overlapping — or one
+# that died before its trap fired — leaves it behind, and the next run then
+# enumerates it, dumps it, and writes its checksum into the manifest as though
+# it were a real database. Observed: `acb_verify_1789810167.dump` in a manifest.
+# A backup that backs up its own scratch copy wastes disk and, worse, makes the
+# manifest describe something that was never part of the product.
 DBS="$(pg psql -U "$PG_USER" -d postgres -tAc \
-  "select datname from pg_database where datistemplate = false and (datname <> 'postgres' or datname = '$APP_DB') order by datname")"
+  "select datname from pg_database where datistemplate = false and datname not like 'acb_verify_%' and (datname <> 'postgres' or datname = '$APP_DB') order by datname")"
 
 for db in $DBS; do
   printf "    - %-16s ... " "$db"
@@ -211,25 +218,110 @@ if [ "$VERIFY_RESTORE" = "1" ]; then
   # failed at the verify step. Keeping it beside the dump also means the
   # evidence for a backup travels with that backup instead of being overwritten
   # by the next run.
-  if pgi pg_restore -U "$PG_USER" -d "$SCRATCH" --no-owner --no-acl \
-       < "$DEST/$APP_DB.dump" > "$DEST/verify_restore.log" 2>&1; then
-    live="$(pg psql -U "$PG_USER" -d "$APP_DB" -tAc \
-            "select count(*) from information_schema.tables where table_schema='public'")"
-    rest="$(pg psql -U "$PG_USER" -d "$SCRATCH" -tAc \
-            "select count(*) from information_schema.tables where table_schema='public'")"
-    echo "    public tables: live=$live restored=$rest"
-    if [ "$live" != "$rest" ]; then
-      warn "table count MISMATCH — backup is not a faithful copy"
+  # ⚠️ **A MANAGED cluster dumps schemas we may not restore, and that is not a
+  # broken backup.** Measured 2026-09-19 on Supabase: the restore raised
+  # exactly two errors — `permission denied to set parameter log_min_messages`
+  # and `permission denied for table vault.secrets`. Both are the provider's
+  # own internals. Our `public` schema restored completely.
+  #
+  # 🔴 **So a non-zero exit is NOT the assertion.** The assertion is, and always
+  # was, the line below: the restored copy has the same public tables as the
+  # live database. Failing the whole backup on the provider's vault would mean
+  # nightly red on a backup that is in fact good, and a unit that is red every
+  # night is a unit nobody reads.
+  #
+  # ⚠️ **Matched on PERMISSION DENIED, not on schema names.** A first attempt
+  # grepped for `vault` and failed: pg_restore's error line reads
+  # `permission denied for table secrets` and names no schema at all — the
+  # schema appears only on the following `Command was: COPY vault.secrets` line.
+  # A rule that reads one line cannot see it.
+  #
+  # 🔴 **Why a permission denial is safe to tolerate HERE and nowhere else.**
+  # The scratch database was created moments ago by this same role, so every
+  # object we own in it is owned by us. A denial can therefore only be a
+  # provider object the dump carried along. Any OTHER error — a syntax failure,
+  # a missing type, a constraint violation — still fails the backup.
+  restore_rc=0
+  pgi pg_restore -U "$PG_USER" -d "$SCRATCH" --no-owner --no-acl \
+     < "$DEST/$APP_DB.dump" > "$DEST/verify_restore.log" 2>&1 || restore_rc=$?
+
+  if [ "$restore_rc" != "0" ]; then
+    OURS_FAILED="$(grep -E '^pg_restore: error' "$DEST/verify_restore.log" \
+                   | grep -Ev 'permission denied' || true)"
+    if [ -n "$OURS_FAILED" ]; then
+      warn "pg_restore FAILED on objects we own — see $DEST/verify_restore.log"
+      printf '%s\n' "$OURS_FAILED" | head -20 >&2
       exit 1
     fi
-    echo "    restore verified"
-  else
-    warn "pg_restore FAILED — see /tmp/verify_restore.log"
-    tail -20 /tmp/verify_restore.log >&2
+    say "Restore raised only provider-managed errors — continuing to the table check"
+    grep -cE '^pg_restore: error' "$DEST/verify_restore.log" \
+      | sed 's/^/    provider-managed errors ignored: /'
+  fi
+
+  live="$(pg psql -U "$PG_USER" -d "$APP_DB" -tAc \
+          "select count(*) from information_schema.tables where table_schema='public'")"
+  rest="$(pg psql -U "$PG_USER" -d "$SCRATCH" -tAc \
+          "select count(*) from information_schema.tables where table_schema='public'")"
+  echo "    public tables: live=$live restored=$rest"
+  # 🔴 Zero on BOTH sides is not agreement, it is two failures matching. A
+  # restore that produced no tables at all would otherwise pass this check.
+  if [ -z "$live" ] || [ "$live" = "0" ]; then
+    warn "the LIVE database reports no public tables — the check cannot mean anything"
     exit 1
   fi
+  if [ "$live" != "$rest" ]; then
+    warn "table count MISMATCH — backup is not a faithful copy"
+    exit 1
+  fi
+  echo "    restore verified"
   pg dropdb -U "$PG_USER" --if-exists "$SCRATCH" >/dev/null 2>&1 || true
   trap - EXIT
+fi
+
+# --- The Customer Console's own cluster (H-98) -------------------------------
+# 🔴 **The Console database has NEVER been covered here, and the owner lost
+# Console data on 2026-09-01 with no backup to restore.** Everything above
+# enumerates `pg_database` on ONE connection. The Console is a SEPARATE
+# Supabase project reached with its own credentials, so it can never appear in
+# that listing however many databases the app's cluster grows.
+#
+# ⚠️ **Skipped LOUDLY when the DSN is absent.** A box without the Console must
+# still back up the app database rather than fail the whole unit — but a silent
+# skip is exactly how this gap survived. The warning below is the evidence.
+#
+# ⚠️ **`pg_dump` takes the URL directly.** Re-deriving PGHOST and PGUSER from
+# it would be a second parser for a string libpq already understands, and
+# getting the pooler's user format wrong is a failure that shows up at restore.
+if [ -n "${CUSTOMER_CONSOLE_DATABASE_URL:-}" ]; then
+  say "Customer Console cluster (separate project)"
+  # The app's DSN carries a SQLAlchemy driver suffix libpq does not understand.
+  CC_DSN="${CUSTOMER_CONSOLE_DATABASE_URL/postgresql+psycopg:/postgresql:}"
+  CC_DSN="${CC_DSN/postgresql+asyncpg:/postgresql:}"
+  printf "    - %-16s ... " "customer_console"
+  # ⚠️ stderr to a FILE, never the console: pg_dump echoes the whole connection
+  # string on failure, password included. That has reached a transcript here.
+  if pg_dump -d "$CC_DSN" -Fc > "$DEST/customer_console.dump" \
+       2> "$DEST/customer_console.err"; then
+    if pg_restore --list > /dev/null < "$DEST/customer_console.dump" 2>/dev/null; then
+      echo "ok ($(du -h "$DEST/customer_console.dump" | cut -f1))"
+      rm -f "$DEST/customer_console.err"
+      (cd "$DEST" && sha256sum ./customer_console.dump >> MANIFEST.txt)
+    else
+      echo "CORRUPT"
+      warn "pg_restore could not read customer_console.dump — backup FAILED"
+      exit 1
+    fi
+  else
+    echo "FAILED"
+    warn "Could not dump the Customer Console database. The app database above"
+    warn "IS backed up; the Console's is NOT. See $DEST/customer_console.err"
+    warn "— that file holds the DSN, so do not paste it anywhere."
+    exit 1
+  fi
+else
+  warn "CUSTOMER_CONSOLE_DATABASE_URL is unset — the Console database is NOT in"
+  warn "this backup. If this box serves the Console, that is H-98: the unit is"
+  warn "missing its second EnvironmentFile."
 fi
 
 # --- Off-box copy ------------------------------------------------------------

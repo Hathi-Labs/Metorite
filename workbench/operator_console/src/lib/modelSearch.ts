@@ -7,7 +7,8 @@
 // hold it — this app's suite carries no React renderer, so anything expressed
 // in JSX is untested by construction.
 
-import type { CatalogModel, ModelKind } from "./contract";
+import { KIND_LABEL, type CatalogModel, type ModelKind } from "./contract";
+import type { Tone } from "./tone";
 
 export type ModelStatus = "costed" | "undeclared" | "nokey" | "costblind";
 
@@ -61,13 +62,25 @@ export const NO_FILTERS: Filters = {
  *
  * ⚠️ **The DESCRIPTION is searched too.** An operator looking for a cheap
  * transcription model types "cheap", not a model id. Restricting the match to
- * the id makes the box useless for the only query it is really used for. */
+ * the id makes the box useless for the only query it is really used for.
+ *
+ * 🔴 **The KIND LABELS are in the haystack, added 2026-09-19.** Capability was
+ * reachable only through a row of chips, so "which models read images" needed
+ * a chip and could not be typed. Measured the same day: that row carried seven
+ * chips and only two ever had models behind them — five read `0` on every
+ * install. Putting the labels here is what let the row go.
+ *
+ * ⚠️ **The LABEL, not the slug.** An operator types "reads images", not
+ * "vision". The slug is matched too, because it costs nothing and an engineer
+ * reading `model_capability` types that instead. */
 export function matchesQuery(m: CatalogModel, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
   // Every whitespace-separated word must appear SOMEWHERE. "claude fast"
   // should find a fast Claude, and an OR would return every Claude.
-  const hay = `${m.id} ${m.label} ${m.provider} ${m.description}`.toLowerCase();
+  const kinds = m.kinds.map((k) => `${k} ${KIND_LABEL[k]}`).join(" ");
+  const hay =
+    `${m.id} ${m.label} ${m.provider} ${m.description} ${kinds}`.toLowerCase();
   return q.split(/\s+/).every((word) => hay.includes(word));
 }
 
@@ -146,14 +159,171 @@ export function kindFacets(
   }));
 }
 
-export function providerFacets(
-  models: CatalogModel[], f: Filters, armed: string[] = [],
-): Facet<string>[] {
-  const all = [...new Set(models.map((m) => m.provider))].sort();
-  return all.map((p) => ({
-    value: p,
-    count: filterModels(models, { ...f, providers: [p] }, armed).length,
-  }));
+/** How close a model is to the date its vendor switches it off.
+ *
+ * 🔴 **A declared model's card never said this, and the risk is large.**
+ * Measured against the live feed on 2026-09-19: 798 models carry a retirement
+ * date, 337 of them ALREADY PAST and 214 inside ninety days. Declare one of
+ * those and the tier pointing at it fails the day the vendor pulls it, with
+ * nothing on this page having said so. The "available" table showed the badge;
+ * the card you look at afterwards did not.
+ *
+ * ⚠️ **Silent past ninety days, deliberately.** A 2027 date is a fact nobody
+ * can act on today, and a card that warns about everything trains an operator
+ * to read none of it. Past and imminent are what change a decision.
+ *
+ * ⚠️ **"retired" in the past tense, and DANGER.** A date that has gone by is
+ * not a warning about the future — the model may already be refusing calls.
+ */
+export type Retirement = { label: string; tone: Tone; days: number };
+
+export function retirementOf(
+  deprecatedOn: string | null,
+  today: Date,
+): Retirement | null {
+  if (!deprecatedOn) return null;
+  const when = Date.parse(`${deprecatedOn}T00:00:00Z`);
+  if (Number.isNaN(when)) return null;
+  const midnight = Date.UTC(
+    today.getUTCFullYear(),
+    today.getUTCMonth(),
+    today.getUTCDate(),
+  );
+  const days = Math.round((when - midnight) / 86_400_000);
+  if (days < 0) {
+    return { label: `retired ${deprecatedOn}`, tone: "danger", days };
+  }
+  if (days <= 90) {
+    return {
+      label: days === 0 ? "retires today" : `retires in ${days} days`,
+      tone: "warn",
+      days,
+    };
+  }
+  return null;
+}
+
+/** Which tiers point at this model, and where in each chain it sits.
+ *
+ * 🔴 **The card could not answer "does this one matter?"** A declared model
+ * that some tier serves from is load-bearing — changing or removing it moves
+ * customer traffic. A declared model no tier points at is doing nothing at
+ * all. Both drew identically, so the page gave an operator no way to tell the
+ * two apart before acting.
+ *
+ * ⚠️ **Rank is carried, because first and second choice are different jobs.**
+ * A tier's primary serves every call. Its backup serves only during an outage,
+ * so swapping one is a far smaller act than swapping the other.
+ *
+ * ⚠️ **Sorted by rank then tier**, so a model's own card always lists the
+ * places it is a primary before the places it is a fallback.
+ */
+export type TierUse = { tier: string; task: string; rank: number };
+
+export function tiersUsing(modelId: string, tiers: TierLike[]): TierUse[] {
+  const out: TierUse[] = [];
+  for (const t of tiers) {
+    for (const j of t.jobs) {
+      for (const step of j.chain) {
+        if (step.model === modelId) {
+          out.push({ tier: t.label || t.slug, task: j.task, rank: step.rank });
+        }
+      }
+    }
+  }
+  return out.sort((a, b) => a.rank - b.rank || a.tier.localeCompare(b.tier));
+}
+
+/** The shape `tiersUsing` needs — deliberately narrower than `Tier`, so the
+ *  function is testable without building a whole catalog. */
+export type TierLike = {
+  slug: string;
+  label: string;
+  jobs: { task: string; chain: { model: string; rank: number }[] }[];
+};
+
+/** Where a model sits in one tier's chain, in an operator's words. */
+export function rankWord(rank: number): string {
+  if (rank <= 1) return "1st choice";
+  if (rank === 2) return "backup";
+  return `backup ${rank - 1}`;
+}
+
+/** The states that mean somebody has work to do on this model.
+ *
+ * 🔴 **Four chips became one question, 2026-09-19.** The state row let you
+ * filter to `costed`, `costs blind`, `no key installed` and `not connected`
+ * separately. Three of those are the same question — "what is not ready" —
+ * and the fourth is "show me the ones with no problem", which is what the
+ * unfiltered page already shows. Four controls for one question is why the
+ * row read as a puzzle.
+ *
+ * ⚠️ **`costed` is deliberately absent.** It is the healthy state, every card
+ * carries its own badge, and a filter for "show me what is fine" answers
+ * nothing an operator acts on.
+ */
+export const ATTENTION_STATUSES: ModelStatus[] = [
+  "costblind",
+  "nokey",
+  "undeclared",
+];
+
+/** How many models need somebody's attention.
+ *
+ * ⚠️ Counted through `filterModels`, never a second rule, so the number on the
+ * toggle and the list it produces cannot disagree. */
+export function attentionCount(
+  models: CatalogModel[],
+  f: Filters,
+  armed: string[],
+): number {
+  return filterModels(models, { ...f, statuses: ATTENTION_STATUSES }, armed)
+    .length;
+}
+
+/** The capability chips worth drawing: the ones with models behind them.
+ *
+ * 🔴 **A chip that always reads `0` is a control that has never once been
+ * useful.** Measured 2026-09-19: of seven kind chips, `chat` had 42 models,
+ * `transcribe` had 1, and the other five had none on any install.
+ *
+ * ⚠️ **One kind left means NO row.** Filtering a list to the only kind it
+ * contains returns the same list, so the control does nothing but take space
+ * and invite a click. Capability is still typeable — `matchesQuery` reads the
+ * kind labels.
+ */
+export function usefulKindFacets(
+  facets: Facet<ModelKind>[],
+  selected: ModelKind[],
+): Facet<ModelKind>[] {
+  const live = facets.filter(
+    (k) => k.count > 0 || selected.includes(k.value),
+  );
+  return live.length > 1 ? live : [];
+}
+
+
+/** How many model cards to draw before asking. */
+export const MODEL_PAGE = 24;
+
+/** The page of cards to draw, and how many sit behind it.
+ *
+ * 🔴 **A catalog is unbounded and this page was not.** Forty-three declared
+ * models drew a 13483px page on 2026-09-19. One OpenRouter key declares two
+ * hundred, which is five times that — and the browser builds every card, every
+ * feed lookup and every drift comparison before anybody sees the first one.
+ *
+ * ⚠️ **`expanded` shows everything, and it is the operator's choice.** A hard
+ * cap with no way past it makes a model invisible, and "search for it" is no
+ * answer when you do not know its name.
+ */
+export function pageOf<T>(
+  rows: T[],
+  expanded: boolean,
+  size: number = MODEL_PAGE,
+): { shown: T[]; hidden: number } {
+  if (expanded || rows.length <= size) return { shown: rows, hidden: 0 };
+  return { shown: rows.slice(0, size), hidden: rows.length - size };
 }
 
 /** The line above the list. Says what is shown and, when nothing is, why. */

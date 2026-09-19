@@ -53,7 +53,7 @@ import os
 import re
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -237,29 +237,31 @@ _SLUG_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 #: Hostnames a customer may never own, because the platform already does — or
 #: intends to. Owner ruling B7, 2026-08-24 (`saas_multitenancy.md` §11 MT-1f).
-_RESERVED_SLUGS = frozenset({
-    "admin",
-    "api",
-    "app",
-    "assets",
-    "auth",
-    "billing",
-    "cdn",
-    "console",
-    "dev",
-    "docs",
-    "help",
-    "login",
-    "mail",
-    "operator",
-    "signin",
-    "signup",
-    "staging",
-    "static",
-    "status",
-    "ws",
-    "www",
-})
+_RESERVED_SLUGS = frozenset(
+    {
+        "admin",
+        "api",
+        "app",
+        "assets",
+        "auth",
+        "billing",
+        "cdn",
+        "console",
+        "dev",
+        "docs",
+        "help",
+        "login",
+        "mail",
+        "operator",
+        "signin",
+        "signup",
+        "staging",
+        "static",
+        "status",
+        "ws",
+        "www",
+    }
+)
 
 
 # ── Schemas ─────────────────────────────────────────────────────────────────
@@ -354,8 +356,7 @@ class ProvisionRequest(BaseModel):
         # sends the operator to fix a thing that is not wrong.
         if slug in _RESERVED_SLUGS:
             raise ValueError(
-                "that workspace address is reserved for the platform; "
-                "please choose a different one"
+                "that workspace address is reserved for the platform; please choose a different one"
             )
         return slug
 
@@ -1334,15 +1335,12 @@ def operator_sign_in(req: SigninRequest, request: Request) -> dict[str, Any]:
             # who signs in. `bootstrap_allowed` keeps the directory comparison
             # in `directory` mode and pins to `OPERATOR_BOOTSTRAP_EMAIL`
             # exactly in `registry` mode. Every doubt reads False.
-            if row is None and operators.bootstrap_allowed(
-                identity.email, identity.tid
-            ):
-                try:
+            if row is None and operators.bootstrap_allowed(identity.email, identity.tid):
+                # A refusal means the registry already holds a row, so the
+                # normal path applies and `admit` below refuses on the
+                # registry check.
+                with suppress(operators.BootstrapRefused):
                     operators.bootstrap(conn)
-                except operators.BootstrapRefused:
-                    # The registry already holds a row, so the normal path
-                    # applies and `admit` below refuses on the registry check.
-                    pass
                 row = store.operator_by_email(conn, identity.email)
 
             operator = operators.admit(
@@ -1975,9 +1973,7 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 # forbids a rename in place. They ARE the peak rate.
                 "vendor_input_offpeak_per_1m_usd": None if r[13] is None else str(r[13]),
                 "vendor_output_offpeak_per_1m_usd": None if r[14] is None else str(r[14]),
-                "vendor_cached_input_offpeak_per_1m_usd": (
-                    None if r[15] is None else str(r[15])
-                ),
+                "vendor_cached_input_offpeak_per_1m_usd": (None if r[15] is None else str(r[15])),
                 # `HH:MM` on the wire. A `time` would serialise as `16:30:00`
                 # and the operator typed `16:30`.
                 "offpeak_start_utc": None if r[16] is None else r[16].strftime("%H:%M"),
@@ -1986,9 +1982,7 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 "context_tier_threshold": r[18],
                 "vendor_input_long_per_1m_usd": None if r[19] is None else str(r[19]),
                 "vendor_output_long_per_1m_usd": None if r[20] is None else str(r[20]),
-                "vendor_cached_input_long_per_1m_usd": (
-                    None if r[21] is None else str(r[21])
-                ),
+                "vendor_cached_input_long_per_1m_usd": (None if r[21] is None else str(r[21])),
                 "description": r[6],
                 "reads_images": r[7],
                 "thinks_first": r[8],
@@ -2236,18 +2230,17 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 "tier": m["tier"],
                 "calls": m["calls"],
                 "costed_calls": m["costed_calls"],
+                # Migration 031. How many of the costed calls carry a cost the
+                # vendor stated, so the console can say whether a margin is
+                # measured or derived instead of implying it is all measured.
+                "measured_calls": m["measured_calls"],
                 "credits": str(m["credits"]),
                 "cost_usd": str(m["cost_usd"]),
                 "margin_multiplier": (
-                    None if m["margin_multiplier"] is None
-                    else str(m["margin_multiplier"])
+                    None if m["margin_multiplier"] is None else str(m["margin_multiplier"])
                 ),
-                "margin_floor": (
-                    None if m["margin_floor"] is None else str(m["margin_floor"])
-                ),
-                "realised_margin": (
-                    None if _realised is None else str(_realised)
-                ),
+                "margin_floor": (None if m["margin_floor"] is None else str(m["margin_floor"])),
+                "realised_margin": (None if _realised is None else str(_realised)),
             }
             for m in tier_margins
             for _realised in [
@@ -2504,16 +2497,13 @@ def _tier_rate_scales(req: TierRateRequest) -> dict[str, Decimal]:
     "not sent" and silently reach for the other field.
     """
     return {
-        "input": (
-            req.input_per_1m if req.input_per_1m is not None
-            else req.input_per_1k * _PER_1K
-        ),
+        "input": (req.input_per_1m if req.input_per_1m is not None else req.input_per_1k * _PER_1K),
         "output": (
-            req.output_per_1m if req.output_per_1m is not None
-            else req.output_per_1k * _PER_1K
+            req.output_per_1m if req.output_per_1m is not None else req.output_per_1k * _PER_1K
         ),
         "cached": (
-            req.cached_input_per_1m if req.cached_input_per_1m is not None
+            req.cached_input_per_1m
+            if req.cached_input_per_1m is not None
             else req.cached_input_per_1k * _PER_1K
         ),
     }
@@ -3043,6 +3033,42 @@ def list_provider_credentials(staff: Operator, include_revoked: bool = False) ->
     }
 
 
+@app.get("/providers/spend")
+def provider_spend(staff: Operator, days: int = store.SPEND_WINDOW_DAYS) -> dict[str, Any]:
+    """What each vendor cost US over the window. **Operator-only.**
+
+    🔴 **The console could see what customers spend and not what we owe.** Every
+    other spend read answers "what did a customer use". Nothing answered "what
+    is the bill", which is the number every margin is only meaningful against.
+
+    ⚠️ **`measured_usd` is the reconcilable part** (migration 031). It is the
+    sum of costs a vendor actually stated, so it is the figure to hold an
+    invoice against. The `cost_usd` total includes calls we costed ourselves
+    from `model_profile`, which is an estimate and can be stale.
+    """
+    # A window nobody can widen without meaning to. The read is a full scan of
+    # the usage partition, and an unbounded `days` is how a console page times
+    # out against a year of rows.
+    window = max(1, min(int(days), 365))
+    with get_engine().begin() as conn:
+        rows = store.spend_by_provider(conn, days=window)
+    return {
+        "days": window,
+        "providers": [
+            {
+                "provider": r["provider"],
+                "calls": r["calls"],
+                "measured_calls": r["measured_calls"],
+                # ⚠️ Strings, like every other money field this API returns.
+                # A float here would round a Decimal on the way out.
+                "cost_usd": str(r["cost_usd"]),
+                "measured_usd": str(r["measured_usd"]),
+            }
+            for r in rows
+        ],
+    }
+
+
 @app.post("/providers/credentials")
 def install_provider_credential(req: ProviderCredentialRequest, staff: Operator) -> dict[str, Any]:
     """Install a provider credential. Fernet at rest, INSERT only.
@@ -3196,9 +3222,7 @@ def placed_orgs(caller: ProvisionCaller) -> dict[str, Any]:
             ),
         )
     with get_engine().begin() as conn:
-        rows = store.deployment_placed_orgs(
-            conn, deployment_id=caller.deployment_id
-        )
+        rows = store.deployment_placed_orgs(conn, deployment_id=caller.deployment_id)
     # ⚠️ **The lifecycle verdict is computed HERE, and travels as a BOOLEAN.**
     # The box must never branch on a lifecycle WORD — that would be a second
     # copy of this state machine spelled as an `if`, which §6(d) refuses and
@@ -3227,13 +3251,8 @@ def placed_orgs(caller: ProvisionCaller) -> dict[str, Any]:
     # read it. It travels as this one boolean or not at all.
     return {
         "organizations": [
-            {
-                key: value for key, value in row.items() if key != "status"
-            } | {
-                "provisionable": capabilities_of(
-                    row["status"]
-                ).can_be_provisioned
-            }
+            {key: value for key, value in row.items() if key != "status"}
+            | {"provisionable": capabilities_of(row["status"]).can_be_provisioned}
             for row in rows
         ]
     }
@@ -3544,7 +3563,7 @@ def set_lifecycle(req: LifecycleRequest, staff: Operator) -> dict[str, Any]:
         try:
             assert_transition(current, req.target)
         except TransitionRefused as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         # Entering `cancelled` opens the export window. Recorded as a date on
         # the row, so "how long do they have" is answerable by anyone rather
@@ -4252,9 +4271,7 @@ def billing_summary(org_slug: str, _: Operator) -> dict[str, Any]:
                 "credits": str(lot.credits),
                 "credits_used": str(lot.credits_used),
                 "remaining": str(lot.remaining),
-                "price_paid_inr": (
-                    None if lot.price_paid_inr is None else str(lot.price_paid_inr)
-                ),
+                "price_paid_inr": (None if lot.price_paid_inr is None else str(lot.price_paid_inr)),
                 "expires_at": _iso(lot.expires_at),
             }
             # The order they will BURN in, not an arbitrary one. An operator
@@ -5343,7 +5360,7 @@ def _vendor_prices(
     """
     row = conn.execute(
         text(
-            f"SELECT {', '.join(_PROFILE_RATE_COLUMNS)} "  # noqa: S608 - a fixed tuple, never input
+            f"SELECT {', '.join(_PROFILE_RATE_COLUMNS)} "  # a fixed tuple, never input
             "FROM model_profile WHERE model = :m"
         ),
         {"m": model},
@@ -5351,8 +5368,11 @@ def _vendor_prices(
     if row is None:
         # Unknown model: no rates, and no claim about a window we cannot see.
         return {
-            "input": None, "output": None, "cached": None,
-            "window": None, "context": None,
+            "input": None,
+            "output": None,
+            "cached": None,
+            "window": None,
+            "context": None,
         }
 
     profile = dict(zip(_PROFILE_RATE_COLUMNS, row, strict=True))
@@ -5505,9 +5525,7 @@ def _place_call_hold(
         return None
 
     try:
-        store.place_hold(
-            conn, org_id=org_id, request_id=request_id, credits=estimate.credits
-        )
+        store.place_hold(conn, org_id=org_id, request_id=request_id, credits=estimate.credits)
     except store.HoldRefused as refused:
         return HTTPException(
             status_code=402,
@@ -5666,6 +5684,12 @@ def _record_completion(
                     task=resolved.task,
                     quantity=quantity,
                 )
+            # WHERE the cost came from (migration 031). Set beside every branch
+            # that sets `cost`, because a number with no provenance is what
+            # H-85 is about — a measured margin and a guessed one must not read
+            # the same in a report.
+            cost_source: str | None = None
+
             if metering_fault:
                 # ⚠️ NULL, not zero. A broken partition breaks OUR cost sum by
                 # the same arithmetic it breaks the charge with, and zero would
@@ -5683,6 +5707,27 @@ def _record_completion(
                     )
                 billed = Decimal(0)
                 cost = Decimal(0)
+                # §3.4: the tokens ran on the customer's OWN vendor account, so
+                # the zero is a fact about who paid and not a measurement we
+                # took. It is neither of migration 031's two words.
+                cost_source = None
+            elif usage.vendor_reported_cost_usd is not None:
+                # 🔴 **THE VENDOR TOLD US, so stop calculating** (migration 031).
+                # OpenRouter reports what it actually billed for this call.
+                # That is a measurement, and it outranks every number we could
+                # derive: no `model_profile` price to keep fresh, no pricing
+                # window to resolve, no cache convention to reason about.
+                #
+                # ⚠️ Deliberately ABOVE both computed branches, so it applies to
+                # a per-unit call the same as a token one. A vendor that prices
+                # by the picture still knows what the picture cost.
+                #
+                # ⚠️ `window_at_call` and `context_tier` stay NULL here, and
+                # that is correct rather than missing. They exist to explain how
+                # a DERIVED cost was reached. Nothing needs to explain a figure
+                # the vendor stated.
+                cost = usage.vendor_reported_cost_usd
+                cost_source = "vendor"
             elif quantity is not None:
                 # A per-unit call. The vendor sells it by minute, by picture
                 # or by character, so our cost comes off the column that
@@ -5697,6 +5742,9 @@ def _record_completion(
                         unit=_task_unit(conn, resolved.task),
                     ),
                 )
+                # `None` when nobody has priced the model. Unknown carries no
+                # source, because there is no number to attribute.
+                cost_source = "computed" if cost is not None else None
             else:
                 # ⚠️ The tokens the PROVIDER reported, and the moment the call
                 # STARTED — never an estimate and never "now". Migration 024's
@@ -5715,6 +5763,7 @@ def _record_completion(
                     output_per_1m=prices["output"],
                     cached_per_1m=prices["cached"],
                 )
+                cost_source = "computed" if cost is not None else None
             store.record_usage(
                 conn,
                 org_id=org_id,
@@ -5745,6 +5794,10 @@ def _record_completion(
                 completion_tokens=usage.completion_tokens,
                 cached_tokens=usage.cached_tokens,
                 provider_cost_usd=cost,
+                # Migration 031. Measured by the vendor, or derived by us —
+                # recorded beside the number, so a margin report never mixes
+                # the two without saying so (H-85).
+                cost_source=cost_source,
                 served_rank=getattr(resolved, "rank", 1),
                 byok_served=byok,
                 # ⚠️ NOT `refusal_reason`. The call SERVED — the customer holds
@@ -5816,12 +5869,12 @@ def _chain_credentials(
             continue
         try:
             credentials[vendor] = provider_credential(conn, provider=vendor, org_id=org_id)
-        except Exception:
+        except Exception as exc:
             # A missing or rotated encryption key must fail CLOSED with the
             # same 503 shape the other secrets use — not a 500 that reads
             # as a bug.
             _log.exception("router.credential_unavailable")
-            raise HTTPException(status_code=503, detail="provider credentials unavailable")
+            raise HTTPException(status_code=503, detail="provider credentials unavailable") from exc
     return credentials
 
 
@@ -6198,6 +6251,61 @@ async def _streamed_completion(
         await router_mod.aclose_quietly(source)
 
 
+def _preflight_gates(
+    conn,
+    *,
+    chain: list[ResolvedTier],
+    req: CompletionRequest,
+    caller: Caller,
+    org_id: str,
+    request_id: str,
+) -> tuple[dict[str, router_mod.Credential | None], HTTPException | None, HTTPException | None]:
+    """Load the chain's credentials, then run CP-6's two pre-call refusals.
+
+    Returns the credentials, the balance refusal and the reserve refusal.
+
+    🔴 **Neither refusal is RAISED here** (§8.1 clause 3). A row written on the
+    serving connection rolls back with the raise, so both travel back to the
+    route as values and are delivered there, after the transaction closes.
+
+    📌 Extracted from `chat_completions` for C901 (H-102). It moves no
+    behaviour: same transaction, same order, same two gates.
+    """
+    credentials = _chain_credentials(conn, chain, org_id=org_id)
+
+    # CP-6. BEFORE the provider call, which is the only place a refusal
+    # is worth anything: after it we have already spent the money.
+    # Metering afterwards stays best-effort and never fails a
+    # completion — the GATE may refuse, the METER may not.
+    refusal = _spend_refusal(conn, caller) if _spend_gate_enabled() else None
+
+    # 🔴 **The RESERVE** (migration 027, `credit_pricing.md` §5). The
+    # gate above answers "is there any headroom at all"; this answers
+    # "is there enough for THIS call", and takes it.
+    #
+    # ⚠️ Same transaction as the gate, and `place_hold` locks the
+    # organization row inside it. Two calls arriving together are
+    # serialised there — without it each reads the same balance, each
+    # passes, and the organization goes negative by the second one.
+    #
+    # ⚠️ Only behind the spend gate. The reserve is a spend refusal by
+    # another name, and arming it while the gate ships OFF would refuse
+    # customers the gate deliberately does not (H-42's ordering).
+    hold_refusal: HTTPException | None = None
+    if refusal is None and _spend_gate_enabled():
+        hold_refusal = _place_call_hold(
+            conn,
+            org_id=org_id,
+            request_id=request_id,
+            tier=req.model,
+            task=req.task,
+            messages=req.messages,
+            max_tokens=req.max_tokens,
+        )
+
+    return credentials, refusal, hold_refusal
+
+
 @app.post("/v1/chat/completions")
 def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
     """Proxy one completion, gate it, and charge it.
@@ -6254,36 +6362,16 @@ def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
         unknown_tier = wall.error
 
         if unknown_tier is None:
-            credentials = _chain_credentials(conn, chain, org_id=org_id)
-
-            # CP-6. BEFORE the provider call, which is the only place a refusal
-            # is worth anything: after it we have already spent the money.
-            # Metering afterwards stays best-effort and never fails a
-            # completion — the GATE may refuse, the METER may not.
-            refusal = _spend_refusal(conn, caller) if _spend_gate_enabled() else None
-
-            # 🔴 **The RESERVE** (migration 027, `credit_pricing.md` §5). The
-            # gate above answers "is there any headroom at all"; this answers
-            # "is there enough for THIS call", and takes it.
-            #
-            # ⚠️ Same transaction as the gate, and `place_hold` locks the
-            # organization row inside it. Two calls arriving together are
-            # serialised there — without it each reads the same balance, each
-            # passes, and the organization goes negative by the second one.
-            #
-            # ⚠️ Only behind the spend gate. The reserve is a spend refusal by
-            # another name, and arming it while the gate ships OFF would refuse
-            # customers the gate deliberately does not (H-42's ordering).
-            if refusal is None and _spend_gate_enabled():
-                hold_refusal = _place_call_hold(
-                    conn,
-                    org_id=org_id,
-                    request_id=request_id,
-                    tier=req.model,
-                    task=req.task,
-                    messages=req.messages,
-                    max_tokens=req.max_tokens,
-                )
+            # Credentials and CP-6's two refusals, in one place. `_preflight_gates`
+            # holds the order and the reason each gate sits where it does.
+            credentials, refusal, hold_refusal = _preflight_gates(
+                conn,
+                chain=chain,
+                req=req,
+                caller=caller,
+                org_id=org_id,
+                request_id=request_id,
+            )
 
     if unknown_tier is not None:
         _record_refusal(

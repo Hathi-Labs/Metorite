@@ -11,6 +11,7 @@
 // existed, through the same `/catalog/profiles` seam.
 
 import type { CatalogModel, FeedModel, VendorFeed } from "./contract";
+import { statusOf } from "./modelSearch";
 import { fixedDecimal } from "./pricing";
 import type { Tone } from "./tone";
 
@@ -104,6 +105,101 @@ export function fillCount(m: CatalogModel, f: FeedModel | undefined): number {
   if (m.perCharacterUsd === null && f.perCharacterUsd !== null) n++;
   if (m.perImageUsd === null && f.perImageUsd !== null) n++;
   return n;
+}
+
+/** Can this declared model be costed straight from the feed, with no typing?
+ *
+ * 🔴 **The question the Models page never asked.** A declared model with no
+ * profile draws "costs blind" and offers a fifteen-box form. For most of them
+ * the answer already sits in `vendor_price_feed`, under the SAME id the Router
+ * routes on. Measured 2026-09-19: `deepseek/deepseek-chat` read costs-blind
+ * while the feed held 0.28 in, 0.42 out and a 131072 window. Asking somebody
+ * to type a number we already hold is the whole complaint.
+ *
+ * ⚠️ **TRUE only when the feed can actually answer.** A row carrying no usable
+ * price fills nothing, and an offer that leaves the model still costs-blind is
+ * worse than no offer: it spends a click and teaches that the button does not
+ * work. `groq/whisper-large-v3-turbo` is the live example — declared, in the
+ * feed, and priced by nobody.
+ *
+ * ⚠️ **Token OR per-unit, because a transcribe model has no token price.**
+ * Either kind makes the call costable, so either is enough.
+ */
+export function canFillFromFeed(f: FeedModel | undefined): boolean {
+  if (!f) return false;
+  const usable = (v: string | null) =>
+    v !== null && v.trim() !== "" && Number(v) > 0;
+  return (
+    usable(f.inputPer1M) ||
+    usable(f.outputPer1M) ||
+    usable(f.perMinuteUsd) ||
+    usable(f.perCharacterUsd) ||
+    usable(f.perImageUsd)
+  );
+}
+
+/** What the feed says this model costs, in whatever unit it is sold by.
+ *
+ * 🔴 **The price column said "—" about models it HAD a price for.** It read
+ * only the two token rates, so every per-unit model drew a dash — and a dash
+ * means "we do not know". Measured 2026-09-19: `groq/whisper-large-v3` carries
+ * a per-second rate and `groq/canopylabs/orpheus-v1-english` a per-character
+ * one, and both showed as unpriced beside an Add button.
+ *
+ * ⚠️ **Returns `null` only when the feed truly knows nothing.** That is the
+ * case worth a warning, and it is the same judgement `canFillFromFeed` makes,
+ * so the dash and the warning can never disagree.
+ *
+ * ⚠️ **The unit is NAMED.** "$0.0000220" beside a token price is meaningless
+ * without "per character" — three orders of magnitude separate them.
+ */
+export function feedPriceLabel(f: FeedModel): string | null {
+  const num = (v: string | null) =>
+    v !== null && v.trim() !== "" && Number(v) > 0 ? Number(v) : null;
+
+  const inTok = num(f.inputPer1M);
+  const outTok = num(f.outputPer1M);
+  if (inTok !== null || outTok !== null) {
+    const a = inTok === null ? "—" : `$${fixedDecimal(inTok)}`;
+    const b = outTok === null ? "—" : `$${fixedDecimal(outTok)}`;
+    return `${a} in / ${b} out`;
+  }
+
+  const perMin = num(f.perMinuteUsd);
+  if (perMin !== null) return `$${fixedDecimal(perMin)} per minute`;
+  const perChar = num(f.perCharacterUsd);
+  if (perChar !== null) return `$${fixedDecimal(perChar)} per character`;
+  const perImg = num(f.perImageUsd);
+  if (perImg !== null) return `$${fixedDecimal(perImg)} per image`;
+
+  return null;
+}
+
+/** Every declared model the feed could cost right now, and nobody has.
+ *
+ * 🔴 **The bulk of the setup work, and it is all copying.** Measured against
+ * the live feed on 2026-09-19: 31 of 43 declared models read "costs blind"
+ * while `vendor_price_feed` held a price for most of them. Filling those one
+ * card at a time is the manual labour this page keeps asking for.
+ *
+ * ⚠️ **Built on `statusOf`, never a second rule.** The badge on the card and
+ * the list behind the button must agree, or the count offers work the page
+ * does not show. `costblind` already means declared, callable, and unpriced —
+ * so a model with no vendor key is correctly NOT here: its problem is the key,
+ * and a price would not fix it.
+ *
+ * ⚠️ **Only where the feed can ANSWER** (`canFillFromFeed`). A count that
+ * includes models the feed cannot price promises work the click will not do.
+ */
+export function blindButFillable(
+  models: CatalogModel[],
+  feed: VendorFeed,
+  armed: string[],
+): CatalogModel[] {
+  const byId = feedById(feed);
+  return models.filter(
+    (m) => statusOf(m, armed) === "costblind" && canFillFromFeed(byId.get(m.id)),
+  );
 }
 
 /** The values "Copy the vendor's facts" writes into the form boxes.

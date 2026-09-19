@@ -12,11 +12,17 @@
 // This app's suite carries no React renderer, so logic in JSX is untested by
 // construction and `fallback.test.ts` is the fence.
 //
-// 🔴 **A backup step cannot be SAVED yet, and this page says so where the
-// control is.** `tier_binding` holds one model per (tier, job) with no ordering
-// column. Drawing an enabled "add a backup" button over a table that cannot
-// store one would be a worse lie than not drawing it: the operator would use
-// it, believe they were covered, and find out during an outage.
+// ⚠️ **THIS COMMENT WAS STALE AND SAID THE OPPOSITE OF THE TRUTH.** It read
+// "a backup step cannot be SAVED yet — `tier_binding` holds one model per
+// (tier, job) with no ordering column". Migration 011 added `rank`: it is
+// `NOT NULL DEFAULT 1`, it sits inside the primary key, and a
+// `CHECK (rank >= 1)` guards it. Chains of any length have been storable for
+// many migrations, and this board's own ↑/↓ controls already save them.
+//
+// 🔴 **A stale comment is worse than no comment.** Somebody reading this file
+// to decide whether failover works would have concluded it does not, and then
+// either built a second mechanism or told a customer we have none. Checked
+// against the live schema on 2026-09-19.
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -32,8 +38,13 @@ import {
   outageHeadline,
   outageReport,
   tierNextStep,
+  backupOptions,
+  backupOptionLabel,
+  vendorsByBlastRadius,
+  OUTAGE_VENDOR_HEAD,
   unusedModels,
 } from "@/lib/fallback";
+import { HELP_TIERS } from "@/lib/help";
 import { describeTierRate } from "@/lib/catalog";
 import { capableModelsFor } from "@/lib/readiness";
 import { chipClass, pricingTone } from "@/lib/tone";
@@ -129,17 +140,25 @@ function Job({
           const r = rateFor.get(k);
           if (!r || r.mode === "unpriced") {
             return (
-              <span className={chipClass("warn")}
-                title="Answers customers and bills nothing until priced">
+              // The chip IS the link. "Set it on the Pricing page" with no
+              // route means the reader has to know the nav by heart.
+              <a
+                className={chipClass("warn")}
+                href="/pricing"
+                title={HELP_TIERS.noPrice}
+              >
                 no price
-              </span>
+              </a>
             );
           }
           return (
-            <span className={chipClass(pricingTone(r.mode))}
-              title="What a customer pays. Set on the Pricing page.">
+            <a
+              className={chipClass(pricingTone(r.mode))}
+              href="/pricing"
+              title="What a customer pays for this tier and job. Opens the Pricing page, where the rate card is set."
+            >
               {r.mode === "priced" ? describeTierRate(r) : r.mode}
-            </span>
+            </a>
           );
         })()}
       </div>
@@ -153,11 +172,11 @@ function Job({
               <Provider model={model} />
             </div>
             <div className="stepactions">
-              <button type="button" className="linklike" aria-label={`Move ${model} up`}
+              <button type="button" className="linklike" aria-label={`Move ${model} up`} title={HELP_TIERS.moveUp}
                 disabled={i === 0} onClick={() => move(i, i - 1)}>↑</button>
-              <button type="button" className="linklike" aria-label={`Move ${model} down`}
+              <button type="button" className="linklike" aria-label={`Move ${model} down`} title={HELP_TIERS.moveDown}
                 disabled={i === chain.length - 1} onClick={() => move(i, i + 1)}>↓</button>
-              <button type="button" className="linklike" aria-label={`Remove ${model}`}
+              <button type="button" className="linklike" aria-label={`Remove ${model}`} title={HELP_TIERS.remove}
                 onClick={() => setChain(chain.filter((_, j) => j !== i))}>Remove</button>
             </div>
           </li>
@@ -180,16 +199,44 @@ function Job({
           <label htmlFor={`add-${k}`}>
             {chain.length === 0 ? "First choice" : "Try this next"}
           </label>
-          <select id={`add-${k}`} value={pick} onChange={(e) => setPick(e.target.value)}>
+          {/* 🔴 **Grouped by provider, because the warning above tells the
+              operator to add "a step from a different provider" and the old
+              flat list made them read a prefix off forty-three strings to do
+              it. A provider the chain does not use yet sorts FIRST — those are
+              the choices that fix the warning.
+
+              ⚠️ Each option carries what the model costs US. A backup is
+              chosen under time pressure, and two models from one vendor can
+              differ tenfold. An unpriced one says so rather than looking
+              equal to a model whose margin is known. */}
+          <select
+            id={`add-${k}`}
+            value={pick}
+            title={HELP_TIERS.picker}
+            onChange={(e) => setPick(e.target.value)}
+          >
             <option value="">Choose a model…</option>
-            {options.map((m) => (
-              <option key={m} value={m}>{m}</option>
+            {backupOptions(options, models, chain).map((g) => (
+              <optgroup
+                key={g.provider}
+                label={
+                  g.alreadyInChain
+                    ? `${g.provider} — already in this chain`
+                    : `${g.provider} — a different provider`
+                }
+              >
+                {g.options.map((o) => (
+                  <option key={o.model} value={o.model}>
+                    {backupOptionLabel(o)}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
           {options.length === 0 && (
             <p className="field-hint">
-              Every model that can do this job is already in the list. Add
-              another on the Models page first.
+              Every model that can do this job is already in the list.{" "}
+              <a href="/models">Add another on the Models page</a> first.
             </p>
           )}
           <div className="job-actions">
@@ -252,17 +299,21 @@ export default function TierBoard({
 
   // Every provider we could lose — the ones a chain actually names, not every
   // vendor in the world.
+  // 🔴 **Worst first, and capped.** Measured 2026-09-19: this drew 67
+  // chips across ten rows, alphabetically, so the first thing a reader saw was
+  // a ghost tier's vendor rather than the one serving every chat band. A
+  // control that needs ten rows of options is a list, not a question.
+  const ranked = useMemo(() => vendorsByBlastRadius(tiers), [tiers]);
   const inUse = useMemo(
-    () =>
-      [
-        ...new Set(
-          tiers
-            .flatMap((t) => t.jobs)
-            .flatMap((j) => j.chain)
-            .map((s) => (s.model.includes("/") ? s.model.split("/")[0] : s.model)),
-        ),
-      ].sort(),
-    [tiers],
+    () => ranked.slice(0, OUTAGE_VENDOR_HEAD).map((r) => r.provider),
+    [ranked],
+  );
+  // ⚠️ A vendor the reader already switched off stays on screen even if it
+  // ranks below the cap. Hiding a selected control makes the result change
+  // with no visible cause.
+  const shownVendors = useMemo(
+    () => [...new Set([...inUse, ...down])],
+    [inUse, down],
   );
 
   const taskLabel = (slug: string) =>
@@ -354,11 +405,12 @@ export default function TierBoard({
               No tier points at anything yet, so there is nothing to lose.
             </span>
           ) : (
-            inUse.map((p) => (
+            shownVendors.map((p) => (
               <button
                 key={p}
                 type="button"
                 className="facet"
+                title={HELP_TIERS.outageChip}
                 aria-pressed={down.includes(p)}
                 onClick={() =>
                   setDown(down.includes(p) ? down.filter((x) => x !== p) : [...down, p])
@@ -368,6 +420,12 @@ export default function TierBoard({
                 {p}
               </button>
             ))
+          )}
+          {ranked.length > shownVendors.length && (
+            <span className="muted small" title={HELP_TIERS.outageMore}>
+              and {ranked.length - shownVendors.length} more, each serving fewer
+              jobs than these
+            </span>
           )}
         </div>
 
@@ -427,6 +485,8 @@ export default function TierBoard({
           },
           {
             key: "loose",
+            // The only group that folds. See the render comment below.
+            foldByDefault: true,
             title: "Outside the registry",
             lede: "Bindings that name a tier the registry does not know, or rows with no category. They serve — and they cannot be priced until registered.",
             rows: tiers.filter((t) => !t.registered || !t.task),
@@ -435,10 +495,27 @@ export default function TierBoard({
           .filter((g) => g.rows.length > 0)
           .map((g) => (
             <section key={g.key} className="tiersection">
-              <div className="panel-head">
-                <h2>{g.title}</h2>
-                <p>{g.lede}</p>
-              </div>
+              {/* 🔴 **The anomaly section COLLAPSES; the product ones do not.**
+                  Measured 2026-09-19: "Outside the registry" was 13221px of a
+                  17435px page and carried 105 of its 116 cards, because a list
+                  of things that should not exist has no natural bound. The two
+                  sections that describe the product were 701px and 898px
+                  together and read fine.
+
+                  ⚠️ **Closed is not hidden.** The count sits in the summary,
+                  so a reader learns there are 105 without scrolling past 105.
+
+                  ⚠️ **ONE path, not two.** `open` comes from the group, so the
+                  card markup below is written once. A second branch would be a
+                  second place to change every time a card grows a field. */}
+              <details className="tiersection-fold" open={!g.foldByDefault}>
+                <summary title={HELP_TIERS.section}>
+                  <h2>{g.title}</h2>
+                  <span className="muted small">
+                    {g.rows.length} tier{g.rows.length === 1 ? "" : "s"}
+                  </span>
+                </summary>
+                <p className="sectionlede">{g.lede}</p>
               <div className="tier-grid">
                 {g.rows.map((t) => {
                   const jobs = jobsFor(t);
@@ -481,6 +558,7 @@ export default function TierBoard({
                   );
                 })}
               </div>
+              </details>
             </section>
           ))
       )}

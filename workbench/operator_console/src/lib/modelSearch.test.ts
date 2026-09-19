@@ -6,16 +6,23 @@
 
 import { describe, expect, it } from "vitest";
 
-import { MODEL_KINDS, type CatalogModel } from "./contract";
+import { MODEL_KINDS, type CatalogModel, type ModelKind } from "./contract";
 import {
+  ATTENTION_STATUSES,
+  MODEL_PAGE,
   NO_FILTERS,
   filterModels,
+  attentionCount,
   formatTokens,
   formatVendorPrice,
   kindFacets,
   matchesKinds,
   matchesQuery,
-  providerFacets,
+  pageOf,
+  rankWord,
+  retirementOf,
+  tiersUsing,
+  usefulKindFacets,
   resultLine,
   sortModels,
   statusOf,
@@ -137,14 +144,6 @@ describe("the facet counts", () => {
     expect(facets.vision).toBe(2);
   });
 
-  it("provider facets are counted with the query still applied", () => {
-    const f = { ...NO_FILTERS, query: "cheap" };
-    const facets = Object.fromEntries(
-      providerFacets(CATALOG, f).map((x) => [x.value, x.count]),
-    );
-    expect(facets.anthropic).toBe(1);
-    expect(facets.openai).toBe(0);
-  });
 });
 
 describe("status", () => {
@@ -251,5 +250,233 @@ describe("display", () => {
     expect(formatVendorPrice(3, 15)).toBe("$3 in / $15 out");
     expect(formatVendorPrice(0.13, null)).toBe("$0.13 in / ? out");
     expect(formatVendorPrice(null, null)).toBe("—");
+  });
+});
+
+// ── Keeping the page a page ────────────────────────────────────────────────
+//
+// 🔴 Measured 2026-09-19: forty-three declared models drew a 13483px page,
+// with a thirty-chip vendor row above it. One OpenRouter key declares two
+// hundred models. Both of these trim what is DRAWN and neither removes a way
+// to reach anything.
+
+describe("pageOf", () => {
+  const rows = Array.from({ length: 30 }, (_, i) => i);
+
+  it("draws a short list whole", () => {
+    expect(pageOf([1, 2, 3], false, 24)).toEqual({ shown: [1, 2, 3], hidden: 0 });
+  });
+
+  it("caps a long list and reports what is behind it", () => {
+    const got = pageOf(rows, false, 24);
+    expect(got.shown).toHaveLength(24);
+    expect(got.hidden).toBe(6);
+    // The FIRST rows, in order — the sort above already decided which matter.
+    expect(got.shown[0]).toBe(0);
+  });
+
+  it("🔴 expanded draws everything, because a hard cap hides a model", () => {
+    // "Search for it" is no answer when you do not know the model's name.
+    expect(pageOf(rows, true, 24)).toEqual({ shown: rows, hidden: 0 });
+  });
+
+  it("hides nothing at exactly the page size", () => {
+    expect(pageOf(rows.slice(0, 24), false, 24).hidden).toBe(0);
+  });
+
+  it("carries sane defaults", () => {
+    expect(MODEL_PAGE).toBeGreaterThan(0);
+    expect(pageOf(rows, false).shown).toHaveLength(MODEL_PAGE);
+  });
+});
+
+// ── The filter rows the owner could not read ───────────────────────────────
+//
+// 🔴 Three rows, about forty-five controls, above the first model. Measured
+// 2026-09-19: five of seven capability chips had nothing behind them on any
+// install, and each of thirty vendor chips returned one or two rows of
+// forty-three. These are the judgements that replaced them.
+
+describe("search reaches capability, so the Can row does not have to", () => {
+  const vision = m("anthropic/claude", ["chat", "vision"]);
+
+  it("matches the LABEL an operator would type", () => {
+    // "reads images", not "vision" — the words that are on the screen.
+    expect(matchesQuery(vision, "reads images")).toBe(true);
+  });
+
+  it("matches the SLUG an engineer would type", () => {
+    expect(matchesQuery(vision, "vision")).toBe(true);
+  });
+
+  it("still ANDs the words across every field", () => {
+    expect(matchesQuery(vision, "anthropic reads images")).toBe(true);
+    expect(matchesQuery(vision, "openai reads images")).toBe(false);
+  });
+
+  it("does not match a capability the model lacks", () => {
+    expect(matchesQuery(m("p/plain", ["chat"]), "reads images")).toBe(false);
+  });
+});
+
+describe("usefulKindFacets", () => {
+  const K = (value: ModelKind, count: number) => ({ value, count });
+
+  it("drops the chips with nothing behind them", () => {
+    const got = usefulKindFacets(
+      [K("chat", 42), K("vision", 0), K("transcribe", 1)],
+      [],
+    );
+    expect(got.map((g) => g.value)).toEqual(["chat", "transcribe"]);
+  });
+
+  it("🔴 returns NO row when one kind is left", () => {
+    // Filtering a list to the only kind it contains returns the same list.
+    // The control does nothing but take space and invite a click.
+    expect(usefulKindFacets([K("chat", 42), K("vision", 0)], [])).toEqual([]);
+  });
+
+  it("keeps a SELECTED kind at zero, so the row cannot vanish mid-filter", () => {
+    const got = usefulKindFacets([K("chat", 42), K("vision", 0)], ["vision"]);
+    expect(got.map((g) => g.value)).toEqual(["chat", "vision"]);
+  });
+
+  it("is empty for an empty catalog", () => {
+    expect(usefulKindFacets([], [])).toEqual([]);
+  });
+});
+
+describe("attentionCount", () => {
+  it("counts everything that is NOT costed", () => {
+    const models = [
+      m("p/a", ["chat"], { inputPer1M: 3 }),           // costed
+      m("p/b", ["chat"], { inputPer1M: null }),        // costs blind
+      m("nokey/c", ["chat"], { inputPer1M: 3 }),       // no key installed
+      m("p/d", ["chat"], { declared: false }),         // not connected
+    ];
+    expect(attentionCount(models, NO_FILTERS, ["p"])).toBe(3);
+  });
+
+  it("is zero when every model is costed, so the toggle can hide itself", () => {
+    expect(
+      attentionCount([m("p/a", ["chat"], { inputPer1M: 3 })], NO_FILTERS, ["p"]),
+    ).toBe(0);
+  });
+
+  it("respects the OTHER filters, so the number matches the list it makes", () => {
+    const models = [
+      m("p/keep", ["chat"], { inputPer1M: null }),
+      m("p/drop", ["chat"], { inputPer1M: null }),
+    ];
+    expect(attentionCount(models, { ...NO_FILTERS, query: "keep" }, ["p"])).toBe(1);
+  });
+
+  it("names the three unready states and never includes costed", () => {
+    expect(ATTENTION_STATUSES).not.toContain("costed");
+    expect([...ATTENTION_STATUSES].sort()).toEqual([
+      "costblind",
+      "nokey",
+      "undeclared",
+    ]);
+  });
+});
+
+// ── The two questions a card could not answer ──────────────────────────────
+
+describe("retirementOf", () => {
+  // Fixed "today" — a test that reads the clock fails on one day a year.
+  const TODAY = new Date(Date.UTC(2026, 8, 19)); // 2026-09-19
+
+  it("🔴 a date ALREADY PAST is danger, in the past tense", () => {
+    // Measured 2026-09-19: 337 models in the live feed are past their date.
+    // The model may already be refusing calls — this is not a forecast.
+    const r = retirementOf("2026-02-19", TODAY);
+    expect(r?.tone).toBe("danger");
+    expect(r?.label).toBe("retired 2026-02-19");
+    expect(r?.days).toBeLessThan(0);
+  });
+
+  it("an imminent date warns and counts the days", () => {
+    const r = retirementOf("2026-10-19", TODAY);
+    expect(r?.tone).toBe("warn");
+    expect(r?.label).toBe("retires in 30 days");
+  });
+
+  it("today itself says so, rather than 'in 0 days'", () => {
+    expect(retirementOf("2026-09-19", TODAY)?.label).toBe("retires today");
+  });
+
+  it("🔴 is SILENT past ninety days, so the card does not cry wolf", () => {
+    // A 2027 date is a fact nobody can act on today, and a card that warns
+    // about everything trains an operator to read none of it.
+    expect(retirementOf("2027-06-01", TODAY)).toBeNull();
+  });
+
+  it("the ninety-day edge is inclusive", () => {
+    expect(retirementOf("2026-12-18", TODAY)?.tone).toBe("warn");
+    expect(retirementOf("2026-12-19", TODAY)).toBeNull();
+  });
+
+  it("no date and a malformed date are both silent", () => {
+    expect(retirementOf(null, TODAY)).toBeNull();
+    expect(retirementOf("not-a-date", TODAY)).toBeNull();
+  });
+});
+
+describe("tiersUsing", () => {
+  const TIERS = [
+    {
+      slug: "fast", label: "Fast",
+      jobs: [{ task: "chat", chain: [
+        { model: "deepseek/chat", rank: 1 },
+        { model: "groq/llama", rank: 2 },
+      ] }],
+    },
+    {
+      slug: "powerful", label: "Powerful",
+      jobs: [{ task: "chat", chain: [{ model: "deepseek/chat", rank: 2 }] }],
+    },
+  ];
+
+  it("finds every tier that points at the model", () => {
+    const got = tiersUsing("deepseek/chat", TIERS);
+    expect(got.map((g) => g.tier)).toEqual(["Fast", "Powerful"]);
+  });
+
+  it("🔴 carries the RANK, because primary and backup are different jobs", () => {
+    // A primary serves every call. A backup serves only during an outage, so
+    // swapping one is a far smaller act than swapping the other.
+    const got = tiersUsing("deepseek/chat", TIERS);
+    expect(got[0]).toMatchObject({ tier: "Fast", rank: 1 });
+    expect(got[1]).toMatchObject({ tier: "Powerful", rank: 2 });
+  });
+
+  it("sorts primaries before fallbacks", () => {
+    const got = tiersUsing("deepseek/chat", TIERS);
+    expect(got.map((g) => g.rank)).toEqual([1, 2]);
+  });
+
+  it("returns EMPTY for a model nothing points at", () => {
+    // The whole point: an idle model must be distinguishable from a
+    // load-bearing one before somebody changes it.
+    expect(tiersUsing("anthropic/unused", TIERS)).toEqual([]);
+  });
+
+  it("is empty when no tier is configured at all", () => {
+    expect(tiersUsing("deepseek/chat", [])).toEqual([]);
+  });
+});
+
+describe("rankWord", () => {
+  it("says what an operator would say", () => {
+    expect(rankWord(1)).toBe("1st choice");
+    expect(rankWord(2)).toBe("backup");
+    expect(rankWord(3)).toBe("backup 2");
+  });
+
+  it("treats a zero or negative rank as the primary, never a crash", () => {
+    // `served_rank` is 1-based everywhere, but a hand-typed binding is a
+    // thing this repo has met before.
+    expect(rankWord(0)).toBe("1st choice");
   });
 });

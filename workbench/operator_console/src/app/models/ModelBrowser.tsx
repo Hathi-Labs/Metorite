@@ -28,24 +28,33 @@ import {
   type ModelKind,
   type VendorFeed,
 } from "@/lib/contract";
-import { driftFor, feedById } from "@/lib/feed";
+import { blindButFillable, driftFor, feedById } from "@/lib/feed";
 import {
   NO_FILTERS,
   STATUS_LABEL,
   type Filters,
   type SortKey,
+  ATTENTION_STATUSES,
+  attentionCount,
   filterModels,
   formatTokens,
   formatVendorPrice,
   kindFacets,
-  providerFacets,
+  pageOf,
+  rankWord,
+  retirementOf,
+  tiersUsing,
+  type TierLike,
+  usefulKindFacets,
   resultLine,
   sortModels,
   statusOf,
   toggle,
 } from "@/lib/modelSearch";
+import { HELP_FACTS, HELP_STATUS, HELP_TOOLBAR } from "@/lib/help";
 import { chipClass, type Tone } from "@/lib/tone";
 import FeedAvailable from "./FeedAvailable";
+import FillAllBlind from "./FillAllBlind";
 import FeedStrip from "./FeedStrip";
 import ModelDetails from "./ModelDetails";
 
@@ -69,14 +78,23 @@ const SORTS: { key: SortKey; label: string }[] = [
 ];
 
 function Card({
-  m, f, armed,
+  m, f, armed, tiers, today,
 }: {
   m: CatalogModel; f: FeedModel | undefined; armed: string[];
+  tiers: TierLike[];
+  /** Passed in, never read from a clock here — a pure card is a testable one
+   *  and `retirementOf` must be given its "now". */
+  today: Date;
 }) {
   const status = statusOf(m, armed);
   // The vendor moved a price under a typed profile (014). The chip is the
   // ALERT; the numbers and the copy button live in "Edit details".
   const drift = driftFor(m, f);
+  // 🔴 The vendor's switch-off date. 337 models in the live feed are already
+  // past theirs, and a card that does not say so lets somebody bind one.
+  const retiring = retirementOf(f?.deprecatedOn ?? null, today);
+  // 🔴 Whether anything actually serves from this model.
+  const used = tiersUsing(m.id, tiers);
   return (
     <article className="modelcard">
       <header>
@@ -84,9 +102,25 @@ function Card({
           <h3>{m.label}</h3>
           <span className="mono small muted">{m.id}</span>
         </div>
-        <span className={chipClass(STATUS_TONE[status])}>
-          {STATUS_LABEL[status]}
-        </span>
+        <div className="cardbadges">
+          {/* ⚠️ Retirement sits BESIDE the supply status, not inside it. A
+              model can be perfectly costed and about to stop existing, and
+              collapsing the two would lose whichever came second. */}
+          {retiring && (
+            <span
+              className={chipClass(retiring.tone)}
+              title={`The vendor's own retirement date for this model is ${f?.deprecatedOn}.`}
+            >
+              {retiring.label}
+            </span>
+          )}
+          <span
+            className={chipClass(STATUS_TONE[status])}
+            title={HELP_STATUS[status]}
+          >
+            {STATUS_LABEL[status]}
+          </span>
+        </div>
       </header>
 
       {drift.length > 0 && (
@@ -118,21 +152,46 @@ function Card({
 
       <dl className="modelfacts">
         <div>
-          <dt>Reads at most</dt>
+          <dt title={HELP_FACTS.contextWindow}>Reads at most</dt>
           <dd>{formatTokens(m.contextWindow)}</dd>
         </div>
         <div>
-          <dt>Writes at most</dt>
+          <dt title={HELP_FACTS.maxOutput}>Writes at most</dt>
           <dd>{formatTokens(m.maxOutput)}</dd>
         </div>
         <div>
           {/* ⚠️ "We pay" is not decoration. This is the VENDOR's price, and
               the rate card is what we charge — two numbers on two tables, and
               reading one as the other inverts a margin. */}
-          <dt>We pay, per 1M</dt>
+          <dt title={HELP_FACTS.vendorPrice}>We pay, per 1M</dt>
           <dd>{formatVendorPrice(m.inputPer1M, m.outputPer1M)}</dd>
         </div>
       </dl>
+
+      {/* 🔴 **Does this model MATTER?** A model some tier serves from is
+          load-bearing — changing it moves customer traffic. A model no tier
+          points at is doing nothing. The two drew identically, so the page
+          gave no way to tell them apart before acting.
+
+          ⚠️ The unused line is MUTED, not a warning. A declared model nobody
+          has bound yet is the normal middle of the setup order, not a fault. */}
+      <p
+        className="modeluse"
+        title={used.length === 0 ? HELP_FACTS.unused : HELP_FACTS.tierUse}
+      >
+        {used.length === 0 ? (
+          <span className="muted small">No tier uses this yet</span>
+        ) : (
+          used.slice(0, 3).map((u) => (
+            <span key={`${u.tier}:${u.task}:${u.rank}`} className="chip">
+              {u.tier} · {rankWord(u.rank)}
+            </span>
+          ))
+        )}
+        {used.length > 3 && (
+          <span className="muted small">and {used.length - 3} more</span>
+        )}
+      </p>
 
       <ModelDetails m={m} feedRow={f} />
     </article>
@@ -143,14 +202,25 @@ export default function ModelBrowser({
   models,
   feed,
   armed,
+  tiers,
 }: {
   models: CatalogModel[];
   feed: VendorFeed;
   /** Providers with a live platform key — decides the `nokey` state. */
   armed: string[];
+  /** The chains, so a card can say whether anything serves from it. */
+  tiers: TierLike[];
 }) {
+  // ⚠️ ONE clock for the whole render. Calling `new Date()` inside each card
+  // would let two cards disagree about today across a midnight boundary.
+  const today = new Date();
   const [f, setF] = useState<Filters>(NO_FILTERS);
   const [sort, setSort] = useState<SortKey>("name");
+  // ⚠️ **Keyed on the FILTERS, not a bare boolean.** An operator who narrows
+  // the list is asking a new question, and carrying "show everything" into it
+  // re-renders the wall they just escaped. Holding the key the expansion was
+  // granted for collapses it on any filter change, with no effect to forget.
+  const [expandedFor, setExpandedFor] = useState<string | null>(null);
 
   const shown = useMemo(
     () => sortModels(filterModels(models, f, armed), sort),
@@ -158,9 +228,22 @@ export default function ModelBrowser({
   );
   const kinds = useMemo(
     () => kindFacets(models, f, MODEL_KINDS, armed), [models, f, armed]);
-  const providers = useMemo(
-    () => providerFacets(models, f, armed), [models, f, armed]);
   const byId = useMemo(() => feedById(feed), [feed]);
+  // ⚠️ Only the capability chips with models behind them, and NONE at all when
+  // one kind is left: filtering a list to its only kind returns the same list.
+  const liveKinds = useMemo(
+    () => usefulKindFacets(kinds, f.kinds),
+    [kinds, f.kinds],
+  );
+  const attention = useMemo(
+    () => attentionCount(models, f, armed),
+    [models, f, armed],
+  );
+  const filterKey = JSON.stringify(f);
+  const page = useMemo(
+    () => pageOf(shown, expandedFor === filterKey),
+    [shown, expandedFor, filterKey],
+  );
   const dirty =
     f.query.trim() !== "" || f.kinds.length + f.providers.length + f.statuses.length > 0;
 
@@ -184,22 +267,38 @@ export default function ModelBrowser({
     );
   }
 
+  // 🔴 **The feed list goes ABOVE the catalog until something is costed.**
+  // "Available from your vendors" used to start 5474px down a 13257px page,
+  // under four and a half screens of cards — so the one-click path was
+  // unreachable in the exact state it exists for.
+  //
+  // ⚠️ **Ordered on "nothing is costed yet", NOT on "anything is blind".** The
+  // second condition flips while you work: filling the last blind model would
+  // rearrange the page under the cursor at the moment of the click. This one
+  // changes once, when the first model gets a price.
+  const nothingCosted = models.every((m) => statusOf(m, armed) !== "costed");
+  const blind = blindButFillable(models, feed, armed);
+
   return (
     <>
       <FeedStrip feed={feed} />
+      <FillAllBlind blind={blind} feed={feed} />
+      {nothingCosted && <FeedAvailable feed={feed} />}
       <div className="toolbar">
         <input
           className="search"
           type="search"
           placeholder="Search by name, provider, or what it is good at…"
           aria-label="Search models"
+          title={HELP_TOOLBAR.search}
           value={f.query}
           onChange={(e) => setF({ ...f, query: e.target.value })}
         />
-        <label className="sortpick">
+        <label className="sortpick" title={HELP_TOOLBAR.sort}>
           <span className="muted small">Sort</span>
           <select
             aria-label="Sort models"
+            title={HELP_TOOLBAR.sort}
             value={sort}
             onChange={(e) => setSort(e.target.value as SortKey)}
           >
@@ -212,78 +311,121 @@ export default function ModelBrowser({
         </label>
       </div>
 
+      {/* 🔴 **THREE ROWS OF PILLS BECAME ONE.** The page carried "Can", "From"
+          and "State" — about forty-five controls above the first model — and
+          the owner could not tell what any of the three asked. Measured
+          2026-09-19: of seven capability chips only two ever had models, and
+          the thirty vendor chips each returned one or two rows out of
+          forty-three. A filter whose every option returns two of forty-three
+          is a list wearing a filter's clothes.
+
+          What replaced them:
+            · capability  — typed. `matchesQuery` reads the kind labels now.
+            · vendor      — typed. It always matched `m.provider`.
+            · state       — ONE toggle. Three of the four chips asked the same
+                            question, and the fourth asked for the models with
+                            no problem, which is what the page already shows.
+
+          The capability row survives ONLY where it earns its place: more than
+          one kind with models behind it. */}
       <div className="facets">
-        <div className="facetrow">
-          <span className="facetlabel">Can</span>
-          {kinds.map((k) => (
-            <button
-              key={k.value}
-              type="button"
-              className="facet"
-              aria-pressed={f.kinds.includes(k.value)}
-              // ⚠️ Disabled at zero, not hidden. A chip that disappears makes
-              // the row jump under the pointer and hides that the capability
-              // exists at all.
-              disabled={k.count === 0 && !f.kinds.includes(k.value)}
-              onClick={() => setF({ ...f, kinds: toggle(f.kinds, k.value as ModelKind) })}
-            >
-              {KIND_LABEL[k.value]}
-              <span className="count">{k.count}</span>
-            </button>
-          ))}
-        </div>
+        {/* ⚠️ **No row LABEL.** "Can", "From" and "State" were the three words
+            the owner could not read, and a chip reading "Speech to text" says
+            what it is without one. A label earns its place when the options
+            are ambiguous alone; these are not. */}
+        {liveKinds.length > 0 && (
+          <div className="facetrow">
+            {liveKinds.map((k) => (
+              <button
+                key={k.value}
+                type="button"
+                className="facet"
+                aria-pressed={f.kinds.includes(k.value)}
+                title={HELP_TOOLBAR.kindChip}
+                onClick={() => setF({ ...f, kinds: toggle(f.kinds, k.value) })}
+              >
+                {KIND_LABEL[k.value]}
+                <span className="count">{k.count}</span>
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="facetrow">
-          <span className="facetlabel">From</span>
-          {providers.map((p) => (
+          {/* ⚠️ Drawn only when there IS something to attend to. A toggle
+              reading "0 need attention" is a control that can only ever
+              return an empty list. */}
+          {attention > 0 && (
             <button
-              key={p.value}
               type="button"
               className="facet"
-              aria-pressed={f.providers.includes(p.value)}
-              disabled={p.count === 0 && !f.providers.includes(p.value)}
-              onClick={() => setF({ ...f, providers: toggle(f.providers, p.value) })}
+              aria-pressed={f.statuses.length > 0}
+              title={HELP_TOOLBAR.attention}
+              onClick={() =>
+                setF({
+                  ...f,
+                  statuses: f.statuses.length > 0 ? [] : ATTENTION_STATUSES,
+                })
+              }
             >
-              <span className="glyph">{providerGlyph(p.value)}</span>
-              {p.value}
-              <span className="count">{p.count}</span>
-            </button>
-          ))}
-        </div>
-
-        <div className="facetrow">
-          <span className="facetlabel">State</span>
-          {(["costed", "costblind", "nokey", "undeclared"] as const).map((s) => (
-            <button
-              key={s}
-              type="button"
-              className="facet"
-              aria-pressed={f.statuses.includes(s)}
-              onClick={() => setF({ ...f, statuses: toggle(f.statuses, s) })}
-            >
-              {STATUS_LABEL[s]}
-              <span className="count">
-                {filterModels(models, { ...f, statuses: [s] }, armed).length}
-              </span>
-            </button>
-          ))}
-          {dirty && (
-            <button type="button" className="linklike" onClick={() => setF(NO_FILTERS)}>
-              Clear all
+              Needs attention
+              <span className="count">{attention}</span>
             </button>
           )}
+          {dirty && (
+            <button
+              type="button"
+              className="linklike"
+              title={HELP_TOOLBAR.clear}
+              onClick={() => setF(NO_FILTERS)}
+            >
+              Clear
+            </button>
+          )}
+          <span className="muted small">
+            Search matches the name, the vendor, what it is good at, and what it
+            can do — try &ldquo;deepseek&rdquo; or &ldquo;reads images&rdquo;.
+          </span>
         </div>
       </div>
 
       <p className="resultline">{resultLine(shown.length, models.length, f)}</p>
 
       <div className="modelgrid">
-        {shown.map((m) => (
-          <Card key={m.id} m={m} f={byId.get(m.id)} armed={armed} />
+        {page.shown.map((m) => (
+          <Card
+            key={m.id}
+            m={m}
+            f={byId.get(m.id)}
+            armed={armed}
+            tiers={tiers}
+            today={today}
+          />
         ))}
       </div>
 
-      <FeedAvailable feed={feed} />
+      {/* 🔴 Every card builds a feed lookup and a drift comparison. Rendering
+          two hundred of them before anybody sees the first is why this page
+          measured 13483px on a catalog of forty-three. */}
+      {page.hidden > 0 && (
+        <p className="resultline">
+          <button
+            type="button"
+            className="linklike"
+            title={HELP_TOOLBAR.showMore}
+            onClick={() => setExpandedFor(filterKey)}
+          >
+            Show {page.hidden} more
+          </button>{" "}
+          <span className="muted small">
+            — or narrow the list with the search box and the filters above.
+          </span>
+        </p>
+      )}
+
+      {/* ⚠️ Rendered here ONLY when it was not drawn above. Two copies would
+          be two sets of "Add" buttons for the same rows. */}
+      {!nothingCosted && <FeedAvailable feed={feed} />}
     </>
   );
 }

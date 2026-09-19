@@ -15,7 +15,10 @@ import { describe, expect, it } from "vitest";
 import type { CatalogModel, FeedModel, VendorFeed } from "./contract";
 import {
   availableByVendor,
+  blindButFillable,
+  canFillFromFeed,
   declareBodies,
+  feedPriceLabel,
   driftFor,
   feedById,
   fillCount,
@@ -510,5 +513,238 @@ describe("the pricing board's per-unit half (H-78)", () => {
     // the live claim may not repeat them.
     expect(src).toContain("This read");
     expect(src.split("This read")[0]).not.toContain("does not carry");
+  });
+});
+
+// ── Can the feed cost this model without anybody typing? ────────────────────
+//
+// 🔴 Migration-free, but it is the judgement behind the Models page's biggest
+// complaint. A declared model with no profile drew "costs blind" and offered
+// a fifteen-box form, while `vendor_price_feed` already held the answer under
+// the same id. This decides when the one-click offer appears.
+
+describe("canFillFromFeed", () => {
+  it("is TRUE for a model the feed prices by the token", () => {
+    // The live case, measured 2026-09-19: deepseek/deepseek-chat sat
+    // costs-blind while the feed carried 0.28 in and 0.42 out.
+    expect(canFillFromFeed(F({}))).toBe(true);
+  });
+
+  it("is TRUE on an output price alone", () => {
+    expect(
+      canFillFromFeed(F({ inputPer1M: null, cachedInputPer1M: null })),
+    ).toBe(true);
+  });
+
+  it("is TRUE for a PER-UNIT model, which has no token price at all", () => {
+    // A transcribe model is costed by the minute. Requiring a token price
+    // would hide the offer from exactly the models that need it most.
+    expect(
+      canFillFromFeed(
+        F({
+          inputPer1M: null,
+          outputPer1M: null,
+          cachedInputPer1M: null,
+          perMinuteUsd: "0.006",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("is FALSE when the feed knows the model but prices nothing", () => {
+    // 🔴 The button must not appear here. `groq/whisper-large-v3-turbo` is
+    // the live example: declared, in the feed, priced by nobody. An offer
+    // that leaves the model still costs-blind spends a click and teaches
+    // that the button does not work.
+    expect(
+      canFillFromFeed(
+        F({ inputPer1M: null, outputPer1M: null, cachedInputPer1M: null }),
+      ),
+    ).toBe(false);
+  });
+
+  it("is FALSE when the feed has never seen the model", () => {
+    expect(canFillFromFeed(undefined)).toBe(false);
+  });
+
+  it("refuses a zero, an empty string and whitespace as prices", () => {
+    // A zero is not a price we can bill against, and a blank is the feed
+    // saying it does not know. Neither fills a box.
+    for (const bad of ["0", "0.00", "", "   "]) {
+      expect(
+        canFillFromFeed(
+          F({ inputPer1M: bad, outputPer1M: bad, cachedInputPer1M: bad }),
+        ),
+      ).toBe(false);
+    }
+  });
+
+  it("does not count a CACHED price on its own", () => {
+    // A cache-read rate with no base rate cannot cost an uncached call, which
+    // is most of them. `vendor_cost_usd` returns None for that shape, so the
+    // model would still read costs-blind after the click.
+    expect(
+      canFillFromFeed(
+        F({ inputPer1M: null, outputPer1M: null, cachedInputPer1M: "0.07" }),
+      ),
+    ).toBe(false);
+  });
+});
+
+// ── Which declared models can the feed cost right now? ─────────────────────
+//
+// 🔴 This count drives a BULK write. If it over-reports, the button promises
+// work it will not do; if it under-reports, somebody types prices we already
+// hold. Both failures look like the console being wrong about itself.
+
+describe("blindButFillable", () => {
+  const ARMED = ["deepseek"];
+
+  it("selects a declared, unpriced model the feed can price", () => {
+    const got = blindButFillable(
+      [M({ id: "deepseek/deepseek-chat", inputPer1M: null })],
+      FEED({ rows: [F({ id: "deepseek/deepseek-chat" })] }),
+      ARMED,
+    );
+    expect(got.map((m) => m.id)).toEqual(["deepseek/deepseek-chat"]);
+  });
+
+  it("skips a model that is already COSTED", () => {
+    // 🔴 The rule that makes a bulk fill safe. A model somebody priced is not
+    // in the list, so the button cannot overwrite a deliberate correction —
+    // and a bulk overwrite is unreviewable across thirty models at once.
+    const got = blindButFillable(
+      [M({ id: "deepseek/deepseek-chat", inputPer1M: 99 })],
+      FEED({ rows: [F({ id: "deepseek/deepseek-chat" })] }),
+      ARMED,
+    );
+    expect(got).toEqual([]);
+  });
+
+  it("skips a model whose vendor has NO key, because a price will not fix it", () => {
+    // `statusOf` ranks nokey above costblind: a model we cannot call at all
+    // has a worse problem than an unknown price. Filling it would report
+    // progress on a model that still fails every call.
+    const got = blindButFillable(
+      [M({ id: "deepseek/deepseek-chat", inputPer1M: null })],
+      FEED({ rows: [F({ id: "deepseek/deepseek-chat" })] }),
+      [],
+    );
+    expect(got).toEqual([]);
+  });
+
+  it("skips a model the feed knows but cannot price", () => {
+    const got = blindButFillable(
+      [M({ id: "groq/whisper", provider: "groq", inputPer1M: null })],
+      FEED({
+        rows: [
+          F({
+            id: "groq/whisper",
+            provider: "groq",
+            inputPer1M: null,
+            outputPer1M: null,
+            cachedInputPer1M: null,
+          }),
+        ],
+      }),
+      ["groq"],
+    );
+    expect(got).toEqual([]);
+  });
+
+  it("skips a model the feed has never seen", () => {
+    const got = blindButFillable(
+      [M({ id: "deepseek/unknown-model", inputPer1M: null })],
+      FEED({ rows: [] }),
+      ARMED,
+    );
+    expect(got).toEqual([]);
+  });
+
+  it("reads the AVAILABLE half of the feed too, not only the synced rows", () => {
+    // `feedById` merges both. A declared model whose row sits in `available`
+    // is still priceable, and missing it would under-report the count.
+    const got = blindButFillable(
+      [M({ id: "deepseek/deepseek-chat", inputPer1M: null })],
+      FEED({ rows: [], available: [F({ id: "deepseek/deepseek-chat" })] }),
+      ARMED,
+    );
+    expect(got.map((m) => m.id)).toEqual(["deepseek/deepseek-chat"]);
+  });
+
+  it("is empty on an empty catalog", () => {
+    expect(blindButFillable([], FEED({ rows: [] }), ARMED)).toEqual([]);
+  });
+});
+
+// ── What the feed says a model costs, in ITS unit ──────────────────────────
+//
+// 🔴 The price column read the two token rates and nothing else, so every
+// per-unit model drew a dash — and a dash means "we do not know". Measured
+// 2026-09-19: groq/whisper-large-v3 carries a per-second rate and
+// groq/canopylabs/orpheus-v1-english a per-character one. Both were priced.
+
+describe("feedPriceLabel", () => {
+  it("reads a token-priced model as in and out", () => {
+    expect(feedPriceLabel(F({}))).toBe("$0.28 in / $0.42 out");
+  });
+
+  it("names the unit for a per-MINUTE model", () => {
+    const stt = F({
+      inputPer1M: null, outputPer1M: null, cachedInputPer1M: null,
+      perMinuteUsd: "0.0018498",
+    });
+    expect(feedPriceLabel(stt)).toBe("$0.0018498 per minute");
+  });
+
+  it("names the unit for a per-CHARACTER model", () => {
+    const tts = F({
+      inputPer1M: null, outputPer1M: null, cachedInputPer1M: null,
+      perCharacterUsd: "0.000022",
+    });
+    expect(feedPriceLabel(tts)).toBe("$0.000022 per character");
+  });
+
+  it("names the unit for a per-IMAGE model", () => {
+    const img = F({
+      inputPer1M: null, outputPer1M: null, cachedInputPer1M: null,
+      perImageUsd: "0.04",
+    });
+    expect(feedPriceLabel(img)).toBe("$0.04 per image");
+  });
+
+  it("🔴 the UNIT is never dropped — three orders separate them", () => {
+    // "$0.000022" beside a token price is meaningless without "per character".
+    const tts = F({
+      inputPer1M: null, outputPer1M: null, cachedInputPer1M: null,
+      perCharacterUsd: "0.000022",
+    });
+    expect(feedPriceLabel(tts)).toContain("per character");
+  });
+
+  it("writes a tiny price as PLAIN DIGITS, never exponent notation", () => {
+    // `String(3e-7)` is "3e-7", which is not a number an operator can check.
+    const tiny = F({ inputPer1M: "0.0000003", outputPer1M: null, cachedInputPer1M: null });
+    expect(feedPriceLabel(tiny)).toBe("$0.0000003 in / — out");
+  });
+
+  it("returns NULL only when the feed knows nothing at all", () => {
+    const blind = F({
+      inputPer1M: null, outputPer1M: null, cachedInputPer1M: null,
+      perMinuteUsd: null, perCharacterUsd: null, perImageUsd: null,
+    });
+    expect(feedPriceLabel(blind)).toBeNull();
+  });
+
+  it("agrees with canFillFromFeed, so the dash and the warning cannot differ", () => {
+    const cases = [
+      F({}),
+      F({ inputPer1M: null, outputPer1M: null, cachedInputPer1M: null, perMinuteUsd: "0.006" }),
+      F({ inputPer1M: null, outputPer1M: null, cachedInputPer1M: null }),
+      F({ inputPer1M: "0", outputPer1M: "0", cachedInputPer1M: null }),
+    ];
+    for (const c of cases) {
+      expect(feedPriceLabel(c) !== null).toBe(canFillFromFeed(c));
+    }
   });
 });

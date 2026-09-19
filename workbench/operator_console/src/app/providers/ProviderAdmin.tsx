@@ -51,6 +51,7 @@ import {
   groupByProvider,
   groupLine,
   groupStatus,
+  isConfigured,
   isLive,
   wouldRotate,
 } from "@/lib/providers";
@@ -391,16 +392,13 @@ export default function ProviderAdmin({ creds }: Props) {
   const byok = byokOrgs(creds);
   const rotating = wouldRotate(creds, provider, orgSlug.trim() || null);
 
-  const installed = groups.filter((g) => {
-    const s = groupStatus(g);
-    return s === "connected" || s === "byok-only";
-  });
+  const installed = groups.filter((g) => isConfigured(groupStatus(g)));
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     return groups.filter((g) => {
       const s = groupStatus(g);
-      const isInstalled = s === "connected" || s === "byok-only";
+      const isInstalled = isConfigured(s);
       if (filter === "installed" && !isInstalled) return false;
       if (filter === "todo" && isInstalled) return false;
       if (!q) return true;
@@ -569,18 +567,60 @@ export default function ProviderAdmin({ creds }: Props) {
               <h2>{section.title}</h2>
               <p>{section.note}</p>
             </div>
+            {/* 🔴 **SET UP FIRST, THE REST ROLLED AWAY.** A section mixed the
+                four vendors serving traffic in with thirteen nobody has
+                touched, in one grid, so the page read as a catalogue of
+                things-to-do rather than a picture of what is running. */}
             <div className="provider-grid">
-              {inSection.map((g) => (
-                <Card
-                  key={g.provider}
-                  g={g}
-                  open={openFor === g.provider}
-                  ctx={ctx}
-                  onOpen={startAdd}
-                  onRevoke={revoke}
-                />
-              ))}
+              {inSection
+                .filter((g) => isConfigured(groupStatus(g)))
+                .map((g) => (
+                  <Card
+                    key={g.provider}
+                    g={g}
+                    open={openFor === g.provider}
+                    ctx={ctx}
+                    onOpen={startAdd}
+                    onRevoke={revoke}
+                  />
+                ))}
             </div>
+            {(() => {
+              const rest = inSection.filter(
+                (g) => !isConfigured(groupStatus(g)),
+              );
+              if (rest.length === 0) return null;
+              return (
+                // ⚠️ **Opens when a filter or a search asked for it.** Somebody
+                // who clicks "Not set up" or types a vendor name has already
+                // said what they want, and hiding the answer behind one more
+                // click is the accordion working against them.
+                <details
+                  className="provider-more"
+                  open={filter === "todo" || query.trim() !== ""}
+                >
+                  <summary>
+                    {rest.length} more not set up — {rest
+                      .slice(0, 5)
+                      .map((g) => vendorLabel(g.provider))
+                      .join(", ")}
+                    {rest.length > 5 ? "…" : ""}
+                  </summary>
+                  <div className="provider-grid">
+                    {rest.map((g) => (
+                      <Card
+                        key={g.provider}
+                        g={g}
+                        open={openFor === g.provider}
+                        ctx={ctx}
+                        onOpen={startAdd}
+                        onRevoke={revoke}
+                      />
+                    ))}
+                  </div>
+                </details>
+              );
+            })()}
           </section>
         );
       })}

@@ -8,12 +8,30 @@ Description=Metorite database backup (pg_dump + integrity check)
 # rather than a mis-ordered unit.
 After=docker.service network-online.target
 Wants=network-online.target
-Requires=docker.service
+# ⚠️ **`Wants`, not `Requires` — changed 2026-09-19.** With managed Postgres
+# the dump never touches Docker: `PG_MODE=local` reaches PGHOST through libpq.
+# A hard `Requires` makes the nightly backup fail on a box that no longer runs
+# a database container, which is a backup lost to a dependency it does not use.
+# The docker path still orders correctly behind `After=`.
+Wants=docker.service
 
 [Service]
 Type=oneshot
 # Root: needs `docker exec` and write access to /opt/acb/backups.
 User=root
+# 🔴 **THE LINE WHOSE ABSENCE STOPPED BACKUPS FOR 25 DAYS.** Every sibling unit
+# loads an EnvironmentFile; this one never did, because when it was written the
+# dump reached a container by name and needed no credentials. The move to
+# managed Postgres made PGHOST, PGUSER, PGPASSWORD and PG_MODE mandatory — the
+# unit had none of them, so it failed, and the timer was disabled rather than
+# repaired. The last dump before this fix was 2026-08-25.
+EnvironmentFile=/opt/acb/app/.env
+# ⚠️ The Customer Console is a SEPARATE Supabase project with its own
+# credentials, so its DSN lives in its own env file. The leading `-` makes it
+# optional: a box without the Console must still back up the app database
+# rather than fail the whole unit. `backup_db.sh` skips the second cluster when
+# the variable is absent.
+EnvironmentFile=-/opt/acb/app/apps/services/customer_console/.env
 # Invoked through bash on purpose — a checkout that loses the executable bit
 # (Windows contributors, archive exports) would otherwise fail with a bare
 # "Permission denied" and backups would silently never run. Same reasoning as

@@ -22,6 +22,7 @@ import type {
   ModelKind,
   ModelRate,
   ProviderAccount,
+  ProviderSpend,
   Task,
   Tier,
   TierJob,
@@ -31,6 +32,7 @@ import { EMPTY_CATALOG, EMPTY_FEED } from "./contract";
 import {
   ConsoleUnconfigured,
   listProviderCreds,
+  providerSpend,
   readModelCatalog,
   type Deps,
 } from "./console";
@@ -110,6 +112,9 @@ type WireCatalog = {
   // 028 — per-tier margin. Absent from a Console still mid-rollout.
   tier_margins?: {
     tier: string; calls: number; costed_calls: number;
+    // 031 — optional for the same reason the block is: a Console mid-rollout
+    // does not send it, and `read.ts` reads it as zero measured calls.
+    measured_calls?: number;
     credits: string; cost_usd: string;
     margin_multiplier: string | null;
     margin_floor: string | null;
@@ -151,6 +156,14 @@ type WireFeedModel = {
   reads_images: boolean;
   thinks_first: boolean;
   deprecated_on: string | null;
+};
+
+type WireSpend = {
+  provider: string;
+  calls: number;
+  measured_calls?: number;
+  cost_usd: string;
+  measured_usd: string;
 };
 
 type WireCred = {
@@ -340,6 +353,10 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
     tier: m.tier,
     calls: m.calls,
     costedCalls: m.costed_calls,
+    // ⚠️ `?? 0`, because a Console that predates migration 031 sends no such
+    // field. Zero is the honest reading of an older service: it never recorded
+    // a source, so it can claim no measured calls.
+    measuredCalls: m.measured_calls ?? 0,
     credits: m.credits,
     costUsd: m.cost_usd,
     // ⚠️ `?? null`, never `String(...)`. A null must stay null — `String(null)`
@@ -489,5 +506,36 @@ export async function readAccounts(deps: Deps): Promise<Sourced<ProviderAccount[
     sample: SAMPLE_CATALOG.accounts,
     empty: [],
     owed: OWED.providers,
+  });
+}
+
+/** What each vendor cost US over the window — the operator side of the money.
+ *
+ * ⚠️ **Falls back to an EMPTY list, never to sample numbers.** Every other read
+ * here can show a sample shape, because a made-up model name teaches the layout
+ * and misleads nobody. A made-up BILL does mislead: an operator who reads an
+ * invented total against a real invoice has been given a wrong answer with a
+ * confident face. So a failure here draws nothing and says why. */
+export async function readProviderSpend(
+  deps: Deps,
+): Promise<Sourced<ProviderSpend[]>> {
+  const r = await attempt(
+    () => providerSpend(deps),
+    (p) =>
+      ((p as { providers?: WireSpend[] }).providers ?? []).map((s) => ({
+        provider: s.provider,
+        calls: s.calls,
+        measuredCalls: s.measured_calls ?? 0,
+        costUsd: s.cost_usd,
+        measuredUsd: s.measured_usd,
+      })),
+  );
+  return resolve(r, {
+    sample: [],
+    empty: [],
+    owed:
+      "Live since migration 031. `measured` is the part a vendor STATED, so " +
+      "it is what an invoice reconciles against — the rest we costed " +
+      "ourselves from `model_profile` and it can be stale.",
   });
 }

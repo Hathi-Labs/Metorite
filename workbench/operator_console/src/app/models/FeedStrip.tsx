@@ -14,6 +14,7 @@ import { useState } from "react";
 
 import type { VendorFeed } from "@/lib/contract";
 import { freshness } from "@/lib/feed";
+import { HELP_FEED } from "@/lib/help";
 import { chipClass } from "@/lib/tone";
 
 export default function FeedStrip({ feed }: { feed: VendorFeed }) {
@@ -21,6 +22,12 @@ export default function FeedStrip({ feed }: { feed: VendorFeed }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const state = freshness(feed, new Date());
+  // 🔴 **How many models you could add without typing anything.** The
+  // "available from your vendors" list can sit thousands of pixels down, under
+  // the declared catalog, and an operator who never scrolls there never learns
+  // the one-click path exists. Measured 2026-09-19: it began at 5474px on a
+  // 13257px page. This count and its jump are the cheap half of that fix.
+  const available = feed.available.length;
 
   async function sync() {
     setBusy(true);
@@ -41,10 +48,22 @@ export default function FeedStrip({ feed }: { feed: VendorFeed }) {
 
   return (
     <div className="feedstrip">
-      <span className={chipClass(state.tone)}>{state.label}</span>
-      <button type="button" disabled={busy} onClick={sync}>
+      <span className={chipClass(state.tone)} title={HELP_FEED.freshness}>
+        {state.label}
+      </span>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={sync}
+        title={HELP_FEED.fetch}
+      >
         {busy ? "Fetching…" : "Fetch the latest"}
       </button>
+      {available > 0 && (
+        <a className="linklike" href="#available" title={HELP_FEED.readyToAdd}>
+          {available} ready to add →
+        </a>
+      )}
       <span className="muted small">
         Prices and limits come from litellm&apos;s maintained price map — the
         same ids the Router calls. Fetching changes no price a customer pays.

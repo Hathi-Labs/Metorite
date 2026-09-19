@@ -31,6 +31,7 @@ copy — there is no fourth place for the pattern to be written down.
 structural fence that skips whenever a database is absent is a fence that was
 never there. Nothing here opens a session.
 """
+
 from __future__ import annotations
 
 import re
@@ -52,9 +53,7 @@ _GATEWAY_MAIN = _ROOT / "apps/services/gateway/gateway/main.py"
 #: Read as SOURCE rather than imported: importing ``customer_console.main``
 #: drags litellm and the payment seam into a fence this module's own header
 #: keeps deliberately DB-free and dependency-light.
-_CONSOLE_MAIN = _ROOT / (
-    "apps/services/customer_console/customer_console/main.py"
-)
+_CONSOLE_MAIN = _ROOT / ("apps/services/customer_console/customer_console/main.py")
 #: The FIFTH, pinned by ABSENCE: the Operator Console's slug suggestion, which
 #: carried a second and drifted implementation until 2026-09-15.
 _OPERATOR_SLUG_TS = _ROOT / "workbench/operator_console/src/lib/slug.ts"
@@ -84,12 +83,40 @@ def _py_frozenset(source: str, name: str) -> list[str]:
     Source-parsed, not imported — see ``_CONSOLE_MAIN``'s note. Asserts the
     declaration is still findable, so a restructure is RED here rather than a
     silently empty set that makes every comparison below trivially true.
+
+    ⚠️ **Tolerant of WHITESPACE between the call and the brace, added
+    2026-09-18.** The pattern demanded ``frozenset({`` with nothing between
+    them. `ruff-format` legitimately writes the same declaration as
+    ``frozenset(\\n    {`` once the file it lives in is formatted, and this
+    test then reported "not a module-level frozenset any more" about a
+    declaration that had not changed at all.
+
+    🔴 **The assertion's real job is unchanged and must stay.** It exists to
+    go RED when somebody builds this set some other way — a comprehension, a
+    loop, a read from a file — because then the comparisons below would pass
+    against an empty list. A reformat is not that, and a fence that cannot
+    tell the two apart teaches people to edit the fence.
     """
     match = re.search(
-        rf"^{name}\s*=\s*frozenset\(\{{(.*?)\}}\)", source, re.DOTALL | re.M
+        rf"^{name}\s*=\s*frozenset\(\s*\{{(.*?)\}}\s*,?\s*\)",
+        source,
+        re.DOTALL | re.M,
     )
     assert match is not None, f"{name} is not a module-level frozenset any more"
-    return re.findall(r'"([^"]*)"', match.group(1))
+    found = re.findall(r'"([^"]*)"', match.group(1))
+    # 🔴 **The empty case, which the docstring above always promised to catch
+    # and did not.** `frozenset({s for s in SOURCE})` MATCHES the pattern and
+    # yields no string literals, so every comparison below would run against
+    # an empty list and pass. Measured 2026-09-18, against the pattern as it
+    # stood before this line — so this is an old hole, found while widening
+    # the pattern for whitespace and closed here rather than left for the
+    # person who eventually writes that comprehension.
+    assert found, (
+        f"{name} matched, but carries no string literals — it is probably "
+        "built dynamically now, and every comparison below would pass "
+        "against an empty set"
+    )
+    return found
 
 
 def _py_pattern(source: str, name: str) -> str:
@@ -147,9 +174,9 @@ class TestTheReservedVocabularyIsOneList:
         merely untidy.
         """
         form = _read(_SIGNUP_FORM_TSX)
-        assert re.search(
-            r'import \{[^}]*\bSLUG_RE\b[^}]*\} from "@/lib/subdomain"', form
-        ), "SignUpForm must IMPORT SLUG_RE from the one vocabulary"
+        assert re.search(r'import \{[^}]*\bSLUG_RE\b[^}]*\} from "@/lib/subdomain"', form), (
+            "SignUpForm must IMPORT SLUG_RE from the one vocabulary"
+        )
         # No local re-declaration of either half, under any name: a `const
         # SLUG_RE = /…/` here is the mirror, and so is a fresh regex literal
         # spelling the same DNS-label shape.
@@ -170,9 +197,7 @@ class TestTheReservedVocabularyIsOneList:
         owner ruling B7 closed on the other arm only.
         """
         canonical = set(_ts_array(_read(_SUBDOMAIN_TS), "RESERVED_LABELS"))
-        assert set(_py_frozenset(_read(_CONSOLE_MAIN), "_RESERVED_SLUGS")) == (
-            canonical
-        )
+        assert set(_py_frozenset(_read(_CONSOLE_MAIN), "_RESERVED_SLUGS")) == (canonical)
 
     def test_the_CONSOLE_shape_is_the_same_rule_as_the_gateway(self):
         console = _py_pattern(_read(_CONSOLE_MAIN), "_SLUG_RE")
@@ -212,12 +237,8 @@ class TestTheReservedVocabularyIsOneList:
         canonical_ts = _read(_SUBDOMAIN_TS)
         operator_ts = _read(_OPERATOR_SLUG_TS)
 
-        canonical_re = re.search(
-            r"export const SLUG_RE\s*=\s*/(.+?)/;", canonical_ts
-        )
-        operator_re = re.search(
-            r"export const SLUG_RE\s*=\s*/(.+?)/;", operator_ts
-        )
+        canonical_re = re.search(r"export const SLUG_RE\s*=\s*/(.+?)/;", canonical_ts)
+        operator_re = re.search(r"export const SLUG_RE\s*=\s*/(.+?)/;", operator_ts)
         assert operator_re is not None, "the operator copy lost SLUG_RE"
         assert canonical_re is not None
         assert operator_re.group(1) == canonical_re.group(1)
@@ -239,7 +260,7 @@ class TestTheBrowserNeverTalksToTheGatewayDirectly:
 
     def test_the_cors_allow_list_carries_no_wildcard_or_regex_origin(self):
         source = _read(_GATEWAY_MAIN)
-        block = source[source.index("allow_origins=["):]
+        block = source[source.index("allow_origins=[") :]
         block = block[: block.index("]")]
         assert '"*"' not in block
         assert "'*'" not in block

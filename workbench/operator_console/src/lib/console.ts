@@ -383,6 +383,18 @@ export const listProviderCreds = (includeRevoked: boolean, d?: Deps) =>
     d ?? {},
   );
 
+/** What each vendor cost US over the window — the other half of the money.
+ *
+ * 🔴 **Not `usage_by_org`.** That answers what a CUSTOMER used. This answers
+ * what we OWE, which is the number every margin is only meaningful against,
+ * and which nothing in this console showed before.
+ *
+ * ⚠️ Read server-side with the caller's own token, like the credential list
+ * beside it. It is an operator-wide money figure and belongs on no path the
+ * browser can replay. */
+export const providerSpend = (d?: Deps) =>
+  callConsole("/providers/spend", { method: "GET" }, d ?? {});
+
 // 🔴 `admin` AND a live elevation window. The Console enforces it; this does
 // not. Installing the PLATFORM credential arms every AI call we serve.
 export const installProviderCred = (body: unknown, d?: Deps) =>

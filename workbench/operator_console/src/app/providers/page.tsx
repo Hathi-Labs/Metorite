@@ -1,10 +1,11 @@
 import { redirect } from "next/navigation";
 
-import { readAccounts } from "@/lib/read";
+import { readAccounts, readProviderSpend } from "@/lib/read";
 import { staffSession } from "@/lib/session";
 import SectionTabs from "../SectionTabs";
 import Shell, { Unconfigured } from "../Shell";
 import ProviderAdmin from "./ProviderAdmin";
+import VendorSpend from "./VendorSpend";
 
 export const dynamic = "force-dynamic";
 
@@ -40,7 +41,14 @@ export default async function ProvidersPage() {
   if (!session.configured) return <Unconfigured />;
   if (!session.ok) redirect("/login");
 
-  const accounts = await readAccounts({ authToken: session.authToken });
+  // ⚠️ Read TOGETHER, not in sequence. Two independent Console calls on one
+  // page render, and awaiting them one after the other doubles the wait for
+  // no reason. A failure in either is carried by its own `Sourced` wrapper,
+  // so one read failing never blanks the other half of the page.
+  const [accounts, spend] = await Promise.all([
+    readAccounts({ authToken: session.authToken }),
+    readProviderSpend({ authToken: session.authToken }),
+  ]);
 
   return (
     <Shell
@@ -51,6 +59,9 @@ export default async function ProvidersPage() {
     >
       <SectionTabs current="/providers" />
       <ProviderAdmin creds={accounts.data} />
+      {/* 🔴 BELOW the accounts, and that order is the argument of the page:
+          first what we can call, then what calling it costs. */}
+      <VendorSpend spend={spend.data} days={30} />
     </Shell>
   );
 }
