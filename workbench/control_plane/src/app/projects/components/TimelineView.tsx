@@ -55,9 +55,10 @@ import { TaskMeta } from "@/components/TaskMeta";
 import Button from "@/components/ui/Button";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { StatusRow, TagRow, TaskRow } from "../lib/api";
+import type { StatusRow, TagRow,
+  TaskTypeRow, TaskRow } from "../lib/api";
 import { accentForGroup } from "../lib/accent";
-import { tagColours, visibleChips } from "../lib/card";
+import { tagColours, typeFacts, visibleChips } from "../lib/card";
 import type { GroupBy, TaskGroup } from "../lib/grouping";
 import { anchorDay, dayKey, rescheduleTo, shiftDay } from "../lib/calendar";
 import {
@@ -198,6 +199,8 @@ interface Props {
   /** S6 — the project's tag registry, so a tag chip is the colour its owner
    *  chose here too. One tag, one colour, on every surface of the project. */
   tags?: readonly TagRow[];
+  /** WS-27bh — the root's task types, so a card can name what it IS. */
+  taskTypes?: readonly TaskTypeRow[];
   today?: string;
   /**
    * S3 — the zoom and the span of dates the page FETCHED at it.
@@ -248,6 +251,7 @@ export function TimelineView({
   today,
   shownFields,
   tags,
+  taskTypes,
   zoom = "month",
   window: fetched,
   onZoom,
@@ -339,6 +343,7 @@ export function TimelineView({
 
   // Once per registry, not once per bar.
   const tagHues = useMemo(() => tagColours(tags ?? []), [tags]);
+  const typeHues = useMemo(() => typeFacts(taskTypes ?? []), [taskTypes]);
   /**
    * Dated tasks plus the unscheduled ones — every task that gets a ROW.
    *

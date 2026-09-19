@@ -423,6 +423,21 @@ export interface RenderedReportBody {
   };
 }
 
+/**
+ * WS-27bh — a registered task type. `pm_task_types` since migration 146.
+ *
+ * `icon` is a Lucide name and `color` goes through `resolveHue`, the same
+ * path a tag's colour takes — never a palette of its own.
+ */
+export interface TaskTypeRow {
+  id: string;
+  name: string;
+  icon?: string | null;
+  color?: string | null;
+  is_default?: boolean | null;
+  is_system?: boolean | null;
+}
+
 export interface TaskRow {
   id: string;
   project_id: string;
@@ -1106,6 +1121,16 @@ export const projectsApi = {
 
   tags: (projectId: string) =>
     call<{ rows: TagRow[]; total: number }>(`nodes/${projectId}/tags`),
+
+  /**
+   * WS-27bh — the EFFECTIVE task types for a node: org-wide ∪ root-local,
+   * with a root-local name shadowing an org-wide one (WS-27bj).
+   *
+   * The endpoint has existed since WS-27bj and nothing called it. A card can
+   * draw `type_id` only by resolving it, and this is the registry that does.
+   */
+  types: (projectId: string) =>
+    call<{ rows: TaskTypeRow[]; total: number }>(`nodes/${projectId}/types`),
 
   createTag: (projectId: string, payload: Record<string, unknown>) =>
     call<TagRow>(`nodes/${projectId}/tags`, {

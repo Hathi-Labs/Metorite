@@ -90,7 +90,27 @@ export interface TagFact {
 }
 
 /** Everything a card can draw, in terms neither app's row type owns. */
+/**
+ * WS-27bh — the task's TYPE, resolved to what it is called and how it draws.
+ *
+ * Not the `type_id`. A card cannot render a uuid, and the registry that turns
+ * one into a name lives per root project — so the surface resolves it and
+ * hands the fact down, exactly as it already does for a tag's colour.
+ */
+export interface TypeFact {
+  name: string;
+  /** A Lucide name from `pm_task_types.icon`. */
+  icon?: string | null;
+  /** `pm_task_types.color`, resolved through `resolveHue` like a tag's. */
+  color?: string | null;
+}
+
 export interface TaskFacts {
+  /**
+   * WS-27bh. An Epic must be distinguishable from a Task at a glance, and
+   * `type_id` has been on every row since migration 146 with no surface.
+   */
+  type?: TypeFact | null;
   dueAt?: string | null;
   completedAt?: string | null;
   /** WS-27s — filled for every row of the list endpoint. */
@@ -222,6 +242,26 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
  */
 export function taskMeta(facts: TaskFacts, nowMs = Date.now()): MetaChip[] {
   const chips: MetaChip[] = [];
+
+  // FIRST, and that is the whole point of it. Every other chip here says
+  // something about the task's state — blocked, late, half done. The type
+  // says what the task IS, and a reader scanning a column needs that before
+  // any of the rest. It is also the only chip that never changes, so leading
+  // with it keeps the row's left edge stable between loads.
+  //
+  // ⚠️ The hue comes from the registry through `resolveHue`, the same path a
+  // tag's colour takes. NOT a fifth palette (DESIGN_SYSTEM rule 4).
+  const type = facts.type;
+  if (type?.name) {
+    chips.push({
+      key: "type",
+      icon: type.icon || "Shapes",
+      label: type.name,
+      tone: "muted",
+      hue: resolveHue({ color: type.color }),
+      title: `Type: ${type.name}`,
+    });
+  }
 
   const blocked = facts.blockedByCount ?? 0;
   if (blocked > 0) {

@@ -20,6 +20,7 @@ import {
   taskDeepLink,
   taskFacts,
   taskRef,
+  typeFacts,
   visibleChips,
 } from "./card";
 import { DEFAULT_SHOWN, FIELD_KEYS } from "./shownFields";
@@ -53,6 +54,7 @@ describe("taskFacts", () => {
         }),
       ),
     ).toEqual({
+      type: null,
       dueAt: hours(-2),
       completedAt: hours(-1),
       subtasks: { done: 1, total: 3 },
@@ -67,6 +69,7 @@ describe("taskFacts", () => {
 
   it("defaults the counts a card must not guess at", () => {
     expect(taskFacts(row())).toEqual({
+      type: null,
       dueAt: undefined,
       completedAt: undefined,
       subtasks: null,
@@ -74,6 +77,42 @@ describe("taskFacts", () => {
       tags: [],
       estimateMins: undefined,
     });
+  });
+
+  // ── The task TYPE (WS-27bh) ─────────────────────────────────────
+
+  it("resolves type_id through the registry", () => {
+    const types = typeFacts([
+      { id: "t1", name: "Epic", icon: "Mountain", color: "#7c3aed" },
+    ]);
+    expect(taskFacts(row({ type_id: "t1" }), undefined, types).type).toEqual({
+      name: "Epic",
+      icon: "Mountain",
+      color: "#7c3aed",
+    });
+  });
+
+  it("⚠️ yields NO type when the id is not in the registry", () => {
+    // A type deleted after the task was written. The card must not fall back
+    // to drawing the uuid, which is what a naive `?? task.type_id` does — and
+    // a uuid on a card looks like a bug in the data, not in the lookup.
+    const types = typeFacts([{ id: "t1", name: "Epic" }]);
+    expect(taskFacts(row({ type_id: "gone" }), undefined, types).type).toBeNull();
+    expect(taskFacts(row({ type_id: "t1" }), undefined, undefined).type).toBeNull();
+  });
+
+  it("yields no type when the row carries none", () => {
+    const types = typeFacts([{ id: "t1", name: "Epic" }]);
+    expect(taskFacts(row(), undefined, types).type).toBeNull();
+  });
+
+  it("keys the registry by ID, not by name", () => {
+    // A tag rides the row by NAME, so `tagColours` keys by a lowercased name.
+    // A type rides it as `type_id`. Keying this by name would need a second
+    // lookup that does not exist, and every chip would silently vanish.
+    const types = typeFacts([{ id: "t1", name: "Epic" }]);
+    expect(types.get("t1")?.name).toBe("Epic");
+    expect(types.get("Epic")).toBeUndefined();
   });
 
   it("claims no attachments, because the list endpoint does not count them", () => {

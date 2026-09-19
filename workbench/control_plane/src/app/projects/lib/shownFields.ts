@@ -21,6 +21,7 @@
 
 export const FIELD_KEYS = [
   "status",
+  "type",
   "assignees",
   "start_date",
   "due_at",
@@ -37,6 +38,7 @@ export type FieldKey = (typeof FIELD_KEYS)[number];
 
 export const FIELD_LABELS: Record<FieldKey, string> = {
   status: "Status",
+  type: "Type",
   assignees: "Assignees",
   start_date: "Start",
   due_at: "Due",
@@ -65,6 +67,13 @@ export const CUSTOM_FIELD_PREFIX = "custom.";
 /** The set a view with no stored `shown_fields` means. */
 export const DEFAULT_SHOWN: readonly string[] = [
   "status",
+  // WS-27bh. ⚠️ Shown by DEFAULT, and that is the acceptance criterion rather
+  // than a preference: §9.9.2 asks that "an Epic is distinguishable from a
+  // Task at a glance", and a chip behind a picker nobody opens is not.
+  // A member who does not want it turns it off in Fields, and a member with a
+  // SAVED view keeps exactly the columns they saved — this list is only the
+  // default for a view that has expressed no opinion.
+  "type",
   "assignees",
   "due_at",
   "importance",

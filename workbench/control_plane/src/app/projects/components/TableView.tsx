@@ -35,7 +35,7 @@ import { durationLabel } from "@/lib/taskCard";
 import { useMemo, useRef, useState } from "react";
 
 import { accentForStatus } from "../lib/accent";
-import type { FieldRow, StatusRow, TaskRow } from "../lib/api";
+import type { FieldRow, StatusRow, TaskRow, TaskTypeRow } from "../lib/api";
 import { projectsApi } from "../lib/api";
 import { parseAssignees } from "../lib/assignees";
 import { sortForView } from "../lib/board";
@@ -77,6 +77,16 @@ interface Props {
   statuses: StatusRow[];
   /** WS-27l — the root's custom field definitions, for custom columns. */
   fields: FieldRow[];
+  /**
+   * WS-27bh — the root's task types.
+   *
+   * ⚠️ Needed because `type` joined `DEFAULT_SHOWN`, so this table now draws
+   * a Type column for a view that expressed no opinion. Without the registry
+   * the cell falls through to the custom-field arm and renders "—" on every
+   * row: a column of nothing, which reads as missing DATA rather than a
+   * missing prop.
+   */
+  taskTypes?: readonly TaskTypeRow[];
   /** WS-27x — the view's shown fields; columns are derived from it. */
   shownFields: readonly string[];
   /** Header sort — held by the page, which owns the fetch it drives. */
@@ -92,6 +102,7 @@ interface Props {
 
 export function TableView({
   groups,
+  taskTypes,
   groupBy,
   statuses,
   fields,
@@ -296,6 +307,13 @@ export function TableView({
         ) : (
           "—"
         );
+      }
+      case "type": {
+        // Name, not uuid — and no name rather than the uuid when the type was
+        // deleted after the task was written. `taskFacts` takes the same
+        // decision for the card chip; both refuse to render an id.
+        const type = (taskTypes ?? []).find((row) => row.id === task.type_id);
+        return type ? type.name : "—";
       }
       case "assignees":
         return task.assignees?.length ? (

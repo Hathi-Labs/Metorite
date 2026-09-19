@@ -127,6 +127,7 @@ MAX_EXPORT_ROWS = 5000
 #: lesson, §4 of core.py): ``test_projects_export`` parses the TypeScript.
 FIELD_LABELS: dict[str, str] = {
     "status": "Status",
+    "type": "Type",
     "assignees": "Assignees",
     "start_date": "Start",
     "due_at": "Due",
@@ -182,7 +183,12 @@ def resolve_columns(
     return columns
 
 
-def _render(key: str, task: dict[str, Any], statuses: dict[str, str]) -> Any:
+def _render(
+    key: str,
+    task: dict[str, Any],
+    statuses: dict[str, str],
+    types: dict[str, str] | None = None,
+) -> Any:
     """One task's value for one column key, before :func:`csv_cell`.
 
     Two columns deliberately carry the STORED value rather than the label the
@@ -195,6 +201,11 @@ def _render(key: str, task: dict[str, Any], statuses: dict[str, str]) -> Any:
     """
     if key == "status":
         return statuses.get(str(task.get("status_id") or ""), "")
+    if key == "type":
+        # An id with no row yields "" rather than the uuid. A type deleted
+        # after the task was written is the ordinary case, not an error, and
+        # the status branch above already answers it the same way.
+        return (types or {}).get(str(task.get("type_id") or ""), "")
     if key == "assignees":
         return ", ".join(task.get("assignees") or [])
     if key == "tags":
@@ -239,6 +250,13 @@ SELECT task_id, count(*) AS files
 
 _STATUS_NAMES_SQL = """
 SELECT id, name FROM pm_task_statuses WHERE id = ANY(CAST(:ids AS uuid[]))
+"""
+
+#: WS-27bh. The same shape as the statuses read above, and for the same reason:
+#: the row carries `type_id`, and a spreadsheet cell holding a uuid is not a
+#: fact anybody can use.
+_TYPE_NAMES_SQL = """
+SELECT id, name FROM pm_task_types WHERE id = ANY(CAST(:ids AS uuid[]))
 """
 
 
@@ -369,6 +387,7 @@ async def export_tasks_csv(
 
         ids = [str(r["id"]) for r in exported if r.get("id")]
         statuses: dict[str, str] = {}
+        types: dict[str, str] = {}
         if ids:
             status_ids = sorted({
                 str(r["status_id"]) for r in exported if r.get("status_id")
@@ -378,6 +397,15 @@ async def export_tasks_csv(
                     text(_STATUS_NAMES_SQL), {"ids": status_ids},
                 )).fetchall()
             }
+            type_ids = sorted({
+                str(r["type_id"]) for r in exported if r.get("type_id")
+            })
+            if type_ids:
+                types = {
+                    str(r.id): r.name for r in (await db.execute(
+                        text(_TYPE_NAMES_SQL), {"ids": type_ids},
+                    )).fetchall()
+                }
             files = {
                 str(r.task_id): int(r.files or 0) for r in (await db.execute(
                     text(_ATTACHMENT_COUNTS_SQL), {"ids": ids},
@@ -396,7 +424,7 @@ async def export_tasks_csv(
                 [
                     row.get("task_number"),
                     row.get("title"),
-                    *(_render(key, row, statuses) for key, _ in columns),
+                    *(_render(key, row, statuses, types) for key, _ in columns),
                 ]
                 for row in exported
             ),

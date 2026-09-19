@@ -112,6 +112,10 @@ describe("tableColumns", () => {
   it("draws the default set in the vocabulary's order", () => {
     expect(tableColumns(DEFAULT_SHOWN, []).map((c) => c.key)).toEqual([
       "status",
+      // WS-27bh — `type` joined DEFAULT_SHOWN, so the table draws it by
+      // default too. `TableView` gained the matching cell in the same change;
+      // without that cell this column renders "—" on every row.
+      "type",
       "assignees",
       "due_at",
       "importance",

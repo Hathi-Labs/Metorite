@@ -20,11 +20,12 @@ import {
   type MetaChip,
   type TagFact,
   type TaskFacts,
+  type TypeFact,
   chipKind,
   taskMeta,
 } from "@/lib/taskCard";
 
-import type { TagRow, TaskRow } from "./api";
+import type { TagRow, TaskRow, TaskTypeRow } from "./api";
 import { importanceLabel } from "./table";
 
 /**
@@ -42,11 +43,36 @@ export function tagColours(
   return new Map(tags.map((tag) => [tag.name.toLowerCase(), tag.color]));
 }
 
+/**
+ * WS-27bh — the type registry as the map `taskFacts` looks an id up in.
+ *
+ * Keyed by **id**, not by name. A tag is carried on the row by name, so
+ * `tagColours` keys by a lowercased name; a type is carried as `type_id`, and
+ * keying this by name would need a second lookup that does not exist.
+ */
+export function typeFacts(
+  types: readonly Pick<TaskTypeRow, "id" | "name" | "icon" | "color">[]
+): Map<string, TypeFact> {
+  return new Map(
+    types.map((type) => [
+      type.id,
+      { name: type.name, icon: type.icon, color: type.color },
+    ])
+  );
+}
+
 export function taskFacts(
   task: TaskRow,
-  colours?: ReadonlyMap<string, string>
+  colours?: ReadonlyMap<string, string>,
+  types?: ReadonlyMap<string, TypeFact>
 ): TaskFacts {
   return {
+    // WS-27bh. `type_id` is a uuid and the registry that names it is
+    // per-root, so the page resolves it and passes the map. An id with no
+    // entry yields NO chip rather than a chip reading the uuid: a type
+    // deleted after the task was written is exactly the case the tag colour
+    // lookup already survives.
+    type: task.type_id ? (types?.get(task.type_id) ?? null) : null,
     dueAt: task.due_at,
     completedAt: task.completed_at,
     subtasks: task.subtasks ?? null,
@@ -110,9 +136,10 @@ function importanceChip(task: TaskRow): MetaChip | null {
 export function cardChips(
   task: TaskRow,
   nowMs?: number,
-  colours?: ReadonlyMap<string, string>
+  colours?: ReadonlyMap<string, string>,
+  types?: ReadonlyMap<string, TypeFact>
 ): MetaChip[] {
-  const chips = taskMeta(taskFacts(task, colours), nowMs);
+  const chips = taskMeta(taskFacts(task, colours, types), nowMs);
   const priority = importanceChip(task);
   if (priority) {
     const at = chips.findIndex((chip) => chip.key === "blocked") + 1;
@@ -139,6 +166,7 @@ export function cardChips(
  * of them and silence every tag on every view.
  */
 export const CHIP_FIELD: Record<string, string> = {
+  type: "type",
   blocked: "blocked",
   importance: "importance",
   due: "due_at",
@@ -160,9 +188,10 @@ export function visibleChips(
   task: TaskRow,
   shownFields: readonly string[],
   nowMs?: number,
-  colours?: ReadonlyMap<string, string>
+  colours?: ReadonlyMap<string, string>,
+  types?: ReadonlyMap<string, TypeFact>
 ): MetaChip[] {
-  return cardChips(task, nowMs, colours).filter((chip) => {
+  return cardChips(task, nowMs, colours, types).filter((chip) => {
     const kind = chipKind(chip.key);
     return shownFields.includes(CHIP_FIELD[kind] ?? kind);
   });
