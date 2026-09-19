@@ -72,6 +72,7 @@ import Button from "@/components/ui/Button";
 import { Input, Select, Textarea } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import { StatusChip } from "@/components/StatusChip";
+import { CollapsibleSection } from "@/components/ui/Collapsible";
 import { useEffect, useRef, useState } from "react";
 
 import { accentForStatus } from "../lib/accent";
@@ -87,6 +88,12 @@ import {
   watchersApi,
 } from "../lib/api";
 import { taskDeepLink, taskRef } from "../lib/card";
+import {
+  type FoldableSection,
+  readFolded,
+  toggleFold,
+  writeFolded,
+} from "../lib/sectionFold";
 import { previewKind, readableSize } from "../lib/preview";
 import { isAutomated } from "../lib/lifecycle";
 import { AssigneePicker } from "./AssigneePicker";
@@ -195,28 +202,7 @@ function describe(activity: ActivityRow, defs: FieldRow[] = []): string {
  *
  * ⚠️ It is a deliberate second copy, and it should not stay one. The shared
  * home for it is `src/components/`, promoted together with `ItemDetail`'s — and
- * that edit touches `app/tasks/**`, which another slice holds open. Whoever
- * takes it adds the row to `src/lib/sharedTaskUi.test.ts`'s SEAM so a third
- * copy fails.
- *
- * Takes an icon NAME, not a component: `<Icon name="…">` is the house idiom and
- * the active theme picks the pack.
- */
-function SectionLabel({
-  icon,
-  children,
-}: {
-  icon?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <h3 className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-      {icon ? <Icon name={icon} className="h-3 w-3" /> : null}
-      {children}
-    </h3>
-  );
-}
-
+ * that edit touches `app/tasks
 /**
  * One labelled cell in the details block — the chrome `ItemDetail`'s `MetaEdit`
  * draws in its closed state, without the click-to-edit flip: this panel's
@@ -293,6 +279,38 @@ export function TaskPanel({
   //: The attachment whose viewer is open. One at a time — two open previews
   //: is two things asking for the same attention.
   const [viewing, setViewing] = useState<AttachmentRow | null>(null);
+
+  /**
+   * Which sections this member has folded away.
+   *
+   * ⚠️ Read in an EFFECT, not in a lazy initialiser. `localStorage` does not
+   * exist while this renders on the server, and a first paint that disagreed
+   * with the second is a hydration mismatch — the same reason `panelMode` is
+   * read the way it is, four fields below.
+   */
+  const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
+
+  useEffect(() => {
+    // Same suppression and the same reason as `panelMode` on the page: the
+    // read must happen after mount or the server's paint disagrees with the
+    // client's, and that is a hydration mismatch.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setFolded(readFolded());
+  }, []);
+
+  function setSectionOpen(section: FoldableSection, open: boolean) {
+    setFolded((current) => {
+      const next = toggleFold(current, section, open);
+      writeFolded(next);
+      return next;
+    });
+  }
+
+  /** The props every foldable section shares. */
+  const fold = (section: FoldableSection) => ({
+    open: !folded.has(section),
+    onOpenChange: (open: boolean) => setSectionOpen(section, open),
+  });
 
   const [timeline, setTimeline] = useState<ActivityRow[]>([]);
   const [comment, setComment] = useState("");
@@ -746,8 +764,12 @@ export function TaskPanel({
             them inside the containers they already live in gets the same
             halving of the panel's length with no second copy to drift. */}
         <div className={PAIRED_SECTIONS(twoColumn)}>
-          <section className={twoColumn ? "min-w-0" : undefined}>
-            <SectionLabel icon="SlidersHorizontal">Details</SectionLabel>
+          <CollapsibleSection
+              label="Details"
+              icon="SlidersHorizontal"
+              className={twoColumn ? "min-w-0" : undefined}
+              {...fold("details")}
+            >
             {/* `grid-cols-1`, with no responsive variant on purpose — see the
                 width note in this file's header. */}
             <div className="grid grid-cols-1 gap-2">
@@ -846,7 +868,7 @@ export function TaskPanel({
                 />
               </FieldCell>
             </div>
-          </section>
+          </CollapsibleSection>
 
           {task.description ? (
             // Prose spans both columns: a description set in a 50% column
@@ -859,16 +881,16 @@ export function TaskPanel({
             // with an empty column beside it. `order` re-places it for
             // auto-flow without touching the reading order that Peek and
             // Side still use.
-            <section
-              className={
-                twoColumn ? "order-last col-span-2 min-w-0" : undefined
-              }
+            <CollapsibleSection
+              label="Description"
+              icon="AlignLeft"
+              className={twoColumn ? "order-last col-span-2 min-w-0" : undefined}
+              {...fold("description")}
             >
-              <SectionLabel icon="AlignLeft">Description</SectionLabel>
               <p className="whitespace-pre-wrap text-sm text-foreground">
                 {task.description}
               </p>
-            </section>
+            </CollapsibleSection>
           ) : null}
 
           {/* Tags and recurrence draw their own small labels, so they are
@@ -876,8 +898,12 @@ export function TaskPanel({
               would compete with the ones those components already render.
               Promoting those labels onto `SectionLabel` means editing
               `TagPicker`/`RepeatEditor`, which S5 does not own. */}
-          <section className={twoColumn ? "min-w-0" : undefined}>
-            <SectionLabel icon="Tag">Properties</SectionLabel>
+          <CollapsibleSection
+              label="Properties"
+              icon="Tag"
+              className={twoColumn ? "min-w-0" : undefined}
+              {...fold("properties")}
+            >
             <div className="space-y-3">
               {/* Saved on every change rather than behind a button: a chip is a
                   single decision, and a Save beside it would be a second click
@@ -898,7 +924,7 @@ export function TaskPanel({
               />
               <RepeatEditor taskId={task.id} />
             </div>
-          </section>
+          </CollapsibleSection>
         </div>
 
         {/* Custom fields bring their own section chrome — a top rule, their own
@@ -912,8 +938,12 @@ export function TaskPanel({
           {/* Both halves existed in the schema since WS-27a with no surface:
               links could be created and deleted but never listed, and subtasks
               could be created but never shown. */}
-          <section className={twoColumn ? "min-w-0" : undefined}>
-            <SectionLabel icon="GitBranch">Links &amp; subtasks</SectionLabel>
+          <CollapsibleSection
+              label="Links & subtasks"
+              icon="GitBranch"
+              className={twoColumn ? "min-w-0" : undefined}
+              {...fold("links")}
+            >
             <div className="space-y-2">
               {onOpenTask ? (
                 <RelationsBlock
@@ -938,12 +968,15 @@ export function TaskPanel({
                 aria-label="Add a subtask"
               />
             </div>
-          </section>
+          </CollapsibleSection>
 
-          <section className={twoColumn ? "min-w-0" : undefined}>
-            <SectionLabel icon="Paperclip">
-              Files{files.length ? ` · ${files.length}` : ""}
-            </SectionLabel>
+          <CollapsibleSection
+              label="Files"
+              icon="Paperclip"
+              count={files.length}
+              className={twoColumn ? "min-w-0" : undefined}
+              {...fold("files")}
+            >
             <div className="space-y-1">
               {files.map((f) => {
                 const kind = previewKind(f.mime);
@@ -1056,12 +1089,17 @@ export function TaskPanel({
             >
               {uploading.length > 0 ? "Uploading…" : "Attach files"}
             </Button>
-          </section>
+          </CollapsibleSection>
 
           {/* The timeline spans: it is a list of sentences, and half a
               panel is not enough line length for one. */}
-          <section className={twoColumn ? "col-span-2 min-w-0" : undefined}>
-            <SectionLabel icon="History">Activity</SectionLabel>
+          <CollapsibleSection
+              label="Activity"
+              icon="History"
+              count={timeline.length}
+              className={twoColumn ? "col-span-2 min-w-0" : undefined}
+              {...fold("activity")}
+            >
             <ol className="space-y-3">
               {timeline.map((activity) => (
                 <li key={activity.id} className="text-sm">
@@ -1092,7 +1130,7 @@ export function TaskPanel({
                 </li>
               ) : null}
             </ol>
-          </section>
+          </CollapsibleSection>
         </div>
       </div>
 
