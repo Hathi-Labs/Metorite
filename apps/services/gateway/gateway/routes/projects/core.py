@@ -1979,6 +1979,39 @@ async def remap_one_status(db: Any, *, status_id: str, owner_id: str) -> str:
     return str(row.target)
 
 
+async def remap_one_type(db: Any, *, type_id: str, root_id: str) -> str | None:
+    """Where ONE task's TYPE lands in another root's registry (WS-27bl).
+
+    🔴 **The defect this exists to close.** Task types are root-scoped
+    (:func:`vocabulary_scope`), and every cross-root move before 2026-09-19
+    carried ``type_id`` untouched. The task then pointed at a row in the SOURCE
+    root's registry. Nothing raised, nothing logged; the type simply stopped
+    resolving, and the board drew a task with no type while the column still
+    held an id.
+
+    By NAME, which is the only thing two registries can share — ids cannot be,
+    and a position would match "the first one" to "the first one".
+
+    **``None`` when the destination has no such type, and that is the answer,
+    not a failure.** A cleared type is honest and a member can set a new one. A
+    dangling id is neither. This deliberately differs from
+    :func:`remap_one_status`, which raises instead: a task must be in SOME lane
+    to appear on a board at all, while a task with no type is an ordinary row.
+    """
+    row = (await db.execute(
+        text(
+            "SELECT n.id FROM pm_task_types n "
+            " WHERE n.project_id = CAST(:root AS uuid) "
+            "   AND lower(btrim(n.name)) = ("
+            "       SELECT lower(btrim(o.name)) FROM pm_task_types o "
+            "        WHERE o.id = CAST(:tid AS uuid))"
+            " ORDER BY n.name LIMIT 1"
+        ),
+        {"tid": type_id, "root": root_id},
+    )).fetchone()
+    return str(row.id) if row else None
+
+
 async def assert_no_project_cycle(
     db: Any, project_id: str, new_parent_id: str | None,
 ) -> None:

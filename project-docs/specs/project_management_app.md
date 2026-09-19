@@ -4448,6 +4448,103 @@ Then do the check no test in this tree makes (`DESIGN_SYSTEM.md` §8). Look at
 each new surface in light mode, at compact density, and under a changed
 accent.
 
+### 9.13 WS-27bl — moving a task, and carrying its meaning with it (minted 2026-09-19, owner directive)
+
+**Owner directive, 2026-09-19:** *"I want to be able to move tasks between
+projects and sub-projects and spaces … take into consideration the mapping of
+the statuses or custom parameters or fields of that particular task to the new
+project or space … We should also be able to do this in bulk. But in the case of
+bulk transfer, we have to only be allowed to move from one project to another
+one project … so that the mapping can be common for all the tasks."*
+
+🟢 AGENT-SAFE. **No migration.** Every column this needs exists.
+
+#### 9.13.1 The audit — the hard half is already built
+
+Measured against `3ef3afac`, 2026-09-19.
+
+| Anchor | Finding |
+|---|---|
+| Single-task move | **Already works.** `PATCH /projects/tasks/{id}` with `project_id` (`tasks.py`) refuses a folder, guards privacy, remaps the status, checks the destination's REQUIRED fields before any write, restamps `root_project_id` and reallocates `task_number`. |
+| The mapping primitive | **Already written.** `remap_task_statuses(mapping=…)` takes an explicit old→new map and says in its own docstring it is *"the answer a human gave in the mapping card"*. **That card was never built.** |
+| The automatic rule | `_REMAP_TARGET_SQL` — name, then category, then any non-triage lane. Three steps, in that order. |
+| Any UI | **None.** `taskMenu.ts` offers Open, Copy link, Select and Change status. A task can be moved only by calling the API. |
+| Bulk move | **Refused.** `bulk.validate_patch` allows `PATCHABLE_FIELDS` plus `status`; `project_id` is not in either. |
+| 🔴 `type_id` on a cross-root move | **NOT remapped, and this is a defect.** Types are root-scoped (`vocabulary_scope`), so a moved task keeps an id from the source root's registry and points at nothing. |
+| Custom values with no destination field | **Silently kept.** `apply_values` validates the PATCH against the destination's definitions; the task's EXISTING values are merged in untouched, so they survive as orphans no screen can show. |
+
+So this ticket is mostly **surface plus two corrections**, not new machinery.
+
+#### 9.13.2 The three decisions the owner took, 2026-09-19
+
+- **D-PM-29 — an unmappable value is DROPPED, on the record.** The card offers
+  destination fields of a compatible type. Anything left unmapped is dropped,
+  the drop is named in the confirmation **before** the member agrees, and the
+  old value is written to the task timeline. Keeping it as a hidden orphan was
+  rejected: invisible data that reappears on a later move is worse than a
+  recorded loss. Refusing the move was rejected too — a value that no longer
+  applies in the destination is the ordinary case.
+- **D-PM-30 — a bulk move is a SELECTION that shares one source project.** Not
+  "every task in the project". The Move action refuses a selection spanning two
+  sources and names the offenders. One source means one mapping, which is the
+  owner's whole reason for the constraint.
+- **D-PM-31 — the mapping is auto-filled, shown, and adjustable.** `_REMAP_TARGET_SQL`
+  already resolves a good answer; the card shows what it resolved to, with a
+  per-row override. A silent auto-map was rejected: a wrong lane is then found
+  by somebody else, on a board, later.
+
+#### 9.13.3 Slice 1 — the mechanism 🟢
+
+> **Done when:**
+> * `POST /projects/tasks/move/preview` answers, for `{task_ids, destination_project_id}`,
+>   what the move WOULD do: the resolved status map, the resolved field map, the
+>   values that would be dropped, the tags the destination does not register,
+>   the task type that would be lost, and the destination's required fields the
+>   selection does not satisfy. **It writes nothing.**
+> * `POST /projects/tasks/move` applies it, taking `status_map` and `field_map`
+>   explicitly. ⚠️ **The map is applied FIRST and the automatic rule sweeps what
+>   it did not cover**, which is `remap_task_statuses`'s existing ordering and
+>   its reason: a card built from stale counts must not leave a task behind.
+> * **One transaction.** Partial application is the worst outcome available —
+>   `bulk.py` already argues this, and a half-moved selection is worse than a
+>   half-applied edit because the tasks are now in two places.
+> * **A selection spanning two source projects is a 422 that NAMES them.**
+>   (D-PM-30.) A count alone does not tell the member which tasks to deselect.
+> * 🔴 **`type_id` is remapped by name into the destination root's registry, and
+>   cleared when there is no match.** This is the §9.13.1 defect and it is fixed
+>   in this slice, because the move is what creates the dangling id.
+> * Every drop, every status change and every type change is one `pm_activities`
+>   row on the task, so a move is legible afterwards. The old `task_number` is
+>   already recorded; this joins it.
+> * **`MAX_BULK` is reused, not re-declared** (CLAUDE.md §5).
+> * **R8** — the preview's resolution query is verified against a real Postgres,
+>   not a fake. It is the query the whole feature's correctness rests on.
+>
+> **Gate:** AGENT-SAFE.
+
+#### 9.13.4 Slice 2 — the card 🟢
+
+> **Done when:**
+> * `Move to…` is on the task row menu (`taskMenu.ts`) and on the bulk bar.
+> * The dialog shows the destination picker, then the resolved mapping, then
+>   what will be lost, then the button. ⚠️ **The losses are named before the
+>   button, never in a toast afterwards** (D-PM-29).
+> * It uses `Modal`, `Button` and the promoted `ContextMenu`. No hand-rolled
+>   dialog (WS-27ak).
+> * ⚠️ **It is mounted where BOTH page returns render it** — `overlays`, not the
+>   desktop return. `MoveDialog` is mounted in the desktop return alone and
+>   opens nothing on a phone (**H-120**); this must not repeat it.
+
+#### 9.13.5 Not in this ticket
+
+Moving a task into a **personal** project beyond what `assert_move_keeps_privacy`
+already allows. Auto-creating a missing tag or field in the destination — that is
+a write to a shared vocabulary, taken as a side effect of one member's move, and
+it needs its own decision. Moving a task and its **subtree** as one act:
+`parent_task_id` is its own axis and §9.13 does not touch it.
+
+---
+
 ## 10. Verification
 
 ⚠️ Never `uv run pytest tests/unit/` bare — whole-directory collection hangs on the
