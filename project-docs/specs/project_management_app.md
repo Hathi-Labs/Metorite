@@ -1469,10 +1469,12 @@ measurable rather than aesthetic:
 5. **Concurrency.** D-PM-20 is still owed, so writes are last-write-wins; a mass write is the
    worst possible interaction with agents writing beside humans.
 
-**The one write that IS correct is the user's act, not the state change's:** stopping a project
-**offers** to close its open tasks — *"12 tasks are still open. Close them as cancelled?"* —
-executed through the shipped bulk endpoint (WS-27n) as ordinary audited transitions. Declining
-leaves them open. An offer is not a cascade.
+~~**The one write that IS correct is the user's act, not the state change's:** stopping a
+project **offers** to close its open tasks.~~
+🔴 **WITHDRAWN 2026-09-19 by owner ruling — see D-PM-32.** There is no offer and no
+close. *"Stopping a project does not change its status, so the status of those individual
+tasks remains the same as before. Only the project gets stopped."* The bulk close was never
+built, which is the one piece of luck in this record.
 
 **Pause governs attention, not permission** (owner-ruled the same day): a paused project still
 accepts comments, re-planning and grooming, because re-planning is usually *why* it was paused.
@@ -3757,8 +3759,9 @@ otherwise author three times over.
 > * **Archive is the default affordance and Delete is deliberately harder to reach.** Today
 >   `DELETE` is the only path and it is unrecoverable; shipping archive without re-ranking them
 >   leaves the destructive action as the obvious one.
-> * Stopping a project offers the bulk close (D-PM-26) and takes "leave them as-is" for an
->   answer.
+> * ~~Stopping a project offers the bulk close (D-PM-26).~~ 🔴 **WITHDRAWN
+>   2026-09-19 — D-PM-32(a).** Stopping writes no task row at all. What replaces it is
+>   D-PM-32(b): a stopped project's tasks leave the reports.
 > * **D-PM-21:** the theme sweep is a Playwright case, not a promise — the indicator renders
 >   under Fluent, Material and Graphite, in both modes.
 
@@ -4492,6 +4495,45 @@ So this ticket is mostly **surface plus two corrections**, not new machinery.
   already resolves a good answer; the card shows what it resolved to, with a
   per-row override. A silent auto-map was rejected: a wrong lane is then found
   by somebody else, on a board, later.
+
+**D-PM-32 — a stopped project leaves the REPORTS; a paused one does not.**
+`DECISION (2026-09-19, owner-ruled.)` Two rulings in one, and the first supersedes half of
+D-PM-26.
+
+**(a) Stopping writes nothing.** *"Stopping a project does not change its status, so the
+status of those individual tasks remains the same as before. Only the project gets stopped."*
+D-PM-26's derive-never-write rule was always right; its tail — the offer to bulk-close open
+tasks on Stop — is withdrawn outright. A task in a stopped project keeps the lane it was in,
+so resuming needs no stash column and no reconstruction. **H-119, which asked which lane a
+stop should close into, is dissolved rather than answered: there is no close.**
+
+**(b) A stopped project's work leaves the reports. A paused project's work stays.** The owner
+asked for stopped and left the rest to judgement. The line is **abandoned, not idle**:
+
+| State | In reports? | Why |
+|---|---|---|
+| `active` | yes | — |
+| `queued` | **yes** | Planned but not started. A forecast that cannot see the queue is not a forecast. |
+| `on_hold` (Paused) | **yes** | ⚠️ Stalled, not abandoned. **Hiding paused work is how a quarter of it goes missing** — the report is the only place anybody would notice it had stopped moving. |
+| `stopped` | **no** | Not happening. Counting it as overload or as stuck is noise in every metric. |
+| `archived` | no | Already excluded everywhere by `archived_at`. |
+
+⚠️ **This needs a SECOND predicate, and that is not a duplicate vocabulary.**
+`runnable_project_clause` (`status = 'active'`) answers *"may automation ACT here"* — and the
+answer for a paused project is no: no recurrence spawn, no agent dispatch. The new
+`reportable_project_clause` answers *"does this work COUNT"* — and for a paused project the
+answer is yes. A single predicate cannot say both, and collapsing them would either dispatch
+agents into paused work or hide it from the only surface that would reveal the stall. The two
+are documented against each other at both definitions, and CLAUDE.md §5 is satisfied by them
+answering different questions rather than by there being one.
+
+**Scope.** The four analytics reads, the weekly report, and cross-project roll-ups and
+assignee counts. **Opening the stopped project itself still shows its tasks** — otherwise
+nobody could review it or restart it, and the state would be a trapdoor.
+
+**Fence (R7).** A test asserts a stopped project's tasks are absent from every analytics
+answer and a paused project's are present. R8 binds it: the predicate lands in SQL, so it is
+verified against a real Postgres, not a fake.
 
 #### 9.13.3 Slice 1 — the mechanism 🟢
 

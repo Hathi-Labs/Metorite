@@ -229,3 +229,30 @@ async def test_the_board_order_join_runs_on_asyncpg(async_engine):
                 "view_id": "00000000-0000-0000-0000-000000000000",
             },
         )
+
+
+async def test_the_reportable_ancestor_walk_runs_on_asyncpg(async_engine):
+    """D-PM-32(b) — the clause that drops a stopped project out of reports.
+
+    ⚠️ Added with the clause, in the same pull request, because the suite's
+    `WHERE = "TRUE"` constant means every builder case above would stay green
+    while the real `open_where` carried an unbindable predicate. That gap is
+    exactly H-114's: a fence that covers the builders and not the WHERE they
+    are handed reads like a whole fence.
+
+    A recursive CTE correlated to `t.project_id`, with a `text[]` bind. Both
+    halves are shapes asyncpg can refuse where psycopg does not.
+    """
+    from gateway.routes.projects.core import (
+        REPORTABLE_STATUSES,
+        reportable_with_ancestors_clause,
+    )
+
+    async with async_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "SELECT count(*) FROM pm_tasks t "
+                f" WHERE ({reportable_with_ancestors_clause('t')})"
+            ),
+            {"reportable_states": sorted(REPORTABLE_STATUSES)},
+        )

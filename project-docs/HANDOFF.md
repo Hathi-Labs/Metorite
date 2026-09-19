@@ -832,6 +832,37 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `app/projects/page.tsx` · `DESIGN_SYSTEM.md` §8 · H-8
 - **Added:** 2026-09-19 · found while building the Delete affordance (H-8).
 
+### H-119 · ✅ DISSOLVED — a stop closes nothing, so there is no lane · [RESOLVED]
+- **Answered 2026-09-19, and the question turned out to be wrong.** The owner:
+  *"Stopping a project does not change its status, so the status of those
+  individual tasks remains the same as before. Only the project gets stopped."*
+- So there is no bulk close and no lane to choose. **D-PM-26's offer to close
+  open tasks on Stop is WITHDRAWN**, and the derive-never-write half of that
+  decision stands unchanged. Nothing was built against the withdrawn half.
+- **What replaced it: D-PM-32(b).** A stopped project's tasks leave the
+  reports. Paused and queued work stays, because hiding a stalled project from
+  the one surface that would reveal the stall is how its work goes missing.
+- **Delete this entry** once somebody has read it. Kept for one cycle because
+  H-8 and the WS-27 board row both pointed here.
+
+### H-120 · "Move to…" opens NOTHING on a phone · [AGENT]
+- **Check:** `grep -n "if (isMobile) {" workbench/control_plane/src/app/projects/page.tsx`
+  → note the line. Then find `movingNode ? (`. It sits **after** that early
+  return, so the phone branch never renders it.
+- **Why it is invisible.** The menu entry is drawn, the click lands, and the
+  handler sets `movingNode`. No dialog exists in the phone tree to render it.
+  Nothing errors and nothing appears. A member reads it as a dead menu item.
+- **Measured 2026-09-19** in the visual rig, at 390px. The row menu opens, the
+  drawer closes, and the screen does not change.
+- **The fix, and the trap in it.** Move the mount into `overlays`, which BOTH
+  returns render. `DeleteProjectDialog` is mounted there for this reason and
+  its comment records it. ⚠️ On a phone the tree IS the drawer sheet, so the
+  entry must also close the drawer, or the dialog opens behind it.
+- **⚠️ Check every other dialog in the desktop return the same way.** This is
+  one instance of a pattern, not one bug. Nothing in the tree tests layout.
+- **Authority:** `app/projects/page.tsx` · `DESIGN_SYSTEM.md` §8 · H-8
+- **Added:** 2026-09-19 · found while building the Delete affordance (H-8).
+
 ### H-119 · Decide which lane closes a task when a project STOPS · [OWNER]
 - **Check:** `grep -n "bulk" workbench/control_plane/src/app/projects/page.tsx`
   → no stop-time bulk close means this is still open.

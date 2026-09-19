@@ -122,8 +122,89 @@ RUNNABLE_STATUSES: frozenset[str] = frozenset({"active"})
 #: every default surface, so advancing its work would be automation acting on
 #: rows the product has stopped showing.
 def runnable_project_clause(alias: str = "p") -> str:
-    """A predicate restricting ``alias`` (a ``pm_projects`` row) to runnable."""
+    """A predicate restricting ``alias`` (a ``pm_projects`` row) to runnable.
+
+    ⚠️ **"Runnable" is about ACTING, not about counting.** A paused project is
+    not runnable — nothing may spawn or dispatch into it — and its work still
+    belongs in a report. :func:`reportable_project_clause` is that other
+    question, and D-PM-32 records why the two cannot be one predicate.
+    """
     return f"{alias}.status = 'active' AND {alias}.archived_at IS NULL"
+
+
+#: The states whose work still COUNTS, even though it is not moving (D-PM-32).
+#:
+#: Queued is planned and paused is stalled. Neither is abandoned.
+REPORTABLE_STATUSES: frozenset[str] = frozenset({"active", "queued", "on_hold"})
+
+
+def reportable_project_clause(alias: str = "p") -> str:
+    """A predicate restricting ``alias`` to work that still counts in a report.
+
+    🔴 **NOT :func:`runnable_project_clause`, and the difference is the whole
+    decision.** That one answers *"may automation ACT here"* and says no for a
+    paused project: no recurrence spawn, no agent dispatch. This one answers
+    *"does this work COUNT"* and says yes for the same project.
+
+    One predicate cannot say both. Collapsing them would either dispatch
+    agents into paused work, or hide paused work from the only surface where
+    anybody would notice it had stopped moving — and **a report that silently
+    omits a paused project is how a quarter of its work goes missing.**
+
+    ``stopped`` is the one run state excluded, because it means the work is
+    not happening: counting it as overload or as stuck is noise in every
+    metric. ``done`` goes with it — a finished project's stragglers are not
+    open work. Archived is excluded by ``archived_at`` as everywhere else.
+    """
+    return (
+        f"{alias}.status = ANY(CAST(:reportable_states AS text[])) "
+        f"AND {alias}.archived_at IS NULL"
+    )
+
+
+def reportable_with_ancestors_clause(alias: str = "t") -> str:
+    """Exclude a task whose project OR ANY ANCESTOR is not reportable.
+
+    D-PM-32(b), and the ancestor walk is not optional. A project's state
+    governs its whole subtree — "the most restrictive ancestor wins" is how
+    the tree already draws an inherited pause, and `is_runnable_with_ancestors`
+    exists because the slice-1 guards each read only the task's immediate
+    project and disagreed with the UI. **A task in an active subproject of a
+    STOPPED root is stopped work**, and a report that counts it has the same
+    defect with a different name.
+
+    Correlated, because the callers filter `pm_tasks` and have no project join
+    to hang this on. It is written as NOT EXISTS over the chain rather than
+    `bool_and` over it, so the walk can stop at the first bad ancestor.
+
+    ⚠️ **The plan is UNMEASURED at realistic row counts.** R8 binds this: a
+    recursive CTE correlated per row is exactly the shape that looks fine on a
+    seeded database and is unusable at 60k tasks. WS-27be is the precedent —
+    an index that looked like it covered the case was dead for twenty-four
+    migrations. Measure before claiming this is cheap.
+    """
+    return (
+        f"NOT EXISTS ("
+        f"  WITH RECURSIVE chain AS ("
+        f"    SELECT id, parent_project_id, status, archived_at"
+        f"      FROM pm_projects WHERE id = {alias}.project_id"
+        f"    UNION ALL"
+        f"    SELECT p.id, p.parent_project_id, p.status, p.archived_at"
+        f"      FROM pm_projects p JOIN chain c ON p.id = c.parent_project_id"
+        f"  )"
+        f"  SELECT 1 FROM chain"
+        f"   WHERE NOT (status = ANY(CAST(:reportable_states AS text[]))"
+        f"              AND archived_at IS NULL)"
+        f")"
+    )
+
+
+def is_reportable(project: Any) -> bool:
+    """The Python half of :func:`reportable_project_clause`, same two axes."""
+    if project is None:
+        return False
+    get = project.get if isinstance(project, dict) else lambda k: getattr(project, k, None)
+    return get("status") in REPORTABLE_STATUSES and get("archived_at") is None
 
 
 def is_runnable(project: Any) -> bool:
