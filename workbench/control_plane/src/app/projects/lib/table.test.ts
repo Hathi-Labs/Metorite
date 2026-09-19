@@ -116,6 +116,7 @@ describe("tableColumns", () => {
       // default too. `TableView` gained the matching cell in the same change;
       // without that cell this column renders "—" on every row.
       "type",
+      "source",
       "assignees",
       "due_at",
       "importance",

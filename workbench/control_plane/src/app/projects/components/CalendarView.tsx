@@ -293,7 +293,15 @@ export function CalendarView({
                           task,
                           shownFields,
                           undefined,
-                          tagHues
+                          tagHues,
+                          // ⚠️ The fifth argument. Without it this surface
+                          // built `typeHues` and passed nothing, so the type
+                          // chip drew on the board and the list and NEVER on
+                          // the calendar. `visibleChips`' last parameter is
+                          // optional, so tsc cannot catch the omission, and
+                          // `noUnusedLocals` is off so the dead memo was
+                          // silent too. Found by review, 2026-09-19.
+                          typeHues
                         )}
                       />
                     </button>

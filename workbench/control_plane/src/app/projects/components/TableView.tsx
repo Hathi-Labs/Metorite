@@ -128,6 +128,15 @@ export function TableView({
     [statuses]
   );
 
+  // A Map, like `statusById` above. The first version ran `.find()` inside
+  // `readOnlyCell`, i.e. once per row per render — O(rows × types). The cost
+  // is small today; the inconsistency beside a Map four lines up is the part
+  // worth fixing.
+  const typeById = useMemo(
+    () => new Map((taskTypes ?? []).map((t) => [t.id, t])),
+    [taskTypes]
+  );
+
   const columns = useMemo(
     () => tableColumns(shownFields, fields as FieldDef[]),
     [shownFields, fields]
@@ -312,9 +321,17 @@ export function TableView({
         // Name, not uuid — and no name rather than the uuid when the type was
         // deleted after the task was written. `taskFacts` takes the same
         // decision for the card chip; both refuse to render an id.
-        const type = (taskTypes ?? []).find((row) => row.id === task.type_id);
+        const type = task.type_id ? typeById.get(task.type_id) : undefined;
         return type ? type.name : "—";
       }
+      case "source":
+        // ⚠️ `source` joined FIELD_KEYS, so the Fields menu offers a Source
+        // column. Without this arm the switch fell to the custom-field
+        // default and drew "—" on every row, while the CSV export of the
+        // SAME view printed the real word — the screen and the file
+        // disagreeing about one column. The stored word, not a label, for
+        // `importance`'s reason: the display vocabulary lives in the chip.
+        return task.source && task.source !== "manual" ? task.source : "—";
       case "assignees":
         return task.assignees?.length ? (
           <AvatarStack people={task.assignees} label={personLabel} />

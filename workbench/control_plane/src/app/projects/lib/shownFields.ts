@@ -76,6 +76,10 @@ export const DEFAULT_SHOWN: readonly string[] = [
   // SAVED view keeps exactly the columns they saved — this list is only the
   // default for a view that has expressed no opinion.
   "type",
+  // WS-27bh. On by default like `type`, and cheap: `manual` earns no chip
+  // and is the overwhelming majority of rows, so the common card gains
+  // nothing to read while an emailed or agent-made task announces itself.
+  "source",
   "assignees",
   "due_at",
   "importance",

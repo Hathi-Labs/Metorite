@@ -7,6 +7,8 @@
  * A board full of tasks with no badges looks like a board full of simple tasks.
  */
 
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import { accentForHue } from "@/lib/statusAccent";
@@ -434,5 +436,45 @@ describe("the task SOURCE chip (WS-27bh)", () => {
       "email",
       "import",
     ]);
+  });
+});
+
+describe("🔴 every chip surface must pass the type registry", () => {
+  // The defect this pins, found by review 2026-09-19.
+  //
+  // `CalendarView` built its `typeHues` map and then called `visibleChips`
+  // with FOUR arguments, so the type chip drew on the board and the list and
+  // never on the calendar. Nothing caught it: the fifth parameter is
+  // optional so `tsc` is happy, and `noUnusedLocals` is off so the dead memo
+  // was silent too.
+  //
+  // A source scan, because the defect is an omitted ARGUMENT — there is no
+  // behavioural assertion that distinguishes "this surface has no types" from
+  // "this surface forgot to pass them".
+  const SURFACES = [
+    "TaskBoard.tsx",
+    "TaskList.tsx",
+    "CalendarView.tsx",
+    "TimelineView.tsx",
+  ];
+
+  it("passes the registry at every visibleChips call site", () => {
+    for (const name of SURFACES) {
+      const source = readFileSync(
+        new URL(`../components/${name}`, import.meta.url),
+        "utf-8",
+      );
+      // Every call, with whitespace and newlines collapsed so a multi-line
+      // call reads the same as a one-line one — which is exactly how the
+      // calendar's slipped through a bulk edit.
+      const flat = source.replace(/\s+/g, " ");
+      const calls = flat.match(/visibleChips\([^)]*\)/g) ?? [];
+      for (const call of calls) {
+        expect(
+          call,
+          `${name}: visibleChips must receive the type registry`,
+        ).toContain("typeHues");
+      }
+    }
   });
 });
