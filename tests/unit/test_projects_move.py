@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from gateway.routes.projects import move
 from gateway.routes.projects.move import (
     COMPATIBLE_TYPES,
     apply_field_map,
@@ -253,3 +254,50 @@ class TestTwoSourceFieldsOneTarget:
         mapping, _ = resolve_field_map(self.SOURCE, self.DEST)
         landed, dropped = apply_field_map(values, mapping, frozenset({"priority"}))
         assert len(landed) + len(dropped) == len(values)
+
+
+class TestABlankLaneIsNotAUuid:
+    """F9 — the placeholder option in the dialog reached the driver.
+
+    `MoveTasksDialog` renders `<option value="">Pick a lane…</option>` for a
+    row with no automatic landing. Pick a lane, then pick that option again,
+    and the payload carries `{"<old>": ""}`. That empty string reached
+    `require_status_in_project`, which builds `CAST('' AS uuid)`, and asyncpg
+    raised — a 500 where "you did not pick a lane" was the honest answer.
+    """
+
+    def test_a_blank_VALUE_is_dropped_rather_than_sent_on(self):
+        body = move.MoveIn(
+            task_ids=["t1"],
+            destination_project_id="p2",
+            status_map={"old-lane": "", "other": "new-lane"},
+        )
+        assert body.status_map == {"other": "new-lane"}
+
+    def test_a_whitespace_value_counts_as_blank(self):
+        body = move.MoveIn(
+            task_ids=["t1"], destination_project_id="p2",
+            status_map={"old-lane": "   "},
+        )
+        assert body.status_map == {}
+
+    def test_field_map_gets_the_same_treatment(self):
+        body = move.MoveIn(
+            task_ids=["t1"], destination_project_id="p2",
+            field_map={"a": "", "b": "dest"},
+        )
+        assert body.field_map == {"b": "dest"}
+
+    def test_a_blank_KEY_is_refused_instead(self):
+        """Nothing maps FROM nothing, so this is a caller error and not an
+        unanswered row."""
+        with pytest.raises(ValueError):
+            move.MoveIn(
+                task_ids=["t1"], destination_project_id="p2",
+                status_map={"": "new-lane"},
+            )
+
+    def test_None_still_means_no_mapping_at_all(self):
+        body = move.MoveIn(task_ids=["t1"], destination_project_id="p2")
+        assert body.status_map is None
+        assert body.field_map is None

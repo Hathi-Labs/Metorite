@@ -74,7 +74,7 @@ from gateway.routes.projects.custom_fields import (
     assert_required_fields_present,
     load_definitions,
 )
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import text
 
 #: Which destination field types may receive which source type.
@@ -290,6 +290,32 @@ class MoveIn(BaseModel):
     #: drop MORE than was agreed to. Omitted means "no list", and the bare
     #: flag then behaves as before.
     accepted_drops: list[str] | None = None
+
+    @field_validator("status_map", "field_map")
+    @classmethod
+    def _no_blank_sides(
+        cls, value: dict[str, str] | None,
+    ) -> dict[str, str] | None:
+        """⚠️ A blank is a 500, and it arrives through the ordinary UI.
+
+        `MoveTasksDialog` renders `<option value="">Pick a lane…</option>` for
+        a row with no automatic landing. Choose a lane, then choose that
+        placeholder again, and the dialog sends `{"<old>": ""}`. The empty
+        string reached `require_status_in_project`, which builds
+        `CAST('' AS uuid)`, and the driver raised — a 500 where the honest
+        answer is "you did not pick a lane".
+
+        It DROPS the blank entry rather than refusing the whole move: an
+        unanswered row means the member has no override for it, and the
+        automatic rule already sweeps whatever the card does not cover. A
+        blank KEY is different and is refused, because nothing maps from
+        nothing.
+        """
+        if value is None:
+            return None
+        if any(not str(key).strip() for key in value):
+            raise ValueError("a mapping key cannot be blank")
+        return {k: v for k, v in value.items() if str(v).strip()}
 
 
 async def _selection(db: Any, vis: Any, raw_ids: list[str]) -> list[Any]:

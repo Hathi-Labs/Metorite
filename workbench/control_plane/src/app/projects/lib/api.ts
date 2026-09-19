@@ -1097,13 +1097,6 @@ export const projectsApi = {
     call<ArchiveResult>(`nodes/${projectId}/unarchive`, { method: "POST" }),
 
   /**
-   * H-8 — the unrecoverable cascade, given a control at last.
-   *
-   * ⚠️ Every caller must go through `DeleteProjectDialog`. There is no
-   * confirmation on this side and none on the server's: the route deletes what
-   * it is given. The dialog is the whole guard.
-   */
-  /**
    * WS-27bl §9.13 — what a move WOULD do. Writes nothing.
    *
    * ⚠️ Always call this before `moveTasks`. The server resolves both
@@ -1123,6 +1116,13 @@ export const projectsApi = {
       body: JSON.stringify(payload),
     }),
 
+  /**
+   * H-8 — the unrecoverable cascade, given a control at last.
+   *
+   * ⚠️ Every caller must go through `DeleteProjectDialog`. There is no
+   * confirmation on this side and none on the server's: the route deletes what
+   * it is given. The dialog is the whole guard.
+   */
   deleteProject: (projectId: string) =>
     call<DeleteProjectResult>(`nodes/${projectId}`, { method: "DELETE" }),
 

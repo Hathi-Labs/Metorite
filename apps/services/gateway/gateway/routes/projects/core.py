@@ -177,6 +177,13 @@ def reportable_with_ancestors_clause(alias: str = "t") -> str:
     to hang this on. It is written as NOT EXISTS over the chain rather than
     `bool_and` over it, so the walk can stop at the first bad ancestor.
 
+    ⚠️ **The row test is :func:`reportable_project_clause`, called on the CTE
+    rather than spelled out again.** It used to be inlined here, which left
+    the named predicate with no caller and two copies of one rule — so a
+    later edit to "reportable" could change the single-project answer and not
+    the subtree answer, and only one of them has a surface. `chain` carries
+    the same two columns, so the alias form fits with no change.
+
     ⚠️ **The plan is UNMEASURED at realistic row counts.** R8 binds this: a
     recursive CTE correlated per row is exactly the shape that looks fine on a
     seeded database and is unusable at 60k tasks. WS-27be is the precedent —
@@ -193,8 +200,7 @@ def reportable_with_ancestors_clause(alias: str = "t") -> str:
         f"      FROM pm_projects p JOIN chain c ON p.id = c.parent_project_id"
         f"  )"
         f"  SELECT 1 FROM chain"
-        f"   WHERE NOT (status = ANY(CAST(:reportable_states AS text[]))"
-        f"              AND archived_at IS NULL)"
+        f"   WHERE NOT ({reportable_project_clause('chain')})"
         f")"
     )
 

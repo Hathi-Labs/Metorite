@@ -4527,13 +4527,26 @@ agents into paused work or hide it from the only surface that would reveal the s
 are documented against each other at both definitions, and CLAUDE.md §5 is satisfied by them
 answering different questions rather than by there being one.
 
-**Scope.** The four analytics reads, the weekly report, and cross-project roll-ups and
-assignee counts. **Opening the stopped project itself still shows its tasks** — otherwise
-nobody could review it or restart it, and the state would be a trapdoor.
+**Scope: the OPEN-WORK reads, not the historical ones.** `/analytics/stuck`, `/analytics/load`,
+`/analytics/outlook` and the weekly report's open section. Each builds a predicate the code
+calls `open_where`, and each now carries the clause.
 
-**Fence (R7).** A test asserts a stopped project's tasks are absent from every analytics
-answer and a paused project's are present. R8 binds it: the predicate lands in SQL, so it is
-verified against a real Postgres, not a fake.
+⚠️ **`/analytics/throughput`, `/analytics/finished` and the weekly report's `past_where` keep
+a stopped project's finished work, on purpose.** These describe the past. The tree already
+takes this position for archiving — "an archive sweep in September must not empty July" — and
+a stop is the same shape: it must not retroactively change a number we have already sent.
+"Does not appear in any report" means the work nobody is going to do, not the work already
+done. Reverse this and every past week's velocity moves when somebody stops a project.
+
+**Opening the stopped project itself still shows its tasks** — otherwise nobody could review
+it or restart it, and the state would be a trapdoor.
+
+**Fence (R7).** `tests/unit/test_projects_reportable_reports.py`. It seeds a stopped, a
+paused, a queued and an active project plus an ACTIVE child of the stopped one, then asserts
+which tasks the clause returns. R8 binds it: it runs against the real ladder database, not a
+fake. It also carries a SOURCE SCAN over every `open_where` assignment, because the defect
+this decision shipped was a missing call site — the clause reached one read of five
+while every test passed — and no behavioural test can see the read somebody adds next.
 
 #### 9.13.3 Slice 1 — the mechanism 🟢
 
@@ -4561,10 +4574,17 @@ verified against a real Postgres, not a fake.
 > * **`MAX_BULK` is reused, not re-declared** (CLAUDE.md §5).
 > * 🔴 **Every guard the single-task path calls, this one calls too.**
 >   `assert_move_keeps_privacy` (team → personal strips every grant holder),
->   `assert_required_fields_present` (migration 192), `require_status_in_project`
->   (a caller-supplied lane must belong to the destination) and
->   `apply_status_transition` (which corrects `completed_at`). A bulk path that
+>   `assert_required_fields_present` (migration 192) and `require_status_in_project`
+>   (a caller-supplied lane must belong to the destination). A bulk path that
 >   lands what the narrow path refuses is two rules, not one.
+> * 🔴 **The move writes the status the way `remap_task_statuses` does, NOT
+>   through `apply_status_transition`.** This clause named that helper until
+>   2026-09-20, and building against it killed the feature. It resolves the
+>   lane owner from `task.project_id`, which is still the SOURCE inside the
+>   move loop, so every cross-status-set move raised 422 and rolled back. It
+>   also spawns recurrence successors, which a move must not do. The write
+>   lane sets `completed_at` from the destination lane's category, which is
+>   the one effect of that helper a move needs.
 > * 🔴 **Two source fields may resolve to ONE destination field, and the
 >   loser is a DROP rather than a silent overwrite.** `pm_custom_fields` is
 >   unique on `(project_id, field_key)` alone, so two definitions may share a
