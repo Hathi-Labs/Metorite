@@ -789,10 +789,13 @@ line — never reclaim a number by deleting the other entry.
   mint a second authority vocabulary in an app that has none (CLAUDE.md §5).
   The question is whether Projects needs a WRITE axis beside D12's visibility
   axis. That is one decision for the app, and not a patch on one route.
-- **⚠️ WIDER THAN PROJECTS, measured 2026-09-19.** `require_permission` is used
-  by the admin, agent and settings routes **only**. No route under `projects/`,
-  `crm/`, `email/`, `tasks/` or `notes/` uses it. Visibility alone authorises
-  every content write in the product.
+- **⚠️ Measured 2026-09-19, and CORRECTED the same day.** `require_permission`
+  returns nothing under `projects/`, `email/` or `notes/`. Visibility alone
+  authorises every write there.
+- **🟢 One content app DOES gate writes**, and an earlier version of this entry
+  wrongly said none did. `workflows/publish.py` guards publish, rollback and
+  disable with `workflows:publish`. So the shape to copy is `<app>:<verb>`, and
+  it is already in the tree.
 - **The decision.** Which subject may act. Three candidates, and they are not
   the same: the row's creator, a role, or a per-node write grant that does not
   exist yet. Visibility is *who can see*, and D12 says it is not *who may act*.

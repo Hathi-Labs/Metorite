@@ -416,8 +416,8 @@ owner says so. Board row **WS-40**. Action entry **H-121**.
 ### 8d.1 The measurement
 
 §1 says this spec builds "**one enforcement path the whole platform shares**".
-It is built, and `require_permission` is real. Here is every place the gateway
-uses it, counted on 2026-09-19:
+It is built, `require_permission` is real, and **one content app already uses
+it**. Here is every place the gateway uses it, counted on 2026-09-19:
 
 | Permission | Where |
 |---|---|
@@ -425,9 +425,30 @@ uses it, counted on 2026-09-19:
 | `agents:manage` | `routes/agent.py` |
 | `feature:integrations` · `feature:models` | `routes/oauth.py` · `routes/settings.py` |
 
-**Every one of them is an ADMIN or a SETTINGS act.** Not one content app uses
-the seam. `grep -rn "require_permission" apps/services/gateway/gateway/routes/projects/`
-returns nothing, and so do the same greps for CRM, Email, Tasks and Notes.
+**Almost every one is an ADMIN or a SETTINGS act — with one exception that
+matters more than the rule.**
+
+🟢 **`workflows/publish.py` gates three writes with `workflows:publish`.**
+Publish, rollback and disable each carry
+`dependencies=[require_permission(PUBLISH_PERMISSION)]`. That is a real
+content-app write permission, in exactly the `<app>:<verb>` shape §8d.4 asks
+about. **So the pattern is not hypothetical. It is built, and one app uses it.**
+
+⚠️ Two near-misses, named so that a later reader does not count them as
+precedent:
+
+- `routes/crm/import_zoho.py`, `sync_zoho.py` and `stage_metadata.py` use
+  `admin:access:manage`. Those are administrative acts that live inside a
+  content package, not content writes.
+- `routes/tasks/core.py` uses `admin:members:manage` under the local name
+  `PEOPLE_WRITE_PERMISSION`. It also guards the **retired** `gtd_*` store, not
+  the Tasks lens. An admin permission reused for a people write is not a
+  content-write vocabulary either.
+
+**What IS true of Projects:**
+`grep -rn "require_permission" apps/services/gateway/gateway/routes/projects/`
+returns nothing. Not one of its routes gates a write, and the same holds for
+`email/` and `notes/`.
 
 ### 8d.2 What authorises a content write today
 
@@ -457,10 +478,12 @@ described as authority.
 
 ### 8d.4 The four questions to answer before anybody builds this
 
-1. **What is the permission vocabulary for a content app?** The seam is
-   string-keyed. `projects:write` and `projects:delete` fit the existing shape.
-   A per-verb permission for five apps is twenty new strings, and a role that
-   nobody can reason about is not a control.
+1. **What is the permission vocabulary for a content app?** ✅ **Half answered
+   already — follow `workflows:publish`.** The shape is `<app>:<verb>`, and
+   copying it is what CLAUDE.md §5 requires. What is still open is the GRAIN:
+   a per-verb permission across five apps is twenty new strings, and a role
+   nobody can reason about is not a control. Workflows needed exactly one verb,
+   which is why it got away without answering this.
 2. **Does authority sit on the ORG or on the NODE?** §3's roles are org-wide.
    D12's grants are per-node. "Alice may delete in Marketing and nowhere else"
    needs the second, and `pm_project_grants` already carries a `subject`.
