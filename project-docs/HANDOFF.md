@@ -2548,6 +2548,17 @@ line — never reclaim a number by deleting the other entry.
   the Console database. A restore is verified. That day's deploy took a
   pre-migration dump. Both entries carried this warning as a sub-point, so
   deleting them deleted the only record of it.
+- 🔴 **CORRECTION, same day: the TIMER was never armed.** H-98 and
+  H-105 closed on the strength of `Result=success`, a verified restore and
+  14 dumps on disk. All three were true. The timer was
+  `UnitFileState=disabled` throughout, with an empty
+  `NextElapseUSecRealtime`, so no night was ever covered. Today's run was a
+  manual one. `systemctl enable --now acb-backup.timer` armed it at 12:17
+  UTC, and it now prints NEXT `Sun 2026-09-20 02:30:16 UTC`.
+- **The lesson, so it is not learned twice.** A manual `systemctl start`
+  proves the SERVICE. It says nothing about the SCHEDULE. Read
+  `systemctl list-timers <unit> --all` and require a NEXT date.
+  `Result=success` is also the default for a service that never ran.
 - **What is still true.** `backup_db.sh` says it on every run: a backup on
   the same disk as the database survives a bad migration and a dropped
   table. It does not survive the disk, the box, or the provider account.
