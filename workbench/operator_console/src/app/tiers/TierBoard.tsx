@@ -38,6 +38,8 @@ import {
   outageHeadline,
   outageReport,
   tierNextStep,
+  backupOptions,
+  backupOptionLabel,
   vendorsByBlastRadius,
   OUTAGE_VENDOR_HEAD,
   unusedModels,
@@ -138,17 +140,25 @@ function Job({
           const r = rateFor.get(k);
           if (!r || r.mode === "unpriced") {
             return (
-              <span className={chipClass("warn")}
-                title="Answers customers and bills nothing until priced">
+              // The chip IS the link. "Set it on the Pricing page" with no
+              // route means the reader has to know the nav by heart.
+              <a
+                className={chipClass("warn")}
+                href="/pricing"
+                title={HELP_TIERS.noPrice}
+              >
                 no price
-              </span>
+              </a>
             );
           }
           return (
-            <span className={chipClass(pricingTone(r.mode))}
-              title="What a customer pays. Set on the Pricing page.">
+            <a
+              className={chipClass(pricingTone(r.mode))}
+              href="/pricing"
+              title="What a customer pays for this tier and job. Opens the Pricing page, where the rate card is set."
+            >
               {r.mode === "priced" ? describeTierRate(r) : r.mode}
-            </span>
+            </a>
           );
         })()}
       </div>
@@ -189,16 +199,44 @@ function Job({
           <label htmlFor={`add-${k}`}>
             {chain.length === 0 ? "First choice" : "Try this next"}
           </label>
-          <select id={`add-${k}`} value={pick} onChange={(e) => setPick(e.target.value)}>
+          {/* 🔴 **Grouped by provider, because the warning above tells the
+              operator to add "a step from a different provider" and the old
+              flat list made them read a prefix off forty-three strings to do
+              it. A provider the chain does not use yet sorts FIRST — those are
+              the choices that fix the warning.
+
+              ⚠️ Each option carries what the model costs US. A backup is
+              chosen under time pressure, and two models from one vendor can
+              differ tenfold. An unpriced one says so rather than looking
+              equal to a model whose margin is known. */}
+          <select
+            id={`add-${k}`}
+            value={pick}
+            title={HELP_TIERS.picker}
+            onChange={(e) => setPick(e.target.value)}
+          >
             <option value="">Choose a model…</option>
-            {options.map((m) => (
-              <option key={m} value={m}>{m}</option>
+            {backupOptions(options, models, chain).map((g) => (
+              <optgroup
+                key={g.provider}
+                label={
+                  g.alreadyInChain
+                    ? `${g.provider} — already in this chain`
+                    : `${g.provider} — a different provider`
+                }
+              >
+                {g.options.map((o) => (
+                  <option key={o.model} value={o.model}>
+                    {backupOptionLabel(o)}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
           {options.length === 0 && (
             <p className="field-hint">
-              Every model that can do this job is already in the list. Add
-              another on the Models page first.
+              Every model that can do this job is already in the list.{" "}
+              <a href="/models">Add another on the Models page</a> first.
             </p>
           )}
           <div className="job-actions">

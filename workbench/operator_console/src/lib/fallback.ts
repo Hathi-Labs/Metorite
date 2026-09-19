@@ -394,3 +394,118 @@ export function vendorsByBlastRadius(
         a.provider.localeCompare(b.provider),
     );
 }
+
+/** The models offered as the next step in a chain, grouped so the page's own
+ *  advice is followable.
+ *
+ * 🔴 **The board tells an operator to "add a step from a different provider",
+ * then offered a flat list of model ids.** Following that instruction meant
+ * reading a prefix off each of forty-three strings and remembering which
+ * vendors the chain already used. The advice and the control disagreed.
+ *
+ * ⚠️ **A provider NOT already in the chain sorts first**, because those are the
+ * options that fix the warning. Within a group the cheapest comes first: a
+ * backup is chosen under time pressure and the price difference between two
+ * models of the same vendor can be tenfold.
+ *
+ * ⚠️ **`alreadyInChain` is reported, never removed.** A second model from the
+ * same vendor is a legitimate choice — it survives a model being retired or
+ * rate limited, just not the vendor going down. Hiding it would make the board
+ * refuse a decision that is the operator's to make.
+ *
+ * ⚠️ **An unpriced model is LABELLED, not hidden.** Its calls serve; they
+ * cannot be costed. The picker says so rather than presenting it as equal to a
+ * model whose margin is known.
+ */
+export type BackupOption = {
+  model: string;
+  /** USD per million input tokens, or null when nobody has recorded it. */
+  inputPer1M: number | null;
+  outputPer1M: number | null;
+};
+
+export type BackupGroup = {
+  provider: string;
+  alreadyInChain: boolean;
+  options: BackupOption[];
+};
+
+export function backupOptions(
+  optionIds: string[],
+  models: { id: string; provider: string; inputPer1M: number | null; outputPer1M: number | null }[],
+  chain: string[],
+): BackupGroup[] {
+  const byId = new Map(models.map((m) => [m.id, m]));
+  const vendorOf = (id: string) =>
+    byId.get(id)?.provider ?? (id.includes("/") ? id.split("/")[0] : id);
+  const used = new Set(chain.map(vendorOf));
+
+  const groups = new Map<string, BackupOption[]>();
+  for (const id of optionIds) {
+    const m = byId.get(id);
+    const v = vendorOf(id);
+    if (!groups.has(v)) groups.set(v, []);
+    groups.get(v)?.push({
+      model: id,
+      inputPer1M: m?.inputPer1M ?? null,
+      outputPer1M: m?.outputPer1M ?? null,
+    });
+  }
+
+  return [...groups.entries()]
+    .map(([provider, options]) => ({
+      provider,
+      alreadyInChain: used.has(provider),
+      // ⚠️ An unpriced model sorts LAST inside its group, never first. "We do
+      // not know" is not "free", and a cheapest-first list that recommends the
+      // unknown is the same error `nullsLast` exists to stop elsewhere.
+      options: [...options].sort((a, b) => {
+        if (a.inputPer1M === null && b.inputPer1M === null) {
+          return a.model.localeCompare(b.model);
+        }
+        if (a.inputPer1M === null) return 1;
+        if (b.inputPer1M === null) return -1;
+        return a.inputPer1M - b.inputPer1M || a.model.localeCompare(b.model);
+      }),
+    }))
+    .sort(
+      (a, b) =>
+        // 1. A provider the chain does not use yet — the only kind that fixes
+        //    the same-provider warning.
+        Number(a.alreadyInChain) - Number(b.alreadyInChain) ||
+        // 2. 🔴 A provider with a PRICED option before one with none.
+        //    Measured 2026-09-19 against the live catalog: an alphabetical
+        //    tiebreak put sixty unpriced vendors above deepseek and groq, so
+        //    the first sixty choices the picker offered would each have landed
+        //    a costs-blind step. A choice we cannot cost is not the equal of
+        //    one we can.
+        Number(hasPrice(b)) - Number(hasPrice(a)) ||
+        // 3. Then the cheaper vendor, judged on its cheapest usable option.
+        cheapestOption(a) - cheapestOption(b) ||
+        a.provider.localeCompare(b.provider),
+    );
+}
+
+/** Does this vendor offer anything we can cost? */
+function hasPrice(g: { options: BackupOption[] }): boolean {
+  return g.options.some((o) => o.inputPer1M !== null);
+}
+
+/** The cheapest priced option, or Infinity when the vendor has none — so an
+ *  unpriced vendor can never sort above a priced one on price alone. */
+function cheapestOption(g: { options: BackupOption[] }): number {
+  const priced = g.options
+    .map((o) => o.inputPer1M)
+    .filter((p): p is number => p !== null);
+  return priced.length === 0 ? Number.POSITIVE_INFINITY : Math.min(...priced);
+}
+
+/** One option's label: the id, then what it costs us. */
+export function backupOptionLabel(o: BackupOption): string {
+  if (o.inputPer1M === null && o.outputPer1M === null) {
+    return `${o.model} — no price recorded`;
+  }
+  const inp = o.inputPer1M === null ? "—" : `$${o.inputPer1M}`;
+  const out = o.outputPer1M === null ? "—" : `$${o.outputPer1M}`;
+  return `${o.model} — ${inp} in / ${out} out per 1M`;
+}

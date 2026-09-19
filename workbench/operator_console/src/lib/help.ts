@@ -108,6 +108,10 @@ export const HELP_TIERS = {
   rank:
     "Where this model sits in the chain. 1 serves every call; 2 runs only " +
     "when 1 fails, and so on.",
+  picker:
+    "Grouped by vendor, with the ones this chain does not use yet first — " +
+    "those are the choices that give the tier a real backup. Each price is " +
+    "what the VENDOR charges us, not what a customer pays.",
 } as const;
 
 /** Declaring a model by hand — the escape hatch when the feed has never heard

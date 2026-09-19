@@ -11,6 +11,8 @@ import { describe, expect, it } from "vitest";
 
 import type { CatalogModel, Tier, TierJob } from "./contract";
 import {
+  backupOptionLabel,
+  backupOptions,
   vendorsByBlastRadius,
   type ChainContext,
   canServe,
@@ -463,5 +465,149 @@ describe("vendorsByBlastRadius", () => {
 
   it("is empty when nothing is bound", () => {
     expect(vendorsByBlastRadius([])).toEqual([]);
+  });
+});
+
+// ── The backup picker, which used to contradict the page above it ──────────
+//
+// 🔴 The board warns "add a step from a different provider" and then offered a
+// flat list of 43 model ids. Following the advice meant reading a prefix off
+// each string and remembering which vendors the chain already used.
+
+describe("backupOptions", () => {
+  const M = (id: string, provider: string, inp: number | null, out: number | null) =>
+    ({ id, provider, inputPer1M: inp, outputPer1M: out });
+
+  const MODELS = [
+    M("deepseek/cheap", "deepseek", 0.28, 0.42),
+    M("deepseek/dear", "deepseek", 1.32, 3.96),
+    M("groq/a", "groq", 0.05, 0.08),
+    M("anthropic/x", "anthropic", null, null),
+  ];
+
+  it("🔴 a provider NOT in the chain comes FIRST", () => {
+    // Those are the only choices that fix the same-provider warning.
+    const got = backupOptions(
+      ["deepseek/dear", "groq/a"],
+      MODELS,
+      ["deepseek/cheap"],
+    );
+    expect(got[0].provider).toBe("groq");
+    expect(got[0].alreadyInChain).toBe(false);
+    expect(got[1].provider).toBe("deepseek");
+    expect(got[1].alreadyInChain).toBe(true);
+  });
+
+  it("REPORTS an in-chain provider, never removes it", () => {
+    // A second model from the same vendor survives a retirement or a rate
+    // limit — just not the vendor going down. That is the operator's call.
+    const got = backupOptions(["deepseek/dear"], MODELS, ["deepseek/cheap"]);
+    expect(got).toHaveLength(1);
+    expect(got[0].alreadyInChain).toBe(true);
+  });
+
+  it("puts the cheapest first inside a group", () => {
+    const got = backupOptions(
+      ["deepseek/dear", "deepseek/cheap"],
+      MODELS,
+      [],
+    );
+    expect(got[0].options.map((o) => o.model)).toEqual([
+      "deepseek/cheap",
+      "deepseek/dear",
+    ]);
+  });
+
+  it("🔴 an UNPRICED model sorts LAST, never first", () => {
+    // "We do not know" is not "free". A cheapest-first list that recommends
+    // the unknown is the error `nullsLast` exists to stop elsewhere.
+    const got = backupOptions(["anthropic/x"], [...MODELS], []);
+    expect(got[0].options[0].inputPer1M).toBeNull();
+    const mixed = backupOptions(
+      ["anthropic/x", "anthropic/y"],
+      [...MODELS, M("anthropic/y", "anthropic", 5, 10)],
+      [],
+    );
+    expect(mixed[0].options.map((o) => o.model)).toEqual([
+      "anthropic/y",
+      "anthropic/x",
+    ]);
+  });
+
+  it("falls back to the id prefix for a model the catalog does not carry", () => {
+    const got = backupOptions(["mystery/model"], MODELS, []);
+    expect(got[0].provider).toBe("mystery");
+  });
+
+  it("is empty when nothing is on offer", () => {
+    expect(backupOptions([], MODELS, [])).toEqual([]);
+  });
+});
+
+describe("backupOptionLabel", () => {
+  it("names the price so a backup is not chosen blind", () => {
+    expect(
+      backupOptionLabel({ model: "deepseek/a", inputPer1M: 0.28, outputPer1M: 0.42 }),
+    ).toBe("deepseek/a — $0.28 in / $0.42 out per 1M");
+  });
+
+  it("says so when nobody has recorded a price", () => {
+    expect(
+      backupOptionLabel({ model: "x/y", inputPer1M: null, outputPer1M: null }),
+    ).toBe("x/y — no price recorded");
+  });
+
+  it("draws a dash for the half it does not know", () => {
+    expect(
+      backupOptionLabel({ model: "x/y", inputPer1M: 3, outputPer1M: null }),
+    ).toContain("$3 in / — out");
+  });
+});
+
+describe("backupOptions ordering puts USABLE choices first", () => {
+  const M = (id: string, provider: string, inp: number | null) =>
+    ({ id, provider, inputPer1M: inp, outputPer1M: inp });
+
+  it("🔴 a PRICED vendor outranks an unpriced one, whatever the alphabet says", () => {
+    // Measured 2026-09-19: an alphabetical tiebreak put sixty unpriced
+    // fixture vendors above deepseek and groq, so the first sixty choices
+    // offered would each have landed a costs-blind step.
+    const models = [
+      M("aaa/ghost", "aaa", null),
+      M("zzz/real", "zzz", 0.28),
+    ];
+    const got = backupOptions(["aaa/ghost", "zzz/real"], models, []);
+    expect(got[0].provider).toBe("zzz");
+  });
+
+  it("then prefers the cheaper vendor, on its cheapest option", () => {
+    const models = [
+      M("dear/a", "dear", 5),
+      M("cheap/a", "cheap", 0.1),
+    ];
+    const got = backupOptions(["dear/a", "cheap/a"], models, []);
+    expect(got.map((g) => g.provider)).toEqual(["cheap", "dear"]);
+  });
+
+  it("🔴 but a DIFFERENT provider still beats a priced one already in use", () => {
+    // The warning this picker serves is about the vendor, not the price. A
+    // cheap second model from the vendor that is already the single point of
+    // failure must not be the first thing offered.
+    const models = [
+      M("inchain/cheap", "inchain", 0.01),
+      M("fresh/dear", "fresh", 9),
+    ];
+    const got = backupOptions(
+      ["inchain/cheap", "fresh/dear"],
+      models,
+      ["inchain/other"],
+    );
+    expect(got[0].provider).toBe("fresh");
+  });
+
+  it("orders two unpriced vendors by name, so the list does not reshuffle", () => {
+    const models = [M("b/x", "b", null), M("a/x", "a", null)];
+    const got = backupOptions(["b/x", "a/x"], models, []);
+    expect(got.map((g) => g.provider)).toEqual(["a", "b"]);
   });
 });
