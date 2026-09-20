@@ -61,6 +61,7 @@ import {
   type GroupBy,
   type TaskGroup,
   isFiltered,
+  labelWith,
   personLabel,
 } from "../lib/grouping";
 import { mergePlans, quickAddPrefill } from "../lib/quickAdd";
@@ -158,6 +159,14 @@ interface Props {
     writes: ReturnType<typeof planDrop>,
     patch: Record<string, string | number | null> | null
   ) => void;
+  /**
+   * Assignee value → the name to draw, already disambiguated for the set.
+   *
+   * Absent while the directory lookup is in flight, and for ever if it
+   * fails: `labelWith` then falls back to the address's local part, which is
+   * what every surface showed before 2026-09-21.
+   */
+  personLabels?: ReadonlyMap<string, string>;
 }
 
 export function TaskBoard({
@@ -184,6 +193,7 @@ export function TaskBoard({
   onExtendSelection,
   onSelect,
   onDrop,
+  personLabels,
 }: Props) {
   const [dragging, setDragging] = useState<TaskRow | null>(null);
   const [over, setOver] = useState<{ col: string; lane: string | null } | null>(
@@ -788,7 +798,7 @@ export function TaskBoard({
         ) : null}
         <span className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
           <span>{taskRef(task)}</span>
-          <AvatarStack people={task.assignees} label={personLabel} />
+          <AvatarStack people={task.assignees} label={labelWith(personLabels)} />
         </span>
         {/* The hover strip, absolutely positioned over the footer above.
             ⚠️ LAST in the DOM on purpose. It is four extra tab stops per

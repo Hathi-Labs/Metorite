@@ -42,7 +42,12 @@ import { parseAssignees } from "../lib/assignees";
 import { sortForView } from "../lib/board";
 import { taskDeepLink, taskRef } from "../lib/card";
 import { type FieldDef, displayValue, toInput, toWire } from "../lib/customFields";
-import { type GroupBy, type TaskGroup, UNSET, personLabel } from "../lib/grouping";
+import {
+  type GroupBy,
+  type TaskGroup,
+  UNSET,
+  labelWith,
+} from "../lib/grouping";
 import { dueInstantForDay, quickAddPrefill } from "../lib/quickAdd";
 import {
   IMPORTANCE_OPTIONS,
@@ -95,6 +100,14 @@ interface Props {
   /** A cell edit landed — merge the fresh row into the page's task list. */
   onSaved: (task: TaskRow) => void;
   onSelect: (task: TaskRow) => void;
+  /**
+   * Assignee value → the name to draw, already disambiguated for the set.
+   *
+   * Absent while the directory lookup is in flight, and for ever if it
+   * fails: `labelWith` then falls back to the address's local part, which is
+   * what every surface showed before 2026-09-21.
+   */
+  personLabels?: ReadonlyMap<string, string>;
 }
 
 export function TableView({
@@ -110,6 +123,7 @@ export function TableView({
   onCreated,
   onSaved,
   onSelect,
+  personLabels,
 }: Props) {
   // WS-27ak(3) — a cell edit on a spreadsheet is the mutation furthest from
   // wherever the one inline error line is drawn; see `saveCell`.
@@ -343,7 +357,7 @@ export function TableView({
         return TASK_SOURCES[task.source as TaskSource]?.label ?? "Manual";
       case "assignees":
         return task.assignees?.length ? (
-          <AvatarStack people={task.assignees} label={personLabel} />
+          <AvatarStack people={task.assignees} label={labelWith(personLabels)} />
         ) : (
           "—"
         );

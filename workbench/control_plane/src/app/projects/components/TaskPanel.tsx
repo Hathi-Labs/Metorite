@@ -68,6 +68,7 @@
  * the row it came from and `j`/arrows keep working. Without it, Escape left
  * focus on `<body>` and the next arrow key scrolled the window.
  */
+import { labelWith } from "../lib/grouping";
 import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
@@ -107,7 +108,6 @@ import { RelationsBlock } from "./RelationsBlock";
 import { AttachmentViewer } from "./AttachmentViewer";
 import { changeLabel } from "../lib/customFields";
 import {
-  assigneeLabel,
   classify,
   parseAssignees,
   withAssignee,
@@ -162,6 +162,8 @@ interface Props {
    * panel already IS the screen and three width buttons would be a lie.
    */
   onMode?: (next: PanelMode) => void;
+  /** See TaskBoard's prop of the same name. */
+  personLabels?: ReadonlyMap<string, string>;
 }
 
 function describe(activity: ActivityRow, defs: FieldRow[] = []): string {
@@ -262,6 +264,7 @@ export function TaskPanel({
   onOpenTask,
   mode = "side",
   onMode,
+  personLabels,
 }: Props) {
   // WS-27ak(3) — the confirmation channel. `changeStatus` below is the one
   // mutation on this panel wired to it in that slice.
@@ -826,7 +829,7 @@ export function TaskPanel({
                           kind === "unknown" ? "Not an email or agent:<name>" : who
                         }
                       >
-                        {assigneeLabel(who)}
+                        {labelWith(personLabels)(who)}
                         <button
                           type="button"
                           disabled={busy}

@@ -19,6 +19,7 @@ import {
   fromConfig,
   groupTasks,
   isFiltered,
+  labelPeople,
   personLabel,
   searchOpen,
   type ViewState,
@@ -819,5 +820,87 @@ describe("the archive is a place you can go", () => {
     expect((stored.filters as Record<string, unknown>).archived_only).toBe(true);
     expect(fromConfig(stored).filters.archived).toBe(true);
     expect(fromConfig(toConfig(EMPTY_FILTERS, "status")).filters.archived).toBe(false);
+  });
+});
+
+
+describe("a person reads as a name, and as an address when a name will not do", () => {
+  const NAMES = new Map([
+    ["priya@fracktal.in", "Priya Sharma"],
+    ["p.sharma@fracktal.in", "Priya Sharma"],
+    ["ada@fracktal.in", "Ada Lovelace"],
+    ["blank@fracktal.in", "   "],
+  ]);
+
+  it("prefers the name the directory knows", () => {
+    expect(personLabel("ada@fracktal.in", NAMES)).toBe("Ada Lovelace");
+  });
+
+  it("falls back to the local part when the directory has never heard of them", () => {
+    // ⚠️ The local part reads as a name often enough to be mistaken for one,
+    // which is why it went unnoticed for so long. `p.sharma` is not a name.
+    expect(personLabel("nobody@fracktal.in", NAMES)).toBe("nobody");
+    expect(personLabel("p.sharma@fracktal.in")).toBe("p.sharma");
+  });
+
+  it("treats a blank name as no name", () => {
+    // A directory row with an empty name is not a person called "".
+    expect(personLabel("blank@fracktal.in", NAMES)).toBe("blank");
+  });
+
+  it("is case-insensitive on the address, as the server is", () => {
+    expect(personLabel("Ada@Fracktal.In", NAMES)).toBe("Ada Lovelace");
+  });
+
+  it("names an agent by its own name, never by an address", () => {
+    expect(personLabel("agent:builder", NAMES)).toBe("builder");
+  });
+
+  it("🔴 tells two people with ONE name apart", () => {
+    /**
+     * Reassigning work to the wrong Priya is a silent, plausible mistake —
+     * the card looks correct afterwards. So a shared name is disambiguated
+     * rather than shown twice.
+     *
+     * The name is KEPT and the local part added, because falling all the way
+     * back to the raw address would throw away the half that was working.
+     */
+    const out = labelPeople(
+      ["priya@fracktal.in", "p.sharma@fracktal.in", "ada@fracktal.in"],
+      NAMES,
+    );
+    expect(out.get("priya@fracktal.in")).toBe("Priya Sharma (priya)");
+    expect(out.get("p.sharma@fracktal.in")).toBe("Priya Sharma (p.sharma)");
+    // The unambiguous one is left alone — disambiguating everybody because
+    // two people clashed would make every card noisier to fix two of them.
+    expect(out.get("ada@fracktal.in")).toBe("Ada Lovelace");
+  });
+
+  it("does not disambiguate one person listed twice", () => {
+    const out = labelPeople(["ada@fracktal.in", "ada@fracktal.in"], NAMES);
+    expect([...out.values()]).toEqual(["Ada Lovelace"]);
+  });
+
+  it("leaves agents alone even when a label repeats", () => {
+    // Two agents cannot share a name — it IS their identity — so there is
+    // nothing to disambiguate one with.
+    const out = labelPeople(["agent:builder", "agent:builder"], NAMES);
+    expect(out.get("agent:builder")).toBe("builder");
+  });
+
+  it("works with no directory at all", () => {
+    // The board renders before the lookup answers, and must keep rendering
+    // if it never does.
+    const out = labelPeople(["ada@fracktal.in", "agent:builder"]);
+    expect(out.get("ada@fracktal.in")).toBe("ada");
+    expect(out.get("agent:builder")).toBe("builder");
+  });
+
+  it("disambiguates two unknown people whose local parts differ in domain only", () => {
+    // Both fall back to "sam", and the clash rule then has nothing better to
+    // add than the same local part — so it must not produce "sam (sam)" twice
+    // and call them distinguished.
+    const out = labelPeople(["sam@a.com", "sam@b.com"]);
+    expect(out.get("sam@a.com")).not.toBe(out.get("sam@b.com"));
   });
 });

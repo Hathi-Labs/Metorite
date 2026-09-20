@@ -27,6 +27,7 @@ import { AssigneePicker } from "./AssigneePicker";
 import { TagPicker } from "./TagPicker";
 
 import type { StatusRow, TagRow } from "../lib/api";
+import { labelWith } from "../lib/grouping";
 import { type BulkDraft, EMPTY_DRAFT, buildRequest } from "../lib/selection";
 
 /**
@@ -83,6 +84,8 @@ interface Props {
    * build a request it is written to reject.
    */
   onAction?: (action: "archive" | "unarchive" | "delete") => void;
+  /** See TaskBoard's prop of the same name. */
+  personLabels?: ReadonlyMap<string, string>;
   /** The last outcome sentence, or null. */
   notice: string | null;
 }
@@ -95,6 +98,7 @@ export function BulkBar({
   onClear,
   onApply,
   onAction,
+  personLabels,
   onMove,
   notice,
 }: Props) {
@@ -177,12 +181,14 @@ export function BulkBar({
             refuses what the API accepts is a UI inventing a rule. */}
         <div className="flex items-start gap-1">
           <PeopleField
+            personLabels={personLabels}
             label="Assign to…"
             value={draft.assigneeAdd}
             busy={busy}
             onChange={(next) => set({ assigneeAdd: next })}
           />
           <PeopleField
+            personLabels={personLabels}
             label="Unassign…"
             value={draft.assigneeRemove}
             busy={busy}
@@ -313,11 +319,13 @@ function PeopleField({
   value,
   busy,
   onChange,
+  personLabels,
 }: {
   label: string;
   value: string;
   busy: boolean;
   onChange: (next: string) => void;
+  personLabels?: ReadonlyMap<string, string>;
 }) {
   const [query, setQuery] = useState("");
   const people = asList(value);
@@ -342,7 +350,7 @@ function PeopleField({
             key={who}
             className="inline-flex max-w-full items-center gap-1 rounded-md bg-secondary px-1.5 py-0.5 text-[11px] text-foreground"
           >
-            <span className="truncate">{who}</span>
+            <span className="truncate">{labelWith(personLabels)(who)}</span>
             <button
               type="button"
               disabled={busy}

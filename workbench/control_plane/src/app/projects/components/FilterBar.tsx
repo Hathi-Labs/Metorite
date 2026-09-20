@@ -49,7 +49,7 @@ import {
   UNSET,
   describeDivergence,
   isFiltered,
-  personLabel,
+  labelWith,
   searchOpen,
   viewDivergence,
 } from "../lib/grouping";
@@ -184,6 +184,8 @@ interface Props {
    * claims and only one of them means the archive is empty.
    */
   archivedCount?: number | null;
+  /** See TaskBoard's prop of the same name. */
+  personLabels?: ReadonlyMap<string, string>;
   /** WS-27x — the view's shown fields: the table's columns AND the chip gate. */
   shownFields: readonly string[];
   onShownFields: (next: string[]) => void;
@@ -220,6 +222,7 @@ export function FilterBar({
   people,
   tags,
   archivedCount,
+  personLabels,
   shownFields,
   onShownFields,
   fields,
@@ -420,13 +423,13 @@ export function FilterBar({
             { value: "", label: "Anyone" },
             ...(me ? [{ value: me, label: "Me" }] : []),
             { value: UNSET, label: "Unassigned" },
-            ...people.map((who) => ({ value: who, label: personLabel(who) })),
+            ...people.map((who) => ({ value: who, label: labelWith(personLabels)(who) })),
             // ⚠️ A saved view can name somebody who holds nothing right now.
             // Without this row the control would show its own label and read
             // as "Anyone" while the filter is still applied — a control lying
             // about the state it is in.
             ...(orphanAssignee
-              ? [{ value: orphanAssignee, label: personLabel(orphanAssignee) }]
+              ? [{ value: orphanAssignee, label: labelWith(personLabels)(orphanAssignee) }]
               : []),
           ]}
         />

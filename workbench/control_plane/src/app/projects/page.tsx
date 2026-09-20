@@ -103,6 +103,7 @@ import {
   fromConfig,
   groupTasks,
   isFiltered,
+  labelPeople,
   mergeAssignees,
   toConfig,
   toQuery,
@@ -1629,6 +1630,59 @@ function ProjectsWorkspace() {
     setPeople((current) => mergeAssignees(current, found));
   }, [tasks, month.rows]);
 
+  /**
+   * The directory's names for everybody holding work here.
+   *
+   * ⚠️ **Keyed off `people`, which is the UNION across loads**, not the
+   * current page of tasks. A name that arrived once stays known, so
+   * switching filters does not make labels flicker back to addresses.
+   *
+   * ⚠️ **Never blocks and never fails loudly.** A board must render before
+   * this answers, and keep rendering if it never does — `personLabel` falls
+   * back to the address's local part on its own.
+   */
+  const [personNames, setPersonNames] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+  useEffect(() => {
+    const unknown = people.filter(
+      (who) => !who.startsWith("agent:") && !personNames.has(who.toLowerCase()),
+    );
+    if (unknown.length === 0) return;
+    let live = true;
+    void projectsApi
+      .personNames(unknown)
+      .then((res) => {
+        if (!live) return;
+        setPersonNames((current) => {
+          const next = new Map(current);
+          for (const [email, name] of Object.entries(res.names)) {
+            next.set(email.toLowerCase(), name);
+          }
+          // ⚠️ Remember the MISSES too, as an empty string. Without this the
+          // effect asks again on every render for anybody the directory does
+          // not know, which is a request loop keyed on absence.
+          for (const who of unknown) {
+            const key = who.toLowerCase();
+            if (!next.has(key)) next.set(key, "");
+          }
+          return next;
+        });
+      })
+      .catch(() => {
+        // Labels are a nicety. A failed lookup leaves the local part.
+      });
+    return () => {
+      live = false;
+    };
+  }, [people, personNames]);
+
+  /** Every assignee on screen, labelled and disambiguated together. */
+  const personLabels = useMemo(
+    () => labelPeople(people, personNames),
+    [people, personNames],
+  );
+
   // A different project is a different set of people. Emptied rather than
   // carried, so one project's members never appear in another's filter.
   useEffect(() => {
@@ -2927,6 +2981,7 @@ function ProjectsWorkspace() {
           filters={filters}
           onFilters={changeFilters}
           archivedCount={archivedCount}
+          personLabels={personLabels}
           mode={mode}
           spansProjects={spansProjects}
           groupBy={groupBy}
@@ -2971,6 +3026,7 @@ function ProjectsWorkspace() {
 
       {selected && !overview && picked.size > 0 ? (
         <BulkBar
+          personLabels={personLabels}
           count={picked.size}
           statuses={statuses}
           // The registry the two tag pickers suggest from — the same one the
@@ -3133,6 +3189,7 @@ function ProjectsWorkspace() {
             />
           ) : mode === "table" ? (
             <TableView
+          personLabels={personLabels}
               groups={groups}
               groupBy={groupBy}
               statuses={statuses}
@@ -3152,6 +3209,7 @@ function ProjectsWorkspace() {
             />
           ) : mode === "board" ? (
             <TaskBoard
+          personLabels={personLabels}
               groups={groups}
               groupBy={groupBy}
               // S4 — the empty state has to know whether the filters emptied it.
@@ -3194,6 +3252,7 @@ function ProjectsWorkspace() {
             />
           ) : (
             <TaskList
+          personLabels={personLabels}
               groups={groups}
               groupBy={groupBy}
               filters={filters}
@@ -3244,6 +3303,7 @@ function ProjectsWorkspace() {
   const taskPanel = openTask ? (
     <LayoutBoundary key={`panel-${openTask.id}`} layout="task panel">
     <TaskPanel
+      personLabels={personLabels}
       task={openTask}
       statuses={panelStatuses}
       fields={fields}

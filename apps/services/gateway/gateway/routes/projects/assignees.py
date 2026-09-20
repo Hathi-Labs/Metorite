@@ -78,6 +78,74 @@ class PickerResponse(BaseModel):
     hr_visible: bool
 
 
+#: How many addresses one label lookup may resolve. A board shows a few dozen
+#: assignees at the very most; a caller asking for thousands is not labelling
+#: a screen.
+MAX_NAME_LOOKUP = 200
+
+
+class NamesResponse(BaseModel):
+    #: lowercased address -> display name. An address the directory does not
+    #: know is ABSENT rather than mapped to itself: "no name" and "named after
+    #: their own address" are different facts, and only the client knows what
+    #: to fall back to.
+    names: dict[str, str]
+
+
+@router.get("/people/names", response_model=NamesResponse)
+async def person_names(
+    emails: str = "",
+    user: UserContext = Depends(get_current_user),
+) -> NamesResponse:
+    """Resolve assignee addresses to the names people actually read.
+
+    ## Why this is not `/assignees`
+
+    They answer different questions. `/assignees` SUGGESTS who to give work
+    to: it is capped at eight, ordered by name, and pays for availability,
+    load, skills and warnings per row because an assigner needs them.
+
+    This resolves addresses a caller ALREADY HOLDS — the assignees on the
+    cards in front of them — and needs exactly one column. Routing it through
+    the picker would mean either computing all that machinery for rows nobody
+    is choosing between, or threading a "cheap mode" flag through it. The
+    second is how one endpoint becomes two endpoints wearing one name.
+
+    ## Why the client cannot do without it
+
+    `pm_tasks` stores an assignee as an ADDRESS (`tasks.py`: "an email or
+    `agent:<name>` — one vocabulary for both"), so a task read carries no
+    name. Every Projects surface therefore showed the address's local part,
+    which reads as a name often enough that nobody noticed: `priya` looks
+    deliberate, `p.sharma` does not. Owner reported it on 2026-09-21.
+
+    ⚠️ **Unknown addresses are simply missing from the map.** They are not an
+    error: a task can carry somebody the directory has never had a row for —
+    a former colleague, a typo, an address from an import — and a lookup that
+    404s on one of fifty would make the whole board unlabellable.
+    """
+    wanted = [
+        part.strip().lower()
+        for part in (emails or "").split(",")
+        if part.strip() and not part.strip().startswith("agent:")
+    ][:MAX_NAME_LOOKUP]
+    if not wanted:
+        return NamesResponse(names={})
+
+    # Imported here, not at module scope: the picker below does the same, and
+    # the reason is the import cycle between this package and `routes.people`.
+    from gateway.routes.people.core import _tenant_session
+
+    async with _tenant_session() as db:
+        rows = (await db.execute(text(
+            "SELECT lower(email) AS email, name FROM gtd_people "
+            " WHERE lower(email) = ANY(:emails) AND name <> ''"),
+            {"emails": wanted})).fetchall()
+    return NamesResponse(
+        names={str(r.email): str(r.name) for r in rows if r.name},
+    )
+
+
 @router.get("/assignees", response_model=PickerResponse)
 async def suggest_assignees(
     q: str = "",

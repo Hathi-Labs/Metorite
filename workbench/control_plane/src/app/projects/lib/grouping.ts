@@ -404,10 +404,113 @@ export function describeDivergence(changed: readonly DivergenceKey[]): string {
 
 const localPart = (address: string): string => address.split("@")[0] || address;
 
-/** How an assignee reads on a card: `priya`, or `builder` for an agent. */
-export function personLabel(who: string): string {
+/**
+ * A directory: assignee value → the person's name. Absent means unknown.
+ *
+ * Only ever a HINT. Every label below works without it, because a board must
+ * render before a name lookup has answered and must keep rendering if the
+ * lookup fails.
+ */
+export type PersonNames = ReadonlyMap<string, string>;
+
+/**
+ * How an assignee reads on a card.
+ *
+ * `Priya Sharma` when the directory knows her, `priya` when it does not, and
+ * `builder` for an agent. Owner request, 2026-09-21: "the name would be a
+ * better way to assign people, unless the name is not common, and then we can
+ * fall back to email ID."
+ *
+ * ⚠️ **The local part is the FALLBACK, not the format.** It reads as a
+ * name often enough to be mistaken for one (`priya`), which is exactly why it
+ * survived this long unnoticed: it looks deliberate. It is not — it is the
+ * left half of an email address, and for `p.sharma@` or `ps2@` it is not a
+ * name at all.
+ */
+export function personLabel(who: string, names?: PersonNames): string {
   if (who.startsWith("agent:")) return who.slice("agent:".length) || who;
-  return localPart(who);
+  const named = names?.get(who.toLowerCase());
+  return named && named.trim() ? named.trim() : localPart(who);
+}
+
+/**
+ * The label function an avatar stack or a picker takes, given a resolved set.
+ *
+ * Exists so the four surfaces that draw people cannot drift: pass the map,
+ * get the same answer everywhere, and fall back identically when the map has
+ * not arrived. A component doing `labels.get(who) ?? personLabel(who)` by
+ * hand is one component away from doing it differently.
+ */
+export const labelWith =
+  (labels?: ReadonlyMap<string, string>) =>
+  (who: string): string =>
+    labels?.get(who) ?? personLabel(who);
+
+/**
+ * Label a whole SET of people at once, disambiguating repeats.
+ *
+ * 🔴 **Two people can share a name, and a board that shows both as "Priya
+ * Sharma" is worse than one that showed neither.** Reassigning work to the
+ * wrong Priya is a silent, plausible mistake — the card looks right
+ * afterwards. That is the "unless the name is not common" half of the owner's
+ * ruling (2026-09-21), and it is why labelling is a function of the SET:
+ * whether a name is ambiguous is not a property you can see from inside it.
+ *
+ * Three rungs, and it stops at the first that separates everybody:
+ *
+ * 1. **the name** — `Priya Sharma`
+ * 2. **the name, plus the address's local part** — `Priya Sharma (p.sharma)`.
+ *    Still reads as a person, and tells two of them apart.
+ * 3. **the whole address** — `sam@a.com`. The only thing guaranteed unique.
+ *
+ * ⚠️ **Rung 2 is skipped when it would add nothing.** For somebody the
+ * directory does not know, the label already IS the local part, so
+ * `sam (sam)` is noise that distinguishes nothing — a test caught exactly
+ * that, with `sam@a.com` and `sam@b.com`. Those go straight to rung 3.
+ *
+ * Case-insensitive on the address, because the server compares that way.
+ */
+export function labelPeople(
+  people: readonly string[],
+  names?: PersonNames,
+): Map<string, string> {
+  const unique = [...new Set(people)];
+  const preferred = new Map(unique.map((who) => [who, personLabel(who, names)]));
+
+  const tally = (labels: Map<string, string>): Map<string, number> => {
+    const counts = new Map<string, number>();
+    for (const label of labels.values()) {
+      counts.set(label, (counts.get(label) ?? 0) + 1);
+    }
+    return counts;
+  };
+
+  const counts = tally(preferred);
+  const out = new Map<string, string>();
+
+  for (const who of unique) {
+    const label = preferred.get(who) as string;
+    // An agent's name IS its identity: two agents cannot share one, so there
+    // is never anything to disambiguate it with.
+    if ((counts.get(label) ?? 0) <= 1 || who.startsWith("agent:")) {
+      out.set(who, label);
+      continue;
+    }
+    const local = localPart(who);
+    // Rung 2 only when the name is adding something the local part is not.
+    out.set(who, label === local ? who : `${label} (${local})`);
+  }
+
+  // Rung 3. Anything still colliding after rung 2 gets the whole address —
+  // two people really can be "Priya Sharma (priya)" if their addresses
+  // differ only by domain.
+  const after = tally(out);
+  for (const [who, label] of out) {
+    if ((after.get(label) ?? 0) > 1 && !who.startsWith("agent:")) {
+      out.set(who, who);
+    }
+  }
+  return out;
 }
 
 /**
