@@ -906,19 +906,25 @@ done
 if [ "$UNITS_CHANGED" = "1" ]; then
   sudo systemctl daemon-reload
 fi
+# ⚠️ **acb-backup.timer carried a carve-out here until 2026-09-20, and it is
+# gone on purpose (H-132).** On a `PG_MODE=local` box this loop actively ran
+# `systemctl disable --now acb-backup.timer` on every apply. The reason was
+# real when it was written on 2026-08-17. acb-backup.service loaded NO
+# EnvironmentFile, so it defaulted to `PG_MODE=docker`, dumped the EMPTY local
+# container, passed `--verify-restore`, and forged a green restore point.
+#
+# `EnvironmentFile=/opt/acb/app/.env` landed in that unit on 2026-09-19. That
+# is the exact line whose absence the carve-out described. The hole is filled
+# and the guard outlived it. It silently reverted two hand-enables, and it told
+# neither session. A box with backups disabled for that reason gets them back
+# on the next apply.
+#
+# What replaces it: the unit loads the env file, `PG_MODE=local` follows from
+# it, and `backup_db.sh` EXITS 1 in local mode when no Postgres answers. The
+# false green needs `PG_MODE=docker`, which now needs the EnvironmentFile to be
+# missing. `test_the_backup_service_must_load_its_credentials` is that fence.
 for timer in "$APP_DIR"/deploy/hostinger/*.timer; do
   [ -e "$timer" ] || continue
-  # A managed-DB box (PG_MODE=local, lifted from .env above) must not run the
-  # nightly local dump: with no EnvironmentFile the unit defaults to
-  # PG_MODE=docker and dumps the EMPTY local container — which passes
-  # --verify-restore and becomes a green false restore point. Provider PITR
-  # is the restore path there (docs/EXTERNAL_POSTGRES.md). Actively disable
-  # rather than skip, or the next hand-enable survives every deploy.
-  if [ "$(basename "$timer")" = "acb-backup.timer" ] && [ "${PG_MODE:-docker}" = "local" ]; then
-    sudo systemctl disable --now acb-backup.timer >/dev/null 2>&1 || true
-    echo "    acb-backup.timer left disabled (managed database; provider PITR is the restore path)"
-    continue
-  fi
   sudo systemctl enable --now "$(basename "$timer")" >/dev/null 2>&1 \
     || echo "    !! could not enable $(basename "$timer") — check: systemctl status $(basename "$timer")"
 done
