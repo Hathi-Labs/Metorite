@@ -2800,6 +2800,37 @@ line — never reclaim a number by deleting the other entry.
   renumbered to H-140** — another branch merged H-133 first, and
   `test_handoff_queue` caught the reuse. Ids are never reclaimed.
 
+### H-141 · An admin cannot hide an app from a ROLE · [AGENT]
+- **Check:** `rg -n "is a system role and cannot be edited" apps/services/gateway/gateway/routes/admin/roles.py`
+  → a hit means `PATCH /admin/roles/{slug}` still refuses every built-in
+  role, and this is open.
+- **Why:** migration 207 opened every app to `member` and `manager`. The
+  owner's rule is that a role narrows what you may DO, not what you may see.
+  The owner asked for the other half in the same breath. *"Later on, we
+  might need to be able to have an admin hide certain apps and features from
+  some non-admin roles."*
+- **What works today:** per-PERSON Deny, at
+  `/settings/members/<email>`. Set any feature to Deny and it beats the role.
+- **What does not:** per-ROLE. `member`, `manager`, `admin`, `owner` and
+  `guest` are all `is_system`, and the edit route refuses them by name.
+  An administrator who wants "no Approvals for members" has two options
+  today. Deny it one person at a time. Or build a custom role and move
+  everybody onto it.
+- **Three shapes, and the choice is the work:**
+  - Let a system role's PERMISSIONS be edited. Its slug, name and rank stay
+    fixed. Smallest change. The risk is an org that edits `member` into
+    something support no longer recognises.
+  - A "duplicate this role" action, so a custom role starts from `member`
+    instead of from nothing. No new rules, and it makes the existing path
+    usable.
+  - A per-role Deny list layered over the seeds, which keeps the seed as the
+    baseline and records the subtraction.
+- 📌 Not urgent. The default is now the permissive one the owner asked for,
+  so nobody is locked out while this is open.
+- **Authority:** owner directive 2026-09-21 · `org_access_control.md` §3 ·
+  migration 207
+- **Added:** 2026-09-21 · the every-app-by-default session
+
 ### H-125 · Migration 148's email index spans EVERY tenant · [AGENT]
 - **Check:** `rg -A 2 "uq_gtd_people_email_lower" infra/postgres/148_people_key_shape.sql`
   → an index on `(lower(email))` that does not name `organization_id` means

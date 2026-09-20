@@ -78,13 +78,43 @@ A role is a named bundle of permissions, scoped to an organization. Five are see
 |---|---|---|
 | `owner` | The person who owns the deployment. *(under D15: owner is per-organization, not per-deployment)* | `*` |
 | `admin` | Runs the platform day to day. | `admin:*`, `feature:*`, `agents:*`, `apps:*`, `integrations:*`, `data:org:read` |
-| `manager` | Reads the member directory; cannot change platform config. | `feature:` chat, email, whatsapp, tasks, notes, memory, dashboard, observability, artifacts, approvals; `agents:run:*`; `apps:use:*`, `apps:create`; `data:org:read`; `admin:members:read` |
-| `member` | Default for a new employee. | `feature:` chat, email, tasks, notes, memory, artifacts, dashboard; `agents:run:*`; `apps:use:*` |
+| `manager` | Reads the member directory. Cannot change platform config. | `feature:*` · `agents:run:*` · `apps:use:*` · `apps:create` · `data:org:read` · `admin:members:read` |
+| `member` | Default for a new employee. | `feature:*` · `agents:run:*` · `apps:use:*` |
 | `guest` | Contractor / external collaborator. | `feature:chat`, `apps:use:*` |
 
 Plus one non-assignable service role, `agent_service`, for the internal bearer path.
 
-A member may hold several roles; grants are the **union**. Note what `member` deliberately omits: WhatsApp, Approvals, Integrations, Models, and both Build panes. The default is the conservative one, and access is added rather than taken away.
+A member may hold several roles, and grants are the **union**.
+
+🔴 **EVERY APP IS OPEN TO EVERYBODY. A role narrows what you may DO, not what
+you may see.** Owner directive, 2026-09-21, applied by migration 207. It
+replaces the old posture, which was that access is added rather than taken
+away.
+
+**Why it changed.** Migration 130 wrote `member` and `manager` as explicit
+lists, before Projects or People existed. A list does not grow, so every app
+added afterwards defaulted to invisible. Measured 2026-09-21:
+`feature:projects` and `feature:people` were held by nobody but admin and
+owner. The company project board could not be opened by anyone in the
+company.
+
+**`feature:*` and not a longer list**, so the default is self-maintaining:
+the next app to go live is open on the day it ships.
+
+⚠️ **The wildcard reaches no verb.** `permission_matches` covers exactly the
+permissions beginning `feature:`. A member holding every app still cannot
+read the HR half of a person record (`admin:members:read`). They still cannot
+edit one (`admin:members:manage`). They still cannot open Organisation, which
+is gated on `is_admin` and which no feature confers. Fence:
+`tests/unit/test_every_app_by_default.py`.
+
+📌 **`guest` is unchanged.** "All the people" means the organization's
+people. An external collaborator keeps chat and explicitly shared apps.
+
+📌 **Hiding an app from a ROLE is not yet possible** — the owner asked for it
+as a later capability. Per-person Deny works today. Per-role does not,
+because `member` and `manager` are system roles and `PATCH
+/admin/roles/{slug}` refuses to edit one. That gap is H-141.
 
 > ⚠️ **This table is incomplete and one cell of it is stale — measured 2026-08-04, see `colleague_onboarding.md` §3.0.**
 > **(a)** These are `130_org_access_control.sql`'s grants only. `131_integration_memory_permissions.sql` adds more to four of the six roles — notably `member` also gets `integrations:use:*` **and `memory:read_org`** (`131:70-78`), while `guest` gets nothing (`131:80`). Quoting this table alone gets `member` wrong.
