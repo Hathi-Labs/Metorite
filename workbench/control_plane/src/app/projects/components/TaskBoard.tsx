@@ -726,6 +726,25 @@ export function TaskBoard({
               className="w-fit"
             />
           )}
+          {/* ⚠️ **The card has to say it, not just the filter chip.**
+              An archived card is drawn exactly like a live one, so a member
+              who arrives by deep link, by search, or by a saved view that
+              pins the archive has nothing telling them why the task is
+              missing from their board. The lit chip in the filter row is a
+              statement about the QUERY; this is a statement about the CARD.
+
+              Deliberately a plain muted badge and not a status accent: the
+              shelf is not a lane, and painting it like one would put a
+              seventh colour into a vocabulary that has six. */}
+          {task.archived_at ? (
+            <span
+              className="flex w-fit items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
+              title={`Archived ${new Date(task.archived_at).toLocaleDateString()} — hidden from the boards and the current-state reports`}
+            >
+              <Icon name="Archive" className="h-3 w-3" />
+              Archived
+            </span>
+          ) : null}
           {renamingThis ? (
             <CardInput
               value={renaming.title}
@@ -817,7 +836,22 @@ export function TaskBoard({
     );
   }
 
-  const droppable = dropRefusal(groupBy, laned ? subBy : null) === null;
+  /**
+   * The ARCHIVE is a record, not a workspace.
+   *
+   * 🔴 **Creating a task here was a black hole.** `QuickAdd` writes a live
+   * task; this view shows only archived ones. So a member typed a title,
+   * pressed Enter, the row was created — and nothing appeared. No error, no
+   * card, no hint that it had gone anywhere. Found by using the feature on
+   * 2026-09-21, not by a test.
+   *
+   * Dragging has the same shape one step further on: `dropRefusal` already
+   * refuses an archived TASK, but the empty-lane placeholder asks it without
+   * one and so cheerfully said "Drop here" over a shelf.
+   */
+  const shelf = filters.archived;
+  const droppable =
+    !shelf && dropRefusal(groupBy, laned ? subBy : null) === null;
   const hidden = swimlanes ? hiddenLaneCount(swimlanes) : 0;
 
   return (
@@ -882,16 +916,23 @@ export function TaskBoard({
                 {cellCards(column.key, column.tasks, null)}
                 {column.tasks.length === 0 ? (
                   <li className="rounded-md border border-dashed border-border p-3 text-center text-xs text-muted-foreground">
-                    {droppable ? "Drop here" : "Nothing here"}
+                    {shelf
+                      ? "Nothing archived in this lane"
+                      : droppable
+                        ? "Drop here"
+                        : "Nothing here"}
                   </li>
                 ) : null}
               </ul>
-              <div className="p-2 pt-0">
-                <QuickAdd
-                  label={`Add to ${column.label}`}
-                  onAdd={(title) => quickAdd(title, column.key, null)}
-                />
-              </div>
+              {/* No composer on the shelf — see `shelf` above. */}
+              {shelf ? null : (
+                <div className="p-2 pt-0">
+                  <QuickAdd
+                    label={`Add to ${column.label}`}
+                    onAdd={(title) => quickAdd(title, column.key, null)}
+                  />
+                </div>
+              )}
             </section>
             );
           })}
@@ -959,18 +1000,20 @@ export function TaskBoard({
                               {cellCards(column.key, cell, lane.key)}
                               {cell.length === 0 ? (
                                 <li className="rounded-md border border-dashed border-border p-2 text-center text-[11px] text-muted-foreground">
-                                  {droppable ? "Drop here" : "—"}
+                                  {shelf ? "—" : droppable ? "Drop here" : "—"}
                                 </li>
                               ) : null}
                             </ul>
-                            <div className="p-2 pt-0">
-                              <QuickAdd
-                                label={`Add to ${column.label} · ${lane.label}`}
-                                onAdd={(title) =>
-                                  quickAdd(title, column.key, lane.key)
-                                }
-                              />
-                            </div>
+                            {shelf ? null : (
+                              <div className="p-2 pt-0">
+                                <QuickAdd
+                                  label={`Add to ${column.label} · ${lane.label}`}
+                                  onAdd={(title) =>
+                                    quickAdd(title, column.key, lane.key)
+                                  }
+                                />
+                              </div>
+                            )}
                           </div>
                         );
                       })}
