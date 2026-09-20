@@ -662,30 +662,97 @@ select optgroup {
   animation: bounce-subtle 1.5s ease-in-out infinite;
 }
 
-/* ── Custom scrollbar (CopilotKit-style thin themed scrollbar) ────────── */
+/* ── Scrollbars ────────────────────────────────────────────── */
+/*
+   ⚠️ THE DEFAULT, not an opt-in. Owner report, 2026-09-20: "the scroll bar
+   does not look very nice in the drop-downs or anywhere — I think we're
+   using the system scroll bar."
 
-.scrollbar-thin {
+   That was exactly right, and the cause was subtler than "we never styled
+   one". A themed scrollbar HAS existed here for months as `.scrollbar-thin`
+   — and it is opt-in, so eleven call sites in the email app wear it and
+   nothing else in the product does. Every dropdown, every dialog, the task
+   panel and the board columns fell back to the platform's: on Windows a
+   chunky grey bar with arrow buttons at both ends, which is a different
+   control from the one macOS draws and a different one again from GTK.
+   A design system that is opt-in is a suggestion.
+
+   ⚠️ **The two standard properties do NOT inherit alike, and assuming they
+   did shipped a half-fix.** `scrollbar-color` inherits; `scrollbar-width`
+   does not (initial `auto`). Declared on `:root` alone, the portalled
+   dropdown panel measured `scrollbar-color` themed and `scrollbar-width:
+   auto` — a platform-width bar wearing our colour, which is worse than
+   either. So the colour rides inheritance from `:root` and the width is
+   applied with `*`.
+
+   ⚠️ Both syntaxes, and they do not fight. Chromium 121+ and Firefox honour
+   the standard properties and then IGNORE the `::-webkit-scrollbar` rules
+   entirely; Safari and older Chromium do the reverse. Keeping both is what
+   makes the result the same thin, buttonless, rounded bar everywhere rather
+   than themed on some engines and native on others. The two must therefore
+   describe the SAME bar — `--scrollbar-thumb` exists so the colour is
+   written once and cannot drift between them.
+*/
+
+:root {
+  --scrollbar-thumb: color-mix(in srgb, var(--muted-foreground) 45%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--muted-foreground) 65%, transparent);
+
+  /* Inherits. Every descendant gets it without a selector. */
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+/* Does NOT inherit — see the note above. `*` is the cheapest correct reach,
+   and `.scrollbar-hide` still wins on specificity. */
+* {
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 45%, transparent) transparent;
 }
 
-.scrollbar-thin::-webkit-scrollbar {
-  width: 6px;
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
 }
 
-.scrollbar-thin::-webkit-scrollbar-track {
+*::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.scrollbar-thin::-webkit-scrollbar-thumb {
-  background-color: color-mix(in srgb, var(--muted-foreground) 45%, transparent);
+*::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
   border-radius: 10rem;
+  /* A transparent border plus `content-box` insets the thumb inside the
+     gutter, so it reads as a floating pill rather than a bar wedged against
+     the edge. Padding cannot do this on a scrollbar pseudo-element. */
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
 
-.scrollbar-thin::-webkit-scrollbar-thumb:hover {
-  background-color: color-mix(in srgb, var(--muted-foreground) 65%, transparent);
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
 }
 
+/* Where a horizontal and a vertical bar meet. Unstyled it is a small grey
+   square in the corner, which is the platform showing through the one place
+   nobody looks. */
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/*
+   Kept as a no-op alias. Eleven call sites ask for it and they are not
+   wrong — they just no longer need to, because this is what every surface
+   gets. Deleting it would be a rename dressed as a cleanup, and the next
+   person to write `scrollbar-thin` out of habit would get nothing.
+*/
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+/* ⚠️ Still meaningful, and it has to WIN. A surface that deliberately hides
+   its bar — a chip rail, a tab strip that scrolls sideways — now has a
+   default to override. `scrollbar-width: none` beats the inherited `thin`,
+   and the class raises the specificity above `*` for the webkit half. */
 .scrollbar-hide {
   scrollbar-width: none;
   -ms-overflow-style: none;
