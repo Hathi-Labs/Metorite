@@ -72,26 +72,38 @@ def _workspace(db: FakeProjectsDB) -> tuple:
     return project, todo, done
 
 
-# ── 1 · the archive guard ───────────────────────────────────────────────────
+# ── 1 · the archive, from any status ────────────────────────────
 
-async def test_archiving_an_open_task_is_422_naming_the_category(
-    db: FakeProjectsDB, events: list,
+@pytest.mark.parametrize(
+    "category,lane", [("todo", "To do"), ("backlog", "Backlog"),
+                      ("in_progress", "Doing"), ("triage", "Inbox")],
+)
+async def test_an_OPEN_task_archives_and_the_row_says_it_was_open(
+    db: FakeProjectsDB, events: list, category: str, lane: str,
 ) -> None:
-    """⚠️ The trap this guard closes: an archived open task silently exits
-    every default list while the work is still owed (P-3). The refusal names
-    the ACTUAL category so the person knows which lane to leave first."""
-    project, todo, _ = _workspace(db)
-    task = db.seed_task(project.id, todo.id, title="Still open")
+    """🔴 **This was a 422 until 2026-09-21, and the reversal is the point.**
 
-    with pytest.raises(HTTPException) as exc:
-        await pm_tasks.archive_task(str(task.id), user=USER)
+    Owner ruling: archive is a SHELF — "hide the task from the project
+    reviews and views where it might not be relevant at the moment but
+    might become relevant later". Parking and abandoning are different
+    acts, many projects have no `cancelled` lane to satisfy the old guard
+    with, and "never again" is `DELETE` now.
 
-    assert exc.value.status_code == 422
-    assert "'todo'" in exc.value.detail
-    # And nothing was written: the task is untouched.
-    assert next(
-        t for t in db.rows("pm_tasks") if str(t["id"]) == str(task.id)
-    )["archived_at"] is None
+    ⚠️ **The lane in the activity is what replaced the guard.** Once any
+    status can be archived, the status stops implying the outcome, and the
+    history is the only thing left that can say a task was parked while it
+    was still open. A silent "Task archived" would lose that permanently.
+    """
+    project = db.seed_project(name="Ops")
+    status = db.seed_status(project.id, name=lane, category=category)
+    task = db.seed_task(project.id, status.id, title="Still open")
+
+    result = await pm_tasks.archive_task(str(task.id), user=USER)
+
+    assert result["archived_at"] is not None
+    bodies = [a["body"] for a in db.activities("system")]
+    assert any(lane in body and "still open" in body for body in bodies), bodies
+    assert ("pm.task.archived", {"task_id": str(task.id)}) in events
 
 
 @pytest.mark.parametrize("category,name", [("done", "Done"), ("cancelled", "Won't do")])
@@ -107,46 +119,41 @@ async def test_a_closed_task_archives_and_earns_a_timeline_row(
     result = await pm_tasks.archive_task(str(task.id), user=USER)
 
     assert result["archived_at"] is not None
-    assert any(
-        a["body"] == "Task archived" for a in db.activities("system")
-    )
+    # Names the lane, and does NOT say "still open" — that half is what
+    # tells a reader six months later which kind of archive this was.
+    bodies = [a["body"] for a in db.activities("system")]
+    assert any(name in body and "still open" not in body for body in bodies), bodies
     assert ("pm.task.archived", {"task_id": str(task.id)}) in events
 
 
-async def test_the_guard_is_category_not_in_closing_never_a_list_of_open_ones() -> None:
-    """WS-27u is concurrently adding a `triage` category. Written as `not in
-    (done, cancelled)`, a new category is refused by default; written as a
-    list of open categories, it would be silently archivable.
+async def test_NOTHING_refuses_an_archive_on_a_category_any_more() -> None:
+    """The guard is gone from both doors, and stays gone.
 
-    ⚠️ **This asserted the SOURCE STRING in `tasks.py` until 2026-09-20.** The
-    guard moved into `core.archive_refusal` when the bulk action needed it too
-    — a bulk archive that skipped it would be the same trap, fifty tasks at a
-    time — and a string match followed the guard nowhere. Asserting the
-    BEHAVIOUR is both stronger and portable: it catches the flipped predicate
-    the old test was written for, and it also catches a guard that is moved
-    and quietly weakened on the way.
+    ⚠️ **This test used to assert the opposite**, and the flip is deliberate
+    (owner ruling, 2026-09-21). It is kept rather than deleted because the
+    failure it now catches is somebody re-adding the guard to one door — the
+    single task or the bulk action — and not the other. That asymmetry is
+    how a board ends up where fifty tasks archive and one does not.
+
+    ⚠️ `CLOSING_CATEGORIES` is still asserted. It did not stop mattering:
+    `laneFor`, `completed_at` and the closed-status reads all key off it.
+    It simply stopped governing the archive.
     """
     assert frozenset({"done", "cancelled"}) == pm_core.CLOSING_CATEGORIES
 
-    # Closed means archivable, and nothing else does.
-    for category in pm_core.CLOSING_CATEGORIES:
-        assert pm_core.archive_refusal(category) is None, category
-
-    # ⚠️ The direction that matters. `triage` is the category WS-27u added
-    # after this guard was written, and the whole point is that it needed no
-    # change here to be refused.
-    for category in ("backlog", "todo", "in_progress", "triage", "", "a-new-one"):
-        refusal = pm_core.archive_refusal(category)
-        assert refusal is not None, f"{category!r} must not be archivable"
-        assert category in refusal or category == "", refusal
-
-    # The guard is reached from BOTH doors, and neither carries its own copy.
     for module in ("tasks.py", "bulk.py"):
         source = (PACKAGE / module).read_text(encoding="utf-8")
-        assert "archive_refusal(" in source, module
-        assert "not in CLOSING_CATEGORIES" not in source, (
-            f"{module} grew a second copy of the guard"
+        assert "archive_refusal" not in source, (
+            f"{module} brought the category guard back; archive is a shelf "
+            "and any status may be shelved (see core.archive_note)"
         )
+        assert "Cannot archive an open task" not in source, module
+
+    # The note still distinguishes the two kinds, which is the whole of what
+    # replaced the guard.
+    assert "still open" in pm_core.archive_note("To do", "todo")
+    assert "still open" not in pm_core.archive_note("Done", "done")
+    assert pm_core.archive_note(None, "todo") == "Task archived"
 
 
 async def test_unarchive_restores_and_needs_no_category(
@@ -174,8 +181,13 @@ async def test_archiving_twice_is_idempotent_not_a_second_timeline_row(
     await pm_tasks.archive_task(str(task.id), user=USER)
     await pm_tasks.archive_task(str(task.id), user=USER)
 
-    assert len([a for a in db.activities("system")
-                if a["body"] == "Task archived"]) == 1
+    # The body now names the lane (see `core.archive_note`), so match on the
+    # act rather than on an exact sentence — a test pinned to the wording
+    # would fail every time the wording improved and prove nothing about
+    # idempotence, which is what this is for.
+    filed = [a for a in db.activities("system")
+             if "archived" in (a["body"] or "")]
+    assert len(filed) == 1, filed
 
 
 # ── 2 · activity meta — the labelled door, structurally ─────────────────────

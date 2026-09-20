@@ -3516,7 +3516,7 @@ for `tests/unit/test_reference_links.py` rather than trust.*
 |---|---|---|
 | P-1 intake/triage | [`issue.py#L92-L100`](https://github.com/makeplane/plane/blob/31853ab2b8b7810c59dc30d22e52c8f4b5a71a47/apps/api/plane/db/models/issue.py) | ⭐ the load-bearing trick: the **default manager excludes `state__group=triage`**, which is the whole "capture does not pollute a board" mechanism |
 | P-2 watchers + mention diffing | [`notification_task.py#L53-L111`](https://github.com/makeplane/plane/blob/31853ab2b8b7810c59dc30d22e52c8f4b5a71a47/apps/api/plane/bgtasks/notification_task.py) | set-difference of old vs new mentions; the fan-out excludes new mentions *and* the actor |
-| P-3 archive guard | [`archive.py#L255-L278`](https://github.com/makeplane/plane/blob/31853ab2b8b7810c59dc30d22e52c8f4b5a71a47/apps/api/plane/app/views/issue/archive.py) | one `state.group not in (completed, cancelled)` check; its bulk sibling is the counterexample (aborts mid-loop) |
+| P-3 archive guard — 🔴 **RETIRED 2026-09-21, D-PM-34** | [`archive.py#L255-L278`](https://github.com/makeplane/plane/blob/31853ab2b8b7810c59dc30d22e52c8f4b5a71a47/apps/api/plane/app/views/issue/archive.py) | one `state.group not in (completed, cancelled)` check. We shipped it, used it, and removed it: archive is a shelf here, not an outcome. Their bulk sibling is still the counterexample worth reading (aborts mid-loop) |
 | P-4 lifecycle sweeper | [`issue_automation_task.py#L28-L149`](https://github.com/makeplane/plane/blob/31853ab2b8b7810c59dc30d22e52c8f4b5a71a47/apps/api/plane/bgtasks/issue_automation_task.py) | exempts issues in an unfinished cycle; stamps `automation: True` into the activity |
 | P-5 activity id+label | [`issue.py#L414-L437`](https://github.com/makeplane/plane/blob/31853ab2b8b7810c59dc30d22e52c8f4b5a71a47/apps/api/plane/db/models/issue.py) | `old_value`/`new_value` beside `old_identifier`/`new_identifier` |
 | P-6 category-ranked sort | [`order_queryset.py#L145-L193`](https://github.com/makeplane/plane/blob/31853ab2b8b7810c59dc30d22e52c8f4b5a71a47/apps/api/plane/utils/order_queryset.py) | ⚠️ their tiebreaker is only `-created_at`; **ours is `(created_at, id)` — we are a step ahead of the source we cited** |
@@ -4003,6 +4003,65 @@ fenced, and is why the mutation pass is not optional here.
 > **Still owed on WS-27bj:** the admin surface for managing org-wide vocabularies (explicitly
 > out of scope above). The RENAME half of "edited or retired" is now built — see §9.11.2.
 > Retiring one is still owed.
+
+#### D-PM-34 — archive is a SHELF, and any status may be shelved
+
+**OWNER-RULED 2026-09-21.** The category guard (P-3) is removed. A task can be
+archived from any lane, by the single route and by the bulk action.
+
+**What archive means, in the owner's words.** It hides a task from the
+project reviews and views where it is not relevant now. It might become
+relevant later.
+
+Three things follow, and each one was a reason the guard had to go.
+
+1. **Parking and abandoning are different acts.** Requiring `cancelled` to
+   express "not now" writes an outcome that did not happen, into the history,
+   permanently.
+2. **A project may have no `cancelled` lane.** Lane sets are per-root and
+   hand-editable, so the guard could refuse an act with no legal way to
+   satisfy it. That is a dead end, not a rule.
+3. **"Never again" has its own verb now.** `DELETE /tasks/{id}` reached the UI
+   on 2026-09-20. Archive no longer has to carry two meanings.
+
+**It was also inconsistent.** `tree.archive_node` files a whole PROJECT from
+any state, open tasks and all, and never had a guard. The larger act was the
+unguarded one.
+
+**Its stated premise had expired.** The guard's own words were that an
+archived open task "silently exits every default list". The `Archived` filter
+shipped 2026-09-20, so it is no longer silent.
+
+⚠️ **What the guard was right about, which did NOT go away.** Archived
+tasks are excluded from the CURRENT-state analytics: open counts, overdue,
+who is overloaded, the forecast. The historical reads deliberately keep them
+(`analytics.py`: "an archive sweep in September must not empty July"). So
+shelving ten open tasks improves the forecast. The work vanished, it did not
+finish.
+
+Under a shelf reading that exclusion is **correct**: parked work is not active
+work. What is wrong is that it is **invisible**. Two halves answer it, and only
+the first is built:
+
+* the `Archived` view, so the shelf is somewhere you can go. **Done.**
+* the count shown beside the open one, so a reader sees "6 open · 3
+  archived" and not "6 open". **Not built.** It is what keeps the forecast
+  honest. The owner deferred it on 2026-09-21, as a separate slice.
+
+**What replaced the guard in the data.** The activity row names the lane.
+"Task archived from To do — still open", against "Task archived from Done".
+Once any status can be shelved, the status no longer implies the outcome. The
+history is then the only place that can say which kind of archive this was.
+`core.archive_note` is the one function that decides it, and both doors call
+it.
+
+**Fences.** `tests/unit/test_projects_hardening.py` — an open task in four
+categories archives and earns a row that says so. It also holds that neither
+door carries a category refusal. `tests/live/live_task_lifecycle.py` — the
+same against a real Postgres. It adds that the closed case does not say
+"still open".
+
+---
 
 #### 9.11.2 Slice 3, the rename (2026-09-20, D-PM-33)
 
@@ -5760,7 +5819,8 @@ the research doc's license wall is binding on every ticket below.
      edits notify only *new* mentions.
    - **Archive guard** (P-3, one predicate, do immediately) — refuse manual archive unless
      the status category is done/cancelled; an archived open task silently exits every
-     default list.
+     default list. 🔴 **Built, then RETIRED on 2026-09-21 (D-PM-34).** The premise
+     "silently" stopped being true when the archive got a view of its own.
    - **Spreadsheet layout + kanban sub-grouping + display-properties contract + group-context
      quick-add** (P-10…P-13) — the four UI gaps with the highest daily-use value.
    - **Auto-archive policy** (P-4) — `archive_in`/`close_in` on root projects; sweeper is a

@@ -42,7 +42,7 @@ from gateway.routes.projects.automation import (
 from gateway.routes.projects.core import (
     _tenant_session,
     actor,
-    archive_refusal,
+    archive_note,
     emit,
     load_visible_task,
     now,
@@ -344,19 +344,23 @@ async def _act_on_one(
         if getattr(task, "archived_at", None) is not None:
             return "skipped", "unchanged"
         status = (await db.execute(
-            text("SELECT category FROM pm_task_statuses WHERE id = CAST(:s AS uuid)"),
+            text(
+                "SELECT name, category FROM pm_task_statuses "
+                " WHERE id = CAST(:s AS uuid)"
+            ),
             {"s": str(task.status_id)},
         )).fetchone()
-        # ⚠️ The SAME guard the single-task route uses. A bulk archive that
-        # skipped it would be the open-task trap wearing a different button,
-        # fifty at a time.
-        refusal = archive_refusal(str(getattr(status, "category", "") or ""))
-        if refusal is not None:
-            return "failed", refusal
+        # ⚠️ No category guard, in EITHER door. It was removed on 2026-09-21
+        # and `core.archive_note` says why. What both doors still do is name
+        # the lane in the activity, which is what keeps the history readable
+        # once the status stops implying the outcome.
         await update_row(db, "pm_tasks", task_id, {"archived_at": now()})
         await record_activity(
-            db, activity_type="system", created_by=by,
-            task_id=task_id, body="Task archived",
+            db, activity_type="system", created_by=by, task_id=task_id,
+            body=archive_note(
+                getattr(status, "name", None),
+                str(getattr(status, "category", "") or ""),
+            ),
         )
         return "applied", "archived"
 

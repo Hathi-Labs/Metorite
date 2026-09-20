@@ -191,19 +191,19 @@ async def main():
     bind_tenant(made["org"])
     t = made["tasks"]
     try:
-        # ── The guard, on a selection ──────────────────────────────────────
+        # -- Any status files, and the row says which --------------------
+        #
+        # The open task was REFUSED here until 2026-09-21. Owner ruling
+        # removed the category guard: archive is a shelf, and many projects
+        # have no `cancelled` lane to satisfy the old rule with.
         out = await pm_bulk.bulk_edit(
             pm_bulk.BulkIn(
                 task_ids=[t["closed_a"], t["open_one"]], action="archive",
             ),
             user=owner(),
         )
-        check("a closed task archives", out["applied"], 1)
-        check("an OPEN one is refused, per task", len(out["failed"]), 1)
-        check("and the refusal says why",
-              "status category is 'todo'" in out["failed"][0]["reason"], True)
-        check("the whole batch did NOT abort", out["results"][0]["task_id"],
-              t["closed_a"])
+        check("both file, whatever their lane", out["applied"], 2)
+        check("and nothing is refused on a category", len(out["failed"]), 0)
 
         filed = await one(
             "SELECT archived_at FROM pm_tasks WHERE id = CAST(:i AS uuid)",
@@ -212,7 +212,29 @@ async def main():
             "SELECT archived_at FROM pm_tasks WHERE id = CAST(:i AS uuid)",
             i=t["open_one"])
         check("the closed one carries a timestamp", filed.archived_at is not None, True)
-        check("the open one carries none", live.archived_at is None, True)
+        check("the OPEN one carries one too", live.archived_at is not None, True)
+
+        # The history is the only thing left that can say a task was parked
+        # while it was still owed, so it has to.
+        note = await one(
+            "SELECT body FROM pm_activities WHERE task_id = CAST(:i AS uuid) "
+            "  AND type = 'system' ORDER BY created_at DESC LIMIT 1",
+            i=t["open_one"])
+        check("the open one's row names its lane and says it was open",
+              ("To do" in (note.body or "")) and ("still open" in (note.body or "")),
+              True)
+        shut = await one(
+            "SELECT body FROM pm_activities WHERE task_id = CAST(:i AS uuid) "
+            "  AND type = 'system' ORDER BY created_at DESC LIMIT 1",
+            i=t["closed_a"])
+        check("the closed one's row does NOT",
+              "still open" in (shut.body or ""), False)
+
+        # Put the open one back, so the reads below describe one filed task.
+        await pm_bulk.bulk_edit(
+            pm_bulk.BulkIn(task_ids=[t["open_one"]], action="unarchive"),
+            user=owner(),
+        )
 
         # ── Idempotent ────────────────────────────────────────────────────
         again = await pm_bulk.bulk_edit(

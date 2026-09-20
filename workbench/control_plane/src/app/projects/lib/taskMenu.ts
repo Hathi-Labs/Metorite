@@ -199,11 +199,11 @@ export interface TaskMenuActions {
   /**
    * File the task out of every default list, board, calendar and search.
    *
-   * ⚠️ **The refusal is the surface's to show, not this menu's to predict.**
-   * The gateway refuses an OPEN task with a 422 that names its status
-   * category and says what to do. Hiding the entry for open tasks instead
-   * would answer "where did Archive go?" with silence, and the member would
-   * never learn the rule.
+   * **Offered on any status**, because archive is a shelf rather than an
+   * outcome: hidden now, reversible, may come back. The gateway refused an
+   * open task until 2026-09-21 and this menu deliberately still offered the
+   * entry, so the refusal could teach the rule. The rule is gone and the
+   * entry stays, which is the simpler product.
    */
   archive?(task: TaskRow): void;
   /** Bring one back from the archive. No guard in this direction. */
