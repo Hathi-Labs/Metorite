@@ -209,7 +209,10 @@ class TestAStaleGeneratedTypeCannotDeadlockTheBuild:
             i for i in range(start, len(lines)) if "npm run build" in lines[i]
         )
         body = lines[start:build]
-        assert any(".next/types" in ln and ln.strip().startswith("rm ") for ln in body), (
+        removers = ("rm ", "drop_dir ")
+        assert any(
+            ".next/types" in ln and ln.strip().startswith(removers) for ln in body
+        ), (
             "build_next_staged must remove the previous build's .next/types "
             "BEFORE it builds. Without it a renamed route directory wedges "
             "every future deploy, and each retry restarts the gateway first."
@@ -317,3 +320,90 @@ class TestARetryThatCannotSucceedStopsRetrying:
         window = "\n".join(lines[trip : trip + 8])
         assert "exit 0" not in window
         assert "exit 11" in window
+
+
+class TestHousekeepingCannotAbortTheDeploy:
+    """🔴 Two production deploys reported SUCCESS and shipped no UI, in one hour.
+
+    Measured 2026-09-20. `.next` on the box carries root-owned files (H-89),
+    the apply runs as the deploy user, and so ``rm -rf .next.previous`` exits
+    "Permission denied". Under ``set -e`` that ended the script.
+
+    The post-swap call is the one that hurts. By then `.next` has ALREADY been
+    replaced, so the box holds a build its running server never loaded, and
+    the ``systemctl restart acb-workbench`` eleven lines below never runs. The
+    gateway answers its own ``/version`` with the new SHA, the workbench
+    answers 307, and `verify()` blesses the release. The owner opens the app
+    and sees the previous build.
+
+    The rule: **deleting the last build's leftovers is never worth a failed
+    release.** Every removal in the build path goes through ``drop_dir``,
+    which tries as the deploy user, then with sudo, then gives up and says so.
+
+    ⚠️ This does NOT weaken `TestTheApplyNeverDeletesTheLiveBuild`. A removal
+    that must not fail is a different claim from a removal that must not
+    happen, and `.next` itself is still never a target.
+    """
+
+    def test_every_removal_in_the_build_path_goes_through_the_helper(self) -> None:
+        lines = _executable_lines(_APPLY)
+        start = next(i for i, ln in enumerate(lines) if "build_next_staged()" in ln)
+        end = next(
+            i for i in range(start + 1, len(lines))
+            if lines[i].strip() == "}"
+        )
+        raw = [ln for ln in lines[start:end] if ln.strip().startswith("rm ")]
+        assert raw == [], (
+            "a bare `rm` inside build_next_staged can abort the deploy after "
+            f"the swap and before the restart — use drop_dir: {raw}"
+        )
+
+    def test_the_helper_never_returns_non_zero(self) -> None:
+        lines = _executable_lines(_APPLY)
+        start = next(i for i, ln in enumerate(lines) if ln.strip().startswith("drop_dir()"))
+        end = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == "}")
+        body = lines[start:end]
+        assert any(ln.strip() == "return 0" for ln in body), (
+            "drop_dir exists so that a failed cleanup cannot end the apply; "
+            "it must end in `return 0`"
+        )
+        assert any("sudo rm -rf" in ln for ln in body), (
+            "the files it must remove are root-owned (H-89) — try sudo before "
+            "giving up"
+        )
+
+    def test_the_restart_still_follows_the_swap(self) -> None:
+        """The property the cleanup was destroying.
+
+        A new `.next` that the running server never loaded is worse than no
+        deploy: the served chunks are gone, replaced by a build nothing has
+        read. The restart is what makes the swap real.
+        """
+        lines = _executable_lines(_APPLY)
+        swap = next(i for i, ln in enumerate(lines) if ln.strip() == "mv .next.staging .next")
+        restart = next(
+            i for i in range(swap, len(lines))
+            if "systemctl restart acb-workbench" in lines[i]
+        )
+        assert swap < restart
+
+    def test_a_failed_npm_install_does_not_end_the_apply(self) -> None:
+        """It did, this morning, before the build was even attempted.
+
+        `npm ci` and `npm install` both hit EACCES on a root-owned
+        `node_modules`. The build is the gate — it either passes, or
+        `build_next_staged` keeps the running build and fails loudly. An
+        install that cannot abort costs nothing and saves the release.
+        """
+        lines = _executable_lines(_APPLY)
+        i = next(i for i, ln in enumerate(lines) if "npm ci --prefer-offline" in ln)
+        # The statement, not the neighbourhood: a backslash continues it.
+        stmt = [lines[i]]
+        while stmt[-1].rstrip().endswith(chr(92)):
+            i += 1
+            stmt.append(lines[i])
+        statement = " ".join(ln.strip() for ln in stmt)
+        assert statement.count("||") >= 2 and "echo" in statement, (
+            "the workbench npm install must fall through to a warning rather "
+            f"than abort the apply under set -e: {statement!r}"
+        )

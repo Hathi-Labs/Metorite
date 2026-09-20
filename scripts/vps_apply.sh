@@ -681,9 +681,33 @@ fi
 # next.config — both apps carry it, and `test_deploy_next_build_swap.py`
 # fails if either loses it.
 NEXT_BUILD_HEAP_MB="${NEXT_BUILD_HEAP_MB:-1024}"
+# Remove a build-tree directory without ever aborting the deploy.
+#
+# 🔴 **A HOUSEKEEPING `rm` KILLED TWO PRODUCTION DEPLOYS ON 2026-09-20.**
+#
+# `.next` on the box carries root-owned files (H-89 — something here writes
+# into the checkout as root). The apply runs as the deploy user, so
+# `rm -rf .next.previous` returns "Permission denied" and, under `set -e`,
+# takes the whole script with it. The post-swap call is the dangerous one:
+# `.next` has ALREADY been replaced, and the `systemctl restart` eleven lines
+# below never runs. The box is then serving a build it did not load, the
+# gateway answers its own `/version` correctly, and the deploy reports
+# SUCCESS. The owner sees the old UI and is told the fix shipped.
+#
+# Deleting last build's leftovers is never worth a failed release. Try as
+# ourselves, then with sudo, then give up and say so.
+drop_dir() {
+  [ -e "$1" ] || return 0
+  rm -rf "$1" 2>/dev/null && return 0
+  sudo rm -rf "$1" 2>/dev/null && return 0
+  echo "    ~ could not remove $1 (left on disk; harmless, and the next apply retries)"
+  return 0
+}
+
 build_next_staged() {
   name="$1"
-  rm -rf .next.staging .next.previous
+  drop_dir .next.staging
+  drop_dir .next.previous
   # 🔴 **THE PREVIOUS BUILD'S GENERATED TYPES CAN DEADLOCK THE NEXT ONE.**
   #
   # `tsconfig.json` includes BOTH `.next/types/**/*.ts` and
@@ -707,7 +731,8 @@ build_next_staged() {
   # typecheck. `next start` never reads them — it needs BUILD_ID, the server
   # chunks and the manifests, all untouched. So the running app keeps serving
   # while the build fails, which is the property this function exists for.
-  rm -rf .next/types .next/dev/types
+  drop_dir .next/types
+  drop_dir .next/dev/types
   # A non-zero exit here propagates under `set -e` with `.next` untouched.
   NEXT_DIST_DIR=".next.staging" \
     NODE_OPTIONS="--max-old-space-size=$NEXT_BUILD_HEAP_MB" npm run build
@@ -721,14 +746,20 @@ build_next_staged() {
   fi
   if [ -d .next ]; then mv .next .next.previous; fi
   mv .next.staging .next
-  rm -rf .next.previous
+  # ⚠️ AFTER the swap, so it must not be able to fail. See drop_dir above.
+  drop_dir .next.previous
   echo "    $name: new build swapped in"
 }
 
 echo "==> Rebuilding + restarting workbench (Next.js)"
 cd "$APP_DIR/workbench/control_plane"
 if [ -f package-lock.json ] || [ -f package.json ]; then
-  npm ci --prefer-offline 2>/dev/null || npm install
+  # ⚠️ NOT fatal. A root-owned `node_modules` (H-89) makes both of these exit
+  # non-zero with EACCES, and on 2026-09-20 that aborted the apply before the
+  # restart, the Operator Console and the Caddy reload — while the deploy
+  # reported success. The BUILD is the gate: it either passes, or
+  # `build_next_staged` keeps the running build and fails loudly.
+  npm ci --prefer-offline 2>/dev/null || npm install ||     echo "    ! npm install failed — building against the node_modules already here"
   build_next_staged "workbench"
 fi
 # Reload systemd unit in case acb-workbench.service changed (adds PATH for uv etc.)
