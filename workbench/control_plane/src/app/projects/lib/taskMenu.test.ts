@@ -777,14 +777,14 @@ describe("the lifecycle verbs (owner request, 2026-09-20)", () => {
     expect(ids(taskMenuItems(filed()))).not.toContain("task.archive");
   });
 
-  it("offers Archive on an OPEN task, and lets the gateway explain", () => {
+  it("offers Archive on an OPEN task", () => {
     /**
-     * ⚠️ The refusal is the surface's to show, not this menu's to predict.
+     * Archive is a shelf, not an outcome, so every lane can be shelved.
      *
-     * The gateway refuses an open task with a 422 naming its status category
-     * and saying what to do. Hiding the entry instead would answer "where did
-     * Archive go?" with silence, and the rule — an archived open task is work
-     * that vanished while it was still owed — would never be learned.
+     * ⚠️ The gateway refused this until 2026-09-21 and the entry was offered
+     * anyway, so the refusal could explain itself. The refusal is gone; the
+     * entry is unchanged. This test outlived the rule it was written for,
+     * which is the point of asserting the OFFER rather than the outcome.
      */
     const open = live({ task: task({ status_id: "s-todo" }) });
     expect(ids(taskMenuItems(open))).toContain("task.archive");

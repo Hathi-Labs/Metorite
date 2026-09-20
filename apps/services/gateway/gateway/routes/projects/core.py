@@ -1685,28 +1685,62 @@ async def org_wide_exists(db: Any, table: str, root: str, value: Any) -> bool:
     return row is not None
 
 
-def archive_refusal(category: str) -> str | None:
-    """Why a task in this status category may not be archived, or ``None``.
+def archive_note(status_name: str | None, category: str) -> str:
+    """What the activity row says when a task is filed.
 
-    An archived task exits every default list, board, calendar and search
-    surface at once, so archiving an OPEN one is a trap rather than a feature
-    (P-3): the work disappears while it is still owed, and nobody gardening a
-    board can see where it went.
+    ## The guard that used to live here, and why it is gone
 
-    ⚠️ **Written as "not closed", never as a list of open categories.** A
-    category added later — WS-27u's ``triage`` was — is then refused by
-    default instead of becoming silently archivable.
+    Until 2026-09-21 this function REFUSED to archive anything whose status
+    category was not `done` or `cancelled` (P-3, lifted from Plane). Owner
+    ruling that day removed it, and the reasoning is worth keeping because
+    the guard was not silly — it was answering the right question in the
+    wrong place.
 
-    ⚠️ **Extracted so the single-task route and the BULK action cannot
-    drift.** A bulk archive that skipped this guard would be the same trap
-    wearing a different button, and fifty tasks at a time.
+    **What archive means here.** The owner's words: "archive is primarily
+    just to hide the task from the project reviews and views where it might
+    not be relevant at the moment but might become relevant later." A SHELF.
+    Not a graveyard, and not a synonym for an outcome.
+
+    Three consequences followed:
+
+    * **Parking and abandoning are different acts.** Requiring `cancelled`
+      to express "not now" records an outcome that did not happen, and
+      permanently, in the history.
+    * **Many projects have no cancelled lane at all.** A lane set is
+      per-root and hand-editable, so the guard could refuse an act with no
+      legal way to satisfy it.
+    * **"Never again" already has a verb.** `DELETE /tasks/{id}` shipped
+      2026-09-20. Archive no longer has to carry both meanings.
+
+    It was also inconsistent: `tree.archive_node` files a whole PROJECT from
+    any state, open tasks and all, and never had a guard. The bigger act was
+    the unguarded one.
+
+    ⚠️ **What the guard was PROTECTING is real and did not go away.**
+    Archived tasks are excluded from the current-state analytics — open
+    counts, overdue, "who is overloaded", the forecast — while the
+    historical reads deliberately keep them (`analytics.py`: "an archive
+    sweep in September must not empty July"). So parking ten open tasks
+    improves the forecast because work vanished, not because it finished.
+    Under a shelf reading that exclusion is CORRECT — parked work is not
+    active work — but it must be **visible rather than silent**. The
+    `Archived` filter is half of that. Showing the count beside the open
+    one, so a reader sees "6 open · 3 archived", is the other half and is
+    not built yet.
+
+    ⚠️ **This is why the note names the lane.** The status no longer implies
+    the outcome, so the history has to carry it: a task filed from `To do`
+    and a task filed from `Done` are different events, and six months later
+    the lane it sat in is the only thing that says which.
     """
+    lane = (status_name or "").strip()
+    if not lane:
+        return "Task archived"
     if category in CLOSING_CATEGORIES:
-        return None
-    return (
-        f"Cannot archive an open task: its status category is '{category}'. "
-        f"Move it to a done or cancelled status first."
-    )
+        return f"Task archived from {lane}"
+    # Said plainly, because this is the case the old guard forbade and the
+    # one a reader of the history is most likely to be surprised by.
+    return f"Task archived from {lane} — still open"
 
 
 def is_org_wide(row: Any) -> bool:

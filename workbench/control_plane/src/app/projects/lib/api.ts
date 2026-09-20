@@ -1188,10 +1188,14 @@ export const projectsApi = {
   /**
    * File a task out of every default list, board, calendar and search.
    *
-   * ⚠️ The gateway refuses this for an OPEN task (422 naming the status
-   * category). That is deliberate — an archived open task is work that
-   * disappeared while still owed — so the caller shows the refusal rather
-   * than pre-guessing it.
+   * **Any status.** Archive is a shelf — hidden now, reversible, may come
+   * back — so it does not require an outcome first. The category guard that
+   * refused open tasks was removed on 2026-09-21 (owner ruling); the gateway's
+   * `archive_note` carries the reasoning.
+   *
+   * ⚠️ An archived task leaves the CURRENT-state analytics (open counts,
+   * overdue, the forecast) while staying in the historical ones. That is
+   * correct for a shelf and is why the archive has a view of its own.
    */
   archiveTask: (taskId: string) =>
     call<TaskRow>(`tasks/${taskId}/archive`, { method: "POST" }),

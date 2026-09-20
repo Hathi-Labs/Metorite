@@ -24,7 +24,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, Header, HTTPException
 from gateway.routes.projects.core import (
-    archive_refusal,
+    archive_note,
     CLOSING_CATEGORIES,
     DIRECTIONS,
     TASK_SORTS,
@@ -783,18 +783,20 @@ async def delete_task(
 async def archive_task(
     task_id: str, user: UserContext = Depends(get_current_user),
 ) -> dict:
-    """Archive one task — allowed only once it is CLOSED.
+    """Archive one task, from ANY status.
 
-    An archived task exits every default list, board, calendar and search
-    surface at once, so archiving an open task is a trap, not a feature (P-3):
-    the work disappears while still owed, and nobody gardening a board can see
-    where it went. The guard is written on the status CATEGORY, and as "not in
-    (done, cancelled)" rather than as a list of open categories — a category
-    added later (WS-27u's `triage`) is refused by default instead of becoming
-    silently archivable. The refusal names the actual category, because "cannot
-    archive" without the why sends people hunting through lanes.
+    Archive is a shelf: it hides a task from the boards, lists, calendars and
+    searches where it is not relevant right now, and it is reversible by
+    `unarchive_task`. It is not an outcome, and it does not claim one.
 
-    WS-27z's sweeper depends on this guard shipping first.
+    ⚠️ **This refused an open task until 2026-09-21 (P-3).** Owner ruling
+    removed the guard: parking and abandoning are different acts, many
+    projects have no `cancelled` lane to satisfy it with, and "never again"
+    is `DELETE` now. `core.archive_note` carries the full reasoning and,
+    importantly, the thing the guard was right about.
+
+    The activity row names the lane the task sat in, because the status no
+    longer implies the outcome.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -802,16 +804,19 @@ async def archive_task(
         status = await require_row(
             db, "pm_task_statuses", str(task.status_id), "Status",
         )
-        refusal = archive_refusal(str(getattr(status, "category", "") or ""))
-        if refusal is not None:
-            raise HTTPException(status_code=422, detail=refusal)
         if getattr(task, "archived_at", None) is not None:
             # Already archived — idempotent, the double-click answer.
             return row_to_dict(task, TaskModel)
         row = await update_row(db, "pm_tasks", task_id, {"archived_at": now()})
         await record_activity(
             db, activity_type="system", created_by=actor(user),
-            task_id=task_id, body="Task archived",
+            task_id=task_id,
+            # Names the lane, because the status no longer implies the
+            # outcome. See `archive_note`.
+            body=archive_note(
+                getattr(status, "name", None),
+                str(getattr(status, "category", "") or ""),
+            ),
         )
         result = row_to_dict(row, TaskModel)
 

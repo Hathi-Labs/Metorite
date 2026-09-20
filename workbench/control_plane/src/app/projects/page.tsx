@@ -2269,11 +2269,9 @@ function ProjectsWorkspace() {
   /**
    * File one task, or bring one back. Owner request, 2026-09-20.
    *
-   * ⚠️ **The refusal is SHOWN, not predicted.** The gateway refuses an open
-   * task with a 422 naming its status category and saying what to do about
-   * it. Greying the entry out instead would answer "why can I not archive
-   * this?" with silence, and the rule — an archived open task is work that
-   * vanished while still owed — would never be learned.
+   * **Any status files.** Archive is a shelf, not an outcome — the category
+   * guard went on 2026-09-21. An error can still arrive (the task moved, the
+   * grant changed), so the strip still shows one.
    */
   async function setTaskArchived(taskId: string, archived: boolean) {
     try {
