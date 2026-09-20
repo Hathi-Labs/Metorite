@@ -173,3 +173,147 @@ class TestTheHealthProbeCallsA5xxAnOutage:
         # this ever fails, the probe has started paging on a healthy box.
         lines = _executable_lines(_HEALTH)
         assert not any("4[0-9][0-9]" in ln for ln in lines)
+
+
+_PULL = _ROOT / "scripts/vps_pull.sh"
+_TSCONFIG = _ROOT / "workbench/control_plane/tsconfig.json"
+
+
+class TestAStaleGeneratedTypeCannotDeadlockTheBuild:
+    """🔴 Eleven hours of production outage, from one renamed directory.
+
+    `tsconfig.json` includes the generated route types of BOTH dist dirs,
+    because either can be live. So a staged build isolates its output and
+    still type-checks the PREVIOUS build's `validator.ts`. That file names
+    every route by path, so renaming a route directory makes it reference a
+    module that is gone:
+
+        Cannot find module '../../src/app/api/people/[...path]/route.js'
+
+    Nothing recovers on its own. The build cannot pass until `.next` is
+    replaced, and the swap only replaces `.next` after a build passes.
+
+    Measured 2026-09-20 on production. PR #306 renamed that route, and every
+    five-minute apply for the next eleven hours died here — each one having
+    already restarted the live gateway.
+    """
+
+    def test_the_staged_build_clears_the_previous_generated_types(self) -> None:
+        lines = _executable_lines(_APPLY)
+        start = next(
+            i for i, ln in enumerate(lines) if "build_next_staged()" in ln
+        )
+        # Only the body, and only up to the build command — clearing them
+        # AFTER the build would be pointless.
+        build = next(
+            i for i in range(start, len(lines)) if "npm run build" in lines[i]
+        )
+        body = lines[start:build]
+        assert any(".next/types" in ln and ln.strip().startswith("rm ") for ln in body), (
+            "build_next_staged must remove the previous build's .next/types "
+            "BEFORE it builds. Without it a renamed route directory wedges "
+            "every future deploy, and each retry restarts the gateway first."
+        )
+
+    def test_tsconfig_still_scopes_both_dist_dirs(self) -> None:
+        """The tripwire for the test above.
+
+        If somebody removes `.next/types` from `include`, the deadlock is
+        gone by another route and the `rm` stops being load-bearing — but so
+        does this whole class, and it would keep passing while guarding
+        nothing. Fail here instead, so the reason gets re-read.
+        """
+        text = _TSCONFIG.read_text(encoding="utf-8")
+        assert ".next/types/**/*.ts" in text
+        assert ".next.staging/types/**/*.ts" in text
+
+    def test_the_gateway_still_restarts_before_the_workbench_builds(self) -> None:
+        """⚠️ This pins the ORDER that made the fault user-visible.
+
+        The gateway restart runs long before the workbench build, so a build
+        that always fails still bounces production on every tick. Reordering
+        is not obviously right — the API is meant to be new before the UI
+        that calls it — so this is NOT a demand to change it. It records the
+        ordering the circuit breaker in `vps_pull.sh` exists to compensate
+        for. Change the order and the breaker's rationale needs re-reading.
+        """
+        lines = _executable_lines(_APPLY)
+        restart = next(
+            i for i, ln in enumerate(lines)
+            if "systemctl restart acb-gateway" in ln
+        )
+        build = next(i for i, ln in enumerate(lines) if "npm run build" in ln)
+        assert restart < build
+
+
+class TestARetryThatCannotSucceedStopsRetrying:
+    """One failed apply is a deploy that did not land. 130 is an outage.
+
+    The retry in `vps_pull.sh` gates on the last SUCCESSFUL sha, which is
+    right — a half-finished apply must be tried again. What it missed is an
+    apply that fails the same way every time. Because the apply restarts the
+    gateway before it builds, an unwinnable retry is not a no-op: it is a
+    gateway restart every five minutes, forever.
+    """
+
+    def test_there_is_a_failure_counter_and_a_ceiling(self) -> None:
+        lines = _executable_lines(_PULL)
+        text = "\n".join(lines)
+        assert "last-fail-count" in text, "nothing counts repeated failures"
+        assert "MAX_FAILS" in text, "nothing caps them"
+
+    def test_the_breaker_refuses_BEFORE_running_the_apply(self) -> None:
+        """A breaker that trips after the apply has already run is decoration.
+
+        The whole cost of the loop was paid inside `vps_apply.sh` — the
+        gateway restart. Exiting after it has run saves nothing.
+        """
+        lines = _executable_lines(_PULL)
+        trip = next(
+            i for i, ln in enumerate(lines) if "MAX_FAILS" in ln and "-ge" in ln
+        )
+        apply_at = next(
+            i for i, ln in enumerate(lines) if 'bash "$TMP_APPLY"' in ln
+        )
+        assert trip < apply_at, (
+            "the failure ceiling is checked after the apply already ran — "
+            "the restart it is meant to prevent has already happened"
+        )
+
+    def test_the_count_is_keyed_to_the_target_sha(self) -> None:
+        """A new commit must get its own attempts, with nothing cleared by
+        hand. A global counter would latch the box out after three unrelated
+        failures and need an operator to reset it."""
+        lines = _executable_lines(_PULL)
+        text = "\n".join(lines)
+        assert 'last-fail-sha' in text
+        assert '"$FAIL_SHA" = "$TARGET"' in text
+
+    def test_a_success_clears_the_breaker(self) -> None:
+        """Otherwise a box that recovers stays latched out by its history."""
+        lines = _executable_lines(_PULL)
+        # ⚠️ The WRITE of the success marker, not the read of it. Anchoring on
+        # `">" in ln` matched `$(cat ... 2>/dev/null)` first, three hundred
+        # lines earlier, and the assertion then read a window with no writes
+        # in it at all.
+        ok = next(
+            i for i, ln in enumerate(lines)
+            if 'echo "$TARGET" >' in ln and "last-pull-sha" in ln
+        )
+        window = "\n".join(lines[ok : ok + 4])
+        assert "rm -f" in window and "last-fail" in window
+
+    def test_giving_up_still_exits_NON_zero(self) -> None:
+        """A box that has stopped trying must not look healthy.
+
+        `systemctl --failed` is the only thing watching. Exiting 0 here would
+        turn a stuck box into a silent one, which is the exact failure WS-25
+        was built to end.
+        """
+        lines = _executable_lines(_PULL)
+        trip = next(
+            i for i, ln in enumerate(lines) if "MAX_FAILS" in ln and "-ge" in ln
+        )
+        window = "\n".join(lines[trip : trip + 8])
+        assert "exit 0" not in window
+        assert "exit 11" in window

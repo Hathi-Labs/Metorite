@@ -684,6 +684,30 @@ NEXT_BUILD_HEAP_MB="${NEXT_BUILD_HEAP_MB:-1024}"
 build_next_staged() {
   name="$1"
   rm -rf .next.staging .next.previous
+  # 🔴 **THE PREVIOUS BUILD'S GENERATED TYPES CAN DEADLOCK THE NEXT ONE.**
+  #
+  # `tsconfig.json` includes BOTH `.next/types/**/*.ts` and
+  # `.next.staging/types/**/*.ts`, because either can be the live dist dir.
+  # So a staged build isolates its OUTPUT and still type-checks the LAST
+  # build's generated `validator.ts`.
+  #
+  # That file names every route by path. Rename a route directory and the old
+  # validator points at a module that no longer exists:
+  #
+  #   Type error: Cannot find module
+  #     '../../src/app/api/people/[...path]/route.js'
+  #
+  # Now nothing can recover on its own. The build cannot pass until `.next`
+  # is replaced, and the swap below only replaces `.next` AFTER a build
+  # passes. Measured on production 2026-09-20: PR #306 renamed that route to
+  # `[[...path]]`, and every apply for the next eleven hours failed here.
+  #
+  # ⚠️ Removing these is safe and is NOT a violation of "a failed build
+  # changes nothing". `types/` holds TypeScript declarations for the
+  # typecheck. `next start` never reads them — it needs BUILD_ID, the server
+  # chunks and the manifests, all untouched. So the running app keeps serving
+  # while the build fails, which is the property this function exists for.
+  rm -rf .next/types .next/dev/types
   # A non-zero exit here propagates under `set -e` with `.next` untouched.
   NEXT_DIST_DIR=".next.staging" \
     NODE_OPTIONS="--max-old-space-size=$NEXT_BUILD_HEAP_MB" npm run build
