@@ -278,6 +278,9 @@ async def export_tasks_csv(
     sort: str | None = None,
     direction: str = "desc",
     include_archived: bool = False,
+    #: Parity with the list (see its own comment). A filter the list
+    #: takes and this one drops reads as the FILTER being broken.
+    archived_only: bool = False,
     status_category: str | None = None,
     assignees: str | None = None,
     unassigned: bool = False,
@@ -354,6 +357,7 @@ async def export_tasks_csv(
             assignees=assignees, unassigned=unassigned, overdue=overdue,
             due_before=due_before, importance_gte=importance_gte, q=q,
             tags=tags, tags_all=tags_all, include_archived=include_archived,
+            archived_only=archived_only,
             watching=watching, viewer=actor(user) if watching else None,
         )
         clauses.extend(extra_clauses)

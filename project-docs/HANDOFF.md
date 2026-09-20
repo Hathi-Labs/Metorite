@@ -2154,6 +2154,16 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-30 · vendor-feed session
 
 ### H-88 · A field-change coalescing test flakes on a UUID tiebreak · [AGENT]
+- **🔴 2026-09-20 — measured: it fails FOUR runs in five.** Five
+  identical runs of `tests/unit/test_projects_hardening.py` with
+  `-p no:randomly`: fail, fail, fail, fail, pass. "Flakes" undersells it.
+  At that rate the suite is red more often than green, so the honest
+  reading is a BROKEN test, not an occasional one.
+- **⚠️ It is also camouflage.** A branch that genuinely breaks this file
+  cannot be told from a clean one without running it several times. That
+  cost real minutes on 2026-09-20, when a lifecycle change had to be
+  isolated from it by reverting the test file and re-running.
+- **The failing case:** `test_an_intervening_activity_breaks_the_run`.
 - **Check:** run `uv run pytest tests/unit/ -k "project or tree or task or
   personal" -q` three times. If
   `test_projects_hardening.py::test_an_intervening_activity_breaks_the_run`
