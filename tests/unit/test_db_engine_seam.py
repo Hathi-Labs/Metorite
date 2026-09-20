@@ -848,3 +848,75 @@ def test_the_factory_open_detector_is_not_vacuous(tmp_path) -> None:
         "the AST detector missed a direct factory open — a new unbound-RLS "
         "site would slip past this ratchet"
     )
+
+
+class TestThePoolCeilingFitsThePoolerInFront:
+    """🔴 The gateway was configured to open TWICE what it is allowed.
+
+    `db_pool_size + db_max_overflow` was 10 + 20 = 30. The deployment puts
+    Supabase's pooler in front in SESSION mode, whose cap is 15 clients for
+    the whole database. The setting's own note said to raise these once you
+    "have raised `max_connections` (or put PgBouncer in front)" — a pooler
+    was put in front, with a SMALLER budget than the stock Postgres 100 the
+    arithmetic assumed, and nobody came back to lower the number.
+
+    What it cost, measured 2026-09-20:
+
+        asyncpg.exceptions.InternalServerError: (EMAXCONNSESSION) max clients
+        reached in session mode - max clients are limited to pool_size: 15
+
+    `resolve_identity` swallowed that and the member was told they belong to
+    no organization.
+
+    ⚠️ **This is a unit test over a CONSTANT, and that is the point.** No
+    integration test would have caught it: the pool only overflows under
+    concurrency, against a pooler, in production. The arithmetic is checkable
+    for free and was never checked.
+    """
+
+    #: Supabase session-mode pooler, `aws-0-ap-south-1.pooler.supabase.com:5432`.
+    #: Read off the refusal itself, not from a dashboard.
+    POOLER_SESSION_CAP = 15
+
+    #: Slots this process must NOT take: a migration run, an operator `psql`,
+    #: the backup job. Sitting exactly on the cap means the next admin command
+    #: is what breaks somebody's page.
+    RESERVED_FOR_OPERATORS = 3
+
+    def test_one_process_cannot_exceed_the_pooler_budget(self):
+        from acb_common.settings import Settings
+
+        s = Settings()
+        ceiling = s.db_pool_size + s.db_max_overflow
+        assert ceiling <= self.POOLER_SESSION_CAP - self.RESERVED_FOR_OPERATORS, (
+            f"a single process may open {ceiling} connections, but the pooler "
+            f"in front allows {self.POOLER_SESSION_CAP} for EVERY client and "
+            f"{self.RESERVED_FOR_OPERATORS} must stay free for migrations and "
+            "operator access. Exceeding it does not queue — the pooler REFUSES, "
+            "`resolve_identity` cannot read, and the member is told they belong "
+            "to no organization."
+        )
+
+    def test_exhaustion_waits_rather_than_hanging_for_thirty_seconds(self):
+        """The ceiling is deliberately near the cap, so queueing is ordinary.
+
+        SQLAlchemy's default `pool_timeout` is 30s. A page that hangs that
+        long and then fails is worse than one that fails quickly: the person
+        has already reloaded, which costs another slot.
+        """
+        from acb_common.settings import Settings
+
+        s = Settings()
+        assert 0 < s.db_pool_timeout <= 15
+
+    def test_the_engine_actually_passes_the_timeout(self):
+        """A setting nothing reads is a comment. `create_async_engine` must
+        be handed it — the default applies otherwise and the knob lies."""
+        import pathlib
+
+        src = pathlib.Path(
+            __file__
+        ).resolve().parents[2].joinpath(
+            "packages/acb_common/acb_common/db.py"
+        ).read_text(encoding="utf-8")
+        assert "pool_timeout=settings.db_pool_timeout" in src

@@ -1411,3 +1411,135 @@ class TestTheMirrorThroughItsOwnCallPath:
                 email=f"ghost-{uuid.uuid4().hex[:8]}@h6.example",
                 org_id=str(uuid.uuid4()),
             ) is None
+
+
+class _RefusingFactory:
+    """A session whose `execute` fails the way the pooler fails.
+
+    ⚠️ The real thing is `asyncpg.exceptions.InternalServerError:
+    (EMAXCONNSESSION) max clients reached in session mode — max clients are
+    limited to pool_size: 15`, raised out of `pool._do_get()`. What matters
+    here is only that the READ failed, so a plain exception carrying that
+    text is a faithful stand-in and needs no driver.
+    """
+
+    MESSAGE = (
+        "(EMAXCONNSESSION) max clients reached in session mode - max clients "
+        "are limited to pool_size: 15"
+    )
+
+    def __call__(self) -> _RefusingFactory:
+        return self
+
+    async def __aenter__(self) -> _RefusingFactory:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def execute(self, sql: object, params: dict | None = None) -> object:
+        raise RuntimeError(self.MESSAGE)
+
+
+@pytest.fixture(autouse=True)
+def _reset_identity_read_flag():
+    """⚠️ The ContextVar outlives one test inside a worker.
+
+    `test_a_refused_read_RECORDS_that_it_failed` leaves it True by design —
+    that IS its assertion. Without this reset it stays True for every later
+    test in the process, and any of them that reaches `_tenant_unbound`
+    gets a 503 where it expected a 403. That is the exact cross-test leak
+    this flag's own docstring warns about, and it showed up as an unrelated
+    suite failing only in a full run.
+    """
+    import acb_auth.access as access_mod
+
+    token = access_mod._identity_read_failed.set(False)
+    yield
+    access_mod._identity_read_failed.reset(token)
+
+
+class TestAFailedReadIsNotNoMembership:
+    """🔴 These two were ONE return value, and a member paid for it.
+
+    `resolve_identity` swallowed any exception and returned `(None, None)` —
+    which is also what "the read worked and nobody matched" returns. So
+    `gateway.main._tenant_unbound` could not tell them apart and answered a
+    signed-in owner, looking at their own board:
+
+        "This account is not a member of any organization"
+
+    Production, 2026-09-20, six hours: eleven `auth.identity_resolve_failed`
+    and ten `tenant.unbound`, all of the latter with a user header present.
+    The advice in that message — ask an administrator — could not have fixed
+    a connection-pool ceiling.
+    """
+
+    async def test_a_refused_read_RECORDS_that_it_failed(self, monkeypatch):
+        """⚠️ It still returns `(None, None)` — routes that need no tenant
+        must keep degrading gracefully, and an earlier attempt that RAISED
+        here broke `test_rbac`'s bearer chain and
+        `test_observability_access`'s "degrades to empty without db". What
+        changes is that the reason is recorded."""
+        import acb_auth.access as access_mod
+
+        monkeypatch.delenv("IDENTITY_CUTOVER", raising=False)
+        monkeypatch.setattr(
+            access_mod, "_get_session_factory", lambda: _RefusingFactory(),
+        )
+        access_mod._identity_read_failed.set(False)
+
+        assert await access_mod.resolve_identity("someone@example.com") == (
+            None, None,
+        )
+        assert access_mod.identity_read_failed() is True
+
+    async def test_the_flag_is_CLEARED_when_a_later_read_works(
+        self, monkeypatch,
+    ):
+        """🔴 Set-only would be worse than not recording it at all.
+
+        A task that served a failing request keeps its ContextVar. Left
+        standing, the next member's genuine "no membership" reads as "try
+        again in a moment" — advice that can never come true, and a person
+        who never gets told to ask an administrator.
+        """
+        import acb_auth.access as access_mod
+
+        monkeypatch.delenv("IDENTITY_CUTOVER", raising=False)
+        access_mod._identity_read_failed.set(True)
+        monkeypatch.setattr(
+            access_mod, "_get_session_factory", lambda: _RowsCapture([]),
+        )
+
+        await access_mod.resolve_identity("nobody@example.com")
+
+        assert access_mod.identity_read_failed() is False
+
+    async def test_NO_ROWS_returns_None_and_does_NOT_set_the_flag(
+        self, monkeypatch,
+    ):
+        """The other half, and the one that must NOT change.
+
+        Somebody genuinely between "signs in" and "an admin adds them" is the
+        ordinary onboarding state. They still get `(None, None)`, and the 403
+        that tells them to ask an administrator is correct FOR THEM.
+        """
+        import acb_auth.access as access_mod
+
+        monkeypatch.delenv("IDENTITY_CUTOVER", raising=False)
+        monkeypatch.setattr(
+            access_mod, "_get_session_factory", lambda: _RowsCapture([]),
+        )
+
+        assert await access_mod.resolve_identity("nobody@example.com") == (
+            None, None,
+        )
+        # The 403 that tells them to ask an administrator is correct here.
+        assert access_mod.identity_read_failed() is False
+
+    async def test_a_blank_email_is_still_not_an_error(self, monkeypatch):
+        import acb_auth.access as access_mod
+
+        assert await access_mod.resolve_identity(None) == (None, None)
+        assert await access_mod.resolve_identity("") == (None, None)

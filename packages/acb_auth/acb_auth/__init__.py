@@ -7,7 +7,7 @@ Two guard styles coexist:
   roles plus per-user allow/deny overrides. See
   ``project-docs/specs/org_access_control.md``.
 """
-from acb_auth.access import ensure_owner_bootstrap
+from acb_auth.access import ensure_owner_bootstrap, identity_read_failed
 from acb_auth.access import invalidate as invalidate_access
 from acb_auth.access import resolve_access, resolve_session_access
 from acb_auth.deps import (
@@ -45,6 +45,7 @@ from acb_auth.roles import UserContext, UserRole
 __all__ = [
     # identity
     "UserRole",
+    "identity_read_failed",
     "UserContext",
     "get_current_user",
     # guards
