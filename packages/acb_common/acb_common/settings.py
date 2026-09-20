@@ -58,15 +58,50 @@ class Settings(BaseSettings):
     # Size of the ONE shared async pool per process (acb_common.db, BO-10).
     # Ceiling = db_pool_size + db_max_overflow = 30 connections from a process.
     #
-    # These are knobs, not constants, because the arithmetic is deployment-wide:
-    # a stock Postgres allows 100 connections total and the gateway is not its
-    # only client — Langfuse, LiteLLM and the ingestion services draw from the
-    # same server. 30 is what `gateway/db.py` already used for the packages that
-    # had been converted, and it is deliberately unchanged here so consolidating
-    # the rest is a no-op per package rather than a silent retune. Raise it when
-    # you have raised `max_connections` (or put PgBouncer in front), not before.
-    db_pool_size: int = 10
-    db_max_overflow: int = 20
+    # 🔴 **THIS WAS 10 + 20 = 30, AND THE POOLER IN FRONT ALLOWS 15.**
+    #
+    # The note here used to say to raise these once you "have raised
+    # `max_connections` (or put PgBouncer in front)". A pooler WAS put in
+    # front — Supabase's, in session mode — and its budget is SMALLER than the
+    # stock Postgres 100 this arithmetic assumed. Nobody came back to lower the
+    # number, so the gateway was configured to open twice what it is allowed.
+    #
+    # Measured on production 2026-09-20:
+    #
+    #     asyncpg.exceptions.InternalServerError: (EMAXCONNSESSION) max
+    #     clients reached in session mode — max clients are limited to
+    #     pool_size: 15
+    #
+    # `resolve_identity` swallowed that and returned "no organization", so a
+    # signed-in owner was told they belong to no organization while looking at
+    # their own board. Eleven refusals in six hours, in bursts, because one
+    # page load fires ten parallel reads.
+    #
+    # ⚠️ **12, not 15.** The pooler's cap counts EVERY client of that database,
+    # and the gateway is not the only one — a migration run, a `psql` and the
+    # backup job each need a slot. Sitting exactly on the ceiling means the
+    # next admin command is what breaks a member's page.
+    #
+    # ⚠️ **Exhaustion now WAITS instead of failing.** SQLAlchemy queues on a
+    # full pool up to `db_pool_timeout`, so the visible cost of this ceiling is
+    # latency, not an error — the right trade for a limit we sit near.
+    #
+    # ⚠️ **Do NOT "fix" this by moving to the transaction-mode port (6543).**
+    # That raises the client cap and also requires `statement_cache_size=0`
+    # (see `db_statement_cache_size` below), and `SET LOCAL` semantics want
+    # re-verifying against it. Session mode is what this deployment is
+    # verified against; changing ports is its own decision, not a knob turn.
+    db_pool_size: int = 8
+    db_max_overflow: int = 4
+
+    # How long a caller waits for a free connection before giving up.
+    #
+    # SQLAlchemy's default is 30s. With a ceiling this close to the pooler's,
+    # queueing is ORDINARY rather than exceptional — and a request that hangs
+    # for half a minute and then fails is worse for the person than one that
+    # fails quickly, because they have already reloaded, which costs another
+    # slot.
+    db_pool_timeout: int = 10
 
     # asyncpg's prepared-statement cache size, passed through to the driver
     # when set (acb_common.db.engine_connect_args). Leave None for the driver

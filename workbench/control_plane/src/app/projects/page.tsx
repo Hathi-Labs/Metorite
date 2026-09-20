@@ -2989,6 +2989,10 @@ function ProjectsWorkspace() {
               projectId={selected.id}
               shownFields={shownFields}
               onCreated={() => void loadProject(selected)}
+              // A rename writes one title and the board must redraw it. Same
+              // answer as `onCreated` today; a separate prop because they are
+              // separate events (see TaskBoard's Props).
+              onRenamed={() => void loadProject(selected)}
               selected={picked}
               onToggle={toggleSelection}
               onMoveTask={(taskId) => {

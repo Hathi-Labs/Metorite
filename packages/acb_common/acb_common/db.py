@@ -152,6 +152,12 @@ def get_engine() -> Any:
             async_database_url(), echo=False, pool_pre_ping=True,
             pool_size=settings.db_pool_size,
             max_overflow=settings.db_max_overflow,
+            # ⚠️ Bounded on purpose. The ceiling above sits deliberately below
+            # the pooler's client cap, so waiting for a free connection is an
+            # ORDINARY state now. SQLAlchemy's 30s default turns that wait
+            # into a page that hangs and then fails — by which time the person
+            # has reloaded and taken another slot. See `db_pool_timeout`.
+            pool_timeout=settings.db_pool_timeout,
             pool_recycle=1800,
             connect_args=engine_connect_args(),
         )

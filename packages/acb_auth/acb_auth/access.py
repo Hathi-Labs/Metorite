@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import time
+from contextvars import ContextVar
 
 from acb_common import get_logger
 
@@ -37,6 +38,48 @@ from acb_auth.permissions import (
 )
 
 _log = get_logger("acb_auth.access")
+
+
+#: Did THIS request's identity read FAIL, as opposed to finding nobody?
+#:
+#: 🔴 **The distinction is the whole point.** Both outcomes stop a
+#: tenant-scoped request, so it is tempting to treat them alike — and this
+#: repo did, returning ``(None, None)`` for both. They give the person
+#: opposite instructions:
+#:
+#: * *no rows*     → "an administrator has to add you to an organization"
+#: * *read failed* → "try again in a moment"
+#:
+#: Telling somebody the first when the truth is the second sends them to an
+#: administrator who finds nothing wrong, while the real fault goes
+#: unreported because the member believed the message. It happened — see the
+#: ``except`` block in :func:`resolve_identity`.
+#:
+#: ⚠️ **A ContextVar and NOT an exception, and the test suite is why.**
+#: Raising made a failed read fail the whole auth dependency, so a directory
+#: blip took down routes that need no tenant at all: `test_rbac`'s bearer
+#: chain and `test_observability_access`'s "degrades to empty without db"
+#: both went red. Those degrade gracefully today and must keep doing so. The
+#: flag changes the ANSWER only where a route actually needed a tenant and
+#: ``TenantUnbound`` was going to be raised regardless — no new failures,
+#: only an honest reason for an existing one.
+#:
+#: Per-task by construction, so one request cannot read another's value — the
+#: same property ``bind_tenant`` relies on.
+_identity_read_failed: ContextVar[bool] = ContextVar(
+    "acb_auth_identity_read_failed", default=False,
+)
+
+
+def identity_read_failed() -> bool:
+    """True when this request's identity read FAILED rather than found nobody.
+
+    ``gateway.main._tenant_unbound`` reads this to choose between a 503 ("we
+    could not reach the directory, try again") and a 403 ("you are not a
+    member of any organization").
+    """
+    return _identity_read_failed.get()
+
 
 #: Short enough that a revocation lands within a minute, long enough that a
 #: chatty page does not issue one query per API call.
@@ -1016,6 +1059,13 @@ _IDENTITY_LEG_SQL = """
 async def resolve_identity(email: str | None) -> tuple[str | None, str | None]:
     """Return ``(user_id, organization_id)`` for an email, or ``(None, None)``.
 
+    ⚠️ **``(None, None)`` means "the read worked and nobody matched".** A read
+    that FAILED raises :class:`IdentityUnavailable` instead, because the two
+    have opposite meanings to the person waiting: one is "an administrator has
+    to add you", the other is "try again in a moment". They were the same
+    return value until 2026-09-20, and the second was being reported as the
+    first — see the ``except`` block for the measurement.
+
     ⚠️ **H6 slice 3b — the read cutover, DARK behind ``IDENTITY_CUTOVER``.** This
     is the tenant-DISCOVERY read on the sign-in path
     (``deps._with_resolved_access``): it runs UNBOUND, because the tenant is what
@@ -1042,6 +1092,11 @@ async def resolve_identity(email: str | None) -> tuple[str | None, str | None]:
     """
     if not email:
         return None, None
+    # ⚠️ Cleared on the way IN, not only set on the way out. A task that
+    # handled a failing request before this one must not leave the flag
+    # standing and turn the next member's genuine "no membership" into a
+    # "try again" they can never satisfy.
+    _identity_read_failed.set(False)
     key = email.lower().strip()
     try:
         from sqlalchemy import text  # noqa: PLC0415
@@ -1071,22 +1126,46 @@ async def resolve_identity(email: str | None) -> tuple[str | None, str | None]:
                 )
             ).mappings().first()
     except Exception:  # noqa: BLE001
-        # ⚠️ **Say so.** The return value is `(None, None)` either way, so a
-        # database that refused this read is INDISTINGUISHABLE downstream from
-        # a person who is genuinely not a member — and downstream now tells
-        # that person, in so many words, that they belong to no organization
-        # (`gateway.main._tenant_unbound`). Getting that wrong turns an outage
-        # into an accusation, so the two cases have to differ somewhere, and a
-        # log line is the cheapest place.
+        # 🔴 **THE OUTAGE THAT BECAME AN ACCUSATION. It happened.**
         #
-        # Still swallowed, deliberately: raising here would brick sign-in on a
-        # transient blip, which is the failure this `except` was added for.
+        # This block used to log and `return None, None`. Its own comment said
+        # the two cases "have to differ somewhere, and a log line is the
+        # cheapest place" — but a log line is read by US, and the person is
+        # told, in so many words, that they belong to no organization.
+        #
+        # Measured on production 2026-09-20: eleven of these in six hours, and
+        # ten `tenant.unbound` 403s beside them, every one carrying
+        # `tenant_had_user_header: True` — a signed-in member with a healthy
+        # membership. The exception underneath was always the same:
+        #
+        #     asyncpg.exceptions.InternalServerError: (EMAXCONNSESSION)
+        #     max clients reached in session mode — max clients are limited
+        #     to pool_size: 15
+        #
+        # The owner saw "This account is not a member of any organization"
+        # while looking at their own board.
+        #
+        # ⚠️ **So it RAISES now, and the old fear was the wrong way round.**
+        # The comment said raising "would brick sign-in on a transient blip".
+        # Returning `(None, None)` does not un-brick it — the request fails
+        # either way. All the swallow bought was a WRONG REASON. A 503 that
+        # says "we could not reach your workspace, try again" is honest and
+        # retryable; a 403 that says "you are not a member" sends the person
+        # to an administrator over a connection-pool limit.
+        #
+        # ⚠️ Still swallowed — routes that need no tenant must keep degrading
+        # gracefully, and raising here broke them. What changes is that the
+        # reason is now RECORDED, so the one place that turns "no tenant" into
+        # a sentence for a person can tell the two cases apart.
+        _identity_read_failed.set(True)
         _log.exception(
             "auth.identity_resolve_failed",
             extra={"identity_email_present": True},
         )
         return None, None
     if row is None:
+        # The genuine case, and the ONLY one that now reaches the 403: the
+        # read worked and nobody matched.
         return None, None
     return row["id"], row["org"]
 
