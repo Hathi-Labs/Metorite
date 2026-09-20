@@ -24,6 +24,7 @@
  * never there (spec §3.2).
  */
 
+import Link from "next/link";
 import { useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
@@ -145,10 +146,41 @@ export function PersonEditor({
         className="flex max-h-[88vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-card shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="flex items-center justify-between border-b border-border px-4 py-3">
-          <h2 className="text-sm font-semibold text-foreground">
-            {person ? `Edit ${person.name}` : "Add person"}
-          </h2>
+        <header className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold text-foreground">
+              {person ? `Edit ${person.name}` : "Add someone without a login"}
+            </h2>
+            {/*
+              ⚠️ **This door is NOT how a colleague joins**, and saying so is
+              the whole point of this line. Since migration 206 a member gets
+              their directory row from the `app_user` trigger, so the ONLY
+              thing left for this form is a person who will never sign in — a
+              contractor, a vendor contact, a new hire before day one.
+
+              It is a MONEY distinction, not a tidiness one. A member costs a
+              seat (`launch_surface.md` §4.1, ₹500/user/month); a directory
+              row costs nothing and cannot sign in. Collapsing the two would
+              force every contractor to become a paid member, which §2 calls
+              a licensing decision rather than a directory one.
+
+              Unlabelled, this button read as a second way to do what
+              Organisation already does. Owner asked why it existed, which is
+              the question a control should never provoke.
+            */}
+            {!person && (
+              <p className="mt-0.5 max-w-prose text-[11px] text-muted-foreground">
+                For a contractor, a vendor contact, or a new hire before day
+                one — somebody you assign work to who never signs in, and who
+                costs no seat. Colleagues arrive on their own when you invite
+                them in{" "}
+                <Link href="/settings/organization" className="underline">
+                  Organisation
+                </Link>
+                .
+              </p>
+            )}
+          </div>
           <Button
             variant="ghost"
             size="icon-xs"

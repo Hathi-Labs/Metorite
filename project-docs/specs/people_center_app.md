@@ -114,6 +114,14 @@ during an incident obeys the rule too.
 the product. A failure becomes a warning in the Postgres log and the member is
 still created. Re-running migration 206 backfills whatever was missed.
 
+📌 **"Add person" now has exactly ONE purpose, and it says so.** Before the
+trigger it was one of two ways a colleague could reach the directory. Now a
+member arrives on their own, so the form is only for a person who will never
+sign in. That is a MONEY distinction and not a tidiness one: a member costs a
+seat (`launch_surface.md` §4.1), and a directory row costs nothing. The
+dialog is titled *"Add someone without a login"*. It points at Organisation
+for colleagues. An unlabelled second door reads as a duplicate of the first.
+
 ⚠️ **It writes `active` and `invited` members only.** The two status
 vocabularies differ, and off-boarding is D63's question (H-49), unsettled. An
 existing row is never rewritten, so a person's own edits survive.
