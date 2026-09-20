@@ -156,7 +156,10 @@ export function MoveTasksDialog({
   const destRows = destinations(roots);
   const drops = Object.entries(plan?.drops ?? {});
   const lostTypes = (plan?.types ?? []).filter((row) => !row.to);
-  const unregistered = plan?.tags.unregistered ?? [];
+  // `plan?.tags` — the guard has to be at BOTH levels. `plan?.tags.x`
+  // only checks `plan`, so a preview that omits `tags` throws and the
+  // whole page goes white. Every neighbour here already guards this way.
+  const unregistered = plan?.tags?.unregistered ?? [];
   // ⚠️ From the PLAN, not from the page. The page holds only the selected
   // project's lanes and the destination is never the selected project, so the
   // old source answered `undefined` every time — every dropdown rendered one

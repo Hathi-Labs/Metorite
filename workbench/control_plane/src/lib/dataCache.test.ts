@@ -271,3 +271,74 @@ describe("⚠️ the storage fence", () => {
     }
   });
 });
+
+describe("🔴 a watcher that FORCES its re-read never stops", () => {
+  /**
+   * The loop that shipped, reduced to one key and two watchers.
+   *
+   * Measured in a browser on 2026-09-20: one write, and the projects tree was
+   * re-read 42 times in eight seconds, still going nineteen seconds later,
+   * with a median gap of 187 ms. `useCachedResource` woke on `invalidate`,
+   * read with `force`, and a forced read always calls `put` — which wakes
+   * every watcher of that key, including the one that caused it.
+   *
+   * Every member who made one change then polled the gateway at about five
+   * requests a second, per tab, until they navigated away.
+   *
+   * ⚠️ **The wake must be DEFERRED for this to reproduce.** The hook
+   * defers it by WRITE_SETTLE_MS. A wake handled synchronously inside
+   * `notify` joins the read that is still in flight and the loop hides.
+   */
+  const later = () => new Promise((r) => setTimeout(r, 0));
+
+  it("loops when the wake forces", async () => {
+    const key = cacheKey("projects/tree");
+    let fetches = 0;
+    let wakes = 0;
+    const off = subscribe(key, () => {
+      wakes += 1;
+      if (wakes > 6) return; // a real browser has no such ceiling
+      setTimeout(() => {
+        void read(key, async () => { fetches += 1; return { n: fetches }; }, { force: true });
+      }, 0);
+    });
+    await read(key, async () => { fetches += 1; return { n: 0 }; }, { force: true });
+    for (let i = 0; i < 8; i += 1) await later();
+    off();
+    expect(wakes).toBeGreaterThan(3);
+    expect(fetches).toBeGreaterThan(3);
+  });
+
+  it("settles when it does not", async () => {
+    const key = cacheKey("projects/tree");
+    let fetches = 0;
+    let wakes = 0;
+    const off = subscribe(key, () => {
+      wakes += 1;
+      setTimeout(() => {
+        void read(key, async () => { fetches += 1; return { n: fetches }; });
+      }, 0);
+    });
+    // The first read seeds the cache, exactly as a mount does.
+    await read(key, async () => { fetches += 1; return { n: 0 }; });
+    // The write. `invalidate` DROPS the key, so the wake below misses and
+    // goes to the network — which is the behaviour we must not lose.
+    invalidate("projects/");
+    for (let i = 0; i < 8; i += 1) await later();
+    off();
+    // Once for the mount, once for the invalidate. Everything after that
+    // finds a fresh entry and asks nobody.
+    expect(fetches).toBe(2);
+    expect(wakes).toBeLessThanOrEqual(3);
+  });
+
+  it("an UNFORCED read of a fresh entry does not put, so it wakes nobody", async () => {
+    const key = cacheKey("projects/tasks");
+    let wakes = 0;
+    put(key, { rows: [] });
+    const off = subscribe(key, () => { wakes += 1; });
+    await read(key, async () => ({ rows: ["never asked"] }));
+    off();
+    expect(wakes).toBe(0);
+  });
+});

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -177,5 +179,44 @@ describe("the invariant the two flags exist to keep", () => {
       }),
     ];
     for (const s of states) expect(s.loading && s.refreshing).toBe(false);
+  });
+});
+
+
+describe("🔴 the wake must not force", () => {
+  /**
+   * `put` wakes every watcher of the key, and a FORCED read always puts. So a
+   * watcher that forces its own re-read wakes itself, forever.
+   *
+   * Measured in a browser on 2026-09-20: one write, and `/api/projects/tree`
+   * was re-read 42 times in eight seconds, still going nineteen seconds
+   * later, median gap 187 ms — per tab, until the member navigated away.
+   * `dataCache.test.ts` holds the reduced case.
+   *
+   * `invalidate` is what makes the unforced read correct: it DROPS the key,
+   * so the read misses and goes to the network. Forcing adds nothing and
+   * costs a poll.
+   */
+  it("subscribes with an unforced load", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL("./useCachedResource.ts", import.meta.url)),
+      "utf-8"
+    );
+    const code = src.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    const wake = code.match(/settle = coalesce\((.*)\);/);
+    expect(wake, "the subscribe path must still go through coalesce").not.toBeNull();
+    expect(wake![1]).toContain("load(false)");
+    expect(wake![1]).not.toContain("load(true)");
+  });
+
+  it("keeps an EXPLICIT refresh forcing", () => {
+    // A member who presses refresh is asking for the network, not for the
+    // cache's opinion. Only the automatic wake changed.
+    const src = readFileSync(
+      fileURLToPath(new URL("./useCachedResource.ts", import.meta.url)),
+      "utf-8"
+    );
+    const code = src.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+    expect(code).toContain("useCallback(() => load(true)");
   });
 });

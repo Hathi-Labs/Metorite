@@ -39,7 +39,7 @@ const status = (
   name,
   color: "gray",
   position: 0,
-  category: "open",
+  category: "todo",
   is_default: false,
   ...over,
 });
@@ -380,9 +380,9 @@ describe("Move to project… (WS-27bl §9.13.4)", () => {
  */
 const LADDER = [
   status("s-cancelled", "Cancelled", { category: "cancelled", position: 40 }),
-  status("s-doing", "Doing", { category: "open", position: 20 }),
+  status("s-doing", "Doing", { category: "in_progress", position: 20 }),
   status("s-done", "Done", { category: "done", position: 30 }),
-  status("s-todo", "To do", { category: "open", position: 10 }),
+  status("s-todo", "To do", { category: "todo", position: 10 }),
 ];
 
 const ladder = (over: Partial<TaskMenuContext> = {}): TaskMenuContext => ({
