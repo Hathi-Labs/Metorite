@@ -217,3 +217,60 @@ def test_the_picker_never_writes() -> None:
     code = _strip_prose(SOURCE)
     for verb in ("INSERT", "UPDATE", "DELETE"):
         assert not re.search(rf"\b{verb}\b", code), verb
+
+
+# ── The label lookup (owner request, 2026-09-21) ────────────────────
+#
+# `pm_tasks` stores an assignee as an ADDRESS, so a task read carries no name
+# and every Projects surface fell back to the local part — or, in the task
+# panel, printed the whole address. `priya` reads as a name; `p.sharma@x.com`
+# does not.
+
+def test_the_lookup_is_bounded():
+    """A board shows a few dozen assignees. A caller asking for thousands is
+    not labelling a screen, and one request that can read the whole directory
+    is a denial-of-service surface rather than a feature — the same
+    reasoning `MAX_BULK` and `MAX_PEOPLE` already carry."""
+    from gateway.routes.projects.assignees import MAX_NAME_LOOKUP
+
+    assert MAX_NAME_LOOKUP <= 500
+    assert MAX_NAME_LOOKUP >= 50, "too small to label one board, which is the point"
+
+
+def test_it_touches_no_database_when_there_is_nothing_to_resolve():
+    """⚠️ Both of these are the common case, not an edge one.
+
+    A board with no assignees asks for nothing, and a board whose only
+    assignees are AGENTS asks for nothing either — an agent's name IS its
+    identity, so there is no address to look up. Opening a tenant session to
+    answer `{}` is waste on the busiest read the picker package has.
+    """
+    import asyncio
+
+    from gateway.routes.projects.assignees import person_names
+
+    # `user=None` would explode on any code path that reached the session.
+    assert asyncio.run(person_names(emails="", user=None)).names == {}
+    assert asyncio.run(person_names(emails="   ", user=None)).names == {}
+    assert asyncio.run(
+        person_names(emails="agent:builder,agent:researcher", user=None),
+    ).names == {}
+
+
+def test_an_unknown_address_is_ABSENT_rather_than_echoed():
+    """The contract the client depends on, stated where it is decided.
+
+    A task can carry somebody the directory has never had a row for — a
+    former colleague, a typo, an address from an import. Mapping them to
+    themselves would make "no name" and "named after their own address"
+    indistinguishable, and only the client knows what to fall back to.
+    """
+    from gateway.routes.projects.assignees import NamesResponse
+
+    # The model carries a plain mapping, so absence is expressible at all.
+    assert NamesResponse(names={}).names == {}
+    fields = NamesResponse.model_fields
+    assert set(fields) == {"names"}, (
+        "a second field here invites a client to read something other than "
+        "the mapping, and the fallback lives in the client"
+    )

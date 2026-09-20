@@ -131,6 +131,28 @@ INSERT INTO pm_tasks (id, organization_id, project_id, root_project_id, status_i
  ('c0000000-0000-0000-0000-00000000000a','32f18e2f-e3ce-499b-bb28-9ecd6030ad43','a0000000-0000-0000-0000-000000000002','a0000000-0000-0000-0000-000000000001','b0000000-0000-0000-0000-000000000004','Old release checklist, kept for reference','manual','dev@fracktal.in',13,ARRAY['deploy'],now() - interval '9 days'),
  ('c0000000-0000-0000-0000-00000000000b','32f18e2f-e3ce-499b-bb28-9ecd6030ad43','a0000000-0000-0000-0000-000000000003','a0000000-0000-0000-0000-000000000001','b0000000-0000-0000-0000-000000000002','Spike: evaluate a second search backend','manual','dev@fracktal.in',14,ARRAY[]::text[],now() - interval '2 days');
 
+-- ── People, and who is holding what ───────────────────────────
+-- ⚠️ TWO people called "Priya Sharma", on purpose. A shared name is the
+-- case `labelPeople` exists for, and a review board that cannot produce one
+-- cannot show whether the disambiguation works.
+--
+-- The fourth assignee is deliberately somebody the directory has NEVER heard
+-- of, so the fallback to the address is on screen too.
+DELETE FROM gtd_people WHERE email IN
+  ('priya@fracktal.in','p.sharma@fracktal.in','ada@fracktal.in','dev@fracktal.in');
+INSERT INTO gtd_people (name, email, role, department, status) VALUES
+ ('Priya Sharma','priya@fracktal.in','Engineer','Engineering','active'),
+ ('Priya Sharma','p.sharma@fracktal.in','Designer','Design','active'),
+ ('Ada Lovelace','ada@fracktal.in','Engineer','Engineering','active'),
+ ('Dev','dev@fracktal.in','Owner','Leadership','active');
+
+INSERT INTO pm_task_assignees (task_id, organization_id, assignee, assigned_by) VALUES
+ ('c0000000-0000-0000-0000-000000000001','32f18e2f-e3ce-499b-bb28-9ecd6030ad43','ada@fracktal.in','dev@fracktal.in'),
+ ('c0000000-0000-0000-0000-000000000002','32f18e2f-e3ce-499b-bb28-9ecd6030ad43','priya@fracktal.in','dev@fracktal.in'),
+ ('c0000000-0000-0000-0000-000000000005','32f18e2f-e3ce-499b-bb28-9ecd6030ad43','p.sharma@fracktal.in','dev@fracktal.in'),
+ ('c0000000-0000-0000-0000-000000000006','32f18e2f-e3ce-499b-bb28-9ecd6030ad43','nobody@elsewhere.test','dev@fracktal.in')
+ON CONFLICT DO NOTHING;
+
 COMMIT;
 
 SELECT 'projects' AS what, count(*)::text AS n FROM pm_projects

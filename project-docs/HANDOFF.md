@@ -2195,6 +2195,28 @@ line — never reclaim a number by deleting the other entry.
 
 
 ### H-96 · `dev_db.sh` starts the tenant database and never applies its ladder · [AGENT]
+- **🟢 2026-09-21 — replayed it by hand, and here is the recipe.** The
+  container had been recreated, so the tenant database was empty. Three
+  things the runner does not do for you, in order:
+
+      # 1. the extensions. 03_pending_commits.sql wants uuid_generate_v4()
+      CREATE EXTENSION IF NOT EXISTS "uuid-ossp"; CREATE EXTENSION IF NOT EXISTS pgcrypto;
+      # 2. the base schema. It is mounted into the container's initdb and
+      #    so runs ONLY on a first init; migration 95 needs its `meeting`.
+      psql < infra/postgres/01_schema.sql
+      # 3. then the ladder
+      APP_DIR=$(pwd) PG_CONTAINER=metorite-scratch-tenant PG_USER=acb \
+        PG_DB=acb_tenant SKIP_PRE_MIGRATION_BACKUP=1 bash scripts/apply_migrations.sh
+
+  That applied 112 migrations and left a working schema. The backup skip
+  is correct HERE and nowhere else: a scratch container that was empty a
+  minute ago has nothing to restore.
+- **What the fix should include:** the two steps above, not only the
+  ladder. A runner that replays 02..206 onto a fresh container fails at
+  03, then again at 95. Both failures read as a broken migration. Neither
+  is one. They are missing prerequisites.
+- **⚠️ The container is recreated more often than anyone assumed.** That
+  is what makes this urgent, and not only tidy. See [[H-139]].
 - **Check:** read `scripts/dev_db.sh`. Search for `infra/postgres`. No hit
   means the script still applies only the Console ladder, and this is open.
 - **What I measured, 2026-09-02.** The script started both containers and

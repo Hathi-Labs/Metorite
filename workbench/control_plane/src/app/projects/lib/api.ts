@@ -1179,6 +1179,18 @@ export const projectsApi = {
   createTask: (payload: Record<string, unknown>) =>
     call<TaskRow>("tasks", { method: "POST", body: JSON.stringify(payload) }),
 
+  /**
+   * Assignee addresses → the names people read. Unknown ones are absent.
+   *
+   * `pm_tasks` stores an assignee as an ADDRESS, so a task read carries no
+   * name and every surface fell back to the local part. Owner reported it
+   * on 2026-09-21: `priya` reads as a name, `p.sharma` does not.
+   */
+  personNames: (emails: readonly string[]) =>
+    call<{ names: Record<string, string> }>(
+      `people/names?emails=${encodeURIComponent(emails.join(","))}`,
+    ),
+
   patchTask: (taskId: string, payload: Record<string, unknown>) =>
     call<TaskRow>(`tasks/${taskId}`, {
       method: "PATCH",

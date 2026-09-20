@@ -46,6 +46,7 @@ import {
   type GroupBy,
   type TaskGroup,
   isFiltered,
+  labelWith,
   personLabel,
 } from "../lib/grouping";
 import { quickAddPrefill } from "../lib/quickAdd";
@@ -85,6 +86,14 @@ interface Props {
   /** WS-27y — Shift+Arrow grew the selection to exactly these ids. */
   onExtendSelection?: (ids: string[]) => void;
   onSelect: (task: TaskRow) => void;
+  /**
+   * Assignee value → the name to draw, already disambiguated for the set.
+   *
+   * Absent while the directory lookup is in flight, and for ever if it
+   * fails: `labelWith` then falls back to the address's local part, which is
+   * what every surface showed before 2026-09-21.
+   */
+  personLabels?: ReadonlyMap<string, string>;
 }
 
 export function TaskList({
@@ -104,6 +113,7 @@ export function TaskList({
   allChecked = false,
   onExtendSelection,
   onSelect,
+  personLabels,
 }: Props) {
   const [cursor, setCursor] = useState(-1);
   const [anchor, setAnchor] = useState<number | null>(null);
@@ -388,7 +398,7 @@ export function TaskList({
                   {showAssignees ? (
                     <td className="px-3 py-2 text-muted-foreground">
                       {task.assignees?.length ? (
-                        <AvatarStack people={task.assignees} label={personLabel} />
+                        <AvatarStack people={task.assignees} label={labelWith(personLabels)} />
                       ) : (
                         "—"
                       )}
