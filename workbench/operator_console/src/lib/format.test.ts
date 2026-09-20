@@ -3,6 +3,9 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   readCreditLots,
+  formatCredits,
+  formatUsd,
+  formatRate,
   formatPaise,
   seatsDigest,
   formatDate,
@@ -544,8 +547,15 @@ describe("formatDateTime", () => {
     // "20/9/2026" and the browser "20/09/2026", which is a hydration mismatch:
     // React throws away the server HTML for that subtree. Measured on
     // /pricing, 2026-09-20.
+    // ⚠️ Bounded to formatDateTime ALONE, at the next export. The slice ran
+    // to end-of-file until 2026-09-20, so this fence silently guarded every
+    // helper added after it — and failed a money formatter that is allowed
+    // an explicit locale by the whole-app fence directly below. A fence that
+    // forbids more than it says is one people delete rather than read.
     const src = readFileSync(join(__dirname, "format.ts"), "utf8");
-    const body = src.slice(src.indexOf("export function formatDateTime"));
+    const from = src.indexOf("export function formatDateTime");
+    const next = src.indexOf("export function", from + 1);
+    const body = src.slice(from, next === -1 ? undefined : next);
     expect(body).not.toContain("toLocaleString");
     expect(body).not.toContain("toLocaleDateString");
     expect(body).not.toContain("new Date(");
@@ -579,5 +589,47 @@ describe("formatDateTime", () => {
     };
     walk(root);
     expect(offenders).toEqual([]);
+  });
+});
+
+// ── Money, rendered ──────────────────────────────────────────────────────
+// 🔴 Every input below is a REAL value measured off the running console on
+// 2026-09-20, not an invented one.
+describe("money reaches the operator readable", () => {
+  it("shortens the figures that were reaching the screen raw", () => {
+    expect(formatCredits("4022.8130")).toBe("4,022.81");
+    expect(formatCredits("2500.0000")).toBe("2,500");
+    expect(formatCredits("-2956.7040")).toBe("-2,956.7");
+    expect(formatCredits("246.3120")).toBe("246.31");
+  });
+
+  it("🔴 keeps a sub-cent vendor cost visible instead of rounding it to $0", () => {
+    // Rounding here would report our provider cost as nothing, which is the
+    // one direction a cost figure must never be wrong in.
+    expect(formatUsd("0.00042")).toBe("$0.0004");
+    expect(formatUsd("8.25746700")).toBe("$8.26");
+    expect(formatUsd("0.48724200")).toBe("$0.49");
+    expect(formatUsd(0)).toBe("$0");
+  });
+
+  it("🔴 collapses the rate-card chip that made /tiers scroll sideways", () => {
+    // `4000.000000 in / 12000.000000 out per 1M` was a 260px nowrap chip in a
+    // 390px window. The number, not the CSS, was the width.
+    expect(formatRate("4000.000000")).toBe("4,000");
+    expect(formatRate("12000.000000")).toBe("12,000");
+    expect(formatRate("0.280000")).toBe("0.28");
+  });
+
+  it("🔴 shows an unexpected value back rather than turning it into a dash", () => {
+    // A dash reads as "none". If the Console ever sends a shape we did not
+    // plan for, the operator must be able to see it and report it.
+    expect(formatCredits("not-a-number")).toBe("not-a-number");
+    expect(formatUsd("??")).toBe("??");
+  });
+
+  it("says nothing arrived, for the values that mean nothing arrived", () => {
+    expect(formatCredits(null)).toBe("—");
+    expect(formatUsd(undefined)).toBe("—");
+    expect(formatRate("")).toBe("—");
   });
 });

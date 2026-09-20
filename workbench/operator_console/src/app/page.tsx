@@ -154,22 +154,28 @@ export default async function CustomersPage() {
             {purged.length === 1 ? "organization" : "organizations"} — data
             destroyed; the record is kept for billing history
           </summary>
-          <table>
-            <tbody>
-              {purged.map((o) => (
-                <tr key={o.slug}>
-                  <td>
-                    <a href={`/customers/${encodeURIComponent(o.slug)}`}>
-                      {o.name}
-                    </a>
-                    <div className="muted small">{o.slug}</div>
-                  </td>
-                  <td className="muted">purged</td>
-                  <td className="muted">{formatPaise(o.mrr_paise)} was MRR</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="tablewrap">
+            {/* ⚠️ A wide table must scroll INSIDE its own box. Without this the
+            table widens the document and the whole page scrolls
+            sideways, which moves the nav and every other panel with
+            it. Measured at 390px on 2026-09-20. */}
+            <table>
+              <tbody>
+                {purged.map((o) => (
+                  <tr key={o.slug}>
+                    <td>
+                      <a href={`/customers/${encodeURIComponent(o.slug)}`}>
+                        {o.name}
+                      </a>
+                      <div className="muted small">{o.slug}</div>
+                    </td>
+                    <td className="muted">purged</td>
+                    <td className="muted">{formatPaise(o.mrr_paise)} was MRR</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </details>
       )}
     </main>

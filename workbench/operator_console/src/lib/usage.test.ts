@@ -9,10 +9,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   type OrgUsageRow,
+  isOwing,
   isWalled,
   marginLabel,
   marginTone,
   orgFlags,
+  rowRunwayLabel,
   runwayLabel,
   runwayTone,
   sparklinePath,
@@ -267,5 +269,72 @@ describe("consumption we served and did not bill", () => {
     expect(unbilledTotals([stale as never])).toEqual({
       orgs: 0, calls: 0, tokens: 0,
     });
+  });
+});
+
+// ── Past zero, and still being served ────────────────────────────────────
+//
+// 🔴 The board drew a customer at -2,956.7 credits with the same chip as one
+// at exactly 0. With `CUSTOMER_CONSOLE_SPEND_GATE` off — the SHIPPED state —
+// those are opposite facts: one has stopped costing us, the other is being
+// given AI on our vendor bill and widening the hole with every call.
+describe("a customer past zero", () => {
+  it("🔴 is told apart from one that merely has nothing left", () => {
+    expect(isOwing(ROW({ balance: "-2956.7040" }))).toBe(true);
+    expect(isOwing(ROW({ balance: "0" }))).toBe(false);
+    expect(isOwing(ROW({ balance: "0.0001" }))).toBe(false);
+  });
+
+  it("🔴 leads the chips, and takes the runway chip's place", () => {
+    // Two chips saying one thing is how the expensive reading gets skimmed.
+    const labels = orgFlags(
+      ROW({ balance: "-500", runwayDays: 0 }),
+    ).map((f) => f.label);
+    expect(labels[0]).toBe("past zero — still serving");
+    expect(labels).not.toContain("out of credit");
+  });
+
+  it("does not fire on a healthy balance", () => {
+    expect(orgFlags(ROW()).map((f) => f.label)).not.toContain(
+      "past zero — still serving",
+    );
+  });
+
+  it("🔴 is counted ONCE in the headline, not as two problems", () => {
+    const line = usageHeadline([
+      ROW({ slug: "a", balance: "-500", runwayDays: 0 }),
+    ]);
+    expect(line).toContain("1 past zero and still being served");
+    expect(line).not.toContain("nearly out of credit");
+  });
+
+  it("still reports a thin-but-positive customer as nearly out", () => {
+    const line = usageHeadline([ROW({ slug: "b", balance: "5", runwayDays: 1 })]);
+    expect(line).toContain("1 nearly out of credit");
+    expect(line).not.toContain("past zero");
+  });
+
+  it("🔴 makes the runway COLUMN agree with the chip beside it", () => {
+    // The two render independently. One row said "past zero — still serving"
+    // and "out of credit" at once, two cells apart, which reads as two
+    // different customers' facts on one line.
+    const row = ROW({ balance: "-500", runwayDays: 0 });
+    expect(rowRunwayLabel(row)).toBe("past zero");
+    expect(orgFlags(row).map((f) => f.label)).not.toContain("out of credit");
+  });
+
+  it("leaves the column alone for a customer who is merely at zero", () => {
+    expect(rowRunwayLabel(ROW({ balance: "0", runwayDays: 0 }))).toBe(
+      "out of credit",
+    );
+    expect(rowRunwayLabel(ROW({ balance: "900", runwayDays: 12 }))).toBe(
+      "12d left",
+    );
+  });
+
+  it("survives a balance the Console sent in a shape we did not expect", () => {
+    // A `NaN` must not become "owing" — that would put a red chip on every
+    // row the moment the field changed shape.
+    expect(isOwing(ROW({ balance: "unknown" }))).toBe(false);
   });
 });

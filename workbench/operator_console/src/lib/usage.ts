@@ -113,13 +113,55 @@ export function isWalled(row: OrgUsageRow): boolean {
   return (row.refusals ?? 0) > 0 && row.calls === 0;
 }
 
+/** The runway cell for one ROW, which is not the same as for one NUMBER.
+ *
+ * 🔴 **`runwayLabel(0)` says "out of credit" and that is right for a customer
+ * at zero and wrong for one below it.** The chip list already replaces the
+ * runway chip on an owing row; this is the same correction for the COLUMN,
+ * which renders on its own. Without it one row said "past zero — still
+ * serving" and "out of credit" at the same time, two cells apart. Measured on
+ * the seeded fleet, 2026-09-20.
+ */
+export function rowRunwayLabel(row: OrgUsageRow): string {
+  if (isOwing(row)) return "past zero";
+  return runwayLabel(row.runwayDays);
+}
+
+/** Is this organization PAST zero — served on credit it does not hold?
+ *
+ * 🔴 **This is not the same fact as "out of credit", and the difference is
+ * money.** `CUSTOMER_CONSOLE_SPEND_GATE` ships OFF (H-42: price the card,
+ * THEN arm the wall), so nothing refuses a call at a zero balance. The
+ * balance simply keeps going down. A customer at exactly 0 has stopped
+ * costing us; a customer at -2,956 is being given AI we have paid the vendor
+ * for, and every further call widens it.
+ *
+ * ⚠️ **The board read both as "out of credit" until 2026-09-20**, which is
+ * the calmer of the two readings — it sounds like somebody who has been cut
+ * off. Measured on a seeded fleet: a customer sat at -2,956.7 wearing the
+ * same chip as one sat at 0.
+ *
+ * ⚠️ Deliberately NOT gated on reading the flag. This console cannot see the
+ * customer's box (`golive.ts` says so for the same reason), and a negative
+ * balance is worth a human either way: with the gate on it should have been
+ * impossible, which is a bug, and with it off it is a bill.
+ */
+export function isOwing(row: OrgUsageRow): boolean {
+  const n = Number(row.balance);
+  return Number.isFinite(n) && n < 0;
+}
+
 /** What wants a human on this row, most urgent first.
  *
  * ⚠️ Ordered, because the caller renders them in order and a row with three
  * chips must lead with the one that costs money. */
 export function orgFlags(row: OrgUsageRow): { label: string; tone: Tone }[] {
   const out: { label: string; tone: Tone }[] = [];
-  if (row.runwayDays !== null && row.runwayDays <= SHORT_RUNWAY_DAYS) {
+  // 🔴 Ahead of the runway chip, and it REPLACES it. "Past zero" and "out of
+  // credit" are the same row seen twice, and the expensive reading leads.
+  if (isOwing(row)) {
+    out.push({ label: "past zero — still serving", tone: "danger" });
+  } else if (row.runwayDays !== null && row.runwayDays <= SHORT_RUNWAY_DAYS) {
     out.push({ label: runwayLabel(row.runwayDays), tone: "danger" });
   }
   if (marginTone(row.marginRatio) === "danger") {
@@ -183,11 +225,23 @@ export function usageHeadline(rows: OrgUsageRow[]): string {
     );
   }
   const silent = rows.filter((r) => r.silent).length;
+  // ⚠️ `!isOwing` — an organization past zero has a runway of 0, so without
+  // this it is counted twice and the line reads "1 past zero · 1 nearly out
+  // of credit" for ONE customer. The chip list excludes the same row for the
+  // same reason.
   const short = rows.filter(
-    (r) => r.runwayDays !== null && r.runwayDays <= SHORT_RUNWAY_DAYS,
+    (r) =>
+      !isOwing(r) && r.runwayDays !== null && r.runwayDays <= SHORT_RUNWAY_DAYS,
   ).length;
   const walled = rows.filter(isWalled).length;
+  const owing = rows.filter(isOwing).length;
   const parts = [`${active} organization${active === 1 ? "" : "s"} active`];
+  // 🔴 First, because it is the only line here that is already costing money.
+  if (owing) {
+    parts.push(
+      `${owing} past zero and still being served`,
+    );
+  }
   if (short) parts.push(`${short} nearly out of credit`);
   // Ahead of `silent`, for the reason `orgFlags` gives: a walled customer is
   // the one who stopped being silent.

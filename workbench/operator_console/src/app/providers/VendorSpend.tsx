@@ -117,57 +117,63 @@ export default function VendorSpend({
             )}
           </div>
 
-          <table className="grid">
-            <thead>
-              <tr>
-                <th>Vendor</th>
-                <th>Calls</th>
-                <th>Cost</th>
-                {/* 🔴 The reconcilable part, beside the total rather than
-                    blended into it. */}
-                <th>Vendor stated</th>
-              </tr>
-            </thead>
-            <tbody>
-              {billed.map((r) => {
-                const rowTotal = Number(r.costUsd);
-                const rowMeasured = Number(r.measuredUsd);
-                const allMeasured =
-                  Number.isFinite(rowTotal) &&
-                  Number.isFinite(rowMeasured) &&
-                  rowTotal > 0 &&
-                  rowMeasured >= rowTotal;
-                return (
-                  <tr key={r.provider}>
-                    {/* ⚠️ **No monogram here, deliberately.** `.glyph` is only
-                        styled INSIDE `.chip` and `.facet` (globals.css), so a
-                        bare one renders as a naked capital beside the name —
-                        "O openrouter" reads as a typo. The other callers all
-                        sit in a card or a chip where a visual anchor earns its
-                        place. A four-column money table has one identifier
-                        that matters and it is already the first column. */}
-                    <td className="mono">{r.provider}</td>
-                    <td className="mono">{r.calls}</td>
-                    <td className="mono">{usd(r.costUsd)}</td>
-                    <td>
-                      {rowMeasured > 0 ? (
-                        <span className={chipClass(allMeasured ? "ok" : "warn")}>
-                          {usd(r.measuredUsd)}
-                        </span>
-                      ) : (
-                        // ⚠️ A dash, not a zero. This vendor stated nothing, so
-                        // there is no measured figure — which is different from
-                        // a measured figure that happens to be zero.
-                        <span className="muted" title="This vendor reports no cost, so the figure beside it is our own arithmetic.">
-                          —
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div className="tablewrap">
+            {/* ⚠️ A wide table must scroll INSIDE its own box. Without this the
+            table widens the document and the whole page scrolls
+            sideways, which moves the nav and every other panel with
+            it. Measured at 390px on 2026-09-20. */}
+            <table className="grid">
+              <thead>
+                <tr>
+                  <th>Vendor</th>
+                  <th>Calls</th>
+                  <th>Cost</th>
+                  {/* 🔴 The reconcilable part, beside the total rather than
+                      blended into it. */}
+                  <th>Vendor stated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {billed.map((r) => {
+                  const rowTotal = Number(r.costUsd);
+                  const rowMeasured = Number(r.measuredUsd);
+                  const allMeasured =
+                    Number.isFinite(rowTotal) &&
+                    Number.isFinite(rowMeasured) &&
+                    rowTotal > 0 &&
+                    rowMeasured >= rowTotal;
+                  return (
+                    <tr key={r.provider}>
+                      {/* ⚠️ **No monogram here, deliberately.** `.glyph` is only
+                          styled INSIDE `.chip` and `.facet` (globals.css), so a
+                          bare one renders as a naked capital beside the name —
+                          "O openrouter" reads as a typo. The other callers all
+                          sit in a card or a chip where a visual anchor earns its
+                          place. A four-column money table has one identifier
+                          that matters and it is already the first column. */}
+                      <td className="mono">{r.provider}</td>
+                      <td className="mono">{r.calls}</td>
+                      <td className="mono">{usd(r.costUsd)}</td>
+                      <td>
+                        {rowMeasured > 0 ? (
+                          <span className={chipClass(allMeasured ? "ok" : "warn")}>
+                            {usd(r.measuredUsd)}
+                          </span>
+                        ) : (
+                          // ⚠️ A dash, not a zero. This vendor stated nothing, so
+                          // there is no measured figure — which is different from
+                          // a measured figure that happens to be zero.
+                          <span className="muted" title="This vendor reports no cost, so the figure beside it is our own arithmetic.">
+                            —
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
 
           {unbilled.length > 0 && (
             <p className="field-hint">

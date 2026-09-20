@@ -2514,6 +2514,36 @@ line — never reclaim a number by deleting the other entry.
   had taken 117 for the no-organization outage and merged first. Ids
   are never reused, so that entry keeps the number.)*
 
+### H-132 · `vps_apply.sh` disables the backup timer for a reason that was repaired · [AGENT]
+- **Check:** read `scripts/vps_apply.sh` around line 917. A
+  `systemctl disable --now acb-backup.timer` under `PG_MODE=local` means this
+  is open. Then read `/etc/systemd/system/acb-backup.service` on the box and
+  confirm it loads `EnvironmentFile=/opt/acb/app/.env`.
+- 🔴 **The guard outlived what it guarded.** The carve-out landed on
+  2026-08-17. Its comment states the danger plainly. With no
+  `EnvironmentFile` the unit defaults to `PG_MODE=docker`, dumps the empty
+  local container, passes `--verify-restore`, and becomes a green false
+  restore point. That was true when it was written.
+- 🔴 **The `EnvironmentFile` line landed on 2026-09-19**, and it is the exact
+  line the carve-out says is missing. Measured on 2026-09-20: a real run wrote
+  `app_user: 4` and `gtd_items: 2` into the manifest, beside a
+  `customer_console.dump`. The unit no longer dumps an empty container.
+- ⚠️ **The carve-out now silently undoes a hand-enable on every deploy.**
+  Two sessions have armed this timer and both arms were reverted. Neither
+  session was told. An operator reading `systemctl list-timers` after a
+  deploy sees no backup timer and no reason why.
+- **What to do.** Delete the three-line carve-out, and let the shared glob
+  enable the timer like every other one. Then verify by a NEXT date, never by
+  `Result=success` — H-123 records why.
+- ⚠️ **One question belongs to the owner, and it is not this fix.** Whether
+  nightly logical dumps or the provider's PITR is the restore path of record
+  is a money decision. H-123 owns it. This entry only says the code refuses
+  the dumps for a reason that no longer holds.
+- **Authority:** `scripts/vps_apply.sh` · `deploy/hostinger/acb-backup.timer`
+- **Added:** 2026-09-20 · credit and usage review session. Minted as
+  **H-131** against a stale base, and renumbered to **H-132** on merge —
+  main already held an H-131. Ids are never reused.
+
 ### H-123 · Backups exist now, and live only on the box they protect · [OWNER]
 - **Check:** on the box, `sudo grep -c '^BACKUP_REMOTE=' /opt/acb/app/.env`.
   A zero means every dump still lives on one disk, and this is open.
@@ -2529,6 +2559,20 @@ line — never reclaim a number by deleting the other entry.
   `NextElapseUSecRealtime`, so no night was ever covered. Today's run was a
   manual one. `systemctl enable --now acb-backup.timer` armed it at 12:17
   UTC, and it now prints NEXT `Sun 2026-09-20 02:30:16 UTC`.
+- 🔴 **SECOND CORRECTION, 2026-09-20: the timer was DISABLED again.** The
+  arming above held for one day. `systemctl list-unit-files` reported
+  `acb-backup.timer disabled` this morning, and no NEXT date. The cause is
+  `scripts/vps_apply.sh` lines 917 to 919. On a `PG_MODE=local` box it runs
+  `systemctl disable --now acb-backup.timer` on every apply. Its own comment
+  says it disables rather than skips, so that a hand-enable does not survive
+  a deploy. That is exactly what happened to mine.
+- 🔴 **The carve-out's reason is now STALE, and that is H-132.** It was
+  written on 2026-08-17, because the unit then loaded no `EnvironmentFile`
+  and would dump an empty container. The service gained
+  `EnvironmentFile=/opt/acb/app/.env` on 2026-09-19. Today's run proves the
+  repair: the manifest carries real anchor counts and a
+  `customer_console.dump` of 966 kB. Arming the timer by hand is pointless
+  until somebody removes the carve-out.
 - **The lesson, so it is not learned twice.** A manual `systemctl start`
   proves the SERVICE. It says nothing about the SCHEDULE. Read
   `systemctl list-timers <unit> --all` and require a NEXT date.

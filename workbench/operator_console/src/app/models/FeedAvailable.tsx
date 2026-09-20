@@ -174,86 +174,92 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
               )}
             </span>
           </summary>
-          <table>
-            <thead>
-              <tr>
-                <th title={HELP_AVAILABLE.colModel}>Model</th>
-                <th title={HELP_AVAILABLE.colJob}>Job</th>
-                <th title={HELP_AVAILABLE.colContext}>Reads at most</th>
-                {/* ⚠️ Not "per 1M". A transcribe model is sold by the minute
-                    and a speech model by the character — the unit belongs to
-                    the row, and `feedPriceLabel` names it there. */}
-                <th title={HELP_AVAILABLE.colPrice}>We would pay</th>
-                <th aria-label="Add" />
-              </tr>
-            </thead>
-            <tbody>
-              {rows.slice(0, PER_VENDOR_CAP).map((f) => (
-                <tr key={f.id}>
-                  <td>
-                    <span className="mono small">{f.id}</span>
-                    {f.deprecatedOn && (
-                      <span
-                        className="chip warn"
-                        title="The vendor has announced a retirement date"
-                      >
-                        retires {f.deprecatedOn}
-                      </span>
-                    )}
-                  </td>
-                  <td>{jobWord(f)}</td>
-                  <td>
-                    {f.contextWindow === null
-                      ? "—"
-                      : f.contextWindow.toLocaleString("en-US")}
-                  </td>
-                  <td>
-                    {/* ⚠️ Says WHY the dash is there. A bare "—" beside an Add
-                        button that behaves identically taught nothing — the
-                        model lands costs-blind and the reader finds out on the
-                        page above. */}
-                    {feedPriceLabel(f) !== null ? (
-                      <span className="mono small">{feedPriceLabel(f)}</span>
-                    ) : (
-                      <span
-                        className="chip warn"
-                        title="The feed carries no price for this model. Adding it lands a costs-blind model, and its margin reads as unknown until somebody records a price by hand."
-                      >
-                        no price upstream
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    {f.task ? (
-                      <button
-                        type="button"
-                        disabled={busy !== null}
-                        onClick={() => add(f)}
-                        title={
-                          canFillFromFeed(f)
-                            ? HELP_AVAILABLE.add
-                            : HELP_AVAILABLE.addUnpriced
-                        }
-                      >
-                        {busy === f.id
-                          ? "Adding…"
-                          : canFillFromFeed(f)
-                            ? "+ Add"
-                            : "+ Add anyway"}
-                      </button>
-                    ) : (
-                      <span
-                        className="muted small"
-                        title={`litellm calls this mode "${f.mode}" and the Router has no verb for it yet`}
-                      >
-                        not servable yet
-                      </span>
-                    )}
-                  </td>
+          <div className="tablewrap">
+            {/* ⚠️ A wide table must scroll INSIDE its own box. Without this the
+            table widens the document and the whole page scrolls
+            sideways, which moves the nav and every other panel with
+            it. Measured at 390px on 2026-09-20. */}
+            <table>
+              <thead>
+                <tr>
+                  <th title={HELP_AVAILABLE.colModel}>Model</th>
+                  <th title={HELP_AVAILABLE.colJob}>Job</th>
+                  <th title={HELP_AVAILABLE.colContext}>Reads at most</th>
+                  {/* ⚠️ Not "per 1M". A transcribe model is sold by the minute
+                      and a speech model by the character — the unit belongs to
+                      the row, and `feedPriceLabel` names it there. */}
+                  <th title={HELP_AVAILABLE.colPrice}>We would pay</th>
+                  <th aria-label="Add" />
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {rows.slice(0, PER_VENDOR_CAP).map((f) => (
+                  <tr key={f.id}>
+                    <td>
+                      <span className="mono small">{f.id}</span>
+                      {f.deprecatedOn && (
+                        <span
+                          className="chip warn"
+                          title="The vendor has announced a retirement date"
+                        >
+                          retires {f.deprecatedOn}
+                        </span>
+                      )}
+                    </td>
+                    <td>{jobWord(f)}</td>
+                    <td>
+                      {f.contextWindow === null
+                        ? "—"
+                        : f.contextWindow.toLocaleString("en-US")}
+                    </td>
+                    <td>
+                      {/* ⚠️ Says WHY the dash is there. A bare "—" beside an Add
+                          button that behaves identically taught nothing — the
+                          model lands costs-blind and the reader finds out on the
+                          page above. */}
+                      {feedPriceLabel(f) !== null ? (
+                        <span className="mono small">{feedPriceLabel(f)}</span>
+                      ) : (
+                        <span
+                          className="chip warn"
+                          title="The feed carries no price for this model. Adding it lands a costs-blind model, and its margin reads as unknown until somebody records a price by hand."
+                        >
+                          no price upstream
+                        </span>
+                      )}
+                    </td>
+                    <td>
+                      {f.task ? (
+                        <button
+                          type="button"
+                          disabled={busy !== null}
+                          onClick={() => add(f)}
+                          title={
+                            canFillFromFeed(f)
+                              ? HELP_AVAILABLE.add
+                              : HELP_AVAILABLE.addUnpriced
+                          }
+                        >
+                          {busy === f.id
+                            ? "Adding…"
+                            : canFillFromFeed(f)
+                              ? "+ Add"
+                              : "+ Add anyway"}
+                        </button>
+                      ) : (
+                        <span
+                          className="muted small"
+                          title={`litellm calls this mode "${f.mode}" and the Router has no verb for it yet`}
+                        >
+                          not servable yet
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           {rows.length > PER_VENDOR_CAP && (
             <p className="note">
               Showing {PER_VENDOR_CAP} of {rows.length} — search to narrow the

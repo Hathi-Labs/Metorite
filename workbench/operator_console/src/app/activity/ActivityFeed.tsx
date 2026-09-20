@@ -148,49 +148,55 @@ export default function ActivityFeed({ actions }: { actions: string[] }) {
       {error && <div className="result err">{error}</div>}
 
       <div className="panel">
-        <table>
-          <thead>
-            <tr>
-              <th>When</th>
-              <th>Who</th>
-              <th>Action</th>
-              <th>Company</th>
-              <th>Detail</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 && !busy && (
+        <div className="tablewrap">
+          {/* ⚠️ A wide table must scroll INSIDE its own box. Without this the
+            table widens the document and the whole page scrolls
+            sideways, which moves the nav and every other panel with
+            it. Measured at 390px on 2026-09-20. */}
+          <table>
+            <thead>
               <tr>
-                <td colSpan={5} className="empty">
-                  Nothing matches. An unknown company or person returns an
-                  empty page rather than an error, on purpose.
-                </td>
+                <th>When</th>
+                <th>Who</th>
+                <th>Action</th>
+                <th>Company</th>
+                <th>Detail</th>
               </tr>
-            )}
-            {rows.map((r) => (
-              <tr key={r.id}>
-                <td className="small">{when(r.created_at)}</td>
-                <td>
-                  <ActorCell actor={r.actor} />
-                </td>
-                <td>{r.action}</td>
-                <td>
-                  {/* A null company is normal: `operator.*` acts name none, and
-                      a purged customer's rows keep their history with the
-                      organization set to NULL (D63). */}
-                  {r.org_slug ? (
-                    <span title={r.org_name ?? undefined}>{r.org_slug}</span>
-                  ) : (
-                    <span className="muted">—</span>
-                  )}
-                </td>
-                <td className="small">
-                  <code>{JSON.stringify(r.detail)}</code>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.length === 0 && !busy && (
+                <tr>
+                  <td colSpan={5} className="empty">
+                    Nothing matches. An unknown company or person returns an
+                    empty page rather than an error, on purpose.
+                  </td>
+                </tr>
+              )}
+              {rows.map((r) => (
+                <tr key={r.id}>
+                  <td className="small">{when(r.created_at)}</td>
+                  <td>
+                    <ActorCell actor={r.actor} />
+                  </td>
+                  <td>{r.action}</td>
+                  <td>
+                    {/* A null company is normal: `operator.*` acts name none, and
+                        a purged customer's rows keep their history with the
+                        organization set to NULL (D63). */}
+                    {r.org_slug ? (
+                      <span title={r.org_name ?? undefined}>{r.org_slug}</span>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
+                  <td className="small">
+                    <code>{JSON.stringify(r.detail)}</code>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="row">
