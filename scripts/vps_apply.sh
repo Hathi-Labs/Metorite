@@ -704,6 +704,34 @@ drop_dir() {
   return 0
 }
 
+# Install this directory's dependencies. Never end the deploy.
+#
+# 🔴 **BOTH Next apps died here, on three separate deploys on 2026-09-20.**
+#
+# `node_modules` on the box carries root-owned files (H-89). The apply runs
+# as the deploy user, so `npm ci` exits with EACCES. Under `set -e` that ends
+# the script — and the workbench install sits ABOVE the Operator Console,
+# Caddy, the watchdog, the unit sync (BO-23) and the health probe. One
+# permission error skipped all of them, and the deploy still reported
+# success.
+#
+# So: try, then reclaim our own build tree and try once more, then warn and
+# carry on. The BUILD is the gate. `build_next_staged` either produces a
+# BUILD_ID or keeps the running build and fails loudly.
+#
+# ⚠️ The chown is a self-heal, NOT a fix for H-89. Something here still writes
+# into the checkout as root, and it will do it again.
+npm_install_here() {
+  name="$1"
+  npm ci --prefer-offline 2>/dev/null && return 0
+  echo "    ~ $name: npm ci failed — reclaiming the build tree and retrying"
+  sudo chown -R "$(id -un):$(id -gn)" node_modules 2>/dev/null || true
+  npm ci --prefer-offline 2>/dev/null && return 0
+  npm install && return 0
+  echo "    ! $name: npm install failed — building against the node_modules already here"
+  return 0
+}
+
 build_next_staged() {
   name="$1"
   drop_dir .next.staging
@@ -754,12 +782,7 @@ build_next_staged() {
 echo "==> Rebuilding + restarting workbench (Next.js)"
 cd "$APP_DIR/workbench/control_plane"
 if [ -f package-lock.json ] || [ -f package.json ]; then
-  # ⚠️ NOT fatal. A root-owned `node_modules` (H-89) makes both of these exit
-  # non-zero with EACCES, and on 2026-09-20 that aborted the apply before the
-  # restart, the Operator Console and the Caddy reload — while the deploy
-  # reported success. The BUILD is the gate: it either passes, or
-  # `build_next_staged` keeps the running build and fails loudly.
-  npm ci --prefer-offline 2>/dev/null || npm install ||     echo "    ! npm install failed — building against the node_modules already here"
+  npm_install_here "workbench"
   build_next_staged "workbench"
 fi
 # Reload systemd unit in case acb-workbench.service changed (adds PATH for uv etc.)
@@ -800,7 +823,7 @@ if systemctl is-enabled --quiet "$OC_UNIT" 2>/dev/null; then
   echo "==> Rebuilding + restarting Operator Console ($OC_UNIT)"
   cd "$OC_DIR"
   if [ -f package-lock.json ] || [ -f package.json ]; then
-    npm ci --prefer-offline 2>/dev/null || npm install
+    npm_install_here "operator console"
     # Same staged build as the workbench, for the same reason and with the same
     # guarantee: the console keeps serving its previous build until a new one
     # exists. See `build_next_staged` above.

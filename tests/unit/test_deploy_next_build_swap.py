@@ -387,23 +387,51 @@ class TestHousekeepingCannotAbortTheDeploy:
         )
         assert swap < restart
 
-    def test_a_failed_npm_install_does_not_end_the_apply(self) -> None:
-        """It did, this morning, before the build was even attempted.
+    def test_no_app_installs_its_dependencies_outside_the_helper(self) -> None:
+        """A bare `npm ci` under `set -e` ends the deploy.
 
-        `npm ci` and `npm install` both hit EACCES on a root-owned
-        `node_modules`. The build is the gate — it either passes, or
-        `build_next_staged` keeps the running build and fails loudly. An
-        install that cannot abort costs nothing and saves the release.
+        It did, three times on 2026-09-20, on a root-owned `node_modules`
+        (H-89). The workbench install sits ABOVE the Operator Console, Caddy,
+        the watchdog, the unit sync and the health probe, so one permission
+        error skipped all of them while the deploy reported success.
         """
         lines = _executable_lines(_APPLY)
-        i = next(i for i, ln in enumerate(lines) if "npm ci --prefer-offline" in ln)
-        # The statement, not the neighbourhood: a backslash continues it.
-        stmt = [lines[i]]
-        while stmt[-1].rstrip().endswith(chr(92)):
-            i += 1
-            stmt.append(lines[i])
-        statement = " ".join(ln.strip() for ln in stmt)
-        assert statement.count("||") >= 2 and "echo" in statement, (
-            "the workbench npm install must fall through to a warning rather "
-            f"than abort the apply under set -e: {statement!r}"
+        start = next(
+            i for i, ln in enumerate(lines)
+            if ln.strip().startswith("npm_install_here()")
         )
+        end = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == "}")
+        outside = [
+            ln for i, ln in enumerate(lines)
+            if not (start <= i < end)
+            and (ln.strip().startswith("npm ci") or ln.strip().startswith("npm install"))
+        ]
+        assert outside == [], (
+            "install dependencies through npm_install_here, which cannot end "
+            f"the apply: {outside}"
+        )
+
+    def test_the_install_helper_reclaims_the_tree_and_never_fails(self) -> None:
+        lines = _executable_lines(_APPLY)
+        start = next(
+            i for i, ln in enumerate(lines)
+            if ln.strip().startswith("npm_install_here()")
+        )
+        end = next(i for i in range(start + 1, len(lines)) if lines[i].strip() == "}")
+        body = lines[start:end]
+        assert any("sudo chown" in ln and "node_modules" in ln for ln in body), (
+            "the tree is root-owned (H-89) — reclaim it and retry before "
+            "giving up"
+        )
+        assert body[-1].strip() == "return 0", (
+            "npm_install_here must end in `return 0`; the BUILD is the gate, "
+            "not the install"
+        )
+
+    def test_both_apps_install_through_it(self) -> None:
+        lines = _executable_lines(_APPLY)
+        calls = [
+            ln for ln in lines
+            if "npm_install_here " in ln and not ln.strip().startswith("npm_install_here()")
+        ]
+        assert len(calls) >= 2, f"both Next apps must install through it: {calls}"
