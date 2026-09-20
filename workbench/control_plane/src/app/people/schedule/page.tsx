@@ -17,7 +17,6 @@
  * nobody trusts twice.
  */
 
-import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import Icon from "@/components/Icon";
@@ -138,11 +137,6 @@ export default function WorkSchedulePage() {
             person can override any of it on their own profile.
           </p>
         </div>
-        <Link href="/people">
-          <Button variant="secondary" size="sm" icon="Users">
-            Directory
-          </Button>
-        </Link>
       </header>
 
       {error && (

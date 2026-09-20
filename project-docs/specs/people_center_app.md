@@ -510,6 +510,44 @@ beside "Your access", and not only a card on a Center page a colleague may not b
 open. Owner-directed: *"people from their personal center should be able to modify their
 profile."* It appears in both places; it is one page either way.
 
+### 5.0 The app shell — how a person reaches any of this ✅ BUILT 2026-09-20
+
+`app/people/layout.tsx` draws one tab bar over every surface below.
+
+**Why it exists.** Each surface in this section was built, and the sidebar
+offered only `/people`. The capability search, the workload dashboard and the
+rebalancing suggestions were reachable by typing the URL. Those three are what
+make a filled-in profile worth filling in. A surface nobody can navigate to is
+a surface nobody has.
+
+**The tabs, and the grant each one needs:**
+
+| Tab | Route | Needs |
+|---|---|---|
+| Directory | `/people` | `feature:people` |
+| Org chart | `/people/chart` | `feature:people` |
+| Find skills | `/people/search` | `admin:members:read` |
+| Workload | `/people/dashboard` | `admin:members:read` |
+| Working week | `/people/schedule` | `feature:people` |
+| My profile | `/people/me` | ungated (§4.5) |
+
+⚠️ **A member without `feature:people` sees NO bar.** The layout wraps
+`/people/me`, which is ungated on purpose. Tabs beside it for surfaces the
+member cannot open would turn their own profile into a wall of refusals.
+
+⚠️ **Hiding a tab is a courtesy, never a boundary.** The gateway refuses the
+request. The bar exists so a member is not offered four links that answer 403.
+
+📌 `/people/quality` is linked from the workload page. `/people/overview` is a
+D49 Center landing, and D49 keeps those routable and unlinked. Neither has a
+tab.
+
+**The bar is `components/Tabs`**, which gained `href` support in the same
+change. A People-local tab bar would be the app-local look `AGENTS.md` rule 1
+refuses. Fence: `src/app/people/layout.test.ts` — six cases, and the one that
+matters asserts that `/people` matches EXACTLY. As a prefix it matches every
+sibling route, which lights two tabs at once on every page in the app.
+
 ### 5.1 Directory — the default view ✅ BUILT
 
 A searchable list of everybody, one row per person, with a card/table toggle.

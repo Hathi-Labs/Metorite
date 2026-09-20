@@ -14,10 +14,8 @@
  * people to hunt for permissions they may never get. The gateway answers that
  * question as `can_manage` on the read, so the page knows before it draws.
  */
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 
 import { AwayBadge } from "./components/AbsencePanel";
@@ -150,13 +148,6 @@ export default function PeoplePage() {
               {loading ? "loading…" : `${rows.length} in the directory`}
             </span>
             <span className="flex-1" />
-            <Link
-              href="/people/chart"
-              className="flex items-center gap-1 text-xs text-primary hover:underline"
-            >
-              <Icon name="Network" size={14} />
-              Org chart
-            </Link>
             {canManage ? (
               <>
                 {/*

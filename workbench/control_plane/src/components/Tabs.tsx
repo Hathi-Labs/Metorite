@@ -18,6 +18,7 @@
  *   />
  */
 
+import Link from "next/link";
 import React from "react";
 import Icon from "@/components/Icon";
 
@@ -34,6 +35,20 @@ export interface TabDef {
   count?: number;
   /** Optional tooltip / aria-description */
   note?: string;
+  /**
+   * Make this tab a real LINK rather than a button.
+   *
+   * Added for the People app, whose six surfaces are separate ROUTES rather
+   * than states of one page. Without it that app would need a second tab bar
+   * of its own — a parallel look nobody would keep in step with this one.
+   * A link is also the honest control for a navigation: it gets middle-click,
+   * open-in-new-tab, a real `href` on hover, and prefetch, none of which an
+   * `onClick` button can offer.
+   *
+   * When present, `onTabChange` is NOT called — the route change is the
+   * state change, and calling both would fire a redundant re-render.
+   */
+  href?: string;
 }
 
 export interface TabsProps {
@@ -65,24 +80,45 @@ export default function Tabs({
       >
         {tabs.map((t) => {
           const active = activeTab === t.id;
-          return (
+          const cls = `flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-t-lg border-b-2 tech-transition whitespace-nowrap ${
+            active
+              ? "border-primary text-foreground bg-primary/5"
+              : "border-transparent text-muted-foreground hover:text-foreground hover:bg-secondary/50"
+          }`;
+          const inner = (
+            <>
+              {t.icon && <Icon name={t.icon} className="w-3.5 h-3.5" />}
+              {t.label}
+              {t.count !== undefined && (
+                <span className="ml-1 text-[10px] opacity-60">{t.count}</span>
+              )}
+            </>
+          );
+          return t.href ? (
+            <Link
+              key={t.id}
+              href={t.href}
+              role="tab"
+              aria-selected={active}
+              // `page`, not `true`: for a link-tab the active one IS the
+              // current document, and that is the value a screen reader
+              // announces as "current page" rather than merely "selected".
+              aria-current={active ? "page" : undefined}
+              title={t.note}
+              className={cls}
+            >
+              {inner}
+            </Link>
+          ) : (
             <button
               key={t.id}
               role="tab"
               aria-selected={active}
               onClick={() => onTabChange(t.id)}
               title={t.note}
-              className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-t-lg border-b-2 tech-transition whitespace-nowrap ${
-                active
-                  ? "border-primary text-foreground bg-primary/5"
-                  : "border-transparent text-muted-foreground hover:text-foreground hover:bg-secondary/50"
-              }`}
+              className={cls}
             >
-              {t.icon && <Icon name={t.icon} className="w-3.5 h-3.5" />}
-              {t.label}
-              {t.count !== undefined && (
-                <span className="ml-1 text-[10px] opacity-60">{t.count}</span>
-              )}
+              {inner}
             </button>
           );
         })}

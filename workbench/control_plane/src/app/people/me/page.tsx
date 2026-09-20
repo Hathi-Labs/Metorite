@@ -20,7 +20,6 @@
  * the worst of the three answers.
  */
 
-import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
@@ -99,11 +98,6 @@ export default function MyProfilePage() {
             What the directory shows, and what the assignment suggester reads.
           </p>
         </div>
-        <Link href="/people">
-          <Button variant="secondary" size="sm" icon="Users">
-            Directory
-          </Button>
-        </Link>
       </header>
 
       {state.kind === "loading" && (
