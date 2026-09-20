@@ -147,7 +147,12 @@ export default function Header() {
         <Elevation />
         <div className="sidebar-actions">
           <ThemeToggle />
-          <button type="button" className="linklike" onClick={signOut}>
+          <button
+            type="button"
+            className="linklike"
+            onClick={signOut}
+            title="End this console session. Any elevation window closes with it."
+          >
             Sign out
           </button>
         </div>
