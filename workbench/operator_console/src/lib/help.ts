@@ -36,7 +36,7 @@ export const HELP_FEED = {
 /** The costs-blind banner. */
 export const HELP_FILL = {
   fillAll:
-    "Copies the vendor's own recorded price onto every model that has none. " +
+    "Uses the vendor's own recorded price on every model that has none. " +
     "It only ADDS a price — a model you have already costed is untouched.",
 } as const;
 
@@ -244,8 +244,8 @@ export const HELP_REMOVE = {
 export const HELP_DETAILS = {
   open: "Record or correct what we know about this model.",
   fillFromFeed:
-    "Copy the vendor's own window, limits and prices onto this model and " +
-    "save, in one click. Nothing to type.",
+    "Uses the vendor's own window, limits and prices on this model, and " +
+    "saves them in one click. Nothing to type.",
   label: "A friendlier name for the lists on this page. The Router always uses the id.",
   description:
     "What this model is good at, in your words. The search box matches it, " +
@@ -272,7 +272,7 @@ export const HELP_DETAILS = {
   thinksFirst: "The model reasons before answering, which costs more output tokens.",
   blank: "Leave a box empty for “we do not know”. It shows as a dash, which is true — a zero would read as a broken model.",
   copyFeed:
-    "Fill every box below from the vendor's own figures. Nothing is saved " +
+    "Puts the vendor's own figures in every box below. Nothing is saved " +
     "until you press Save, so you can read the numbers first.",
   save:
     "Write these facts to the model. Calls made after this are costed with " +

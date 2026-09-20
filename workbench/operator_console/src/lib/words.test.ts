@@ -13,10 +13,23 @@ import { ADD, EDIT, LIST, REMOVE, VENDOR_PRICES } from "./words";
 
 const MODELS_DIR = join(__dirname, "..", "app", "models");
 
+/** Every file that puts WORDS in front of an operator on this page.
+ *
+ * 🔴 **`help.ts` belongs here, and leaving it out let the retired vocabulary
+ * survive the rename.** Measured on the deployed bundle, 2026-09-21: the
+ * buttons all read "Use the vendor's prices" while their own tooltips still
+ * said "Copy the vendor's own window…" and "Fill every box below…". Hovering a
+ * control to have it explained in the words it no longer uses is the same
+ * defect this file exists for, one layer down. */
 function modelsSource(): { file: string; text: string }[] {
-  return readdirSync(MODELS_DIR)
+  const files = readdirSync(MODELS_DIR)
     .filter((f) => f.endsWith(".tsx"))
-    .map((f) => ({ file: f, text: readFileSync(join(MODELS_DIR, f), "utf-8") }));
+    .map((f) => ({ file: f, path: join(MODELS_DIR, f) }));
+  files.push({ file: "lib/help.ts", path: join(__dirname, "help.ts") });
+  return files.map(({ file, path }) => ({
+    file,
+    text: readFileSync(path, "utf-8"),
+  }));
 }
 
 describe("one act, one word", () => {
@@ -70,8 +83,10 @@ const RETIRED: [string, string][] = [
 ];
 
 describe("the retired vocabulary cannot come back", () => {
-  it("scans a real directory", () => {
-    expect(modelsSource().length).toBeGreaterThan(4);
+  it("scans a real directory, and the tooltip dictionary with it", () => {
+    const files = modelsSource();
+    expect(files.length).toBeGreaterThan(5);
+    expect(files.map((f) => f.file)).toContain("lib/help.ts");
   });
 
   it.each(RETIRED)("no Models component says %j (%s)", (banned) => {

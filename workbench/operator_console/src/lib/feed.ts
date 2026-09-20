@@ -202,7 +202,7 @@ export function blindButFillable(
   );
 }
 
-/** The values "Copy the vendor's facts" writes into the form boxes.
+/** The values "Use the vendor's prices" writes into the form boxes.
  *  Strings because that is what the inputs hold — empty means unknown.
  *
  * ⚠️ **Every value is copied, and none is computed** (H-78). `vmin` holds a
