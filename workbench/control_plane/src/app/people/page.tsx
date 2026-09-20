@@ -88,33 +88,8 @@ export default function PeoplePage() {
     };
   }, [q, department, status, reloadKey]);
 
-  /**
-   * The roster sync (H-124). `null` = never pressed; a string = what it did,
-   * shown rather than swallowed because "it worked and there was nothing to
-   * do" and "it wrote nothing" must not look the same.
-   */
-  const [syncing, setSyncing] = useState(false);
-  const [syncNote, setSyncNote] = useState<string | null>(null);
-
   const onSaved = useCallback(() => setReloadKey((n) => n + 1), []);
 
-  const syncMembers = useCallback(async () => {
-    setSyncing(true);
-    setSyncNote(null);
-    try {
-      const res = await peopleApi.syncMembers();
-      setSyncNote(
-        res.created > 0
-          ? `Added ${res.created} of ${res.members} members to the directory.`
-          : `Nothing to add — all ${res.members} members already have a row.`,
-      );
-      setReloadKey((n) => n + 1);
-    } catch (err) {
-      setSyncNote(String((err as Error).message));
-    } finally {
-      setSyncing(false);
-    }
-  }, []);
 
   useEffect(() => {
     let live = true;
@@ -149,27 +124,9 @@ export default function PeoplePage() {
             </span>
             <span className="flex-1" />
             {canManage ? (
-              <>
-                {/*
-                  The roster sync (H-124). Present for an administrator
-                  always, not only on an empty directory: a member invited
-                  before PR #306 is missing from a directory that already has
-                  rows, and that is invisible until somebody looks for them.
-                */}
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  icon="RefreshCw"
-                  disabled={syncing}
-                  onClick={() => void syncMembers()}
-                  title="Give every member of the organization a directory row"
-                >
-                  {syncing ? "Syncing…" : "Sync members"}
-                </Button>
-                <Button size="sm" icon="Plus" onClick={() => setEditing(null)}>
-                  Add person
-                </Button>
-              </>
+              <Button size="sm" icon="Plus" onClick={() => setEditing(null)}>
+                Add person
+              </Button>
             ) : null}
           </div>
           <input
@@ -222,24 +179,16 @@ export default function PeoplePage() {
             {error}
           </p>
         ) : null}
-        {syncNote ? (
-          <p
-            role="status"
-            className="border-b border-border bg-muted px-3 py-2 text-xs text-foreground"
-          >
-            {syncNote}
-          </p>
-        ) : null}
 
         <div className="min-h-0 flex-1 overflow-auto p-3">
           {!loading && rows.length === 0 ? (
             /*
-              Two different emptinesses, and conflating them was the whole
-              complaint. With a filter on, "nobody matches" is the truth. With
-              no filter at all, an EMPTY directory is not a search result — it
-              is a directory that was never seeded, which is exactly what
-              H-124 describes, and the reader needs the repair rather than a
-              shrug.
+              Two different emptinesses, and conflating them was the original
+              complaint. With a filter on, "nobody matches" is the truth.
+              With no filter at all, the directory itself is empty — which
+              since migration 206 means the organization has no active member
+              with an address, because membership fills this table by trigger
+              and no longer by anybody remembering to.
             */
             q || department || status ? (
               <p className="text-sm text-muted-foreground">Nobody matches that.</p>
@@ -249,24 +198,12 @@ export default function PeoplePage() {
                 {/* `max-w-prose`: unbounded, this is a single 1050px line at
                     1440 — a measure nobody reads to the end of. */}
                 <p className="mt-1 max-w-prose text-xs text-muted-foreground">
-                  Your organization&apos;s members each need a directory row
-                  before they appear here, on the org chart, or in the
-                  assignee picker in Projects.
+                  Everybody in your organization appears here on their own —
+                  a member is added to the directory when they are invited.
                   {canManage
-                    ? " Sync members creates one for everybody who is missing."
-                    : " An administrator can add them."}
+                    ? " Add person is for somebody with no login, such as a contractor or a new hire before day one."
+                    : " An administrator can add somebody who has no login."}
                 </p>
-                {canManage ? (
-                  <Button
-                    className="mt-3"
-                    size="sm"
-                    icon="RefreshCw"
-                    disabled={syncing}
-                    onClick={() => void syncMembers()}
-                  >
-                    {syncing ? "Syncing…" : "Sync members"}
-                  </Button>
-                ) : null}
               </div>
             )
           ) : null}

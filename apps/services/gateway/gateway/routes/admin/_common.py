@@ -73,7 +73,6 @@ from gateway.db import tenant_session as _tenant_session  # noqa: F401
 # `routes/projects/core.py` owns it because Projects needed it first; the
 # question it answers belongs to no package.
 from gateway.routes.projects.core import NO_ORGANIZATION, resolve_organization_id
-from gateway.routes.tasks.people import ensure_directory_row
 from sqlalchemy import text
 
 _log = get_logger("gateway.admin")
@@ -789,23 +788,16 @@ async def provision_member(
     member = await get_member(db, org_id, email)
     await set_roles(db, member["id"], role_ids, admin.email)
 
-    # The member's DIRECTORY row, so `/people/me` has something to show.
+    # The member's DIRECTORY row is NOT written here, and that is deliberate.
     #
-    # ⚠️ **In this transaction, unlike the two mirrors below.** The shadow and
-    # the Console live on other planes, so they mirror after the commit and
-    # must never fail an invite that happened. `gtd_people` is the SAME
-    # database and the SAME tenant, so the atomic write is the correct one: a
-    # provisioning that rolls back must not leave a directory row behind for a
-    # member who does not exist.
-    #
-    # Idempotent, and the return value is discarded on purpose — re-inviting
-    # somebody who already has a row is a no-op and not an error.
-    await ensure_directory_row(
-        db,
-        email=member["email"],
-        display_name=member.get("display_name") or display_name or "",
-        status="invited" if status == "invited" else "active",
-    )
+    # Migration 206 puts a trigger on `app_user`, so the row appears with the
+    # member for EVERY writer — this one, the founder bootstrap in
+    # `acb_auth.access`, and the org-provisioning functions in migrations 179,
+    # 180 and 201. An earlier version of this code called
+    # `ensure_directory_row` right here and taught only two of those five
+    # paths. A rule applied at five call sites has five chances to be
+    # forgotten, and somebody running SQL on the box during an incident can
+    # never be taught at all. Fence: `tests/unit/test_people_from_membership.py`.
 
     # ⚠️ The RLS-EXEMPT identity-shadow mirror is deliberately NOT called here.
     # It is the CALLER's responsibility, AFTER its `_tenant_session` has

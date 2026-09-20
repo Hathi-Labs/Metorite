@@ -196,6 +196,13 @@ _GRANDFATHERED: dict[tuple[str, str], tuple[int, str]] = {
     ("196_projects_status_sets.sql", "org_role_permission"): (1, "SEED"),
     ("200_provision_org_roles_tenancy.sql", "org_role_permission"): (1, "GUARDED"),
     ("201_provision_org_owner_tenancy.sql", "user_role"): (1, "GUARDED"),
+    # Two arms, both guarded, and they guard DIFFERENTLY on purpose:
+    # the trigger asks `pg_attribute` at RUN time (so promoting the
+    # tenancy layer cannot leave it stale — see the migration header for
+    # the 36-error regression that taught us), and the backfill asks
+    # `information_schema.columns` once, the way 200 and 201 do. The arm
+    # counted here is the no-column half of each.
+    ("206_people_from_membership.sql", "gtd_people"): (2, "GUARDED"),
 }
 
 

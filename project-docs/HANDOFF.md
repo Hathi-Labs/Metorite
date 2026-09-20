@@ -2717,37 +2717,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `scripts/backup_db.sh` · `deploy/hostinger/BACKUP-RESTORE.md`
 - **Added:** 2026-09-19 · operator console session, after the backup repair
 
-### H-124 · Seed the production directory from the org roster · [OWNER]
-- **Check:** open `/people` as an administrator. A directory that lists your
-  members means this is done. An empty one, or one missing somebody invited
-  before 2026-09-20, means it is open.
-- **The repair is BUILT and needs one press.** `POST /people/sync-members`
-  gives every `active` and `invited` member of the caller's organization a
-  `gtd_people` row. The **Sync members** button on `/people` calls it.
-  Idempotent — a second press writes nothing and says so.
-- **Why it is a route and not a migration.** This entry used to be ordered
-  after H-104. A numbered migration cannot know whether
-  `gtd_people.organization_id` has reached production. It would also have to
-  satisfy a FORCE ROW LEVEL SECURITY policy from a connection that binds no
-  tenant. The route runs inside `_tenant_session`. The tenant is bound, so the
-  row lands in the right organization either way. **H-104 no longer blocks
-  this.**
-- **Why it is OWNER and not AGENT.** The press writes rows into a live
-  organization's directory. `work_plan.md` §6 and CLAUDE.md §3a rule 3 keep a
-  live organization's membership data with the owner.
-- **Why:** PR #306 made member provisioning write the directory row. It fixed
-  the cause, not the data. Every member created before 2026-09-20 still has
-  no row. Each one opens *My Profile* and reads "An administrator can add
-  you". Production held zero directory rows on 2026-09-19, the owner
-  included.
-- ⚠️ **A member who is `suspended` or `removed` gets no row.** The two status
-  vocabularies differ and only `active` and `invited` map. The alumni case is
-  D63's question (H-49) and is not settled.
-- **Authority:** `project-docs/specs/people_center_app.md` §2 · PR #306 ·
-  `apps/services/gateway/gateway/routes/people/members_sync.py`
-- **Added:** 2026-09-20 · the My Profile session ·
-  **updated 2026-09-20** — the repair is built, the press is what remains
-
 ### H-125 · Migration 148's email index spans EVERY tenant · [AGENT]
 - **Check:** `rg -A 2 "uq_gtd_people_email_lower" infra/postgres/148_people_key_shape.sql`
   → an index on `(lower(email))` that does not name `organization_id` means
