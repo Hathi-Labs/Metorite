@@ -4055,6 +4055,29 @@ history is then the only place that can say which kind of archive this was.
 `core.archive_note` is the one function that decides it, and both doors call
 it.
 
+**The surface, after using it (2026-09-21).** Three things the ruling implied
+and the board did not yet do. Each was found by driving the feature in a
+browser, not by a test.
+
+* 🔴 **The shelf offered a composer, and it was a black hole.**
+  `QuickAdd` writes a LIVE task, and the archived view shows only filed ones.
+  A member typed a title, pressed Enter, the row was created, and nothing
+  appeared. No error and no card. The composer and the drop targets are now
+  gone from that view.
+* **A filed card looked exactly like a live one.** The lit chip is a statement
+  about the QUERY. The card now carries an `Archived` badge, which is a
+  statement about the CARD. That is what a member needs when they arrive by
+  deep link, by search, or by a saved view that pins the archive.
+* **The shelf is visible from the board.** The `Archived` chip carries its
+  count, under the same filters, so it answers "how many would I see if I
+  clicked this". This is half of the honesty note above. The open-versus-
+  archived count on the Overview is still not built.
+
+⚠️ **The three UI changes are NOT fenced.** `vitest` is
+`environment: "node"`, so none of them is a claim it can test, and nothing in
+CI runs `e2e/` (H-27). They were verified by driving the board against the
+local stack. The server behaviour underneath them IS fenced, twice.
+
 **Fences.** `tests/unit/test_projects_hardening.py` — an open task in four
 categories archives and earns a row that says so. It also holds that neither
 door carries a category refusal. `tests/live/live_task_lifecycle.py` — the

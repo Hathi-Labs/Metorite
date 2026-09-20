@@ -176,6 +176,14 @@ interface Props {
   people: readonly string[];
   /** WS-27m — the project's registered tags, for the tag row. */
   tags: TagRow[];
+  /**
+   * How many tasks are on the shelf, under the filters now in force.
+   *
+   * `null` while it is unknown — the chip then shows no number rather than
+   * a confident zero, because "0" and "not counted yet" are different
+   * claims and only one of them means the archive is empty.
+   */
+  archivedCount?: number | null;
   /** WS-27x — the view's shown fields: the table's columns AND the chip gate. */
   shownFields: readonly string[];
   onShownFields: (next: string[]) => void;
@@ -211,6 +219,7 @@ export function FilterBar({
   me,
   people,
   tags,
+  archivedCount,
   shownFields,
   onShownFields,
   fields,
@@ -470,6 +479,11 @@ export function FilterBar({
           size="sm"
           icon="Archive"
           aria-pressed={filters.archived}
+          aria-label={
+            typeof archivedCount === "number"
+              ? `Archived, ${archivedCount} task${archivedCount === 1 ? "" : "s"}`
+              : "Archived"
+          }
           title={
             filters.archived
               ? "Showing only archived tasks"
@@ -478,6 +492,11 @@ export function FilterBar({
           onClick={() => set({ archived: !filters.archived })}
         >
           Archived
+          {/* The same shape the tag chips beside it use: the label, then how
+              many. It is what turns the chip from a control into a fact. */}
+          {typeof archivedCount === "number" && archivedCount > 0 ? (
+            <span className="ml-1 opacity-70">{archivedCount}</span>
+          ) : null}
         </Button>
 
         {/* Both axes are offered only where the canvas draws them. Calendar

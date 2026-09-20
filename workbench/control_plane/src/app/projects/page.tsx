@@ -528,6 +528,20 @@ function ProjectsWorkspace() {
   const [selected, setSelected] = useState<ProjectRow | null>(null);
   const [statuses, setStatuses] = useState<StatusRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
+  /**
+   * How many tasks are on the shelf for the board in view, or null.
+   *
+   * ⚠️ **Without this the archive is invisible until you go looking.** An
+   * archived task leaves the board and the current-state reports, so a
+   * member reading "6 open" has no way to know whether that is the whole
+   * story or whether forty more are filed just out of sight. The chip
+   * carries the number so the shelf announces itself.
+   *
+   * Counted with the SAME filters as the board, so it answers exactly "how
+   * many would I see if I clicked this" — a count that ignored the tag
+   * filter beside it would send people to an empty view.
+   */
+  const [archivedCount, setArchivedCount] = useState<number | null>(null);
   const [openTask, setOpenTask] = useState<TaskRow | null>(null);
   // WS-27ab — peek · side · full, persisted per user (`lib/panelMode.ts`).
   // Read in an effect rather than a lazy initialiser: `localStorage` does not
@@ -1437,13 +1451,26 @@ function ProjectsWorkspace() {
       if (heldStatuses) setStatuses(heldStatuses.data.rows);
       if (heldTasks) setTasks(heldTasks.data.rows);
 
+      // The shelf's size, under the same filters. `page_size: 1` because only
+      // `total` is wanted — the rows are the board's job, not this read's.
+      const shelfParams = { ...taskParams, archived_only: true, page_size: 1 };
+      const shelfKey = projectsKey("tasks", shelfParams);
+
       try {
-        const [statusRes, taskRes] = await Promise.all([
+        const [statusRes, taskRes, shelfRes] = await Promise.all([
           read(statusesKey, () => projectsApi.statuses(project.id)),
           read(tasksKey, () => projectsApi.tasks(taskParams)),
+          // ⚠️ Never fails the board. A count is decoration next to the rows,
+          // and a shelf read that 500s must not blank a working board.
+          read(shelfKey, () => projectsApi.tasks(shelfParams)).catch(() => null),
         ]);
         setStatuses(statusRes.rows);
         setTasks(taskRes.rows);
+        setArchivedCount(
+          filters.archived
+            ? taskRes.total ?? taskRes.rows.length
+            : shelfRes?.total ?? null,
+        );
       } catch (err) {
         setError(String((err as Error).message));
         // ⚠️ Only blank what we had nothing for. Clearing rows we are already
@@ -2899,6 +2926,7 @@ function ProjectsWorkspace() {
         <FilterBar
           filters={filters}
           onFilters={changeFilters}
+          archivedCount={archivedCount}
           mode={mode}
           spansProjects={spansProjects}
           groupBy={groupBy}
