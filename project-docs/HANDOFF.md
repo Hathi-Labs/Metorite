@@ -621,8 +621,16 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-14 · carried from the session that refused them
 
 ### H-4 · WS-27bj: build the admin surface for org-wide vocabularies · [AGENT]
+- **🟢 2026-09-20 — the RENAME half is built (D-PM-33).** An org-wide tag,
+  field or type can now be renamed by somebody holding
+  `admin:settings:manage`, and a tag rename is previewed first by
+  `GET /tags/{id}/impact`. Merge and delete stay refused by name. What is
+  still owed is the SURFACE: a place to see the organization's vocabulary,
+  and a decision about retiring a row.
 - **Check:** `rg -n "refuse_org_wide_write" apps/services/gateway/gateway/routes/projects/`
-  → still present on the patch/delete/merge paths means still pending.
+  → present on DELETE and MERGE only is the expected state after D-PM-33. Present
+  on a PATCH path means the rename regressed. The entry stays open until a
+  surface lists the organization's own vocabulary, which no route does yet.
 - **Why:** An org-wide tag, task type or custom field can currently be
   **created but never edited or retired** — `refuse_org_wide_write` answers 409
   rather than letting those routes 500 on `CAST('None' AS uuid)`. That is the
@@ -633,6 +641,12 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-14 · session that built WS-27bj
 
 ### H-5 · Flip `PROJECTS_ORG_VOCABULARIES` when org-wide creates should go live · [OWNER]
+- **⚠️ 2026-09-20 — the owner ruled NOT YET, and named the condition.**
+  The flip waits for the admin surface (H-4). Creating an org-wide row is
+  easy and un-creating it is the hard part, so a member could mint rows
+  nobody can then manage. Measured the same day: the flag is unset in
+  production and both databases hold zero org-wide rows, so nothing is
+  reachable today either way.
 - **Check:** the variable's value on the box → unset or `0`/`off`/`false` means
   still dark.
 - **Why:** Default OFF and it gates **only** the affordance that *creates* an

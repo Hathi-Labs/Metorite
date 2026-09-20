@@ -26,9 +26,21 @@ import Modal from "@/components/ui/Modal";
 const orgWide = (row: { project_id?: string | null }): boolean =>
   row.project_id === null;
 
+/**
+ * ⚠️ Narrowed on 2026-09-20 (D-PM-33), because the old wording is now wrong.
+ *
+ * It said "edit it in organization settings". An org-wide field CAN be
+ * renamed since that ruling, by somebody holding `admin:settings:manage`, and
+ * the rename touches no task at all — `field_key` is never editable, so only
+ * the label moves. What is still refused is the DELETE, which clears the
+ * key off every task in the organization.
+ *
+ * This list has no rename control to open up. Adding one belongs with the
+ * admin surface (H-4), where the organization's own fields are listed.
+ */
 const ORG_WIDE_NOTE =
-  "Shared by the whole organization — edit it in organization settings, " +
-  "not from one project.";
+  "Shared by the whole organization — it cannot be deleted from inside " +
+  "one project.";
 import { useEffect, useState } from "react";
 
 import { type FieldRow, projectsApi } from "../lib/api";

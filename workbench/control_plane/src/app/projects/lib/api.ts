@@ -1264,6 +1264,20 @@ export const projectsApi = {
     }),
 
   /** Rename or recolour. A rename rewrites every task wearing the tag. */
+  /**
+   * How much a rename would rewrite, BEFORE it is asked for (D-PM-33).
+   *
+   * Shaped like `moveTasksPreview` rather than reading the count out of the
+   * write's response, where it would arrive after the decision it informs.
+   */
+  tagImpact: (tagId: string) =>
+    call<{
+      tag: string;
+      scope: "organization" | "project";
+      tasks: number;
+      projects: number;
+    }>(`tags/${tagId}/impact`),
+
   patchTag: (tagId: string, payload: Record<string, unknown>) =>
     call<TagRow>(`tags/${tagId}`, {
       method: "PATCH",

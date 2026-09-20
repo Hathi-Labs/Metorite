@@ -34,7 +34,12 @@ from gateway.routes.projects.core import (
     clean_payload,
     load_visible_project,
     org_wide_exists,
+    governed_tasks_scope,
+    is_org_wide,
+    refuse_org_wide_rescope,
     refuse_org_wide_write,
+    require_known_tenant,
+    require_org_vocabulary_edit,
     require_known_tenant,
     require_org_vocabulary_write,
     require_row,
@@ -354,19 +359,25 @@ async def _root_for(db: Any, vis: Any, project_id: str) -> str:
     return await root_project_id(db, project_id)
 
 
-async def _count_with_key(db: Any, root: str, key: str) -> int:
-    """How many tasks in this tree hold a value for ``key``.
+async def _count_with_key(db: Any, owner: Any, key: str) -> int:
+    """How many of the tasks ``owner`` governs hold a value for ``key``.
 
     Uses the `?` operator (key exists), not `@>`, because the question is
     whether the field is *in use* at all, whatever it was set to.
+
+    🔴 **Takes the ROW, not a root id, and a live run is what proved it had
+    to.** This runs on every `patch_field`, including one that only changes
+    the label. For an org-wide field ``str(row.project_id)`` is the literal
+    string ``"None"``, and asyncpg rejects it before Postgres even sees it:
+    ``invalid UUID 'None': length must be between 32..36 characters, got 4``.
+    The hermetic suite passed — it casts nothing (R8).
     """
+    where, params = governed_tasks_scope(owner)
     return int((await db.execute(
         text(
-            "SELECT count(*) FROM pm_tasks "
-            "WHERE root_project_id = CAST(:root AS uuid) "
-            "  AND custom_fields ? :key"
+            f"SELECT count(*) FROM pm_tasks WHERE {where} AND custom_fields ? :key"
         ),
-        {"root": root, "key": key},
+        {**params, "key": key},
     )).scalar() or 0)
 
 
@@ -501,14 +512,27 @@ async def patch_field(
 
     async with _tenant_session() as db:
         existing = await require_row(db, "pm_custom_fields", field_id, "Custom field")
-        refuse_org_wide_write(existing, "custom field")
-        vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, str(existing.project_id))
+        if is_org_wide(existing):
+            # Owner decision, 2026-09-20. A field's LABEL is the only thing a
+            # rename moves — `field_key` is never editable (see above), so no
+            # task value is touched and there is nothing to preview. What is
+            # refused is `field_type` and `options`, whose guards ask "is this
+            # in use", a question with a different answer org-wide.
+            require_org_vocabulary_edit(user, existing.name)
+            refuse_org_wide_rescope(
+                values, frozenset({"name", "description"}), "custom field",
+            )
+            vis = await resolve_visibility(db, user)
+            require_known_tenant(vis, "custom field")
+        else:
+            refuse_org_wide_write(existing, "custom field")
+            vis = await resolve_visibility(db, user)
+            await load_visible_project(db, vis, str(existing.project_id))
         if not values:
             return _definition_row(existing)
 
         root = str(existing.project_id)
-        in_use = await _count_with_key(db, root, existing.field_key)
+        in_use = await _count_with_key(db, existing, existing.field_key)
 
         new_type = values.get("field_type") or existing.field_type
         if new_type != existing.field_type and in_use:
@@ -522,7 +546,7 @@ async def patch_field(
         if "options" in values:
             options = clean_options(new_type, values["options"])
             removed = await _options_in_use(
-                db, root, existing.field_key, list(existing.options or []), options,
+                db, existing, existing.field_key, list(existing.options or []), options,
             )
             if removed:
                 raise HTTPException(
@@ -560,13 +584,13 @@ async def delete_field(
         vis = await resolve_visibility(db, user)
         await load_visible_project(db, vis, str(existing.project_id))
         root = str(existing.project_id)
+        where, params = governed_tasks_scope(existing)
         cleared = (await db.execute(
             text(
-                "UPDATE pm_tasks SET custom_fields = custom_fields - :key "
-                "WHERE root_project_id = CAST(:root AS uuid) "
-                "  AND custom_fields ? :key"
+                f"UPDATE pm_tasks SET custom_fields = custom_fields - :key "
+                f"WHERE {where} AND custom_fields ? :key"
             ),
-            {"root": root, "key": existing.field_key},
+            {**params, "key": existing.field_key},
         )).rowcount or 0
         await db.execute(
             text("DELETE FROM pm_custom_fields WHERE id = CAST(:fid AS uuid)"),
@@ -580,23 +604,25 @@ async def delete_field(
 
 
 async def _options_in_use(
-    db: Any, root: str, key: str, before: list[str], after: list[str],
+    db: Any, owner: Any, key: str, before: list[str], after: list[str],
 ) -> set[str]:
     """Which of the dropped options some task still holds.
 
     Adding options is free; removing one is what needs the check, so the query
     only runs when something actually went away.
+
+    Scoped by the ROW for the same reason :func:`_count_with_key` is.
     """
     dropped = set(before) - set(after)
     if not dropped:
         return set()
+    where, params = governed_tasks_scope(owner)
     rows = (await db.execute(
         text(
-            "SELECT custom_fields -> :key AS value FROM pm_tasks "
-            "WHERE root_project_id = CAST(:root AS uuid) "
-            "  AND custom_fields ? :key"
+            f"SELECT custom_fields -> :key AS value FROM pm_tasks "
+            f"WHERE {where} AND custom_fields ? :key"
         ),
-        {"root": root, "key": key},
+        {**params, "key": key},
     )).fetchall()
     held: set[str] = set()
     for row in rows:

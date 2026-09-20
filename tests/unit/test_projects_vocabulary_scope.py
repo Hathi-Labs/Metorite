@@ -17,9 +17,12 @@ What this file pins is the half that lives in Python:
   yield one colour.
 * **the flag gates the CREATE, never the read.** Creating an org-wide row is the
   half that is hard to walk back.
-* **an org-wide row cannot be edited from inside one project** — every
-  rename/merge/delete path in the package hands ``str(row.project_id)`` to a
-  uuid cast, and for an org-wide row that is the literal string ``"None"``.
+* **an org-wide row may be RENAMED and nothing else** (owner decision,
+  2026-09-20). Merge and delete stay refused: a rename is reversible by
+  renaming back, and the other two are not. The rename is scoped by
+  ``governed_tasks_scope``, which is what removed the old ``"None"`` cast —
+  every write path used to hand ``str(row.project_id)`` to a uuid cast, and
+  for an org-wide row that is the literal string ``"None"``.
 
 Hermetic. The tenant fence has two halves and only one is here: this file proves
 the SQL carries the anchor and that the mirror honours it; that Postgres honours
@@ -654,22 +657,101 @@ async def test_an_org_wide_type_cannot_be_the_default(
     assert exc.value.status_code == 422
 
 
-# ── An org-wide row is edited nowhere (yet) ─────────────────────────────────
+# ── An org-wide row may be RENAMED, and nothing else ───────────────────────
+#
+# Owner decision, 2026-09-20. It reads: allow the rename, show the org-wide
+# affected-task count before confirming, keep it behind
+# ``admin:settings:manage``.
+#
+# ⚠️ **Merge and delete stay refused**, and that is the whole of the
+# conservatism. A rename is reversible by renaming back. A delete removes a row
+# every project in the organization is using and strips it off their tasks, and
+# a merge destroys one of two rows. Those need the admin surface (H-4) and a
+# decision of their own.
 
 @pytest.mark.asyncio
-async def test_renaming_an_org_wide_tag_is_refused(db: FakeProjectsDB):
-    """⚠️ Without this the route reaches `CAST('None' AS uuid)` — an unhandled
-    database error, i.e. a 500 on a request that should have said no."""
+async def test_an_owner_may_rename_an_org_wide_tag(db: FakeProjectsDB):
+    """🔴 And the rewrite reaches the WHOLE organization.
+
+    `pm_tasks.tags` stores display text, so the rename is a rewrite of every
+    task that wears it — in every project, not in the one the request came
+    through. A scope of one root would rename the registry row and leave most
+    of the tasks still carrying the old word.
+    """
+    here = db.seed_project()
+    there = db.seed_project()
+    tag = db.seed("pm_tags", project_id=None, name="shared", organization_id=ORG_A)
+    db.seed("pm_tasks", root_project_id=here.id, tags=["shared"],
+            organization_id=ORG_A)
+    db.seed("pm_tasks", root_project_id=there.id, tags=["shared", "other"],
+            organization_id=ORG_A)
+
+    out = await pm_tags.patch_tag(
+        tag.id, pm_tags.TagIn(name="renamed"), user=OWNER,
+    )
+    assert out["name"] == "renamed"
+    assert out["retagged"] == 2, "both projects' tasks, not just one"
+    assert sorted(
+        sorted(r["tags"]) for r in db.rows("pm_tasks")
+    ) == [["other", "renamed"], ["renamed"]]
+
+
+@pytest.mark.asyncio
+async def test_a_member_cannot_rename_an_org_wide_tag(db: FakeProjectsDB):
+    """The permission IS the authorization here — there is no project to check."""
     db.seed_project()
-    tag = db.seed("pm_tags", project_id=None, name="shared",
-                  organization_id=ORG_A)
+    tag = db.seed("pm_tags", project_id=None, name="shared", organization_id=ORG_A)
     with pytest.raises(HTTPException) as exc:
-        await pm_tags.patch_tag(tag.id, pm_tags.TagIn(name="renamed"), user=OWNER)
-    assert exc.value.status_code == 409
+        await pm_tags.patch_tag(tag.id, pm_tags.TagIn(name="x"), user=MEMBER)
+    assert exc.value.status_code == 403
+    assert db.rows("pm_tags")[0]["name"] == "shared"
 
 
 @pytest.mark.asyncio
-async def test_deleting_an_org_wide_tag_is_refused(db: FakeProjectsDB):
+async def test_the_create_flag_does_NOT_gate_the_rename(db: FakeProjectsDB):
+    """Turning creates off must not strand the rows already minted.
+
+    `org_vocabularies_enabled` guards the act that is hard to walk back. A row
+    that exists and cannot be corrected is a worse state than either setting of
+    that flag, so the edit is gated on the permission alone. The `db` fixture
+    leaves the flag at its default, which is OFF.
+    """
+    db.seed_project()
+    tag = db.seed("pm_tags", project_id=None, name="shared", organization_id=ORG_A)
+    assert pm_core.org_vocabularies_enabled() is False
+    out = await pm_tags.patch_tag(tag.id, pm_tags.TagIn(name="fine"), user=OWNER)
+    assert out["name"] == "fine"
+
+
+@pytest.mark.asyncio
+async def test_a_rename_onto_a_name_ANY_project_uses_is_refused(
+    db: FakeProjectsDB,
+):
+    """🔴 The silent merge this exists to prevent.
+
+    `pm_tasks.tags` stores display TEXT. Renaming the organization's "shared"
+    to "mine" inside a tree that already has its own "mine" would leave both on
+    one task and `merged_tags` would fold them — a destructive act nobody asked
+    for, reported as a rename. The per-project rule already refuses a rename
+    onto an existing name. This is that rule at the scope the row has.
+    """
+    project = db.seed_project()
+    tag = db.seed("pm_tags", project_id=None, name="shared", organization_id=ORG_A)
+    db.seed("pm_tags", project_id=project.id, name="mine", organization_id=ORG_A)
+
+    with pytest.raises(HTTPException) as exc:
+        await pm_tags.patch_tag(tag.id, pm_tags.TagIn(name="mine"), user=OWNER)
+    assert exc.value.status_code == 409
+    assert "merge" in str(exc.value.detail).lower()
+
+
+# ⚠️ **The impact READ is not here, and that is deliberate.** It is a
+# `count(*) … count(DISTINCT root_project_id)` aggregate, and an aggregate is
+# the exact shape a hermetic fake answers with whatever it was handed (R8).
+# Its behaviour is proved in `tests/live/live_ws27bj_rename.py`.
+
+@pytest.mark.asyncio
+async def test_deleting_an_org_wide_tag_is_STILL_refused(db: FakeProjectsDB):
     db.seed_project()
     tag = db.seed("pm_tags", project_id=None, name="shared",
                   organization_id=ORG_A)
@@ -680,7 +762,7 @@ async def test_deleting_an_org_wide_tag_is_refused(db: FakeProjectsDB):
 
 
 @pytest.mark.asyncio
-async def test_merging_at_EITHER_end_is_refused(db: FakeProjectsDB):
+async def test_merging_at_EITHER_end_is_STILL_refused(db: FakeProjectsDB):
     """Merging INTO an org-wide tag would rewrite one project's tasks while
     claiming an organization-wide result; merging one AWAY would delete a row
     every other project is still using."""
@@ -698,7 +780,36 @@ async def test_merging_at_EITHER_end_is_refused(db: FakeProjectsDB):
 
 
 @pytest.mark.asyncio
-async def test_org_wide_fields_and_types_refuse_the_same_way(db: FakeProjectsDB):
+async def test_a_field_and_a_type_rename_org_wide_too(db: FakeProjectsDB):
+    """Neither touches a task, and that is why neither needs a preview.
+
+    `field_key` is never editable and `pm_tasks.type_id` is a foreign key, so
+    these two renames move a LABEL and nothing else.
+    """
+    db.seed_project()
+    field = db.seed("pm_custom_fields", project_id=None, field_key="k",
+                    name="K", field_type="text", organization_id=ORG_A)
+    type_row = db.seed("pm_task_types", project_id=None, name="Spike",
+                       organization_id=ORG_A)
+
+    assert (await pm_fields.patch_field(
+        field.id, pm_fields.FieldIn(name="Kilo"), user=OWNER,
+    ))["name"] == "Kilo"
+    assert (await pm_admin.patch_type(
+        type_row.id, pm_admin.TypeIn(name="Spike II"), user=OWNER,
+    ))["name"] == "Spike II"
+
+
+@pytest.mark.asyncio
+async def test_the_per_PROJECT_attributes_are_refused_by_name(
+    db: FakeProjectsDB,
+):
+    """⚠️ Each of these has no answer yet at organization scope.
+
+    `is_default` — the default type of WHICH project? `_clear_other_defaults`
+    is scoped to one root. `field_type` and `options` are both guarded by "is
+    this in use", which is a different question across an organization.
+    """
     db.seed_project()
     field = db.seed("pm_custom_fields", project_id=None, field_key="k",
                     name="K", field_type="text", organization_id=ORG_A)
@@ -706,9 +817,31 @@ async def test_org_wide_fields_and_types_refuse_the_same_way(db: FakeProjectsDB)
                        organization_id=ORG_A)
 
     for call in (
-        pm_fields.patch_field(field.id, pm_fields.FieldIn(name="x"), user=OWNER),
+        pm_fields.patch_field(
+            field.id, pm_fields.FieldIn(name="K", field_type="number"), user=OWNER,
+        ),
+        pm_admin.patch_type(
+            type_row.id, pm_admin.TypeIn(name="Spike", is_default=True), user=OWNER,
+        ),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await call
+        assert exc.value.status_code == 409
+        assert "per project" in str(exc.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_field_or_a_type_org_wide_is_STILL_refused(
+    db: FakeProjectsDB,
+):
+    db.seed_project()
+    field = db.seed("pm_custom_fields", project_id=None, field_key="k",
+                    name="K", field_type="text", organization_id=ORG_A)
+    type_row = db.seed("pm_task_types", project_id=None, name="Spike",
+                       organization_id=ORG_A)
+
+    for call in (
         pm_fields.delete_field(field.id, user=OWNER),
-        pm_admin.patch_type(type_row.id, pm_admin.TypeIn(name="x"), user=OWNER),
         pm_admin.delete_type(type_row.id, user=OWNER),
     ):
         with pytest.raises(HTTPException) as exc:
