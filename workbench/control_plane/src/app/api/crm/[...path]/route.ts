@@ -107,6 +107,14 @@ async function forward(
     // unserveable.
     const exportRows = res.headers.get("x-export-rows");
     if (exportRows) headers["X-Export-Rows"] = exportRows;
+    // ⚠️ A security header the gateway sets must survive this hop, or it does
+    // not exist — this proxy is the only route to the bytes. The Projects
+    // proxy is where this was found (its attachments now serve `inline`, so
+    // the browser renders member-uploaded bytes on our origin), and the two
+    // proxies carry the same tail. Fixed in both, and fenced for both by
+    // `src/lib/export.test.ts`, the same way the BOM defect was.
+    const noSniff = res.headers.get("x-content-type-options");
+    if (noSniff) headers["X-Content-Type-Options"] = noSniff;
     return new NextResponse(buf, { status: res.status, headers });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 502 });

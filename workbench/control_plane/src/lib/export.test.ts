@@ -221,6 +221,36 @@ describe.each(EXPORT_PROXIES)("$name", ({ source: relative, load, path }) => {
     ).toBe("crm-leads.csv");
   });
 
+  it("forwards nosniff, which is the only hop that can lose it", async () => {
+    // ⚠️ **This asserts on the PROXY's response, not the gateway's.** The
+    // gateway sets `X-Content-Type-Options: nosniff` beside every inline
+    // `Content-Disposition`, and a backend test that reads it there passes
+    // while the browser never sees it — which is exactly what happened.
+    // These handlers build their headers from scratch, so a header survives
+    // only if a line here copies it.
+    //
+    // It is load-bearing now rather than hygiene: Projects attachments serve
+    // `inline` for a safelist of types, so the browser RENDERS uploaded bytes
+    // on our own origin with the session attached. The safelist is what stops
+    // an SVG today. `nosniff` is what stops the NEXT entry somebody adds to
+    // that safelist from becoming stored XSS.
+    const res = await relay(
+      new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), {
+        status: 200,
+        headers: {
+          "content-type": "image/png",
+          "content-disposition": 'inline; filename="shot.png"',
+          "x-content-type-options": "nosniff",
+        },
+      })
+    );
+
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("content-disposition")).toBe(
+      'inline; filename="shot.png"'
+    );
+  });
+
   it("answers an empty upstream body with no body and its status", async () => {
     // 204 and friends: there is nothing to guess a content type for, and
     // `NextResponse.json("")` would answer `""` where the caller expects

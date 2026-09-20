@@ -138,6 +138,30 @@ export interface PickerResponse {
 }
 
 /**
+ * The picker's two groups, from whatever the suggest endpoint returned.
+ *
+ * 🔴 **Defensive on purpose, and the reason is a measured crash.** The
+ * component built these inline as `res.people` / `res.agents` and then read
+ * `.length`. A response missing either key — an older server, a proxied
+ * error page, a shape change — threw, the throw escaped to the layout
+ * boundary, and **the whole task panel rendered empty**. A suggestion list
+ * is a convenience; its worst case must be "no suggestions", never "no
+ * panel".
+ *
+ * An empty group is dropped rather than drawn as a heading with nothing
+ * under it.
+ */
+export function pickerGroups(
+  res: PickerResponse | null,
+): Array<{ heading: string; rows: PickerRow[] }> {
+  if (!res) return [];
+  return [
+    { heading: "People", rows: Array.isArray(res.people) ? res.people : [] },
+    { heading: "Agents", rows: Array.isArray(res.agents) ? res.agents : [] },
+  ].filter((group) => group.rows.length > 0);
+}
+
+/**
  * The one line under a suggestion: load when visible, "no login" when true,
  * warnings always. Empty string when there is nothing to say — a row with a
  * blank subtitle beats one reading "undefined".

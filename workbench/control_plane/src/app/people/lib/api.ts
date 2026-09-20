@@ -12,6 +12,8 @@
  * 403 after the click (D-PC-4).
  */
 
+import { describeFailure, detailText, readJsonBody } from "@/lib/apiError";
+
 /** The §3.1 half of a person that every `feature:people` holder may read. */
 export interface PersonProfileFields {
   preferred_name?: string | null;
@@ -160,10 +162,10 @@ async function call<T>(path: string): Promise<T> {
   const suffix = path === "" || path.startsWith("?") ? path : `/${path}`;
   const res = await fetch(`/api/people${suffix}`);
   const text = await res.text();
-  const body = text ? JSON.parse(text) : null;
+  const body = readJsonBody(text).value;
   if (!res.ok) {
     throw new PeopleApiError(
-      body?.detail ?? `Request failed (${res.status})`,
+      detailText(body?.detail) || describeFailure(res.status, text),
       res.status
     );
   }
@@ -215,10 +217,10 @@ export const peopleApi = {
       body: JSON.stringify({ policy, dry_run: dryRun }),
     });
     const text = await res.text();
-    const parsed = text ? JSON.parse(text) : null;
+    const parsed = readJsonBody(text).value;
     if (!res.ok) {
       throw new PeopleApiError(
-        parsed?.detail ?? `Request failed (${res.status})`,
+        detailText(parsed?.detail) || describeFailure(res.status, text),
         res.status
       );
     }
@@ -252,13 +254,13 @@ export const peopleApi = {
       body: form,
     });
     const text = await res.text();
-    const parsed = text ? JSON.parse(text) : null;
+    const parsed = readJsonBody(text).value;
     if (!res.ok) {
       // The gateway refuses a file with a sentence about that file — shown
       // verbatim, because the person who chose it is the one who has to
       // choose another.
       throw new PeopleApiError(
-        parsed?.detail ?? `Upload failed (${res.status})`,
+        detailText(parsed?.detail) || describeFailure(res.status, text),
         res.status
       );
     }
@@ -268,10 +270,10 @@ export const peopleApi = {
   removeAvatar: async (target: string) => {
     const res = await fetch(`/api/people/${target}/avatar`, { method: "DELETE" });
     const text = await res.text();
-    const parsed = text ? JSON.parse(text) : null;
+    const parsed = readJsonBody(text).value;
     if (!res.ok) {
       throw new PeopleApiError(
-        parsed?.detail ?? `Request failed (${res.status})`,
+        detailText(parsed?.detail) || describeFailure(res.status, text),
         res.status
       );
     }
@@ -290,10 +292,10 @@ export const peopleApi = {
       body: JSON.stringify(body),
     });
     const text = await res.text();
-    const parsed = text ? JSON.parse(text) : null;
+    const parsed = readJsonBody(text).value;
     if (!res.ok) {
       throw new PeopleApiError(
-        parsed?.detail ?? `Request failed (${res.status})`,
+        detailText(parsed?.detail) || describeFailure(res.status, text),
         res.status
       );
     }
@@ -306,9 +308,9 @@ export const peopleApi = {
     });
     if (!res.ok) {
       const text = await res.text();
-      const parsed = text ? JSON.parse(text) : null;
+      const parsed = readJsonBody(text).value;
       throw new PeopleApiError(
-        parsed?.detail ?? `Request failed (${res.status})`,
+        detailText(parsed?.detail) || describeFailure(res.status, text),
         res.status
       );
     }
@@ -374,10 +376,10 @@ export const peopleApi = {
       body: JSON.stringify({ rows }),
     });
     const text = await res.text();
-    const parsed = text ? JSON.parse(text) : null;
+    const parsed = readJsonBody(text).value;
     if (!res.ok) {
       throw new PeopleApiError(
-        parsed?.detail ?? `Request failed (${res.status})`,
+        detailText(parsed?.detail) || describeFailure(res.status, text),
         res.status
       );
     }
@@ -397,10 +399,10 @@ export const peopleApi = {
       body: JSON.stringify({ rows }),
     });
     const text = await res.text();
-    const parsed = text ? JSON.parse(text) : null;
+    const parsed = readJsonBody(text).value;
     if (!res.ok) {
       throw new PeopleApiError(
-        parsed?.detail ?? `Request failed (${res.status})`,
+        detailText(parsed?.detail) || describeFailure(res.status, text),
         res.status
       );
     }
@@ -447,10 +449,10 @@ export const peopleApi = {
       body: JSON.stringify(body),
     });
     const text = await res.text();
-    const parsed = text ? JSON.parse(text) : null;
+    const parsed = readJsonBody(text).value;
     if (!res.ok) {
       throw new PeopleApiError(
-        parsed?.detail ?? `Request failed (${res.status})`,
+        detailText(parsed?.detail) || describeFailure(res.status, text),
         res.status
       );
     }
@@ -470,10 +472,10 @@ export const peopleApi = {
       body: form,
     });
     const text = await res.text();
-    const parsed = text ? JSON.parse(text) : null;
+    const parsed = readJsonBody(text).value;
     if (!res.ok) {
       throw new PeopleApiError(
-        parsed?.detail ?? `Upload failed (${res.status})`,
+        detailText(parsed?.detail) || describeFailure(res.status, text),
         res.status
       );
     }
@@ -512,9 +514,9 @@ export const peopleApi = {
     });
     if (!res.ok) {
       const text = await res.text();
-      const parsed = text ? JSON.parse(text) : null;
+      const parsed = readJsonBody(text).value;
       throw new PeopleApiError(
-        parsed?.detail ?? `Assign failed (${res.status})`,
+        detailText(parsed?.detail) || describeFailure(res.status, text),
         res.status
       );
     }

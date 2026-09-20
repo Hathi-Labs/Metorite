@@ -1,3 +1,4 @@
+import { describeFailure, detailText, readJsonBody } from "@/lib/apiError";
 import { cacheKey, invalidate } from "@/lib/dataCache";
 
 import type { Rule as RecurrenceRule } from "./recurrence";
@@ -797,13 +798,42 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   const text = await res.text();
-  const body = text ? JSON.parse(text) : null;
+
+  /**
+   * ⚠️ **PARSE DEFENSIVELY, AND PARSE AFTER THE STATUS — not before it.**
+   *
+   * This read used to be `text ? JSON.parse(text) : null`, one line above the
+   * `!res.ok` branch. So any error response that was not JSON threw a raw
+   * `SyntaxError` HERE, and the careful message below was unreachable for
+   * exactly the failures a person most needs explained.
+   *
+   * It is not a hypothetical shape. Starlette's unhandled-exception response
+   * is the nine bytes `Internal Server Error` as `text/plain`, and the proxy
+   * relays the upstream content type faithfully. A member saw:
+   *
+   *     Unexpected token 'I', "Internal S"... is not valid JSON
+   *
+   * which names the parser rather than the fault, points at no server, and
+   * suggests nothing to do. A 502 from a restarting gateway reads the same
+   * way. Measured on production 2026-09-20, where a stuck deploy loop was
+   * restarting the gateway every five minutes.
+   */
+  const parsed = readJsonBody(text);
+  const body = parsed.value;
+
   if (!res.ok) {
-    // The API answers 404 for "not yours" as well as "no such thing" (R5), so
-    // the message is deliberately not embellished here — the UI must not
-    // invent a distinction the server refuses to make.
     throw new ProjectsApiError(
-      body?.detail ?? `Request failed (${res.status})`,
+      detailText(body?.detail) || describeFailure(res.status, text),
+      res.status
+    );
+  }
+
+  // A 2xx whose body is not JSON is still broken, and silently returning the
+  // raw text as `T` would hand a string to code expecting rows — a crash one
+  // frame later, blaming the wrong place.
+  if (!parsed.ok) {
+    throw new ProjectsApiError(
+      `The server answered ${res.status} with a reply this app could not read.`,
       res.status
     );
   }

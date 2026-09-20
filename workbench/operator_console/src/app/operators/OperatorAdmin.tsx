@@ -125,6 +125,10 @@ export default function OperatorAdmin({ rows }: { rows: OperatorRow[] }) {
       )}
 
       <div className="panel">
+        {/* ⚠️ The table scrolls ITSELF. Six columns cannot fit a phone, and
+            without this the whole body slid sideways by 191px at 390px wide,
+            which breaks every other surface on the screen. Measured 2026-09-20. */}
+        <div className="tablewrap">
         <table>
           <thead>
             <tr>
@@ -206,6 +210,7 @@ export default function OperatorAdmin({ rows }: { rows: OperatorRow[] }) {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
 
       <form className="panel" onSubmit={add}>

@@ -108,6 +108,19 @@ async function forward(
     // is the ONLY route to the export.
     const exportRows = res.headers.get("x-export-rows");
     if (exportRows) headers["X-Export-Rows"] = exportRows;
+    // ⚠️ **A security header the gateway sets is worthless unless it survives
+    // this hop.** `GET /projects/attachments/{id}/{name}` answers
+    // `Content-Disposition: inline` for a safelist of types, so the browser
+    // RENDERS member-uploaded bytes on our origin with the session attached.
+    // The gateway pairs that with `nosniff`, and this function builds its
+    // headers from scratch — so until now the browser never saw it.
+    //
+    // Nothing in the app may point at `api.*` (see the note at the top), so
+    // this proxy is the ONLY route to those bytes. A header dropped here is a
+    // header that does not exist. Fenced by `src/lib/export.test.ts`, which
+    // reads the header off the PROXY response and not off the gateway's.
+    const noSniff = res.headers.get("x-content-type-options");
+    if (noSniff) headers["X-Content-Type-Options"] = noSniff;
     return new NextResponse(buf, { status: res.status, headers });
   } catch (err) {
     return NextResponse.json(

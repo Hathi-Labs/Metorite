@@ -20,7 +20,11 @@ import Icon from "@/components/Icon";
 import { Input } from "@/components/ui/Input";
 
 import { projectsApi } from "../lib/api";
-import { type PickerResponse, type PickerRow, describePickerRow } from "../lib/assignees";
+import {
+  type PickerResponse,
+  describePickerRow,
+  pickerGroups,
+} from "../lib/assignees";
 
 const DEBOUNCE_MS = 200;
 
@@ -46,6 +50,22 @@ export function AssigneePicker({
 }: Props) {
   const [open, setOpen] = useState(false);
   const [res, setRes] = useState<PickerResponse | null>(null);
+  /**
+   * ⚠️ Three states that used to be ONE, and the one was silence.
+   *
+   * The list rendered only `open && groups.length > 0`, so "still fetching",
+   * "nothing matches what you typed", "the request failed" and "the
+   * directory is empty" all drew exactly nothing. Every one of them reads as
+   * a dead control, which is what was reported: the field does not populate.
+   *
+   * ⚠️ **"Still fetching" is `res === null`, NOT a `loading` flag.** There was
+   * a `loading` boolean here and it was set INSIDE the debounce callback, so
+   * for the first `DEBOUNCE_MS` of every fresh open nothing was loading and
+   * no response had arrived — and the picker told the member "Nobody in the
+   * directory yet" on a tenant full of people. `res === null` cannot have
+   * that gap: it means "no answer yet" from the first render onwards.
+   */
+  const [failed, setFailed] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -53,12 +73,16 @@ export function AssigneePicker({
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => {
       void (async () => {
+        setFailed(false);
         try {
           setRes(await projectsApi.suggestAssignees(
             value.trim(), due ? due.slice(0, 10) : null));
         } catch {
-          // Suggestions are a convenience; the input still works without them.
+          // Suggestions are a convenience and the input still works without
+          // them — but the member is TOLD, rather than left looking at a
+          // control that appears to do nothing.
           setRes(null);
+          setFailed(true);
         }
       })();
     }, DEBOUNCE_MS);
@@ -67,12 +91,8 @@ export function AssigneePicker({
     };
   }, [value, open, due]);
 
-  const groups: Array<{ heading: string; rows: PickerRow[] }> = res
-    ? [
-        { heading: "People", rows: res.people },
-        { heading: "Agents", rows: res.agents },
-      ].filter((g) => g.rows.length > 0)
-    : [];
+  // One rule, tested without a DOM — see `pickerGroups`.
+  const groups = pickerGroups(res);
 
   return (
     <div className="relative">
@@ -104,8 +124,28 @@ export function AssigneePicker({
         aria-label="Add an assignee"
         aria-expanded={open}
       />
-      {open && groups.length > 0 && (
+      {open && (
         <div className="absolute inset-x-0 top-full z-20 mt-1 max-h-72 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-md">
+          {/* ⚠️ Every branch draws SOMETHING. A picker that renders nothing
+              is indistinguishable from a broken one, and free text still
+              works in all of them — the server accepts any non-empty
+              string, so this list never gates what may be assigned. */}
+          {res === null && !failed ? (
+            <p className="px-2 py-1.5 text-[11px] text-muted-foreground">
+              Looking for teammates…
+            </p>
+          ) : failed ? (
+            <p className="px-2 py-1.5 text-[11px] text-foreground">
+              Couldn&rsquo;t reach the directory. You can still type an email
+              or <code>agent:name</code>.
+            </p>
+          ) : groups.length === 0 ? (
+            <p className="px-2 py-1.5 text-[11px] text-muted-foreground">
+              {value.trim()
+                ? `Nobody matches “${value.trim()}”. Type a full email to assign anyway.`
+                : "Nobody in the directory yet. Add people in the People app, or type an email."}
+            </p>
+          ) : null}
           {groups.map((group) => (
             <div key={group.heading}>
               <p className="px-2 pb-0.5 pt-1.5 text-[10px] font-medium uppercase text-muted-foreground">

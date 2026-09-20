@@ -75,7 +75,12 @@ export default function CommandJump() {
 
   return (
     <>
-      <button type="button" className="cmdk" onClick={openPalette}>
+      <button
+        type="button"
+        className="cmdk"
+        onClick={openPalette}
+        title="Jump to any page or customer by name. Ctrl K opens it from anywhere."
+      >
         <svg viewBox="0 0 24 24" width="13" height="13" fill="none"
           stroke="currentColor" strokeWidth="2" strokeLinecap="round"
           aria-hidden="true">
