@@ -22,6 +22,7 @@ import { useEffect, useState } from "react";
 import Icon from "@/components/Icon";
 
 import { PeopleApiError, peopleApi } from "../lib/api";
+import { PAGE_FRAME, PAGE_FRAME_BLOCK } from "../lib/frame";
 import {
   type QualityResponse,
   describeMissing,
@@ -102,14 +103,14 @@ export default function QualityPage() {
 
   if (error) {
     return (
-      <main className="mx-auto w-full max-w-3xl p-4">
+      <main className={PAGE_FRAME_BLOCK}>
         <p className="text-sm text-muted-foreground">{error}</p>
       </main>
     );
   }
   if (!res) {
     return (
-      <main className="mx-auto w-full max-w-3xl p-4">
+      <main className={PAGE_FRAME_BLOCK}>
         <p className="text-sm text-muted-foreground">Reading the record…</p>
       </main>
     );
@@ -118,7 +119,7 @@ export default function QualityPage() {
   const { coverage, quality, counts } = res;
 
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4">
+    <main className={PAGE_FRAME}>
       <header>
         <h1 className="flex items-center gap-2 text-lg font-semibold">
           <Icon name="ShieldCheck" size={20} />

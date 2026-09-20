@@ -2727,6 +2727,36 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `scripts/backup_db.sh` · `deploy/hostinger/BACKUP-RESTORE.md`
 - **Added:** 2026-09-19 · operator console session, after the backup repair
 
+### H-132 · Renaming the `gtd_*` directory tables breaks 8 old migrations · [AGENT]
+- **Check:** `rg -l "gtd_people" infra/postgres/*.sql | wc -l`. A count above
+  zero means the rename has not happened and this is open.
+- **The owner asked for it, 2026-09-20:** *"I don't want to use the
+  terminology GTD."* The names are decided — `people`, `people_skills`,
+  `people_credentials`, `people_absences`, `people_resumes`.
+- 🔴 **Tried and REVERTED the same day, on evidence.** A rename plus a
+  compatibility view at each old name passed every People suite. The ladder
+  was then replayed against the renamed database. **8 migrations failed.**
+  49, 74, 75, 148, 172 and 173 do ALTER TABLE on a view now. 174 and 176 do
+  CREATE INDEX on one. Dropping the views does not help. The
+  ALTERs then address a name that does not exist at all.
+- **Production is protected only by the LEDGER.** Those 8 files are applied
+  and unchanged, so a normal deploy skips them. The hazard is real wherever
+  the ledger is not in play. Three places do that.
+  - `MIGRATION_REPLAY_ALL=1`, the documented recovery path.
+  - `tests/unit/_tenant_ladder.py`, which keeps no ledger. Every R8 suite
+    then breaks on a persistent scratch database.
+  - Any later edit to one of the 8.
+- **So the first step is NOT the rename.** Guard those 8 files first, so
+  each is a no-op when its table is absent or is a view. The rename is a
+  one-file change after that.
+- 📌 **The code sweep is easy and was proven** — 66 files, 294 occurrences,
+  by word boundary so `uq_gtd_people_email_lower` and the other index and
+  constraint names survive. Three static fences read migration TEXT and must
+  keep the old spelling: `test_tenancy_insert_fence`, `test_tenancy_boundary`
+  and `test_people_key_shape`.
+- **Authority:** owner directive 2026-09-20 · `people_center_app.md` §2 · R6
+- **Added:** 2026-09-20 · the People UX session
+
 ### H-125 · Migration 148's email index spans EVERY tenant · [AGENT]
 - **Check:** `rg -A 2 "uq_gtd_people_email_lower" infra/postgres/148_people_key_shape.sql`
   → an index on `(lower(email))` that does not name `organization_id` means
