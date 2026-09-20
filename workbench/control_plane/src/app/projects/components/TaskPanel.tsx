@@ -908,6 +908,12 @@ export function TaskPanel({
                 value={task.tags ?? []}
                 registry={tags}
                 disabled={busy}
+                // The registry a new tag lands in is this task's own project.
+                // Best effort inside the picker: if it fails the tag still
+                // gets added, it just keeps the column default colour.
+                onCreate={(name, color) =>
+                  projectsApi.createTag(task.project_id, { name, color })
+                }
                 onChange={(next) => {
                   void (async () => {
                     try {

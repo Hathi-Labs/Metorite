@@ -20,7 +20,19 @@ import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useState } from "react";
 
-import { type TagRow, addTag, chipClass, registryOf, removeTag, suggest, wouldCreate } from "../lib/tags";
+import {
+  TAG_COLORS,
+  type TagColor,
+  type TagRow,
+  addTag,
+  autoTagHue,
+  chipClass,
+  swatchClass,
+  registryOf,
+  removeTag,
+  suggest,
+  wouldCreate,
+} from "../lib/tags";
 
 interface Props {
   value: string[];
@@ -40,6 +52,15 @@ interface Props {
   compact?: boolean;
   placeholder?: string;
   ariaLabel?: string;
+  /**
+   * Register a brand-new tag in the project's registry, with its colour.
+   *
+   * Optional, and absent is meaningful: the bulk bar can edit a selection
+   * spanning several projects, so there is no ONE registry to create in.
+   * Without it the picker behaves exactly as it did — the name goes on the
+   * task and the server registers it at the column default.
+   */
+  onCreate?: (name: string, color: TagColor) => void | Promise<unknown>;
 }
 
 export function TagPicker({
@@ -50,6 +71,7 @@ export function TagPicker({
   compact = false,
   placeholder = "Add a tag…",
   ariaLabel = "Add a tag",
+  onCreate,
 }: Props) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
@@ -62,9 +84,17 @@ export function TagPicker({
   const colorOf = (name: string) =>
     registry.find((t) => t.name.toLowerCase() === name.toLowerCase())?.color;
 
-  const commit = (raw: string) => {
+  const commit = (raw: string, hue?: TagColor) => {
     const next = addTag(value, raw, lookup);
     if (next !== value) onChange(next);
+    // ⚠️ Registering is BEST EFFORT and never blocks the add. The server
+    // auto-registers an unknown name anyway (at the column default), so a
+    // failed create costs the colour and nothing else — whereas awaiting it
+    // would make adding a tag wait on a second request, which is the errand
+    // this picker exists to avoid.
+    if (hue && onCreate && wouldCreate(raw, lookup)) {
+      void Promise.resolve(onCreate(raw.trim(), hue)).catch(() => {});
+    }
     setQuery("");
   };
 
@@ -122,7 +152,10 @@ export function TagPicker({
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
-              commit(options.length && !creating ? options[0].name : query);
+              commit(
+                options.length && !creating ? options[0].name : query,
+                creating ? autoTagHue(query) : undefined,
+              );
             } else if (e.key === "Escape") {
               setOpen(false);
             } else if (e.key === "Backspace" && query === "" && value.length) {
@@ -164,17 +197,55 @@ export function TagPicker({
               </li>
             ))}
             {creating ? (
-              <li className="border-t border-border">
+              /* ⚠️ The colour is OFFERED here, never demanded.
+                 
+                 This file's header says auto-registration is deliberate,
+                 because "a two-step errand is how tagging gets abandoned".
+                 A modal asking for a hue on every new tag is that errand.
+                 So Enter still creates in one keystroke — it just no longer
+                 creates a grey tag, because `autoTagHue` picks a stable
+                 colour from the name. The six swatches are there for the
+                 member who cares, one click, without leaving the list.
+                 Curating afterwards is `TagManager`'s job. */
+              <li className="border-t border-border p-1">
                 <Button
                   variant="ghost"
                   size="sm"
                   icon="Plus"
                   className="w-full justify-start"
                   onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
-                  onClick={() => commit(query)}
+                  onClick={() => commit(query, autoTagHue(query))}
                 >
                   Create “{query.trim()}”
                 </Button>
+                <div className="mt-1 flex items-center gap-1 px-2 pb-0.5">
+                  <span className="text-[11px] text-muted-foreground">
+                    Colour
+                  </span>
+                  {TAG_COLORS.map((hue) => {
+                    const auto = hue === autoTagHue(query);
+                    return (
+                      <button
+                        key={hue}
+                        type="button"
+                        // The name says which hue AND whether it is the one
+                        // Enter would take — a swatch row is unreadable to a
+                        // screen reader otherwise.
+                        aria-label={
+                          auto ? `${hue} (chosen by default)` : `Create it ${hue}`
+                        }
+                        title={hue}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => commit(query, hue)}
+                        className={`h-4 w-4 rounded-full ${swatchClass(hue)} ${
+                          auto
+                            ? "ring-2 ring-ring ring-offset-1 ring-offset-card"
+                            : "opacity-70 hover:opacity-100"
+                        }`}
+                      />
+                    );
+                  })}
+                </div>
               </li>
             ) : null}
           </ul>
