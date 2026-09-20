@@ -6,7 +6,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from acb_auth import (UserContext, UserRole, get_current_user,
-                      require_authenticated, require_role)
+                      identity_read_failed, require_authenticated,
+                      require_role)
 from acb_common import configure_logging, get_logger, get_settings
 from acb_common.db import TenantUnbound, clear_tenant, release_tenant
 from fastapi import BackgroundTasks, Depends, FastAPI, Request
@@ -680,13 +681,45 @@ app = FastAPI(
 async def _tenant_unbound(request: Request, exc: TenantUnbound) -> JSONResponse:
     # Present/absent only, never the address itself.
     identified = bool(request.headers.get("x-user-email"))
+    # 🔴 Did the directory REFUSE the read, or did it answer "nobody"?
+    # Until 2026-09-20 nothing here could tell, because `resolve_identity`
+    # returned the same `(None, None)` for both — so a database that refused
+    # came out of the 403 below as "This account is not a member of any
+    # organization", to a signed-in owner looking at their own board.
+    unreachable = identity_read_failed()
     _log.error(
         "tenant.unbound",
         extra={
             "tenant_path": request.url.path,
             "tenant_had_user_header": identified,
+            "tenant_directory_unreachable": unreachable,
         },
     )
+    if unreachable:
+        # ⚠️ **503, and it is checked BEFORE `identified`.** This is our
+        # fault, it is retryable, and saying so is the entire point: the
+        # advice the 403 gives — ask an administrator — could not have fixed
+        # the real cause, which was a connection-pool ceiling above what the
+        # pooler in front allows. Measured in production the same day:
+        # eleven refused reads in six hours, in bursts, because one page load
+        # fires ten parallel requests.
+        #
+        # `Retry-After` is short — the pool frees in well under a second.
+        #
+        # ⚠️ The driver's own message is NOT echoed; it names the pooler host
+        # and its limits, and this body reaches a browser.
+        return JSONResponse(
+            status_code=503,
+            headers={"Retry-After": "2"},
+            content={
+                "detail": (
+                    "We could not reach the directory that says which"
+                    " organization you belong to. This is a fault on our side"
+                    " and your account is fine. Try again in a moment."
+                ),
+                "code": "identity_unavailable",
+            },
+        )
     if identified:
         return JSONResponse(
             status_code=403,

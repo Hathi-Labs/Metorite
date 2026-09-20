@@ -143,3 +143,117 @@ def test_the_gateway_itself_registers_it():
     from gateway.main import app
 
     assert TenantUnbound in app.exception_handlers
+
+
+# ── The third case: the directory could not be READ ────────────────────────
+
+
+def _app_with_handler_unreachable(monkeypatch) -> FastAPI:
+    """The same handler, with this request's identity read marked FAILED.
+
+    ⚠️ The flag is set through `acb_auth.access`'s own ContextVar rather than
+    by patching `identity_read_failed`, so the test exercises the real seam
+    the gateway reads.
+    """
+    import acb_auth.access as access_mod
+
+    access_mod._identity_read_failed.set(True)
+    return _app_with_handler()
+
+
+@pytest.fixture
+def unavailable(monkeypatch) -> TestClient:
+    return TestClient(
+        _app_with_handler_unreachable(monkeypatch), raise_server_exceptions=False,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _reset_identity_flag():
+    """⚠️ Per-test reset. The ContextVar outlives one test inside a worker,
+    and a leaked `True` turns every later 403 assertion into a 503."""
+    import acb_auth.access as access_mod
+
+    token = access_mod._identity_read_failed.set(False)
+    yield
+    access_mod._identity_read_failed.reset(token)
+
+
+class TestAFailedReadIsNotAnAccusation:
+    """🔴 The bug this class exists for reached the owner's screen.
+
+    `resolve_identity` swallowed a failed read and returned `(None, None)` —
+    the same value as "nobody matched". So the 403 above fired, and a
+    signed-in owner looking at their own board was told:
+
+        "This account is not a member of any organization"
+
+    Measured on production 2026-09-20, six hours: eleven
+    `auth.identity_resolve_failed` and ten `tenant.unbound`, every one of the
+    latter carrying `tenant_had_user_header: True`. Underneath all of them
+    `(EMAXCONNSESSION) max clients reached in session mode — max clients are
+    limited to pool_size: 15`.
+
+    A connection-pool ceiling was being reported as a membership problem, and
+    the instruction it gave — go to an administrator — could not have helped.
+    """
+
+    def test_it_is_503_and_not_403(self, unavailable):
+        # 403 is the accusation. The whole fix is that these two differ.
+        assert unavailable.get("/scoped", headers=WHO).status_code == 503
+
+    def test_it_is_not_a_4xx_at_all(self, unavailable):
+        # Any 4xx says "your request was wrong". It was not.
+        assert unavailable.get("/scoped", headers=WHO).status_code // 100 == 5
+
+    def test_it_never_says_the_member_has_no_organization(self, unavailable):
+        body = unavailable.get("/scoped", headers=WHO).json()["detail"].lower()
+        assert "not a member" not in body
+        assert "no organization" not in body
+        assert "administrator" not in body
+
+    def test_it_says_the_account_is_fine(self, unavailable):
+        # The first thought on any auth-shaped error is "is my account
+        # broken". Answer it before they ask.
+        body = unavailable.get("/scoped", headers=WHO).json()["detail"].lower()
+        assert "your account is fine" in body
+
+    def test_it_tells_them_to_retry(self, unavailable):
+        body = unavailable.get("/scoped", headers=WHO).json()["detail"].lower()
+        assert "try again" in body
+
+    def test_it_carries_Retry_After(self, unavailable):
+        # A 503 without it is a dead end for anything automated.
+        assert unavailable.get("/scoped", headers=WHO).headers.get("Retry-After")
+
+    def test_the_body_is_readable_JSON(self, unavailable):
+        got = unavailable.get("/scoped", headers=WHO).json()
+        assert got["code"] == "identity_unavailable"
+
+    def test_it_does_not_leak_the_driver_message(self, unavailable):
+        # ⚠️ The asyncpg text names the pooler host and its limits.
+        body = unavailable.get("/scoped", headers=WHO).json()["detail"]
+        for leak in ("pool_size", "EMAXCONNSESSION", "asyncpg", "supabase"):
+            assert leak.lower() not in body.lower()
+
+    def test_a_SERVICE_call_with_a_failed_read_is_also_503(self, unavailable):
+        # No user header. It is still our fault and still retryable, so the
+        # unreachable branch wins over the 500 — the 500 means "a job reached
+        # a tenant route", which is a different defect.
+        assert unavailable.get("/scoped").status_code == 503
+
+
+class TestTheOrdinaryCasesAreUNCHANGED:
+    """⚠️ The flag must change nothing when the read WORKED.
+
+    Somebody genuinely between "signs in" and "an admin adds them" is the
+    ordinary onboarding state, and the 403 is correct for them. If the flag
+    leaked, every one of those would become "try again in a moment" — advice
+    that can never come true.
+    """
+
+    def test_a_real_non_member_still_gets_403(self, client):
+        assert client.get("/scoped", headers=WHO).status_code == 403
+
+    def test_a_service_call_still_gets_500(self, client):
+        assert client.get("/scoped").status_code == 500
