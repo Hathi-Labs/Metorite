@@ -199,6 +199,10 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # so the refusal is authenticated, not an anonymous probe's oracle.
     ("POST", "/catalog/rates"): _R(ADMIN, elevated=True),
     ("POST", "/catalog/tier-rates"): _R(ADMIN, elevated=True),
+    # The margin is a commercial number like the price beside it, so it
+    # takes the same gate. CI caught the ABSENCE of a row like this once
+    # and it read as a mystery 403.
+    ("POST", "/catalog/tier-margins"): _R(ADMIN, elevated=True),
     # The credit's own rupee price (017) — the same commercial sharpness.
     ("POST", "/catalog/credit-price"): _R(ADMIN, elevated=True),
     ("POST", "/providers/credentials/revoke"): _R(ADMIN, elevated=True),

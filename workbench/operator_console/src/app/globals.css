@@ -2514,3 +2514,16 @@ main.wrap {
   gap: 10px;
   flex-wrap: wrap;
 }
+
+.cardactions {
+  display: flex;
+  gap: 8px;
+}
+.cardactions .linklike {
+  flex: 1 1 0;
+  text-align: center;
+  padding: 7px;
+  border: 1px dashed var(--border);
+  border-radius: var(--r);
+  min-width: 0;
+}
