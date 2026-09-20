@@ -32,6 +32,10 @@ import { savedAssumptions, inrLabel, marginPct, parseMarginPct, costBasis, costB
 import { marginLabelPct, roundCredits } from "@/lib/pricing";
 import {
   type TierPriceRow,
+  floorOfPct,
+  floorPctOf,
+  marginPctOf,
+  multiplierOfPct,
   plannedMargin,
   priceState,
   pricingAlert,
@@ -50,7 +54,9 @@ export default function PriceBoard({ catalog }: { catalog: AiCatalog }) {
   const a = savedAssumptions(catalog.creditPrice);
   const alert = pricingAlert(groups, catalog.creditPrice);
 
-  const [open, setOpen] = useState<string | null>(null);
+  // Which card is open, and which of its two editors. One at a time: two
+  // open forms on one card is two half-finished commercial decisions.
+  const [open, setOpen] = useState<{ tier: string; what: "price" | "margin" } | null>(null);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   if (groups.length === 0) {
@@ -99,9 +105,13 @@ export default function PriceBoard({ catalog }: { catalog: AiCatalog }) {
                 row={r}
                 catalog={catalog}
                 assumptions={a}
-                open={open === r.tier.slug}
-                onToggle={() =>
-                  setOpen(open === r.tier.slug ? null : r.tier.slug)
+                open={open?.tier === r.tier.slug ? open.what : null}
+                onToggle={(what) =>
+                  setOpen(
+                    open?.tier === r.tier.slug && open.what === what
+                      ? null
+                      : { tier: r.tier.slug, what },
+                  )
                 }
                 onSaved={(text, ok) => {
                   setResult({ ok, text });
@@ -132,8 +142,8 @@ function TierCard({
   row: TierPriceRow;
   catalog: AiCatalog;
   assumptions: ReturnType<typeof savedAssumptions>;
-  open: boolean;
-  onToggle: () => void;
+  open: "price" | "margin" | null;
+  onToggle: (what: "price" | "margin") => void;
   onSaved: (text: string, ok: boolean) => void;
 }) {
   const state = priceState(row);
@@ -183,7 +193,7 @@ function TierCard({
         <dt title={HELP_PRICING.weCharge}>we charge</dt>
         <dd>{chargeLine(row, catalog)}</dd>
 
-        <dt title={HELP_PRICING.plannedMargin}>margin</dt>
+        <dt title={HELP_PRICING.marginVsFloor}>margin</dt>
         <dd>
           {planned === null ? (
             <span className="muted">—</span>
@@ -220,17 +230,35 @@ function TierCard({
         </dd>
       </dl>
 
-      <button
-        type="button"
-        className="linklike wide"
-        onClick={onToggle}
-        title={HELP_PRICING.setPrice}
-        disabled={row.primaryId === null && state === "unbound" && !open}
-      >
-        {open ? "Close" : state === "priced" || state === "absorbed" ? "Change the price" : "Set the price"}
-      </button>
+      <div className="cardactions">
+        <button
+          type="button"
+          className="linklike"
+          onClick={() => onToggle("price")}
+          title={HELP_PRICING.setPrice}
+          disabled={row.primaryId === null && state === "unbound" && open === null}
+        >
+          {open === "price"
+            ? "Close"
+            : state === "priced" || state === "absorbed"
+              ? "Change the price"
+              : "Set the price"}
+        </button>
+        <button
+          type="button"
+          className="linklike"
+          onClick={() => onToggle("margin")}
+          title={HELP_PRICING.setMargin}
+        >
+          {open === "margin"
+            ? "Close"
+            : row.margin && (row.margin.marginMultiplier !== null || row.margin.marginFloor !== null)
+              ? "Change the margin"
+              : "Set the margin"}
+        </button>
+      </div>
 
-      {open && (
+      {open === "price" && (
         <PriceEditor
           row={row}
           catalog={catalog}
@@ -238,6 +266,8 @@ function TierCard({
           onSaved={onSaved}
         />
       )}
+
+      {open === "margin" && <MarginEditor row={row} onSaved={onSaved} />}
     </article>
   );
 }
@@ -514,6 +544,121 @@ function PriceEditor({
         </button>
         <span className="muted small">
           Saving is a commercial act, so it needs an elevated admin session.
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ── What we MEANT to keep, and what we want to be told about ───────────────
+//
+// 🔴 **Migration 029 shipped the table, three reads and no way in.** Its own
+// header says "an agent builds the mechanism, the owner sets the figures" —
+// and the mechanism stopped at the table. The board's alarm could never fire
+// and its margin box could never fill, because the only road to the number
+// was hand-written SQL. This is that road.
+//
+// ⚠️ **Two numbers, and confusing them inverts an alarm.** The multiplier is
+// an INTENTION that seeds a suggestion. The floor is a THRESHOLD measured
+// against traffic that already happened. A tier can hold one and miss the
+// other, which is exactly why the form draws them apart with their own words.
+//
+// ⚠️ **Blank is a decision, not a gap.** No multiplier means no suggestion,
+// and no floor means no alarm. Both are states an operator picks, so an empty
+// box saves as NULL rather than being refused or coerced to zero.
+function MarginEditor({
+  row,
+  onSaved,
+}: {
+  row: TierPriceRow;
+  onSaved: (text: string, ok: boolean) => void;
+}) {
+  const m = row.margin;
+  // ⚠️ The unit conversion lives in `priceRows.ts` and is tested there. It
+  // was inline here for one commit, which is the exact shape this app cannot
+  // test — no React renderer, so arithmetic inside a component is checked by
+  // nothing.
+  const [keep, setKeep] = useState(marginPctOf(m?.marginMultiplier ?? null));
+  const [floor, setFloor] = useState(floorPctOf(m?.marginFloor ?? null));
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function save() {
+    const k = keep.trim();
+    const f = floor.trim();
+    if (k && !(Number(k) >= 0 && Number(k) < 100)) {
+      setErr("Keep a share between 0 and 99 percent. 100 asks for an infinite price.");
+      return;
+    }
+    if (f && !(Number(f) >= 0 && Number(f) < 100)) {
+      setErr("A floor is a percentage below 100. A floor of 100 can never be met.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch("/api/operator/catalog/tier-margins", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          tier: row.tier.slug,
+          // ⚠️ null, never "" or 0. An empty box means "do not suggest" and
+          // "do not watch", and a zero would be a number somebody chose.
+          margin_multiplier: multiplierOfPct(k),
+          margin_floor: floorOfPct(f),
+        }),
+      });
+      const text = await res.text();
+      onSaved(
+        res.ok
+          ? `${row.tier.label}: margin recorded. It changes no bill by itself — it seeds the suggestion and sets the alarm.`
+          : `The Console refused: ${text}`,
+        res.ok,
+      );
+      if (!res.ok) setErr(`The Console refused: ${text}`);
+    } catch {
+      setErr(
+        "The Console did not answer. Nothing was recorded — check the network and try again.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="priceeditor">
+      <div className="legs">
+        <label title={HELP_PRICING.multiplier}>
+          Aim to keep, %
+          <input inputMode="numeric" value={keep} onChange={(e) => setKeep(e.target.value)} />
+          <span className="muted small">
+            {keep.trim() ? "seeds the suggestion" : "no suggestion"}
+          </span>
+        </label>
+        <label title={HELP_PRICING.floor}>
+          Tell me below, %
+          <input inputMode="numeric" value={floor} onChange={(e) => setFloor(e.target.value)} />
+          <span className="muted small">
+            {floor.trim() ? "alarms under this" : "never alarms"}
+          </span>
+        </label>
+      </div>
+
+      <p className="muted small">
+        Neither number bills anything. The first seeds what this tier suggests
+        when you price it. The second is measured against traffic that already
+        happened, so a tier can sit above its floor while the first is wrong.
+        Leave a box empty to turn that half off.
+      </p>
+
+      {err && <p className="result err">{err}</p>}
+
+      <div className="editoractions">
+        <button type="button" onClick={save} disabled={busy} title={HELP_PRICING.saveMargin}>
+          {busy ? "Saving…" : "Save the margin"}
+        </button>
+        <span className="muted small">
+          A commercial act, so it needs an elevated admin session.
         </span>
       </div>
     </div>

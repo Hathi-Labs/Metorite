@@ -266,10 +266,22 @@ describe("the wiring", () => {
   it("🔴 there is exactly ONE write path for a price", () => {
     // Suggesting a price and typing one were never two acts: they write
     // the same card, through the same route, with the same body. Two
-    // fetch sites here would be the split this board exists to end.
+    // routes to a price here would be the split this board exists to end.
+    //
+    // ⚠️ **Counted BY ROUTE, not by `fetch(`.** The count of fetch sites
+    // was the first instrument, and it only worked while the board wrote one
+    // kind of thing. The margin editor made it a second write -- of a
+    // different thing, through a different route -- and a fence that fails on
+    // that is measuring the wrong quantity. Two calls to the SAME route is
+    // the defect; two routes for two decisions is the design.
     const src = read("../app/pricing/PriceBoard.tsx");
-    expect(src).toContain('fetch("/api/operator/catalog/tier-rates"');
-    expect(src.match(/fetch\(/g)).toHaveLength(1);
+    const to = (route: string) =>
+      src.match(new RegExp(`fetch\\("${route}"`, "g")) ?? [];
+    expect(to("/api/operator/catalog/tier-rates")).toHaveLength(1);
+    expect(to("/api/operator/catalog/tier-margins")).toHaveLength(1);
+    // And nothing else. A third route appearing here is a third decision
+    // somebody put on this surface without saying so.
+    expect(src.match(/fetch\(/g)).toHaveLength(2);
   });
 
   it("🔴 the board POSTs per MILLION, and never both scales", () => {

@@ -300,3 +300,50 @@ export function pricingAlert(
 export function plural(n: number, word: string): string {
   return n === 1 ? word : `${word}s`;
 }
+
+// ── The margin, in the two units it lives in ───────────────────────────────
+//
+// 🔴 **Stored as a MULTIPLIER, thought about as a PERCENT.** `tier_margin`
+// holds M, where a price is cost × M. An operator thinks "I keep 60% of what
+// they pay". The two are related by margin = 1 − 1/M, and that conversion is
+// exactly the kind of arithmetic this repo has shipped wrong before — so it
+// lives here, with a test, and not inside a component this app cannot render.
+
+/** A stored multiplier as the percent an operator types. "" when unset or
+ *  unusable — a multiplier below 1 sells below cost and the column refuses it,
+ *  so it can only arrive from a hand-written row. */
+export function marginPctOf(multiplier: string | null): string {
+  if (multiplier === null) return "";
+  const m = Number(multiplier);
+  if (!Number.isFinite(m) || m < 1) return "";
+  return String(Math.round((1 - 1 / m) * 100));
+}
+
+/** The percent an operator typed, as the multiplier the column stores. Null
+ *  for an empty box, which means "offer no suggestion" and must not become a
+ *  zero. Null also for 100 or more, which asks for an infinite price. */
+export function multiplierOfPct(pct: string): string | null {
+  const t = pct.trim();
+  if (!t) return null;
+  const n = Number(t);
+  if (!Number.isFinite(n) || n < 0 || n >= 100) return null;
+  return String(1 / (1 - n / 100));
+}
+
+/** A stored floor fraction as the percent an operator types. */
+export function floorPctOf(floor: string | null): string {
+  if (floor === null) return "";
+  const f = Number(floor);
+  if (!Number.isFinite(f)) return "";
+  return String(Math.round(f * 100));
+}
+
+/** The percent an operator typed, as the fraction the column stores. Null for
+ *  an empty box, which means "never alarm". */
+export function floorOfPct(pct: string): string | null {
+  const t = pct.trim();
+  if (!t) return null;
+  const n = Number(t);
+  if (!Number.isFinite(n) || n < 0 || n >= 100) return null;
+  return String(n / 100);
+}

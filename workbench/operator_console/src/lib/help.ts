@@ -272,9 +272,6 @@ export const HELP_PRICING = {
   earned:
     "The margin real traffic actually produced over the last seven days. " +
     "This is the only figure on the card that measures rather than predicts.",
-  floor:
-    "The margin below which somebody should look at this tier. A tier with " +
-    "no floor never raises an alarm, because nobody set it a threshold.",
   runsOn:
     "The model that answers first for this tier. Its vendor price is the " +
     "cost every suggestion here is built on — a backup changes our cost, " +
@@ -308,4 +305,24 @@ export const HELP_PRICING = {
   savePrice:
     "Write this card. It takes effect now, past calls keep the card they " +
     "were rated by, and repricing later is an insert, so history stays.",
+  setMargin:
+    "Record what you aim to keep on this tier, and the level below which " +
+    "somebody should look. Both are commercial decisions, and both may be " +
+    "left blank.",
+  multiplier:
+    "What you aim to keep, as a share of the price. It seeds the suggestion " +
+    "when you price this tier, and it changes no bill by itself. Blank means " +
+    "this tier offers no suggestion at all.",
+  floor:
+    "The realised margin below which this tier raises an alarm. Measured " +
+    "against real traffic, not against the price on the card, so a tier can " +
+    "sit above its floor while its intended margin is wrong. Blank means it " +
+    "never alarms.",
+  marginVsFloor:
+    "The intended margin is what you MEANT to keep. The floor is what you " +
+    "want to be told about. A tier can miss one and hold the other, which " +
+    "is why they are two numbers.",
+  saveMargin:
+    "Record both numbers. It is a commercial act, so it needs an elevated " +
+    "admin session, and the previous pair stays readable as history.",
 } as const;

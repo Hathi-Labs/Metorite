@@ -11,6 +11,10 @@ import type { AiCatalog, CatalogModel, Tier, TierMargin, TierRate } from "./cont
 import { EMPTY_CATALOG } from "./contract";
 import {
   PER_1M,
+  floorOfPct,
+  floorPctOf,
+  marginPctOf,
+  multiplierOfPct,
   perUnitVendorUsd,
   plannedMargin,
   priceState,
@@ -306,5 +310,65 @@ describe("pricingAlert", () => {
   it("treats an absorbed tier as priced — free on purpose is a decision", () => {
     const free = row({ rate: { mode: "absorbed" } as TierRate });
     expect(pricingAlert(g([free]), price).tone).toBe("ok");
+  });
+});
+
+describe("the margin's two units", () => {
+  it("🔴 a round trip through percent and back is the identity", () => {
+    // The conversion this repo is most likely to ship backwards. 60% kept
+    // means charge 2.5x cost: 1 - 1/2.5 = 0.6. Checked both directions and
+    // then round-tripped, because one direction alone can be wrong twice and
+    // still agree with itself.
+    for (const pct of ["0", "25", "50", "60", "75", "90", "99"]) {
+      const mult = multiplierOfPct(pct);
+      expect(mult).not.toBeNull();
+      expect(marginPctOf(mult)).toBe(pct);
+    }
+  });
+
+  it("converts the worked example the design document uses", () => {
+    // 2.5 on Fast and 1.4 on Powerful are the document's own numbers.
+    expect(marginPctOf("2.5")).toBe("60");
+    expect(marginPctOf("1.4")).toBe("29");
+    expect(Number(multiplierOfPct("60"))).toBeCloseTo(2.5, 10);
+  });
+
+  it("🔴 an EMPTY box is null, never a zero", () => {
+    // Blank means "offer no suggestion" and "never alarm". A zero would be a
+    // number somebody chose, and 0% kept means selling at exactly cost.
+    expect(multiplierOfPct("")).toBeNull();
+    expect(multiplierOfPct("   ")).toBeNull();
+    expect(floorOfPct("")).toBeNull();
+    // ...and 0 typed on purpose is NOT blank.
+    expect(multiplierOfPct("0")).toBe("1");
+    expect(floorOfPct("0")).toBe("0");
+  });
+
+  it("refuses 100 percent or more — that asks for an infinite price", () => {
+    expect(multiplierOfPct("100")).toBeNull();
+    expect(multiplierOfPct("150")).toBeNull();
+    expect(floorOfPct("100")).toBeNull();
+  });
+
+  it("refuses a negative share", () => {
+    expect(multiplierOfPct("-10")).toBeNull();
+    expect(floorOfPct("-1")).toBeNull();
+  });
+
+  it("shows an unset margin as an empty box, not a zero", () => {
+    expect(marginPctOf(null)).toBe("");
+    expect(floorPctOf(null)).toBe("");
+  });
+
+  it("ignores a multiplier below 1, which can only come from a hand-written row", () => {
+    // The column's CHECK refuses it, so it cannot arrive through the route.
+    // Drawing it as a negative percent would be worse than drawing nothing.
+    expect(marginPctOf("0.8")).toBe("");
+  });
+
+  it("round-trips a floor through percent and back", () => {
+    for (const pct of ["0", "25", "45", "50", "99"]) {
+      expect(floorPctOf(floorOfPct(pct))).toBe(pct);
+    }
   });
 });

@@ -2641,6 +2641,129 @@ def set_tier_rate(req: TierRateRequest, staff: Operator) -> dict[str, Any]:
     return {"tier": req.tier, "task": req.task, "pricing_mode": req.pricing_mode}
 
 
+class TierMarginRequest(BaseModel):
+    """What we INTEND to keep on a tier, and when to complain (migration 029).
+
+    ⚠️ **Two different numbers, and confusing them inverts an alarm.**
+    ``margin_multiplier`` is what we multiply cost by to SUGGEST a price — an
+    intention. ``margin_floor`` is the realised margin BELOW WHICH somebody
+    should look — an alarm threshold measured against what actually happened.
+    A tier can sit above its floor while its multiplier is wrong, and below
+    its floor while its multiplier is right.
+
+    ⚠️ **Both are OPTIONAL, and NULL is a real answer.** A tier with no
+    multiplier offers no suggestion. A tier with no floor never alarms. An
+    operator clearing one is saying "stop suggesting" or "stop watching", and
+    that is a decision the board draws differently from a zero.
+    """
+
+    tier: str
+    #: M in the design document. 2.5 means charge 2.5 times cost. The column's
+    #: CHECK refuses anything below 1 — a multiplier under 1 sells below cost,
+    #: which is a decision the ABSORBED pricing mode exists to record instead.
+    margin_multiplier: Decimal | None = None
+    #: A FRACTION, so 0.45 is 45 percent. The column's CHECK holds it in
+    #: [0, 1): a floor of 1 demands an infinite price and can never be met.
+    margin_floor: Decimal | None = None
+    #: When it takes effect. NULL means now. Future-dating is the mechanism
+    #: for "the new margin applies from the 1st".
+    effective_from: datetime | None = None
+
+
+@app.post("/catalog/tier-margins")
+def set_tier_margin(req: TierMarginRequest, staff: Operator) -> dict[str, Any]:
+    """Set one tier's intended margin and its alarm floor. **INSERT, never
+    UPDATE** — a past suggestion must stay readable against the numbers that
+    produced it.
+
+    🔴 **The NUMBERS are the owner's commercial act (H-42).** This route is
+    the MECHANISM, and building it sets nothing: migration 029 ships the table
+    empty on purpose, and it stays empty until somebody decides.
+
+    🔴 **This was the half that never shipped.** 029 wrote "an agent builds
+    the mechanism, the owner sets the figures". The table and three reads
+    landed — the pricing board's alarm, its floor line and the margin box that
+    seeds every suggestion — and no route did. So the alarm could not fire and
+    the box could not fill, because the only way in was hand-written SQL.
+
+    ⚠️ **Both numbers may be omitted, and omitting BOTH is legal.** It records
+    that this tier has neither a suggestion nor a watch, which is a different
+    state from never having been considered — and the row is what carries the
+    difference.
+    """
+    with get_engine().begin() as conn:
+        known_tier = conn.execute(
+            text("SELECT 1 FROM tier_catalog WHERE slug = :s"),
+            {"s": req.tier},
+        ).first()
+        if known_tier is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown tier {req.tier!r}; it is not in tier_catalog",
+            )
+
+        # ⚠️ Checked HERE as well as by the column, so the operator gets a
+        # sentence instead of a constraint name. The CHECK stays the fence:
+        # this route is not the only thing that can reach the table.
+        if req.margin_multiplier is not None and req.margin_multiplier < 1:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "a margin multiplier below 1 sells below cost; mark the "
+                    "tier absorbed on its rate card if that is the intention"
+                ),
+            )
+        if req.margin_floor is not None and not (0 <= req.margin_floor < 1):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "a margin floor is a FRACTION in [0, 1) — 0.45 means 45 "
+                    "percent. A floor of 1 demands an infinite price"
+                ),
+            )
+
+        try:
+            conn.execute(
+                text(
+                    "INSERT INTO tier_margin (tier, margin_multiplier, "
+                    "    margin_floor, effective_from) "
+                    "VALUES (:t, :m, :f, COALESCE(:eff, now()))"
+                ),
+                {
+                    "t": req.tier,
+                    "m": req.margin_multiplier,
+                    "f": req.margin_floor,
+                    "eff": req.effective_from,
+                },
+            )
+        except IntegrityError:
+            # The same retried-POST trap `/catalog/tier-rates` answers for.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "a margin for this tier already exists at that exact "
+                    "effective_from; omit it to save a new row dated now, or "
+                    "pass a later timestamp"
+                ),
+            ) from None
+        _audit(
+            conn,
+            None,
+            "catalog.tier_margin",
+            {
+                "tier": req.tier,
+                "margin_multiplier": _fixed(req.margin_multiplier),
+                "margin_floor": _fixed(req.margin_floor),
+            },
+            actor=staff.actor,
+        )
+    return {
+        "tier": req.tier,
+        "margin_multiplier": _fixed(req.margin_multiplier),
+        "margin_floor": _fixed(req.margin_floor),
+    }
+
+
 class CreditPriceRequest(BaseModel):
     """What one credit sells for — the other half of H-42 (migration 017)."""
 
