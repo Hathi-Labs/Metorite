@@ -2606,6 +2606,39 @@ line — never reclaim a number by deleting the other entry.
   `tests/unit/test_build_info.py`
 - **Added:** 2026-09-20 · the My Profile session
 
+### H-131 · 19 hover-revealed controls vanish on a touch-capable display · [AGENT]
+- **Check:** from `workbench/control_plane`, count the files with no touch
+  fallback:
+  `grep -rln "opacity-0[^\"]*group-hover" src --include=*.tsx | while read f; do grep -q "hover:none" "$f" || echo "$f"; done | wc -l`
+  → a count above 0 means this is open. It was 19 on 2026-09-20.
+- **Why:** Tailwind v4 compiles `hover:` and `group-hover:` inside
+  `@media (hover: hover)`. Chromium reports `hover: none` for ANY
+  touch-capable display. That includes a Windows laptop with a touchscreen,
+  even when the member drives it with a mouse. So a control revealed only by
+  `group-hover` is **permanently invisible** for those members.
+- **Measured, not deduced.** In a Playwright context with `hasTouch: true`,
+  `matchMedia("(hover: none)").matches` is `true`, the row matches `:hover`,
+  and a `group-hover:opacity-100` child still computes to `opacity: 0`.
+- **What it costs today:** `/tasks` `InboxCard` hides its SELECTION control
+  this way, so bulk select is unreachable there. The calendar resize handle
+  has the same shape. So do the email sidebar actions and the app-builder
+  row actions.
+- **The repair, already used once:** put `data-<thing>` on the row. Reveal
+  the control with the arbitrary variant `[[data-<thing>]:hover_&]`, which
+  Tailwind emits with no media wrapper. The header of
+  `projects/components/TaskCardActions.tsx` holds the worked example.
+- **⚠️ Do NOT answer this with an `@media (hover: none)` pin.** The Projects
+  card tried that, and it pinned the control permanently ON for the same
+  members. The owner reported it. A pin trades invisible for always-visible.
+  It repairs nothing.
+- **⚠️ Each surface needs its own fence.** `vitest` is `environment: "node"`
+  and cannot see this. `e2e/projects-card-strip.spec.ts` shows the shape.
+  H-27 still applies: nothing in CI runs `e2e/`.
+- **Authority:**
+  `workbench/control_plane/src/app/projects/components/TaskCardActions.tsx`
+  trap 3 · `workbench/control_plane/e2e/projects-card-strip.spec.ts`
+- **Added:** 2026-09-20 · the Projects card session
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

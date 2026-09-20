@@ -471,13 +471,16 @@ describe("the tick is a toggle, and says which way it will go", () => {
 });
 
 describe("the strip and the menu are one registry", () => {
-  it("the strip is markDone, addSubtask, rename — in that order", () => {
+  it("the strip is markDone, addSubtask, rename, select — in that order", () => {
     // `quick` ranks, not registry order: the registry is grouped for the
     // MENU's reading, and the strip's left-to-right is its own decision.
+    // Select is last and `trailing`, so the pill draws it past the "more"
+    // button and behind a rule.
     expect(quickIds(ladder())).toEqual([
       "task.markDone",
       "task.addSubtask",
       "task.rename",
+      "task.select",
     ]);
   });
 
@@ -518,7 +521,8 @@ describe("the strip and the menu are one registry", () => {
 
   it("a surface that cannot edit in place is offered neither, on either", () => {
     const readOnly = ladder({ canEditInline: false });
-    expect(quickIds(readOnly)).toEqual(["task.markDone"]);
+    // Select survives: it does not edit the task, it selects it.
+    expect(quickIds(readOnly)).toEqual(["task.markDone", "task.select"]);
     expect(ids(taskMenuItems(readOnly))).not.toContain("task.rename");
     expect(ids(taskMenuItems(readOnly))).not.toContain("task.addSubtask");
   });
@@ -531,6 +535,7 @@ describe("the strip and the menu are one registry", () => {
       "setStatus:t1:s-done",
       "addSubtask:t1",
       "rename:t1",
+      "toggleSelect:t1",
     ]);
   });
 });
@@ -655,5 +660,100 @@ describe("done outranks cancelled, and position only breaks the tie", () => {
     const actions = spyActions();
     tick?.run(actions, ctx);
     expect(actions.calls).toEqual(["setStatus:t1:s-backlog"]);
+  });
+});
+
+/**
+ * ── Select is on the strip, and it is the only way in (owner, 2026-09-20) ──
+ *
+ * The card's own checkbox no longer appears on hover. So if `task.select`
+ * ever loses its `quick` rank, the ONLY door into a selection is the
+ * right-click menu — and a member who does not right-click cannot select
+ * anything at all. That is what these pin.
+ */
+describe("the strip carries Select, last and apart", () => {
+  const strip = (over: Partial<TaskMenuContext> = {}) =>
+    taskQuickActions(ladder(over));
+
+  it("Select is on the strip", () => {
+    expect(strip().map((a) => a.id)).toContain("task.select");
+  });
+
+  it("it is the LAST thing, and it is trailing", () => {
+    const items = strip();
+    expect(items.at(-1)?.id).toBe("task.select");
+    expect(items.at(-1)?.trailing).toBe(true);
+  });
+
+  it("nothing else is trailing, so the rule is drawn once", () => {
+    // Two trailing items would put two dividers in the pill.
+    expect(strip().filter((a) => a.trailing).map((a) => a.id)).toEqual([
+      "task.select",
+    ]);
+  });
+
+  it("it says what the click will do, and reads as ON when selected", () => {
+    const off = strip().find((a) => a.id === "task.select");
+    expect(off).toMatchObject({ label: "Select", active: false });
+    const on = strip({ selected: true }).find((a) => a.id === "task.select");
+    expect(on).toMatchObject({ label: "Remove from selection", active: true });
+  });
+
+  it("it toggles the selection and nothing else", () => {
+    const ctx = ladder();
+    const actions = spyActions();
+    strip().find((a) => a.id === "task.select")?.run(actions, ctx);
+    expect(actions.calls).toEqual(["toggleSelect:t1"]);
+  });
+
+  it("a surface that cannot select is offered no tick box anywhere", () => {
+    const readOnly = ladder({ canSelect: false });
+    expect(taskQuickActions(readOnly).map((a) => a.id)).not.toContain(
+      "task.select",
+    );
+    expect(ids(taskMenuItems(readOnly))).not.toContain("task.select");
+  });
+
+  it("⚠️ a surface that CAN select always has a door in", () => {
+    // The load-bearing one. The card's checkbox is gone until a selection
+    // exists, so the strip and the menu are the only ways to start one. If
+    // both were ever filtered out on a selectable surface, selection would
+    // be unreachable and nothing else here would notice.
+    for (const ctx of [
+      ladder(),
+      ladder({ canEditInline: false }),
+      ladder({ statuses: [] }),
+      ladder({ canMoveToProject: true }),
+    ]) {
+      const onStrip = taskQuickActions(ctx).some((a) => a.id === "task.select");
+      const inMenu = ids(taskMenuItems(ctx)).includes("task.select");
+      expect(
+        onStrip || inMenu,
+        "no way to start a selection on a surface that supports one",
+      ).toBe(true);
+    }
+  });
+});
+
+describe("which colour an ON toggle is", () => {
+  it("Select is the ACCENT, because a checked box is a selection", () => {
+    const sel = taskQuickActions(ladder({ selected: true })).find(
+      (a) => a.id === "task.select",
+    );
+    expect(sel?.tone).toBe("primary");
+  });
+
+  it("Mark done is SUCCESS, because finished is a fact about the work", () => {
+    // `Checkbox.tsx`'s header owns this rule. Painted in the accent, the tick
+    // moves when a member changes their accent — the defect `underAccents`
+    // exists to catch, and one this repo has shipped before.
+    const tick = taskQuickActions(ladder()).find((a) => a.id === "task.markDone");
+    expect(tick?.tone).toBe("success");
+  });
+
+  it("every quick action declares a tone that the strip can paint", () => {
+    for (const item of taskQuickActions(ladder({ selected: true }))) {
+      expect(["primary", "success"], item.id).toContain(item.tone);
+    }
   });
 });

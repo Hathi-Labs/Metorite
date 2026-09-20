@@ -216,10 +216,30 @@ export interface TaskMenuAction {
   /** `false` keeps the action off the right-click menu. Default: on it. */
   inMenu?: boolean;
   /**
-   * The strip draws this button in the accent, as a toggle that is ON.
+   * Drawn at the END of the strip, past the "more" button and behind a rule.
+   *
+   * For a control that is a MODE rather than an act. `task.select` is the
+   * only one: Mark done, Rename and Add subtask all do something to the task
+   * and then they are over, while Select puts the board into a state. Owner
+   * direction, 2026-09-20, pointing at the reference card where the tick box
+   * sits apart from the action glyphs.
+   */
+  trailing?: boolean;
+  /**
+   * The strip draws this button as a toggle that is ON.
    * Only meaningful with `quick`.
    */
   activeWhen?(ctx: TaskMenuContext): boolean;
+  /**
+   * WHICH colour "on" is — and the two are not interchangeable.
+   *
+   * ⚠️ `Checkbox.tsx`'s header owns this rule. The member's accent means
+   * SELECTION, so `task.select` is `primary`. A lane colour is a fact about
+   * the work, so `task.markDone` is `success`. Painting done-ness in the
+   * accent makes it change when a member changes theirs, which is the defect
+   * the visual rig's `underAccents` exists to catch.
+   */
+  activeTone?: "primary" | "success";
   /** Offered only when this holds. Absent = always. */
   when?(ctx: TaskMenuContext): boolean;
   /**
@@ -264,6 +284,7 @@ export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
     // two names for one write. See the file header.
     inMenu: false,
     activeWhen: isDone,
+    activeTone: "success",
     // No closed lane means no tick — a project whose lanes are all open has
     // no notion of finished, and a button that moves a task to "Backlog"
     // under a checkmark would be lying about what it did.
@@ -300,6 +321,15 @@ export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
     label: (ctx) => (ctx.selected ? "Remove from selection" : "Select"),
     icon: "CheckSquare",
     group: 2,
+    // On the strip too, and LAST (owner, 2026-09-20). It is the way INTO
+    // selection now that the card's own checkbox no longer appears on hover
+    // — without it the only door is the right-click menu, and a member who
+    // does not right-click could not select anything at all.
+    quick: 3,
+    trailing: true,
+    activeWhen: (ctx) => ctx.selected,
+    // The accent, because a checked box is a selection. See `activeTone`.
+    activeTone: "primary",
     // Offered only where the surface actually drew a checkbox: an entry that
     // adds a row to a selection nothing can act on is a dead click.
     when: (ctx) => ctx.canSelect,
@@ -412,8 +442,12 @@ export interface TaskQuickAction {
   id: string;
   label: string;
   icon: string;
-  /** Drawn in the accent, as a toggle that is on (`task.markDone`). */
+  /** This toggle is ON. */
   active: boolean;
+  /** Which colour "on" is. See `TaskMenuAction.activeTone`. */
+  tone: "primary" | "success";
+  /** Drawn past the "more" button, behind a rule. See `trailing`. */
+  trailing: boolean;
   run(actions: TaskMenuActions, ctx: TaskMenuContext): void;
 }
 
@@ -444,6 +478,8 @@ export function taskQuickActions(
       // registry test requires one; this keeps the type honest.
       icon: action.icon ?? "Circle",
       active: action.activeWhen ? action.activeWhen(ctx) : false,
+      tone: action.activeTone ?? "primary",
+      trailing: action.trailing === true,
       run: (actions, at) => action.run(actions, at, ""),
     }));
 }

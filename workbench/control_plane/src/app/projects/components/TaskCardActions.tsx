@@ -36,10 +36,36 @@
  *    the action never ran. `SWALLOW` stops the keyboard as well as the
  *    pointer for that reason. `CardInput.tsx` defends itself against the
  *    same shell behaviour, and this file did not.
- * 3. **A touch screen never hovers.** `[@media(hover:none)]` pins the strip
- *    on, which is the same rule `app/chat/page.tsx` applies to its own
- *    hover-revealed control. Without it the whole feature is desktop-only and
- *    nothing says so.
+ * 3. **⚠️ TAILWIND'S `hover:` IS MEDIA-GATED, AND THAT SHIPPED A DEFECT.**
+ *    Read this before touching the reveal.
+ *
+ *    Tailwind v4 compiles every `hover:` and `group-hover:` variant inside
+ *    `@media (hover: hover)`. Chromium reports `hover: none` for ANY
+ *    touch-capable display — a Windows laptop with a touchscreen included,
+ *    even when the member is driving it with a mouse. On such a machine
+ *    `group-hover/card:opacity-100` NEVER applies, so the strip would be
+ *    invisible for ever.
+ *
+ *    The first version papered over that with
+ *    `[@media(hover:none)]:opacity-100`, which pinned the strip AND the
+ *    card's checkbox permanently on for exactly those members. The owner
+ *    reported it on 2026-09-20 as "it's always on".
+ *
+ *    ⚠️ **So removing the pin is not the fix — it trades always-on for
+ *    never-on.** The reveal uses an ARBITRARY variant instead
+ *    (`[[data-card]:hover_&]`), which Tailwind emits verbatim with no media
+ *    wrapper, so it follows the real `:hover` state whatever the display
+ *    reports. Measured: with `hasTouch: true` the row matched `:hover` while
+ *    `group-hover` still resolved to `opacity: 0`.
+ *
+ *    `data-card` rather than a named group because a Tailwind group name
+ *    carries a `/`, which has to be escaped inside an arbitrary variant and
+ *    is one silent-failure mode too many for something this load-bearing.
+ *
+ *    What it costs: on a display with NO pointer at all the strip is reached
+ *    by keyboard focus or by the long-press menu, not by hovering. The board
+ *    is not the phone surface — the app draws the table at that width — so
+ *    this is a tablet-sized edge, and it is named rather than hidden.
  *
  * ⚠️ **The card is `draggable`, and these are inside it.** Every button stops
  * its own click, its own pointer-down and its own drag start — otherwise
@@ -61,9 +87,17 @@ import type {
 /** Kept out of the JSX so the hidden/shown pair is read as one decision. */
 const REVEAL =
   "opacity-0 pointer-events-none " +
-  "group-hover/card:opacity-100 group-hover/card:pointer-events-auto " +
-  "focus-within:opacity-100 focus-within:pointer-events-auto " +
-  "[@media(hover:none)]:opacity-100 [@media(hover:none)]:pointer-events-auto";
+  // ⚠️ NOT `group-hover/card:` — see trap 3. This is the same selector
+  // without Tailwind's `@media (hover: hover)` wrapper around it.
+  "[[data-card]:hover_&]:opacity-100 [[data-card]:hover_&]:pointer-events-auto " +
+  // The keyboard's door in, and the fallback on a display that never hovers.
+  // ⚠️ `:focus-visible`, not plain `focus-within`: a MOUSE click leaves
+  // focus on the button it hit, so with `focus-within` the strip stayed lit
+  // on that card after the pointer had gone — a small version of the
+  // always-on complaint. `:has(:focus-visible)` reveals it for the keyboard
+  // and not for the mouse, which is the same distinction the house focus
+  // ring already draws.
+  "[&:has(:focus-visible)]:opacity-100 [&:has(:focus-visible)]:pointer-events-auto";
 
 /**
  * ⚠️ The house `Button`, not a hand-rolled one.
@@ -137,40 +171,15 @@ export function TaskCardActions({
       // transparent strip would read as part of the row underneath it.
       className={`absolute bottom-1.5 right-1.5 z-10 flex items-center gap-px rounded-md border border-border bg-card p-0.5 shadow-sm ${REVEAL}`}
     >
-      {items.map((item) => (
-        <Button
-          key={item.id}
-          {...GHOST}
-          {...SWALLOW}
-          type="button"
-          // `title` as well as `aria-label`: these are glyphs with no words,
-          // and "what does the tick do" is a question a tooltip answers and a
-          // screen-reader label does not.
-          title={item.label}
-          aria-label={item.label}
-          aria-pressed={item.active ? true : undefined}
-          // ⚠️ `--success`, NOT `--primary`. `Checkbox.tsx`'s header states
-          // the rule and the first draft here broke it: the accent means
-          // SELECTION, and "this task is finished" is a fact about the work,
-          // which is what `statusAccent.ts` spends `--success` on. Painted in
-          // the accent, the tick changed colour when a member changed theirs
-          // — the exact defect `underAccents` exists to catch.
-          className={item.active ? "text-success" : ""}
-          onClick={(event) => {
-            event.stopPropagation();
-            event.preventDefault();
-            item.run(actions, ctx);
-          }}
-        >
-          <Icon
-            name={item.icon}
-            size={14}
-            // The tick reads as ON at a glance rather than by its colour
-            // alone — colour is the cue some people do not get.
-            strokeWidth={item.active ? 3 : 2}
+      {items
+        .filter((item) => !item.trailing)
+        .map((item) => (
+          <QuickButton
+            key={item.id}
+            item={item}
+            onRun={() => item.run(actions, ctx)}
           />
-        </Button>
-      ))}
+        ))}
 
       <Button
         {...GHOST}
@@ -191,7 +200,63 @@ export function TaskCardActions({
       >
         <Icon name="Ellipsis" size={14} />
       </Button>
+
+      {/* The mode, past a rule. See `TaskMenuAction.trailing`. */}
+      {items
+        .filter((item) => item.trailing)
+        .map((item) => (
+          <span key={item.id} className="flex items-center">
+            <span className="mx-0.5 h-4 w-px bg-border" aria-hidden />
+            <QuickButton item={item} onRun={() => item.run(actions, ctx)} />
+          </span>
+        ))}
     </div>
+  );
+}
+
+/** One glyph button. Extracted so the row and the trailing slot agree. */
+function QuickButton({
+  item,
+  onRun,
+}: {
+  item: TaskQuickAction;
+  onRun: () => void;
+}) {
+  return (
+    <Button
+      {...GHOST}
+      {...SWALLOW}
+      type="button"
+      // `title` as well as `aria-label`: these are glyphs with no words, and
+      // "what does the tick do" is a question a tooltip answers and a
+      // screen-reader label does not.
+      title={item.label}
+      aria-label={item.label}
+      aria-pressed={item.active ? true : undefined}
+      // ⚠️ The tone is DECLARED, never guessed here. `Checkbox.tsx`'s rule:
+      // the accent means selection, a lane colour is a fact about the work.
+      // See `TaskMenuAction.activeTone`.
+      className={
+        item.active
+          ? item.tone === "success"
+            ? "text-success"
+            : "text-primary"
+          : ""
+      }
+      onClick={(event) => {
+        event.stopPropagation();
+        event.preventDefault();
+        onRun();
+      }}
+    >
+      <Icon
+        name={item.icon}
+        size={14}
+        // The toggle reads as ON at a glance rather than by its colour alone
+        // — colour is the cue some people do not get.
+        strokeWidth={item.active ? 3 : 2}
+      />
+    </Button>
   );
 }
 

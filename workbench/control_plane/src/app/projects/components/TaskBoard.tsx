@@ -644,32 +644,33 @@ export function TaskBoard({
     const editing = renamingThis || composingHere;
 
     return (
-    // `group/card` NAMED rather than bare: the shell already sets a plain
-    // `group` for its own children, and the two reveal-on-hover controls here
-    // straddle it — the checkbox is a sibling of the shell, the action strip a
-    // grandchild. One named group on the row is what makes both answer to the
-    // same hover.
-    <li key={task.id} className="group/card flex items-start gap-1.5 rounded-md">
-      {onToggle ? (
+    // ⚠️ `data-card`, not a Tailwind group. The strip's reveal cannot use
+    // `group-hover:` at all — Tailwind v4 wraps that in
+    // `@media (hover: hover)`, which is FALSE on any touch-capable display
+    // and left the strip invisible there. `TaskCardActions` trap 3 carries
+    // the measurement. A plain data attribute has no `/` to escape inside the
+    // arbitrary variant that replaces it.
+    <li key={task.id} data-card className="flex items-start gap-1.5 rounded-md">
+      {/* ⚠️ The checkbox exists ONLY once a selection has been started, and
+          hovering does NOT start one (owner, 2026-09-20). The way in is the
+          tick box at the end of the card's hover strip, or Select in the
+          right-click menu; from the second card on, every card carries a box
+          so the next pick is one click.
+
+          The first version revealed it on hover as well, which put a control
+          under the pointer on every card the member crossed — and paired
+          with the `(hover: none)` defect above it drew one on every card at
+          rest. Rendering nothing rather than an invisible box also keeps it
+          out of the tab order, where fifty unreachable checkboxes were fifty
+          tab stops.
+
+          The gutter comes and goes with it. That shifts the cards 22px once,
+          at the moment the bulk bar appears above them — one change of
+          layout for one change of mode, rather than a permanently empty
+          column waiting for a mode nobody is in. */}
+      {onToggle && (selectionActive || selected?.has(task.id)) ? (
         <Checkbox
-          // Owner direction, 2026-09-20: the checkbox appears on hover, and
-          // once anything is selected every card shows one so the next pick is
-          // a single click. This is /tasks' `InboxCard` rule, which has drawn
-          // its selection exactly this way since WS-39 — the two apps' cards
-          // agreeing is AGENTS.md rule 4, not a new idea.
-          //
-          // ⚠️ The gutter is reserved whether the box is painted or not. A
-          // checkbox that appears in the FLOW on hover shifts every title 22px
-          // right under the pointer, which reads as the board flinching.
-          className={[
-            "mt-3 shrink-0",
-            selectionActive || selected?.has(task.id)
-              ? "opacity-100"
-              : // `[@media(hover:none)]` because a touch screen never hovers,
-                // and without it selection is a desktop-only feature that
-                // nothing tells a phone about.
-                "opacity-0 group-hover/card:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100",
-          ].join(" ")}
+          className="mt-3 shrink-0"
           aria-label={`Select ${task.title}`}
           checked={selected?.has(task.id) ?? false}
           // The click must not also open the task — a checkbox inside a card

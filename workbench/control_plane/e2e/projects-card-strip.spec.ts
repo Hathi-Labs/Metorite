@@ -221,3 +221,131 @@ test("a slow rename on one card does not close or disable another's", async ({
     "A's response closed B's field — `setRenaming(null)` was unconditional.",
   ).toBeVisible();
 });
+
+/**
+ * ── The touch-capable display (owner report, 2026-09-20) ────────────────
+ *
+ * The regression this pins is NOT "does hover work". It is that Tailwind v4
+ * compiles `hover:` and `group-hover:` inside `@media (hover: hover)`, and
+ * Chromium reports `hover: none` for any touch-capable display — a Windows
+ * laptop with a touchscreen driven by a mouse included.
+ *
+ * Both possible mistakes ship green on a normal desktop, and both were made:
+ *
+ *  * `group-hover:` alone → the strip is invisible FOR EVER on such a
+ *    display, because the media query never matches.
+ *  * `group-hover:` plus an `@media (hover: none)` pin → the strip and the
+ *    card's checkbox are permanently ON for exactly those members. That is
+ *    what the owner saw and reported.
+ *
+ * So this runs the board in a `hasTouch` context and asserts both ends:
+ * nothing at rest, everything on hover.
+ */
+test.describe("on a touch-capable display", () => {
+  test.use({ hasTouch: true });
+
+  test("the strip hides at rest and reveals on hover", async ({ page }) => {
+    test.setTimeout(120_000);
+
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname.replace(/^\/api\//, "");
+      const hit = Object.keys(FIXTURES)
+        .sort((a, b) => b.length - a.length)
+        .find((key) => path.includes(key));
+      return route.fulfill({ json: hit ? (FIXTURES[hit] as object) : EMPTY });
+    });
+
+    await page.goto("/projects");
+    await page.waitForLoadState("domcontentloaded");
+    await page.waitForTimeout(4000);
+    await page.getByText("Bootloader", { exact: true }).first().click();
+    await page.waitForTimeout(2500);
+
+    // The premise. If this is false the test is not exercising the bug.
+    expect(
+      await page.evaluate(() => matchMedia("(hover: none)").matches),
+      "this context does not report `hover: none`, so it cannot see the bug",
+    ).toBe(true);
+
+    const card = page.getByText("Notification engine for projects").first();
+    const row = page
+      .locator("li")
+      .filter({ hasText: "Notification engine for projects" })
+      .last();
+    const strip = row.locator("[aria-label='More actions']").locator("..");
+
+    // ── at rest ──────────────────────────────────────────────────────────
+    await page.mouse.move(5, 5);
+    await page.waitForTimeout(500);
+    expect(
+      await strip.evaluate((el) => getComputedStyle(el).opacity),
+      "the strip is visible with nothing hovered — an `@media (hover: none)` " +
+        "pin is back, or something else is forcing it on.",
+    ).toBe("0");
+    await expect(
+      row.locator('input[type="checkbox"]'),
+      "a checkbox exists with nothing selected. It must appear only once a " +
+        "selection has been started.",
+    ).toHaveCount(0);
+
+    // ── on hover ─────────────────────────────────────────────────────────
+    await card.hover();
+    await page.waitForTimeout(500);
+    expect(
+      await strip.evaluate((el) => getComputedStyle(el).opacity),
+      "the strip did not reveal on hover. Tailwind's `hover:` is wrapped in " +
+        "`@media (hover: hover)`, which is FALSE here — the reveal must use " +
+        "the arbitrary `[[data-card]:hover_&]` variant instead.",
+    ).toBe("1");
+
+    // The tick box the owner asked for, at the end of the pill.
+    await expect(
+      row.getByRole("button", { name: "Select", exact: true }),
+      "the strip has no Select control, so with the card's checkbox gone " +
+        "there is no way to start a selection without a right-click.",
+    ).toHaveCount(1);
+  });
+
+  test("selecting from the strip gives every card a checkbox", async ({ page }) => {
+    test.setTimeout(120_000);
+
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname.replace(/^\/api\//, "");
+      const hit = Object.keys(FIXTURES)
+        .sort((a, b) => b.length - a.length)
+        .find((key) => path.includes(key));
+      return route.fulfill({ json: hit ? (FIXTURES[hit] as object) : EMPTY });
+    });
+
+    await page.goto("/projects");
+    await page.waitForLoadState("domcontentloaded");
+    await page.waitForTimeout(4000);
+    await page.getByText("Bootloader", { exact: true }).first().click();
+    await page.waitForTimeout(2500);
+
+    const card = page.getByText("Notification engine for projects").first();
+    const row = page
+      .locator("li")
+      .filter({ hasText: "Notification engine for projects" })
+      .last();
+
+    await expect(page.locator('input[type="checkbox"]')).toHaveCount(0);
+
+    await card.hover();
+    await page.waitForTimeout(400);
+    await row.getByRole("button", { name: "Select", exact: true }).click();
+    await page.waitForTimeout(800);
+
+    // Both cards, not only the one that was picked — that is the point of
+    // showing them: the second pick should be one click.
+    await expect(
+      page.locator('input[type="checkbox"]'),
+      "selecting one card did not give the others a checkbox",
+    ).toHaveCount(2);
+
+    // And the pointer leaving must not take them away again.
+    await page.mouse.move(5, 5);
+    await page.waitForTimeout(500);
+    await expect(page.locator('input[type="checkbox"]')).toHaveCount(2);
+  });
+});
