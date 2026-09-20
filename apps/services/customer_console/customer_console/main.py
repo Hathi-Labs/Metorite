@@ -2109,6 +2109,25 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
         # served_rank above 1 is a customer request the primary did not
         # answer — the one durable proof a chain earns its keep. Aggregated
         # by day so a bad afternoon reads as one row, not four hundred.
+        #
+        # 🔴 **`served_rank > 1` ALONE over-reports, and H-82 is the repair.**
+        # D-AI-2's lift drops the blind steps of a chat chain BEFORE the walk
+        # starts (`router.resolve_vision_chain`). A tier binding a blind rank 1
+        # and a seeing rank 2 therefore serves EVERY vision call at rank 2,
+        # with nothing having failed, and this read called all of it a
+        # failover — up to 100 percent of that tier's vision traffic.
+        #
+        # ⚠️ **The RANK is true; only the meaning slipped.** `resolve_chain`
+        # builds the rank from the column and never from a list index, so the
+        # write stays exactly as it is. What changes is who reads it as a
+        # failure.
+        #
+        # 📌 **The discriminator is the JOIN, and it is the one the entry
+        # names.** A lift bills the CHOSEN tier with `task = vision` while that
+        # tier binds no vision task, so the pair joins to no `tier_binding`
+        # row. A real failover always joins: the rank it served is a rank
+        # somebody bound. A tier that binds `vision` itself keeps reporting its
+        # own failovers, because that pair does join.
         failovers = [
             {
                 "day": _iso(r[0]),
@@ -2120,13 +2139,15 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
             }
             for r in conn.execute(
                 text(
-                    "SELECT date_trunc('day', created_at) AS day, tier, task, "
-                    "       model, served_rank, COUNT(*) "
-                    "FROM usage_event "
-                    "WHERE served_rank > 1 "
-                    "  AND created_at >= now() - INTERVAL '14 days' "
-                    "GROUP BY 1, tier, task, model, served_rank "
-                    "ORDER BY 1 DESC, tier, task LIMIT 50"
+                    "SELECT date_trunc('day', u.created_at) AS day, u.tier, u.task, "
+                    "       u.model, u.served_rank, COUNT(*) "
+                    "FROM usage_event u "
+                    "WHERE u.served_rank > 1 "
+                    "  AND u.created_at >= now() - INTERVAL '14 days' "
+                    "  AND EXISTS (SELECT 1 FROM tier_binding b "
+                    "              WHERE b.tier = u.tier AND b.task = u.task) "
+                    "GROUP BY 1, u.tier, u.task, u.model, u.served_rank "
+                    "ORDER BY 1 DESC, u.tier, u.task LIMIT 50"
                 )
             )
         ]
@@ -2618,6 +2639,129 @@ def set_tier_rate(req: TierRateRequest, staff: Operator) -> dict[str, Any]:
             actor=staff.actor,
         )
     return {"tier": req.tier, "task": req.task, "pricing_mode": req.pricing_mode}
+
+
+class TierMarginRequest(BaseModel):
+    """What we INTEND to keep on a tier, and when to complain (migration 029).
+
+    ⚠️ **Two different numbers, and confusing them inverts an alarm.**
+    ``margin_multiplier`` is what we multiply cost by to SUGGEST a price — an
+    intention. ``margin_floor`` is the realised margin BELOW WHICH somebody
+    should look — an alarm threshold measured against what actually happened.
+    A tier can sit above its floor while its multiplier is wrong, and below
+    its floor while its multiplier is right.
+
+    ⚠️ **Both are OPTIONAL, and NULL is a real answer.** A tier with no
+    multiplier offers no suggestion. A tier with no floor never alarms. An
+    operator clearing one is saying "stop suggesting" or "stop watching", and
+    that is a decision the board draws differently from a zero.
+    """
+
+    tier: str
+    #: M in the design document. 2.5 means charge 2.5 times cost. The column's
+    #: CHECK refuses anything below 1 — a multiplier under 1 sells below cost,
+    #: which is a decision the ABSORBED pricing mode exists to record instead.
+    margin_multiplier: Decimal | None = None
+    #: A FRACTION, so 0.45 is 45 percent. The column's CHECK holds it in
+    #: [0, 1): a floor of 1 demands an infinite price and can never be met.
+    margin_floor: Decimal | None = None
+    #: When it takes effect. NULL means now. Future-dating is the mechanism
+    #: for "the new margin applies from the 1st".
+    effective_from: datetime | None = None
+
+
+@app.post("/catalog/tier-margins")
+def set_tier_margin(req: TierMarginRequest, staff: Operator) -> dict[str, Any]:
+    """Set one tier's intended margin and its alarm floor. **INSERT, never
+    UPDATE** — a past suggestion must stay readable against the numbers that
+    produced it.
+
+    🔴 **The NUMBERS are the owner's commercial act (H-42).** This route is
+    the MECHANISM, and building it sets nothing: migration 029 ships the table
+    empty on purpose, and it stays empty until somebody decides.
+
+    🔴 **This was the half that never shipped.** 029 wrote "an agent builds
+    the mechanism, the owner sets the figures". The table and three reads
+    landed — the pricing board's alarm, its floor line and the margin box that
+    seeds every suggestion — and no route did. So the alarm could not fire and
+    the box could not fill, because the only way in was hand-written SQL.
+
+    ⚠️ **Both numbers may be omitted, and omitting BOTH is legal.** It records
+    that this tier has neither a suggestion nor a watch, which is a different
+    state from never having been considered — and the row is what carries the
+    difference.
+    """
+    with get_engine().begin() as conn:
+        known_tier = conn.execute(
+            text("SELECT 1 FROM tier_catalog WHERE slug = :s"),
+            {"s": req.tier},
+        ).first()
+        if known_tier is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown tier {req.tier!r}; it is not in tier_catalog",
+            )
+
+        # ⚠️ Checked HERE as well as by the column, so the operator gets a
+        # sentence instead of a constraint name. The CHECK stays the fence:
+        # this route is not the only thing that can reach the table.
+        if req.margin_multiplier is not None and req.margin_multiplier < 1:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "a margin multiplier below 1 sells below cost; mark the "
+                    "tier absorbed on its rate card if that is the intention"
+                ),
+            )
+        if req.margin_floor is not None and not (0 <= req.margin_floor < 1):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "a margin floor is a FRACTION in [0, 1) — 0.45 means 45 "
+                    "percent. A floor of 1 demands an infinite price"
+                ),
+            )
+
+        try:
+            conn.execute(
+                text(
+                    "INSERT INTO tier_margin (tier, margin_multiplier, "
+                    "    margin_floor, effective_from) "
+                    "VALUES (:t, :m, :f, COALESCE(:eff, now()))"
+                ),
+                {
+                    "t": req.tier,
+                    "m": req.margin_multiplier,
+                    "f": req.margin_floor,
+                    "eff": req.effective_from,
+                },
+            )
+        except IntegrityError:
+            # The same retried-POST trap `/catalog/tier-rates` answers for.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "a margin for this tier already exists at that exact "
+                    "effective_from; omit it to save a new row dated now, or "
+                    "pass a later timestamp"
+                ),
+            ) from None
+        _audit(
+            conn,
+            None,
+            "catalog.tier_margin",
+            {
+                "tier": req.tier,
+                "margin_multiplier": _fixed(req.margin_multiplier),
+                "margin_floor": _fixed(req.margin_floor),
+            },
+            actor=staff.actor,
+        )
+    return {
+        "tier": req.tier,
+        "margin_multiplier": _fixed(req.margin_multiplier),
+        "margin_floor": _fixed(req.margin_floor),
+    }
 
 
 class CreditPriceRequest(BaseModel):
@@ -5772,7 +5916,7 @@ def _record_completion(
                 # `started_at`. A fresh one here would orphan every hold.
                 # Still SERVER-generated — the caller's `client_ref` is
                 # correlation only (migration 005).
-                request_id=request_id or f"rtr-{uuid.uuid4().hex}",
+                request_id=request_id or _new_request_id(),
                 client_ref=client_ref,
                 billed_credits=billed,
                 user_email=caller.member,
@@ -6897,19 +7041,18 @@ def audio_transcriptions(
         # grow a second opinion about what a vendor 500 means.
         raise _upstream_refusal(failed) from failed
 
+    # H-85: minted HERE so the alarm below and the row further down name the
+    # same call. One id, passed to both.
+    request_id = _new_request_id()
+
     seconds = router_mod.duration_seconds(response)
     if seconds is None:
         # ⚠️ BILL ZERO, LOUDLY (clause 3). The customer already holds the
         # transcript, so the only choice left is whether we also lose the
         # row. We keep the row — it is the evidence — and this line is how
         # an unmeasured call becomes visible instead of merely cheap.
-        _log.warning(
-            "router.unmeasured_quantity",
-            extra={
-                "router_model": resolved.model,
-                "router_tier": resolved.tier,
-                "router_task": TRANSCRIBE_TASK,
-            },
+        _unmeasured(
+            resolved, TRANSCRIBE_TASK, org_id=org_id, request_id=request_id
         )
         minutes = Decimal(0)
     else:
@@ -6924,6 +7067,7 @@ def audio_transcriptions(
         client_ref=client_ref,
         byok=_byok_served(resolved),
         quantity=minutes,
+        request_id=request_id,
     )
 
     # 📌 The caller reads a transcript, never the verbose body the meter
@@ -7110,17 +7254,45 @@ def _serving_prelude(
     return attempts, credentials, invocations
 
 
-def _unmeasured(resolved: ResolvedTier, task: str) -> None:
+def _new_request_id() -> str:
+    """The id a usage row is idempotent on, spelled in ONE place.
+
+    ⚠️ It was minted inline inside :func:`_record_completion`, which meant it
+    did not exist until after the row was written. H-85 needs it EARLIER, so
+    the alarm and the row can name the same call.
+    """
+    return f"rtr-{uuid.uuid4().hex}"
+
+
+def _unmeasured(
+    resolved: ResolvedTier, task: str, *, org_id: str, request_id: str
+) -> None:
     """Say out loud that nothing measured this call (clause 5, clause 6).
 
     The customer already holds the pictures or the audio, so the only choice
     left is whether we also lose the row. We keep the row and bill zero, and
     this line is how an unmeasured call becomes visible instead of merely
     cheap.
+
+    🔴 **It names the ORGANIZATION and the REQUEST (H-85).** It logged the
+    model, the tier and the task, and `usage_event` is keyed
+    ``(organization_id, request_id)`` — so the alarm could not be joined to
+    the row it was about. Nobody could tell one customer's unmeasured call
+    from another's, or find the row that billed zero because of this line.
+
+    ⚠️ **The caller mints the request id and passes the SAME one to
+    :func:`_record_completion`.** Two ids would be worse than none: the join
+    would look available and would silently match nothing.
     """
     _log.warning(
         "router.unmeasured_quantity",
-        extra={"router_model": resolved.model, "router_tier": resolved.tier, "router_task": task},
+        extra={
+            "router_model": resolved.model,
+            "router_tier": resolved.tier,
+            "router_task": task,
+            "router_org": org_id,
+            "router_request": request_id,
+        },
     )
 
 
@@ -7217,9 +7389,12 @@ def images_generations(req: ImageRequest, caller: KeyCaller) -> Any:
         # ONE mapping, shared with every serving route.
         raise _upstream_refusal(failed) from failed
 
+    # H-85: one id for the alarm and the row alike.
+    request_id = _new_request_id()
+
     pictures = router_mod.image_count(response)
     if pictures is None:
-        _unmeasured(resolved, IMAGE_TASK)
+        _unmeasured(resolved, IMAGE_TASK, org_id=org_id, request_id=request_id)
         pictures = Decimal(0)
 
     # Metering is best-effort and NEVER fails the call.
@@ -7231,6 +7406,7 @@ def images_generations(req: ImageRequest, caller: KeyCaller) -> Any:
         client_ref=req.client_ref,
         byok=_byok_served(resolved),
         quantity=pictures,
+        request_id=request_id,
     )
 
     return response
@@ -7343,6 +7519,9 @@ def audio_speech(req: SpeechRequest, caller: KeyCaller) -> Response:
     # already bills what came BACK, and this door now agrees with it.
     audio, media_type = router_mod.speech_audio(response)
 
+    # H-85: one id for the alarm and the row alike.
+    request_id = _new_request_id()
+
     if audio:
         characters = Decimal(len(spoken))
     else:
@@ -7350,7 +7529,7 @@ def audio_speech(req: SpeechRequest, caller: KeyCaller) -> Response:
         # measured this call and we guess at no length. The customer keeps
         # the 200 — an empty body their own player reports is better than a
         # 500 — and they keep their credits with it.
-        _unmeasured(resolved, SPEAK_TASK)
+        _unmeasured(resolved, SPEAK_TASK, org_id=org_id, request_id=request_id)
         characters = Decimal(0)
 
     # Metering is best-effort and NEVER fails the call.
@@ -7362,6 +7541,7 @@ def audio_speech(req: SpeechRequest, caller: KeyCaller) -> Response:
         client_ref=req.client_ref,
         byok=_byok_served(resolved),
         quantity=characters,
+        request_id=request_id,
     )
 
     return Response(content=audio, media_type=media_type)

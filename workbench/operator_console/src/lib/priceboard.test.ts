@@ -238,29 +238,63 @@ describe("the price list's groups", () => {
 describe("the wiring", () => {
   const read = (p: string) => readFileSync(join(__dirname, p), "utf8");
 
-  it("🔴 the page shows list → method → cockpit, under the credit price", () => {
+  it("🔴 the credit price comes first, then the one board", () => {
+    // The page carried five panels until 2026-09-20, and four of them
+    // answered the same question. The order that survives is the only
+    // one that matters: the knob everything depends on, then the board.
     const page = read("../app/pricing/page.tsx");
     const order = [
       page.indexOf("<CreditPrice"),
-      page.indexOf("<PriceList"),
-      page.indexOf("<PriceFromCost"),
-      page.indexOf("<TierPricing"),
+      page.indexOf("<PriceBoard"),
     ];
     for (const at of order) expect(at).toBeGreaterThan(-1);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
+    // The four it replaced are gone, not merely unmounted.
+    for (const dead of ["<PriceList", "<PriceFromCost", "<TierPricing", "<MarginMonitor"]) {
+      expect(page).not.toContain(dead);
+    }
   });
 
-  it("the method board runs ONLY on the saved credit price", () => {
+  it("the board runs ONLY on the saved credit price", () => {
     // No second set of assumption boxes: one saved frame, one method.
-    const src = read("../app/pricing/PriceFromCost.tsx");
+    const src = read("../app/pricing/PriceBoard.tsx");
     expect(src).toContain("savedAssumptions(");
     expect(src).not.toContain("setInrPerCredit");
+    expect(src).not.toContain("setUsdToInr");
   });
 
-  it("applying writes through the SAME route as the manual form", () => {
-    const src = read("../app/pricing/PriceFromCost.tsx");
-    expect(src).toContain('fetch("/api/operator/catalog/tier-rates"');
-    expect(src.match(/fetch\(/g)).toHaveLength(1);
+  it("🔴 there is exactly ONE write path for a price", () => {
+    // Suggesting a price and typing one were never two acts: they write
+    // the same card, through the same route, with the same body. Two
+    // routes to a price here would be the split this board exists to end.
+    //
+    // ⚠️ **Counted BY ROUTE, not by `fetch(`.** The count of fetch sites
+    // was the first instrument, and it only worked while the board wrote one
+    // kind of thing. The margin editor made it a second write -- of a
+    // different thing, through a different route -- and a fence that fails on
+    // that is measuring the wrong quantity. Two calls to the SAME route is
+    // the defect; two routes for two decisions is the design.
+    const src = read("../app/pricing/PriceBoard.tsx");
+    const to = (route: string) =>
+      src.match(new RegExp(`fetch\\("${route}"`, "g")) ?? [];
+    expect(to("/api/operator/catalog/tier-rates")).toHaveLength(1);
+    expect(to("/api/operator/catalog/tier-margins")).toHaveLength(1);
+    // And nothing else. A third route appearing here is a third decision
+    // somebody put on this surface without saying so.
+    expect(src.match(/fetch\(/g)).toHaveLength(2);
+  });
+
+  it("🔴 the board POSTs per MILLION, and never both scales", () => {
+    // The Console accepts per-1k and per-1M and prefers per-1M when it
+    // is sent. A body carrying both is a disagreement resolved silently,
+    // and the losing scale is wrong by a factor of 1000.
+    const src = read("../app/pricing/PriceBoard.tsx");
+    expect(src).toContain("input_per_1m");
+    expect(src).toContain("output_per_1m");
+    expect(src).toContain("cached_input_per_1m");
+    expect(src).not.toContain("input_per_1k");
+    expect(src).not.toContain("output_per_1k");
+    expect(src).not.toContain("cached_input_per_1k");
   });
 });
 

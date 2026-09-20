@@ -256,8 +256,12 @@ describe("🔴 no client code converts a unit (H-78)", () => {
       "feed.ts",
       "read.ts",
       "priceboard.ts",
+      // priceRows.ts joined this list when the board became one card
+      // per tier: it picks the per-minute column per task, exactly as
+      // priceboard.ts does, so it is just as likely to want a x60.
+      "priceRows.ts",
       "../app/models/ModelDetails.tsx",
-      "../app/pricing/PriceFromCost.tsx",
+      "../app/pricing/PriceBoard.tsx",
     ]) {
       expect(sixtySites(readFileSync(join(__dirname, p), "utf8"))).toEqual([]);
     }
@@ -494,25 +498,31 @@ describe("ModelDetails posts the wire's own strings", () => {
 });
 
 describe("the pricing board's per-unit half (H-78)", () => {
-  it("🔴 PriceFromCost reads the RECORDED cost through priceboard.ts", () => {
+  it("🔴 the price board reads the RECORDED cost through a pure function", () => {
     // The board half of clause 7. The task-to-column judgement is a pure
     // function (`recordedVendorUsd`) because this app has no React renderer
     // and logic inside a component is untested by construction. The fence is
     // that the component calls it rather than re-deciding inline.
     const src = readFileSync(
-      join(__dirname, "..", "app", "pricing", "PriceFromCost.tsx"), "utf8");
-    expect(src).toContain("recordedVendorUsd(j.task, m)");
-    expect(src).toContain("vendorUsdBox(vendorUsd[key], recorded)");
+      join(__dirname, "..", "app", "pricing", "PriceBoard.tsx"), "utf8");
+    const rows = readFileSync(join(__dirname, "priceRows.ts"), "utf8");
+    // The judgement lives in the library, and the library is tested.
+    expect(rows).toContain("perUnitVendorUsd");
+    expect(rows).toContain("perMinuteUsd");
     // No second task-to-column table inside the JSX.
     expect(src).not.toContain("perMinuteUsd");
     expect(src).not.toContain("perImageUsd");
-    // 🔴 The stale claim is gone. The header once told the reader the feed
-    // "does not carry those columns yet", which stopped being true the day
-    // 019 landed — and a comment that lies is how the next agent rebuilds a
-    // seam that already exists. The retraction line may quote the old words;
-    // the live claim may not repeat them.
-    expect(src).toContain("This read");
-    expect(src.split("This read")[0]).not.toContain("does not carry");
+    expect(src).not.toContain("perCharacterUsd");
+    // 🔴 The stale claim must not come back. A header once told the
+    // reader the feed "does not carry those columns yet", which stopped being
+    // true the day 019 landed — and a comment that lies is how the next agent
+    // rebuilds a seam that already exists.
+    //
+    // ⚠️ This is STRICTER than the fence it replaces. That one anchored on a
+    // retraction line and only checked the text above it, so the claim could
+    // legally reappear below. The file that carried the retraction is gone, so
+    // the whole file is now in scope.
+    expect(src).not.toContain("does not carry");
   });
 });
 

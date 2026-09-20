@@ -79,10 +79,26 @@ it is not a defect to be tidied away.
 | | `app_user` (+ `user_role`, `org_group_member`) | `gtd_people` (+ `gtd_person_resumes`) |
 |---|---|---|
 | Answers | *Can they sign in, and what may they see?* | *Who are they, what can they do, who do they report to?* |
-| Created by | An invite (`POST /admin/members`) or a sign-in request | An import, a résumé upload, or a hand-added row |
+| Created by | An invite (`POST /admin/members`) or a sign-in request | **Member provisioning**, an import, a résumé upload, or a hand-added row |
 | Owned by | `org_access_control.md` | `task_manager_hr_planning_and_memory.md` |
 | Key | `email` | `id`; `lower(email)` partial-unique since migration 148 |
 | Includes people who never sign in | No | **Yes** — contractors, a new hire before day one, a vendor contact |
+
+⚠️ **Member provisioning writes BOTH stores, since 2026-09-20.** Until then it
+wrote only the first one. No path made a directory row for a member, so every
+person who signed in opened *My Profile* and read "An administrator can add
+you". The founder read it too, in an organization that held no other
+administrator. Production carried zero directory rows on 2026-09-19.
+
+`ensure_directory_row` now writes a minimal row — name, address, status — from
+`provision_member` and from signup. The row stays minimal on purpose. This is
+the surface where a person describes themselves, so the product must not put
+words in their mouth.
+
+**The two permissive halves below are unchanged.** A contractor may still hold
+a directory row and no login. A service identity may still sign in and hold no
+directory row. What changed is that provisioning a HUMAN member now writes
+both.
 
 **They are joined on lowercased email, and the join is deliberately partial.** A person can
 exist in the directory with no login (a contractor you assign work to but who has no seat),

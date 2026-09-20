@@ -334,6 +334,14 @@ export const setModelRate = (body: unknown, d?: Deps) =>
 export const setTierRate = (body: unknown, d?: Deps) =>
   callConsole("/catalog/tier-rates", { method: "POST", body }, d ?? {});
 
+// The margin we INTEND per tier, and the floor that alarms (029). Admin plus
+// an elevation window, the same gate the price beside it takes.
+//
+// ⚠️ INSERT-only. A past suggestion stays readable against the numbers that
+// produced it, so this never updates a row — it dates a new one.
+export const setTierMargin = (body: unknown, d?: Deps) =>
+  callConsole("/catalog/tier-margins", { method: "POST", body }, d ?? {});
+
 // The credit's own rupee price (017) — the other half of H-42. Admin plus
 // an elevation window; billing never reads what it writes.
 export const setCreditPrice = (body: unknown, d?: Deps) =>

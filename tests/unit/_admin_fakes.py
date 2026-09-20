@@ -12,6 +12,7 @@ Same convention as ``test_admin_groups.py``: the route functions are called
 directly with the DB seam monkeypatched onto the SUT submodule, so nothing here
 touches Postgres.
 """
+
 from __future__ import annotations
 
 import re
@@ -168,7 +169,10 @@ class _FakeDB:
     """
 
     ROLE_RANKS: ClassVar[dict[str, int]] = {
-        "owner": 0, "admin": 10, "manager": 20, "member": 30,
+        "owner": 0,
+        "admin": 10,
+        "manager": 20,
+        "member": 30,
     }
 
     #: Only what invariant 4's third door needs to decide: does this role still
@@ -185,9 +189,9 @@ class _FakeDB:
     }
 
     def __init__(self) -> None:
-        self.users: dict[str, dict[str, Any]] = {}          # id → row
-        self.user_roles: dict[str, list[str]] = {}          # uid → [slug]
-        self.requests: dict[str, dict[str, Any]] = {}       # lower(email) → row
+        self.users: dict[str, dict[str, Any]] = {}  # id → row
+        self.user_roles: dict[str, list[str]] = {}  # uid → [slug]
+        self.requests: dict[str, dict[str, Any]] = {}  # lower(email) → row
         #: Everything else a person owns — one list per table name, rows as
         #: plain dicts carrying whatever columns the purge's clauses name.
         #: `user_role`, `app_user` and `access_request` are NOT here: they are
@@ -222,6 +226,11 @@ class _FakeDB:
         #: audit entry has to carry more than "it happened" — a purge that
         #: records no counts leaves nothing to reconcile against.
         self.audit_payloads: list[dict[str, Any]] = []
+        #: ``gtd_people`` — lower(email) → row. The DIRECTORY, which is a
+        #: different store from ``app_user`` above (``people_center_app.md``
+        #: §2) and is now written by `provision_member`, so a test that
+        #: invites somebody can assert they became findable.
+        self.directory: dict[str, dict[str, Any]] = {}
         self.statements: list[str] = []
         #: ``len(self.audit)`` at each ``commit()`` — how a test proves the
         #: audit entry was written first rather than merely written.
@@ -241,15 +250,16 @@ class _FakeDB:
         clause that changes column or drops a filter changes the answer.
         """
         if table == "user_role":
-            return [{"user_id": p.get("uid"), "slug": slug}
-                    for slug in self.user_roles.get(p.get("uid", ""), [])]
+            return [
+                {"user_id": p.get("uid"), "slug": slug}
+                for slug in self.user_roles.get(p.get("uid", ""), [])
+            ]
         if table == "app_user":
             row = self.users.get(p.get("uid", ""))
             return [row] if row else []
         if table == "access_request":
             want = str(p.get("email", "")).lower()
-            return [r for r in self.requests.values()
-                    if r["email"].lower() == want]
+            return [r for r in self.requests.values() if r["email"].lower() == want]
 
         found = list(self.rows.get(table, []))
         scoped = False
@@ -283,8 +293,7 @@ class _FakeDB:
         if vis:
             wants_private = vis.group(1) == "="
             found = [
-                r for r in found
-                if (r.get("visibility", "private") == "private") is wants_private
+                r for r in found if (r.get("visibility", "private") == "private") is wants_private
             ]
         for nul in _PERSON_NULL.finditer(s):
             col, negated = nul.group(1), bool(nul.group(2))
@@ -304,9 +313,16 @@ class _FakeDB:
             self.rows[table] = keep
 
     # helpers -----------------------------------------------------------
-    def seed_user(self, uid: str, email: str, *, status: str = "active",
-                  name: str = "", joined_at: str | None = None,
-                  organization_id: str | None = ORG) -> None:
+    def seed_user(
+        self,
+        uid: str,
+        email: str,
+        *,
+        status: str = "active",
+        name: str = "",
+        joined_at: str | None = None,
+        organization_id: str | None = ORG,
+    ) -> None:
         """Seed a directory row. ``organization_id`` defaults to :data:`ORG`.
 
         Defaulted rather than required so the single-tenant files that predate
@@ -315,38 +331,56 @@ class _FakeDB:
         adopt into a tenant.
         """
         self.users[uid] = {
-            "id": uid, "email": email, "display_name": name,
-            "avatar_url": "", "status": status, "legacy_role": "employee",
-            "invited_by": "", "invited_at": None, "joined_at": joined_at,
-            "last_login_at": None, "last_active_at": None, "created_at": None,
+            "id": uid,
+            "email": email,
+            "display_name": name,
+            "avatar_url": "",
+            "status": status,
+            "legacy_role": "employee",
+            "invited_by": "",
+            "invited_at": None,
+            "joined_at": joined_at,
+            "last_login_at": None,
+            "last_active_at": None,
+            "created_at": None,
             "organization_id": organization_id,
         }
 
     def seed_organization(self, org_id: str, slug: str, name: str) -> None:
         self.organizations[org_id] = {
-            "id": org_id, "slug": slug, "display_name": name,
+            "id": org_id,
+            "slug": slug,
+            "display_name": name,
         }
 
-    def seed_group(self, gid: str, slug: str, *, organization_id: str = ORG,
-                   name: str | None = None) -> None:
+    def seed_group(
+        self, gid: str, slug: str, *, organization_id: str = ORG, name: str | None = None
+    ) -> None:
         self.groups[gid] = {
-            "id": gid, "slug": slug, "display_name": name or slug.title(),
-            "description": "", "organization_id": organization_id,
+            "id": gid,
+            "slug": slug,
+            "display_name": name or slug.title(),
+            "description": "",
+            "organization_id": organization_id,
         }
 
-    def seed_request(self, email: str, *, status: str = "pending",
-                     attempts: int = 1) -> None:
+    def seed_request(self, email: str, *, status: str = "pending", attempts: int = 1) -> None:
         self.requests[email.lower()] = {
-            "id": f"r-{len(self.requests) + 1}", "email": email,
-            "display_name": "", "first_seen_at": None, "last_seen_at": None,
-            "attempt_count": attempts, "status": status,
-            "decided_by": "", "decided_at": None,
+            "id": f"r-{len(self.requests) + 1}",
+            "email": email,
+            "display_name": "",
+            "first_seen_at": None,
+            "last_seen_at": None,
+            "attempt_count": attempts,
+            "status": status,
+            "decided_by": "",
+            "decided_at": None,
         }
 
     def user_by_email(self, email: str) -> dict[str, Any] | None:
         return next(
-            (u for u in self.users.values()
-             if u["email"].lower() == email.lower()), None,
+            (u for u in self.users.values() if u["email"].lower() == email.lower()),
+            None,
         )
 
     # SQLAlchemy-session surface ---------------------------------------
@@ -402,23 +436,25 @@ class _FakeDB:
             # `members.list_members` — the roster. The tenant predicate is read
             # from the statement, so a route that stops scoping the roster
             # shows this fake's other organization and fails.
-            rows = [
-                u for u in self.users.values()
-                if u.get("organization_id") == p.get("org")
-            ]
+            rows = [u for u in self.users.values() if u.get("organization_id") == p.get("org")]
             if "u.status <> 'removed'" in s:
                 rows = [u for u in rows if u["status"] != "removed"]
-            return _Rows([
-                dict(u) | {"roles": list(self.user_roles.get(u["id"], []))}
-                for u in sorted(rows, key=lambda u: u["email"])
-            ])
+            return _Rows(
+                [
+                    dict(u) | {"roles": list(self.user_roles.get(u["id"], []))}
+                    for u in sorted(rows, key=lambda u: u["email"])
+                ]
+            )
 
         if "FROM org_group" in s and "AND slug = :slug" in s:
             # `groups._get_group` — by slug WITHIN one organization.
             row = next(
-                (g for g in self.groups.values()
-                 if g["slug"] == p["slug"]
-                 and g["organization_id"] == p.get("org")), None,
+                (
+                    g
+                    for g in self.groups.values()
+                    if g["slug"] == p["slug"] and g["organization_id"] == p.get("org")
+                ),
+                None,
             )
             return _Rows([dict(row)] if row else [])
 
@@ -433,10 +469,11 @@ class _FakeDB:
 
         if "INSERT INTO user_permission_override" in s:
             key = (p["uid"], p["perm"])
-            if key in self.overrides:          # ON CONFLICT DO NOTHING
+            if key in self.overrides:  # ON CONFLICT DO NOTHING
                 return _Rows([], rowcount=0)
             self.overrides[key] = {
-                "effect": p.get("effect", "allow"), "reason": p.get("reason", ""),
+                "effect": p.get("effect", "allow"),
+                "reason": p.get("reason", ""),
                 "set_by": p.get("by", ""),
             }
             return _Rows([], rowcount=1)
@@ -466,24 +503,28 @@ class _FakeDB:
             out: list[dict[str, Any]] = []
             for rid in p["ids"]:
                 slug = str(rid).removeprefix("role-")
-                out += [{"permission": x}
-                        for x in self.ROLE_PERMISSIONS.get(slug, ())]
+                out += [{"permission": x} for x in self.ROLE_PERMISSIONS.get(slug, ())]
             return _Rows(out)
 
         if "FROM org_role WHERE organization_id" in s and "ANY(:slugs)" in s:
-            return _Rows([
-                {"id": f"role-{slug}", "slug": slug,
-                 "rank": self.ROLE_RANKS[slug]}
-                for slug in p["slugs"] if slug in self.ROLE_RANKS
-            ])
+            return _Rows(
+                [
+                    {"id": f"role-{slug}", "slug": slug, "rank": self.ROLE_RANKS[slug]}
+                    for slug in p["slugs"]
+                    if slug in self.ROLE_RANKS
+                ]
+            )
 
         if "SELECT organization_id::text AS org, email FROM app_user" in s:
             # `_ADDRESS_TENANT_SQL` — the one deliberately cross-tenant read.
             want = str(p["email"]).lower()
-            return _Rows([
-                {"org": u.get("organization_id"), "email": u["email"]}
-                for u in self.users.values() if u["email"].lower() == want
-            ])
+            return _Rows(
+                [
+                    {"org": u.get("organization_id"), "email": u["email"]}
+                    for u in self.users.values()
+                    if u["email"].lower() == want
+                ]
+            )
 
         if "INSERT INTO app_user" in s:
             # ⚠️ **BYTE-EXACT**, mirroring `app_user_email_key`, which is
@@ -498,9 +539,13 @@ class _FakeDB:
             )
             if existing is None:
                 uid = f"u-{len(self.users) + 1}"
-                self.seed_user(uid, p["email"], status=p.get("status", "invited"),
-                               name=p.get("name", ""),
-                               organization_id=p.get("org"))
+                self.seed_user(
+                    uid,
+                    p["email"],
+                    status=p.get("status", "invited"),
+                    name=p.get("name", ""),
+                    organization_id=p.get("org"),
+                )
                 self.users[uid]["invited_by"] = p.get("by", "")
                 if p.get("status") == "active":
                     self.users[uid]["joined_at"] = "now()"
@@ -520,9 +565,8 @@ class _FakeDB:
             allows_match = "app_user.organization_id = EXCLUDED.organization_id" in s
             org = existing.get("organization_id")
             if allows_null or allows_match:
-                writable = (
-                    (allows_null and org is None)
-                    or (allows_match and org is not None and org == p.get("org"))
+                writable = (allows_null and org is None) or (
+                    allows_match and org is not None and org == p.get("org")
                 )
                 if not writable:
                     return _Rows([], rowcount=0)
@@ -542,8 +586,7 @@ class _FakeDB:
             prior = existing["status"]
             if prior == "invited" or (prior == "removed" and wanted != "active"):
                 existing["status"] = wanted
-                if prior == "invited" and wanted == "active" \
-                        and not existing["joined_at"]:
+                if prior == "invited" and wanted == "active" and not existing["joined_at"]:
                     existing["joined_at"] = "now()"
             return _Rows([], rowcount=1)
 
@@ -596,20 +639,26 @@ class _FakeDB:
             # and invariant 1 is per-tenant: another company having an owner
             # does not stop this one going ownerless.
             excluded = p.get("uid")
-            return _Rows([{"count": sum(
-                1 for uid, slugs in self.user_roles.items()
-                if "owner" in slugs and uid != excluded
-                and (self.users.get(uid) or {}).get("status") == "active"
-                and (self.users.get(uid) or {}).get("organization_id")
-                == p.get("org")
-            )}])
+            return _Rows(
+                [
+                    {
+                        "count": sum(
+                            1
+                            for uid, slugs in self.user_roles.items()
+                            if "owner" in slugs
+                            and uid != excluded
+                            and (self.users.get(uid) or {}).get("status") == "active"
+                            and (self.users.get(uid) or {}).get("organization_id") == p.get("org")
+                        )
+                    }
+                ]
+            )
 
         if "SELECT r.slug FROM user_role ur" in s:
             slugs = self.user_roles.get(p["uid"], [])
-            return _Rows([
-                {"slug": x}
-                for x in sorted(slugs, key=lambda y: self.ROLE_RANKS.get(y, 999))
-            ])
+            return _Rows(
+                [{"slug": x} for x in sorted(slugs, key=lambda y: self.ROLE_RANKS.get(y, 999))]
+            )
 
         # members.purge_member — ONE branch for every person-scoped count and
         # delete, driven by the statement text (see the module header).
@@ -645,10 +694,28 @@ class _FakeDB:
             if "lower(email) = :email" in s:
                 row = self.requests.get(str(p["email"]).lower())
                 return _Rows([dict(row)] if row else [])
-            rows = [
-                dict(r) for r in self.requests.values() if r["status"] == "pending"
-            ]
+            rows = [dict(r) for r in self.requests.values() if r["status"] == "pending"]
             return _Rows(rows)
+
+        # `tasks.people.ensure_directory_row` — the member's DIRECTORY row.
+        # Modelled rather than waved through: `ON CONFLICT DO NOTHING` means
+        # the second invite must write nothing, and a fake that answered every
+        # INSERT with success would hide exactly that.
+        if "INSERT INTO gtd_people" in s:
+            # Named `address`, not `key`: `key` is a (group_id, user_id) tuple
+            # in an earlier branch of this same function, and reusing it here
+            # makes the type checker read the two as one variable.
+            address = str(p.get("email") or "").lower()
+            if not address or address in self.directory:
+                return _Rows([], rowcount=0)
+            self.directory[address] = {
+                "id": p.get("id"),
+                "name": p.get("name"),
+                "email": address,
+                "status": p.get("status"),
+                "source": "member",
+            }
+            return _Rows([], rowcount=1)
 
         raise AssertionError(f"unhandled SQL in fake: {s}")
 
@@ -669,6 +736,7 @@ def bind_admin_db(monkeypatch: Any, fake: _FakeDB, modules: tuple[Any, ...]) -> 
     Postgres. GUC plumbing stays out of the mirror — ``test_tenant_session.py``
     owns that.
     """
+
     @asynccontextmanager
     async def _tenant_session(organization_id: str | None = None) -> Any:
         yield fake
@@ -715,9 +783,11 @@ def bind_admin_db(monkeypatch: Any, fake: _FakeDB, modules: tuple[Any, ...]) -> 
     for module in modules:
         monkeypatch.setattr(module, "_tenant_session", _tenant_session)
         monkeypatch.setattr(
-            module, "invalidate_for",
+            module,
+            "invalidate_for",
             lambda *e: fake.invalidated.extend(x for x in e if x),
         )
+
         def _record(actor: str, action: str, target: str, **kw: Any) -> None:
             fake.audit.append((action, target))
             fake.audit_payloads.append(kw)

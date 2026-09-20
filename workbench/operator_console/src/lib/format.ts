@@ -196,6 +196,26 @@ export function formatDate(iso: string | null): string {
   return iso.slice(0, 10);
 }
 
+/** An ISO instant as "2026-09-20 14:05 UTC", or "—".
+ *
+ * 🔴 **Deterministic on purpose, and that is the whole point.**
+ * `toLocaleString()` reads the RUNTIME's locale and zone. Next renders every
+ * page on the server first, so Node formatted "20/9/2026" and the browser
+ * formatted "20/09/2026" — a hydration mismatch that makes React throw away
+ * the server HTML for that subtree. Measured on /pricing, 2026-09-20.
+ *
+ * ⚠️ **UTC, and it says so.** The box runs UTC and the logs are UTC, so an
+ * operator comparing this to a log line must not be silently shown their own
+ * zone. Slicing the ISO string cannot drift, because nothing is parsed.
+ */
+export function formatDateTime(iso: string | null): string {
+  if (!iso) return "—";
+  const t = iso.trim();
+  // Not an ISO instant we can slice? Show it verbatim rather than guess.
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(t)) return t;
+  return `${t.slice(0, 10)} ${t.slice(11, 16)} UTC`;
+}
+
 // The lifecycle targets the Access control offers — ADVISORY UX only.
 // The Console's `assert_transition` graph is the authority and re-checks every
 // move (a refused transition is a 409); this list only decides which button to

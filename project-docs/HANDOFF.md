@@ -379,40 +379,6 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-31 · WS-31 H-46 review round 2 · **renumbered from H-84 on
   2026-08-31**. The router-guards slice took that id first.
 
-### H-85 · Make an UNMEASURED call reconcilable to the row it wrote · [AGENT]
-- ⚠️ **STILL OPEN on 2026-09-19, and a comment elsewhere overstates
-  it.** Migration `031_cost_source.sql` says it "closes half of H-85". That
-  is loose. `cost_source` records how a usage ROW arrived at its cost. This
-  entry is about the `router.unmeasured_quantity` ALARM naming neither the
-  organization nor the request id, so nobody can join it to the row it
-  belongs to. Related, not the same. The Check below was re-run today and
-  both `extra` blocks still carry only model, tier and task.
-- **Check:** `rg -n 'router.unmeasured_quantity' -A4 apps/services/customer_console/customer_console/main.py`.
-  An `extra` block carrying no organization and no request id means this entry
-  is still real.
-- **Why:** `router.unmeasured_quantity` is the alarm that says nothing measured
-  a call we served. It logs the model, the tier and the task, and it names
-  neither the organization nor the request. So nobody can join the alarm to the
-  `usage_event` row it belongs to. Nobody can tell one customer's unmeasured
-  calls from another customer's either. The revenue path deserves a log a
-  person can reconcile.
-- 📌 **PRE-EXISTING, and wider than the two media doors.** The transcribe route
-  writes the same three fields (`main.py:5749`). The two H-46 doors copied that
-  shape, so a repair here should move all three onto one helper.
-- 🔴 **SPLIT THE NAME TOO — two different incidents share one alarm today.**
-  On the image door and the transcribe door, `router.unmeasured_quantity`
-  means *we could not count what the provider returned*. On the speak door it
-  also fires when the vendor answered ZERO BYTES of audio. That is not a
-  counting failure at all. We counted the characters fine, and the vendor
-  sent nothing back. One alarm cannot page for both. This entry is the place
-  to give the empty-audio case its own name.
-- 📌 **The fix shape:** carry `org_id` and the server-generated `request_id`
-  into the log line. `_record_completion` mints the id, so the ORDER matters —
-  the alarm fires before the row exists today.
-- **Authority:** `specs/customer_console.md` §6A.10c clause 5 · clause 6
-  · board row WS-31
-- **Added:** 2026-08-31 · WS-31 H-46 review round 2
-
 ### H-86 · One serving prelude for all FOUR Router doors · [AGENT]
 - **Check:** `rg -c '_serving_prelude' apps/services/customer_console/customer_console/main.py`.
   A count under 5 means fewer than four doors share it, and this entry is still
@@ -429,29 +395,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/customer_console.md` §6A.10c · root `CLAUDE.md` §5
   · board row WS-31
 - **Added:** 2026-08-31 · WS-31 H-46 review round 2
-
-### H-82 · Correct the failover read, which now counts a resolution act · [AGENT]
-- **Check:** `grep -n "served_rank > 1" apps/services/customer_console/customer_console/main.py`
-  and `grep -n "Failovers, last 14 days" workbench/operator_console/src/app/tiers/TierBoard.tsx`.
-  A hit on both means the read still calls every `served_rank > 1` row a
-  failover, and this entry is still real.
-- **Why:** D-AI-2's lift drops the blind steps of a chat chain BEFORE the walk
-  starts. Take a tier that binds a blind rank 1 and a seeing rank 2, both
-  keyed. `_record_completion` (`main.py:4656`) then writes `served_rank = 2`
-  with `task = vision` on EVERY successful call, and no step ever failed.
-- 🔴 **The dashboard reads that as a failover.** `main.py:1858-1868` selects
-  `WHERE served_rank > 1`, and its own comment calls every such row a customer
-  request the rank-1 step did not answer. `TierBoard` would report 100 percent
-  of that tier's vision traffic as a failover.
-- ⚠️ **The emitted group joins to no `tier_binding` row.** It carries the
-  chosen tier with `task = vision`, and the chosen tier binds no `vision` task.
-- 📌 **The RANK is TRUE, and only the MEANING slipped.** `resolve_chain` builds
-  `rank` from the column and never from a list index, and the lift chain stays
-  a subsequence of the chain. So do not change the write.
-- 📌 **The credential filter (`main.py:5255-5258`) already does this on the
-  CHAT path.** So this widens a shape, and it mints no new class.
-- **Authority:** `ai_metering_and_analytics.md` §8.5 clause 7 · board row WS-31
-- **Added:** 2026-08-31 · WS-31 router-guards final repair round
 
 ### H-81 · Decide the TWO open resolution rules for the vision chain · [OWNER]
 - **Check:** `grep -n "def resolve_vision_chain" -A3 apps/services/customer_console/customer_console/router.py`
@@ -2123,67 +2066,6 @@ line — never reclaim a number by deleting the other entry.
   2026-08-31** after run `33937646678`'s predecessor failed · **de-escalated
   2026-09-05** against run `33937646678`, credit-pricing merge session
 
-### H-91 · The provisioning fixtures leak an organization per test, and that is what fills the scratch database · [AGENT]
-- 🔴 **The leak reaches the UI, and it cost a day of measurement.**
-  Measured 2026-09-19 on a scratch database: 105 ghost tiers, 67 vendor
-  chips, 43 declared models and 30 provider-filter chips — nearly all of
-  them fixture rows named `ptv*`, `tp*` and `cp*`. Every page-size and
-  control-count number taken that day had to be read past them, and twice
-  a design decision was nearly taken on a number the fixtures produced.
-  The entry reads as a disk-space problem. It is also a measurement one.
-- **Check:** count `organization` on the console scratch database, run
-  `uv run pytest tests/unit/test_customer_console_router.py -q`, then count
-  again. A rise means this entry is still real. ⚠️ Do NOT check by reading
-  `test_customer_console_sql.py` for `limit=`. H-83 closed that shape on
-  2026-08-31, and the fences no longer care how large the table grows. This
-  entry is about the TABLE, and never about the fence.
-- **Why:** 🔴 **This is the root cause behind the two entries closed on
-  2026-08-31, and neither of them fixed it.** The `org_key` fixture at
-  `tests/unit/test_customer_console_router.py:128-142` posts `/orgs/provision`
-  with a fresh `router-<hex>` slug for every test, and it removes nothing.
-- **📌 Measured per suite on 2026-08-31, by an independent verifier.** An
-  earlier estimate of 170 rows a run was wrong, and these numbers replace it.
-
-  | suite | organizations a run | `usage_event` a run |
-  |---|---|---|
-  | `test_customer_console_router.py` | **+99** | **+86** |
-  | `test_provider_keys.py` | +3 | 0 |
-  | `test_customer_console_sql.py` | 0 | 0 |
-  | `test_customer_console_catalog.py` | 0 | 0 |
-  | **the console family, 16 files** | **+647** | **+288** |
-
-  The router figure repeated exactly over three separate runs. Attribution by
-  slug prefix: of 5278 organizations, `router-` held **3144**, which is 60
-  percent. Of 3720 `usage_event` rows, those organizations held **2752**.
-- **📌 The number this reached, and what it cost.** The shared database held
-  **25,959 organizations, 15,159 usage events and 8,643 credit-ledger rows**
-  before an operator rebuilt it. At that size
-  `test_customer_console_sql.py` and `test_customer_console_pricing_truth.py`
-  failed on volume alone. A wide sweep gave 41 failures on one run and 22 on
-  the next, with no code change between them. 🔴 **A red that comes and goes
-  hides a real red.**
-- **📌 H-83's repair makes the FENCES immune, and it does not stop the
-  GROWTH.** A slug filter reads one organization whatever the table holds. The
-  table still grows by 170 rows a run, and the next assertion that pages the
-  table inherits the same trap.
-- **The repair:** give `org_key` and its siblings a teardown, the way
-  `bound_tier` already does for tier bindings. One fixture, one teardown.
-  ⚠️ **The fence must read the TABLE, and never the source text.** A verifier
-  defeated a source scan on 2026-08-31 with two spellings. One was a
-  lower-case `insert into`. The other split the keyword over adjacent string
-  literals, which is this repository's own house style. A fixture that
-  snapshots the row count before and after cannot be out-spelled.
-- **📌 Two smaller leaks ride here.** `test_customer_console_vendor_feed.py`
-  leaks `ptv*` provider credentials and `model_profile` rows, measured 2 to 16
-  in one run. And `test_customer_console_pricing_truth.py:497,530` carry the
-  same volume bet with `limit=1_000_000`. Both pass today, and both fail at
-  some table size nobody has chosen.
-- **Authority:** `engineering_practice.md` §1.1 (the R8 loop) · the H-83 and
-  H-84 closures on branch `ws-31-fixture-hygiene`
-- **Added:** 2026-08-31 · WS-31 fixture-hygiene slice · **renumbered from H-88
-  on 2026-08-31.** A second branch minted H-88 against a different base, and
-  that entry merged first. The queue fence named the collision.
-
 ### H-76 · `usage_by_org` sorts by spend, so the quiet funded customer falls off the cap · [AGENT]
 - **Check:** read the docstring of `usage_by_org` in
   `apps/services/customer_console/customer_console/store.py` and the `ORDER BY`
@@ -2664,6 +2546,65 @@ line — never reclaim a number by deleting the other entry.
   change — the script already rsyncs to it and warns while it is unset.
 - **Authority:** `scripts/backup_db.sh` · `deploy/hostinger/BACKUP-RESTORE.md`
 - **Added:** 2026-09-19 · operator console session, after the backup repair
+
+### H-124 · Backfill the directory rows for members who predate 2026-09-20 · [AGENT]
+- **Check, repo half:** `rg -l "INSERT INTO gtd_people" infra/postgres/` → no
+  migration that reads `app_user` means this is open.
+- **Check, data half:** run this on the box. A count above zero means this is
+  open. ⚠️ A session with no reach to the box cannot run it. Say so. Do not
+  report a pass.
+
+  ```sql
+  SELECT count(*) FROM app_user u
+   WHERE u.status = 'active'
+     AND NOT EXISTS (SELECT 1 FROM gtd_people p
+                      WHERE lower(p.email) = lower(u.email));
+  ```
+- **Why:** PR #306 made member provisioning write the directory row. It fixed
+  the cause, not the data. Every member created before 2026-09-20 still has no
+  row. Each one opens *My Profile* and reads "An administrator can add you".
+  Production held zero directory rows on 2026-09-19, the owner included.
+- **⚠️ Ordered AFTER H-104, and that is why PR #306 stopped here.** The test
+  ladder skips `infra/postgres/generated/`, so nobody knows whether
+  `gtd_people` carries `organization_id` in production. A backfill cannot put a
+  row in the correct tenant until somebody settles that.
+- 📌 A small organization needs no migration. The administrator presses **Add
+  person** on `/people`, which PR #306 also repaired.
+- **Authority:** `project-docs/specs/people_center_app.md` §2 · PR #306
+- **Added:** 2026-09-20 · the My Profile session
+
+### H-125 · Migration 148's email index spans EVERY tenant · [AGENT]
+- **Check:** `rg -A 2 "uq_gtd_people_email_lower" infra/postgres/148_people_key_shape.sql`
+  → an index on `(lower(email))` that does not name `organization_id` means
+  this is open.
+- **Why:** two organizations cannot hold the same address in `gtd_people`. A
+  contractor who works for two customers is the ordinary case. The second
+  tenant's member silently gets no directory row, because
+  `ensure_directory_row` uses `ON CONFLICT DO NOTHING`. Row level security
+  hides the other tenant's row, so nobody can see the reason.
+- **⚠️ Ordered AFTER H-104.** The index cannot name a column that has not
+  reached production.
+- **Authority:** `infra/postgres/148_people_key_shape.sql:87` ·
+  `project-docs/specs/saas_multitenancy.md`
+- **Added:** 2026-09-20 · the My Profile session, found while writing PR #306
+
+### H-126 · `build_sha()` returns None in EVERY git worktree · [AGENT]
+- **Check:** from a worktree, `uv run pytest tests/unit/test_build_info.py -q`
+  → a failure that names `build_sha() disagrees with git rev-parse HEAD` means
+  this is open. The same command passes in the main checkout.
+- **Why:** `_sha_from_git_dir` reads `HEAD`, finds `ref: refs/heads/<branch>`,
+  then looks for that ref below the worktree gitdir. A worktree keeps its
+  branch refs in the COMMON git dir, which its `commondir` file names. The
+  function does not follow that file. `build_info.py` already handles the
+  `.git` FILE, so the repair is one more hop and not a rewrite.
+- **⚠️ This greets every session.** CLAUDE.md §4 tells each one to start in a
+  worktree, so each one meets a red suite that is not theirs. That is how
+  people learn to ignore a failing test.
+- 📌 **Production is unaffected.** The box is a plain clone, so `/version`
+  reports the real SHA. The damage is to trust in the suite, not to the deploy.
+- **Authority:** `apps/services/gateway/gateway/build_info.py:128` ·
+  `tests/unit/test_build_info.py`
+- **Added:** 2026-09-20 · the My Profile session
 
 # DONE — deleted, not archived
 

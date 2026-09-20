@@ -242,3 +242,87 @@ export const HELP_DETAILS = {
     "them — what a customer pays is unchanged, and lives on Pricing.",
   close: "Shut the editor. Anything you typed and did not save is discarded.",
 } as const;
+
+/** The Pricing board — what a customer pays, per tier.
+ *
+ * ⚠️ **The costliest confusion on this page is cost read as price.** Every
+ * entry that names a number says whose side it is on: ours, or the customer's.
+ */
+export const HELP_PRICING = {
+  creditValue:
+    "What one credit is worth in rupees. A bank transfer converts with this " +
+    "number, and every suggestion below turns vendor dollars into credits " +
+    "through it. Nothing on this page can be priced until it is saved.",
+  fxRate:
+    "The rupee-to-dollar rate the suggestions plan with. It is a planning " +
+    "figure we choose, not a live market feed, so it moves only when you " +
+    "change it.",
+  saveCredit:
+    "Records the credit's value. It is a commercial act, so it needs an " +
+    "elevated admin session, and every save is kept as history.",
+  costsUs:
+    "What the VENDOR charges us for this tier's first model, converted to " +
+    "credits. This is our cost, never what a customer pays.",
+  weCharge:
+    "What a customer is billed for this tier today, in credits. The invoice " +
+    "reads this exact card, so the two can never disagree.",
+  plannedMargin:
+    "The share of the customer's price that stays with us, going by the " +
+    "price on the card and the vendor's listed cost. A forecast, not history.",
+  earned:
+    "The margin real traffic actually produced over the last seven days. " +
+    "This is the only figure on the card that measures rather than predicts.",
+  runsOn:
+    "The model that answers first for this tier. Its vendor price is the " +
+    "cost every suggestion here is built on — a backup changes our cost, " +
+    "never the customer's price.",
+  setPrice:
+    "Open the editor for this tier. Nothing is written until you save, so " +
+    "you can read the suggested figures first.",
+  targetMargin:
+    "The share of the price you want to keep. 60 means a job costing 400 " +
+    "credits is charged 1000. Suggestions below follow it as you type.",
+  useSuggestion:
+    "Copy the suggested figures into the boxes. You can still edit them " +
+    "before saving — the suggestion is a starting point, not the decision.",
+  modePriced:
+    "Charge a customer the figures below for every call this tier serves. " +
+    "This is the only mode that puts a number on an invoice.",
+  modeAbsorbed:
+    "Bill nothing for this tier ON PURPOSE, because the seat price covers " +
+    "it. Different from having no price, and the board draws it differently.",
+  modeUnpriced:
+    "Record that this tier has no price. It keeps answering customers and " +
+    "keeps billing nothing, which is the state to leave deliberately.",
+  inputPrice: "What a customer pays per million tokens they send.",
+  outputPrice: "What a customer pays per million tokens the model writes back.",
+  cachedPrice:
+    "What a customer pays per million tokens the vendor served from its own " +
+    "cache. Leave it equal to the input price if you do not want a discount.",
+  perUnitPrice:
+    "What a customer pays for one unit of this job — a minute of audio, an " +
+    "image, a thousand characters. The unit is fixed by the job.",
+  savePrice:
+    "Write this card. It takes effect now, past calls keep the card they " +
+    "were rated by, and repricing later is an insert, so history stays.",
+  setMargin:
+    "Record what you aim to keep on this tier, and the level below which " +
+    "somebody should look. Both are commercial decisions, and both may be " +
+    "left blank.",
+  multiplier:
+    "What you aim to keep, as a share of the price. It seeds the suggestion " +
+    "when you price this tier, and it changes no bill by itself. Blank means " +
+    "this tier offers no suggestion at all.",
+  floor:
+    "The realised margin below which this tier raises an alarm. Measured " +
+    "against real traffic, not against the price on the card, so a tier can " +
+    "sit above its floor while its intended margin is wrong. Blank means it " +
+    "never alarms.",
+  marginVsFloor:
+    "The intended margin is what you MEANT to keep. The floor is what you " +
+    "want to be told about. A tier can miss one and hold the other, which " +
+    "is why they are two numbers.",
+  saveMargin:
+    "Record both numbers. It is a commercial act, so it needs an elevated " +
+    "admin session, and the previous pair stays readable as history.",
+} as const;

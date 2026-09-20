@@ -2393,3 +2393,137 @@ main.wrap {
   font-size: 13px;
   font-weight: 600;
 }
+
+/* ── The price board ─────────────────────────────────────────────────────
+   🔴 Five panels became two on 2026-09-20. Four of them answered ONE
+   question — "what do we charge for this tier, and is it enough?" — in a
+   read-only list, a suggestion table, a hand form and a monitor. The tier is
+   the thing being priced, so the tier is the card, and the whole decision
+   sits on it.
+
+   ⚠️ Reuses `.tier-grid`, `.tier-card`, `.segmented` and `.chip` rather than
+   inventing a second vocabulary. What is new here is only the two-column
+   fact list and the editor that opens inside a card. */
+
+/* The one line at the top: the next thing to do, said once. It replaced the
+   same unsaved credit price being reported in three separate panels. */
+.alertline {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.alertline b {
+  color: var(--text);
+  font-size: 13.5px;
+}
+.alertline p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+  max-width: 76ch;
+}
+.alertline .dot {
+  margin-top: 5px;
+  flex: none;
+}
+.panel.alert-danger { border-color: var(--danger-line); background: var(--danger-soft); }
+.panel.alert-warn { border-color: var(--warn-line); background: var(--warn-soft); }
+.panel.alert-ok { border-color: var(--ok-line); }
+
+/* The facts on a card. A two-column list, because every row is a
+   label-and-value pair and a table for five rows is heavier than the data. */
+.pricefacts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 5px 12px;
+  margin: 0 0 12px;
+  align-items: baseline;
+}
+.pricefacts dt {
+  color: var(--muted);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  /* A dotted underline is the one affordance that says "there is a hover
+     here" without spending colour, which this page needs for meaning. */
+  border-bottom: 1px dotted var(--border);
+  cursor: help;
+}
+.pricefacts dd {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.pricefacts dd .mono { font-size: 11.5px; }
+
+/* A tier billing under the floor it was given. The only alarm on this page,
+   because it is the only state that costs money on every single call. */
+.tier-card.under {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+}
+
+.linklike.wide {
+  display: block;
+  width: 100%;
+  text-align: center;
+  padding: 7px;
+  border: 1px dashed var(--border);
+  border-radius: var(--r);
+}
+
+/* The editor, inside the card it prices. */
+.priceeditor {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.suggestrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+.suggestrow label { display: inline-flex; align-items: center; gap: 0; }
+.suggestrow input { width: 52px; text-align: center; }
+.legs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+.legs label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11.5px;
+  color: var(--muted);
+  cursor: help;
+}
+.legs input { width: 100%; }
+.editoractions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.cardactions {
+  display: flex;
+  gap: 8px;
+}
+.cardactions .linklike {
+  flex: 1 1 0;
+  text-align: center;
+  padding: 7px;
+  border: 1px dashed var(--border);
+  border-radius: var(--r);
+  min-width: 0;
+}

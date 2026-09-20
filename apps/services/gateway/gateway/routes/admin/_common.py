@@ -34,7 +34,7 @@ an access model and an outage:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from acb_auth import (
@@ -73,6 +73,7 @@ from gateway.db import tenant_session as _tenant_session  # noqa: F401
 # `routes/projects/core.py` owns it because Projects needed it first; the
 # question it answers belongs to no package.
 from gateway.routes.projects.core import NO_ORGANIZATION, resolve_organization_id
+from gateway.routes.tasks.people import ensure_directory_row
 from sqlalchemy import text
 
 _log = get_logger("gateway.admin")
@@ -123,6 +124,7 @@ NON_ASSIGNABLE_ROLES = frozenset({"agent_service"})
 
 
 # ── Auth gate ───────────────────────────────────────────────────────────────
+
 
 async def require_admin_user(
     user: UserContext = Depends(get_current_user),
@@ -197,8 +199,7 @@ async def get_org_id(db: Any, user: UserContext) -> str:
         raise HTTPException(
             status_code=503,
             detail=(
-                "Organization not provisioned. Apply "
-                "infra/postgres/130_org_access_control.sql."
+                "Organization not provisioned. Apply infra/postgres/130_org_access_control.sql."
             ),
         )
     raise HTTPException(status_code=403, detail=NO_ORGANIZATION)
@@ -223,17 +224,21 @@ async def find_member(db: Any, org_id: str, email: str) -> dict[str, Any] | None
     Case-insensitive on the address (R10) and exact on the tenant.
     """
     row = (
-        await db.execute(
-            text(
-                "SELECT id::text AS id, email, display_name, avatar_url, status, "
-                "       role AS legacy_role, invited_by, invited_at, joined_at, "
-                "       last_login_at, last_active_at, created_at "
-                "  FROM app_user WHERE lower(email) = :email "
-                "   AND organization_id = CAST(:org AS uuid)"
-            ),
-            {"email": email.lower().strip(), "org": org_id},
+        (
+            await db.execute(
+                text(
+                    "SELECT id::text AS id, email, display_name, avatar_url, status, "
+                    "       role AS legacy_role, invited_by, invited_at, joined_at, "
+                    "       last_login_at, last_active_at, created_at "
+                    "  FROM app_user WHERE lower(email) = :email "
+                    "   AND organization_id = CAST(:org AS uuid)"
+                ),
+                {"email": email.lower().strip(), "org": org_id},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     return dict(row) if row is not None else None
 
 
@@ -253,15 +258,19 @@ async def get_member(db: Any, org_id: str, email: str) -> dict[str, Any]:
 async def get_role(db: Any, org_id: str, slug: str) -> dict[str, Any]:
     """Fetch one role row by slug, or 404."""
     row = (
-        await db.execute(
-            text(
-                "SELECT id::text AS id, slug, display_name, description, "
-                "       is_system, rank "
-                "  FROM org_role WHERE organization_id = CAST(:org AS uuid) AND slug = :slug"
-            ),
-            {"org": org_id, "slug": slug},
+        (
+            await db.execute(
+                text(
+                    "SELECT id::text AS id, slug, display_name, description, "
+                    "       is_system, rank "
+                    "  FROM org_role WHERE organization_id = CAST(:org AS uuid) AND slug = :slug"
+                ),
+                {"org": org_id, "slug": slug},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     if row is None:
         raise HTTPException(status_code=404, detail=f"No role '{slug}'.")
     return dict(row)
@@ -269,15 +278,19 @@ async def get_role(db: Any, org_id: str, slug: str) -> dict[str, Any]:
 
 async def roles_for_user(db: Any, user_id: str) -> list[str]:
     rows = (
-        await db.execute(
-            text(
-                "SELECT r.slug FROM user_role ur "
-                "  JOIN org_role r ON r.id = ur.role_id "
-                " WHERE ur.user_id = CAST(:uid AS uuid) ORDER BY r.rank"
-            ),
-            {"uid": user_id},
+        (
+            await db.execute(
+                text(
+                    "SELECT r.slug FROM user_role ur "
+                    "  JOIN org_role r ON r.id = ur.role_id "
+                    " WHERE ur.user_id = CAST(:uid AS uuid) ORDER BY r.rank"
+                ),
+                {"uid": user_id},
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return list(rows)
 
 
@@ -290,17 +303,21 @@ async def caller_rank(db: Any, org_id: str, user: UserContext) -> int:
     if user.has_permission("*"):
         return 0
     rows = (
-        await db.execute(
-            text(
-                "SELECT MIN(r.rank) AS rank "
-                "  FROM app_user u "
-                "  JOIN user_role ur ON ur.user_id = u.id "
-                "  JOIN org_role r   ON r.id = ur.role_id "
-                " WHERE lower(u.email) = :email AND r.organization_id = CAST(:org AS uuid)"
-            ),
-            {"email": (user.email or "").lower(), "org": org_id},
+        (
+            await db.execute(
+                text(
+                    "SELECT MIN(r.rank) AS rank "
+                    "  FROM app_user u "
+                    "  JOIN user_role ur ON ur.user_id = u.id "
+                    "  JOIN org_role r   ON r.id = ur.role_id "
+                    " WHERE lower(u.email) = :email AND r.organization_id = CAST(:org AS uuid)"
+                ),
+                {"email": (user.email or "").lower(), "org": org_id},
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     rank = rows["rank"] if rows else None
     return int(rank) if rank is not None else 1000
 
@@ -321,17 +338,12 @@ async def owner_count(db: Any, org_id: str, *, excluding_user_id: str | None = N
     return int((await db.execute(text(sql), params)).scalar() or 0)
 
 
-async def assert_owner_survives(
-    db: Any, org_id: str, *, excluding_user_id: str
-) -> None:
+async def assert_owner_survives(db: Any, org_id: str, *, excluding_user_id: str) -> None:
     """Refuse a change that would leave the organization ownerless."""
     if await owner_count(db, org_id, excluding_user_id=excluding_user_id) == 0:
         raise HTTPException(
             status_code=409,
-            detail=(
-                "This would leave the organization with no owner. "
-                "Assign another owner first."
-            ),
+            detail=("This would leave the organization with no owner. Assign another owner first."),
         )
 
 
@@ -396,8 +408,7 @@ def assert_not_self_lockout(
         return
     wording = _SELF_LOCKOUT_WORDING.get(
         status,
-        f"You cannot set your own membership to '{status}' — "
-        "it would take away your own access.",
+        f"You cannot set your own membership to '{status}' — it would take away your own access.",
     )
     raise HTTPException(status_code=409, detail=f"{wording} {_SELF_LOCKOUT_ADVICE}")
 
@@ -412,8 +423,7 @@ SELF_RECOVERY_PERMISSION = "admin:members:manage"
 #: ``_PROVISION_MEMBER_SQL`` is: the test fake answers it from a Python mapping,
 #: and a mirror can only ever agree with itself.
 _ROLE_PERMISSIONS_SQL = (
-    "SELECT permission FROM org_role_permission "
-    " WHERE role_id = ANY(CAST(:ids AS uuid[]))"
+    "SELECT permission FROM org_role_permission  WHERE role_id = ANY(CAST(:ids AS uuid[]))"
 )
 
 
@@ -458,13 +468,8 @@ async def assert_not_self_demotion(
 
     ids = [rid for rid, _slug in role_ids]
     if ids:
-        granted = (
-            await db.execute(text(_ROLE_PERMISSIONS_SQL), {"ids": ids})
-        ).scalars().all()
-        if any(
-            permission_matches(str(p), SELF_RECOVERY_PERMISSION)
-            for p in granted
-        ):
+        granted = (await db.execute(text(_ROLE_PERMISSIONS_SQL), {"ids": ids})).scalars().all()
+        if any(permission_matches(str(p), SELF_RECOVERY_PERMISSION) for p in granted):
             return
 
     raise HTTPException(
@@ -478,10 +483,11 @@ async def assert_not_self_demotion(
 
 # ── Provisioning: the one path from an address to a member ──────────────────
 
+
 def _iso(value: Any) -> str:
     """Timestamps on the wire are UTC ISO-8601, and absence is ``""``."""
     if isinstance(value, datetime):
-        return value.astimezone(timezone.utc).isoformat()
+        return value.astimezone(UTC).isoformat()
     return "" if value is None else str(value)
 
 
@@ -499,14 +505,18 @@ async def resolve_assignable_roles(
         raise HTTPException(status_code=400, detail="At least one role is required.")
 
     rows = (
-        await db.execute(
-            text(
-                "SELECT id::text AS id, slug, rank FROM org_role "
-                " WHERE organization_id = CAST(:org AS uuid) AND slug = ANY(:slugs)"
-            ),
-            {"org": org_id, "slugs": list(slugs)},
+        (
+            await db.execute(
+                text(
+                    "SELECT id::text AS id, slug, rank FROM org_role "
+                    " WHERE organization_id = CAST(:org AS uuid) AND slug = ANY(:slugs)"
+                ),
+                {"org": org_id, "slugs": list(slugs)},
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
 
     found = {r["slug"]: r for r in rows}
     missing = [s for s in slugs if s not in found]
@@ -672,8 +682,7 @@ _PROVISION_MEMBER_SQL = """
 #: the deployment's directory). It still returns the address's STORED spelling,
 #: which is now belt-and-braces rather than the whole mechanism.
 _ADDRESS_TENANT_SQL = (
-    "SELECT organization_id::text AS org, email FROM app_user "
-    " WHERE lower(email) = :email"
+    "SELECT organization_id::text AS org, email FROM app_user  WHERE lower(email) = :email"
 )
 
 
@@ -728,9 +737,7 @@ async def provision_member(
     # across the whole directory, because the unique index is not. See
     # `_ADDRESS_TENANT_SQL` for what this is defending against and why it is
     # the only cross-tenant read in the package.
-    known = (
-        await db.execute(text(_ADDRESS_TENANT_SQL), {"email": email})
-    ).mappings().all()
+    known = (await db.execute(text(_ADDRESS_TENANT_SQL), {"email": email})).mappings().all()
     if any(r["org"] and r["org"] != org_id for r in known):
         raise HTTPException(status_code=404, detail=f"No member '{email}'.")
     # Bind the address as it is STORED, so the upsert lands on the existing row
@@ -767,8 +774,13 @@ async def provision_member(
 
     await db.execute(
         text(_PROVISION_MEMBER_SQL),
-        {"email": stored_email, "name": display_name or "", "org": org_id,
-         "by": admin.email, "status": status},
+        {
+            "email": stored_email,
+            "name": display_name or "",
+            "org": org_id,
+            "by": admin.email,
+            "status": status,
+        },
     )
     # Re-read through the SAME tenant predicate the fence uses. When the upsert
     # declined a foreign row this is the 404 the caller receives, and it is
@@ -776,6 +788,24 @@ async def provision_member(
     # could not have written to in the first place.
     member = await get_member(db, org_id, email)
     await set_roles(db, member["id"], role_ids, admin.email)
+
+    # The member's DIRECTORY row, so `/people/me` has something to show.
+    #
+    # ⚠️ **In this transaction, unlike the two mirrors below.** The shadow and
+    # the Console live on other planes, so they mirror after the commit and
+    # must never fail an invite that happened. `gtd_people` is the SAME
+    # database and the SAME tenant, so the atomic write is the correct one: a
+    # provisioning that rolls back must not leave a directory row behind for a
+    # member who does not exist.
+    #
+    # Idempotent, and the return value is discarded on purpose — re-inviting
+    # somebody who already has a row is a no-op and not an error.
+    await ensure_directory_row(
+        db,
+        email=member["email"],
+        display_name=member.get("display_name") or display_name or "",
+        status="invited" if status == "invited" else "active",
+    )
 
     # ⚠️ The RLS-EXEMPT identity-shadow mirror is deliberately NOT called here.
     # It is the CALLER's responsibility, AFTER its `_tenant_session` has
@@ -799,9 +829,7 @@ def invalidate_for(*emails: str | None) -> None:
             invalidate_access(email)
 
 
-def record_admin_change(
-    actor: str | None, action: str, target: str, **payload: Any
-) -> None:
+def record_admin_change(actor: str | None, action: str, target: str, **payload: Any) -> None:
     """Append an access change to the audit log.
 
     Every write in this package goes through here. "Who could see what, and
@@ -814,13 +842,15 @@ def record_admin_change(
     revoking someone's access.
     """
     try:
-        from acb_audit import AuditEvent, record  # noqa: PLC0415
+        from acb_audit import AuditEvent, record
 
-        record(AuditEvent(
-            actor=f"user:{actor}" if actor else "system:internal",
-            action=action,
-            target=target,
-            payload=payload,
-        ))
-    except Exception as exc:  # noqa: BLE001
+        record(
+            AuditEvent(
+                actor=f"user:{actor}" if actor else "system:internal",
+                action=action,
+                target=target,
+                payload=payload,
+            )
+        )
+    except Exception as exc:
         _log.warning("admin_audit_failed", action=action, error=str(exc))
