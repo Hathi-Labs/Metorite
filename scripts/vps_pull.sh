@@ -117,6 +117,40 @@ if [ "$LOCAL" = "$TARGET" ] && [ "$LAST_OK_SHA" = "$TARGET" ] && [ "$MODE" != "f
   exit 0
 fi
 
+# 🔴 **A RETRY THAT CANNOT SUCCEED MUST STOP RETRYING.**
+#
+# The retry above is deliberate and right: gate on the last SUCCESSFUL sha, so
+# a half-finished apply is tried again instead of latching itself out. What it
+# did not consider is an apply that fails the SAME way every time.
+#
+# `vps_apply.sh` restarts the gateway around line 590 and builds the workbench
+# around line 700. So a build that always fails still bounces production first,
+# every single tick. Measured 2026-09-20: a stale generated type made the build
+# fail for eleven hours, and the five-minute timer restarted the live gateway
+# ~130 times. Every in-flight request during those restarts got a 500, and the
+# only thing anybody saw was an occasional unreadable error in the UI.
+#
+# ⚠️ **The damage was not the failed deploy. It was the retrying.** One failed
+# apply is a deploy that did not land. A hundred and thirty is an outage.
+#
+# So: three attempts at one target, then stop and say so loudly. The count is
+# keyed to the TARGET sha, so a new commit always gets its own three attempts
+# and nothing needs clearing by hand. A transient failure — a network blip, a
+# busy box — still retries, which is the case the retry was built for.
+FAIL_SHA="$(cat "$STATE_DIR/last-fail-sha" 2>/dev/null || echo '')"
+FAIL_N="$(cat "$STATE_DIR/last-fail-count" 2>/dev/null || echo 0)"
+case "$FAIL_N" in ''|*[!0-9]*) FAIL_N=0 ;; esac
+MAX_FAILS="${MAX_FAILS:-3}"
+
+if [ "$FAIL_SHA" = "$TARGET" ] && [ "$FAIL_N" -ge "$MAX_FAILS" ] && [ "$MODE" != "force" ]; then
+  warn "apply has failed $FAIL_N times at ${TARGET:0:12} — NOT retrying"
+  warn "each attempt restarts the gateway before it fails, so retrying is an outage"
+  warn "fix the cause, then: sudo MODE=force bash $0   (or clear $STATE_DIR/last-fail-*)"
+  # Non-zero so `systemctl --failed` keeps showing it. A box that has given up
+  # must not look healthy — that is the failure WS-25 exists to end.
+  exit 11
+fi
+
 if [ "$MODE" = "check" ]; then
   echo "    BEHIND — $(git rev-list --count HEAD.."origin/$RELEASE_REF") commit(s)"
   git log --oneline HEAD.."origin/$RELEASE_REF" | head -20
@@ -148,9 +182,24 @@ if APP_DIR="$APP_DIR" DEPLOY_REF="$TARGET" bash "$TMP_APPLY"; then
   mkdir -p "$STATE_DIR" 2>/dev/null || true
   date -u '+%Y-%m-%dT%H:%M:%SZ' > "$STATE_DIR/last-pull-ok" 2>/dev/null || true
   echo "$TARGET" > "$STATE_DIR/last-pull-sha" 2>/dev/null || true
+  # Clear the breaker. A success is the only thing that should, and it must
+  # happen here rather than on the next tick — otherwise a box that recovers
+  # stays latched out by its own history.
+  rm -f "$STATE_DIR/last-fail-sha" "$STATE_DIR/last-fail-count" 2>/dev/null || true
   say "Applied $(git rev-parse --short HEAD)"
 else
   rc=$?
+  # Count this failure against THIS target, so the breaker above can stop a
+  # loop that cannot win. A different target resets the count to 1.
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+  if [ "$FAIL_SHA" = "$TARGET" ]; then
+    FAIL_N=$((FAIL_N + 1))
+  else
+    FAIL_N=1
+  fi
+  echo "$TARGET" > "$STATE_DIR/last-fail-sha" 2>/dev/null || true
+  echo "$FAIL_N" > "$STATE_DIR/last-fail-count" 2>/dev/null || true
+  warn "attempt $FAIL_N of $MAX_FAILS at ${TARGET:0:12}"
   # Exit non-zero so systemd marks the unit failed and `systemctl --failed`
   # shows it. A deploy that fails silently is the whole reason WS-25 exists:
   # for two days the only signal was a red tick on a page nobody was watching.
