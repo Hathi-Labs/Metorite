@@ -201,6 +201,42 @@ export const HELP_AVAILABLE = {
   notServable:
     "litellm offers this model in a mode the Router has no endpoint for " +
     "yet, so declaring it would create something nothing can call.",
+  pick:
+    "Tick the models you want, across as many vendors as you like, then add " +
+    "them in one act. Nothing is written until you press the button.",
+  pickVendor:
+    "Tick every model shown for this vendor. It selects what is on screen, " +
+    "so narrowing the search first is how you choose a subset.",
+  addSelected:
+    "Declare every model you ticked and save the vendor's facts for each. " +
+    "They go one at a time, and the result says what actually landed.",
+  clearPicks:
+    "Untick everything, across every vendor. Nothing has been written, so " +
+    "this undoes a selection and not a change.",
+  showAll:
+    "Draw every model this vendor offers instead of the first few. A long " +
+    "list is slower to read, which is why it is not the default.",
+} as const;
+
+/** Taking a model back OUT of the catalog.
+ *
+ * ⚠️ **Say what survives.** An operator who cannot tell whether "remove" also
+ * throws away the prices they recorded will not press it, and the catalog
+ * keeps growing — which is the state this whole control exists to end.
+ */
+export const HELP_REMOVE = {
+  open:
+    "Take this model out of the catalog. It leaves this page and every " +
+    "backup-chain picker on Tiers. The vendor feed can put it back in one click.",
+  blocked:
+    "A tier still serves from this model, so removing it would break those " +
+    "calls. Re-point the tier on the Tiers page first, then come back.",
+  confirm:
+    "Remove it now. The prices you recorded are kept, so a past cost still " +
+    "reconciles and re-adding the model restores your numbers.",
+  keep:
+    "Leave the model exactly as it is. Nothing has been written, and the " +
+    "card goes back to how you found it.",
 } as const;
 
 /** The details editor — the form that made the owner ask for all of this. */
@@ -240,7 +276,13 @@ export const HELP_DETAILS = {
   save:
     "Write these facts to the model. Calls made after this are costed with " +
     "them — what a customer pays is unchanged, and lives on Pricing.",
-  close: "Shut the editor. Anything you typed and did not save is discarded.",
+  // 🔴 This used to read "anything you typed and did not save is discarded".
+  // It was not true: the boxes are this component's own state and the card
+  // keeps it mounted, so reopening shows exactly what you left. The wrong
+  // warning is what made "Close" look like the dangerous half of a pair.
+  close:
+    "Shut the editor. Nothing is written until you press Save, and anything " +
+    "you typed is still here when you open it again.",
 } as const;
 
 /** The Pricing board — what a customer pays, per tier.

@@ -23,6 +23,7 @@ const VERBS = [
 ];
 
 import { HELP_DECLARE } from "@/lib/help";
+import { ADD } from "@/lib/words";
 export default function DeclareModel({
   tasks,
   accounts = [],
@@ -66,7 +67,7 @@ export default function DeclareModel({
 
   return (
     <details className="advanced">
-      <summary title={HELP_DECLARE.open}>Add a model to the catalog</summary>
+      <summary title={HELP_DECLARE.open}>{ADD.byHandSummary}</summary>
 
       <p className="field-hint">
         A model has to be declared before any tier can use it. The provider verb
@@ -127,7 +128,7 @@ export default function DeclareModel({
           title={HELP_DECLARE.submit}
           onClick={declare}
         >
-          Add
+          {busy ? ADD.busy : ADD.byHandSubmit}
         </button>
       </div>
 

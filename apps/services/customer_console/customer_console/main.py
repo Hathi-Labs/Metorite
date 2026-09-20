@@ -1799,6 +1799,22 @@ class CapabilityRequest(BaseModel):
     streams: bool = False
 
 
+class CapabilityRemoveRequest(BaseModel):
+    """Take a model back out of the catalog.
+
+    ⚠️ **This is NOT the §6A.5 exception being widened.** Insert-only binds a
+    `tier_binding` and a rate, because a past invoice was computed against
+    them. A capability is a FACT about a model, which is why the declare above
+    is already an UPSERT rather than an append. Removing one destroys no audit
+    trail, and the audit row this writes says who removed what.
+    """
+
+    model: str = Field(min_length=1)
+    #: One task, or every task this model declares when absent. The UI sends
+    #: nothing — an operator removing a model means the model.
+    task: str | None = None
+
+
 class BindingRequest(BaseModel):
     tier: str
     task: str
@@ -2226,8 +2242,23 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                     "WHERE provider IN (SELECT provider FROM provider_credential "
                     "                   WHERE organization_id IS NULL "
                     "                     AND revoked_at IS NULL) "
-                    "  AND model NOT IN (SELECT model FROM model_capability "
-                    "                    UNION SELECT model FROM model_profile) "
+                    # 🔴 **`model_capability` ALONE decides this, not a
+                    # profile (2026-09-21).** It used to exclude a model with
+                    # either row. That was harmless while a profile could only
+                    # belong to a declared model — and it stranded every model
+                    # the operator removed the moment `DELETE
+                    # /catalog/capabilities` existed, because the removal keeps
+                    # the prices: the model left the catalog and was excluded
+                    # from the offer list by its own surviving profile, so it
+                    # appeared in NEITHER and could not be added back.
+                    #
+                    # ⚠️ A profile is not a declaration. `POST /catalog/profiles`
+                    # has always accepted a model `model_capability` has never
+                    # heard of, and `GET /catalog/models` builds the catalog
+                    # from the capabilities. Offering a model nothing declares
+                    # is therefore correct, and re-adding it simply re-saves
+                    # facts that already match.
+                    "  AND model NOT IN (SELECT model FROM model_capability) "
                     "ORDER BY provider, mode, model LIMIT 1000"
                 )
             )
@@ -2350,6 +2381,92 @@ def declare_capability(req: CapabilityRequest, staff: Operator) -> dict[str, Any
             actor=staff.actor,
         )
     return {"model": req.model, "task": req.task, "invocation": invocation, "streams": streams}
+
+
+#: The bindings IN FORCE, for one model. The same "newest chain per (tier,
+#: task) whose date has passed" rule `GET /catalog/models` reads with — a
+#: superseded row must not block a removal, or a catalog could never shrink
+#: once anything had ever pointed at it.
+_IN_FORCE_BINDINGS_FOR_MODEL = (
+    "SELECT b.tier, b.task, b.rank FROM tier_binding b "
+    "WHERE b.model = :m "
+    "  AND b.effective_from = ("
+    "      SELECT max(x.effective_from) FROM tier_binding x "
+    "      WHERE x.task = b.task AND x.tier = b.tier "
+    "        AND x.effective_from <= now()) "
+    "ORDER BY b.task, b.tier, b.rank"
+)
+
+
+@app.delete("/catalog/capabilities")
+def remove_capability(req: CapabilityRemoveRequest, staff: Operator) -> dict[str, Any]:
+    """Take a model out of the catalog.
+
+    🔴 **Why this exists.** A model reaches `/models`, and every backup-chain
+    picker on `/tiers`, because it has a `model_capability` row. One click on
+    the vendor feed writes one. The feed holds about 4300 models, so a catalog
+    that could only grow made every downstream picker unreadable, and there was
+    no act that undid a mis-click.
+
+    ⚠️ **It REFUSES while a tier serves from the model**, and names the tiers.
+    `tier_binding` carries no foreign key to `model_capability`, so a silent
+    delete leaves `resolve` unable to find the verb for a model it still
+    resolves to — a 500 on the first customer call, and invisible until then.
+    Re-point the tier first. The refusal is a 400 the operator can act on.
+
+    ⚠️ **`model_profile` is KEPT** (owner decision, 2026-09-21). The prices are
+    what past cost figures were computed from, so deleting them would make a
+    recorded cost unreconcilable. Re-adding the model restores the numbers
+    rather than starting it costs-blind.
+
+    ⚠️ **`editor`, and no elevation window** — the same gate as the declare it
+    undoes. Nobody is billed against a capability, the refusal above keeps a
+    live chain safe, and the act is reversible with one click on the feed.
+    """
+    with get_engine().begin() as conn:
+        rows = [
+            {"tier": r[0], "task": r[1], "rank": r[2]}
+            for r in conn.execute(text(_IN_FORCE_BINDINGS_FOR_MODEL), {"m": req.model})
+        ]
+        # Removing ONE task only conflicts with a binding for THAT task. The
+        # whole-model removal conflicts with any of them.
+        blocking = [r for r in rows if req.task is None or r["task"] == req.task]
+        if blocking:
+            where = ", ".join(
+                f"{r['tier']} ({r['task']}, rank {r['rank']})" for r in blocking
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{req.model!r} still serves {len(blocking)} "
+                    f"{'binding' if len(blocking) == 1 else 'bindings'}: {where}. "
+                    "Re-point those tiers first, then remove it."
+                ),
+            )
+
+        if req.task is None:
+            result = conn.execute(
+                text("DELETE FROM model_capability WHERE model = :m"), {"m": req.model}
+            )
+        else:
+            result = conn.execute(
+                text("DELETE FROM model_capability WHERE model = :m AND task = :t"),
+                {"m": req.model, "t": req.task},
+            )
+        removed = result.rowcount or 0
+        if removed == 0:
+            # Not a 404: the operator asked for the model to be gone and it is
+            # gone. Saying so beats an error for a state they already wanted.
+            _log.info("catalog.capability_remove_noop model=%s", req.model)
+        else:
+            _audit(
+                conn,
+                None,
+                "catalog.capability_removed",
+                {"model": req.model, "task": req.task, "removed": removed},
+                actor=staff.actor,
+            )
+    return {"model": req.model, "task": req.task, "removed": removed}
 
 
 @app.post("/catalog/bindings")

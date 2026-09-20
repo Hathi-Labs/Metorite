@@ -24,6 +24,11 @@ import {
   fillCount,
   freshness,
   prefillFrom,
+  selectableIds,
+  servableFeedModels,
+  toggleAll,
+  togglePick,
+  without,
 } from "./feed";
 
 const M = (over: Partial<CatalogModel>): CatalogModel => ({
@@ -756,5 +761,105 @@ describe("feedPriceLabel", () => {
     for (const c of cases) {
       expect(feedPriceLabel(c) !== null).toBe(canFillFromFeed(c));
     }
+  });
+});
+
+// ── Picking a handful out of thousands (2026-09-21) ───────────────────────
+//
+// The rules that matter: a "select all" may never tick a row the operator
+// cannot see or the Router cannot serve, and every helper returns a NEW set,
+// because React compares the reference and a mutated Set re-renders nothing.
+
+describe("servableFeedModels", () => {
+  it("keeps only what the Router has a verb for", () => {
+    const feed = FEED({
+      available: [
+        F({ id: "openai/gpt-4o", task: "chat" }),
+        // litellm offers reranking; the Console leaves `task` null because
+        // the Router has no endpoint for it.
+        F({ id: "cohere/rerank-v3", task: null, mode: "rerank" }),
+        F({ id: "openai/whisper-1", task: "transcribe" }),
+      ],
+    });
+    expect(servableFeedModels(feed).map((f) => f.id)).toEqual([
+      "openai/gpt-4o",
+      "openai/whisper-1",
+    ]);
+  });
+
+  it("treats an empty-string task as unservable, not as a task", () => {
+    const feed = FEED({ available: [F({ id: "x/y", task: "" })] });
+    expect(servableFeedModels(feed)).toEqual([]);
+  });
+});
+
+describe("selectableIds", () => {
+  it("names the servable rows only", () => {
+    expect(
+      selectableIds([
+        F({ id: "a/one", task: "chat" }),
+        F({ id: "b/two", task: null }),
+      ]),
+    ).toEqual(["a/one"]);
+  });
+
+  it("is empty for a vendor offering nothing we can serve", () => {
+    expect(selectableIds([F({ id: "b/two", task: null })])).toEqual([]);
+  });
+});
+
+describe("togglePick", () => {
+  it("adds an id that was not picked", () => {
+    expect([...togglePick(new Set(), "a/one")]).toEqual(["a/one"]);
+  });
+
+  it("removes one that was", () => {
+    expect([...togglePick(new Set(["a/one"]), "a/one")]).toEqual([]);
+  });
+
+  it("returns a NEW set, never the one it was given", () => {
+    // 🔴 The failure this guards: a mutated Set is `===` to the old one, so
+    // React's state compare skips the render and the tick never appears.
+    const before = new Set(["a/one"]);
+    const after = togglePick(before, "b/two");
+    expect(after).not.toBe(before);
+    expect([...before]).toEqual(["a/one"]);
+  });
+});
+
+describe("without", () => {
+  it("drops the id and leaves the rest", () => {
+    expect([...without(new Set(["a", "b"]), "a")]).toEqual(["b"]);
+  });
+
+  it("is a no-op for an id that was never there", () => {
+    expect([...without(new Set(["a"]), "z")]).toEqual(["a"]);
+  });
+});
+
+describe("toggleAll", () => {
+  it("ticks every id when some are off", () => {
+    expect([...toggleAll(new Set(["a"]), ["a", "b"])].sort()).toEqual(["a", "b"]);
+  });
+
+  it("unticks them all when every one is already on", () => {
+    expect([...toggleAll(new Set(["a", "b"]), ["a", "b"])]).toEqual([]);
+  });
+
+  it("leaves picks from OTHER vendors alone in both directions", () => {
+    // ⚠️ The selection spans vendors on purpose — the models a company needs
+    // are rarely all under one key — so a vendor's header checkbox must
+    // touch only its own rows.
+    expect([...toggleAll(new Set(["other/keep"]), ["a", "b"])].sort()).toEqual([
+      "a", "b", "other/keep",
+    ]);
+    expect([...toggleAll(new Set(["other/keep", "a"]), ["a"])]).toEqual([
+      "other/keep",
+    ]);
+  });
+
+  it("does nothing at all when there is nothing selectable", () => {
+    const before = new Set(["a"]);
+    expect([...toggleAll(before, [])]).toEqual(["a"]);
   });
 });

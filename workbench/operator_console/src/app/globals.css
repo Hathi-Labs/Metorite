@@ -1661,6 +1661,106 @@ pre.token {
   border-top: 1px solid var(--border);
 }
 
+/* ── A card's actions: edit the facts, or take the model out ─────────────
+   Added 2026-09-21 with `RemoveModel`. Before it the card's only control was
+   the full-width dashed "details" button, so a second one beside it had
+   nowhere to sit. */
+.modelcard .modelactions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+/* The details control keeps the row and Remove sits at its end. `.add-job`
+   carries `width: 100%`, which would otherwise push Remove onto its own
+   line on every card. */
+.modelcard .modelactions > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-top: 0;
+}
+/* ⚠️ `.add-job` carries `width: 100%` from the days when the details toggle
+   was a card's ONLY control. Left alone it takes the whole row and pushes
+   every sibling onto a second line — measured 2026-09-21, with "Use the
+   vendor's prices" above it and "Remove" stranded to the right. */
+.modelcard .modelactions .add-job {
+  margin-top: 0;
+  width: auto;
+  flex: 0 1 auto;
+}
+/* The details row sits on the left and Remove at the far right, so a
+   destructive control is never adjacent to the one people press most. */
+.modelcard .modelactions > .rowline {
+  flex: 1 1 auto;
+}
+/* ⚠️ The OPEN editor takes the whole row, so Remove drops underneath it
+   rather than hovering beside fifteen boxes. */
+.modelcard .modelactions > .job-edit {
+  flex: 1 1 100%;
+}
+
+/* The remove confirmation, inline on the card. Never a modal: the operator
+   is reading the card's own facts to decide, and a dialog covers them. */
+.removeconfirm {
+  flex: 1 1 100%;
+  margin-top: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--danger-line);
+  border-radius: var(--r-sm);
+  background: var(--danger-soft);
+}
+.removeconfirm > p {
+  margin: 0 0 8px;
+}
+.removeconfirm .rowline {
+  margin-top: 8px;
+}
+
+/* ── `.rowline` ──────────────────────────────────────────────────────────
+   🔴 It had NO rule at all. Three components used it and it worked only
+   because a button is inline-block, so the controls sat in a text flow with
+   word-spacing between them and no vertical alignment. */
+.rowline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Picking models out of the vendor feed ───────────────────────────────── */
+/* ⚠️ The global `button` rule carries `margin-top: 12px`, which is right for a
+   button under a form field and wrong for one inside a table cell: with
+   `vertical-align: top` it pushed every feed row to 68px. */
+.feedvendor td button {
+  margin-top: 0;
+}
+.pickbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pickbar > p {
+  margin: 0;
+}
+/* A tick column stays narrow, or it is the widest thing in the table on a
+   phone and pushes the row sideways. */
+.tickcol {
+  width: 28px;
+  padding-right: 0 !important;
+  text-align: center;
+}
+.tickcol input {
+  margin: 0;
+  cursor: pointer;
+}
+/* ⚠️ A picked row is marked by a TINTED BACKGROUND and its own tick, never
+   by colour alone — the tick is the accessible signal and the tint is the
+   thing you can see from across the table. */
+tr.picked > td {
+  background: var(--accent-soft, var(--panel-2));
+}
+
 .feedvendor {
   margin-top: 16px;
 }

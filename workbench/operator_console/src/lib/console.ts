@@ -323,6 +323,15 @@ export const readModelCatalog = (d?: Deps) =>
 export const declareCapability = (body: unknown, d?: Deps) =>
   callConsole("/catalog/capabilities", { method: "POST", body }, d ?? {});
 
+// Take a model back out of the catalog. Same gate as the declare it undoes:
+// `editor`, no elevation window.
+//
+// ⚠️ The Console REFUSES while a tier serves from the model, and its 400 names
+// the tiers. Relay that verbatim — the operator's next act is on /tiers, and a
+// paraphrase here would be a second vocabulary for one refusal.
+export const removeCapability = (body: unknown, d?: Deps) =>
+  callConsole("/catalog/capabilities", { method: "DELETE", body }, d ?? {});
+
 export const bindTier = (body: unknown, d?: Deps) =>
   callConsole("/catalog/bindings", { method: "POST", body }, d ?? {});
 

@@ -28,6 +28,7 @@ import { useRouter } from "next/navigation";
 
 import type { CatalogModel, VendorFeed } from "@/lib/contract";
 import { HELP_FILL } from "@/lib/help";
+import { VENDOR_PRICES } from "@/lib/words";
 import { declareBodies, feedById } from "@/lib/feed";
 
 export default function FillAllBlind({
@@ -95,9 +96,7 @@ export default function FillAllBlind({
           onClick={fillAll}
           title={HELP_FILL.fillAll}
         >
-          {busy
-            ? `Filling ${blind.length}…`
-            : `Fill ${blind.length === 1 ? "it" : `all ${blind.length}`} from the feed`}
+          {busy ? VENDOR_PRICES.busy : VENDOR_PRICES.all(blind.length)}
         </button>
         {done && (
           <span className={done.failed.length === 0 ? "ok-t" : "warn-t"}>

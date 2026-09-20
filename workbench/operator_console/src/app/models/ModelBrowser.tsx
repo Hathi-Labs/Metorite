@@ -52,11 +52,13 @@ import {
   toggle,
 } from "@/lib/modelSearch";
 import { HELP_FACTS, HELP_STATUS, HELP_TOOLBAR } from "@/lib/help";
+import { LIST } from "@/lib/words";
 import { chipClass, type Tone } from "@/lib/tone";
 import FeedAvailable from "./FeedAvailable";
 import FillAllBlind from "./FillAllBlind";
 import FeedStrip from "./FeedStrip";
 import ModelDetails from "./ModelDetails";
+import RemoveModel from "./RemoveModel";
 
 const STATUS_TONE: Record<ReturnType<typeof statusOf>, Tone> = {
   costed: "ok",
@@ -88,7 +90,7 @@ function Card({
 }) {
   const status = statusOf(m, armed);
   // The vendor moved a price under a typed profile (014). The chip is the
-  // ALERT; the numbers and the copy button live in "Edit details".
+  // ALERT; the numbers and the vendor-price control live in the editor.
   const drift = driftFor(m, f);
   // 🔴 The vendor's switch-off date. 337 models in the live feed are already
   // past theirs, and a card that does not say so lets somebody bind one.
@@ -193,7 +195,15 @@ function Card({
         )}
       </p>
 
-      <ModelDetails m={m} feedRow={f} />
+      {/* 🔴 **The card gained a way OUT.** Declaring was one click and
+          removing was impossible, so the catalog could only grow — and every
+          backup-chain picker on /tiers grew with it. `RemoveModel` refuses
+          while `used` is non-empty and names the tiers, which is why it is
+          handed the same list the line above draws. */}
+      <div className="modelactions">
+        <ModelDetails m={m} feedRow={f} />
+        <RemoveModel m={m} used={used} />
+      </div>
     </article>
   );
 }
@@ -379,7 +389,7 @@ export default function ModelBrowser({
               title={HELP_TOOLBAR.clear}
               onClick={() => setF(NO_FILTERS)}
             >
-              Clear
+              {LIST.clear}
             </button>
           )}
           <span className="muted small">
@@ -415,7 +425,7 @@ export default function ModelBrowser({
             title={HELP_TOOLBAR.showMore}
             onClick={() => setExpandedFor(filterKey)}
           >
-            Show {page.hidden} more
+            {LIST.showMore(page.hidden)}
           </button>{" "}
           <span className="muted small">
             — or narrow the list with the search box and the filters above.
@@ -424,7 +434,7 @@ export default function ModelBrowser({
       )}
 
       {/* ⚠️ Rendered here ONLY when it was not drawn above. Two copies would
-          be two sets of "Add" buttons for the same rows. */}
+          be two sets of add buttons for the same rows. */}
       {!nothingCosted && <FeedAvailable feed={feed} />}
     </>
   );
