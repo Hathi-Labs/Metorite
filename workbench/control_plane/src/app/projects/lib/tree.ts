@@ -286,6 +286,30 @@ export function filterByCenter(
 }
 
 /** A project and its ancestors, for a breadcrumb. */
+/**
+ * The SPACE a node belongs to — the first row on its path from the top.
+ *
+ * ⚠️ This is the scope of a project's tags and custom fields, and that is
+ * why it exists. D-PM-16 makes a vocabulary org-wide or ROOT-local, never
+ * per-node: a subproject has no tag set to manage, it reads its space's. So
+ * the menu offers "Tags" on every row and the caller resolves which registry
+ * that means, rather than hiding the entry where the answer is indirect.
+ *
+ * Statuses are deliberately NOT this: migration 196 gave every node the
+ * option to own its own set, so `hasStatusSet` and `StatusSetControl` decide
+ * those. Two vocabularies, two scoping rules, on purpose.
+ *
+ * Falls back to the node itself when the tree does not contain it — a stale
+ * row should open its own screen rather than none.
+ */
+export function spaceOf<T extends ProjectNode>(
+  roots: readonly T[],
+  node: T
+): T {
+  const path = pathTo(roots as readonly ProjectNode[], node.id);
+  return (path[0] as T | undefined) ?? node;
+}
+
 export function pathTo(
   roots: readonly ProjectNode[],
   projectId: string

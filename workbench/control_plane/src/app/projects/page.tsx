@@ -138,6 +138,7 @@ import {
   type NodeLevel,
   nodeKind,
   showsDashboard,
+  spaceOf,
 } from "./lib/tree";
 import AnalyticsView from "./components/AnalyticsView";
 import ReportsView from "./components/ReportsView";
@@ -971,6 +972,27 @@ function ProjectsWorkspace() {
       open(node);
     };
 
+  /**
+   * The same, for a ROOT-scoped screen opened from any row.
+   *
+   * Tags and custom fields belong to the space (D-PM-16), so right-clicking
+   * a subproject and choosing "Tags" must open the SPACE's registry — the
+   * one whose chips that board is already showing. Resolving it here rather
+   * than in `ProjectTree` keeps the tree saying "manage this row's
+   * vocabularies" and leaves which registry that means to the layer holding
+   * the whole tree.
+   *
+   * ⚠️ `setSelected(node)` keeps the ROW the member clicked, not the space
+   * it resolved to. Selecting the space instead would navigate the board out
+   * from under them as a side effect of opening a dialog.
+   */
+  const manageRoot =
+    (open: (node: ProjectRow) => void) => (node: ProjectRow) => {
+      setApp(null);
+      setSelected(node);
+      open(spaceOf(roots, node));
+    };
+
   const projectMenuActions: ProjectMenuHandlers = useMemo(
     () => ({
       onSetState: (project, state) => {
@@ -1317,8 +1339,8 @@ function ProjectsWorkspace() {
             onPicked={() => setSheet(null)}
             actions={projectMenuActions}
             onManageStatuses={manageSpace(setManagingStatuses)}
-            onManageFields={manageSpace(setManagingFields)}
-            onManageTags={manageSpace(setManagingTags)}
+            onManageFields={manageRoot(setManagingFields)}
+            onManageTags={manageRoot(setManagingTags)}
             onManageLifecycle={manageSpace(setManagingLifecycle)}
           />
         ) : (
