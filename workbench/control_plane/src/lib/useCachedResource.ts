@@ -222,10 +222,28 @@ export function useCachedResource<T>(
      */
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load(false, false);
-    // Any `invalidate()` for this key — a write anywhere in the app — wakes
-    // us, and a burst of writes wakes us many times. Coalesce them: see
-    // WRITE_SETTLE_MS.
-    const settle = coalesce(() => load(true));
+    /**
+     * Any `invalidate()` for this key — a write anywhere in the app — wakes
+     * us, and a burst of writes wakes us many times. Coalesce them: see
+     * WRITE_SETTLE_MS.
+     *
+     * 🔴 **`load(true)` HERE IS A PERPETUAL POLL, and it shipped.** Measured
+     * in a browser on 2026-09-20: one write, and `/api/projects/tree` was
+     * re-read 42 times in eight seconds, still going nineteen seconds later,
+     * with a median gap of 187 ms. `put` notifies every watcher of the key,
+     * and a forced read always puts. So the wake caused the read, the read
+     * caused the put, and the put caused the next wake.
+     *
+     * `load(false)` cuts it, and loses nothing. The event that matters is
+     * `invalidate`, which DROPS the key — an unforced read then misses and
+     * goes to the network exactly as before. What it no longer does is
+     * re-fetch a value the cache already holds and we just stored.
+     *
+     * ⚠️ It is also correct when somebody else refetched first. Their fresh
+     * entry answers our read with no request at all, so N watchers of one key
+     * cost one round trip between them rather than N.
+     */
+    const settle = coalesce(() => load(false));
     const off = subscribe(key, settle.trigger);
     return () => {
       settle.cancel();

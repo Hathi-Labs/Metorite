@@ -30,8 +30,8 @@ import { expect, test } from "@playwright/test";
  */
 
 const STATUSES = [
-  { id: "s1", project_id: "p2", name: "Backlog", color: "gray", position: 10, category: "open", is_default: false },
-  { id: "s2", project_id: "p2", name: "To do", color: "blue", position: 20, category: "open", is_default: false },
+  { id: "s1", project_id: "p2", name: "Backlog", color: "gray", position: 10, category: "backlog", is_default: false },
+  { id: "s2", project_id: "p2", name: "To do", color: "blue", position: 20, category: "todo", is_default: false },
   { id: "s4", project_id: "p2", name: "Done", color: "green", position: 40, category: "done", is_default: false },
 ];
 

@@ -1565,10 +1565,34 @@ function ProjectsWorkspace() {
     if (mode === "calendar" || mode === "timeline") void loadMonth();
   }, [mode, loadMonth]);
 
+  /**
+   * Reload WHAT IS ON SCREEN, after a write.
+   *
+   * 🔴 **This used to be `loadMonth`, so a write on the board refreshed the
+   * calendar.** `loadMonth` reads the calendar window and sets `month`. It
+   * touches neither `tasks` nor `statuses`. So every caller below — every
+   * undo step, every redo, every task patch routed through `rewriteTask`,
+   * and both link writes — refreshed a surface the member was not looking
+   * at, and the board they WERE looking at kept its old rows until they
+   * reloaded the page. The owner reported it as "it doesn't immediately show
+   * up in the UI", on 2026-09-20.
+   *
+   * The mode decides, because the modes read different endpoints. Loading
+   * both would double every write's cost to refresh something nobody can
+   * see.
+   */
+  const refreshSurface = useCallback(async () => {
+    if (mode === "calendar" || mode === "timeline") {
+      await loadMonth();
+      return;
+    }
+    if (selected) await loadProject(selected);
+  }, [mode, loadMonth, selected, loadProject]);
+
   // Always the CURRENT reload, for undo steps that outlive the render that
   // recorded them. See `rewriteTask`.
   const refreshRef = useRef<() => Promise<void>>(async () => {});
-  refreshRef.current = loadMonth;
+  refreshRef.current = refreshSurface;
 
   // WS-27af — the assignee filter's options, accumulated from whatever has
   // been loaded. `mergeAssignees` returns the same array when nothing is new,
@@ -2222,7 +2246,12 @@ function ProjectsWorkspace() {
       setAnchor(null);
       // The tasks are in another project now, so this board's list is wrong
       // and so is the tree's count. Refetch rather than patch in place.
+      //
+      // ⚠️ BOTH. `setTreeKey` re-reads the TREE, and nothing else. The board's
+      // rows come from `loadProject`, so bumping the key alone left the moved
+      // cards sitting on the board they had just left.
       setTreeKey((k) => k + 1);
+      await refreshRef.current();
       toast.show({
         variant: "success",
         title:
