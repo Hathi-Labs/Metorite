@@ -1688,6 +1688,11 @@ pre.token {
   margin-top: 0;
   width: auto;
   flex: 0 1 auto;
+  /* ⚠️ SOLID here. `.add-job` is dashed because it was once a card's only
+     control, drawn as an empty "add something" affordance. In a row beside
+     two solid buttons it is the only dashed thing on the surface, and
+     `/providers` draws Replace and Remove with one border. */
+  border-style: solid;
 }
 /* The details row sits on the left and Remove at the far right, so a
    destructive control is never adjacent to the one people press most. */
@@ -1701,20 +1706,19 @@ pre.token {
 }
 
 /* The remove confirmation, inline on the card. Never a modal: the operator
-   is reading the card's own facts to decide, and a dialog covers them. */
+   is reading the card's own facts to decide, and a dialog covers them.
+   🔴 It is a `.banner danger` (DESIGN.md §5) and this rule adds ONLY what a
+   banner inside a flex action row needs. The first version restated the
+   banner's own tint, border and radius by hand. */
 .removeconfirm {
   flex: 1 1 100%;
-  margin-top: 4px;
-  padding: 10px 12px;
-  border: 1px solid var(--danger-line);
-  border-radius: var(--r-sm);
-  background: var(--danger-soft);
+  margin: 4px 0 0;
 }
 .removeconfirm > p {
   margin: 0 0 8px;
 }
-.removeconfirm .rowline {
-  margin-top: 8px;
+.removeconfirm > p:last-of-type {
+  margin-bottom: 0;
 }
 
 /* ── `.rowline` ──────────────────────────────────────────────────────────
