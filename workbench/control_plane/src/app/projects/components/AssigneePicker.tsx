@@ -17,6 +17,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
+import AnchoredPanel from "@/components/ui/AnchoredPanel";
 import { Input } from "@/components/ui/Input";
 
 import { projectsApi } from "../lib/api";
@@ -76,6 +77,9 @@ export function AssigneePicker({
   commitOnBlur = true,
 }: Props) {
   const [open, setOpen] = useState(false);
+  /** The field the portalled list measures from. State, not a ref, so the
+   *  panel re-places when the input mounts. */
+  const [field, setField] = useState<HTMLInputElement | null>(null);
   const [res, setRes] = useState<PickerResponse | null>(null);
   /**
    * ⚠️ Three states that used to be ONE, and the one was silence.
@@ -124,6 +128,7 @@ export function AssigneePicker({
   return (
     <div className="relative">
       <Input
+        ref={setField}
         className={className}
         value={value}
         disabled={disabled}
@@ -151,8 +156,18 @@ export function AssigneePicker({
         aria-label={ariaLabel}
         aria-expanded={open}
       />
-      {open && (
-        <div className="absolute inset-x-0 top-full z-20 mt-1 max-h-72 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-md">
+      {/* ⚠️ PORTALLED. The task panel's body scrolls, and an absolutely
+          positioned list is clipped by it: measured 2026-09-20, the tag
+          list beside this one spanned y486–615 inside a box ending at
+          y552, so a third of it — including its last row — was simply not
+          on screen. The owner reported it as the picker "not showing up
+          properly". `AnchoredPanel` carries the whole rule. */}
+      <AnchoredPanel
+        anchor={field}
+        open={open}
+        maxHeight={288}
+        className="p-1"
+      >
           {/* ⚠️ Every branch draws SOMETHING. A picker that renders nothing
               is indistinguishable from a broken one, and free text still
               works in all of them — the server accepts any non-empty
@@ -226,8 +241,7 @@ export function AssigneePicker({
               })}
             </div>
           ))}
-        </div>
-      )}
+      </AnchoredPanel>
     </div>
   );
 }

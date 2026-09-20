@@ -19,6 +19,7 @@ import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
 import Modal from "@/components/ui/Modal";
 import { useEffect, useState } from "react";
 
@@ -31,10 +32,6 @@ import {
   needsOptions,
   ordered,
 } from "../lib/customFields";
-
-const SELECT =
-  "cc-control rounded-lg border border-border bg-background px-2 py-1.5 " +
-  "text-xs text-foreground outline-none focus:border-primary/50";
 
 interface Props {
   projectId: string;
@@ -192,21 +189,22 @@ export function FieldManager({ projectId, projectName, onClose, onChanged }: Pro
               aria-label="Field name"
             />
           </label>
-          <label className="text-[11px] text-muted-foreground">
+          {/* A `div`, not a `label`: the control is a BUTTON now, and a
+              label cannot forward a click to one. Leaving the element as a
+              label would promise an association the DOM does not make. */}
+          <div className="text-[11px] text-muted-foreground">
             Type
-            <select
-              aria-label="Field type"
-              className={`${SELECT} block`}
+            <SelectButton
+              label="Field type"
+              widthClass="mt-0.5 w-[10rem]"
               value={type}
-              onChange={(e) => setType(e.target.value as FieldType)}
-            >
-              {FIELD_TYPES.map((option) => (
-                <option key={option} value={option}>
-                  {FIELD_TYPE_LABELS[option]}
-                </option>
-              ))}
-            </select>
-          </label>
+              onChange={(next) => setType(next as FieldType)}
+              options={FIELD_TYPES.map((option) => ({
+                value: option,
+                label: FIELD_TYPE_LABELS[option],
+              }))}
+            />
+          </div>
           <Button type="submit" size="sm" loading={busy} disabled={!name.trim()}>
             Add
           </Button>

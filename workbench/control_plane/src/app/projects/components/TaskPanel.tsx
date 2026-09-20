@@ -71,7 +71,8 @@
 import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
-import { Input, Select, Textarea } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
+import { Input, Textarea } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import { StatusChip } from "@/components/StatusChip";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
@@ -782,18 +783,14 @@ export function TaskPanel({
                   />
                 }
               >
-                <Select
+                <SelectButton
+                  label="Status"
+                  widthClass="w-full"
                   value={task.status_id}
                   disabled={busy}
-                  aria-label="Status"
-                  onChange={(e) => void changeStatus(e.target.value)}
-                >
-                  {statuses.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </Select>
+                  onChange={(next) => void changeStatus(next)}
+                  options={statuses.map((s) => ({ value: s.id, label: s.name }))}
+                />
               </FieldCell>
 
               <FieldCell

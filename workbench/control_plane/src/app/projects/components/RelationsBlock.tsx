@@ -27,6 +27,7 @@ import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
 import { useCallback, useEffect, useReducer, useState } from "react";
 
 import type { TaskRow } from "../lib/api";
@@ -42,10 +43,6 @@ import {
   progressLabel,
   progressPercent,
 } from "../lib/relations";
-
-const SELECT =
-  "cc-control rounded-lg border border-border bg-background px-2 py-1.5 " +
-  "text-xs text-foreground outline-none focus:border-primary/50";
 
 const LINK_LABELS: Array<[LinkType, string]> = [
   ["blocks", "blocks"],
@@ -323,18 +320,13 @@ export function RelationsBlock({
       {linking ? (
         <form onSubmit={addLink} className="flex flex-wrap items-center gap-1">
           <span className="text-xs text-muted-foreground">This</span>
-          <select
-            aria-label="Link type"
-            className={SELECT}
+          <SelectButton
+            label="Link type"
+            widthClass="w-[9rem]"
             value={kind}
-            onChange={(e) => setKind(e.target.value as LinkType)}
-          >
-            {LINK_LABELS.map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
+            onChange={(next) => setKind(next as LinkType)}
+            options={LINK_LABELS.map(([value, label]) => ({ value, label }))}
+          />
           <Input
             autoFocus
             inputSize="sm"

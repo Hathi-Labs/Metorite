@@ -45,15 +45,11 @@
  * it does not hand-roll a second containment check — the walker is what makes
  * a portalled child not count as "outside".
  */
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
-import {
-  PREVENT_OUTSIDE_CLICK,
-  domClickWalk,
-  shouldDismiss,
-} from "@/lib/outsideClick";
+import AnchoredPanel from "@/components/ui/AnchoredPanel";
+import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
 
 /**
  * Which arrow the trigger wears — the one decision in this file worth a test.
@@ -116,6 +112,24 @@ export interface SelectButtonProps {
   widthClass?: string;
   /** A write is in flight. The trigger refuses to open. */
   disabled?: boolean;
+  /**
+   * Open the list on mount, for a control that IS the act of choosing.
+   *
+   * `TableView`'s cell editors are the case: the member has already clicked
+   * the cell to start editing, and a button they must then click again to
+   * open is two gestures for one decision. The native `<select>` these
+   * replaced had the same flaw — `autoFocus` focuses it, it does not open
+   * it — so this is the conversion fixing something on the way past.
+   */
+  autoOpen?: boolean;
+  /**
+   * The list closed — by a pick, by Escape, or by a click outside.
+   *
+   * A cell editor has to put the cell back afterwards, and it cannot see any
+   * of those three from out here. Fired for all of them, so the caller
+   * handles one event instead of guessing at three.
+   */
+  onClose?: () => void;
 }
 
 export function SelectButton({
@@ -127,50 +141,29 @@ export function SelectButton({
   className = "",
   widthClass = "w-[9rem]",
   disabled = false,
+  autoOpen = false,
+  onClose,
 }: SelectButtonProps) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(autoOpen);
   const root = useRef<HTMLDivElement | null>(null);
   const listId = useId();
-  /** Where the portalled panel sits, in viewport coordinates. */
-  const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(
-    null,
-  );
+  /**
+   * Fire `onClose` on the true→false edge, not on every render where the
+   * list happens to be shut. A handler that ran on mount would close a cell
+   * editor before the member had chosen anything.
+   */
+  const wasOpen = useRef(open);
+  useEffect(() => {
+    if (wasOpen.current && !open) onClose?.();
+    wasOpen.current = open;
+  }, [open, onClose]);
 
   /**
-   * Measure the trigger, and decide whether the panel hangs below or above.
-   *
-   * Recomputed on scroll and resize rather than closed on them: this control
-   * lives inside dialogs whose body scrolls, and a list that vanishes when
-   * the member nudges the wheel reads as a crash.
+   * The trigger, as state rather than a ref, so the panel re-measures when
+   * it mounts. A ref does not re-render, and the panel would then place
+   * itself against `null` on the first open.
    */
-  const place = useCallback(() => {
-    const trigger = root.current?.querySelector("button");
-    if (!trigger) return;
-    const rect = trigger.getBoundingClientRect();
-    const below = window.innerHeight - rect.bottom;
-    // 16rem is the panel's own `max-h-64`; ask for that much and flip when
-    // there is not room, so the last option is never off the bottom.
-    const wanted = 256;
-    const up = below < wanted && rect.top > below;
-    setBox({
-      left: rect.left,
-      top: up ? Math.max(8, rect.top - wanted - 2) : rect.bottom + 2,
-      width: rect.width,
-    });
-  }, []);
-
-  useLayoutEffect(() => {
-    if (!open) return;
-    place();
-    // `true` — capture, so a scroll inside a dialog body reaches this even
-    // though that element is not an ancestor of the portalled panel.
-    window.addEventListener("scroll", place, true);
-    window.addEventListener("resize", place);
-    return () => {
-      window.removeEventListener("scroll", place, true);
-      window.removeEventListener("resize", place);
-    };
-  }, [open, place]);
+  const [trigger, setTrigger] = useState<HTMLButtonElement | null>(null);
 
   const current = options.find((o) => o.value === value);
 
@@ -213,6 +206,7 @@ export function SelectButton({
   return (
     <div ref={root} className={`relative ${widthClass}`}>
       <button
+        ref={setTrigger}
         type="button"
         aria-label={label}
         aria-haspopup="listbox"
@@ -233,23 +227,12 @@ export function SelectButton({
         />
       </button>
 
-      {open && box
-        ? createPortal(
-        <div
-          id={listId}
-          role="listbox"
-          aria-label={label}
-          // ⚠️ The marker that keeps a portalled child "inside" its opener.
-          // Without it `shouldDismiss` walks from the option to <body>, never
-          // meets the trigger, and closes the panel before the click lands.
-          {...{ [PREVENT_OUTSIDE_CLICK]: "" }}
-          // `fixed`, measured from the trigger. See the header: an absolute
-          // panel is clipped by the first non-visible ancestor, and inside a
-          // Modal that is the dialog itself.
-          style={{ left: box.left, top: box.top, minWidth: box.width }}
-          // No transition. See the header — this is a directive, not a default.
-          className="fixed z-[60] max-h-64 w-max overflow-y-auto rounded-md border border-border bg-card p-1 shadow-md"
-        >
+      <AnchoredPanel
+        anchor={trigger}
+        open={open}
+        className="max-h-64 w-max p-1"
+        panelProps={{ id: listId, role: "listbox", "aria-label": label }}
+      >
           {options.map((option) => (
             <button
               key={option.value}
@@ -278,10 +261,7 @@ export function SelectButton({
               ) : null}
             </button>
           ))}
-        </div>,
-            document.body,
-          )
-        : null}
+      </AnchoredPanel>
     </div>
   );
 }

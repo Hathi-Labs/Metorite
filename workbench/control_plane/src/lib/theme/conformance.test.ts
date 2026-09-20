@@ -719,7 +719,23 @@ describe("selects and file pickers go through the primitives", () => {
    * implementation has one. What must not happen is the input being the visible
    * control. So the fence is *a file input that is not hidden*.
    */
-  const SELECT_TAG = /<select\b/g;
+  /**
+   * ⚠️ BOTH spellings, and the capital one is the point.
+   *
+   * This was `/<select\b/g` — case sensitive — until 2026-09-20, so
+   * `<Select>` never counted. That matters more than it sounds. `Select`
+   * (in `components/ui/Input.tsx`) is a native `<select>` wearing the house
+   * paint on its TRIGGER, and the open list is still drawn by the operating
+   * system. On Windows that is a white panel with a blue highlight bar in
+   * the middle of a dark dialog, which is what the owner reported on the
+   * Move card.
+   *
+   * So a file using the wrapper passed a rule literally named "a file with
+   * no budget uses `<Select>`". The rule was true and the product was
+   * wrong. The house dropdown is `components/ui/SelectButton.tsx`, a button
+   * with a PORTALLED list. Both native spellings are debt from here.
+   */
+  const SELECT_TAG = /<[Ss]elect\b/g;
 
   /**
    * Comments removed — this rule's own version, because the shared `strip()`
@@ -778,12 +794,6 @@ describe("selects and file pickers go through the primitives", () => {
     // filter row to this bar). The entry is deleted rather than set to 0 —
     // a zero budget is a file the "no budget means use the primitive" rule
     // above would then stop watching.
-    "app/projects/components/CustomFieldValues.tsx": 1,
-    "app/projects/components/FieldManager.tsx": 1,
-    "app/projects/components/RelationsBlock.tsx": 1,
-    "app/projects/components/RepeatEditor.tsx": 3,
-    "app/projects/components/TableView.tsx": 3,
-    "app/projects/components/TagManager.tsx": 1,
     "app/settings/groups/page.tsx": 2,
     // D49 moved the roster into Organisation (`launch_surface.md` §6.2), so the
     // two bare <select>s moved with it — `app/settings/members/page.tsx` is now
@@ -793,7 +803,8 @@ describe("selects and file pickers go through the primitives", () => {
     "app/settings/organization/OrganizationAdmin.tsx": 2,
     "app/tasks/components/EngageView.tsx": 2,
     "app/tasks/components/TaskSettingsModal.tsx": 2,
-    "app/tasks/components/TaskToolbar.tsx": 3,
+    // 3 raw, plus one `<Select>` the widened regex now sees.
+    "app/tasks/components/TaskToolbar.tsx": 4,
     "app/calendar/components/CalendarSettings.tsx": 3,
     "app/calendar/components/PlanDayPanel.tsx": 1,
     "app/whatsapp/calls/page.tsx": 1,
@@ -802,6 +813,15 @@ describe("selects and file pickers go through the primitives", () => {
     "app/workflows/components/TriggerPanel.tsx": 1,
     "components/genUITemplates.tsx": 1,
     "components/room/ShareSheet.tsx": 1,
+    // Added 2026-09-20, when SELECT_TAG widened to catch `<Select>`. These
+    // are not new markup — they are files the rule could not see. Each one
+    // still opens the PLATFORM's list. Converting them is a ticket per app,
+    // and the budget is here so none of them grows meanwhile.
+    "app/people/components/AbsencePanel.tsx": 1,
+    "app/people/components/ProfilePanels.tsx": 1,
+    "app/people/components/SkillsPanel.tsx": 2,
+    "app/settings/billing/page.tsx": 1,
+    "app/signup/SignUpForm.tsx": 1,
   };
 
   const selects = (rel: string) =>

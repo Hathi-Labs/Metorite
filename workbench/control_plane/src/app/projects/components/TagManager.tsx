@@ -15,15 +15,12 @@
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
 import Modal from "@/components/ui/Modal";
 import { useEffect, useState } from "react";
 
 import { projectsApi } from "../lib/api";
 import { TAG_COLORS, type TagRow, byUsage, chipClass, normaliseTag } from "../lib/tags";
-
-const SELECT =
-  "cc-control rounded-lg border border-border bg-background px-2 py-1.5 " +
-  "text-xs text-foreground outline-none focus:border-primary/50";
 
 interface Props {
   projectId: string;
@@ -204,23 +201,18 @@ export function TagManager({
                     {/* The number this screen is opened for: which of two
                         near-duplicates should absorb the other. */}
                     <Badge>{t.task_count ?? 0}</Badge>
-                    <select
-                      aria-label={`Colour for ${t.name}`}
-                      className={SELECT}
+                    <SelectButton
+                      label={`Colour for ${t.name}`}
+                      widthClass="w-[7rem]"
                       value={TAG_COLORS.includes(t.color as never) ? t.color : "gray"}
-                      onChange={(e) =>
+                      onChange={(next) =>
                         void run(async () => {
-                          await projectsApi.patchTag(t.id, { color: e.target.value });
+                          await projectsApi.patchTag(t.id, { color: next });
                           return null;
                         })
                       }
-                    >
-                      {TAG_COLORS.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                    </select>
+                      options={TAG_COLORS.map((c) => ({ value: c, label: c }))}
+                    />
                     <Button
                       variant="ghost"
                       size="icon-sm"

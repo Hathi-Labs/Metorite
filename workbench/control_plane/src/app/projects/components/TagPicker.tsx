@@ -15,6 +15,7 @@
  */
 
 import Icon from "@/components/Icon";
+import AnchoredPanel from "@/components/ui/AnchoredPanel";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useState } from "react";
@@ -52,6 +53,8 @@ export function TagPicker({
 }: Props) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
+  /** The field the portalled list measures from. See `AnchoredPanel`. */
+  const [field, setField] = useState<HTMLInputElement | null>(null);
 
   const lookup = registryOf(registry);
   const options = suggest(query, registry, value);
@@ -95,6 +98,7 @@ export function TagPicker({
 
       <div className={compact && value.length === 0 ? "relative" : "relative mt-1"}>
         <Input
+          ref={setField}
           inputSize="sm"
           disabled={disabled}
           value={query}
@@ -129,8 +133,17 @@ export function TagPicker({
           }}
         />
 
-        {open && (options.length > 0 || creating) ? (
-          <ul className="absolute z-20 mt-1 w-full overflow-hidden rounded-lg border border-border bg-card shadow">
+        {/* ⚠️ PORTALLED. Measured in the task panel on 2026-09-20: this
+            list spanned y486–615 inside a scrolling box that ended at y552,
+            so its last row and the "Create" action were off screen. The
+            owner reported the picker as not showing up properly. See
+            `AnchoredPanel`. */}
+        <AnchoredPanel
+          anchor={field}
+          open={open && (options.length > 0 || creating)}
+          maxHeight={256}
+        >
+          <ul className="overflow-hidden rounded-lg">
             {options.map((option) => (
               <li key={option.id}>
                 <button
@@ -165,7 +178,7 @@ export function TagPicker({
               </li>
             ) : null}
           </ul>
-        ) : null}
+        </AnchoredPanel>
       </div>
     </div>
   );

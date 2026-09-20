@@ -48,7 +48,7 @@
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
-import { Select } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
 import { useEffect, useMemo, useState } from "react";
 
 import { findMerges, mergeWarning, overrideNote } from "../lib/statusSwitch";
@@ -273,23 +273,24 @@ export function StatusSetControl({
             Start from another project&apos;s lanes:
           </span>
           <div className="w-48">
-            <Select
-              inputSize="sm"
-              aria-label="Copy statuses from another project"
-              value=""
+            <SelectButton
+              label="Copy statuses from another project"
+              widthClass="w-full"
               disabled={disabled}
-              onChange={(e) => {
-                if (!e.target.value) return;
-                void ask({ mode: "own", copy_from: e.target.value });
+              // Stays on the placeholder: this control ACTS rather than
+              // holds a value, so binding it to a selection would leave the
+              // last project it copied sitting in the box as if it were a
+              // setting.
+              value=""
+              onChange={(next) => {
+                if (!next) return;
+                void ask({ mode: "own", copy_from: next });
               }}
-            >
-              <option value="">Choose a project…</option>
-              {sources.map((row) => (
-                <option key={row.id} value={row.id}>
-                  {row.name}
-                </option>
-              ))}
-            </Select>
+              options={[
+                { value: "", label: "Choose a project…" },
+                ...sources.map((row) => ({ value: row.id, label: row.name })),
+              ]}
+            />
           </div>
         </div>
       ) : null}
@@ -347,24 +348,21 @@ export function StatusSetControl({
                       {m.tasks}
                     </td>
                     <td className="py-1 pr-3">
-                      <Select
-                        inputSize="sm"
-                        aria-label={`Where ${m.name} lands`}
+                      <SelectButton
+                        label={`Where ${m.name} lands`}
+                        widthClass="w-full"
                         value={choices[m.status_id] ?? ""}
-                        onChange={(e) =>
-                          setChoices((c) => ({
-                            ...c,
-                            [m.status_id]: e.target.value,
-                          }))
+                        onChange={(next) =>
+                          setChoices((c) => ({ ...c, [m.status_id]: next }))
                         }
-                      >
-                        <option value="">Pick a status…</option>
-                        {preview.lanes.map((lane) => (
-                          <option key={lane.id} value={lane.name}>
-                            {lane.name}
-                          </option>
-                        ))}
-                      </Select>
+                        options={[
+                          { value: "", label: "Pick a status…" },
+                          ...preview.lanes.map((lane) => ({
+                            value: lane.name,
+                            label: lane.name,
+                          })),
+                        ]}
+                      />
                     </td>
                   </tr>
                 ))}
