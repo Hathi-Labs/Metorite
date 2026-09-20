@@ -17,6 +17,25 @@ import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
 import Modal from "@/components/ui/Modal";
+
+/**
+ * An org-wide row belongs to the organization, not to this space.
+ *
+ * `project_id: null` is the wire's marker for it (WS-27bj / D-PM-16). The
+ * gateway refuses every per-project write against such a row
+ * (`refuse_org_wide_write`), so the honest thing is to draw the controls
+ * disabled with the reason rather than let the member press a 409.
+ *
+ * ⚠️ Disabled, NOT hidden. The row still belongs on this list — it is a
+ * tag this project's tasks really can wear, and hiding it would make the
+ * screen disagree with the picker that offers it.
+ */
+const orgWide = (row: { project_id?: string | null }): boolean =>
+  row.project_id === null;
+
+const ORG_WIDE_NOTE =
+  "Shared by the whole organization — edit it in organization settings, " +
+  "not from one project.";
 import { useEffect, useState } from "react";
 
 import { projectsApi } from "../lib/api";
@@ -197,6 +216,25 @@ export function TagManager({
                     >
                       {t.name}
                     </span>
+                    {/* ⚠️ The gateway sends `project_id: null` for an org-wide
+                        row and says in `tags._row` that it does so because
+                        "a client reads it to know whether the row is
+                        editable here". Neither manager read it. So the day
+                        the first org-wide tag exists, this screen would list
+                        it beside the local ones with a full set of Rename,
+                        Merge and Delete buttons, every one of which answers
+                        409 from `refuse_org_wide_write`.
+
+                        Nothing is broken today only because
+                        `PROJECTS_ORG_VOCABULARIES` is off and no such row
+                        exists. That makes this latent rather than harmless:
+                        the flag is one env write away, and the failure it
+                        uncovers is three dead buttons. */}
+                    {orgWide(t) ? (
+                      <Badge tone="primary" title="Shared by every project in this organization">
+                        Organization
+                      </Badge>
+                    ) : null}
                     <span className="flex-1" />
                     {/* The number this screen is opened for: which of two
                         near-duplicates should absorb the other. */}
@@ -204,6 +242,7 @@ export function TagManager({
                     <SelectButton
                       label={`Colour for ${t.name}`}
                       widthClass="w-[7rem]"
+                      disabled={orgWide(t)}
                       value={TAG_COLORS.includes(t.color as never) ? t.color : "gray"}
                       onChange={(next) =>
                         void run(async () => {
@@ -218,6 +257,8 @@ export function TagManager({
                       size="icon-sm"
                       icon="Pencil"
                       aria-label={`Rename ${t.name}`}
+                      disabled={orgWide(t)}
+                      title={orgWide(t) ? ORG_WIDE_NOTE : undefined}
                       onClick={() => {
                         setEditing(t.id);
                         setDraft(t.name);
@@ -228,8 +269,8 @@ export function TagManager({
                       size="icon-sm"
                       icon="Merge"
                       aria-label={`Merge ${t.name}`}
-                      title="Fold this tag into another"
-                      disabled={tags.length < 2}
+                      title={orgWide(t) ? ORG_WIDE_NOTE : "Fold this tag into another"}
+                      disabled={orgWide(t) || tags.length < 2}
                       onClick={() => setMergeSource(t)}
                     />
                     <Button
@@ -237,7 +278,12 @@ export function TagManager({
                       size="icon-sm"
                       icon="Trash2"
                       aria-label={`Delete ${t.name}`}
-                      title="Deletes it and takes it off every task"
+                      disabled={orgWide(t)}
+                      title={
+                        orgWide(t)
+                          ? ORG_WIDE_NOTE
+                          : "Deletes it and takes it off every task"
+                      }
                       onClick={() =>
                         void run(async () => {
                           const done = await projectsApi.deleteTag(t.id);
