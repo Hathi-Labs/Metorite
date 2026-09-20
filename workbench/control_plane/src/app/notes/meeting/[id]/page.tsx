@@ -908,7 +908,7 @@ export default function MeetingPage({
                             >
                               {displayName(seg.speaker_label)}
                             </span>
-                            <Icon name="Pencil" className="w-2.5 h-2.5 text-muted-foreground opacity-0 group-hover:opacity-100 tech-transition" />
+                            <Icon name="Pencil" className="w-2.5 h-2.5 text-muted-foreground reveal-on-hover tech-transition" />
                           </button>
                         ) : seg.channel ? (
                           <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">

@@ -237,7 +237,7 @@ export function AssistantRail({ onClose }: { onClose?: () => void } = {}) {
                     removeSession(s.id);
                   }}
                   title="Delete conversation"
-                  className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive flex-shrink-0"
+                  className="reveal-on-hover text-muted-foreground hover:text-destructive flex-shrink-0"
                 >
                   <Icon name="Trash2" size={12} />
                 </button>

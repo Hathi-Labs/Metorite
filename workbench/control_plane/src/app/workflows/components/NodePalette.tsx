@@ -148,7 +148,7 @@ export default function NodePalette({
             </span>
           </span>
           {!dead && (
-            <span className="shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 tech-transition">
+            <span className="shrink-0 text-muted-foreground reveal-on-hover tech-transition">
               <AppIcon name="Plus" className="w-3 h-3" />
             </span>
           )}

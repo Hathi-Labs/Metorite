@@ -516,7 +516,7 @@ function SessionList({
                           e.stopPropagation();
                           onDelete(s.id);
                         }}
-                        className="ml-1 shrink-0 rounded-md p-1.5 text-muted-foreground/60 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-all"
+                        className="ml-1 shrink-0 rounded-md p-1.5 text-muted-foreground/60 reveal-on-hover hover:text-destructive hover:bg-destructive/10 transition-all"
                         title="Delete conversation"
                         aria-label="Delete conversation"
                       >

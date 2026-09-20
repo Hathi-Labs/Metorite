@@ -1041,7 +1041,7 @@ function EditableTitle({ value, onSave }: { value: string; onSave: (v: string) =
         title="Click to edit"
       >
         <h1 className="text-lg font-bold leading-snug text-foreground">{value}</h1>
-        <AppIcon name="Pencil" className="mt-1.5 h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+        <AppIcon name="Pencil" className="mt-1.5 h-3.5 w-3.5 shrink-0 text-muted-foreground transition-opacity reveal-on-hover" />
       </button>
     );
   }
@@ -1094,7 +1094,7 @@ function EditableText({
         <p className={`flex-1 text-sm text-foreground ${multiline ? "whitespace-pre-wrap" : ""}`}>
           {value}
         </p>
-        <AppIcon name="Pencil" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+        <AppIcon name="Pencil" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground transition-opacity reveal-on-hover" />
       </button>
     ) : (
       <button
@@ -1162,7 +1162,7 @@ function MetaEdit({
             <Icon className="h-3 w-3" />
             {label}
           </span>
-          <AppIcon name="Pencil" className="h-3 w-3 shrink-0 text-muted-foreground/50 opacity-0 transition-opacity group-hover:opacity-100" />
+          <AppIcon name="Pencil" className="h-3 w-3 shrink-0 text-muted-foreground/50 transition-opacity reveal-on-hover" />
         </div>
         <div className="mt-0.5 text-sm text-foreground">
           {display ?? <span className="text-muted-foreground/60">—</span>}

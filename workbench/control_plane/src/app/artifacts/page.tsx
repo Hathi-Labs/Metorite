@@ -217,7 +217,7 @@ function FileCard({ artifact, onView, index }: { artifact: ArtifactEntry; onView
           <span className="text-[10px] text-muted-foreground/50">{formatRelative(artifact.modified_at)}</span>
         </div>
       </div>
-      <div className="absolute inset-0 bg-background/80 opacity-0 group-hover:opacity-100 tech-transition flex items-center justify-center gap-3">
+      <div className="absolute inset-0 bg-background/80 reveal-on-hover tech-transition flex items-center justify-center gap-3">
         <button onClick={(e) => { e.stopPropagation(); onView(); }} className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:opacity-90 tech-transition shadow-lg">
           <Icon name="Eye" size={13} /> View
         </button>

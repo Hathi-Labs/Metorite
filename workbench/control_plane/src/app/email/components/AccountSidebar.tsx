@@ -131,7 +131,7 @@ export function AccountSidebar({
                       onSetDefault(account.id);
                     }}
                     title="Set as default mailbox"
-                    className="p-1 rounded opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-amber-400 transition-opacity flex-shrink-0"
+                    className="p-1 rounded reveal-on-hover text-muted-foreground hover:text-amber-400 transition-opacity flex-shrink-0"
                   >
                     <AppIcon name="Star" size={11} />
                   </button>

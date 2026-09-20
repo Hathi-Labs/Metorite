@@ -2247,7 +2247,7 @@ function AddRuleDialog({
                       <ActionIcon type={at} size={12} />
                     </span>
                     <span className="flex-1">{ex}</span>
-                    <Icon name="Plus" size={11} className="text-muted-foreground/50 mt-0.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+                    <Icon name="Plus" size={11} className="text-muted-foreground/50 mt-0.5 flex-shrink-0 reveal-on-hover transition-opacity" />
                   </button>
                 );
               })}
