@@ -287,6 +287,12 @@ line — never reclaim a number by deleting the other entry.
   `test_handoff_ids_are_unique` caught the collision.
 
 ### H-89 · Something on the box writes into the checkout as root · [OWNER]
+- **🔴 2026-09-20 — this caused a shipped outage.** 50237 files under
+  `/opt/acb/app/workbench` were root-owned. The apply runs as the deploy
+  user, so `npm ci` and `rm -rf .next.previous` both returned EACCES, and
+  two deploys reported SUCCESS while shipping no UI. An agent chowned the
+  tree back to the deploy user to deliver PR #318. The WRITER is still
+  unidentified, so the ownership will drift again.
 - **Check:** on the box, run `sudo find /opt/acb/app -name .next -prune -o
   ! -user acb -print | head`. Any line means a root-owned path is back in the
   checkout, and the cause is still there.
@@ -2771,6 +2777,26 @@ line — never reclaim a number by deleting the other entry.
   `workbench/control_plane/src/app/projects/components/TaskCardActions.tsx`
   trap 3 · `workbench/control_plane/e2e/projects-card-strip.spec.ts`
 - **Added:** 2026-09-20 · the Projects card session
+
+### H-138 · `verify()` blesses a deploy that shipped no UI · [AGENT]
+- **Check:** `grep -c 'workbench.*BUILD_ID\|wb_sha' .github/workflows/deploy.yml`
+  → `0` means the deploy still cannot see a workbench that did not rebuild.
+- **Why:** On 2026-09-20 two deploys reported SUCCESS and shipped no UI.
+  `verify()` asks the GATEWAY for its SHA, and asks the workbench only for an
+  HTTP code. The workbench answered 307 from the LAST build both times.
+  The gateway and the workbench are separate units with separate release
+  paths, so one SHA cannot speak for both.
+- **The repair:** give the workbench a `/api/version` that reports the SHA it
+  was BUILT from, and make `verify()` require it to match. A build id alone is
+  not enough. It changes on every build, so it cannot say WHICH commit.
+- **⚠️ The immediate cause is fixed, the blindness is not.**
+  `scripts/vps_apply.sh` no longer dies in housekeeping (`drop_dir`, fenced by
+  `tests/unit/test_deploy_next_build_swap.py`). Any future break between the
+  swap and the restart stays invisible to CI.
+- **Authority:** `.github/workflows/deploy.yml` verify() ·
+  `scripts/vps_apply.sh` build_next_staged · H-89 · H-137
+- **Added:** 2026-09-20 · the Projects card session, PR #318 delivery
+
 
 # DONE — deleted, not archived
 
