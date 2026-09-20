@@ -33,6 +33,7 @@ import { accentForHue } from "@/lib/statusAccent";
 
 import { Avatar } from "../components/Avatar";
 import { type WorkRow, peopleApi } from "../lib/api";
+import { PAGE_FRAME } from "../lib/frame";
 import {
   type SuggestionsResponse,
   describeCandidate,
@@ -146,7 +147,7 @@ export default function WorkloadDashboardPage() {
   const scope = data ? describeScope(data) : null;
 
   return (
-    <main className="mx-auto flex w-full max-w-6xl flex-col gap-4 p-4">
+    <main className={PAGE_FRAME}>
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-sm font-medium text-foreground">Workload</h1>
@@ -234,7 +235,12 @@ export default function WorkloadDashboardPage() {
         />
       )}
 
-      {sug && (sug.at_risk.length > 0 || sug.pickups.length > 0) && (
+      {/* ⚠️ The FIELDS are guarded, not just the object. A response that
+          arrives without `at_risk` — a version skew, a degraded answer —
+          used to throw here and blank the whole Workload page, not just
+          this section. `harness.ts` records that class of crash as its
+          eighth trap, and this is one of the components it means. */}
+      {sug && ((sug.at_risk?.length ?? 0) > 0 || (sug.pickups?.length ?? 0) > 0) && (
         <section className="rounded-xl border border-border">
           <div className="border-b border-border p-3">
             <h2 className="text-xs font-medium text-foreground">

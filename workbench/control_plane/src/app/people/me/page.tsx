@@ -30,6 +30,7 @@ import { AvatarPicker } from "../components/AvatarPicker";
 import { ProfilePanels } from "../components/ProfilePanels";
 import { type PersonDetail, peopleApi } from "../lib/api";
 import { initials } from "../lib/directory";
+import { PAGE_FRAME } from "../lib/frame";
 
 type State =
   | { kind: "loading" }
@@ -90,7 +91,7 @@ export default function MyProfilePage() {
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-4xl flex-col gap-4 p-4">
+    <main className={PAGE_FRAME}>
       <header className="flex items-center justify-between gap-3">
         <div>
           <h1 className="text-sm font-medium text-foreground">My profile</h1>

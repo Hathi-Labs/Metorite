@@ -560,6 +560,14 @@ request. The bar exists so a member is not offered four links that answer 403.
 D49 Center landing, and D49 keeps those routable and unlinked. Neither has a
 tab.
 
+**One page width, and it is a constant.** `app/people/lib/frame.ts` holds
+`PAGE_FRAME`. Before it the seven surfaces declared FOUR widths, so the
+heading's left edge moved on four of the six tab clicks. The directory is the
+one page with no frame, because it is a full-height two-pane layout and not a
+document that flows. Fence: `lib/frame.test.ts`, which greps every page for a
+`max-w-` of its own. `max-w-prose` stays legal — a measure belongs to the
+paragraph.
+
 **The bar is `components/Tabs`**, which gained `href` support in the same
 change. A People-local tab bar would be the app-local look `AGENTS.md` rule 1
 refuses. Fence: `src/app/people/layout.test.ts` — six cases, and the one that

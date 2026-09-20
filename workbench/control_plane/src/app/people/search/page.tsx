@@ -24,6 +24,7 @@ import { Input } from "@/components/ui/Input";
 
 import { Avatar } from "../components/Avatar";
 import { PeopleApiError, peopleApi } from "../lib/api";
+import { PAGE_FRAME } from "../lib/frame";
 import {
   type CapabilityResponse,
   describeResultLoad,
@@ -55,7 +56,7 @@ export default function CapabilitySearchPage() {
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4">
+    <main className={PAGE_FRAME}>
       <header className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-sm font-medium text-foreground">
@@ -86,6 +87,39 @@ export default function CapabilitySearchPage() {
           Search
         </Button>
       </form>
+
+      {/*
+        Before the first search this page was blank below the box — the one
+        surface that most justifies filling in a profile, showing nothing
+        about what it can do. Three signals, named, because a ranking whose
+        reasoning is hidden cannot be argued with (§5.5).
+      */}
+      {!res && !busy && !error && (
+        <section className="rounded-xl border border-border p-4">
+          <p className="text-sm text-foreground">
+            Find who can help with a piece of work.
+          </p>
+          <ul className="mt-2 max-w-prose space-y-1 text-xs text-muted-foreground">
+            <li>
+              <span className="text-foreground">Stated skills</span> — weighted
+              by level and how recently somebody used them.
+            </li>
+            <li>
+              <span className="text-foreground">CV evidence</span> — the
+              matching line from their newest résumé, quoted.
+            </li>
+            <li>
+              <span className="text-foreground">Related work</span> — nearby
+              experience, when semantic matching is available.
+            </li>
+          </ul>
+          <p className="mt-3 max-w-prose text-xs text-muted-foreground">
+            Every match shows which of the three it came from. Nothing here
+            assigns anything — and a skill nobody wrote down cannot be found,
+            so an empty result is also a prompt to fill in a profile.
+          </p>
+        </section>
+      )}
 
       {error && (
         <p className="text-xs text-destructive" role="alert">

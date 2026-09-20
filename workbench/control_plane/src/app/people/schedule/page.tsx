@@ -24,6 +24,7 @@ import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 
 import { PeopleApiError, peopleApi } from "../lib/api";
+import { PAGE_FRAME } from "../lib/frame";
 import {
   DAY_NAMES,
   type PolicyImpact,
@@ -126,7 +127,7 @@ export default function WorkSchedulePage() {
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4">
+    <main className={PAGE_FRAME}>
       <header className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-sm font-medium text-foreground">

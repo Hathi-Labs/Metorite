@@ -25,6 +25,7 @@ import { categoricalAccent } from "@/lib/categorical";
 
 import { Avatar } from "../components/Avatar";
 import { PeopleApiError, peopleApi } from "../lib/api";
+import { PAGE_FRAME, PAGE_FRAME_BLOCK } from "../lib/frame";
 import {
   type ChartResponse,
   type TreeNode,
@@ -214,21 +215,21 @@ export default function OrgChartPage() {
 
   if (error && !res) {
     return (
-      <main className="mx-auto w-full max-w-3xl p-4">
+      <main className={PAGE_FRAME_BLOCK}>
         <p className="text-sm text-muted-foreground">{error}</p>
       </main>
     );
   }
   if (!res || !tree) {
     return (
-      <main className="mx-auto w-full max-w-3xl p-4">
+      <main className={PAGE_FRAME_BLOCK}>
         <p className="text-sm text-muted-foreground">Drawing the chart…</p>
       </main>
     );
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4">
+    <main className={PAGE_FRAME}>
       <header className="flex items-start justify-between gap-3">
         <div>
           <h1 className="flex items-center gap-2 text-lg font-semibold">
