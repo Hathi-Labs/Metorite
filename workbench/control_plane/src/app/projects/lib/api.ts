@@ -521,6 +521,14 @@ export interface TaskRow {
    * `TaskModel` has always sent it; nothing declared it, so nothing read it.
    */
   source?: string | null;
+  /**
+   * When somebody filed this task, or null.
+   *
+   * ⚠️ On `TaskModel` since WS-27w and declared by no client until now, so
+   * every surface treated an archived task as live. It only ever ARRIVED on
+   * a read that asked for archived tasks, which is why nothing noticed.
+   */
+  archived_at?: string | null;
   status_id: string;
   title: string;
   description?: string | null;
@@ -1176,6 +1184,39 @@ export const projectsApi = {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
+
+  /**
+   * File a task out of every default list, board, calendar and search.
+   *
+   * ⚠️ The gateway refuses this for an OPEN task (422 naming the status
+   * category). That is deliberate — an archived open task is work that
+   * disappeared while still owed — so the caller shows the refusal rather
+   * than pre-guessing it.
+   */
+  archiveTask: (taskId: string) =>
+    call<TaskRow>(`tasks/${taskId}/archive`, { method: "POST" }),
+
+  /** Bring one back. No guard in this direction. */
+  unarchiveTask: (taskId: string) =>
+    call<TaskRow>(`tasks/${taskId}/unarchive`, { method: "POST" }),
+
+  /**
+   * Delete a task for good, and say what went with it.
+   *
+   * ⚠️ Subtasks are PROMOTED, not destroyed — `parent_task_id` SET NULLs — so
+   * `subtasks_promoted` is not a cascade count but its opposite. Reporting it
+   * as deleted would reassure in the wrong direction.
+   */
+  deleteTask: (taskId: string) =>
+    call<{
+      deleted: string;
+      cascaded: {
+        activities: number;
+        assignees: number;
+        links: number;
+        subtasks_promoted: number;
+      };
+    }>(`tasks/${taskId}`, { method: "DELETE" }),
 
   setAssignees: (taskId: string, assignees: string[]) =>
     call<{ task_id: string; assignees: string[] }>(`tasks/${taskId}/assignees`, {

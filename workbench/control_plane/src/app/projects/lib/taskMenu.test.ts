@@ -757,3 +757,79 @@ describe("which colour an ON toggle is", () => {
     }
   });
 });
+
+
+describe("the lifecycle verbs (owner request, 2026-09-20)", () => {
+  const filed = (over: Partial<TaskMenuContext> = {}) =>
+    board({
+      canArchive: true,
+      canDelete: true,
+      task: task({ archived_at: "2026-09-01T00:00:00Z" }),
+      ...over,
+    });
+  const live = (over: Partial<TaskMenuContext> = {}) =>
+    board({ canArchive: true, canDelete: true, ...over });
+
+  it("offers Archive on a live task and Restore on a filed one, never both", () => {
+    expect(ids(taskMenuItems(live()))).toContain("task.archive");
+    expect(ids(taskMenuItems(live()))).not.toContain("task.unarchive");
+    expect(ids(taskMenuItems(filed()))).toContain("task.unarchive");
+    expect(ids(taskMenuItems(filed()))).not.toContain("task.archive");
+  });
+
+  it("offers Archive on an OPEN task, and lets the gateway explain", () => {
+    /**
+     * ⚠️ The refusal is the surface's to show, not this menu's to predict.
+     *
+     * The gateway refuses an open task with a 422 naming its status category
+     * and saying what to do. Hiding the entry instead would answer "where did
+     * Archive go?" with silence, and the rule — an archived open task is work
+     * that vanished while it was still owed — would never be learned.
+     */
+    const open = live({ task: task({ status_id: "s-todo" }) });
+    expect(ids(taskMenuItems(open))).toContain("task.archive");
+  });
+
+  it("drops all three where the surface cannot do them", () => {
+    // The rule `canSelect`, `canMoveToProject` and `canEditInline` follow:
+    // an entry with nowhere to send its result is dropped, never greyed.
+    const shown = ids(taskMenuItems(bare()));
+    for (const id of ["task.archive", "task.unarchive", "task.delete"]) {
+      expect(shown).not.toContain(id);
+    }
+  });
+
+  it("separates the power to file from the power to destroy", () => {
+    // A surface may reasonably offer the reversible one and not the other.
+    const fileOnly = board({ canArchive: true });
+    expect(ids(taskMenuItems(fileOnly))).toContain("task.archive");
+    expect(ids(taskMenuItems(fileOnly))).not.toContain("task.delete");
+  });
+
+  it("puts Delete last", () => {
+    // A destructive entry sitting between two ordinary ones is one people
+    // press by muscle memory.
+    const shown = ids(taskMenuItems(live())).filter((id) => id !== "");
+    expect(shown[shown.length - 1]).toBe("task.delete");
+  });
+
+  it("each verb calls its own action and nothing else", () => {
+    const spy = spyActions();
+    const actions = {
+      ...spy,
+      archive: (t: TaskRow) => spy.calls.push(`archive:${t.id}`),
+      unarchive: (t: TaskRow) => spy.calls.push(`unarchive:${t.id}`),
+      deleteTask: (t: TaskRow) => spy.calls.push(`delete:${t.id}`),
+    };
+    const run = (ctx: TaskMenuContext, id: string) => {
+      const entry = taskMenuItems(ctx).find(
+        (e) => e.kind === "item" && e.id === id,
+      );
+      if (entry && entry.kind === "item") entry.run(actions, ctx);
+    };
+    run(live(), "task.archive");
+    run(filed(), "task.unarchive");
+    run(live(), "task.delete");
+    expect(spy.calls).toEqual(["archive:t1", "unarchive:t1", "delete:t1"]);
+  });
+});

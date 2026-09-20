@@ -193,6 +193,9 @@ async def get_calendar(
     tags: str | None = None,
     tags_all: str | None = None,
     include_archived: bool = False,
+    #: Parity with the list (see its own comment). A filter the list
+    #: takes and this one drops reads as the FILTER being broken.
+    archived_only: bool = False,
     # WS-27t. Off by default: the calendar draws no arrows and would pay for a
     # query it never reads. A flag rather than a second endpoint because the
     # WINDOW is the resource — calendar and timeline are two renderings of the
@@ -260,6 +263,7 @@ async def get_calendar(
             assignee=assignee, assignees=assignees, unassigned=unassigned,
             overdue=overdue, importance_gte=importance_gte, q=q, tags=tags,
             tags_all=tags_all, include_archived=include_archived,
+            archived_only=archived_only,
             watching=watching, viewer=actor(user) if watching else None,
         )
         clauses.extend(extra_clauses)

@@ -79,6 +79,16 @@ export interface Filters {
    * so one shared saved view shows each person their own subscriptions.
    */
   watching: boolean;
+  /**
+   * The archive, as a place you can go.
+   *
+   * ⚠️ **"Only archived", not "archived too".** The gateway has both —
+   * `include_archived` mixes filed tasks in with live ones, and
+   * `archived_only` shows just the filed ones. Mixed in, an archived task is
+   * not findable, and finding one is the entire reason somebody opens this.
+   * Restoring it is then a right-click away, on the card where they found it.
+   */
+  archived: boolean;
   /** WS-27m — ANY of these tags. `tags_all` on the wire is not exposed here yet. */
   tags: string[];
 }
@@ -112,6 +122,7 @@ export const EMPTY_FILTERS: Filters = {
   unassigned: false,
   overdue: false,
   watching: false,
+  archived: false,
   tags: [],
 };
 
@@ -131,6 +142,7 @@ export function toQuery(filters: Filters): Record<string, string> {
   if (filters.unassigned) out.unassigned = "true";
   if (filters.overdue) out.overdue = "true";
   if (filters.watching) out.watching = "true";
+  if (filters.archived) out.archived_only = "true";
   // CSV, matching `split_csv` on the gateway. A tag containing a comma would
   // break this — which is why the picker treats a comma as a separator, so
   // one can never be stored.
@@ -169,6 +181,7 @@ export function fromConfig(config: unknown): {
       unassigned: stored.unassigned === true,
       overdue: stored.overdue === true,
       watching: stored.watching === true,
+      archived: stored.archived_only === true,
       tags:
         typeof stored.tags === "string" && stored.tags
           ? stored.tags.split(",").map((s) => s.trim()).filter(Boolean)
@@ -215,6 +228,11 @@ export function toConfig(
   if (filters.unassigned) stored.unassigned = true;
   if (filters.overdue) stored.overdue = true;
   if (filters.watching) stored.watching = true;
+  // ⚠️ A BOOLEAN here, a string in `toQuery`. `toConfig` writes JSON that
+  // `fromConfig` reads back; `toQuery` writes a query string, where every
+  // value is text. Storing "true" here would make `fromConfig`'s
+  // `=== true` false and the saved view would silently lose the filter.
+  if (filters.archived) stored.archived_only = true;
   // A CSV string here too, not an array: `build_task_filters` parses it with
   // `split_csv`, so a saved view and a typed query string must be the same
   // shape or the view would be the one that breaks.

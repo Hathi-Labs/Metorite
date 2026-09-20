@@ -2154,6 +2154,16 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-30 · vendor-feed session
 
 ### H-88 · A field-change coalescing test flakes on a UUID tiebreak · [AGENT]
+- **🔴 2026-09-20 — measured: it fails FOUR runs in five.** Five
+  identical runs of `tests/unit/test_projects_hardening.py` with
+  `-p no:randomly`: fail, fail, fail, fail, pass. "Flakes" undersells it.
+  At that rate the suite is red more often than green, so the honest
+  reading is a BROKEN test, not an occasional one.
+- **⚠️ It is also camouflage.** A branch that genuinely breaks this file
+  cannot be told from a clean one without running it several times. That
+  cost real minutes on 2026-09-20, when a lifecycle change had to be
+  isolated from it by reverting the test file and re-running.
+- **The failing case:** `test_an_intervening_activity_breaks_the_run`.
 - **Check:** run `uv run pytest tests/unit/ -k "project or tree or task or
   personal" -q` three times. If
   `test_projects_hardening.py::test_an_intervening_activity_breaks_the_run`
@@ -2749,6 +2759,36 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `apps/services/gateway/gateway/build_info.py:128` ·
   `tests/unit/test_build_info.py`
 - **Added:** 2026-09-20 · the My Profile session
+
+### H-139 · 🔴 A cleared `organization` row silently destroys the Projects data · [AGENT]
+- **Check:** read the delete rule on the organization key.
+
+      select confdeltype from pg_constraint
+       where conrelid = 'pm_projects'::regclass;
+
+  → `c` is the cascade. This entry is then open.
+- **Why:** `pm_projects.organization_id` is `ON DELETE CASCADE`. Anything
+  that clears an `organization` row takes that tenant's projects, tasks,
+  statuses and tags with it. It gives no message. Measured 2026-09-20 on the
+  scratch tenant: a seeded review board became `pm_projects = 0`. At the same
+  time `organization` churned from 83 rows to 148, every row minutes old.
+- **⚠️ Not attributed, and that is part of the finding.** `log_statement`
+  is `none` on that container, so no statement survives. What is certain is
+  the CASCADE and the churn. Anybody hunting the fixture leak should look for
+  one that DELETES or truncates `organization`, not only for one that creates.
+- **What it costs today:** the local review loop the owner asked for on
+  2026-09-20 rests on that data. A test run can erase it in silence.
+  Re-seeding the Projects rows is easy. Re-seeding the identity chain is not.
+  `org_membership.user_id` references `user_identity`, not `app_user`. So a
+  hand-seeded developer lands on the invite wall, and the app is unusable.
+- **The repair is a decision, not a patch.** A cascade is right for a real
+  tenant deletion and wrong for a test fixture. Either the fixtures stop
+  deleting organizations, or the scratch tenant stops being the same database
+  the UI is reviewed against.
+- **Authority:** `pm_projects_organization_id_fkey` ·
+  `scripts/dev_db.sh` · `tests/live/README.md`
+- **Added:** 2026-09-20 · the task lifecycle session
+
 
 # DONE — deleted, not archived
 

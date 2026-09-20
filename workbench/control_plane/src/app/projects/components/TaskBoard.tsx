@@ -136,6 +136,20 @@ interface Props {
   onToggle?: (id: string, shift: boolean) => void;
   /** WS-27bl §9.13.4 — raise the move card for one task. */
   onMoveTask?: (taskId: string) => void;
+  /**
+   * File a task, and bring one back. Owner request, 2026-09-20.
+   *
+   * One prop for both directions: a surface that can file and cannot restore
+   * would be a one-way door, which is the exact shape the gateway added
+   * `unarchive` to avoid. Absent means the card offers neither.
+   */
+  onArchive?: (taskId: string, archived: boolean) => void;
+  /**
+   * Delete for good. SEPARATE from `onArchive`, because they are different
+   * powers — filing is reversible and deleting is not — and a surface may
+   * reasonably offer the first without the second.
+   */
+  onDeleteTask?: (taskId: string) => void;
   /** WS-27y — Shift+Arrow grew the selection to exactly these ids. */
   onExtendSelection?: (ids: string[]) => void;
   onSelect: (task: TaskRow) => void;
@@ -162,6 +176,8 @@ export function TaskBoard({
   shownFields,
   onCreated,
   onRenamed,
+  onArchive,
+  onDeleteTask,
   selected,
   onToggle,
   onMoveTask,
@@ -514,6 +530,12 @@ export function TaskBoard({
       setRenameError(null);
       setRenaming({ id: task.id, title: task.title });
     },
+    // The page owns the write, the refusal and the confirmation. This only
+    // says which task and which direction — the same division `moveToProject`
+    // and `rename` already follow.
+    archive: (task) => onArchive?.(task.id, true),
+    unarchive: (task) => onArchive?.(task.id, false),
+    deleteTask: (task) => onDeleteTask?.(task.id),
   };
 
   const menuFor = (task: TaskRow): TaskMenuContext => ({
@@ -527,6 +549,8 @@ export function TaskBoard({
     // reload after a write would show the old title until the next poll, which
     // reads as the rename having failed.
     canEditInline: Boolean(onRenamed),
+    canArchive: Boolean(onArchive),
+    canDelete: Boolean(onDeleteTask),
     selected: selected?.has(task.id) ?? false,
   });
 

@@ -72,6 +72,17 @@ interface Props {
    * would let somebody move fifty tasks from a dropdown.
    */
   onMove?: () => void;
+  /**
+   * The lifecycle verbs, on the whole selection. Owner request, 2026-09-20.
+   *
+   * ⚠️ **Separate from `onApply`, for the reason `onMove` gives above and one
+   * more.** A patch SETS FIELDS and composes; these three do not compose with
+   * anything or with each other, and `delete` makes any other half of the
+   * request meaningless. The gateway refuses the combination by name rather
+   * than guessing an order, so offering them through the same button would
+   * build a request it is written to reject.
+   */
+  onAction?: (action: "archive" | "unarchive" | "delete") => void;
   /** The last outcome sentence, or null. */
   notice: string | null;
 }
@@ -83,6 +94,7 @@ export function BulkBar({
   busy,
   onClear,
   onApply,
+  onAction,
   onMove,
   notice,
 }: Props) {
@@ -222,6 +234,45 @@ export function BulkBar({
           >
             Apply to {count}
           </Button>
+          {/* ⚠️ Beside Apply, not inside it. These three are verbs, not
+              fields — see `onAction`. Archive and Restore are both offered
+              because a selection can hold either kind and the member cannot
+              see which from here; the gateway answers per task and the
+              notice says how many of each. */}
+          {onAction ? (
+            <>
+              <Button
+                variant="secondary"
+                size="sm"
+                icon="Archive"
+                loading={busy}
+                title="File these out of every board, list and search"
+                onClick={() => onAction("archive")}
+              >
+                Archive
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                icon="ArchiveRestore"
+                loading={busy}
+                title="Bring these back onto their boards"
+                onClick={() => onAction("unarchive")}
+              >
+                Restore
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                icon="Trash2"
+                loading={busy}
+                title="Delete these for good"
+                onClick={() => onAction("delete")}
+              >
+                Delete
+              </Button>
+            </>
+          ) : null}
           <Button variant="ghost" size="sm" icon="X" onClick={onClear}>
             Clear
           </Button>

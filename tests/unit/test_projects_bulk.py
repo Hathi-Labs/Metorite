@@ -30,6 +30,7 @@ import pytest
 from fastapi import HTTPException
 from gateway.routes.projects.automation import PATCHABLE_FIELDS
 from gateway.routes.projects.bulk import (
+    BULK_ACTIONS,
     MAX_BULK,
     clean_people,
     clean_tag_list,
@@ -293,3 +294,91 @@ def test_an_empty_selection_is_refused_the_same_way():
     with pytest.raises(HTTPException) as exc:
         asyncio.run(bulk_edit(BulkIn(task_ids=[], patch={"importance": 1}), user=None))
     assert exc.value.status_code == 422
+
+
+# ── The lifecycle verbs (owner request 2026-09-20) ──────────────────────────
+#
+# Delete, archive and unarchive, on a selection. The single-task routes have
+# existed since WS-27w; nothing could reach them from a multi-select, and
+# nothing in the UI could reach them at all.
+
+def test_the_three_verbs_are_the_three_the_routes_already_have():
+    """No fourth verb invented here.
+
+    `tasks.py` owns `DELETE /tasks/{id}`, `POST /{id}/archive` and
+    `POST /{id}/unarchive`. Bulk is a second door onto those three, not a
+    second vocabulary — a verb here with no single-task twin would be a
+    behaviour only reachable in batches.
+    """
+    assert set(BULK_ACTIONS) == {"archive", "unarchive", "delete"}
+
+
+def test_an_action_is_not_an_edit():
+    """⚠️ Refused rather than ordered.
+
+    "Archive these and also tag them" has two readings — tag then archive, or
+    archive then tag — and a `delete` makes the other half meaningless
+    whichever way it runs. Guessing an order here is how a caller discovers
+    months later that half their request never happened.
+    """
+    import asyncio
+
+    from gateway.routes.projects.bulk import BulkIn, bulk_edit
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(bulk_edit(
+            BulkIn(task_ids=["t1"], action="archive", tags_add=["bug"]),
+            user=None,
+        ))
+    assert exc.value.status_code == 422
+    assert "action, not an edit" in str(exc.value.detail)
+
+
+def test_an_unknown_verb_names_the_ones_that_exist():
+    import asyncio
+
+    from gateway.routes.projects.bulk import BulkIn, bulk_edit
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(bulk_edit(BulkIn(task_ids=["t1"], action="burn"), user=None))
+    assert exc.value.status_code == 422
+    assert "archive" in str(exc.value.detail)
+
+
+def test_an_action_alone_is_NOT_a_request_that_asks_for_nothing():
+    """The trap this guards.
+
+    `is_noop` reads patch, assignees and tags. An action-only payload is empty
+    by all four of those measures, so the noop check would refuse the one
+    request shape this feature exists for — and the failure would read
+    "Nothing to change" while the caller had asked to delete fifty things.
+    """
+    import asyncio
+
+    from gateway.routes.projects.bulk import BulkIn, bulk_edit
+
+    # It gets PAST validation: the failure below is the missing database, not
+    # a 422. `pytest.raises(HTTPException)` would catch a 422 and hide this.
+    try:
+        asyncio.run(bulk_edit(BulkIn(task_ids=["t1"], action="delete"), user=None))
+        raised: BaseException | None = None
+    except HTTPException as exc:
+        raised = exc
+    except Exception as exc:  # the database is not here; that is the expected wall
+        raised = exc
+    assert not (
+        isinstance(raised, HTTPException) and raised.status_code == 422
+    ), f"action-only was refused as an empty request: {raised}"
+    assert not isinstance(raised, NameError), f"the test itself is broken: {raised}"
+
+
+def test_the_empty_message_now_mentions_an_action():
+    """A refusal that lists three of the four ways to act teaches the wrong
+    API. It is the only place a caller learns what a bulk request may carry."""
+    import asyncio
+
+    from gateway.routes.projects.bulk import BulkIn, bulk_edit
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(bulk_edit(BulkIn(task_ids=["t1"]), user=None))
+    assert "action" in str(exc.value.detail)

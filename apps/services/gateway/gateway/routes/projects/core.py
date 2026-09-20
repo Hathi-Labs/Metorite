@@ -1685,6 +1685,30 @@ async def org_wide_exists(db: Any, table: str, root: str, value: Any) -> bool:
     return row is not None
 
 
+def archive_refusal(category: str) -> str | None:
+    """Why a task in this status category may not be archived, or ``None``.
+
+    An archived task exits every default list, board, calendar and search
+    surface at once, so archiving an OPEN one is a trap rather than a feature
+    (P-3): the work disappears while it is still owed, and nobody gardening a
+    board can see where it went.
+
+    ⚠️ **Written as "not closed", never as a list of open categories.** A
+    category added later — WS-27u's ``triage`` was — is then refused by
+    default instead of becoming silently archivable.
+
+    ⚠️ **Extracted so the single-task route and the BULK action cannot
+    drift.** A bulk archive that skipped this guard would be the same trap
+    wearing a different button, and fifty tasks at a time.
+    """
+    if category in CLOSING_CATEGORIES:
+        return None
+    return (
+        f"Cannot archive an open task: its status category is '{category}'. "
+        f"Move it to a done or cancelled status first."
+    )
+
+
 def is_org_wide(row: Any) -> bool:
     """Is this vocabulary row the tenant's rather than one project's?"""
     return getattr(row, "project_id", None) is None

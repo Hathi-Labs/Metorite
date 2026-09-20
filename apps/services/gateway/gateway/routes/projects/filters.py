@@ -147,6 +147,7 @@ def build_task_filters(
     tags: str | None = None,
     tags_all: str | None = None,
     include_archived: bool = False,
+    archived_only: bool = False,
     watching: bool = False,
     viewer: str | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
@@ -292,7 +293,28 @@ def build_task_filters(
         clauses.append("t.tags @> CAST(:tags_all AS text[])")
         params["tags_all"] = wanted_all
 
-    if not include_archived:
+    if archived_only:
+        # ── The archive, as a place you can go ────────────────────────────
+        #
+        # `include_archived` answers "show me everything"; this answers "show
+        # me what I filed". They are different questions and the second one is
+        # the one somebody asks when they want a task BACK — mixed in with
+        # every live task, an archived one is not findable.
+        #
+        # ⚠️ **Two booleans rather than one tri-state, and that is a wire
+        # decision, not a modelling one.** `include_archived` is already on
+        # four endpoints and inside saved views (`VIEW_FILTER_KEYS`), so
+        # changing its type would break stored configs. Both are read HERE,
+        # in one place, so no caller can compose them wrongly: `archived_only`
+        # simply wins.
+        #
+        # ⚠️ This is the task's OWN archive flag. A task sitting in an
+        # archived PROJECT is filed by its project, not by anybody choosing to
+        # file it, so it does not belong in "things I archived" — and
+        # unarchiving it here would not bring it back anyway. That is a
+        # project-level act (`unarchive_node`).
+        clauses.append("t.archived_at IS NOT NULL")
+    elif not include_archived:
         clauses.append("t.archived_at IS NULL")
         # WS-27bg. A task is also out of the default reads when the PROJECT
         # holding it is filed — that is what "archive a project and its tasks"
@@ -323,7 +345,7 @@ def build_task_filters(
 VIEW_FILTER_KEYS: frozenset[str] = frozenset({
     "status_id", "status_category", "assignee", "assignees", "unassigned",
     "overdue", "due_before", "importance_gte", "q", "tags", "tags_all",
-    "include_archived",
+    "include_archived", "archived_only",
     # ⚠️ `watching`, NOT `watched_by`. The view stores the INTENT — "things I
     # watch" — and the endpoint resolves it to whoever is asking. Storing an
     # address instead would pin one person's subscriptions into a view other

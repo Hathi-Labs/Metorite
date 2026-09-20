@@ -450,6 +450,35 @@ export function FilterBar({
         >
           Watching
         </Button>
+        {/*
+          The archive, as a place you can go. Owner request, 2026-09-20.
+
+          ⚠️ **"Only archived", not "archived too".** The gateway has both
+          spellings — `include_archived` mixes filed tasks in among the live
+          ones, `archived_only` shows just the filed ones. Mixed in, an
+          archived task is not findable, and finding one is the entire reason
+          somebody opens this. So the chip is exclusive, and the count beside
+          the lanes then reads as "how much is in the archive".
+
+          ⚠️ A FILTER, not a fourth lens — the same argument Watching makes
+          above. "Archived, in Ops, tagged bug" is one query and one chip
+          each, and Restore is a right-click away on the card where it was
+          found.
+        */}
+        <Button
+          variant={filters.archived ? "primary" : "secondary"}
+          size="sm"
+          icon="Archive"
+          aria-pressed={filters.archived}
+          title={
+            filters.archived
+              ? "Showing only archived tasks"
+              : "Show the archive — filed tasks, which every other view hides"
+          }
+          onClick={() => set({ archived: !filters.archived })}
+        >
+          Archived
+        </Button>
 
         {/* Both axes are offered only where the canvas draws them. Calendar
             and Timeline honour neither, and only the board has a second

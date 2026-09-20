@@ -42,11 +42,15 @@ from gateway.routes.projects.automation import (
 from gateway.routes.projects.core import (
     _tenant_session,
     actor,
+    archive_refusal,
     emit,
     load_visible_task,
+    now,
     record_activity,
     resolve_visibility,
     router,
+    touch_task,
+    update_row,
 )
 from gateway.routes.projects.notifications import notifiable, notify
 from gateway.routes.projects.tags import apply_task_tags, normalise_tag
@@ -62,6 +66,18 @@ from sqlalchemy import text
 MAX_BULK = 500
 
 
+#: The lifecycle verbs a selection can be put through.
+#:
+#: Separate from `patch` on purpose. A patch SETS FIELDS and composes — you can
+#: change status and add a tag in one request. These three do not compose with
+#: anything, with each other, or with a patch: there is no coherent reading of
+#: "archive it and also rename it", and `delete` makes every other half of such
+#: a request meaningless. Modelling them as one exclusive verb is what lets the
+#: endpoint refuse the incoherent combinations by name instead of guessing an
+#: order.
+BULK_ACTIONS = ("archive", "unarchive", "delete")
+
+
 class BulkIn(BaseModel):
     task_ids: list[str]
     #: Plain fields plus `status` (by NAME), handed to `apply_task_patch`.
@@ -70,6 +86,8 @@ class BulkIn(BaseModel):
     assignees_remove: list[str] | None = None
     tags_add: list[str] | None = None
     tags_remove: list[str] | None = None
+    #: One of :data:`BULK_ACTIONS`, and then nothing else in this payload.
+    action: str | None = None
 
 
 def validate_patch(patch: dict[str, Any] | None) -> dict[str, Any]:
@@ -290,6 +308,70 @@ async def _apply_to_one(
     return outcome, notify_these
 
 
+async def _act_on_one(
+    db: Any, task: Any, action: str, *, by: str,
+) -> tuple[str, str]:
+    """Put ONE task through a lifecycle verb. Returns ``(outcome, detail)``.
+
+    ``outcome`` is ``"applied"``, ``"skipped"`` or ``"failed"`` — the same
+    three buckets the edit path reports, so a caller reads one response shape
+    whichever verb it sent.
+
+    ⚠️ **Idempotent where the single-task routes are idempotent.** Archiving an
+    already-archived task is ``skipped``, not an error: a selection of fifty
+    that contains three already-filed tasks is a normal thing to do twice, and
+    failing it would teach people to avoid the button.
+    """
+    task_id = str(task.id)
+
+    if action == "delete":
+        # The tombstone is migration 168's AFTER DELETE trigger, not a
+        # statement here — see `tasks.delete_task`, which explains why. The
+        # subtasks are PROMOTED by the FK's SET NULL, never destroyed.
+        children = [
+            str(r.id) for r in (await db.execute(
+                text("SELECT id FROM pm_tasks WHERE parent_task_id = CAST(:t AS uuid)"),
+                {"t": task_id},
+            )).fetchall()
+        ]
+        await db.execute(
+            text("DELETE FROM pm_tasks WHERE id = CAST(:t AS uuid)"), {"t": task_id},
+        )
+        await touch_task(db, getattr(task, "parent_task_id", None), *children)
+        return "applied", "deleted"
+
+    if action == "archive":
+        if getattr(task, "archived_at", None) is not None:
+            return "skipped", "unchanged"
+        status = (await db.execute(
+            text("SELECT category FROM pm_task_statuses WHERE id = CAST(:s AS uuid)"),
+            {"s": str(task.status_id)},
+        )).fetchone()
+        # ⚠️ The SAME guard the single-task route uses. A bulk archive that
+        # skipped it would be the open-task trap wearing a different button,
+        # fifty at a time.
+        refusal = archive_refusal(str(getattr(status, "category", "") or ""))
+        if refusal is not None:
+            return "failed", refusal
+        await update_row(db, "pm_tasks", task_id, {"archived_at": now()})
+        await record_activity(
+            db, activity_type="system", created_by=by,
+            task_id=task_id, body="Task archived",
+        )
+        return "applied", "archived"
+
+    if getattr(task, "archived_at", None) is None:
+        return "skipped", "unchanged"
+    # No category guard in this direction: restoring puts work back where
+    # people can see it, which is never the trap the archive guard prevents.
+    await update_row(db, "pm_tasks", task_id, {"archived_at": None})
+    await record_activity(
+        db, activity_type="system", created_by=by,
+        task_id=task_id, body="Task restored from the archive",
+    )
+    return "applied", "unarchived"
+
+
 @router.post("/tasks/bulk")
 async def bulk_edit(
     payload: BulkIn, user: UserContext = Depends(get_current_user),
@@ -327,10 +409,28 @@ async def bulk_edit(
     add_tags = clean_tag_list(payload.tags_add)
     drop_tags = clean_tag_list(payload.tags_remove)
 
-    if is_noop(patch, add_people, drop_people, add_tags, drop_tags):
+    action = (payload.action or "").strip().lower() or None
+    if action is not None:
+        if action not in BULK_ACTIONS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown action '{action}'. One of: {list(BULK_ACTIONS)}.",
+            )
+        if not is_noop(patch, add_people, drop_people, add_tags, drop_tags):
+            # Refused rather than ordered. "Archive these and also tag them"
+            # has two readings — tag then archive, or archive then tag — and a
+            # `delete` makes the other half meaningless whichever way it runs.
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"'{action}' is an action, not an edit. Send it on its own, "
+                    "without a patch, assignees or tags."
+                ),
+            )
+    elif is_noop(patch, add_people, drop_people, add_tags, drop_tags):
         raise HTTPException(
             status_code=422,
-            detail="Nothing to change. Send a patch, assignees or tags.",
+            detail="Nothing to change. Send a patch, assignees, tags or an action.",
         )
 
     who = actor(user)
@@ -348,6 +448,17 @@ async def bulk_edit(
                 task = await load_visible_task(db, vis, task_id)
             except HTTPException:
                 skipped.append({"task_id": task_id, "reason": "not_found"})
+                continue
+
+            if action is not None:
+                verdict, detail = await _act_on_one(db, task, action, by=who)
+                if verdict == "applied":
+                    applied.append({"task_id": task_id, "changed": [detail]})
+                    changed_ids.append(task_id)
+                elif verdict == "skipped":
+                    skipped.append({"task_id": task_id, "reason": detail})
+                else:
+                    failed.append({"task_id": task_id, "reason": detail})
                 continue
 
             try:

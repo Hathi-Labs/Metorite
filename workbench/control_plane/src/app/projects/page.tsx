@@ -1758,6 +1758,49 @@ function ProjectsWorkspace() {
     }
   }
 
+  /**
+   * A lifecycle verb on the whole selection. Owner request, 2026-09-20.
+   *
+   * ⚠️ **Deliberately NOT routed through `applyBulk`.** That function builds
+   * a patch, and the gateway refuses an action sent beside one. Two paths
+   * because they are two request shapes, which is the same reason `onMove`
+   * is not an edit either.
+   *
+   * ⚠️ **Delete is confirmed and the rest are not.** Archiving fifty tasks is
+   * undone by restoring fifty tasks, and the Restore button is on the same
+   * bar. Deleting fifty is undone by nothing.
+   */
+  async function applyBulkAction(action: "archive" | "unarchive" | "delete") {
+    const ids = [...picked];
+    if (ids.length === 0) return;
+    if (
+      action === "delete" &&
+      !window.confirm(
+        `Delete ${ids.length} task${ids.length === 1 ? "" : "s"}? This cannot ` +
+          "be undone.\n\nAny subtasks they have are kept and moved up a " +
+          "level, not deleted.",
+      )
+    ) {
+      return;
+    }
+    setBulkBusy(true);
+    setBulkNotice(null);
+    try {
+      const outcome = await projectsApi.bulkEdit({ action, task_ids: ids });
+      setBulkNotice(describeOutcome(outcome));
+      // ⚠️ The selection is DROPPED after a delete and kept otherwise. Keeping
+      // it would leave the bar counting rows that no longer exist, and the
+      // next button pressed would report fifty "not found".
+      if (action === "delete") setPicked(new Set());
+      await refreshRef.current();
+      setTreeKey((k) => k + 1);
+    } catch (err) {
+      setBulkNotice(String((err as Error).message));
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   function applyView(view: ViewRow) {
     const {
       filters: next,
@@ -2223,6 +2266,66 @@ function ProjectsWorkspace() {
    * time somebody clicks — a field deleted, a status renamed — and applying a
    * remembered answer is how a value lands under a key nothing defines.
    */
+  /**
+   * File one task, or bring one back. Owner request, 2026-09-20.
+   *
+   * ⚠️ **The refusal is SHOWN, not predicted.** The gateway refuses an open
+   * task with a 422 naming its status category and saying what to do about
+   * it. Greying the entry out instead would answer "why can I not archive
+   * this?" with silence, and the rule — an archived open task is work that
+   * vanished while still owed — would never be learned.
+   */
+  async function setTaskArchived(taskId: string, archived: boolean) {
+    try {
+      if (archived) await projectsApi.archiveTask(taskId);
+      else await projectsApi.unarchiveTask(taskId);
+      await refreshRef.current();
+      setTreeKey((k) => k + 1);
+      toast.show({
+        variant: "success",
+        title: archived ? "Task archived" : "Task restored from the archive",
+      });
+    } catch (err) {
+      setError(String((err as Error).message));
+    }
+  }
+
+  /**
+   * Delete one task for good.
+   *
+   * ⚠️ **The subtask sentence is not decoration.** Deleting a parent PROMOTES
+   * its children — `parent_task_id` SET NULLs — so they survive at the top
+   * level. Somebody who expects a cascade would otherwise delete a parent to
+   * be rid of a subtree and find the subtree still there, or, worse, hesitate
+   * to delete anything because they cannot tell which it does.
+   */
+  async function deleteTaskById(taskId: string) {
+    const doomed = tasks.find((t) => t.id === taskId);
+    const kids = doomed?.subtasks?.total ?? 0;
+    const ok = window.confirm(
+      `Delete “${doomed?.title ?? "this task"}”? This cannot be undone.` +
+        (kids
+          ? `\n\nIts ${kids} subtask${kids === 1 ? "" : "s"} will be kept and ` +
+            "moved up a level, not deleted."
+          : ""),
+    );
+    if (!ok) return;
+    try {
+      const done = await projectsApi.deleteTask(taskId);
+      await refreshRef.current();
+      setTreeKey((k) => k + 1);
+      const promoted = done.cascaded.subtasks_promoted;
+      toast.show({
+        variant: "success",
+        title: promoted
+          ? `Deleted. ${promoted} subtask${promoted === 1 ? "" : "s"} moved up a level.`
+          : "Task deleted",
+      });
+    } catch (err) {
+      setError(String((err as Error).message));
+    }
+  }
+
   async function moveTasksTo(
     destinationId: string,
     statusMap: Record<string, string>,
@@ -2856,6 +2959,7 @@ function ProjectsWorkspace() {
             setBulkNotice(null);
           }}
           onApply={(request) => void applyBulk(request)}
+          onAction={(action) => void applyBulkAction(action)}
           onMove={() => {
             setMoveTasksError(null);
             setMovingTasks([...picked]);
@@ -3048,6 +3152,10 @@ function ProjectsWorkspace() {
               // answer as `onCreated` today; a separate prop because they are
               // separate events (see TaskBoard's Props).
               onRenamed={() => void loadProject(selected)}
+              onArchive={(taskId, archived) =>
+                void setTaskArchived(taskId, archived)
+              }
+              onDeleteTask={(taskId) => void deleteTaskById(taskId)}
               selected={picked}
               onToggle={toggleSelection}
               onMoveTask={(taskId) => {

@@ -116,11 +116,37 @@ async def test_a_closed_task_archives_and_earns_a_timeline_row(
 async def test_the_guard_is_category_not_in_closing_never_a_list_of_open_ones() -> None:
     """WS-27u is concurrently adding a `triage` category. Written as `not in
     (done, cancelled)`, a new category is refused by default; written as a
-    list of open categories, it would be silently archivable. Pinned on the
-    source so the mutant that flips the predicate's direction goes red."""
-    source = (PACKAGE / "tasks.py").read_text(encoding="utf-8")
-    assert "if category not in CLOSING_CATEGORIES:" in source
+    list of open categories, it would be silently archivable.
+
+    ⚠️ **This asserted the SOURCE STRING in `tasks.py` until 2026-09-20.** The
+    guard moved into `core.archive_refusal` when the bulk action needed it too
+    — a bulk archive that skipped it would be the same trap, fifty tasks at a
+    time — and a string match followed the guard nowhere. Asserting the
+    BEHAVIOUR is both stronger and portable: it catches the flipped predicate
+    the old test was written for, and it also catches a guard that is moved
+    and quietly weakened on the way.
+    """
     assert frozenset({"done", "cancelled"}) == pm_core.CLOSING_CATEGORIES
+
+    # Closed means archivable, and nothing else does.
+    for category in pm_core.CLOSING_CATEGORIES:
+        assert pm_core.archive_refusal(category) is None, category
+
+    # ⚠️ The direction that matters. `triage` is the category WS-27u added
+    # after this guard was written, and the whole point is that it needed no
+    # change here to be refused.
+    for category in ("backlog", "todo", "in_progress", "triage", "", "a-new-one"):
+        refusal = pm_core.archive_refusal(category)
+        assert refusal is not None, f"{category!r} must not be archivable"
+        assert category in refusal or category == "", refusal
+
+    # The guard is reached from BOTH doors, and neither carries its own copy.
+    for module in ("tasks.py", "bulk.py"):
+        source = (PACKAGE / module).read_text(encoding="utf-8")
+        assert "archive_refusal(" in source, module
+        assert "not in CLOSING_CATEGORIES" not in source, (
+            f"{module} grew a second copy of the guard"
+        )
 
 
 async def test_unarchive_restores_and_needs_no_category(

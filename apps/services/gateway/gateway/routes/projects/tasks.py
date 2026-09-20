@@ -24,6 +24,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, Header, HTTPException
 from gateway.routes.projects.core import (
+    archive_refusal,
     CLOSING_CATEGORIES,
     DIRECTIONS,
     TASK_SORTS,
@@ -164,6 +165,9 @@ async def list_tasks(
     direction: str = "desc",
     page: Page = Depends(),
     include_archived: bool = False,
+    #: The archive AS A PLACE. `include_archived` shows everything; this shows
+    #: only what somebody filed, which is the view you open to get one back.
+    archived_only: bool = False,
     # WS-27k. CSV rather than repeated params so a saved view's stored config
     # round-trips through a query string unchanged.
     status_category: str | None = None,
@@ -250,6 +254,7 @@ async def list_tasks(
             assignees=assignees, unassigned=unassigned, overdue=overdue,
             due_before=due_before, importance_gte=importance_gte, q=q,
             tags=tags, tags_all=tags_all, include_archived=include_archived,
+            archived_only=archived_only,
             watching=watching, viewer=actor(user) if watching else None,
         )
         clauses.extend(extra_clauses)
@@ -797,16 +802,9 @@ async def archive_task(
         status = await require_row(
             db, "pm_task_statuses", str(task.status_id), "Status",
         )
-        category = str(getattr(status, "category", "") or "")
-        if category not in CLOSING_CATEGORIES:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"Cannot archive an open task: its status category is "
-                    f"'{category}'. Move it to a done or cancelled status "
-                    f"first."
-                ),
-            )
+        refusal = archive_refusal(str(getattr(status, "category", "") or ""))
+        if refusal is not None:
+            raise HTTPException(status_code=422, detail=refusal)
         if getattr(task, "archived_at", None) is not None:
             # Already archived — idempotent, the double-click answer.
             return row_to_dict(task, TaskModel)

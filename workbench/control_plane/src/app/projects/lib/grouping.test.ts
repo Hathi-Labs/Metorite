@@ -795,3 +795,29 @@ describe("searchOpen", () => {
     expect(searchOpen({ opened: false, draft: "\t" })).toBe(false);
   });
 });
+
+
+describe("the archive is a place you can go", () => {
+  it("asks for ONLY archived tasks, never archived-as-well", () => {
+    // ⚠️ The gateway has both spellings and they answer different questions.
+    // `include_archived` mixes filed tasks in with live ones, which is the
+    // one arrangement in which an archived task cannot be found — and finding
+    // one is the entire reason somebody opens this.
+    expect(toQuery({ ...EMPTY_FILTERS, archived: true })).toEqual({
+      archived_only: "true",
+    });
+    expect(toQuery(EMPTY_FILTERS).archived_only).toBeUndefined();
+  });
+
+  it("survives a round trip through a saved view", () => {
+    // ⚠️ Through `toConfig`, which is the path a view actually takes.
+    // `toQuery` writes a query STRING, where `true` is the text "true" —
+    // round-tripping that through `fromConfig`'s `=== true` would be false,
+    // and the view would silently lose the filter.
+    const stored = toConfig({ ...EMPTY_FILTERS, archived: true }, "status");
+    // Nested: `toConfig` returns { filters, group_by, ... }.
+    expect((stored.filters as Record<string, unknown>).archived_only).toBe(true);
+    expect(fromConfig(stored).filters.archived).toBe(true);
+    expect(fromConfig(toConfig(EMPTY_FILTERS, "status")).filters.archived).toBe(false);
+  });
+});
