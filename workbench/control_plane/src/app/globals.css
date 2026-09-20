@@ -762,6 +762,49 @@ select optgroup {
   display: none;
 }
 
+/* ── Reveal on hover ──────────────────────────────────────────────────── */
+/*
+ * 🔴 `opacity-0 group-hover:opacity-100` HIDES THE CONTROL FOREVER on a
+ * touch-capable display, and thirty places in this app were written that way.
+ *
+ * Tailwind v4 compiles every `hover:` and `group-hover:` inside
+ * `@media (hover: hover)`. Chromium reports `hover: none` for ANY display the
+ * OS calls touch-capable — which includes a Windows laptop with a touchscreen,
+ * driven by a mouse, with a cursor on the screen. On those machines the media
+ * query never matches, so the reveal rule is never emitted and the control is
+ * `opacity: 0` for the life of the page. The owner reported it on the Projects
+ * board on 2026-09-20; H-131 counted nineteen more files.
+ *
+ * ⚠️ **The obvious fix is wrong.** Pinning with
+ * `[@media(hover:none)]:opacity-100` makes the control permanently VISIBLE for
+ * exactly the same members — it trades invisible for always-on, which is what
+ * the owner rejected first. `TaskCardActions.tsx` carries that story.
+ *
+ * This rule carries no media query at all, so it applies to every member on
+ * every machine, and hover behaves the way hover is supposed to.
+ *
+ * ⚠️ **`:focus-visible`, never `:focus-within`.** A container that reveals on
+ * `:focus-within` stays lit after a MOUSE click lands focus inside it, so the
+ * control lingers over a card the pointer has already left. `:has(:focus-visible)`
+ * is what makes it keyboard-reachable without that.
+ *
+ * Fence: `src/lib/theme/conformance.test.ts` refuses a new
+ * `group-hover:opacity-100` anywhere in `src`.
+ */
+@utility reveal-on-hover {
+  opacity: 0;
+
+  .group:hover & {
+    opacity: 1;
+  }
+
+  /* The control itself is focusable, or something inside it is. */
+  &:focus-visible,
+  &:has(:focus-visible) {
+    opacity: 1;
+  }
+}
+
 /* ── Reduced motion ───────────────────────────────────────────────────── */
 /* Entrance/pulse animations become instant; the state they convey (a new
    step arriving, a spinner turning) is still carried by the content itself.

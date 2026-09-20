@@ -186,7 +186,7 @@ export function UnscheduledRail({
                       "tech-transition shrink-0 rounded p-0.5",
                       t.id === oneThingId
                         ? "text-amber-400"
-                        : "text-muted-foreground/60 opacity-0 hover:text-amber-400 group-hover:opacity-100",
+                        : "text-muted-foreground/60 hover:text-amber-400 reveal-on-hover",
                     ].join(" ")}
                   >
                     <Icon name="Star"

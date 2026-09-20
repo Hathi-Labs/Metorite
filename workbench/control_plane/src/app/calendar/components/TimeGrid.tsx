@@ -647,7 +647,7 @@ export function TimeGrid({
                           "tech-transition absolute right-[54px] top-0.5 rounded p-0.5",
                           isNow
                             ? "text-primary hover:bg-black/10"
-                            : "text-muted-foreground opacity-0 hover:bg-black/10 hover:text-primary group-hover:opacity-100",
+                            : "text-muted-foreground hover:bg-black/10 hover:text-primary reveal-on-hover",
                         ].join(" ")}
                       >
                         <Icon name="Play" className="h-3 w-3" fill="currentColor" />
@@ -673,7 +673,7 @@ export function TimeGrid({
                           "tech-transition absolute right-[36px] top-0.5 rounded p-0.5",
                           isOneThing
                             ? "text-amber-400 hover:bg-black/10"
-                            : "text-muted-foreground opacity-0 hover:bg-black/10 hover:text-amber-400 group-hover:opacity-100",
+                            : "text-muted-foreground hover:bg-black/10 hover:text-amber-400 reveal-on-hover",
                         ].join(" ")}
                       >
                         <Icon name="Star"
@@ -701,7 +701,7 @@ export function TimeGrid({
                         "tech-transition absolute right-[18px] top-0.5 rounded p-0.5",
                         isFixed
                           ? "text-primary hover:bg-black/10"
-                          : "text-muted-foreground opacity-0 hover:bg-black/10 hover:text-foreground group-hover:opacity-100",
+                          : "text-muted-foreground hover:bg-black/10 hover:text-foreground reveal-on-hover",
                       ].join(" ")}
                     >
                       {isFixed ? (
@@ -718,7 +718,7 @@ export function TimeGrid({
                         e.stopPropagation();
                         onUnschedule(b.item);
                       }}
-                      className="tech-transition absolute right-0.5 top-0.5 rounded p-0.5 text-muted-foreground opacity-0 hover:bg-black/10 hover:text-destructive group-hover:opacity-100"
+                      className="tech-transition absolute right-0.5 top-0.5 rounded p-0.5 text-muted-foreground hover:bg-black/10 hover:text-destructive reveal-on-hover"
                     >
                       <Icon name="X" className="h-3 w-3" />
                     </button>
@@ -726,7 +726,7 @@ export function TimeGrid({
                     <div
                       onPointerDown={(e) => startResize(e, b)}
                       title="Drag to change duration"
-                      className="absolute inset-x-0 bottom-0 flex h-2 cursor-ns-resize items-end justify-center pb-0.5 opacity-0 group-hover:opacity-100"
+                      className="absolute inset-x-0 bottom-0 flex h-2 cursor-ns-resize items-end justify-center pb-0.5 reveal-on-hover"
                     >
                       <div className="h-0.5 w-6 rounded-full bg-primary/60" />
                     </div>

@@ -363,7 +363,7 @@ export function DashboardView({
                           {openable && (
                             <AppIcon name="ChevronRight"
                               size={11}
-                              className="text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                              className="text-muted-foreground reveal-on-hover transition-opacity flex-shrink-0"
                             />
                           )}
                         </span>
@@ -416,7 +416,7 @@ export function DashboardView({
                         {onFilterLabel && (
                           <AppIcon name="ChevronRight"
                             size={11}
-                            className="text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity"
+                            className="text-muted-foreground reveal-on-hover transition-opacity"
                           />
                         )}
                       </span>
@@ -458,7 +458,7 @@ export function DashboardView({
                         {onFilterSender && (
                           <AppIcon name="ChevronRight"
                             size={11}
-                            className="text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                            className="text-muted-foreground reveal-on-hover transition-opacity flex-shrink-0"
                           />
                         )}
                       </span>
@@ -536,7 +536,7 @@ function ThreadRow({
       {/* Always visible on touch screens (no hover to reveal them); hover-only
           on sm+ where a pointer exists. */}
       <span
-        className="flex items-center gap-0.5 flex-shrink-0 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
+        className="flex items-center gap-0.5 flex-shrink-0 opacity-100 sm:reveal-on-hover transition-opacity"
         onClick={(e) => e.stopPropagation()}
       >
         {actions}

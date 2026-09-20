@@ -329,7 +329,7 @@ function FileTreeView({
           <button
             onClick={() => onDelete(f.path)}
             title={`Delete ${f.path}`}
-            className="p-1 mr-1 rounded opacity-0 group-hover:opacity-100 hover:text-destructive tech-transition shrink-0"
+            className="p-1 mr-1 rounded reveal-on-hover hover:text-destructive tech-transition shrink-0"
           >
             <Icon name="Trash2" className="w-3 h-3" />
           </button>

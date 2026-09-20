@@ -440,7 +440,7 @@ function CostView({ cost }: { cost: CostData | null }) {
         <div className="flex items-end gap-1.5 h-40">
           {cost.days.map((d) => (
             <div key={d.date} className="flex-1 flex flex-col items-center gap-1 min-w-0 group">
-              <div className="text-[9px] font-mono text-muted-foreground/70 opacity-0 group-hover:opacity-100 transition-opacity">
+              <div className="text-[9px] font-mono text-muted-foreground/70 reveal-on-hover transition-opacity">
                 {fmtCost(d.cost)}
               </div>
               <div

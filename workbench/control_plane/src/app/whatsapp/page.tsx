@@ -1390,7 +1390,7 @@ function Bubble({
         <button
           onClick={doCapture}
           disabled={busy}
-          className="mt-0.5 flex items-center gap-1 text-[10px] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 disabled:opacity-50"
+          className="mt-0.5 flex items-center gap-1 text-[10px] text-muted-foreground transition-opacity reveal-on-hover disabled:opacity-50"
         >
           <AppIcon name="Plus" className="h-3 w-3" />
           {captured ? "captured" : "task"}

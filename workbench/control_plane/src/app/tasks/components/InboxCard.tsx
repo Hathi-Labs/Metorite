@@ -198,7 +198,7 @@ export function InboxCard({
           "mt-0.5 shrink-0 tech-transition",
           selected || selectionMode
             ? "opacity-100"
-            : "opacity-0 group-hover:opacity-100",
+            : "reveal-on-hover",
           selected ? "text-primary" : "text-muted-foreground hover:text-foreground",
         ].join(" ")}
       >
@@ -267,7 +267,7 @@ export function InboxCard({
       </div>
 
       {/* Secondary quick-actions (desktop hover; on touch, tap card → Clarify) */}
-      <div className="hidden shrink-0 items-center gap-0.5 opacity-0 tech-transition focus-within:opacity-100 group-hover:opacity-100 sm:flex">
+      <div className="hidden shrink-0 items-center gap-0.5 tech-transition reveal-on-hover sm:flex">
         <CardAction label="Edit" icon={themedIcon("Pencil")} onClick={onEditStart} />
         <div className="relative">
           <CardAction

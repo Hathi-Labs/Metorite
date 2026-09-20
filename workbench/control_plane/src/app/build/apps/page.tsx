@@ -118,7 +118,7 @@ function AppCard({
             className={`p-1.5 rounded-lg tech-transition ${
               app.is_template
                 ? "text-accent opacity-100"
-                : "text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground"
+                : "text-muted-foreground reveal-on-hover hover:text-foreground"
             }`}
           >
             <Icon name="LayoutTemplate" className="w-3.5 h-3.5" />
@@ -141,7 +141,7 @@ function AppCard({
           className={`p-1.5 rounded-lg tech-transition ${
             app.pinned
               ? "text-primary opacity-100"
-              : "text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground"
+              : "text-muted-foreground reveal-on-hover hover:text-foreground"
           }`}
         >
           {app.pinned ? (

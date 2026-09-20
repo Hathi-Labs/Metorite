@@ -168,7 +168,7 @@ export function InboxTable({
                         e.stopPropagation();
                         quickDispose(item.id, "SOMEDAY");
                       }}
-                      className="tech-transition rounded p-1 text-muted-foreground opacity-0 hover:bg-secondary hover:text-foreground group-hover:opacity-100"
+                      className="tech-transition rounded p-1 text-muted-foreground hover:bg-secondary hover:text-foreground reveal-on-hover"
                     >
                       <Icon name="Lightbulb" className="h-3.5 w-3.5" />
                     </button>
@@ -179,7 +179,7 @@ export function InboxTable({
                         e.stopPropagation();
                         openClarify(item.id);
                       }}
-                      className="tech-transition rounded p-1 text-primary opacity-0 hover:bg-primary/10 group-hover:opacity-100"
+                      className="tech-transition rounded p-1 text-primary hover:bg-primary/10 reveal-on-hover"
                     >
                       <Icon name="ArrowRight" className="h-3.5 w-3.5" />
                     </button>
