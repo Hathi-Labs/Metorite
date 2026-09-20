@@ -287,6 +287,23 @@ line — never reclaim a number by deleting the other entry.
   `test_handoff_ids_are_unique` caught the collision.
 
 ### H-89 · Something on the box writes into the checkout as root · [OWNER]
+- **🟢 2026-09-20 — THE WRITER IS FOUND, and no guess is needed.**
+  `acb-pull.service` carries `User=root` and runs `vps_pull.sh`, which
+  executes the same `vps_apply.sh`. `acb-pull.timer` fires every five
+  minutes and is enabled. So every build the PULL path does writes
+  root-owned files, and the PUSH path, which connects as the deploy user,
+  then cannot touch them. The two delivery paths disagree about who owns
+  the build tree.
+- **What it cost:** three deploys on 2026-09-20 died on EACCES. Two of
+  them reported SUCCESS and shipped no UI. See the note below.
+- **The harm is contained, the cause is not.** `npm_install_here` in
+  `scripts/vps_apply.sh` (PR #323) reclaims the tree with sudo and
+  retries, so drift no longer costs a release. The ownership still flips
+  on every pull-side build.
+- **The decision this needs:** run `acb-pull.service` as the deploy user,
+  or accept the flip and keep the self-heal. Running it as the deploy user
+  is the smaller surface. It is a systemd change on production, so it is
+  yours.
 - **🔴 2026-09-20 — this caused a shipped outage.** 50237 files under
   `/opt/acb/app/workbench` were root-owned. The apply runs as the deploy
   user, so `npm ci` and `rm -rf .next.previous` both returned EACCES, and
