@@ -592,31 +592,37 @@ export default function TierBoard({
           </p>
         ) : (
           <div style={{ overflowX: "auto" }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Day</th>
-                  <th>Tier</th>
-                  <th>Job</th>
-                  <th>Served by</th>
-                  <th>Requests</th>
-                </tr>
-              </thead>
-              <tbody>
-                {catalog.failovers.map((f) => (
-                  <tr key={`${f.day}/${f.tier}/${f.task}/${f.model}/${f.rank}`}>
-                    <td>{f.day}</td>
-                    <td>{f.tier}</td>
-                    <td>{tasks.find((t) => t.slug === f.task)?.label ?? f.task}</td>
-                    <td>
-                      <span className="mono">{f.model}</span>{" "}
-                      <span className="muted small">backup #{f.rank}</span>
-                    </td>
-                    <td>{f.requests}</td>
+            <div className="tablewrap">
+              {/* ⚠️ A wide table must scroll INSIDE its own box. Without this the
+            table widens the document and the whole page scrolls
+            sideways, which moves the nav and every other panel with
+            it. Measured at 390px on 2026-09-20. */}
+              <table>
+                <thead>
+                  <tr>
+                    <th>Day</th>
+                    <th>Tier</th>
+                    <th>Job</th>
+                    <th>Served by</th>
+                    <th>Requests</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {catalog.failovers.map((f) => (
+                    <tr key={`${f.day}/${f.tier}/${f.task}/${f.model}/${f.rank}`}>
+                      <td>{f.day}</td>
+                      <td>{f.tier}</td>
+                      <td>{tasks.find((t) => t.slug === f.task)?.label ?? f.task}</td>
+                      <td>
+                        <span className="mono">{f.model}</span>{" "}
+                        <span className="muted small">backup #{f.rank}</span>
+                      </td>
+                      <td>{f.requests}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </section>

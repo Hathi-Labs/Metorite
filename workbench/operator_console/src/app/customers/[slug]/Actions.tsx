@@ -167,49 +167,55 @@ function MembersPanel({
             {counts.unassigned} unassigned. Releasing a seat leaves the person on
             the roster so they can be reassigned.
           </p>
-          <table>
-            <tbody>
-              {members.map((m) => {
-                const seated = isSeated(m);
-                return (
-                  <tr key={m.email}>
-                    <td>
-                      {m.email}
-                      {m.status !== "active" ? ` (${m.status})` : ""}
-                    </td>
-                    <td>{m.role}</td>
-                    <td>
-                      <strong>{seated ? "Seated" : "Unassigned"}</strong>
-                      {seated && m.seats.length > 1
-                        ? ` · ${m.seats.join(", ")}`
-                        : ""}
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        className={seated ? "secondary" : undefined}
-                        disabled={busy === m.email}
-                        onClick={() =>
-                          act(
-                            m.email,
-                            seated
-                              ? "/api/operator/seats/release"
-                              : "/api/operator/seats",
-                          )
-                        }
-                      >
-                        {busy === m.email
-                          ? "…"
-                          : seated
-                            ? "Release"
-                            : "Assign seat"}
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div className="tablewrap">
+            {/* ⚠️ A wide table must scroll INSIDE its own box. Without this the
+            table widens the document and the whole page scrolls
+            sideways, which moves the nav and every other panel with
+            it. Measured at 390px on 2026-09-20. */}
+            <table>
+              <tbody>
+                {members.map((m) => {
+                  const seated = isSeated(m);
+                  return (
+                    <tr key={m.email}>
+                      <td>
+                        {m.email}
+                        {m.status !== "active" ? ` (${m.status})` : ""}
+                      </td>
+                      <td>{m.role}</td>
+                      <td>
+                        <strong>{seated ? "Seated" : "Unassigned"}</strong>
+                        {seated && m.seats.length > 1
+                          ? ` · ${m.seats.join(", ")}`
+                          : ""}
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          className={seated ? "secondary" : undefined}
+                          disabled={busy === m.email}
+                          onClick={() =>
+                            act(
+                              m.email,
+                              seated
+                                ? "/api/operator/seats/release"
+                                : "/api/operator/seats",
+                            )
+                          }
+                        >
+                          {busy === m.email
+                            ? "…"
+                            : seated
+                              ? "Release"
+                              : "Assign seat"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </>
       )}
       <ResultLine result={result} />
@@ -782,56 +788,62 @@ function KeysPanel({
       ) : live.length === 0 ? (
         <p className="muted">No live keys. This customer cannot call the Router.</p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Prefix</th>
-              <th>Label</th>
-              <th>Created</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {live.map((k) => (
-              <tr key={k.prefix}>
-                <td>
-                  <code>{k.prefix}…</code>
-                </td>
-                <td>{k.label ?? "—"}</td>
-                <td>{formatDate(k.created_at)}</td>
-                <td>
-                  {confirming === k.prefix ? (
-                    <>
-                      <button
-                        type="button"
-                        className="danger"
-                        disabled={busy}
-                        onClick={() => revoke(k.prefix)}
-                      >
-                        Revoke for good
-                      </button>{" "}
+        <div className="tablewrap">
+          {/* ⚠️ A wide table must scroll INSIDE its own box. Without this the
+            table widens the document and the whole page scrolls
+            sideways, which moves the nav and every other panel with
+            it. Measured at 390px on 2026-09-20. */}
+          <table>
+            <thead>
+              <tr>
+                <th>Prefix</th>
+                <th>Label</th>
+                <th>Created</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {live.map((k) => (
+                <tr key={k.prefix}>
+                  <td>
+                    <code>{k.prefix}…</code>
+                  </td>
+                  <td>{k.label ?? "—"}</td>
+                  <td>{formatDate(k.created_at)}</td>
+                  <td>
+                    {confirming === k.prefix ? (
+                      <>
+                        <button
+                          type="button"
+                          className="danger"
+                          disabled={busy}
+                          onClick={() => revoke(k.prefix)}
+                        >
+                          Revoke for good
+                        </button>{" "}
+                        <button
+                          type="button"
+                          className="linklike"
+                          onClick={() => setConfirming(null)}
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
                       <button
                         type="button"
                         className="linklike"
-                        onClick={() => setConfirming(null)}
+                        onClick={() => setConfirming(k.prefix)}
                       >
-                        Cancel
+                        Revoke
                       </button>
-                    </>
-                  ) : (
-                    <button
-                      type="button"
-                      className="linklike"
-                      onClick={() => setConfirming(k.prefix)}
-                    >
-                      Revoke
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {keys.length > live.length && (

@@ -102,77 +102,83 @@ export default function CustomerTable({ rows }: { rows: OrgRow[] }) {
           No customer matches {query ? `“${query}”` : "this filter"}.
         </p>
       ) : (
-        <table>
-          <thead>
-            <tr>
-              <th>Customer</th>
-              <th>Status</th>
-              <th>Subscription</th>
-              <th>MRR</th>
-              <th>Seats</th>
-              <th>AI credits</th>
-              <th>Trial</th>
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((o) => {
-              const flags = attentionFlags(o, now);
-              return (
-                <tr key={o.slug}>
-                  <td>
-                    <div className="orgcell">
+        <div className="tablewrap">
+          {/* ⚠️ A wide table must scroll INSIDE its own box. Without this the
+            table widens the document and the whole page scrolls
+            sideways, which moves the nav and every other panel with
+            it. Measured at 390px on 2026-09-20. */}
+          <table>
+            <thead>
+              <tr>
+                <th>Customer</th>
+                <th>Status</th>
+                <th>Subscription</th>
+                <th>MRR</th>
+                <th>Seats</th>
+                <th>AI credits</th>
+                <th>Trial</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((o) => {
+                const flags = attentionFlags(o, now);
+                return (
+                  <tr key={o.slug}>
+                    <td>
+                      <div className="orgcell">
+                        <span
+                          className={categoricalBox(o.name)}
+                          aria-hidden="true"
+                        >
+                          {providerGlyph(o.name)}
+                        </span>
+                        <div>
+                          <a href={`/customers/${encodeURIComponent(o.slug)}`}>
+                            {o.name}
+                          </a>
+                          <div className="muted small">{o.slug}</div>
+                          {flags.length > 0 && (
+                            <div className="cell-flags" style={{ marginTop: 5 }}>
+                              {flags.map((f) => (
+                                <span key={f.kind} className={chipClass(f.tone)}>
+                                  {f.label}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                    <td>
                       <span
-                        className={categoricalBox(o.name)}
-                        aria-hidden="true"
+                        className={chipClass(lifecycleTone(o.status))}
+                        title={statusHelp(o.status)}
                       >
-                        {providerGlyph(o.name)}
+                        {o.status.replace("_", " ")}
                       </span>
-                      <div>
-                        <a href={`/customers/${encodeURIComponent(o.slug)}`}>
-                          {o.name}
-                        </a>
-                        <div className="muted small">{o.slug}</div>
-                        {flags.length > 0 && (
-                          <div className="cell-flags" style={{ marginTop: 5 }}>
-                            {flags.map((f) => (
-                              <span key={f.kind} className={chipClass(f.tone)}>
-                                {f.label}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </td>
-                  <td>
-                    <span
-                      className={chipClass(lifecycleTone(o.status))}
-                      title={statusHelp(o.status)}
-                    >
-                      {o.status.replace("_", " ")}
-                    </span>
-                  </td>
-                  <td>
-                    {o.subscription_status ?? <span className="muted">none</span>}
-                  </td>
-                  <td>{formatPaise(o.mrr_paise)}</td>
-                  <td>
-                    <SeatsCell org={o} />
-                  </td>
-                  <td>{o.credit_balance}</td>
-                  <td>
-                    {formatDate(o.trial_ends_at)}
-                    {o.status === "trial" && trialHint(o.trial_ends_at, now) && (
-                      <div className="muted small">
-                        {trialHint(o.trial_ends_at, now)}
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                    </td>
+                    <td>
+                      {o.subscription_status ?? <span className="muted">none</span>}
+                    </td>
+                    <td>{formatPaise(o.mrr_paise)}</td>
+                    <td>
+                      <SeatsCell org={o} />
+                    </td>
+                    <td>{o.credit_balance}</td>
+                    <td>
+                      {formatDate(o.trial_ends_at)}
+                      {o.status === "trial" && trialHint(o.trial_ends_at, now) && (
+                        <div className="muted small">
+                          {trialHint(o.trial_ends_at, now)}
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </>
   );

@@ -6,12 +6,19 @@
 // app's suite carries no React renderer, so logic in JSX is untested by
 // construction and `usage.test.ts` is the fence for all of it.
 //
-// ⚠️ **Credits and costs render as the STRINGS the Console sent.** They are
-// money, the ledger stores NUMERIC(14,4), and re-formatting a parsed float is
+// ⚠️ **Credits and costs ARRIVE as strings and are never summed as floats.**
+// They are money, the ledger stores NUMERIC(14,4), and adding parsed floats is
 // how a total stops matching the sum of its rows. `Number()` appears here only
 // to compare and to draw.
+//
+// ⚠️ **They are FORMATTED for display, and that is a different act.** Until
+// 2026-09-20 they were printed verbatim, so an operator read `$8.25746700` and
+// `2500.0000`. `formatCredits`/`formatUsd` shorten what is shown and change no
+// stored or summed value — and neither one rounds a small non-zero figure to
+// zero, which is the trap that makes a display formatter dangerous on money.
 
 import { useMemo, useState } from "react";
+import { formatCredits, formatUsd } from "@/lib/format";
 
 import { chipClass } from "@/lib/tone";
 import {
@@ -20,7 +27,7 @@ import {
   marginLabel,
   marginTone,
   orgFlags,
-  runwayLabel,
+  rowRunwayLabel,
   runwayTone,
   sparklinePath,
   unbilledTotals,
@@ -205,85 +212,91 @@ export default function UsageBoard({
             </p>
           </div>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>Organization</th>
-                <th>Calls</th>
-                {/* A5 (§8.1). Beside Calls on purpose — "0 calls, 41 refused"
-                    is one sentence, and it is the sentence support needs. */}
-                <th>Refused</th>
-                {/* Deliberately NOT "Unbilled" alone. "Unbilled" reads as an
-                    invoice that has not gone out yet, which is recoverable.
-                    This is not — it is service already given away. */}
-                <th title="Served and not charged — absorbed cost">
-                  Given away
-                </th>
-                <th>Credits</th>
-                <th>Our cost</th>
-                <th>Margin</th>
-                <th>Balance</th>
-                <th>Runway</th>
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map((r) => {
-                const flags = orgFlags(r);
-                return (
-                  <tr key={r.slug}>
-                    <td>
-                      <a href={`/customers/${encodeURIComponent(r.slug)}`}>
-                        {r.name}
-                      </a>
-                      <div className="muted small">
-                        {r.slug} · {r.members} member{r.members === 1 ? "" : "s"}
-                      </div>
-                      {flags.length > 0 && (
-                        <div className="cell-flags" style={{ marginTop: 5 }}>
-                          {flags.map((f) => (
-                            <span key={f.label} className={chipClass(f.tone)}>
-                              {f.label}
-                            </span>
-                          ))}
+          <div className="tablewrap">
+            {/* ⚠️ A wide table must scroll INSIDE its own box. Without this the
+            table widens the document and the whole page scrolls
+            sideways, which moves the nav and every other panel with
+            it. Measured at 390px on 2026-09-20. */}
+            <table>
+              <thead>
+                <tr>
+                  <th>Organization</th>
+                  <th>Calls</th>
+                  {/* A5 (§8.1). Beside Calls on purpose — "0 calls, 41 refused"
+                      is one sentence, and it is the sentence support needs. */}
+                  <th>Refused</th>
+                  {/* Deliberately NOT "Unbilled" alone. "Unbilled" reads as an
+                      invoice that has not gone out yet, which is recoverable.
+                      This is not — it is service already given away. */}
+                  <th title="Served and not charged — absorbed cost">
+                    Given away
+                  </th>
+                  <th>Credits</th>
+                  <th>Our cost</th>
+                  <th>Margin</th>
+                  <th>Balance</th>
+                  <th>Runway</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((r) => {
+                  const flags = orgFlags(r);
+                  return (
+                    <tr key={r.slug}>
+                      <td>
+                        <a href={`/customers/${encodeURIComponent(r.slug)}`}>
+                          {r.name}
+                        </a>
+                        <div className="muted small">
+                          {r.slug} · {r.members} member{r.members === 1 ? "" : "s"}
                         </div>
-                      )}
-                    </td>
-                    <td>{r.calls}</td>
-                    <td className={r.refusals > 0 ? "caution" : "muted"}>
-                      {r.refusals}
-                    </td>
-                    {/* 🔴 Money we did not collect, beside the count of times
-                        we said no. Reading the two the same way is the trap:
-                        a refusal cost us nothing, this cost us the vendor's
-                        bill. */}
-                    <td
-                      className={r.unbilledCalls > 0 ? "danger-t" : "muted"}
-                      title={
-                        r.unbilledCalls > 0
-                          ? `${r.unbilledCalls} served call(s) we could not meter, about ${r.unbilledTokens.toLocaleString("en-IN")} tokens. Absorbed, not charged.`
-                          : undefined
-                      }
-                    >
-                      {r.unbilledCalls}
-                    </td>
-                    <td>{r.credits}</td>
-                    <td>${r.costUsd}</td>
-                    <td>
-                      <span className={chipClass(marginTone(r.marginRatio))}>
-                        {marginLabel(r.marginRatio)}
-                      </span>
-                    </td>
-                    <td>{r.balance}</td>
-                    <td>
-                      <span className={chipClass(runwayTone(r.runwayDays))}>
-                        {runwayLabel(r.runwayDays)}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                        {flags.length > 0 && (
+                          <div className="cell-flags" style={{ marginTop: 5 }}>
+                            {flags.map((f) => (
+                              <span key={f.label} className={chipClass(f.tone)}>
+                                {f.label}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      <td>{r.calls}</td>
+                      <td className={r.refusals > 0 ? "caution" : "muted"}>
+                        {r.refusals}
+                      </td>
+                      {/* 🔴 Money we did not collect, beside the count of times
+                          we said no. Reading the two the same way is the trap:
+                          a refusal cost us nothing, this cost us the vendor's
+                          bill. */}
+                      <td
+                        className={r.unbilledCalls > 0 ? "danger-t" : "muted"}
+                        title={
+                          r.unbilledCalls > 0
+                            ? `${r.unbilledCalls} served call(s) we could not meter, about ${r.unbilledTokens.toLocaleString("en-IN")} tokens. Absorbed, not charged.`
+                            : undefined
+                        }
+                      >
+                        {r.unbilledCalls}
+                      </td>
+                      <td>{formatCredits(r.credits)}</td>
+                      <td>{formatUsd(r.costUsd)}</td>
+                      <td>
+                        <span className={chipClass(marginTone(r.marginRatio))}>
+                          {marginLabel(r.marginRatio)}
+                        </span>
+                      </td>
+                      <td>{formatCredits(r.balance)}</td>
+                      <td>
+                        <span className={chipClass(runwayTone(r.runwayDays))}>
+                          {rowRunwayLabel(r)}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
 
         {total > rows.length && (

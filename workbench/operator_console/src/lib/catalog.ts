@@ -12,6 +12,7 @@
 // language.
 
 import type { ModelRate, TierRate } from "./contract";
+import { formatRate } from "./format";
 
 export type { ModelRate };
 
@@ -47,9 +48,9 @@ export function describeRate(
   }
   if (row.mode !== "priced") return "not priced";
   if (row.unit === "tokens") {
-    return `${row.inputPer1k} in / ${row.outputPer1k} out per 1k`;
+    return `${formatRate(row.inputPer1k)} in / ${formatRate(row.outputPer1k)} out per 1k`;
   }
-  return `${row.creditsPerUnit} per ${singular(row.unit)}`;
+  return `${formatRate(row.creditsPerUnit)} per ${singular(row.unit)}`;
 }
 
 
@@ -69,7 +70,7 @@ export function describeTierRate(
   if (row.mode === "absorbed") return "absorbed into the seat price";
   if (row.mode !== "priced") return "not priced";
   if (row.unit === "tokens") {
-    return `${row.inputPer1m} in / ${row.outputPer1m} out per 1M`;
+    return `${formatRate(row.inputPer1m)} in / ${formatRate(row.outputPer1m)} out per 1M`;
   }
   return `${row.creditsPerUnit} per ${singular(row.unit)}`;
 }

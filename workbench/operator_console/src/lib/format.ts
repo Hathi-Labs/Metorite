@@ -503,3 +503,75 @@ export const LOT_SOURCE_LABEL: Record<string, string> = {
   refund: "Refunded",
   grant: "Granted",
 };
+
+// ── Money, rendered ──────────────────────────────────────────────────────
+//
+// 🔴 **The Console sends money as STRINGS, on purpose, and this console was
+// printing them verbatim.** `NUMERIC(14,4)` and `NUMERIC(14,6)` arrive as
+// `4022.8130`, `2500.0000`, `$8.25746700` and `4000.000000`, and every one of
+// those reached an operator exactly like that. Measured 2026-09-20.
+//
+// ⚠️ **It was a LAYOUT defect as well as a reading one.** `4000.000000 in /
+// 12000.000000 out per 1M` is a 260px `white-space: nowrap` chip, so the
+// tiers page scrolled sideways at phone width — 463px of document in a 390px
+// window. Shortening the number fixed the overflow that no amount of CSS on
+// the chip would have.
+//
+// ⚠️ **Parse, never re-serialise through a float, for anything we ADD.**
+// These functions are for DISPLAY only. Summing them is how a total stops
+// agreeing with its rows, which is the reason the Console sends strings in
+// the first place.
+
+const GROUPED = new Intl.NumberFormat("en-IN", {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
+
+/** For a figure too small to survive two decimals. See `formatCredits`. */
+const FINE = new Intl.NumberFormat("en-IN", {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 6,
+});
+
+/** A credit figure an operator can read: grouped, at most 2 decimals, and
+ *  trailing zeros dropped. `4022.8130` → `4,022.81`, `2500.0000` → `2,500`.
+ *
+ *  ⚠️ An unparseable value comes back UNCHANGED rather than as `NaN` or `—`.
+ *  If the Console ever sends a shape we did not expect, the operator should
+ *  see it and say so — not watch it become a dash that reads as "none". */
+export function formatCredits(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  // 🔴 A balance that is SMALL is not a balance that is ZERO. Rounding
+  // `0.0040` to `0` tells an operator the customer has nothing left, which is
+  // the one direction a credit figure must never be wrong in — they would top
+  // up an account that did not need it, or refuse one that did.
+  if (n !== 0 && Math.abs(n) < 0.01) return FINE.format(n);
+  return GROUPED.format(n);
+}
+
+/** Provider cost in dollars. Two decimals down to a cent, then four — a
+ *  per-call vendor charge is legitimately a fraction of a cent, and rounding
+ *  it to `$0.00` would report our cost as nothing. */
+export function formatUsd(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  if (n === 0) return "$0";
+  const dp = Math.abs(n) >= 0.01 ? 2 : 4;
+  const s = n.toLocaleString("en-IN", {
+    minimumFractionDigits: dp,
+    maximumFractionDigits: dp,
+  });
+  return n < 0 ? `-$${s.slice(1)}` : `$${s}`;
+}
+
+/** A rate-card number, which carries six decimals in the database and needs
+ *  none of them on screen. `4000.000000` → `4,000`, `0.280000` → `0.28`. */
+export function formatRate(value: string | number | null | undefined): string {
+  if (value === null || value === undefined || value === "") return "—";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  return GROUPED.format(n);
+}

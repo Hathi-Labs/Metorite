@@ -373,65 +373,77 @@ export default async function CustomerDetailPage({
             027 carry no lot, and their history starts from the ledger below.
           </p>
         ) : (
-          <table className="grid">
-            <thead>
-              <tr>
-                <th>Source</th>
-                <th>Remaining</th>
-                <th>Of</th>
-                <th>Paid</th>
-                <th>Expires</th>
-              </tr>
-            </thead>
-            <tbody>
-              {lots.map((lot) => (
-                <tr key={lot.id}>
-                  <td>{LOT_SOURCE_LABEL[lot.source] ?? lot.source}</td>
-                  <td className="mono">{lot.remaining}</td>
-                  <td className="mono muted">{lot.credits}</td>
-                  {/* ⚠️ NULL and "0" are DIFFERENT facts and must not draw the
-                      same. Nobody paid, versus somebody paid nothing. */}
-                  <td className={lot.pricePaidInr === null ? "muted" : "mono"}>
-                    {lot.pricePaidInr === null
-                      ? "free"
-                      : `₹${Number(lot.pricePaidInr).toLocaleString("en-IN")}`}
-                  </td>
-                  <td className={lot.expiresAt ? "" : "muted"}>
-                    {lot.expiresAt ? formatDate(lot.expiresAt) : "never"}
-                  </td>
+          <div className="tablewrap">
+            {/* ⚠️ A wide table must scroll INSIDE its own box. Without this the
+            table widens the document and the whole page scrolls
+            sideways, which moves the nav and every other panel with
+            it. Measured at 390px on 2026-09-20. */}
+            <table className="grid">
+              <thead>
+                <tr>
+                  <th>Source</th>
+                  <th>Remaining</th>
+                  <th>Of</th>
+                  <th>Paid</th>
+                  <th>Expires</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {lots.map((lot) => (
+                  <tr key={lot.id}>
+                    <td>{LOT_SOURCE_LABEL[lot.source] ?? lot.source}</td>
+                    <td className="mono">{lot.remaining}</td>
+                    <td className="mono muted">{lot.credits}</td>
+                    {/* ⚠️ NULL and "0" are DIFFERENT facts and must not draw the
+                        same. Nobody paid, versus somebody paid nothing. */}
+                    <td className={lot.pricePaidInr === null ? "muted" : "mono"}>
+                      {lot.pricePaidInr === null
+                        ? "free"
+                        : `₹${Number(lot.pricePaidInr).toLocaleString("en-IN")}`}
+                    </td>
+                    <td className={lot.expiresAt ? "" : "muted"}>
+                      {lot.expiresAt ? formatDate(lot.expiresAt) : "never"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
 
       {org.seats.length > 1 && (
         <div className="panel">
           <h2 style={{ marginTop: 0 }}>Seats by plan</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Plan</th>
-                <th>Purchased</th>
-                <th>Assigned</th>
-                <th>Available</th>
-              </tr>
-            </thead>
-            <tbody>
-              {org.seats.map((s) => (
-                <tr key={s.plan_slug}>
-                  <td>{s.plan_slug}</td>
-                  <td>{s.purchased}</td>
-                  <td>
-                    {s.assigned}
-                    {s.oversubscribed ? " ⚠" : ""}
-                  </td>
-                  <td>{s.available}</td>
+          <div className="tablewrap">
+            {/* ⚠️ A wide table must scroll INSIDE its own box. Without this the
+            table widens the document and the whole page scrolls
+            sideways, which moves the nav and every other panel with
+            it. Measured at 390px on 2026-09-20. */}
+            <table>
+              <thead>
+                <tr>
+                  <th>Plan</th>
+                  <th>Purchased</th>
+                  <th>Assigned</th>
+                  <th>Available</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {org.seats.map((s) => (
+                  <tr key={s.plan_slug}>
+                    <td>{s.plan_slug}</td>
+                    <td>{s.purchased}</td>
+                    <td>
+                      {s.assigned}
+                      {s.oversubscribed ? " ⚠" : ""}
+                    </td>
+                    <td>{s.available}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -456,28 +468,34 @@ export default async function CustomerDetailPage({
             No entries yet. The first grant starts the history.
           </p>
         ) : (
-          <table>
-            <thead>
-              <tr>
-                <th>When</th>
-                <th>Change</th>
-                <th>Reason</th>
-                <th>Reference</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ledger.map((row, i) => (
-                <tr key={`${row.created_at}-${i}`}>
-                  <td className="muted small">{formatDate(row.created_at)}</td>
-                  <td className={ledgerAdds(row) ? "ok-t" : ""}>
-                    {ledgerAdds(row) ? `+${row.delta}` : row.delta}
-                  </td>
-                  <td>{row.reason}</td>
-                  <td className="mono small">{row.ref ?? "-"}</td>
+          <div className="tablewrap">
+            {/* ⚠️ A wide table must scroll INSIDE its own box. Without this the
+            table widens the document and the whole page scrolls
+            sideways, which moves the nav and every other panel with
+            it. Measured at 390px on 2026-09-20. */}
+            <table>
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Change</th>
+                  <th>Reason</th>
+                  <th>Reference</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {ledger.map((row, i) => (
+                  <tr key={`${row.created_at}-${i}`}>
+                    <td className="muted small">{formatDate(row.created_at)}</td>
+                    <td className={ledgerAdds(row) ? "ok-t" : ""}>
+                      {ledgerAdds(row) ? `+${row.delta}` : row.delta}
+                    </td>
+                    <td>{row.reason}</td>
+                    <td className="mono small">{row.ref ?? "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 
