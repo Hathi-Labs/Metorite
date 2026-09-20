@@ -82,6 +82,18 @@ export interface TaskMenuContext {
    * grey, which is the rule `canSelect` and `canMoveToProject` already follow.
    */
   canEditInline?: boolean;
+  /**
+   * The surface can file a task and bring it back.
+   *
+   * ⚠️ Absent on a read-only list, and the entries then DROP rather than
+   * grey — the rule `canSelect`, `canMoveToProject` and `canEditInline`
+   * already follow.
+   */
+  canArchive?: boolean;
+  /** The surface can delete a task for good. Separate from `canArchive`
+   * because they are different powers: filing is reversible and deleting is
+   * not, and a surface may reasonably offer the first and not the second. */
+  canDelete?: boolean;
 }
 
 /**
@@ -184,6 +196,25 @@ export interface TaskMenuActions {
   addSubtask?(task: TaskRow): void;
   /** Put this card's title into edit. Saving is the surface's business. */
   rename?(task: TaskRow): void;
+  /**
+   * File the task out of every default list, board, calendar and search.
+   *
+   * ⚠️ **The refusal is the surface's to show, not this menu's to predict.**
+   * The gateway refuses an OPEN task with a 422 that names its status
+   * category and says what to do. Hiding the entry for open tasks instead
+   * would answer "where did Archive go?" with silence, and the member would
+   * never learn the rule.
+   */
+  archive?(task: TaskRow): void;
+  /** Bring one back from the archive. No guard in this direction. */
+  unarchive?(task: TaskRow): void;
+  /**
+   * Delete for good. The surface confirms — this only asks for it.
+   *
+   * Named `deleteTask` rather than `delete`, which is a reserved word and
+   * reads as an object operation at every call site.
+   */
+  deleteTask?(task: TaskRow): void;
 }
 
 /** One expanded row of a multi-row action (the status block). */
@@ -265,6 +296,10 @@ export interface TaskMenuAction {
  * Deliberately short. A context menu is not a second toolbar: each entry here
  * is something you would otherwise have to open the panel to do.
  */
+/** Has somebody filed this task? */
+export const isArchived = (ctx: TaskMenuContext): boolean =>
+  Boolean(ctx.task.archived_at);
+
 export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
   {
     id: "task.open",
@@ -368,6 +403,33 @@ export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
         checked: status.id === ctx.task.status_id,
       })),
     run: (actions, ctx, suffix) => actions.setStatus(ctx.task, suffix),
+  },
+  {
+    id: "task.archive",
+    label: () => "Archive",
+    icon: "Archive",
+    // Group 4: the lifecycle verbs sit below the status block, because they
+    // are about whether the task is on the board at all rather than where on
+    // it. Delete is last, where a destructive entry belongs.
+    group: 4,
+    when: (ctx) => Boolean(ctx.canArchive) && !isArchived(ctx),
+    run: (actions, ctx) => actions.archive?.(ctx.task),
+  },
+  {
+    id: "task.unarchive",
+    label: () => "Restore from archive",
+    icon: "ArchiveRestore",
+    group: 4,
+    when: (ctx) => Boolean(ctx.canArchive) && isArchived(ctx),
+    run: (actions, ctx) => actions.unarchive?.(ctx.task),
+  },
+  {
+    id: "task.delete",
+    label: () => "Delete",
+    icon: "Trash2",
+    group: 5,
+    when: (ctx) => Boolean(ctx.canDelete),
+    run: (actions, ctx) => actions.deleteTask?.(ctx.task),
   },
 ];
 
