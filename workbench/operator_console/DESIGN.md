@@ -110,6 +110,16 @@ copies.
    second vocabulary.
 5. **Put the logic in `src/lib/`.** This app has no React renderer in its test
    suite. Logic inside JSX has no test.
+6. **A card's actions are QUIET and equal.** `/providers` is the pattern. It
+   draws Replace and Remove as one size, with one border. Remove is red text
+   on the same button, never a filled red block.
+7. **One filled button per page.** A filled `button` is the page-level act.
+   The Models page once drew eight of them. Every card offered a filled
+   accent slab beside a 28px quiet one. Measured 2026-09-21. *Advisory
+   — no test counts them. `DESIGN.md` §8 is where a person checks.*
+8. **One name per act.** `src/lib/words.ts` holds the Models page vocabulary,
+   and `words.test.ts` is the fence. That page carried four different "Add"
+   buttons, and one of them added no model.
 
 ## 8. Before you open a pull request
 
@@ -132,6 +142,9 @@ page, switch the theme, and look at it. An agent cannot do this step.
 - [ ] A long value wraps. It does not truncate a credential.
 - [ ] The keyboard reaches every control, and the focus ring is visible.
 - [ ] The empty state names what is absent.
+- [ ] Every button in a card is the same height. Count the filled ones — one
+      page-level act, and no more.
+- [ ] A button says the same word as the button beside it, for the same act.
 
 ## 9. Where the data on a screen comes from
 

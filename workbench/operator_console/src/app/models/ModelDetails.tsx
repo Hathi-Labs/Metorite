@@ -253,10 +253,15 @@ export default function ModelDetails({
     const offerFill = !known && canFillFromFeed(feedRow);
     return (
       <div className="rowline">
+        {/* ⚠️ `.linklike`, not a filled accent block. `/providers` draws
+            Replace and Remove as equal quiet buttons inside a card, and the
+            one filled button on a page is the page-level act. This used to be
+            a 37px accent slab beside a 28px dashed one, on every costs-blind
+            card — the loudest thing on the page, repeated. */}
         {offerFill && (
           <button
             type="button"
-            className="primary"
+            className="linklike"
             disabled={busy}
             onClick={fillFromFeedAndSave}
             title={HELP_DETAILS.fillFromFeed}

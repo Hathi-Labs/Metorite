@@ -90,7 +90,12 @@ export default function RemoveModel({
   }
 
   return (
-    <div className="removeconfirm" role="group" aria-label={`Remove ${m.id}`}>
+    // 🔴 `.banner danger`, NOT a panel of its own. `DESIGN.md` §5 already
+    // names `.banner` with an `info` and a `danger` modifier, and §5 says not
+    // to hand-roll a control. The first version of this drew its own tinted
+    // box with its own border and radius — a second vocabulary for a thing
+    // the console already had a word for.
+    <div className="banner danger removeconfirm" role="group" aria-label={`Remove ${m.id}`}>
       <p>
         Remove <span className="mono small">{m.id}</span> from the catalog?
       </p>
@@ -120,7 +125,7 @@ export default function RemoveModel({
             reader is left wondering whether removal exists at all. */}
         <button
           type="button"
-          className="danger"
+          className="linklike danger"
           disabled={busy || blocked}
           title={blocked ? HELP_REMOVE.blocked : HELP_REMOVE.confirm}
           onClick={remove}
