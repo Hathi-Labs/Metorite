@@ -774,7 +774,10 @@ describe("selects and file pickers go through the primitives", () => {
     "app/notes/components/NotesSettingsModal.tsx": 1,
     "app/notes/meeting/[id]/page.tsx": 1,
     "app/people/components/PersonEditor.tsx": 2,
-    "app/projects/components/BulkBar.tsx": 2,
+    // Both went to `SelectButton` on 2026-09-20 (H-94, extended from the
+    // filter row to this bar). The entry is deleted rather than set to 0 —
+    // a zero budget is a file the "no budget means use the primitive" rule
+    // above would then stop watching.
     "app/projects/components/CustomFieldValues.tsx": 1,
     "app/projects/components/FieldManager.tsx": 1,
     "app/projects/components/RelationsBlock.tsx": 1,
