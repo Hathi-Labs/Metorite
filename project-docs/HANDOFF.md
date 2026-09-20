@@ -288,8 +288,14 @@ line — never reclaim a number by deleting the other entry.
 
 ### H-89 · Something on the box writes into the checkout as root · [OWNER]
 - **Check:** on the box, run `sudo find /opt/acb/app -name .next -prune -o
-  -name node_modules -prune -o ! -user acb -print | head`. Any line means a
-  root-owned path is back in the checkout, and the cause is still there.
+  ! -user acb -print | head`. Any line means a root-owned path is back in the
+  checkout, and the cause is still there.
+- 🔴 **The Check PRUNED `node_modules` until 2026-09-20, and that is where
+  the damage is.** Root-owned directories under
+  `workbench/control_plane/node_modules` make `npm install` fail with EACCES,
+  which kills `vps_apply.sh` before it syncs systemd units. The old Check
+  stepped over that directory, so this entry read clear while every deploy
+  was truncating. H-137 records the truncation.
 - **⚠️ Do NOT check this with the SHA comparison.** The old Check compared
   `/version` against `origin/main`. That reads the SYMPTOM, and the symptom is
   now repaired automatically. So the SHA check will pass while the cause runs
@@ -2570,6 +2576,38 @@ line — never reclaim a number by deleting the other entry.
   sentence. Do not leave it half-said. ⚠️ `LEDGER_REASONS` is a closed set, so
   a lapse reason needs a migration.
 - **Authority:** migration 028 · `subscription_console.md` SC-4g
+- **Added:** 2026-09-20 · credit and usage review session
+
+### H-137 · 🔴 The deploy reports SUCCESS while `vps_apply.sh` dies half way · [AGENT]
+- **Check:** open the newest green `deploy.yml` run, job *Deploy to Hostinger*,
+  and search the log for `ssh exited non-zero`. A hit inside a run marked
+  success means this is open.
+- 🔴 **Measured on 2026-09-20, run 35513962455, which is marked SUCCESS.**
+  `vps_apply.sh` reached `==> Rebuilding + restarting workbench (Next.js)` and
+  died there with `npm error code EACCES` on
+  `workbench/control_plane/node_modules/react-pdf/node_modules/@napi-rs/canvas-android-arm64`.
+  The workflow printed `(ssh exited non-zero - verifying by health regardless)`,
+  polled the gateway, found it healthy, and reported a verified deploy.
+- 🔴 **Everything after that step silently does not run.** In file order the
+  casualties are `==> Installing health watchdog (systemd timer)` at line 865
+  and `==> Syncing systemd units (BO-23)` at line 885. So a systemd unit added
+  to the repo never reaches the box, and no timer is enabled — which is the
+  loop BO-23 exists to be.
+- ⚠️ **This is how H-132 was found, and it is the larger half.** Removing the
+  backup carve-out changed nothing on the box. The loop that would arm the
+  timer sits past the point where the script dies. The timer was armed by hand
+  at 13:47 UTC and now prints NEXT `Mon 2026-09-21 02:32:46 UTC`.
+- 🔴 **H-89's Check cannot see this, and that is why both look clear.** It
+  prunes `node_modules`, and `node_modules` is exactly where the root-owned
+  paths that break the install live. Corrected below.
+- ⚠️ **The health probe is not wrong. It answers a different question.**
+  A healthy gateway says the services that were ALREADY running still run. It
+  cannot say whether the steps after the failure ran. Root `CLAUDE.md` §3 rule
+  8 names this. Verify by evidence, never by a green job.
+- **The fix, in two parts.** Make the workflow FAIL when the apply exits
+  non-zero, instead of falling through to the health probe. Then repair the
+  ownership so the install stops failing — H-89 owns the cause.
+- **Authority:** `.github/workflows/deploy.yml` · `scripts/vps_apply.sh` · H-89
 - **Added:** 2026-09-20 · credit and usage review session
 
 ### H-136 · Every AI-spend signal is PULL-ONLY — nobody is told anything · [AGENT+OWNER]
