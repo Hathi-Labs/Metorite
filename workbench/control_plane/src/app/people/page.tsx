@@ -17,7 +17,6 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import Button from "@/components/ui/Button";
 
 import { AwayBadge } from "./components/AbsencePanel";
 import { Avatar } from "./components/Avatar";
@@ -58,11 +57,10 @@ export default function PeoplePage() {
    * disagree and "open, editing nobody" would render a create form titled with
    * somebody's name.
    */
-  // `undefined` = closed, a person = editing. `null` (create) is no longer
-  // reachable: nothing opens this editor without a person. The type keeps the
-  // null arm because `PersonEditor` still accepts it, and narrowing that is a
-  // change to the component rather than to this decision.
-  const [editing, setEditing] = useState<PersonDetail | null | undefined>(
+  // `undefined` = closed, a person = editing. There is no third state: the
+  // editor creates nobody now, and `PersonEditor` refuses a null `person` at
+  // the type level, so "open, editing nobody" cannot be represented.
+  const [editing, setEditing] = useState<PersonDetail | undefined>(
     undefined,
   );
   /** Bumped after a save; both the list and the open panel re-read on it. */
