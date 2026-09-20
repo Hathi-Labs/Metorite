@@ -38,7 +38,6 @@ import Icon, { themedIcon } from "@/components/Icon";
 import { StatusChip } from "@/components/StatusChip";
 import { TaskCardShell, TaskCardTitle } from "@/components/TaskCardShell";
 import Button from "@/components/ui/Button";
-import { Checkbox } from "@/components/ui/Checkbox";
 import { dropIndexFor, gapKey } from "@/lib/boardDrop";
 import { Fragment, useMemo, useState } from "react";
 
@@ -493,9 +492,9 @@ export function TaskBoard({
         }
       })();
     },
-    // `false` — the range-extend gesture belongs to the control that starts a
-    // range, and a right-click has no anchor.
-    toggleSelect: (task) => onToggle?.(task.id, false),
+    // The strip's tick box passes the shift key; the right-click menu does
+    // not, because a right-click has no anchor to extend a range from.
+    toggleSelect: (task, shift) => onToggle?.(task.id, shift ?? false),
     moveToProject: (task) => onMoveTask?.(task.id),
     setStatus: (task, statusId) => {
       if (task.status_id === statusId) return;
@@ -530,15 +529,6 @@ export function TaskBoard({
     canEditInline: Boolean(onRenamed),
     selected: selected?.has(task.id) ?? false,
   });
-
-  /**
-   * Anything is selected, so every card shows its checkbox.
-   *
-   * ⚠️ Read from `selected`, never tracked as a second flag. A boolean set
-   * beside the set is a second source of truth for the same fact, and it is
-   * the one that stays true after the last row leaves the selection.
-   */
-  const selectionActive = (selected?.size ?? 0) > 0;
 
   /**
    * Close a field ONLY if it is still the one this write belongs to.
@@ -650,37 +640,14 @@ export function TaskBoard({
     // and left the strip invisible there. `TaskCardActions` trap 3 carries
     // the measurement. A plain data attribute has no `/` to escape inside the
     // arbitrary variant that replaces it.
-    <li key={task.id} data-card className="flex items-start gap-1.5 rounded-md">
-      {/* ⚠️ The checkbox exists ONLY once a selection has been started, and
-          hovering does NOT start one (owner, 2026-09-20). The way in is the
-          tick box at the end of the card's hover strip, or Select in the
-          right-click menu; from the second card on, every card carries a box
-          so the next pick is one click.
-
-          The first version revealed it on hover as well, which put a control
-          under the pointer on every card the member crossed — and paired
-          with the `(hover: none)` defect above it drew one on every card at
-          rest. Rendering nothing rather than an invisible box also keeps it
-          out of the tab order, where fifty unreachable checkboxes were fifty
-          tab stops.
-
-          The gutter comes and goes with it. That shifts the cards 22px once,
-          at the moment the bulk bar appears above them — one change of
-          layout for one change of mode, rather than a permanently empty
-          column waiting for a mode nobody is in. */}
-      {onToggle && (selectionActive || selected?.has(task.id)) ? (
-        <Checkbox
-          className="mt-3 shrink-0"
-          aria-label={`Select ${task.title}`}
-          checked={selected?.has(task.id) ?? false}
-          // The click must not also open the task — a checkbox inside a card
-          // that opens on click is otherwise one gesture with two outcomes.
-          onClick={(e) => e.stopPropagation()}
-          onChange={(e) =>
-            onToggle(task.id, (e.nativeEvent as MouseEvent).shiftKey)
-          }
-        />
-      ) : null}
+    //
+    // ⚠️ **NO GUTTER, ever** (owner, 2026-09-20). The row used to hold a
+    // checkbox beside the card, which meant the card's width depended on
+    // whether anything was selected. Selection now shows in two places that
+    // cost no layout: the shell's primary border and ring, and the tick box
+    // in the card's own action pill, which stays lit once the card is in the
+    // selection. The card is full width at all times.
+    <li key={task.id} data-card className="rounded-md">
       {/* WS-27ad: the same box /tasks draws (`@/components/TaskCardShell`) —
           `bg-card` on the column's `bg-card` well, the shadow lift that says
           "draggable", one radius, one padding, one title treatment. This card
@@ -695,7 +662,10 @@ export function TaskBoard({
         // "Mark done Add subtask Rename More actions Notification engine for
         // projects, button". Found by the visual rig, which could no longer
         // tell the card apart from its own Rename button.
-        ariaLabel={task.title}
+        // Selection is drawn with a border, a ring and a lit tick box. None
+        // of those reach a screen reader, and the card is the thing being
+        // announced — so it says so.
+        ariaLabel={selected?.has(task.id) ? `${task.title}, selected` : task.title}
         draggable={!editing}
         completed={Boolean(task.completed_at)}
         selected={selected?.has(task.id) ?? false}

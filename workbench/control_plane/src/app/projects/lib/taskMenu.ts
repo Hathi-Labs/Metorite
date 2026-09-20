@@ -152,8 +152,16 @@ export interface TaskMenuActions {
   open(task: TaskRow): void;
   /** Put the task's deep link on the clipboard (`lib/card.taskDeepLink`). */
   copyLink(task: TaskRow): void;
-  /** Add to / remove from the bulk selection. */
-  toggleSelect(task: TaskRow): void;
+  /**
+   * Add to / remove from the bulk selection.
+   *
+   * `shift` extends a RANGE from the last anchor, exactly as shift-clicking
+   * the card's old left checkbox did. That gutter is gone (owner,
+   * 2026-09-20), so the strip's tick box is the only checkbox on a board card
+   * and it carries the modifier. The right-click menu passes nothing: a
+   * right-click has no anchor to extend from.
+   */
+  toggleSelect(task: TaskRow, shift?: boolean): void;
   /** Move the task to another status. */
   setStatus(task: TaskRow, statusId: string): void;
   /**

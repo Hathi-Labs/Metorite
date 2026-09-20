@@ -35,6 +35,20 @@ const STATUSES = [
   { id: "s4", project_id: "p2", name: "Done", color: "green", position: 40, category: "done", is_default: false },
 ];
 
+const TASK3 = {
+  id: "t4",
+  project_id: "p2",
+  root_project_id: "p1",
+  task_number: 4,
+  status_id: "s2",
+  title: "Third card",
+  tags: [],
+  assignees: [],
+  custom_fields: {},
+  subtasks: { done: 0, total: 0 },
+  blocked_by_count: 0,
+};
+
 const TASK2 = {
   id: "t3",
   project_id: "p2",
@@ -81,7 +95,7 @@ const FIXTURES: Record<string, unknown> = {
   "auth/me": { email: "you@example.com", name: "You" },
   "projects/tree": { rows: TREE, total: 1 },
   "nodes/p2/statuses": { rows: STATUSES, total: STATUSES.length },
-  "projects/tasks": { rows: [TASK, TASK2], total: 2 },
+  "projects/tasks": { rows: [TASK, TASK2, TASK3], total: 3 },
 };
 
 test("Enter on a strip button runs the action, and does not open the task", async ({
@@ -284,8 +298,9 @@ test.describe("on a touch-capable display", () => {
     ).toBe("0");
     await expect(
       row.locator('input[type="checkbox"]'),
-      "a checkbox exists with nothing selected. It must appear only once a " +
-        "selection has been started.",
+      "a board card grew a checkbox of its own. There is no gutter any more " +
+        "(owner, 2026-09-20) — the tick lives in the card's action pill so " +
+        "the card is full width at all times.",
     ).toHaveCount(0);
 
     // ── on hover ─────────────────────────────────────────────────────────
@@ -306,7 +321,15 @@ test.describe("on a touch-capable display", () => {
     ).toHaveCount(1);
   });
 
-  test("selecting from the strip gives every card a checkbox", async ({ page }) => {
+  test("a selected card keeps its tick lit, and its neighbours stay quiet", async ({
+    page,
+  }) => {
+    // Owner direction, 2026-09-20: no gutter, ever. Selection shows in the
+    // shell's border and in a tick that PERSISTS on the card's own pill.
+    // Two ways this ships wrong and neither is visible in a unit test:
+    // the tick fades with the pointer (nothing then says the card is
+    // selected), or every card's pill pins on (the always-on complaint
+    // again, wearing a different hat).
     test.setTimeout(120_000);
 
     await page.route("**/api/**", async (route) => {
@@ -323,29 +346,101 @@ test.describe("on a touch-capable display", () => {
     await page.getByText("Bootloader", { exact: true }).first().click();
     await page.waitForTimeout(2500);
 
-    const card = page.getByText("Notification engine for projects").first();
-    const row = page
-      .locator("li")
-      .filter({ hasText: "Notification engine for projects" })
-      .last();
+    const rowOf = (title: string) =>
+      page.locator("li").filter({ hasText: title }).last();
+    const tickPill = (title: string) =>
+      rowOf(title).getByRole("button", { name: /^(Select|Remove from selection)$/ }).locator("..");
 
-    await expect(page.locator('input[type="checkbox"]')).toHaveCount(0);
+    const first = "Notification engine for projects";
+    const second = "Second card";
 
-    await card.hover();
-    await page.waitForTimeout(400);
-    await row.getByRole("button", { name: "Select", exact: true }).click();
-    await page.waitForTimeout(800);
-
-    // Both cards, not only the one that was picked — that is the point of
-    // showing them: the second pick should be one click.
+    // No card anywhere carries a checkbox input. The gutter is gone.
     await expect(
       page.locator('input[type="checkbox"]'),
-      "selecting one card did not give the others a checkbox",
-    ).toHaveCount(2);
+      "the board drew a checkbox outside the pill",
+    ).toHaveCount(0);
 
-    // And the pointer leaving must not take them away again.
+    await page.getByText(first).first().hover();
+    await page.waitForTimeout(400);
+    await rowOf(first).getByRole("button", { name: "Select", exact: true }).click();
+    await page.waitForTimeout(800);
+
+    // Take the pointer right away, which is the state that matters.
     await page.mouse.move(5, 5);
-    await page.waitForTimeout(500);
-    await expect(page.locator('input[type="checkbox"]')).toHaveCount(2);
+    await page.waitForTimeout(600);
+
+    expect(
+      await tickPill(first).evaluate((el) => getComputedStyle(el).opacity),
+      "the selected card's tick faded with the pointer, so nothing but the " +
+        "border says it is selected.",
+    ).toBe("1");
+
+    expect(
+      await tickPill(second).evaluate((el) => getComputedStyle(el).opacity),
+      "an UNselected card's tick is showing with nothing hovered.",
+    ).toBe("0");
+
+    // The action pill beside it must NOT pin on with the tick.
+    const actionPill = rowOf(first).locator("[aria-label='More actions']").locator("..");
+    expect(
+      await actionPill.evaluate((el) => getComputedStyle(el).opacity),
+      "the whole action pill pinned on for a selected card. Only the tick " +
+        "should persist.",
+    ).toBe("0");
+
+    // And the card says so to a screen reader, which no colour can.
+    await expect(
+      page.getByRole("button", { name: `${first}, selected` }),
+      "the selected card does not announce its state",
+    ).toHaveCount(1);
+  });
+
+  test("shift-clicking the tick still extends a range", async ({ page }) => {
+    // The gutter checkbox used to carry this gesture. It is gone, so the
+    // pill's tick is the only checkbox left — if it swallowed the modifier,
+    // range selection would have disappeared with the gutter and nothing
+    // else here would have noticed.
+    test.setTimeout(120_000);
+
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname.replace(/^\/api\//, "");
+      const hit = Object.keys(FIXTURES)
+        .sort((a, b) => b.length - a.length)
+        .find((key) => path.includes(key));
+      return route.fulfill({ json: hit ? (FIXTURES[hit] as object) : EMPTY });
+    });
+
+    await page.goto("/projects");
+    await page.waitForLoadState("domcontentloaded");
+    await page.waitForTimeout(4000);
+    await page.getByText("Bootloader", { exact: true }).first().click();
+    await page.waitForTimeout(2500);
+
+    const pick = async (title: string, shift = false) => {
+      await page.getByText(title).first().hover();
+      await page.waitForTimeout(400);
+      await page
+        .locator("li")
+        .filter({ hasText: title })
+        .last()
+        .getByRole("button", { name: /^(Select|Remove from selection)$/ })
+        .click(shift ? { modifiers: ["Shift"] } : undefined);
+      await page.waitForTimeout(700);
+    };
+
+    // ⚠️ THREE cards, and the shift-click skips the middle one. With two
+    // cards this test could not fail: dropping the modifier still toggles
+    // the second card ON, so "2 selected" appeared either way. It passed
+    // against a deliberately broken build, which is how it was caught.
+    // Selecting 1 then shift-clicking 3 must take the RANGE — all three.
+    await pick("Notification engine for projects");
+    await expect(page.getByText("1 selected")).toBeVisible();
+
+    await pick("Third card", true);
+    await expect(
+      page.getByText("3 selected"),
+      "shift-clicking the tick added one card instead of the range — the " +
+        "modifier is being dropped between the button and `onToggle`.",
+    ).toBeVisible();
   });
 });
