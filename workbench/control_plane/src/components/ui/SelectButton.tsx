@@ -21,6 +21,23 @@
  * and disappears as a state change. Do not add a duration, a transition or an
  * easing curve here, and do not re-open the question without asking.
  *
+ * ## ⚠️ The panel is PORTALLED, and it has to be
+ *
+ * An absolutely-positioned panel is clipped by the nearest ancestor that is
+ * not `overflow: visible`. `Modal.tsx`'s body is `overflow-hidden`, so inside
+ * a dialog this control drew a list with its bottom cut off — measured in
+ * `MoveTasksDialog` on 2026-09-20: six options in the DOM, a 154px panel, and
+ * only two of them visible. A native `<select>` never had that problem
+ * because the browser draws its list outside the page entirely, which is the
+ * one thing the platform widget was better at.
+ *
+ * So the panel renders into `document.body` at `position: fixed`, measured
+ * from the trigger. It carries `PREVENT_OUTSIDE_CLICK`, the marker
+ * `lib/outsideClick.ts` defines for exactly this: a portalled child is, by
+ * containment, OUTSIDE the popover that raised it, so without the marker the
+ * first click on an option would dismiss the panel instead of choosing. That
+ * file was written ahead of this need and says so; this is the need.
+ *
  * ⚠️ **Not built on `@base-ui/react`, and that is the rule rather than a
  * shortcut.** `AGENTS.md` rule 8 / D-PM-15 make `src/components/ui/Modal.tsx`
  * the ONE file that may import the substrate. H-94 names the sanctioned answer
@@ -28,10 +45,15 @@
  * it does not hand-roll a second containment check — the walker is what makes
  * a portalled child not count as "outside".
  */
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import Icon from "@/components/Icon";
-import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
+import {
+  PREVENT_OUTSIDE_CLICK,
+  domClickWalk,
+  shouldDismiss,
+} from "@/lib/outsideClick";
 
 /**
  * Which arrow the trigger wears — the one decision in this file worth a test.
@@ -56,6 +78,24 @@ export interface SelectOption {
   label: string;
   /** Drawn after the label, muted — a count, a hint, an address. */
   hint?: string;
+  /**
+   * Indent, for a list that is really a TREE. One step per level.
+   *
+   * ⚠️ Not leading spaces in the label. A native `<option>` is the only
+   * place that trick works, because the browser renders its text verbatim;
+   * in real markup the spaces collapse and every row lines up again. The
+   * project picker in `MoveTasksDialog` is what asked for this.
+   */
+  depth?: number;
+  /**
+   * Offered but not choosable, with `hint` saying why.
+   *
+   * Kept rather than dropped, because the row is part of the SHAPE the
+   * member is reading: a folder between two projects explains the
+   * indentation of the project under it. Dropping it would flatten the tree
+   * into a list that no longer says what contains what.
+   */
+  disabled?: boolean;
 }
 
 export interface SelectButtonProps {
@@ -74,6 +114,8 @@ export interface SelectButtonProps {
   className?: string;
   /** Widest the trigger may grow. The row is `flex-wrap`; this keeps it sane. */
   widthClass?: string;
+  /** A write is in flight. The trigger refuses to open. */
+  disabled?: boolean;
 }
 
 export function SelectButton({
@@ -84,10 +126,51 @@ export function SelectButton({
   defaultValue = "",
   className = "",
   widthClass = "w-[9rem]",
+  disabled = false,
 }: SelectButtonProps) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement | null>(null);
   const listId = useId();
+  /** Where the portalled panel sits, in viewport coordinates. */
+  const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(
+    null,
+  );
+
+  /**
+   * Measure the trigger, and decide whether the panel hangs below or above.
+   *
+   * Recomputed on scroll and resize rather than closed on them: this control
+   * lives inside dialogs whose body scrolls, and a list that vanishes when
+   * the member nudges the wheel reads as a crash.
+   */
+  const place = useCallback(() => {
+    const trigger = root.current?.querySelector("button");
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const below = window.innerHeight - rect.bottom;
+    // 16rem is the panel's own `max-h-64`; ask for that much and flip when
+    // there is not room, so the last option is never off the bottom.
+    const wanted = 256;
+    const up = below < wanted && rect.top > below;
+    setBox({
+      left: rect.left,
+      top: up ? Math.max(8, rect.top - wanted - 2) : rect.bottom + 2,
+      width: rect.width,
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    place();
+    // `true` — capture, so a scroll inside a dialog body reaches this even
+    // though that element is not an ancestor of the portalled panel.
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open, place]);
 
   const current = options.find((o) => o.value === value);
 
@@ -135,8 +218,9 @@ export function SelectButton({
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
+        disabled={disabled}
         onClick={() => setOpen((was) => !was)}
-        className={`cc-control flex h-7 w-full items-center gap-1 rounded-md border border-border bg-card px-2 text-left text-xs hover:bg-muted ${className}`}
+        className={`cc-control flex h-7 w-full items-center gap-1 rounded-md border border-border bg-card px-2 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 ${className}`}
       >
         <span className="min-w-0 flex-1 truncate pr-px">
           {current?.label ?? label}
@@ -149,13 +233,22 @@ export function SelectButton({
         />
       </button>
 
-      {open ? (
+      {open && box
+        ? createPortal(
         <div
           id={listId}
           role="listbox"
           aria-label={label}
+          // ⚠️ The marker that keeps a portalled child "inside" its opener.
+          // Without it `shouldDismiss` walks from the option to <body>, never
+          // meets the trigger, and closes the panel before the click lands.
+          {...{ [PREVENT_OUTSIDE_CLICK]: "" }}
+          // `fixed`, measured from the trigger. See the header: an absolute
+          // panel is clipped by the first non-visible ancestor, and inside a
+          // Modal that is the dialog itself.
+          style={{ left: box.left, top: box.top, minWidth: box.width }}
           // No transition. See the header — this is a directive, not a default.
-          className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-64 w-max min-w-full overflow-y-auto rounded-md border border-border bg-card p-1 shadow-md"
+          className="fixed z-[60] max-h-64 w-max overflow-y-auto rounded-md border border-border bg-card p-1 shadow-md"
         >
           {options.map((option) => (
             <button
@@ -163,10 +256,19 @@ export function SelectButton({
               type="button"
               role="option"
               aria-selected={option.value === value}
+              aria-disabled={option.disabled || undefined}
+              disabled={option.disabled}
               onClick={() => pick(option.value)}
-              className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-muted ${
-                option.value === value ? "bg-muted font-medium" : ""
-              }`}
+              className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs ${
+                option.disabled
+                  ? "cursor-not-allowed text-muted-foreground"
+                  : "hover:bg-muted"
+              } ${option.value === value ? "bg-muted font-medium" : ""}`}
+              // A tree's indent, in `rem` so it follows the member's density.
+              // `px` here would stop matching the text beside it at compact.
+              style={
+                option.depth ? { paddingLeft: `${0.5 + option.depth * 0.75}rem` } : undefined
+              }
             >
               <span className="min-w-0 flex-1 truncate pr-px">{option.label}</span>
               {option.hint ? (
@@ -176,8 +278,10 @@ export function SelectButton({
               ) : null}
             </button>
           ))}
-        </div>
-      ) : null}
+        </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }

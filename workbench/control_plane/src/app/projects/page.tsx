@@ -2793,6 +2793,10 @@ function ProjectsWorkspace() {
         <BulkBar
           count={picked.size}
           statuses={statuses}
+          // The registry the two tag pickers suggest from — the same one the
+          // task panel and the filter row read, so one tag is one colour and
+          // one spelling everywhere.
+          tags={tags}
           busy={bulkBusy}
           notice={bulkNotice}
           onClear={() => {

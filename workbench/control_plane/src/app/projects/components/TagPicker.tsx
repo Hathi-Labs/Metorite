@@ -26,9 +26,30 @@ interface Props {
   registry: TagRow[];
   disabled?: boolean;
   onChange: (next: string[]) => void;
+  /**
+   * Drop the "Tags" heading and the "None yet." line (WS-27n's bulk bar,
+   * 2026-09-20).
+   *
+   * The panel is a labelled block in a column. The bulk bar is a row of
+   * controls where every field is already named by its placeholder, and a
+   * heading over each one would double the bar's height for nothing. The
+   * BEHAVIOUR is identical either way — this only removes two lines of
+   * chrome, which is why it is a flag here and not a second component.
+   */
+  compact?: boolean;
+  placeholder?: string;
+  ariaLabel?: string;
 }
 
-export function TagPicker({ value, registry, disabled = false, onChange }: Props) {
+export function TagPicker({
+  value,
+  registry,
+  disabled = false,
+  onChange,
+  compact = false,
+  placeholder = "Add a tag…",
+  ariaLabel = "Add a tag",
+}: Props) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
 
@@ -46,8 +67,10 @@ export function TagPicker({ value, registry, disabled = false, onChange }: Props
 
   return (
     <div>
-      <span className="text-xs text-muted-foreground">Tags</span>
-      <div className="mt-1 flex flex-wrap gap-1">
+      {compact ? null : (
+        <span className="text-xs text-muted-foreground">Tags</span>
+      )}
+      <div className={compact ? "flex flex-wrap gap-1 empty:hidden" : "mt-1 flex flex-wrap gap-1"}>
         {value.map((name) => (
           <span
             key={name}
@@ -65,18 +88,18 @@ export function TagPicker({ value, registry, disabled = false, onChange }: Props
             </button>
           </span>
         ))}
-        {value.length === 0 ? (
+        {value.length === 0 && !compact ? (
           <span className="text-xs text-muted-foreground">None yet.</span>
         ) : null}
       </div>
 
-      <div className="relative mt-1">
+      <div className={compact && value.length === 0 ? "relative" : "relative mt-1"}>
         <Input
           inputSize="sm"
           disabled={disabled}
           value={query}
-          aria-label="Add a tag"
-          placeholder="Add a tag…"
+          aria-label={ariaLabel}
+          placeholder={placeholder}
           onFocus={() => setOpen(true)}
           // A blur has to outlive the mousedown on a suggestion, or clicking
           // one closes the list before the click lands.

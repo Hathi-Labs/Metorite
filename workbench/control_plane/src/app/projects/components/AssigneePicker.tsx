@@ -38,6 +38,29 @@ interface Props {
   disabled?: boolean;
   /** The task's due date (ISO), to sharpen the engagement-end warning. */
   due?: string | null;
+  /**
+   * Presentation, for the second surface (WS-27n's bulk bar, 2026-09-20).
+   *
+   * The panel says "Add an assignee"; the bulk bar has TWO of these and they
+   * mean opposite things, so neither can use a fixed label. Defaults keep the
+   * panel byte-identical — this widened the seam rather than forking it,
+   * which is the rule the bulk bar's status control already follows.
+   */
+  placeholder?: string;
+  ariaLabel?: string;
+  className?: string;
+  /**
+   * Whether losing focus commits whatever is typed. Default `true`, which is
+   * the task panel's behaviour and predates this prop.
+   *
+   * ⚠️ The bulk bar passes `false`, and the reason is a defect seen on the
+   * local stack: with four controls on one row, typing "ow" and then
+   * clicking the tag field beside it QUEUED "ow" as an assignee. In the
+   * panel a blur is the member leaving a finished field. In a row of fields
+   * it is the member moving to the next one, and those are opposite
+   * intentions. Enter still commits free text on both.
+   */
+  commitOnBlur?: boolean;
 }
 
 export function AssigneePicker({
@@ -47,6 +70,10 @@ export function AssigneePicker({
   onCommitText,
   disabled,
   due,
+  placeholder = "name, email or agent:name",
+  ariaLabel = "Add an assignee",
+  className = "mt-1.5",
+  commitOnBlur = true,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [res, setRes] = useState<PickerResponse | null>(null);
@@ -97,7 +124,7 @@ export function AssigneePicker({
   return (
     <div className="relative">
       <Input
-        className="mt-1.5"
+        className={className}
         value={value}
         disabled={disabled}
         onChange={(e) => {
@@ -117,11 +144,11 @@ export function AssigneePicker({
           // Delay so a click on a suggestion lands before the list closes.
           setTimeout(() => {
             setOpen(false);
-            onCommitText();
+            if (commitOnBlur) onCommitText();
           }, 150);
         }}
-        placeholder="name, email or agent:name"
-        aria-label="Add an assignee"
+        placeholder={placeholder}
+        aria-label={ariaLabel}
         aria-expanded={open}
       />
       {open && (
