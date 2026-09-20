@@ -17,16 +17,23 @@ import { isKnownIcon } from "@/lib/icons";
 
 import type { StatusRow, TaskRow } from "./api";
 import { COMMANDS } from "./commands";
+import { CLOSED } from "./relations";
 import {
   TASK_MENU_ACTIONS,
   type TaskMenuActions,
   type TaskMenuContext,
   type TaskMenuEntry,
+  laneFor,
   taskMenuItems,
   taskMenuKind,
+  taskQuickActions,
 } from "./taskMenu";
 
-const status = (id: string, name: string): StatusRow => ({
+const status = (
+  id: string,
+  name: string,
+  over: Partial<StatusRow> = {},
+): StatusRow => ({
   id,
   project_id: "p1",
   name,
@@ -34,6 +41,7 @@ const status = (id: string, name: string): StatusRow => ({
   position: 0,
   category: "open",
   is_default: false,
+  ...over,
 });
 
 const STATUSES = [status("s1", "Todo"), status("s2", "Doing"), status("s3", "Done")];
@@ -75,6 +83,8 @@ function spyActions(): TaskMenuActions & { calls: string[] } {
     toggleSelect: (t) => calls.push(`toggleSelect:${t.id}`),
     setStatus: (t, statusId) => calls.push(`setStatus:${t.id}:${statusId}`),
     moveToProject: (t) => calls.push(`moveToProject:${t.id}`),
+    addSubtask: (t) => calls.push(`addSubtask:${t.id}`),
+    rename: (t) => calls.push(`rename:${t.id}`),
   };
 }
 
@@ -346,5 +356,304 @@ describe("Move to project… (WS-27bl §9.13.4)", () => {
       entry.run({ ...spyActions(), moveToProject: (t) => seen.push(t.id) }, ctx);
     }
     expect(seen).toEqual(["t9"]);
+  });
+});
+
+/**
+ * ── The card's hover strip (owner direction, 2026-09-20) ────────────────
+ *
+ * The strip is a second READER of one registry, so what needs pinning is not
+ * "does it draw four buttons" — it is every way the two readers could stop
+ * agreeing, and every way a tick could move a task to the wrong lane.
+ */
+
+/**
+ * Lanes with a real closing category, in a deliberately unhelpful order.
+ *
+ * ⚠️ **The array order DISCRIMINATES, and it was rewritten once because it
+ * did not.** The first version listed Done at index 0 and To do at index 1,
+ * so `.find(closed)` and `.find(closed)` after a sort both answered "Done" —
+ * the test passed with the sort deleted. Now the first CLOSED lane in array
+ * order (Cancelled) is not the lowest-position closed lane (Done), and the
+ * first OPEN one (Doing) is not the lowest-position open one (To do). Keep it
+ * that way: delete the sort in `laneFor` and two of these must go red.
+ */
+const LADDER = [
+  status("s-cancelled", "Cancelled", { category: "cancelled", position: 40 }),
+  status("s-doing", "Doing", { category: "open", position: 20 }),
+  status("s-done", "Done", { category: "done", position: 30 }),
+  status("s-todo", "To do", { category: "open", position: 10 }),
+];
+
+const ladder = (over: Partial<TaskMenuContext> = {}): TaskMenuContext => ({
+  task: task({ status_id: "s-todo" }),
+  statuses: LADDER,
+  canSelect: true,
+  canEditInline: true,
+  selected: false,
+  ...over,
+});
+
+const quickIds = (ctx: TaskMenuContext) => taskQuickActions(ctx).map((a) => a.id);
+
+describe("which lane the tick sends a task to", () => {
+  it("picks the first CLOSED lane by position, not the first in the array", () => {
+    // The array here is deliberately out of order. Reading `statuses[0]` would
+    // answer "Done" by luck, and so would a `.find(closed)` with no sort —
+    // both break the day a space puts Cancelled before Done, and neither is
+    // visible in review.
+    expect(laneFor(LADDER, "closed")?.id).toBe("s-done");
+  });
+
+  it("picks the first OPEN lane by position to reopen into", () => {
+    expect(laneFor(LADDER, "open")?.id).toBe("s-todo");
+  });
+
+  it("answers nothing when the project has no lane of that kind", () => {
+    const openOnly = [status("a", "A"), status("b", "B", { position: 1 })];
+    expect(laneFor(openOnly, "closed")).toBeUndefined();
+    expect(laneFor(openOnly, "open")?.id).toBe("a");
+  });
+
+  it("treats cancelled as closed, because the gateway does", () => {
+    // `CLOSED` is `relations.ts`'s mirror of `CLOSING_CATEGORIES`. A second
+    // list inside `taskMenu.ts` would pass this and disagree with the server.
+    const cancelOnly = [
+      status("open", "Open", { position: 0 }),
+      status("x", "Cancelled", { category: "cancelled", position: 1 }),
+    ];
+    expect(laneFor(cancelOnly, "closed")?.id).toBe("x");
+  });
+});
+
+describe("the tick is a toggle, and says which way it will go", () => {
+  const tick = (ctx: TaskMenuContext) =>
+    taskQuickActions(ctx).find((a) => a.id === "task.markDone");
+
+  it("reads Mark done on an open task, and Reopen on a closed one", () => {
+    expect(tick(ladder())).toMatchObject({ label: "Mark done", active: false });
+    expect(tick(ladder({ task: task({ status_id: "s-done" }) }))).toMatchObject({
+      label: "Reopen",
+      active: true,
+    });
+  });
+
+  it("an open task goes to Done, and a done task comes back to To do", () => {
+    const open = ladder();
+    const a = spyActions();
+    tick(open)?.run(a, open);
+    expect(a.calls).toEqual(["setStatus:t1:s-done"]);
+
+    const closed = ladder({ task: task({ status_id: "s-done" }) });
+    const b = spyActions();
+    tick(closed)?.run(b, closed);
+    expect(b.calls).toEqual(["setStatus:t1:s-todo"]);
+  });
+
+  it("a cancelled task reopens rather than being marked done again", () => {
+    // The plausible bug: `isDone` written as `status_id === doneLane.id`
+    // rather than as a category test. Cancelled is closed and is not the Done
+    // lane, so that spelling offers "Mark done" on an abandoned task.
+    const ctx = ladder({ task: task({ status_id: "s-cancelled" }) });
+    expect(tick(ctx)).toMatchObject({ label: "Reopen", active: true });
+  });
+
+  it("is not offered at all where no lane closes work", () => {
+    // A board whose lanes are all open has no notion of finished. A tick that
+    // moved a task to "Backlog" would lie about what it did.
+    const openOnly = ladder({ statuses: [status("a", "A"), status("b", "B")] });
+    expect(quickIds(openOnly)).not.toContain("task.markDone");
+  });
+
+  it("is not offered on a surface with no status axis", () => {
+    expect(quickIds(ladder({ statuses: [] }))).not.toContain("task.markDone");
+  });
+});
+
+describe("the strip and the menu are one registry", () => {
+  it("the strip is markDone, addSubtask, rename — in that order", () => {
+    // `quick` ranks, not registry order: the registry is grouped for the
+    // MENU's reading, and the strip's left-to-right is its own decision.
+    expect(quickIds(ladder())).toEqual([
+      "task.markDone",
+      "task.addSubtask",
+      "task.rename",
+    ]);
+  });
+
+  it("markDone is on the strip and NOT in the menu", () => {
+    // §5: the menu already lists every lane by name, so a "Mark done" command
+    // beside a "Done" row is two names for one write. `inMenu: false` is the
+    // whole mechanism, and this is what keeps it honest.
+    expect(quickIds(ladder())).toContain("task.markDone");
+    expect(ids(taskMenuItems(ladder()))).not.toContain("task.markDone");
+  });
+
+  it("dropping markDone leaves no empty group and no hanging separator", () => {
+    // `inMenu` is applied BEFORE the block logic. Applied after, group 0 would
+    // still be created for an action that emits nothing, and the menu would
+    // open on a rule.
+    const entries = taskMenuItems(ladder());
+    expect(entries.at(0)?.kind).not.toBe("sep");
+    expect(entries.at(-1)?.kind).not.toBe("sep");
+    for (let i = 1; i < entries.length; i++) {
+      expect(entries[i].kind === "sep" && entries[i - 1].kind === "sep").toBe(false);
+    }
+  });
+
+  it("rename and add-subtask appear on BOTH, with one spelling each", () => {
+    const menu = taskMenuItems(ladder()).filter((e) => e.kind === "item");
+    const strip = taskQuickActions(ladder());
+    for (const id of ["task.rename", "task.addSubtask"]) {
+      const inMenu = menu.find((e) => e.id === id);
+      const onStrip = strip.find((a) => a.id === id);
+      expect(inMenu, id + " is missing from the menu").toBeTruthy();
+      expect(onStrip, id + " is missing from the strip").toBeTruthy();
+      // The drift this ticket guards against: the strip saying "Edit" where
+      // the menu says "Rename".
+      expect(onStrip?.label).toBe((inMenu as { label: string }).label);
+      expect(onStrip?.icon).toBe((inMenu as { icon?: string }).icon);
+    }
+  });
+
+  it("a surface that cannot edit in place is offered neither, on either", () => {
+    const readOnly = ladder({ canEditInline: false });
+    expect(quickIds(readOnly)).toEqual(["task.markDone"]);
+    expect(ids(taskMenuItems(readOnly))).not.toContain("task.rename");
+    expect(ids(taskMenuItems(readOnly))).not.toContain("task.addSubtask");
+  });
+
+  it("every strip button runs exactly its own action", () => {
+    const ctx = ladder();
+    const actions = spyActions();
+    for (const item of taskQuickActions(ctx)) item.run(actions, ctx);
+    expect(actions.calls).toEqual([
+      "setStatus:t1:s-done",
+      "addSubtask:t1",
+      "rename:t1",
+    ]);
+  });
+});
+
+describe("the strip's shape is enforced, not assumed", () => {
+  it("no action carries both `quick` and `expand`", () => {
+    // One button cannot be four lanes. If somebody ranks the status action,
+    // `taskQuickActions` silently drops it and the strip loses a button with
+    // no error — so the registry is checked, not the output.
+    const both = TASK_MENU_ACTIONS.filter((a) => a.quick !== undefined && a.expand);
+    expect(
+      both.map((a) => a.id),
+      "A quick action is ONE button. Give it rows or give it a rank.",
+    ).toEqual([]);
+  });
+
+  it("every quick rank is unique, so the order is not the array's", () => {
+    const ranks = TASK_MENU_ACTIONS.map((a) => a.quick).filter(
+      (r): r is number => r !== undefined,
+    );
+    expect(new Set(ranks).size, "two buttons share a rank").toBe(ranks.length);
+  });
+
+  it("every quick action declares a glyph", () => {
+    // The strip has no room for words. An action with no icon falls back to a
+    // circle, which is a button that says nothing about what it does.
+    const mute = TASK_MENU_ACTIONS.filter((a) => a.quick !== undefined && !a.icon);
+    expect(mute.map((a) => a.id)).toEqual([]);
+  });
+
+  it("an action that is inMenu:false and has no rank is unreachable", () => {
+    // The declaration mistake that ships silently: hiding an action from the
+    // menu without putting it on the strip removes it from the product.
+    const lost = TASK_MENU_ACTIONS.filter(
+      (a) => a.inMenu === false && a.quick === undefined,
+    );
+    expect(lost.map((a) => a.id)).toEqual([]);
+  });
+});
+
+/**
+ * ── "Mark done" must not cancel the task (review finding, 2026-09-20) ──
+ *
+ * The first draft ranked closing lanes by POSITION alone, so a space that
+ * orders Cancelled before Done got a tick labelled "Mark done" that wrote
+ * Cancelled. Both the label and the glyph said the opposite of the write.
+ */
+describe("done outranks cancelled, and position only breaks the tie", () => {
+  /** Backlog 10, To do 20, Cancelled 30, Done 40 — a legal, ordinary space. */
+  const CANCEL_FIRST = [
+    status("s-backlog", "Backlog", { position: 10 }),
+    status("s-todo", "To do", { position: 20 }),
+    status("s-cancel", "Cancelled", { category: "cancelled", position: 30 }),
+    status("s-done", "Done", { category: "done", position: 40 }),
+  ];
+
+  it("picks Done even when Cancelled sits before it", () => {
+    expect(laneFor(CANCEL_FIRST, "closed")?.id).toBe("s-done");
+  });
+
+  it("the tick on such a board says Mark done and writes the DONE lane", () => {
+    const ctx: TaskMenuContext = {
+      task: task({ status_id: "s-todo" }),
+      statuses: CANCEL_FIRST,
+      canSelect: true,
+      canEditInline: true,
+      selected: false,
+    };
+    const tick = taskQuickActions(ctx).find((a) => a.id === "task.markDone");
+    expect(tick?.label).toBe("Mark done");
+    const actions = spyActions();
+    tick?.run(actions, ctx);
+    expect(
+      actions.calls,
+      "a tick labelled Mark done wrote a lane that is not Done",
+    ).toEqual(["setStatus:t1:s-done"]);
+  });
+
+  it("position still decides between two lanes of the SAME category", () => {
+    const twoDone = [
+      status("late", "Shipped", { category: "done", position: 90 }),
+      status("early", "Done", { category: "done", position: 50 }),
+    ];
+    expect(laneFor(twoDone, "closed")?.id).toBe("early");
+  });
+
+  it("falls back to any closing lane when neither name is present", () => {
+    // `CLOSED` in relations.ts is the authority on WHICH categories close.
+    // A category added there must still find a lane here rather than
+    // silently removing the tick from every card.
+    const odd = [
+      status("open", "Open", { position: 0 }),
+      status("weird", "Filed", { category: "archived_x", position: 5 }),
+    ];
+    const reachable = laneFor(odd, "closed");
+    // With today's CLOSED list this is undefined, which is the honest
+    // answer. The assertion pins the SHAPE: never a lane whose category is
+    // not closing.
+    expect(reachable === undefined || CLOSED.includes(reachable.category)).toBe(
+      true,
+    );
+  });
+
+  it("cancelled is still chosen when it is the only closing lane", () => {
+    const cancelOnly = [
+      status("open", "Open", { position: 0 }),
+      status("x", "Cancelled", { category: "cancelled", position: 1 }),
+    ];
+    expect(laneFor(cancelOnly, "closed")?.id).toBe("x");
+  });
+
+  it("a task sitting in Cancelled still offers Reopen, not Mark done", () => {
+    const ctx: TaskMenuContext = {
+      task: task({ status_id: "s-cancel" }),
+      statuses: CANCEL_FIRST,
+      canSelect: true,
+      canEditInline: true,
+      selected: false,
+    };
+    const tick = taskQuickActions(ctx).find((a) => a.id === "task.markDone");
+    expect(tick).toMatchObject({ label: "Reopen", active: true });
+    const actions = spyActions();
+    tick?.run(actions, ctx);
+    expect(actions.calls).toEqual(["setStatus:t1:s-backlog"]);
   });
 });

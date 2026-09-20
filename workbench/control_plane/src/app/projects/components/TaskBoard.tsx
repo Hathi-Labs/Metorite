@@ -71,8 +71,15 @@ import {
   hiddenLaneCount,
   visibleLanes,
 } from "../lib/swimlanes";
-import { type TaskMenuActions, taskMenuItems } from "../lib/taskMenu";
+import {
+  type TaskMenuActions,
+  type TaskMenuContext,
+  taskMenuItems,
+  taskQuickActions,
+} from "../lib/taskMenu";
+import { CardInput } from "./CardInput";
 import { QuickAdd } from "./QuickAdd";
+import { TaskCardActions } from "./TaskCardActions";
 import { useFlash } from "./useFlash";
 
 const NOBODY: ReadonlySet<string> = new Set();
@@ -113,6 +120,18 @@ interface Props {
   /** WS-27x — the view's shown fields; chips a hidden field earned are not drawn. */
   shownFields: readonly string[];
   onCreated: (task: TaskRow) => void;
+  /**
+   * A task on this board changed in place — renamed from the card.
+   *
+   * Separate from `onCreated` rather than folded into it: `onCreated` carries
+   * the new row so a caller could insert it, and a rename has no new row. The
+   * page answers both with a reload today, and that is the page's decision to
+   * change later, not a reason to lie about which event happened.
+   *
+   * Absent means the card cannot be renamed in place — the same rule
+   * `onToggle` and `onMoveTask` follow, and `canEditInline` reads it.
+   */
+  onRenamed?: () => void;
   /** WS-27n — ids currently multi-selected. Empty when nobody is bulk editing. */
   selected?: ReadonlySet<string>;
   onToggle?: (id: string, shift: boolean) => void;
@@ -143,6 +162,7 @@ export function TaskBoard({
   projectId,
   shownFields,
   onCreated,
+  onRenamed,
   selected,
   onToggle,
   onMoveTask,
@@ -162,6 +182,32 @@ export function TaskBoard({
   const [menu, setMenu] = useState<{ x: number; y: number; task: TaskRow } | null>(
     null
   );
+  /**
+   * The card being renamed, and the draft title.
+   *
+   * The DRAFT lives here rather than in the field, because the field unmounts
+   * every time the board reloads under it — which a poll or somebody else's
+   * drop does on its own schedule. Held in the parent, a reload redraws the
+   * card with the half-typed title still in it.
+   */
+  const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(
+    null
+  );
+  /**
+   * The task whose rename is in flight, or null.
+   *
+   * ⚠️ A task ID, never a boolean. A board-wide `busy` flag disabled the
+   * field on a DIFFERENT card: rename A, then click Rename on B before A's
+   * PATCH returns, and B opened greyed out and unfocused. The write belongs
+   * to one row, so the flag names that row.
+   */
+  const [renameBusyId, setRenameBusyId] = useState<string | null>(null);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  /** The card with a subtask composer open under it, and its draft. */
+  const [subtaskFor, setSubtaskFor] = useState<string | null>(null);
+  const [subtaskTitle, setSubtaskTitle] = useState("");
+  const [subtaskBusyId, setSubtaskBusyId] = useState<string | null>(null);
+  const [subtaskError, setSubtaskError] = useState<string | null>(null);
   const { flash, attach, scrollTo } = useFlash();
 
   // `fromConfig` normalises an equal sub-axis away, but the axis pickers can
@@ -455,17 +501,121 @@ export function TaskBoard({
       if (task.status_id === statusId) return;
       onDrop(task, [], buildColumnDropUpdate("status", statusId));
     },
+    // Both of these OPEN a field and write nothing. See `taskMenu.ts`.
+    // Opening one closes the other: two fields on one card is two carets and
+    // one keyboard, and whichever the member typed into would be a guess.
+    addSubtask: (task) => {
+      setRenaming(null);
+      setSubtaskTitle("");
+      setSubtaskError(null);
+      setSubtaskFor(task.id);
+    },
+    rename: (task) => {
+      setSubtaskFor(null);
+      setRenameError(null);
+      setRenaming({ id: task.id, title: task.title });
+    },
   };
 
-  const menuFor = (task: TaskRow) => ({
+  const menuFor = (task: TaskRow): TaskMenuContext => ({
     task,
     statuses,
     // The checkbox and the menu row agree by construction: both are the
     // presence of `onToggle`, so a surface that cannot select cannot offer it.
     canSelect: Boolean(onToggle),
     canMoveToProject: Boolean(onMoveTask),
+    // Renaming needs somewhere to send the result. A board whose page does not
+    // reload after a write would show the old title until the next poll, which
+    // reads as the rename having failed.
+    canEditInline: Boolean(onRenamed),
     selected: selected?.has(task.id) ?? false,
   });
+
+  /**
+   * Anything is selected, so every card shows its checkbox.
+   *
+   * ⚠️ Read from `selected`, never tracked as a second flag. A boolean set
+   * beside the set is a second source of truth for the same fact, and it is
+   * the one that stays true after the last row leaves the selection.
+   */
+  const selectionActive = (selected?.size ?? 0) > 0;
+
+  /**
+   * Close a field ONLY if it is still the one this write belongs to.
+   *
+   * ⚠️ Every `setRenaming(null)` after an `await` was unconditional, and
+   * that closed whatever field was open by then. Rename A, click Rename on B,
+   * and A's response shut B's field while the member was typing in it.
+   */
+  const closeRenameOf = (taskId: string) =>
+    setRenaming((current) => (current?.id === taskId ? null : current));
+
+  /** Rename. A no-op on an empty or unchanged title, which is what makes the
+   *  blur-commits rule in `CardInput` safe. */
+  async function commitRename(task: TaskRow) {
+    const draft = renaming;
+    if (!draft || draft.id !== task.id) return;
+    const title = draft.title.trim();
+    if (!title || title === task.title) {
+      closeRenameOf(task.id);
+      return;
+    }
+    setRenameBusyId(task.id);
+    setRenameError(null);
+    try {
+      await projectsApi.patchTask(task.id, { title });
+      closeRenameOf(task.id);
+      onRenamed?.();
+    } catch (err) {
+      // The field stays open with what was typed still in it, AND the reason
+      // is drawn under it. Closing silently would throw the member's words
+      // away and redraw the OLD title, which reads as the rename having
+      // worked and then been undone.
+      setRenameError(String((err as Error).message));
+    } finally {
+      setRenameBusyId((current) => (current === task.id ? null : current));
+    }
+  }
+
+  /** A subtask is a task with a parent (§3.5) — no second endpoint, and the
+   *  same call `TaskPanel.addSubtask` makes. */
+  /** The composer's half of `closeRenameOf`, for the same reason. */
+  const closeComposerOf = (taskId: string) =>
+    setSubtaskFor((current) => {
+      if (current !== taskId) return current;
+      setSubtaskTitle("");
+      return null;
+    });
+
+  async function commitSubtask(task: TaskRow) {
+    if (subtaskFor !== task.id) return;
+    const title = subtaskTitle.trim();
+    if (!title) {
+      closeComposerOf(task.id);
+      return;
+    }
+    setSubtaskBusyId(task.id);
+    setSubtaskError(null);
+    try {
+      const created = await projectsApi.createTask({
+        // The PARENT's project, not the board's selected node: a subtask
+        // belongs where its parent lives, and an aggregate board draws rows
+        // from the whole subtree.
+        project_id: task.project_id,
+        parent_task_id: task.id,
+        title,
+      });
+      closeComposerOf(task.id);
+      flash(created.id);
+      onCreated(created);
+    } catch (err) {
+      // Same reasoning as the rename: the composer keeps the title and says
+      // why, rather than losing both to a failed POST.
+      setSubtaskError(String((err as Error).message));
+    } finally {
+      setSubtaskBusyId((current) => (current === task.id ? null : current));
+    }
+  }
 
   /** The registry's entries as the shared menu's items. Icons resolve here —
    *  `taskMenu.ts` stays pure and names glyphs, it never imports a component. */
@@ -484,11 +634,42 @@ export function TaskBoard({
     );
   };
 
-  const card = (task: TaskRow) => (
-    <li key={task.id} className="flex items-start gap-1.5 rounded-md">
+  const card = (task: TaskRow) => {
+    const ctx = menuFor(task);
+    const renamingThis = renaming?.id === task.id;
+    const composingHere = subtaskFor === task.id;
+    // An input inside the card suspends the card's own gestures. Otherwise
+    // selecting the text you are editing drags the card into another lane,
+    // and the click that put the caret back also opens the task panel.
+    const editing = renamingThis || composingHere;
+
+    return (
+    // `group/card` NAMED rather than bare: the shell already sets a plain
+    // `group` for its own children, and the two reveal-on-hover controls here
+    // straddle it — the checkbox is a sibling of the shell, the action strip a
+    // grandchild. One named group on the row is what makes both answer to the
+    // same hover.
+    <li key={task.id} className="group/card flex items-start gap-1.5 rounded-md">
       {onToggle ? (
         <Checkbox
-          className="mt-3 shrink-0"
+          // Owner direction, 2026-09-20: the checkbox appears on hover, and
+          // once anything is selected every card shows one so the next pick is
+          // a single click. This is /tasks' `InboxCard` rule, which has drawn
+          // its selection exactly this way since WS-39 — the two apps' cards
+          // agreeing is AGENTS.md rule 4, not a new idea.
+          //
+          // ⚠️ The gutter is reserved whether the box is painted or not. A
+          // checkbox that appears in the FLOW on hover shifts every title 22px
+          // right under the pointer, which reads as the board flinching.
+          className={[
+            "mt-3 shrink-0",
+            selectionActive || selected?.has(task.id)
+              ? "opacity-100"
+              : // `[@media(hover:none)]` because a touch screen never hovers,
+                // and without it selection is a desktop-only feature that
+                // nothing tells a phone about.
+                "opacity-0 group-hover/card:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100",
+          ].join(" ")}
           aria-label={`Select ${task.title}`}
           checked={selected?.has(task.id) ?? false}
           // The click must not also open the task — a checkbox inside a card
@@ -507,11 +688,20 @@ export function TaskBoard({
       <TaskCardShell
         innerRef={attach(task.id)}
         className="w-full min-w-0"
-        draggable
+        // ⚠️ NAMED explicitly, and the strip is why. With no label the
+        // shell's accessible name is computed from its CONTENTS, so the four
+        // buttons inside it now prefix every card: a screen reader announced
+        // "Mark done Add subtask Rename More actions Notification engine for
+        // projects, button". Found by the visual rig, which could no longer
+        // tell the card apart from its own Rename button.
+        ariaLabel={task.title}
+        draggable={!editing}
         completed={Boolean(task.completed_at)}
         selected={selected?.has(task.id) ?? false}
         atCursor={cursorAt >= 0 && rows[cursorAt] === task.id}
-        onActivate={() => onSelect(task)}
+        onActivate={() => {
+          if (!editing) onSelect(task);
+        }}
         // WS-27bd — the shell has accepted this prop since S1 and /projects
         // never passed it, which is why the app had zero `onContextMenu`.
         onContextMenu={(event) => {
@@ -530,19 +720,36 @@ export function TaskBoard({
           setDropAt(null);
         }}
       >
-        {/* Off the status axis the column no longer says what the status is,
-            so the card carries it — the same rule /tasks applies with
-            `showStage` on a lens-grouped list, and the same pill. */}
-        {groupBy === "status" ? null : (
-          <StatusChip
-            accent={accentForStatus(statusById.get(task.status_id))}
-            label={statusById.get(task.status_id)?.name ?? "No status"}
-            className="w-fit"
-          />
-        )}
-        <TaskCardTitle completed={Boolean(task.completed_at)} className="truncate">
-          {task.title}
-        </TaskCardTitle>
+        <div className="flex min-w-0 flex-col gap-2">
+          {/* Off the status axis the column no longer says what the status is,
+              so the card carries it — the same rule /tasks applies with
+              `showStage` on a lens-grouped list, and the same pill. */}
+          {groupBy === "status" ? null : (
+            <StatusChip
+              accent={accentForStatus(statusById.get(task.status_id))}
+              label={statusById.get(task.status_id)?.name ?? "No status"}
+              className="w-fit"
+            />
+          )}
+          {renamingThis ? (
+            <CardInput
+              value={renaming.title}
+              busy={renameBusyId === task.id}
+              error={renameError}
+              aria-label={`Rename ${task.title}`}
+              onChange={(title) => setRenaming({ id: task.id, title })}
+              onCancel={() => {
+                setRenameError(null);
+                closeRenameOf(task.id);
+              }}
+              onCommit={() => void commitRename(task)}
+            />
+          ) : (
+            <TaskCardTitle completed={Boolean(task.completed_at)} className="truncate">
+              {task.title}
+            </TaskCardTitle>
+          )}
+        </div>
         {/* The chip row and the owner strip are the shared card vocabulary
             (WS-27s) — the same components /tasks draws, so a task looks like
             the same kind of thing in both. S6 added the two facts the row
@@ -550,13 +757,46 @@ export function TaskBoard({
             `shown_fields` has always asked for, and the tags by NAME in the
             colour their registry gives them, instead of a bare count. */}
         <TaskMeta chips={visibleChips(task, shownFields, undefined, tagHues, typeHues)} />
+        {composingHere ? (
+          <CardInput
+            value={subtaskTitle}
+            busy={subtaskBusyId === task.id}
+            error={subtaskError}
+            placeholder="Subtask title"
+            aria-label={`Add a subtask to ${task.title}`}
+            onChange={setSubtaskTitle}
+            onCancel={() => {
+              setSubtaskError(null);
+              closeComposerOf(task.id);
+            }}
+            onCommit={() => void commitSubtask(task)}
+          />
+        ) : null}
         <span className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
           <span>{taskRef(task)}</span>
           <AvatarStack people={task.assignees} label={personLabel} />
         </span>
+        {/* The hover strip, absolutely positioned over the footer above.
+            ⚠️ LAST in the DOM on purpose. It is four extra tab stops per
+            card, and drawn first they came BEFORE the card's own title — so
+            tabbing a fifty-card board read out the actions before it read out
+            what they would act on. Position is `absolute`, so moving it here
+            changes the tab order and nothing else.
+            Hidden while an input is open on this card: four buttons floating
+            over a field you are typing in offer nothing, and one of them
+            would discard what you typed. */}
+        {editing ? null : (
+          <TaskCardActions
+            items={taskQuickActions(ctx)}
+            actions={menuActions}
+            ctx={ctx}
+            onMore={(at) => setMenu({ ...at, task })}
+          />
+        )}
       </TaskCardShell>
     </li>
-  );
+    );
+  };
 
   if (columns.length === 0) {
     // S4 — the old copy named both causes in one sentence ("Clear a filter, or

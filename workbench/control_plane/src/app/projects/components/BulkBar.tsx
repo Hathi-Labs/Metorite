@@ -20,14 +20,22 @@
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
 import { useState } from "react";
 
 import type { StatusRow } from "../lib/api";
 import { type BulkDraft, EMPTY_DRAFT, buildRequest } from "../lib/selection";
 
-const SELECT =
-  "cc-control rounded-lg border border-border bg-background px-2 py-1.5 " +
-  "text-xs text-foreground outline-none focus:border-primary/50";
+/**
+ * The house active pair, the same two strings `FilterBar` uses.
+ *
+ * ⚠️ Copied rather than imported, exactly as `FilterBar` holds them: they are
+ * two utility strings, and an import between two sibling components to share
+ * a constant is a dependency for nothing. If a third surface wants them they
+ * move to one place.
+ */
+const OFF_DEFAULT = "border-primary/50 bg-primary/10 text-primary";
+const AT_DEFAULT = "";
 
 const IMPORTANCE = [
   ["", "Priority…"],
@@ -88,35 +96,39 @@ export function BulkBar({
           </Button>
         ) : null}
 
-        <select
-          aria-label="Set status"
-          className={SELECT}
+        {/* ⚠️ BUTTONS, not `<select>`s (H-94, owner 2026-08-26 — restated
+            2026-09-20 for this bar). A native `<select>` takes its open list
+            from the PLATFORM: on Windows that is a white panel with a blue
+            highlight bar, which is the one control in the row that is not
+            drawn by this design system. `FilterBar` was converted and this bar
+            was missed, so the two rows of dropdowns on one screen did not
+            match each other. */}
+        <SelectButton
+          label="Set status"
+          widthClass="w-[9rem]"
+          className={draft.status ? OFF_DEFAULT : AT_DEFAULT}
           value={draft.status}
-          onChange={(e) => set({ status: e.target.value })}
-        >
-          <option value="">Status…</option>
-          {/* De-duplicated by NAME: a selection can span projects whose lanes
-              share names, and offering "Done" twice is a choice with no
-              difference. */}
-          {[...new Set(statuses.map((s) => s.name))].map((name) => (
-            <option key={name} value={name}>
-              {name}
-            </option>
-          ))}
-        </select>
+          onChange={(next) => set({ status: next })}
+          // De-duplicated by NAME: a selection can span projects whose lanes
+          // share names, and offering "Done" twice is a choice with no
+          // difference.
+          options={[
+            { value: "", label: "Status…" },
+            ...[...new Set(statuses.map((s) => s.name))].map((name) => ({
+              value: name,
+              label: name,
+            })),
+          ]}
+        />
 
-        <select
-          aria-label="Set priority"
-          className={SELECT}
+        <SelectButton
+          label="Set priority"
+          widthClass="w-[8rem]"
+          className={draft.importance ? OFF_DEFAULT : AT_DEFAULT}
           value={draft.importance}
-          onChange={(e) => set({ importance: e.target.value })}
-        >
-          {IMPORTANCE.map(([value, label]) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
-          ))}
-        </select>
+          onChange={(next) => set({ importance: next })}
+          options={IMPORTANCE.map(([value, label]) => ({ value, label }))}
+        />
 
         {/* ⚠️ The add/remove fields are PAIRS, and the pair is the unit that
             wraps. Left loose on the row, "Remove tags…" wrapped away from
