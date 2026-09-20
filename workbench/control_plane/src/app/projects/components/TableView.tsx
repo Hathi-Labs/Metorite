@@ -29,6 +29,7 @@ import Icon from "@/components/Icon";
 import { StatusChip } from "@/components/StatusChip";
 import { AvatarStack } from "@/components/TaskMeta";
 import { Input } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
 import { useToast } from "@/components/ui/Toast";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { TASK_SOURCES, type TaskSource, durationLabel } from "@/lib/taskCard";
@@ -56,10 +57,6 @@ import {
 import { NO_CELL, clampCell, stepCell } from "../lib/tableCursor";
 import { QuickAdd } from "./QuickAdd";
 import { useFlash } from "./useFlash";
-
-const SELECT =
-  "cc-control w-full rounded-lg border border-border bg-background px-2 py-1 " +
-  "text-xs text-foreground outline-none focus:border-primary/50";
 
 /** The columns whose cells open an editor on Enter (or a click). */
 const EDITABLE = new Set(["status", "assignees", "due_at", "start_date", "importance"]);
@@ -385,48 +382,42 @@ export function TableView({
   function editorCell(task: TaskRow, column: TableColumn): React.ReactNode {
     if (column.key === "status") {
       return (
-        <select
-          autoFocus
-          aria-label={`Status of ${task.title}`}
-          className={SELECT}
-          defaultValue={task.status_id}
-          onChange={(e) => void saveCell(task, { status_id: e.target.value })}
-          onBlur={closeEditor}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") closeEditor();
-          }}
-        >
-          {statuses.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.name}
-            </option>
-          ))}
-        </select>
+        // ⚠️ `autoOpen`, and it is a fix rather than parity. The native
+        // `<select>` this replaced took `autoFocus`, which focuses a select
+        // and does NOT open it — so editing one cell was click the cell,
+        // then click the control. `onClose` puts the cell back whether the
+        // member picked, pressed Escape, or clicked away.
+        <SelectButton
+          autoOpen
+          onClose={closeEditor}
+          label={`Status of ${task.title}`}
+          widthClass="w-full"
+          value={task.status_id}
+          onChange={(next) => void saveCell(task, { status_id: next })}
+          options={statuses.map((s) => ({ value: s.id, label: s.name }))}
+        />
       );
     }
     if (column.key === "importance") {
       return (
-        <select
-          autoFocus
-          aria-label={`Priority of ${task.title}`}
-          className={SELECT}
-          defaultValue={task.importance == null ? "" : String(task.importance)}
-          onChange={(e) =>
+        <SelectButton
+          autoOpen
+          onClose={closeEditor}
+          label={`Priority of ${task.title}`}
+          widthClass="w-full"
+          value={task.importance == null ? "" : String(task.importance)}
+          onChange={(next) =>
             void saveCell(task, {
-              importance: e.target.value === "" ? null : Number(e.target.value),
+              // ⚠️ `""` is "no priority" and `"0"` is Low. `Number("")`
+              // is 0, so the emptiness check is what keeps them apart.
+              importance: next === "" ? null : Number(next),
             })
           }
-          onBlur={closeEditor}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") closeEditor();
-          }}
-        >
-          {IMPORTANCE_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+          options={IMPORTANCE_OPTIONS.map((option) => ({
+            value: option.value,
+            label: option.label,
+          }))}
+        />
       );
     }
     if (column.key === "assignees") {
@@ -489,28 +480,22 @@ export function TableView({
     }
     if (def.field_type === "select") {
       return (
-        <select
-          autoFocus
-          aria-label={`${def.name} of ${task.title}`}
-          className={SELECT}
-          defaultValue={String(toInput("select", stored))}
-          onChange={(e) =>
+        <SelectButton
+          autoOpen
+          onClose={closeEditor}
+          label={`${def.name} of ${task.title}`}
+          widthClass="w-full"
+          value={String(toInput("select", stored))}
+          onChange={(next) =>
             void saveCell(task, {
-              custom_fields: { [key]: toWire("select", e.target.value) },
+              custom_fields: { [key]: toWire("select", next) },
             })
           }
-          onBlur={closeEditor}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") closeEditor();
-          }}
-        >
-          <option value="">— not set —</option>
-          {def.options.map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
-          ))}
-        </select>
+          options={[
+            { value: "", label: "— not set —" },
+            ...def.options.map((option) => ({ value: option, label: option })),
+          ]}
+        />
       );
     }
     return (

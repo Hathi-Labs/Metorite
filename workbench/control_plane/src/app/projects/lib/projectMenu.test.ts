@@ -292,29 +292,50 @@ describe("projectMenuItems · the row menu's scope", () => {
   // ⚠️ "Statuses" is NOT in this list any more, and that is the point.
   // Migration 196 (2026-09-06) let a project own its own lanes, so statuses
   // stopped being root-scoped while these four did not.
-  const ROOT_SCOPED = [
-    "Space settings",
-    "Custom fields",
-    "Tags",
-    "Lifecycle policy",
-  ];
-
   const LEVELS = ["space", "folder", "project", "subproject"] as const;
 
-  it("keeps the root-scoped screens on a SPACE row, and offers them nowhere else", () => {
-    // Tags and fields are ONE set per space, inherited by the whole subtree. A
-    // tree row is a precise thing to click, so offering their editors on a leaf
-    // would say the leaf has a set of its own, and the next person would file a
-    // bug when editing one leaf changed its siblings. `nodeLevel()` already
-    // calls a root 'space', so one test carries the whole scope.
+  it("keeps Space settings and Lifecycle on a SPACE row, and nowhere else", () => {
+    // These two really are properties OF the space — its name and icon, its
+    // archive policy — rather than of a set it owns, so a subproject has
+    // nothing to show.
+    const spaceOnly = ["Space settings", "Lifecycle policy"];
     const onSpace = labels(projectMenuItems(project(), handlers(), ui(), "space"));
-    for (const label of ROOT_SCOPED) expect(onSpace).toContain(label);
+    for (const label of spaceOnly) expect(onSpace).toContain(label);
 
     for (const level of LEVELS.filter((l) => l !== "space")) {
       const elsewhere = labels(
         projectMenuItems(project(), handlers(), ui(), level)
       );
-      for (const label of ROOT_SCOPED) expect(elsewhere).not.toContain(label);
+      for (const label of spaceOnly) expect(elsewhere).not.toContain(label);
+    }
+  });
+
+  it("offers Tags and Custom fields on EVERY level, including a leaf", () => {
+    // ⚠️ This reverses what this file asserted until 2026-09-20, so the old
+    // reasoning is worth answering rather than deleting. It was: tags and
+    // fields are one set per space, so offering their editors on a leaf
+    // "would say the leaf has a set of its own, and the next person would
+    // file a bug when editing one leaf changed its siblings."
+    //
+    // The scope claim is right and the conclusion did not follow. Hiding the
+    // door does not teach the model — it teaches that the screen does not
+    // exist, which is what the owner reported: they had been right-clicking
+    // a subproject looking for somewhere to edit tags.
+    //
+    // What answers the ambiguity is the dialog, which both managers already
+    // had: "Shared by <space> and everything under it". The page resolves
+    // the space before opening (`manageRoot` + `spaceOf`), so a leaf's menu
+    // opens the space's registry and the first line says whose it is.
+    //
+    // The same mistake in the same file, one vocabulary over: Statuses sat
+    // in the space-only block until 2026-09-16 and was reported the same
+    // way. Twice is a pattern, not a coincidence.
+    for (const level of LEVELS) {
+      const items = labels(projectMenuItems(project(), handlers(), ui(), level));
+      expect(items, `Tags missing on a ${level}`).toContain("Tags");
+      expect(items, `Custom fields missing on a ${level}`).toContain(
+        "Custom fields"
+      );
     }
   });
 
@@ -340,16 +361,17 @@ describe("projectMenuItems · the row menu's scope", () => {
     expect(onFolder).not.toContain("Statuses");
   });
 
-  it("gives a subproject Statuses WITHOUT the space-only screens beside it", () => {
-    // The two halves of the split, asserted together: moving statuses out of
-    // the `isSpace` block must not drag the root-scoped four along with it.
+  it("gives a subproject its vocabularies WITHOUT the space's own screens", () => {
+    // The split, asserted in one place: a subproject reaches all three
+    // vocabularies, and neither of the two screens that describe the SPACE
+    // itself.
     const onSub = labels(
       projectMenuItems(project(), handlers(), ui(), "subproject")
     );
     expect(onSub).toContain("Statuses");
+    expect(onSub).toContain("Tags");
+    expect(onSub).toContain("Custom fields");
     expect(onSub).not.toContain("Space settings");
-    expect(onSub).not.toContain("Custom fields");
-    expect(onSub).not.toContain("Tags");
     expect(onSub).not.toContain("Lifecycle policy");
   });
 

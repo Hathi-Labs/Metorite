@@ -33,7 +33,7 @@ import { useCallback, useEffect, useState } from "react";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
-import { Select } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
 
 import { type MovePlan, projectsApi } from "../lib/api";
 import { LEVEL_ICONS, type ProjectNode, nodeKind, nodeLevel } from "../lib/tree";
@@ -203,21 +203,37 @@ export function MoveTasksDialog({
       <div className="space-y-3 p-3 text-xs">
         <label className="block space-y-1">
           <span className="text-muted-foreground">Move to</span>
-          <Select
-            inputSize="sm"
+          {/* ⚠️ `SelectButton`, NOT the `Select` primitive (owner, 2026-09-20).
+              `Select` is a native `<select>` wearing the house paint on its
+              TRIGGER. The open list is drawn by the operating system, so on
+              Windows this picker was a white panel with a blue highlight bar
+              in the middle of a dark dialog. The trigger looked right, which
+              is why it survived the H-94 sweep — and why the conformance
+              rule missed it: that regex is `/<select/g`, case sensitive,
+              so the capital-S wrapper never counted.
+
+              The tree survives the move. `depth` indents each row, where the
+              old markup padded the option TEXT with non-breaking spaces.
+              That works only inside a native `<option>`, whose text the
+              browser renders verbatim. */}
+          <SelectButton
+            label="Move to"
+            widthClass="w-full"
             value={destination ?? ""}
-            disabled={busy}
-            onChange={(e) => setDestination(e.target.value || null)}
-          >
-            <option value="">Pick a project…</option>
-            {destRows.map(({ node, depth, legal }) => (
-              <option key={node.id} value={node.id} disabled={!legal}>
-                {" ".repeat(depth * 2)}
-                {node.name}
-                {legal ? "" : " — a folder holds projects, not tasks"}
-              </option>
-            ))}
-          </Select>
+            onChange={(next) => setDestination(next || null)}
+            options={[
+              { value: "", label: "Pick a project…" },
+              ...destRows.map(({ node, depth, legal }) => ({
+                value: node.id,
+                label: node.name,
+                depth,
+                disabled: !legal,
+                // A folder stays in the list rather than being dropped: it is
+                // what explains the indent of the project beneath it.
+                hint: legal ? undefined : "a folder holds projects, not tasks",
+              })),
+            ]}
+          />
         </label>
 
         {planning ? (
@@ -254,33 +270,33 @@ export function MoveTasksDialog({
                       {row.from.name}
                     </span>
                     <Icon name="ArrowRight" className="h-3 w-3 shrink-0" />
-                    <Select
-                      inputSize="sm"
-                      className="min-w-0 flex-1 basis-0"
+                    {/* ⚠️ `SelectButton`, for the reason the destination
+                        picker above carries: `Select` opens the PLATFORM's
+                        list. A mapping card that asks the member to agree to
+                        a remap should not hand them an operating-system
+                        widget to agree with. */}
+                    <SelectButton
+                      label={`Map ${row.from.name} to`}
+                      widthClass="min-w-0 flex-1 basis-0"
                       disabled={busy}
                       value={overrides[row.from.id] ?? row.to?.id ?? ""}
-                      onChange={(e) =>
-                        setOverrides((prev) => ({
-                          ...prev,
-                          [row.from.id]: e.target.value,
-                        }))
+                      onChange={(next) =>
+                        setOverrides((prev) => ({ ...prev, [row.from.id]: next }))
                       }
-                    >
-                      {/* A lane the automatic rule chose that is somehow not
-                          in the list still renders, so the row never shows a
-                          blank selection. */}
-                      {row.to && !destStatuses.some((s) => s.id === row.to?.id) ? (
-                        <option value={row.to.id}>{row.to.name}</option>
-                      ) : null}
-                      {!row.to ? (
-                        <option value="">Pick a lane…</option>
-                      ) : null}
-                      {destStatuses.map((status) => (
-                        <option key={status.id} value={status.id}>
-                          {status.name}
-                        </option>
-                      ))}
-                    </Select>
+                      options={[
+                        // A lane the automatic rule chose that is somehow not
+                        // in the list still renders, so the row never shows a
+                        // blank selection.
+                        ...(row.to && !destStatuses.some((s) => s.id === row.to?.id)
+                          ? [{ value: row.to.id, label: row.to.name }]
+                          : []),
+                        ...(!row.to ? [{ value: "", label: "Pick a lane…" }] : []),
+                        ...destStatuses.map((status) => ({
+                          value: status.id,
+                          label: status.name,
+                        })),
+                      ]}
+                    />
                   </div>
                 ))}
               </div>

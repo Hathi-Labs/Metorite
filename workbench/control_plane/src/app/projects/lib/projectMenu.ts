@@ -174,7 +174,14 @@ export interface ProjectMenuUi {
    */
   onCreate?: (option: ChildOption) => void;
   createOptions?: readonly ChildOption[];
-  /** The root-scoped vocabularies, and the archive policy. Space rows only. */
+  /**
+   * The root-scoped vocabularies, and the archive policy.
+   *
+   * ⚠️ Tags and custom fields are offered on every level and the CALLER
+   * resolves the root — see the note at the call site. Lifecycle and Space
+   * settings stay space-only, because those really are properties of the
+   * space rather than of a set it owns.
+   */
   onManageFields?: () => void;
   onManageStatuses?: () => void;
   onManageTags?: () => void;
@@ -304,7 +311,23 @@ export function projectMenuItems(
         onSelect: ui.onManageStatuses,
       });
     }
-    if (isSpace && ui.onManageFields) {
+    // ⚠️ Offered on EVERY level, not just a space — and the set they open
+    // is still the space's. Owner report, 2026-09-20: "we should also have a
+    // space and place where we are editing the tags", from somebody who had
+    // been right-clicking a SUBPROJECT. The screen existed and the door did
+    // not, which is indistinguishable from the screen not existing.
+    //
+    // Gating it to spaces was reasoning from the data model: tags and custom
+    // fields are ROOT-scoped (D-PM-16 — a project's vocabulary is org-wide
+    // ∪ root-local, and a subproject has no set of its own), so a subproject
+    // has nothing to manage. True, and beside the point: the member wants to
+    // edit the tags they can see on this board, and that is the root's set.
+    //
+    // Same rule the statuses entry above states: the menu offers the door,
+    // the dialog describes the room. `TagManager` and `FieldManager` are
+    // titled with the project they opened for, so opening one from a
+    // subproject names the space and the scope explains itself.
+    if (ui.onManageFields) {
       scoped.push({
         kind: "item",
         label: "Custom fields",
@@ -312,7 +335,7 @@ export function projectMenuItems(
         onSelect: ui.onManageFields,
       });
     }
-    if (isSpace && ui.onManageTags) {
+    if (ui.onManageTags) {
       scoped.push({
         kind: "item",
         label: "Tags",

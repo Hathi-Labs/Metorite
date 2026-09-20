@@ -62,6 +62,18 @@ export type TagColor = AccentHue;
 export const chipClass = (color: string | undefined): string =>
   statusAccent({ color }).chip;
 
+/**
+ * A tag's colour as a solid SWATCH, for a picker.
+ *
+ * ⚠️ Not `chipClass`. A chip is a faint tinted background behind text
+ * plus a coloured ink, which is right at chip size and almost
+ * invisible as a 16px dot — the first swatch row drawn with it had four of
+ * six hues reading as the same grey smudge. `dot` is the solid fill the
+ * same vocabulary already defines for exactly this.
+ */
+export const swatchClass = (color: string | undefined): string =>
+  statusAccent({ color }).dot;
+
 /** `lower(name)` → the registry's display form. */
 export function registryOf(tags: TagRow[]): Map<string, string> {
   return new Map(tags.map((t) => [t.name.toLowerCase(), t.name]));
@@ -164,4 +176,42 @@ export function byUsage(tags: TagRow[]): TagRow[] {
  */
 export function canMerge(source: TagRow | null, target: TagRow | null): boolean {
   return Boolean(source && target && source.id !== target.id);
+}
+
+/**
+ * The hues a NEW tag may be given automatically — every one except gray.
+ *
+ * ⚠️ Gray is excluded on purpose. `146_projects.sql` defaults the column to
+ * `'gray'`, so every tag the server auto-registered was gray and a project's
+ * whole tag set read as one colour. Gray is the "no colour" look, which is
+ * the right default for a column and the wrong one for a tag somebody just
+ * invented. It stays available — a member can pick it — but nothing lands
+ * there by accident.
+ */
+export const AUTO_TAG_HUES = TAG_COLORS.filter((hue) => hue !== "gray");
+
+/**
+ * The hue a tag called `name` gets if nobody chooses one.
+ *
+ * Deterministic, so the same word is the same colour on every board and
+ * across a reload, and so two people inventing "blocked" separately do not
+ * end up arguing about which one is right.
+ *
+ * ⚠️ **Its own hash, deliberately NOT `lib/categorical.hashSlot`.** That one
+ * is modulo `HASH_SLOTS` over the `--cat-1…12` ramp, and its header says
+ * never to change the modulus because doing so repaints every context, tag
+ * and label ever hash-coloured. Tags are a different, six-name vocabulary
+ * (`TAG_COLORS`), so reusing that function would mean reaching for a slot
+ * index and mapping it onto five hues — a second mapping that would drift.
+ * Five lines here, with the same stability promise, is the smaller lie.
+ */
+export function autoTagHue(name: string): TagColor {
+  const key = name.trim().toLowerCase();
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    // The `>>> 0` keeps it unsigned: a negative modulus would index off the
+    // front of the array and hand back `undefined`.
+    hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  }
+  return AUTO_TAG_HUES[hash % AUTO_TAG_HUES.length] as TagColor;
 }

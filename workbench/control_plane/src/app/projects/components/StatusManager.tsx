@@ -52,7 +52,8 @@
 import { ContextMenu } from "@/components/ContextMenu";
 import Icon, { themedIcon } from "@/components/Icon";
 import Button from "@/components/ui/Button";
-import { Input, Select } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
+import { Input } from "@/components/ui/Input";
 import Modal from "@/components/ui/Modal";
 import {
   ACCENT_HUES,
@@ -369,22 +370,25 @@ export function StatusManager({
             Move {counts[removing.id] ?? 0} task(s) out of “{removing.name}” to
           </span>
           <div className="w-40">
-            <Select
-              inputSize="sm"
-              aria-label="Where its tasks go"
+            <SelectButton
+              label="Where its tasks go"
+              widthClass="w-full"
               value={moveTo}
-              onChange={(e) => setMoveTo(e.target.value)}
-            >
-              <option value="">Choose a status…</option>
-              {rows
-                .filter((r) => r.id !== removing.id)
-                .map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name}
-                    {closesTask(r.category) ? " — completes them" : ""}
-                  </option>
-                ))}
-            </Select>
+              onChange={setMoveTo}
+              options={[
+                { value: "", label: "Choose a status…" },
+                ...rows
+                  .filter((r) => r.id !== removing.id)
+                  .map((r) => ({
+                    value: r.id,
+                    label: r.name,
+                    // The consequence, muted beside the name rather than
+                    // glued onto it: moving tasks into a closing lane marks
+                    // them complete, and that is not obvious from a name.
+                    hint: closesTask(r.category) ? "completes them" : undefined,
+                  })),
+              ]}
+            />
           </div>
           <Button
             variant="primary"

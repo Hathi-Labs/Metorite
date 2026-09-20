@@ -20,6 +20,27 @@
  * way to reach the menu for people who do not right-click. Phones have no
  * right-click at all, which is why it is not optional.
  *
+ * ## Two pills, and the right one stays
+ *
+ * Owner direction, 2026-09-20: *"we don't necessarily have to also show the
+ * checkbox on the left-hand side because we already have a checkbox in the
+ * hover pop-up — just persist the checkbox icon of the pop-up, so the card
+ * can be full at all points in time."*
+ *
+ * So the card has NO left gutter any more, at any time, and it never changes
+ * width. Selection shows in two places instead: the shell's primary border
+ * and ring, which it already drew, and the tick box here, which stays lit on
+ * a selected card after the pointer leaves.
+ *
+ * That is why the trailing control is its own pill rather than a divider
+ * inside one. The two have different reveal rules — the action pill is
+ * hover-only, the tick pill is hover OR selected — and one container cannot
+ * hold both. Side by side with a small gap they read as the same object.
+ *
+ * ⚠️ **The tick pill is the ONLY checkbox on a board card now.** Before you
+ * change what reveals it, note that removing it removes both the way in to a
+ * selection and the only sign that a card is in one.
+ *
  * ## Three traps, all of which ship green
  *
  * 1. **`opacity-0` alone leaves an invisible button clickable.** A hidden
@@ -115,6 +136,14 @@ const REVEAL =
 const GHOST = { variant: "ghost", size: "icon-sm" } as const;
 
 /**
+ * A pill's own chrome.
+ *
+ * `bg-card` with a border and a shadow, because it sits ON the card. A
+ * transparent pill would read as part of the footer row underneath it.
+ */
+const PILL = "rounded-md border border-border bg-card p-0.5 shadow-sm";
+
+/**
  * Swallow every gesture the card underneath would otherwise claim.
  *
  * `onPointerDown` matters as much as `onClick`: the drag starts on the press,
@@ -169,46 +198,55 @@ export function TaskCardActions({
       //
       // `bg-card` with a border and a shadow, because it sits ON the card. A
       // transparent strip would read as part of the row underneath it.
-      className={`absolute bottom-1.5 right-1.5 z-10 flex items-center gap-px rounded-md border border-border bg-card p-0.5 shadow-sm ${REVEAL}`}
+      className="absolute bottom-1.5 right-1.5 z-10 flex items-center gap-1"
     >
-      {items
-        .filter((item) => !item.trailing)
-        .map((item) => (
-          <QuickButton
-            key={item.id}
-            item={item}
-            onRun={() => item.run(actions, ctx)}
-          />
-        ))}
+      <div className={`flex items-center gap-px ${PILL} ${REVEAL}`}>
+        {items
+          .filter((item) => !item.trailing)
+          .map((item) => (
+            <QuickButton
+              key={item.id}
+              item={item}
+              actions={actions}
+              ctx={ctx}
+            />
+          ))}
 
-      <Button
-        {...GHOST}
-        {...SWALLOW}
-        type="button"
-        title="More actions"
-        aria-label="More actions"
-        aria-haspopup="menu"
-        onClick={(event) => {
-          event.stopPropagation();
-          event.preventDefault();
-          // Anchored to the BUTTON, not to the pointer. A keyboard activation
-          // has no pointer, and `clientX` is then 0 — the menu would open in
-          // the top-left corner of the window.
-          const box = event.currentTarget.getBoundingClientRect();
-          onMore({ x: box.left, y: box.bottom + 2 });
-        }}
-      >
-        <Icon name="Ellipsis" size={14} />
-      </Button>
+        <Button
+          {...GHOST}
+          {...SWALLOW}
+          type="button"
+          title="More actions"
+          aria-label="More actions"
+          aria-haspopup="menu"
+          onClick={(event) => {
+            event.stopPropagation();
+            event.preventDefault();
+            // Anchored to the BUTTON, not to the pointer. A keyboard
+            // activation has no pointer, and `clientX` is then 0 — the menu
+            // would open in the top-left corner of the window.
+            const box = event.currentTarget.getBoundingClientRect();
+            onMore({ x: box.left, y: box.bottom + 2 });
+          }}
+        >
+          <Icon name="Ellipsis" size={14} />
+        </Button>
+      </div>
 
-      {/* The mode, past a rule. See `TaskMenuAction.trailing`. */}
+      {/* The MODE, in its own pill. ⚠️ Its reveal is deliberately different:
+          hover OR selected, because on a selected card it is the only thing
+          saying so besides the border. See the header. */}
       {items
         .filter((item) => item.trailing)
         .map((item) => (
-          <span key={item.id} className="flex items-center">
-            <span className="mx-0.5 h-4 w-px bg-border" aria-hidden />
-            <QuickButton item={item} onRun={() => item.run(actions, ctx)} />
-          </span>
+          <div
+            key={item.id}
+            className={`flex items-center ${PILL} ${
+              item.active ? "opacity-100" : REVEAL
+            }`}
+          >
+            <QuickButton item={item} actions={actions} ctx={ctx} />
+          </div>
         ))}
     </div>
   );
@@ -217,10 +255,12 @@ export function TaskCardActions({
 /** One glyph button. Extracted so the row and the trailing slot agree. */
 function QuickButton({
   item,
-  onRun,
+  actions,
+  ctx,
 }: {
   item: TaskQuickAction;
-  onRun: () => void;
+  actions: TaskMenuActions;
+  ctx: TaskMenuContext;
 }) {
   return (
     <Button
@@ -246,7 +286,18 @@ function QuickButton({
       onClick={(event) => {
         event.stopPropagation();
         event.preventDefault();
-        onRun();
+        // ⚠️ The shift key has to survive the trip, and it nearly did not.
+        // Shift-click on the card's old left checkbox extended a RANGE, and
+        // that gutter is gone — this tick box is the only checkbox left, so
+        // if it swallowed the modifier the gesture would have disappeared
+        // with the gutter. The menu still passes `false`: a right-click has
+        // no anchor to extend from.
+        item.run(
+          event.shiftKey
+            ? { ...actions, toggleSelect: (t) => actions.toggleSelect(t, true) }
+            : actions,
+          ctx,
+        );
       }}
     >
       <Icon

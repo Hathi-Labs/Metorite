@@ -71,7 +71,8 @@
 import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
-import { Input, Select, Textarea } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
+import { Input, Textarea } from "@/components/ui/Input";
 import { useToast } from "@/components/ui/Toast";
 import { StatusChip } from "@/components/StatusChip";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
@@ -782,18 +783,14 @@ export function TaskPanel({
                   />
                 }
               >
-                <Select
+                <SelectButton
+                  label="Status"
+                  widthClass="w-full"
                   value={task.status_id}
                   disabled={busy}
-                  aria-label="Status"
-                  onChange={(e) => void changeStatus(e.target.value)}
-                >
-                  {statuses.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </Select>
+                  onChange={(next) => void changeStatus(next)}
+                  options={statuses.map((s) => ({ value: s.id, label: s.name }))}
+                />
               </FieldCell>
 
               <FieldCell
@@ -911,6 +908,12 @@ export function TaskPanel({
                 value={task.tags ?? []}
                 registry={tags}
                 disabled={busy}
+                // The registry a new tag lands in is this task's own project.
+                // Best effort inside the picker: if it fails the tag still
+                // gets added, it just keeps the column default colour.
+                onCreate={(name, color) =>
+                  projectsApi.createTag(task.project_id, { name, color })
+                }
                 onChange={(next) => {
                   void (async () => {
                     try {

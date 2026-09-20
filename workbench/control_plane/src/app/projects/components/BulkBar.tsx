@@ -19,11 +19,14 @@
 
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
+import Icon from "@/components/Icon";
 import { useState } from "react";
 
-import type { StatusRow } from "../lib/api";
+import { AssigneePicker } from "./AssigneePicker";
+import { TagPicker } from "./TagPicker";
+
+import type { StatusRow, TagRow } from "../lib/api";
 import { type BulkDraft, EMPTY_DRAFT, buildRequest } from "../lib/selection";
 
 /**
@@ -48,6 +51,15 @@ const IMPORTANCE = [
 interface Props {
   count: number;
   statuses: StatusRow[];
+  /**
+   * The project's tag registry, for the two tag pickers.
+   *
+   * Defaulted to empty rather than required: a selection can span projects,
+   * and a surface with no registry should still let somebody TYPE a tag. The
+   * picker then suggests nothing and creates on Enter, which is the honest
+   * behaviour and exactly what the four text boxes did before.
+   */
+  tags?: readonly TagRow[];
   busy: boolean;
   onClear: () => void;
   onApply: (request: ReturnType<typeof buildRequest>) => void;
@@ -67,6 +79,7 @@ interface Props {
 export function BulkBar({
   count,
   statuses,
+  tags = [],
   busy,
   onClear,
   onApply,
@@ -134,42 +147,59 @@ export function BulkBar({
             wraps. Left loose on the row, "Remove tags…" wrapped away from
             "Add tags…" and landed under the assignee fields, where it reads
             as a fourth unrelated box. Grouping costs one div and keeps the
-            two halves of one idea on one line at every width. */}
-        <div className="flex items-center gap-1">
-          <Input
-            inputSize="sm"
-            className="w-36"
-            aria-label="Assign to"
-            placeholder="Assign to…"
+            two halves of one idea on one line at every width.
+
+            ⚠️ **These were four free-text boxes** until 2026-09-20. Owner
+            direction: a selection should suggest as you type, the way the
+            task panel already does. So they are the panel's OWN pickers —
+            `AssigneePicker` (directory-backed, people and agents in one list
+            with their warnings) and `TagPicker` (the project's registry, with
+            "create" shown rather than silent). Widened with presentation
+            props rather than copied, so the bar and the panel cannot drift
+            into suggesting different things.
+
+            The DRAFT is still a comma-separated string, so `buildRequest`
+            and `lib/selection.ts` are untouched. A picker writes into the
+            same field a person could type into, and free text still works —
+            the server accepts any non-empty string, and a picker that
+            refuses what the API accepts is a UI inventing a rule. */}
+        <div className="flex items-start gap-1">
+          <PeopleField
+            label="Assign to…"
             value={draft.assigneeAdd}
-            onChange={(e) => set({ assigneeAdd: e.target.value })}
+            busy={busy}
+            onChange={(next) => set({ assigneeAdd: next })}
           />
-          <Input
-            inputSize="sm"
-            className="w-36"
-            aria-label="Unassign"
-            placeholder="Unassign…"
+          <PeopleField
+            label="Unassign…"
             value={draft.assigneeRemove}
-            onChange={(e) => set({ assigneeRemove: e.target.value })}
+            busy={busy}
+            onChange={(next) => set({ assigneeRemove: next })}
           />
         </div>
-        <div className="flex items-center gap-1">
-          <Input
-            inputSize="sm"
-            className="w-28"
-            aria-label="Add tags"
-            placeholder="Add tags…"
-            value={draft.tagAdd}
-            onChange={(e) => set({ tagAdd: e.target.value })}
-          />
-          <Input
-            inputSize="sm"
-            className="w-28"
-            aria-label="Remove tags"
-            placeholder="Remove tags…"
-            value={draft.tagRemove}
-            onChange={(e) => set({ tagRemove: e.target.value })}
-          />
+        <div className="flex items-start gap-1">
+          <div className="w-36">
+            <TagPicker
+              compact
+              placeholder="Add tags…"
+              ariaLabel="Add tags"
+              registry={[...tags]}
+              disabled={busy}
+              value={asList(draft.tagAdd)}
+              onChange={(next) => set({ tagAdd: next.join(", ") })}
+            />
+          </div>
+          <div className="w-36">
+            <TagPicker
+              compact
+              placeholder="Remove tags…"
+              ariaLabel="Remove tags"
+              registry={[...tags]}
+              disabled={busy}
+              value={asList(draft.tagRemove)}
+              onChange={(next) => set({ tagRemove: next.join(", ") })}
+            />
+          </div>
         </div>
 
         {/* `ml-auto` pins the two actions to the trailing edge, so the button
@@ -201,6 +231,92 @@ export function BulkBar({
       {notice ? (
         <p className="mt-1 text-xs text-muted-foreground">{notice}</p>
       ) : null}
+    </div>
+  );
+}
+
+/** A CSV draft field as a list, and back. `lib/selection.list` does the same
+ *  split on the way to the request; this is its mirror for the UI. */
+const asList = (raw: string): string[] =>
+  raw
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+/**
+ * One assignee field: the chips already queued, plus the directory picker.
+ *
+ * ⚠️ The picker's text is a LOCAL query, not the draft. Bound to the draft it
+ * would search for "priya@x, bob@y" the moment a second person was queued,
+ * and the directory would answer nothing — a field that stops suggesting once
+ * you have used it. So the query clears on every pick and the committed
+ * people live in chips beside it, which is the model `TagPicker` already uses
+ * for the same reason.
+ *
+ * Free text still lands: Enter commits whatever was typed, because the server
+ * takes any non-empty string and `AssigneePicker`'s own header says a picker
+ * that refuses what the API accepts is a UI inventing a rule.
+ */
+function PeopleField({
+  label,
+  value,
+  busy,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  busy: boolean;
+  onChange: (next: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const people = asList(value);
+
+  const add = (who: string) => {
+    const trimmed = who.trim();
+    // A comma would split one address into two unusable halves downstream.
+    if (!trimmed || trimmed.includes(",")) return;
+    if (people.some((p) => p.toLowerCase() === trimmed.toLowerCase())) {
+      setQuery("");
+      return;
+    }
+    onChange([...people, trimmed].join(", "));
+    setQuery("");
+  };
+
+  return (
+    <div className="w-36">
+      <div className="flex flex-wrap gap-1 empty:hidden">
+        {people.map((who) => (
+          <span
+            key={who}
+            className="inline-flex max-w-full items-center gap-1 rounded-md bg-secondary px-1.5 py-0.5 text-[11px] text-foreground"
+          >
+            <span className="truncate">{who}</span>
+            <button
+              type="button"
+              disabled={busy}
+              aria-label={`Remove ${who}`}
+              onClick={() => onChange(people.filter((p) => p !== who).join(", "))}
+              className="shrink-0 opacity-70 hover:opacity-100"
+            >
+              <Icon name="X" size={10} />
+            </button>
+          </span>
+        ))}
+      </div>
+      <AssigneePicker
+        value={query}
+        onChange={setQuery}
+        onPick={add}
+        onCommitText={() => add(query)}
+        // ⚠️ Enter only. A blur here is the member moving to the next field
+        // on the same row, not finishing this one — see the prop's note.
+        commitOnBlur={false}
+        disabled={busy}
+        placeholder={label}
+        ariaLabel={label.replace(/…$/, "")}
+        className={people.length ? "mt-1" : ""}
+      />
     </div>
   );
 }

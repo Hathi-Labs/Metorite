@@ -19,7 +19,16 @@ import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
 import Modal from "@/components/ui/Modal";
+
+/** See `TagManager` — the same marker, the same reason. */
+const orgWide = (row: { project_id?: string | null }): boolean =>
+  row.project_id === null;
+
+const ORG_WIDE_NOTE =
+  "Shared by the whole organization — edit it in organization settings, " +
+  "not from one project.";
 import { useEffect, useState } from "react";
 
 import { type FieldRow, projectsApi } from "../lib/api";
@@ -31,10 +40,6 @@ import {
   needsOptions,
   ordered,
 } from "../lib/customFields";
-
-const SELECT =
-  "cc-control rounded-lg border border-border bg-background px-2 py-1.5 " +
-  "text-xs text-foreground outline-none focus:border-primary/50";
 
 interface Props {
   projectId: string;
@@ -165,13 +170,32 @@ export function FieldManager({ projectId, projectName, onClose, onChanged }: Pro
                     {field.options.length ? ` · ${field.options.join(", ")}` : ""}
                   </span>
                 </span>
+                {/* ⚠️ Same marker `TagManager` now reads: the wire sends
+                    `project_id: null` for an org-wide row and the gateway
+                    refuses every per-project write against one. Drawn and
+                    disabled rather than hidden — the field really is on this
+                    project's tasks, so leaving it off the list would make
+                    this screen disagree with the task panel. */}
+                {orgWide(field) ? (
+                  <Badge
+                    tone="primary"
+                    title="Shared by every project in this organization"
+                  >
+                    Organization
+                  </Badge>
+                ) : null}
                 <Badge>{FIELD_TYPE_LABELS[field.field_type as FieldType]}</Badge>
                 <Button
                   variant="ghost"
                   size="icon-sm"
                   icon="Trash2"
                   aria-label={`Delete ${field.name}`}
-                  title={`Delete “${field.name}” and clear it from every task`}
+                  disabled={orgWide(field)}
+                  title={
+                    orgWide(field)
+                      ? ORG_WIDE_NOTE
+                      : `Delete “${field.name}” and clear it from every task`
+                  }
                   onClick={() => void remove(field as FieldRow)}
                 />
               </li>
@@ -192,21 +216,22 @@ export function FieldManager({ projectId, projectName, onClose, onChanged }: Pro
               aria-label="Field name"
             />
           </label>
-          <label className="text-[11px] text-muted-foreground">
+          {/* A `div`, not a `label`: the control is a BUTTON now, and a
+              label cannot forward a click to one. Leaving the element as a
+              label would promise an association the DOM does not make. */}
+          <div className="text-[11px] text-muted-foreground">
             Type
-            <select
-              aria-label="Field type"
-              className={`${SELECT} block`}
+            <SelectButton
+              label="Field type"
+              widthClass="mt-0.5 w-[10rem]"
               value={type}
-              onChange={(e) => setType(e.target.value as FieldType)}
-            >
-              {FIELD_TYPES.map((option) => (
-                <option key={option} value={option}>
-                  {FIELD_TYPE_LABELS[option]}
-                </option>
-              ))}
-            </select>
-          </label>
+              onChange={(next) => setType(next as FieldType)}
+              options={FIELD_TYPES.map((option) => ({
+                value: option,
+                label: FIELD_TYPE_LABELS[option],
+              }))}
+            />
+          </div>
           <Button type="submit" size="sm" loading={busy} disabled={!name.trim()}>
             Add
           </Button>

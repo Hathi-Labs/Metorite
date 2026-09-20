@@ -17,6 +17,7 @@
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
 import { useEffect, useState } from "react";
 
 import { projectsApi } from "../lib/api";
@@ -32,10 +33,6 @@ import {
   toPayload,
   toggleWeekday,
 } from "../lib/recurrence";
-
-const SELECT =
-  "cc-control rounded-lg border border-border bg-background px-2 py-1.5 " +
-  "text-xs text-foreground outline-none focus:border-primary/50";
 
 const FREQ_LABELS: Record<Freq, string> = {
   daily: "Daily",
@@ -175,18 +172,13 @@ export function RepeatEditor({ taskId }: Props) {
               value={String(draft.interval)}
               onChange={(e) => set({ interval: Number(e.target.value) })}
             />
-            <select
-              aria-label="How often"
-              className={SELECT}
+            <SelectButton
+              label="How often"
+              widthClass="w-[8rem]"
               value={draft.freq}
-              onChange={(e) => set({ freq: e.target.value as Freq })}
-            >
-              {FREQS.map((f) => (
-                <option key={f} value={f}>
-                  {FREQ_LABELS[f]}
-                </option>
-              ))}
-            </select>
+              onChange={(next) => set({ freq: next as Freq })}
+              options={FREQS.map((f) => ({ value: f, label: FREQ_LABELS[f] }))}
+            />
           </div>
 
           {draft.freq === "weekly" ? (
@@ -211,20 +203,18 @@ export function RepeatEditor({ taskId }: Props) {
           {draft.freq === "monthly" || draft.freq === "yearly" ? (
             <div className="flex flex-wrap items-center gap-2">
               {draft.freq === "yearly" ? (
-                <select
-                  aria-label="Month"
-                  className={SELECT}
+                <SelectButton
+                  label="Month"
+                  widthClass="w-[9rem]"
                   value={String(draft.month_of_year ?? 1)}
-                  onChange={(e) => set({ month_of_year: Number(e.target.value) })}
-                >
-                  {Array.from({ length: 12 }, (_, i) => (
-                    <option key={i + 1} value={i + 1}>
-                      {new Date(2026, i, 1).toLocaleString(undefined, {
-                        month: "long",
-                      })}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(next) => set({ month_of_year: Number(next) })}
+                  options={Array.from({ length: 12 }, (_, i) => ({
+                    value: String(i + 1),
+                    label: new Date(2026, i, 1).toLocaleString(undefined, {
+                      month: "long",
+                    }),
+                  }))}
+                />
               ) : null}
               <span className="text-xs text-muted-foreground">on day</span>
               <Input
@@ -247,18 +237,13 @@ export function RepeatEditor({ taskId }: Props) {
             </div>
           ) : null}
 
-          <select
-            aria-label="Measured from"
-            className={`${SELECT} w-full`}
+          <SelectButton
+            label="Measured from"
+            widthClass="w-full"
             value={draft.anchor}
-            onChange={(e) => set({ anchor: e.target.value as Rule["anchor"] })}
-          >
-            {ANCHORS.map((a) => (
-              <option key={a} value={a}>
-                {ANCHOR_LABELS[a]}
-              </option>
-            ))}
-          </select>
+            onChange={(next) => set({ anchor: next as Rule["anchor"] })}
+            options={ANCHORS.map((a) => ({ value: a, label: ANCHOR_LABELS[a] }))}
+          />
 
           {/* Live, not on save: picking the wrong anchor is invisible until a
               cadence has drifted for three months. */}

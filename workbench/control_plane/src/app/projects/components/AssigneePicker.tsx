@@ -17,6 +17,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
+import AnchoredPanel from "@/components/ui/AnchoredPanel";
 import { Input } from "@/components/ui/Input";
 
 import { projectsApi } from "../lib/api";
@@ -38,6 +39,29 @@ interface Props {
   disabled?: boolean;
   /** The task's due date (ISO), to sharpen the engagement-end warning. */
   due?: string | null;
+  /**
+   * Presentation, for the second surface (WS-27n's bulk bar, 2026-09-20).
+   *
+   * The panel says "Add an assignee"; the bulk bar has TWO of these and they
+   * mean opposite things, so neither can use a fixed label. Defaults keep the
+   * panel byte-identical — this widened the seam rather than forking it,
+   * which is the rule the bulk bar's status control already follows.
+   */
+  placeholder?: string;
+  ariaLabel?: string;
+  className?: string;
+  /**
+   * Whether losing focus commits whatever is typed. Default `true`, which is
+   * the task panel's behaviour and predates this prop.
+   *
+   * ⚠️ The bulk bar passes `false`, and the reason is a defect seen on the
+   * local stack: with four controls on one row, typing "ow" and then
+   * clicking the tag field beside it QUEUED "ow" as an assignee. In the
+   * panel a blur is the member leaving a finished field. In a row of fields
+   * it is the member moving to the next one, and those are opposite
+   * intentions. Enter still commits free text on both.
+   */
+  commitOnBlur?: boolean;
 }
 
 export function AssigneePicker({
@@ -47,8 +71,15 @@ export function AssigneePicker({
   onCommitText,
   disabled,
   due,
+  placeholder = "name, email or agent:name",
+  ariaLabel = "Add an assignee",
+  className = "mt-1.5",
+  commitOnBlur = true,
 }: Props) {
   const [open, setOpen] = useState(false);
+  /** The field the portalled list measures from. State, not a ref, so the
+   *  panel re-places when the input mounts. */
+  const [field, setField] = useState<HTMLInputElement | null>(null);
   const [res, setRes] = useState<PickerResponse | null>(null);
   /**
    * ⚠️ Three states that used to be ONE, and the one was silence.
@@ -97,7 +128,8 @@ export function AssigneePicker({
   return (
     <div className="relative">
       <Input
-        className="mt-1.5"
+        ref={setField}
+        className={className}
         value={value}
         disabled={disabled}
         onChange={(e) => {
@@ -117,15 +149,25 @@ export function AssigneePicker({
           // Delay so a click on a suggestion lands before the list closes.
           setTimeout(() => {
             setOpen(false);
-            onCommitText();
+            if (commitOnBlur) onCommitText();
           }, 150);
         }}
-        placeholder="name, email or agent:name"
-        aria-label="Add an assignee"
+        placeholder={placeholder}
+        aria-label={ariaLabel}
         aria-expanded={open}
       />
-      {open && (
-        <div className="absolute inset-x-0 top-full z-20 mt-1 max-h-72 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-md">
+      {/* ⚠️ PORTALLED. The task panel's body scrolls, and an absolutely
+          positioned list is clipped by it: measured 2026-09-20, the tag
+          list beside this one spanned y486–615 inside a box ending at
+          y552, so a third of it — including its last row — was simply not
+          on screen. The owner reported it as the picker "not showing up
+          properly". `AnchoredPanel` carries the whole rule. */}
+      <AnchoredPanel
+        anchor={field}
+        open={open}
+        maxHeight={288}
+        className="p-1"
+      >
           {/* ⚠️ Every branch draws SOMETHING. A picker that renders nothing
               is indistinguishable from a broken one, and free text still
               works in all of them — the server accepts any non-empty
@@ -199,8 +241,7 @@ export function AssigneePicker({
               })}
             </div>
           ))}
-        </div>
-      )}
+      </AnchoredPanel>
     </div>
   );
 }

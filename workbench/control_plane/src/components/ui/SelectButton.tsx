@@ -21,6 +21,23 @@
  * and disappears as a state change. Do not add a duration, a transition or an
  * easing curve here, and do not re-open the question without asking.
  *
+ * ## ⚠️ The panel is PORTALLED, and it has to be
+ *
+ * An absolutely-positioned panel is clipped by the nearest ancestor that is
+ * not `overflow: visible`. `Modal.tsx`'s body is `overflow-hidden`, so inside
+ * a dialog this control drew a list with its bottom cut off — measured in
+ * `MoveTasksDialog` on 2026-09-20: six options in the DOM, a 154px panel, and
+ * only two of them visible. A native `<select>` never had that problem
+ * because the browser draws its list outside the page entirely, which is the
+ * one thing the platform widget was better at.
+ *
+ * So the panel renders into `document.body` at `position: fixed`, measured
+ * from the trigger. It carries `PREVENT_OUTSIDE_CLICK`, the marker
+ * `lib/outsideClick.ts` defines for exactly this: a portalled child is, by
+ * containment, OUTSIDE the popover that raised it, so without the marker the
+ * first click on an option would dismiss the panel instead of choosing. That
+ * file was written ahead of this need and says so; this is the need.
+ *
  * ⚠️ **Not built on `@base-ui/react`, and that is the rule rather than a
  * shortcut.** `AGENTS.md` rule 8 / D-PM-15 make `src/components/ui/Modal.tsx`
  * the ONE file that may import the substrate. H-94 names the sanctioned answer
@@ -31,6 +48,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
+import AnchoredPanel from "@/components/ui/AnchoredPanel";
 import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
 
 /**
@@ -56,6 +74,24 @@ export interface SelectOption {
   label: string;
   /** Drawn after the label, muted — a count, a hint, an address. */
   hint?: string;
+  /**
+   * Indent, for a list that is really a TREE. One step per level.
+   *
+   * ⚠️ Not leading spaces in the label. A native `<option>` is the only
+   * place that trick works, because the browser renders its text verbatim;
+   * in real markup the spaces collapse and every row lines up again. The
+   * project picker in `MoveTasksDialog` is what asked for this.
+   */
+  depth?: number;
+  /**
+   * Offered but not choosable, with `hint` saying why.
+   *
+   * Kept rather than dropped, because the row is part of the SHAPE the
+   * member is reading: a folder between two projects explains the
+   * indentation of the project under it. Dropping it would flatten the tree
+   * into a list that no longer says what contains what.
+   */
+  disabled?: boolean;
 }
 
 export interface SelectButtonProps {
@@ -74,6 +110,26 @@ export interface SelectButtonProps {
   className?: string;
   /** Widest the trigger may grow. The row is `flex-wrap`; this keeps it sane. */
   widthClass?: string;
+  /** A write is in flight. The trigger refuses to open. */
+  disabled?: boolean;
+  /**
+   * Open the list on mount, for a control that IS the act of choosing.
+   *
+   * `TableView`'s cell editors are the case: the member has already clicked
+   * the cell to start editing, and a button they must then click again to
+   * open is two gestures for one decision. The native `<select>` these
+   * replaced had the same flaw — `autoFocus` focuses it, it does not open
+   * it — so this is the conversion fixing something on the way past.
+   */
+  autoOpen?: boolean;
+  /**
+   * The list closed — by a pick, by Escape, or by a click outside.
+   *
+   * A cell editor has to put the cell back afterwards, and it cannot see any
+   * of those three from out here. Fired for all of them, so the caller
+   * handles one event instead of guessing at three.
+   */
+  onClose?: () => void;
 }
 
 export function SelectButton({
@@ -84,10 +140,30 @@ export function SelectButton({
   defaultValue = "",
   className = "",
   widthClass = "w-[9rem]",
+  disabled = false,
+  autoOpen = false,
+  onClose,
 }: SelectButtonProps) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(autoOpen);
   const root = useRef<HTMLDivElement | null>(null);
   const listId = useId();
+  /**
+   * Fire `onClose` on the true→false edge, not on every render where the
+   * list happens to be shut. A handler that ran on mount would close a cell
+   * editor before the member had chosen anything.
+   */
+  const wasOpen = useRef(open);
+  useEffect(() => {
+    if (wasOpen.current && !open) onClose?.();
+    wasOpen.current = open;
+  }, [open, onClose]);
+
+  /**
+   * The trigger, as state rather than a ref, so the panel re-measures when
+   * it mounts. A ref does not re-render, and the panel would then place
+   * itself against `null` on the first open.
+   */
+  const [trigger, setTrigger] = useState<HTMLButtonElement | null>(null);
 
   const current = options.find((o) => o.value === value);
 
@@ -130,13 +206,15 @@ export function SelectButton({
   return (
     <div ref={root} className={`relative ${widthClass}`}>
       <button
+        ref={setTrigger}
         type="button"
         aria-label={label}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
+        disabled={disabled}
         onClick={() => setOpen((was) => !was)}
-        className={`cc-control flex h-7 w-full items-center gap-1 rounded-md border border-border bg-card px-2 text-left text-xs hover:bg-muted ${className}`}
+        className={`cc-control flex h-7 w-full items-center gap-1 rounded-md border border-border bg-card px-2 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60 ${className}`}
       >
         <span className="min-w-0 flex-1 truncate pr-px">
           {current?.label ?? label}
@@ -149,24 +227,31 @@ export function SelectButton({
         />
       </button>
 
-      {open ? (
-        <div
-          id={listId}
-          role="listbox"
-          aria-label={label}
-          // No transition. See the header — this is a directive, not a default.
-          className="absolute left-0 top-[calc(100%+2px)] z-30 max-h-64 w-max min-w-full overflow-y-auto rounded-md border border-border bg-card p-1 shadow-md"
-        >
+      <AnchoredPanel
+        anchor={trigger}
+        open={open}
+        className="max-h-64 w-max p-1"
+        panelProps={{ id: listId, role: "listbox", "aria-label": label }}
+      >
           {options.map((option) => (
             <button
               key={option.value}
               type="button"
               role="option"
               aria-selected={option.value === value}
+              aria-disabled={option.disabled || undefined}
+              disabled={option.disabled}
               onClick={() => pick(option.value)}
-              className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-muted ${
-                option.value === value ? "bg-muted font-medium" : ""
-              }`}
+              className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs ${
+                option.disabled
+                  ? "cursor-not-allowed text-muted-foreground"
+                  : "hover:bg-muted"
+              } ${option.value === value ? "bg-muted font-medium" : ""}`}
+              // A tree's indent, in `rem` so it follows the member's density.
+              // `px` here would stop matching the text beside it at compact.
+              style={
+                option.depth ? { paddingLeft: `${0.5 + option.depth * 0.75}rem` } : undefined
+              }
             >
               <span className="min-w-0 flex-1 truncate pr-px">{option.label}</span>
               {option.hint ? (
@@ -176,8 +261,7 @@ export function SelectButton({
               ) : null}
             </button>
           ))}
-        </div>
-      ) : null}
+      </AnchoredPanel>
     </div>
   );
 }

@@ -15,6 +15,7 @@
 
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { useEffect, useState } from "react";
 
@@ -27,10 +28,6 @@ import {
   ordered,
   toInput,
 } from "../lib/customFields";
-
-const SELECT =
-  "cc-control w-full rounded-lg border border-border bg-background px-2 py-1.5 " +
-  "text-xs text-foreground outline-none focus:border-primary/50";
 
 interface Props {
   task: TaskRow;
@@ -117,21 +114,21 @@ export function CustomFieldValues({ task, fields, onChanged }: Props) {
                   {draft[def.field_key] === true ? "Yes" : "No"}
                 </label>
               ) : def.field_type === "select" ? (
-                <select
-                  aria-label={def.name}
-                  className={SELECT}
+                <SelectButton
+                  label={def.name}
+                  widthClass="w-full"
                   value={String(draft[def.field_key] ?? "")}
-                  onChange={(e) => set(def.field_key, e.target.value)}
-                >
-                  {/* An explicit "not set" row: without it a select can never be
-                      emptied once somebody has chosen something. */}
-                  <option value="">— not set —</option>
-                  {def.options.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(next) => set(def.field_key, next)}
+                  options={[
+                    // An explicit "not set" row: without it the field can
+                    // never be emptied once somebody has chosen something.
+                    { value: "", label: "— not set —" },
+                    ...def.options.map((option) => ({
+                      value: option,
+                      label: option,
+                    })),
+                  ]}
+                />
               ) : def.field_type === "multi_select" ? (
                 <div className="flex flex-wrap gap-1">
                   {def.options.map((option) => {

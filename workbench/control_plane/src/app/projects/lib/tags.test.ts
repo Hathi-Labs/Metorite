@@ -21,6 +21,9 @@ import {
   removeTag,
   suggest,
   wouldCreate,
+  AUTO_TAG_HUES,
+  TAG_COLORS,
+  autoTagHue,
 } from "./tags";
 
 const tag = (name: string, over: Partial<TagRow> = {}): TagRow => ({
@@ -202,6 +205,53 @@ describe("chipClass", () => {
     // DESIGN_SYSTEM.md: the theme decides what red is.
     for (const color of ["gray", "red", "amber", "green", "blue", "violet"]) {
       expect(chipClass(color)).not.toMatch(/#[0-9a-f]{3,8}\b|hsl\(|rgb\(/i);
+    }
+  });
+});
+
+/**
+ * ── The colour a new tag gets (owner, 2026-09-20) ───────────────────────
+ *
+ * Before this, `146_projects.sql`'s `DEFAULT 'gray'` decided, so every tag
+ * the server auto-registered was gray and a project's whole tag set read as
+ * one colour. The owner asked how a colour gets chosen at creation time.
+ */
+describe("the hue a new tag gets by default", () => {
+  it("is never gray — that is the no-colour look, not a choice", () => {
+    // The whole point. If gray ever re-enters the auto pool, new tags go
+    // back to being indistinguishable and nothing else here would notice.
+    expect(AUTO_TAG_HUES).not.toContain("gray");
+    for (const name of ["bug", "ui", "urgent", "backend", "ops", "a", "zz", ""]) {
+      expect(autoTagHue(name), name).not.toBe("gray");
+    }
+  });
+
+  it("is stable for the same word, so a tag is one colour everywhere", () => {
+    expect(autoTagHue("deploy")).toBe(autoTagHue("deploy"));
+    // Two people inventing the same tag separately must not disagree.
+    expect(autoTagHue("Deploy")).toBe(autoTagHue("  deploy  "));
+  });
+
+  it("is always a hue the chip vocabulary can paint", () => {
+    for (const name of ["a", "bb", "ccc", "dddd", "eeeee", "ffffff", "zzzzzzz"]) {
+      expect(TAG_COLORS, name).toContain(autoTagHue(name));
+    }
+  });
+
+  it("spreads across the pool rather than collapsing onto one hue", () => {
+    // A hash that always answered the same thing would pass every test
+    // above and leave the board monochrome anyway.
+    const words = ["bug", "ui", "urgent", "backend", "ops", "docs", "perf",
+                   "design", "infra", "billing", "auth", "search"];
+    const used = new Set(words.map(autoTagHue));
+    expect(used.size, "the auto hue barely varies").toBeGreaterThan(2);
+  });
+
+  it("never indexes off the array, whatever the name", () => {
+    // The unsigned guard: a signed hash gives a negative modulus, which
+    // reads past the front of the array and hands back `undefined`.
+    for (const name of ["\u00ff\u00ff\u00ff", "\u4f60\u597d", "z".repeat(400), "\u{1F600}"]) {
+      expect(autoTagHue(name), JSON.stringify(name)).toBeTruthy();
     }
   });
 });
