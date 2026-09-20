@@ -2757,6 +2757,25 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner directive 2026-09-20 · `people_center_app.md` §2 · R6
 - **Added:** 2026-09-20 · the People UX session
 
+### H-133 · `POST /tasks/people` has no caller. Decide whether it stays · [OWNER]
+- **Check:** `rg -n "peopleWriteApi.create|createPerson" workbench/control_plane/src`
+  → no hit means nothing in the product calls it, and this is open.
+- **Why:** the owner removed the People app's "Add person" control on
+  2026-09-21. One door into the organization, and it is Organisation. The
+  endpoint behind the old form is now unreachable from the product.
+- **Kept instead of deleted, on purpose.** It is the door an importer or a
+  re-enabled form would use. A working admin endpoint with no UI is not the
+  same defect as a second door in the product. Its docstring says so, so
+  nobody "restores" the button by accident.
+- **The decision to take:** delete it with its tests and spec sections, or
+  keep it as the seam a future importer uses. Deleting is tidier. Keeping is
+  reversible. Neither is urgent, and both are the owner's call because the
+  question is product shape.
+- 📌 `PATCH /people/{id}` is untouched and still reachable. An administrator
+  still corrects a colleague's title or department from the person page.
+- **Authority:** owner directive 2026-09-21 · `people_center_app.md` §2
+- **Added:** 2026-09-21 · the one-door session
+
 ### H-125 · Migration 148's email index spans EVERY tenant · [AGENT]
 - **Check:** `rg -A 2 "uq_gtd_people_email_lower" infra/postgres/148_people_key_shape.sql`
   → an index on `(lower(email))` that does not name `organization_id` means
