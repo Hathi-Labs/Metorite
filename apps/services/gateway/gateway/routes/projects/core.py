@@ -1745,6 +1745,88 @@ def refuse_org_wide_write(row: Any, what: str) -> None:
         )
 
 
+def refuse_org_wide_rescope(
+    values: dict, allowed: frozenset[str], what: str,
+) -> None:
+    """Refuse the keys of an org-wide edit whose meaning is per-PROJECT.
+
+    D-PM-16 lets a row be the organization's or one project's. It does not say
+    what a *per-project* attribute means on an organization's row, and three of
+    them have no answer yet:
+
+    * ``is_default`` — the default type of WHICH project? ``_clear_other_defaults``
+      is scoped to one root, so an org-wide default would silently un-default
+      one tree and leave every other tree's alone.
+    * ``field_type`` and ``options`` — both are guarded by "is this in use",
+      and in use across an organization is a different question with a
+      different answer.
+
+    Refusing them by name is the conservative half. The owner's decision of
+    2026-09-20 was about the RENAME, and a rename is what this allows.
+    """
+    blocked = sorted(k for k in values if k not in allowed)
+    if blocked:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"An organization-wide {what} can be renamed and described, "
+                f"not re-scoped. {', '.join(blocked)} "
+                f"{'is' if len(blocked) == 1 else 'are'} decided per project."
+            ),
+        )
+
+
+def require_org_vocabulary_edit(user: Any, what: str) -> None:
+    """Permission to change a row that ALREADY applies to every project.
+
+    ⚠️ **The create flag does not gate this, and that is deliberate.**
+    ``org_vocabularies_enabled`` gates the act that is hard to walk back —
+    minting a row that appears everywhere at once. Turning creates off later
+    must not strand the rows already minted as uneditable, which would be a
+    worse state than either setting.
+
+    ⚠️ **This permission is the WHOLE authorization, because there is no
+    project to check.** Every per-project path here anchors on
+    :func:`load_visible_project` — a row the caller was demonstrably allowed to
+    see. An org-wide row has no project, so the two fences are the tenant
+    session (RLS) and :data:`ORG_VOCABULARY_WRITE`, which is owner/admin only.
+    """
+    if not (user is not None and user.has_permission(ORG_VOCABULARY_WRITE)):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"'{what}' applies to every project in the organization, so "
+                "changing it needs organization settings permission."
+            ),
+        )
+
+
+def governed_tasks_scope(row: Any) -> tuple[str, dict]:
+    """The WHERE arm selecting the tasks a vocabulary row governs, and its params.
+
+    🔴 **This replaces the bug ``refuse_org_wide_write`` was built to hide.**
+    Every write path here read ``str(row.project_id)`` and handed it to a
+    ``CAST(:root AS uuid)``. For an org-wide row that is ``str(None)`` — the
+    literal string ``"None"`` — and Postgres answers an unhandled cast error,
+    so a route that should have said something said 500. Refusing by name
+    turned the crash into an answer. Scoping correctly removes the crash.
+
+    The organization is read from the ROW, not from the caller. The row came
+    out of a tenant session, so its ``organization_id`` is already this
+    tenant's — and taking it from the row means the scope cannot disagree with
+    the thing being renamed.
+    """
+    if is_org_wide(row):
+        return (
+            "organization_id = CAST(:scope AS uuid)",
+            {"scope": str(row.organization_id)},
+        )
+    return (
+        "root_project_id = CAST(:scope AS uuid)",
+        {"scope": str(row.project_id)},
+    )
+
+
 #: The permission that may write the tenant's shared vocabulary.
 #:
 #: An org-wide row lands in **every project in the organization**, including ones

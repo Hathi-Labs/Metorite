@@ -4001,7 +4001,68 @@ fenced, and is why the mutation pass is not optional here.
   tenant that adopts many org-wide entries.
 
 > **Still owed on WS-27bj:** the admin surface for managing org-wide vocabularies (explicitly
-> out of scope above), which is also what would let an org-wide row be edited or retired.
+> out of scope above). The RENAME half of "edited or retired" is now built — see §9.11.2.
+> Retiring one is still owed.
+
+#### 9.11.2 Slice 3, the rename (2026-09-20, D-PM-33)
+
+**D-PM-33 — an org-wide row may be RENAMED, and nothing else.** OWNER-RULED 2026-09-20.
+The ruling has three parts, and each answers a question the seam left open.
+
+1. **Allow the rename**, for tags, custom fields and task types.
+2. **Show the affected-task count first.** `GET /tags/{id}/impact` is the read, shaped like
+   `tasks/move/preview` rather than inventing a second idiom.
+3. **Keep it behind `admin:settings:manage`.** The row lands in every project in the
+   organization. That includes projects the writer cannot see. A grant on the project the
+   request came through is not enough. The create already uses this same permission.
+
+**Merge and delete stay refused.** A rename is reversible by renaming back. A delete removes a
+row every project is using and strips it off their tasks, and a merge destroys one of two rows.
+Those wait for the admin surface and a ruling of their own.
+
+**The create flag does NOT gate the edit.** `PROJECTS_ORG_VOCABULARIES` guards the act that is
+hard to walk back. Turning creates off later must not strand the rows already minted as
+uneditable, which would be a worse state than either setting of the flag.
+
+**What is refused by name, and why each has no answer yet at organization scope:**
+
+| Refused | The question it cannot answer |
+|---|---|
+| `is_default` | the default type of WHICH project? `_clear_other_defaults` is scoped to one root |
+| `field_type` | its guard asks "is this in use", and in use across an organization is a different question |
+| `options` | same guard, same reason |
+
+**Only tags rewrite task data.** `pm_tasks.tags` stores display TEXT (migration 156). So a
+tag rename rewrites every task that wears it. `pm_tasks.type_id` is a foreign key, and
+`pm_custom_fields.field_key` is never editable. Those two renames move a label and nothing
+else. That is why only tags get a preview.
+
+**A rename onto a name ANY project already uses is a 409.** Tags are stored as text. So
+renaming the organization's "bug" to "defect", inside a tree that has its own "defect", would
+merge the two on every task there. That is a destructive act nobody asked for, reported as a
+rename. The per-project rule already refuses a rename onto an existing name. This is that same
+rule, at the scope the row actually has.
+
+**`governed_tasks_scope` replaced the bug `refuse_org_wide_write` was hiding.** Every write
+path read `str(row.project_id)` and handed it to a `CAST(:root AS uuid)`. For an org-wide row
+that is the literal string `"None"`. The helper returns the right WHERE arm for either scope.
+The refusal is now a policy about merge and delete. It is no longer a guard against a crash.
+
+**Fences.** `tests/unit/test_projects_vocabulary_scope.py` (the policy — who may, what is
+refused) and **`tests/live/live_ws27bj_rename.py`** (the behaviour, against a real Postgres).
+⚠️ The live one earned its place immediately. It caught a surviving `CAST('None' AS uuid)`
+in `_count_with_key`. That helper runs on every `patch_field`, including a label-only one. The
+whole hermetic suite was green.
+
+That is R8 in one line.
+
+⚠️ **This lands dark, and deliberately.** `PROJECTS_ORG_VOCABULARIES` is unset in
+production. There are zero org-wide rows in either database, measured 2026-09-20. So nothing
+here is reachable by a member yet. The owner's other ruling of the same day was **not to flip
+the flag until the admin surface exists**.
+
+Creating a row is easy, and un-creating it is the hard part. The management lands first. H-5
+holds the flip.
 
 ---
 

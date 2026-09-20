@@ -38,7 +38,11 @@ from gateway.routes.projects.core import (
     count_where,
     load_visible_project,
     record_activity,
+    is_org_wide,
+    refuse_org_wide_rescope,
     refuse_org_wide_write,
+    require_known_tenant,
+    require_org_vocabulary_edit,
     remap_task_statuses,
     require_known_tenant,
     require_org_vocabulary_write,
@@ -866,9 +870,22 @@ async def patch_type(
     values.pop("scope", None)
     async with _tenant_session() as db:
         existing = await require_row(db, "pm_task_types", type_id, "Task type")
-        refuse_org_wide_write(existing, "task type")
-        vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, str(existing.project_id))
+        if is_org_wide(existing):
+            # Owner decision, 2026-09-20. `pm_tasks.type_id` is a foreign key,
+            # so renaming a type rewrites no task at all — there is nothing to
+            # preview. `is_default` is refused: `_clear_other_defaults` is
+            # scoped to one root, so an org-wide default would un-default one
+            # tree and quietly leave every other tree's alone.
+            require_org_vocabulary_edit(user, existing.name)
+            refuse_org_wide_rescope(
+                values, frozenset({"name", "description"}), "task type",
+            )
+            vis = await resolve_visibility(db, user)
+            require_known_tenant(vis, "task type")
+        else:
+            refuse_org_wide_write(existing, "task type")
+            vis = await resolve_visibility(db, user)
+            await load_visible_project(db, vis, str(existing.project_id))
         if getattr(existing, "is_system", False) and "name" in values:
             raise HTTPException(
                 status_code=409,

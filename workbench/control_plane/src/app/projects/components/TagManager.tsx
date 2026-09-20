@@ -21,10 +21,13 @@ import Modal from "@/components/ui/Modal";
 /**
  * An org-wide row belongs to the organization, not to this space.
  *
- * `project_id: null` is the wire's marker for it (WS-27bj / D-PM-16). The
- * gateway refuses every per-project write against such a row
- * (`refuse_org_wide_write`), so the honest thing is to draw the controls
- * disabled with the reason rather than let the member press a 409.
+ * `project_id: null` is the wire's marker for it (WS-27bj / D-PM-16).
+ *
+ * **What may be done to one changed on 2026-09-20 (D-PM-33).** A RENAME and a
+ * recolour are allowed, for somebody holding `admin:settings:manage`, and the
+ * rename is confirmed against a count first — see `confirmOrgRename`. A MERGE
+ * and a DELETE are still refused by the gateway, so those two stay drawn
+ * disabled with the reason rather than letting the member press a 409.
  *
  * ⚠️ Disabled, NOT hidden. The row still belongs on this list — it is a
  * tag this project's tasks really can wear, and hiding it would make the
@@ -34,8 +37,40 @@ const orgWide = (row: { project_id?: string | null }): boolean =>
   row.project_id === null;
 
 const ORG_WIDE_NOTE =
-  "Shared by the whole organization — edit it in organization settings, " +
-  "not from one project.";
+  "Shared by the whole organization — it can be renamed, but not merged " +
+  "away or deleted from inside one project.";
+
+/**
+ * Ask before rewriting other projects' tasks.
+ *
+ * ⚠️ **The count is the whole point of the confirmation.** "Rename a tag" and
+ * "rewrite 340 tasks in 11 projects, most of which you cannot see" are the
+ * same gesture here, because `pm_tasks.tags` stores display text. A member who
+ * is told the second number makes a different decision from one who is not,
+ * which is exactly why the owner asked for it.
+ *
+ * Returns true when the rename should go ahead.
+ */
+async function confirmOrgRename(tagId: string, to: string): Promise<boolean> {
+  let impact: Awaited<ReturnType<typeof projectsApi.tagImpact>> | null = null;
+  try {
+    impact = await projectsApi.tagImpact(tagId);
+  } catch {
+    // ⚠️ A preview that failed must not become a silent yes. Ask anyway, and
+    // say that the size is unknown — the member can still decline.
+    return window.confirm(
+      `Rename this organization-wide tag to “${to}”? It is shared by every ` +
+        "project, and the number of tasks it would rewrite could not be read.",
+    );
+  }
+  const tasks = `${impact.tasks} task${impact.tasks === 1 ? "" : "s"}`;
+  const projects = `${impact.projects} project${impact.projects === 1 ? "" : "s"}`;
+  return window.confirm(
+    `“${impact.tag}” is shared by the whole organization.\n\n` +
+      `Renaming it to “${to}” rewrites ${tasks} across ${projects}, ` +
+      "including projects you may not be able to open.\n\nRename it?",
+  );
+}
 import { useEffect, useState } from "react";
 
 import { projectsApi } from "../lib/api";
@@ -179,6 +214,11 @@ export function TagManager({
                         return;
                       }
                       void run(async () => {
+                        // D-PM-33: the count comes before the write, never after.
+                        if (orgWide(t) && !(await confirmOrgRename(t.id, next))) {
+                          setEditing(null);
+                          return null;
+                        }
                         const done = await projectsApi.patchTag(t.id, { name: next });
                         setEditing(null);
                         onTasksTouched();
@@ -242,7 +282,6 @@ export function TagManager({
                     <SelectButton
                       label={`Colour for ${t.name}`}
                       widthClass="w-[7rem]"
-                      disabled={orgWide(t)}
                       value={TAG_COLORS.includes(t.color as never) ? t.color : "gray"}
                       onChange={(next) =>
                         void run(async () => {
@@ -257,8 +296,11 @@ export function TagManager({
                       size="icon-sm"
                       icon="Pencil"
                       aria-label={`Rename ${t.name}`}
-                      disabled={orgWide(t)}
-                      title={orgWide(t) ? ORG_WIDE_NOTE : undefined}
+                      title={
+                        orgWide(t)
+                          ? "Renames it for the whole organization — you are shown how many tasks first"
+                          : undefined
+                      }
                       onClick={() => {
                         setEditing(t.id);
                         setDraft(t.name);

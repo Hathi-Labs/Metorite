@@ -41,7 +41,12 @@ from gateway.routes.projects.core import (
     clean_payload,
     load_visible_project,
     org_wide_exists,
+    governed_tasks_scope,
+    is_org_wide,
+    refuse_org_wide_rescope,
     refuse_org_wide_write,
+    require_known_tenant,
+    require_org_vocabulary_edit,
     require_known_tenant,
     require_org_vocabulary_write,
     require_row,
@@ -437,28 +442,116 @@ async def patch_tag(
 
     async with _tenant_session() as db:
         existing = await require_row(db, "pm_tags", tag_id, "Tag")
-        refuse_org_wide_write(existing, "tag")
-        vis = await resolve_visibility(db, user)
-        await load_visible_project(db, vis, str(existing.project_id))
+        org_wide = is_org_wide(existing)
+        if org_wide:
+            # Owner decision, 2026-09-20: an org-wide tag MAY be renamed, by
+            # somebody who can change organization settings, after being shown
+            # how many tasks it touches. Merge and delete stay refused — those
+            # are the halves that cannot be walked back.
+            require_org_vocabulary_edit(user, existing.name)
+            refuse_org_wide_rescope(
+                values, frozenset({"name", "color", "description"}), "tag",
+            )
+            vis = await resolve_visibility(db, user)
+            require_known_tenant(vis, "tag")
+        else:
+            refuse_org_wide_write(existing, "tag")
+            vis = await resolve_visibility(db, user)
+            await load_visible_project(db, vis, str(existing.project_id))
         root = str(existing.project_id)
 
         renamed = 0
         if new_name and new_name.lower() != existing.name.lower():
-            registry = await load_registry(db, root)
-            if new_name.lower() in registry:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"'{registry[new_name.lower()]}' already exists. "
-                           f"Merge '{existing.name}' into it instead — a rename "
-                           f"would leave two tags with one name.",
-                )
-            renamed = await _rewrite(db, root, existing.name, new_name)
+            if org_wide:
+                # ⚠️ The collision has to be checked across the ORGANIZATION,
+                # and the reason is the storage: `pm_tasks.tags` holds display
+                # TEXT. Rewriting the organization's "bug" to "defect" inside a
+                # project that already has its own "defect" would MERGE the two
+                # on every task there — a destructive act nobody asked for,
+                # reported as a rename. The per-project rule above already
+                # refuses a rename onto an existing name; this is that rule at
+                # the scope the row actually has.
+                clash = (await db.execute(
+                    text(
+                        "SELECT id, name, project_id FROM pm_tags "
+                        " WHERE lower(name) = :name "
+                        "   AND id <> CAST(:tid AS uuid) "
+                        "   AND organization_id = CAST(:org AS uuid) LIMIT 1"
+                    ),
+                    {
+                        "name": new_name.lower(), "tid": tag_id,
+                        "org": str(existing.organization_id),
+                    },
+                )).fetchone()
+                if clash is not None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"'{clash.name}' already exists "
+                               f"{await _where_tag_lives(db, clash)}. Renaming "
+                               f"'{existing.name}' onto it would merge the two on "
+                               f"every task that wears either.",
+                    )
+            else:
+                registry = await load_registry(db, root)
+                if new_name.lower() in registry:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"'{registry[new_name.lower()]}' already exists. "
+                               f"Merge '{existing.name}' into it instead — a rename "
+                               f"would leave two tags with one name.",
+                    )
+            renamed = await _rewrite(db, existing, existing.name, new_name)
 
         write = {k: v for k, v in values.items() if k in ("color", "description")}
         if new_name:
             write["name"] = new_name
         row = await update_row(db, "pm_tags", tag_id, write) if write else existing
         return {**_row(row), "retagged": renamed}
+
+
+@router.get("/tags/{tag_id}/impact")
+async def tag_impact(
+    tag_id: str, user: UserContext = Depends(get_current_user),
+) -> dict:
+    """How much a rename of this tag would rewrite, BEFORE it is asked for.
+
+    Owner decision, 2026-09-20: an organization-wide tag may be renamed, and
+    the person renaming it is shown the size of the act first. This is the
+    read that makes that possible, and it is the same shape as
+    ``tasks/move/preview`` — a preview endpoint the dialog reads, rather than a
+    count smuggled into the write's response where it arrives too late to
+    inform a decision.
+
+    ⚠️ **``projects`` is the count of distinct TREES, not of nodes.**
+    ``pm_tasks.root_project_id`` is what the tag is scoped by, so a tag on
+    forty tasks spread over two trees reads "40 tasks in 2 projects", and a
+    subproject is not counted separately from its root. Saying which it means
+    costs one word and prevents the number being read as "two places to go and
+    look".
+    """
+    async with _tenant_session() as db:
+        existing = await require_row(db, "pm_tags", tag_id, "Tag")
+        vis = await resolve_visibility(db, user)
+        if is_org_wide(existing):
+            require_org_vocabulary_edit(user, existing.name)
+            require_known_tenant(vis, "tag")
+        else:
+            await load_visible_project(db, vis, str(existing.project_id))
+        where, params = governed_tasks_scope(existing)
+        row = (await db.execute(
+            text(
+                f"SELECT count(*) AS tasks, "
+                f"       count(DISTINCT root_project_id) AS projects "
+                f"  FROM pm_tasks WHERE {where} AND :name = ANY(tags)"
+            ),
+            {**params, "name": existing.name},
+        )).fetchone()
+        return {
+            "tag": existing.name,
+            "scope": "organization" if is_org_wide(existing) else "project",
+            "tasks": int(row.tasks or 0),
+            "projects": int(row.projects or 0),
+        }
 
 
 @router.post("/tags/{tag_id}/merge")
@@ -496,7 +589,7 @@ async def merge_tag(
                 status_code=422, detail="A tag cannot be merged into itself.",
             )
 
-        moved = await _rewrite(db, str(source.project_id), source.name, target.name)
+        moved = await _rewrite(db, source, source.name, target.name)
         await db.execute(
             text("DELETE FROM pm_tags WHERE id = CAST(:tid AS uuid)"),
             {"tid": tag_id},
@@ -522,13 +615,13 @@ async def delete_tag(
         refuse_org_wide_write(existing, "tag")
         vis = await resolve_visibility(db, user)
         await load_visible_project(db, vis, str(existing.project_id))
+        where, params = governed_tasks_scope(existing)
         stripped = (await db.execute(
             text(
-                "UPDATE pm_tasks SET tags = array_remove(tags, :name) "
-                " WHERE root_project_id = CAST(:root AS uuid) "
-                "   AND :name = ANY(tags)"
+                f"UPDATE pm_tasks SET tags = array_remove(tags, :name) "
+                f" WHERE {where} AND :name = ANY(tags)"
             ),
-            {"root": str(existing.project_id), "name": existing.name},
+            {**params, "name": existing.name},
         )).rowcount or 0
         await db.execute(
             text("DELETE FROM pm_tags WHERE id = CAST(:tid AS uuid)"),
@@ -540,21 +633,44 @@ async def delete_tag(
         }
 
 
-async def _rewrite(db: Any, root: str, before: str, after: str) -> int:
-    """Replace one tag with another across a project's tasks. Returns the count.
+async def _where_tag_lives(db: Any, row: Any) -> str:
+    """"in 'Bootloader'", or "organization-wide". For one refusal message.
+
+    A second point read rather than a ``LEFT JOIN`` on the clash query, and the
+    join is the one this replaced. The collision path is rare, the name is only
+    wanted when it fires, and a two-table join whose second table contributes
+    one string to an error message is a harder query for every reader of the
+    first one.
+    """
+    if row.project_id is None:
+        return "organization-wide"
+    found = (await db.execute(
+        text("SELECT name FROM pm_projects WHERE id = CAST(:pid AS uuid)"),
+        {"pid": str(row.project_id)},
+    )).fetchone()
+    return f"in '{found.name}'" if found is not None else "in another project"
+
+
+async def _rewrite(db: Any, owner: Any, before: str, after: str) -> int:
+    """Replace one tag with another across the tasks ``owner`` governs.
 
     Done in Python over the affected rows rather than as a clever array
     expression in SQL, because the merge case — a task holding BOTH tags must
     end with the target once — is where this is easy to get wrong, and
     `merged_tags` is a pure function a test can pin. An `array_replace` would
     leave the duplicate.
+
+    ⚠️ **Takes the ROW, not a root id.** An org-wide tag governs every task in
+    the organization, and passing ``str(row.project_id)`` for one of those
+    sends the literal string ``"None"`` into a uuid cast. See
+    :func:`governed_tasks_scope`.
     """
+    where, params = governed_tasks_scope(owner)
     rows = (await db.execute(
         text(
-            "SELECT id, tags FROM pm_tasks "
-            " WHERE root_project_id = CAST(:root AS uuid) AND :before = ANY(tags)"
+            f"SELECT id, tags FROM pm_tasks WHERE {where} AND :before = ANY(tags)"
         ),
-        {"root": root, "before": before},
+        {**params, "before": before},
     )).fetchall()
     for row in rows:
         await db.execute(
