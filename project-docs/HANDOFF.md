@@ -678,7 +678,7 @@ line — never reclaim a number by deleting the other entry.
   D12 · R5 · `specs/project_management_app.md` §11
 - **Added:** 2026-09-19 · found by the adversarial review of the H-8 diff.
 
-### H-125 · A fence that counts `text(` sites cannot see a statement change · [AGENT]
+### H-128 · A fence that counts `text(` sites cannot see a statement change · [AGENT]
 - **Check:** `grep -n "pm_tags" tests/unit/test_projects_move_sql_asyncpg.py`
   → it exercises `WHERE project_id = CAST(:root AS uuid)`. Now
   `grep -n "pm_tags" apps/services/gateway/gateway/routes/projects/move.py`
@@ -698,7 +698,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** R7 · R8 · `tests/unit/test_projects_move_sql_asyncpg.py`
 - **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
 
-### H-126 · A hand-supplied field map can still pick its winner by JSONB order · [AGENT]
+### H-129 · A hand-supplied field map can still pick its winner by JSONB order · [AGENT]
 - **Check:** `grep -n "claimed" apps/services/gateway/gateway/routes/projects/move.py`
   → `resolve_field_map` keeps a `claimed` dict. The caller-supplied branch in
   `_plan` checks `compatible()` for each entry and never checks `claimed`.
@@ -714,7 +714,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/project_management_app.md` §9.13 · D-PM-29 · CLAUDE.md §5
 - **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
 
-### H-127 · A two-key ORDER BY in the fake honours only the first key · [AGENT]
+### H-130 · A two-key ORDER BY in the fake honours only the first key · [AGENT]
 - **Check:** `grep -n "_ordered" tests/unit/_projects_fakes.py` → it sorts on
   the first key of `ORDER BY created_at DESC, id DESC` and drops the tiebreak.
 - **How it shows.** `test_projects_hardening.py::test_an_intervening_activity_breaks_the_run`
@@ -733,7 +733,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `tests/unit/_projects_fakes.py` · R8
 - **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
 
-### H-124 · The move has no end-to-end test, and that is where its P0s live · [AGENT]
+### H-127 · The move has no end-to-end test, and that is where its P0s live · [AGENT]
 - **Check:** `grep -rn "move_tasks" tests/unit/test_projects_move_routes.py`
   → only the refusals. No test drives a cross-status-set move to completion.
 - **⚠️ BOTH P0-class defects WS-27bl shipped lived in the endpoint bodies.**
@@ -768,7 +768,7 @@ line — never reclaim a number by deleting the other entry.
   `accepted_drops` 409.
 - **Authority:** `specs/project_management_app.md` §9.13 · R8 · H-114 · H-96
 - **Added:** 2026-09-19 · filed by the session that shipped the defects.
-  ⚠️ **Minted as H-122 and renumbered to H-124 on merge.** PR #302 merged
+  ⚠️ **Minted as H-122 and renumbered to H-127 on merge.** PR #302 merged
   first and took 122 for the Operator Console rig. This is the collision
   `test_handoff_queue.py` exists to catch, and it caught it.
 

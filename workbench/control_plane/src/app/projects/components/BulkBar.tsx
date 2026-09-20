@@ -118,57 +118,72 @@ export function BulkBar({
           ))}
         </select>
 
-        <Input
-          inputSize="sm"
-          className="w-40"
-          aria-label="Assign to"
-          placeholder="Assign to…"
-          value={draft.assigneeAdd}
-          onChange={(e) => set({ assigneeAdd: e.target.value })}
-        />
-        <Input
-          inputSize="sm"
-          className="w-40"
-          aria-label="Unassign"
-          placeholder="Unassign…"
-          value={draft.assigneeRemove}
-          onChange={(e) => set({ assigneeRemove: e.target.value })}
-        />
-        <Input
-          inputSize="sm"
-          className="w-32"
-          aria-label="Add tags"
-          placeholder="Add tags…"
-          value={draft.tagAdd}
-          onChange={(e) => set({ tagAdd: e.target.value })}
-        />
-        <Input
-          inputSize="sm"
-          className="w-32"
-          aria-label="Remove tags"
-          placeholder="Remove tags…"
-          value={draft.tagRemove}
-          onChange={(e) => set({ tagRemove: e.target.value })}
-        />
+        {/* ⚠️ The add/remove fields are PAIRS, and the pair is the unit that
+            wraps. Left loose on the row, "Remove tags…" wrapped away from
+            "Add tags…" and landed under the assignee fields, where it reads
+            as a fourth unrelated box. Grouping costs one div and keeps the
+            two halves of one idea on one line at every width. */}
+        <div className="flex items-center gap-1">
+          <Input
+            inputSize="sm"
+            className="w-36"
+            aria-label="Assign to"
+            placeholder="Assign to…"
+            value={draft.assigneeAdd}
+            onChange={(e) => set({ assigneeAdd: e.target.value })}
+          />
+          <Input
+            inputSize="sm"
+            className="w-36"
+            aria-label="Unassign"
+            placeholder="Unassign…"
+            value={draft.assigneeRemove}
+            onChange={(e) => set({ assigneeRemove: e.target.value })}
+          />
+        </div>
+        <div className="flex items-center gap-1">
+          <Input
+            inputSize="sm"
+            className="w-28"
+            aria-label="Add tags"
+            placeholder="Add tags…"
+            value={draft.tagAdd}
+            onChange={(e) => set({ tagAdd: e.target.value })}
+          />
+          <Input
+            inputSize="sm"
+            className="w-28"
+            aria-label="Remove tags"
+            placeholder="Remove tags…"
+            value={draft.tagRemove}
+            onChange={(e) => set({ tagRemove: e.target.value })}
+          />
+        </div>
 
-        <Button
-          size="sm"
-          loading={busy}
-          // Disabled rather than firing and being told 422: the gateway
-          // refuses a no-op, and a button that can only fail is worse than one
-          // that says it is not ready.
-          disabled={!request}
-          title={request ? undefined : "Choose something to change first"}
-          onClick={() => {
-            onApply(request);
-            setDraft(EMPTY_DRAFT);
-          }}
-        >
-          Apply to {count}
-        </Button>
-        <Button variant="ghost" size="sm" icon="X" onClick={onClear}>
-          Clear
-        </Button>
+        {/* `ml-auto` pins the two actions to the trailing edge, so the button
+            that WRITES is always in the same place no matter how the row
+            above it wrapped. A confirm button that moves with the window is
+            one people learn to hunt for. */}
+        <div className="ml-auto flex items-center gap-2">
+          <Button
+            size="sm"
+            loading={busy}
+            // Disabled rather than firing and being told 422: the gateway
+            // refuses a no-op, and a button that can only fail is worse than
+            // one that says it is not ready.
+            disabled={!request}
+            title={request ? undefined : "Choose something to change first"}
+            onClick={() => {
+              onApply(request);
+              setDraft(EMPTY_DRAFT);
+            }}
+          >
+            Apply to {count}
+          </Button>
+          <Button variant="ghost" size="sm" icon="X" onClick={onClear}>
+            Clear
+          </Button>
+        </div>
       </div>
 
       {notice ? (

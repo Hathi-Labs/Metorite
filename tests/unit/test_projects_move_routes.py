@@ -27,7 +27,7 @@ and then assert against my own mirror: the exact thing this harness's header
 warns about and that R8 exists to prevent. So the P0 that made every cross-set
 move 422 would STILL not be caught here.
 
-**That gap is real and is filed as H-124**: an end-to-end move against a real
+**That gap is real and is filed as H-127**: an end-to-end move against a real
 Postgres. Until it exists, the lane resolution is covered structurally by
 `test_projects_move_sql_asyncpg.py` and by nothing behavioural.
 """
@@ -183,4 +183,4 @@ class TestThePrivacyGuardActuallyRuns:
 # fails on `r.to_id` whatever the vocabularies are. Measured 2026-09-20 by
 # writing that test and watching it raise `AttributeError`.
 #
-# So H-124 covers the preview too, and closing it needs the real database.
+# So H-127 covers the preview too, and closing it needs the real database.
