@@ -677,10 +677,23 @@ async def create_person(
     body: PersonWrite,
     user: UserContext = Depends(get_current_user),
 ):
-    """Add a person to the org (manual entry). `name` is required; the EMAIL is
-    what has to be unique.
+    """Add a person to the org (manual entry). `name` is required. The EMAIL
+    is what has to be unique.
 
-    Admin-only (`admin:members:manage`)."""
+    Admin-only (``admin:members:manage``).
+
+    ⚠️ **NOTHING IN THE PRODUCT CALLS THIS, and that is deliberate — do not
+    "restore" the missing button.** Owner directive, 2026-09-21: people enter
+    the organization in ONE place, which is Organisation, and the directory
+    follows from membership by trigger (migration 206). The People app's
+    "Add person" control was removed in the same change. An external
+    collaborator is an invite with the ``guest`` role, not a row typed here.
+
+    The route is kept rather than deleted because it is the door an importer
+    or a re-enabled form would use, and because a working admin endpoint with
+    no UI is not the same defect as a second door in the product. Its fate is
+    H-140.
+    """
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")

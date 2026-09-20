@@ -14,6 +14,7 @@
  * people to hunt for permissions they may never get. The gateway answers that
  * question as `can_manage` on the read, so the page knows before it draws.
  */
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import Button from "@/components/ui/Button";
@@ -57,6 +58,10 @@ export default function PeoplePage() {
    * disagree and "open, editing nobody" would render a create form titled with
    * somebody's name.
    */
+  // `undefined` = closed, a person = editing. `null` (create) is no longer
+  // reachable: nothing opens this editor without a person. The type keeps the
+  // null arm because `PersonEditor` still accepts it, and narrowing that is a
+  // change to the component rather than to this decision.
   const [editing, setEditing] = useState<PersonDetail | null | undefined>(
     undefined,
   );
@@ -123,11 +128,26 @@ export default function PeoplePage() {
               {loading ? "loading…" : `${rows.length} in the directory`}
             </span>
             <span className="flex-1" />
-            {canManage ? (
-              <Button size="sm" icon="Plus" onClick={() => setEditing(null)}>
-                Add person
-              </Button>
-            ) : null}
+            {/*
+              ⚠️ **There is no "Add person" here, and that is the decision.**
+              Owner directive, 2026-09-21: people enter the organization in
+              ONE place — Organisation, where they are invited and given a
+              seat — and the directory follows from membership by trigger
+              (migration 206). A second way to create a person was a second
+              way for the two to disagree.
+
+              An external collaborator is an invite with the `guest` role
+              ("chat and explicitly shared apps only", migration 130), not a
+              row somebody types here. That gives them an identity, an audit
+              trail and a revocation path, none of which a directory-only row
+              has.
+
+              ⚠️ This removes how a row is BORN, not the two-store split.
+              `has_login = false` still happens and still renders: an
+              off-boarded member keeps their directory row (D63), so the
+              login badge and the picker's "no login — cannot see the task"
+              warning (D-PC-12) both stay.
+            */}
           </div>
           <input
             value={q}
@@ -199,10 +219,19 @@ export default function PeoplePage() {
                     1440 — a measure nobody reads to the end of. */}
                 <p className="mt-1 max-w-prose text-xs text-muted-foreground">
                   Everybody in your organization appears here on their own —
-                  a member is added to the directory when they are invited.
-                  {canManage
-                    ? " Add person is for somebody with no login, such as a contractor or a new hire before day one."
-                    : " An administrator can add somebody who has no login."}
+                  a person joins the directory when they are invited.
+                  {canManage ? (
+                    <>
+                      {" "}
+                      Invite somebody in{" "}
+                      <Link href="/settings/organization" className="underline">
+                        Organisation
+                      </Link>
+                      .
+                    </>
+                  ) : (
+                    " An administrator invites people in Organisation."
+                  )}
                 </p>
               </div>
             )

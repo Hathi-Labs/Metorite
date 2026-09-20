@@ -114,13 +114,31 @@ during an incident obeys the rule too.
 the product. A failure becomes a warning in the Postgres log and the member is
 still created. Re-running migration 206 backfills whatever was missed.
 
-📌 **"Add person" now has exactly ONE purpose, and it says so.** Before the
-trigger it was one of two ways a colleague could reach the directory. Now a
-member arrives on their own, so the form is only for a person who will never
-sign in. That is a MONEY distinction and not a tidiness one: a member costs a
-seat (`launch_surface.md` §4.1), and a directory row costs nothing. The
-dialog is titled *"Add someone without a login"*. It points at Organisation
-for colleagues. An unlabelled second door reads as a duplicate of the first.
+🔴 **"Add person" IS GONE. There is ONE door into the organization, and it
+is Organisation.** Owner directive, 2026-09-21, and it supersedes the
+labelling fix made the day before.
+
+The reasoning that kept the button was real. A contractor costs no seat, and
+a member costs ₹500 a month (`launch_surface.md` §4.1). It was also
+answering a question nobody had asked yet. The directory held ZERO rows until
+2026-09-20, so the contractor case had never once been used. `POST
+/tasks/people` had exactly one caller in the whole tree: that form.
+
+**An external collaborator is an invite with the `guest` role**, which
+migration 130 already seeds — *"External collaborator: chat and explicitly
+shared apps only"*. That gives the person an identity, an audit trail and a
+revocation path. A directory-only row has none of the three.
+
+⚠️ **This removes how a row is BORN, not the two-store split.** §2's join
+stays partial, and `has_login = false` still happens. An off-boarded member
+keeps their directory row (D63). So the login badge stays, and so does the
+picker's "no login — cannot see the task" warning (**D-PC-12**). Both are
+still correct.
+
+⚠️ **The seat consequence is accepted, not overlooked.** Everybody in the
+directory is now a member, so a directory of forty people is forty seats.
+That is the right answer for forty colleagues. Revisit it the day somebody
+needs a genuinely unpaid assignee, and revisit `POST /tasks/people` with it.
 
 ⚠️ **It writes `active` and `invited` members only.** The two status
 vocabularies differ, and off-boarding is D63's question (H-49), unsettled. An
