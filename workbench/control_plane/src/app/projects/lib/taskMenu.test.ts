@@ -74,6 +74,7 @@ function spyActions(): TaskMenuActions & { calls: string[] } {
     copyLink: (t) => calls.push(`copyLink:${t.id}`),
     toggleSelect: (t) => calls.push(`toggleSelect:${t.id}`),
     setStatus: (t, statusId) => calls.push(`setStatus:${t.id}:${statusId}`),
+    moveToProject: (t) => calls.push(`moveToProject:${t.id}`),
   };
 }
 
@@ -295,5 +296,55 @@ describe("the palette registry and the card registry stay disjoint", () => {
     expect(
       TASK_MENU_ACTIONS.filter((a) => !a.id.startsWith("task.")).map((a) => a.id),
     ).toEqual([]);
+  });
+});
+
+describe("Move to project… (WS-27bl §9.13.4)", () => {
+  const labelsOf = (ctx: TaskMenuContext) =>
+    taskMenuItems(ctx)
+      .filter((i) => i.kind === "item")
+      .map((i) => (i as { label: string }).label);
+
+  it("is offered only when the surface can raise the card", () => {
+    // The rule `canSelect` already follows: an entry the surface cannot
+    // service is dropped, never greyed. A read-only board gets a menu of
+    // exactly what it can do.
+    expect(labelsOf(board())).not.toContain("Move to project…");
+    expect(labelsOf(board({ canMoveToProject: true }))).toContain(
+      "Move to project…"
+    );
+  });
+
+  it("is offered on a surface with no status axis", () => {
+    // Moving a task does not need the CURRENT project to have lanes drawn —
+    // the destination's lanes are what the card resolves against.
+    expect(labelsOf(bare({ canMoveToProject: true }))).toContain(
+      "Move to project…"
+    );
+  });
+
+  it("⚠️ OPENS the card and moves nothing", () => {
+    // The whole point of D-PM-29: a move crosses two vocabularies, so the
+    // member is shown the mapping and the losses before agreeing. A menu
+    // entry that moved on click would skip that.
+    const actions = spyActions();
+    const ctx = board({ canMoveToProject: true });
+    const entry = taskMenuItems(ctx).find(
+      (i) => i.kind === "item" && (i as { label: string }).label === "Move to project…"
+    );
+    if (entry?.kind === "item") entry.run(actions, ctx);
+    expect(actions.calls).toEqual(["moveToProject:t1"]);
+  });
+
+  it("hands the action the task under the pointer", () => {
+    const seen: string[] = [];
+    const ctx = board({ canMoveToProject: true, task: task({ id: "t9" }) });
+    const entry = taskMenuItems(ctx).find(
+      (i) => i.kind === "item" && (i as { label: string }).label === "Move to project…"
+    );
+    if (entry?.kind === "item") {
+      entry.run({ ...spyActions(), moveToProject: (t) => seen.push(t.id) }, ctx);
+    }
+    expect(seen).toEqual(["t9"]);
   });
 });

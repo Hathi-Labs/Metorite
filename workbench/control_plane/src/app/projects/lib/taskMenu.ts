@@ -51,6 +51,12 @@ export interface TaskMenuContext {
   canSelect: boolean;
   /** This task is already in that selection. */
   selected: boolean;
+  /**
+   * WS-27bl — the surface can raise the move card. Absent on a read-only
+   * surface, and the entry is then dropped rather than greyed, which is the
+   * rule `canSelect` above already follows.
+   */
+  canMoveToProject?: boolean;
 }
 
 /** What an entry is allowed to do. Every surface supplies all of these. */
@@ -63,6 +69,15 @@ export interface TaskMenuActions {
   toggleSelect(task: TaskRow): void;
   /** Move the task to another status. */
   setStatus(task: TaskRow, statusId: string): void;
+  /**
+   * WS-27bl §9.13.4 — open the move card for this task.
+   *
+   * ⚠️ It OPENS a card, it does not move. A move crosses two vocabularies, so
+   * the member has to be shown the mapping and the losses before agreeing
+   * (D-PM-29). Optional, so a read-only surface drops the entry rather than
+   * offering a click that goes nowhere.
+   */
+  moveToProject?(task: TaskRow): void;
 }
 
 /** One expanded row of a multi-row action (the status block). */
@@ -134,6 +149,16 @@ export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
     // adds a row to a selection nothing can act on is a dead click.
     when: (ctx) => ctx.canSelect,
     run: (actions, ctx) => actions.toggleSelect(ctx.task),
+  },
+  {
+    id: "task.moveToProject",
+    label: () => "Move to project…",
+    icon: "FolderInput",
+    // Beside Select rather than with Open: both act on WHERE the task lives
+    // in the tree, and the status block below is about the task's state.
+    group: 1,
+    when: (ctx) => Boolean(ctx.canMoveToProject),
+    run: (actions, ctx) => actions.moveToProject?.(ctx.task),
   },
   {
     id: "task.status",

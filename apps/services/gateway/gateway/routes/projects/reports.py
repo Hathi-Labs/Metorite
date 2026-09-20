@@ -53,11 +53,13 @@ from gateway.routes.projects.analytics import (
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
+    REPORTABLE_STATUSES,
     STARTED_CATEGORY,
     _tenant_session,
     actor,
     insert_row,
     load_visible_project,
+    reportable_with_ancestors_clause,
     require_row,
     resolve_visibility,
     router,
@@ -397,14 +399,24 @@ async def render_report(
             f" AND ({triage_exclusion_clause('t')})"
         )
         # The open-work predicate, matching `load` and `stuck`.
+        #
+        # ⚠️ **D-PM-32(b) lands HERE and not on `past_where`, and the split is
+        # the point.** A stopped project's outstanding work leaves the report,
+        # because nobody is going to do it. What it already FINISHED stays,
+        # for the reason the comment above gives about archiving: a report
+        # describes the past, and stopping a project in September must not
+        # empty July. Putting the clause on `past_where` would rewrite every
+        # week we have already sent.
         open_where = (
             f"{past_where}"
             f" AND t.archived_at IS NULL"
+            f" AND ({reportable_with_ancestors_clause('t')})"
             f" AND s.category <> ALL(CAST(:closed AS text[]))"
         )
         params: dict[str, Any] = {
             **vis.params,
             **scope_params(project_id),
+            "reportable_states": sorted(REPORTABLE_STATUSES),
             "weeks": int(config["weeks"]),
             "closing": sorted(CLOSING_CATEGORIES),
             "closed": sorted(CLOSING_CATEGORIES),

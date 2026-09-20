@@ -43,11 +43,28 @@ interface Props {
   busy: boolean;
   onClear: () => void;
   onApply: (request: ReturnType<typeof buildRequest>) => void;
+  /**
+   * WS-27bl §9.13.4 — open the move card for the whole selection.
+   *
+   * ⚠️ Separate from `onApply`, and it must stay separate. A bulk EDIT is a
+   * patch applied to rows; a bulk MOVE crosses two vocabularies and has to be
+   * agreed to after the member sees the mapping. Folding it into the patch
+   * would let somebody move fifty tasks from a dropdown.
+   */
+  onMove?: () => void;
   /** The last outcome sentence, or null. */
   notice: string | null;
 }
 
-export function BulkBar({ count, statuses, busy, onClear, onApply, notice }: Props) {
+export function BulkBar({
+  count,
+  statuses,
+  busy,
+  onClear,
+  onApply,
+  onMove,
+  notice,
+}: Props) {
   const [draft, setDraft] = useState<BulkDraft>(EMPTY_DRAFT);
   const request = buildRequest(Array.from({ length: count }, (_, i) => `#${i}`), draft);
 
@@ -58,6 +75,18 @@ export function BulkBar({ count, statuses, busy, onClear, onApply, notice }: Pro
     <div className="border-b border-border bg-muted px-3 py-2">
       <div className="flex flex-wrap items-center gap-2">
         <Badge tone="primary">{count} selected</Badge>
+
+        {onMove ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="FolderInput"
+            disabled={busy}
+            onClick={onMove}
+          >
+            Move to project…
+          </Button>
+        ) : null}
 
         <select
           aria-label="Set status"
@@ -89,57 +118,72 @@ export function BulkBar({ count, statuses, busy, onClear, onApply, notice }: Pro
           ))}
         </select>
 
-        <Input
-          inputSize="sm"
-          className="w-40"
-          aria-label="Assign to"
-          placeholder="Assign to…"
-          value={draft.assigneeAdd}
-          onChange={(e) => set({ assigneeAdd: e.target.value })}
-        />
-        <Input
-          inputSize="sm"
-          className="w-40"
-          aria-label="Unassign"
-          placeholder="Unassign…"
-          value={draft.assigneeRemove}
-          onChange={(e) => set({ assigneeRemove: e.target.value })}
-        />
-        <Input
-          inputSize="sm"
-          className="w-32"
-          aria-label="Add tags"
-          placeholder="Add tags…"
-          value={draft.tagAdd}
-          onChange={(e) => set({ tagAdd: e.target.value })}
-        />
-        <Input
-          inputSize="sm"
-          className="w-32"
-          aria-label="Remove tags"
-          placeholder="Remove tags…"
-          value={draft.tagRemove}
-          onChange={(e) => set({ tagRemove: e.target.value })}
-        />
+        {/* ⚠️ The add/remove fields are PAIRS, and the pair is the unit that
+            wraps. Left loose on the row, "Remove tags…" wrapped away from
+            "Add tags…" and landed under the assignee fields, where it reads
+            as a fourth unrelated box. Grouping costs one div and keeps the
+            two halves of one idea on one line at every width. */}
+        <div className="flex items-center gap-1">
+          <Input
+            inputSize="sm"
+            className="w-36"
+            aria-label="Assign to"
+            placeholder="Assign to…"
+            value={draft.assigneeAdd}
+            onChange={(e) => set({ assigneeAdd: e.target.value })}
+          />
+          <Input
+            inputSize="sm"
+            className="w-36"
+            aria-label="Unassign"
+            placeholder="Unassign…"
+            value={draft.assigneeRemove}
+            onChange={(e) => set({ assigneeRemove: e.target.value })}
+          />
+        </div>
+        <div className="flex items-center gap-1">
+          <Input
+            inputSize="sm"
+            className="w-28"
+            aria-label="Add tags"
+            placeholder="Add tags…"
+            value={draft.tagAdd}
+            onChange={(e) => set({ tagAdd: e.target.value })}
+          />
+          <Input
+            inputSize="sm"
+            className="w-28"
+            aria-label="Remove tags"
+            placeholder="Remove tags…"
+            value={draft.tagRemove}
+            onChange={(e) => set({ tagRemove: e.target.value })}
+          />
+        </div>
 
-        <Button
-          size="sm"
-          loading={busy}
-          // Disabled rather than firing and being told 422: the gateway
-          // refuses a no-op, and a button that can only fail is worse than one
-          // that says it is not ready.
-          disabled={!request}
-          title={request ? undefined : "Choose something to change first"}
-          onClick={() => {
-            onApply(request);
-            setDraft(EMPTY_DRAFT);
-          }}
-        >
-          Apply to {count}
-        </Button>
-        <Button variant="ghost" size="sm" icon="X" onClick={onClear}>
-          Clear
-        </Button>
+        {/* `ml-auto` pins the two actions to the trailing edge, so the button
+            that WRITES is always in the same place no matter how the row
+            above it wrapped. A confirm button that moves with the window is
+            one people learn to hunt for. */}
+        <div className="ml-auto flex items-center gap-2">
+          <Button
+            size="sm"
+            loading={busy}
+            // Disabled rather than firing and being told 422: the gateway
+            // refuses a no-op, and a button that can only fail is worse than
+            // one that says it is not ready.
+            disabled={!request}
+            title={request ? undefined : "Choose something to change first"}
+            onClick={() => {
+              onApply(request);
+              setDraft(EMPTY_DRAFT);
+            }}
+          >
+            Apply to {count}
+          </Button>
+          <Button variant="ghost" size="sm" icon="X" onClick={onClear}>
+            Clear
+          </Button>
+        </div>
       </div>
 
       {notice ? (

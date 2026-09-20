@@ -1469,10 +1469,12 @@ measurable rather than aesthetic:
 5. **Concurrency.** D-PM-20 is still owed, so writes are last-write-wins; a mass write is the
    worst possible interaction with agents writing beside humans.
 
-**The one write that IS correct is the user's act, not the state change's:** stopping a project
-**offers** to close its open tasks — *"12 tasks are still open. Close them as cancelled?"* —
-executed through the shipped bulk endpoint (WS-27n) as ordinary audited transitions. Declining
-leaves them open. An offer is not a cascade.
+~~**The one write that IS correct is the user's act, not the state change's:** stopping a
+project **offers** to close its open tasks.~~
+🔴 **WITHDRAWN 2026-09-19 by owner ruling — see D-PM-32.** There is no offer and no
+close. *"Stopping a project does not change its status, so the status of those individual
+tasks remains the same as before. Only the project gets stopped."* The bulk close was never
+built, which is the one piece of luck in this record.
 
 **Pause governs attention, not permission** (owner-ruled the same day): a paused project still
 accepts comments, re-planning and grooming, because re-planning is usually *why* it was paused.
@@ -3757,8 +3759,9 @@ otherwise author three times over.
 > * **Archive is the default affordance and Delete is deliberately harder to reach.** Today
 >   `DELETE` is the only path and it is unrecoverable; shipping archive without re-ranking them
 >   leaves the destructive action as the obvious one.
-> * Stopping a project offers the bulk close (D-PM-26) and takes "leave them as-is" for an
->   answer.
+> * ~~Stopping a project offers the bulk close (D-PM-26).~~ 🔴 **WITHDRAWN
+>   2026-09-19 — D-PM-32(a).** Stopping writes no task row at all. What replaces it is
+>   D-PM-32(b): a stopped project's tasks leave the reports.
 > * **D-PM-21:** the theme sweep is a Playwright case, not a promise — the indicator renders
 >   under Fluent, Material and Graphite, in both modes.
 
@@ -4447,6 +4450,187 @@ npx vitest run src/lib/theme/
 Then do the check no test in this tree makes (`DESIGN_SYSTEM.md` §8). Look at
 each new surface in light mode, at compact density, and under a changed
 accent.
+
+### 9.13 WS-27bl — moving a task, and carrying its meaning with it (minted 2026-09-19, owner directive)
+
+**Owner directive, 2026-09-19:** *"I want to be able to move tasks between
+projects and sub-projects and spaces … take into consideration the mapping of
+the statuses or custom parameters or fields of that particular task to the new
+project or space … We should also be able to do this in bulk. But in the case of
+bulk transfer, we have to only be allowed to move from one project to another
+one project … so that the mapping can be common for all the tasks."*
+
+🟢 AGENT-SAFE. **No migration.** Every column this needs exists.
+
+#### 9.13.1 The audit — the hard half is already built
+
+Measured against `3ef3afac`, 2026-09-19.
+
+| Anchor | Finding |
+|---|---|
+| Single-task move | **Already works.** `PATCH /projects/tasks/{id}` with `project_id` (`tasks.py`) refuses a folder, guards privacy, remaps the status, checks the destination's REQUIRED fields before any write, restamps `root_project_id` and reallocates `task_number`. |
+| The mapping primitive | **Already written.** `remap_task_statuses(mapping=…)` takes an explicit old→new map and says in its own docstring it is *"the answer a human gave in the mapping card"*. **That card was never built.** |
+| The automatic rule | `_REMAP_TARGET_SQL` — name, then category, then any non-triage lane. Three steps, in that order. |
+| Any UI | **None.** `taskMenu.ts` offers Open, Copy link, Select and Change status. A task can be moved only by calling the API. |
+| Bulk move | **Refused.** `bulk.validate_patch` allows `PATCHABLE_FIELDS` plus `status`; `project_id` is not in either. |
+| 🔴 `type_id` on a cross-root move | **NOT remapped, and this is a defect.** Types are root-scoped (`vocabulary_scope`), so a moved task keeps an id from the source root's registry and points at nothing. |
+| Custom values with no destination field | **Silently kept.** `apply_values` validates the PATCH against the destination's definitions; the task's EXISTING values are merged in untouched, so they survive as orphans no screen can show. |
+
+So this ticket is mostly **surface plus two corrections**, not new machinery.
+
+#### 9.13.2 The three decisions the owner took, 2026-09-19
+
+- **D-PM-29 — an unmappable value is DROPPED, on the record.** The card offers
+  destination fields of a compatible type. Anything left unmapped is dropped,
+  the drop is named in the confirmation **before** the member agrees, and the
+  old value is written to the task timeline. Keeping it as a hidden orphan was
+  rejected: invisible data that reappears on a later move is worse than a
+  recorded loss. Refusing the move was rejected too — a value that no longer
+  applies in the destination is the ordinary case.
+- **D-PM-30 — a bulk move is a SELECTION that shares one source project.** Not
+  "every task in the project". The Move action refuses a selection spanning two
+  sources and names the offenders. One source means one mapping, which is the
+  owner's whole reason for the constraint.
+- **D-PM-31 — the mapping is auto-filled, shown, and adjustable.** `_REMAP_TARGET_SQL`
+  already resolves a good answer; the card shows what it resolved to, with a
+  per-row override. A silent auto-map was rejected: a wrong lane is then found
+  by somebody else, on a board, later.
+
+**D-PM-32 — a stopped project leaves the REPORTS; a paused one does not.**
+`DECISION (2026-09-19, owner-ruled.)` Two rulings in one, and the first supersedes half of
+D-PM-26.
+
+**(a) Stopping writes nothing.** *"Stopping a project does not change its status, so the
+status of those individual tasks remains the same as before. Only the project gets stopped."*
+D-PM-26's derive-never-write rule was always right; its tail — the offer to bulk-close open
+tasks on Stop — is withdrawn outright. A task in a stopped project keeps the lane it was in,
+so resuming needs no stash column and no reconstruction. **H-119, which asked which lane a
+stop should close into, is dissolved rather than answered: there is no close.**
+
+**(b) A stopped project's work leaves the reports. A paused project's work stays.** The owner
+asked for stopped and left the rest to judgement. The line is **abandoned, not idle**:
+
+| State | In reports? | Why |
+|---|---|---|
+| `active` | yes | — |
+| `queued` | **yes** | Planned but not started. A forecast that cannot see the queue is not a forecast. |
+| `on_hold` (Paused) | **yes** | ⚠️ Stalled, not abandoned. **Hiding paused work is how a quarter of it goes missing** — the report is the only place anybody would notice it had stopped moving. |
+| `stopped` | **no** | Not happening. Counting it as overload or as stuck is noise in every metric. |
+| `archived` | no | Already excluded everywhere by `archived_at`. |
+
+⚠️ **This needs a SECOND predicate, and that is not a duplicate vocabulary.**
+`runnable_project_clause` (`status = 'active'`) answers *"may automation ACT here"* — and the
+answer for a paused project is no: no recurrence spawn, no agent dispatch. The new
+`reportable_project_clause` answers *"does this work COUNT"* — and for a paused project the
+answer is yes. A single predicate cannot say both, and collapsing them would either dispatch
+agents into paused work or hide it from the only surface that would reveal the stall. The two
+are documented against each other at both definitions, and CLAUDE.md §5 is satisfied by them
+answering different questions rather than by there being one.
+
+**Scope: the OPEN-WORK reads, not the historical ones.** `/analytics/stuck`, `/analytics/load`,
+`/analytics/outlook` and the weekly report's open section. Each builds a predicate the code
+calls `open_where`, and each now carries the clause.
+
+⚠️ **`/analytics/throughput`, `/analytics/finished` and the weekly report's `past_where` keep
+a stopped project's finished work, on purpose.** These describe the past. The tree already
+takes this position for archiving — "an archive sweep in September must not empty July" — and
+a stop is the same shape: it must not retroactively change a number we have already sent.
+"Does not appear in any report" means the work nobody is going to do, not the work already
+done. Reverse this and every past week's velocity moves when somebody stops a project.
+
+**Opening the stopped project itself still shows its tasks** — otherwise nobody could review
+it or restart it, and the state would be a trapdoor.
+
+**Fence (R7).** `tests/unit/test_projects_reportable_reports.py`. It seeds a stopped, a
+paused, a queued and an active project plus an ACTIVE child of the stopped one, then asserts
+which tasks the clause returns. R8 binds it: it runs against the real ladder database, not a
+fake. It also carries a SOURCE SCAN over every `open_where` assignment, because the defect
+this decision shipped was a missing call site — the clause reached one read of five
+while every test passed — and no behavioural test can see the read somebody adds next.
+
+#### 9.13.3 Slice 1 — the mechanism 🟢
+
+> **Done when:**
+> * `POST /projects/tasks/move/preview` answers, for `{task_ids, destination_project_id}`,
+>   what the move WOULD do: the resolved status map, the resolved field map, the
+>   values that would be dropped, the tags the destination does not register,
+>   the task type that would be lost, and the destination's required fields the
+>   selection does not satisfy. **It writes nothing.**
+> * `POST /projects/tasks/move` applies it, taking `status_map` and `field_map`
+>   explicitly. ⚠️ **The map is applied FIRST and the automatic rule sweeps what
+>   it did not cover**, which is `remap_task_statuses`'s existing ordering and
+>   its reason: a card built from stale counts must not leave a task behind.
+> * **One transaction.** Partial application is the worst outcome available —
+>   `bulk.py` already argues this, and a half-moved selection is worse than a
+>   half-applied edit because the tasks are now in two places.
+> * **A selection spanning two source projects is a 422 that NAMES them.**
+>   (D-PM-30.) A count alone does not tell the member which tasks to deselect.
+> * 🔴 **`type_id` is remapped by name into the destination root's registry, and
+>   cleared when there is no match.** This is the §9.13.1 defect and it is fixed
+>   in this slice, because the move is what creates the dangling id.
+> * Every drop, every status change and every type change is one `pm_activities`
+>   row on the task, so a move is legible afterwards. The old `task_number` is
+>   already recorded; this joins it.
+> * **`MAX_BULK` is reused, not re-declared** (CLAUDE.md §5).
+> * 🔴 **Every guard the single-task path calls, this one calls too.**
+>   `assert_move_keeps_privacy` (team → personal strips every grant holder),
+>   `assert_required_fields_present` (migration 192) and `require_status_in_project`
+>   (a caller-supplied lane must belong to the destination). A bulk path that
+>   lands what the narrow path refuses is two rules, not one.
+> * 🔴 **The move writes the status the way `remap_task_statuses` does, NOT
+>   through `apply_status_transition`.** This clause named that helper until
+>   2026-09-20, and building against it killed the feature. It resolves the
+>   lane owner from `task.project_id`, which is still the SOURCE inside the
+>   move loop, so every cross-status-set move raised 422 and rolled back. It
+>   also spawns recurrence successors, which a move must not do. The write
+>   lane sets `completed_at` from the destination lane's category, which is
+>   the one effect of that helper a move needs.
+> * 🔴 **Two source fields may resolve to ONE destination field, and the
+>   loser is a DROP rather than a silent overwrite.** `pm_custom_fields` is
+>   unique on `(project_id, field_key)` alone, so two definitions may share a
+>   name — which WS-27bj's org-wide ∪ root-local union makes ordinary. The
+>   exact-key match wins; the other is reported.
+> * **The preview returns the destination's own lanes.** Without them the
+>   override dropdown has nothing to offer but the automatic answer, and
+>   D-PM-31's "adjustable" is unreachable.
+> * **R8** — the preview's resolution query is verified against a real Postgres,
+>   not a fake. It is the query the whole feature's correctness rests on.
+>
+> **Gate:** AGENT-SAFE.
+
+#### 9.13.4 Slice 2 — the card 🟢
+
+> **Done when:**
+> * `Move to…` is on the task row menu (`taskMenu.ts`) and on the bulk bar.
+> * The dialog shows the destination picker, then the resolved mapping, then
+>   what will be lost, then the button. ⚠️ **The losses are named before the
+>   button, never in a toast afterwards** (D-PM-29).
+> * ⚠️ **Every mapping table NAMES both ends** — "From: <source> (now)" and
+>   "To: <destination> (after)" — for statuses AND for custom fields (owner
+>   directive, 2026-09-19). An arrow alone leaves the reader to infer the
+>   direction, on the one screen where reading it backwards silently rewrites
+>   every task in the selection. The destination name resolves from the PICKED
+>   node, never from the plan's id: the member chose it from that list, so it
+>   is always resolvable, while an id may name a node the loaded tree does not
+>   hold and the header would degrade to a bare "To".
+> * **The field mapping is shown, not only its losses.** A member moving work
+>   needs to see where a value LANDS as much as which ones vanish, and an
+>   orphan is listed with an explicit "dropped" rather than omitted.
+> * It uses `Modal`, `Button` and the promoted `ContextMenu`. No hand-rolled
+>   dialog (WS-27ak).
+> * ⚠️ **It is mounted where BOTH page returns render it** — `overlays`, not the
+>   desktop return. `MoveDialog` is mounted in the desktop return alone and
+>   opens nothing on a phone (**H-120**); this must not repeat it.
+
+#### 9.13.5 Not in this ticket
+
+Moving a task into a **personal** project beyond what `assert_move_keeps_privacy`
+already allows. Auto-creating a missing tag or field in the destination — that is
+a write to a shared vocabulary, taken as a side effect of one member's move, and
+it needs its own decision. Moving a task and its **subtree** as one act:
+`parent_task_id` is its own axis and §9.13 does not touch it.
+
+---
 
 ## 10. Verification
 

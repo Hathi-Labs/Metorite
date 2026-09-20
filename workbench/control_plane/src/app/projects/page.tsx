@@ -45,6 +45,7 @@ import {
 import { FieldManager } from "./components/FieldManager";
 import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
 import { MoveDialog } from "./components/MoveDialog";
+import { MoveTasksDialog } from "./components/MoveTasksDialog";
 import { type TreeDropTarget, planTreeDrop } from "./lib/treeDrop";
 import { LifecyclePolicy } from "./components/LifecyclePolicy";
 import { StatusManager } from "./components/StatusManager";
@@ -627,6 +628,11 @@ function ProjectsWorkspace() {
   //: SAME row leaves the id unchanged, so the id alone would not remount and
   //: the stale-armed frame would survive exactly where it is easiest to hit.
   const [deleteOpenedAt, setDeleteOpenedAt] = useState(0);
+  //: WS-27bl — the tasks whose move card is open. One state for both entry
+  //: points: a single row from its menu, and the whole bulk selection.
+  const [movingTasks, setMovingTasks] = useState<readonly string[] | null>(null);
+  const [movingTasksBusy, setMovingTasksBusy] = useState(false);
+  const [moveTasksError, setMoveTasksError] = useState<string | null>(null);
   // Analytics reads the portfolio roll-up — the same shape as a node's, so
   // one dashboard component draws both.
   const [portfolio, setPortfolio] = useState<NodeSummary | null>(null);
@@ -2163,6 +2169,55 @@ function ProjectsWorkspace() {
   }
 
   /**
+   * WS-27bl §9.13 — move the selection, with the mapping the member agreed.
+   *
+   * ⚠️ The server is asked a SECOND time here, and that is deliberate. The
+   * card previewed a plan; this posts the destination and the overrides and
+   * lets `move.py` re-resolve. A plan held in the browser can be stale by the
+   * time somebody clicks — a field deleted, a status renamed — and applying a
+   * remembered answer is how a value lands under a key nothing defines.
+   */
+  async function moveTasksTo(
+    destinationId: string,
+    statusMap: Record<string, string>,
+    acceptedDrops: string[] | null,
+  ) {
+    const ids = movingTasks ?? [];
+    setMovingTasksBusy(true);
+    setMoveTasksError(null);
+    try {
+      const res = await projectsApi.moveTasks({
+        task_ids: [...ids],
+        destination_project_id: destinationId,
+        status_map: statusMap,
+        accept_drops: acceptedDrops !== null,
+        // What the card actually SHOWED as dropping. The server answers 409
+        // if the destination changed and the real loss is now larger.
+        ...(acceptedDrops ? { accepted_drops: acceptedDrops } : {}),
+      });
+      setMovingTasks(null);
+      setPicked(new Set());
+      setAnchor(null);
+      // The tasks are in another project now, so this board's list is wrong
+      // and so is the tree's count. Refetch rather than patch in place.
+      setTreeKey((k) => k + 1);
+      toast.show({
+        variant: "success",
+        title:
+          res.dropped_fields.length > 0
+            ? `Moved ${res.moved} task(s) — dropped ${res.dropped_fields.join(", ")}`
+            : `Moved ${res.moved} task(s)`,
+      });
+    } catch (err) {
+      // Stays OPEN on a refusal, and the message renders IN the card: the
+      // page's error strip sits under the modal backdrop.
+      setMoveTasksError(String((err as Error).message));
+    } finally {
+      setMovingTasksBusy(false);
+    }
+  }
+
+  /**
    * WS-27bk §9.12.4 slice 2 — a completed drag in the rail.
    *
    * ⚠️ **The planner decides, and it already refused the illegal ones.** A
@@ -2746,6 +2801,10 @@ function ProjectsWorkspace() {
             setBulkNotice(null);
           }}
           onApply={(request) => void applyBulk(request)}
+          onMove={() => {
+            setMoveTasksError(null);
+            setMovingTasks([...picked]);
+          }}
         />
       ) : null}
 
@@ -2932,6 +2991,10 @@ function ProjectsWorkspace() {
               onCreated={() => void loadProject(selected)}
               selected={picked}
               onToggle={toggleSelection}
+              onMoveTask={(taskId) => {
+                setMoveTasksError(null);
+                setMovingTasks([taskId]);
+              }}
               onExtendSelection={extendSelection}
               onSelect={(task) => void openWithStatuses(task)}
               onDrop={handleDrop}
@@ -3032,6 +3095,25 @@ function ProjectsWorkspace() {
           One paint, on the one act in this app that cannot be undone.
           Keying on the id makes the reset structural: a different row, or the
           same row opened again, is a new instance with fresh state. */}
+      {/* WS-27bl §9.13.4. In `overlays`, which BOTH page returns render —
+          `MoveDialog` is in the desktop return alone and opens nothing on a
+          phone (H-120). Keyed on the selection so reopening never shows the
+          previous set's plan. */}
+      <MoveTasksDialog
+        key={`move:${movingTasks?.join(",") ?? "none"}`}
+        taskIds={movingTasks}
+        roots={roots}
+        busy={movingTasksBusy}
+        error={moveTasksError}
+        onClose={() => {
+          setMovingTasks(null);
+          setMoveTasksError(null);
+        }}
+        onConfirm={(destinationId, statusMap, acceptedDrops) =>
+          void moveTasksTo(destinationId, statusMap, acceptedDrops)
+        }
+      />
+
       <DeleteProjectDialog
         key={`delete:${deletingNode?.project.id ?? "none"}:${deleteOpenedAt}`}
         project={deletingNode?.project ?? null}

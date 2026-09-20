@@ -27,9 +27,54 @@ const SIZES: Record<InputSize, string> = {
 };
 
 const BASE =
-  "cc-control w-full rounded-lg border border-border bg-background text-foreground " +
+  "cc-control rounded-lg border border-border bg-background text-foreground " +
   "placeholder:text-muted-foreground outline-none focus:border-primary/50 " +
   "disabled:cursor-not-allowed disabled:opacity-60";
+
+/**
+ * 🔴 **`w-full` USED TO LIVE IN `BASE`, AND IT SILENTLY ATE EVERY CALLER'S
+ * WIDTH.**
+ *
+ * Tailwind class precedence is decided by the order rules appear in the
+ * generated STYLESHEET, never by their order in the `class` attribute. So
+ * `` `${BASE} ${className}` `` reads as though the caller wins and does not:
+ * `w-full` and `w-40` have equal specificity, and `w-full` sorts later.
+ *
+ * Eleven call sites were passing a width that did nothing. The one that
+ * showed it was the Projects bulk bar, whose four fields are written as
+ * `w-40`/`w-32` on a `flex-wrap` row — each rendered full width, so every
+ * field took its own line and pushed the board a third of a screen down.
+ * It reads as a missing layout rule, and the layout rule was there.
+ *
+ * The repo carries no `tailwind-merge` and no `cn`, so this is the narrow
+ * fix rather than the general one: apply the default only when the caller
+ * has expressed no width of their own. A caller who says nothing still gets
+ * `w-full`, which is what every other call site already relies on.
+ */
+const WIDTH_RE = /^(?:w-|min-w-|max-w-|basis-|flex-1$|flex-auto$|size-)/;
+
+/**
+ * Split a caller's classes into the ones that decide WIDTH and the rest.
+ *
+ * Two consumers need the difference. Without an icon the field is the only
+ * element, so everything goes on it. WITH an icon the field sits inside a
+ * positioning wrapper, and that wrapper is what the parent flex row
+ * measures — so the width belongs there while `text-right` or `font-mono`
+ * still belong on the field.
+ */
+export function splitWidth(className: string): {
+  width: string;
+  rest: string;
+} {
+  const parts = className.split(/\s+/).filter(Boolean);
+  const width = parts.filter((c) => WIDTH_RE.test(c));
+  return {
+    // No width from the caller means the old default, which every other call
+    // site already leans on.
+    width: width.length ? width.join(" ") : "w-full",
+    rest: parts.filter((c) => !WIDTH_RE.test(c)).join(" "),
+  };
+}
 
 export type InputProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, "size" | "className"> & {
   inputSize?: InputSize;
@@ -49,15 +94,20 @@ export type InputProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, "size
 };
 
 export function Input({ inputSize = "md", icon, className = "", ...rest }: InputProps) {
+  // ⚠️ With an icon the WRAPPER is what the parent flex row measures, so the
+  // caller's width has to land there and the field goes back to filling it.
+  // Sizing only the field leaves a full-width wrapper holding a narrow input
+  // — the row still breaks, and the fix looks like it failed.
+  const { width, rest: styles } = splitWidth(className);
   const field = (
     <input
       {...rest}
-      className={`${BASE} ${SIZES[inputSize]} ${icon ? "pl-8" : ""} ${className}`}
+      className={`${BASE} ${icon ? "w-full" : width} ${SIZES[inputSize]} ${icon ? "pl-8" : ""} ${styles}`}
     />
   );
   if (!icon) return field;
   return (
-    <div className="relative w-full">
+    <div className={`relative ${width}`}>
       {/*
         ⚠️ `z-10` is LOAD-BEARING, and without it this icon has never been
         drawn at all.

@@ -678,6 +678,100 @@ line — never reclaim a number by deleting the other entry.
   D12 · R5 · `specs/project_management_app.md` §11
 - **Added:** 2026-09-19 · found by the adversarial review of the H-8 diff.
 
+### H-128 · A fence that counts `text(` sites cannot see a statement change · [AGENT]
+- **Check:** `grep -n "pm_tags" tests/unit/test_projects_move_sql_asyncpg.py`
+  → it exercises `WHERE project_id = CAST(:root AS uuid)`. Now
+  `grep -n "pm_tags" apps/services/gateway/gateway/routes/projects/move.py`
+  → the code runs `WHERE {vocabulary_scope()}`, a two-arm predicate with a
+  correlated subquery. Two different statements.
+- **Why the fence missed it.** `test_every_SQL_statement_in_move_py_is_covered`
+  counts `text(` sites and compares the count to a hardcoded 5. A statement
+  can change completely without the count moving. The file header claims to
+  close the "a partial fence reads like a whole one" failure, and this is that
+  failure inside the fence written to prevent it.
+- **Measured 2026-09-20.** A reviewer ran the REAL statement against the
+  ladder database on asyncpg and it passed, so this is a fence gap and not a
+  live bug. That is what makes it easy to leave and wrong to leave.
+- **The fix.** Compare the statement TEXT, not the count. Extract each SQL
+  string to a module constant and have the test execute the constant, the way
+  `_BUDGET_LOCK_SQL` now does in the attachments arm.
+- **Authority:** R7 · R8 · `tests/unit/test_projects_move_sql_asyncpg.py`
+- **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
+
+### H-129 · A hand-supplied field map can still pick its winner by JSONB order · [AGENT]
+- **Check:** `grep -n "claimed" apps/services/gateway/gateway/routes/projects/move.py`
+  → `resolve_field_map` keeps a `claimed` dict. The caller-supplied branch in
+  `_plan` checks `compatible()` for each entry and never checks `claimed`.
+- **What happens.** Two source keys may name one destination key. Nothing is
+  lost silently — `apply_field_map` keeps the first and records the other with
+  its VALUE — but the WINNER follows each task's JSONB key order. So inside
+  ONE bulk move, task A can land `a` and task B can land `b`.
+- **⚠️ A test pins the wrong thing.** `test_a_HAND_SUPPLIED_map_cannot_collide_either`
+  asserts the order-dependent outcome instead of removing it, so it will pass
+  after the fix is wrong and after it is right.
+- **The fix.** Run the caller's map through the same `claimed` check the
+  resolved map uses, and refuse a colliding pair with 422. One rule, not two.
+- **Authority:** `specs/project_management_app.md` §9.13 · D-PM-29 · CLAUDE.md §5
+- **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
+
+### H-130 · A two-key ORDER BY in the fake honours only the first key · [AGENT]
+- **Check:** `grep -n "_ordered" tests/unit/_projects_fakes.py` → it sorts on
+  the first key of `ORDER BY created_at DESC, id DESC` and drops the tiebreak.
+- **How it shows.** `test_projects_hardening.py::test_an_intervening_activity_breaks_the_run`
+  fails 3 of 3 runs under Python 3.12 and passes 6 of 6 under 3.13. It is not
+  the code. `time.get_clock_info('time').resolution` is `0.015625` on 3.12 and
+  `1e-07` on 3.13 — a verifier measured 19995 of 20000 consecutive
+  `datetime.now(UTC)` calls returning the SAME value on 3.12. Every
+  `created_at` ties, the stable sort returns insertion order,
+  `_coalescible_prior` picks the OLDEST row, and the assertion is `1 == 2`.
+- **⚠️ CI cannot see it.** CI pins 3.12, but the Linux clock is fine, so it
+  stays green. This bites on a Windows checkout and reads as the branch under
+  test being broken.
+- **Proved pre-existing** by running the merge-base tree under the same
+  interpreter: 4 of 6 runs fail there too.
+- **The fix.** Teach `_ordered` the remaining keys.
+- **Authority:** `tests/unit/_projects_fakes.py` · R8
+- **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
+
+### H-127 · The move has no end-to-end test, and that is where its P0s live · [AGENT]
+- **Check:** `grep -rn "move_tasks" tests/unit/test_projects_move_routes.py`
+  → only the refusals. No test drives a cross-status-set move to completion.
+- **⚠️ BOTH P0-class defects WS-27bl shipped lived in the endpoint bodies.**
+  One silently overwrote a custom value. The other — introduced by the FIX for
+  a P2 — routed the status through `apply_status_transition`, which reads the
+  lane owner off `task.project_id`, still the SOURCE inside the loop. Every
+  cross-set move raised 422 and rolled back. **The feature was dead and 30
+  green tests said nothing.**
+- **Why the hermetic suite cannot close it.** The landing lane resolves through
+  `_REMAP_TARGET_SQL`, a COALESCE over three correlated subqueries.
+  `FakeProjectsDB` cannot evaluate that. Teaching it to would re-implement the
+  rule in Python and assert against the mirror — what the harness header warns
+  about, and what R8 exists to prevent.
+- **What is needed.** One end-to-end against a real Postgres: seed two roots
+  with different lanes, move a task, assert it lands in a DESTINATION lane with
+  `completed_at` correct. `scripts/dev_db.sh` provides the database and
+  `test_projects_move_sql_asyncpg.py` has the engine fixture to copy.
+  ⚠️ **Use `apply_ladder` from `tests/unit/_tenant_ladder.py`.** `dev_db.sh`
+  alone leaves the tenant database empty (H-96), so a suite that skips it
+  fails on `relation "pm_tasks" does not exist` and reads as a code fault.
+- **⚠️ The fake blocks the PREVIEW too, and a review said otherwise.** A round-2
+  review held that a move between two projects sharing one status home would
+  be fully hermetic, because the lanes do not change. Measured 2026-09-20 by
+  writing that test: `_status_proposal` runs `_REMAP_TARGET_SQL` on every
+  path, with no same-home short circuit, so the fake raises whatever the
+  vocabularies are. Nothing hermetic can drive a successful move OR preview.
+  (A cheap side finding: the remap query runs even when it cannot change
+  anything. Worth a short circuit, and that is a separate act.)
+- **What WAS closable and is now closed.** `assert_move_keeps_privacy` had no
+  test, though the shared fake grew `_IN_CAST_LIST` for exactly that. Both
+  endpoints now have one. Still open here: the `accept_drops` 422 and the
+  `accepted_drops` 409.
+- **Authority:** `specs/project_management_app.md` §9.13 · R8 · H-114 · H-96
+- **Added:** 2026-09-19 · filed by the session that shipped the defects.
+  ⚠️ **Minted as H-122 and renumbered to H-127 on merge.** PR #302 merged
+  first and took 122 for the Operator Console rig. This is the collision
+  `test_handoff_queue.py` exists to catch, and it caught it.
+
 ### H-120 · "Move to…" opens NOTHING on a phone · [AGENT]
 - **Check:** `grep -n "if (isMobile) {" workbench/control_plane/src/app/projects/page.tsx`
   → note the line. Then find `movingNode ? (`. It sits **after** that early
@@ -696,20 +790,18 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `app/projects/page.tsx` · `DESIGN_SYSTEM.md` §8 · H-8
 - **Added:** 2026-09-19 · found while building the Delete affordance (H-8).
 
-### H-119 · Decide which lane closes a task when a project STOPS · [OWNER]
-- **Check:** `grep -n "bulk" workbench/control_plane/src/app/projects/page.tsx`
-  → no stop-time bulk close means this is still open.
-- **Why an owner.** D-PM-26 says a stop must OFFER to close the open tasks. The
-  offer needs a lane, and the lane carries a meaning. **Done** and **Cancelled**
-  read differently in every report we send.
-- **Why it cannot just be built.** `POST /projects/tasks/bulk` takes a lane
-  **name**. Migration 196 lets each project own its lanes. So one name cannot
-  close a subtree, and a server-side read must choose per project.
-- **The two shapes.** (1) The server picks each project's first closing-category
-  lane. (2) A stop means cancelled, and the category picks the lane. Shape 2 is
-  a product call.
-- **Authority:** D-PM-26 · `specs/project_management_app.md` §9.8.4 · H-8
-- **Added:** 2026-09-19 · found while building the Delete affordance (H-8).
+### H-119 · ✅ DISSOLVED — a stop closes nothing, so there is no lane · [RESOLVED]
+- **Answered 2026-09-19, and the question turned out to be wrong.** The owner:
+  *"Stopping a project does not change its status, so the status of those
+  individual tasks remains the same as before. Only the project gets stopped."*
+- So there is no bulk close and no lane to choose. **D-PM-26's offer to close
+  open tasks on Stop is WITHDRAWN**, and the derive-never-write half of that
+  decision stands unchanged. Nothing was built against the withdrawn half.
+- **What replaced it: D-PM-32(b).** A stopped project's tasks leave the
+  reports. Paused and queued work stays, because hiding a stalled project from
+  the one surface that would reveal the stall is how its work goes missing.
+- **Delete this entry** once somebody has read it. Kept for one cycle because
+  H-8 and the WS-27 board row both pointed here.
 
 ### H-8 · Still owed on WS-27bg slice 2, and WS-27bg slice 3 / WS-27bh unbuilt · [AGENT]
 - **Check:** the WS-27 row in `work_plan.md` §2 — it names what is built. Read

@@ -116,6 +116,8 @@ interface Props {
   /** WS-27n — ids currently multi-selected. Empty when nobody is bulk editing. */
   selected?: ReadonlySet<string>;
   onToggle?: (id: string, shift: boolean) => void;
+  /** WS-27bl §9.13.4 — raise the move card for one task. */
+  onMoveTask?: (taskId: string) => void;
   /** WS-27y — Shift+Arrow grew the selection to exactly these ids. */
   onExtendSelection?: (ids: string[]) => void;
   onSelect: (task: TaskRow) => void;
@@ -143,6 +145,7 @@ export function TaskBoard({
   onCreated,
   selected,
   onToggle,
+  onMoveTask,
   onExtendSelection,
   onSelect,
   onDrop,
@@ -447,6 +450,7 @@ export function TaskBoard({
     // `false` — the range-extend gesture belongs to the control that starts a
     // range, and a right-click has no anchor.
     toggleSelect: (task) => onToggle?.(task.id, false),
+    moveToProject: (task) => onMoveTask?.(task.id),
     setStatus: (task, statusId) => {
       if (task.status_id === statusId) return;
       onDrop(task, [], buildColumnDropUpdate("status", statusId));
@@ -459,6 +463,7 @@ export function TaskBoard({
     // The checkbox and the menu row agree by construction: both are the
     // presence of `onToggle`, so a surface that cannot select cannot offer it.
     canSelect: Boolean(onToggle),
+    canMoveToProject: Boolean(onMoveTask),
     selected: selected?.has(task.id) ?? false,
   });
 

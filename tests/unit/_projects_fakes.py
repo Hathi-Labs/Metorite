@@ -85,6 +85,20 @@ _PLAIN_EQ = re.compile(r"(?<!lower\()\b(?:\w+\.)?(\w+)\s*=\s*:(\w+)\b")
 _ANY_UUID = re.compile(
     r"(?:\w+\.)?(\w+)\s*=\s*ANY\(CAST\(:(\w+)\s+AS\s+uuid\[\]\)\)", re.I
 )
+#: ``<col> IN (CAST(:a AS uuid), CAST(:b AS uuid), ...)`` -- an id set
+#: written out by NAME rather than bound as an array.
+#:
+#: WARNING: added 2026-09-19 for `core.assert_move_keeps_privacy`, which
+#: reads BOTH ends of a move in one statement. The fake REFUSED that
+#: statement rather than matching every row -- the right instinct, and the
+#: reason this gap surfaced as a loud failure instead of a test passing for
+#: the wrong reason. Every route calling that guard was untestable here.
+_IN_CAST_LIST = re.compile(
+    r"(?:\w+\.)?(\w+)\s+IN\s*\(\s*((?:CAST\(:\w+\s+AS\s+uuid\)\s*,?\s*)+)\)",
+    re.I,
+)
+_CAST_PARAM = re.compile(r"CAST\(:(\w+)\s+AS\s+uuid\)", re.I)
+
 #: ``<col> = 'literal'``
 _LITERAL_EQ = re.compile(r"\b(?:\w+\.)?(\w+)\s*=\s*'([^']*)'")
 #: ``<col> <> :param`` — NOT equals.
@@ -1932,6 +1946,12 @@ class FakeProjectsDB:
         for column, param in _ANY_UUID.findall(top):
             seen = True
             wanted_ids = {str(v) for v in (args.get(param) or [])}
+            rows = [r for r in rows if str(r.get(column)) in wanted_ids]
+        for column, params in _IN_CAST_LIST.findall(top):
+            seen = True
+            wanted_ids = {
+                str(args.get(name)) for name in _CAST_PARAM.findall(params)
+            }
             rows = [r for r in rows if str(r.get(column)) in wanted_ids]
         for column, param in _PLAIN_EQ.findall(top):
             seen = True

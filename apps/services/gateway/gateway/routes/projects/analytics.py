@@ -43,9 +43,11 @@ from fastapi import Depends, Query
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
+    REPORTABLE_STATUSES,
     STARTED_CATEGORY,
     _tenant_session,
     load_visible_project,
+    reportable_with_ancestors_clause,
     resolve_visibility,
     router,
     task_visibility_clause,
@@ -173,12 +175,20 @@ async def stuck(
             f" AND t.archived_at IS NULL"
             f" AND ({task_visibility_clause(vis, 't')})"
             f" AND ({triage_exclusion_clause('t')})"
+            # D-PM-32(b). A STOPPED project's work is not happening, so
+            # counting it as overload or as stuck is noise in every metric.
+            # ⚠️ Paused and queued work STAYS — hiding a stalled project from
+            # the one surface that would reveal the stall is how a quarter of
+            # its work goes missing. `reportable_project_clause` documents why
+            # this is not `runnable_project_clause`.
+            f" AND ({reportable_with_ancestors_clause('t')})"
             f" AND s.category <> ALL(CAST(:closed AS text[]))"
         )
         params: dict[str, Any] = {
             **vis.params,
             **scope_params(project_id),
             "closed": sorted(CLOSING_CATEGORIES),
+            "reportable_states": sorted(REPORTABLE_STATUSES),
         }
 
         # ── How long has open work sat untouched? ──────────────────────────
@@ -507,12 +517,17 @@ async def load(
             f" AND t.archived_at IS NULL"
             f" AND ({task_visibility_clause(vis, 't')})"
             f" AND ({triage_exclusion_clause('t')})"
+            # D-PM-32(b), the same clause and the same reason as `stuck`.
+            # Counting a stopped project's work as somebody's load is how a
+            # person reads as overloaded by work nobody expects them to do.
+            f" AND ({reportable_with_ancestors_clause('t')})"
             f" AND s.category <> ALL(CAST(:closed AS text[]))"
         )
         params: dict[str, Any] = {
             **vis.params,
             **scope_params(project_id),
             "closed": sorted(CLOSING_CATEGORIES),
+            "reportable_states": sorted(REPORTABLE_STATUSES),
         }
 
         # ── Per person, bucketed by when it is due — see `load_sql`. ──────
@@ -1430,12 +1445,16 @@ async def outlook(
             f" AND t.archived_at IS NULL"
             f" AND ({task_visibility_clause(vis, 't')})"
             f" AND ({triage_exclusion_clause('t')})"
+            # D-PM-32(b). An outlook is a forecast, and forecasting the
+            # delivery of work that was stopped is the clearest case of all.
+            f" AND ({reportable_with_ancestors_clause('t')})"
             f" AND s.category <> ALL(CAST(:closed AS text[]))"
         )
         params: dict[str, Any] = {
             **vis.params,
             **scope_params(project_id),
             "closed": sorted(CLOSING_CATEGORIES),
+            "reportable_states": sorted(REPORTABLE_STATUSES),
         }
         period = {
             **vis.params,
