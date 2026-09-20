@@ -2514,7 +2514,7 @@ line — never reclaim a number by deleting the other entry.
   had taken 117 for the no-organization outage and merged first. Ids
   are never reused, so that entry keeps the number.)*
 
-### H-131 · `vps_apply.sh` disables the backup timer for a reason that was repaired · [AGENT]
+### H-132 · `vps_apply.sh` disables the backup timer for a reason that was repaired · [AGENT]
 - **Check:** read `scripts/vps_apply.sh` around line 917. A
   `systemctl disable --now acb-backup.timer` under `PG_MODE=local` means this
   is open. Then read `/etc/systemd/system/acb-backup.service` on the box and
@@ -2540,7 +2540,9 @@ line — never reclaim a number by deleting the other entry.
   is a money decision. H-123 owns it. This entry only says the code refuses
   the dumps for a reason that no longer holds.
 - **Authority:** `scripts/vps_apply.sh` · `deploy/hostinger/acb-backup.timer`
-- **Added:** 2026-09-20 · credit and usage review session
+- **Added:** 2026-09-20 · credit and usage review session. Minted as
+  **H-131** against a stale base, and renumbered to **H-132** on merge —
+  main already held an H-131. Ids are never reused.
 
 ### H-123 · Backups exist now, and live only on the box they protect · [OWNER]
 - **Check:** on the box, `sudo grep -c '^BACKUP_REMOTE=' /opt/acb/app/.env`.
@@ -2564,7 +2566,7 @@ line — never reclaim a number by deleting the other entry.
   `systemctl disable --now acb-backup.timer` on every apply. Its own comment
   says it disables rather than skips, so that a hand-enable does not survive
   a deploy. That is exactly what happened to mine.
-- 🔴 **The carve-out's reason is now STALE, and that is H-131.** It was
+- 🔴 **The carve-out's reason is now STALE, and that is H-132.** It was
   written on 2026-08-17, because the unit then loaded no `EnvironmentFile`
   and would dump an empty container. The service gained
   `EnvironmentFile=/opt/acb/app/.env` on 2026-09-19. Today's run proves the
