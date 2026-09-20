@@ -156,9 +156,9 @@ export default function WorkloadDashboardPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Link href="/people">
-            <Button variant="secondary" size="sm" icon="Users">
-              Directory
+          <Link href="/people/quality">
+            <Button variant="secondary" size="sm" icon="ShieldCheck">
+              Data quality
             </Button>
           </Link>
           <Link href="/people/schedule">

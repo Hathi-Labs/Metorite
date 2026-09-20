@@ -66,11 +66,6 @@ export default function CapabilitySearchPage() {
             its reasoning. Nothing here assigns anything.
           </p>
         </div>
-        <Link href="/people">
-          <Button variant="secondary" size="sm" icon="Users">
-            Directory
-          </Button>
-        </Link>
       </header>
 
       <form
