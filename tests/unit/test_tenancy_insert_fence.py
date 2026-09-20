@@ -203,6 +203,11 @@ _GRANDFATHERED: dict[tuple[str, str], tuple[int, str]] = {
     # `information_schema.columns` once, the way 200 and 201 do. The arm
     # counted here is the no-column half of each.
     ("206_people_from_membership.sql", "gtd_people"): (2, "GUARDED"),
+    # Both arms of 207's cross-tenant grant. The no-column half is the
+    # one counted; the other names `organization_id` from the ROLE being
+    # granted, because the statement crosses every organization by
+    # design and a bound GUC would be wrong for all but one.
+    ("207_every_app_by_default.sql", "org_role_permission"): (1, "GUARDED"),
 }
 
 
