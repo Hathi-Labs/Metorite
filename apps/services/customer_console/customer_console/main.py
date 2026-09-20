@@ -1799,6 +1799,22 @@ class CapabilityRequest(BaseModel):
     streams: bool = False
 
 
+class CapabilityRemoveRequest(BaseModel):
+    """Take a model back out of the catalog.
+
+    ⚠️ **This is NOT the §6A.5 exception being widened.** Insert-only binds a
+    `tier_binding` and a rate, because a past invoice was computed against
+    them. A capability is a FACT about a model, which is why the declare above
+    is already an UPSERT rather than an append. Removing one destroys no audit
+    trail, and the audit row this writes says who removed what.
+    """
+
+    model: str = Field(min_length=1)
+    #: One task, or every task this model declares when absent. The UI sends
+    #: nothing — an operator removing a model means the model.
+    task: str | None = None
+
+
 class BindingRequest(BaseModel):
     tier: str
     task: str
@@ -2196,6 +2212,15 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 # verbatim — fixed-point, never E-notation.
                 "vendor_per_character_usd": _fixed(r[14]),
                 "vendor_per_image_usd": _fixed(r[15]),
+                # 🔴 **Does this model ALREADY carry prices we saved?** Added
+                # 2026-09-21 with `DELETE /catalog/capabilities`, which keeps
+                # `model_profile` on purpose. A removed model returns to the
+                # shelf, and its Add would otherwise re-save a profile built
+                # from litellm alone — writing NULL over the off-peak rates,
+                # the long-context tier, the label and the description,
+                # because `POST /catalog/profiles` replaces the whole row.
+                # The browser skips that write when this is true.
+                "profiled": bool(r[16]),
             }
 
         # ⚠️ `_feed_wire` reads BY POSITION, so a column inserted in the
@@ -2207,11 +2232,18 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
             "deprecated_on, vendor_per_second_usd, vendor_per_character_usd, "
             "vendor_per_image_usd"
         )
+
+        #: Appended as the LAST column by both reads below, because
+        #: `_feed_wire` reads by position.
+        _PROFILED = (
+            ", EXISTS (SELECT 1 FROM model_profile p "
+            "          WHERE p.model = vendor_price_feed.model) AS profiled"
+        )
         feed_rows = [
             _feed_wire(r)
             for r in conn.execute(
                 text(
-                    f"SELECT {_FEED_COLS} FROM vendor_price_feed "
+                    f"SELECT {_FEED_COLS}{_PROFILED} FROM vendor_price_feed "
                     "WHERE model IN (SELECT model FROM model_capability "
                     "                UNION SELECT model FROM model_profile) "
                     "ORDER BY model"
@@ -2222,12 +2254,27 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
             _feed_wire(r)
             for r in conn.execute(
                 text(
-                    f"SELECT {_FEED_COLS} FROM vendor_price_feed "
+                    f"SELECT {_FEED_COLS}{_PROFILED} FROM vendor_price_feed "
                     "WHERE provider IN (SELECT provider FROM provider_credential "
                     "                   WHERE organization_id IS NULL "
                     "                     AND revoked_at IS NULL) "
-                    "  AND model NOT IN (SELECT model FROM model_capability "
-                    "                    UNION SELECT model FROM model_profile) "
+                    # 🔴 **`model_capability` ALONE decides this, not a
+                    # profile (2026-09-21).** It used to exclude a model with
+                    # either row. That was harmless while a profile could only
+                    # belong to a declared model — and it stranded every model
+                    # the operator removed the moment `DELETE
+                    # /catalog/capabilities` existed, because the removal keeps
+                    # the prices: the model left the catalog and was excluded
+                    # from the offer list by its own surviving profile, so it
+                    # appeared in NEITHER and could not be added back.
+                    #
+                    # ⚠️ A profile is not a declaration. `POST /catalog/profiles`
+                    # has always accepted a model `model_capability` has never
+                    # heard of, and `GET /catalog/models` builds the catalog
+                    # from the capabilities. Offering a model nothing declares
+                    # is therefore correct, and re-adding it simply re-saves
+                    # facts that already match.
+                    "  AND model NOT IN (SELECT model FROM model_capability) "
                     "ORDER BY provider, mode, model LIMIT 1000"
                 )
             )
@@ -2352,6 +2399,132 @@ def declare_capability(req: CapabilityRequest, staff: Operator) -> dict[str, Any
     return {"model": req.model, "task": req.task, "invocation": invocation, "streams": streams}
 
 
+#: The bindings a removal must respect: the one IN FORCE, and every one that
+#: is STAGED for a future date.
+#:
+#: ⚠️ **A superseded row must NOT block**, or a catalog could never shrink once
+#: anything had ever pointed at a model — every historical row would veto for
+#: ever. The `max(...) <= now()` half is `GET /catalog/models`' own rule, clause
+#: for clause, so the two cannot disagree about what is live.
+#:
+#: 🔴 **A FUTURE-DATED row must block, and this is not symmetric with the
+#: above.** A staged chain is armed, not superseded: `POST /catalog/bindings`
+#: takes a future `effective_from` on purpose, and `bind_tier` checked the
+#: capability on the day it was staged. Remove the model in between and nothing
+#: says a word — `resolve_chain` returns it on the date, `resolve_invocation`
+#: finds no verb, and the 500 arrives on a customer's first call. The `unserved`
+#: gap cannot show it either, because that reads the in-force chain only.
+_BLOCKING_BINDINGS_FOR_MODEL = (
+    "SELECT b.tier, b.task, b.rank, b.effective_from, "
+    "       (b.effective_from > now()) AS staged "
+    "FROM tier_binding b "
+    "WHERE b.model = :m "
+    "  AND (b.effective_from > now() "
+    "       OR b.effective_from = ("
+    "          SELECT max(x.effective_from) FROM tier_binding x "
+    "          WHERE x.task = b.task AND x.tier = b.tier "
+    "            AND x.effective_from <= now())) "
+    "ORDER BY b.task, b.tier, b.rank"
+)
+
+
+@app.delete("/catalog/capabilities")
+def remove_capability(req: CapabilityRemoveRequest, staff: Operator) -> dict[str, Any]:
+    """Take a model out of the catalog.
+
+    🔴 **Why this exists.** A model reaches `/models`, and every backup-chain
+    picker on `/tiers`, because it has a `model_capability` row. One click on
+    the vendor feed writes one. The feed holds about 4300 models, so a catalog
+    that could only grow made every downstream picker unreadable, and there was
+    no act that undid a mis-click.
+
+    ⚠️ **It REFUSES while a tier serves from the model**, and names the tiers.
+    `tier_binding` carries no foreign key to `model_capability`, so a silent
+    delete leaves `resolve` unable to find the verb for a model it still
+    resolves to — a 500 on the first customer call, and invisible until then.
+    Re-point the tier first. The refusal is a 400 the operator can act on.
+
+    ⚠️ **A STAGED chain refuses too**, and says so by its date. A binding dated
+    next Monday is armed, not superseded.
+
+    ⚠️ **`model_profile` is KEPT** (owner decision, 2026-09-21). The prices are
+    what past cost figures were computed from, so deleting them would make a
+    recorded cost unreconcilable. Re-adding the model restores the numbers
+    rather than starting it costs-blind.
+
+    ⚠️ **`editor`, and no elevation window** — the same gate as the declare it
+    undoes. Nobody is billed against a capability, the refusal above keeps a
+    live chain safe, and the act is reversible with one click on the feed.
+    """
+    with get_engine().begin() as conn:
+        # ⚠️ **LOCK the capability rows FIRST.** Without this the check and the
+        # delete are safe against each other and not against `bind_tier`: under
+        # READ COMMITTED, a concurrent bind reads `model_capability` and finds
+        # the row this transaction has not yet deleted, while this one reads
+        # `tier_binding` and finds no row that one has not yet inserted. Two
+        # different tables, no lock conflict, both commit — and the result is
+        # an in-force binding with no capability, which is the 500 above with
+        # nobody able to see it. `bind_tier` takes the same lock.
+        conn.execute(
+            text("SELECT 1 FROM model_capability WHERE model = :m FOR UPDATE"),
+            {"m": req.model},
+        )
+        rows = [
+            {"tier": r[0], "task": r[1], "rank": r[2], "staged": bool(r[4])}
+            for r in conn.execute(
+                text(_BLOCKING_BINDINGS_FOR_MODEL), {"m": req.model}
+            )
+        ]
+        # ⚠️ A typed task is refused, the same way the declare refuses one.
+        # Without this, `{"task": "chatt"}` answers 200 with `removed: 0` and
+        # reads as success, so the operator believes a model is gone.
+        if req.task is not None and not _task_exists(conn, req.task):
+            raise HTTPException(status_code=400, detail=f"unknown task {req.task!r}")
+
+        # Removing ONE task only conflicts with a binding for THAT task. The
+        # whole-model removal conflicts with any of them.
+        blocking = [r for r in rows if req.task is None or r["task"] == req.task]
+        if blocking:
+            where = ", ".join(
+                f"{r['tier']} ({r['task']}, rank {r['rank']}"
+                + (", staged" if r["staged"] else "")
+                + ")"
+                for r in blocking
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{req.model!r} still serves {len(blocking)} "
+                    f"{'binding' if len(blocking) == 1 else 'bindings'}: {where}. "
+                    "Re-point those tiers first, then remove it."
+                ),
+            )
+
+        if req.task is None:
+            result = conn.execute(
+                text("DELETE FROM model_capability WHERE model = :m"), {"m": req.model}
+            )
+        else:
+            result = conn.execute(
+                text("DELETE FROM model_capability WHERE model = :m AND task = :t"),
+                {"m": req.model, "t": req.task},
+            )
+        removed = result.rowcount or 0
+        if removed == 0:
+            # Not a 404: the operator asked for the model to be gone and it is
+            # gone. Saying so beats an error for a state they already wanted.
+            _log.info("catalog.capability_remove_noop model=%s", req.model)
+        else:
+            _audit(
+                conn,
+                None,
+                "catalog.capability_removed",
+                {"model": req.model, "task": req.task, "removed": removed},
+                actor=staff.actor,
+            )
+    return {"model": req.model, "task": req.task, "removed": removed}
+
+
 @app.post("/catalog/bindings")
 def bind_tier(req: BindingRequest, staff: Operator) -> dict[str, Any]:
     """Point a `(task, tier)` pair at a model. **INSERT, never UPDATE.**
@@ -2386,8 +2559,17 @@ def bind_tier(req: BindingRequest, staff: Operator) -> dict[str, Any]:
         # has already failed, so the 500 arrives during an outage, when nobody
         # has attention to spare for it.
         for model in chain:
+            # ⚠️ `FOR UPDATE` — the other half of the race
+            # `remove_capability` locks against. A plain SELECT here reads a
+            # row a concurrent DELETE has not committed yet, and both
+            # transactions then commit an in-force binding with no capability
+            # behind it. The lock is on rows this statement already reads, so
+            # it costs nothing that was not already being read.
             capable = conn.execute(
-                text("SELECT 1 FROM model_capability WHERE model = :m AND task = :t"),
+                text(
+                    "SELECT 1 FROM model_capability "
+                    "WHERE model = :m AND task = :t FOR UPDATE"
+                ),
                 {"m": model, "t": req.task},
             ).first()
             if capable is None:

@@ -178,6 +178,11 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # term. Nobody is billed against it and it is reversible, so `editor`
     # and no window. Getting it wrong fails loudly at the provider.
     ("POST", "/catalog/capabilities"): _R(EDITOR),
+    # Removing one is the same act undone, at the same severity. It destroys
+    # no audit trail, the route refuses while a tier still serves from the
+    # model, and the vendor feed puts it back in one click. `editor`, no
+    # window — for the same reason the declare above takes neither.
+    ("DELETE", "/catalog/capabilities"): _R(EDITOR),
     # ⚠️ Re-pointing a tier decides what EVERY customer call runs on. A
     # wrong model here does not fail loudly — it answers, plausibly, at
     # the wrong price. Same severity as installing a provider key above.

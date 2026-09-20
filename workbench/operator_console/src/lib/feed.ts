@@ -326,3 +326,76 @@ export function availableByVendor(
   }
   return out;
 }
+
+// ── Picking a handful of models out of thousands (2026-09-21) ──────────────
+//
+// 🔴 **Why the selection lives here and not in the component.** This app's
+// suite carries no React renderer, so anything written in JSX is untested by
+// construction. The rules below have right and wrong answers — which rows a
+// "select all" may tick, what a tick does to an id already ticked — so they
+// are pure functions with `feed.test.ts` behind them, exactly like
+// `declareBodies` and `blindButFillable` above.
+
+/** Every offered model the Router could actually serve.
+ *
+ * ⚠️ **`task` is the test, not `mode`.** litellm offers modes we have no verb
+ * for (`rerank`, `moderation`); the Console leaves `task` null for those, and
+ * declaring one would create a row nothing can call. A bulk add that included
+ * them would fail on exactly the rows nobody chose deliberately. */
+export function servableFeedModels(feed: VendorFeed): FeedModel[] {
+  return feed.available.filter((f) => f.task !== null && f.task !== "");
+}
+
+/** The ids of `rows` that a "select all" may tick — the servable ones. */
+export function selectableIds(rows: FeedModel[]): string[] {
+  return rows.filter((f) => f.task !== null && f.task !== "").map((f) => f.id);
+}
+
+/** A new set with `id` added or removed. Never mutates: React compares the
+ *  reference, and a mutated Set re-renders nothing. */
+export function togglePick(picked: Set<string>, id: string): Set<string> {
+  const next = new Set(picked);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  return next;
+}
+
+/** A new set with `id` gone. */
+export function without(picked: Set<string>, id: string): Set<string> {
+  const next = new Set(picked);
+  next.delete(id);
+  return next;
+}
+
+/** Tick every id in `ids`, or untick them all when they are already ticked.
+ *
+ * ⚠️ **"All shown", never "all offered".** The header checkbox acts on the
+ * rows on screen, so narrowing the search first is how an operator picks a
+ * subset — and a click can never tick nine hundred models they cannot see. */
+export function toggleAll(picked: Set<string>, ids: string[]): Set<string> {
+  const next = new Set(picked);
+  const allOn = ids.length > 0 && ids.every((id) => next.has(id));
+  for (const id of ids) {
+    if (allOn) next.delete(id);
+    else next.add(id);
+  }
+  return next;
+}
+
+/** Should adding this SHELF row write a profile, or only declare it?
+ *
+ * 🔴 **Only ever false after a removal.** `DELETE /catalog/capabilities`
+ * keeps `model_profile`, so a removed model comes back onto its vendor's
+ * shelf with our own numbers still saved. `POST /catalog/profiles` REPLACES
+ * the whole row and `declareBodies` knows only what litellm publishes, so
+ * re-saving it would write NULL over the off-peak rates, the long-context
+ * tier, the label and the description — and every later call would cost at
+ * the peak rate, with nothing said anywhere.
+ *
+ * ⚠️ **For the OFFER list only.** `FillAllBlind` deliberately writes a profile
+ * onto models we already hold rows for — that is its entire job — and it
+ * passes rows from `feed.rows`, never from `feed.available`.
+ */
+export function shouldWriteProfile(f: FeedModel): boolean {
+  return !f.profiled;
+}

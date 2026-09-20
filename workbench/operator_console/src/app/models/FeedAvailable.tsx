@@ -11,6 +11,22 @@
 //
 // ⚠️ Vendors we hold no live platform key for are not in this list — the
 // Console excludes them. A model we cannot call is a brochure, not an offer.
+//
+// 🔴 **PICK, then add — 2026-09-21.** One button per row is the right act for
+// one model and the wrong one for eleven: the operator setting a company up
+// wants nine specific models out of four vendors, and a per-row click makes
+// that nine round trips they have to sit and watch. Worse, every model added
+// by mistake was permanent until `RemoveModel` existed, so the cheap act had
+// no cheap undo and people over-added to avoid coming back.
+//
+// ⚠️ **The selection spans vendors and survives the search box**, because the
+// nine models are not all under one vendor and narrowing is how you find each
+// one. It is cleared by the operator, or by a successful add — never by a
+// re-render.
+//
+// ⚠️ **One request at a time, and it reports what LANDED**, the same rule
+// `FillAllBlind` follows. A `Promise.all` over eleven writes hides which one
+// failed and hands the Console eleven concurrent writes from one click.
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -18,11 +34,18 @@ import { useRouter } from "next/navigation";
 import { categoricalChip, providerGlyph } from "@/lib/categorical";
 import { KIND_LABEL, type FeedModel, type VendorFeed } from "@/lib/contract";
 import { HELP_AVAILABLE } from "@/lib/help";
+import { ADD, EDIT } from "@/lib/words";
 import {
   availableByVendor,
   canFillFromFeed,
   declareBodies,
   feedPriceLabel,
+  selectableIds,
+  servableFeedModels,
+  shouldWriteProfile,
+  toggleAll,
+  togglePick,
+  without,
 } from "@/lib/feed";
 
 /** How many rows to draw per vendor before pointing at the search box.
@@ -63,8 +86,22 @@ function jobWord(f: FeedModel): string {
 export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
   const router = useRouter();
   const [query, setQuery] = useState("");
+  // The id being written by a single-row click, or null.
   const [busy, setBusy] = useState<string | null>(null);
+  // ⚠️ A separate flag, never a sentinel inside `busy`. A sentinel has to be
+  // a string no model id can equal, and the obvious choices are a control
+  // byte — which is how a NUL reached a source file here once already.
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // ⚠️ The ids, not the rows. A `FeedModel` is re-derived on every render by
+  // `availableByVendor`, so holding objects would compare by identity and a
+  // tick would come undone the next time the operator typed a letter.
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  // Which vendors the reader asked to see in full. `PER_VENDOR_CAP` keeps the
+  // panel readable; a vendor whose models you are picking from is exactly
+  // where the cap stops being a kindness.
+  const [showAll, setShowAll] = useState<Set<string>>(new Set());
+  const [done, setDone] = useState<{ ok: number; failed: string[] } | null>(null);
 
   const groups = useMemo(
     () => availableByVendor(feed, query),
@@ -73,21 +110,26 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
 
   if (feed.available.length === 0) return null;
 
-  async function add(f: FeedModel) {
+  /** Declare ONE model and save its facts. Returns the problem, or null.
+   *
+   * ⚠️ **The single row and the bulk button share this**, so the two writes
+   * cannot grow different rules about what a blank means or what a half-
+   * failure says. It is the same two POSTs it always was. */
+  async function addOne(f: FeedModel): Promise<string | null> {
     const bodies = declareBodies(f);
-    if (!bodies.capability) return;
-    setBusy(f.id);
-    setErr(null);
+    if (!bodies.capability) return `${f.id} has no job the Router can serve.`;
     try {
       const cap = await fetch("/api/operator/catalog/capabilities", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(bodies.capability),
       });
-      if (!cap.ok) {
-        setErr(`The Console refused ${f.id}: ${await cap.text()}`);
-        return;
-      }
+      if (!cap.ok) return `The Console refused ${f.id}: ${await cap.text()}`;
+      // 🔴 **A model we have priced before is declared and NOT re-profiled.**
+      // The judgement is `shouldWriteProfile`, with its reasoning and its
+      // test in `feed.ts` — this app has no React renderer, so a rule written
+      // here would be untested by construction.
+      if (!shouldWriteProfile(f)) return null;
       const prof = await fetch("/api/operator/catalog/profiles", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -95,22 +137,66 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
       });
       if (!prof.ok) {
         // The capability landed, the facts did not — say exactly that.
-        setErr(
+        return (
           `${f.id} is declared, but its facts failed to save: ` +
-            `${await prof.text()}. Use "Edit details" on its card.`,
+          `${await prof.text()}. Use ${EDIT.open} on its card.`
         );
-        return;
       }
-      router.refresh();
+      return null;
     } catch {
-      setErr(
+      return (
         `The Console did not answer while adding ${f.id} — check the ` +
         "network, then look at its card: the declare may have landed " +
-        "without its facts.",
+        "without its facts."
       );
-    } finally {
-      setBusy(null);
     }
+  }
+
+  async function add(f: FeedModel) {
+    setBusy(f.id);
+    setErr(null);
+    setDone(null);
+    const problem = await addOne(f);
+    setBusy(null);
+    if (problem) {
+      setErr(problem);
+      return;
+    }
+    // ⚠️ Untick it too. The row is about to leave the list — it is declared
+    // now — and a selection holding an id that is no longer on offer would
+    // put a phantom into the next "Add N selected".
+    //
+    // ⚠️ **The UPDATER form, never the captured `picked`.** Two awaits have
+    // passed and the row checkboxes stay live during a single-row add (they
+    // disable on `bulkBusy` only), so a tick made while this was in flight
+    // would be written away without a word.
+    setPicked((p) => without(p, f.id));
+    router.refresh();
+  }
+
+  /** Add everything ticked, one at a time, and say what landed. */
+  async function addPicked() {
+    const rows = servableFeedModels(feed).filter((f) => picked.has(f.id));
+    if (rows.length === 0) return;
+    setBulkBusy(true);
+    setErr(null);
+    setDone(null);
+    let ok = 0;
+    const failed: string[] = [];
+    for (const f of rows) {
+      const problem = await addOne(f);
+      if (problem === null) ok++;
+      else failed.push(f.id);
+    }
+    setBulkBusy(false);
+    setDone({ ok, failed });
+    // ⚠️ Keep the ones that FAILED ticked, and only those. The operator's next
+    // act is to retry or read the refusal, and clearing the lot would hide
+    // which models they still do not have.
+    setPicked(new Set(failed));  // the boxes were disabled throughout
+    // Refresh even on a partial failure: the models that DID land are in the
+    // catalog, and a list still offering them invites a second add.
+    router.refresh();
   }
 
   return (
@@ -142,6 +228,59 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
 
       {err && <p className="result err">{err}</p>}
 
+      {/* 🔴 **What you picked, and the one button that writes it.** It is
+          drawn only when something is ticked: a permanently-present bar
+          reading "Add 0 selected" is a control that can only ever do nothing,
+          and it would sit above the search box on every visit.
+
+          ⚠️ **The count spans vendors.** That is the point — the nine models
+          a company actually needs are rarely all under one key. */}
+      {picked.size > 0 && (
+        <div className="banner info pickbar" role="status">
+          <strong>
+            {picked.size} model{picked.size === 1 ? "" : "s"} picked
+          </strong>
+          <div className="rowline">
+            <button
+              type="button"
+              className="primary"
+              disabled={bulkBusy || busy !== null}
+              title={HELP_AVAILABLE.addSelected}
+              onClick={addPicked}
+            >
+              {bulkBusy ? ADD.busy : ADD.selected(picked.size)}
+            </button>
+            <button
+              type="button"
+              className="linklike"
+              disabled={bulkBusy}
+              title={HELP_AVAILABLE.clearPicks}
+              onClick={() => setPicked(new Set())}
+            >
+              Clear picks
+            </button>
+          </div>
+          <p className="muted small">
+            Each one is declared and its vendor facts saved, one at a time.
+            Nothing is charged to a customer until a tier points at it and the
+            rate card prices it.
+          </p>
+        </div>
+      )}
+
+      {/* ⚠️ Survives the refresh, because the rows that succeeded have left
+          the list and the reader needs to know they landed rather than
+          vanished. */}
+      {done && (
+        <p className={done.failed.length === 0 ? "result ok" : "result err"}>
+          {done.failed.length === 0
+            ? `Added ${done.ok} to the catalog.`
+            : `Added ${done.ok}. ${done.failed.length} refused — ${done.failed
+                .slice(0, 3)
+                .join(", ")}${done.failed.length > 3 ? "…" : ""}. Those are still picked, so you can try again.`}
+        </p>
+      )}
+
       {/* 🔴 **ONE LINE PER VENDOR, CLOSED.** Four vendors drew four flat
           tables and about fifty rows before anybody had chosen a vendor —
           a wall, and the owner said so. Closed, this panel is four lines:
@@ -156,7 +295,14 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
           hiding the thing you just searched for is the worst of both designs.
           One vendor opens too, because a single closed row is a click that
           could only ever have one outcome. */}
-      {[...groups.entries()].map(([vendor, rows]) => (
+      {[...groups.entries()].map(([vendor, rows]) => {
+        // ⚠️ The cap applies to what is DRAWN, and every "select all" below
+        // acts on the drawn rows only. A tick can therefore never select a
+        // model the operator has not seen.
+        const visible = showAll.has(vendor) ? rows : rows.slice(0, PER_VENDOR_CAP);
+        const ids = selectableIds(visible);
+        const allOn = ids.length > 0 && ids.every((id) => picked.has(id));
+        return (
         <details
           key={vendor}
           className="feedvendor"
@@ -182,6 +328,19 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
             <table>
               <thead>
                 <tr>
+                  <th className="tickcol">
+                    {/* ⚠️ Labelled for a screen reader, never with visible
+                        text. A word here would be the widest thing in a 28px
+                        column and push the table sideways. */}
+                    <input
+                      type="checkbox"
+                      checked={allOn}
+                      disabled={ids.length === 0 || bulkBusy}
+                      title={HELP_AVAILABLE.pickVendor}
+                      aria-label={`Pick every ${vendor} model shown`}
+                      onChange={() => setPicked(toggleAll(picked, ids))}
+                    />
+                  </th>
                   <th title={HELP_AVAILABLE.colModel}>Model</th>
                   <th title={HELP_AVAILABLE.colJob}>Job</th>
                   <th title={HELP_AVAILABLE.colContext}>Reads at most</th>
@@ -193,8 +352,22 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
                 </tr>
               </thead>
               <tbody>
-                {rows.slice(0, PER_VENDOR_CAP).map((f) => (
-                  <tr key={f.id}>
+                {visible.map((f) => (
+                  <tr key={f.id} className={picked.has(f.id) ? "picked" : undefined}>
+                    <td className="tickcol">
+                      {/* ⚠️ No tick on a row the Router cannot serve. The cell
+                          stays, so the column does not jag. */}
+                      {f.task && (
+                        <input
+                          type="checkbox"
+                          checked={picked.has(f.id)}
+                          disabled={bulkBusy}
+                          title={HELP_AVAILABLE.pick}
+                          aria-label={`Pick ${f.id}`}
+                          onChange={() => setPicked(togglePick(picked, f.id))}
+                        />
+                      )}
+                    </td>
                     <td>
                       <span className="mono small">{f.id}</span>
                       {f.deprecatedOn && (
@@ -230,9 +403,14 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
                     </td>
                     <td>
                       {f.task ? (
+                        // ⚠️ Link weight, not a filled button. The pick
+                        // bar above carries the one primary act on this
+                        // panel, and twelve solid buttons down a table
+                        // compete with it and with each other.
                         <button
                           type="button"
-                          disabled={busy !== null}
+                          className="linklike"
+                          disabled={busy !== null || bulkBusy}
                           onClick={() => add(f)}
                           title={
                             canFillFromFeed(f)
@@ -241,10 +419,10 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
                           }
                         >
                           {busy === f.id
-                            ? "Adding…"
+                            ? ADD.busy
                             : canFillFromFeed(f)
-                              ? "+ Add"
-                              : "+ Add anyway"}
+                              ? ADD.one
+                              : ADD.unpriced}
                         </button>
                       ) : (
                         <span
@@ -260,14 +438,42 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
               </tbody>
             </table>
           </div>
+          {/* 🔴 The note used to say "search to narrow the rest" and stop
+              there. An operator who wants the 40th model of 517 cannot search
+              for a name they do not know yet, so the cap was a wall rather
+              than a kindness. Now it is a door. */}
           {rows.length > PER_VENDOR_CAP && (
             <p className="note">
-              Showing {PER_VENDOR_CAP} of {rows.length} — search to narrow the
-              rest.
+              {showAll.has(vendor) ? (
+                <>
+                  Showing all {rows.length}.{" "}
+                  <button
+                    type="button"
+                    className="linklike"
+                    onClick={() => setShowAll(without(showAll, vendor))}
+                  >
+                    Show the first {PER_VENDOR_CAP}
+                  </button>
+                </>
+              ) : (
+                <>
+                  Showing {PER_VENDOR_CAP} of {rows.length}.{" "}
+                  <button
+                    type="button"
+                    className="linklike"
+                    title={HELP_AVAILABLE.showAll}
+                    onClick={() => setShowAll(togglePick(showAll, vendor))}
+                  >
+                    Show all {rows.length}
+                  </button>{" "}
+                  <span className="muted small">— or search to narrow them.</span>
+                </>
+              )}
             </p>
           )}
         </details>
-      ))}
+        );
+      })}
 
       {groups.size === 0 && (
         <p className="muted">Nothing matches &ldquo;{query}&rdquo;.</p>

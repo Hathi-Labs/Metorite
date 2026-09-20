@@ -15,6 +15,7 @@ import { useState } from "react";
 import type { VendorFeed } from "@/lib/contract";
 import { freshness } from "@/lib/feed";
 import { HELP_FEED } from "@/lib/help";
+import { LIST } from "@/lib/words";
 import { chipClass } from "@/lib/tone";
 
 export default function FeedStrip({ feed }: { feed: VendorFeed }) {
@@ -57,11 +58,11 @@ export default function FeedStrip({ feed }: { feed: VendorFeed }) {
         onClick={sync}
         title={HELP_FEED.fetch}
       >
-        {busy ? "Fetching…" : "Fetch the latest"}
+        {busy ? LIST.fetchBusy : LIST.fetchFeed}
       </button>
       {available > 0 && (
         <a className="linklike" href="#available" title={HELP_FEED.readyToAdd}>
-          {available} ready to add →
+          {LIST.readyToAdd(available)}
         </a>
       )}
       <span className="muted small">

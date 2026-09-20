@@ -405,6 +405,9 @@ const FM = (
   // state for every chat model litellm ships.
   perMinuteUsd: null, perCharacterUsd: null, perImageUsd: null,
   readsImages: false, thinksFirst: false, deprecatedOn: null,
+  // We hold no saved prices for a sample shelf row, so adding it is a
+  // create and the profile write is the right thing to send.
+  profiled: false,
   ...over,
 });
 

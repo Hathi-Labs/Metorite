@@ -1,6 +1,6 @@
 "use client";
 
-// What a model IS — the editor behind each card's "Add details".
+// What a model IS — the editor behind each card's Edit-details control.
 //
 // 🔴 **Its own file, so `ModelBrowser` stays free of `fetch(`.** That fence is
 // about READS: the catalog is read by the server component with the caller's
@@ -22,6 +22,7 @@ import { useRouter } from "next/navigation";
 import type { CatalogModel, FeedModel } from "@/lib/contract";
 import { canFillFromFeed, declareBodies, driftFor, prefillFrom } from "@/lib/feed";
 import { HELP_DETAILS } from "@/lib/help";
+import { EDIT, VENDOR_PRICES } from "@/lib/words";
 import { windowProblem, wrapsMidnight } from "@/lib/window";
 
 /** Blank means UNKNOWN and travels as null. A typed value travels as the
@@ -242,8 +243,13 @@ export default function ModelDetails({
     //
     // ⚠️ **Never offered once a model is costed.** Overwriting a figure
     // somebody entered, from one click and with no diff shown, is how a
-    // deliberate correction silently reverts. "Edit details" carries the
-    // drift comparison for that case, and keeps the save deliberate.
+    // deliberate correction silently reverts. The editor carries the drift
+    // comparison for that case, and keeps the save deliberate.
+    //
+    // ⚠️ **The toggle beside it reads the same in every state** (`words.ts`).
+    // It used to say three different things for one act, and the first of them
+    // claimed to add a model while adding none. The em dashes on the card
+    // already say the facts are missing; the button need not say it twice.
     const offerFill = !known && canFillFromFeed(feedRow);
     return (
       <div className="rowline">
@@ -255,7 +261,7 @@ export default function ModelDetails({
             onClick={fillFromFeedAndSave}
             title={HELP_DETAILS.fillFromFeed}
           >
-            {busy ? "Filling…" : "Fill from the vendor feed"}
+            {busy ? VENDOR_PRICES.busy : VENDOR_PRICES.one}
           </button>
         )}
         <button
@@ -264,7 +270,7 @@ export default function ModelDetails({
           title={HELP_DETAILS.open}
           onClick={() => setOpen(true)}
         >
-          {known ? "Edit details" : offerFill ? "or enter by hand" : "+ Add details"}
+          {EDIT.open}
         </button>
         {result && (
           <span className={result.ok ? "ok-t" : "warn-t"}>{result.text}</span>
@@ -273,8 +279,10 @@ export default function ModelDetails({
     );
   }
 
-  // The feed PREFILLS, the operator SAVES — the click below only fills the
-  // boxes, and the write is still the same Save it always was.
+  // The feed PREFILLS, the operator SAVES — the control below only fills
+  // the boxes, and the write is still the same Save it always was. It carries
+  // the SAME verb as the one-click version on the collapsed card, because it
+  // is the same act; the sentence around it carries the one difference.
   const drift = driftFor(m, feedRow);
 
   function copyFromFeed() {
@@ -324,9 +332,9 @@ export default function ModelDetails({
             title={HELP_DETAILS.copyFeed}
             onClick={copyFromFeed}
           >
-            Copy the vendor&apos;s facts into the boxes
+            {VENDOR_PRICES.intoBoxes}
           </button>{" "}
-          — then check and save.
+          — this only fills the boxes. Check them, then save.
         </p>
       )}
 
@@ -601,7 +609,7 @@ export default function ModelDetails({
           title={HELP_DETAILS.save}
           onClick={save}
         >
-          Save
+          {busy ? EDIT.busy : EDIT.save}
         </button>
         <button
           type="button"
@@ -609,7 +617,12 @@ export default function ModelDetails({
           title={HELP_DETAILS.close}
           onClick={() => setOpen(false)}
         >
-          Close
+          {/* ⚠️ The word is in `words.ts` and it is deliberately not Close.
+              Beside a Save, the two read as a pair of ways out and the reader
+              has to guess which one discards their typing. Neither does — the
+              boxes are this component's state and the card keeps it mounted —
+              but a label that provokes the question is itself the defect. */}
+          {EDIT.close}
         </button>
       </div>
 
