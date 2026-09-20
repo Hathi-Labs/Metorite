@@ -44,6 +44,12 @@ const LIVE_SET: ReadonlyArray<[string, string]> = [
   ["personal", "/people/me"],
   ["personal", "/access"],
   ["apps", "/projects"],
+  // Added 2026-09-20 by owner decision, taking the live set from NINE to TEN.
+  // The directory was held back while it could not load at all (PR #306) and
+  // while it had no rows to show (H-124's roster sync). Same fence, same
+  // rule: this line and `launch_surface.md` §2 move together or the suite
+  // goes red.
+  ["apps", "/people"],
   ["ai-studio", "/chat"],
   ["admin", "/approvals"],
   ["admin", "/settings/organization"],
@@ -85,7 +91,7 @@ describe("chromeless onboarding routes (CP-2c onboarding UX)", () => {
 });
 
 describe("the launch allowlist (LS-1)", () => {
-  it("ships exactly the nine panes launch_surface.md §2 names", () => {
+  it("ships exactly the ten panes launch_surface.md §2 names", () => {
     const live = panesWithSection()
       .filter(([, p]) => p.launch === "live")
       .map(([section, p]): [string, string] => [section, p.href]);
