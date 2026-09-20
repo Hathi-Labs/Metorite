@@ -27,8 +27,11 @@
 export const ADD = {
   /** One row of the vendor feed. */
   one: "Add",
-  /** One row whose job the Router has no verb for yet. */
-  unservable: "Add anyway",
+  /** One row the vendor feed carries NO price for. It still declares fine
+   *  and lands costs blind, so the button works and says it is a concession.
+   *  ⚠️ A row the Router has no verb for draws no button at all — that case
+   *  is the "not servable yet" note, not a label here. */
+  unpriced: "Add anyway",
   /** The bulk act, over the rows you ticked. */
   selected: (n: number) => `Add ${n} selected`,
   /** The by-hand form's disclosure and its submit. */

@@ -617,10 +617,11 @@ export default function ModelDetails({
           title={HELP_DETAILS.close}
           onClick={() => setOpen(false)}
         >
-          {/* ⚠️ "Done", never "Close". Beside a Save the two read as a pair
-              of ways out and the reader has to guess which one discards their
-              typing. Neither does — but a label that provokes the question is
-              itself the defect. */}
+          {/* ⚠️ The word is in `words.ts` and it is deliberately not Close.
+              Beside a Save, the two read as a pair of ways out and the reader
+              has to guess which one discards their typing. Neither does — the
+              boxes are this component's state and the card keeps it mounted —
+              but a label that provokes the question is itself the defect. */}
           {EDIT.close}
         </button>
       </div>

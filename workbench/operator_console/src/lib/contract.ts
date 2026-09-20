@@ -338,6 +338,16 @@ export type FeedModel = {
   thinksFirst: boolean;
   /** The vendor's own retirement date, when litellm records one. */
   deprecatedOn: string | null;
+  /** We already hold a saved profile for this model.
+   *
+   * 🔴 **Only ever true on the OFFER list after a removal.** `DELETE
+   * /catalog/capabilities` keeps `model_profile`, so a removed model comes
+   * back onto its vendor's shelf with our prices still in the database.
+   * Adding it must NOT re-save a profile built from litellm alone —
+   * `POST /catalog/profiles` replaces the whole row, so that would write NULL
+   * over the off-peak rates, the long-context tier, the label and the
+   * description. `FeedAvailable` reads this and skips the profile write. */
+  profiled: boolean;
 };
 
 export type VendorFeed = {

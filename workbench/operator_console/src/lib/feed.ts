@@ -381,3 +381,21 @@ export function toggleAll(picked: Set<string>, ids: string[]): Set<string> {
   }
   return next;
 }
+
+/** Should adding this SHELF row write a profile, or only declare it?
+ *
+ * 🔴 **Only ever false after a removal.** `DELETE /catalog/capabilities`
+ * keeps `model_profile`, so a removed model comes back onto its vendor's
+ * shelf with our own numbers still saved. `POST /catalog/profiles` REPLACES
+ * the whole row and `declareBodies` knows only what litellm publishes, so
+ * re-saving it would write NULL over the off-peak rates, the long-context
+ * tier, the label and the description — and every later call would cost at
+ * the peak rate, with nothing said anywhere.
+ *
+ * ⚠️ **For the OFFER list only.** `FillAllBlind` deliberately writes a profile
+ * onto models we already hold rows for — that is its entire job — and it
+ * passes rows from `feed.rows`, never from `feed.available`.
+ */
+export function shouldWriteProfile(f: FeedModel): boolean {
+  return !f.profiled;
+}

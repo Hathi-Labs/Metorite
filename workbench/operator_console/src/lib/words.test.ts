@@ -22,7 +22,7 @@ function modelsSource(): { file: string; text: string }[] {
 describe("one act, one word", () => {
   it("pins the add vocabulary", () => {
     expect(ADD.one).toBe("Add");
-    expect(ADD.unservable).toBe("Add anyway");
+    expect(ADD.unpriced).toBe("Add anyway");
     expect(ADD.selected(3)).toBe("Add 3 selected");
     expect(ADD.byHandSubmit).toBe("Add");
     expect(ADD.busy).toBe("Adding…");
@@ -82,12 +82,24 @@ describe("the retired vocabulary cannot come back", () => {
   });
 
   it("no Models component hardcodes a label that words.ts owns", () => {
-    // Every literal below has an entry in `words.ts`. A component that spells
-    // one itself is how the two drift apart.
-    const owned = ["\"Remove\"", "\"Clear filters\"", "\"Edit details\""];
+    // Every word below has an entry in `words.ts`. A component that spells one
+    // itself is how the two drift apart.
+    //
+    // 🔴 **Both shapes, and the JSX one matters more.** An earlier version of
+    // this test matched only `"Remove"` — a double-quoted literal — while
+    // every retired label on this page was written as JSX TEXT: `>Add<`,
+    // `>Clear<`, `>Save<`, `>Close<`. The scan was blind to the exact form it
+    // exists to catch.
+    const owned = ["Remove", "Clear filters", "Edit details", "Keep it", "Done"];
     const offenders: string[] = [];
     for (const { file, text } of modelsSource()) {
-      for (const lit of owned) if (text.includes(lit)) offenders.push(`${file} ${lit}`);
+      for (const w of owned) {
+        if (text.includes(`"${w}"`)) offenders.push(`${file} "${w}"`);
+        // `>Remove<` and `> Remove <`, across a line break too.
+        if (new RegExp(`>\s*${w}\s*<`).test(text)) {
+          offenders.push(`${file} >${w}<`);
+        }
+      }
     }
     expect(offenders).toEqual([]);
   });

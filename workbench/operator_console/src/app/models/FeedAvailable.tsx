@@ -42,6 +42,7 @@ import {
   feedPriceLabel,
   selectableIds,
   servableFeedModels,
+  shouldWriteProfile,
   toggleAll,
   togglePick,
   without,
@@ -124,6 +125,11 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
         body: JSON.stringify(bodies.capability),
       });
       if (!cap.ok) return `The Console refused ${f.id}: ${await cap.text()}`;
+      // 🔴 **A model we have priced before is declared and NOT re-profiled.**
+      // The judgement is `shouldWriteProfile`, with its reasoning and its
+      // test in `feed.ts` — this app has no React renderer, so a rule written
+      // here would be untested by construction.
+      if (!shouldWriteProfile(f)) return null;
       const prof = await fetch("/api/operator/catalog/profiles", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -159,7 +165,12 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
     // ⚠️ Untick it too. The row is about to leave the list — it is declared
     // now — and a selection holding an id that is no longer on offer would
     // put a phantom into the next "Add N selected".
-    setPicked(without(picked, f.id));
+    //
+    // ⚠️ **The UPDATER form, never the captured `picked`.** Two awaits have
+    // passed and the row checkboxes stay live during a single-row add (they
+    // disable on `bulkBusy` only), so a tick made while this was in flight
+    // would be written away without a word.
+    setPicked((p) => without(p, f.id));
     router.refresh();
   }
 
@@ -182,7 +193,7 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
     // ⚠️ Keep the ones that FAILED ticked, and only those. The operator's next
     // act is to retry or read the refusal, and clearing the lot would hide
     // which models they still do not have.
-    setPicked(new Set(failed));
+    setPicked(new Set(failed));  // the boxes were disabled throughout
     // Refresh even on a partial failure: the models that DID land are in the
     // catalog, and a list still offering them invites a second add.
     router.refresh();
@@ -411,7 +422,7 @@ export default function FeedAvailable({ feed }: { feed: VendorFeed }) {
                             ? ADD.busy
                             : canFillFromFeed(f)
                               ? ADD.one
-                              : ADD.unservable}
+                              : ADD.unpriced}
                         </button>
                       ) : (
                         <span

@@ -227,7 +227,8 @@ export const HELP_AVAILABLE = {
 export const HELP_REMOVE = {
   open:
     "Take this model out of the catalog. It leaves this page and every " +
-    "backup-chain picker on Tiers. The vendor feed can put it back in one click.",
+    "backup-chain picker on Tiers. The prices you recorded are kept, so " +
+    "adding it again restores them.",
   blocked:
     "A tier still serves from this model, so removing it would break those " +
     "calls. Re-point the tier on the Tiers page first, then come back.",

@@ -643,23 +643,6 @@ class TestRemovingAModelFromTheCatalog:
         assert r.status_code == 200, r.text
         assert r.json()["removed"] == 1
 
-    def test_a_FUTURE_DATED_binding_does_not_block_it_either(self, client, db):
-        """A binding that has not taken effect is not serving anything yet.
-        ``effective_from <= now()`` is the whole of the difference."""
-        model = f"test/{uuid.uuid4().hex[:8]}"
-        tier = f"tier-{uuid.uuid4().hex[:6]}"
-        client.post("/catalog/capabilities", headers=OP, json={
-            "model": model, "task": "chat", "invocation": "acompletion"})
-        with db.begin() as c:
-            c.execute(text(
-                "INSERT INTO tier_binding (tier, task, model, rank, "
-                "effective_from) VALUES (:t, 'chat', :m, 1, "
-                "now() + interval '10 days')"), {"t": tier, "m": model})
-
-        r = client.request("DELETE", "/catalog/capabilities", headers=OP,
-                           json={"model": model})
-        assert r.status_code == 200, r.text
-
     def test_removing_one_task_is_not_blocked_by_a_binding_on_ANOTHER(
         self, client, db,
     ):
@@ -782,6 +765,112 @@ class TestRemovingAModelFromTheCatalog:
         assert offered(), (
             "a removed model is in NEITHER list — its kept profile hid it "
             "from its own vendor's shelf")
+
+    def test_a_STAGED_binding_BLOCKS_the_removal(self, client, db):
+        """🔴 Found in adversarial review, 2026-09-21. A staged chain is
+        ARMED, not superseded.
+
+        ``POST /catalog/bindings`` takes a future ``effective_from`` on purpose
+        — it stages a change without taking effect — and ``bind_tier`` checked
+        the capability on the day it was staged. Remove the model in between
+        and nothing says a word: ``resolve_chain`` returns it on the date,
+        ``resolve_invocation`` finds no verb, and the 500 lands on a customer's
+        first call. The ``unserved`` gap cannot show it either, because that
+        reads the in-force chain alone.
+        """
+        model = f"test/{uuid.uuid4().hex[:8]}"
+        tier = f"tier-{uuid.uuid4().hex[:6]}"
+        client.post("/catalog/capabilities", headers=OP, json={
+            "model": model, "task": "chat", "invocation": "acompletion"})
+        with db.begin() as c:
+            c.execute(text(
+                "INSERT INTO tier_binding (tier, task, model, rank, "
+                "effective_from) VALUES (:t, 'chat', :m, 1, "
+                "now() + interval '10 days')"), {"t": tier, "m": model})
+
+        r = client.request("DELETE", "/catalog/capabilities", headers=OP,
+                           json={"model": model})
+        assert r.status_code == 400, r.text
+        detail = r.json()["detail"]
+        assert tier in detail
+        # ⚠️ And it SAYS which kind, because "re-point it" means a different
+        # act for a chain that has not started yet.
+        assert "staged" in detail
+
+    def test_a_typed_task_is_refused_rather_than_answering_removed_zero(
+        self, client,
+    ):
+        """A 200 with ``removed: 0`` reads as success, so an operator who
+        mistypes believes the model is gone. The declare refuses an unknown
+        task; so does this."""
+        r = client.request("DELETE", "/catalog/capabilities", headers=OP,
+                           json={"model": "test/x", "task": "chatt"})
+        assert r.status_code == 400
+        assert "chatt" in r.json()["detail"]
+
+    def test_the_offer_list_SAYS_we_already_hold_prices_for_a_model(
+        self, client, db,
+    ):
+        """🔴 Found in adversarial review, 2026-09-21. The other half of
+        "the prices are kept".
+
+        A removed model returns to its vendor's shelf with ``model_profile``
+        still in the database. The page's Add sends a capability POST **and** a
+        profile POST built from litellm alone, and ``POST /catalog/profiles``
+        replaces the WHOLE row — so re-adding would write NULL over the
+        off-peak rates, the long-context tier, the label and the description,
+        and every later call would cost at the peak rate with nothing said.
+
+        The browser cannot know which shelf rows we have priced. This flag is
+        how it finds out, and `FeedAvailable` skips the profile write on it.
+        """
+        with db.begin() as c:
+            c.execute(text(
+                "INSERT INTO provider_credential (provider, secret_enc) "
+                "VALUES ('strandco', 'x') ON CONFLICT DO NOTHING"))
+            c.execute(text(
+                "INSERT INTO vendor_price_feed "
+                "(model, provider, mode, task, invocation, context_window, "
+                " vendor_input_per_1m_usd, vendor_output_per_1m_usd) "
+                "VALUES ('strandco/two', 'strandco', 'chat', 'chat', "
+                "        'acompletion', 8192, 1, 2) "
+                "ON CONFLICT (model) DO NOTHING"))
+
+        def row():
+            body = client.get("/catalog/models", headers=OP).json()
+            return next((f for f in body["feed"]["available"]
+                         if f["model"] == "strandco/two"), None)
+
+        # Never seen before: nothing of ours to protect.
+        assert row() is not None
+        assert row()["profiled"] is False
+
+        # Declare it, price it — including an OFF-PEAK rate, which is exactly
+        # the field the feed does not carry and a re-add would erase.
+        client.post("/catalog/capabilities", headers=OP, json={
+            "model": "strandco/two", "task": "chat",
+            "invocation": "acompletion"})
+        client.post("/catalog/profiles", headers=OP, json={
+            "model": "strandco/two",
+            "vendor_input_per_1m_usd": "1",
+            "vendor_input_offpeak_per_1m_usd": "0.22",
+            "offpeak_start_utc": "16:30", "offpeak_end_utc": "00:30"})
+
+        client.request("DELETE", "/catalog/capabilities", headers=OP,
+                       json={"model": "strandco/two"})
+
+        back = row()
+        assert back is not None, "the removed model must return to the shelf"
+        assert back["profiled"] is True, (
+            "the shelf must say we already hold prices, or the browser "
+            "re-saves a litellm-only profile over them")
+
+        # And the off-peak rate really is still there to protect.
+        with db.begin() as c:
+            kept = c.execute(text(
+                "SELECT vendor_input_offpeak_per_1m_usd FROM model_profile "
+                "WHERE model = 'strandco/two'")).scalar()
+        assert Decimal(kept) == Decimal("0.22")
 
     def test_it_is_operator_gated(self, client):
         assert client.request(

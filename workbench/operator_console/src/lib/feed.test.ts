@@ -26,6 +26,7 @@ import {
   prefillFrom,
   selectableIds,
   servableFeedModels,
+  shouldWriteProfile,
   toggleAll,
   togglePick,
   without,
@@ -55,6 +56,8 @@ const F = (over: Partial<FeedModel>): FeedModel => ({
   cachedInputPer1M: "0.070000",
   perMinuteUsd: null, perCharacterUsd: null, perImageUsd: null,
   readsImages: false, thinksFirst: false, deprecatedOn: null,
+  // Offered and NOT priced by us — the ordinary case for a shelf row.
+  profiled: false,
   ...over,
 });
 
@@ -861,5 +864,41 @@ describe("toggleAll", () => {
   it("does nothing at all when there is nothing selectable", () => {
     const before = new Set(["a"]);
     expect([...toggleAll(before, [])]).toEqual(["a"]);
+  });
+});
+
+describe("shouldWriteProfile", () => {
+  it("writes for a model we have never priced", () => {
+    expect(shouldWriteProfile(F({ profiled: false }))).toBe(true);
+  });
+
+  it("does NOT write for one whose prices we kept through a removal", () => {
+    expect(shouldWriteProfile(F({ profiled: true }))).toBe(false);
+  });
+
+  it("guards fields `declareBodies` cannot supply", () => {
+    // 🔴 This is WHY the guard exists, pinned so it stays true. The profile
+    // body is built from litellm, and litellm publishes one rate per model:
+    // no window, no context tier. `POST /catalog/profiles` replaces the whole
+    // row, so every key missing here arrives as null and erases what an
+    // operator typed. If a future feed DOES carry these, this test goes red
+    // and the guard can be reconsidered on purpose.
+    const keys = Object.keys(declareBodies(F({})).profile);
+    for (const absent of [
+      "vendor_input_offpeak_per_1m_usd",
+      "vendor_output_offpeak_per_1m_usd",
+      "vendor_cached_input_offpeak_per_1m_usd",
+      "offpeak_start_utc",
+      "offpeak_end_utc",
+      "context_tier_threshold",
+      "vendor_input_long_per_1m_usd",
+      "vendor_output_long_per_1m_usd",
+      "vendor_cached_input_long_per_1m_usd",
+    ]) {
+      expect(keys).not.toContain(absent);
+    }
+    // And the two it DOES send blank, which overwrite just as hard.
+    expect(declareBodies(F({})).profile.label).toBeNull();
+    expect(declareBodies(F({})).profile.description).toBe("");
   });
 });

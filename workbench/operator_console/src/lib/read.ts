@@ -156,6 +156,7 @@ type WireFeedModel = {
   reads_images: boolean;
   thinks_first: boolean;
   deprecated_on: string | null;
+  profiled?: boolean;
 };
 
 type WireSpend = {
@@ -392,6 +393,9 @@ export function catalogFromWire(w: WireCatalog): AiCatalog {
     readsImages: r.reads_images,
     thinksFirst: r.thinks_first,
     deprecatedOn: r.deprecated_on,
+    // ⚠️ Defaults FALSE. An older Console that does not send the field must
+    // not make the browser skip a profile write it should make.
+    profiled: r.profiled === true,
   });
   const feed: VendorFeed = w.feed
     ? {
