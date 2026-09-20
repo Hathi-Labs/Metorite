@@ -500,7 +500,7 @@ describe("ModelDetails posts the wire's own strings", () => {
     expect(src).toContain('["$ per minute", vmin]');
     expect(src).toContain('["$ per character", vchar]');
     expect(src).toContain('["$ per image", vimg]');
-    // And "Copy the vendor's facts" fills them.
+    // And "Use the vendor's prices" fills them.
     expect(src).toContain("setVmin(v.vmin)");
   });
 });
