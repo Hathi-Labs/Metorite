@@ -79,7 +79,7 @@ it is not a defect to be tidied away.
 | | `app_user` (+ `user_role`, `org_group_member`) | `gtd_people` (+ `gtd_person_resumes`) |
 |---|---|---|
 | Answers | *Can they sign in, and what may they see?* | *Who are they, what can they do, who do they report to?* |
-| Created by | An invite (`POST /admin/members`) or a sign-in request | **Member provisioning**, an import, a résumé upload, or a hand-added row |
+| Created by | An invite (`POST /admin/members`) or a sign-in request | **Any `app_user` write, by trigger** (migration 206), an import, a résumé upload, or a hand-added row |
 | Owned by | `org_access_control.md` | `task_manager_hr_planning_and_memory.md` |
 | Key | `email` | `id`; `lower(email)` partial-unique since migration 148 |
 | Includes people who never sign in | No | **Yes** — contractors, a new hire before day one, a vendor contact |
@@ -99,6 +99,24 @@ words in their mouth.
 a directory row and no login. A service identity may still sign in and hold no
 directory row. What changed is that provisioning a HUMAN member now writes
 both.
+
+**A member is in the directory. Always, and with nobody pressing anything.**
+Migration 206 puts that rule in a trigger on `app_user`. Owner directive,
+2026-09-20.
+
+Two earlier shapes were both wrong. Application code taught two of the five
+`app_user` writers and missed three. A "Sync members" button made an invariant
+into a chore somebody has to remember. It was therefore false most of the
+time, and it said nothing. The database cannot forget. SQL run on the box
+during an incident obeys the rule too.
+
+⚠️ **The trigger FAILS OPEN.** A directory row is a convenience. Membership is
+the product. A failure becomes a warning in the Postgres log and the member is
+still created. Re-running migration 206 backfills whatever was missed.
+
+⚠️ **It writes `active` and `invited` members only.** The two status
+vocabularies differ, and off-boarding is D63's question (H-49), unsettled. An
+existing row is never rewritten, so a person's own edits survive.
 
 **They are joined on lowercased email, and the join is deliberately partial.** A person can
 exist in the directory with no login (a contractor you assign work to but who has no seat),

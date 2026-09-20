@@ -68,7 +68,6 @@ from acb_auth.console_resolve import (
     provision_org_on_console,
 )
 from acb_common import get_logger, get_settings
-from acb_common.db import tenant_session
 from acb_common.provisioning import (
     OwnerBelongsElsewhere,
     SlugOwnedByAnother,
@@ -78,7 +77,6 @@ from acb_common.provisioning import (
 )
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from gateway.routes.tasks.people import ensure_directory_row
 
 _log = get_logger("gateway.signup")
 
@@ -400,46 +398,6 @@ async def _mirror_to_console(
     return None
 
 
-async def _write_founder_directory_row(
-    *, organization_id: str, slug: str, email: str, display_name: str
-) -> None:
-    """Give the person who just created the org their `/people/me` row.
-
-    Without it the founder opens *My Profile* and reads "An administrator can
-    add you" — in an organization where they are the only administrator there
-    is. Measured on production 2026-09-19: the owner of the live tenant had no
-    row, and neither did anybody else.
-
-    ⚠️ **Its OWN tenant session.** The organization was created seconds ago and
-    nothing has bound ``app.tenant_id`` on this request. ``gtd_people``'s
-    ``organization_id`` defaults from that setting, so an unbound insert would
-    write a NULL tenant — the one outcome worse than no row at all.
-
-    Best-effort, and AFTER the authoritative commit, like every other mirror in
-    this flow. A signup that worked must never fail on a profile row, and
-    ``invite_member`` writes the same row for everybody who follows the
-    founder in.
-
-    Extracted from :func:`provision_signup` rather than inlined: the route was
-    already at the complexity ceiling, and one more ``try`` pushed it over.
-    """
-    try:
-        async with tenant_session(organization_id) as db:
-            # `status` is left to the helper's own default on purpose. The
-            # founder is active by definition, and
-            # `test_console_dependency_boundary` forbids a lifecycle state
-            # NAME as a string constant in this file. That fence cannot tell a
-            # people-directory status from a deployment lifecycle state, and
-            # it is right not to try.
-            await ensure_directory_row(
-                db,
-                email=email,
-                display_name=display_name,
-            )
-    except Exception as exc:
-        _log.warning("signup.founder_directory_row_failed", slug=slug, error=str(exc)[:200])
-
-
 @router.post("/provision")
 async def provision_signup(
     request: Request,
@@ -535,7 +493,11 @@ async def provision_signup(
     # raced its own pre-flight, mapped to the SAME two codes so a race is
     # indistinguishable from the pre-flighted case at the wire.
     try:
-        organization_id = await provision_local_organization(
+        # The return value is no longer bound: it existed only to pass the
+        # organization to the founder's directory-row write, and migration
+        # 206's trigger does that now, inside the same statement that creates
+        # the `app_user` row.
+        await provision_local_organization(
             slug, display_name or None, owner_email=email
         )
     except OwnerBelongsElsewhere:
@@ -558,13 +520,11 @@ async def provision_signup(
         _log.error("signup.tenant_provision_failed", error=str(exc)[:200])
         return _refuse(CONSOLE_UNAVAILABLE)
 
-    # ── Step 1.4 · the FOUNDER's directory row ───────────────────────────────
-    await _write_founder_directory_row(
-        organization_id=str(organization_id),
-        slug=slug,
-        email=email,
-        display_name=display_name or "",
-    )
+    # ── Step 1.4 · the FOUNDER's directory row is written by the DATABASE ────
+    # Migration 206's trigger on `app_user` writes it with the row the
+    # provisioning function above already inserted, so there is nothing to do
+    # here. This step used to call `ensure_directory_row` and was one of only
+    # two of the five `app_user` writers that did.
 
     # ── Step 1.5 · persist the GST profile on the tenant org (CP-2e) ─────────
     # AFTER step 1 (the org now exists) and BEFORE step 2, so a transient step-2
