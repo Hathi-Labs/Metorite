@@ -24,7 +24,6 @@
  * never there (spec §3.2).
  */
 
-import Link from "next/link";
 import { useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
@@ -33,11 +32,9 @@ import { Input } from "@/components/ui/Input";
 
 import type { PersonDetail, PersonRow } from "../lib/api";
 import {
-  DEFAULT_STATUS,
   type PersonForm,
   addSkill,
   buildWriteBody,
-  emptyForm,
   formFromPerson,
   mergeResumeSkills,
   removeSkill,
@@ -47,8 +44,17 @@ import {
 import { peopleWriteApi } from "../lib/write";
 
 interface Props {
-  /** The person being edited, or null to create one. */
-  person: PersonDetail | null;
+  /**
+   * The person being edited. NOT nullable, and that is the decision.
+   *
+   * This editor used to create as well. The owner closed that door on
+   * 2026-09-21 — people enter the organization in ONE place, Organisation,
+   * and the directory follows from membership by trigger (migration 206).
+   * The create branches are gone rather than merely unreachable: UI that
+   * still argues for a reversed decision is how the decision gets reversed
+   * back by somebody reading the component instead of the spec.
+   */
+  person: PersonDetail;
   /** Whether the caller may see (and therefore safely re-save) the HR half. */
   hrVisible: boolean;
   /** Everyone in the directory — the manager picker's options. */
@@ -71,9 +77,7 @@ export function PersonEditor({
   onClose,
   onSaved,
 }: Props) {
-  const [form, setForm] = useState<PersonForm>(() =>
-    person ? formFromPerson(person) : emptyForm(statuses[0] ?? DEFAULT_STATUS),
-  );
+  const [form, setForm] = useState<PersonForm>(() => formFromPerson(person));
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,12 +100,7 @@ export function PersonEditor({
     setSaving(true);
     setError(null);
     try {
-      const body = buildWriteBody(form, { hrVisible });
-      if (person) {
-        await peopleWriteApi.update(person.id, body);
-      } else {
-        await peopleWriteApi.create(body);
-      }
+      await peopleWriteApi.update(person.id, buildWriteBody(form, { hrVisible }));
       onSaved();
       onClose();
     } catch (err) {
@@ -142,44 +141,15 @@ export function PersonEditor({
     >
       <div
         role="dialog"
-        aria-label={person ? `Edit ${person.name}` : "Add person"}
+        aria-label={`Edit ${person.name}`}
         className="flex max-h-[88vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-card shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
           <div className="min-w-0">
             <h2 className="text-sm font-semibold text-foreground">
-              {person ? `Edit ${person.name}` : "Add someone without a login"}
+              {`Edit ${person.name}`}
             </h2>
-            {/*
-              ⚠️ **This door is NOT how a colleague joins**, and saying so is
-              the whole point of this line. Since migration 206 a member gets
-              their directory row from the `app_user` trigger, so the ONLY
-              thing left for this form is a person who will never sign in — a
-              contractor, a vendor contact, a new hire before day one.
-
-              It is a MONEY distinction, not a tidiness one. A member costs a
-              seat (`launch_surface.md` §4.1, ₹500/user/month); a directory
-              row costs nothing and cannot sign in. Collapsing the two would
-              force every contractor to become a paid member, which §2 calls
-              a licensing decision rather than a directory one.
-
-              Unlabelled, this button read as a second way to do what
-              Organisation already does. Owner asked why it existed, which is
-              the question a control should never provoke.
-            */}
-            {!person && (
-              <p className="mt-0.5 max-w-prose text-[11px] text-muted-foreground">
-                For a contractor, a vendor contact, or a new hire before day
-                one — somebody you assign work to who never signs in, and who
-                costs no seat. Colleagues arrive on their own when you invite
-                them in{" "}
-                <Link href="/settings/organization" className="underline">
-                  Organisation
-                </Link>
-                .
-              </p>
-            )}
           </div>
           <Button
             variant="ghost"
@@ -340,12 +310,7 @@ export function PersonEditor({
           </Field>
 
           <Field label="Résumé">
-            {!person ? (
-              <p className="text-[11px] text-muted-foreground">
-                Save this person first, then upload a résumé to auto-extract
-                skills.
-              </p>
-            ) : (
+            {(
               <div className="space-y-2">
                 <input
                   ref={fileRef}
@@ -387,7 +352,7 @@ export function PersonEditor({
             Cancel
           </Button>
           <Button loading={saving} onClick={save}>
-            {person ? "Save changes" : "Add person"}
+            Save changes
           </Button>
         </footer>
       </div>

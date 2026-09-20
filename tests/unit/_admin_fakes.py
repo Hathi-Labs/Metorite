@@ -697,10 +697,14 @@ class _FakeDB:
             rows = [dict(r) for r in self.requests.values() if r["status"] == "pending"]
             return _Rows(rows)
 
-        # `tasks.people.ensure_directory_row` — the member's DIRECTORY row.
-        # Modelled rather than waved through: `ON CONFLICT DO NOTHING` means
-        # the second invite must write nothing, and a fake that answered every
-        # INSERT with success would hide exactly that.
+        # ⚠️ **DEAD SINCE MIGRATION 206, and kept only so a stale test cannot
+        # pass for the wrong reason.** `ensure_directory_row` was deleted when
+        # the directory row became a TRIGGER on `app_user`, so no application
+        # code issues this INSERT any more — and a fake has no triggers, so
+        # nothing here can model the real behaviour either. `self.directory`
+        # stays populated for the assertions that read it; the branch simply
+        # never fires. The real fence is `test_people_from_membership.py`,
+        # which runs against a real Postgres for exactly this reason.
         if "INSERT INTO gtd_people" in s:
             # Named `address`, not `key`: `key` is a (group_id, user_id) tuple
             # in an earlier branch of this same function, and reusing it here

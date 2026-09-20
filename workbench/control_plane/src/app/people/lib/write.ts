@@ -53,14 +53,17 @@ async function unwrap<T>(res: Response): Promise<T> {
 }
 
 export const peopleWriteApi = {
-  create: async (body: PersonWriteBody): Promise<WrittenPerson> =>
-    unwrap<WrittenPerson>(
-      await fetch("/api/tasks/people", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      }),
-    ),
+  /*
+   * ⚠️ **There is no `create` here, and that is deliberate.** People enter
+   * the organization in ONE place — Organisation — and the directory follows
+   * from membership by trigger (migration 206). Owner directive 2026-09-21.
+   *
+   * `POST /tasks/people` still exists SERVER-side and is documented as
+   * having no caller, because it is the door an importer would use. Its fate
+   * is H-140. A client method with no caller is not that: it is an
+   * invitation to wire a second door back up without reading why the first
+   * one closed.
+   */
 
   update: async (id: string, body: PersonWriteBody): Promise<WrittenPerson> =>
     unwrap<WrittenPerson>(
