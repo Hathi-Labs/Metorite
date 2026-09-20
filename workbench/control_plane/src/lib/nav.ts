@@ -270,9 +270,19 @@ export const NAV_SECTIONS: NavSection[] = [
         icon: "Users",
         note: "Directory, skills and org chart",
         feature: "people",
-        // WS-28 is partly built, but the directory is not launch-ready. Note
-        // this does NOT hide /people/me, which is its own ungated live pane.
-        launch: "preview",
+        // `live` since 2026-09-20 — owner decision, taking the live set from
+        // NINE to TEN. Held back until now because the directory had never
+        // loaded (PR #306: the BFF proxy was a REQUIRED catch-all, so the
+        // bare path 404'd for its whole life) and because no member ever got
+        // a `gtd_people` row, so it rendered empty even once it did load.
+        // Both are fixed, and the roster sync (H-124) seeds it.
+        //
+        // ⚠️ `feature:people` is `is_default false`, so promoting the pane
+        // does NOT make it visible to anybody who has not been granted the
+        // slug — the owner's `*` matches, an ordinary member's grants do not.
+        // Launch status answers *are we offering it*; the grant answers *may
+        // this member reach it*, and they stay two questions.
+        launch: "live",
       },
       // The six Center landing pages, kept as `preview` so they remain
       // reachable with the flag on and by URL always (D49 / launch_surface.md

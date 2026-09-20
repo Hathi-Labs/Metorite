@@ -103,17 +103,21 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 | **Personal Center** | My Profile | `/people/me` | ungated | Your own record is never the directory (D-PC-15) |
 | **Personal Center** | My Access | `/access` | ungated | Renamed from "Your access". Ungated by construction — it is the page that explains a missing pane |
 | **Apps** | Projects | `/projects` | `feature:projects` | |
+| **Apps** | People | `/people` | `feature:people` | 🆕 **Live on 2026-09-20**, by owner decision. Held back before because the directory could not load and had no rows. PR #306 repaired the BFF proxy and gave each new member a `gtd_people` row. H-124's roster sync seeds the members who predate it. ⚠️ `feature:people` is `is_default false`. A live pane is still dark to a member without the grant |
 | **AI Studio** | Chat | `/chat` | `feature:chat` | Section renamed from "Studio" |
 | **Admin** | Approvals | `/approvals` | `feature:approvals` | |
 | **Admin** | Organisation | `/settings/organization` | admin | Tabs: Members & roles · Seat assignments · Branding · **Requests** (§6.2) |
 | **Admin** | Appearance | `/settings/appearance` | ungated | Personal preference; the org-wide default on the same page is gateway-authorized |
 
-**Nine** entries, four sections, in that order *(eight until 2026-08-24; D54 added
-Calendar — `nav.test.ts`'s count fence moved 8 → 9 in the same PR that added the pane,
-which is exactly what the fence is for)*. **"Personal Center" survives as a
-section label and nothing else** — it is a category of apps mapped one-to-one to
-the signed-in person, not a projection of a department, and the directive keeps
-it by name.
+**Ten** entries, four sections, in that order. The set held eight until 2026-08-24,
+and nine until 2026-09-20. D54 added Calendar. The owner then promoted People.
+`nav.test.ts`'s count fence moved 8 → 9 → 10 in the same pull request as each pane.
+That is what the fence is for.
+
+**"Personal Center" survives as a
+section label and nothing else.** It is a category of apps mapped one-to-one to
+the signed-in person. It is not a projection of a department. The directive
+keeps it by name.
 
 ### Preview — in the application, absent from the surface
 
@@ -129,7 +133,6 @@ answer rather than a diff:
 | Personal Center | Memories | `/memory` | WS-9 — operator-grade surface, not customer-grade |
 | Personal Center | Artifacts | `/artifacts` | Reads as a debugging surface |
 | Apps | CRM | `/crm` | WS-26 incomplete |
-| Apps | People | `/people` | WS-28 partially built; the directory is not launch-ready |
 | Apps | Centers (six panes) | `/centers/<slug>` | **Withdrawn by D49**, not merely incomplete (§5) |
 | AI Studio | Workflows | `/workflows` | WS-11 incomplete |
 | AI Studio | App Workshop | `/build/apps` | Incomplete |
@@ -139,11 +142,12 @@ answer rather than a diff:
 | Admin | Integrations | `/integrations` | Incomplete |
 | Admin | Live Activity | `/observability` | Operator concern |
 
-**The count is the fence.** `nav.test.ts` asserts that exactly the **nine** rows
-above are `live` — so adding a pane without deciding its launch status fails,
-and promoting one is a deliberate one-line edit with a test to update. *(It worked:
-D54's Calendar pane could not land without this table and that assertion both being
-edited on purpose.)*
+**The count is the fence.** `nav.test.ts` asserts that exactly the **ten** rows
+above are `live`. A pane added without a launch status fails the suite.
+Promoting one is a deliberate edit that also updates the test.
+
+*(It worked twice. Neither D54's Calendar pane nor the People pane could land
+until somebody edited this table and that assertion on purpose.)*
 
 ---
 
@@ -414,12 +418,18 @@ Personal Center / Apps / AI Studio / Admin per §2. Delete the `centers` section
 move Projects and CRM into Apps. Rename "Your access" → "My Access" and the
 "Studio" section → "AI Studio".
 
-**Done when:** `nav.test.ts` asserts (a) the live set is exactly §2's **nine**
-`(section, href)` pairs *(this clause read "eight" until 2026-08-26 — D54 added the
-Calendar pane the same day LS-1 was written, §2's own table was updated to nine and
-this line was not; `nav.test.ts` has said `"ships exactly the nine panes"` since)*; (b) every pane carries an explicit `launch`; (c) no
-section is named "Centers"; (d) `visibleSections` drops `preview` panes when the
-preview flag is off and restores them when it is on.
+**Done when:** `nav.test.ts` asserts all four of these.
+
+- (a) The live set is exactly §2's **ten** `(section, href)` pairs.
+- (b) Every pane carries an explicit `launch`.
+- (c) No section is named "Centers".
+- (d) `visibleSections` drops `preview` panes when the preview flag is off, and
+  restores them when it is on.
+
+⚠️ **This clause has been wrong twice, both times by one number.** It read
+"eight" until 2026-08-26. D54 added the Calendar pane on the day LS-1 was
+written. Somebody updated §2's table to nine and left this line alone. Change
+the count here, in §2's table, and in `nav.test.ts` together.
 
 ### LS-2 · One filter, three surfaces — **AGENT-SAFE** · ✅ BUILT 2026-08-24
 

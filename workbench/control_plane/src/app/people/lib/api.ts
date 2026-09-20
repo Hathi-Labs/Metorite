@@ -207,6 +207,36 @@ export const peopleApi = {
    * nothing. The settings page previews before it applies, because this figure
    * is the denominator of every load bar in the org.
    */
+  /**
+   * Give every member of the org a directory row (H-124).
+   *
+   * The repair for a directory that predates PR #306: member provisioning
+   * writes a `gtd_people` row now, but everybody created before it has none,
+   * so they read "An administrator can add you" on their own profile. This
+   * is the administrator doing that, for the whole roster, in one press.
+   *
+   * Idempotent — the server inserts only what is missing and reports
+   * `created` apart from `existing`, so "nothing to do" and "wrote nothing"
+   * do not render as the same sentence.
+   */
+  syncMembers: async () => {
+    const res = await fetch("/api/people/sync-members", { method: "POST" });
+    const text = await res.text();
+    const parsed = readJsonBody(text).value;
+    if (!res.ok) {
+      throw new PeopleApiError(
+        detailText(parsed?.detail) || describeFailure(res.status, text),
+        res.status
+      );
+    }
+    return parsed as {
+      members: number;
+      created: number;
+      existing: number;
+      skipped: number;
+    };
+  },
+
   saveSchedule: async (
     policy: import("./schedule").WorkPolicy,
     dryRun: boolean
