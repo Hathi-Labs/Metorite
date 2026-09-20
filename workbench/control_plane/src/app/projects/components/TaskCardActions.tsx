@@ -29,6 +29,13 @@
  * 2. **`hidden` or `invisible` would take it out of the tab order.** Then the
  *    only way to finish a task is a mouse. `opacity-0` keeps the buttons
  *    focusable, and `focus-within` paints them the moment one has focus.
+ *    ⚠️ Focusable was not enough, and the first version of this file was
+ *    wrong about it. `TaskCardShell` calls `preventDefault()` on Enter and
+ *    Space from ANY descendant, which CANCELS the click the browser would
+ *    have synthesised — so Enter on "Mark done" opened the task panel and
+ *    the action never ran. `SWALLOW` stops the keyboard as well as the
+ *    pointer for that reason. `CardInput.tsx` defends itself against the
+ *    same shell behaviour, and this file did not.
  * 3. **A touch screen never hovers.** `[@media(hover:none)]` pins the strip
  *    on, which is the same rule `app/chat/page.tsx` applies to its own
  *    hover-revealed control. Without it the whole feature is desktop-only and
@@ -43,6 +50,7 @@
  */
 
 import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
 
 import type {
   TaskMenuActions,
@@ -57,10 +65,20 @@ const REVEAL =
   "focus-within:opacity-100 focus-within:pointer-events-auto " +
   "[@media(hover:none)]:opacity-100 [@media(hover:none)]:pointer-events-auto";
 
-const BUTTON =
-  "flex h-6 w-6 items-center justify-center rounded " +
-  "text-muted-foreground hover:bg-muted hover:text-foreground " +
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+/**
+ * ⚠️ The house `Button`, not a hand-rolled one.
+ *
+ * The first version of this file wrote its own ghost icon button as a class
+ * string — `Button variant="ghost" size="icon-sm"` already exists and is the
+ * same control, so that was a second way to do an existing thing (§5). It
+ * also skipped `cc-button`, which is what gives the theme's radius, state
+ * layer and focus ring.
+ *
+ * The glyph goes in as CHILDREN rather than through `icon`, because the tick
+ * needs a heavier stroke when it is on and `Button` draws its own icon at a
+ * fixed weight.
+ */
+const GHOST = { variant: "ghost", size: "icon-sm" } as const;
 
 /**
  * Swallow every gesture the card underneath would otherwise claim.
@@ -68,10 +86,19 @@ const BUTTON =
  * `onPointerDown` matters as much as `onClick`: the drag starts on the press,
  * so stopping only the click still lets a press-and-move on Rename drag the
  * whole card into another lane.
+ *
+ * ⚠️ **`onKeyDown` is the one that was missing, and without it the strip
+ * was mouse-only.** The shell's Enter/Space handler runs on the bubble, calls
+ * `preventDefault()`, and the button's synthesised click never happens — so
+ * the keyboard opened the task instead of running the action, and the board's
+ * cursor stepper then opened a SECOND task. Stopping the key here leaves the
+ * button's own default activation untouched, because this does not
+ * `preventDefault`.
  */
 const SWALLOW = {
   draggable: false,
   onPointerDown: (event: React.PointerEvent) => event.stopPropagation(),
+  onKeyDown: (event: React.KeyboardEvent) => event.stopPropagation(),
   onDragStart: (event: React.DragEvent) => {
     event.preventDefault();
     event.stopPropagation();
@@ -111,10 +138,11 @@ export function TaskCardActions({
       className={`absolute bottom-1.5 right-1.5 z-10 flex items-center gap-px rounded-md border border-border bg-card p-0.5 shadow-sm ${REVEAL}`}
     >
       {items.map((item) => (
-        <button
+        <Button
           key={item.id}
-          type="button"
+          {...GHOST}
           {...SWALLOW}
+          type="button"
           // `title` as well as `aria-label`: these are glyphs with no words,
           // and "what does the tick do" is a question a tooltip answers and a
           // screen-reader label does not.
@@ -127,7 +155,7 @@ export function TaskCardActions({
           // which is what `statusAccent.ts` spends `--success` on. Painted in
           // the accent, the tick changed colour when a member changed theirs
           // — the exact defect `underAccents` exists to catch.
-          className={`${BUTTON} ${item.active ? "text-success" : ""}`}
+          className={item.active ? "text-success" : ""}
           onClick={(event) => {
             event.stopPropagation();
             event.preventDefault();
@@ -141,16 +169,16 @@ export function TaskCardActions({
             // alone — colour is the cue some people do not get.
             strokeWidth={item.active ? 3 : 2}
           />
-        </button>
+        </Button>
       ))}
 
-      <button
-        type="button"
+      <Button
+        {...GHOST}
         {...SWALLOW}
+        type="button"
         title="More actions"
         aria-label="More actions"
         aria-haspopup="menu"
-        className={BUTTON}
         onClick={(event) => {
           event.stopPropagation();
           event.preventDefault();
@@ -162,7 +190,7 @@ export function TaskCardActions({
         }}
       >
         <Icon name="Ellipsis" size={14} />
-      </button>
+      </Button>
     </div>
   );
 }

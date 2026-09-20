@@ -17,6 +17,7 @@ import { isKnownIcon } from "@/lib/icons";
 
 import type { StatusRow, TaskRow } from "./api";
 import { COMMANDS } from "./commands";
+import { CLOSED } from "./relations";
 import {
   TASK_MENU_ACTIONS,
   type TaskMenuActions,
@@ -567,5 +568,92 @@ describe("the strip's shape is enforced, not assumed", () => {
       (a) => a.inMenu === false && a.quick === undefined,
     );
     expect(lost.map((a) => a.id)).toEqual([]);
+  });
+});
+
+/**
+ * ── "Mark done" must not cancel the task (review finding, 2026-09-20) ──
+ *
+ * The first draft ranked closing lanes by POSITION alone, so a space that
+ * orders Cancelled before Done got a tick labelled "Mark done" that wrote
+ * Cancelled. Both the label and the glyph said the opposite of the write.
+ */
+describe("done outranks cancelled, and position only breaks the tie", () => {
+  /** Backlog 10, To do 20, Cancelled 30, Done 40 — a legal, ordinary space. */
+  const CANCEL_FIRST = [
+    status("s-backlog", "Backlog", { position: 10 }),
+    status("s-todo", "To do", { position: 20 }),
+    status("s-cancel", "Cancelled", { category: "cancelled", position: 30 }),
+    status("s-done", "Done", { category: "done", position: 40 }),
+  ];
+
+  it("picks Done even when Cancelled sits before it", () => {
+    expect(laneFor(CANCEL_FIRST, "closed")?.id).toBe("s-done");
+  });
+
+  it("the tick on such a board says Mark done and writes the DONE lane", () => {
+    const ctx: TaskMenuContext = {
+      task: task({ status_id: "s-todo" }),
+      statuses: CANCEL_FIRST,
+      canSelect: true,
+      canEditInline: true,
+      selected: false,
+    };
+    const tick = taskQuickActions(ctx).find((a) => a.id === "task.markDone");
+    expect(tick?.label).toBe("Mark done");
+    const actions = spyActions();
+    tick?.run(actions, ctx);
+    expect(
+      actions.calls,
+      "a tick labelled Mark done wrote a lane that is not Done",
+    ).toEqual(["setStatus:t1:s-done"]);
+  });
+
+  it("position still decides between two lanes of the SAME category", () => {
+    const twoDone = [
+      status("late", "Shipped", { category: "done", position: 90 }),
+      status("early", "Done", { category: "done", position: 50 }),
+    ];
+    expect(laneFor(twoDone, "closed")?.id).toBe("early");
+  });
+
+  it("falls back to any closing lane when neither name is present", () => {
+    // `CLOSED` in relations.ts is the authority on WHICH categories close.
+    // A category added there must still find a lane here rather than
+    // silently removing the tick from every card.
+    const odd = [
+      status("open", "Open", { position: 0 }),
+      status("weird", "Filed", { category: "archived_x", position: 5 }),
+    ];
+    const reachable = laneFor(odd, "closed");
+    // With today's CLOSED list this is undefined, which is the honest
+    // answer. The assertion pins the SHAPE: never a lane whose category is
+    // not closing.
+    expect(reachable === undefined || CLOSED.includes(reachable.category)).toBe(
+      true,
+    );
+  });
+
+  it("cancelled is still chosen when it is the only closing lane", () => {
+    const cancelOnly = [
+      status("open", "Open", { position: 0 }),
+      status("x", "Cancelled", { category: "cancelled", position: 1 }),
+    ];
+    expect(laneFor(cancelOnly, "closed")?.id).toBe("x");
+  });
+
+  it("a task sitting in Cancelled still offers Reopen, not Mark done", () => {
+    const ctx: TaskMenuContext = {
+      task: task({ status_id: "s-cancel" }),
+      statuses: CANCEL_FIRST,
+      canSelect: true,
+      canEditInline: true,
+      selected: false,
+    };
+    const tick = taskQuickActions(ctx).find((a) => a.id === "task.markDone");
+    expect(tick).toMatchObject({ label: "Reopen", active: true });
+    const actions = spyActions();
+    tick?.run(actions, ctx);
+    expect(actions.calls).toEqual(["setStatus:t1:s-backlog"]);
   });
 });

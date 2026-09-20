@@ -32,6 +32,19 @@
  * gesture that loses it must not be "clicked somewhere else". The caller's
  * commit is a no-op on an empty or unchanged value, so a blur that follows
  * Escape writes nothing.
+ *
+ * ## While a write is in flight, and when it fails
+ *
+ * ⚠️ **`readOnly` while busy, NEVER `disabled`.** This repo already wrote
+ * the rule down — `components/QuickAdd.tsx`: "Not `disabled` while busy —
+ * disabling blurs the input". The first version here used `disabled`, so a
+ * failed rename dropped focus to `<body>` and the mount effect that focuses
+ * the field has `[]` deps and never runs again. The member was left looking
+ * at their own text with no caret and no message, which reads as nothing
+ * having happened.
+ *
+ * A failure draws its reason under the field. The caller owns the text; this
+ * only renders it, because only the caller knows which request failed.
  */
 
 import { useEffect, useRef } from "react";
@@ -42,6 +55,7 @@ export function CardInput({
   onCommit,
   onCancel,
   busy = false,
+  error = null,
   placeholder,
   "aria-label": ariaLabel,
 }: {
@@ -51,6 +65,8 @@ export function CardInput({
   onCancel: () => void;
   /** A write is in flight. The field stays readable and refuses a second one. */
   busy?: boolean;
+  /** Why the last commit failed. Drawn under the field; the caret stays. */
+  error?: string | null;
   placeholder?: string;
   "aria-label": string;
 }) {
@@ -68,17 +84,23 @@ export function CardInput({
   }, []);
 
   return (
+    <div className="min-w-0">
     <input
       ref={field}
       type="text"
       value={value}
-      disabled={busy}
+      // ⚠️ `readOnly`, not `disabled`. See the header.
+      readOnly={busy}
+      aria-busy={busy || undefined}
+      aria-invalid={error ? true : undefined}
       placeholder={placeholder}
       aria-label={ariaLabel}
       // The house field paint, at the card's own text size. Not the `Input`
       // primitive: this one sits inside a card and has to read as the title it
       // replaced, so it carries no label slot, no icon slot and no size ramp.
-      className="w-full rounded border border-primary bg-background px-1.5 py-1 text-[13px] font-medium leading-snug text-foreground outline-none disabled:opacity-60"
+      className={`w-full rounded border bg-background px-1.5 py-1 text-[13px] font-medium leading-snug text-foreground outline-none ${
+        error ? "border-destructive" : "border-primary"
+      } ${busy ? "opacity-70" : ""}`}
       onChange={(event) => onChange(event.target.value)}
       onClick={(event) => event.stopPropagation()}
       onPointerDown={(event) => event.stopPropagation()}
@@ -103,6 +125,10 @@ export function CardInput({
         if (!busy) onCommit();
       }}
     />
+      {error ? (
+        <p className="mt-1 text-[11px] text-destructive">{error}</p>
+      ) : null}
+    </div>
   );
 }
 

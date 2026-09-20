@@ -193,11 +193,21 @@ export function TaskBoard({
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(
     null
   );
-  const [renameBusy, setRenameBusy] = useState(false);
+  /**
+   * The task whose rename is in flight, or null.
+   *
+   * ⚠️ A task ID, never a boolean. A board-wide `busy` flag disabled the
+   * field on a DIFFERENT card: rename A, then click Rename on B before A's
+   * PATCH returns, and B opened greyed out and unfocused. The write belongs
+   * to one row, so the flag names that row.
+   */
+  const [renameBusyId, setRenameBusyId] = useState<string | null>(null);
+  const [renameError, setRenameError] = useState<string | null>(null);
   /** The card with a subtask composer open under it, and its draft. */
   const [subtaskFor, setSubtaskFor] = useState<string | null>(null);
   const [subtaskTitle, setSubtaskTitle] = useState("");
-  const [subtaskBusy, setSubtaskBusy] = useState(false);
+  const [subtaskBusyId, setSubtaskBusyId] = useState<string | null>(null);
+  const [subtaskError, setSubtaskError] = useState<string | null>(null);
   const { flash, attach, scrollTo } = useFlash();
 
   // `fromConfig` normalises an equal sub-axis away, but the axis pickers can
@@ -497,10 +507,12 @@ export function TaskBoard({
     addSubtask: (task) => {
       setRenaming(null);
       setSubtaskTitle("");
+      setSubtaskError(null);
       setSubtaskFor(task.id);
     },
     rename: (task) => {
       setSubtaskFor(null);
+      setRenameError(null);
       setRenaming({ id: task.id, title: task.title });
     },
   };
@@ -528,6 +540,16 @@ export function TaskBoard({
    */
   const selectionActive = (selected?.size ?? 0) > 0;
 
+  /**
+   * Close a field ONLY if it is still the one this write belongs to.
+   *
+   * ⚠️ Every `setRenaming(null)` after an `await` was unconditional, and
+   * that closed whatever field was open by then. Rename A, click Rename on B,
+   * and A's response shut B's field while the member was typing in it.
+   */
+  const closeRenameOf = (taskId: string) =>
+    setRenaming((current) => (current?.id === taskId ? null : current));
+
   /** Rename. A no-op on an empty or unchanged title, which is what makes the
    *  blur-commits rule in `CardInput` safe. */
   async function commitRename(task: TaskRow) {
@@ -535,49 +557,63 @@ export function TaskBoard({
     if (!draft || draft.id !== task.id) return;
     const title = draft.title.trim();
     if (!title || title === task.title) {
-      setRenaming(null);
+      closeRenameOf(task.id);
       return;
     }
-    setRenameBusy(true);
+    setRenameBusyId(task.id);
+    setRenameError(null);
     try {
       await projectsApi.patchTask(task.id, { title });
-      setRenaming(null);
+      closeRenameOf(task.id);
       onRenamed?.();
-    } catch {
-      // The field stays open with what was typed still in it. Closing it here
-      // would throw the member's words away and say nothing — and the card
-      // would redraw the OLD title, which reads as the rename having worked
-      // and then been undone.
+    } catch (err) {
+      // The field stays open with what was typed still in it, AND the reason
+      // is drawn under it. Closing silently would throw the member's words
+      // away and redraw the OLD title, which reads as the rename having
+      // worked and then been undone.
+      setRenameError(String((err as Error).message));
     } finally {
-      setRenameBusy(false);
+      setRenameBusyId((current) => (current === task.id ? null : current));
     }
   }
 
   /** A subtask is a task with a parent (§3.5) — no second endpoint, and the
    *  same call `TaskPanel.addSubtask` makes. */
+  /** The composer's half of `closeRenameOf`, for the same reason. */
+  const closeComposerOf = (taskId: string) =>
+    setSubtaskFor((current) => {
+      if (current !== taskId) return current;
+      setSubtaskTitle("");
+      return null;
+    });
+
   async function commitSubtask(task: TaskRow) {
     if (subtaskFor !== task.id) return;
     const title = subtaskTitle.trim();
     if (!title) {
-      setSubtaskFor(null);
+      closeComposerOf(task.id);
       return;
     }
-    setSubtaskBusy(true);
+    setSubtaskBusyId(task.id);
+    setSubtaskError(null);
     try {
       const created = await projectsApi.createTask({
+        // The PARENT's project, not the board's selected node: a subtask
+        // belongs where its parent lives, and an aggregate board draws rows
+        // from the whole subtree.
         project_id: task.project_id,
         parent_task_id: task.id,
         title,
       });
-      setSubtaskFor(null);
-      setSubtaskTitle("");
+      closeComposerOf(task.id);
       flash(created.id);
       onCreated(created);
-    } catch {
-      // Same reasoning as the rename: the composer keeps the title so the
-      // member can try again, rather than losing it to a failed POST.
+    } catch (err) {
+      // Same reasoning as the rename: the composer keeps the title and says
+      // why, rather than losing both to a failed POST.
+      setSubtaskError(String((err as Error).message));
     } finally {
-      setSubtaskBusy(false);
+      setSubtaskBusyId((current) => (current === task.id ? null : current));
     }
   }
 
@@ -684,18 +720,6 @@ export function TaskBoard({
           setDropAt(null);
         }}
       >
-        {/* The hover strip. Hidden while an input is open on this card: four
-            buttons floating over a field you are typing in offer nothing, and
-            one of them would discard what you typed. */}
-        {editing ? null : (
-          <TaskCardActions
-            items={taskQuickActions(ctx)}
-            actions={menuActions}
-            ctx={ctx}
-            onMore={(at) => setMenu({ ...at, task })}
-          />
-        )}
-
         <div className="flex min-w-0 flex-col gap-2">
           {/* Off the status axis the column no longer says what the status is,
               so the card carries it — the same rule /tasks applies with
@@ -710,10 +734,14 @@ export function TaskBoard({
           {renamingThis ? (
             <CardInput
               value={renaming.title}
-              busy={renameBusy}
+              busy={renameBusyId === task.id}
+              error={renameError}
               aria-label={`Rename ${task.title}`}
               onChange={(title) => setRenaming({ id: task.id, title })}
-              onCancel={() => setRenaming(null)}
+              onCancel={() => {
+                setRenameError(null);
+                closeRenameOf(task.id);
+              }}
               onCommit={() => void commitRename(task)}
             />
           ) : (
@@ -732,11 +760,15 @@ export function TaskBoard({
         {composingHere ? (
           <CardInput
             value={subtaskTitle}
-            busy={subtaskBusy}
+            busy={subtaskBusyId === task.id}
+            error={subtaskError}
             placeholder="Subtask title"
             aria-label={`Add a subtask to ${task.title}`}
             onChange={setSubtaskTitle}
-            onCancel={() => setSubtaskFor(null)}
+            onCancel={() => {
+              setSubtaskError(null);
+              closeComposerOf(task.id);
+            }}
             onCommit={() => void commitSubtask(task)}
           />
         ) : null}
@@ -744,6 +776,23 @@ export function TaskBoard({
           <span>{taskRef(task)}</span>
           <AvatarStack people={task.assignees} label={personLabel} />
         </span>
+        {/* The hover strip, absolutely positioned over the footer above.
+            ⚠️ LAST in the DOM on purpose. It is four extra tab stops per
+            card, and drawn first they came BEFORE the card's own title — so
+            tabbing a fifty-card board read out the actions before it read out
+            what they would act on. Position is `absolute`, so moving it here
+            changes the tab order and nothing else.
+            Hidden while an input is open on this card: four buttons floating
+            over a field you are typing in offer nothing, and one of them
+            would discard what you typed. */}
+        {editing ? null : (
+          <TaskCardActions
+            items={taskQuickActions(ctx)}
+            actions={menuActions}
+            ctx={ctx}
+            onMore={(at) => setMenu({ ...at, task })}
+          />
+        )}
       </TaskCardShell>
     </li>
     );

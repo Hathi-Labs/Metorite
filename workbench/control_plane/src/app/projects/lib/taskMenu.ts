@@ -91,13 +91,26 @@ export interface TaskMenuContext {
  * ⚠️ **Derived from the lanes, never from a flag.** `StatusRow.is_default` is
  * on the wire and read by nothing: its own header says the first lane by
  * position is where work starts, and that on the dev database the flag sat on
- * `backlog` for every space. So this applies that same rule at both ends —
- * the first CLOSED lane by position is where finished work goes, and the
- * first OPEN lane by position is where reopened work comes back to.
+ * `backlog` for every space. So position is the tie-break at both ends.
  *
- * `CLOSED` comes from `relations.ts`, which mirrors the gateway's
- * `CLOSING_CATEGORIES`. A second list of closing categories in this file is
- * exactly the mirror that goes stale and then lies.
+ * ⚠️ **`done` OUTRANKS `cancelled`, and position only breaks the tie.**
+ * Ranking by position alone was wrong and shipped in the first draft: a space
+ * that orders Backlog 10, To do 20, Cancelled 30, Done 40 got a tick labelled
+ * "Mark done" that CANCELLED the task. Both the label and the glyph said the
+ * opposite of the write.
+ *
+ * ⚠️ This deliberately disagrees with the gateway's `_closing_status`
+ * (`routes/projects/automation.py`), which prefers `cancelled`. That is not
+ * drift — the two answer different questions. Auto-close sweeps work nobody
+ * has touched for months, and its docstring says why: "a task nobody has
+ * touched for months was abandoned, not finished, and calling it done would
+ * inflate every completion report." A member pressing a tick is stating the
+ * opposite. Same vocabulary, opposite intent, so the rankings are opposite on
+ * purpose and each says so.
+ *
+ * `CLOSED` still comes from `relations.ts`, which mirrors the gateway's
+ * `CLOSING_CATEGORIES` — WHICH categories close is one fact with one home.
+ * Only the ranking within them is local.
  *
  * `undefined` when the project has no such lane — which is what drops the
  * button off the card instead of drawing one that cannot work.
@@ -106,10 +119,16 @@ export function laneFor(
   statuses: readonly StatusRow[],
   end: "closed" | "open",
 ): StatusRow | undefined {
-  const want = end === "closed";
-  return [...statuses]
-    .sort((a, b) => a.position - b.position)
-    .find((status) => isResolved(status.category) === want);
+  const byPosition = [...statuses].sort((a, b) => a.position - b.position);
+  if (end === "open") return byPosition.find((s) => !isResolved(s.category));
+  for (const wanted of ["done", "cancelled"]) {
+    const hit = byPosition.find((s) => s.category === wanted);
+    if (hit) return hit;
+  }
+  // A closing category we do not rank by name: `CLOSED` is the authority on
+  // WHICH categories close, so a new one added there still finds a lane here
+  // rather than silently removing the tick.
+  return byPosition.find((s) => isResolved(s.category));
 }
 
 /** This task's own lane category, or undefined on a surface with no axis. */
