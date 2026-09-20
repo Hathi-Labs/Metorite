@@ -2514,6 +2514,85 @@ line — never reclaim a number by deleting the other entry.
   had taken 117 for the no-organization outage and merged first. Ids
   are never reused, so that entry keeps the number.)*
 
+### H-133 · The customer's page shows their BALANCE and never their USAGE · [AGENT]
+- **Check:** open `workbench/operator_console/src/app/customers/[slug]/page.tsx`
+  and read `loadOrg`. Five reads, none of them a usage read, means this is open.
+- 🔴 **It is the page where the question gets asked.** A customer writes in
+  saying their credits went faster than they expected. The operator opens that
+  customer and sees the balance, the lots and the ledger. The ledger says
+  `usage -1.29` eight hundred times. It cannot say which tier, which app or
+  which person, so the operator cannot answer.
+- ⚠️ **The read already exists and nothing calls it.** `GET
+  /admin/usage/daily?org_slug=<slug>` serves a per-organization series, and
+  `usageDaily(days, orgSlug)` in `lib/console.ts` already takes the slug. The
+  fleet board at `/usage` computes calls, credits, cost, margin, runway and
+  the silent flag per organization, and the per-customer page reads none of it.
+- **The slice.** One panel under Credit lots: the 30-day series, the same row
+  the fleet board draws for this organization, and a link to `/usage`. Judge
+  it with the functions in `lib/usage.ts` — a second verdict on one row is the
+  defect `golive.ts` and `fallback.ts` already record.
+- **Authority:** `specs/ai_metering_and_analytics.md` §5 · `customer_console.md` §6B
+- **Added:** 2026-09-20 · credit and usage review session
+
+### H-134 · D66 is BUILT and unwired — a customer sees a total and no breakdown · [AGENT]
+- **Check:** grep the workbench for `my/usage/activity` and `my/usage/members`.
+  No consumer means this is open.
+- 🔴 **Two endpoints answer "what did we spend it ON" and nothing asks them.**
+  `GET /my/usage/activity` is D66 (a), spend by activity. `GET
+  /my/usage/members` is D66 (b), spend per person. Both are implemented,
+  tested and reachable. `settings/billing` reads only `/me/billing`, so the
+  customer sees a balance, a burn figure and a runway.
+- ⚠️ **A customer who cannot see the breakdown cannot manage the spend.** They
+  can only ask us, which makes every credit question a support conversation.
+- ⚠️ **`/my/usage/members` must NOT grow a cap column.** Its own docstring says
+  so: showing a cap beside a spend implies the cap is enforced, and
+  `member_ai_cap` is not enforced. H-73 owns that.
+- **Authority:** D66 · `customer_console.md` · `specs/launch_surface.md` §7
+- **Added:** 2026-09-20 · credit and usage review session
+
+### H-135 · Credit expiry is stored, displayed, and never enforced · [AGENT]
+- **Check:** read `store.open_lots`. No `expires_at` predicate in the WHERE
+  clause means this is open.
+- ⚠️ **Nothing is wrong TODAY, and that is why it needs writing down.** No
+  caller passes `expires_at` to `store.add_credit`, so every lot on every box
+  is `NULL` and never expires. The machinery is inert, not broken.
+- 🔴 **The day somebody sets an expiry, three things are wrong at once.**
+  `open_lots` selects on `credits_used < credits` alone, so an EXPIRED lot is
+  still drawn from — and it is drawn FIRST, because the order is soonest
+  expiry first. The balance is `SUM(credit_ledger)` and no row ever lapses a
+  lot, so expired credit still counts. No job sweeps.
+- 🔴 **The console already promises the lapse.** The Credit lots panel says
+  the lots burn "soonest to expire first, and free before paid". It adds "so a
+  customer never loses credits they bought". One column header names when each
+  lot lapses. We would show a customer an expiry date we do not act on.
+- **The slice, when it is wanted.** Either enforce it — a predicate, a lapse
+  ledger row with its own reason, and a sweep — or remove the column and the
+  sentence. Do not leave it half-said. ⚠️ `LEDGER_REASONS` is a closed set, so
+  a lapse reason needs a migration.
+- **Authority:** migration 028 · `subscription_console.md` SC-4g
+- **Added:** 2026-09-20 · credit and usage review session
+
+### H-136 · Every AI-spend signal is PULL-ONLY — nobody is told anything · [AGENT+OWNER]
+- **Check:** grep the Customer Console for a scheduled report or digest. None,
+  and no timer on the box, means this is open.
+- 🔴 **The board computes the alarms and then waits to be visited.** `/usage`
+  already knows which customer is past zero. It knows which margin has
+  inverted, and which organization is funded and silent. It counts the calls
+  served and never billed. Each is a fact somebody should be TOLD. Today each
+  one waits for an operator to open a page.
+- ⚠️ **The spend gate ships OFF, which makes this sharper, not softer.** With
+  no wall at zero a balance keeps falling, so the cost of nobody looking grows
+  with time instead of stopping at zero. H-132's backup timer is the same
+  shape of failure: a thing that runs only when a human remembers.
+- **The narrow first slice.** One daily digest to the operator, naming only
+  what changed: organizations that crossed zero, organizations that became
+  silent, and the unbilled count. Reuse `analytics.py` — a second judgement
+  would disagree with the board within a month.
+- ⚠️ **Where it SENDS is the owner's call**, which is why this is both. Mail
+  to a real person is §3a rule 3. The computation and the digest are not.
+- **Authority:** `specs/ai_metering_and_analytics.md` §6 · H-111 (the other report)
+- **Added:** 2026-09-20 · credit and usage review session
+
 ### H-132 · `vps_apply.sh` disables the backup timer for a reason that was repaired · [AGENT]
 - **Check:** read `scripts/vps_apply.sh` around line 917. A
   `systemctl disable --now acb-backup.timer` under `PG_MODE=local` means this
