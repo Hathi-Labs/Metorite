@@ -53,21 +53,49 @@ def test_the_live_delivery_path_enables_every_repo_timer() -> None:
     ), "vps_apply.sh must enable timers from the glob, not from a hand list"
 
 
-def test_the_backup_timer_is_excepted_on_managed_db_boxes() -> None:
-    """The ONE exception to the glob rule, named (R7). A PG_MODE=local box —
-    Postgres managed elsewhere, e.g. Supabase — must NOT arm the nightly local
-    dump: acb-backup.service has no EnvironmentFile, so it defaults to the
-    docker container and dumps the EMPTY local Postgres, which passes
-    --verify-restore and forges a green restore point (PR #4 review round 1).
-    The carve-out must actively DISABLE, not merely skip: a hand-enabled
-    timer would otherwise survive every subsequent deploy."""
-    lines = _executable_lines(_APPLY)
-    assert any(
-        "acb-backup.timer" in ln and "PG_MODE" in ln for ln in lines
-    ), "the managed-DB carve-out for acb-backup.timer is gone"
-    assert any(
-        "disable --now" in ln and "acb-backup.timer" in ln for ln in lines
-    ), "the carve-out must disable, not skip — a hand-enable would survive deploys"
+def test_the_backup_service_must_load_its_credentials() -> None:
+    """🔴 **The fence that REPLACED the managed-DB carve-out (H-132).**
+
+    Until 2026-09-20 `vps_apply.sh` disabled acb-backup.timer on every apply to
+    a `PG_MODE=local` box. That was right on 2026-08-17. The unit loaded no
+    EnvironmentFile, defaulted to `PG_MODE=docker`, dumped the EMPTY local
+    container, passed `--verify-restore` and forged a green restore point.
+
+    The EnvironmentFile landed on 2026-09-19 and the carve-out came out. This
+    test is what stops the hole reopening. Delete that line from the unit and
+    the false green returns, with the timer now ARMED, which is worse than
+    when it was disabled.
+    """
+    service = (_UNITS_DIR / "acb-backup.service").read_text(encoding="utf-8")
+    assert "EnvironmentFile=/opt/acb/app/.env" in service, (
+        "acb-backup.service must load /opt/acb/app/.env. Without it PG_MODE "
+        "defaults to docker, the unit dumps the empty local container, and "
+        "--verify-restore passes on nothing. See H-132."
+    )
+
+
+def test_no_timer_is_carved_out_of_the_enable_loop() -> None:
+    """🔴 A timer shipped in the repo arrives SCHEDULED, with no exceptions.
+
+    The carve-out this replaces reverted two hand-enables and told neither
+    session. An operator reading `systemctl list-timers` after a deploy saw no
+    backup timer and no reason why. To exclude a timer again, do not SHIP it.
+    Shipping a unit and then disabling it from the loop meant to arm it is how
+    a box ends up with a backup service and no schedule.
+
+    ⚠️ Scoped to the timer loop on purpose. `vps_apply.sh` legitimately
+    disables `acb-whatsapp-bridge` when `WHATSAPP_BRIDGE_ENABLED` is not 1.
+    That is a feature flag turning a SERVICE off. It is not a timer unwired
+    from its own enable loop.
+    """
+    text = _APPLY.read_text(encoding="utf-8")
+    loop = text[text.index('for timer in "$APP_DIR"'):]
+    loop = loop[: loop.index("\ndone")]
+    assert "systemctl disable" not in loop, (
+        "vps_apply.sh disables a timer it also ships. See H-132 - do not "
+        "reintroduce a carve-out here. Stop shipping the unit instead."
+    )
+    assert "enable --now" in loop, "the timer loop no longer enables anything"
 
 
 def test_the_live_delivery_path_never_restarts_services_from_the_sync_loop() -> None:
