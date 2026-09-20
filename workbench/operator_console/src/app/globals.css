@@ -2527,3 +2527,35 @@ main.wrap {
   border-radius: var(--r);
   min-width: 0;
 }
+
+/* ── Sentences inside a <label> must not shout ───────────────────────────
+   🔴 Found by looking, 2026-09-20. The global `label` rule uppercases, which
+   is right for a field name ("INPUT, PER 1M") and wrong for the two places a
+   label wraps a SENTENCE: the margin knob reads "KEEP __ % OF THE PRICE", and
+   the hint under each box reads "NO SUGGESTION" / "NEVER ALARMS".
+
+   ⚠️ The field NAME keeps its uppercase — only the prose inside drops it. A
+   blanket override here would flatten the console's whole form idiom. */
+.suggestrow label {
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 500;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.legs label > span {
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+}
+
+/* ── A wide table scrolls ITSELF, never the page ─────────────────────────
+   🔴 Measured at 390px: /operators dragged the whole body sideways by 191px.
+   A six-column table cannot fit a phone, and that is fine — what is not fine
+   is the page moving with it, which breaks every other surface on the screen.
+   The repo's own rule: only tables, diagrams and code may exceed the width,
+   each inside its own scroll container. */
+.tablewrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}

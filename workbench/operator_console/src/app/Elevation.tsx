@@ -169,7 +169,16 @@ export default function Elevation() {
           {error ? <span className="elevation-error">{error}</span> : null}
         </>
       ) : (
-        <button type="button" className="linklike" onClick={() => setOpen(true)}>
+        <button
+          type="button"
+          className="linklike"
+          onClick={() => setOpen(true)}
+          title={
+            "Open a time-limited admin window. Commercial acts — pricing a " +
+            "tier, saving the credit price, installing a vendor key — need " +
+            "one, and it closes by itself. You give a reason, and it is logged."
+          }
+        >
           Elevate
         </button>
       )}
