@@ -2757,7 +2757,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner directive 2026-09-20 · `people_center_app.md` §2 · R6
 - **Added:** 2026-09-20 · the People UX session
 
-### H-133 · `POST /tasks/people` has no caller. Decide whether it stays · [OWNER]
+### H-140 · `POST /tasks/people` has no caller. Decide whether it stays · [OWNER]
 - **Check:** `rg -n "peopleWriteApi.create|createPerson" workbench/control_plane/src`
   → no hit means nothing in the product calls it, and this is open.
 - **Why:** the owner removed the People app's "Add person" control on
@@ -2774,7 +2774,9 @@ line — never reclaim a number by deleting the other entry.
 - 📌 `PATCH /people/{id}` is untouched and still reachable. An administrator
   still corrects a colleague's title or department from the person page.
 - **Authority:** owner directive 2026-09-21 · `people_center_app.md` §2
-- **Added:** 2026-09-21 · the one-door session
+- **Added:** 2026-09-21 · the one-door session · **minted as H-133 and
+  renumbered to H-140** — another branch merged H-133 first, and
+  `test_handoff_queue` caught the reuse. Ids are never reclaimed.
 
 ### H-125 · Migration 148's email index spans EVERY tenant · [AGENT]
 - **Check:** `rg -A 2 "uq_gtd_people_email_lower" infra/postgres/148_people_key_shape.sql`

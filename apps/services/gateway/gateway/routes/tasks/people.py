@@ -692,7 +692,7 @@ async def create_person(
     The route is kept rather than deleted because it is the door an importer
     or a re-enabled form would use, and because a working admin endpoint with
     no UI is not the same defect as a second door in the product. Its fate is
-    H-133.
+    H-140.
     """
     name = (body.name or "").strip()
     if not name:
