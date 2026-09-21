@@ -1,5 +1,6 @@
+
 <a href="https://github.com/VoltAgent/voltagent">
-     <img width="1500" alt="claude-skills" src="https://github.com/user-attachments/assets/0db54cfc-f3dd-4683-abbb-e4c01d9dfb5d" />
+     <img width="1500" alt="claude-skills" src="https://github.com/user-attachments/assets/a890e563-e999-4b1f-8ce1-20399b0574f8" />
 </a>
 
 
@@ -21,9 +22,6 @@
 [![Awesome](https://awesome.re/badge.svg)](https://awesome.re)
 ![Skills Count](https://img.shields.io/badge/Skills-1497+-blue?style=flat-square)
 ![Last Update](https://img.shields.io/github/last-commit/VoltAgent/awesome-agent-skills?label=Last%20update&style=flat-square)
-<a href="https://github.com/VoltAgent/voltagent">
-  <img alt="VoltAgent" src="https://cdn.voltagent.dev/website/logo/logo-2-svg.svg" height="20" />
-</a>
 [![Discord](https://img.shields.io/discord/1361559153780195478.svg?label=&logo=discord&logoColor=ffffff&color=7389D8&labelColor=6A7EC2)](https://s.voltagent.dev/discord)
 
 
@@ -35,7 +33,6 @@
 
 Unlike many bulk-generated skill repositories, this collection focuses on real-world Agent Skills created and used by actual engineering teams, not mass AI‑generated stuff.
 
-This collection features official skills published by leading development teams, including Anthropic, Google Labs, Vercel, Stripe, Cloudflare, Netlify, Trail of Bits, Sentry, Expo, Hugging Face, Figma, and more, alongside community-built skills.
 
 Compatible with Claude Code, Codex, Antigravity, Gemini CLI, Cursor, GitHub Copilot, OpenCode, Windsurf, and more. See the table below for paths and documentation.
 
@@ -47,8 +44,9 @@ The most contributed Agent Skills repository, built and maintained together with
 |  |  |
 | :-: | :-- |
 | <a href="https://www.testmuai.com"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.voltagent.dev/awesome-repo/testmui/testmuai-white.png"><img alt="TestMu AI" src="https://cdn.voltagent.dev/awesome-repo/testmui/testmuai-black.png" width="425"></picture></a> | [TestMu AI (formerly LambdaTest)](https://www.testmuai.com) is an AI-native testing cloud platform built for modern engineering teams. Covering everything from autonomous test creation and fast execution to testing AI agents, chatbots and voice assistants. |
-| <a href="https://zero.xyz"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.voltagent.dev/awesome-repo/zero-xyz/zero-dark.png"><img alt="Zero" src="https://cdn.voltagent.dev/awesome-repo/zero-xyz/zero-light.png" width="425"></picture></a> | [Zero](https://zero.xyz) gives your AI access to thousands of tools, APIs, and services, letting it go from prompt to project with no configuration. Instead of asking you to sign up or grab an API key, your AI discovers and uses whatever real service solves the problem right from chat. |
-| <a href="https://lite.ego.app/?utm_source=officialskills&utm_medium=sponsor&utm_campaign=github-sponsor"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.voltagent.dev/awesome-repo/ego-lite/logo_wordmark_lite_white.svg"><img alt="Ego Lite" src="https://cdn.voltagent.dev/awesome-repo/ego-lite/logo_wordmark_lite_dark.svg" width="425"></picture></a> | [Ego Lite](https://lite.ego.app/?utm_source=officialskills&utm_medium=sponsor&utm_campaign=github-sponsor) is the fastest browser for your AI agents to run browser automation tasks, 3.45x faster than agent-browser (Vercel), always free, no setup, and lets your agents run 100+ browser tasks at the same time in their Spaces. |
+| <a href="https://modem.dev/go/awesome-agent-skills"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.voltagent.dev/awesome-repo/modemlabs/modemlabs-dark.svg"><img alt="Modem" src="https://cdn.voltagent.dev/awesome-repo/modemlabs/modemlab-light.svg" width="425"></picture></a> | [Modem](https://modem.dev/go/awesome-agent-skills) is an AI product teammate that takes scattered discussions and turns them into a company-specific context that surfaces insights, automates actions, and closes the loop with teammates and customers. |
+| <a href="https://crawlbase.com/?utm_source=awesome-agent-skills&utm_medium=sponsorship&utm_campaign=voltagent_2026q3&utm_content=readme_listing"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cdn.voltagent.dev/awesome-repo/crawlbase-new/crawlbase-logo-dark-mode.svg"><img alt="Crawlbase" src="https://cdn.voltagent.dev/awesome-repo/crawlbase-new/crawlbase-logo-light-mode.svg" width="425"></picture></a> | [Crawlbase](https://crawlbase.com/?utm_source=awesome-agent-skills&utm_medium=sponsorship&utm_campaign=voltagent_2026q3&utm_content=readme_listing) is web data infrastructure trusted by 70,000+ developers. Its Crawling API, MCP server, and integrations give AI agents live access to any webpage — with JavaScript rendering, proxy rotation, and anti-bot protection. |
+| <a href="https://serpapi.com/awesome-agent-skills"><img alt="SerpApi" src="https://cdn.voltagent.dev/awesome-repo/serpapi/serpapi-logo.png" width="425"></a> | [SerpApi](https://serpapi.com/awesome-agent-skills) is a Web Search API for your AI apps. Available in Markdown and JSON for any integration. |
 
 <br />
 
@@ -61,22 +59,23 @@ The most contributed Agent Skills repository, built and maintained together with
 
 | | | | | 
 |---|---|---|---|
-| [Claude](#official-claude-skills) | [VoltAgent](#skills-by-voltagent) | [TestMu AI](#skills-by-testmu-ai) | [Zero](#skills-by-zero) |
-| [Angular](#skills-by-angular) | [Composio](#skills-by-composio-team) | [Supabase](#skills-by-supabase-team) | [Google Gemini](#skills-by-google-gemini) |
-| [Stripe](#skills-by-stripe-team) | [Courier](#skills-by-courier) | [CallStack](#skills-by-callstack) | [Expo](#skills-by-expo-team) |
-| [Better Auth](#skills-by-better-auth-team) | [Tinybird](#skills-by-tinybird-team) | [HashiCorp](#skills-by-hashicorp-team-for-terraform) | [Sanity](#skills-by-sanity-team) |
-| [Firecrawl](#skills-by-firecrawl-team) | [Neon](#skills-by-neon-team) | [ClickHouse](#skill-by-clickhouse) | [Remotion](#skills-by-remotion) |
-| [Replicate](#skills-by-replicate) | [Typefully](#skills-by-typefully) | [Vercel](#skills-by-vercel-engineering-team) | [Cloudflare](#skills-by-cloudflare-team) |
-| [Netlify](#skills-by-netlify-team) | [Google Labs (Stitch)](#skills-by-google-labs-stitch) | [Google Workspace CLI](#skills-by-google-workspace-cli) | [Hugging Face](#skills-by-hugging-face-team) |
-| [Trail of Bits](#security-skills-by-trail-of-bits-team) | [Sentry](#skills-by-sentry-team-for-their-dev-team) | [Microsoft](#skills-by-microsoft) | [fal.ai](#skills-by-falai-team) |
-| [WordPress](#skills-by-wordpress-development-team) | [OpenAI](#skills-by-openai) | [Figma](#skills-by-figma) | [Corey Haines](#marketing-skills-by-corey-haines) |
-| [Binance](#skills-by-binance) | [Dean Peters](#product-manager-skills-by-dean-peters) | [Paweł Huryn](#product-management-skills-by-pawel-huryn) | [MiniMax](#skills-by-minimax-team) |
-| [DuckDB](#skills-by-duckdb) | [GSAP](#skills-by-gsap-greensock) | [Garry Tan (gstack)](#skills-by-garry-tan-gstack) | [Notion](#skills-by-notion) |
-| [Resend](#skills-by-resend) | [Addy Osmani (Web Quality)](#skills-by-addy-osmani-web-quality) | [MongoDB](#skills-by-mongodb) | [Kim Barrett (Advertising)](#advertising-skills-by-kim-barrett) |
-| [Apollo GraphQL](#skills-by-apollo-graphql) | [Auth0](#skills-by-auth0) | [Brave](#skills-by-brave) | [Browserbase](#skills-by-browserbase) |
-| [CodeRabbit](#skills-by-coderabbit) | [Coinbase](#skills-by-coinbase) | [Datadog Labs](#skills-by-datadog-labs) | [Firebase](#skills-by-firebase) |
-| [Flutter](#skills-by-flutter) | [Venice.ai](#skills-by-veniceai) | [Red Hat](#skills-by-redhat) | [Community](#community-skills) |
-| [Redis](#skills-by-redis) | [NVIDIA](#skills-by-nvidia) | [Google Cloud](#skills-by-google-cloud) | [Quality Standards](#skill-quality-standards) |
+| [Claude](#official-claude-skills) | [VoltAgent](#skills-by-voltagent) | [SerpApi](#skills-by-serpapi) | [Crawlbase](#skills-by-crawlbase) |
+| [TestMu AI](#skills-by-testmu-ai) | [Modem Dev](#skills-by-modem-dev) | [Angular](#skills-by-angular) | [Composio](#skills-by-composio-team) |
+| [Supabase](#skills-by-supabase-team) | [Google Gemini](#skills-by-google-gemini) | [Stripe](#skills-by-stripe-team) | [Courier](#skills-by-courier) |
+| [CallStack](#skills-by-callstack) | [Expo](#skills-by-expo-team) | [Better Auth](#skills-by-better-auth-team) | [Tinybird](#skills-by-tinybird-team) |
+| [HashiCorp](#skills-by-hashicorp-team-for-terraform) | [Sanity](#skills-by-sanity-team) | [Firecrawl](#skills-by-firecrawl-team) | [Neon](#skills-by-neon-team) |
+| [ClickHouse](#skill-by-clickhouse) | [Remotion](#skills-by-remotion) | [Replicate](#skills-by-replicate) | [Typefully](#skills-by-typefully) |
+| [Vercel](#skills-by-vercel-engineering-team) | [Cloudflare](#skills-by-cloudflare-team) | [Netlify](#skills-by-netlify-team) | [Google Labs (Stitch)](#skills-by-google-labs-stitch) |
+| [Google Workspace CLI](#skills-by-google-workspace-cli) | [Hugging Face](#skills-by-hugging-face-team) | [Trail of Bits](#security-skills-by-trail-of-bits-team) | [Sentry](#skills-by-sentry-team-for-their-dev-team) |
+| [Microsoft](#skills-by-microsoft) | [fal.ai](#skills-by-falai-team) | [WordPress](#skills-by-wordpress-development-team) | [OpenAI](#skills-by-openai) |
+| [Figma](#skills-by-figma) | [Corey Haines](#marketing-skills-by-corey-haines) | [Binance](#skills-by-binance) | [Dean Peters](#product-manager-skills-by-dean-peters) |
+| [Paweł Huryn](#product-management-skills-by-pawel-huryn) | [MiniMax](#skills-by-minimax-team) | [DuckDB](#skills-by-duckdb) | [GSAP](#skills-by-gsap-greensock) |
+| [Garry Tan (gstack)](#skills-by-garry-tan-gstack) | [Notion](#skills-by-notion) | [Resend](#skills-by-resend) | [Addy Osmani (Web Quality)](#skills-by-addy-osmani-web-quality) |
+| [MongoDB](#skills-by-mongodb) | [Kim Barrett (Advertising)](#advertising-skills-by-kim-barrett) | [Apollo GraphQL](#skills-by-apollo-graphql) | [Auth0](#skills-by-auth0) |
+| [Brave](#skills-by-brave) | [Browserbase](#skills-by-browserbase) | [CodeRabbit](#skills-by-coderabbit) | [Coinbase](#skills-by-coinbase) |
+| [Datadog Labs](#skills-by-datadog-labs) | [Firebase](#skills-by-firebase) | [Flutter](#skills-by-flutter) | [Venice.ai](#skills-by-veniceai) |
+| [Red Hat](#skills-by-redhat) | [Community](#community-skills) | [Redis](#skills-by-redis) | [NVIDIA](#skills-by-nvidia) |
+| [Google Cloud](#skills-by-google-cloud) | [Quality Standards](#skill-quality-standards) |  |  |
 
 
 
@@ -89,15 +88,22 @@ You ship products with AI, but every launch still dies quietly because nobody po
 </a>
 
 <br/>
-<br/>
 
-Stop building from a blank page. [LaunchKit](https://launchkit.getdesign.md/) gives your AI coding assistant a complete, working product to start from — websites, startups, and web apps that are clickable on day one.
+
 
 <a href="https://launchkit.getdesign.md/">
-<img src="https://cdn.voltagent.dev/awesome-repo/new-launchkit.png" alt="launchkit"  /><br/>
+<img src="https://cdn.voltagent.dev/awesome-repo/website-starter-kit-banner-dark-0315e5f9c1.png" alt="launchkit"  /><br/>
 </a>
 
 <br/>
+
+
+<a href="https://mobile-starterkit.getdesign.md/">
+<img src="https://cdn.voltagent.dev/awesome-repo/mobile-starter-kit-banner-light-450ba0a9b0.png" alt="mobilekit"  /><br/>
+</a>
+
+<br/>
+
 
 <details open>
 <summary><h3 style="display:inline">Official Claude Skills</h3></summary>
@@ -130,6 +136,44 @@ Official skills by VoltAgent for building AI agents with the VoltAgent TypeScrip
 - **[voltagent/voltagent-best-practices](https://officialskills.sh/voltagent/skills/voltagent-best-practices)** - Architecture and usage patterns for agents, workflows, memory, and servers
 - **[voltagent/voltagent-core-reference](https://officialskills.sh/voltagent/skills/voltagent-core-reference)** - Reference for the VoltAgent class options and lifecycle methods
 - **[voltagent/voltagent-docs-bundle](https://officialskills.sh/voltagent/skills/voltagent-docs-bundle)** - Lookup embedded docs from @voltagent/core for version-matched documentation
+
+</details>
+
+<details>
+<summary><h3 style="display:inline">Skills by SerpApi</h3></summary>
+
+Official skills by the [SerpApi](https://serpapi.com/awesome-agent-skills) team — the Web Search API for AI apps. They give agents structured, machine-readable search data through 130+ engines, from Google web and Scholar to Maps, Flights, Hotels, and Shopping.
+
+- **[serpapi/serpapi-web-search](https://officialskills.sh/serpapi/skills/serpapi-web-search)** - Structured search data via 130+ engines: pick the right engine, extract the right keys, recover from errors
+- **[serpapi/agent-usability-test](https://officialskills.sh/serpapi/skills/agent-usability-test)** - Test whether agents can discover and use your tool — the subject under test is the interface, not the agent
+
+More from SerpApi (not skills, but they pair with them):
+
+- **[serpapi/serpapi-search-tools-python](https://github.com/serpapi/serpapi-search-tools-python)** - Real-time search tools for Python agents with native support for popular agent SDKs
+- **[serpapi/serpapi-cli](https://github.com/serpapi/serpapi-cli)** - SerpApi client for the command line, covering all 130+ engines
+
+</details>
+
+<details>
+<summary><h3 style="display:inline">Skills by Crawlbase</h3></summary>
+
+Official skills by the [Crawlbase](https://crawlbase.com/?utm_source=awesome-agent-skills&utm_medium=sponsorship&utm_campaign=voltagent_2026q3&utm_content=readme_listing) team that give AI agents live web access through the Crawlbase MCP server: crawl any URL as raw HTML, clean Markdown, or a screenshot, and manage results in Crawlbase Cloud Storage.
+
+- **[crawlbase/crawl-html](https://officialskills.sh/crawlbase/skills/crawl-html)** - Crawl a URL and return its raw HTML with JS rendering, device emulation, and geo-targeting
+- **[crawlbase/crawl-markdown](https://officialskills.sh/crawlbase/skills/crawl-markdown)** - Extract clean, LLM-ready Markdown from any URL, stripped of ads and boilerplate
+- **[crawlbase/crawl-screenshot](https://officialskills.sh/crawlbase/skills/crawl-screenshot)** - Take full-page or viewport screenshots of any URL on desktop or mobile
+- **[crawlbase/storage-get](https://officialskills.sh/crawlbase/skills/storage-get)** - Retrieve a stored page from Crawlbase Cloud Storage as JSON, HTML, or Markdown
+- **[crawlbase/storage-list](https://officialskills.sh/crawlbase/skills/storage-list)** - List stored rids with scroll-based pagination, up to 1000 per call
+- **[crawlbase/storage-bulk-get](https://officialskills.sh/crawlbase/skills/storage-bulk-get)** - Retrieve up to 100 stored pages in one call, with optional auto-delete
+- **[crawlbase/storage-count](https://officialskills.sh/crawlbase/skills/storage-count)** - Count the documents held in Crawlbase Cloud Storage for a token
+- **[crawlbase/storage-delete](https://officialskills.sh/crawlbase/skills/storage-delete)** - Delete a single stored page from Crawlbase Cloud Storage by rid
+- **[crawlbase/storage-bulk-delete](https://officialskills.sh/crawlbase/skills/storage-bulk-delete)** - Delete up to 100 stored pages from Crawlbase Cloud Storage in one call
+
+More from Crawlbase (not skills, but they pair with them):
+
+- **[crawlbase/crawlbase-mcp](https://github.com/crawlbase/crawlbase-mcp)** - The MCP server behind these skills (npm `@crawlbase/mcp`) with JS rendering, proxy rotation, and anti-bot protection
+- **[crawlbase/langchain-crawlbase](https://github.com/crawlbase/langchain-crawlbase)** - LangChain document loader, tool, and retriever backed by the Crawling API
+- **[crawlbase/n8n-nodes-crawlbase](https://github.com/crawlbase/n8n-nodes-crawlbase)** - Native Crawlbase node for n8n with credentials and Crawling API options
 
 </details>
 
@@ -186,6 +230,13 @@ Production-grade Agent Skills for every major test automation framework, maintai
 - **[testmu-ai/webdriverio-skill](https://github.com/LambdaTest/agent-skills/tree/main/webdriverio-skill)** - Generate WebdriverIO (WDIO) automation tests in JavaScript or TypeScript
 - **[testmu-ai/xcuitest-skill](https://github.com/LambdaTest/agent-skills/tree/main/xcuitest-skill)** - Generate XCUITest UI tests for iOS/iPadOS apps in Swift
 - **[testmu-ai/xunit-skill](https://github.com/LambdaTest/agent-skills/tree/main/xunit-skill)** - Generate xUnit.net tests in C# with Fact/Theory and FluentAssertions
+
+</details>
+
+<details>
+<summary><h3 style="display:inline">Skills by Modem Dev</h3></summary>
+
+- **[modem-dev/skills](https://github.com/modem-dev/skills)** - Agent skills from [Modem](https://modem.dev/go/awesome-agent-skills), starting with write-discoverable-code
 
 </details>
 
@@ -833,38 +884,37 @@ Official skills from Figma's MCP server guide.
 
 Official marketing skills by [Corey Haines](https://github.com/coreyhaines31), covering the full SaaS marketing stack from SEO and copywriting to growth, CRO, and paid acquisition.
 
-- **[coreyhaines31/ab-test-setup](https://github.com/coreyhaines31/marketingskills/tree/main/skills/ab-test-setup)** - Plan and implement A/B tests or experiments for any digital experience
+- **[coreyhaines31/ab-testing](https://github.com/coreyhaines31/marketingskills/tree/main/skills/ab-testing)** - Plan and implement A/B tests or experiments for any digital experience
 - **[coreyhaines31/ad-creative](https://github.com/coreyhaines31/marketingskills/tree/main/skills/ad-creative)** - Generate and iterate ad creative including headlines, descriptions, and primary text
 - **[coreyhaines31/ai-seo](https://github.com/coreyhaines31/marketingskills/tree/main/skills/ai-seo)** - Optimize content to appear in AI-generated answers and LLM search results
-- **[coreyhaines31/analytics-tracking](https://github.com/coreyhaines31/marketingskills/tree/main/skills/analytics-tracking)** - Set up and audit analytics tracking and measurement pipelines
+- **[coreyhaines31/analytics](https://github.com/coreyhaines31/marketingskills/tree/main/skills/analytics)** - Set up and audit analytics tracking and measurement pipelines
 - **[coreyhaines31/churn-prevention](https://github.com/coreyhaines31/marketingskills/tree/main/skills/churn-prevention)** - Build cancellation flows, save offers, and recover failed payments
 - **[coreyhaines31/cold-email](https://github.com/coreyhaines31/marketingskills/tree/main/skills/cold-email)** - Write B2B cold emails and follow-up sequences that convert
-- **[coreyhaines31/competitor-alternatives](https://github.com/coreyhaines31/marketingskills/tree/main/skills/competitor-alternatives)** - Build competitor comparison and alternative landing pages for SEO
+- **[coreyhaines31/competitors](https://github.com/coreyhaines31/marketingskills/tree/main/skills/competitors)** - Build competitor comparison and alternative landing pages for SEO
 - **[coreyhaines31/content-strategy](https://github.com/coreyhaines31/marketingskills/tree/main/skills/content-strategy)** - Plan content strategy and decide what topics and formats to prioritize
 - **[coreyhaines31/copy-editing](https://github.com/coreyhaines31/marketingskills/tree/main/skills/copy-editing)** - Edit and improve existing marketing copy for clarity and impact
 - **[coreyhaines31/copywriting](https://github.com/coreyhaines31/marketingskills/tree/main/skills/copywriting)** - Write and rewrite marketing copy for landing pages, homepages, and ads
-- **[coreyhaines31/email-sequence](https://github.com/coreyhaines31/marketingskills/tree/main/skills/email-sequence)** - Build email sequences, drip campaigns, and lifecycle email flows
-- **[coreyhaines31/form-cro](https://github.com/coreyhaines31/marketingskills/tree/main/skills/form-cro)** - Optimize lead capture and contact forms to improve conversion
-- **[coreyhaines31/free-tool-strategy](https://github.com/coreyhaines31/marketingskills/tree/main/skills/free-tool-strategy)** - Plan and build free tools for lead generation and SEO value
-- **[coreyhaines31/launch-strategy](https://github.com/coreyhaines31/marketingskills/tree/main/skills/launch-strategy)** - Plan product launches, feature announcements, and go-to-market strategies
+- **[coreyhaines31/emails](https://github.com/coreyhaines31/marketingskills/tree/main/skills/emails)** - Build email sequences, drip campaigns, and lifecycle email flows
+- **[coreyhaines31/free-tools](https://github.com/coreyhaines31/marketingskills/tree/main/skills/free-tools)** - Plan and build free tools for lead generation and SEO value
+- **[coreyhaines31/launch](https://github.com/coreyhaines31/marketingskills/tree/main/skills/launch)** - Plan product launches, feature announcements, and go-to-market strategies
 - **[coreyhaines31/marketing-ideas](https://github.com/coreyhaines31/marketingskills/tree/main/skills/marketing-ideas)** - Generate marketing strategies and campaign ideas for SaaS products
 - **[coreyhaines31/marketing-psychology](https://github.com/coreyhaines31/marketingskills/tree/main/skills/marketing-psychology)** - Apply psychological principles and behavioral science to copy and design
-- **[coreyhaines31/onboarding-cro](https://github.com/coreyhaines31/marketingskills/tree/main/skills/onboarding-cro)** - Optimize post-signup onboarding and user activation to improve time-to-value
-- **[coreyhaines31/page-cro](https://github.com/coreyhaines31/marketingskills/tree/main/skills/page-cro)** - Improve conversion rates on any marketing page including homepages and landing pages
-- **[coreyhaines31/paid-ads](https://github.com/coreyhaines31/marketingskills/tree/main/skills/paid-ads)** - Create and optimize paid campaigns on Google, Meta, LinkedIn, and more
-- **[coreyhaines31/paywall-upgrade-cro](https://github.com/coreyhaines31/marketingskills/tree/main/skills/paywall-upgrade-cro)** - Design and optimize upgrade screens, paywalls, and upsell modals
-- **[coreyhaines31/popup-cro](https://github.com/coreyhaines31/marketingskills/tree/main/skills/popup-cro)** - Create and optimize popups, modals, and slide-ins for conversions
-- **[coreyhaines31/pricing-strategy](https://github.com/coreyhaines31/marketingskills/tree/main/skills/pricing-strategy)** - Define pricing, packaging, and monetization strategy for SaaS products
-- **[coreyhaines31/product-marketing-context](https://github.com/coreyhaines31/marketingskills/tree/main/skills/product-marketing-context)** - Create and maintain a product marketing context document for consistent messaging
+- **[coreyhaines31/onboarding](https://github.com/coreyhaines31/marketingskills/tree/main/skills/onboarding)** - Optimize post-signup onboarding and user activation to improve time-to-value
+- **[coreyhaines31/cro](https://github.com/coreyhaines31/marketingskills/tree/main/skills/cro)** - Improve conversion rates on any marketing page or form, including homepages, landing pages, and contact forms
+- **[coreyhaines31/ads](https://github.com/coreyhaines31/marketingskills/tree/main/skills/ads)** - Create and optimize paid campaigns on Google, Meta, LinkedIn, and more
+- **[coreyhaines31/paywalls](https://github.com/coreyhaines31/marketingskills/tree/main/skills/paywalls)** - Design and optimize upgrade screens, paywalls, and upsell modals
+- **[coreyhaines31/popups](https://github.com/coreyhaines31/marketingskills/tree/main/skills/popups)** - Create and optimize popups, modals, and slide-ins for conversions
+- **[coreyhaines31/pricing](https://github.com/coreyhaines31/marketingskills/tree/main/skills/pricing)** - Define pricing, packaging, and monetization strategy for SaaS products
+- **[coreyhaines31/product-marketing](https://github.com/coreyhaines31/marketingskills/tree/main/skills/product-marketing)** - Create and maintain a product marketing context document for consistent messaging
 - **[coreyhaines31/programmatic-seo](https://github.com/coreyhaines31/marketingskills/tree/main/skills/programmatic-seo)** - Build SEO-driven page templates for large-scale content generation
-- **[coreyhaines31/referral-program](https://github.com/coreyhaines31/marketingskills/tree/main/skills/referral-program)** - Design and optimize referral, affiliate, and word-of-mouth programs
+- **[coreyhaines31/referrals](https://github.com/coreyhaines31/marketingskills/tree/main/skills/referrals)** - Design and optimize referral, affiliate, and word-of-mouth programs
 - **[coreyhaines31/revops](https://github.com/coreyhaines31/marketingskills/tree/main/skills/revops)** - Streamline revenue operations, lead lifecycle, and marketing-to-sales handoff
 - **[coreyhaines31/sales-enablement](https://github.com/coreyhaines31/marketingskills/tree/main/skills/sales-enablement)** - Create pitch decks, one-pagers, objection handling docs, and demo scripts
-- **[coreyhaines31/schema-markup](https://github.com/coreyhaines31/marketingskills/tree/main/skills/schema-markup)** - Add and optimize schema markup and structured data for better SEO
+- **[coreyhaines31/schema](https://github.com/coreyhaines31/marketingskills/tree/main/skills/schema)** - Add and optimize schema markup and structured data for better SEO
 - **[coreyhaines31/seo-audit](https://github.com/coreyhaines31/marketingskills/tree/main/skills/seo-audit)** - Audit and diagnose technical and on-page SEO issues on a site
-- **[coreyhaines31/signup-flow-cro](https://github.com/coreyhaines31/marketingskills/tree/main/skills/signup-flow-cro)** - Optimize signup, registration, and trial activation flows for higher conversion
+- **[coreyhaines31/signup](https://github.com/coreyhaines31/marketingskills/tree/main/skills/signup)** - Optimize signup, registration, and trial activation flows for higher conversion
 - **[coreyhaines31/site-architecture](https://github.com/coreyhaines31/marketingskills/tree/main/skills/site-architecture)** - Plan and restructure page hierarchy, navigation, and URL structure
-- **[coreyhaines31/social-content](https://github.com/coreyhaines31/marketingskills/tree/main/skills/social-content)** - Create and schedule social media content for LinkedIn, Twitter/X, and Instagram
+- **[coreyhaines31/social](https://github.com/coreyhaines31/marketingskills/tree/main/skills/social)** - Create and schedule social media content for LinkedIn, Twitter/X, and Instagram
 
 </details>
 
@@ -1383,220 +1433,16 @@ Official MongoDB Agent Skills for agentic workflows — connection management, s
 <details>
 <summary><h3 style="display:inline">Skills by Redis</h3></summary>
 
-- **[redis/redis-development](https://github.com/redis/agent-skills/tree/main/skills/redis-development)** - Redis development best practices — data structures, query engine, vector search, caching, and performance optimization.
+- **[redis/redis-core](https://github.com/redis/agent-skills/tree/main/skills/redis-core)** - Redis development best practices — data structures, query engine, vector search, caching, and performance optimization.
 
 </details>
 
 <details>
 <summary><h3 style="display:inline">Skills by NVIDIA</h3></summary>
 
-Official skills published by NVIDIA across AI/ML infrastructure projects — Megatron, NeMo, TensorRT-LLM, CUDA-Q, cuOpt, DALI, DeepStream, and more. 155 skills across 17 products.
+Official skills published by NVIDIA for its AI, accelerated computing, robotics, simulation, and developer platforms. NVIDIA updates and reorganizes this catalog frequently, so this list links to the maintained source instead of duplicating a snapshot.
 
-### CUDA-Q
-
-- **[NVIDIA/CUDA-Q/cudaq-guide](https://github.com/NVIDIA/skills/tree/main/skills/CUDA-Q/cudaq-guide)** - CUDA-Q onboarding guide for installation, test programs, GPU simulation, QPU hardware, and quantum applications.
-
-### DALI
-
-- **[NVIDIA/DALI/dali-dynamic-mode](https://github.com/NVIDIA/skills/tree/main/skills/DALI/dali-dynamic-mode)** - Use when writing DALI data loading or preprocessing code with `nvidia.dali.experimental.dynamic` (ndd), or when converting DALI pipeline-mode code to dynamic mode, or when the user...
-
-### Megatron-Bridge
-
-- **[NVIDIA/Megatron-Bridge/adding-model-support](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/adding-model-support)** - Guide for adding support for new LLM or VLM models in Megatron-Bridge.
-- **[NVIDIA/Megatron-Bridge/build-and-dependency](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/build-and-dependency)** - Dev environment setup for Megatron Bridge — container-based development, uv package management, lockfile regeneration, adding dependencies, Slurm container usage, and common build...
-- **[NVIDIA/Megatron-Bridge/bump-dependency](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/bump-dependency)** - Bump a pinned dependency (TransformerEngine, Megatron-LM, NRX, etc.), regenerate the lockfile, open a PR, and drive it to green by attaching a watchdog to the "CICD NeMo" workflow...
-- **[NVIDIA/Megatron-Bridge/cicd](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/cicd)** - CI/CD reference for Megatron Bridge — pipeline structure, commit and PR workflow, CI failure investigation, and common failure patterns.
-- **[NVIDIA/Megatron-Bridge/linting-and-formatting](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/linting-and-formatting)** - Code style and quality rules for Megatron Bridge — ruff configuration, naming conventions, type hints, mypy rules, docstrings, copyright headers, logging, and the code review check...
-- **[NVIDIA/Megatron-Bridge/mlm-bridge-training](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/mlm-bridge-training)** - Run Megatron-LM (MLM) and Megatron Bridge training with mock or real data.
-- **[NVIDIA/Megatron-Bridge/multi-node-slurm](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/multi-node-slurm)** - Convert single-node scripts to multi-node Slurm sbatch jobs and debug common multi-node failures.
-- **[NVIDIA/Megatron-Bridge/nemo-rl-e2e-testing](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/nemo-rl-e2e-testing)** - External NeMo-RL end-to-end validation workflow for Megatron-Bridge model/provider changes, including downstream compatibility checks, external RL lifecycle behavior, Megatron poli...
-- **[NVIDIA/Megatron-Bridge/parity-testing](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/parity-testing)** - Structured framework for verifying numerical parity of HF<->MCore weight conversions.
-- **[NVIDIA/Megatron-Bridge/perf-activation-recompute](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/perf-activation-recompute)** - Validate and use selective and full activation recompute in Megatron Bridge to reduce GPU memory usage at the cost of extra compute.
-- **[NVIDIA/Megatron-Bridge/perf-cpu-offloading](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/perf-cpu-offloading)** - Validate and use CPU offloading in Megatron Bridge, including layer-level activation offloading and fractional optimizer state offloading with HybridDeviceOptimizer.
-- **[NVIDIA/Megatron-Bridge/perf-cuda-graphs](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/perf-cuda-graphs)** - Validate and use CUDA graph capture in Megatron Bridge, including local full-iteration graphs and Transformer Engine scoped graphs for attention, MLP, and MoE modules.
-- **[NVIDIA/Megatron-Bridge/perf-expert-parallel-overlap](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/perf-expert-parallel-overlap)** - Validate and use MoE expert-parallel communication overlap in Megatron-Bridge, including overlap_moe_expert_parallel_comm, delay_wgrad_compute, and flex dispatcher backends such as...
-- **[NVIDIA/Megatron-Bridge/perf-hierarchical-context-parallel](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/perf-hierarchical-context-parallel)** - Operational guide for enabling hierarchical context parallelism in Megatron-Bridge, including config knobs, code anchors, pitfalls, and verification.
-- **[NVIDIA/Megatron-Bridge/perf-megatron-fsdp](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/perf-megatron-fsdp)** - Operational guide for enabling Megatron FSDP in Megatron-Bridge, including config knobs, code anchors, pitfalls, and verification.
-- **[NVIDIA/Megatron-Bridge/perf-memory-tuning](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/perf-memory-tuning)** - Techniques for reducing peak GPU memory in Megatron Bridge — expandable segments, parallelism resizing, activation recompute, CPU offloading constraints, and common OOM fixes.
-- **[NVIDIA/Megatron-Bridge/perf-moe-comm-overlap](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/perf-moe-comm-overlap)** - MoE expert-parallel communication overlap in Megatron Bridge.
-- **[NVIDIA/Megatron-Bridge/perf-moe-dispatcher-selection](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/perf-moe-dispatcher-selection)** - Choose the right MoE token dispatcher (`alltoall`, DeepEP, or HybridEP) for the hardware, EP degree, and optimization stage.
-- **[NVIDIA/Megatron-Bridge/perf-moe-hardware-configs](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/perf-moe-hardware-configs)** - Representative MoE training playbooks by hardware platform and model family.
-- **[NVIDIA/Megatron-Bridge/perf-moe-long-context](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/perf-moe-long-context)** - Long-context MoE training guidance for Megatron Bridge.
-- **[NVIDIA/Megatron-Bridge/perf-moe-optimization-workflow](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/perf-moe-optimization-workflow)** - Systematic workflow for MoE training optimization in Megatron Bridge, based on the Megatron-Core MoE paper.
-- **[NVIDIA/Megatron-Bridge/perf-moe-vlm-training](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/perf-moe-vlm-training)** - Practical guidance for training MoE VLMs in Megatron Bridge.
-- **[NVIDIA/Megatron-Bridge/perf-parallelism-strategies](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/perf-parallelism-strategies)** - Operational guide for choosing and combining parallelism strategies in Megatron Bridge, including sizing rules, hardware topology mapping, and combined parallelism configuration.
-- **[NVIDIA/Megatron-Bridge/perf-sequence-packing](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/perf-sequence-packing)** - Validate and use packed sequences and long-context training in Megatron-Bridge, distinguishing offline packed SFT for LLMs from in-batch packing for VLMs, and applying the right CP...
-- **[NVIDIA/Megatron-Bridge/perf-tp-dp-comm-overlap](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/perf-tp-dp-comm-overlap)** - Operational guide for enabling TP, DP, and PP communication overlap in Megatron-Bridge, including config knobs, code anchors, pitfalls, and verification.
-- **[NVIDIA/Megatron-Bridge/recipe-recommender](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/recipe-recommender)** - Recommend and customize Megatron Bridge recipes for a user's model, GPU count, and training goal.
-- **[NVIDIA/Megatron-Bridge/resiliency](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/resiliency)** - Resiliency features in Megatron Bridge including fault tolerance, straggler detection, in-process restart, preemption, and re-run state machine.
-- **[NVIDIA/Megatron-Bridge/testing](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/testing)** - Testing reference for Megatron Bridge — unit and functional test layout, tier semantics (L0/L1/L2/flaky), script conventions, running tests locally, adding/moving/disabling tests,...
-- **[NVIDIA/Megatron-Bridge/verl-e2e-testing](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Bridge/verl-e2e-testing)** - External verl end-to-end validation workflow for Megatron-Bridge model/provider changes.
-
-### Megatron-Core
-
-- **[NVIDIA/Megatron-Core/build-and-dependency](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Core/build-and-dependency)** - Container-based dev environment setup and dependency management for Megatron-LM.
-- **[NVIDIA/Megatron-Core/bump-base-image](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Core/bump-base-image)** - Bump the NVIDIA PyTorch base image (`nvcr.io/nvidia/pytorch:<YY.MM>-py3`) used by Megatron-LM CI.
-- **[NVIDIA/Megatron-Core/cicd](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Core/cicd)** - CI/CD reference for Megatron-LM.
-- **[NVIDIA/Megatron-Core/create-issue](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Core/create-issue)** - Investigate a failing GitHub Actions run or job and create a GitHub issue for the failure.
-- **[NVIDIA/Megatron-Core/linting-and-formatting](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Core/linting-and-formatting)** - Linting and formatting for Megatron-LM.
-- **[NVIDIA/Megatron-Core/nightly-sync](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Core/nightly-sync)** - Domain knowledge for the nightly main-to-dev sync workflow.
-- **[NVIDIA/Megatron-Core/onboard-gb200-1node-tests](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Core/onboard-gb200-1node-tests)** - Onboard 1-node GitHub MR functional tests for GB200 from existing mr-scoped 2-node tests.
-- **[NVIDIA/Megatron-Core/respond-to-issue](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Core/respond-to-issue)** - Research and draft a response to a GitHub issue or question from an external contributor.
-- **[NVIDIA/Megatron-Core/run-on-slurm](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Core/run-on-slurm)** - How to launch distributed Megatron-LM training jobs on a SLURM cluster.
-- **[NVIDIA/Megatron-Core/split-pr](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Core/split-pr)** - Split a PR into multiple PRs to reduce the number of required CODEOWNERS reviewer groups.
-- **[NVIDIA/Megatron-Core/testing](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Core/testing)** - Test system for Megatron-LM.
-- **[NVIDIA/Megatron-Core/update-golden-values](https://github.com/NVIDIA/skills/tree/main/skills/Megatron-Core/update-golden-values)** - Refresh golden values from a GitHub Actions workflow run (failing-only or all jobs), score the change with average normalized relative differences, and produce a PR-ready summary.
-
-### Model-Optimizer
-
-- **[NVIDIA/Model-Optimizer/accessing-mlflow](https://github.com/NVIDIA/skills/tree/main/skills/Model-Optimizer/accessing-mlflow)** - Query and browse evaluation results stored in MLflow.
-- **[NVIDIA/Model-Optimizer/debug](https://github.com/NVIDIA/skills/tree/main/skills/Model-Optimizer/debug)** - Run commands inside a remote Docker container via the file-based command relay (tools/debugger).
-- **[NVIDIA/Model-Optimizer/deployment](https://github.com/NVIDIA/skills/tree/main/skills/Model-Optimizer/deployment)** - Serve a quantized or unquantized LLM checkpoint as an OpenAI-compatible API endpoint using vLLM, SGLang, or TRT-LLM.
-- **[NVIDIA/Model-Optimizer/evaluation](https://github.com/NVIDIA/skills/tree/main/skills/Model-Optimizer/evaluation)** - Evaluates accuracy of quantized or unquantized LLMs using NeMo Evaluator Launcher (NEL).
-- **[NVIDIA/Model-Optimizer/launching-evals](https://github.com/NVIDIA/skills/tree/main/skills/Model-Optimizer/launching-evals)** - Run, monitor, analyze, and debug LLM evaluations via nemo-evaluator-launcher.
-- **[NVIDIA/Model-Optimizer/monitor](https://github.com/NVIDIA/skills/tree/main/skills/Model-Optimizer/monitor)** - Monitor submitted jobs (PTQ, evaluation, deployment) on SLURM clusters.
-- **[NVIDIA/Model-Optimizer/ptq](https://github.com/NVIDIA/skills/tree/main/skills/Model-Optimizer/ptq)** - This skill should be used when the user asks to "quantize a model", "run PTQ", "post-training quantization", "NVFP4 quantization", "FP8 quantization", "INT8 quantization", "INT4 AW...
-- **[NVIDIA/Model-Optimizer/release-cherry-pick](https://github.com/NVIDIA/skills/tree/main/skills/Model-Optimizer/release-cherry-pick)** - Cherry-pick merged PRs labeled for a release branch into that branch, then open a PR and apply the cherry-pick-done label.
-
-### NeMo-Evaluator
-
-- **[NVIDIA/NeMo-Evaluator/byob](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-Evaluator/byob)** - Create custom LLM evaluation benchmarks using the BYOB decorator framework.
-
-### NeMo-Evaluator-Launcher
-
-- **[NVIDIA/NeMo-Evaluator-Launcher/accessing-mlflow](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-Evaluator-Launcher/accessing-mlflow)** - Query and browse evaluation results stored in MLflow.
-- **[NVIDIA/NeMo-Evaluator-Launcher/launching-evals](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-Evaluator-Launcher/launching-evals)** - Run, monitor, analyze, and debug LLM evaluations via nemo-evaluator-launcher.
-- **[NVIDIA/NeMo-Evaluator-Launcher/nel-assistant](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-Evaluator-Launcher/nel-assistant)** - Interactive config wizard for NeMo Evaluator Launcher (NEL).
-
-### NeMo-Gym
-
-- **[NVIDIA/NeMo-Gym/add-benchmark](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-Gym/add-benchmark)** - > Guide for adding a new benchmark or training environment to NeMo-Gym.
-- **[NVIDIA/NeMo-Gym/nemo-gym-debugging](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-Gym/nemo-gym-debugging)** - >- Use when debugging a Nemo Gym run or reward profiling job.
-- **[NVIDIA/NeMo-Gym/nemo-gym-docs](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-Gym/nemo-gym-docs)** - > Maintain the NeMo Gym Fern docs site — add, update, move, or remove pages under fern/.
-- **[NVIDIA/NeMo-Gym/nemo-gym-pivot-datasets](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-Gym/nemo-gym-pivot-datasets)** - >- Use when creating, validating, or documenting Nemo Gym pivot datasets from rollout, trajectory, chat-completion, Responses API, or tool-call artifacts.
-- **[NVIDIA/NeMo-Gym/nemo-gym-reward-profiling](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-Gym/nemo-gym-reward-profiling)** - >- Use to help users get started with Nemo Gym reward profiling.
-
-### NeMo-RL
-
-- **[NVIDIA/NeMo-RL/auto-research](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-RL/auto-research)** - Autonomous NeMo-RL research agent workflow for directed hypothesis testing and open-ended discovery.
-- **[NVIDIA/NeMo-RL/brev-etiquette](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-RL/brev-etiquette)** - Brev instance operating guidance for NeMo-RL agents working in /home/ubuntu/RL with limited workspace disk, a larger /ephemeral volume, and optional /home/ubuntu/RL/.env secrets.
-- **[NVIDIA/NeMo-RL/build-and-dependency](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-RL/build-and-dependency)** - Build and dependency management for NeMo-RL.
-- **[NVIDIA/NeMo-RL/cicd](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-RL/cicd)** - CI/CD reference for NeMo-RL.
-- **[NVIDIA/NeMo-RL/config-conventions](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-RL/config-conventions)** - Configuration conventions for NeMo-RL.
-- **[NVIDIA/NeMo-RL/contributing](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-RL/contributing)** - Contribution conventions for NeMo-RL.
-- **[NVIDIA/NeMo-RL/copyright](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-RL/copyright)** - NVIDIA copyright header requirements for NeMo-RL.
-- **[NVIDIA/NeMo-RL/docs](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-RL/docs)** - Documentation conventions for NeMo-RL.
-- **[NVIDIA/NeMo-RL/error-handling](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-RL/error-handling)** - Error handling guidelines for NeMo-RL.
-- **[NVIDIA/NeMo-RL/launch-nemo-rl](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-RL/launch-nemo-rl)** - Playbook for launching, monitoring, stopping, and debugging NeMo-RL recipes on a Kubernetes cluster via the nrl-k8s CLI.
-- **[NVIDIA/NeMo-RL/linting-and-formatting](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-RL/linting-and-formatting)** - Code style guidelines for NeMo-RL (Python and shell).
-- **[NVIDIA/NeMo-RL/review-pr](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-RL/review-pr)** - Interactive code review for NVIDIA-NeMo/RL pull requests.
-- **[NVIDIA/NeMo-RL/session-memory](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-RL/session-memory)** - Manage durable working-session memory for coding agents.
-- **[NVIDIA/NeMo-RL/testing](https://github.com/NVIDIA/skills/tree/main/skills/NeMo-RL/testing)** - Testing conventions for NeMo-RL.
-
-### NemoClaw
-
-- **[NVIDIA/NemoClaw/nemoclaw-contributor-create-pr](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-contributor-create-pr)** - Create GitHub pull requests that follow the NemoClaw PR template.
-- **[NVIDIA/NemoClaw/nemoclaw-contributor-update-docs](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-contributor-update-docs)** - Scan recent git commits for changes that affect user-facing behavior, then draft or update the corresponding documentation pages and refresh generated user skills for release prep.
-- **[NVIDIA/NemoClaw/nemoclaw-maintainer-cross-issue-sweep](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-maintainer-cross-issue-sweep)** - Scans other open issues to find ones a given PR may also fix or accidentally break.
-- **[NVIDIA/NemoClaw/nemoclaw-maintainer-cut-release-tag](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-maintainer-cut-release-tag)** - Cut a new semver release — bump all version strings via bump-version.ts, open a release PR, and after merge tag main and push.
-- **[NVIDIA/NemoClaw/nemoclaw-maintainer-day](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-maintainer-day)** - Runs the daytime maintainer loop for NemoClaw, prioritizing items labeled with the current version target.
-- **[NVIDIA/NemoClaw/nemoclaw-maintainer-evening](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-maintainer-evening)** - Runs the end-of-day maintainer handoff for NemoClaw.
-- **[NVIDIA/NemoClaw/nemoclaw-maintainer-find-review-pr](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-maintainer-find-review-pr)** - Finds open GitHub PRs with security and priority-high labels, links each to its issue, detects duplicates (multiple PRs fixing the same issue), and presents a table of review candi...
-- **[NVIDIA/NemoClaw/nemoclaw-maintainer-morning](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-maintainer-morning)** - Runs the morning maintainer standup for NemoClaw.
-- **[NVIDIA/NemoClaw/nemoclaw-maintainer-normalize-title-tags](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-maintainer-normalize-title-tags)** - Normalizes GitHub issue and PR titles by removing any bracketed [NemoClaw] tag case-insensitively, even when the tag appears later in the title.
-- **[NVIDIA/NemoClaw/nemoclaw-maintainer-pr-comparator](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-maintainer-pr-comparator)** - Compares competing PRs that target the same issue and recommends which one to merge.
-- **[NVIDIA/NemoClaw/nemoclaw-maintainer-security-code-review](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-maintainer-security-code-review)** - Performs a comprehensive security review of code changes in a GitHub PR or issue.
-- **[NVIDIA/NemoClaw/nemoclaw-maintainer-triage](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-maintainer-triage)** - AI-assisted label triage for NVIDIA/NemoClaw issues and PRs.
-- **[NVIDIA/NemoClaw/nemoclaw-skills-guide](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-skills-guide)** - Start here.
-- **[NVIDIA/NemoClaw/nemoclaw-user-agent-skills](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-user-agent-skills)** - Describes the agent skills shipped with NemoClaw and how to access them by cloning the repository.
-- **[NVIDIA/NemoClaw/nemoclaw-user-configure-inference](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-user-configure-inference)** - Connects NemoClaw to a local inference server.
-- **[NVIDIA/NemoClaw/nemoclaw-user-configure-security](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-user-configure-security)** - Presents a risk framework for every configurable security control in NemoClaw.
-- **[NVIDIA/NemoClaw/nemoclaw-user-deploy-remote](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-user-deploy-remote)** - Explains how to run NemoClaw on a remote GPU instance, including the deprecated Brev compatibility path and the preferred installer plus onboard flow.
-- **[NVIDIA/NemoClaw/nemoclaw-user-get-started](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-user-get-started)** - Installs NemoClaw, launches a sandbox, and runs the first agent prompt.
-- **[NVIDIA/NemoClaw/nemoclaw-user-manage-policy](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-user-manage-policy)** - Adds, removes, or modifies allowed endpoints in the sandbox policy.
-- **[NVIDIA/NemoClaw/nemoclaw-user-manage-sandboxes](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-user-manage-sandboxes)** - Explains operational tasks after the quickstart: listing sandboxes, status and health checks, logs, diagnostics, port forwards, multiple sandboxes, credential reset, rebuilds, netw...
-- **[NVIDIA/NemoClaw/nemoclaw-user-monitor-sandbox](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-user-monitor-sandbox)** - Inspects sandbox health, traces agent behavior, and diagnoses problems.
-- **[NVIDIA/NemoClaw/nemoclaw-user-overview](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-user-overview)** - Explains how OpenClaw, OpenShell, and NemoClaw form the ecosystem, NemoClaw's position in the stack, what NemoClaw adds beyond the community sandbox, and when to prefer NemoClaw ve...
-- **[NVIDIA/NemoClaw/nemoclaw-user-reference](https://github.com/NVIDIA/skills/tree/main/skills/NemoClaw/nemoclaw-user-reference)** - Describes the NemoClaw plugin and blueprint architecture and how they orchestrate the OpenClaw sandbox.
-
-### TensorRT-LLM
-
-- **[NVIDIA/TensorRT-LLM/ad-accuracy-debug](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/ad-accuracy-debug)** - > Debug AutoDeploy accuracy regressions vs a reference score (PyTorch backend or published baseline).
-- **[NVIDIA/TensorRT-LLM/ad-add-fusion-transformation](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/ad-add-fusion-transformation)** - > Claude Code skill (trtllm-agent-toolkit): implement or extend TensorRT-LLM AutoDeploy fusion transforms under transform/library/ in a TensorRT-LLM checkout.
-- **[NVIDIA/TensorRT-LLM/ad-conf-check](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/ad-conf-check)** - > Check whether AutoDeploy YAML configs were actually applied by analyzing server logs and optionally graph dumps (AD_DUMP_GRAPHS_DIR).
-- **[NVIDIA/TensorRT-LLM/ad-graph-dump](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/ad-graph-dump)** - > Enable and interpret TensorRT-LLM AutoDeploy FX graph text dumps via AD_DUMP_GRAPHS_DIR.
-- **[NVIDIA/TensorRT-LLM/ad-layer-visualizer](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/ad-layer-visualizer)** - > Visualize a specific transformer decoder layer from an AutoDeploy FX graph text dump as a hierarchical DOT/PNG diagram.
-- **[NVIDIA/TensorRT-LLM/ad-model-onboard](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/ad-model-onboard)** - > Translates a HuggingFace model into a prefill-only AutoDeploy custom model using reference custom ops, validates with hierarchical equivalence tests.
-- **[NVIDIA/TensorRT-LLM/exec-local-compile](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/exec-local-compile)** - Compile TensorRT-LLM on a compute node inside a Docker container.
-- **[NVIDIA/TensorRT-LLM/exec-slurm-compile](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/exec-slurm-compile)** - Compile TensorRT-LLM on a SLURM cluster.
-- **[NVIDIA/TensorRT-LLM/kernel-cute-writing](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/kernel-cute-writing)** - > Write and implement GPU kernels using NVIDIA CuTe DSL (CUTLASS 4.x Python API) — NOT for Triton, CUDA C++, or conceptual explanations.
-- **[NVIDIA/TensorRT-LLM/kernel-tileir-optimization](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/kernel-tileir-optimization)** - > Optimize existing Triton kernels for NVIDIA TileIR backend on Blackwell GPUs (sm_100+).
-- **[NVIDIA/TensorRT-LLM/kernel-triton-writing](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/kernel-triton-writing)** - > ONLY for OpenAI Triton (@triton.jit) kernel development.
-- **[NVIDIA/TensorRT-LLM/perf-analysis](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/perf-analysis)** - > Performance analysis coordination workflow.
-- **[NVIDIA/TensorRT-LLM/perf-host-analysis](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/perf-host-analysis)** - > Analyze host/CPU overhead in TensorRT-LLM inference from nsys traces.
-- **[NVIDIA/TensorRT-LLM/perf-host-optimization](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/perf-host-optimization)** - Profiles and optimizes TensorRT-LLM host/CPU overhead using line_profiler (with nsys support planned).
-- **[NVIDIA/TensorRT-LLM/perf-nsight-compute-analysis](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/perf-nsight-compute-analysis)** - > Analyze ncu (NVIDIA Nsight Compute) profiling output: SOL% bottleneck classification, roofline analysis, occupancy diagnosis, memory hierarchy analysis, warp stall analysis, metr...
-- **[NVIDIA/TensorRT-LLM/perf-nsight-systems](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/perf-nsight-systems)** - >- Nsight Systems (nsys) CLI for system-level timeline profiling.
-- **[NVIDIA/TensorRT-LLM/perf-optimization](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/perf-optimization)** - > Performance optimization coordination playbook.
-- **[NVIDIA/TensorRT-LLM/perf-torch-cuda-graphs](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/perf-torch-cuda-graphs)** - >- Apply CUDA Graphs to PyTorch workloads — API selection (torch.compile, PyTorch make_graphed_callables, TE make_graphed_callables, MCore CudaGraphManager, FullCudaGraphWrapper, m...
-- **[NVIDIA/TensorRT-LLM/perf-torch-sync-free](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/perf-torch-sync-free)** - >- Identify and eliminate host-device synchronizations in PyTorch code.
-- **[NVIDIA/TensorRT-LLM/perf-workload-profiling](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/perf-workload-profiling)** - > Code instrumentation for timing workloads.
-- **[NVIDIA/TensorRT-LLM/trtllm-code-contribution](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/trtllm-code-contribution)** - > Best practices for contributing code to TensorRT-LLM.
-- **[NVIDIA/TensorRT-LLM/trtllm-codebase-exploration](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/trtllm-codebase-exploration)** - > Systematic approach to exploring the TensorRT-LLM codebase before implementing new features or optimizations.
-- **[NVIDIA/TensorRT-LLM/trtllm-flashinfer-upgrade](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/trtllm-flashinfer-upgrade)** - >- Upgrade flashinfer-python version in TensorRT-LLM.
-- **[NVIDIA/TensorRT-LLM/trtllm-moe-develop](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/trtllm-moe-develop)** - >- Review, design, and refactor TensorRT-LLM PyTorch MoE code for architecture fit, clean code, maintainability, and testability.
-- **[NVIDIA/TensorRT-LLM/trtllm-serve-config-guide](https://github.com/NVIDIA/skills/tree/main/skills/TensorRT-LLM/trtllm-serve-config-guide)** - Generate a source-backed starting `trtllm-serve --config` YAML for basic aggregate single-node PyTorch serving, aligned with checked-in TensorRT-LLM configs and deployment docs.
-
-### TileGym
-
-- **[NVIDIA/TileGym/adding-cutile-kernel](https://github.com/NVIDIA/skills/tree/main/skills/TileGym/adding-cutile-kernel)** - Add a new cuTile GPU kernel operator to TileGym.
-- **[NVIDIA/TileGym/converting-cutile-to-julia](https://github.com/NVIDIA/skills/tree/main/skills/TileGym/converting-cutile-to-julia)** - Converts cuTile Python GPU kernels (@ct.kernel) to cuTile.jl Julia equivalents.
-- **[NVIDIA/TileGym/converting-cutile-to-triton](https://github.com/NVIDIA/skills/tree/main/skills/TileGym/converting-cutile-to-triton)** - Converts cuTile GPU kernels (@ct.kernel) to Triton (@triton.jit).
-- **[NVIDIA/TileGym/cutile-autotuning](https://github.com/NVIDIA/skills/tree/main/skills/TileGym/cutile-autotuning)** - Use when adding, modifying, optimizing, or debugging CuTile autotuning code.
-- **[NVIDIA/TileGym/cutile-python](https://github.com/NVIDIA/skills/tree/main/skills/TileGym/cutile-python)** - Expert cuTile programming assistant.
-- **[NVIDIA/TileGym/improve-cutile-kernel-perf](https://github.com/NVIDIA/skills/tree/main/skills/TileGym/improve-cutile-kernel-perf)** - Iteratively optimize cuTile kernel performance through systematic profiling, bottleneck analysis, IR comparison, and targeted tuning.
-- **[NVIDIA/TileGym/monkey-patch-kernels-to-transformers](https://github.com/NVIDIA/skills/tree/main/skills/TileGym/monkey-patch-kernels-to-transformers)** - Integrate TileGym kernels into Hugging Face `transformers` models by replacing the library's submodule(s) and certain class(es)' implementations, and patching certain class(es)' in...
-
-### cuopt
-
-- **[NVIDIA/cuopt/cuopt-developer](https://github.com/NVIDIA/skills/tree/main/skills/cuopt/cuopt-developer)** - Modify, build, test, debug, and contribute to NVIDIA cuOpt (C++/CUDA, Python, server, CI).
-- **[NVIDIA/cuopt/cuopt-install](https://github.com/NVIDIA/skills/tree/main/skills/cuopt/cuopt-install)** - Install cuOpt for Python, C, or as a server (pip, conda, Docker) — system requirements, install commands, and verification.
-- **[NVIDIA/cuopt/cuopt-numerical-optimization-api-c](https://github.com/NVIDIA/skills/tree/main/skills/cuopt/cuopt-numerical-optimization-api-c)** - LP, MILP, and QP (beta) with cuOpt — C API only.
-- **[NVIDIA/cuopt/cuopt-numerical-optimization-api-cli](https://github.com/NVIDIA/skills/tree/main/skills/cuopt/cuopt-numerical-optimization-api-cli)** - LP, MILP, and QP (beta) with cuOpt — CLI only (MPS files, cuopt_cli).
-- **[NVIDIA/cuopt/cuopt-numerical-optimization-api-python](https://github.com/NVIDIA/skills/tree/main/skills/cuopt/cuopt-numerical-optimization-api-python)** - Solve Linear Programming (LP), Mixed-Integer Linear Programming (MILP), and Quadratic Programming (QP, beta) with the Python API.
-- **[NVIDIA/cuopt/cuopt-routing-api-python](https://github.com/NVIDIA/skills/tree/main/skills/cuopt/cuopt-routing-api-python)** - Vehicle routing (VRP, TSP, PDP) with cuOpt — Python API only.
-- **[NVIDIA/cuopt/cuopt-server-api-python](https://github.com/NVIDIA/skills/tree/main/skills/cuopt/cuopt-server-api-python)** - cuOpt REST server — start server, endpoints, Python/curl client examples.
-- **[NVIDIA/cuopt/cuopt-server-common](https://github.com/NVIDIA/skills/tree/main/skills/cuopt/cuopt-server-common)** - cuOpt REST server — what it does and how requests flow.
-- **[NVIDIA/cuopt/cuopt-user-rules](https://github.com/NVIDIA/skills/tree/main/skills/cuopt/cuopt-user-rules)** - Base rules for end users calling NVIDIA cuOpt (routing/LP/MILP/QP/install/server).
-- **[NVIDIA/cuopt/numerical-optimization-formulation](https://github.com/NVIDIA/skills/tree/main/skills/cuopt/numerical-optimization-formulation)** - Numerical optimization (LP, MILP, QP) — concepts, problem-text parsing, and formulation patterns.
-- **[NVIDIA/cuopt/routing-formulation](https://github.com/NVIDIA/skills/tree/main/skills/cuopt/routing-formulation)** - Vehicle routing (VRP, TSP, PDP) — problem types and data requirements.
-- **[NVIDIA/cuopt/skill-evolution](https://github.com/NVIDIA/skills/tree/main/skills/cuopt/skill-evolution)** - After solving a non-trivial problem, detect generalizable learnings and propose skill updates so future interactions benefit automatically.
-
-### deepstream
-
-- **[NVIDIA/deepstream/deepstream-dev](https://github.com/NVIDIA/skills/tree/main/skills/deepstream/deepstream-dev)** - NVIDIA DeepStream SDK 9.0 development with Python pyservicemaker API.
-- **[NVIDIA/deepstream/deepstream-import-vision-model](https://github.com/NVIDIA/skills/tree/main/skills/deepstream/deepstream-import-vision-model)** - > Use this skill to bring any vision model from HuggingFace or NVIDIA NGC into an NVIDIA DeepStream pipeline with end-to-end automation: ONNX download, SafeTensors export, TRT engi...
-
-### nemotron-voice-agent
-
-- **[NVIDIA/nemotron-voice-agent/nemotron-voice-agent-deploy](https://github.com/NVIDIA/skills/tree/main/skills/nemotron-voice-agent/nemotron-voice-agent-deploy)** - Deploy Nemotron Voice Agent on Workstation (x86), Jetson Thor, or Cloud NIMs.
-
-### rag
-
-- **[NVIDIA/rag/rag-blueprint](https://github.com/NVIDIA/skills/tree/main/skills/rag/rag-blueprint)** - "NVIDIA RAG Blueprint — deploy, configure, troubleshoot, and manage.
-
-### video-search-and-summarization
-
-- **[NVIDIA/video-search-and-summarization/alerts](https://github.com/NVIDIA/skills/tree/main/skills/video-search-and-summarization/alerts)** - Manage and monitor VSS alerts after the alerts profile is deployed.
-- **[NVIDIA/video-search-and-summarization/deploy](https://github.com/NVIDIA/skills/tree/main/skills/video-search-and-summarization/deploy)** - Deploy, debug, or tear down any VSS profile using a compose-centric workflow — config (dry-run) with env overrides, review resolved compose, then compose up.
-- **[NVIDIA/video-search-and-summarization/report](https://github.com/NVIDIA/skills/tree/main/skills/video-search-and-summarization/report)** - Produce video analysis reports by discovering the deployed VSS agent, querying POST /generate for a timestamped captioned summary of the clip, then formatting the agent reply as th...
-- **[NVIDIA/video-search-and-summarization/rt-vlm](https://github.com/NVIDIA/skills/tree/main/skills/video-search-and-summarization/rt-vlm)** - > Use this skill when working with the RTVI VLM or RT-VLM microservice API on VSS 3.1.
-- **[NVIDIA/video-search-and-summarization/video-analytics](https://github.com/NVIDIA/skills/tree/main/skills/video-search-and-summarization/video-analytics)** - Query video analytics data and metrics from Elastic search via the VA-MCP server (port 9901).
-- **[NVIDIA/video-search-and-summarization/video-search](https://github.com/NVIDIA/skills/tree/main/skills/video-search-and-summarization/video-search)** - Search video archives using natural language — find events, objects, actions, and people across recorded video using fusion search (Cosmos Embed1 semantic search + CV attribute sea...
-- **[NVIDIA/video-search-and-summarization/video-summarization](https://github.com/NVIDIA/skills/tree/main/skills/video-search-and-summarization/video-summarization)** - Summarize a video by calling the VLM NIM or the Long Video Summarization (LVS) microservice directly.
-- **[NVIDIA/video-search-and-summarization/video-understanding](https://github.com/NVIDIA/skills/tree/main/skills/video-search-and-summarization/video-understanding)** - Call the vss agent to run video understanding on video to answer a text question.
-- **[NVIDIA/video-search-and-summarization/vios](https://github.com/NVIDIA/skills/tree/main/skills/video-search-and-summarization/vios)** - Query VIOS REST APIs: sensor list, recording timelines, video clip extraction, snapshot capture, add/delete sensors and streams
-- **[NVIDIA/video-search-and-summarization/vss-frag](https://github.com/NVIDIA/skills/tree/main/skills/video-search-and-summarization/vss-frag)** - Generate video summary reports using the VSS video_search_frag extension with Long Video Summarization (LVS), Enterprise RAG knowledge retrieval, and human-in-the-loop parameter co...
+- **[Browse NVIDIA's official Agent Skills catalog](https://github.com/NVIDIA/skills/tree/main/skills)** - View the current collection directly in NVIDIA's repository.
 
 </details>
 
@@ -1667,7 +1513,7 @@ Official skills published by Cypress to help create, maintain, understand, and f
 <details>
 <summary><h3 style="display:inline">Marketing</h3></summary>
 
-- **[BrianRWagner/ai-marketing-skills](https://github.com/BrianRWagner/ai-marketing-skills)** - 17 marketing frameworks for cold outreach, homepage audit, social cards, and more
+- **[BrianRWagner/ai-marketing-claude-code-skills](https://github.com/BrianRWagner/ai-marketing-claude-code-skills)** - 17 marketing frameworks for cold outreach, homepage audit, social cards, and more
 - **[AgriciDaniel/claude-seo](https://github.com/AgriciDaniel/claude-seo)** - Universal SEO skill for comprehensive website analysis and optimization
 - **[wshuyi/x-article-publisher-skill](https://github.com/wshuyi/x-article-publisher-skill)** - Publish articles to X/Twitter
 - **[CosmoBlk/email-marketing-bible](https://github.com/CosmoBlk/email-marketing-bible)** - 55K-word email marketing guide as an AI skill
@@ -1683,10 +1529,22 @@ Official skills published by Cypress to help create, maintain, understand, and f
 - **[taisly/agent](https://github.com/taisly/agent)** - Codex plugin, Agent Skill, CLI, and MCP server for publishing approved short-form videos to TikTok, Instagram Reels, YouTube Shorts, X, and Facebook through Taisly
 - **[indranilbanerjee/digital-marketing-pro](https://github.com/indranilbanerjee/digital-marketing-pro)** - 150-skill engagement methodology — 12-Part Strategy Flow, 25 specialist agents, EU AI Act Article 50 ready (C2PA signing), 6-platform AEO/GEO incl. Google AI Mode
 - **[infrasity-labs/dev-gtm-claude-skills](https://github.com/infrasity-labs/dev-gtm-claude-skills)**: GTM-focused skill collection for developer go-to-market workflows including launch planning, positioning, and outbound sequences.
-- **[nowork-studio/NotFair](https://github.com/nowork-studio/NotFair)** - SEO, GEO, Google Ads, and Meta Ads skills with live data
+- **[nowork-studio/notfair-plugin](https://github.com/nowork-studio/notfair-plugin)** - SEO, GEO, Google Ads, and Meta Ads skills with live data
 - **[aaron-he-zhu/aaron-marketing-skills](https://github.com/aaron-he-zhu/aaron-marketing-skills)** - 69 marketing skills across SEO/GEO, influencer, paid ads, and email on one shared contract, with 5 benchmark-driven auditor gates (CORE-EEAT, CITE, C³, ROAS, SEND) and keyless data connectors
+- **[gooseworks-ai/goose-skills](https://github.com/gooseworks-ai/goose-skills)** - 125 growth and GTM skills: ads, content, lead gen, SEO
+- **[sergebulaev/linkedin-skills](https://github.com/sergebulaev/linkedin-skills)** - LinkedIn marketing skills: viral hooks, comment drafting, algorithm audit, humanizer
+- **[Vladimir-Human/humanizer-ru](https://github.com/Vladimir-Human/humanizer-ru)** - Removes AI-writing markers from Russian text
 - **[Bomx/distribb-skill](https://github.com/Bomx/distribb-skill)** - SEO articles, keyword research, CMS publishing, high-DR backlink exchange
+- **[Citlyze/citlyze-skills](https://github.com/citlyze/citlyze-skills)** - AI search visibility skills from the Citlyze team: window-over-window visibility reports, citation gap analysis, prompt audits, and action plans via the Citlyze MCP server, plus a standalone AEO page audit that grades any URL without an account
 - **[AIDevGTM/gtm-cofounder](https://github.com/AIDevGTM/gtm-cofounder)** - 18 go-to-market skills for solo technical founders: positioning, first users, launch, pricing, and founder-led sales; grounded in Adam Frankl and Jakub Czakon
+- **[mailtrap/mailtrap-skills](https://github.com/mailtrap/mailtrap-skills)** - Send emails via API/SMTP with sandbox testing
+- **[YannisKiefer/dark-psychology-skills](https://github.com/YannisKiefer/dark-psychology-skills)** - 13 sales and negotiation skills for agents distilled from 36 books (CIA psyop manuals, FBI behavioral research, propaganda science, persuasion classics); every tactic passes an honest-influence filter: it must still work when fully disclosed
+- **[SupercmoHQ/superCMO-skills](https://github.com/SupercmoHQ/superCMO-skills)** - Open-source skills + local MCP server for marketing video & image production: UGC videos, ad videos, product photography, and image ads from a product photo and a brief; casts AI actors, picks the best image/video models, edits any-length clips with consistent actor and product, and researches competitor ads. BYO or managed keys, Apache-2.0
+- **[sandbaseai/sandbase-skills/multi-source-search](https://github.com/sandbaseai/sandbase-skills/tree/main/research/multi-source-search)** - Evidence-led multi-source research with offline validation
+- **[Nanako0129/sepia](https://github.com/Nanako0129/sepia)** - De-AI writing skill fixing narrative structure before word choice
+- **[axelfreeman/marketing-mindset](https://github.com/axelfreeman/marketing-mindset)** - Marketing OS for AI agents — think like a marketer first, get tactics as the output
+- **[ScrapeCreators/social-media-research-skills](https://github.com/ScrapeCreators/social-media-research-skills)** - Research social outliers, comments, competitors, ads, and trends
+- **[ilyautov/humanizer-ru](https://github.com/ilyautov/humanizer-ru/tree/main/skills/humanizer-ru)** - Removes 64 AI-writing markers from Russian text, with scanner
 
 </details>
 
@@ -1706,18 +1564,16 @@ Official skills published by Cypress to help create, maintain, understand, and f
 - **[obra/writing-plans](https://github.com/obra/superpowers/blob/main/skills/writing-plans/SKILL.md)** - Create strategic documentation
 - **[obra/executing-plans](https://github.com/obra/superpowers/blob/main/skills/executing-plans/SKILL.md)** - Implement and run strategic plans
 - **[obra/dispatching-parallel-agents](https://github.com/obra/superpowers/blob/main/skills/dispatching-parallel-agents/SKILL.md)** - Coordinate multiple simultaneous agents
-- **[obra/sharing-skills](https://github.com/obra/superpowers/blob/main/skills/sharing-skills/SKILL.md)** - Distribute and communicate capabilities
 - **[obra/using-superpowers](https://github.com/obra/superpowers/blob/main/skills/using-superpowers/SKILL.md)** - Leverage core platform capabilities
 - **[op7418/Youtube-clipper-skill](https://github.com/op7418/Youtube-clipper-skill)** - YouTube clip generation and editing with automated workflows
 - **[ognjengt/founder-skills](https://github.com/ognjengt/founder-skills)** - Claude skills for founders with packaged startup workflows
 - **[EveryInc/charlie-cfo-skill](https://github.com/EveryInc/charlie-cfo-skill)** - Bootstrapped CFO financial management inspired by Charlie Munger
 - **[openaccountants/openaccountants](https://github.com/openaccountants/openaccountants)** - 371 tax classification skills across 134 countries
 - **[wrsmith108/linear-claude-skill](https://github.com/wrsmith108/linear-claude-skill)** - Manage Linear issues, projects, and teams
-- **[Shpigford/readme](https://github.com/Shpigford/skills/tree/main/readme)** - Generate comprehensive project documentation
 - **[hanfang/claude-memory-skill](https://github.com/hanfang/claude-memory-skill)** - Minimal, low-friction hierarchical memory system with background agents and filesystem-based persistence
-- **[kreuzberg-dev/kreuzberg](https://github.com/kreuzberg-dev/kreuzberg/tree/main/skills/kreuzberg)** - Extract text, tables, and metadata from 62+ document formats
+- **[xberg-io/xberg](https://github.com/xberg-io/xberg/tree/main/plugin/skills/xberg)** - Extract text, tables, and metadata from 101+ document formats
 - **[Paramchoudhary/ResumeSkills](https://github.com/Paramchoudhary/ResumeSkills)** - 20 specialized skills for resume optimization, ATS analysis, interview prep, and career transitions
-- **[RoundTable02/tutor-skills](https://github.com/RoundTable02/tutor-skills)** - Transform docs or codebases into Obsidian StudyVaults with interactive quizzes
+- **[bevibing/tutor-skills](https://github.com/bevibing/tutor-skills)** - Transform docs or codebases into Obsidian StudyVaults with interactive quizzes
 - **[NeoLabHQ/write-concisely](https://github.com/NeoLabHQ/context-engineering-kit/tree/master/plugins/docs/skills/write-concisely)** - Applies the famous *The Elements of Style* book principles to make documentation and writing clearer and more professional by eliminating wordiness and improving structure.
 - **[ReScienceLab/opc-skills](https://github.com/ReScienceLab/opc-skills)** - Agent skills for solopreneurs with SEO, geo, and LLM tools
 - **[SeanZoR/claude-speed-reader](https://github.com/SeanZoR/claude-speed-reader)** - Speed read Claude's responses at 600+ WPM using RSVP with Spritz-style ORP highlighting
@@ -1729,17 +1585,27 @@ Official skills published by Cypress to help create, maintain, understand, and f
 - **[Linked-API/linkedin](https://github.com/Linked-API/linkedin-skills/tree/main/linkedin)** - Fetch LinkedIn profiles, search people and companies, send messages, manage connections, create posts, react, comment, and run custom LinkedIn workflows from Claude Code, Codex, Cursor, and Windsurf.
 - **[pattern-ai-labs/agentcall](https://github.com/pattern-ai-labs/agentcall)** - Let your AI agents join Google Meet, Zoom, Teams calls and collaborate like a real team-mate.
 - **[Sendmux/skills](https://github.com/Sendmux/skills)** - Sendmux email and mailbox workflows for agents
+- **[tjboudreaux/cc-thinking-skills](https://github.com/tjboudreaux/cc-thinking-skills)** - 28 eval-informed mental models for decisions, debugging, systems, and strategy
+- **[JimmySadek/youtube-fetcher](https://github.com/JimmySadek/youtube-fetcher-to-markdown)** - Create Obsidian-ready Markdown notes from YouTube videos
+- **[zapier/zapier-mcp](https://github.com/zapier/zapier-mcp)** - Official plugin distribution for the hosted Zapier MCP server. Connects Claude to thousands of apps — send messages, pull data, trigger workflows.
+- **[Neeeophytee/finding-unknowns-skills](https://github.com/Neeeophytee/finding-unknowns-skills)** - 8 meta-skills that make a coding agent surface your unknowns before they get expensive: blindspot pass, interview, reference hunt, implementation plan/notes, pitch packager, and a pre-merge change quiz. Works in Claude Code, Codex, and Cursor via the agentskills.io SKILL.md format
+- **[kgraph57/strategy-consulting-visualization](https://github.com/kgraph57/mckinsey-style-visualization-skill)** - McKinsey-style charts and consulting slide decks
+- **[vaibhavarora14/job-application-agent](https://github.com/vaibhavarora14/job-application-agent)** - Privacy-first job discovery and tracking
+- **[cyperx84/claude-skills-mental-models](https://github.com/cyperx84/claude-skills-mental-models)** - Drop your own mental models in as files; 21 included
+- **[manavmishra/zero-slop](https://github.com/manavmishra/ZeroSlop/blob/main/SKILL.md)** - Edits AI-sounding prose while preserving facts, voice, and formatting
 
 </details>
 
 <details>
 <summary><h3 style="display:inline">Development and Testing</h3></summary>
 
+- **[VoDaiLocz/kilo-kit-mcp](https://github.com/VoDaiLocz/kilo-kit-mcp)** - Comprehensive library of 177 curated skills paired with an MCP runtime enforcing protocol-level C4 workflow gates, hard-gated command execution with security guardrails, and 5 cognitive reasoning engines (Tree of Thoughts DAG, Adversarial Grilling, 5-Whys Root Cause Tracer, Context Compactor, Self-Evolution) for Claude Code, Cursor, Antigravity, and Codex
+
+- **[hedralab/eskill](https://github.com/hedralab/eskill)** - Meta-skill to build top-tier Agent Skills: spec-compliant SKILL.md, eval loop, validator, market research, numbered-file pipeline
 - **[robzolkos/skill-rails-upgrade](https://github.com/robzolkos/skill-rails-upgrade)** - Analyze Rails apps and provide upgrade assessments
-- **[Shpigford/screenshots](https://github.com/Shpigford/skills/tree/main/screenshots)** - Generate marketing screenshots with Playwright
 - **[antonbabenko/terraform-skill](https://github.com/antonbabenko/terraform-skill)** - Terraform and OpenTofu patterns: testing, modules, state, CI/CD.
 - **[zxkane/aws-skills](https://github.com/zxkane/aws-skills)** - AWS development with infrastructure automation and cloud architecture patterns
-- **[Rootly-AI-Labs/rootly-incident-responder](https://github.com/Rootly-AI-Labs/Rootly-MCP-server/blob/main/examples/skills/rootly-incident-responder.md)** - AI-powered incident response with ML similarity matching, solution suggestions, and on-call coordination. Requires [Rootly MCP Server](https://github.com/Rootly-AI-Labs/Rootly-MCP-server)
+- **[Rootly-AI-Labs/rootly-incident-responder](https://github.com/rootlyhq/rootly-mcp-server/blob/main/examples/skills/rootly-incident-responder.md)** - AI-powered incident response with ML similarity matching, solution suggestions, and on-call coordination. Requires [Rootly MCP Server](https://github.com/rootlyhq/rootly-mcp-server)
 - **[conorluddy/ios-simulator-skill](https://github.com/conorluddy/ios-simulator-skill)** - Control iOS Simulator
 - **[ramzesenok/iOS-Accessibility-Audit-Skill](https://github.com/ramzesenok/iOS-Accessibility-Audit-Skill)** - Audit iOS App against Accessibility norms
 - **[truongduy2611/app-store-preflight-skills](https://github.com/truongduy2611/app-store-preflight-skills)** - Scan iOS/macOS projects to catch common mistakes that lead to App Store rejection before submission
@@ -1748,53 +1614,43 @@ Official skills published by Cypress to help create, maintain, understand, and f
 - **[sanjay3290/deep-research](https://github.com/sanjay3290/ai-skills/tree/main/skills/deep-research)** - Autonomous multi-step research using Gemini Deep Research Agent
 - **[jthack/ffuf-claude-skill](https://github.com/jthack/ffuf_claude_skill)** - Web fuzzing with ffuf
 - **[lackeyjb/playwright-skill](https://github.com/lackeyjb/playwright-skill)** - Browser automation with Playwright
+- **[woniu9524/open-web-bridge](https://github.com/woniu9524/open-web-bridge)** - Drive your real, logged-in Chrome via CDP from Claude Code, Codex, or Gemini CLI: semantic snapshots, real mouse clicks, human handoff for captchas and logins, HAR capture and replay
 - **[ibelick/ui-skills](https://github.com/ibelick/ui-skills)** - Opinionated, evolving constraints to guide agents when building interfaces
 - **[muthuishere/hand-drawn-diagrams](https://github.com/muthuishere/hand-drawn-diagrams)** - Generate hand-drawn Excalidraw diagrams from a prompt — animated SVG, hosted edit link, and PNG export. Works with Claude Code, Codex, Gemini CLI, and any agent supporting standard skill paths
 - **[nextlevelbuilder/ui-ux-pro-max-skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill)** - UI/UX design patterns and best practices
 - **[ehmo/platform-design-skills](https://github.com/ehmo/platform-design-skills)** - 300+ design rules from Apple HIG, Material Design 3, and WCAG 2.2 for cross-platform apps
+- **[Kayforkind/reimagine-it](https://github.com/Kayforkind/reimagine-it)** - Redesign HTML pages using only their existing content
 - **[scarletkc/vexor](https://github.com/scarletkc/vexor)** - Vector-powered CLI for semantic file search with a Claude/Codex skill
 - **[obra/test-driven-development](https://github.com/obra/superpowers/blob/main/skills/test-driven-development/SKILL.md)** - Write tests before implementing code
 - **[obra/subagent-driven-development](https://github.com/obra/superpowers/blob/main/skills/subagent-driven-development/SKILL.md)** - Development using multiple sub-agents
 - **[obra/systematic-debugging](https://github.com/obra/superpowers/blob/main/skills/systematic-debugging/SKILL.md)** - Methodical problem-solving in code
-- **[obra/root-cause-tracing](https://github.com/obra/superpowers/blob/main/skills/root-cause-tracing/SKILL.md)** - Investigate and identify fundamental problems
-- **[obra/testing-skills-with-subagents](https://github.com/obra/superpowers/blob/main/skills/testing-skills-with-subagents/SKILL.md)** - Collaborative testing approaches
-- **[obra/testing-anti-patterns](https://github.com/obra/superpowers/blob/main/skills/testing-anti-patterns/SKILL.md)** - Identify ineffective testing practices
 - **[obra/finishing-a-development-branch](https://github.com/obra/superpowers/blob/main/skills/finishing-a-development-branch/SKILL.md)** - Complete Git code branches
 - **[obra/requesting-code-review](https://github.com/obra/superpowers/blob/main/skills/requesting-code-review/SKILL.md)** - Initiate code review processes
 - **[obra/receiving-code-review](https://github.com/obra/superpowers/blob/main/skills/receiving-code-review/SKILL.md)** - Process and incorporate code feedback
 - **[obra/using-git-worktrees](https://github.com/obra/superpowers/blob/main/skills/using-git-worktrees/SKILL.md)** - Manage multiple Git working trees
 - **[obra/verification-before-completion](https://github.com/obra/superpowers/blob/main/skills/verification-before-completion/SKILL.md)** - Validate work before finalizing
-- **[obra/condition-based-waiting](https://github.com/obra/superpowers/blob/main/skills/condition-based-waiting/SKILL.md)** - Manage conditional pauses or delays
-- **[obra/commands](https://github.com/obra/superpowers/tree/main/skills/commands)** - Create and manage command structures
 - **[obra/writing-skills](https://github.com/obra/superpowers/blob/main/skills/writing-skills/SKILL.md)** - Develop and document capabilities
 - **[fvadicamo/dev-agent-skills](https://github.com/fvadicamo/dev-agent-skills)** - Git and GitHub workflow skills for commits, PRs, and code reviews
 - **[omkamal/pypict-skill](https://github.com/omkamal/pypict-claude-skill/blob/main/SKILL.md)** - Pairwise test generation
-- **[alinaqi/claude-bootstrap](https://github.com/alinaqi/claude-bootstrap)** - Opinionated project initialization with security-first guardrails, spec-driven atomic todos, LLM testing patterns, and CLI tool orchestration (gh, vercel, supabase)
+- **[alinaqi/maggy](https://github.com/alinaqi/maggy)** - Opinionated project initialization with security-first guardrails, spec-driven atomic todos, LLM testing patterns, and CLI tool orchestration (gh, vercel, supabase)
 - **[ZhangHanDong/makepad-skills](https://github.com/ZhangHanDong/makepad-skills)** - Makepad UI development skills for Rust apps: setup, patterns, shaders, packaging, and troubleshooting.
 - **[massimodeluisa/recursive-decomposition-skill](https://github.com/massimodeluisa/recursive-decomposition-skill)** - Handle long-context tasks (100+ files, 50k+ tokens) through recursive decomposition strategies based on RLM research
 - **[AvdLee/swiftui-expert-skill](https://github.com/AvdLee/SwiftUI-Agent-Skill/tree/main/swiftui-expert-skill)** - Modern SwiftUI best practices and iOS 26+ Liquid Glass adoption
 - **[efremidze/swift-patterns-skill](https://github.com/efremidze/swift-patterns-skill/tree/main/swift-patterns)** - Modern Swift/SwiftUI best practices
-- **[Joannis/claude-skills](https://github.com/Joannis/claude-skills)** - Swift Server development guidance with linting tool for best practices
-- **[rudrankriyam/app-store-connect-cli-skills](https://github.com/rudrankriyam/app-store-connect-cli-skills)** - Automate App Store deployments and management using ASC CLI
+- **[wendylabsinc/claude-skills](https://github.com/wendylabsinc/claude-skills)** - Swift Server development guidance with linting tool for best practices
+- **[rorkai/app-store-connect-cli-skills](https://github.com/rorkai/app-store-connect-cli-skills)** - Automate App Store deployments and management using ASC CLI
 - **[rameerez/claude-code-startup-skills](https://github.com/rameerez/claude-code-startup-skills)** - Skills for building and running software startups, apps, and SaaS
 - **[zscole/model-hierarchy-skill](https://github.com/zscole/model-hierarchy-skill)** - Cost-optimized model routing based on task complexity
 - **[CloudAI-X/threejs-skills](https://github.com/CloudAI-X/threejs-skills)** - Three.js skills for creating 3D elements and interactive experiences
 - **[Leonxlnx/taste-skill](https://github.com/Leonxlnx/taste-skill)** - High-agency frontend skill that gives AI good taste with tunable design variance, motion intensity, and visual density to stop generic UI slop
 - **[testdino-hq/playwright-skill](https://github.com/testdino-hq/playwright-skill)** - 70+ production-tested Playwright automation testing patterns: E2E, POM, CI/CD, migrations, CLI
-- **[NeoLabHQ/code-review](https://github.com/NeoLabHQ/context-engineering-kit/tree/master/plugins/code-review)** - Comprehensive PR code review using specialized agents: bug-hunter, security-auditor, code-quality-reviewer, contracts-reviewer, historical-context-reviewer, test-coverage-reviewer
+- **[NeoLabHQ/review](https://github.com/NeoLabHQ/context-engineering-kit/tree/master/plugins/review)** - Comprehensive PR code review using specialized agents: bug-hunter, security-auditor, code-quality-reviewer, contracts-reviewer, historical-context-reviewer, test-coverage-reviewer
 - **[NeoLabHQ/reflexion](https://github.com/NeoLabHQ/context-engineering-kit/tree/master/plugins/reflexion)** - Self-refinement loop that forces the LLM to reflect on previous output and correct itself.
 - **[NeoLabHQ/sdd](https://github.com/NeoLabHQ/context-engineering-kit/tree/master/plugins/sdd)** - Spec-driven development workflow that transforms prompts into production-ready implementations through structured planning, architecture design, and LLM-as-a-Judge based quality gates.
 - **[NeoLabHQ/ddd](https://github.com/NeoLabHQ/context-engineering-kit/tree/master/plugins/ddd)** - Domain-driven development skills that also include Clean Architecture, SOLID principles, and design patterns.
 - **[NeoLabHQ/sadd](https://github.com/NeoLabHQ/context-engineering-kit/tree/master/plugins/sadd)** - Dispatches independent subagents for individual tasks with code review checkpoints between iterations for rapid, controlled development.
 - **[NeoLabHQ/kaizen](https://github.com/NeoLabHQ/context-engineering-kit/tree/master/plugins/kaizen)** - Applies continuous improvement methodology with multiple analytical approaches, based on Japanese Kaizen philosophy and Lean methodology.
-- **[hamelsmu/eval-audit](https://github.com/hamelsmu/prompts/tree/main/evals-skills/skills/eval-audit)** - Audit LLM eval pipelines and surface problems
-- **[hamelsmu/error-analysis](https://github.com/hamelsmu/prompts/tree/main/evals-skills/skills/error-analysis)** - Systematically identify failure modes in LLM pipelines
-- **[hamelsmu/generate-synthetic-data](https://github.com/hamelsmu/prompts/tree/main/evals-skills/skills/generate-synthetic-data)** - Create diverse synthetic test inputs for LLM evals
-- **[hamelsmu/write-judge-prompt](https://github.com/hamelsmu/prompts/tree/main/evals-skills/skills/write-judge-prompt)** - Design LLM-as-Judge evaluators for subjective criteria
-- **[hamelsmu/validate-evaluator](https://github.com/hamelsmu/prompts/tree/main/evals-skills/skills/validate-evaluator)** - Calibrate LLM judges against human labels
-- **[hamelsmu/evaluate-rag](https://github.com/hamelsmu/prompts/tree/main/evals-skills/skills/evaluate-rag)** - Evaluate RAG retrieval and generation quality
 - **[uucz/moyu](https://github.com/uucz/moyu)** - Anti-over-engineering skill with 5 variants and 10 platforms
-- **[hamelsmu/build-review-interface](https://github.com/hamelsmu/prompts/tree/main/evals-skills/skills/build-review-interface)** - Build annotation interfaces for reviewing LLM traces
 - **[mattpocock/skills](https://github.com/mattpocock/skills)** - 17 dev workflow skills: PRD writing, TDD, codebase architecture, git guardrails, issue triage, refactoring plans, and more
 - **[mukul975/Anthropic-Cybersecurity-Skills](https://github.com/mukul975/Anthropic-Cybersecurity-Skills)** - 753 cybersecurity skills across 38 domains: cloud security, pentesting, red teaming, DFIR, malware analysis, threat intel, and more (MITRE ATT&CK mapped)
 - **[wrsmith108/varlock-claude-skill](https://github.com/wrsmith108/varlock-claude-skill)** - Secure environment variable management ensuring secrets are never exposed in Claude sessions, terminals, logs, or git commits
@@ -1802,9 +1658,8 @@ Official skills published by Cypress to help create, maintain, understand, and f
 - **[NoizAI/skills](https://github.com/NoizAI/skills)** - Human-like TTS workflows with local/cloud APIs and app delivery
 - **[Kevin7Qi/codex-collab](https://github.com/Kevin7Qi/codex-collab)** - Collaborate with Codex from Claude Code
 - **[ethos-link/rails-conventions](https://github.com/ethos-link/rails-conventions)** - Rails 8 conventions for consistent production code changes
-- **[ShunsukeHayashi/agent-skill-bus](https://github.com/ShunsukeHayashi/agent-skill-bus)** - Self-improving task orchestration for AI agent systems
 - **[mcollina/skills](https://github.com/mcollina/skills/tree/main/skills)** - 11 skills by Matteo Collina: Node.js, Fastify, TypeScript, OAuth, Git/GitHub, ESLint neostandard, documentation (Diataxis), Node.js core internals, skill optimizer, and more
-- **[Lum1104/understand-anything](https://github.com/Lum1104/Understand-Anything)** - Interactive codebase knowledge graphs via multi-agent LLM analysis
+- **[Lum1104/understand-anything](https://github.com/Egonex-AI/Understand-Anything)** - Interactive codebase knowledge graphs via multi-agent LLM analysis
 - **[hqhq1025/skill-optimizer](https://github.com/hqhq1025/skill-optimizer)** - Diagnose and optimize Agent Skills (SKILL.md) with real session data and research-backed static analysis. Works with Claude Code, Codex, and any Agent Skills-compatible agent
 - **[LambdaTest/agent-skills](https://github.com/LambdaTest/agent-skills)** - TestMu AI (Formerly LambdaTest) Skills is a curated collection of Agent Skills that teach AI coding assistants how to write production-grade test automation.
 - **[foryourhealth111-pixel/Vibe-Skills](https://github.com/foryourhealth111-pixel/Vibe-Skills)** - A skills governed plug-and-play harness for staged, test-driven skill orchestration
@@ -1813,8 +1668,29 @@ Official skills published by Cypress to help create, maintain, understand, and f
 - **[GanyuanRan/Aegis](https://github.com/GanyuanRan/Aegis)** - Evidence-driven method pack for AI coding agents
 - **[baskduf/codex-fable5](https://github.com/baskduf/FableCodex/tree/main/plugins/codex-fable5/skills/codex-fable5)** - Evidence-based workflow gates for Codex
 - **[csthink/dashmotion](https://github.com/csthink/dashmotion/tree/main/skills/dashmotion)** - Animated technical diagrams from plain English or Mermaid, self-contained HTML/SVG
+- **[plasma-ai/fractal](https://github.com/plasma-ai/fractal/tree/main/fractal/skills/fractal)** - Bounded hierarchical agent loops in isolated git worktrees
+- **[reliefeai/browser-relay](https://github.com/reliefeai/browser-relay/tree/v1.4.1/skills/browser-relay)** - Control an existing logged-in Chrome without stealing focus
+- **[squirrelscan/squirrelscan](https://github.com/squirrelscan/squirrelscan/tree/main/skills)** - Audits websites for SEO, performance, security, accessibility and returns fixes
+- **[Simon-He95/markstream-install](https://github.com/Simon-He95/markstream-vue/tree/main/.agents/skills/markstream-install)** - Install streaming Markdown renderers across five frontend frameworks
+- **[eduardo-sl/go-agent-skills](https://github.com/eduardo-sl/go-agent-skills)** - Curated Go skills for code review, concurrency, testing, and architecture
+- **[drogers0/github-image-upload](https://github.com/drogers0/gh-image/tree/main/skills/github-image-upload)** - Attach screenshots, PDFs, logs, zips, and videos to GitHub PRs, issues, and comments, returning canonical user-attachments URLs. GitHub has no public attachment-upload API. Works with Claude Code, Codex, Cursor, and Gemini CLI
 - **[browser-act/browser-act](https://github.com/browser-act/skills/tree/main/browser-act)** - Automate authenticated browsers with extraction and human handoff
-- **[JasonColapietro/suede-creator-skills](https://github.com/JasonColapietro/suede-creator-skills)** - Agent orchestration, code review grading, AI eval, creator tooling skills.
+- **[agiwhitelist/auteur](https://github.com/agiwhitelist/auteur)** - Builds websites gated by an anti-slop linter and motion QA
+- **[JasonColapietro/suede-creator-skills](https://github.com/JasonColapietro/suede-creator-skills)** - Design, UI polish, code review grading, AI evals, SEO audits.
+- **[superdesigndev/superdesign-skill](https://github.com/superdesigndev/superdesign-skill)** - Creates design systems from existing codebases and iterates UI drafts
+- **[Ryan-yang125/motion-lexicon](https://github.com/Ryan-yang125/motion-lexicon/tree/main/skills/motion-lexicon)** - Build and review product motion with installable React components
+- **[Maksim-Burtsev/simple-man](https://github.com/Maksim-Burtsev/simple-man)** - Strips praise, recaps and filler from agent answers while keeping every fact you act on: findings carry location and fix, refusals carry the safe procedure, tutorials stay long-form. Benchmarked on 1,793 preregistered live calls with raw records committed. Works with Claude Code, Codex, Gemini CLI, Cursor
+- **[aeonfun/aeon](https://github.com/aeonfun/aeon)** - 70+ Claude Code skills + autonomous GitHub Actions agent framework
+- **[KhazP/vibe-coding-prompt-template](https://github.com/KhazP/vibe-coding-prompt-template)** - Plan MVPs into PRD, tech design, and AGENTS.md
+- **[lindblomstefan/skills-library](https://github.com/lindblomstefan/skills-library)** - Guided discovery skill for Claude Code: runs an interview to recommend from a catalog of 100+ AI skills; records session feedback that validates candidates over time
+- **[rainmanjam/poka-yoke](https://github.com/rainmanjam/poka-yoke)** - Make misuse unrepresentable: audit, design, and enforce mistake-proofing devices
+- **[scarletkc/agents](https://github.com/scarletkc/agents)** - Reusable standards and workflow skills for AI coding agents
+- **[dannwaneri/spec-writer](https://github.com/dannwaneri/spec-writer)** - Turns vague requests into spec, plan, and tasks
+- **[Continuum-AI-Corp/orca-replay](https://github.com/Continuum-AI-Corp/OrcaReplay/tree/main/skills/orca-replay)** - Answer questions about past agent runs from their recordings
+- **[tt-a1i/archify](https://github.com/tt-a1i/archify/tree/main/archify)** - Generate validated interactive architecture diagrams from codebases or system descriptions
+- **[d1vai/d1v](https://github.com/d1vai/d1v-cli/blob/main/skills/d1v/SKILL.md)** - Deploy web projects with verified previews and confirmed production releases
+- **[kensaurus/cursor-kenji](https://github.com/kensaurus/cursor-kenji)** - Ready-made playbooks your coding agent auto-triggers
+- **[saleh-alhaddad/itqan-engineering](https://github.com/saleh-alhaddad/itqan-engineering)** - Full software-engineering lifecycle in 12 skills: a resumable orchestrator plus spec, plan, TDD build, verify, five-axis review, security, and release — with approval gates before code and evidence before "done"
 
 </details>
 
@@ -1833,10 +1709,21 @@ Official skills published by Cypress to help create, maintain, understand, and f
 - **[awrshift/claude-memory-kit](https://github.com/awrshift/claude-memory-kit)** - Persistent memory with hooks, wiki, and daily synthesis for multi-project workflows
 - **[NeoLabHQ/prompt-engineering](https://github.com/NeoLabHQ/context-engineering-kit/tree/master/plugins/customaize-agent/skills/prompt-engineering)** - Widely used prompt engineering techniques and patterns, including Anthropic best practices and agent persuasion principles.
 - **[sametbrr/llm-wiki-manager](https://github.com/sametbrr/llm-wiki-manager)** - Persistent LLM-managed personal wiki — the model writes, cross-references, and maintains the knowledge base while you curate sources. Implements Karpathy's LLM Wiki pattern with 8 operating modes.
+- **[dankofly/perfectify](https://github.com/dankofly/perfectify)** - Self-improving control kernel (DAGx AGI Kernel): hard approval stops for irreversible actions, evidence-gated completion, and a self-learning playbook with drift governance. Behaviorally evaluated; works across Claude Code, Codex, Hermes, and OpenCode
 - **[Panniantong/Agent-Reach](https://github.com/Panniantong/Agent-Reach)** - Multi-platform search CLI for 17 sites including Chinese platforms
+- **[zilliztech/mfs](https://github.com/zilliztech/mfs)** - `mfs-find` / `mfs-ingest` skills that search, grep and read across your code, docs, chat (Slack/Gmail/Jira), databases and object stores as one file-like, searchable namespace; self-hosted with local ONNX embeddings
 - **[ohad6k/emulo](https://github.com/ohad6k/emulo)** - Mines AI coding logs into personal agent profiles
 - **[Tubo2333/obsidian-knowledge-brain](https://github.com/Tubo2333/obsidian-knowledge-brain)** - Cross-session knowledge memory and rule evolution for AI coding agents
+- **[stjbrown/agent-knowledge](https://github.com/stjbrown/agent-knowledge)** - Maintains portable, cited agent knowledge bases in plain Markdown
+- **[khendzel/skills-janitor](https://github.com/khendzel/skills-janitor)** - Token audit, usage tracking, and swipe-to-delete skill pruning.
 - **[oliver-zehentleitner/keep-the-why](https://github.com/oliver-zehentleitner/keep-the-why)** - Preserves the reasoning behind a codebase — decisions, workarounds, rejected alternatives
+- **[chrono-meta/context-doctor](https://github.com/chrono-meta/forge-harness/tree/main/plugins/fh-meta/skills/context-doctor)** - Generates .claudeignore and flags context bloat before it costs tokens
+- **[thousandflowers/skillreaper](https://github.com/thousandflowers/skillreaper)** - Prunes unused skills, MCP servers, and subagents from transcript evidence
+- **[orziz/odai](https://github.com/orziz/odai/tree/main/skills/odai)** - Govern evidence, responsibility routing, safety boundaries, and verified delivery
+- **[thedotmack/claude-mem](https://github.com/thedotmack/claude-mem)** - Compresses and persists agent memory across sessions
+- **[vshulcz/deja-history](https://github.com/vshulcz/deja-vu/tree/main/claude-plugin/skills/deja-history)** - Searches your own past sessions across 20 coding agents
+- **[amirkiarafiei/subagent-cli-skills](https://github.com/amirkiarafiei/subagent-cli-skills/tree/main/skills)** - Delegate heavy work to 15 other agent CLIs as subagents
+- **[rebelytics/task-observer](https://github.com/rebelytics/one-skill-to-rule-them-all)** - Meta-skill for continuous skill improvement & automatic skill creation.
 
 </details>
 
@@ -1846,26 +1733,23 @@ Official skills published by Cypress to help create, maintain, understand, and f
 - **[shouldnotappearcalm/a-share-skill](https://github.com/shouldnotappearcalm/a-share-skill)** - China A-share (Shanghai/Shenzhen) skills: real-time quotes, K-line history, technical indicators, events, capital flows, sector heatmaps, and paper trading. Works with Claude Code, Cursor, Codex, and Qoder
 - **[transloadit/skills](https://github.com/transloadit/skills/tree/main/skills)** - Transloadit skill collection (6)
 - **[honeydew-ai/honeydew-ai-coding-agents-plugins](https://github.com/honeydew-ai/honeydew-ai-coding-agents-plugins)** - 11 skills for the Honeydew semantic layer over Snowflake, Databricks, and BigQuery: model exploration, entity/relation/attribute/metric/context/domain creation, validation, query, filtering, and workspace branching
-- **[raintree-technology/apple-hig-skills](https://github.com/raintree-technology/apple-hig-skills)** - Apple Human Interface Guidelines as 14 agent skills covering platforms, foundations, components, patterns, inputs, and technologies for iOS, macOS, visionOS, watchOS, and tvOS
-- **[K-Dense-AI/claude-scientific-skills](https://github.com/K-Dense-AI/claude-scientific-skills)** - Scientific research and analysis skills
+- **[raintree-technology/hig-doctor](https://github.com/raintree-technology/hig-doctor)** - Apple Human Interface Guidelines as 14 agent skills covering platforms, foundations, components, patterns, inputs, and technologies for iOS, macOS, visionOS, watchOS, and tvOS
+- **[K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills)** - Scientific research and analysis skills
 - **[NotMyself/claude-win11-speckit-update-skill](https://github.com/NotMyself/claude-win11-speckit-update-skill)** - Windows 11 system management
 - **[sanjay3290/imagen](https://github.com/sanjay3290/ai-skills/tree/main/skills/imagen)** - Generate images using Google Gemini's API
-- **[jeffersonwarrior/claudisms](https://github.com/jeffersonwarrior/claudisms)** - SMS messaging integration
 - **[SHADOWPR0/security-bluebook-builder](https://github.com/SHADOWPR0/security-bluebook-builder)** - Build security Blue Books for sensitive apps
-- **[obra/defense-in-depth](https://github.com/obra/superpowers/blob/main/skills/defense-in-depth/SKILL.md)** - Multi-layered security approaches
-- **[huifer/Claude-Ally-Health](https://github.com/huifer/Claude-Ally-Health)** - A health assistant skill for medical information analysis, symptom tracking, and wellness guidance.
+- **[huifer/WellAlly-health](https://github.com/huifer/WellAlly-health)** - A health assistant skill for medical information analysis, symptom tracking, and wellness guidance.
 - **[frmoretto/clarity-gate](https://github.com/frmoretto/clarity-gate)** - Epistemic quality verification for RAG systems
 - **[wanshuiyin/Auto-claude-code-research-in-sleep](https://github.com/wanshuiyin/Auto-claude-code-research-in-sleep)** - Autonomous ML research with cross-model review loops and GPU deployment
-- **[zechenzhangAGI/AI-research-SKILLs](https://github.com/zechenzhangAGI/AI-research-SKILLs)** - 77 AI research skills for model training, inference, and MLOps
-- **[Orchestra-Research/AI-research-SKILLs](https://github.com/Orchestra-Research/AI-research-SKILLs)** - 20-module AI research skill library for model architecture, training, and ML paper writing
+- **[Orchestra-Research/AI-Research-SKILLs](https://github.com/Orchestra-Research/AI-Research-SKILLs)** - AI research skills for model training, inference, and MLOps
 - **[komal-SkyNET/claude-skill-homeassistant](https://github.com/komal-SkyNET/claude-skill-homeassistant)** - Supercharge and manage Home Assistant workflows
 - **[more-io/apple-bridges](https://github.com/more-io/claude-apple-bridges)** - Native macOS app access — manage Apple Reminders, Calendar, Contacts, Notes, Mail, and tmux sessions via Swift CLI bridges
 - **[hanhuark/mechanical-engineering-research-skill](https://github.com/hanhuark/mechanical-engineering-research-skill)** - Thermal-fluid research writing, proposals, DOE, and presentation feedback
 - **[prompt-security/clawsec](https://github.com/prompt-security/clawsec)** - Security skill suite with drift detection, automated audits, and skill integrity verification
 - **[BehiSecc/vibesec](https://github.com/BehiSecc/VibeSec-Skill)** - Helps write secure code by preventing common vulnerabilities including IDOR, XSS, SQL injection, SSRF, and weak authentication, approaching code from a bug hunter's perspective
-- **[lawvable/awesome-legal-skills](https://github.com/lawvable/awesome-legal-skills)** - Curated agent skills for automating legal workflows
+- **[lawve-ai/awesome-legal-skills](https://github.com/lawve-ai/awesome-legal-skills)** - Curated agent skills for automating legal workflows
 - **[peas/genealogy-research](https://paulo.com.br/skills/genealogy-research/SKILL.md)** - Genealogy research agent with OCR, FamilySearch, YAML data, and human-in-the-loop
-- **[zw008/VMware-AIops](https://github.com/zw008/VMware-AIops)** - AI-powered VMware vCenter/ESXi monitoring and operations: inventory queries, health/alarms, VM lifecycle (create, delete, snapshot, clone, migrate), vSAN management, Aria Operations analytics, and scheduled log scanning. Supports Claude Code, Gemini CLI, Codex, Aider, Trae, Kimi, and MCP.
+- **[vmware-skills/VMware-AIops](https://github.com/vmware-skills/VMware-AIops)** - AI-powered VMware vCenter/ESXi monitoring and operations: inventory queries, health/alarms, VM lifecycle (create, delete, snapshot, clone, migrate), vSAN management, Aria Operations analytics, and scheduled log scanning. Supports Claude Code, Gemini CLI, Codex, Aider, Trae, Kimi, and MCP.
 - **[video-db/skills](https://github.com/video-db/skills)** - Realtime and batch video workflows: capture screen/audio, ingest URLs/YouTube/RTSP, transcribe, index, search, generate subtitles, edit timelines, and stream HLS output
 - **[materials-simulation-skills](https://github.com/HeshamFS/materials-simulation-skills)** - Agent skills for computational materials science: numerical stability, time-stepping, linear solvers, mesh generation, simulation validation, parameter optimization, and post-processing
 - **[Ericyoung-183/alpha-insights](https://github.com/Ericyoung-183/alpha-insights)** - Harness-enforced business research for Claude Code and Codex
@@ -1876,7 +1760,23 @@ Official skills published by Cypress to help create, maintain, understand, and f
 - **[aklofas/kicad-happy](https://github.com/aklofas/kicad-happy)** - AI-powered KiCad electronics design review and analysis
 - **[bitwize-music-studio/claude-ai-music-skills](https://github.com/bitwize-music-studio/claude-ai-music-skills)** - Full-lifecycle AI music album production
 - **[Alisa0808/vibe-creating-skill](https://github.com/Alisa0808/vibe-creating-skill)** - Rewrites a rough idea or shot script into text-to-video prompts
+- **[HUANGCHIHHUNGLeo/claude-real-video](https://github.com/HUANGCHIHHUNGLeo/claude-real-video)** - Scene-aware keyframes plus transcripts so any LLM watches videos
+- **[Optim-Agent/optim-agent](https://github.com/Optim-Agent/optim-agent)** - Agent-guided optimization for measurable system tuning.
 - **[Orkas-AI/video-router](https://github.com/Orkas-AI/Orkas-VideoStudio/tree/main/packages/skills/video-router)** - Route video requests through deterministic agent production stages
+- **[perso-ai/perso-dubbing](https://github.com/perso-ai/perso-dubbing-plugin)** - Video translator: dubbing, lip-sync, subtitles, and short clips
+- **[GarethManning/regenerative-project-design-orchestrator](https://github.com/GarethManning/education-agent-skills/tree/main/skills/original-frameworks/regenerative-project-design-orchestrator)** - Orchestrates proportionate regenerative learning projects with safeguards and stewardship
+- **[GarethManning/learning-target-authoring-guide](https://github.com/GarethManning/education-agent-skills/tree/main/skills/original-frameworks/learning-target-authoring-guide)** - Authors observable competency learning targets across developmental bands
+- **[GarethManning/assessment-validity-checker](https://github.com/GarethManning/education-agent-skills/tree/main/skills/curriculum-assessment/assessment-validity-checker)** - Audits assessments for validity, reliability, and learning alignment
+- **[GarethManning/progressive-hint-ladder](https://github.com/GarethManning/education-agent-skills/tree/main/skills/student-learning/progressive-hint-ladder)** - Provides graduated hints while preserving learner thinking and agency
+- **[GarethManning/competency-unpacker](https://github.com/GarethManning/education-agent-skills/tree/main/skills/curriculum-assessment/competency-unpacker)** - Unpacks broad competencies into assessable sub-skills and success criteria
+- **[ZeroPointRepo/youtube-skills](https://github.com/ZeroPointRepo/youtube-skills)** - Agent skills for YouTube: pull video transcripts and discover videos (search, channel and playlist listings) via TranscriptAPI.
+- **[morluto/rea](https://github.com/morluto/rea/tree/main/skills/reverse-engineer-anything)** - Reverse-engineer binaries, applications, and runtimes with REA
+- **[apitube/news-api-skills](https://github.com/apitube/news-api-skills)** - Search worldwide news by keyword, entity, sentiment, source, date
+- **[zincio/universal-checkout](https://github.com/zincio/skills/tree/master/skills/universal-checkout)** - Official Zinc API (zinc.com) checkout across 50+ US retailers
+- **[swaylq/humanize-chinese](https://github.com/swaylq/humanize-chinese)** - Detect and rewrite AI-generated Chinese text, fully offline, no LLM
+- **[MartinDelophy/edit-timeline-studio](https://github.com/MartinDelophy/ai-video-editor/tree/main/skills/edit-timeline-studio)** - Create editable video timelines with captions, voiceovers, and verified exports.
+- **[Tencent/aig-agent-redteam](https://github.com/Tencent/AI-Infra-Guard/tree/main/skills/aig-agent-redteam)** - One-command Agent red-team security assessment skill
+- **[ilyautov/small-business-ru](https://github.com/ilyautov/small-business-ru/tree/main/small-business-ru/skills)** - 34 skills for Russian small business: taxes, deadlines, counterparty checks
 
 </details>
 
@@ -1914,7 +1814,7 @@ Agent skills can include prompt injections, tool poisoning, hidden malware paylo
 
 | Tool | Project Path | Global Path | Official Docs |
 |------|-------------|-------------|---------------|
-| Antigravity | `.agent/skills/` | `~/.gemini/antigravity/skills/` | [Antigravity Skills](https://antigravity.google/docs/skills) |
+| Antigravity | `.agents/skills/` | `~/.gemini/config/skills/` | [Antigravity Skills](https://antigravity.google/docs/skills) |
 | Claude Code | `.claude/skills/` | `~/.claude/skills/` | [Claude Code Skills](https://docs.anthropic.com/en/docs/claude-code/skills) |
 | Codex | `.agents/skills/` | `~/.agents/skills/` | [Codex Skills](https://developers.openai.com/codex/skills) |
 | Cursor | `.cursor/skills/` | `~/.cursor/skills/` | [Cursor Skills](https://cursor.com/docs/context/skills) |
