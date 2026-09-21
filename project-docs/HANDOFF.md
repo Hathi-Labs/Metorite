@@ -286,7 +286,47 @@ line — never reclaim a number by deleting the other entry.
   H-92 the same day. H-91 merged first, from the WS-31 fixture work, and
   `test_handoff_ids_are_unique` caught the collision.
 
+### H-142 · The deploy goes red on a 30-second ssh blip, and the retry cannot outlast it · [AGENT]
+
+- **What happened, 2026-09-21.** The deploy for #344 failed. All three
+  rounds ended `ssh: connect to host *** port ***: Connection timed out`,
+  30 seconds each. A plain re-run minutes later succeeded with no change,
+  so the box was reachable throughout from elsewhere — I held an
+  interactive ssh session to it during the failure and ran commands.
+- **The retry window is too short for the thing it retries.** Rounds are
+  60s and 120s apart, so the whole ladder finishes inside about 4.5
+  minutes and every try carries the same 30-second connect timeout.
+  A blip that lasts five minutes defeats it, and the job then reports a
+  failed RELEASE for what was a failed CONNECTION.
+- **⚠️ The two are not the same failure and must not read the same.**
+  H-137 made a half-finished apply go red, which was right. This is the
+  opposite case: nothing was applied, nothing is half-done, and the
+  last build is still serving. Telling those apart is the difference
+  between "re-run this" and "go and look at the box".
+- **Why it did not cost a release this time**, which is its own problem:
+  `acb-pull.timer` delivered the commit anyway. See [[H-89]].
+- **What to do.** Give the connect failure its own exit path and message,
+  separate from an apply that started and stopped. Then widen the backoff,
+  or raise `ConnectTimeout`, so a minutes-long blip does not read as a
+  broken deploy.
+- **Check:** read the deploy step for a distinct message when ssh never
+  connects. If every failure still prints "THE APPLY DID NOT REACH ITS
+  FINAL LINE", this is open — that sentence is false when the apply never
+  started.
+
 ### H-89 · Something on the box writes into the checkout as root · [OWNER]
+- **⚠️ 2026-09-21 — the PULL path is now load-bearing, not redundant.**
+  The deploy for #344 failed: ssh timed out on all three rounds from the
+  GitHub runner. Production came up on the new commit anyway, because
+  `acb-pull.timer` fetched and applied it. Evidence: `/version` served
+  `cc17db99` while the deploy job was still red, and `acb-gateway`
+  entered active at 07:04:39 UTC with `acb-workbench` at 07:06:53, both
+  after the merge at 06:56 and neither from the push path.
+- **This changes what the entry is about.** It reads today as a
+  housekeeping defect — root-owned files that break the other path.
+  It is also the reason a release landed while CI said it had not. Both
+  halves of that are bad, and the ownership fix must not delete
+  the timer without noticing what it is carrying. See [[H-142]].
 - **🟢 2026-09-20 — THE WRITER IS FOUND, and no guess is needed.**
   `acb-pull.service` carries `User=root` and runs `vps_pull.sh`, which
   executes the same `vps_apply.sh`. `acb-pull.timer` fires every five
