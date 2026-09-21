@@ -554,6 +554,37 @@ beside "Your access", and not only a card on a Center page a colleague may not b
 open. Owner-directed: *"people from their personal center should be able to modify their
 profile."* It appears in both places; it is one page either way.
 
+### 4.6 The tenant fence on a SHARED table ✅ CLOSED 2026-09-21
+
+An assignee is an **email string**, and the same address can belong to two
+organizations. A contractor working for two customers is the ordinary case
+this product is sold for. Every read in this package that joins a shared
+table on an address therefore needs its own tenant predicate.
+
+Three did not, found by an end-to-end review and fixed in the same change.
+
+| Read | What it leaked |
+|---|---|
+| `GET /people/{id}/work` | Skipped the clause for a `data:org:read` caller. The `manager` role holds it, so a manager saw every open task in ANY organization assigned to that address |
+| `compute_load` | No predicate at all. It feeds the directory, capability search and the Projects assignee picker, so another customer's backlog decided whether this customer's colleague looked overloaded |
+| `has_login` (and the picker's own copy) | Answered *"is this address a member anywhere in the deployment"*. Wrong question, and it tells one customer about another |
+
+⚠️ **Row-level security is not the answer here.** The generated tenancy phase
+is not on the numbered ladder (H-104), so production may not enforce it. A
+read path must not depend on an enforcement flip that is the owner's act.
+The predicate is explicit and costs one comparison.
+
+⚠️ **A test asserted the leak, and that is why it lived.** The old
+`test_an_unrestricted_viewer_gets_no_scoping_predicate` argued that adding
+the closure "would put a recursive join on every read for no effect".
+`Visibility.project_clause` does not return `TRUE` for an unrestricted
+caller. It returns the tenant subquery. The clause **is** the fence.
+
+📌 **One organization cannot prove any of this.** The fences are pinned by
+`tests/unit/test_people_tenant_fences.py`, which seeds a SECOND organization
+holding the same address. A single-tenant fixture passes with every fence
+removed, which is exactly how these survived.
+
 ### 5.0 The app shell — how a person reaches any of this ✅ BUILT 2026-09-20
 
 `app/people/layout.tsx` draws one tab bar over every surface below.

@@ -28,6 +28,7 @@ from gateway.routes.people.core import (  # noqa: F401 — re-exports
     person_payload,
     router,
 )
+from gateway.routes.people.dashboard import _scope
 from gateway.routes.tasks.people import _row_to_person
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -282,9 +283,23 @@ async def get_person_work(
             "EXISTS (SELECT 1 FROM pm_task_assignees a "
             "WHERE a.task_id = t.id AND lower(a.assignee) = :who)",
         ]
-        if not vis.unrestricted:
-            clauses.append(vis.project_clause("t.root_project_id"))
-            params.update(vis.params)
+        # ⚠️ **APPLIED FOR THE UNRESTRICTED CALLER TOO**, and the `if not`
+        # this replaces was a cross-tenant leak. `data:org:read` — which the
+        # `manager` role holds — means unrestricted *within a tenant*, never
+        # across them. Skipping the clause left this query with an assignee
+        # predicate and no tenant fence, so a manager opening a colleague's
+        # work saw every task in ANY organization assigned to that address.
+        #
+        # It is not hypothetical: WS-28j measured it on the scratch cluster
+        # (no FORCE RLS, which is production's state while H-104 is open) and
+        # a second organization's task landed on the row. `dashboard.py`'s
+        # `_scope` docstring has named this endpoint as the one that skips
+        # the clause since 2026-08-14 — "a finding for the board, not a
+        # pattern to copy". This is that finding, closed.
+        #
+        # `_scope` is imported rather than re-derived: one answer to "what may
+        # this viewer see", and the dashboard already owns it.
+        clauses.append(_scope(vis, params, "t.root_project_id"))
         rows = (await db.execute(
             text(
                 "SELECT t.id, t.title, t.task_number, t.due_at, t.project_id, "

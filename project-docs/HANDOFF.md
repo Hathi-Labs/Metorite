@@ -2906,6 +2906,60 @@ line — never reclaim a number by deleting the other entry.
   migration 207
 - **Added:** 2026-09-21 · the every-app-by-default session
 
+### H-142 · A person has no URL, so nothing can link to them · [AGENT]
+- **Check:** `ls workbench/control_plane/src/app/people/` → no `[id]`
+  directory means a person is still panel-only, and this is open.
+- **Why:** `people_center_app.md` §5.2 calls it the *person page*. It is
+  built as a side panel inside the directory, keyed by React state
+  (`openId`). There is no route, so there is no address.
+- **What that costs, measured 2026-09-21:**
+  - You cannot send a colleague a link to a colleague.
+  - The org chart cannot open anybody. Its nodes only expand and collapse.
+  - Projects links to People from NOWHERE. `rg "/people/"` over the whole
+    Projects app returns zero hits, so an assignee chip is a dead end.
+  - Back and refresh both lose the open person.
+- **The shape:** add `app/people/[id]/page.tsx` that renders the SAME
+  `PersonPanel` content. The directory's row becomes a `Link` to it
+  instead of a state setter. Keep the panel for the directory's side-by-side read
+  if it earns its place. Then the chart node and the Projects assignee chip
+  both have somewhere to point.
+- 📌 The backend is ready. `GET /people/{id}` already serves the whole record
+  and `GET /people/{id}/work` its open tasks.
+- **Authority:** `people_center_app.md` §5.2 · owner review 2026-09-21
+- **Added:** 2026-09-21 · the People end-to-end review
+
+### H-143 · My Profile is a dead end · [AGENT]
+- **Check:** `rg -n "href|Link" workbench/control_plane/src/app/people/me/page.tsx`
+  → no outbound link means this is open.
+- **Why:** two asymmetries, both found by reading the page beside a
+  colleague's.
+  - A colleague's panel shows their **Open work** and an **Assign work**
+    button. My own profile shows neither. I can see what a colleague is
+    holding and not what I am.
+  - The completeness meter lists each missing field and what it costs the
+    planner — *"Skills: the first and most defensible signal behind who
+    should do this"* — and then routes nowhere. It diagnoses and does not
+    treat.
+- **The shape:** make each missing-field row focus its own input, and add the
+  same work summary the person panel already renders. Both are components
+  that exist.
+- **Authority:** `people_center_app.md` §5.3 · owner review 2026-09-21
+- **Added:** 2026-09-21 · the People end-to-end review
+
+### H-144 · `GET /people/{id}/editable` has no caller · [AGENT]
+- **Check:** `rg -n "editable" workbench/control_plane/src/app/people/lib/api.ts`
+  → no hit means nothing calls it, and this is open.
+- **Why:** the endpoint answers "what may this caller write on that row"
+  (D-PC-4). The UI gets the same answer from `editable_fields`, which rides
+  on the person payload, so the standalone route is dead.
+- **The decision:** delete it, or keep it as the door a second client would
+  use. Same question as H-140 and worth answering the same way at the same
+  time.
+- 📌 Harmless while it sits there. Filed so it becomes a decision
+  instead of residue.
+- **Authority:** owner review 2026-09-21
+- **Added:** 2026-09-21 · the People end-to-end review
+
 ### H-125 · Migration 148's email index spans EVERY tenant · [AGENT]
 - **Check:** `rg -A 2 "uq_gtd_people_email_lower" infra/postgres/148_people_key_shape.sql`
   → an index on `(lower(email))` that does not name `organization_id` means
