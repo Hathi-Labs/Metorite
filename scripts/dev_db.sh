@@ -20,6 +20,11 @@
 # eventually point at the wrong host.
 set -euo pipefail
 
+# Where the repo is, resolved from THIS script rather than the caller's cwd:
+# `apply_migrations.sh` is reached by path below, and `bash scripts/dev_db.sh`
+# from a subdirectory would otherwise not find it.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 CC_CONTAINER="metorite-scratch-console"
 TENANT_CONTAINER="metorite-scratch-tenant"
 CC_PORT="${METORITE_SCRATCH_CONSOLE_PORT:-5433}"
@@ -118,6 +123,73 @@ if [ "$applied" != "$want" ]; then
     exit 1
 fi
 
+# ── Apply the TENANT ladder ─────────────────────────────────────────────────
+#
+# 🔴 **This script started the tenant database and never built it (H-96).** Its
+# own header promised the "mt-scratch pattern (:5433, full ladder applied)",
+# and a reader took the printed DSN as proof. Measured 2026-09-02: the Console
+# database got every file and the tenant database got ZERO tables. An R8 suite
+# needing a tenant table then failed, or skipped, against a database this
+# script had just called ready.
+#
+# ⚠️ **THREE steps, and the ladder alone is only the third.** A replay of
+# 02..209 onto a fresh container fails at 03, then again at 95. Both read as a
+# broken migration. Neither is one. They are missing prerequisites.
+#
+# ⚠️ **The ladder goes through scripts/apply_migrations.sh**, the same replayer
+# the deploy runs, and never a second loop written here. That script already
+# carries the numeric sort, the init-only skips and ON_ERROR_STOP. A plain glob
+# puts 100_ before 10_ and the ladder dies at once, so a copy here would be a
+# second opinion about the order of 209 files.
+#
+# ⚠️ **SKIP_PRE_MIGRATION_BACKUP=1 is correct HERE and nowhere else.** A
+# scratch container that was empty a minute ago has nothing to restore.
+say "Tenant ladder:"
+
+# 1. The extensions. 01_schema.sql creates uuid-ossp and vector itself, but
+#    03_pending_commits.sql wants uuid_generate_v4() and this costs nothing
+#    when they are already there.
+docker exec "$TENANT_CONTAINER" psql -U acb -d acb_tenant -q \
+    -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp"; CREATE EXTENSION IF NOT EXISTS pgcrypto;' \
+    >/dev/null 2>&1 || true
+
+# 2. The base schema — ONLY on an empty database.
+#
+# ⚠️ 01_schema.sql is what initdb lays down on a fresh volume, and it is NOT
+# re-runnable. start_one above REUSES a running container, so replaying it over
+# a built database fails on the first CREATE. The table count is the test,
+# because it is the one fact that tells the two cases apart.
+tenant_tables="$(docker exec "$TENANT_CONTAINER" psql -U acb -d acb_tenant -tAc \
+    "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'" \
+    2>/dev/null | tr -d '[:space:]')"
+if [ "${tenant_tables:-0}" = "0" ]; then
+    if ! docker exec -i "$TENANT_CONTAINER" psql -U acb -d acb_tenant \
+            -v ON_ERROR_STOP=1 -q < infra/postgres/01_schema.sql 2>/tmp/dev_db_err; then
+        say "  FAILED 01_schema.sql"
+        sed 's/^/    /' /tmp/dev_db_err >&2
+        say '  !! If that named the "vector" type, the IMAGE is wrong — the'
+        say '     tenant container must be pgvector, not stock postgres.'
+        exit 1
+    fi
+    say "  applied 01_schema.sql (the database was empty)"
+else
+    say "  01_schema.sql skipped — $tenant_tables tables already here"
+fi
+
+# 3. The ladder itself. The replayer keeps a ledger, so a re-run costs seconds
+#    rather than replaying all 209 files.
+if ! APP_DIR="$REPO_ROOT" PG_CONTAINER="$TENANT_CONTAINER" \
+        PG_USER=acb PG_DB=acb_tenant SKIP_PRE_MIGRATION_BACKUP=1 \
+        bash "$REPO_ROOT/scripts/apply_migrations.sh" \
+        >/tmp/dev_db_tenant.log 2>&1; then
+    say "  FAILED — the last 20 lines of the replay:"
+    tail -20 /tmp/dev_db_tenant.log | sed 's/^/    /' >&2
+    exit 1
+fi
+tenant_note="$(grep -oE '\([0-9]+ applied, [0-9]+ already recorded\)' \
+    /tmp/dev_db_tenant.log | tail -1)"
+say "  ${tenant_note:-replayed}"
+
 if [ -n "$EXPORT_ONLY" ]; then
     printf 'export CUSTOMER_CONSOLE_DATABASE_URL=%s\n' "$CC_DSN"
     printf 'export TENANT_LADDER_DATABASE_URL=%s\n' "$TENANT_DSN"
@@ -133,3 +205,17 @@ say ""
 say "  eval \"\$(bash scripts/dev_db.sh --export)\"    # both, in one line"
 say ""
 say "⚠️ Without these, 843 R8 tests SKIP and the run still reads green."
+say ""
+# 📌 Measured 2026-09-21, when the tenant ladder was added. Two suites want
+# DATABASE_URL rather than TENANT_LADDER_DATABASE_URL, and this script does
+# NOT set it — deliberately.
+#
+# Setting it does make `test_tenant_coverage.py` run, and it then FAILS: every
+# table reports "missing tenant scoping in the live catalog". That is WS-29's
+# unfinished RLS retrofit, not a broken setup — but it reads exactly like one,
+# and DATABASE_URL is the app's main DSN, so exporting it here would point
+# anything else in the shell at this scratch database too.
+say "📌 Two suites want DATABASE_URL instead, and this script does not set it."
+say "   Setting it surfaces WS-29's unfinished tenant RLS, which reads as a"
+say "   broken setup and is not one. Set it by hand if that is what you want:"
+say "     export DATABASE_URL=postgresql+asyncpg://acb:acb@127.0.0.1:${TENANT_PORT}/acb_tenant"
