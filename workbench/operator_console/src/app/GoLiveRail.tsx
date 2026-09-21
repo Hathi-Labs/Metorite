@@ -10,6 +10,7 @@ import Link from "next/link";
 
 import type { AiCatalog } from "@/lib/contract";
 import { goLiveSteps, railSummary, stepTone } from "@/lib/golive";
+import type { OrgRow } from "@/lib/format";
 import { chipClass } from "@/lib/tone";
 
 const WORD = {
@@ -19,8 +20,17 @@ const WORD = {
   info: "yours",
 } as const;
 
-export default function GoLiveRail({ catalog }: { catalog: AiCatalog }) {
-  const steps = goLiveSteps(catalog);
+export default function GoLiveRail({
+  catalog,
+  orgs,
+}: {
+  catalog: AiCatalog;
+  /** The customer list, so step 5 can say whether anyone holds a key.
+   *  ⚠️ Optional: a caller without it gets the old `info` step, not a red
+   *  one — see `customersWithoutKeys`. */
+  orgs?: OrgRow[];
+}) {
+  const steps = goLiveSteps(catalog, orgs);
   const summary = railSummary(steps);
   // The step the eye should land on: the first one still open. `info`
   // steps are the owner's and are never "next" for the console.

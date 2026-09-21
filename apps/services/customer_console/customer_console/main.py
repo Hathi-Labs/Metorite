@@ -849,6 +849,18 @@ class OrgSummaryView(BaseModel):
     provider: str | None
     trial_ends_at: str | None
     current_period_end: str | None
+    #: LIVE `cc_live_` keys this organization holds.
+    #:
+    #: 🔴 **Zero means nothing this customer's deployment does can be served.**
+    #: The key is what that deployment presents to the Router on every AI call.
+    #: Until this field existed the operator console could not report its
+    #: absence — the go-live rail's "arm a customer" step was `info` forever,
+    #: with the comment "the catalog read does not carry balances or keys".
+    #: `hathi-labs-llp` ran for weeks with no key and nothing said so.
+    #:
+    #: ⚠️ A COUNT, never the key or its prefix. What a page needs is whether
+    #: one exists; anything more is a credential detail on a cross-org list.
+    live_keys: int = 0
     export_until: str | None
     credit_balance: str
     mrr_paise: int
@@ -4636,6 +4648,10 @@ def list_organizations(_: Operator) -> OrgListView:
     """
     with get_engine().begin() as conn:
         rows = store.cross_org_summary(conn)
+        # ⚠️ Its own read, not a column on the summary. `cross_org_summary` is
+        # the seat-and-money shape several callers share, and widening it for
+        # one page's question is how a shared read grows a tail nobody needs.
+        live_keys = store.live_key_count_by_org(conn)
 
     organizations: list[OrgSummaryView] = []
     for r in rows:
@@ -4667,6 +4683,9 @@ def list_organizations(_: Operator) -> OrgListView:
                 export_until=_iso(r["export_until"]),
                 credit_balance=str(r["credit_balance"]),
                 mrr_paise=payments.paise(mrr_inr) if active else 0,
+                # `.get`, because an organization with no key must read 0
+                # rather than raise inside a page that lists them all.
+                live_keys=live_keys.get(r["slug"], 0),
                 seats=seats,
             )
         )

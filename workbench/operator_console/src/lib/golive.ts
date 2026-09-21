@@ -18,6 +18,7 @@
 // would disagree with the tiers page within a month.
 
 import type { AiCatalog } from "./contract";
+import type { OrgRow } from "./format";
 import { type ChainContext, tierNextStep } from "./fallback";
 import { armedProviders, reportsCost } from "./providers";
 import type { Tone } from "./tone";
@@ -44,8 +45,41 @@ export function stepTone(s: StepState): Tone {
   return "neutral";
 }
 
+/** Whether every live customer can actually be served — step 5's judgement.
+ *
+ * 🔴 **A customer with no `cc_live_` key cannot be served at all.** Their
+ * deployment presents that key to the Router on every AI call. This step was
+ * `info` forever, with the comment "the catalog read does not carry balances
+ * or keys", so it could never go green and never go red. `hathi-labs-llp` was
+ * provisioned and ran for weeks with zero keys, and nothing anywhere said so.
+ * Measured 2026-09-21. `GET /orgs` carries the count now.
+ *
+ * ⚠️ **`undefined` is NOT zero.** A Console predating the field sends nothing,
+ * and reading that as "no key" would put a red step on a customer who may well
+ * have one. Unknown stays `info`, which is what it was.
+ *
+ * ⚠️ **Only ACTIVE organizations are judged.** A suspended or cancelled
+ * customer needs no key, and nagging for one sends an operator to do work
+ * that changes nothing — `reportsCost`'s argument, one surface over.
+ */
+export function customersWithoutKeys(
+  orgs: OrgRow[] | undefined,
+): { known: boolean; missing: string[]; live: number } {
+  if (!orgs || orgs.length === 0) return { known: false, missing: [], live: 0 };
+  const live = orgs.filter((o) => o.status === "active");
+  // One organization that did not carry the field is enough to make the
+  // whole answer unknown: a partial read must not read as a whole one.
+  const known = live.every((o) => typeof o.live_keys === "number");
+  if (!known) return { known: false, missing: [], live: live.length };
+  return {
+    known: true,
+    missing: live.filter((o) => (o.live_keys ?? 0) === 0).map((o) => o.slug),
+    live: live.length,
+  };
+}
+
 /** The six steps, judged. Pure, so `golive.test.ts` can hold every state. */
-export function goLiveSteps(cat: AiCatalog): GoLiveStep[] {
+export function goLiveSteps(cat: AiCatalog, orgs?: OrgRow[]): GoLiveStep[] {
   const armed = armedProviders(cat.accounts);
   const declared = cat.models.filter((m) => m.declared);
   // 🔴 **A model on a REPORTING vendor needs no recorded price** (migration
@@ -60,6 +94,7 @@ export function goLiveSteps(cat: AiCatalog): GoLiveStep[] {
     (m) => m.inputPer1M === null && reportsCost(m.provider),
   );
 
+  const keys = customersWithoutKeys(orgs);
   const ctx: ChainContext = { models: cat.models, armed };
   const tierVerdict = tierNextStep(cat.tiers, ctx);
 
@@ -189,13 +224,28 @@ export function goLiveSteps(cat: AiCatalog): GoLiveStep[] {
       key: "customer",
       n: 5,
       title: "Arm a customer",
-      // The catalog read does not carry balances or keys, and this rail must
-      // not claim what it cannot see.
-      state: "info",
-      detail:
-        "On the customer's page: issue their cc_live_ key (shown exactly " +
-        "once) and grant credits. Their deployment presents that key to the " +
-        "Router on every call.",
+      // 🔴 DERIVABLE since 2026-09-21. `GET /orgs` carries `live_keys`, so
+      // this step can finally say whether a customer can be served — see
+      // `customersWithoutKeys` for why `undefined` stays `info`.
+      state: !keys.known
+        ? "info"
+        : keys.missing.length === 0
+          ? "done"
+          : "todo",
+      detail: !keys.known
+        ? "On the customer's page: issue their cc_live_ key (shown exactly " +
+          "once) and grant credits. Their deployment presents that key to " +
+          "the Router on every call."
+        : keys.missing.length === 0
+          ? `Every active customer holds a key (${keys.live}). Grant them ` +
+            "credits on the customer's page if you have not."
+          : `${keys.missing.length} of ${keys.live} active ` +
+            `customer${keys.live === 1 ? "" : "s"} ` +
+            `${keys.missing.length === 1 ? "holds" : "hold"} NO cc_live_ ` +
+            `key: ${keys.missing.slice(0, 3).join(", ")}` +
+            `${keys.missing.length > 3 ? "…" : ""}. Nothing their ` +
+            "deployment does can be served until one is issued — on their " +
+            "page, shown exactly once.",
       href: "/",
       linkText: "Customers",
     },
