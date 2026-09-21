@@ -132,3 +132,60 @@ describe("splitWidth", () => {
     });
   });
 });
+
+/**
+ * Every field primitive applies the default width.
+ *
+ * ⚠️ **This suite exists because the fix above was applied to ONE of three
+ * primitives and nobody noticed for three days.**
+ *
+ * `w-full` left `BASE` on 2026-09-18. `Input` grew `splitWidth` in the same
+ * commit. `Textarea` and `Select` did not, and both fall back to an intrinsic
+ * width when no class gives them one: a `<textarea>` to its `cols` attribute,
+ * which defaults to 20 characters, and a `<select>` to its longest option.
+ *
+ * The visible result was Projects' comment box — 206px wide in a 447px panel,
+ * sitting in the corner under a full-width Comment button. Owner-reported
+ * 2026-09-21, from a screenshot.
+ *
+ * A per-component test would not have caught this, because the components
+ * that were wrong had no test. This one asserts the RULE across all three, so
+ * a fourth primitive that forgets it fails here.
+ */
+describe("the default-width rule reaches every primitive", () => {
+  /** One exported component's body, from its `export function` to the next. */
+  function bodyOf(name: string): string {
+    const from = SRC.indexOf(`export function ${name}(`);
+    expect(from, `${name} is exported from Input.tsx`).toBeGreaterThan(-1);
+    const after = SRC.indexOf("\nexport ", from + 1);
+    return SRC.slice(from, after === -1 ? SRC.length : after);
+  }
+
+  it.each(["Input", "Textarea", "Select"])(
+    "%s asks splitWidth what width to draw",
+    (name) => {
+      expect(bodyOf(name)).toContain("splitWidth(className)");
+    },
+  );
+
+  it.each(["Input", "Textarea", "Select"])(
+    "%s spends the width it was given",
+    (name) => {
+      // Calling `splitWidth` and then dropping `width` is the same bug with
+      // an extra step, and it type-checks.
+      expect(bodyOf(name)).toMatch(/\$\{width\}/);
+    },
+  );
+
+  it("no primitive puts w-full back into the shared BASE", () => {
+    // Where this started. `BASE` is concatenated BEFORE the caller's classes
+    // and Tailwind decides precedence by stylesheet order, so a `w-full`
+    // here silently beats every caller's `w-40` again.
+    // The LITERAL only. The prose between it and `WIDTH_RE` explains the
+    // defect and says `w-full` five times over, so a looser slice fails on
+    // the documentation instead of on the code.
+    const from = SRC.indexOf("const BASE =");
+    const base = SRC.slice(from, SRC.indexOf(";", from));
+    expect(base).not.toMatch(/\bw-full\b/);
+  });
+});

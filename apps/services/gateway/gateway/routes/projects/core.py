@@ -694,6 +694,14 @@ class ActivityModel(BaseModel):
     id: str
     task_id: str | None = None
     project_id: str | None = None
+    #: Migration 208. The comment this comment answers, or ``None``.
+    #:
+    #: ONE level deep, and the cap is enforced in ``add_comment`` because a
+    #: CHECK cannot read the row it points at. Present on EVERY activity shape
+    #: rather than on a comment-only model: the timeline is one stream of one
+    #: type, and a second row shape for replies is the split that makes a
+    #: client guess which one it is holding.
+    parent_id: str | None = None
     type: str
     body: str | None = None
     meta: dict | None = None
@@ -2575,6 +2583,7 @@ async def record_activity(
     body: str | None = None,
     meta: dict[str, Any] | None = None,
     automation: bool = False,
+    parent_id: str | None = None,
 ) -> Any:
     """Write one timeline row.
 
@@ -2618,6 +2627,10 @@ async def record_activity(
         "body": body,
         "meta": meta,
         "created_by": created_by,
+        # Migration 208. Whether this row MAY carry one is the caller's
+        # business — `add_comment` is the only caller that passes it, and it
+        # checks the parent first. This function stays the one writer.
+        "parent_id": parent_id,
     })
 
 

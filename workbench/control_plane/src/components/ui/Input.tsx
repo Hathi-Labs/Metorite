@@ -150,7 +150,23 @@ export type TextareaProps = Omit<
 };
 
 export function Textarea({ inputSize = "md", className = "", ...rest }: TextareaProps) {
-  return <textarea {...rest} className={`${BASE} ${SIZES[inputSize]} resize-y ${className}`} />;
+  // ⚠️ `splitWidth`, for the reason the block above `WIDTH_RE` gives — and
+  // this is the call site that proved the rule was owed to every primitive,
+  // not only to `Input`.
+  //
+  // When `w-full` left `BASE`, `Input` grew the default-width rule and this
+  // did not. A `<textarea>` carrying no width class falls back to its `cols`
+  // attribute, which defaults to 20. So Projects' comment box rendered 206px
+  // wide inside a 447px panel, tucked into the corner under a full-width
+  // Comment button. Owner-reported 2026-09-21, and measured in the visual
+  // rig: the rendered class string held no `w-` token at all.
+  const { width, rest: styles } = splitWidth(className);
+  return (
+    <textarea
+      {...rest}
+      className={`${BASE} ${width} ${SIZES[inputSize]} resize-y ${styles}`}
+    />
+  );
 }
 
 export type SelectProps = Omit<
@@ -193,11 +209,19 @@ export function Select({
   children,
   ...rest
 }: SelectProps) {
+  // ⚠️ The WRAPPER takes the caller's width and the field fills it — `Input`'s
+  // icon branch, for the same reason: the wrapper is what a parent flex row
+  // measures, so sizing only the field leaves a full-width box holding a
+  // narrow control. The `w-full` on the field is also the third repair of the
+  // `BASE` change: a bare `<select>` shrink-wraps to its longest option, so
+  // since 2026-09-18 every select in the app has been narrower than the box
+  // drawn around it.
+  const { width, rest: styles } = splitWidth(className);
   return (
-    <div className="relative w-full">
+    <div className={`relative ${width}`}>
       <select
         {...rest}
-        className={`${BASE} ${SIZES[inputSize]} cursor-pointer appearance-none pr-7 disabled:cursor-not-allowed ${className}`}
+        className={`${BASE} w-full ${SIZES[inputSize]} cursor-pointer appearance-none pr-7 disabled:cursor-not-allowed ${styles}`}
       >
         {children}
       </select>

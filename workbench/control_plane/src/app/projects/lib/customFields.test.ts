@@ -172,8 +172,44 @@ describe("changeLabel", () => {
     expect(changeLabel("custom.old_thing", defs)).toBe("old thing");
   });
 
-  it("leaves an ordinary column name alone", () => {
-    expect(changeLabel("title", defs)).toBe("title");
+  /**
+   * ⚠️ These replaced a test that asserted the OPPOSITE — `changeLabel("title")`
+   * used to return `"title"`, and "leaves an ordinary column name alone" was
+   * the name it passed under.
+   *
+   * It was never a decision. Custom fields were the case the function was
+   * written for, and the built-in columns fell through because nobody had
+   * looked at what they rendered. The owner did, on 2026-09-21, and the
+   * timeline said `Edited due_at, start_date`.
+   */
+  it("says Due date, not due_at", () => {
+    expect(changeLabel("due_at", defs)).toBe("Due date");
+    expect(changeLabel("start_date", defs)).toBe("Start date");
+    expect(changeLabel("estimate_mins", defs)).toBe("Estimate");
+  });
+
+  it("uses the word the product uses, not the word the column uses", () => {
+    // `importance` is the column. Every surface in Projects calls it
+    // priority, and the timeline is the one place that said otherwise.
+    expect(changeLabel("importance", defs)).toBe("Priority");
+  });
+
+  it("labels a project node's fields too", () => {
+    // `tree.py::_TRACKED_PROJECT_FIELDS` writes these, through the same
+    // `field_change` door and into the same renderer.
+    expect(changeLabel("archive_after_months", defs)).toBe("Auto-archive after");
+    expect(changeLabel("parent_project_id", defs)).toBe("Parent project");
+  });
+
+  it("degrades a column nobody listed into readable words", () => {
+    // ⚠️ The rung that makes the map safe to keep. `FIELD_LABELS` mirrors two
+    // tuples that live in Python; a column added there and forgotten here
+    // must still not reach a member as a database key.
+    expect(changeLabel("some_new_column", defs)).toBe("Some new column");
+  });
+
+  it("gives a single-word column a capital", () => {
+    expect(changeLabel("lead", defs)).toBe("Lead");
   });
 });
 

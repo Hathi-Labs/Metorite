@@ -72,11 +72,92 @@ _CUSTOM_PREFIX = "custom."
 
 class CommentIn(BaseModel):
     body: str
+    #: Migration 208 — the comment this one answers. Absent means top level.
+    #:
+    #: Only ``POST`` reads it. An EDIT deliberately cannot re-parent a comment:
+    #: moving somebody's reply under a different question changes what it
+    #: appears to say, and no surface asks for it.
+    parent_id: str | None = None
+
+
+#: How deep a comment thread goes. Owner ruling, 2026-09-21: *"Limit the
+#: depth. I think just one layer of reply should be fine."*
+#:
+#: A root and its replies, and that is all. The reason to write it down as a
+#: number rather than as an `if` is that the client caps the SAME thing —
+#: `TaskPanel` offers Reply on a root and not on a reply — and two places
+#: enforcing one rule should be able to point at each other.
+MAX_COMMENT_DEPTH = 1
+
+
+async def _parent_comment(db: Any, parent_id: str, task_id: str) -> Any:
+    """The comment a reply may attach to, or a 4xx that says why not.
+
+    Four refusals, and each one is a thing a client could otherwise create
+    that nothing downstream knows how to draw:
+
+    * **Not found** covers a deleted parent and a bad id together, for
+      `_load_own_comment`'s reason — "no such row" and "not yours to see" are
+      one answer.
+    * **A different task.** A reply is read inside its task's thread. Attached
+      across tasks it is invisible in one place and orphaned in the other.
+    * **Not a comment.** Answering a `status_change` is answering an event
+      nobody wrote. The type is on the OTHER row, which is exactly why no
+      CHECK in migration 208 can say this.
+    * **Already a reply.** The depth cap. Refused rather than silently
+      re-parented onto the root: a comment that quietly answers something
+      other than what the author picked is worse than an error, because the
+      author never finds out.
+    """
+    row = (await db.execute(
+        text(
+            "SELECT id, type, task_id, parent_id FROM pm_activities "
+            "WHERE id = CAST(:pid AS uuid) AND deleted_at IS NULL"
+        ),
+        {"pid": parent_id},
+    )).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    if str(row.task_id) != str(task_id):
+        raise HTTPException(
+            status_code=422,
+            detail="A reply must be on the same task as the comment it answers.",
+        )
+    if row.type != "comment":
+        raise HTTPException(
+            status_code=422, detail="You can only reply to a comment.",
+        )
+    if row.parent_id is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="Replies go one level deep. Reply to the first comment instead.",
+        )
+    return row
+
+
+#: What a timeline read may ask for, and the SQL that narrows it.
+#:
+#: Owner request, 2026-09-21: *"we should separate out activity and comments
+#: because the comments are getting muddled up with the activity"*. Two lists
+#: on the surface, and each one has to paginate on its own — a client that
+#: fetched `all` and filtered in the browser would show "5 of 50" where 50 is
+#: mostly the other list, and its "show older" button would fetch a page that
+#: is entirely the wrong kind.
+#:
+#: ⚠️ A FILTER on the one endpoint, never a second route (§5). The store is
+#: still one table and the stream is still one stream — `kind` narrows the
+#: read, and `all` remains the default so every existing caller is unchanged.
+_KIND_CLAUSES: dict[str, str] = {
+    "all": "",
+    "comments": " AND type = 'comment'",
+    "events": " AND type <> 'comment'",
+}
 
 
 @router.get("/tasks/{task_id}/timeline")
 async def get_timeline(
     task_id: str,
+    kind: str = "all",
     user: UserContext = Depends(get_current_user),
     page: Page = Depends(),
 ) -> dict:
@@ -85,7 +166,25 @@ async def get_timeline(
     Deleted comments are withheld; system events have no ``deleted_at`` and are
     never withheld — the history of what happened to a task is not editable by
     the people it happened to.
+
+    ``kind`` narrows the read to ``comments`` or to ``events``; the default
+    ``all`` is the whole stream, which is what every caller before 2026-09-21
+    asked for. ``total`` counts what the filter matched, not the table, because
+    a "show 45 older" button computed from the wrong total lies.
+
+    ⚠️ **A reply can arrive without its root**, on any page but the last: the
+    order is by time and a root can be older than the page boundary. The
+    client promotes such a reply to top level rather than dropping it —
+    ``activityStream.ts::threadComments``, and its suite pins that. Paging the
+    thread as a unit would mean ordering by root and breaking the one property
+    a timeline owes, which is that it reads in time order.
     """
+    clause = _KIND_CLAUSES.get(kind)
+    if clause is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"kind must be one of {', '.join(sorted(_KIND_CLAUSES))}.",
+        )
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         await load_visible_task(db, vis, task_id)
@@ -96,6 +195,7 @@ async def get_timeline(
             text(
                 "SELECT count(*) FROM pm_activities "
                 "WHERE task_id = CAST(:tid AS uuid) AND deleted_at IS NULL"
+                + clause
             ),
             {"tid": task_id},
         )).scalar() or 0
@@ -103,7 +203,8 @@ async def get_timeline(
             text(
                 "SELECT * FROM pm_activities "
                 "WHERE task_id = CAST(:tid AS uuid) AND deleted_at IS NULL "
-                "ORDER BY created_at DESC, id DESC LIMIT :limit OFFSET :offset"
+                + clause +
+                " ORDER BY created_at DESC, id DESC LIMIT :limit OFFSET :offset"
             ),
             params,
         )).fetchall()
@@ -124,9 +225,14 @@ async def add_comment(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         await load_visible_task(db, vis, task_id)
+        # ⚠️ AFTER the visibility check, never before. Asked first, the parent
+        # lookup would answer 404 or 422 for a task the caller may not see,
+        # and the difference between those two says whether a comment exists.
+        if payload.parent_id is not None:
+            await _parent_comment(db, payload.parent_id, task_id)
         row = await record_activity(
             db, activity_type="comment", created_by=actor(user),
-            task_id=task_id, body=body,
+            task_id=task_id, body=body, parent_id=payload.parent_id,
         )
         # WS-27v — commenting subscribes the commenter, BEFORE the audience is
         # read so their row exists for the next event too. Harmless for this
