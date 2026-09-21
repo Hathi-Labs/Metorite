@@ -1954,6 +1954,38 @@ line — never reclaim a number by deleting the other entry.
 - **⚠️ On a SHARED box one org key cannot be right for every tenant.** The
   setting is correct on a single-org silo only. Somebody must resolve the key
   per-organization before this goes on anywhere else.
+- **📌 MEASURED ON THE BOX, 2026-09-21.** The three prerequisites, and what
+  else the flip would meet:
+  1. ✅ **A platform vendor account exists** — `deepseek`, live. It is the
+     ONLY one.
+  2. ❌ **`CUSTOMER_CONSOLE_ORG_KEY` is UNSET**, and `llm_api_key` holds **no
+     rows at all**. There is nothing to put on the box yet.
+     ⚠️ `CUSTOMER_CONSOLE_URL` IS set, to `http://127.0.0.1:8090`.
+  3. ✅ Streaming, closed as above.
+- **🔴 THE FLAG ALONE IS INERT, and that is worth knowing before anyone tries
+  it.** `_router_should_serve` needs the flag AND `router_is_wired()` — the
+  URL and the org key together. With the key unset the flip logs
+  `v1.router_enabled_but_unwired` and falls back to the local path. So turning
+  it on early breaks nothing. It also achieves nothing.
+- **🔴 `tier-stt` WOULD FAIL EVERY CALL.** It binds
+  `groq/whisper-large-v3-turbo`, and there is no groq credential. Install one
+  or re-point the tier BEFORE the flip. Both acts are `admin` + elevation.
+- **⚠️ Seven registry tiers have NO binding** and answer 400 after the flip:
+  `tier-code`, `tier-vision`, `tier-image`, `tier-tts`, `tier-embed`,
+  `tier-video`, `tier-music`. Only the three chat tiers and `tier-stt` are
+  bound. Anything in the product that asks for one of those breaks.
+- **⚠️ What serves customer AI TODAY is the TENANT-LOCAL `DEEPSEEK_API_KEY`**
+  in `/opt/acb/app/.env`, through local litellm, unmetered. The vendor keys in
+  the operator console are the PLATFORM account. They serve nothing until this
+  flip. Removing the local key before the Router is proven serving takes AI
+  down for the live customer. D57.7 leaves no fallback.
+- **✅ H-72 IS CLOSED, and its Check was looking in the wrong place.** It named
+  a `task_settings` table. No such table exists. The columns live on
+  `gtd_settings` and `email_assistant_settings`. BOTH hold **zero rows** on the
+  tenant database. So no raw model id is stored anywhere, and nothing breaks
+  on the flip. ⚠️ A Check that names a table that does not exist reads
+  as "closed" whatever the truth is. Confirm you are on the tenant database by
+  finding `pm_tasks` before believing an absence there.
 - **Authority:** `work_plan.md` §6 (d)/(e) · **D57** · **D57.7** ·
   `specs/customer_console.md` §6B.7
 - **Added:** 2026-08-27 · WS-31 CP-11 slice 3 session
@@ -1965,52 +1997,6 @@ line — never reclaim a number by deleting the other entry.
 
 
 ---
-
-### H-72 · A saved raw model id in a LIVE app breaks on the flag flip · [OWNER]
-- **Check:** on the box, look for a `task_settings` row whose
-  `chat_model` / `clarify_model` / `atomize_model` / `email_capture_model`
-  does not start with `tier-`. No such row means nobody ever picked one,
-  and this closes with no migration at all.
-  ⚠️ **The picker itself is already gone** (part 1 below). This entry is
-  now only about values ALREADY STORED.
-- **Why:** 🔴 **D32.7 says customers never see a model, and one does.** Found
-  while scoping CP-5, which targets the `preview` models page. This is a
-  different surface and a live one. The chain is measured, not inferred:
-  1. `/tasks` is `launch: "live"` in `nav.ts` — one of the nine panes.
-  2. `app/tasks/page.tsx` renders `<TaskSettingsModal />` twice.
-  3. The modal reads `/api/settings/llm/enabled-models` and offers each one
-     under an `optgroup` labelled **"Your enabled models"** (line 174).
-  4. The chosen value saves to `chatModel` / `clarifyModel` / `atomizeModel`
-     / `emailCaptureModel`.
-  5. `AssistantRail.tsx:276` passes `model={chatModel}` into the chat call.
-- **⚠️ The defaults are TIERS**, so nothing is broken today and nothing looks
-  wrong. `tier-powerful`, `tier-balanced`, `tier-fast`. **Only a customer who
-  deliberately picks a model from that group stores a bare model id.**
-- **🔴 That customer's Tasks AI breaks the day `ROUTER_SERVING_ENABLED` flips.**
-  The Console refuses a bare model id with **400**, and does not coerce it
-  (D32.7, and `resolve_tier` raises `TierUnknown`). The break stays silent
-  until the flip. It then lands on the customer most engaged with the
-  product. That is the one who went into settings and chose.
-- **So the trigger is H-69**, the same flip that arms metering.
-- **Two questions, and the second is the owner's:**
-  1. ✅ **DONE 2026-08-27.** The `optgroup` is gone, the fetch that fed it
-     is gone, and `modelVocabulary.test.ts` fails if either returns. This
-     stops NEW model ids. ⚠️ It heals nothing already saved.
-  2. ⚠️ **What happens to a value already saved?** A stored `openai/gpt-4o`
-     must become *some* tier, and choosing which is a product decision — a
-     migration that guessed would silently re-point somebody's work.
-     `test_byok_default.py` shows the old orchestrator coerced to
-     `tier-balanced`; D32.7 retired coercion precisely because it hides a
-     misconfiguration behind a bill.
-- **✅ `/email` is DONE (2026-08-28).** `ai-settings/SettingsTab.tsx` carried
-  the same picker and it is gone the same way. The fence moved with it:
-  `src/lib/modelVocabulary.test.ts` is now ONE table-driven test over both
-  surfaces, not a copy per app. Add a row when a third picker appears.
-- **⚠️ What is left here is the OWNER half only** — the stored-value query
-  below. No code change remains.
-- **Authority:** **D32.7** · `specs/customer_console.md` §6A CP-5 ·
-  `specs/launch_surface.md` §2 (the live nine)
-- **Added:** 2026-08-27 · WS-31 CP-5 scoping session
 
 ### H-73 · CP-7's per-member cap rests on an identity the member controls · [AGENT+OWNER]
 - **Check:** `grep -n "x-cc-member" apps/services/gateway/gateway/routes/v1_compat.py`
