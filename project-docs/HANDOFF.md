@@ -49,6 +49,27 @@ nothing; the thing nobody wrote down costs a session.
 ## The shape of an entry
 
 ```
+### H-150 · The right-click menu on a task cannot be opened on a phone · [AGENT]
+
+- **What happens.** At 390px the board draws its cards, and a right-click
+  on one opens nothing. Measured 2026-09-21 in the visual rig: the card is
+  in the DOM, and `Copy link` — the second entry in the menu — has a count
+  of zero after the gesture.
+- **⚠️ It is EVERY entry, not one.** Open, Copy link, Select, Move to
+  project, Merge into, Change status, Rename, Add subtask, Archive, Restore
+  and Delete are all in that menu and all unreachable. Six of them have no
+  other door on a phone at all.
+- **It is pre-existing**, and predates the Merge entry that found it. The
+  entry itself is fine — it draws and works at every desktop width.
+- **Why a phone has no right-click, and what that means.** A touch device
+  does not fire `contextmenu` from a tap, and a long press raises the
+  platform's own menu instead. So the surface needs a different door: the
+  card's overflow button, or a long press the component handles itself.
+  `TaskCardActions` already draws a "more" button on hover, and hover does
+  not exist on a phone either — so the two gaps are one gap.
+- **Check:** open `/projects` at 390px, pick a project, and long-press a
+  card. If no menu appears, this is open.
+
 ### H-<n> · <one line, imperative> · [AGENT|OWNER]
 - **Check:** `<command>` → <what output means STILL PENDING>
 - **Why:** <one or two sentences — the reason, not the status>
@@ -2264,61 +2285,6 @@ line — never reclaim a number by deleting the other entry.
   the same next-free id against different bases, which is R1 one level up. This
   entry merged second, so this entry moved.
 
-
-### H-96 · `dev_db.sh` starts the tenant database and never applies its ladder · [AGENT]
-- **🟢 2026-09-21 — the recipe below is confirmed, on a second, empty
-  database.** Built `acb_r8` inside the `acb-postgres` container to verify a
-  migration against a real Postgres (R8). The three steps worked first time
-  and all 206 files applied with no failure:
-
-      docker exec acb-postgres psql -U acb -d postgres -c 'CREATE DATABASE acb_r8 OWNER acb;'
-      docker exec acb-postgres psql -U acb -d acb_r8 \n        -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp"; CREATE EXTENSION IF NOT EXISTS pgcrypto;'
-      docker exec -i acb-postgres psql -U acb -d acb_r8 -q < infra/postgres/01_schema.sql
-      for f in $(ls infra/postgres/*.sql | grep -v schema.generated | grep -v 00_create \n                   | grep -v 01_schema | sed 's#.*/##' | sort -n); do \n        docker exec -i acb-postgres psql -U acb -d acb_r8 -q -v ON_ERROR_STOP=1 \n          < "infra/postgres/$f"; done
-
-  So the fix is well understood and only needs writing. ⚠️ Note the numeric
-  sort: a plain glob orders `100_` before `02_` and the ladder fails at once.
-- **⚠️ The password is not the one in most notes.** `acb-postgres` runs with
-  `POSTGRES_PASSWORD=acb_dev_change_me`, and an asyncpg URL built with `acb`
-  as the password fails authentication. Read it from
-  `docker inspect acb-postgres`.
-- **🟢 2026-09-21 — replayed it by hand, and here is the recipe.** The
-  container had been recreated, so the tenant database was empty. Three
-  things the runner does not do for you, in order:
-
-      # 1. the extensions. 03_pending_commits.sql wants uuid_generate_v4()
-      CREATE EXTENSION IF NOT EXISTS "uuid-ossp"; CREATE EXTENSION IF NOT EXISTS pgcrypto;
-      # 2. the base schema. It is mounted into the container's initdb and
-      #    so runs ONLY on a first init; migration 95 needs its `meeting`.
-      psql < infra/postgres/01_schema.sql
-      # 3. then the ladder
-      APP_DIR=$(pwd) PG_CONTAINER=metorite-scratch-tenant PG_USER=acb \
-        PG_DB=acb_tenant SKIP_PRE_MIGRATION_BACKUP=1 bash scripts/apply_migrations.sh
-
-  That applied 112 migrations and left a working schema. The backup skip
-  is correct HERE and nowhere else: a scratch container that was empty a
-  minute ago has nothing to restore.
-- **What the fix should include:** the two steps above, not only the
-  ladder. A runner that replays 02..206 onto a fresh container fails at
-  03, then again at 95. Both failures read as a broken migration. Neither
-  is one. They are missing prerequisites.
-- **⚠️ The container is recreated more often than anyone assumed.** That
-  is what makes this urgent, and not only tidy. See [[H-139]].
-- **Check:** read `scripts/dev_db.sh`. Search for `infra/postgres`. No hit
-  means the script still applies only the Console ladder, and this is open.
-- **What I measured, 2026-09-02.** The script started both containers and
-  printed both DSNs. The Console database got all 21 files. The tenant
-  database got **0 tables**. I applied the 195 files by hand to make the CP-2g
-  purge door work.
-- **Why this matters more than a missing step.** The script header promises
-  the "`mt-scratch` pattern (:5433, full ladder applied)". A reader takes the
-  printed DSN as proof. An R8 suite that needs a tenant table then fails, or
-  skips, against a database the script said was ready.
-- ⚠️ **The files do not sort the way the loop reads them.** `ls infra/postgres/
-  [0-9]*_*.sql` puts `100_` before `10_`. The apply must sort numerically
-  (`sort -t_ -k1,1n`), and it must exclude `schema.generated.sql`.
-- **Authority:** `specs/engineering_practice.md` §1.1 · CLAUDE.md §6 (R8)
-- **Added:** 2026-09-02 · operator console local-setup session
 
 ### H-111 · Arm the weekly report send. The audience is DECIDED · [OWNER]
 - **Check:** on the box, `grep -c '^PROJECT_REPORT_EMAIL_ENABLED=true' /opt/acb/app/.env`.
