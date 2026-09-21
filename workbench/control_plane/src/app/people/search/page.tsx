@@ -21,6 +21,7 @@ import { useState } from "react";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import PageHeader from "@/components/PageHeader";
 
 import { Avatar } from "../components/Avatar";
 import { PeopleApiError, peopleApi } from "../lib/api";
@@ -57,17 +58,10 @@ export default function CapabilitySearchPage() {
 
   return (
     <main className={PAGE_FRAME}>
-      <header className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-sm font-medium text-foreground">
-            Who can help with…
-          </h1>
-          <p className="text-[11px] text-muted-foreground">
-            Stated skills, résumé evidence, and related work — each match shows
-            its reasoning. Nothing here assigns anything.
-          </p>
-        </div>
-      </header>
+      <PageHeader
+        title="Who can help with…"
+        subtitle="Stated skills, résumé evidence, and related work — each match shows its reasoning. Nothing here assigns anything."
+      />
 
       <form
         className="flex gap-2"

@@ -2906,27 +2906,28 @@ line — never reclaim a number by deleting the other entry.
   migration 207
 - **Added:** 2026-09-21 · the every-app-by-default session
 
-### H-145 · A person has no URL, so nothing can link to them · [AGENT]
-- **Check:** `ls workbench/control_plane/src/app/people/` → no `[id]`
-  directory means a person is still panel-only, and this is open.
-- **Why:** `people_center_app.md` §5.2 calls it the *person page*. It is
-  built as a side panel inside the directory, keyed by React state
-  (`openId`). There is no route, so there is no address.
-- **What that costs, measured 2026-09-21:**
-  - You cannot send a colleague a link to a colleague.
-  - The org chart cannot open anybody. Its nodes only expand and collapse.
-  - Projects links to People from NOWHERE. `rg "/people/"` over the whole
-    Projects app returns zero hits, so an assignee chip is a dead end.
-  - Back and refresh both lose the open person.
-- **The shape:** add `app/people/[id]/page.tsx` that renders the SAME
-  `PersonPanel` content. The directory's row becomes a `Link` to it
-  instead of a state setter. Keep the panel for the directory's side-by-side read
-  if it earns its place. Then the chart node and the Projects assignee chip
-  both have somewhere to point.
-- 📌 The backend is ready. `GET /people/{id}` already serves the whole record
-  and `GET /people/{id}/work` its open tasks.
-- **Authority:** `people_center_app.md` §5.2 · owner review 2026-09-21
-- **Added:** 2026-09-21 · the People end-to-end review · renumbered from H-142 on 2026-09-21, because #346 minted the same id against a different base and merged first. Ids are never reused.
+### H-148 · Projects still has its own look, and 54 hand-rolled buttons · [AGENT]
+- **Check:** `grep -rc "<button " workbench/control_plane/src/app/projects --include=*.tsx | awk -F: '{s+=$2} END {print s}'`
+  → a count above a handful means this is open. It was 54 on 2026-09-21,
+  against 98 uses of the shared `Button`.
+- **Why:** the People app was brought onto one `PageHeader` on 2026-09-21.
+  Projects was not, and the reason is honest. Its surface opens with a slim
+  `h-10` app bar carrying a rail toggle, the app name and app-level actions.
+  Tasks has the same bar. That is a deliberate second shape for a rail-based
+  app, not drift. Replacing it would be a redesign.
+- **What IS drift:** 54 hand-rolled `<button className=…>` next to 98 uses
+  of `components/ui/Button`. Each one is a control that will not follow a
+  change to the button.
+- 📌 The app bar's own comment claims "Same shape as Tasks and Email".
+  Measured: Tasks matches, **Email does not** — it uses a `text-sm
+  font-medium` heading. CRM uses the Settings shape. So the product has at
+  least three page-opening idioms and one comment that is wrong about which.
+- **The decision:** name the two legitimate shapes in `DESIGN_SYSTEM.md`.
+  The app bar is for a rail app. `PageHeader` is for a document surface.
+  Then sweep the buttons. Naming the two first is what stops a third.
+- **Authority:** `AGENTS.md` rule 1 · `DESIGN_SYSTEM.md` · owner directive
+  2026-09-21
+- **Added:** 2026-09-21 · the cohesion pass
 
 ### H-143 · My Profile is a dead end · [AGENT]
 - **Check:** `rg -n "href|Link" workbench/control_plane/src/app/people/me/page.tsx`

@@ -15,7 +15,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-import Icon from "@/components/Icon";
+import PageHeader from "@/components/PageHeader";
 
 import { describeRollup, describeSpread } from "../lib/dashboard";
 import { PeopleApiError, peopleApi } from "../lib/api";
@@ -96,16 +96,15 @@ export default function PeopleOverviewPage() {
 
   return (
     <main className={PAGE_FRAME}>
-      <header>
-        <h1 className="flex items-center gap-2 text-lg font-semibold">
-          <Icon name="Users" size={20} />
-          People
-        </h1>
-        <p className="text-xs text-muted-foreground">
-          {res.total_people} people on record
-          {res.partial ? " · work figures cover the projects you can see" : ""}
-        </p>
-      </header>
+      <PageHeader
+        title="People"
+        meta={`${res.total_people} on record`}
+        subtitle={
+          res.partial
+            ? "Work figures cover the projects you can see."
+            : undefined
+        }
+      />
 
       <Section title="Headcount" href="/people" hrefLabel="Directory">
         <div className="overflow-x-auto">

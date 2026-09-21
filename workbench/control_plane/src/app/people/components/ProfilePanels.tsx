@@ -23,6 +23,7 @@
  */
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
@@ -298,9 +299,9 @@ export function ProfilePanels({
             {overriddenFields(person.schedule).length === 0 ? (
               <>
                 All from the company default —{" "}
-                <a href="/people/schedule" className="underline">
+                <Link href="/people/schedule" className="underline">
                   see the working week
-                </a>
+                </Link>
                 . Change any of it below.
               </>
             ) : (

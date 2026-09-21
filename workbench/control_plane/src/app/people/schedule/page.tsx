@@ -22,6 +22,7 @@ import { useCallback, useEffect, useState } from "react";
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import PageHeader from "@/components/PageHeader";
 
 import { PeopleApiError, peopleApi } from "../lib/api";
 import { PAGE_FRAME } from "../lib/frame";
@@ -128,17 +129,10 @@ export default function WorkSchedulePage() {
 
   return (
     <main className={PAGE_FRAME}>
-      <header className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-sm font-medium text-foreground">
-            The company&apos;s working week
-          </h1>
-          <p className="text-[11px] text-muted-foreground">
-            The default everybody&apos;s contracted hours are derived from. A
-            person can override any of it on their own profile.
-          </p>
-        </div>
-      </header>
+      <PageHeader
+        title="The company&apos;s working week"
+        subtitle="The default everybody&apos;s contracted hours are derived from. A person can override any of it on their own profile."
+      />
 
       {error && (
         <p className="text-xs text-destructive" role="alert">
