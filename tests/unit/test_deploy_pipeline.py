@@ -208,3 +208,76 @@ def test_the_version_endpoint_the_pipeline_depends_on_still_exists() -> None:
         "GET /version is gone, and deploy.yml's verify() depends on it. "
         "Removing it makes every deploy fail verification."
     )
+
+
+# ── H-137: a half-finished apply must not report success ──────────────────
+#
+# 🔴 **Measured 2026-09-20, on three runs all marked SUCCESS.** `vps_apply.sh`
+# died at `==> Rebuilding + restarting workbench` when `npm ci` hit EACCES and
+# the Next build then failed. `set -e` exited, ssh returned non-zero, the
+# workflow shrugged, and `verify()` passed — because a failed build
+# DELIBERATELY leaves the previous `.next` serving and the gateway restart
+# happens further up the script. Every step after the failure silently did not
+# run: the health watchdog timer, and the systemd unit sync.
+#
+# ⚠️ These are STRUCTURAL, like the rest of this file. The contract is a
+# STRING printed by one file and grepped by another, which is exactly the
+# shape that rots without a test — rewording either side breaks the gate and
+# nothing goes red.
+
+APPLY = Path(__file__).resolve().parents[2] / "scripts" / "vps_apply.sh"
+
+#: The apply script's final line. The workflow proves the script finished by
+#: finding it. Both sides must agree, character for character.
+APPLY_DONE = "==> Deployment complete"
+
+
+class TestTheApplyMustReachItsEnd:
+    def test_the_apply_script_prints_the_marker_as_its_LAST_echo(self):
+        body = APPLY.read_text(encoding="utf-8")
+        assert APPLY_DONE in body, (
+            "vps_apply.sh no longer prints the line deploy.yml greps for. "
+            "A deploy that dies half way would report success again.")
+        # It must be the LAST echo in the file, or a script that dies after it
+        # would still look finished.
+        echoes = [
+            ln for ln in body.splitlines()
+            if ln.strip().startswith("echo ") and "$" not in ln.split("echo ", 1)[1][:2]
+        ]
+        assert APPLY_DONE in echoes[-1], (
+            f"the marker must be the script's final echo, found: {echoes[-1]!r}")
+
+    def test_the_workflow_greps_for_that_exact_marker(self):
+        wf = WORKFLOW.read_text(encoding="utf-8")
+        assert f'APPLY_DONE="{APPLY_DONE}"' in wf, (
+            "deploy.yml must pin the apply script's final line verbatim")
+        assert 'grep -qF "$APPLY_DONE"' in wf, (
+            "deploy.yml must TEST for the marker. Printing it is not a gate.")
+
+    def test_the_ssh_status_is_read_from_PIPESTATUS_not_dollar_question(self):
+        """🔴 The subtle way this gate turns itself off.
+
+        The apply output goes through `tee`, and `tee` always succeeds. Reading
+        `$?` after the pipe therefore reports every apply as clean.
+        """
+        wf = WORKFLOW.read_text(encoding="utf-8")
+        assert "PIPESTATUS[0]" in wf
+        assert "ssh_deploy 2>&1 | tee" in wf
+
+    def test_a_round_requires_BOTH_the_apply_and_the_verify(self):
+        """Either alone has shipped a green run that delivered nothing.
+
+        `verify()` alone is H-137. A finished apply alone is the hole that
+        `verify()` was added in 2026-08-26 to close.
+        """
+        wf = WORKFLOW.read_text(encoding="utf-8")
+        assert 'if run_deploy; then applied=1; fi' in wf
+        assert '[ "$applied" = 1 ] && verify' in wf
+        # And the old shape must be gone: run_deploy called for its side
+        # effects, with only verify gating the exit.
+        assert "\n            run_deploy\n            if verify; then" not in wf
+
+    def test_run_deploy_reports_a_failure_instead_of_swallowing_it(self):
+        wf = WORKFLOW.read_text(encoding="utf-8")
+        assert "verifying by health regardless" not in wf, (
+            "that line WAS the bug: it announced the failure and continued")

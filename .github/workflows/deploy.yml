@@ -280,15 +280,60 @@ jobs:
               "$SSH_USER@$SSH_HOST" 'bash -s' < /tmp/deploy_remote.sh
           }
 
+          # The apply script's own last line. `vps_apply.sh` prints it and
+          # nothing else does, so its PRESENCE is proof the script reached the
+          # end rather than dying somewhere in the middle.
+          APPLY_DONE="==> Deployment complete"
+
           run_deploy() {
             # The SSH exit code is ADVISORY — a flaky session teardown must not
-            # be read as a failed deploy. verify() below is the real signal.
+            # be read as a failed deploy.
+            #
+            # 🔴 **"Advisory" used to mean IGNORED, and that is H-137.** Measured
+            # 2026-09-20 on run 35513962455, and again on 35536341856 and
+            # 35540481187, all marked SUCCESS: `vps_apply.sh` died at
+            # `==> Rebuilding + restarting workbench` when `npm ci` hit EACCES
+            # and the Next build then failed. `set -e` exited, ssh returned
+            # non-zero, this function shrugged, and `verify()` passed — because
+            # a failed build DELIBERATELY leaves the previous `.next` serving
+            # and the gateway restart happens further up. So a healthy app on
+            # the right SHA said yes to all three checks while every step after
+            # the failure — the health watchdog timer, the systemd unit sync —
+            # silently did not run.
+            #
+            # ⚠️ **`verify()` cannot see this and never could.** It asks whether
+            # the app is up, public and on this commit. All three stay true when
+            # the tail of the apply is skipped. Only the script can report how
+            # far it got, so this reads the script's own final line.
+            #
+            # ⚠️ The teardown flake the old comment describes is STILL tolerated:
+            # a non-zero ssh AFTER the marker is a pass.
             echo "── Running remote deploy script ──"
-            if ssh_deploy; then
+            : > /tmp/apply.log
+            # ⚠️ PIPESTATUS, not `$?` — a pipe reports tee's status, and tee
+            # always succeeds. Reading `$?` here would report every apply as
+            # clean, which is the failure this block exists to end.
+            ssh_deploy 2>&1 | tee /tmp/apply.log
+            rc=${PIPESTATUS[0]}
+            if [ "$rc" = 0 ]; then
               echo "  ssh returned 0"
             else
-              echo "  (ssh exited non-zero — verifying by health regardless)"
+              echo "  ssh exited $rc"
             fi
+            if grep -qF "$APPLY_DONE" /tmp/apply.log; then
+              if [ "$rc" != 0 ]; then
+                echo "  ✅ the apply reached its final line — treating the"
+                echo "     non-zero ssh as a session teardown flake"
+              fi
+              return 0
+            fi
+            echo "  ❌ THE APPLY DID NOT REACH ITS FINAL LINE."
+            echo "     Everything after the failure did not run. The app may"
+            echo "     still be healthy on the PREVIOUS build — that is what a"
+            echo "     failed Next build is designed to leave behind, and it is"
+            echo "     not a deploy. Last few lines:"
+            tail -n 15 /tmp/apply.log | sed "s/^/       /"
+            return 1
           }
 
           deployed_sha() {
@@ -394,12 +439,21 @@ jobs:
 
           for round in 1 2 3; do
             echo "════════ Deploy round $round/3 ════════"
-            run_deploy
-            if verify; then
+            # ⚠️ BOTH, and in this order. The apply must have finished AND the
+            # right commit must be serving. Either alone has shipped a green
+            # run that delivered nothing — `verify()` alone is H-137, and a
+            # finished apply alone was the hole `verify()` was added to close.
+            applied=0
+            if run_deploy; then applied=1; fi
+            if [ "$applied" = 1 ] && verify; then
               echo "✅ Deploy verified healthy on round $round."
               exit 0
             fi
-            echo "⚠️  App not healthy after round $round."
+            if [ "$applied" != 1 ]; then
+              echo "⚠️  The apply script did not finish on round $round."
+            else
+              echo "⚠️  App not healthy after round $round."
+            fi
             if [ "$round" -lt 3 ]; then
               backoff=$((round * 60))
               echo "Backing off ${backoff}s to outlast any network blip…"
@@ -407,7 +461,8 @@ jobs:
             fi
           done
 
-          echo "❌ App still unreachable after 3 deploy+verify rounds."
+          echo "❌ Deploy FAILED after 3 rounds — the apply did not finish, or"
+          echo "   the app is not serving this commit."
           echo "   Diagnose: SSH to the box and check 'systemctl status acb-gateway acb-workbench'"
           echo "   and 'docker compose -f infra/docker-compose.yml logs --tail=100'."
           exit 1

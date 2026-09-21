@@ -721,14 +721,31 @@ drop_dir() {
 #
 # ⚠️ The chown is a self-heal, NOT a fix for H-89. Something here still writes
 # into the checkout as root, and it will do it again.
+# ⚠️ **This function RETURNS 0 even when every install failed**, on purpose:
+# a stale-but-working `node_modules` still builds, and refusing here would
+# stop a deploy that would otherwise have shipped.
+#
+# 🔴 **It used to swallow the REASON as well, and that cost a day.** Every
+# attempt sent stderr to /dev/null and the chown carried `|| true`, so a tree
+# npm could not repair produced four silent lines and then a Next build that
+# failed for no stated cause. Measured 2026-09-20 (H-137): the real error was
+# `EACCES` on a root-owned path INSIDE `node_modules`, which the ownership
+# repair at the top of this script deliberately prunes. H-89 owns that cause.
+# The first attempt stays quiet because it is expected to fail here. Every
+# attempt after it speaks.
 npm_install_here() {
   name="$1"
   npm ci --prefer-offline 2>/dev/null && return 0
   echo "    ~ $name: npm ci failed — reclaiming the build tree and retrying"
-  sudo chown -R "$(id -un):$(id -gn)" node_modules 2>/dev/null || true
-  npm ci --prefer-offline 2>/dev/null && return 0
+  if ! sudo chown -R "$(id -un):$(id -gn)" node_modules 2>&1; then
+    echo "    !! $name: could NOT reclaim node_modules — an install that fails"
+    echo "       with EACCES after this is H-89, not an npm problem."
+  fi
+  npm ci --prefer-offline && return 0
+  echo "    ~ $name: npm ci failed again — falling back to npm install"
   npm install && return 0
-  echo "    ! $name: npm install failed — building against the node_modules already here"
+  echo "    ! $name: npm install failed — building against the node_modules"
+  echo "      already here. ⚠️ If the build below fails, THIS is why."
   return 0
 }
 
@@ -991,4 +1008,10 @@ uv run python scripts/check_infra.py || {
   exit 1
 }
 
+# 🔴 **`deploy.yml` GREPS FOR THIS EXACT LINE.** It is how the workflow tells
+# "the apply finished" from "the apply died half way and the old build is
+# still serving" — two states that looked identical until H-137, because a
+# healthy app on the right SHA answers yes to every other check.
+# ⚠️ Do not reword it, and do not move it. It must stay the LAST echo here.
+# `test_deploy_pipeline.py::TestTheApplyMustReachItsEnd` fences both sides.
 echo "==> Deployment complete"
