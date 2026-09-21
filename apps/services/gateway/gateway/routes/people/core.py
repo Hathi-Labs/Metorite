@@ -111,8 +111,18 @@ async def has_login(db: Any, email: str | None) -> bool:
     """
     if not (email or "").strip():
         return False
+    # ⚠️ **Scoped to the bound tenant.** `app_user.email` is GLOBALLY unique
+    # (D-MT-1 (a)), so an unscoped existence check answers "is this address a
+    # member anywhere in the deployment" — which is both the wrong question
+    # and a disclosure: it tells one customer that an address belongs to
+    # another. The question this badge asks is "can they sign in HERE".
+    # `NULLIF(…, '')` fails CLOSED: an unbound GUC matches no row.
     row = (await db.execute(
-        text("SELECT 1 FROM app_user WHERE lower(email) = :email LIMIT 1"),
+        text("SELECT 1 FROM app_user "
+             " WHERE lower(email) = :email "
+             "   AND organization_id = CAST(NULLIF("
+             "         current_setting('app.tenant_id', true), '') AS uuid) "
+             " LIMIT 1"),
         {"email": email.strip().lower()},
     )).fetchone()
     return row is not None
@@ -242,6 +252,19 @@ async def compute_load(db: Any, email: str | None) -> dict[str, Any]:
     nothing to the hours, so a bar built only from the sum would show somebody
     with thirty un-estimated tasks as completely free. The count travels with
     the number so the UI can say "plus 30 with no estimate" instead of lying.
+
+    ⚠️ **The tenant predicate is EXPLICIT, and its absence was a leak.** An
+    assignee is an email string, and the same address can be a member of two
+    organizations — a contractor working for two customers is the ordinary
+    case this product is built for. Without the fence this counted every open
+    task in the DEPLOYMENT assigned to that address.
+
+    That is worse than a wrong number. `compute_load` feeds the directory,
+    capability search and the Projects **assignee picker**, so another
+    customer's workload was deciding whether this customer's colleague looked
+    overloaded. `pm_tasks.organization_id` is on the numbered ladder
+    (migration 161), so the column is there whether or not the generated
+    tenancy phase has been promoted (H-104). `NULLIF(…, '')` fails CLOSED.
     """
     if not (email or "").strip():
         return {"open_tasks": 0, "estimated_hours": 0.0, "unestimated": 0}
@@ -255,6 +278,8 @@ async def compute_load(db: Any, email: str | None) -> dict[str, Any]:
                  JOIN pm_task_statuses s ON s.id = t.status_id
                  JOIN pm_task_assignees a ON a.task_id = t.id
                 WHERE lower(a.assignee) = :who
+                  AND t.organization_id = CAST(NULLIF(
+                        current_setting('app.tenant_id', true), '') AS uuid)
                   AND t.archived_at IS NULL
                   AND s.category NOT IN ('done', 'cancelled')"""
         ),

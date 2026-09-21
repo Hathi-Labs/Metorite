@@ -197,9 +197,18 @@ async def suggest_assignees(
         emails = [str(r.email).strip().lower() for r in rows
                   if getattr(r, "email", None)]
         if emails:
+            # ⚠️ Scoped to the bound tenant, like `people.core.has_login`.
+            # `app_user.email` is GLOBALLY unique (D-MT-1 (a)), so without
+            # this the picker draws "has login" for an address that is a
+            # member of ANOTHER customer — telling this one that the address
+            # exists elsewhere, and hiding the "no login — cannot see the
+            # task" warning D-PC-12 exists to show. `NULLIF(…, '')` fails
+            # closed.
             found = (await db.execute(text(
                 "SELECT lower(email) AS email FROM app_user "
-                " WHERE lower(email) = ANY(:emails)"),
+                " WHERE lower(email) = ANY(:emails) "
+                "   AND organization_id = CAST(NULLIF("
+                "         current_setting('app.tenant_id', true), '') AS uuid)"),
                 {"emails": emails})).fetchall()
             logins = {f.email for f in found}
 

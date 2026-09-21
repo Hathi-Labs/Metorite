@@ -371,9 +371,26 @@ def test_the_work_panel_is_scoped_by_the_VIEWERS_grants(db, monkeypatch):
     assert db.params[-1]["vis_email"] == "me@x.in"
 
 
-def test_an_unrestricted_viewer_gets_no_scoping_predicate(db, monkeypatch):
-    """`data:org:read` is the full-portfolio view; adding the closure anyway
-    would put a recursive join on every read for no effect."""
+def test_an_unrestricted_viewer_STILL_GETS_THE_TENANT_PREDICATE(db, monkeypatch):
+    """🔴 **This test asserted the opposite until 2026-09-21, and that is how
+    a cross-tenant leak survived five weeks.**
+
+    The old version read *"`data:org:read` is the full-portfolio view; adding
+    the closure anyway would put a recursive join on every read for no
+    effect"* — plausible, and wrong in the one way that mattered.
+    `Visibility.project_clause` does NOT return `TRUE` for an unrestricted
+    caller. It returns ``column IN (<tenant projects>)``
+    (`projects/core.py:1049-1050`). The clause IS the tenant fence, so
+    skipping it left this query with an assignee predicate and nothing else.
+
+    What that cost: `data:org:read` is held by the `manager` role. A manager
+    opening a colleague's work saw every open task in ANY organization
+    assigned to that address. WS-28j measured the same shortcut elsewhere on
+    the scratch cluster — no FORCE RLS, which is production's state while
+    H-104 is open — and a second organization's task landed on the row.
+
+    `data:org:read` means unrestricted *within* a tenant. Never across.
+    """
     db.people = [SimpleNamespace(email="r@x.in")]
 
     async def fake_resolve(_db, _user):
@@ -386,7 +403,20 @@ def test_an_unrestricted_viewer_gets_no_scoping_predicate(db, monkeypatch):
     )
     run(people_directory.get_person_work("pid", user=hr_reader()))
     work_sql = [s for s in db.statements if "FROM pm_tasks" in s][-1]
-    assert "root_project_id IN" not in work_sql
+    assert "root_project_id IN" in work_sql
+
+
+def test_the_work_panel_scopes_with_the_DASHBOARDS_helper(db, monkeypatch):
+    """Asserted by identity, not by resemblance.
+
+    Two answers to "what may this viewer see" are two answers waiting to
+    drift, and the drift is what produced the leak above: the dashboard
+    applied the clause unconditionally while this endpoint did not, for five
+    weeks, with the dashboard's own docstring naming it.
+    """
+    from gateway.routes.people import dashboard, directory as d
+
+    assert d._scope is dashboard._scope
 
 
 def test_the_work_panel_404s_for_a_person_who_does_not_exist(db):
