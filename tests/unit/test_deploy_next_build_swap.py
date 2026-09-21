@@ -435,3 +435,58 @@ class TestHousekeepingCannotAbortTheDeploy:
             if "npm_install_here " in ln and not ln.strip().startswith("npm_install_here()")
         ]
         assert len(calls) >= 2, f"both Next apps must install through it: {calls}"
+
+
+# ── H-89 / H-137 part two: the build tree must be OWNED before it is built ──
+#
+# 🔴 **Measured 2026-09-21 on run 35588464803** — the first deploy H-137's gate
+# turned red instead of green. `.next` was `root:root` with 3803 paths under
+# it, the Next build could not write its own trace file, and all three rounds
+# died at `EACCES ... .next.staging/trace`. 759 more sat under the operator
+# console. Before H-137 this failed silently and the run reported success.
+#
+# ⚠️ The sweep at the top of `vps_apply.sh` CANNOT catch it, on purpose: it
+# prunes `.next` because the directory is gitignored and huge. That pruning is
+# right. The gap is that nothing else owned the build tree either.
+
+class TestTheBuildTreeIsReclaimed:
+    def test_a_reclaim_helper_exists(self):
+        body = _APPLY.read_text(encoding="utf-8")
+        assert "reclaim_build_tree()" in body, (
+            "nothing reclaims a root-owned `.next` before building into it")
+
+    def test_every_staged_build_reclaims_FIRST(self):
+        """The repair is worthless after the build has already failed."""
+        body = _APPLY.read_text(encoding="utf-8")
+        fn = body[body.index("build_next_staged() {"):]
+        fn = fn[: fn.index("\n}\n")]
+        assert "reclaim_build_tree" in fn, (
+            "`build_next_staged` does not reclaim the tree")
+        # Before the first drop_dir, or a root-owned staging dir defeats it.
+        assert fn.index("reclaim_build_tree") < fn.index("drop_dir"), (
+            "the reclaim must run BEFORE anything tries to remove or write "
+            "the build directories")
+
+    def test_it_covers_all_three_build_directories(self):
+        body = _APPLY.read_text(encoding="utf-8")
+        fn = body[body.index("reclaim_build_tree() {"):]
+        fn = fn[: fn.index("\n}\n")]
+        for d in (".next", ".next.staging", ".next.previous"):
+            assert d in fn, f"{d} is not reclaimed"
+
+    def test_it_only_WRITES_when_something_is_mis_owned(self):
+        """⚠️ A `chown -R` on every apply turns a fast repair into a slow one.
+        `.next` runs to tens of thousands of files."""
+        body = _APPLY.read_text(encoding="utf-8")
+        fn = body[body.index("reclaim_build_tree() {"):]
+        fn = fn[: fn.index("\n}\n")]
+        assert "! -user" in fn, "it must test ownership before chowning"
+        assert 'n" -gt 0' in fn, "it must skip the chown when nothing is wrong"
+
+    def test_a_failed_reclaim_NAMES_the_cause(self):
+        """An EACCES after this is H-89, not a code fault, and the log must
+        say so — that ambiguity is what cost a day."""
+        body = _APPLY.read_text(encoding="utf-8")
+        fn = body[body.index("reclaim_build_tree() {"):]
+        fn = fn[: fn.index("\n}\n")]
+        assert "H-89" in fn
