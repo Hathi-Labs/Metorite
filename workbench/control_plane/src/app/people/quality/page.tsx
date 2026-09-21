@@ -19,7 +19,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-import Icon from "@/components/Icon";
+import PageHeader from "@/components/PageHeader";
 
 import { PeopleApiError, peopleApi } from "../lib/api";
 import { PAGE_FRAME, PAGE_FRAME_BLOCK } from "../lib/frame";
@@ -120,16 +120,10 @@ export default function QualityPage() {
 
   return (
     <main className={PAGE_FRAME}>
-      <header>
-        <h1 className="flex items-center gap-2 text-lg font-semibold">
-          <Icon name="ShieldCheck" size={20} />
-          Skills coverage &amp; data quality
-        </h1>
-        <p className="text-xs text-muted-foreground">
-          What is wrong with the record — not with anybody. Each row links to
-          where it gets fixed.
-        </p>
-      </header>
+      <PageHeader
+        title="Skills coverage & data quality"
+        subtitle="What is wrong with the record — not with anybody. Each row links to where it gets fixed."
+      />
 
       <h2 className="mt-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
         Coverage

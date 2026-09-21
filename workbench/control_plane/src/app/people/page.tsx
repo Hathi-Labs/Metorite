@@ -19,6 +19,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 
 import { AwayBadge } from "./components/AbsencePanel";
+import PageHeader from "@/components/PageHeader";
+
 import { Avatar } from "./components/Avatar";
 import { PersonEditor } from "./components/PersonEditor";
 import { PersonPanel } from "./components/PersonPanel";
@@ -120,12 +122,14 @@ export default function PeoplePage() {
           {/* `flex-wrap`: three controls plus the title squeeze the header
               at 390px — measured in the visual rig. Wrapping is the honest
               answer; compressing each label onto two lines is not. */}
-          <div className="mb-2 flex flex-wrap items-baseline gap-2">
-            <h1 className="text-sm font-semibold text-foreground">People</h1>
-            <span className="text-xs text-muted-foreground">
-              {loading ? "loading…" : `${rows.length} in the directory`}
-            </span>
-            <span className="flex-1" />
+          {/* One heading treatment for every surface — see
+              `components/PageHeader.tsx` for the eight spellings this
+              replaced. The wrap behaviour lives there now too. */}
+          <PageHeader
+            title="People"
+            meta={loading ? "loading…" : `${rows.length} in the directory`}
+            className="mb-2"
+          />
             {/*
               ⚠️ **There is no "Add person" here, and that is the decision.**
               Owner directive, 2026-09-21: people enter the organization in
@@ -146,7 +150,6 @@ export default function PeoplePage() {
               login badge and the picker's "no login — cannot see the task"
               warning (D-PC-12) both stay.
             */}
-          </div>
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
@@ -243,10 +246,14 @@ export default function PeoplePage() {
               {group.people.map((p) => {
                 const skills = skillsState(p.skills, hrVisible);
                 return (
-                  <button
+                  // A LINK, not a button (H-145). A person has their own
+                  // address now, so the row that opens them should behave
+                  // like everything else that navigates: middle-click,
+                  // open-in-new-tab, a real href on hover, and a back
+                  // button that works.
+                  <Link
                     key={p.id}
-                    type="button"
-                    onClick={() => setOpenId(p.id)}
+                    href={`/people/${p.id}`}
                     className="flex w-full items-center gap-2 border-b border-border px-1 py-2 text-left last:border-0 hover:bg-muted"
                   >
                     <Avatar name={p.name} avatar={p.avatar} />
@@ -287,7 +294,7 @@ export default function PeoplePage() {
                     >
                       {p.status}
                     </span>
-                  </button>
+                  </Link>
                 );
               })}
             </section>

@@ -631,6 +631,39 @@ refuses. Fence: `src/app/people/layout.test.ts` — six cases, and the one that
 matters asserts that `/people` matches EXACTLY. As a prefix it matches every
 sibling route, which lights two tabs at once on every page in the app.
 
+### 5.0a One heading, and a person with an address ✅ BUILT 2026-09-21
+
+**`components/PageHeader.tsx` is the page-scoped header for every surface.**
+Title, optional subtitle, optional actions, one typography.
+
+Measured before it: the `<h1>` across People, Projects and Settings came in
+EIGHT spellings. The People app alone carried three — `text-sm font-semibold`
+on the directory, `text-sm font-medium` on four surfaces, and `text-lg
+font-semibold` with an icon on three more. Tab across them and the title
+changed size. Fence: `lib/frame.test.ts` greps every page for a raw `<h1>`.
+
+⚠️ **This is not the app bar.** Projects and Tasks open with a slim `h-10`
+bar carrying a rail toggle and app-level actions. That is a second,
+deliberate shape for a rail-based app. `DESIGN_SYSTEM.md` should name both,
+which is H-148.
+
+**`/people/{id}` exists.** §5.2 has called this the person page since
+2026-08-06 while it was a side panel keyed by React state. It now has an
+address, so:
+
+- a colleague can be linked to,
+- the org chart's nodes open them — before this the chart was a tree you
+  could look at and not navigate from,
+- the directory row is a `Link`, so middle-click and back both work.
+
+It renders `PersonPanel` with a `page` variant rather than a copy. One
+component, two presentations, for the reason that file already gives about
+`ProfilePanels`: a field added to one must not go missing from the other.
+
+📌 **No editor on the page.** Editing needs the directory list and the status
+vocabulary, both of which belong to the directory. The control is absent
+rather than broken.
+
 ### 5.1 Directory — the default view ✅ BUILT
 
 A searchable list of everybody, one row per person, with a card/table toggle.

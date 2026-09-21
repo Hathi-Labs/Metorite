@@ -17,10 +17,12 @@
  * (adversarial review caught the wrong door here).
  */
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import Icon from "@/components/Icon";
 import { Input } from "@/components/ui/Input";
+import PageHeader from "@/components/PageHeader";
 import { categoricalAccent } from "@/lib/categorical";
 
 import { Avatar } from "../components/Avatar";
@@ -97,7 +99,16 @@ function ChartRow(props: RowProps) {
         <Avatar name={n.name} avatar={n.avatar} className="size-6 text-[10px]" />
         <div className="min-w-0">
           <p className="truncate text-sm">
-            {n.name}
+            {/* The node opens the person (H-145). Before this the chart was
+                a tree you could look at and not navigate from — the chevron
+                expanded, and the name did nothing at all. */}
+            <Link
+              href={`/people/${n.id}`}
+              className="hover:underline"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {n.name}
+            </Link>
             {tnode.cycle ? (
               <span className="ml-2 text-xs text-destructive">
                 manager loop — severed here
@@ -230,18 +241,13 @@ export default function OrgChartPage() {
 
   return (
     <main className={PAGE_FRAME}>
-      <header className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="flex items-center gap-2 text-lg font-semibold">
-            <Icon name="Network" size={20} />
-            Org chart
-          </h1>
-          <p className="text-xs text-muted-foreground">
-            From each person&apos;s recorded manager. Unmanaged people appear
-            as roots{res.can_manage ? " · drag a person onto their new manager" : ""}
-          </p>
-        </div>
-      </header>
+      <PageHeader
+        title="Org chart"
+        subtitle={
+          "From each person’s recorded manager. Unmanaged people appear as roots" +
+          (res.can_manage ? " · drag a person onto their new manager" : "")
+        }
+      />
 
       <Input
         value={q}

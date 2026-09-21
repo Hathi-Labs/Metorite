@@ -29,6 +29,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import PageHeader from "@/components/PageHeader";
 import { accentForHue } from "@/lib/statusAccent";
 
 import { Avatar } from "../components/Avatar";
@@ -148,15 +149,11 @@ export default function WorkloadDashboardPage() {
 
   return (
     <main className={PAGE_FRAME}>
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-sm font-medium text-foreground">Workload</h1>
-          <p className="text-[11px] text-muted-foreground">
-            What everybody is holding, what is due, and where the week does not
-            fit. Every figure is about tasks and dates.
-          </p>
-        </div>
-        <div className="flex gap-2">
+      <PageHeader
+        title="Workload"
+        subtitle="What everybody is holding, what is due, and where the week does not fit. Every figure is about tasks and dates."
+        actions={
+          <>
           <Link href="/people/quality">
             <Button variant="secondary" size="sm" icon="ShieldCheck">
               Data quality
@@ -167,8 +164,9 @@ export default function WorkloadDashboardPage() {
               Working week
             </Button>
           </Link>
-        </div>
-      </header>
+          </>
+        }
+      />
 
       {error && (
         <p className="text-xs text-destructive" role="alert">

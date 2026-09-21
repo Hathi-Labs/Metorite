@@ -24,6 +24,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import PageHeader from "@/components/PageHeader";
 
 import { AbsencePanel, AwayBadge } from "../components/AbsencePanel";
 import { AvatarPicker } from "../components/AvatarPicker";
@@ -92,14 +93,10 @@ export default function MyProfilePage() {
 
   return (
     <main className={PAGE_FRAME}>
-      <header className="flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-sm font-medium text-foreground">My profile</h1>
-          <p className="text-[11px] text-muted-foreground">
-            What the directory shows, and what the assignment suggester reads.
-          </p>
-        </div>
-      </header>
+      <PageHeader
+        title="My profile"
+        subtitle="What the directory shows, and what the assignment suggester reads."
+      />
 
       {state.kind === "loading" && (
         <p className="text-xs text-muted-foreground">Loading…</p>

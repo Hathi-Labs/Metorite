@@ -28,9 +28,23 @@ import { ProfilePanels } from "./ProfilePanels";
 
 interface Props {
   personId: string;
+  /**
+   * Where this is being shown.
+   *
+   * `panel` is the directory's side column. `page` is `/people/{id}`, a
+   * surface with its own URL — which is what lets the org chart, a search
+   * result and a colleague's message all point at the same person (H-145).
+   *
+   * One component, two presentations, for the reason this file already gives
+   * about `ProfilePanels`: a field added to one must not be missing from the
+   * other. The variant swaps the frame and drops the close control, and
+   * touches nothing else.
+   */
+  variant?: "panel" | "page";
   /** Bumped by the page after a save, so the panel re-reads what was written. */
   reloadKey?: number;
-  onClose: () => void;
+  /** Required for the panel. The page has the back button instead. */
+  onClose?: () => void;
   /**
    * Opens the editor on this person. The panel raises it rather than rendering
    * the editor itself: the editor needs the directory (for the manager picker)
@@ -45,7 +59,13 @@ const TONE: Record<string, string> = {
   muted: "text-muted-foreground",
 };
 
-export function PersonPanel({ personId, reloadKey = 0, onClose, onEdit }: Props) {
+export function PersonPanel({
+  personId,
+  variant = "panel",
+  reloadKey = 0,
+  onClose,
+  onEdit,
+}: Props) {
   const [person, setPerson] = useState<PersonDetail | null>(null);
   const [work, setWork] = useState<{ rows: WorkRow[]; available: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -71,25 +91,40 @@ export function PersonPanel({ personId, reloadKey = 0, onClose, onEdit }: Props)
     };
   }, [personId, reloadKey]);
 
+  // Resolved BEFORE the early returns: a loading or error state on the page
+  // must not render as a side panel either, which is what made this a bug
+  // the first time round.
+  const asPage = variant === "page";
+  const Frame = asPage ? "div" : "aside";
+  const shellClass = asPage
+    ? "flex w-full flex-col p-3"
+    : "flex h-full w-full max-w-md flex-col border-l border-border bg-card p-3";
+
   if (error) {
     return (
-      <aside className="flex h-full w-full max-w-md flex-col border-l border-border bg-card p-3">
+      <Frame className={shellClass}>
         <p className="text-sm text-foreground">{error}</p>
-      </aside>
+      </Frame>
     );
   }
   if (!person) {
     return (
-      <aside className="flex h-full w-full max-w-md flex-col border-l border-border bg-card p-3">
+      <Frame className={shellClass}>
         <p className="text-sm text-muted-foreground">Loading…</p>
-      </aside>
+      </Frame>
     );
   }
 
   const bar = loadBar(person);
 
   return (
-    <aside className="flex h-full w-full max-w-md flex-col overflow-y-auto border-l border-border bg-card">
+    <Frame
+      className={
+        asPage
+          ? "flex w-full flex-col"
+          : "flex h-full w-full max-w-md flex-col overflow-y-auto border-l border-border bg-card"
+      }
+    >
       <header className="flex items-start justify-between gap-2 border-b border-border p-3">
         <div className="flex min-w-0 items-center gap-2">
           <Avatar name={person.name} avatar={person.avatar}
@@ -129,13 +164,18 @@ export function PersonPanel({ personId, reloadKey = 0, onClose, onEdit }: Props)
               Edit
             </Button>
           ) : null}
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            icon="X"
-            aria-label="Close person"
-            onClick={onClose}
-          />
+          {/* No close control on the PAGE: the browser's back button is the
+              close control for a surface with its own URL, and a second one
+              that navigates somewhere of its own choosing is a surprise. */}
+          {asPage ? null : (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon="X"
+              aria-label="Close person"
+              onClick={onClose}
+            />
+          )}
         </div>
       </header>
 
@@ -304,7 +344,7 @@ export function PersonPanel({ personId, reloadKey = 0, onClose, onEdit }: Props)
           onSaved={(saved) => setPerson(saved)}
         />
       </section>
-    </aside>
+    </Frame>
   );
 }
 

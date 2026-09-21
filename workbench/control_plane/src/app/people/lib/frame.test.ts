@@ -79,6 +79,40 @@ describe("the People app's page frame", () => {
     expect(missing).toEqual([]);
   });
 
+  it("no page writes its own <h1> — the heading comes from PageHeader", () => {
+    /*
+     * Measured 2026-09-21: the `<h1>` across People, Projects and Settings
+     * came in EIGHT spellings, and the People app alone carried three —
+     * `text-sm font-semibold` on the directory, `text-sm font-medium` on
+     * four surfaces, `text-lg font-semibold` on three more. Tab across them
+     * and the title changed size.
+     *
+     * `components/PageHeader.tsx` is the one treatment. This is the grep
+     * that keeps it one: the conformance suite checks eight regexes and none
+     * of them is a heading, so without this the next surface picks its own.
+     */
+    const offenders: string[] = [];
+    for (const file of pageFiles()) {
+      const source = fs.readFileSync(file, "utf-8");
+      if (/<h1[\s>]/.test(source)) offenders.push(path.relative(APP, file));
+    }
+    expect(offenders, "use <PageHeader title=…>, not a raw <h1>").toEqual([]);
+  });
+
+  it("every flowing page renders a PageHeader", () => {
+    const missing: string[] = [];
+    for (const file of pageFiles()) {
+      const rel = path.relative(APP, file);
+      if (UNFRAMED.has(rel)) continue;
+      const source = fs.readFileSync(file, "utf-8");
+      // The person page delegates its heading to `PersonPanel`, which draws
+      // the person's own name — a title this component cannot know.
+      if (rel.includes("[id]")) continue;
+      if (!source.includes("PageHeader")) missing.push(rel);
+    }
+    expect(missing).toEqual([]);
+  });
+
   it("the two frames agree about the width", () => {
     // Two constants so a page that lays out its own children does not have to
     // fight `flex`. They must never disagree about the width itself.
