@@ -1519,11 +1519,15 @@ function OffscreenMarker({
   const offRight = drawnBar.leftPx > viewport.left + viewport.width;
   if (!offLeft && !offRight) return null;
   return (
-    <button
-      type="button"
+    // `className` carries POSITION only — the fill, the border, the radius
+    // and the hover all come from the primitive now (DESIGN_SYSTEM §3).
+    <Button
+      variant="secondary"
+      size="icon-xs"
       onClick={onGo}
       title="Scroll to this task's dates"
-      className="absolute top-1/2 z-20 grid h-6 w-6 -translate-y-1/2 place-items-center rounded-md border border-border bg-card text-muted-foreground hover:text-foreground"
+      aria-label="Scroll to this task's dates"
+      className="absolute top-1/2 z-20 -translate-y-1/2"
       style={{
         left: offLeft
           ? viewport.left + 8
@@ -1531,7 +1535,7 @@ function OffscreenMarker({
       }}
     >
       <Icon name={offLeft ? "ArrowLeft" : "ArrowRight"} size={13} />
-    </button>
+    </Button>
   );
 }
 

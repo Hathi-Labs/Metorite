@@ -321,6 +321,38 @@ async def remove_my_absence(
 # `gateway.person_skills` leaf, which owns the D-PC-6 projection), and this
 # door resolves the person through the self predicate with no id in the path.
 
+@router.get("/me/work")
+async def get_my_work(
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """My own open tasks — the same panel a colleague's page already showed.
+
+    **The asymmetry this closes.** `/people/{id}/work` has rendered a
+    colleague's open work since WS-28b. My own profile showed none, so I
+    could see what everybody else was holding and not what I was. Found by
+    an end-to-end review, filed as H-146.
+
+    ⚠️ **It exists here rather than being called from the page**, because
+    `/people/{id}/work` is on the GATED router and this page is not
+    (D-PC-15). Pointing an ungated surface at a gated endpoint would 403 for
+    a `guest`, who can still reach their own profile — the exact defect
+    WS-28g-2 was opened to fix, reintroduced through a fetch.
+
+    The route takes no person: `_my_row` resolves it from the authenticated
+    identity, which is the invariant `UNGATED_ROUTERS` asserts.
+
+    Scoping is unchanged and is still the VIEWER's — which here is also the
+    subject, so it answers "the work I hold in projects I can open". That is
+    the honest answer: a task in a project I cannot see is not mine to act
+    on from here.
+    """
+    from gateway.routes.people.directory import get_person_work
+
+    async with _tenant_session() as db:
+        row = await _my_row(db, user)
+    return (await get_person_work(str(row.id), user=user)).model_dump()
+
+
 @router.get("/me/skills")
 async def get_my_skills(
     user: UserContext = Depends(get_current_user),

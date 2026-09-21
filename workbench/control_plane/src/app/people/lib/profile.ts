@@ -207,7 +207,17 @@ export interface Completeness {
   filled: number;
   total: number;
   /** Only the fields that carry a `why` — a meter over everything is noise. */
-  missing: Array<{ label: string; why: string }>;
+  missing: Array<{
+    label: string;
+    why: string;
+    /**
+     * The column, so the row can send you to the input.
+     *
+     * Added 2026-09-21 (H-146): the meter said what each gap costs the
+     * planner and then routed nowhere. It diagnosed and did not treat.
+     */
+    name: string;
+  }>;
 }
 
 /**
@@ -222,7 +232,7 @@ export function completeness(person: PersonDetail | null): Completeness {
   const counted = FIELDS.filter((f) => f.why);
   const missing = counted
     .filter((f) => !isFilled(record[f.name]))
-    .map((f) => ({ label: f.label, why: f.why as string }));
+    .map((f) => ({ label: f.label, why: f.why as string, name: f.name }));
   return {
     filled: counted.length - missing.length,
     total: counted.length,

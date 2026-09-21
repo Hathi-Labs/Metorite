@@ -2898,46 +2898,50 @@ line — never reclaim a number by deleting the other entry.
   migration 207
 - **Added:** 2026-09-21 · the every-app-by-default session
 
-### H-148 · Projects still has its own look, and 54 hand-rolled buttons · [AGENT]
-- **Check:** `grep -rc "<button " workbench/control_plane/src/app/projects --include=*.tsx | awk -F: '{s+=$2} END {print s}'`
-  → a count above a handful means this is open. It was 54 on 2026-09-21,
-  against 98 uses of the shared `Button`.
-- **Why:** the People app was brought onto one `PageHeader` on 2026-09-21.
-  Projects was not, and the reason is honest. Its surface opens with a slim
-  `h-10` app bar carrying a rail toggle, the app name and app-level actions.
-  Tasks has the same bar. That is a deliberate second shape for a rail-based
-  app, not drift. Replacing it would be a redesign.
-- **What IS drift:** 54 hand-rolled `<button className=…>` next to 98 uses
-  of `components/ui/Button`. Each one is a control that will not follow a
-  change to the button.
-- 📌 The app bar's own comment claims "Same shape as Tasks and Email".
-  Measured: Tasks matches, **Email does not** — it uses a `text-sm
-  font-medium` heading. CRM uses the Settings shape. So the product has at
-  least three page-opening idioms and one comment that is wrong about which.
-- **The decision:** name the two legitimate shapes in `DESIGN_SYSTEM.md`.
-  The app bar is for a rail app. `PageHeader` is for a document surface.
-  Then sweep the buttons. Naming the two first is what stops a third.
-- **Authority:** `AGENTS.md` rule 1 · `DESIGN_SYSTEM.md` · owner directive
-  2026-09-21
-- **Added:** 2026-09-21 · the cohesion pass
+### H-148 · The remaining raw controls in Projects · [AGENT]
+- **Check:** from `workbench/control_plane`,
+  `npx vitest run src/components/rawControls.test.ts` → the budget in that
+  file is the count. It was 3 on 2026-09-21.
+- 🔴 **THIS ENTRY OVERSTATED THE PROBLEM AND IS CORRECTED.** It said "54
+  hand-rolled buttons". `DESIGN_SYSTEM.md` §3 already says a clickable row
+  stays raw, and classified against it the 54 are:
+  - **29** rows, menu items and clickable cards. Legitimate.
+  - **5** colour swatches. Legitimate. A swatch has no control personality
+    to inherit.
+  - **5** control-shaped. The real defect. **Two converted 2026-09-21.**
+  - The rest are bare text toggles and sort headers, which are row-ish.
+- **What is left is 3, and they are BLOCKED on a missing primitive.** See
+  H-149. A view-mode switch, a view segment and an icon chooser each need a
+  SELECTED state, and `Button` has no variant for one. That absence is why
+  all three were hand-rolled. Converting them to `Button` would drop the
+  state they exist to show.
+- 📌 **The naming is done.** `DESIGN_SYSTEM.md` §6a now names the two ways a
+  surface opens. The slim app bar is for a rail app. `PageHeader` is for a
+  document surface. A third does not now arrive by default.
+- 📌 Email and CRM still open their own way. Neither is a third legitimate
+  shape. Both are drift, and both are cheap once somebody is in the file.
+- **Authority:** `DESIGN_SYSTEM.md` §3, §6a · owner directive 2026-09-21
+- **Added:** 2026-09-21 · the cohesion pass · **corrected and narrowed the
+  same day**, after classifying instead of counting
 
-### H-143 · My Profile is a dead end · [AGENT]
-- **Check:** `rg -n "href|Link" workbench/control_plane/src/app/people/me/page.tsx`
-  → no outbound link means this is open.
-- **Why:** two asymmetries, both found by reading the page beside a
-  colleague's.
-  - A colleague's panel shows their **Open work** and an **Assign work**
-    button. My own profile shows neither. I can see what a colleague is
-    holding and not what I am.
-  - The completeness meter lists each missing field and what it costs the
-    planner — *"Skills: the first and most defensible signal behind who
-    should do this"* — and then routes nowhere. It diagnoses and does not
-    treat.
-- **The shape:** make each missing-field row focus its own input, and add the
-  same work summary the person panel already renders. Both are components
-  that exist.
-- **Authority:** `people_center_app.md` §5.3 · owner review 2026-09-21
-- **Added:** 2026-09-21 · the People end-to-end review
+### H-149 · No primitive for a control with a SELECTED state · [AGENT]
+- **Check:** `rg -n "toggle|pressed" workbench/control_plane/src/components/ui/Button.tsx`
+  → no selected-state variant means this is open.
+- **Why:** `Button` has `primary`, `secondary`, `ghost`, `destructive` and
+  `text`, and no way to say "this one is on". So every segmented control,
+  view switch and chooser in the tree is hand-rolled. Each picks its own
+  way to show the state — `bg-primary/10 text-primary` in one place,
+  `ring-2 ring-primary` in another, `bg-accent` in a third.
+- **Measured 2026-09-21:** three in Projects alone — `page.tsx`'s view
+  mode, `FilterBar.tsx`'s view segment, `SpaceSettings.tsx`'s icon chooser.
+  They are the whole remaining balance of H-148.
+- **Two shapes to choose between.** A selected variant on `Button`, or
+  `Tabs variant="segmented"` for the ones that are really tabs. The view
+  switch is probably Tabs. The icon chooser is probably a toggle.
+- 📌 Do this BEFORE the rest of H-148. Converting a toggle to a plain
+  `Button` loses the state, so that sweep is blocked on this decision.
+- **Authority:** `DESIGN_SYSTEM.md` §3 · H-148
+- **Added:** 2026-09-21 · the cohesion pass
 
 ### H-144 · `GET /people/{id}/editable` has no caller · [AGENT]
 - **Check:** `rg -n "editable" workbench/control_plane/src/app/people/lib/api.ts`

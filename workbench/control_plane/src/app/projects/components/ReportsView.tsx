@@ -23,6 +23,7 @@
 import { useEffect, useState } from "react";
 
 import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
 import { statusAccent } from "@/lib/statusAccent";
 
 import {
@@ -306,14 +307,15 @@ export default function ReportsView({
         <p className="text-[11px] text-muted-foreground">
           A saved question, answered from the same numbers the dashboard shows.
         </p>
-        <button
-          type="button"
+        <Button
+          className="ml-auto"
+          variant="secondary"
+          size="sm"
+          loading={busy}
           onClick={createWeekly}
-          disabled={busy}
-          className="ml-auto rounded-md border border-border px-2 py-1 text-[11px] hover:bg-card disabled:opacity-50"
         >
-          {busy ? "Saving…" : "New weekly report"}
-        </button>
+          New weekly report
+        </Button>
       </div>
 
       {error && (

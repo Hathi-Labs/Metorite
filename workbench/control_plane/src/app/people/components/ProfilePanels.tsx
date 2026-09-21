@@ -209,6 +209,21 @@ function EditControl({
   }
 }
 
+/**
+ * Scroll a profile field into view and put the cursor in it.
+ *
+ * Focus as well as scroll: arriving next to an input you still have to click
+ * is most of the journey and none of the point. A field with no focusable
+ * child — the skills panel is one — is scrolled to and left alone.
+ */
+function focusField(name: string): void {
+  const el = document.getElementById(`field-${name}`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  const input = el.querySelector<HTMLElement>("input, textarea, select, button");
+  input?.focus({ preventScroll: true });
+}
+
 export function ProfilePanels({
   person,
   includePrivate = true,
@@ -263,10 +278,28 @@ export function ProfilePanels({
             <Icon name="Sparkles" className="h-3.5 w-3.5" />
             {meter.filled} of {meter.total} planning fields filled in
           </div>
+          {/*
+            Each row GOES to its field (H-146). Before this the meter named
+            the gap and what it costs the planner, and left you to find the
+            input yourself — a diagnosis with no treatment.
+
+            A raw `<button>` on purpose: this is a full-width left-aligned
+            row, which `DESIGN_SYSTEM.md` §3 names as the case that stays
+            raw rather than wearing a control's personality.
+          */}
           <ul className="mt-2 flex flex-col gap-1">
             {meter.missing.map((m) => (
-              <li key={m.label} className="text-[11px] text-muted-foreground">
-                <span className="text-foreground">{m.label}</span> — {m.why}
+              <li key={m.label}>
+                <button
+                  type="button"
+                  onClick={() => focusField(m.name)}
+                  className="w-full rounded px-1 py-0.5 text-left text-[11px] text-muted-foreground hover:bg-muted"
+                >
+                  <span className="text-foreground underline decoration-dotted underline-offset-2">
+                    {m.label}
+                  </span>{" "}
+                  — {m.why}
+                </button>
               </li>
             ))}
           </ul>
@@ -331,7 +364,13 @@ export function ProfilePanels({
           <p className="mt-0.5 text-[11px] text-muted-foreground">{section.note}</p>
           <dl className="mt-3 grid gap-2.5 sm:grid-cols-2">
             {fields.map((field) => (
-              <div key={field.spec.name} className="flex flex-col gap-1">
+              <div
+                key={field.spec.name}
+                // The anchor the completeness meter jumps to (H-146).
+                // `scroll-mt-4` keeps the label clear of the viewport edge.
+                id={`field-${field.spec.name}`}
+                className="flex flex-col gap-1 scroll-mt-4"
+              >
                 <dt className="text-[11px] text-muted-foreground">
                   {field.spec.label}
                 </dt>
@@ -361,7 +400,9 @@ export function ProfilePanels({
       {/* WS-28h — structured skills & credentials. Its own saves, its own
           endpoint: a skills row is a child record, not a field on the person,
           so it does not ride the PATCH above. */}
-      <SkillsPanel person={person} onSaved={() => onSaved?.(person)} />
+      <div id="field-skills" className="scroll-mt-4">
+        <SkillsPanel person={person} onSaved={() => onSaved?.(person)} />
+      </div>
 
       {error && (
         <p className="text-xs text-destructive" role="alert">
