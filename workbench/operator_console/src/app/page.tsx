@@ -92,7 +92,10 @@ export default async function CustomersPage() {
 
       {error && <div className="banner">{error}</div>}
 
-      <GoLiveRail catalog={aiCatalog.data} />
+      {/* 🔴 The orgs go in now. Step 5 could not say whether a customer
+          held a key, so it sat at `info` forever — and a customer with no
+          key cannot be served at all. */}
+      <GoLiveRail catalog={aiCatalog.data} orgs={rows} />
 
       {!error && rows.length > 0 && (
         <div className="stats">

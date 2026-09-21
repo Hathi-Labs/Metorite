@@ -8,7 +8,8 @@ import { describe, expect, it } from "vitest";
 
 import type { AiCatalog, CatalogModel, ProviderAccount } from "./contract";
 import { EMPTY_CATALOG } from "./contract";
-import { goLiveSteps, railSummary, stepTone } from "./golive";
+import type { OrgRow } from "./format";
+import { customersWithoutKeys, goLiveSteps, railSummary, stepTone } from "./golive";
 
 const ACCOUNT = (over: Partial<ProviderAccount> = {}): ProviderAccount => ({
   id: "a1", provider: "deepseek", label: null, apiBase: null, orgSlug: null,
@@ -57,12 +58,17 @@ describe("the six steps, on an empty console", () => {
     expect(step(CAT(), "tiers").state).toBe("todo");
   });
 
-  it("🔴 NEVER claims the flags or the customer step from here", () => {
+  it("🔴 NEVER claims the FLAGS step from here", () => {
     // The flags live in a box's environment. A green this page cannot
     // measure is the health-dot lie again.
     expect(step(CAT(), "flags").state).toBe("info");
-    expect(step(CAT(), "customer").state).toBe("info");
     expect(step(CAT(), "flags").detail).toContain("Owner acts");
+  });
+
+  it("leaves the customer step at info when no org list is supplied", () => {
+    // ⚠️ It became derivable on 2026-09-21, and only WITH the orgs. A caller
+    // that passes none must get what it always got, never a red step.
+    expect(step(CAT(), "customer").state).toBe("info");
   });
 });
 
@@ -238,5 +244,110 @@ describe("an unreadable credential list", () => {
     expect(step?.state).toBe("todo");
     expect(step?.detail).toContain("UNKNOWN");
     expect(step?.detail).not.toContain("every AI call fails");
+  });
+});
+
+// ── Step 5 — can each customer actually be served? ────────────────────────
+//
+// 🔴 **This step was `info` forever and could not go green OR red.** Its own
+// comment said "the catalog read does not carry balances or keys". A customer
+// with no `cc_live_` key cannot be served at all — their deployment presents
+// that key to the Router on every call — and `hathi-labs-llp` ran for weeks
+// with zero keys while nothing anywhere said so. Measured 2026-09-21.
+
+const ORG = (over: Partial<OrgRow> = {}): OrgRow => ({
+  slug: "acme",
+  name: "Acme",
+  status: "active",
+  subscription_status: "active",
+  provider: null,
+  trial_ends_at: null,
+  current_period_end: null,
+  export_until: null,
+  credit_balance: "0",
+  mrr_paise: 0,
+  live_keys: 1,
+  seats: [],
+  ...over,
+});
+
+describe("customersWithoutKeys", () => {
+  it("is UNKNOWN when no orgs are supplied", () => {
+    expect(customersWithoutKeys(undefined).known).toBe(false);
+    expect(customersWithoutKeys([]).known).toBe(false);
+  });
+
+  it("is UNKNOWN when any live org omits the field", () => {
+    // 🔴 A Console predating the field sends nothing. Reading that as "no
+    // key" would put a red step on a customer who may well have one — and a
+    // partial read must not read as a whole one.
+    const out = customersWithoutKeys([
+      ORG({ slug: "a" }),
+      ORG({ slug: "b", live_keys: undefined }),
+    ]);
+    expect(out.known).toBe(false);
+    expect(out.missing).toEqual([]);
+  });
+
+  it("names the live customers holding no key", () => {
+    const out = customersWithoutKeys([
+      ORG({ slug: "armed", live_keys: 2 }),
+      ORG({ slug: "bare", live_keys: 0 }),
+    ]);
+    expect(out.known).toBe(true);
+    expect(out.missing).toEqual(["bare"]);
+    expect(out.live).toBe(2);
+  });
+
+  it("ignores an org that is NOT active", () => {
+    // ⚠️ A suspended or cancelled customer needs no key, and nagging for one
+    // sends an operator to do work that changes nothing.
+    const out = customersWithoutKeys([
+      ORG({ slug: "gone", status: "cancelled", live_keys: 0 }),
+      ORG({ slug: "live", live_keys: 1 }),
+    ]);
+    expect(out.missing).toEqual([]);
+    expect(out.live).toBe(1);
+  });
+});
+
+describe("step 5 — arm a customer", () => {
+  const s5 = (orgs?: OrgRow[]) =>
+    goLiveSteps(CAT(), orgs).find((x) => x.key === "customer")!;
+
+  it("goes DONE when every active customer holds a key", () => {
+    const st = s5([ORG({ live_keys: 1 })]);
+    expect(st.state).toBe("done");
+    expect(st.detail).toContain("Every active customer holds a key");
+  });
+
+  it("agrees its verb with the number MISSING, not the total", () => {
+    // "1 of 3 active customers hold NO key" reads as three of them.
+    const two = s5([
+      ORG({ slug: "a", live_keys: 0 }),
+      ORG({ slug: "b", live_keys: 0 }),
+      ORG({ slug: "c", live_keys: 1 }),
+    ]);
+    expect(two.detail).toContain("2 of 3 active customers hold NO");
+    const one = s5([ORG({ slug: "a", live_keys: 0 }), ORG({ slug: "b" })]);
+    expect(one.detail).toContain("1 of 2 active customers holds NO");
+  });
+
+  it("goes TODO and NAMES them when one does not", () => {
+    const st = s5([ORG({ slug: "bare", live_keys: 0 })]);
+    expect(st.state).toBe("todo");
+    expect(st.detail).toContain("bare");
+    expect(st.detail).toContain("can be served until one is issued");
+    expect(st.detail).toContain("holds NO cc_live_ key");
+  });
+
+  it("stays INFO when the Console did not send the count", () => {
+    expect(s5([ORG({ live_keys: undefined })]).state).toBe("info");
+  });
+
+  it("reads as DANGER when a customer cannot be served", () => {
+    // The tone is the whole point: this is not a warning, it is a customer
+    // whose every AI call fails.
+    expect(stepTone(s5([ORG({ live_keys: 0 })]).state)).toBe("danger");
   });
 });

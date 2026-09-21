@@ -253,3 +253,62 @@ class TestFences:
         after = body.split(marker, 1)[1]
         # The call appears after the route signature, within the app.
         assert "store.cross_org_summary(" in after
+
+
+class TestTheLiveKeyCount:
+    """`live_keys` on the customer list — the fact nothing could see.
+
+    🔴 **A customer with no `cc_live_` key cannot be served AT ALL.** Their
+    deployment presents it to the Router on every AI call. The operator
+    console's go-live rail could not report its absence, because the reads it
+    had carried no key facts — its own comment said so. `hathi-labs-llp` was
+    provisioned and ran for weeks with zero keys, and nothing anywhere said
+    so. Measured 2026-09-21.
+    """
+
+    def test_a_fresh_org_reports_ZERO_keys(self, client, deployment):
+        """🔴 The state that caused this. Provisioning mints no key, so every
+        new customer starts unable to be served — and that must be VISIBLE."""
+        slug = _provision(client, deployment)
+        assert _row_for(client, slug)["live_keys"] == 0
+
+    def test_issuing_a_key_moves_the_count(self, client, deployment):
+        slug = _provision(client, deployment)
+        r = client.post("/keys", headers=AUTH, json={"org_slug": slug})
+        assert r.status_code == 200, r.text
+        assert _row_for(client, slug)["live_keys"] == 1
+
+    def test_a_REVOKED_key_does_not_count(self, client, deployment):
+        """⚠️ A revoked key authenticates nothing. Counting it would report a
+        deployment as armed while every call it makes is refused."""
+        from sqlalchemy import text
+
+        slug = _provision(client, deployment)
+        client.post("/keys", headers=AUTH, json={"org_slug": slug})
+        assert _row_for(client, slug)["live_keys"] == 1
+
+        eng = create_engine(_URL, future=True)
+        with eng.begin() as c:
+            c.execute(
+                text(
+                    "UPDATE llm_api_key SET revoked_at = now() "
+                    "WHERE organization_id = "
+                    "  (SELECT id FROM organization WHERE slug = :s)"
+                ),
+                {"s": slug},
+            )
+        eng.dispose()
+        assert _row_for(client, slug)["live_keys"] == 0
+
+    def test_every_org_carries_the_field_even_with_no_keys(
+        self, client, deployment
+    ):
+        """⚠️ 0, never a missing field. The console renders every row, and a
+        page that lists them all must not break on one absent key."""
+        _provision(client, deployment)
+        _provision(client, deployment)
+        rows = client.get("/orgs", headers=AUTH).json()["organizations"]
+        assert rows
+        for row in rows:
+            assert "live_keys" in row, row["slug"]
+            assert isinstance(row["live_keys"], int)

@@ -1612,6 +1612,45 @@ def credit_balance_by_org(conn: Connection) -> dict[str, Decimal]:
 # ── Keys ────────────────────────────────────────────────────────────────────
 
 
+def live_key_count_by_org(conn: Connection) -> dict[str, int]:
+    """How many LIVE `cc_live_` keys each organization holds, keyed by slug.
+
+    🔴 **Why the operator list needs this at all.** A customer's deployment
+    presents its organization key to the Router on every AI call. Without one,
+    nothing that deployment does can be served or billed — and until now
+    nothing anywhere said so. `hathi-labs-llp` was provisioned and ran for
+    weeks with zero keys, and the go-live rail could not report it because the
+    catalog read carries no key facts. Measured 2026-09-21.
+
+    ⚠️ **An organization with no key returns 0, not a missing entry.** The
+    caller renders every organization, and a `KeyError` inside a page that
+    lists all of them is a blank page rather than a missing cell — the same
+    rule `credit_balance_by_org` states.
+
+    ⚠️ **LIVE only.** A revoked key is not a key: it authenticates nothing, so
+    counting it would report a deployment as armed when every call it makes
+    is refused.
+
+    ⚠️ **Uncapped.** This is a FACT a page is judged from, and H-76 records
+    what a cap on one of those does — an arbitrary subset gets the truth and
+    the rest silently read zero.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT o.slug                AS slug,
+                   COUNT(k.id)           AS live_keys
+            FROM organization o
+            LEFT JOIN llm_api_key k
+                   ON k.organization_id = o.id
+                  AND k.revoked_at IS NULL
+            GROUP BY o.id, o.slug
+            """
+        )
+    )
+    return {r.slug: int(r.live_keys) for r in rows}
+
+
 def issue_key(
     conn: Connection,
     *,

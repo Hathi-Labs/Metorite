@@ -26,6 +26,15 @@ export type OrgRow = {
   export_until: string | null;
   credit_balance: string;
   mrr_paise: number;
+  /** LIVE `cc_live_` keys this organization holds.
+   *
+   * 🔴 **Zero means nothing this customer's deployment does can be served.**
+   * Their box presents this key to the Router on every AI call.
+   *
+   * ⚠️ **Optional, and it defaults to 0 at the read** — a Console predating
+   * the field sends nothing, and treating that as "no key" would put a red
+   * step on a customer who may well have one. `readOrgs` decides. */
+  live_keys?: number;
   seats: SeatRow[];
 };
 
