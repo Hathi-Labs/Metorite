@@ -104,6 +104,12 @@ import {
   timelineRows,
   weekCells,
 } from "../lib/timeline";
+import {
+  applyScroll,
+  edgeVelocity,
+  frameStep,
+  type ScrollBox,
+} from "../lib/edgeScroll";
 
 const LEFT_COL = 340;
 
@@ -355,6 +361,19 @@ export function TimelineView({
    * moment a drag crosses a day boundary, read by the bar's own click.
    */
   const travelledRef = useRef(false);
+  /**
+   * The last place the pointer was, in viewport coordinates.
+   *
+   * ⚠️ The auto-scroll loop needs this and cannot get it any other way.
+   * While the chart pulls itself along under a STATIONARY pointer, no
+   * `mousemove` fires — so every frame has to recompute from the last known
+   * position rather than from an event it is not going to receive.
+   */
+  const pointerRef = useRef<{ x: number; y: number } | null>(null);
+  /** The running `requestAnimationFrame` id, or 0 when nothing is dragging. */
+  const autoRef = useRef(0);
+  /** `performance.now()` of the previous frame, for a time-based step. */
+  const lastFrameRef = useRef(0);
 
   // Once per registry, not once per bar.
   const tagHues = useMemo(() => tagColours(tags ?? []), [tags]);
@@ -577,6 +596,86 @@ export function TimelineView({
     readViewport();
   }, [zoom, range.from, todayPx, todayKey, scrollToDay, readViewport]);
 
+  // ── The chart scrolls itself while you drag ──────────────────────
+  //
+  // Owner request, 2026-09-21. Every decision is in `lib/edgeScroll.ts`, which
+  // is testable; what stays here is the loop and the two DOM reads, which are
+  // not — `vitest.config.ts` is `environment: "node"`.
+
+  /**
+   * The LIVE chart area, which is not the container's box.
+   *
+   * ⚠️ Both insets are load-bearing. The task column is 340px of sticky
+   * chrome painted OVER the chart, and the header another 52px — so a bar
+   * dragged under either one is hidden, and that is exactly the moment the
+   * chart should be moving. Measuring from the container's own edges would
+   * put the trigger 340px too far left: you would have to drag a bar
+   * completely out of sight before anything happened.
+   */
+  const chartBox = useCallback((): ScrollBox | null => {
+    const box = boxRef.current;
+    if (!box) return null;
+    return {
+      left: box.left + LEFT_COL,
+      right: box.right,
+      top: box.top + HEAD_H,
+      bottom: box.bottom,
+    };
+  }, []);
+
+  const stopAutoScroll = useCallback(() => {
+    if (autoRef.current) cancelAnimationFrame(autoRef.current);
+    autoRef.current = 0;
+    pointerRef.current = null;
+  }, []);
+
+  /**
+   * Pull the chart while the pointer sits near an edge.
+   *
+   * `onScrolled` is handed the distance that ACTUALLY moved, and every caller
+   * has to use it — see the note on `applyScroll`. A bar's position is a pure
+   * pointer delta, so content sliding under a stationary cursor moves the
+   * chart and leaves the bar behind unless the drag's origin follows.
+   *
+   * ⚠️ The loop keeps running while the velocity is zero rather than
+   * stopping and restarting. One `requestAnimationFrame` that does two
+   * comparisons costs nothing, and the alternative needs the mousemove handler
+   * to decide when to restart it — which is a second place that has to know
+   * the edge rule.
+   */
+  const startAutoScroll = useCallback(
+    (onScrolled: (dx: number, dy: number) => void) => {
+      stopAutoScroll();
+      lastFrameRef.current =
+        typeof performance === "undefined" ? 0 : performance.now();
+      const tick = (now: number) => {
+        const el = scrollRef.current;
+        const view = chartBox();
+        const pointer = pointerRef.current;
+        const elapsed = now - lastFrameRef.current;
+        lastFrameRef.current = now;
+        if (el && view && pointer) {
+          const speed = edgeVelocity(pointer, view);
+          if (speed.x !== 0 || speed.y !== 0) {
+            const moved = applyScroll(
+              el,
+              frameStep(speed.x, elapsed),
+              frameStep(speed.y, elapsed),
+            );
+            if (moved.dx !== 0 || moved.dy !== 0) onScrolled(moved.dx, moved.dy);
+          }
+        }
+        autoRef.current = requestAnimationFrame(tick);
+      };
+      autoRef.current = requestAnimationFrame(tick);
+    },
+    [chartBox, stopAutoScroll],
+  );
+
+  // A drag that outlives its component leaks a frame loop for ever, and the
+  // chart is unmounted every time the member switches view.
+  useEffect(() => stopAutoScroll, [stopAutoScroll]);
+
   // ── Dragging a bar ──────────────────────────────────────────────────────
 
   function beginDrag(
@@ -603,12 +702,21 @@ export function TimelineView({
     };
     dragRef.current = next;
     setDrag(next);
+    pointerRef.current = { x: event.clientX, y: event.clientY };
 
-    const onMouseMove = (moved: MouseEvent) => {
+    /**
+     * Where the bar sits now, from the last known pointer.
+     *
+     * Reads `pointerRef` rather than taking an event, because the auto-scroll
+     * loop calls this too and there is no event during it — the chart moves
+     * under a stationary cursor, so no `mousemove` fires.
+     */
+    const recompute = () => {
       const current = dragRef.current;
-      if (!current) return;
-      const steps = dayStep(moved.clientX - current.originX, range);
-      const hoverDay = dayAtPx(chartX(moved.clientX), range);
+      const pointer = pointerRef.current;
+      if (!current || !pointer) return;
+      const steps = dayStep(pointer.x - current.originX, range);
+      const hoverDay = dayAtPx(chartX(pointer.x), range);
       // The guard that makes state-per-drag affordable: between day boundaries
       // nothing has changed, so nothing re-renders.
       if (steps === current.steps && hoverDay === current.hoverDay) return;
@@ -618,9 +726,28 @@ export function TimelineView({
       setDrag(updated);
     };
 
+    const onMouseMove = (moved: MouseEvent) => {
+      pointerRef.current = { x: moved.clientX, y: moved.clientY };
+      recompute();
+    };
+
+    startAutoScroll((dx) => {
+      const current = dragRef.current;
+      if (!current || dx === 0) return;
+      // 🔴 THE line that makes auto-scroll correct rather than merely
+      // present. `steps` is `pointer.x - originX` — a pure pointer delta. The
+      // content just moved `dx` to the left under a cursor that did not move,
+      // so the pointer is now `dx` further along the calendar and the origin
+      // has to follow it. Without this the chart scrolls away and the bar
+      // stays where it was, which looks like the bar is sliding backwards.
+      dragRef.current = { ...current, originX: current.originX - dx };
+      recompute();
+    });
+
     const onMouseUp = () => {
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mouseup", onMouseUp);
+      stopAutoScroll();
       const finished = dragRef.current;
       dragRef.current = null;
       setDrag(null);
@@ -689,26 +816,43 @@ export function TimelineView({
     boxRef.current = el.getBoundingClientRect();
     const box = boxRef.current;
 
-    const point = (moved: { clientX: number; clientY: number }) => ({
-      x: chartX(moved.clientX),
-      y: moved.clientY - box.top - HEAD_H + el.scrollTop,
+    // ⚠️ BOTH of these already read the live scroll offset, which is why the
+    // rubber-band line needs no compensation when the chart moves itself —
+    // unlike a bar, whose position is a pure pointer delta. Recomputing from
+    // the same cursor position after a scroll simply gives the right answer.
+    const point = (at: { x: number; y: number }) => ({
+      x: chartX(at.x),
+      y: at.y - box.top - HEAD_H + el.scrollTop,
     });
 
-    const next: LinkState = { fromId, ...point(event), overId: null };
+    pointerRef.current = { x: event.clientX, y: event.clientY };
+    const next: LinkState = { fromId, ...point(pointerRef.current), overId: null };
     linkRef.current = next;
     setLink(next);
 
-    const onMouseMove = (moved: MouseEvent) => {
+    const recompute = () => {
       const current = linkRef.current;
-      if (!current) return;
-      const updated = { ...current, ...point(moved) };
+      const pointer = pointerRef.current;
+      if (!current || !pointer) return;
+      const updated = { ...current, ...point(pointer) };
       linkRef.current = updated;
       setLink(updated);
     };
 
+    const onMouseMove = (moved: MouseEvent) => {
+      pointerRef.current = { x: moved.clientX, y: moved.clientY };
+      recompute();
+    };
+
+    // The gesture that needs this MOST, and the one people hit hardest: a
+    // blocker and the task it blocks are usually far apart, in time and in
+    // the row list. Both axes, so an arrow can reach a task below the fold.
+    startAutoScroll(recompute);
+
     const onMouseUp = () => {
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mouseup", onMouseUp);
+      stopAutoScroll();
       const finished = linkRef.current;
       linkRef.current = null;
       setLink(null);
@@ -1679,6 +1823,14 @@ function TimelineBar({
 
         <button
           type="button"
+          /* A stable handle for a test, as `data-card` is on the board. The
+             task's NAME is not one: it is also the row label in the sticky
+             column, so a by-name query picks whichever comes first in the
+             DOM and silently grabs the label instead of the bar. That cost
+             an afternoon here — the drag never started and the assertions
+             passed anyway, because a bar that is not moving also is not
+             moving wrongly. */
+          data-bar={task.id}
           onMouseDown={(event) => {
             // Both gestures start here. A press that never travels is a click
             // and opens the task; one that does is a move and does not —

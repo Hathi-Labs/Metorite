@@ -5683,6 +5683,48 @@ this up"*. Only `blocks` is drawn — `relates_to` and `duplicates` have no dire
 anything to a schedule (WS-27p's `DIRECTED_TYPES`), and an arrow would claim a sequence nobody
 asserted.
 
+#### The chart scrolls itself while you drag (2026-09-21)
+
+Owner request: *"moving a task within the timeline should automatically scroll
+left and right when we are dragging"*.
+
+The drag never broke at the edge. `mousemove` binds to `document`, so the bar
+kept following the pointer past the chart. What stopped was the VIEW. At the
+month zoom the chart draws 24px per day, so a 900px window is about five
+weeks. Moving a task out two months was not one gesture. It was drag, drop,
+scroll, and pick the bar up again.
+
+**One mechanism, three gestures.** Moving a bar, dragging an edge to change
+one date, and dragging the dot to another bar all start in the same two
+functions, so they all call the same loop. The dependency drag is the one
+people hit hardest — a blocker and the task it blocks are usually far apart —
+and it is the reason the loop scrolls vertically as well.
+
+**The decisions are in `lib/edgeScroll.ts`, the loop is in the component.**
+`vitest.config.ts` is `environment: "node"`, so nothing here can watch a
+scroll happen. What can be tested is the arithmetic: direction, speed, the
+clamp at each end. So the pure half is a module with a suite, and what stays
+in `TimelineView.tsx` is a `requestAnimationFrame` and two DOM writes.
+
+⚠️ **Scrolling the chart must MOVE THE DRAG too, and this is the whole
+subtlety.** A bar's position is `dayStep(clientX - originX)` — a pure pointer
+delta. Scroll the content 400px under a stationary cursor and that delta does
+not change, so the chart slides away and the bar stays behind. It reads as the
+bar sliding backwards out of your grip. The loop reports the distance that
+ACTUALLY moved and the drag's origin follows it. The distance has to be
+measured rather than assumed: at `scrollLeft === 0` the DOM refuses the
+scroll, and compensating for one that did not happen is the same defect
+mirrored.
+
+⚠️ **The trigger zone is measured from the CHART, not from the container.**
+The task column is 340px of sticky chrome painted over the chart and the
+header another 52px. A bar dragged under either is hidden, which is exactly
+when the chart should move. Measuring from the container's own edges would put
+the left trigger 340px too far out.
+
+Fences: `src/app/projects/lib/edgeScroll.test.ts` (a gate) and
+`e2e/projects-timeline-autoscroll.spec.ts` (runnable, not a gate — H-27).
+
 #### D-PM-11 — hierarchy depth decides what earns a bar
 
 Top-level tasks get rows; subtasks fold in and expand on a chevron. **A parent with no dates

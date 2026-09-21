@@ -1594,12 +1594,22 @@ function ProjectsWorkspace() {
         include_undated: mode === "timeline",
         ...toQuery(filters),
       });
+      // ⚠️ Normalised HERE, at the boundary, so nothing downstream has to
+      // guard. `monthGroups` spreads `month.unscheduled`, and a spread of
+      // `undefined` throws during RENDER — which blanks the whole Projects
+      // page rather than degrading.
+      //
+      // The gateway does always send these today (`calendar.py` returns
+      // `unscheduled: []` when `include_undated` is false). The shape that
+      // does not is an OLDER gateway, which is what the app talks to for the
+      // minutes a deploy is rolling — and `unscheduled` only arrived on
+      // 2026-09-16, so that window has already existed once.
       setMonth({
-        rows: res.rows,
-        links: res.links,
-        undated: res.undated,
-        unscheduled: res.unscheduled,
-        truncated: res.truncated,
+        rows: res.rows ?? [],
+        links: res.links ?? [],
+        undated: res.undated ?? 0,
+        unscheduled: res.unscheduled ?? [],
+        truncated: res.truncated ?? false,
       });
     } catch (err) {
       setError(String((err as Error).message));
