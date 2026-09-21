@@ -214,7 +214,7 @@ export interface NodeSummary {
  *
  * ⚠️ **Built with NO time tracking.** Owner direction 2026-09-17: derive the
  * temporal shape of a project from what we already store — the activity
- * spine, `estimate_mins`, `due_at`, and `gtd_people`. Nothing here is a
+ * spine, `estimate_mins`, `due_at`, and `people`. Nothing here is a
  * logged hour, and nothing may be labelled as one.
  */
 export interface VelocityForecast {

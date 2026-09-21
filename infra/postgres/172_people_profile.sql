@@ -31,57 +31,57 @@
 -- Idempotent: `ADD COLUMN IF NOT EXISTS` everywhere; apply_migrations.sh
 --       re-runs 02+ on every deploy.
 --
--- Tenancy (R5a): no new TABLE, so nothing new to scope. `gtd_people` is
+-- Tenancy (R5a): no new TABLE, so nothing new to scope. `people` is
 --       already covered by the generated MT-1b migration and stays so.
 
 -- ── §3.1 · Identity & directory — the half a person writes about themselves ──
 -- Write class: SELF (the subject, or an `admin:members:manage` holder).
 -- Read tier:   DIRECTORY (any `feature:people` holder).
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS preferred_name TEXT;
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS pronouns TEXT;
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS location TEXT;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS preferred_name TEXT;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS pronouns TEXT;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS location TEXT;
 -- An IANA name ('Asia/Kolkata'), not an offset: an offset is wrong twice a year
 -- in half the world, and the question this answers ("is a 9am call rude for
 -- them") is asked on a specific future date.
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS timezone TEXT;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS timezone TEXT;
 -- {"days": [1,2,3,4,5], "start": "09:00", "end": "17:00"} — a record the
 -- product never filters on, so JSONB rather than five columns (spec §7).
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS working_hours JSONB;
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS bio TEXT;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS working_hours JSONB;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS bio TEXT;
 -- {"github": "...", "linkedin": "..."} — professional, public-facing links.
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS links JSONB;
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS languages TEXT[] DEFAULT '{}';
+ALTER TABLE people ADD COLUMN IF NOT EXISTS links JSONB;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS languages TEXT[] DEFAULT '{}';
 -- What they WANT to work on. An assigner that only optimises for fit gives the
 -- same person the same work forever, which is how people leave.
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS interests TEXT[] DEFAULT '{}';
+ALTER TABLE people ADD COLUMN IF NOT EXISTS interests TEXT[] DEFAULT '{}';
 
 -- ── §3.2 · Employment — what the ORGANISATION records about them ─────────────
 -- Write class: ADMIN. A product where you can promote yourself is not an org
 -- chart, so title/role/manager/status (all pre-existing) and everything here
 -- stay out of the self class.
 -- Read tier:   HR (`admin:members:read` or self).
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS employee_id TEXT;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS employee_id TEXT;
 -- 'employee' | 'contractor' | 'intern' | 'vendor' | 'agent'.
 -- ⚠️ Deliberately BESIDE `status`, not merged into it (D-PC-8). 148's CHECK
 -- mixes a lifecycle (active/alumni/invited) with an engagement type
 -- (contractor) because that is the vocabulary the data already carried; R6
 -- forbids renaming it in place. Where both are set, this column is the fact
 -- and `status` is the lifecycle.
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS employment_type TEXT;
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS start_date DATE;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS employment_type TEXT;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS start_date DATE;
 -- An engagement end. Assignment past it is a mistake the picker warns about
 -- (spec §6.1) — which is the whole reason to store it.
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS end_date DATE;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS end_date DATE;
 -- 'junior' | 'mid' | 'senior' | 'lead' | 'principal'. Coarse ON PURPOSE: it
 -- feeds "should this person own it or review it", never a pay band (§3.6).
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS seniority TEXT;
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS cost_center TEXT;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS seniority TEXT;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS cost_center TEXT;
 
 -- ── §3.4 · Availability ──────────────────────────────────────────────────────
 -- A person's own stated ceiling on parallel work. Write class SELF: a
 -- suggester should respect the number the person gives before an hours figure
 -- it half-invented from unestimated tasks.
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS max_concurrent_tasks INT;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS max_concurrent_tasks INT;
 
 -- ── §3.5 · Private — self, or an `admin:members:manage` holder, and nobody
 --          else (D-PC-3: NOT `admin:members:read`, which is the manager-ish
@@ -94,24 +94,24 @@ ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS max_concurrent_tasks INT;
 -- fact that `scripts/import_hr_people.py` still does not populate any of these.
 -- They arrive only when a person types them about themselves, or an HR admin
 -- does.
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS phone TEXT;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS phone TEXT;
 -- {"name": "...", "relation": "...", "phone": "..."}
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS emergency_contact JSONB;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS emergency_contact JSONB;
 -- Off-boarding, and reaching an alumnus. ADMIN-write: it is an identity fact
 -- about the engagement, not a self-description.
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS personal_email TEXT;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS personal_email TEXT;
 -- ⚠️ 'MM-DD', TEXT, and NOT a DATE (D-PC-9). The team can say happy birthday
 -- without the product ever holding a date of birth — which is half of an
 -- identity-theft pair and answers no question this spec asks. A DATE column
 -- would invite somebody to store the year "since it is the same field".
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS birthday TEXT;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS birthday TEXT;
 
-COMMENT ON COLUMN gtd_people.birthday IS
+COMMENT ON COLUMN people.birthday IS
     'MM-DD only. Never a full date of birth — People Center spec D-PC-9.';
-COMMENT ON COLUMN gtd_people.employment_type IS
+COMMENT ON COLUMN people.employment_type IS
     'employee|contractor|intern|vendor|agent. Validated in the route against '
     'routes/people/fields.EMPLOYMENT_TYPES; a database CHECK is P-6 (D-PC-8).';
-COMMENT ON COLUMN gtd_people.seniority IS
+COMMENT ON COLUMN people.seniority IS
     'junior|mid|senior|lead|principal. Validated in the route against '
     'routes/people/fields.SENIORITY_LEVELS. Feeds own-vs-review, never pay.';
 
@@ -119,6 +119,6 @@ COMMENT ON COLUMN gtd_people.seniority IS
 -- "available now" derived from it). Small table — dozens of rows — so these
 -- earn their place by keeping the planner honest as the roster grows, not by
 -- rescuing a slow query today.
-CREATE INDEX IF NOT EXISTS idx_gtd_people_timezone ON gtd_people (timezone);
+CREATE INDEX IF NOT EXISTS idx_gtd_people_timezone ON people (timezone);
 CREATE INDEX IF NOT EXISTS idx_gtd_people_employment_type
-    ON gtd_people (employment_type);
+    ON people (employment_type);

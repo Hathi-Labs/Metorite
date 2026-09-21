@@ -18,6 +18,7 @@ from typing import Any
 
 from acb_auth import UserContext, UserRole, build_access
 from gateway.routes.people import chart as chart_mod
+from tests.unit._sql_match import hits
 
 REPO = Path(__file__).resolve().parents[2]
 SOURCE = (REPO / "apps/services/gateway/gateway/routes/people/chart.py"
@@ -61,7 +62,7 @@ class FakeDB:
 
     async def execute(self, sql: Any, params: dict | None = None) -> _Result:
         s = " ".join(str(sql).split())
-        if "FROM gtd_people" in s:
+        if hits(s, "FROM people"):
             # NULL must stay on the chart: bare `status <> 'alumni'` is NULL
             # for a NULL status and silently drops the row.
             assert "status IS NULL OR status <> 'alumni'" in s

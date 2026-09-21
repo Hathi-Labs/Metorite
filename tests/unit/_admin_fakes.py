@@ -19,6 +19,7 @@ import re
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any, ClassVar
+from tests.unit._sql_match import hits
 
 ORG = "00000000-0000-0000-0000-00000000000a"
 
@@ -226,7 +227,7 @@ class _FakeDB:
         #: audit entry has to carry more than "it happened" — a purge that
         #: records no counts leaves nothing to reconcile against.
         self.audit_payloads: list[dict[str, Any]] = []
-        #: ``gtd_people`` — lower(email) → row. The DIRECTORY, which is a
+        #: ``people`` — lower(email) → row. The DIRECTORY, which is a
         #: different store from ``app_user`` above (``people_center_app.md``
         #: §2) and is now written by `provision_member`, so a test that
         #: invites somebody can assert they became findable.
@@ -705,7 +706,7 @@ class _FakeDB:
         # stays populated for the assertions that read it; the branch simply
         # never fires. The real fence is `test_people_from_membership.py`,
         # which runs against a real Postgres for exactly this reason.
-        if "INSERT INTO gtd_people" in s:
+        if hits(s, "INSERT INTO people"):
             # Named `address`, not `key`: `key` is a (group_id, user_id) tuple
             # in an earlier branch of this same function, and reusing it here
             # makes the type checker read the two as one variable.

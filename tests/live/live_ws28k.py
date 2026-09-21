@@ -21,7 +21,7 @@ Run it::
         -o '-k /var/tmp -p 55432' start"
     uv run python tests/live/live_ws28k.py
 
-⚠️ Writes and deletes `gtd_people` rows under `@ws28k.invalid`. Scratch only.
+⚠️ Writes and deletes `people` rows under `@ws28k.invalid`. Scratch only.
 """
 import asyncio
 import os
@@ -81,7 +81,7 @@ async def main() -> None:
     token = bind_tenant(str(org.id))
     try:
         await db.execute(text(
-            "DELETE FROM gtd_people WHERE email LIKE '%@ws28k.invalid'"))
+            "DELETE FROM people WHERE email LIKE '%@ws28k.invalid'"))
         await db.commit()
 
         mine = await tasks_people.create_person(
@@ -103,7 +103,7 @@ async def main() -> None:
 
         row = (await db.execute(
             text("SELECT starts_on, ends_on, organization_id, created_by "
-                 "  FROM gtd_person_absences WHERE id = CAST(:id AS uuid)"),
+                 "  FROM people_absences WHERE id = CAST(:id AS uuid)"),
             {"id": created["id"]})).fetchone()
         check("the dates are real DATEs", (row.starts_on, row.ends_on),
               (monday, monday + timedelta(days=4)))
@@ -115,7 +115,7 @@ async def main() -> None:
         release_tenant(token)
         try:
             await db.execute(
-                text("INSERT INTO gtd_person_absences "
+                text("INSERT INTO people_absences "
                      "  (person_id, starts_on, ends_on, created_by) "
                      "VALUES (CAST(:p AS uuid), :s, :e, 'probe')"),
                 {"p": mine.id, "s": monday, "e": monday})
@@ -129,11 +129,11 @@ async def main() -> None:
         # ── 3. The CHECKs are the database's, not just the route's ─────────
         for label, sql, params in (
             ("backwards dates",
-             "INSERT INTO gtd_person_absences (person_id, starts_on, ends_on, "
+             "INSERT INTO people_absences (person_id, starts_on, ends_on, "
              "created_by) VALUES (CAST(:p AS uuid), :s, :e, 'probe')",
              {"p": mine.id, "s": monday, "e": monday - timedelta(days=1)}),
             ("a fourth kind",
-             "INSERT INTO gtd_person_absences (person_id, starts_on, ends_on, "
+             "INSERT INTO people_absences (person_id, starts_on, ends_on, "
              "kind, created_by) VALUES (CAST(:p AS uuid), :s, :s, 'sick', 'probe')",
              {"p": mine.id, "s": monday}),
         ):
@@ -147,7 +147,7 @@ async def main() -> None:
 
         # ── 4. Availability, computed over the real rows ───────────────────
         person_row = (await db.execute(
-            text("SELECT * FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            text("SELECT * FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": mine.id})).fetchone()
         payload = await people_core.person_payload(db, person_row, ADMIN)
         check("the upcoming span is on the person read",
@@ -175,7 +175,7 @@ async def main() -> None:
             check("somebody else's id deletes nothing",
                   getattr(exc, "status_code", None), 404)
         still = (await db.execute(
-            text("SELECT count(*) AS n FROM gtd_person_absences "
+            text("SELECT count(*) AS n FROM people_absences "
                  " WHERE id = CAST(:id AS uuid)"),
             {"id": created["id"]})).fetchone()
         check("…and the span is still there", int(still.n), 1)
@@ -183,7 +183,7 @@ async def main() -> None:
         # Their own, they can.
         await people_self.remove_my_absence(created["id"], ME)
         gone = (await db.execute(
-            text("SELECT count(*) AS n FROM gtd_person_absences "
+            text("SELECT count(*) AS n FROM people_absences "
                  " WHERE id = CAST(:id AS uuid)"),
             {"id": created["id"]})).fetchone()
         check("their own, they can", int(gone.n), 0)
@@ -199,11 +199,11 @@ async def main() -> None:
         async with tenant_session(str(org.id)) as scoped:
             await people_absences.create_absence(
                 scoped, theirs.id, absence(monday, monday), "probe")
-        await db.execute(text("DELETE FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+        await db.execute(text("DELETE FROM people WHERE id = CAST(:id AS uuid)"),
                          {"id": theirs.id})
         await db.commit()
         orphans = (await db.execute(
-            text("SELECT count(*) AS n FROM gtd_person_absences "
+            text("SELECT count(*) AS n FROM people_absences "
                  " WHERE person_id = CAST(:id AS uuid)"),
             {"id": theirs.id})).fetchone()
         check("deleting a person clears their absences", int(orphans.n), 0)
@@ -214,7 +214,7 @@ async def main() -> None:
         # of its deliberate failures was the last one.
         await db.rollback()
         await db.execute(text(
-            "DELETE FROM gtd_people WHERE email LIKE '%@ws28k.invalid'"))
+            "DELETE FROM people WHERE email LIKE '%@ws28k.invalid'"))
         await db.commit()
         release_tenant(token)
         await db.close()

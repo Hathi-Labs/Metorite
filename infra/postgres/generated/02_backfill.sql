@@ -218,19 +218,19 @@ UPDATE gtd_horizons SET organization_id = (SELECT id FROM organization WHERE slu
 UPDATE gtd_items SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
-UPDATE gtd_people SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+UPDATE people SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
-UPDATE gtd_person_absences SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+UPDATE people_absences SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
-UPDATE gtd_person_credentials SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+UPDATE people_credentials SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
-UPDATE gtd_person_resumes SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+UPDATE people_resumes SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
-UPDATE gtd_person_skills SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+UPDATE people_skills SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE gtd_projects SET organization_id = (SELECT id FROM organization WHERE slug = 'default')

@@ -203,10 +203,10 @@ async def search_people(
         people = (await db.execute(text(
             "SELECT id, name, title, department, avatar, timezone, domain, "
             "       email, end_date, working_hours "
-            "  FROM gtd_people WHERE status = 'active'"))).fetchall()
+            "  FROM people WHERE status = 'active'"))).fetchall()
         skills = (await db.execute(text(
             "SELECT person_id, skill, level, years, last_used_year, evidence "
-            "  FROM gtd_person_skills"))).fetchall()
+            "  FROM people_skills"))).fetchall()
         by_person: dict[str, list[dict[str, Any]]] = {}
         for row in skills:
             by_person.setdefault(str(row.person_id), []).append({
@@ -224,7 +224,7 @@ async def search_people(
             try:
                 resume_rows = (await db.execute(text(
                     "SELECT DISTINCT ON (person_id) person_id, parsed_text "
-                    "  FROM gtd_person_resumes "
+                    "  FROM people_resumes "
                     f" WHERE {clauses} "
                     " ORDER BY person_id, uploaded_at DESC"),
                     {f"t{i}": f"%{t}%" for i, t in enumerate(tokens)},
@@ -282,7 +282,7 @@ async def search_people(
             schedule = person_schedule(policy, person)
             load = await compute_load(db, getattr(person, "email", None))
             away_row = (await db.execute(text(
-                "SELECT kind, ends_on FROM gtd_person_absences "
+                "SELECT kind, ends_on FROM people_absences "
                 " WHERE person_id = CAST(:pid AS uuid) "
                 "   AND starts_on <= :sunday AND ends_on >= :today "
                 " ORDER BY (kind = 'partial'), ends_on DESC LIMIT 1"),

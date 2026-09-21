@@ -274,7 +274,7 @@ export const NAV_SECTIONS: NavSection[] = [
         // NINE to TEN. Held back until now because the directory had never
         // loaded (PR #306: the BFF proxy was a REQUIRED catch-all, so the
         // bare path 404'd for its whole life) and because no member ever got
-        // a `gtd_people` row, so it rendered empty even once it did load.
+        // a `people` row, so it rendered empty even once it did load.
         // Both are fixed, and the roster sync (H-124) seeds it.
         //
         // ⚠️ `feature:people` is `is_default false`, so promoting the pane

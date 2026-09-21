@@ -95,7 +95,7 @@ ANONYMOUS = UserContext(email=None, role=UserRole.EMPLOYEE,
 # ── Fakes ───────────────────────────────────────────────────────────────────
 
 def _person_row(**over: Any) -> SimpleNamespace:
-    """One `gtd_people` row, HR half populated so a leak is visible."""
+    """One `people` row, HR half populated so a leak is visible."""
     row = {
         "id": "11111111-1111-1111-1111-111111111111",
         "name": "Asha Rao",

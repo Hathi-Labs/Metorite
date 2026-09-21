@@ -87,10 +87,10 @@ SELECT s3c_check('5b gtd_day_state survives (D53.6 — Calendar)',
     (to_regclass('public.gtd_day_state') IS NOT NULL), true);
 SELECT s3c_check('5c gtd_rollover_log survives (D53.6 — Calendar)',
     (to_regclass('public.gtd_rollover_log') IS NOT NULL), true);
-SELECT s3c_check('5d gtd_people survives (People directory, not tasks)',
-    (to_regclass('public.gtd_people') IS NOT NULL), true);
-SELECT s3c_check('5e gtd_person_skills survives (People directory)',
-    (to_regclass('public.gtd_person_skills') IS NOT NULL), true);
+SELECT s3c_check('5d people survives (People directory, not tasks)',
+    (to_regclass('public.people') IS NOT NULL), true);
+SELECT s3c_check('5e people_skills survives (People directory)',
+    (to_regclass('public.people_skills') IS NOT NULL), true);
 SELECT s3c_check('5f gtd_horizons survives (WS-21 owns Horizons)',
     (to_regclass('public.gtd_horizons') IS NOT NULL), true);
 SELECT s3c_check('5g gtd_reviews survives (WS-18 owns Weekly Review)',

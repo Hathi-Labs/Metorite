@@ -283,7 +283,7 @@ protocol, not plumbing. Reference implementation:
 4. **(Optional) a purpose-built vector table** when recall precision needs
    task-specific structure Mem0's free-text facts can't give (e.g. exact
    disposition/owner columns to `ORDER BY cosine`). Start WITHOUT it — Mem0 facts
-   are enough until proven otherwise. (Phase 2's `gtd_people.capability_embedding`
+   are enough until proven otherwise. (Phase 2's `people.capability_embedding`
    is exactly this pattern for the *people*-matching side.)
 
 5. **Wire recall + save into the agent's loop.** Native/Copilot agents already

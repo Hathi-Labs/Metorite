@@ -138,9 +138,9 @@ INSERT INTO pm_tasks (id, organization_id, project_id, root_project_id, status_i
 --
 -- The fourth assignee is deliberately somebody the directory has NEVER heard
 -- of, so the fallback to the address is on screen too.
-DELETE FROM gtd_people WHERE email IN
+DELETE FROM people WHERE email IN
   ('priya@fracktal.in','p.sharma@fracktal.in','ada@fracktal.in','dev@fracktal.in');
-INSERT INTO gtd_people (name, email, role, department, status) VALUES
+INSERT INTO people (name, email, role, department, status) VALUES
  ('Priya Sharma','priya@fracktal.in','Engineer','Engineering','active'),
  ('Priya Sharma','p.sharma@fracktal.in','Designer','Design','active'),
  ('Ada Lovelace','ada@fracktal.in','Engineer','Engineering','active'),

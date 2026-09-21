@@ -4,7 +4,7 @@ Spec: `project-docs/specs/people_center_app.md` §3, §4, §5.3 · D-PC-1…D-PC
 
 What this file locks, in the order the spec argues it:
 
-* **The partition is total.** Every column of `gtd_people` — discovered from the
+* **The partition is total.** Every column of `people` — discovered from the
   migrations, not from a list somebody maintains — is in exactly one write
   class. A column added next month fails here rather than defaulting into the
   permissive answer (R7).
@@ -53,6 +53,7 @@ from gateway.routes.people import router as people_router
 from gateway.routes.people import self_router as people_self_router
 from gateway.routes.people import selfservice as people_self
 from gateway.routes.tasks import people as tasks_people
+from tests.unit._sql_match import hits
 
 REPO = Path(__file__).resolve().parents[2]
 MIGRATIONS = REPO / "infra" / "postgres"
@@ -124,10 +125,10 @@ class FakeDB:
         self.params.append(dict(params or {}))
         if statement.startswith("SELECT 1 FROM app_user"):
             return _Result([SimpleNamespace(**{"?column?": 1})])
-        if statement.startswith("SELECT name FROM gtd_people"):
+        if hits(statement, "SELECT name FROM people"):
             return _Result([])
-        if statement.startswith("SELECT email FROM gtd_people") \
-                or statement.startswith("SELECT * FROM gtd_people"):
+        if hits(statement, "SELECT email FROM people") \
+                or hits(statement, "SELECT * FROM people"):
             # The self lookup filters on the address, and the fake has to as
             # well: a double that answers "here is Priya" to
             # `WHERE lower(email) = 'someone@else'` would make the self
@@ -174,19 +175,27 @@ SUBJECT = _user("priya@fracktal.in", "feature:people")
 # ══════════════════════════════════════════════════════════════════════════
 
 _ADD_COLUMN = re.compile(
-    r"ALTER\s+TABLE\s+gtd_people\s+ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+    r"ALTER\s+TABLE\s+people\s+ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?"
     r"([a-z_][a-z0-9_]*)", re.IGNORECASE)
 
 
 def discovered_columns() -> set[str]:
-    """Every column of ``gtd_people``, read out of the migrations.
+    """Every column of ``people``, read out of the migrations.
 
     Discovered rather than listed: a list in a test is a second place to
     remember, and the whole point of this fence is that nobody has to remember.
     Reads 49's CREATE TABLE body plus every later ADD COLUMN across the ladder.
     """
     create = (MIGRATIONS / "49_gtd_people.sql").read_text(encoding="utf-8")
-    body = create[create.index("CREATE TABLE"):]
+    # The STATEMENT, at the start of a line — not the first "CREATE TABLE" in
+    # the file. 49 opens with the rename prologue (the `gtd_` retirement,
+    # 2026-09-21) whose comment explains why a late rename migration fails, and
+    # says "CREATE TABLE IF NOT EXISTS" while doing so. Anchoring on the loose
+    # fragment read that comment as the table body and reported `BEGIN`,
+    # `DECLARE` and `EXECUTE` as unclassified columns.
+    start = re.search(r"^CREATE TABLE IF NOT EXISTS people(?!\w)", create, re.M)
+    assert start, "49 no longer creates `people` under a name this test knows"
+    body = create[start.start():]
     body = body[body.index("(") + 1: body.index("\n);")]
     columns: set[str] = set()
     for line in body.splitlines():
@@ -209,7 +218,7 @@ def test_the_migrations_are_discoverable_at_all() -> None:
 
 
 def test_every_column_is_in_exactly_one_write_class() -> None:
-    """**The fence (R7).** A column added to `gtd_people` next month fails here
+    """**The fence (R7).** A column added to `people` next month fails here
     until somebody decides who may write it. Without this, the honest-looking
     default is 'nobody classified it, so the admin path writes it and the self
     path does not' — which is a decision made by omission."""
@@ -218,7 +227,7 @@ def test_every_column_is_in_exactly_one_write_class() -> None:
                   | people_fields.DERIVED_FIELDS)
     missing = discovered_columns() - classified
     assert not missing, (
-        f"unclassified gtd_people columns: {sorted(missing)}. Put each in "
+        f"unclassified people columns: {sorted(missing)}. Put each in "
         "ADMIN_FIELDS, SELF_FIELDS or DERIVED_FIELDS in routes/people/fields.py "
         "— see people_center_app.md §4.3."
     )

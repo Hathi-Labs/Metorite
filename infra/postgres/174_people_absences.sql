@@ -1,6 +1,6 @@
 -- 174_people_absences.sql — who is away, and when (People Center P-5 / WS-28k).
 --
--- What: `gtd_person_absences` — one row per span somebody is not working.
+-- What: `people_absences` — one row per span somebody is not working.
 -- Why:  an assigner needs to know Rahul is away next week, and the dashboard's
 --       "at risk" is arithmetic over the working hours somebody actually has
 --       left before a deadline — which is wrong by a whole week if it counts
@@ -34,13 +34,61 @@
 --
 -- Idempotent: CREATE TABLE / INDEX IF NOT EXISTS.
 
-CREATE TABLE IF NOT EXISTS gtd_person_absences (
+-- == The `gtd_` name is retired (owner directive, 2026-09-21) ================
+--
+-- **THE RENAME LIVES IN THE FILE THAT CREATES THE TABLE, and that is what
+-- makes it safe.** The obvious alternative -- one migration at the end that
+-- renames -- breaks every earlier file on replay: an ALTER TABLE addresses a
+-- name that is gone, and CREATE TABLE IF NOT EXISTS happily builds an empty
+-- duplicate beside the real one. Both shapes were measured on 2026-09-21 and
+-- both were abandoned.
+--
+-- One file answers for one table in all three states:
+--
+--   * Fresh install -- nothing to rename, the CREATE below makes the new
+--     name directly.
+--   * A database that predates this -- the old table is renamed WITH ITS
+--     ROWS, and the CREATE below then finds the name taken and skips.
+--   * Replay -- already renamed, the guard matches nothing. Idempotent.
+--
+-- relkind = 'r' so a view wearing the old name is left alone rather than
+-- renamed into the table's place.
+--
+-- Index and constraint names keep their old spelling. A rename does not
+-- touch them, migration 148 looks some of them up BY NAME, and no query
+-- names an index.
+--
+-- WARNING: this block names the gtd_person_absences table, so it must survive a rename
+-- sweep. The first attempt added it BEFORE sweeping the tree, and the sweep
+-- rewrote `ALTER TABLE gtd_person_absences RENAME TO people_absences` into `ALTER TABLE people_absences RENAME TO
+-- people_absences` -- a silent no-op that left an upgraded database on the old tables
+-- with new empty ones beside them. Caught only by rebuilding a real
+-- pre-change database and upgrading it, which is now
+-- tests/unit/test_people_rename_upgrade.py. The old name is spelled ONCE
+-- here, as a quoted literal passed to format().
+
+DO $rename_people_absences$
+DECLARE
+    old_name CONSTANT text := 'gtd_person_absences';
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.relname = old_name AND c.relkind = 'r'
+           AND n.nspname = current_schema()
+    ) AND to_regclass('public.people_absences') IS NULL THEN
+        EXECUTE format('ALTER TABLE %I RENAME TO %I', old_name, 'people_absences');
+        RAISE NOTICE 'renamed % -> people_absences', old_name;
+    END IF;
+END
+$rename_people_absences$;
+
+CREATE TABLE IF NOT EXISTS people_absences (
     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     -- CASCADE: an absence is a fact about a person and means nothing without
     -- them. Deleting a person is already a deliberate act; leaving orphaned
     -- spans behind would make the availability query answer for nobody.
     person_id           UUID NOT NULL
-                            REFERENCES gtd_people (id) ON DELETE CASCADE,
+                            REFERENCES people (id) ON DELETE CASCADE,
     -- ── The tenant key, declared here rather than retrofitted ──────────────
     -- R5a and `test_tenancy_boundary.test_a_new_table_must_carry_a_tenant_key`:
     -- a table added while the system is knowingly becoming multi-tenant
@@ -54,7 +102,7 @@ CREATE TABLE IF NOT EXISTS gtd_person_absences (
     -- fail closed, never "the usual org" (MT-1c).
     --
     -- ⚠️ Not a parent trigger like the 17 `pm_*` tables use, because the parent
-    -- cannot supply what it does not have: `gtd_people` carries no
+    -- cannot supply what it does not have: `people` carries no
     -- `organization_id` until the generated MT-1b migration is promoted, which
     -- is a maintenance-window decision and not this ticket's.
     -- ⚠️ REFERENCES before DEFAULT, and the order is not cosmetic:
@@ -99,9 +147,9 @@ CREATE TABLE IF NOT EXISTS gtd_person_absences (
 -- Person first because it is always known and always equality; the date is the
 -- range half.
 CREATE INDEX IF NOT EXISTS idx_gtd_person_absences_person
-    ON gtd_person_absences (person_id, starts_on, ends_on);
+    ON people_absences (person_id, starts_on, ends_on);
 
 -- The dashboard's other question — "who is away this week" — has no person to
 -- filter on, so it needs the dates on their own.
 CREATE INDEX IF NOT EXISTS idx_gtd_person_absences_window
-    ON gtd_person_absences (organization_id, starts_on, ends_on);
+    ON people_absences (organization_id, starts_on, ends_on);

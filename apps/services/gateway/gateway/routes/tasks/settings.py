@@ -273,7 +273,7 @@ async def _load(db: Any, user_id: str) -> GtdSettingsModel:
         # applying forever. That is "seeded once" with no sync to maintain.
         #
         # Direction is People → Calendar and only that way: nothing in this
-        # package writes `gtd_people.working_hours`, and a test asserts it.
+        # package writes `people.working_hours`, and a test asserts it.
         return GtdSettingsModel(**await _seed_from_work_schedule(db, user_id))
     
     return GtdSettingsModel(
@@ -325,7 +325,7 @@ async def _seed_from_work_schedule(db: Any, user_id: str) -> dict[str, int]:
         )
 
         row = (await db.execute(text(
-            "SELECT working_hours FROM gtd_people "
+            "SELECT working_hours FROM people "
             "WHERE lower(email) = :email LIMIT 1"),
             {"email": (user_id or "").strip().lower()})).fetchone()
         if row is None:

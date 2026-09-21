@@ -19,7 +19,7 @@ test's own dictionary works. That is the failure mode R8 exists for.
 ``finally``.
 
 ⚠️ **The ladder does NOT build the tenancy layer** — ``_tenant_ladder`` skips
-``infra/postgres/generated/``, so ``gtd_people`` here has no
+``infra/postgres/generated/``, so ``people`` here has no
 ``organization_id`` and no row-level security. That exercises migration 206's
 *no-column* arm. The *with-column* arm is exercised by
 :func:`test_the_trigger_fills_the_tenant_when_the_column_exists`, which adds
@@ -76,13 +76,13 @@ def _address(tag: str = "m") -> str:
 
 def _directory(conn, email: str) -> list[dict]:
     return [dict(r) for r in conn.execute(text(
-        "SELECT name, email, status, source, source_key FROM gtd_people "
+        "SELECT name, email, status, source, source_key FROM people "
         " WHERE lower(email) = lower(:e)"), {"e": email}).mappings()]
 
 
 def _cleanup(engine, *emails: str) -> None:
     with engine.begin() as conn:
-        conn.execute(text("DELETE FROM gtd_people WHERE email = ANY(:e)"),
+        conn.execute(text("DELETE FROM people WHERE email = ANY(:e)"),
                      {"e": list(emails)})
         conn.execute(text("DELETE FROM app_user WHERE email = ANY(:e)"),
                      {"e": list(emails)})
@@ -209,7 +209,7 @@ def test_a_second_update_does_not_duplicate_or_overwrite(eng) -> None:
                 "status) VALUES (:e, 'Original', :o, 'active')"),
                 {"e": email, "o": org})
             conn.execute(text(
-                "UPDATE gtd_people SET name = 'What They Chose', "
+                "UPDATE people SET name = 'What They Chose', "
                 "title = 'Staff Engineer' WHERE lower(email) = :e"),
                 {"e": email})
             conn.execute(text(
@@ -239,7 +239,7 @@ def test_a_member_with_no_address_is_skipped_rather_than_failing(eng) -> None:
                 "status) VALUES (:e, 'Blank', :o, 'active')"),
                 {"e": email, "o": org})
             assert conn.execute(text(
-                "SELECT count(*) FROM gtd_people WHERE name = 'Blank'"),
+                "SELECT count(*) FROM people WHERE name = 'Blank'"),
             ).scalar() == 0
         finally:
             conn.execute(text("DELETE FROM app_user WHERE email = :e"),
@@ -256,7 +256,7 @@ def test_a_contractor_keeps_their_row_and_needs_no_login(eng) -> None:
     try:
         with eng.begin() as conn:
             conn.execute(text(
-                "INSERT INTO gtd_people (id, name, email, status, skills, "
+                "INSERT INTO people (id, name, email, status, skills, "
                 "source, source_key, updated_by, updated_at) "
                 "VALUES (gen_random_uuid(), 'Freelance Fay', :e, 'contractor', "
                 "ARRAY[]::text[], 'manual', :k, 'test', now())"),
@@ -316,7 +316,7 @@ def test_the_migration_is_idempotent_and_backfills(eng) -> None:
                 "trg_app_user_directory_row"))
             assert _directory(conn, email) == []
             before = conn.execute(
-                text("SELECT count(*) FROM gtd_people")).scalar()
+                text("SELECT count(*) FROM people")).scalar()
 
         # The file carries its own BEGIN/COMMIT, so it needs a connection
         # that is not already inside a transaction block.
@@ -326,7 +326,7 @@ def test_the_migration_is_idempotent_and_backfills(eng) -> None:
         with eng.begin() as conn:
             assert len(_directory(conn, email)) == 1, "backfill missed a member"
             after = conn.execute(
-                text("SELECT count(*) FROM gtd_people")).scalar()
+                text("SELECT count(*) FROM people")).scalar()
         assert after == before + 1, "the backfill wrote more than it should"
 
         # Second run: nothing.
@@ -334,7 +334,7 @@ def test_the_migration_is_idempotent_and_backfills(eng) -> None:
             conn.execute(text(sql))
         with eng.begin() as conn:
             again = conn.execute(
-                text("SELECT count(*) FROM gtd_people")).scalar()
+                text("SELECT count(*) FROM people")).scalar()
         assert again == after, "re-running the migration was not idempotent"
     finally:
         _cleanup(eng, email)
@@ -363,7 +363,7 @@ def test_the_trigger_adapts_when_the_TENANCY_LAYER_IS_PROMOTED_LATER(eng) -> Non
     try:
         with eng.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
             conn.execute(text(
-                "ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS "
+                "ALTER TABLE people ADD COLUMN IF NOT EXISTS "
                 "organization_id UUID DEFAULT "
                 "current_setting('app.tenant_id', true)::uuid"))
 
@@ -374,14 +374,14 @@ def test_the_trigger_adapts_when_the_TENANCY_LAYER_IS_PROMOTED_LATER(eng) -> Non
                 "status) VALUES (:e, 'Promoted', :o, 'active')"),
                 {"e": email, "o": org})
             got = conn.execute(text(
-                "SELECT organization_id FROM gtd_people "
+                "SELECT organization_id FROM people "
                 " WHERE lower(email) = :e"), {"e": email}).scalar()
         assert got == org, "the trigger did not carry the member's tenant"
     finally:
         _cleanup(eng, email)
         with eng.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
             conn.execute(text(
-                "ALTER TABLE gtd_people DROP COLUMN IF EXISTS organization_id"))
+                "ALTER TABLE people DROP COLUMN IF EXISTS organization_id"))
 
 
 def test_the_trigger_can_never_take_down_a_member_write(eng) -> None:
@@ -393,7 +393,7 @@ def test_the_trigger_can_never_take_down_a_member_write(eng) -> None:
     the member is still created.
 
     The failure is induced the way the real one arrived: a NOT NULL column on
-    `gtd_people` that the trigger does not fill. The member write must still
+    `people` that the trigger does not fill. The member write must still
     succeed, and the directory row must simply be absent — repairable by
     re-running the migration's backfill.
     """
@@ -404,10 +404,10 @@ def test_the_trigger_can_never_take_down_a_member_write(eng) -> None:
             # then the default is dropped — so an INSERT that does not name
             # the column fails, which is the shape of the real breakage.
             conn.execute(text(
-                "ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS "
+                "ALTER TABLE people ADD COLUMN IF NOT EXISTS "
                 "trigger_cannot_know text NOT NULL DEFAULT 'seeded'"))
             conn.execute(text(
-                "ALTER TABLE gtd_people ALTER COLUMN trigger_cannot_know "
+                "ALTER TABLE people ALTER COLUMN trigger_cannot_know "
                 "DROP DEFAULT"))
 
         with eng.begin() as conn:
@@ -424,7 +424,7 @@ def test_the_trigger_can_never_take_down_a_member_write(eng) -> None:
     finally:
         with eng.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
             conn.execute(text(
-                "ALTER TABLE gtd_people DROP COLUMN IF EXISTS "
+                "ALTER TABLE people DROP COLUMN IF EXISTS "
                 "trigger_cannot_know"))
         _cleanup(eng, email)
 
@@ -433,7 +433,7 @@ def test_the_trigger_fills_the_tenant_when_the_column_exists(eng) -> None:
     """The arm the test ladder cannot otherwise reach (H-104).
 
     The generated tenancy layer is not on the numbered ladder, so nobody knows
-    whether production's `gtd_people` carries `organization_id`. This adds the
+    whether production's `people` carries `organization_id`. This adds the
     column the generated file would, re-runs 206 so the function is rebuilt
     around it, and proves the trigger writes the MEMBER's organization rather
     than leaning on `current_setting('app.tenant_id')` — which is unbound
@@ -444,7 +444,7 @@ def test_the_trigger_fills_the_tenant_when_the_column_exists(eng) -> None:
     try:
         with eng.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
             conn.execute(text(
-                "ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS "
+                "ALTER TABLE people ADD COLUMN IF NOT EXISTS "
                 "organization_id UUID DEFAULT "
                 "current_setting('app.tenant_id', true)::uuid"))
             conn.execute(text(sql))
@@ -458,12 +458,12 @@ def test_the_trigger_fills_the_tenant_when_the_column_exists(eng) -> None:
                 "status) VALUES (:e, 'Tenanted', :o, 'active')"),
                 {"e": email, "o": org})
             got = conn.execute(text(
-                "SELECT organization_id FROM gtd_people "
+                "SELECT organization_id FROM people "
                 " WHERE lower(email) = :e"), {"e": email}).scalar()
         assert got == org, "the trigger did not carry the member's tenant"
     finally:
         _cleanup(eng, email)
         with eng.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
             conn.execute(text(
-                "ALTER TABLE gtd_people DROP COLUMN IF EXISTS organization_id"))
+                "ALTER TABLE people DROP COLUMN IF EXISTS organization_id"))
             conn.execute(text(sql))

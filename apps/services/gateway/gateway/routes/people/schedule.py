@@ -133,7 +133,7 @@ async def put_policy(
     async with _tenant_session() as db:
         current = await load_policy(db)
         rows = (await db.execute(text(
-            "SELECT id, name, working_hours FROM gtd_people "
+            "SELECT id, name, working_hours FROM people "
             "WHERE status <> 'alumni'"))).fetchall()
         impact = _impact(current, policy, rows)
         if not body.dry_run:

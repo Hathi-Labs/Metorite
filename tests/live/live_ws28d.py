@@ -17,7 +17,7 @@ Run it::
         -o '-k /var/tmp -p 55432' start"
     uv run python tests/live/live_ws28d.py
 
-⚠️ Writes and deletes `gtd_people` rows under `@ws28d.invalid`. Scratch only.
+⚠️ Writes and deletes `people` rows under `@ws28d.invalid`. Scratch only.
 """
 import asyncio
 import os
@@ -65,7 +65,7 @@ async def main() -> None:
     token = bind_tenant(str(org.id))
     try:
         await db.execute(text(
-            "DELETE FROM gtd_people WHERE email LIKE '%@ws28d.invalid'"))
+            "DELETE FROM people WHERE email LIKE '%@ws28d.invalid'"))
         await db.commit()
 
         priya = await tasks_people.create_person(
@@ -92,7 +92,7 @@ async def main() -> None:
                     (30, "Old CV: once touched firmware."),
                     (1, "New CV: shipped extruder firmware at Acme.")):
                 await scoped.execute(text(
-                    "INSERT INTO gtd_person_resumes "
+                    "INSERT INTO people_resumes "
                     "  (person_id, filename, parsed_text, uploaded_by, "
                     "   uploaded_at) "
                     "VALUES (CAST(:p AS uuid), 'cv.txt', :t, 'seed', "
@@ -100,7 +100,7 @@ async def main() -> None:
                     {"p": priya.id, "t": line, "age": age_days})
             # An absence covering this week, for the availability line.
             await scoped.execute(text(
-                "INSERT INTO gtd_person_absences "
+                "INSERT INTO people_absences "
                 "  (person_id, starts_on, ends_on, kind, created_by) "
                 "VALUES (CAST(:p AS uuid), :s, :e, 'holiday', 'seed')"),
                 {"p": priya.id, "s": date.today(),
@@ -148,7 +148,7 @@ async def main() -> None:
     finally:
         await db.rollback()
         await db.execute(text(
-            "DELETE FROM gtd_people WHERE email LIKE '%@ws28d.invalid'"))
+            "DELETE FROM people WHERE email LIKE '%@ws28d.invalid'"))
         await db.commit()
         release_tenant(token)
         await db.close()

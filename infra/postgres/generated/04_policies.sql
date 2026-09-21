@@ -482,38 +482,38 @@ CREATE POLICY gtd_items_tenant_isolation ON gtd_items
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
-ALTER TABLE gtd_people ENABLE ROW LEVEL SECURITY;
-ALTER TABLE gtd_people FORCE  ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS gtd_people_tenant_isolation ON gtd_people;
-CREATE POLICY gtd_people_tenant_isolation ON gtd_people
+ALTER TABLE people ENABLE ROW LEVEL SECURITY;
+ALTER TABLE people FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS gtd_people_tenant_isolation ON people;
+CREATE POLICY gtd_people_tenant_isolation ON people
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
-ALTER TABLE gtd_person_absences ENABLE ROW LEVEL SECURITY;
-ALTER TABLE gtd_person_absences FORCE  ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS gtd_person_absences_tenant_isolation ON gtd_person_absences;
-CREATE POLICY gtd_person_absences_tenant_isolation ON gtd_person_absences
+ALTER TABLE people_absences ENABLE ROW LEVEL SECURITY;
+ALTER TABLE people_absences FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS gtd_person_absences_tenant_isolation ON people_absences;
+CREATE POLICY gtd_person_absences_tenant_isolation ON people_absences
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
-ALTER TABLE gtd_person_credentials ENABLE ROW LEVEL SECURITY;
-ALTER TABLE gtd_person_credentials FORCE  ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS gtd_person_credentials_tenant_isolation ON gtd_person_credentials;
-CREATE POLICY gtd_person_credentials_tenant_isolation ON gtd_person_credentials
+ALTER TABLE people_credentials ENABLE ROW LEVEL SECURITY;
+ALTER TABLE people_credentials FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS gtd_person_credentials_tenant_isolation ON people_credentials;
+CREATE POLICY gtd_person_credentials_tenant_isolation ON people_credentials
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
-ALTER TABLE gtd_person_resumes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE gtd_person_resumes FORCE  ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS gtd_person_resumes_tenant_isolation ON gtd_person_resumes;
-CREATE POLICY gtd_person_resumes_tenant_isolation ON gtd_person_resumes
+ALTER TABLE people_resumes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE people_resumes FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS gtd_person_resumes_tenant_isolation ON people_resumes;
+CREATE POLICY gtd_person_resumes_tenant_isolation ON people_resumes
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
-ALTER TABLE gtd_person_skills ENABLE ROW LEVEL SECURITY;
-ALTER TABLE gtd_person_skills FORCE  ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS gtd_person_skills_tenant_isolation ON gtd_person_skills;
-CREATE POLICY gtd_person_skills_tenant_isolation ON gtd_person_skills
+ALTER TABLE people_skills ENABLE ROW LEVEL SECURITY;
+ALTER TABLE people_skills FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS gtd_person_skills_tenant_isolation ON people_skills;
+CREATE POLICY gtd_person_skills_tenant_isolation ON people_skills
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 

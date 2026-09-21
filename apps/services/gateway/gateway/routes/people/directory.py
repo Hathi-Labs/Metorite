@@ -157,7 +157,7 @@ async def list_directory(
     async with _tenant_session() as db:
         rows = (await db.execute(
             text(
-                "SELECT * FROM gtd_people WHERE " + " AND ".join(clauses)
+                "SELECT * FROM people WHERE " + " AND ".join(clauses)
                 + " ORDER BY department NULLS LAST, name"
             ),
             params,
@@ -201,7 +201,7 @@ async def list_facets(user: UserContext = Depends(get_current_user)) -> dict:
     async with _tenant_session() as db:
         rows = (await db.execute(
             text(
-                "SELECT department, team, count(*) AS total FROM gtd_people "
+                "SELECT department, team, count(*) AS total FROM people "
                 "WHERE department IS NOT NULL GROUP BY department, team "
                 "ORDER BY department, team"
             ),
@@ -234,7 +234,7 @@ async def get_person(
     """
     async with _tenant_session() as db:
         row = (await db.execute(
-            text("SELECT * FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            text("SELECT * FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": person_id},
         )).fetchone()
         if row is None:
@@ -264,7 +264,7 @@ async def get_person_work(
 
     async with _tenant_session() as db:
         person = (await db.execute(
-            text("SELECT email FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            text("SELECT email FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": person_id},
         )).fetchone()
         if person is None:

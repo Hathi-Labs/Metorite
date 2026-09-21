@@ -50,7 +50,7 @@ router = APIRouter(
 # Spec: project-docs/specs/colleague_onboarding.md §4 N4 (owner-answered
 # 2026-08-04, "directory open, HR fields restricted").
 #
-# `gtd_people` is an ORG roster, not per-user rows, so the owner-predicate
+# `people` is an ORG roster, not per-user rows, so the owner-predicate
 # shape used by items/accounts is the wrong tool. The recorded answer is two
 # rules, both expressed in the EXISTING admin vocabulary
 # (`acb_auth.permissions.CAPABILITIES`) rather than a new slug — a new slug is
@@ -114,7 +114,7 @@ def require_people_write() -> Any:
     return require_permission(PEOPLE_WRITE_PERMISSION)
 
 
-#: The statuses a `gtd_people` row may carry — mirrored from migration 148's
+#: The statuses a `people` row may carry — mirrored from migration 148's
 #: `gtd_people_status_check`.
 #:
 #: Defined HERE, next to the write gate, and re-exported by

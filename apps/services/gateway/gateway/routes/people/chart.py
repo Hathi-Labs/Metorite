@@ -4,7 +4,7 @@ Spec: ``project-docs/specs/people_center_app.md`` §5.4 · D-PC-14.
 
     GET /people/chart   → every current person as a flat node list
 
-The chart is ``gtd_people.manager_id`` — a self-FK — so this endpoint returns
+The chart is ``people.manager_id`` — a self-FK — so this endpoint returns
 the FLAT list and the client builds the tree, with the cycle guard where the
 recursion is (a manager loop must degrade to a labelled root, not a hang).
 
@@ -75,7 +75,7 @@ async def get_chart(
             # bad-status defect — a person must not vanish with their status.
             "SELECT id, name, title, department, team, avatar, email, "
             "       status, manager_id "
-            "  FROM gtd_people "
+            "  FROM people "
             " WHERE status IS NULL OR status <> 'alumni' "
             " ORDER BY lower(name)"))).fetchall()
         # ⚠️ `org_group` is in the tenancy ratchet's EXEMPT list (it carries

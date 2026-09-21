@@ -32,6 +32,7 @@ from gateway import work_schedule as ws
 from gateway.routes.people import absences as people_absences
 from gateway.routes.people import core as people_core
 from gateway.routes.people import selfservice as people_self
+from tests.unit._sql_match import hits
 
 REPO = Path(__file__).resolve().parents[2]
 MIGRATION = REPO / "infra" / "postgres" / "174_people_absences.sql"
@@ -212,8 +213,8 @@ def test_the_table_is_tenant_scoped_by_construction() -> None:
     sys.modules["gen_tenant_migration"] = module
     spec.loader.exec_module(module)
 
-    assert "gtd_person_absences" in module.discover_tables()
-    assert "gtd_person_absences" not in module.EXEMPT
+    assert "people_absences" in module.discover_tables()
+    assert "people_absences" not in module.EXEMPT
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -303,13 +304,13 @@ class FakeDB:
         statement = " ".join(str(sql).split())
         self.statements.append(statement)
         self.params.append(dict(params or {}))
-        if statement.startswith("DELETE FROM gtd_person_absences"):
+        if statement.startswith("DELETE FROM people_absences"):
             return _Result([], rowcount=self.deleted)
-        if "INSERT INTO gtd_person_absences" in statement:
+        if "INSERT INTO people_absences" in statement:
             return _Result([SimpleNamespace(id="aaaaaaaa-0000-0000-0000-000000000000")])
-        if "FROM gtd_person_absences" in statement:
+        if "FROM people_absences" in statement:
             return _Result([])
-        if "FROM gtd_people" in statement:
+        if hits(statement, "FROM people"):
             wanted = (params or {}).get("email")
             if wanted is not None:
                 return _Result([PERSON] if PERSON.email == wanted else [])
@@ -351,7 +352,7 @@ def test_a_member_with_no_grants_records_their_own_absence(monkeypatch) -> None:
     bind(monkeypatch, db)
     out = run(people_self.add_my_absence(body(), user=SUBJECT))
     assert out["kind"] == "away"
-    assert db.issued("INSERT INTO gtd_person_absences")
+    assert db.issued("INSERT INTO people_absences")
 
 
 def test_a_stranger_may_not_record_one_for_somebody_else(monkeypatch) -> None:
@@ -360,14 +361,14 @@ def test_a_stranger_may_not_record_one_for_somebody_else(monkeypatch) -> None:
     with pytest.raises(HTTPException) as exc:
         run(people_absences.add_absence(PERSON.id, body(), user=STRANGER))
     assert exc.value.status_code == 403
-    assert not db.issued("INSERT INTO gtd_person_absences")
+    assert not db.issued("INSERT INTO people_absences")
 
 
 def test_an_admin_may_record_one_for_anybody(monkeypatch) -> None:
     db = FakeDB()
     bind(monkeypatch, db)
     run(people_absences.add_absence(PERSON.id, body(), user=ADMIN))
-    assert db.issued("INSERT INTO gtd_person_absences")
+    assert db.issued("INSERT INTO people_absences")
 
 
 def test_the_delete_is_scoped_to_the_person_not_just_the_id(monkeypatch) -> None:
@@ -376,7 +377,7 @@ def test_the_delete_is_scoped_to_the_person_not_just_the_id(monkeypatch) -> None
     db = FakeDB()
     bind(monkeypatch, db)
     run(people_self.remove_my_absence("aaaa-bbbb", user=SUBJECT))
-    [sql] = [s for s in db.statements if s.startswith("DELETE FROM gtd_person_absences")]
+    [sql] = [s for s in db.statements if s.startswith("DELETE FROM people_absences")]
     assert "person_id = CAST(:pid AS uuid)" in sql
 
 
@@ -426,7 +427,7 @@ def test_the_dates_are_bound_as_dates_not_cast_over_a_string(monkeypatch) -> Non
     bind(monkeypatch, db)
     run(people_self.add_my_absence(body(), user=SUBJECT))
     insert = next(p for s, p in zip(db.statements, db.params, strict=True)
-                  if "INSERT INTO gtd_person_absences" in s)
+                  if "INSERT INTO people_absences" in s)
     assert isinstance(insert["starts_on"], date)
-    sql = next(s for s in db.statements if "INSERT INTO gtd_person_absences" in s)
+    sql = next(s for s in db.statements if "INSERT INTO people_absences" in s)
     assert "CAST(:starts_on" not in sql

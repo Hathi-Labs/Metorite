@@ -260,7 +260,7 @@ export function PersonEditor({
               </>
             ) : null}
             {/* ⚠️ The "ClickUp user id" field was removed 2026-08-24 (D52,
-                board WS-39 S1). `gtd_people.clickup_user_id` still exists —
+                board WS-39 S1). `people.clickup_user_id` still exists —
                 D52.3 keeps the column under R6 — but it was the assignment
                 target for a provider that is gone, so offering the input
                 asked a customer to fill in a value nothing would read. */}

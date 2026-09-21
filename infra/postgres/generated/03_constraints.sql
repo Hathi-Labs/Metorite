@@ -791,65 +791,65 @@ ALTER TABLE gtd_items ADD CONSTRAINT gtd_items_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS gtd_items_org_idx ON gtd_items (organization_id);
 
--- gtd_people
+-- people
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM gtd_people WHERE organization_id IS NULL) THEN
-        RAISE EXCEPTION 'MT-1b: gtd_people still has unowned rows — run phase 2 (backfill) to completion first';
+    IF EXISTS (SELECT 1 FROM people WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: people still has unowned rows — run phase 2 (backfill) to completion first';
     END IF;
 END $$;
-ALTER TABLE gtd_people ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE gtd_people ADD CONSTRAINT gtd_people_org_fk
+ALTER TABLE people ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE people ADD CONSTRAINT gtd_people_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
-CREATE INDEX IF NOT EXISTS gtd_people_org_idx ON gtd_people (organization_id);
+CREATE INDEX IF NOT EXISTS gtd_people_org_idx ON people (organization_id);
 
--- gtd_person_absences
+-- people_absences
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM gtd_person_absences WHERE organization_id IS NULL) THEN
-        RAISE EXCEPTION 'MT-1b: gtd_person_absences still has unowned rows — run phase 2 (backfill) to completion first';
+    IF EXISTS (SELECT 1 FROM people_absences WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: people_absences still has unowned rows — run phase 2 (backfill) to completion first';
     END IF;
 END $$;
-ALTER TABLE gtd_person_absences ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE gtd_person_absences ADD CONSTRAINT gtd_person_absences_org_fk
+ALTER TABLE people_absences ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE people_absences ADD CONSTRAINT gtd_person_absences_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
-CREATE INDEX IF NOT EXISTS gtd_person_absences_org_idx ON gtd_person_absences (organization_id);
+CREATE INDEX IF NOT EXISTS gtd_person_absences_org_idx ON people_absences (organization_id);
 
--- gtd_person_credentials
+-- people_credentials
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM gtd_person_credentials WHERE organization_id IS NULL) THEN
-        RAISE EXCEPTION 'MT-1b: gtd_person_credentials still has unowned rows — run phase 2 (backfill) to completion first';
+    IF EXISTS (SELECT 1 FROM people_credentials WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: people_credentials still has unowned rows — run phase 2 (backfill) to completion first';
     END IF;
 END $$;
-ALTER TABLE gtd_person_credentials ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE gtd_person_credentials ADD CONSTRAINT gtd_person_credentials_org_fk
+ALTER TABLE people_credentials ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE people_credentials ADD CONSTRAINT gtd_person_credentials_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
-CREATE INDEX IF NOT EXISTS gtd_person_credentials_org_idx ON gtd_person_credentials (organization_id);
+CREATE INDEX IF NOT EXISTS gtd_person_credentials_org_idx ON people_credentials (organization_id);
 
--- gtd_person_resumes
+-- people_resumes
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM gtd_person_resumes WHERE organization_id IS NULL) THEN
-        RAISE EXCEPTION 'MT-1b: gtd_person_resumes still has unowned rows — run phase 2 (backfill) to completion first';
+    IF EXISTS (SELECT 1 FROM people_resumes WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: people_resumes still has unowned rows — run phase 2 (backfill) to completion first';
     END IF;
 END $$;
-ALTER TABLE gtd_person_resumes ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE gtd_person_resumes ADD CONSTRAINT gtd_person_resumes_org_fk
+ALTER TABLE people_resumes ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE people_resumes ADD CONSTRAINT gtd_person_resumes_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
-CREATE INDEX IF NOT EXISTS gtd_person_resumes_org_idx ON gtd_person_resumes (organization_id);
+CREATE INDEX IF NOT EXISTS gtd_person_resumes_org_idx ON people_resumes (organization_id);
 
--- gtd_person_skills
+-- people_skills
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM gtd_person_skills WHERE organization_id IS NULL) THEN
-        RAISE EXCEPTION 'MT-1b: gtd_person_skills still has unowned rows — run phase 2 (backfill) to completion first';
+    IF EXISTS (SELECT 1 FROM people_skills WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: people_skills still has unowned rows — run phase 2 (backfill) to completion first';
     END IF;
 END $$;
-ALTER TABLE gtd_person_skills ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE gtd_person_skills ADD CONSTRAINT gtd_person_skills_org_fk
+ALTER TABLE people_skills ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE people_skills ADD CONSTRAINT gtd_person_skills_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
-CREATE INDEX IF NOT EXISTS gtd_person_skills_org_idx ON gtd_person_skills (organization_id);
+CREATE INDEX IF NOT EXISTS gtd_person_skills_org_idx ON people_skills (organization_id);
 
 -- gtd_projects
 DO $$

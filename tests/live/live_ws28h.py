@@ -13,7 +13,7 @@ database answers:
 * **`ON DELETE CASCADE`** clears both tables with the person;
 * **D-PC-6 over real rows**: after every real write path — create with
   skills, the flat PATCH, the structured replace, the résumé ingest through
-  the actual endpoint — `gtd_people.skills`/`skills_source` equal the table's
+  the actual endpoint — `people.skills`/`skills_source` equal the table's
   content, read back from the database rather than trusted from the code.
 
 Run it::
@@ -22,7 +22,7 @@ Run it::
         -o '-k /var/tmp -p 55432' start"
     uv run python tests/live/live_ws28h.py
 
-⚠️ Writes and deletes `gtd_people` rows under `@ws28h.invalid`. Scratch only.
+⚠️ Writes and deletes `people` rows under `@ws28h.invalid`. Scratch only.
 """
 import asyncio
 import io
@@ -68,10 +68,10 @@ ME = user(MINE)
 async def projection(db, person_id: str) -> tuple[list[str], dict, list[str]]:
     """The array, its source map, and the table — read back from the DATABASE."""
     person = (await db.execute(text(
-        "SELECT skills, skills_source FROM gtd_people "
+        "SELECT skills, skills_source FROM people "
         " WHERE id = CAST(:id AS uuid)"), {"id": person_id})).fetchone()
     rows = (await db.execute(text(
-        "SELECT skill, evidence FROM gtd_person_skills "
+        "SELECT skill, evidence FROM people_skills "
         " WHERE person_id = CAST(:id AS uuid) "
         " ORDER BY created_at, lower(skill)"), {"id": person_id})).fetchall()
     return (list(person.skills or []), dict(person.skills_source or {}),
@@ -85,7 +85,7 @@ async def main() -> None:
     token = bind_tenant(str(org.id))
     try:
         await db.execute(text(
-            "DELETE FROM gtd_people WHERE email LIKE '%@ws28h.invalid'"))
+            "DELETE FROM people WHERE email LIKE '%@ws28h.invalid'"))
         await db.commit()
 
         # ── 1. Create with skills seeds the table (D-PC-6 from row one) ────
@@ -113,7 +113,7 @@ async def main() -> None:
         check("replace rewrote table and array together", arr, table)
         check("…dropping what the payload dropped", "altium" not in arr, True)
         level = (await db.execute(text(
-            "SELECT level, years FROM gtd_person_skills "
+            "SELECT level, years FROM people_skills "
             " WHERE person_id = CAST(:id AS uuid) AND skill = 'python'"),
             {"id": mine.id})).fetchone()
         check("the level and years are real columns",
@@ -128,7 +128,7 @@ async def main() -> None:
               ["python", "rust"])
         check("…array still equals table", arr, table)
         survived = (await db.execute(text(
-            "SELECT level FROM gtd_person_skills "
+            "SELECT level FROM people_skills "
             " WHERE person_id = CAST(:id AS uuid) AND skill = 'python'"),
             {"id": mine.id})).fetchone()
         check("the flat save did NOT strip the structured level",
@@ -154,13 +154,13 @@ async def main() -> None:
         # ── 5. The database's own constraints ──────────────────────────────
         for label, sql, params in (
             ("a case-folded duplicate",
-             "INSERT INTO gtd_person_skills (person_id, skill) "
+             "INSERT INTO people_skills (person_id, skill) "
              "VALUES (CAST(:p AS uuid), 'PYTHON')", {"p": mine.id}),
             ("a fifth level",
-             "INSERT INTO gtd_person_skills (person_id, skill, level) "
+             "INSERT INTO people_skills (person_id, skill, level) "
              "VALUES (CAST(:p AS uuid), 'zig', 'wizard')", {"p": mine.id}),
             ("a backwards credential",
-             "INSERT INTO gtd_person_credentials (person_id, kind, title, "
+             "INSERT INTO people_credentials (person_id, kind, title, "
              "year_from, year_to) VALUES (CAST(:p AS uuid), 'education', "
              "'BTech', 2020, 2016)", {"p": mine.id}),
         ):
@@ -174,12 +174,12 @@ async def main() -> None:
 
         # ── 6. Tenant fail-closed on both tables ───────────────────────────
         release_tenant(token)
-        for table_name in ("gtd_person_skills", "gtd_person_credentials"):
+        for table_name in ("people_skills", "people_credentials"):
             try:
-                cols = ("person_id, skill" if table_name == "gtd_person_skills"
+                cols = ("person_id, skill" if table_name == "people_skills"
                         else "person_id, kind, title")
                 vals = ("CAST(:p AS uuid), 'probe'"
-                        if table_name == "gtd_person_skills"
+                        if table_name == "people_skills"
                         else "CAST(:p AS uuid), 'education', 'probe'")
                 await db.execute(text(
                     f"INSERT INTO {table_name} ({cols}) VALUES ({vals})"),
@@ -195,10 +195,10 @@ async def main() -> None:
 
         # ── 7. CASCADE ─────────────────────────────────────────────────────
         await db.execute(text(
-            "DELETE FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            "DELETE FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": mine.id})
         await db.commit()
-        for table_name in ("gtd_person_skills", "gtd_person_credentials"):
+        for table_name in ("people_skills", "people_credentials"):
             orphans = (await db.execute(text(
                 f"SELECT count(*) AS n FROM {table_name} "
                 " WHERE person_id = CAST(:id AS uuid)"),
@@ -207,7 +207,7 @@ async def main() -> None:
     finally:
         await db.rollback()
         await db.execute(text(
-            "DELETE FROM gtd_people WHERE email LIKE '%@ws28h.invalid'"))
+            "DELETE FROM people WHERE email LIKE '%@ws28h.invalid'"))
         await db.commit()
         release_tenant(token)
         await db.close()

@@ -1,7 +1,7 @@
 """Tasks · capability — semantic assignee matching (spec §5, Phase 2).
 
 Embeds each person's capability text (role · title · skills · domain · résumé
-summary) into ``gtd_people.capability_embedding`` and scores a task against the
+summary) into ``people.capability_embedding`` and scores a task against the
 roster by cosine similarity, so the clarify/assignment engine can rank owners by
 SEMANTIC fit — not just keyword overlap.
 
@@ -119,7 +119,7 @@ async def embed_person(db: Any, person_id: str) -> bool:
         row = (await db.execute(text(
             """SELECT role, title, domain, skills, resume_summary,
                       capability_text_hash
-                 FROM gtd_people WHERE id = :id"""), {"id": person_id})).fetchone()
+                 FROM people WHERE id = :id"""), {"id": person_id})).fetchone()
         if row is None:
             return False
         ctext = capability_text({
@@ -136,7 +136,7 @@ async def embed_person(db: Any, person_id: str) -> bool:
         if not vecs:
             return False
         await db.execute(text(
-            """UPDATE gtd_people
+            """UPDATE people
                   SET capability_embedding = CAST(:emb AS vector),
                       capability_text_hash = :hash
                 WHERE id = :id"""),
@@ -157,7 +157,7 @@ async def embed_pending_people(db: Any, *, batch: int = 64) -> int:
     rows = (await db.execute(text(
         """SELECT id, role, title, domain, skills, resume_summary,
                   capability_text_hash
-             FROM gtd_people
+             FROM people
             WHERE status = 'active'
             ORDER BY updated_at DESC NULLS LAST
             LIMIT :lim"""), {"lim": batch})).fetchall()
@@ -182,7 +182,7 @@ async def embed_pending_people(db: Any, *, batch: int = 64) -> int:
         return 0
     for (pid, _c, h), vec in zip(pending, vecs, strict=True):
         await db.execute(text(
-            """UPDATE gtd_people
+            """UPDATE people
                   SET capability_embedding = CAST(:emb AS vector),
                       capability_text_hash = :hash
                 WHERE id = :id"""),
@@ -207,7 +207,7 @@ async def semantic_scores(db: Any, task_text: str) -> dict[str, float]:
         rows = (await db.execute(text(
             """SELECT name,
                       1 - (capability_embedding <=> CAST(:qvec AS vector)) AS sim
-                 FROM gtd_people
+                 FROM people
                 WHERE status = 'active'
                   AND capability_embedding IS NOT NULL"""),
             {"qvec": _vec_literal(vecs[0])})).fetchall()

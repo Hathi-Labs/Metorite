@@ -11,7 +11,7 @@ plane — every row the organization owns **in the tenant-scoped schema**.
 Every tenant-scoped table carries ``organization_id REFERENCES organization
 ON DELETE CASCADE`` (33 tables at build time — ``app_user``,
 ``org_membership``, ``org_role``/``org_group``, the ``pm_*`` family, the
-``gtd_person_*`` family, ``tenant_placement``, ``provider_keys``,
+the ``people*`` family, ``tenant_placement``, ``provider_keys``,
 ``model_config``, ``mcp_servers``, ``plugins``), so deleting the
 ``organization`` row deletes the tenant plane.
 

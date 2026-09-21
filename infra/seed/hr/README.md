@@ -2,7 +2,7 @@
 
 Snapshot of `FracktalWorks/agent-project-manager` → `agent-data/`
 (`hr_structure.json` + `resume_profiles.json`), used to populate the
-Task Manager's `gtd_people` org-knowledge layer (spec §6.1) via
+Task Manager's `people` org-knowledge layer (spec §6.1) via
 `scripts/import_hr_people.py`.
 
 - **Source of truth stays agent-project-manager / the HR system** — re-copy

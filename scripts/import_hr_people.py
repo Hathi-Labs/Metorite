@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Import the company org chart + resume capabilities into gtd_people.
+"""Import the company org chart + resume capabilities into people.
 
 Reads the seed snapshot (infra/seed/hr/) — a copy of agent-project-manager's
 agent-data/hr_structure.json + resume_profiles.json — merges each person's
 org-chart skills with their resume-extracted skills, and upserts one
-gtd_people row per person (keyed by unique name). Idempotent: re-run any time
+people row per person (keyed by unique name). Idempotent: re-run any time
 the snapshot is refreshed.
 
 Usage:
@@ -30,7 +30,7 @@ SOURCE = "agent-project-manager"
 def source_key(name: str) -> str:
     """The importer's upsert key — per SOURCE, not per person.
 
-    Migration 148 dropped `UNIQUE(name)` from `gtd_people` (People Center P-1):
+    Migration 148 dropped `UNIQUE(name)` from `people` (People Center P-1):
     two real people may share a name, and the old constraint said they could
     not. This script still needs *some* stable key or a re-import would insert a
     second copy of everyone, and `ON CONFLICT (name)` now has no constraint to
@@ -44,7 +44,7 @@ def source_key(name: str) -> str:
 
 
 UPSERT = """
-INSERT INTO gtd_people
+INSERT INTO people
     (name, email, role, department, team, reports_to, status, skills,
      resume_summary, years_experience, domain,
      capacity_hours_per_week, current_load_hours_per_week,
@@ -57,20 +57,20 @@ VALUES
      now(), now())
 ON CONFLICT (source_key) WHERE source_key IS NOT NULL DO UPDATE SET
     name = EXCLUDED.name,
-    email = COALESCE(EXCLUDED.email, gtd_people.email),
+    email = COALESCE(EXCLUDED.email, people.email),
     role = EXCLUDED.role,
     department = EXCLUDED.department,
     team = EXCLUDED.team,
     reports_to = EXCLUDED.reports_to,
     status = EXCLUDED.status,
     skills = EXCLUDED.skills,
-    resume_summary = COALESCE(EXCLUDED.resume_summary, gtd_people.resume_summary),
-    years_experience = COALESCE(EXCLUDED.years_experience, gtd_people.years_experience),
-    domain = COALESCE(EXCLUDED.domain, gtd_people.domain),
+    resume_summary = COALESCE(EXCLUDED.resume_summary, people.resume_summary),
+    years_experience = COALESCE(EXCLUDED.years_experience, people.years_experience),
+    domain = COALESCE(EXCLUDED.domain, people.domain),
     capacity_hours_per_week = EXCLUDED.capacity_hours_per_week,
     current_load_hours_per_week = EXCLUDED.current_load_hours_per_week,
     available_hours_per_week = EXCLUDED.available_hours_per_week,
-    clickup_user_id = COALESCE(EXCLUDED.clickup_user_id, gtd_people.clickup_user_id),
+    clickup_user_id = COALESCE(EXCLUDED.clickup_user_id, people.clickup_user_id),
     synced_at = now(), updated_at = now()
 """
 
@@ -179,9 +179,9 @@ async def main() -> None:
         for r in rows:
             await conn.execute(text(UPSERT), r)
         count = (await conn.execute(
-            text("SELECT count(*) FROM gtd_people"))).scalar()
+            text("SELECT count(*) FROM people"))).scalar()
     await engine.dispose()
-    print(f"upserted {len(rows)} → gtd_people now has {count} rows")
+    print(f"upserted {len(rows)} → people now has {count} rows")
 
 
 if __name__ == "__main__":

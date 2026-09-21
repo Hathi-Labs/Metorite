@@ -26,6 +26,7 @@ from fastapi import HTTPException
 from gateway.routes.people import dashboard as people_dashboard
 from gateway.routes.people import quality as quality_mod
 from gateway.routes.people import search as people_search
+from tests.unit._sql_match import hits
 
 REPO = Path(__file__).resolve().parents[2]
 SOURCE = (REPO / "apps/services/gateway/gateway/routes/people/quality.py"
@@ -67,9 +68,9 @@ class FakeDB:
 
     async def execute(self, sql: Any, params: dict | None = None) -> _Result:
         s = " ".join(str(sql).split())
-        if "FROM gtd_people" in s:
+        if hits(s, "FROM people"):
             return _Result(self.roster)
-        if "FROM gtd_person_skills" in s:
+        if "FROM people_skills" in s:
             return _Result(self.skills)
         if "FROM pm_tasks" in s:
             return _Result(self.tasks)
@@ -196,7 +197,7 @@ def test_a_failed_scan_says_so_not_no_visible_tasks(monkeypatch) -> None:
 
 def test_array_only_skills_still_count_as_declared(monkeypatch) -> None:
     """Adversarial-review finding: the importer and every pre-176 write fill
-    only `gtd_people.skills`; coverage over the child table alone asserted
+    only `people.skills`; coverage over the child table alone asserted
     "nobody claims firmware" about a record whose array declares it."""
     db = FakeDB(roster=[BOSS, person(skills=["firmware"],
                                      title="Firmware Wizard")],

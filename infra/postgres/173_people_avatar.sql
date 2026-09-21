@@ -1,6 +1,6 @@
 -- 173_people_avatar.sql — the display image (People Center P-8 / WS-28q).
 --
--- What: `gtd_people.avatar` (a data URI) and `avatar_updated_at`.
+-- What: `people.avatar` (a data URI) and `avatar_updated_at`.
 -- Why:  owner-directed 2026-08-13 — "every user should have a unique image that
 --       displays", with "a strict policy on the size of the image so that random
 --       image sizes are not uploaded" and a crop.
@@ -44,15 +44,15 @@
 -- consumer is an <img src>, and a round trip through base64 at every read to
 -- store 25% fewer bytes in a table of dozens of rows is a worse trade than it
 -- sounds.
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS avatar TEXT;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS avatar TEXT;
 
 -- Cache busting. The data URI is inlined in the response, so the browser has
 -- nothing to re-fetch — but the directory list and the person page are cached
 -- by the client, and this is what tells a stale render it is stale. It is also
 -- the honest answer to "when did this person last change their picture", which
 -- `updated_at` cannot give once anything else on the row moves.
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS avatar_updated_at TIMESTAMPTZ;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS avatar_updated_at TIMESTAMPTZ;
 
-COMMENT ON COLUMN gtd_people.avatar IS
+COMMENT ON COLUMN people.avatar IS
     'data:image/jpeg;base64 URI of the SERVER''s 256x256 re-encode. Never the '
     'uploaded bytes - People Center D-PC-17.';

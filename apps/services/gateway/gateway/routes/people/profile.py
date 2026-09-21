@@ -64,7 +64,7 @@ async def _authorized_row(db: Any, person_id: str, user: Any,
     exist by reading the refusal.
     """
     row = (await db.execute(
-        text("SELECT * FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+        text("SELECT * FROM people WHERE id = CAST(:id AS uuid)"),
         {"id": person_id},
     )).fetchone()
     if row is None:
@@ -107,7 +107,7 @@ async def update_profile(
     person = await tasks_people.update_person(person_id, body, user)
     async with _tenant_session() as db:
         row = (await db.execute(
-            text("SELECT * FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            text("SELECT * FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": str(person.id)},
         )).fetchone()
         # Re-projected for THIS caller: `update_person` answers with the admin
@@ -140,7 +140,7 @@ async def upload_resume(
     result = await tasks_people.ingest_resume(person_id, file, user)
     async with _tenant_session() as db:
         row = (await db.execute(
-            text("SELECT * FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            text("SELECT * FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": person_id},
         )).fetchone()
         return {
@@ -163,7 +163,7 @@ async def get_editable(
     """
     async with _tenant_session() as db:
         row = (await db.execute(
-            text("SELECT email FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            text("SELECT email FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": person_id},
         )).fetchone()
         if row is None:
@@ -202,7 +202,7 @@ async def upload_avatar(
         except AvatarError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         row = (await db.execute(
-            text("SELECT * FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            text("SELECT * FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": person_id})).fetchone()
         return await person_payload(db, row, user)
 
@@ -216,6 +216,6 @@ async def delete_avatar(
         await clear_avatar(db, person_id,
                            getattr(user, "email", None) or "anonymous")
         row = (await db.execute(
-            text("SELECT * FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            text("SELECT * FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": person_id})).fetchone()
         return await person_payload(db, row, user)

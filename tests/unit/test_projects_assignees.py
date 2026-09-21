@@ -28,6 +28,7 @@ from typing import Any
 from acb_auth import UserContext, UserRole, build_access
 from gateway.routes.people import core as people_core
 from gateway.routes.projects import assignees as picker
+from tests.unit._sql_match import hits
 
 REPO = Path(__file__).resolve().parents[2]
 SOURCE = (REPO / "apps/services/gateway/gateway/routes/projects/assignees.py"
@@ -79,7 +80,7 @@ class FakeDB:
     async def execute(self, sql: Any, params: dict | None = None) -> _Result:
         s = " ".join(str(sql).split())
         self.statements.append(s)
-        if "FROM gtd_people" in s:
+        if hits(s, "FROM people"):
             needle = (params or {}).get("q")
             rows = self.people
             if needle:
@@ -89,7 +90,7 @@ class FakeDB:
                         or clean in (r.email or "").lower()
                         or clean in (r.title or "").lower()]
             return _Result(rows)
-        if "FROM gtd_person_absences" in s:
+        if "FROM people_absences" in s:
             return _Result(self.absences)
         if "FROM app_user" in s:
             # Priya has a login; the contractor does not.

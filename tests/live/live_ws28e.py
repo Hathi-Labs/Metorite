@@ -80,7 +80,7 @@ async def main() -> None:
                 "        CAST(:org AS uuid))"), {"org": str(org.id)})
             # An absence covering today, for the away line.
             await scoped.execute(text(
-                "INSERT INTO gtd_person_absences "
+                "INSERT INTO people_absences "
                 "  (person_id, starts_on, ends_on, kind, created_by) "
                 "VALUES (CAST(:p AS uuid), :s, :e, 'away', 'seed')"),
                 {"p": staff.id, "s": date.today(),
@@ -128,7 +128,7 @@ async def main() -> None:
 
 async def cleanup(db) -> None:
     await db.execute(text(
-        "DELETE FROM gtd_people WHERE email LIKE '%@ws28e.invalid'"))
+        "DELETE FROM people WHERE email LIKE '%@ws28e.invalid'"))
     await db.execute(text(
         "DELETE FROM app_user WHERE email LIKE '%@ws28e.invalid'"))
 

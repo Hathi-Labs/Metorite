@@ -3,7 +3,7 @@
 One claim, three fences: **a projection, never a second count.** The load half
 is the dashboard's own rollup by identity; the quality half is §5.10's
 ``collect`` by identity; and the only SQL this module runs itself is the
-headcount GROUP BY over ``gtd_people`` — the one figure no other surface
+headcount GROUP BY over ``people`` — the one figure no other surface
 computes.
 """
 
@@ -131,13 +131,13 @@ def test_the_only_query_here_is_the_headcount(monkeypatch) -> None:
     bind(monkeypatch, db)
     run(overview_mod.get_overview(user=HR))
     assert len(db.statements) == 1
-    assert "FROM gtd_people" in db.statements[0]
+    assert "FROM people" in db.statements[0]
     assert "GROUP BY" in db.statements[0]
 
 
 def test_no_second_count_in_the_source() -> None:
     """Structurally: the module never touches the Projects tables and contains
-    exactly one SELECT — over ``gtd_people``. The cheapest way to reintroduce
+    exactly one SELECT — over ``people``. The cheapest way to reintroduce
     a second arithmetic is a convenience query; this makes it a red test."""
     from tests.unit.test_people_dashboard import _strip_prose
 

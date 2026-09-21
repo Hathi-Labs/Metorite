@@ -85,7 +85,20 @@ reference tied to code. Do not put product specs in `docs/`.
   disagree about its disposition. ⚠️ **`gtd_*` is retired** — it is the old Tasks
   store, still on disk during expand/contract; do not build against it, and do not
   sweep `gtd_settings`/`gtd_day_state`/`gtd_rollover_log` with it (they are the
-  Calendar's). ⚠️ **ClickUp is gone** — no connector, no importer, no sync; Metorite
+  Calendar's).
+  ⚠️ **THE NAME IS GOING, TABLE BY TABLE** *(owner directive, 2026-09-21)*. The
+  People family moved first. `gtd_people` is now **`people`**,
+  `gtd_person_skills` is **`people_skills`**, `gtd_person_credentials` is
+  **`people_credentials`**, `gtd_person_absences` is **`people_absences`**, and
+  `gtd_person_resumes` is **`people_resumes`**. The rename lives INSIDE the
+  migration that creates each table, guarded, so one file answers a fresh
+  install, an upgrade and a replay. `tests/unit/test_people_rename_upgrade.py`
+  is the fence, and its docstring carries the two shapes that failed. Index and
+  constraint names keep the old spelling on purpose. **`people` is a PREFIX of
+  its own family.** A fake that dispatches on `"FROM people" in sql` answers the
+  absences query with directory rows, so use `tests/unit/_sql_match.py`.
+  Still to move: the Calendar three and the task store.
+  ⚠️ **ClickUp is gone** — no connector, no importer, no sync; Metorite
   is the PM system of record and root `AGENTS.md` constraint 8 is amended to say so.
 - **Pricing is FLAT: ₹500/user/month + AI credits**, one sellable seat
   (`core`), everything live included. Center packages, add-ons and Complete are

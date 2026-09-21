@@ -22,7 +22,7 @@ is how two numbers start disagreeing — so the ONE statement this module runs
 itself is the headcount by department and status, which no other surface
 computes (the workload dashboard excludes alumni by design; a headcount that
 did would say the company never loses anybody). The fence: this module's only
-``SELECT`` reads ``gtd_people``, and its only aggregate is that GROUP BY.
+``SELECT`` reads ``people``, and its only aggregate is that GROUP BY.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ async def get_overview(
             # the two numbers sit on one screen and must tell one story.
             "       COALESCE(status, '(none)') AS status, "
             "       count(*) AS count "
-            "  FROM gtd_people "
+            "  FROM people "
             " GROUP BY 1, 2 ORDER BY 1, 2"))).fetchall()
 
     headcount = [HeadcountRow(department=r.department, status=r.status,

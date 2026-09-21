@@ -216,13 +216,13 @@ async def collect(db: Any, user: UserContext) -> QualityResponse:
     roster = (await db.execute(text(
         "SELECT id, name, title, status, email, email_conflict, manager_id, "
         "       timezone, working_hours, skills "
-        "  FROM gtd_people"))).fetchall()
+        "  FROM people"))).fetchall()
     # Alphabetical HERE, structurally, not as an ORDER BY a fake would skip:
     # every list below inherits this order, and "the lists are never a
     # ranking" (D-PC-14) is this line rather than a promise.
     roster = sorted(roster, key=lambda r: ((r.name or "").lower(), str(r.id)))
     skill_rows = (await db.execute(text(
-        "SELECT person_id, skill FROM gtd_person_skills"))).fetchall()
+        "SELECT person_id, skill FROM people_skills"))).fetchall()
 
     status_by_id = {str(r.id): r.status for r in roster}
     name_by_id = {str(r.id): r.name for r in roster}
@@ -237,7 +237,7 @@ async def collect(db: Any, user: UserContext) -> QualityResponse:
     # ── Coverage 1 · bus factor of one ──────────────────────────────────────
     # Declared = the child table (D-PC-6's source) UNION the legacy array:
     # `scripts/import_hr_people.py` and every pre-176 write filled only
-    # `gtd_people.skills`, and there is no backfill — reading the child table
+    # `people.skills`, and there is no backfill — reading the child table
     # alone asserted "nobody claims firmware" about a record whose array
     # declares it (adversarial review, measured live). The union is read-only
     # and one-way; the write-path projection (D-PC-6) is untouched.

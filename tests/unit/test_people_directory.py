@@ -39,6 +39,7 @@ from fastapi import HTTPException
 from gateway.routes.people import core as people_core
 from gateway.routes.people import directory as people_directory
 from gateway.routes.people.directory import build_directory_filters
+from tests.unit._sql_match import hits
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -89,7 +90,7 @@ class FakeDB:
             return _Result(self.facets)
         if "FROM pm_tasks" in statement:
             return _Result(self.work)
-        if "SELECT email FROM gtd_people" in statement or "FROM gtd_people" in statement:
+        if hits(statement, "FROM people"):
             return _Result(self.people)
         return _Result([])
 

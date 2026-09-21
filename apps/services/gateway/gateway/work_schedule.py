@@ -3,7 +3,7 @@
 Spec: ``project-docs/specs/people_center_app.md`` §3.4a · **D-PC-16**, **D-PC-18**.
 
     layer 1  org policy      org_settings['work_schedule']  — the company's week
-    layer 2  person override gtd_people.working_hours       — their exceptions
+    layer 2  person override people.working_hours       — their exceptions
     layer 3  effective       computed here, stored nowhere
 
 WS-28k adds the fourth thing on top of the three layers: **absences**, which do
@@ -292,7 +292,7 @@ def contracted_hours_per_week(schedule: dict[str, Any]) -> float:
 
     **Derived, never stored** (D-PC-18) — the same lesson WS-28b applied to
     *load*, applied to the denominator load was being compared against. The
-    typed ``gtd_people.capacity_hours_per_week`` stays (R6: the importer writes
+    typed ``people.capacity_hours_per_week`` stays (R6: the importer writes
     it) and becomes an override this figure is checked against.
 
     A quarter hour because that is the smallest unit anybody schedules in, and
@@ -568,7 +568,7 @@ async def load_policy(db: Any) -> dict[str, Any]:
 
 
 def person_schedule(policy: dict[str, Any], row: Any) -> dict[str, Any]:
-    """The effective schedule for one ``gtd_people`` row.
+    """The effective schedule for one ``people`` row.
 
     ONE call site for the layering, so "which layer won" is answered in exactly
     one place — the person page, the directory, the dashboard and the calendar

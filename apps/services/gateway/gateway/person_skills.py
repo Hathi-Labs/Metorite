@@ -7,7 +7,7 @@ and for the same reason: ``routes/people/*`` imports from ``routes/tasks/*``
 and never the reverse, and BOTH need to write here — the People routes own the
 editing surface, the tasks-side résumé ingest writes parsed rows.
 
-**The child table is the source; ``gtd_people.skills[]`` is the cache.** Four
+**The child table is the source; ``people.skills[]`` is the cache.** Four
 live consumers read the array (the GIN index, ``_match_capability``,
 ``fetch_people_for_clarify``, the directory filters) and R6 forbids breaking
 them, so every write path here ends in :func:`project` — inside the caller's
@@ -182,7 +182,7 @@ def validate_credentials(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 async def fetch_skills(db: Any, person_id: str) -> list[dict[str, Any]]:
     rows = (await db.execute(text(
         "SELECT id, skill, level, years, last_used_year, evidence "
-        "  FROM gtd_person_skills WHERE person_id = CAST(:pid AS uuid) "
+        "  FROM people_skills WHERE person_id = CAST(:pid AS uuid) "
         " ORDER BY created_at, lower(skill)"), {"pid": person_id})).fetchall()
     return [
         {"id": str(r.id), "skill": r.skill, "level": r.level,
@@ -195,7 +195,7 @@ async def fetch_skills(db: Any, person_id: str) -> list[dict[str, Any]]:
 async def fetch_credentials(db: Any, person_id: str) -> list[dict[str, Any]]:
     rows = (await db.execute(text(
         "SELECT id, kind, title, issuer, year_from, year_to, detail, source "
-        "  FROM gtd_person_credentials WHERE person_id = CAST(:pid AS uuid) "
+        "  FROM people_credentials WHERE person_id = CAST(:pid AS uuid) "
         " ORDER BY year_from DESC NULLS LAST, created_at"),
         {"pid": person_id})).fetchall()
     return [
@@ -219,11 +219,11 @@ async def replace_skills(db: Any, person_id: str, rows: list[dict[str, Any]],
     """
     values = validate_skills(rows)
     await db.execute(text(
-        "DELETE FROM gtd_person_skills WHERE person_id = CAST(:pid AS uuid)"),
+        "DELETE FROM people_skills WHERE person_id = CAST(:pid AS uuid)"),
         {"pid": person_id})
     for value in values:
         await db.execute(text(
-            "INSERT INTO gtd_person_skills "
+            "INSERT INTO people_skills "
             "  (person_id, skill, level, years, last_used_year, evidence, "
             "   updated_by) "
             "VALUES (CAST(:pid AS uuid), :skill, :level, :years, "
@@ -253,21 +253,21 @@ async def sync_from_array(db: Any, person_id: str, skills: list[str],
             wanted[name.lower()] = name
 
     existing = (await db.execute(text(
-        "SELECT lower(skill) AS key FROM gtd_person_skills "
+        "SELECT lower(skill) AS key FROM people_skills "
         " WHERE person_id = CAST(:pid AS uuid)"), {"pid": person_id})).fetchall()
     have = {r.key for r in existing}
 
     gone = have - set(wanted)
     if gone:
         await db.execute(text(
-            "DELETE FROM gtd_person_skills "
+            "DELETE FROM people_skills "
             " WHERE person_id = CAST(:pid AS uuid) "
             "   AND lower(skill) = ANY(:gone)"),
             {"pid": person_id, "gone": sorted(gone)})
     for key, name in wanted.items():
         if key not in have:
             await db.execute(text(
-                "INSERT INTO gtd_person_skills "
+                "INSERT INTO people_skills "
                 "  (person_id, skill, evidence, updated_by) "
                 "VALUES (CAST(:pid AS uuid), :skill, 'manual', :by)"),
                 {"pid": person_id, "skill": name, "by": actor})
@@ -290,7 +290,7 @@ async def merge_from_resume(db: Any, person_id: str,
     ``added_skills``.
     """
     existing = (await db.execute(text(
-        "SELECT lower(skill) AS key FROM gtd_person_skills "
+        "SELECT lower(skill) AS key FROM people_skills "
         " WHERE person_id = CAST(:pid AS uuid)"), {"pid": person_id})).fetchall()
     have = {r.key for r in existing}
     added: list[str] = []
@@ -301,7 +301,7 @@ async def merge_from_resume(db: Any, person_id: str,
         have.add(name.lower())
         added.append(name)
         await db.execute(text(
-            "INSERT INTO gtd_person_skills "
+            "INSERT INTO people_skills "
             "  (person_id, skill, evidence, updated_by) "
             "VALUES (CAST(:pid AS uuid), :skill, 'resume', :by)"),
             {"pid": person_id, "skill": name, "by": actor})
@@ -309,7 +309,7 @@ async def merge_from_resume(db: Any, person_id: str,
     if credentials:
         rows = (await db.execute(text(
             "SELECT kind, lower(title) AS title, lower(COALESCE(issuer, '')) "
-            "       AS issuer FROM gtd_person_credentials "
+            "       AS issuer FROM people_credentials "
             " WHERE person_id = CAST(:pid AS uuid)"), {"pid": person_id})
         ).fetchall()
         seen = {(r.kind, r.title, r.issuer) for r in rows}
@@ -320,7 +320,7 @@ async def merge_from_resume(db: Any, person_id: str,
                 continue
             seen.add(key)
             await db.execute(text(
-                "INSERT INTO gtd_person_credentials "
+                "INSERT INTO people_credentials "
                 "  (person_id, kind, title, issuer, year_from, year_to, "
                 "   detail, source, created_by) "
                 "VALUES (CAST(:pid AS uuid), :kind, :title, :issuer, "
@@ -341,11 +341,11 @@ async def replace_credentials(db: Any, person_id: str,
     identically."""
     values = validate_credentials(rows)
     await db.execute(text(
-        "DELETE FROM gtd_person_credentials "
+        "DELETE FROM people_credentials "
         " WHERE person_id = CAST(:pid AS uuid)"), {"pid": person_id})
     for value in values:
         await db.execute(text(
-            "INSERT INTO gtd_person_credentials "
+            "INSERT INTO people_credentials "
             "  (person_id, kind, title, issuer, year_from, year_to, detail, "
             "   source, created_by) "
             "VALUES (CAST(:pid AS uuid), :kind, :title, :issuer, :year_from, "
@@ -355,20 +355,20 @@ async def replace_credentials(db: Any, person_id: str,
 
 
 async def project(db: Any, person_id: str, actor: str) -> None:
-    """Rewrite ``gtd_people.skills`` + ``skills_source`` from the table.
+    """Rewrite ``people.skills`` + ``skills_source`` from the table.
 
     THE one place the array is derived (D-PC-6). Runs on the caller's session,
     inside the caller's transaction — commit lands the table and its projection
     together or neither, so no reader can catch them disagreeing.
     """
     rows = (await db.execute(text(
-        "SELECT skill, evidence FROM gtd_person_skills "
+        "SELECT skill, evidence FROM people_skills "
         " WHERE person_id = CAST(:pid AS uuid) "
         " ORDER BY created_at, lower(skill)"), {"pid": person_id})).fetchall()
     skills = [r.skill for r in rows]
     source = {r.skill: r.evidence for r in rows}
     await db.execute(text(
-        "UPDATE gtd_people SET skills = :skills, "
+        "UPDATE people SET skills = :skills, "
         "       skills_source = CAST(:source AS JSONB), "
         "       updated_by = :by, updated_at = now() "
         " WHERE id = CAST(:pid AS uuid)"),

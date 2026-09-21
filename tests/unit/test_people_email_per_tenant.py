@@ -93,7 +93,7 @@ def two_firms(eng):
         b = _org(conn, "firm-b")
     yield a, b
     with eng.begin() as conn:
-        conn.execute(text("DELETE FROM gtd_people WHERE email = :e"),
+        conn.execute(text("DELETE FROM people WHERE email = :e"),
                      {"e": SHARED})
         conn.execute(text("DELETE FROM app_user WHERE email = :e"),
                      {"e": SHARED})
@@ -117,13 +117,13 @@ def test_two_customers_may_each_hold_the_same_contractor(eng, two_firms) -> None
     with eng.begin() as conn:
         for org, name in ((a, "Their name for her"), (b, "Our name for her")):
             conn.execute(text(
-                "INSERT INTO gtd_people (id, name, email, status, skills, "
+                "INSERT INTO people (id, name, email, status, skills, "
                 "source, source_key, organization_id, updated_by, updated_at) "
                 "VALUES (gen_random_uuid(), :n, :e, 'contractor', "
                 "ARRAY[]::text[], 'manual', :k, :o, 'test', now())"),
                 {"n": name, "e": SHARED, "k": f"manual:{org}", "o": org})
         rows = conn.execute(text(
-            "SELECT organization_id FROM gtd_people WHERE email = :e"),
+            "SELECT organization_id FROM people WHERE email = :e"),
             {"e": SHARED}).scalars().all()
     assert sorted(map(str, rows)) == sorted([str(a), str(b)])
 
@@ -137,14 +137,14 @@ def test_the_same_address_is_still_unique_WITHIN_one_customer(eng, two_firms) ->
     a, _b = two_firms
     with eng.begin() as conn:
         conn.execute(text(
-            "INSERT INTO gtd_people (id, name, email, status, skills, source, "
+            "INSERT INTO people (id, name, email, status, skills, source, "
             "source_key, organization_id, updated_by, updated_at) "
             "VALUES (gen_random_uuid(), 'First', :e, 'active', "
             "ARRAY[]::text[], 'manual', 'k1', :o, 'test', now())"),
             {"e": SHARED, "o": a})
     with pytest.raises(IntegrityError), eng.begin() as conn:
         conn.execute(text(
-            "INSERT INTO gtd_people (id, name, email, status, skills, "
+            "INSERT INTO people (id, name, email, status, skills, "
             "source, source_key, organization_id, updated_by, updated_at) "
             "VALUES (gen_random_uuid(), 'Second', :e, 'active', "
             "ARRAY[]::text[], 'manual', 'k2', :o, 'test', now())"),
@@ -161,7 +161,7 @@ def test_the_member_trigger_writes_a_row_in_BOTH_organizations(eng, two_firms) -
     a, b = two_firms
     with eng.begin() as conn:
         conn.execute(text(
-            "INSERT INTO gtd_people (id, name, email, status, skills, source, "
+            "INSERT INTO people (id, name, email, status, skills, source, "
             "source_key, organization_id, updated_by, updated_at) "
             "VALUES (gen_random_uuid(), 'At A', :e, 'contractor', "
             "ARRAY[]::text[], 'manual', 'ka', :o, 'test', now())"),
@@ -171,7 +171,7 @@ def test_the_member_trigger_writes_a_row_in_BOTH_organizations(eng, two_firms) -
             "INSERT INTO app_user (email, display_name, organization_id, status) "
             "VALUES (:e, 'At B', :o, 'active')"), {"e": SHARED, "o": b})
         at_b = conn.execute(text(
-            "SELECT count(*) FROM gtd_people "
+            "SELECT count(*) FROM people "
             " WHERE email = :e AND organization_id = :o"),
             {"e": SHARED, "o": b}).scalar()
     assert at_b == 1, "the invite at B produced no directory row"
@@ -197,7 +197,7 @@ def test_find_self_row_cannot_return_ANOTHER_customers_row(eng, two_firms) -> No
     with eng.begin() as conn:
         for org, name in ((a, "Row at A"), (b, "Row at B")):
             conn.execute(text(
-                "INSERT INTO gtd_people (id, name, email, status, skills, "
+                "INSERT INTO people (id, name, email, status, skills, "
                 "source, source_key, organization_id, updated_by, updated_at) "
                 "VALUES (gen_random_uuid(), :n, :e, 'active', "
                 "ARRAY[]::text[], 'manual', :k, :o, 'test', now())"),
@@ -220,7 +220,7 @@ def test_the_duplicate_check_names_nobody_at_another_customer(eng, two_firms) ->
     a, b = two_firms
     with eng.begin() as conn:
         conn.execute(text(
-            "INSERT INTO gtd_people (id, name, email, status, skills, source, "
+            "INSERT INTO people (id, name, email, status, skills, source, "
             "source_key, organization_id, updated_by, updated_at) "
             "VALUES (gen_random_uuid(), 'Held at A', :e, 'active', "
             "ARRAY[]::text[], 'manual', 'ka', :o, 'test', now())"),
@@ -242,7 +242,7 @@ def test_the_old_global_index_is_gone(eng) -> None:
     exactly as before while the new one sat next to it looking like a fix."""
     with eng.begin() as conn:
         names = conn.execute(text(
-            "SELECT indexname FROM pg_indexes WHERE tablename = 'gtd_people'"),
+            "SELECT indexname FROM pg_indexes WHERE tablename = 'people'"),
         ).scalars().all()
     assert "uq_gtd_people_org_email_lower" in names
     assert "uq_gtd_people_email_lower" not in names
@@ -263,9 +263,9 @@ def test_no_migration_pins_a_conflict_target_on_this_table(eng) -> None:
     offenders = []
     for f in sorted(mig.glob("[0-9]*_*.sql")):
         text_ = f.read_text(encoding="utf-8")
-        if re.search(r"INSERT INTO gtd_people[\s\S]{0,900}?ON CONFLICT\s*\(", text_):
+        if re.search(r"INSERT INTO people[\s\S]{0,900}?ON CONFLICT\s*\(", text_):
             offenders.append(f.name)
     assert not offenders, (
-        "These pin a conflict target on `gtd_people`, so changing its unique "
+        "These pin a conflict target on `people`, so changing its unique "
         f"index breaks them at plan time: {sorted(set(offenders))}"
     )

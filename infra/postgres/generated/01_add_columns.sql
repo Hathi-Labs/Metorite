@@ -279,23 +279,23 @@ ALTER TABLE gtd_items
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE gtd_people
+ALTER TABLE people
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE gtd_person_absences
+ALTER TABLE people_absences
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE gtd_person_credentials
+ALTER TABLE people_credentials
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE gtd_person_resumes
+ALTER TABLE people_resumes
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE gtd_person_skills
+ALTER TABLE people_skills
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
