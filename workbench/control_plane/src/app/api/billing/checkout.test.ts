@@ -200,6 +200,23 @@ const EXCLUDED: Record<string, string> = {
     "The per-member WRITE controls it feeds ARE `billing:purchase`-gated at the " +
     "surface, but the roster read itself takes the seats read's session gate. " +
     "Covered by `members/members.test.ts`.",
+  "usage/activity/route.ts":
+    "NOT a money route (D66 (a), H-134): a READ of what this organization ran " +
+    "and what it cost, which mints nothing and moves nothing. It is gated, " +
+    "just not by `billing:purchase` — `requireSpendReader` resolves the " +
+    "session server-side and SCOPES a non-admin to their own member address, " +
+    "because the upstream takes a `member` parameter the workbench must fill " +
+    "'from the signed-in session, never from the browser'. Requiring the " +
+    "purchase capability would stop a member seeing their own usage, which is " +
+    "the catalog read's argument. Fenced by `usage/usage.test.ts`.",
+  "usage/members/route.ts":
+    "NOT a money route (D66 (b), H-134), and the one read here that is " +
+    "ADMIN-ONLY: the row names a colleague and what they cost. " +
+    "`requireSpendReader` refuses a non-admin with 403 BEFORE the Console is " +
+    "touched — `billing:purchase` would be the wrong gate, because reading " +
+    "what was spent and spending are two different acts and an organization " +
+    "may grant one without the other. Fenced by `usage/usage.test.ts`, which " +
+    "asserts the refusal AND that no Console call was made.",
   "seats/assign/route.ts":
     "NOT an org-key money route (SC-2a): a gateway-tier seat WRITE proxy that " +
     "presents NO `cc_live_` org key and never touches `_console.ts` — it " +

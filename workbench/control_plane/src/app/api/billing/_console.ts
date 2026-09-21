@@ -320,3 +320,59 @@ export function consoleHeaders(key: string, email: string): HeadersInit {
     "X-CC-Member": email,
   };
 }
+
+/**
+ * The signed-in member, IF they may read this organization's spend. **H-134.**
+ *
+ * 🔴 **Server-side admin, not the page's arm.** `settings/billing` already
+ * refuses a non-admin, and its own comment calls that gate *"a COURTESY, not a
+ * security boundary"*. That is fine for a balance the whole company shares. It
+ * is not fine for `/my/usage/members`, which names **every colleague and what
+ * they each spent** — a surface gate alone would leave that one `curl` away
+ * from any signed-in member.
+ *
+ * ⚠️ **`is_admin`, not `billing:purchase`.** Reading what was spent and
+ * spending are two different acts, and an org that grants one without the
+ * other is making a coherent choice. Borrowing the purchase capability here
+ * would quietly redefine it.
+ *
+ * ⚠️ **Every failure to RESOLVE is a refusal**, the same rule
+ * `requirePurchaser` states: an unreachable gateway, a non-JSON answer or a
+ * payload with no `is_admin` all mean *we could not establish that this person
+ * may read it*, and the safe answer to that is no.
+ *
+ * Returns the member's own email on success — the activity route scopes to it
+ * for a non-admin, so one endpoint serves both readings.
+ */
+export async function requireSpendReader(): Promise<
+  { email: string; isAdmin: boolean } | NextResponse
+> {
+  const identity = await currentIdentity();
+  if (!identity) {
+    return NextResponse.json({ detail: "Sign in to continue" }, { status: 401 });
+  }
+
+  let access: Partial<Access> | null = null;
+  try {
+    const res = await fetch(`${GATEWAY_URL}/auth/me`, {
+      headers: headersActingAs(identity.email),
+      cache: "no-store",
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.ok) access = (await res.json()) as Partial<Access>;
+  } catch {
+    access = null;
+  }
+  if (access === null) {
+    // ⚠️ 403, never 500. We could not establish the fact, and the safe answer
+    // to "may they read the company's spend" is no.
+    return NextResponse.json(
+      {
+        detail:
+          "We could not confirm your access, so this read was refused. Try again shortly.",
+      },
+      { status: 403 },
+    );
+  }
+  return { email: identity.email, isAdmin: access.is_admin === true };
+}

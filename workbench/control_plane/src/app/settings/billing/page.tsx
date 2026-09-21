@@ -27,6 +27,7 @@ import Button from "@/components/ui/Button";
 import { Select } from "@/components/ui/Input";
 
 import Checkout from "./Checkout";
+import SpendBreakdown from "./SpendBreakdown";
 import {
   type CreditSummary,
   type InvoiceRow,
@@ -211,6 +212,11 @@ export default function BillingPage() {
                 onChanged={loadSeats}
               />
             ) : null}
+            {/* 🔴 H-134 — between the balance and the bills, because that is
+                where the question sits: the credits went somewhere, and the
+                bill is what arrives afterwards. It renders nothing when both
+                reads are empty or refused. */}
+            <SpendBreakdown />
             <InvoiceTable rows={data.invoices} />
           </div>
         ) : null}
