@@ -315,6 +315,32 @@ line — never reclaim a number by deleting the other entry.
   started.
 
 ### H-89 · Something on the box writes into the checkout as root · [OWNER]
+- **📌 2026-09-21 — MEASURED, and one part of it is still unexplained.**
+  H-137's gate turned a deploy red for the first time. The cause was this
+  entry. `.next` was `root:root` with 3803 paths under it in the control
+  plane, and 759 in the operator console. Every Next build died at
+  `EACCES … .next.staging/trace`. Run 35588464803.
+  - **Handled, not cured.** `reclaim_build_tree` in `vps_apply.sh` (#358) now
+    reclaims `.next`, `.next.staging` and `.next.previous` before each build,
+    and PRINTS the count it repaired. So every deploy is a measurement of
+    this entry from now on. Watch that number: it should trend to zero once
+    the cause is found, and it is a time series nobody had before.
+  - 🔴 **THE PART I COULD NOT EXPLAIN.** I reclaimed all 4562 paths by hand
+    and verified zero remained. The next deploy, about ten minutes later,
+    reclaimed **3807** under the same directory. So something re-created them
+    inside that window.
+  - **What it is NOT.** All four units run as `acb`, and so do their main
+    processes (`systemctl show <unit> -p User`). No root-owned file had been
+    written in the previous twenty minutes. `drop_dir`'s `sudo rm -rf`
+    deletes and creates nothing. The sherpa-onnx step at line ~401 runs
+    `uv pip install` WITHOUT sudo.
+  - **What is left root-owned**, and it looks historical instead of active:
+    20 paths, all under `.venv/lib/python3.12/site-packages/sherpa_onnx*`
+    and `.git`. The `.venv` repair higher up this script already exists for
+    exactly that shape.
+  - **The next step for whoever takes this.** Instrument, do not reason.
+    A `find -newermt` sweep on a timer, or an audit rule on the checkout,
+    will name the writer in a day. Reasoning from the unit files did not.
 - **⚠️ 2026-09-21 — the PULL path is now load-bearing, not redundant.**
   The deploy for #344 failed: ssh timed out on all three rounds from the
   GitHub runner. Production came up on the new commit anyway, because
