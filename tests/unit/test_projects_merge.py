@@ -318,3 +318,76 @@ def test_the_columns_are_nullable_with_no_default_r6():
         assert added is not None, column
         assert "NOT NULL" not in added.group(0), column
         assert "DEFAULT" not in added.group(0), column
+
+
+# ── What adversarial review found, kept as rules ─────────────────────────
+
+
+def test_no_satellite_is_moved_blind():
+    """🔴 Every satellite move is conditional, and none deletes.
+
+    The first draft split the tables in two: four moved with a blind UPDATE
+    under the claim they had "no key that could collide", and three
+    de-duplicated by DELETING the source's row. Both halves were wrong
+    against a real database — `pm_intake.task_id` is UNIQUE so a merge of two
+    captured tasks answered 500, and `pm_task_personal` holds a member's
+    Calendar block and tracked actuals, which the de-dupe destroyed.
+
+    One rule now: move a row only where the target has none for the same key.
+    This reads the source, because "does it still delete" is the question,
+    and a functional test of a merge that happens to avoid a collision would
+    pass either way.
+    """
+    source = (
+        REPO / "apps/services/gateway/gateway/routes/projects/merge.py"
+    ).read_text(encoding="utf-8")
+    body = source[source.index("async def _move_satellites"):]
+    body = body[: body.index("async def _move_links")]
+    assert "NOT EXISTS" in body, "the move is unconditional again"
+    # ⚠️ `DELETE FROM`, not `DELETE`. The docstring above the function
+    # explains at length what it no longer deletes, and a looser check reads
+    # its own documentation and fails on the explanation. That exact shape
+    # has now cost this repo three tests in one day.
+    assert "DELETE FROM" not in body.upper(), "a satellite move must not delete"
+
+
+def test_the_intake_row_has_no_second_half_to_its_key():
+    """`pm_intake.task_id` is UNIQUE on its own, so `None` is the right
+    entry — not a column name that would make the clash test always false."""
+    assert ("pm_intake", None) in pm_merge._MOVE
+
+
+def test_the_block_cycle_guard_is_the_EXISTING_one():
+    """⚠️ Not a second implementation. `assert_no_block_cycle` is bounded,
+    tested, and refuses the same state the link endpoint refuses — a merge
+    writing a cycle the rest of the app forbids is the defect review found."""
+    source = (
+        REPO / "apps/services/gateway/gateway/routes/projects/merge.py"
+    ).read_text(encoding="utf-8")
+    assert "from gateway.routes.projects.relations import assert_no_block_cycle" in source
+    body = source[source.index("async def _move_links"):]
+    body = body[: body.index("async def _descends_from")]
+    assert "assert_no_block_cycle" in body
+
+
+def test_the_ancestor_test_walks_rather_than_peeking_at_the_parent():
+    """🔴 The first draft asked only "is its parent the source", which misses
+    the grandchild — and merging into one's own grandchild made two tasks
+    each other's parent."""
+    source = (
+        REPO / "apps/services/gateway/gateway/routes/projects/merge.py"
+    ).read_text(encoding="utf-8")
+    body = source[source.index("async def _descends_from"):]
+    body = body[: body.index("async def _reparent_children")]
+    assert "MAX_DEPTH" in body, "an unbounded walk is a denial-of-service surface"
+    assert "range(" in body
+
+
+def test_stubs_are_re_pointed_so_no_chain_can_form():
+    """🔴 Merge A into B, then B into C. Without this A aims at a stub and
+    its old link opens an empty task — the one promise merging makes."""
+    source = (
+        REPO / "apps/services/gateway/gateway/routes/projects/merge.py"
+    ).read_text(encoding="utf-8")
+    body = source[source.index("async def merge_tasks"):]
+    assert "WHERE merged_into_task_id = CAST(:src AS uuid)" in body

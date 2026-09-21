@@ -183,6 +183,14 @@ async def seed() -> dict:
         # Source B: no description, no dates, no priority.
         await task("b", "home", 3, tags=["gamma"])
         await task("kid", "home", 4, parent=made["tasks"]["a"])
+        # A three-generation chain for the GRANDCHILD case: gp -> mid -> gc.
+        await task("gp", "home", 20)
+        await task("mid", "home", 21, parent=made["tasks"]["gp"])
+        await task("gc", "home", 22, parent=made["tasks"]["mid"])
+        # And a pair for the blocks-cycle case: cyc_s blocks via mid_x to cyc_t.
+        await task("cyc_s", "home", 30)
+        await task("cyc_x", "home", 31)
+        await task("cyc_t", "home", 32)
         await task("bystander", "home", 5)
         await task("faraway", "other", 1)
 
@@ -215,21 +223,50 @@ async def seed() -> dict:
         for src, dst, kind in (("a", "bystander", "blocks"),
                                ("target", "bystander", "blocks"),
                                ("a", "target", "blocks"),
-                               ("b", "bystander", "relates_to")):
+                               ("b", "bystander", "relates_to"),
+                               # S blocks X, X blocks T. Re-pointing S onto T
+                               # closes a two-node loop.
+                               ("cyc_s", "cyc_x", "blocks"),
+                               ("cyc_x", "cyc_t", "blocks")):
             await db.execute(text(
                 "INSERT INTO pm_task_links (source_task_id, target_task_id, "
                 "link_type, organization_id, created_by) VALUES "
                 "(CAST(:s AS uuid), CAST(:d AS uuid), :k, CAST(:o AS uuid), :me)"),
                 {"s": t[src], "d": t[dst], "k": kind, "o": org_id, "me": ME})
 
+        # ⚠️ An intake row on BOTH sides. `pm_intake.task_id` is UNIQUE, and
+        # two emails about one thing is the canonical use of merging — the
+        # first draft answered 500 here.
+        for key in ("target", "a"):
+            await db.execute(text(
+                "INSERT INTO pm_intake (task_id, organization_id, source, "
+                "source_ref, status, created_by) VALUES (CAST(:t AS uuid), "
+                "CAST(:o AS uuid), 'email', :s, 'accepted', :me)"),
+                {"t": t[key], "o": org_id, "s": f"{MARK} {key}", "me": ME})
+
+        # The same attachment id on both: `(task_id, attachment_id)` is the
+        # primary key, so a blind move would collide.
+        shared_file = str(uuid.uuid4())
+        for key in ("target", "a"):
+            await db.execute(text(
+                "INSERT INTO pm_task_attachments (task_id, attachment_id, "
+                "organization_id, added_by) VALUES (CAST(:t AS uuid), "
+                "CAST(:f AS uuid), CAST(:o AS uuid), :me)"),
+                {"t": t[key], "f": shared_file, "o": org_id, "me": ME})
+
         # A personal overlay for the same member on BOTH sides: the target's
         # must win, and the source's must not collide.
-        for key, disp in (("target", "NEXT"), ("a", "SOMEDAY")):
+        # ⚠️ The SOURCE's row carries tracked actuals. "Two rows say the
+        # same thing" is true of an assignee and false of this table.
+        for key, disp, actual in (("target", "NEXT", None), ("a", "SOMEDAY", True)):
             await db.execute(text(
                 "INSERT INTO pm_task_personal (task_id, member_email, "
-                "disposition, organization_id) VALUES (CAST(:t AS uuid), :m, "
-                ":d, CAST(:o AS uuid))"),
-                {"t": t[key], "m": ME, "d": disp, "o": org_id})
+                "disposition, organization_id, actual_start, actual_end) "
+                "VALUES (CAST(:t AS uuid), :m, :d, CAST(:o AS uuid), "
+                "CAST(:s AS timestamptz), CAST(:e AS timestamptz))"),
+                {"t": t[key], "m": ME, "d": disp, "o": org_id,
+                 "s": ts("2026-09-01") if actual else None,
+                 "e": ts("2026-09-02") if actual else None})
 
         await db.commit()
         return made
@@ -244,6 +281,12 @@ async def clean(made: dict) -> None:
             for sql in (
                 "DELETE FROM pm_activities WHERE task_id IN (SELECT id FROM "
                 "pm_tasks WHERE root_project_id = CAST(:p AS uuid))",
+                "DELETE FROM pm_intake WHERE task_id IN (SELECT id FROM "
+                "pm_tasks WHERE root_project_id = CAST(:p AS uuid))",
+                "DELETE FROM pm_task_attachments WHERE task_id IN (SELECT id "
+                "FROM pm_tasks WHERE root_project_id = CAST(:p AS uuid))",
+                "DELETE FROM pm_task_personal WHERE task_id IN (SELECT id "
+                "FROM pm_tasks WHERE root_project_id = CAST(:p AS uuid))",
                 "DELETE FROM pm_tasks WHERE root_project_id = CAST(:p AS uuid)",
                 "DELETE FROM pm_task_statuses WHERE project_id = CAST(:p AS uuid)",
                 "DELETE FROM pm_project_grants WHERE project_id = CAST(:p AS uuid)",
@@ -383,7 +426,93 @@ async def main():  # noqa: C901
                                  user=owner()),
             "and a merged task cannot be merged again")
 
-        # ── Unarchiving a stub makes it a task again ───────────────────────
+        # 🔴 `pm_intake.task_id` is UNIQUE. The first draft moved it blind and
+        # answered 500 — on the canonical use of the feature, two captured
+        # emails about one thing.
+        check("both intake records survive the merge",
+              await scalar("SELECT count(*) FROM pm_intake WHERE source_ref LIKE :m",
+                           m=f"{MARK}%"), 2)
+        check("and the source's still names the task it created",
+              str(await scalar(
+                  "SELECT task_id FROM pm_intake WHERE source_ref = :s",
+                  s=f"{MARK} a")), t["a"])
+
+        # `(task_id, attachment_id)` is the primary key.
+        check("a shared attachment does not collide",
+              await scalar("SELECT count(*) FROM pm_task_attachments WHERE "
+                           "task_id = CAST(:i AS uuid)", i=t["target"]), 1)
+
+        # 🔴 The source's tracked actuals are a member's real work. The first
+        # draft DELETED the row to de-duplicate.
+        check("the source's tracked actuals are not destroyed",
+              await scalar("SELECT count(*) FROM pm_task_personal WHERE "
+                           "task_id = CAST(:i AS uuid) AND actual_start IS NOT NULL",
+                           i=t["a"]), 1)
+
+        # A re-parented subtask is an edit no delta client sees otherwise.
+        kid_seen = await one(
+            "SELECT updated_at, created_at FROM pm_tasks WHERE id = CAST(:i AS uuid)",
+            i=t["kid"])
+        check("a re-parented subtask is bumped for the delta feed",
+              kid_seen.updated_at > kid_seen.created_at, True)
+
+        # ── The cases adversarial review found, 2026-09-21 ────────────────
+        #
+        # Every one of these was a live defect in the first draft, and the
+        # first draft's own comments claimed three of them were impossible.
+
+        # 🔴 A GRANDCHILD. The first guard only tested the direct-child case,
+        # so merging a task into its own grandchild made the two tasks each
+        # other's parent — a shape `assert_no_task_cycle` refuses on every
+        # other write path in the product.
+        await pm_merge.merge_tasks(
+            t["gc"], pm_merge.MergeIn(sources=[t["gp"]]), user=owner())
+        gc_parent = await scalar(
+            "SELECT parent_task_id FROM pm_tasks WHERE id = CAST(:i AS uuid)",
+            i=t["gc"])
+        mid_parent = await scalar(
+            "SELECT parent_task_id FROM pm_tasks WHERE id = CAST(:i AS uuid)",
+            i=t["mid"])
+        check("merging into a GRANDCHILD leaves no parent cycle",
+              str(gc_parent) == t["mid"] and str(mid_parent) == t["gc"], False)
+        check("and the middle task hangs off the survivor",
+              str(mid_parent), t["gc"])
+
+        # 🔴 A `blocks` CYCLE. S blocks X and X blocks T; re-pointing S's edge
+        # onto T closes the loop. `assert_no_block_cycle` calls this "a
+        # deadlock no human can resolve by finishing something", and the link
+        # endpoint refuses it with 422 — so the merge must not create it.
+        await pm_merge.merge_tasks(
+            t["cyc_t"], pm_merge.MergeIn(sources=[t["cyc_s"]]), user=owner())
+        loop = await scalar(
+            "SELECT count(*) FROM pm_task_links a JOIN pm_task_links b "
+            "ON a.source_task_id = b.target_task_id "
+            "AND a.target_task_id = b.source_task_id "
+            "WHERE a.link_type = 'blocks' AND b.link_type = 'blocks'")
+        check("a merge cannot create a blocks cycle", loop, 0)
+
+        # 🔴 A REDIRECT CHAIN. Merge A into B, then B into C: A pointed at a
+        # stub, and one hop from A landed on an empty task. Merging must
+        # re-point everything that aimed at the task being merged away.
+        chain = await one(
+            "SELECT merged_into_task_id FROM pm_tasks WHERE id = CAST(:i AS uuid)",
+            i=t["a"])
+        # `a` was merged into `target` earlier. Now fold `target` into `kid`.
+        await pm_merge.merge_tasks(
+            t["kid"], pm_merge.MergeIn(sources=[t["target"]]), user=owner())
+        rechained = await scalar(
+            "SELECT merged_into_task_id FROM pm_tasks WHERE id = CAST(:i AS uuid)",
+            i=t["a"])
+        check("a stub follows its target when that target is merged on",
+              str(rechained), t["kid"])
+        check("so no stub ever points at another stub",
+              await scalar(
+                  "SELECT count(*) FROM pm_tasks s JOIN pm_tasks m "
+                  "ON s.merged_into_task_id = m.id "
+                  "WHERE m.merged_into_task_id IS NOT NULL"), 0)
+        assert chain is not None
+
+        # ── Unarchiving a stub makes it a task again ───────────────────────────
         #
         # ⚠️ The DATABASE forces this: `pm_tasks_merged_is_archived` refuses a
         # row that claims to be merged while off the shelf, so clearing one

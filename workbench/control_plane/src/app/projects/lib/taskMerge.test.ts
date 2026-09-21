@@ -27,9 +27,16 @@ describe("mergeRefusal", () => {
     expect(mergeRefusal(task(), [])).toBeNull();
   });
 
-  it("refuses a task that is being merged", () => {
-    // The commonest mistake: picking one of the selected tasks as the target.
+  it("refuses the only task being merged, which would be a no-op", () => {
     expect(mergeRefusal(task({ id: "a" }), ["a"])).toContain("being merged");
+  });
+
+  it("ALLOWS keeping one of several selected tasks", () => {
+    // 🔴 The gesture the bulk bar exists for: select three duplicates and
+    // keep one. The first draft greyed out all three, so the survivor had
+    // to be a fourth task outside the selection — while the gateway
+    // supported this all along by dropping the target out of `sources`.
+    expect(mergeRefusal(task({ id: "a" }), ["a", "b", "c"])).toBeNull();
   });
 
   it("refuses a task that is itself a merged stub", () => {
@@ -125,6 +132,13 @@ describe("mergeSummary", () => {
     const got = mergeSummary(task(), ["a", "b"]);
     expect(got).toContain("archived");
     expect(got).not.toContain("delete");
+  });
+
+  it("counts what is FOLDED IN, not the whole selection", () => {
+    // Keeping one of three means two are folded in. Off by one here is off
+    // by one in the sentence read immediately before the click.
+    const got = mergeSummary(task({ id: "a", task_number: 7 }), ["a", "b", "c"]);
+    expect(got).toContain("2 tasks will be folded");
   });
 
   it("counts one task as one, not as 1 tasks", () => {

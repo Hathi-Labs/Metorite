@@ -161,7 +161,15 @@ export function MergeTasksDialog({
           })}
           {shown.length === 0 ? (
             <li className="px-2.5 py-3 text-xs text-muted-foreground">
-              No task here matches that.
+              {/* ⚠️ Says WHY it is not here, which the first draft did not.
+                  This list is the board's loaded page — 100 tasks, and
+                  narrowed by whatever filters the board carries. Somebody
+                  typing the number of a task they can see in another view
+                  read "No task here matches that" and had no way to know
+                  the list was a page. Found in adversarial review. */}
+              Nothing loaded on this board matches that. The list shows the{" "}
+              {candidates.length} tasks currently on it — clear the board&apos;s
+              filters, or open the task you want to keep and merge from there.
             </li>
           ) : null}
         </ul>

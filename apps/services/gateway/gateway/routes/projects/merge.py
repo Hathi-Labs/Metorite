@@ -58,6 +58,7 @@ from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.bulk import MAX_BULK
 from gateway.routes.projects.core import (
+    MAX_DEPTH,
     TaskModel,
     _tenant_session,
     actor,
@@ -71,35 +72,50 @@ from gateway.routes.projects.core import (
     touch_task,
     update_row,
 )
+from gateway.routes.projects.relations import assert_no_block_cycle
 from pydantic import BaseModel
 from sqlalchemy import text
 
-#: Tables whose rows simply MOVE: everything the source holds becomes the
-#: target's, with no key that could collide.
+#: Every satellite the merge moves, as `(table, the rest of its unique key)`.
 #:
-#: ⚠️ `pm_activities` is in here and that is the point of the feature. The
-#: comments and the history are the content people merge tasks to keep
-#: together; leaving them behind on a stub nobody opens would make the merge
-#: a deletion with extra steps.
-_MOVE_WHOLE: tuple[tuple[str, str], ...] = (
-    ("pm_activities", "task_id"),
-    ("pm_task_attachments", "task_id"),
-    ("pm_notifications", "task_id"),
-    ("pm_intake", "task_id"),
-    ("pm_intake", "duplicate_of_task_id"),
-)
-
-#: Tables with a UNIQUE key that includes the task: the source's rows move
-#: only where the target has none for the same key, and the rest are dropped.
+#: ``None`` means the table's key is the task alone, so at most one row can
+#: exist per task — `pm_intake` is the case.
 #:
-#: Dropping is right and not lossy: two rows for the same (task, person) say
-#: the same thing, and the target's is the one already attached to the task
-#: that survives. `(table, the other half of the key)`.
-_MOVE_UNIQUE: tuple[tuple[str, str], ...] = (
+#: 🔴 **NOTHING IS DELETED, and the first draft deleted plenty.** It moved
+#: four of these with a blind UPDATE under the claim that they had "no key
+#: that could collide", and de-duplicated three others by DELETING the
+#: source's row. Adversarial review found both halves wrong against a real
+#: database:
+#:
+#:   * `pm_intake.task_id` is UNIQUE, so merging two captured tasks answered
+#:     500 — and two emails about one thing is the canonical use of this
+#:     feature;
+#:   * `pm_task_attachments` is keyed `(task_id, attachment_id)`, the same
+#:     hazard one upload path away;
+#:   * `pm_task_personal` holds a member's Calendar block and their tracked
+#:     actuals. "Two rows say the same thing" is true of an assignee and
+#:     false of that table, so the de-dupe destroyed real work.
+#:
+#: The repair is one rule for all of them, and it is simpler than what it
+#: replaced: **move a row only where the target has none for the same key,
+#: and otherwise leave it where it is.** Nothing collides and nothing is
+#: lost, because the source survives as a stub and its own rows stay
+#: readable on it. The target still ends up with the union, which is what
+#: the merge owed.
+_MOVE: tuple[tuple[str, str | None], ...] = (
+    # History and comments: the content people merge tasks to keep together.
+    ("pm_activities", "id"),
+    ("pm_task_attachments", "attachment_id"),
+    ("pm_notifications", "id"),
     ("pm_task_assignees", "assignee"),
     ("pm_task_watchers", "watcher"),
     ("pm_task_personal", "member_email"),
     ("pm_view_task_positions", "view_id"),
+    # ⚠️ One intake row per task, ever. It records how the task was CREATED,
+    # which stays true of the stub — so it moves only when the target has no
+    # origin of its own, and otherwise stays put rather than claiming the
+    # request created a task it did not.
+    ("pm_intake", None),
 )
 
 
@@ -246,40 +262,27 @@ def _fold_scalars(target: Any, sources: list[Any]) -> dict[str, Any]:
 
 
 async def _move_satellites(db: Any, source_id: str, target_id: str) -> None:
-    """Everything hanging off the source becomes the target's.
+    """Everything hanging off the source becomes the target's, where it can.
 
-    ⚠️ Driven by the two tables at the top of this module rather than by
-    twelve hand-written statements. `pm_tasks` has twelve foreign keys
-    pointing at it, and the failure mode of writing them out is the
-    thirteenth: a satellite added later that nobody remembers to move, whose
-    rows then cascade away when the stub is deleted.
+    ⚠️ Driven by :data:`_MOVE` rather than by thirteen hand-written
+    statements. `pm_tasks` has thirteen foreign keys pointing at it, and the
+    failure mode of writing them out is the fourteenth: a satellite added
+    later that nobody remembers, whose rows then vanish when the stub is
+    deleted.
+
+    One statement per table, and it never deletes. See :data:`_MOVE`.
     """
     keys = {"src": source_id, "dst": target_id}
-    for table, column in _MOVE_WHOLE:
-        await db.execute(
-            text(
-                f"UPDATE {table} SET {column} = CAST(:dst AS uuid) "  # noqa: S608
-                f"WHERE {column} = CAST(:src AS uuid)"
-            ),
-            keys,
-        )
-    for table, other in _MOVE_UNIQUE:
-        # Drop the source's row where the target already has one for the same
-        # key, then move what is left. Two statements rather than an upsert,
-        # because the tables have different column sets and this needs none
-        # of them.
-        await db.execute(
-            text(
-                f"DELETE FROM {table} WHERE task_id = CAST(:src AS uuid) "  # noqa: S608
-                f"AND {other} IN (SELECT {other} FROM {table} "
-                f"WHERE task_id = CAST(:dst AS uuid))"
-            ),
-            keys,
+    for table, other in _MOVE:
+        clash = (
+            f"SELECT 1 FROM {table} b WHERE b.task_id = CAST(:dst AS uuid)"  # noqa: S608
+            + (f" AND b.{other} = a.{other}" if other else "")
         )
         await db.execute(
             text(
-                f"UPDATE {table} SET task_id = CAST(:dst AS uuid) "  # noqa: S608
-                f"WHERE task_id = CAST(:src AS uuid)"
+                f"UPDATE {table} a SET task_id = CAST(:dst AS uuid) "  # noqa: S608
+                f"WHERE a.task_id = CAST(:src AS uuid) "
+                f"AND NOT EXISTS ({clash})"
             ),
             keys,
         )
@@ -288,67 +291,118 @@ async def _move_satellites(db: Any, source_id: str, target_id: str) -> None:
 async def _move_links(db: Any, source_id: str, target_id: str) -> None:
     """Re-point the source's dependencies at the target, without nonsense.
 
-    Three things a naive re-point creates, all of which the UI would then
-    have to render:
+    Row by row rather than in one UPDATE, because three of the four outcomes
+    are not a move:
 
     * **a self-link** — the source blocked the target, or the reverse, and
-      after the merge both ends are the same task;
+      after the merge both ends would be the same task;
     * **a duplicate** — both tasks blocked the same third task, and
       `UNIQUE (source, target, link_type)` would refuse the second;
-    * nothing else: a cycle cannot appear, because re-pointing an edge onto
-      a task that already has the other end is exactly the self-link case.
+    * **a CYCLE** — S blocks X and X blocks T, so re-pointing S's edge onto
+      T closes a loop.
 
-    So the two offenders are deleted FIRST and what survives is moved.
+    🔴 **The first draft's docstring said a cycle could not appear here.**
+    It reasoned that re-pointing onto a task holding the other end is the
+    self-link case, which is true only when that task IS the target. With a
+    third task in the middle the loop closes, and adversarial review built
+    one against a real database. `assert_no_block_cycle` calls that state "a
+    deadlock no human can resolve by finishing something" and the link
+    endpoint refuses it with 422 — so a merge must not quietly write it.
+
+    ⚠️ The cycle test is the EXISTING guard, not a second implementation.
+    An edge that would close a loop is dropped rather than moved: the
+    target's own dependency graph is the one being kept, exactly as its
+    scalars are.
     """
-    keys = {"src": source_id, "dst": target_id}
-    # Edges between the two tasks themselves. After the merge they would
-    # say "this task blocks itself".
-    await db.execute(
+    rows = (await db.execute(
         text(
-            "DELETE FROM pm_task_links WHERE "
-            "(source_task_id = CAST(:src AS uuid) AND target_task_id = CAST(:dst AS uuid)) "
-            "OR (source_task_id = CAST(:dst AS uuid) AND target_task_id = CAST(:src AS uuid))"
+            "SELECT id, source_task_id, target_task_id, link_type "
+            "FROM pm_task_links WHERE source_task_id = CAST(:src AS uuid) "
+            "OR target_task_id = CAST(:src AS uuid)"
         ),
-        keys,
-    )
-    for mine, theirs in (
-        ("source_task_id", "target_task_id"),
-        ("target_task_id", "source_task_id"),
-    ):
+        {"src": source_id},
+    )).fetchall()
+
+    for row in rows:
+        src = target_id if str(row.source_task_id) == source_id else str(row.source_task_id)
+        dst = target_id if str(row.target_task_id) == source_id else str(row.target_task_id)
+        drop = src == dst
+        if not drop:
+            twin = (await db.execute(
+                text(
+                    "SELECT 1 FROM pm_task_links WHERE id <> CAST(:id AS uuid) "
+                    "AND source_task_id = CAST(:s AS uuid) "
+                    "AND target_task_id = CAST(:d AS uuid) AND link_type = :k"
+                ),
+                {"id": str(row.id), "s": src, "d": dst, "k": row.link_type},
+            )).fetchone()
+            drop = twin is not None
+        if not drop and row.link_type == "blocks":
+            try:
+                await assert_no_block_cycle(db, src, dst)
+            except HTTPException:
+                drop = True
+        if drop:
+            await db.execute(
+                text("DELETE FROM pm_task_links WHERE id = CAST(:id AS uuid)"),
+                {"id": str(row.id)},
+            )
+            continue
         await db.execute(
             text(
-                f"DELETE FROM pm_task_links a WHERE a.{mine} = CAST(:src AS uuid) "  # noqa: S608
-                f"AND EXISTS (SELECT 1 FROM pm_task_links b "
-                f"WHERE b.{mine} = CAST(:dst AS uuid) AND b.{theirs} = a.{theirs} "
-                f"AND b.link_type = a.link_type)"
+                "UPDATE pm_task_links SET source_task_id = CAST(:s AS uuid), "
+                "target_task_id = CAST(:d AS uuid) WHERE id = CAST(:id AS uuid)"
             ),
-            keys,
-        )
-        await db.execute(
-            text(
-                f"UPDATE pm_task_links SET {mine} = CAST(:dst AS uuid) "  # noqa: S608
-                f"WHERE {mine} = CAST(:src AS uuid)"
-            ),
-            keys,
+            {"s": src, "d": dst, "id": str(row.id)},
         )
 
 
-async def _reparent_children(db: Any, source_id: str, target: Any) -> None:
-    """The source's subtasks become the target's.
+async def _descends_from(db: Any, task_id: str, ancestor_id: str) -> bool:
+    """Is `task_id` under `ancestor_id`, at any depth?
+
+    🔴 **The first draft asked only "is its parent the source".** That misses
+    the grandchild, and merging a task into its own grandchild made the two
+    tasks each other's parent — a shape `assert_no_task_cycle` refuses on
+    every other write path in the product. Adversarial review built it
+    against a real database.
+
+    Bounded by `MAX_DEPTH`, for `assert_no_task_cycle`'s reason: an
+    unbounded walk over data somebody can create is a denial-of-service
+    surface rather than a thorough check.
+    """
+    at: str | None = task_id
+    for _ in range(MAX_DEPTH):
+        if at is None:
+            return False
+        if str(at) == str(ancestor_id):
+            return True
+        row = (await db.execute(
+            text("SELECT parent_task_id FROM pm_tasks WHERE id = CAST(:i AS uuid)"),
+            {"i": str(at)},
+        )).fetchone()
+        at = str(row.parent_task_id) if row and row.parent_task_id else None
+    return False
+
+
+async def _reparent_children(db: Any, source_id: str, target: Any) -> list[str]:
+    """The source's subtasks become the target's. Returns the ones that moved.
 
     ⚠️ Two orderings matter here and neither is obvious.
 
-    **The target may BE a child of the source.** Merging a parent into its
-    own subtask is a real gesture — "this turned out to be the whole of it".
-    Re-pointing blindly would make the target its own parent, which the
-    `parent_task_id` self-reference does not forbid. So the target is lifted
-    to the source's own parent first, and only then do its new siblings
-    arrive.
+    **The target may be UNDER the source**, at any depth. Merging a parent
+    into one of its own descendants is a real gesture — "this turned out to
+    be the whole of it". Re-pointing blindly would put the target inside its
+    own subtree, so it is lifted to the source's own parent first.
 
     **A subtask is not merged, it is moved.** It is a task in its own right
-    with its own content; folding it in would destroy work nobody named.
+    with its own content, and folding it in would destroy work nobody named.
+
+    The ids come back because a moved subtask needs a `touch_task` of its
+    own: `parent_task_id` changes and `updated_at` does not, so no delta
+    client would ever see it — the failure `tasks.py` already names on its
+    own promote path.
     """
-    if str(getattr(target, "parent_task_id", None) or "") == str(source_id):
+    if await _descends_from(db, str(target.id), source_id):
         await db.execute(
             text(
                 "UPDATE pm_tasks SET parent_task_id = "
@@ -357,13 +411,15 @@ async def _reparent_children(db: Any, source_id: str, target: Any) -> None:
             ),
             {"src": source_id, "dst": str(target.id)},
         )
-    await db.execute(
+    moved = (await db.execute(
         text(
             "UPDATE pm_tasks SET parent_task_id = CAST(:dst AS uuid) "
-            "WHERE parent_task_id = CAST(:src AS uuid) AND id <> CAST(:dst AS uuid)"
+            "WHERE parent_task_id = CAST(:src AS uuid) "
+            "AND id <> CAST(:dst AS uuid) RETURNING id"
         ),
         {"src": source_id, "dst": str(target.id)},
-    )
+    )).fetchall()
+    return [str(r.id) for r in moved]
 
 
 @router.post("/tasks/{task_id}/merge")
@@ -403,10 +459,31 @@ async def merge_tasks(
             )
         sources = [await _load_mergeable(db, vis, t, target) for t in wanted]
 
+        bumped: list[str] = []
         for source in sources:
             await _move_links(db, str(source.id), task_id)
-            await _reparent_children(db, str(source.id), target)
+            bumped += await _reparent_children(db, str(source.id), target)
             await _move_satellites(db, str(source.id), task_id)
+            # 🔴 Everything that already pointed at this source now points at
+            # the survivor instead.
+            #
+            # Without it a CHAIN forms: merge A into B today, then B into C
+            # tomorrow — B is an ordinary task at the second merge, so nothing
+            # refuses it — and A is left aiming at a stub. Opening A by its
+            # old link then lands on an empty task, which is the one promise
+            # merging makes and the one it would have broken. Found in
+            # adversarial review, and the client comment that followed one hop
+            # said this could not happen.
+            #
+            # It also keeps the invariant the client relies on: a stub always
+            # points at a live task, so one hop is always enough.
+            await db.execute(
+                text(
+                    "UPDATE pm_tasks SET merged_into_task_id = CAST(:dst AS uuid) "
+                    "WHERE merged_into_task_id = CAST(:src AS uuid)"
+                ),
+                {"src": str(source.id), "dst": task_id},
+            )
 
         values = _fold_scalars(target, sources)
         row = await update_row(db, "pm_tasks", task_id, values) if values else target
@@ -440,6 +517,12 @@ async def merge_tasks(
             meta={"merged_from": [str(s.id) for s in sources]},
         )
         await touch_task(db, task_id)
+        # A subtask that changed parent is an edit no delta client can see
+        # otherwise — `parent_task_id` moves and `updated_at` does not.
+        # `tasks.py` does exactly this on its own promote path and names the
+        # failure there.
+        for child in dict.fromkeys(bumped):
+            await touch_task(db, child)
         result = row_to_dict(row, TaskModel)
         result["merged"] = [str(s.id) for s in sources]
 

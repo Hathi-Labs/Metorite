@@ -34,8 +34,16 @@ export function mergeRefusal(
   target: TaskRow,
   sources: readonly string[],
 ): string | null {
+  // 🔴 Only when it is the ONLY one. Selecting three duplicates and keeping
+  // one of them IS the gesture — it is why somebody selects three duplicates
+  // — and the first draft greyed out all three, so the survivor had to be a
+  // fourth task outside the selection. The gateway supports this already: it
+  // drops the target out of `sources`. The two halves disagreed about the
+  // same gesture, which adversarial review caught.
   if (sources.includes(target.id)) {
-    return "This is one of the tasks being merged.";
+    return sources.length === 1
+      ? "This is the task being merged."
+      : null;
   }
   if (target.merged_into_task_id) {
     // The gateway refuses this too. Saying so here means the member never
@@ -91,7 +99,13 @@ export function mergeSummary(
   target: TaskRow | null,
   sources: readonly string[],
 ): string {
-  const n = sources.length;
+  // ⚠️ Counts what is FOLDED IN, which is the selection minus the survivor
+  // when the survivor is part of it. "3 tasks will be folded into #42" while
+  // #42 is one of the three is off by one in the sentence people read
+  // immediately before an irreversible click.
+  const n = target
+    ? sources.filter((id) => id !== target.id).length
+    : sources.length;
   const what = n === 1 ? "1 task" : `${n} tasks`;
   if (!target) return `Choose the task to keep. ${what} will be folded into it.`;
   // ⚠️ Agrees with the count. "Their comments … they are archived" for one
