@@ -842,7 +842,7 @@ async def unarchive_task(
         if getattr(task, "archived_at", None) is None:
             return row_to_dict(task, TaskModel)
         # ⚠️ A MERGED task loses its pointer here, and it must: migration
-        # 209's `pm_tasks_merged_is_archived` refuses a row that claims to be
+        # 210's `pm_tasks_merged_is_archived` refuses a row that claims to be
         # merged while off the shelf, so clearing one without the other is a
         # 500 from the driver.
         #

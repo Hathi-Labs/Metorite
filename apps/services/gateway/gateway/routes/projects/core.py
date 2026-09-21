@@ -624,7 +624,7 @@ class TaskModel(BaseModel):
     created_at: str | None = None
     updated_at: str | None = None
     archived_at: str | None = None
-    #: Migration 209. The task this one was folded into, or ``None``.
+    #: Migration 210. The task this one was folded into, or ``None``.
     #:
     #: ⚠️ Always accompanied by `archived_at`, and the database enforces it
     #: (`pm_tasks_merged_is_archived`). A client may treat this as "and it is

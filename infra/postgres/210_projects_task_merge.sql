@@ -1,5 +1,5 @@
 -- ============================================================================
--- 209_projects_task_merge.sql — fold one task into another
+-- 210_projects_task_merge.sql — fold one task into another
 -- ============================================================================
 -- Spec: project-docs/specs/project_management_app.md §3.4 / §11.18.
 -- Owner request, 2026-09-21: *"enabling us to merge multiple tasks into one.

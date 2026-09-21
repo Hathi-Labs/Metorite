@@ -5686,7 +5686,7 @@ lists it with its count, and Delete and Unarchive already work on it. The
 badge reads **Merged** instead of **Archived**, because the same row has a
 truer word available, and the card's deep link opens the task it went to.
 
-Migration 209's `pm_tasks_merged_is_archived` makes it unbreakable rather
+Migration 210's `pm_tasks_merged_is_archived` makes it unbreakable rather
 than remembered: the database refuses a row that claims to be merged while
 off the shelf. Unarchiving therefore clears the pointer in the same statement
 — a restored task is not merged any more, though its content stays where it

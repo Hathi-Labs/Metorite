@@ -1,7 +1,7 @@
 """Projects · fold one task into another.
 
 Spec: ``project-docs/specs/project_management_app.md`` §11.18. Migration
-``209_projects_task_merge.sql``.
+``210_projects_task_merge.sql``.
 
     POST /projects/tasks/{task_id}/merge     ← fold others INTO this one
 
@@ -27,7 +27,7 @@ tasks a hiding rule of their own and the owner found the hole at once: a row
 that no view lists is a row nobody can delete or restore. So merging spends
 the shelf that already exists — every `archived_at IS NULL` clause excludes
 it for free, the Archived filter lists it, and Delete and Unarchive already
-work on it. Migration 209's ``pm_tasks_merged_is_archived`` makes that
+work on it. Migration 210's ``pm_tasks_merged_is_archived`` makes that
 unbreakable rather than remembered.
 
 ## What combines, and why each way
@@ -492,7 +492,7 @@ async def merge_tasks(
         names = ", ".join(f"#{s.task_number}" for s in sources)
         for source in sources:
             # ⚠️ Archived in the SAME statement as the pointer. Migration
-            # 209's CHECK refuses one without the other, which is what keeps
+            # 210's CHECK refuses one without the other, which is what keeps
             # a merged task reachable from the Archived shelf.
             await update_row(db, "pm_tasks", str(source.id), {
                 "merged_into_task_id": task_id,
