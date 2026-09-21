@@ -20,6 +20,7 @@
  * the worst of the three answers.
  */
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
@@ -29,7 +30,7 @@ import PageHeader from "@/components/PageHeader";
 import { AbsencePanel, AwayBadge } from "../components/AbsencePanel";
 import { AvatarPicker } from "../components/AvatarPicker";
 import { ProfilePanels } from "../components/ProfilePanels";
-import { type PersonDetail, peopleApi } from "../lib/api";
+import { type PersonDetail, type WorkRow, peopleApi } from "../lib/api";
 import { initials } from "../lib/directory";
 import { PAGE_FRAME } from "../lib/frame";
 
@@ -41,6 +42,15 @@ type State =
 
 export default function MyProfilePage() {
   const [state, setState] = useState<State>({ kind: "loading" });
+  /**
+   * My own open work (H-146). A colleague's page has shown theirs since
+   * WS-28b; mine showed nothing, so I could see what everybody else was
+   * holding and not what I was.
+   */
+  const [work, setWork] = useState<{
+    rows: WorkRow[];
+    available: boolean;
+  } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadNote, setUploadNote] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -65,6 +75,25 @@ export default function MyProfilePage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    let live = true;
+    // Best-effort and separate from `load`: the profile must render whether
+    // or not the work half answers. A member with no `feature:projects`
+    // gets `available: false`, which the panel states rather than showing
+    // an empty list that reads as "nothing to do".
+    peopleApi
+      .myWork()
+      .then((res) => {
+        if (live) setWork({ rows: res.rows, available: res.available });
+      })
+      .catch(() => {
+        if (live) setWork(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   async function onResume(file: File | null) {
     if (!file || state.kind !== "resolved") return;
@@ -203,6 +232,45 @@ export default function MyProfilePage() {
                 </span>
               )}
             </div>
+          </section>
+
+          {/*
+            My own open work (H-146) — the same list a colleague's page has
+            shown since WS-28b. Placed above Time away, because "what am I
+            holding" is the question this page is opened with.
+          */}
+          <section className="rounded-xl border border-border p-3">
+            <h3 className="text-xs font-medium text-foreground">Open work</h3>
+            {!work ? (
+              <p className="mt-1 text-[11px] text-muted-foreground">Loading…</p>
+            ) : !work.available ? (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Needs the Projects app to show what you are working on.
+              </p>
+            ) : work.rows.length === 0 ? (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Nothing open in a project you can see.
+              </p>
+            ) : (
+              <ul className="mt-2 space-y-1">
+                {work.rows.map((task) => (
+                  <li key={task.id} className="text-xs">
+                    <Link
+                      href={`/projects?task=${task.id}`}
+                      className="text-foreground hover:underline"
+                    >
+                      {task.title}
+                    </Link>
+                    {task.project_name ? (
+                      <span className="text-muted-foreground">
+                        {" "}
+                        · {task.project_name}
+                      </span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
 
           <AbsencePanel

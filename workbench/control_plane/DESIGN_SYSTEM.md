@@ -365,17 +365,44 @@ Check `src/components/` before writing a tab bar, filter pills or a page header.
 * `Tabs` — `variant="segmented"` (2–5 short labels) or `"underline"` (icons or
   longer labels). Takes icon **names**, not components.
 * `FilterPills` — rounded filter buttons with counts.
-* Page header — every page uses the same shape:
+* `PageHeader` — the page's title, subtitle and whole-surface actions.
 
 ```tsx
-<div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-border shrink-0">
-  <div>
-    <h1 className="text-base sm:text-lg font-bold text-foreground">Title</h1>
-    <p className="text-xs text-muted-foreground mt-0.5">Description or status</p>
-  </div>
-  {/* actions */}
-</div>
+import PageHeader from "@/components/PageHeader";
+
+<PageHeader title="Workload" subtitle="What everybody is holding." meta="12 people"
+            actions={<Button size="sm" icon="Plus">New</Button>} />
 ```
+
+⚠️ **This used to be a copy-paste snippet here, and that is exactly why it
+drifted.** §3 argues at length that a control is a component and not a
+documented class string. The same argument applies to a header, and this
+section did not make it. So the blob was copied and edited in place.
+
+Measured on 2026-09-21: **eight different `<h1>` spellings** across People,
+Projects and Settings, three of them inside the People app alone. A snippet
+cannot be changed centrally. A component can.
+
+### 6a. Two ways a surface opens, and only two
+
+Naming both, because a third appears whenever the set is left implicit.
+
+| Shape | Who | What it is |
+|---|---|---|
+| **App bar** | Projects, Tasks | A slim `h-10` strip: rail toggle, a divider, the app's name in `text-xs text-muted-foreground`, then app-level actions. For an app whose content is a persistent tree or list beside a pane |
+| **`PageHeader`** | People and every document surface | Title, subtitle, actions, stacked. For a surface you read down |
+
+**A surface picks one.** An app with a rail may carry the bar from its
+layout AND a `PageHeader` inside a pane. The bar is app scope and the header
+is page scope, so they answer different questions.
+
+⚠️ **Do not take the app bar as licence for a third shape.** Measured
+2026-09-21: the Projects bar's own comment claims *"Same shape as Tasks and
+Email"*.
+
+Tasks matches. **Email does not** — it draws a `text-sm font-medium`
+heading. CRM uses the old Settings blob. Those two are drift, not a third
+legitimate shape. They are H-148.
 
 Layout: header → tabs/filters → `flex-1 overflow-y-auto` content, optional
 `w-[380px]` desktop side panel (bottom sheet on mobile).

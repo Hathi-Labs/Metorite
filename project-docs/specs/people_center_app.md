@@ -664,6 +664,27 @@ component, two presentations, for the reason that file already gives about
 vocabulary, both of which belong to the directory. The control is absent
 rather than broken.
 
+### 5.3a My profile knows what I am holding ✅ BUILT 2026-09-21
+
+Two asymmetries closed, both found by reading this page beside a colleague's.
+
+**`GET /people/me/work`.** A colleague's page has shown their open tasks
+since WS-28b. Mine showed none, so I could see what everybody else was
+holding and not what I was.
+
+⚠️ **It is a NEW route on the ungated self router, not a call to
+`/people/{id}/work`.** That one is gated on `feature:people`, and this page
+is deliberately not (D-PC-15). Pointing an ungated surface at a gated
+endpoint would 403 for a `guest`, who can still reach their own profile.
+That is the exact defect WS-28g-2 exists to fix, reintroduced through a
+fetch. The route takes no person, so `UNGATED_ROUTERS`'s invariant holds.
+
+**The completeness meter routes.** It listed each missing field and what the
+gap costs the planner, and then left you to find the input. Each row is now
+a button that scrolls to its field and focuses it. `completeness()` carries
+the column name for that, and every field wrapper carries
+`id="field-<name>"`.
+
 ### 5.1 Directory — the default view ✅ BUILT
 
 A searchable list of everybody, one row per person, with a card/table toggle.

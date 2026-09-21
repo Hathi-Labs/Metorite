@@ -535,4 +535,14 @@ export const peopleApi = {
 
   work: (id: string) =>
     call<{ rows: WorkRow[]; total: number; available: boolean }>(`${id}/work`),
+
+  /**
+   * MY open work — the ungated twin of `work` (H-146).
+   *
+   * A separate route rather than `work(myId)`: `/people/{id}/work` is on the
+   * gated router and My Profile is not (D-PC-15), so a `guest` reaching
+   * their own profile would get a 403 from a page they are entitled to.
+   */
+  myWork: () =>
+    call<{ rows: WorkRow[]; total: number; available: boolean }>("me/work"),
 };
