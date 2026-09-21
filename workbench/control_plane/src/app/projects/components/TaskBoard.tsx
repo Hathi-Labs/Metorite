@@ -137,6 +137,8 @@ interface Props {
   onToggle?: (id: string, shift: boolean) => void;
   /** WS-27bl §9.13.4 — raise the move card for one task. */
   onMoveTask?: (taskId: string) => void;
+  /** Open the merge card for one task. Absent = not offered. */
+  onMergeTask?: (taskId: string) => void;
   /**
    * File a task, and bring one back. Owner request, 2026-09-20.
    *
@@ -190,6 +192,7 @@ export function TaskBoard({
   selected,
   onToggle,
   onMoveTask,
+  onMergeTask,
   onExtendSelection,
   onSelect,
   onDrop,
@@ -522,6 +525,7 @@ export function TaskBoard({
     // not, because a right-click has no anchor to extend a range from.
     toggleSelect: (task, shift) => onToggle?.(task.id, shift ?? false),
     moveToProject: (task) => onMoveTask?.(task.id),
+    mergeInto: (task) => onMergeTask?.(task.id),
     setStatus: (task, statusId) => {
       if (task.status_id === statusId) return;
       onDrop(task, [], buildColumnDropUpdate("status", statusId));
@@ -555,6 +559,11 @@ export function TaskBoard({
     // presence of `onToggle`, so a surface that cannot select cannot offer it.
     canSelect: Boolean(onToggle),
     canMoveToProject: Boolean(onMoveTask),
+    // ⚠️ Not offered on a task that has already been merged away:
+    // the gateway refuses it, so the entry would only ever produce an
+    // error. On the Archived shelf the useful verbs are Restore and
+    // Delete, and both are already there.
+    canMerge: Boolean(onMergeTask) && !task.merged_into_task_id,
     // Renaming needs somewhere to send the result. A board whose page does not
     // reload after a write would show the old title until the next poll, which
     // reads as the rename having failed.
@@ -746,13 +755,24 @@ export function TaskBoard({
               Deliberately a plain muted badge and not a status accent: the
               shelf is not a lane, and painting it like one would put a
               seventh colour into a vocabulary that has six. */}
+          {/* ⚠️ A MERGED task is an archived task, so it would otherwise show
+              the plain Archived badge and say nothing about where its content
+              went. It is the same badge with a truer word — not a second
+              one, because there is no second state. */}
           {task.archived_at ? (
             <span
               className="flex w-fit items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground"
-              title={`Archived ${new Date(task.archived_at).toLocaleDateString()} — hidden from the boards and the current-state reports`}
+              title={
+                task.merged_into_task_id
+                  ? `Merged ${new Date(task.merged_at ?? task.archived_at).toLocaleDateString()} — its comments, history and attachments are on the task it went to`
+                  : `Archived ${new Date(task.archived_at).toLocaleDateString()} — hidden from the boards and the current-state reports`
+              }
             >
-              <Icon name="Archive" className="h-3 w-3" />
-              Archived
+              <Icon
+                name={task.merged_into_task_id ? "Merge" : "Archive"}
+                className="h-3 w-3"
+              />
+              {task.merged_into_task_id ? "Merged" : "Archived"}
             </span>
           ) : null}
           {renamingThis ? (

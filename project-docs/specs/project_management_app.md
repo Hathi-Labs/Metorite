@@ -5660,6 +5660,104 @@ never been mirrored, so every `overdue` test since WS-27k was really asserting o
 status half and would have passed with the date comparison deleted. Teaching the fake `<
 now()` killed that mutant on the list endpoint as well as the calendar.
 
+### 11.18 Merging tasks (built 2026-09-21)
+
+Asked for directly: *"enabling us to merge multiple tasks into one. So if I
+right click on a task, I should be able to merge it into another task. And the
+data of both the tasks are appropriately combined."*
+
+`POST /projects/tasks/{id}/merge`, body `{sources: […]}`. The path names the
+task that SURVIVES, so the survivor is never ambiguous in a call that moves
+data one way. Two doors onto it: the right-click menu for one task, and the
+bulk bar for a selection. Both OPEN A CARD rather than merging, because the
+one decision inside — which task is kept — must not be made by accident.
+
+#### D-PM-35 — a merged task IS an archived task
+
+⚠️ **The first design gave merged tasks a hiding rule of their own**: absent
+from every list, board and count. The owner rejected it on sight: *"what
+happens when we want to delete or archive a task? There is no way to do that
+because it'll be unseen in the UI."* A row that nothing lists is a row nobody
+can manage, and they accumulate for ever.
+
+So merging spends the shelf that already exists. Everything follows with no
+new code: every `archived_at IS NULL` clause excludes it, the Archived filter
+lists it with its count, and Delete and Unarchive already work on it. The
+badge reads **Merged** instead of **Archived**, because the same row has a
+truer word available, and the card's deep link opens the task it went to.
+
+Migration 209's `pm_tasks_merged_is_archived` makes it unbreakable rather
+than remembered: the database refuses a row that claims to be merged while
+off the shelf. Unarchiving therefore clears the pointer in the same statement
+— a restored task is not merged any more, though its content stays where it
+went.
+
+#### D-PM-36 — same project only
+
+The owner's ruling. Projects own their statuses, custom fields and task types,
+so a cross-project merge is a Move plus a merge. `/move` already resolves the
+status map, the field map and the drops (D-PM-29). A thinner second
+implementation of that inside merge is how the two would drift. The refusal
+names Move, so the path forward is one click.
+
+#### What combines, and why
+
+Set-like things UNION, because dropping half of a union loses work somebody
+did. That covers assignees, watchers, tags (case-folded), links, subtasks,
+and every comment and history row. Scalars keep the TARGET's value, because
+the target is the task being kept. Four are exceptions, and each one is a
+judgement:
+
+| Field | Rule | Why |
+|---|---|---|
+| Estimate | **sum** | Two tasks' work is still two tasks' work |
+| Start date | **earliest** | The combined task started when its earlier half did |
+| Due date | **earliest** | ⚠️ NOT latest. A due date is a commitment. Merging is internal tidying and must not relax one |
+| Priority | **higher** | Folding an urgent task into a normal one does not make the urgent work less urgent |
+
+`description` APPENDS under a rule naming the source, because prose is
+somebody's writing and neither losing it nor interleaving it is honest.
+Custom fields fill only the keys the target has NOT answered — overwriting
+would let a merge silently change a field set on the task somebody chose to
+keep.
+
+⚠️ **A subtask is MOVED, not merged.** It is a task in its own right. Folding
+it in would destroy work nobody named. And **merging a parent into its own
+subtask is a real gesture** — "this turned out to be the whole of it" — so
+the target is lifted to the source's parent before its new siblings arrive,
+or `parent_task_id` would point a row at itself.
+
+#### Five things the first draft got wrong, all found in review
+
+Kept because each one reads as obviously right until a real database is
+asked, and four of them had a code comment asserting they could not happen.
+
+1. **`pm_intake.task_id` is UNIQUE**, so merging two captured tasks answered
+   500. Two emails about one thing is the canonical use of this feature.
+2. **`pm_task_personal` was de-duplicated by DELETE**, which destroyed a
+   member's Calendar block and their tracked actuals. "Two rows say the same
+   thing" is true of an assignee and false of that table.
+3. **Merging into one's own GRANDCHILD made a parent cycle.** The guard
+   tested the direct-child case only, and `assert_no_task_cycle` refuses the
+   resulting shape on every other write path.
+4. **A `blocks` cycle.** S blocks X and X blocks T, so re-pointing S's edge
+   onto T closes a loop the link endpoint refuses with 422.
+5. **A redirect CHAIN.** Merge A into B, then B into C — B is an ordinary
+   task at the second merge — and A is left pointing at a stub, so its old
+   link opens an empty task.
+
+The repair for 1 and 2 is one rule replacing two: **move a satellite row
+only where the target has none for the same key, and never delete.** Nothing
+collides and nothing is lost, because the source survives as a stub and its
+own rows stay readable on it. 3 walks the ancestor chain bounded by
+`MAX_DEPTH`. 4 asks the existing `assert_no_block_cycle` and drops the
+offending edge rather than moving it. 5 re-points every stub that aimed at a
+task being merged away, which keeps the invariant the client relies on: **a
+stub always points at a live task, so one hop is always enough.**
+
+Fences: `tests/unit/test_projects_merge.py` (30), `tests/live/live_task_merge.py`
+(43, against a real Postgres), `src/app/projects/lib/taskMerge.test.ts` (19).
+
 ### 11.17 WS-27t — the timeline, and dependencies you can draw (built 2026-08-08)
 
 Asked for directly: *"a timeline view that can also make tasks and subtasks dependent on each
