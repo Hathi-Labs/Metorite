@@ -1121,6 +1121,30 @@ export const projectsApi = {
   task: (taskId: string) => call<TaskRow>(`tasks/${taskId}`),
 
   /**
+   * The largest page the gateway will serve, and therefore the largest this
+   * client may ask for.
+   *
+   * 🔴 **This is mirrored from Python, and asking for more is a 422 that
+   * empties the surface.** `core.py::MAX_PAGE_SIZE` is 100, and `Page` binds
+   * `page_size` as `Query(50, ge=1, le=MAX_PAGE_SIZE)`. FastAPI refuses the
+   * request before the handler runs, so the panel does not get a short list
+   * — it gets nothing, and draws "No comments yet" over a task full of them.
+   *
+   * That shipped in the first draft of this feature and no test saw it: the
+   * live harness builds `Page` by hand and calls the handler directly, and
+   * the visual rig stubs the API and answers 200 whatever the query says.
+   * `tests/unit/test_projects_timeline_page_size.py` reads THIS line and
+   * compares it to the Python constant, which is the only fence that spans
+   * the two.
+   *
+   * ⚠️ A thread longer than this loses its older roots off the page, and
+   * `threadComments` promotes the orphaned replies to top level. That is the
+   * honest degradation and it is deliberate; paging a thread as a unit would
+   * mean ordering by root, which breaks a timeline's one promise.
+   */
+  MAX_TIMELINE_PAGE: 100,
+
+  /**
    * One task's activity stream, newest first.
    *
    * `kind` narrows it to what people WROTE or to what HAPPENED — the panel
@@ -1130,7 +1154,8 @@ export const projectsApi = {
    * whole stream, which is what every caller before today asked for.
    *
    * `pageSize` exists so the comments list can ask for more than the default
-   * 50 without a second endpoint.
+   * 50 without a second endpoint. ⚠️ It cannot exceed
+   * {@link MAX_TIMELINE_PAGE} — see that constant.
    */
   timeline: (
     taskId: string,

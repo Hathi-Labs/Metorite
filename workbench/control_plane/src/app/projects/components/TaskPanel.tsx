@@ -582,10 +582,13 @@ export function TaskPanel({
   async function loadStreams(taskId: string, deep: boolean) {
     try {
       const [conv, evt] = await Promise.all([
-        projectsApi.timeline(taskId, { kind: "comments", pageSize: 200 }),
+        projectsApi.timeline(taskId, {
+          kind: "comments",
+          pageSize: projectsApi.MAX_TIMELINE_PAGE,
+        }),
         projectsApi.timeline(taskId, {
           kind: "events",
-          pageSize: deep ? 200 : 50,
+          pageSize: deep ? projectsApi.MAX_TIMELINE_PAGE : 50,
         }),
       ]);
       return { comments: conv, events: evt };

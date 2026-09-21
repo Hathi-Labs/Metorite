@@ -34,12 +34,21 @@ import { changeLabel, type FieldDef } from "./customFields";
 /**
  * One activity row → the line the timeline prints.
  *
- * ⚠️ **Moved here from `TaskPanel.tsx` unchanged except for the default
- * branch**, which used to fall through to `activity.type` — so an activity
- * type added in Python and not here reached the member as the bare word
- * `agent_run`. `ACTIVITY_TYPES` in `core.py` is the vocabulary, and this is a
- * mirror of it; {@link ACTIVITY_VERBS} keeps the mirror's failure legible
- * rather than raw.
+ * ⚠️ **Moved here from `TaskPanel.tsx`, with three changes and no others.**
+ * Said precisely, because a note claiming "unchanged" is what a later reader
+ * trusts while they debug something else:
+ *
+ * 1. The DEFAULT branch no longer falls through to `activity.type`. An
+ *    activity type added in Python and not here used to reach the member as
+ *    the bare word `agent_run`.
+ * 2. A `mention` case. `ACTIVITY_TYPES` has carried `mention` since WS-27j
+ *    and this function never had an arm for it, so every "X mentioned Y" row
+ *    printed the literal word `mention` — the row carries no body, and the
+ *    names are in `meta.mentioned`.
+ * 3. A `link` case, for the same reason and with a body to fall back on.
+ *
+ * `ACTIVITY_TYPES` in `core.py` is the vocabulary and this is a mirror of it.
+ * Mirrors go stale, so {@link ACTIVITY_VERBS} makes this one fail legibly.
  */
 export function describeActivity(
   activity: ActivityRow,
