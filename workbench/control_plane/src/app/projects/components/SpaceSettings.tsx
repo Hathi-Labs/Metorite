@@ -108,21 +108,22 @@ export default function SpaceSettings({
             className="grid max-h-44 grid-cols-8 gap-1 overflow-y-auto pr-1"
           >
             {SPACE_ICON_CHOICES.map((choice) => (
-              <button
+              // A RADIO, not a toggle: `selected` styles it and deliberately
+              // leaves `role`/`aria-checked` alone, because `aria-pressed` on
+              // a radio is two conflicting answers to "what kind of control
+              // is this". The primitive checks for exactly that.
+              <Button
                 key={choice}
-                type="button"
+                variant="ghost"
+                size="icon"
                 role="radio"
                 aria-checked={choice === icon}
                 aria-label={choice}
+                selected={choice === icon}
                 onClick={() => setIcon(choice)}
-                className={`flex items-center justify-center rounded-md p-2 tech-transition ${
-                  choice === icon
-                    ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground hover:bg-muted"
-                }`}
               >
                 <Icon name={choice} className="h-4 w-4" />
-              </button>
+              </Button>
             ))}
           </div>
         </div>

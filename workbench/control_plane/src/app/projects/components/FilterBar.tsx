@@ -683,19 +683,19 @@ export function FilterBar({
       <div className="mt-2 flex flex-wrap items-center gap-1">
         {views.map((view) => (
           <span key={view.id} className="inline-flex items-center">
-            <button
-              type="button"
+            {/* The house's active token, now from the primitive (H-149).
+                It was `bg-accent text-accent-foreground`, which resolves to
+                a different colour per theme than every other selected thing
+                in the app — so the applied view read as "selected" in one
+                theme and as "highlighted" in the next. That correction is
+                what `SELECTED.ghost` now carries for everybody. */}
+            <Button
+              variant="ghost"
+              size="none"
+              radius="keep"
+              selected={view.id === activeViewId}
               onClick={() => onApplyView(view)}
-              // The house's active token (AGENTS.md rule 6). It was
-              // `bg-accent text-accent-foreground`, which resolves to a
-              // different colour per theme than every other selected thing in
-              // the app — so the applied view read as "selected" in one theme
-              // and as "highlighted" in the next.
-              className={`rounded-l-md px-2 py-1 text-xs ${
-                view.id === activeViewId
-                  ? "bg-primary/10 text-primary"
-                  : "text-muted-foreground hover:bg-muted"
-              }`}
+              className="rounded-l-md px-2 py-1 text-xs"
             >
               {view.name}
               {/* WS-27ab — the edited marker. A dot rather than a word: the
@@ -710,7 +710,7 @@ export function FilterBar({
                   ●
                 </span>
               ) : null}
-            </button>
+            </Button>
             <button
               type="button"
               aria-label={`Delete view ${view.name}`}
