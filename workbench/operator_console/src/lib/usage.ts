@@ -276,3 +276,32 @@ export function unbilledTotals(rows: OrgUsageRow[]): {
     tokens: hit.reduce((n, r) => n + (r.unbilledTokens ?? 0), 0),
   };
 }
+
+/** What the customer page can honestly say about one organization (H-133).
+ *
+ * 🔴 **Two reads, and only one of them is authoritative about "did they use
+ * anything".** `GET /admin/usage/daily?org_slug=` is per-organization and
+ * unfiltered. `GET /admin/usage/orgs` is a CAPPED page sorted by spend, and it
+ * takes no org filter — so a quiet customer can have real traffic and still be
+ * absent from it. That is H-76, and reading the absence as "no calls" would
+ * put the fleet board's truncation on a customer's own page as a fact.
+ *
+ * ⚠️ So the SERIES decides whether anything happened, and the ROW only
+ * enriches it. When they disagree, the panel says which.
+ */
+export type CustomerUsageState =
+  | { kind: "full"; row: OrgUsageRow }
+  | { kind: "truncated" }
+  | { kind: "quiet" };
+
+export function customerUsageState(
+  row: OrgUsageRow | null,
+  days: UsageDay[],
+): CustomerUsageState {
+  if (row) return { kind: "full", row };
+  // ⚠️ `calls`, not `credits`. An unpriced rate card bills zero, which is the
+  // shipped state — so judging traffic by credits would call every served
+  // call a quiet month until the day somebody prices the card.
+  const served = days.some((d) => d.calls > 0);
+  return served ? { kind: "truncated" } : { kind: "quiet" };
+}

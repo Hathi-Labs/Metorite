@@ -20,6 +20,7 @@
 import { useMemo, useState } from "react";
 import { formatCredits, formatUsd } from "@/lib/format";
 
+import Spark from "../Spark";
 import { chipClass } from "@/lib/tone";
 import {
   type OrgUsageRow,
@@ -29,26 +30,12 @@ import {
   orgFlags,
   rowRunwayLabel,
   runwayTone,
-  sparklinePath,
   unbilledTotals,
   usageHeadline,
 } from "@/lib/usage";
 
 const TOMBSTONE = /-purged-[0-9a-f]{6}$/;
 
-function Spark({ days }: { days: UsageDay[] }) {
-  const d = useMemo(
-    () => sparklinePath(days.map((x) => Number(x.credits) || 0), 560, 44),
-    [days],
-  );
-  if (!d) return null;
-  return (
-    <svg className="spark" viewBox="0 0 560 44" preserveAspectRatio="none"
-      role="img" aria-label="Credits per day">
-      <path d={d} />
-    </svg>
-  );
-}
 
 export default function UsageBoard({
   rows, days, spikes, total, silentSlugs = [],
