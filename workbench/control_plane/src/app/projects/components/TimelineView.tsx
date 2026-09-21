@@ -105,6 +105,7 @@ import {
   weekCells,
 } from "../lib/timeline";
 import {
+  DRAG_SLOP,
   applyScroll,
   edgeVelocity,
   frameStep,
@@ -623,10 +624,38 @@ export function TimelineView({
     };
   }, []);
 
+  /**
+   * Has this press become a DRAG? Until it has, the loop scrolls nothing.
+   *
+   * 🔴 See `DRAG_SLOP`. Without this, clicking a bar near the edge scrolls
+   * the chart during the press, drags the origin along with it, and commits a
+   * date change instead of opening the task.
+   */
+  const armedRef = useRef(false);
+  /** Where the press began, which is what `DRAG_SLOP` is measured from. */
+  const graspRef = useRef<{ x: number; y: number } | null>(null);
+
   const stopAutoScroll = useCallback(() => {
     if (autoRef.current) cancelAnimationFrame(autoRef.current);
     autoRef.current = 0;
     pointerRef.current = null;
+    graspRef.current = null;
+    armedRef.current = false;
+  }, []);
+
+  /**
+   * Record the pointer, and decide whether the press has become a drag yet.
+   *
+   * Both drag handlers call this instead of writing `pointerRef` themselves,
+   * so the arming rule lives in one place rather than in two that can drift.
+   */
+  const notePointer = useCallback((x: number, y: number) => {
+    pointerRef.current = { x, y };
+    const grasp = graspRef.current;
+    if (armedRef.current || !grasp) return;
+    if (Math.abs(x - grasp.x) > DRAG_SLOP || Math.abs(y - grasp.y) > DRAG_SLOP) {
+      armedRef.current = true;
+    }
   }, []);
 
   /**
@@ -642,10 +671,33 @@ export function TimelineView({
    * comparisons costs nothing, and the alternative needs the mousemove handler
    * to decide when to restart it — which is a second place that has to know
    * the edge rule.
+   *
+   * ## Two honest limits, both measured and both accepted
+   *
+   * **A frame that scrolls re-renders the chart.** Writing `scrollLeft` fires
+   * `onScroll`, which runs `readViewport` and writes `viewport` state — so
+   * the Gantt renders about sixty times a second while the chart is pulling.
+   * It is not a feedback loop: `readViewport` writes no scroll offset. It is
+   * the same cost the surface already pays for a fast manual scroll, and a
+   * drag is a second or two.
+   *
+   * **`chartBox` is measured at mousedown, not per frame.** A layout shift
+   * mid-drag would leave the trigger zone in the wrong place. Left as is
+   * deliberately: measuring per frame is a forced reflow sixty times a
+   * second, and a layout shift while a button is held is not a case anyone
+   * has been able to build.
    */
   const startAutoScroll = useCallback(
-    (onScrolled: (dx: number, dy: number) => void) => {
-      stopAutoScroll();
+    (
+      onScrolled: (dx: number, dy: number) => void,
+      { vertical = false }: { vertical?: boolean } = {},
+    ) => {
+      // ⚠️ Cancel the FRAME, not the whole gesture. Calling `stopAutoScroll`
+      // here would null the pointer the caller has just recorded, and then
+      // nothing scrolls until the first `mousemove` arrives.
+      if (autoRef.current) cancelAnimationFrame(autoRef.current);
+      armedRef.current = false;
+      graspRef.current = pointerRef.current;
       lastFrameRef.current =
         typeof performance === "undefined" ? 0 : performance.now();
       const tick = (now: number) => {
@@ -654,14 +706,19 @@ export function TimelineView({
         const pointer = pointerRef.current;
         const elapsed = now - lastFrameRef.current;
         lastFrameRef.current = now;
-        if (el && view && pointer) {
+        if (armedRef.current && el && view && pointer) {
           const speed = edgeVelocity(pointer, view);
-          if (speed.x !== 0 || speed.y !== 0) {
-            const moved = applyScroll(
-              el,
-              frameStep(speed.x, elapsed),
-              frameStep(speed.y, elapsed),
-            );
+          // ⚠️ `vertical` is OFF by default, and a bar drag leaves it off.
+          // A bar cannot change rows, so vertical travel buys it nothing and
+          // costs it everything: the pointer sits in the bottom zone for a
+          // drag on one of the last visible rows, the chart scrolls at 15
+          // rows a second, and the bar you are holding leaves the top of the
+          // screen. That is the blindness this whole feature exists to end,
+          // reintroduced on the other axis. Only the dependency arrow, which
+          // reaches for a task it cannot see, asks for it.
+          const dy = vertical ? frameStep(speed.y, elapsed) : 0;
+          if (speed.x !== 0 || dy !== 0) {
+            const moved = applyScroll(el, frameStep(speed.x, elapsed), dy);
             if (moved.dx !== 0 || moved.dy !== 0) onScrolled(moved.dx, moved.dy);
           }
         }
@@ -669,7 +726,7 @@ export function TimelineView({
       };
       autoRef.current = requestAnimationFrame(tick);
     },
-    [chartBox, stopAutoScroll],
+    [chartBox],
   );
 
   // A drag that outlives its component leaks a frame loop for ever, and the
@@ -727,7 +784,18 @@ export function TimelineView({
     };
 
     const onMouseMove = (moved: MouseEvent) => {
-      pointerRef.current = { x: moved.clientX, y: moved.clientY };
+      // ⚠️ A mouseup the browser never delivered. Releasing outside the
+      // window, or losing the pointer, leaves the listeners attached — a
+      // stuck drag, which this component has always had. What is NEW is that
+      // a stuck drag now SCROLLS: the last pointer position is in the edge
+      // zone, so the chart runs to the end of its range with no button held.
+      // `buttons` is the cheapest way to notice, and it is checked before
+      // anything else uses the event.
+      if (moved.buttons === 0) {
+        onMouseUp();
+        return;
+      }
+      notePointer(moved.clientX, moved.clientY);
       recompute();
     };
 
@@ -744,18 +812,23 @@ export function TimelineView({
       recompute();
     });
 
-    const onMouseUp = () => {
+    function onMouseUp() {
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("blur", onMouseUp);
       stopAutoScroll();
       const finished = dragRef.current;
+      if (!finished) return;
       dragRef.current = null;
       setDrag(null);
-      if (finished) commit(finished);
-    };
+      commit(finished);
+    }
 
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mouseup", onMouseUp);
+    // Alt-tab, a native drag, an OS dialog. The window stops receiving mouse
+    // events and the release never arrives.
+    window.addEventListener("blur", onMouseUp);
   }
 
   /** One gesture → at most one PATCH. A drag that changed nothing writes nothing. */
@@ -840,27 +913,36 @@ export function TimelineView({
     };
 
     const onMouseMove = (moved: MouseEvent) => {
-      pointerRef.current = { x: moved.clientX, y: moved.clientY };
+      if (moved.buttons === 0) {
+        onMouseUp();
+        return;
+      }
+      notePointer(moved.clientX, moved.clientY);
       recompute();
     };
 
     // The gesture that needs this MOST, and the one people hit hardest: a
     // blocker and the task it blocks are usually far apart, in time and in
-    // the row list. Both axes, so an arrow can reach a task below the fold.
-    startAutoScroll(recompute);
+    // the row list. `vertical` so an arrow can reach a task below the fold —
+    // this is the ONE gesture that asks for it, because it is the only one
+    // whose target is a different row.
+    startAutoScroll(recompute, { vertical: true });
 
-    const onMouseUp = () => {
+    function onMouseUp() {
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mouseup", onMouseUp);
+      window.removeEventListener("blur", onMouseUp);
       stopAutoScroll();
       const finished = linkRef.current;
+      if (!finished) return;
       linkRef.current = null;
       setLink(null);
-      if (finished?.overId) applyLink(finished.fromId, finished.overId);
-    };
+      if (finished.overId) applyLink(finished.fromId, finished.overId);
+    }
 
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mouseup", onMouseUp);
+    window.addEventListener("blur", onMouseUp);
   }
 
   function applyLink(blockerId: string, blockedId: string) {
@@ -1878,6 +1960,9 @@ function TimelineBar({
         {drawnBar.derived ? null : (
           <span
             role="presentation"
+            /* The same test seam the bar carries, and for the same reason:
+               nothing else about this element is addressable. */
+            data-link-from={task.id}
             onMouseDown={onLinkFrom}
             title={`Drag onto another bar: "${task.title}" blocks it`}
             className={`absolute -right-4 top-1/2 z-20 h-2.5 w-2.5 -translate-y-1/2 cursor-crosshair rounded-full border border-primary bg-card transition-opacity ${

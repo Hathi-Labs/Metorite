@@ -33,6 +33,27 @@
  * scroll that did not happen is the same bug mirrored.
  */
 
+/**
+ * How far the pointer must travel before a press counts as a drag.
+ *
+ * 🔴 **Without this, clicking a bar near the edge RESCHEDULES it.** The
+ * chain is short and it shipped in the first draft of this feature: press,
+ * the loop starts, the pointer is already inside the edge zone, the chart
+ * scrolls ~47px during a 100ms press, the drag's origin follows it, and
+ * `dayStep` reports two whole days at the month zoom — seven at the quarter
+ * zoom. The press then commits a PATCH and, because the component reads
+ * "did it travel" to tell a click from a drag, the task does NOT open. The
+ * member sees a task that refused to open and quietly changed date.
+ *
+ * On the old code the same press gave `Math.round(1 / 24) === 0` steps, so it
+ * opened the task and wrote nothing. Arming after a few pixels of real
+ * pointer travel is what keeps that true.
+ *
+ * Four pixels is the usual slop for this — enough to absorb the hand
+ * movement in a click, small enough that a deliberate drag never notices.
+ */
+export const DRAG_SLOP = 4;
+
 /** The live chart area, in viewport coordinates. */
 export interface ScrollBox {
   left: number;

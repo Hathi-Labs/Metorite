@@ -5722,8 +5722,26 @@ header another 52px. A bar dragged under either is hidden, which is exactly
 when the chart should move. Measuring from the container's own edges would put
 the left trigger 340px too far out.
 
+⚠️ **A press is not a drag until it has travelled, and that rule is load
+bearing.** The first draft armed the loop on mousedown. Clicking a bar that
+already sat near the edge then scrolled the chart during the press, dragged
+the origin with it, and committed a date change — while the component's
+own "did it travel" test suppressed the panel. A task that refused to open
+and quietly moved two days. `DRAG_SLOP` is four pixels of real pointer
+travel before the loop may scroll anything.
+
+⚠️ **A bar drag scrolls SIDEWAYS ONLY.** A bar cannot change rows, so
+vertical travel buys it nothing and costs it everything: on one of the last
+visible rows the pointer sits in the bottom zone for the whole gesture, and
+the bar you are holding leaves the top of the screen. That is this feature's
+own failure mode on the other axis. Only the dependency arrow takes both,
+because it is the only gesture whose target is a different row.
+
 Fences: `src/app/projects/lib/edgeScroll.test.ts` (a gate) and
 `e2e/projects-timeline-autoscroll.spec.ts` (runnable, not a gate — H-27).
+Every one of the five rules above was checked against its own counterexample:
+each was reintroduced in turn and the suite was re-run, so no test in that
+file passes on the defect it exists to catch.
 
 #### D-PM-11 — hierarchy depth decides what earns a bar
 

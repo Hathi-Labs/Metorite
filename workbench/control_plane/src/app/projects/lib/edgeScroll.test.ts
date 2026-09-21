@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DRAG_SLOP,
   EDGE_ZONE,
   MAX_SPEED_X,
   MAX_SPEED_Y,
@@ -174,5 +175,27 @@ describe("applyScroll", () => {
     };
     applyScroll(el, 10, 0);
     expect(writes).toBe(0);
+  });
+});
+
+describe("DRAG_SLOP", () => {
+  it("is small enough that a real drag never notices it", () => {
+    // A deliberate drag travels tens of pixels before it means anything —
+    // half a day-column is 12px at the month zoom. Slop larger than that
+    // would swallow the start of genuine drags.
+    expect(DRAG_SLOP).toBeLessThan(8);
+  });
+
+  it("is large enough to absorb the hand movement in a click", () => {
+    // 🔴 Zero here is the defect it exists for: the loop arms on the press,
+    // the chart scrolls during it, the drag's origin follows, and the click
+    // commits a date change instead of opening the task.
+    expect(DRAG_SLOP).toBeGreaterThan(1);
+  });
+
+  it("is smaller than the edge zone it gates", () => {
+    // Otherwise a pointer could cross the whole trigger zone before the loop
+    // is allowed to look at it.
+    expect(DRAG_SLOP).toBeLessThan(EDGE_ZONE);
   });
 });
