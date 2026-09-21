@@ -1,7 +1,7 @@
 """Merging tasks — the rules that are arithmetic, and one mirror that bites.
 
 Spec: ``project-docs/specs/project_management_app.md`` §11.18. Migration
-``209_projects_task_merge.sql``.
+``210_projects_task_merge.sql``.
 
 ⚠️ **This file deliberately does NOT test the merge.** The merge is twelve
 foreign keys' worth of UPDATE and DELETE, and a hermetic fake agrees with
@@ -27,7 +27,7 @@ from gateway.routes.projects.core import ACTIVITY_TYPES
 
 REPO = Path(__file__).resolve().parents[2]
 MIGRATION = (
-    REPO / "infra/postgres/209_projects_task_merge.sql"
+    REPO / "infra/postgres/210_projects_task_merge.sql"
 ).read_text(encoding="utf-8")
 
 

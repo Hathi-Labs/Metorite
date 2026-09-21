@@ -530,7 +530,7 @@ export interface TaskRow {
    */
   archived_at?: string | null;
   /**
-   * Migration 209 — the task this one was folded into, or absent.
+   * Migration 210 — the task this one was folded into, or absent.
    *
    * ⚠️ **A task carrying this is ALWAYS archived**, and the database
    * enforces it (`pm_tasks_merged_is_archived`). So a surface may read this
