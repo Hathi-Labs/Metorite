@@ -832,6 +832,28 @@ function ProjectsWorkspace() {
    */
   const [people, setPeople] = useState<string[]>([]);
   /**
+   * Addresses seen somewhere OTHER than an assignee list — today, the authors
+   * of comments and timeline entries in the open task panel.
+   *
+   * ⚠️ **Deliberately NOT merged into `people`, and that is the whole reason
+   * it is a second list.** `people` is the assignee filter's options. A
+   * colleague who commented once and holds no task would become a filterable
+   * assignee whose every result is empty — a filter that promises rows it
+   * cannot produce. These people need a NAME, which is a different job from
+   * being a filter option.
+   */
+  const [seenPeople, setSeenPeople] = useState<string[]>([]);
+  /**
+   * ⚠️ `useCallback` with no dependencies, and the panel's load effect is
+   * why. That effect lists this in its dependency array, so an arrow rebuilt
+   * on every render of this page would re-read the timeline on every render.
+   * `setSeenPeople` is stable and `mergeAssignees` is a module function, so
+   * an empty dependency list is correct rather than a silencing.
+   */
+  const notePeopleSeen = useCallback((who: string[]) => {
+    setSeenPeople((current) => mergeAssignees(current, who));
+  }, []);
+  /**
    * Undo history, scoped to the open project.
    *
    * Switching project clears it, which is the point of the scope: an entry
@@ -1644,8 +1666,23 @@ function ProjectsWorkspace() {
   const [personNames, setPersonNames] = useState<Map<string, string>>(
     () => new Map(),
   );
+
+  /**
+   * Everybody a label is owed for: the board's assignees, plus anybody the
+   * open panel has shown.
+   *
+   * ⚠️ Disambiguation runs over the UNION, and it has to. Two colleagues
+   * called Priya Sharma are told apart by what else is on screen; resolving
+   * the two lists separately would render one of them plainly while the
+   * other carried a qualifier, for the same name.
+   */
+  const namedPeople = useMemo(
+    () => mergeAssignees(people, seenPeople),
+    [people, seenPeople],
+  );
+
   useEffect(() => {
-    const unknown = people.filter(
+    const unknown = namedPeople.filter(
       (who) => !who.startsWith("agent:") && !personNames.has(who.toLowerCase()),
     );
     if (unknown.length === 0) return;
@@ -1654,9 +1691,15 @@ function ProjectsWorkspace() {
       .personNames(unknown)
       .then((res) => {
         if (!live) return;
+        // ⚠️ Read the body HERE, not inside the updater below. React runs a
+        // state updater during RENDER, so a throw in there escapes this
+        // promise chain's `.catch` and blanks the whole Projects page. A 200
+        // whose body carries no `names` is not hypothetical — it is what an
+        // older gateway answers during the minutes a deploy is rolling.
+        const found = Object.entries(res?.names ?? {});
         setPersonNames((current) => {
           const next = new Map(current);
-          for (const [email, name] of Object.entries(res.names)) {
+          for (const [email, name] of found) {
             next.set(email.toLowerCase(), name);
           }
           // ⚠️ Remember the MISSES too, as an empty string. Without this the
@@ -1675,18 +1718,22 @@ function ProjectsWorkspace() {
     return () => {
       live = false;
     };
-  }, [people, personNames]);
+  }, [namedPeople, personNames]);
 
-  /** Every assignee on screen, labelled and disambiguated together. */
+  /** Every person on screen, labelled and disambiguated together. */
   const personLabels = useMemo(
-    () => labelPeople(people, personNames),
-    [people, personNames],
+    () => labelPeople(namedPeople, personNames),
+    [namedPeople, personNames],
   );
 
   // A different project is a different set of people. Emptied rather than
   // carried, so one project's members never appear in another's filter.
   useEffect(() => {
     setPeople([]);
+    // The panel's people go too. A name resolved for one project's commenter
+    // is not wrong in another, but keeping the list would grow it for the
+    // whole session and send a lookup for people nobody is looking at.
+    setSeenPeople([]);
   }, [selected?.id]);
 
   useEffect(() => {
@@ -3304,6 +3351,21 @@ function ProjectsWorkspace() {
     <LayoutBoundary key={`panel-${openTask.id}`} layout="task panel">
     <TaskPanel
       personLabels={personLabels}
+      /**
+       * ⚠️ People the BOARD never saw.
+       *
+       * `people` is built from assignees, so a colleague who commented on a
+       * task but holds none of them has no directory name and renders as the
+       * local part of their address — which is the defect the name lookup was
+       * added to end, surviving in the one place people are named most.
+       *
+       * Reported upward rather than looked up in the panel: the existing
+       * effect already resolves names and hands the labels back down, and
+       * a second lookup inside the panel would be a second way to do one
+       * thing (§5) with its own cache to go stale. It lands in
+       * `seenPeople`, NOT in `people` — see that state's own note.
+       */
+      onPeopleSeen={notePeopleSeen}
       task={openTask}
       statuses={panelStatuses}
       fields={fields}

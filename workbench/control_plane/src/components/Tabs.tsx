@@ -59,6 +59,22 @@ export interface TabsProps {
   variant?: "segmented" | "underline";
   /** Extra className applied to the outer container */
   className?: string;
+  /**
+   * Where this bar sits, which decides its OWN chrome.
+   *
+   * * `"page"` (the default, and every caller before 2026-09-21) tops a whole
+   *   surface: page gutters, and a rule under it separating it from content.
+   * * `"inline"` sits inside something that already has padding and a border
+   *   — a panel section, a card. It drops both.
+   *
+   * ⚠️ **A prop, and not a `className` the caller passes.** The container's
+   * padding is written as `px-4 sm:px-6`, and Tailwind decides precedence by
+   * the order rules appear in the generated stylesheet, never by the order of
+   * the class attribute. So a caller's `px-0` loses, silently. `Input.tsx`
+   * carries the long version of this lesson; eleven call sites paid for it
+   * there, and inventing a second tab bar to escape it would be worse.
+   */
+  chrome?: "page" | "inline";
 }
 
 /**
@@ -71,11 +87,16 @@ export default function Tabs({
   onTabChange,
   variant = "segmented",
   className = "",
+  chrome = "page",
 }: TabsProps) {
+  const CONTAINER =
+    chrome === "inline"
+      ? ""
+      : "px-4 sm:px-6 pt-3 border-b border-border";
   if (variant === "underline") {
     return (
       <div
-        className={`flex items-center gap-1 px-4 sm:px-6 pt-3 pb-0 border-b border-border shrink-0 overflow-x-auto scrollbar-hide ${className}`}
+        className={`flex items-center gap-1 pb-0 shrink-0 overflow-x-auto scrollbar-hide ${CONTAINER} ${className}`}
         role="tablist"
       >
         {tabs.map((t) => {
@@ -129,7 +150,9 @@ export default function Tabs({
   // Default: segmented control
   return (
     <div
-      className={`flex items-center gap-0.5 px-4 sm:px-6 pt-3 pb-3 border-b border-border shrink-0 ${className}`}
+      className={`flex items-center gap-0.5 shrink-0 ${
+        chrome === "inline" ? "" : "pb-3"
+      } ${CONTAINER} ${className}`}
     >
       <div
         className="flex items-center gap-0.5 p-0.5 rounded-lg bg-secondary/50"

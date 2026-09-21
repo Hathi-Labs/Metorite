@@ -70,6 +70,7 @@
  */
 import { labelWith } from "../lib/grouping";
 import Icon from "@/components/Icon";
+import Tabs from "@/components/Tabs";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import SelectButton from "@/components/ui/SelectButton";
@@ -106,7 +107,12 @@ import { TagPicker } from "./TagPicker";
 import { RepeatEditor } from "./RepeatEditor";
 import { RelationsBlock } from "./RelationsBlock";
 import { AttachmentViewer } from "./AttachmentViewer";
-import { changeLabel } from "../lib/customFields";
+import {
+  ROLLUP_AT,
+  describeActivity,
+  rollUp,
+  threadComments,
+} from "../lib/activityStream";
 import {
   classify,
   parseAssignees,
@@ -164,40 +170,14 @@ interface Props {
   onMode?: (next: PanelMode) => void;
   /** See TaskBoard's prop of the same name. */
   personLabels?: ReadonlyMap<string, string>;
-}
-
-function describe(activity: ActivityRow, defs: FieldRow[] = []): string {
-  const meta = (activity.meta ?? {}) as Record<string, unknown>;
-  switch (activity.type) {
-    case "comment":
-      return activity.body ?? "";
-    case "status_change":
-      return activity.body ?? "Status changed";
-    case "assignment": {
-      const added = (meta.added as string[] | undefined) ?? [];
-      const removed = (meta.removed as string[] | undefined) ?? [];
-      const parts: string[] = [];
-      if (added.length) parts.push(`assigned ${added.join(", ")}`);
-      if (removed.length) parts.push(`unassigned ${removed.join(", ")}`);
-      return parts.join("; ") || "Assignment changed";
-    }
-    case "field_change": {
-      const changes = (meta.changes as Array<{ field: string }> | undefined) ?? [];
-      // `patch_task` files a custom edit as `custom.<key>`. Rendering that raw
-      // would put a database key in front of somebody reading their own
-      // history, so the definition's label is used where one is loaded.
-      const named = changes.map((c) => changeLabel(c.field, defs as never));
-      return `Edited ${named.join(", ") || "fields"}`;
-    }
-    case "agent_run":
-      return `Agent run ${String(meta.agent ?? "")}`.trim();
-    case "sync":
-      return activity.body ?? "Synced";
-    case "attachment":
-      return activity.body ?? "Attachment changed";
-    default:
-      return activity.body ?? activity.type;
-  }
+  /**
+   * Addresses this panel has seen that the board may not have.
+   *
+   * A comment's author is very often not an assignee, and `personLabels` is
+   * built from assignees. Without this the byline over somebody's own words
+   * is the local part of their email.
+   */
+  onPeopleSeen?: (who: string[]) => void;
 }
 
 /**
@@ -253,6 +233,73 @@ function FieldCell({
   );
 }
 
+/**
+ * One page of one kind of activity, and how many of that kind exist.
+ *
+ * `total` is the SERVER's count for the same `kind`. The roll-up's "Show N
+ * older" is computed from it, so a count taken from the page in hand would
+ * promise five where there are fifty.
+ */
+/** The first few words of a comment, for the "Replying to …" line. */
+function excerpt(body: string, max = 60): string {
+  const flat = body.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/**
+ * One line of either stream: who, when, and what it says.
+ *
+ * ⚠️ **Shared by both lists on purpose.** A comment and a status change are
+ * the same row in the same table (§3.8), and drawing them through two
+ * components is how the byline in one drifts from the byline in the other —
+ * which is what "separate systems" must NOT be taken to mean. The split is
+ * WHICH LIST an entry appears in, never what an entry looks like.
+ */
+function Entry({
+  activity,
+  fields,
+  personLabels,
+}: {
+  activity: ActivityRow;
+  fields: FieldRow[];
+  personLabels?: ReadonlyMap<string, string>;
+}) {
+  const who = activity.created_by ?? "";
+  return (
+    <div className="text-sm">
+      <p className="flex items-center gap-1 text-xs text-muted-foreground">
+        {/* WS-27z — an automated entry says so. The flag is the row's
+            meta.automation, written only by the workflow engine; a sweep
+            archiving a task must not read as a person did it. */}
+        {isAutomated(activity) ? (
+          <Badge size="xs" icon="Bot" title="Automated by a workflow">
+            auto
+          </Badge>
+        ) : null}
+        <span className="min-w-0 truncate">
+          {/* The NAME, not the address — the same rule the assignee chips
+              follow, and `labelWith` falls back to the local part on its
+              own when the directory has never heard of somebody. */}
+          {who ? labelWith(personLabels)(who) : "system"}
+          {activity.created_at
+            ? ` · ${new Date(activity.created_at).toLocaleString()}`
+            : ""}
+        </span>
+      </p>
+      <p className="whitespace-pre-wrap text-foreground">
+        {describeActivity(activity, fields)}
+      </p>
+    </div>
+  );
+}
+
+interface Stream {
+  rows: ActivityRow[];
+  total: number;
+}
+
+const EMPTY_STREAM: Stream = { rows: [], total: 0 };
+
 export function TaskPanel({
   task,
   statuses,
@@ -265,6 +312,7 @@ export function TaskPanel({
   mode = "side",
   onMode,
   personLabels,
+  onPeopleSeen,
 }: Props) {
   // WS-27ak(3) — the confirmation channel. `changeStatus` below is the one
   // mutation on this panel wired to it in that slice.
@@ -315,7 +363,34 @@ export function TaskPanel({
     onOpenChange: (open: boolean) => setSectionOpen(section, open),
   });
 
-  const [timeline, setTimeline] = useState<ActivityRow[]>([]);
+  /**
+   * ⚠️ **TWO streams, read separately, and that is the whole point.**
+   *
+   * Owner request, 2026-09-21: *"we should separate out activity and comments
+   * because the comments are getting muddled up with the activity"*. One
+   * table still (§3.8) — the SPLIT is a `kind` filter on the one endpoint,
+   * not a second store and not a second route.
+   *
+   * Read separately rather than fetched once and partitioned here, because
+   * each list paginates on its own. One `all` page of 50 on a busy task is
+   * 48 field changes and two comments, and a browser-side split would show
+   * the two while claiming there were fifty.
+   */
+  const [events, setEvents] = useState<Stream>(EMPTY_STREAM);
+  const [comments, setComments] = useState<Stream>(EMPTY_STREAM);
+  /** Which list is on screen. Comments first: it is the one you write into. */
+  const [stream, setStream] = useState<"comments" | "activity">("comments");
+  /** Whether the roll-up is open — see `ROLLUP_AT`. */
+  const [allEvents, setAllEvents] = useState(false);
+  /**
+   * The comment the composer is answering, or `null` for a new thread.
+   *
+   * ⚠️ **One composer, reused.** A second editor drawn under each comment
+   * would be a second way to write a comment — a second place for the
+   * mention picker, the keyboard handling and the not-delivered notice to
+   * drift apart (§5). Reply re-points the composer and says so above it.
+   */
+  const [replyTo, setReplyTo] = useState<ActivityRow | null>(null);
   const [comment, setComment] = useState("");
   const [notDelivered, setNotDelivered] = useState<string | null>(null);
   const commentBox = useRef<HTMLTextAreaElement | null>(null);
@@ -381,12 +456,32 @@ export function TaskPanel({
 
   useEffect(() => {
     let live = true;
-    projectsApi
-      .timeline(task.id)
-      .then((res) => {
-        if (live) setTimeline(res.rows);
-      })
-      .catch((err) => live && setError(String(err.message ?? err)));
+    // ⚠️ Reset FIRST. Without this the next task's panel paints the previous
+    // task's comments for as long as the two reads take, and a reply posted
+    // in that window would attach to a comment on another task — which the
+    // gateway refuses, so it reads as a broken Reply button.
+    //
+    // The rule below wants this derived from `task.id` during render instead.
+    // It cannot be: these four are also written by the writes on this panel,
+    // so they are state, not a projection of the prop. `setWatching(null)`
+    // three lines down has carried the same shape since WS-27v.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setEvents(EMPTY_STREAM);
+    setComments(EMPTY_STREAM);
+    setReplyTo(null);
+    setAllEvents(false);
+    void loadStreams(task.id, false).then((got) => {
+      if (!got || !live) return;
+      setComments(got.comments);
+      setEvents(got.events);
+      // Everybody who appears in either list, so the page can put a NAME over
+      // their words. Agents are excluded: an `agent:<name>` IS its name, and
+      // the directory has never heard of one.
+      const seen = [...got.comments.rows, ...got.events.rows]
+        .map((entry) => entry.created_by ?? "")
+        .filter((who) => who && !who.startsWith("agent:") && !who.startsWith("system:"));
+      if (seen.length) onPeopleSeen?.(seen);
+    });
     attachmentsApi
       .list(task.id)
       .then((res) => {
@@ -406,7 +501,11 @@ export function TaskPanel({
     return () => {
       live = false;
     };
-  }, [task.id]);
+    // `onPeopleSeen` is `useCallback`'d with no dependencies on the page, so
+    // listing it here costs nothing. An inline arrow from a future caller
+    // would re-read both streams on every render of the page, which is the
+    // failure this note exists to make visible rather than to permit.
+  }, [task.id, onPeopleSeen]);
 
   async function toggleWatch() {
     if (watching === null) return;
@@ -432,12 +531,19 @@ export function TaskPanel({
       for (const file of Array.from(picked)) {
         await attachmentsApi.upload(task.id, file);
       }
-      const [fresh, tl] = await Promise.all([
+      // An upload writes an `attachment` activity, which is an EVENT — so
+      // the activity list has to re-read, and the comments list has not
+      // changed. `loadStreams` reads both rather than growing a third
+      // partial-refresh path for one call site to keep in step.
+      const [fresh, got] = await Promise.all([
         attachmentsApi.list(task.id),
-        projectsApi.timeline(task.id),
+        loadStreams(task.id, allEvents),
       ]);
       setFiles(fresh.rows);
-      setTimeline(tl.rows);
+      if (got) {
+        setComments(got.comments);
+        setEvents(got.events);
+      }
     } catch (err) {
       setError(String((err as Error).message));
     } finally {
@@ -460,13 +566,79 @@ export function TaskPanel({
     }
   }
 
+  /**
+   * Both streams for one task.
+   *
+   * `deep` asks for the whole activity history rather than the first page —
+   * it is what the roll-up's "Show N older" spends. The comments list asks
+   * for a larger page always: a thread is read whole, and a reply whose root
+   * fell off the page renders as a root of its own (`threadComments`
+   * promotes it rather than dropping it, and its suite pins that).
+   *
+   * Resolves `null` on failure, having already reported it. A panel that
+   * blanked because the timeline 500'd would take the status control and the
+   * assignees with it, and those are why somebody opened it.
+   */
+  async function loadStreams(taskId: string, deep: boolean) {
+    try {
+      const [conv, evt] = await Promise.all([
+        projectsApi.timeline(taskId, { kind: "comments", pageSize: 200 }),
+        projectsApi.timeline(taskId, {
+          kind: "events",
+          pageSize: deep ? 200 : 50,
+        }),
+      ]);
+      return { comments: conv, events: evt };
+    } catch (err) {
+      setError(String((err as Error).message ?? err));
+      return null;
+    }
+  }
+
   async function reload() {
-    const [fresh, tl] = await Promise.all([
+    const [fresh, got] = await Promise.all([
       projectsApi.task(task.id),
-      projectsApi.timeline(task.id),
+      loadStreams(task.id, allEvents),
     ]);
-    setTimeline(tl.rows);
+    if (got) {
+      setComments(got.comments);
+      setEvents(got.events);
+    }
     onChanged(fresh);
+  }
+
+  /**
+   * The activity entries to draw, and how many are folded away.
+   *
+   * ⚠️ `events.total` and not `events.rows.length`: the count on the button
+   * has to cover rows still on the server, or "Show 5 older" opens onto
+   * fifty.
+   */
+  const shownEvents = rollUp(events.rows, {
+    expanded: allEvents,
+    total: events.total,
+  });
+
+  /**
+   * Point the composer at a comment, and put the caret in it.
+   *
+   * ⚠️ The Comments tab is forced on, because Reply is reachable from it
+   * only — but a later caller could reach this from anywhere, and a composer
+   * that silently answered a comment the author cannot see is the failure
+   * mode worth spending one line on.
+   */
+  function startReply(root: ActivityRow) {
+    setReplyTo(root);
+    setStream("comments");
+    commentBox.current?.focus();
+  }
+
+  /** Open the roll-up, fetching the rest of the history if it is not here. */
+  async function showAllEvents() {
+    setAllEvents(true);
+    if (events.rows.length >= events.total) return;
+    const got = await loadStreams(task.id, true);
+    if (got) setEvents(got.events);
   }
 
   /**
@@ -575,8 +747,13 @@ export function TaskPanel({
     setError(null);
     setNotDelivered(null);
     try {
-      const posted = await projectsApi.comment(task.id, body);
+      const posted = await projectsApi.comment(task.id, body, replyTo?.id);
       setComment("");
+      setReplyTo(null);
+      // A reply belongs in the conversation, so show it. Posting from the
+      // Activity tab is possible only through the keyboard, and landing the
+      // new comment somewhere the author cannot see it is the bug.
+      setStream("comments");
       // WS-27j: a mention that reached nobody is said out loud. The comment
       // still posted, so this is a notice rather than an error — but silence
       // would leave the author believing a colleague was pulled in.
@@ -1096,58 +1273,183 @@ export function TaskPanel({
             </Button>
           </CollapsibleSection>
 
-          {/* The timeline spans: it is a list of sentences, and half a
-              panel is not enough line length for one. */}
+          {/* ⚠️ TWO lists, not one stream with a filter drawn over it.
+              Owner request, 2026-09-21: the comments were "getting muddled
+              up with the activity". `Tabs` is the shared bar (§5) — a
+              tab strip written here would be a second one to keep in step.
+
+              The section SPANS in two-column mode: both lists are lists of
+              sentences, and half a panel is not enough line length. */}
           <CollapsibleSection
-              label="Activity"
-              icon="History"
-              count={timeline.length}
+              label="Discussion"
+              icon="MessageSquare"
+              count={comments.total}
               className={twoColumn ? "col-span-2 min-w-0" : undefined}
               {...fold("activity")}
             >
-            <ol className="space-y-3">
-              {timeline.map((activity) => (
-                <li key={activity.id} className="text-sm">
-                  <p className="flex items-center gap-1 text-xs text-muted-foreground">
-                    {/* WS-27z — an automated entry says so. The flag is the row's
-                        meta.automation, written only by the workflow engine; a
-                        sweep archiving a task must not read as a person did it. */}
-                    {isAutomated(activity) ? (
-                      <Badge size="xs" icon="Bot" title="Automated by a workflow">
-                        auto
-                      </Badge>
+            <Tabs
+              chrome="inline"
+              className="mb-3"
+              activeTab={stream}
+              onTabChange={(id) => setStream(id as "comments" | "activity")}
+              tabs={[
+                {
+                  id: "comments",
+                  label: "Comments",
+                  icon: "MessageSquare",
+                  count: comments.total,
+                  note: "What people wrote",
+                },
+                {
+                  id: "activity",
+                  label: "Activity",
+                  icon: "History",
+                  count: events.total,
+                  note: "What happened to this task",
+                },
+              ]}
+            />
+
+            {stream === "comments" ? (
+              <ol className="space-y-4">
+                {threadComments(comments.rows).map(({ root, replies }) => (
+                  <li key={root.id}>
+                    <Entry
+                      activity={root}
+                      fields={fields}
+                      personLabels={personLabels}
+                    />
+                    {/* ⚠️ ONE level, and the button is how the client holds
+                        that line — the gateway refuses a reply to a reply
+                        (422), so a Reply here would only ever be an error. */}
+                    <div className="mt-1 flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon="CornerDownRight"
+                        onClick={() => startReply(root)}
+                      >
+                        Reply
+                      </Button>
+                      {replies.length ? (
+                        <span className="text-[11px] text-muted-foreground">
+                          {replies.length}{" "}
+                          {replies.length === 1 ? "reply" : "replies"}
+                        </span>
+                      ) : null}
+                    </div>
+                    {replies.length ? (
+                      // Indented and ruled, because one level of depth has to
+                      // be visible without reading the text to work it out.
+                      <ol className="mt-2 space-y-3 border-l border-border pl-3">
+                        {replies.map((reply) => (
+                          <li key={reply.id}>
+                            <Entry
+                              activity={reply}
+                              fields={fields}
+                              personLabels={personLabels}
+                            />
+                          </li>
+                        ))}
+                      </ol>
                     ) : null}
-                    <span className="min-w-0 truncate">
-                      {activity.created_by ?? "system"}
-                      {activity.created_at
-                        ? ` · ${new Date(activity.created_at).toLocaleString()}`
-                        : ""}
-                    </span>
-                  </p>
-                  <p className="whitespace-pre-wrap text-foreground">
-                    {describe(activity, fields)}
-                  </p>
-                </li>
-              ))}
-              {timeline.length === 0 ? (
-                <li className="text-sm text-muted-foreground">
-                  Nothing on the timeline yet.
-                </li>
-              ) : null}
-            </ol>
+                  </li>
+                ))}
+                {comments.rows.length === 0 ? (
+                  <li className="text-sm text-muted-foreground">
+                    No comments yet. Say something below.
+                  </li>
+                ) : null}
+              </ol>
+            ) : (
+              <>
+                <ol className="space-y-3">
+                  {shownEvents.shown.map((activity) => (
+                    <li key={activity.id}>
+                      <Entry
+                        activity={activity}
+                        fields={fields}
+                        personLabels={personLabels}
+                      />
+                    </li>
+                  ))}
+                  {events.rows.length === 0 ? (
+                    <li className="text-sm text-muted-foreground">
+                      Nothing has happened to this task yet.
+                    </li>
+                  ) : null}
+                </ol>
+                {/* The roll-up. Owner request: show about five, fold the
+                    rest. The screenshot that prompted it held nine
+                    consecutive "Edited due_at, start_date" rows, and nothing
+                    below them was reachable without scrolling past. */}
+                {shownEvents.hidden > 0 ? (
+                  <Button
+                    className="mt-2"
+                    variant="secondary"
+                    size="sm"
+                    icon="ChevronDown"
+                    onClick={() => void showAllEvents()}
+                  >
+                    Show {shownEvents.hidden} older
+                  </Button>
+                ) : null}
+                {allEvents && events.rows.length > ROLLUP_AT ? (
+                  <Button
+                    className="mt-2"
+                    variant="ghost"
+                    size="sm"
+                    icon="ChevronUp"
+                    onClick={() => setAllEvents(false)}
+                  >
+                    Show less
+                  </Button>
+                ) : null}
+              </>
+            )}
           </CollapsibleSection>
         </div>
       </div>
 
-      <div className="shrink-0 border-t border-border bg-card p-3">
+      {/* ⚠️ The composer belongs to the COMMENTS list, and is hidden with it.
+          A comment box docked under a list of system events invites somebody
+          to answer a status change, which is the muddle the two tabs exist to
+          end — and the gateway refuses it anyway. */}
+      <div
+        className="shrink-0 border-t border-border bg-card p-3"
+        hidden={stream !== "comments"}
+      >
+        {replyTo ? (
+          // Who this will answer, and a way out. Without it the composer
+          // looks identical whether it starts a thread or joins one, and the
+          // difference is only visible after posting.
+          <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-background px-2 py-1.5">
+            <Icon name="CornerDownRight" className="h-3 w-3 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+              Replying to{" "}
+              <span className="text-foreground">
+                {labelWith(personLabels)(replyTo.created_by ?? "system")}
+              </span>
+              {replyTo.body ? ` — “${excerpt(replyTo.body)}”` : ""}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon="X"
+              aria-label="Cancel reply"
+              title="Write a new comment instead"
+              onClick={() => setReplyTo(null)}
+            />
+          </div>
+        ) : null}
         <Textarea
           ref={commentBox}
           inputSize="lg"
           value={comment}
           onChange={(e) => setComment(e.target.value)}
-          placeholder="Add a comment…"
-          aria-label="Add a comment"
-          rows={2}
+          placeholder={replyTo ? "Write a reply…" : "Add a comment…"}
+          aria-label={replyTo ? "Write a reply" : "Add a comment"}
+          rows={3}
         />
         {/* Mentionable people are this task's assignees. A full directory
             picker is WS-28e's job; these are who a comment names in practice,
@@ -1172,11 +1474,11 @@ export function TaskPanel({
         ) : null}
         <Button
           className="mt-2 w-full"
-          icon="MessageSquare"
+          icon={replyTo ? "CornerDownRight" : "MessageSquare"}
           onClick={addComment}
           disabled={busy || !comment.trim()}
         >
-          Comment
+          {replyTo ? "Reply" : "Comment"}
         </Button>
       </div>
       {/* The viewer is mounted at the panel root rather than inside the

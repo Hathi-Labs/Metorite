@@ -493,7 +493,8 @@ target_task_id)`.
 pm_projects ON DELETE CASCADE` · **CHECK: at least one target non-NULL** (the
 `crm_activities` move) · `type TEXT NOT NULL CHECK (type IN
 ('comment','status_change','field_change','link','assignment','agent_run','sync',
-'system'))` · `body TEXT` · `meta JSONB` (`field_change` carries
+'system','attachment','mention'))` · `parent_id UUID REFERENCES pm_activities ON DELETE
+SET NULL` (comments only — see Replies below) · `body TEXT` · `meta JSONB` (`field_change` carries
 `{"changes":[{field,old,new}]}` — the Paca diff-and-revert shape; `agent_run` carries
 `{run_id, agent}`; `sync` carries the conflict record, §7.2) · `created_by TEXT NOT NULL`
 (email, `agent:<name>`, or `system:sync` / `system:workflow:<id>`) · `created_at` ·
@@ -503,6 +504,32 @@ pm_projects ON DELETE CASCADE` · **CHECK: at least one target non-NULL** (the
 One transition, three effects (the CRM's `apply_status_transition` lesson): a status PATCH
 writes the new `status_id`, a `status_change` activity, and `completed_at` when crossing
 into/out of `done` — one helper, called by every mutator including sync and automation.
+
+**Replies (migration 208, owner request 2026-09-21).** `parent_id UUID REFERENCES
+pm_activities ON DELETE SET NULL` makes a comment an answer to another comment. Index:
+`(parent_id) WHERE parent_id IS NOT NULL`.
+
+⚠️ **One level, and the cap is application code.** A CHECK sees one row, and every
+question here is about the other row — is it a comment, is it on this task, is it already
+a reply. So the migration enforces only what a constraint can see (a row is not its own
+parent, the parent exists) and `activities.py::_parent_comment` enforces the rest, with a
+422 rather than a silent re-parent. Fences: `tests/unit/test_projects_comments.py` and
+`tests/live/live_comment_threads.py`.
+
+⚠️ **`SET NULL`, not `CASCADE`, and the reasoning is worth keeping.** A comment delete
+here is a SOFT delete, which no foreign key ever sees — so a cascade would not fire on
+the operation it appears to describe. Making it fire would mean one person tidying away
+their own comment silently destroys other people's replies. A hard delete therefore
+PROMOTES a reply to top level, and the client does the same for a reply whose root is
+soft-deleted or simply off the page.
+
+**Two lists, one table.** `GET /tasks/{id}/timeline?kind=all|comments|events` narrows the
+read. The split is a filter on the one endpoint, never a second route and never a second
+store: `comments` is `type = 'comment'` and `events` is `type <> 'comment'`, which
+partition the stream so nothing can fall out of both. `total` is narrowed with the rows,
+because the panel's "Show N older" is computed from it. Each list paginates separately —
+one `all` page of 50 on a busy task is 48 field changes and two comments, and splitting
+that in the browser shows two while claiming fifty.
 
 ### 3.9 `pm_views` + `pm_view_task_positions` — saved views and manual order
 `pm_views`: `id` · `project_id NOT NULL REFERENCES pm_projects ON DELETE CASCADE` ·

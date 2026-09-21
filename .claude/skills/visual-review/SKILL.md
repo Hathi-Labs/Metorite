@@ -44,7 +44,11 @@ field. None of them were visible in the code.
 1. **Copy the example.** `workbench/control_plane/e2e/visual/example.visual.ts`
    is the template. Change the route and the stubs.
 2. **Run it by name.** `npx playwright test e2e/visual/<yours>.visual.ts
-   --project=chromium`, from `workbench/control_plane`.
+   --project=visual`, from `workbench/control_plane`.
+   ⚠️ `visual`, not `chromium`. `playwright.config.ts` gives the rig its own
+   project, because `chromium`'s default `testMatch` takes only `*.spec.ts`
+   and `*.test.ts`. Run with `--project=chromium` and Playwright answers
+   "No tests found", which reads as a broken rig file.
 3. **Read the captures.** Open the PNGs. Look at them. The point of the rig is
    that a person or a model sees the surface.
 4. **Turn what you find into an assertion**, where you can. A screenshot proves

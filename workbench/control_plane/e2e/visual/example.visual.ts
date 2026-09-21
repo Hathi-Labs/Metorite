@@ -15,7 +15,7 @@ import {
  * it up. A capture rig asserts nothing, and a suite full of tests that cannot
  * fail teaches people to ignore the suite. Run it by name:
  *
- *     npx playwright test e2e/visual/example.visual.ts --project=chromium
+ *     npx playwright test e2e/visual/example.visual.ts --project=visual
  *
  * To review a different surface, copy this file, change the route and the
  * stubs, and delete the parts you do not need. Do not commit your copy — the

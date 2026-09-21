@@ -147,19 +147,82 @@ export function displayValue(def: FieldDef, value: unknown): string {
 }
 
 /**
+ * Column name → the words a person uses for it.
+ *
+ * ⚠️ **Owner-reported, 2026-09-21:** *"shouldn't we have human-readable names
+ * for the names of the fields that are being edited by the user?"* The
+ * timeline was reading `Edited due_at, start_date` — nine times in a row, in
+ * the screenshot that came with the report.
+ *
+ * Every entry here is a column that can earn a `field_change`: the task set
+ * is `tasks.py::_TRACKED_TASK_FIELDS` plus `status_id`, the project set is
+ * `tree.py::_TRACKED_PROJECT_FIELDS`, and `automation.py::PATCHABLE_FIELDS`
+ * is a subset of the first. Two of those tuples live in Python and this map
+ * is a THIRD list of the same names, which is a mirror and mirrors go stale
+ * — so the fallback below is built to make a miss survivable rather than
+ * wrong, and `customFields.test.ts` pins the ones that exist today.
+ *
+ * Only the names that de-underscoring gets WRONG need to be here. `title`,
+ * `description` and `timezone` are already English, and `estimate_mins` reads
+ * better as "Estimate" than as "Estimate mins" — which is the kind of
+ * judgement a rule cannot make, and the reason this is a table.
+ */
+const FIELD_LABELS: Record<string, string> = {
+  // ── The task ──
+  title: "Title",
+  description: "Description",
+  importance: "Priority",
+  due_at: "Due date",
+  start_date: "Start date",
+  estimate_mins: "Estimate",
+  status_id: "Status",
+  type_id: "Task type",
+  parent_task_id: "Parent task",
+  project_id: "Project",
+  archived_at: "Archived",
+  visibility: "Visibility",
+  // ── The project node ──
+  name: "Name",
+  status: "Status",
+  lead: "Lead",
+  parent_project_id: "Parent project",
+  archive_after_months: "Auto-archive after",
+  close_after_months: "Auto-close after",
+  timezone: "Time zone",
+  icon: "Icon",
+  icon_slot: "Icon",
+};
+
+/**
  * A `field_change` entry's field name → what the timeline should say.
  *
- * `patch_task` files a custom edit as `custom.<key>`. Rendering that raw would
- * put a database key in front of somebody reading their own history, so the
- * definition's label is used when it is loaded — and the key, de-underscored,
- * when it is not, because a field can be deleted after the change that names it
- * and the timeline still has to say something.
+ * Three rungs, and each one exists for a case the one above it cannot cover:
+ *
+ * 1. **A custom field** is filed by `patch_task` as `custom.<key>`. Rendering
+ *    that raw would put a database key in front of somebody reading their own
+ *    history, so the definition's own label wins — and the key, de-underscored,
+ *    when the definition is gone, because a field can be deleted after the
+ *    change that names it and the timeline still has to say something.
+ * 2. **A known column** takes the word above.
+ * 3. **Anything else** is de-underscored and given a capital. ⚠️ This rung is
+ *    load-bearing, not a formality: `FIELD_LABELS` mirrors tuples that live in
+ *    Python, so a column added there and forgotten here must degrade to
+ *    `Start date`-shaped text rather than to a database key. It is what makes
+ *    the mirror safe to keep.
  */
 export function changeLabel(field: string, defs: FieldDef[]): string {
-  if (!field.startsWith("custom.")) return field;
+  if (!field.startsWith("custom.")) {
+    return FIELD_LABELS[field] ?? sentenceCase(field);
+  }
   const key = field.slice("custom.".length);
   const def = defs.find((d) => d.field_key === key);
   return def ? def.name : key.replace(/_/g, " ");
+}
+
+/** `start_date` → `Start date`. One capital, never Title Case. */
+function sentenceCase(key: string): string {
+  const words = key.replace(/_/g, " ").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : key;
 }
 
 /** Definitions in the order a form should render them. */

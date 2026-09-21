@@ -2154,6 +2154,25 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-30 · vendor-feed session
 
 ### H-88 · A field-change coalescing test flakes on a UUID tiebreak · [AGENT]
+- **🔴 2026-09-21 — this is [[H-92]], and H-92's diagnosis is the right
+  one.** Two entries name ONE test:
+  `test_an_intervening_activity_breaks_the_run`. This entry calls it a UUID
+  tiebreak flake. H-92 calls it state leaking between tests. Measured today,
+  on this branch and on its base:
+
+      alone, 5 runs:     pass pass pass pass pass
+      in suite, 3 runs:  FAIL FAIL FAIL
+      in suite on BASE:  FAIL pass FAIL
+
+  A tiebreak flake does not pass five times alone and fail three times in a
+  suite. That is leakage, so look where H-92 says to look — `FakeProjectsDB`
+  and any module-level cache — and not at a UUID sort.
+- **⚠️ Fold the two entries into one when you take it.** Two ids for one
+  defect is how a fix lands against the wrong description.
+- **It cost time again today.** A comment-threading branch touched
+  `core.py` and `activities.py`, and the suite went red. Isolating it needed
+  the base files copied back in and the suite re-run three times. That is
+  the camouflage this entry already warns about, paid a second time.
 - **🔴 2026-09-20 — measured: it fails FOUR runs in five.** Five
   identical runs of `tests/unit/test_projects_hardening.py` with
   `-p no:randomly`: fail, fail, fail, fail, pass. "Flakes" undersells it.
@@ -2195,6 +2214,22 @@ line — never reclaim a number by deleting the other entry.
 
 
 ### H-96 · `dev_db.sh` starts the tenant database and never applies its ladder · [AGENT]
+- **🟢 2026-09-21 — the recipe below is confirmed, on a second, empty
+  database.** Built `acb_r8` inside the `acb-postgres` container to verify a
+  migration against a real Postgres (R8). The three steps worked first time
+  and all 206 files applied with no failure:
+
+      docker exec acb-postgres psql -U acb -d postgres -c 'CREATE DATABASE acb_r8 OWNER acb;'
+      docker exec acb-postgres psql -U acb -d acb_r8 \n        -c 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp"; CREATE EXTENSION IF NOT EXISTS pgcrypto;'
+      docker exec -i acb-postgres psql -U acb -d acb_r8 -q < infra/postgres/01_schema.sql
+      for f in $(ls infra/postgres/*.sql | grep -v schema.generated | grep -v 00_create \n                   | grep -v 01_schema | sed 's#.*/##' | sort -n); do \n        docker exec -i acb-postgres psql -U acb -d acb_r8 -q -v ON_ERROR_STOP=1 \n          < "infra/postgres/$f"; done
+
+  So the fix is well understood and only needs writing. ⚠️ Note the numeric
+  sort: a plain glob orders `100_` before `02_` and the ladder fails at once.
+- **⚠️ The password is not the one in most notes.** `acb-postgres` runs with
+  `POSTGRES_PASSWORD=acb_dev_change_me`, and an asyncpg URL built with `acb`
+  as the password fails authentication. Read it from
+  `docker inspect acb-postgres`.
 - **🟢 2026-09-21 — replayed it by hand, and here is the recipe.** The
   container had been recreated, so the tenant database was empty. Three
   things the runner does not do for you, in order:
