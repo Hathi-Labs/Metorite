@@ -2906,7 +2906,7 @@ line — never reclaim a number by deleting the other entry.
   migration 207
 - **Added:** 2026-09-21 · the every-app-by-default session
 
-### H-142 · A person has no URL, so nothing can link to them · [AGENT]
+### H-145 · A person has no URL, so nothing can link to them · [AGENT]
 - **Check:** `ls workbench/control_plane/src/app/people/` → no `[id]`
   directory means a person is still panel-only, and this is open.
 - **Why:** `people_center_app.md` §5.2 calls it the *person page*. It is
@@ -2926,7 +2926,9 @@ line — never reclaim a number by deleting the other entry.
 - 📌 The backend is ready. `GET /people/{id}` already serves the whole record
   and `GET /people/{id}/work` its open tasks.
 - **Authority:** `people_center_app.md` §5.2 · owner review 2026-09-21
-- **Added:** 2026-09-21 · the People end-to-end review
+- **Added:** 2026-09-21 · the People end-to-end review · **minted as H-142
+  and renumbered to H-145** — another branch merged its own H-142 first,
+  and `test_handoff_queue` caught the reuse. Ids are never reclaimed.
 
 ### H-143 · My Profile is a dead end · [AGENT]
 - **Check:** `rg -n "href|Link" workbench/control_plane/src/app/people/me/page.tsx`
