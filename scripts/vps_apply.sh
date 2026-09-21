@@ -749,8 +749,42 @@ npm_install_here() {
   return 0
 }
 
+# 🔴 **RECLAIM THE BUILD TREE BEFORE BUILDING INTO IT (H-89, H-137 part two).**
+#
+# Measured 2026-09-21 on run 35588464803, the first deploy H-137's gate turned
+# red instead of green: `.next` was `root:root` with 3803 paths under it, the
+# Next build could not write its own trace file, and all three rounds died at
+# `EACCES ... .next.staging/trace`. 759 more sat under the operator console.
+#
+# ⚠️ **The sweep at the top of this script CANNOT catch this**, and that is
+# deliberate. It prunes `.next` because the directory is gitignored and huge,
+# so `git reset` never touches it — chowning 60k files on every apply would
+# turn a fast repair into a slow one. The pruning is right. The gap it leaves
+# is that nothing else owned the build tree either.
+#
+# So the repair happens HERE: at the one moment it matters, scoped to the one
+# app about to be built, and only when something is actually mis-owned.
+reclaim_build_tree() {
+  name="$1"
+  owner="$(stat -c '%U:%G' .)"
+  user="${owner%%:*}"
+  for t in .next .next.staging .next.previous; do
+    [ -e "$t" ] || continue
+    # `find ! -user` first, so the common case costs a traversal and no write.
+    n="$(sudo find "$t" ! -user "$user" -print 2>/dev/null | wc -l)"
+    [ "$n" -gt 0 ] || continue
+    if sudo chown -R "$owner" "$t" 2>&1; then
+      echo "    ~ $name: reclaimed $n path(s) under $t (H-89)"
+    else
+      echo "    !! $name: could NOT reclaim $t — the build below will fail"
+      echo "       with EACCES, and that is H-89 rather than a code fault."
+    fi
+  done
+}
+
 build_next_staged() {
   name="$1"
+  reclaim_build_tree "$name"
   drop_dir .next.staging
   drop_dir .next.previous
   # 🔴 **THE PREVIOUS BUILD'S GENERATED TYPES CAN DEADLOCK THE NEXT ONE.**
