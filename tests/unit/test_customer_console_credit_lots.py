@@ -288,3 +288,77 @@ class TestTheSchema:
             )
         assert prices[granted] is None
         assert prices[promoted] == Decimal("0.00")
+
+
+# ── H-135: credits do not expire, and nothing may promise that they do ──────
+#
+# 🔴 **The defect was a PROMISE we did not keep.** The operator console showed
+# an "Expires" column and said lots burn "soonest to expire first, and free
+# before paid, so a customer never loses credits they bought". `open_lots` has
+# no expiry predicate, so an expired lot would have been drawn from — and drawn
+# FIRST, because the order is soonest expiry first. Nothing was wrong in
+# practice only because no caller ever set an expiry.
+#
+# Owner decision, 2026-09-21: **credits do not expire.** So the fix is to
+# remove the promise and make the value unsettable, rather than to build an
+# enforcement nobody wants.
+#
+# ⚠️ **`open_lots`' ordering and `add_credit_lot`'s parameter SURVIVE**, and
+# `TestTheConsumptionOrder` above still covers them. They are correct code for
+# the day somebody reverses the commercial decision. What must not survive is a
+# production path that sets the value, or a surface that claims we act on it.
+
+
+class TestCreditsDoNotExpire:
+    def test_add_credit_takes_NO_expiry(self):
+        """The one production path to a lot. Closing it here is what makes
+        the un-enforced expiry unreachable."""
+        import inspect
+
+        from customer_console import store
+
+        params = inspect.signature(store.add_credit).parameters
+        assert "expires_at" not in params, (
+            "add_credit accepts an expiry again. Nothing enforces one "
+            "(open_lots has no predicate), so a lot set this way would be "
+            "drawn from after it lapsed, and drawn FIRST.")
+
+    def test_only_the_store_and_its_tests_REACH_the_lot_writer(self):
+        """`add_credit_lot` keeps its parameter, so the fence is about who can
+        reach it. One production caller — `add_credit` — and it no longer
+        passes an expiry."""
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[2]
+        pkg = root / "apps/services/customer_console/customer_console"
+        callers = sorted(
+            {
+                path.name
+                for path in pkg.rglob("*.py")
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if "add_credit_lot(" in line
+                and not line.strip().startswith(("#", "def "))
+            }
+        )
+        assert callers == ["store.py"], (
+            "a new file reaches the lot writer directly. It must go through "
+            f"`add_credit`, which cannot set an expiry: {callers}")
+
+    def test_the_operator_panel_promises_no_lapse(self):
+        """🔴 The surface half. A date we show is a date a customer reads as
+        a rule, whatever the database does."""
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[2]
+        page = (
+            root
+            / "workbench/operator_console/src/app/customers/[slug]/page.tsx"
+        ).read_text(encoding="utf-8")
+
+        # The column and the value that filled it.
+        assert "<th>Expires</th>" not in page
+        assert "lot.expiresAt" not in page
+        # And the sentence that described a rule nothing ran.
+        assert "soonest to expire first" not in page
+        # What SHOULD survive: the half that is true and protects the customer.
+        assert "Free credits burn first" in page
