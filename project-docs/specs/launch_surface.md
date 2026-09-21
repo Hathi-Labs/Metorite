@@ -103,7 +103,7 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 | **Personal Center** | My Profile | `/people/me` | ungated | Your own record is never the directory (D-PC-15) |
 | **Personal Center** | My Access | `/access` | ungated | Renamed from "Your access". Ungated by construction — it is the page that explains a missing pane |
 | **Apps** | Projects | `/projects` | `feature:projects` | |
-| **Apps** | People | `/people` | `feature:people` | 🆕 **Live on 2026-09-20**, by owner decision. Held back before because the directory could not load and had no rows. PR #306 repaired the BFF proxy and gave each new member a `gtd_people` row. H-124's roster sync seeds the members who predate it. ⚠️ `feature:people` is `is_default false`. A live pane is still dark to a member without the grant |
+| **Apps** | People | `/people` | `feature:people` | 🆕 **Live on 2026-09-20**, by owner decision. Held back before because the directory could not load and had no rows. PR #306 repaired the BFF proxy and gave each new member a `people` row. H-124's roster sync seeds the members who predate it. ⚠️ `feature:people` is `is_default false`. A live pane is still dark to a member without the grant |
 | **AI Studio** | Chat | `/chat` | `feature:chat` | Section renamed from "Studio" |
 | **Admin** | Approvals | `/approvals` | `feature:approvals` | |
 | **Admin** | Organisation | `/settings/organization` | admin | Tabs: Members & roles · Seat assignments · Branding · **Requests** (§6.2) |

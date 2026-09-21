@@ -8,7 +8,7 @@ needed by an executive team, CEO, or project/product manager"*.
 purpose** — *"we can estimate the temporal characteristics of each project
 without needing to use time tracking"*. Everything here derives from what the
 product already stores: `pm_activities` for what happened, `estimate_mins`
-and `due_at` for the plan, `gtd_people` for who can do the work.
+and `due_at` for the plan, `people` for who can do the work.
 
 The claims worth pinning are the REFUSALS. A forecast that always answers is
 easy and wrong, and the wrong answer is the one that gets quoted in a

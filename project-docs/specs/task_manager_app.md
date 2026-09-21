@@ -214,7 +214,7 @@ To set tasks up properly during Clarify, the app must know the connected tool's 
 | **Statuses / stages** | the "Stage" picker + GTD→stage default map | provider API (per-list custom statuses) → `task_accounts.capabilities`/`field_map` |
 | **Custom fields, priorities** (later) | extra optional fields | provider API |
 
-Today `CONNECTED_PROVIDERS` (Local / ClickUp / Jira with their statuses) + `gtd_projects` + `gtd_people` stand in for this fetched schema. **[plumbing]:** a `provider.get_schema()` sync via the interface layer (§5.2) that populates it for real. If the schema (or a matching project/assignee/stage) isn't available or a field can't be set, the item stays fully processable — clarify locally now, complete the PM setup later (P8).
+Today `CONNECTED_PROVIDERS` (Local / ClickUp / Jira with their statuses) + `gtd_projects` + `people` stand in for this fetched schema. **[plumbing]:** a `provider.get_schema()` sync via the interface layer (§5.2) that populates it for real. If the schema (or a matching project/assignee/stage) isn't available or a field can't be set, the item stays fully processable — clarify locally now, complete the PM setup later (P8).
 
 **AI in Clarify — the boundary + opportunities**
 
@@ -584,7 +584,7 @@ whole app each:
 **What did NOT change, deliberately.** `GtdProject` survives as an *association*: a task
 still belongs to a project and every card still names it. What went is the **browsing**
 surface. The clarify flow's Where axis still offers the local hierarchy, because filing a
-personal task is a personal act. `gtd_people` is untouched — the People Center reads it.
+personal task is a personal act. `people` is untouched — the People Center reads it.
 
 **Two things this broke and how they were handled.** `loadPeople()` had exactly one caller:
 opening the People view. Deleting that view would have left the delegate picker and the
@@ -603,11 +603,11 @@ discovered later.
 
 ### 6.1 People & capabilities intelligence — the org-knowledge layer (✅ v1 shipped)
 
-> Added 2026-07-01 as a forward design note; **v1 shipped 2026-07-02** with the *actual* company data. `agent-project-manager`'s `agent-data/` (hr_structure.json + resume_profiles.json — 26 people, 11 departments, roles, org-chart + resume-extracted skills, capacity/load hours, ClickUp user ids) is snapshotted into **`infra/seed/hr/`** (phones stripped) and imported into **`gtd_people`** (migration `49_gtd_people.sql`) by **`scripts/import_hr_people.py`** (idempotent upsert by name; re-run to refresh — the source repo / HR system stays the source of truth). Served via **`GET /tasks/people`** (auth-gated, `q` searches name/role/department/skill); the clarify proposal is now **capability-aware** (skills word-boundary match + free-hours tiebreak → `suggested_assignee` with the person's real ClickUp id, so delegation pushes assign the actual user); the agent gained **`gtd_people(query)`**; the UI's delegation/assignee pickers hydrate from the org people. Remaining (below) = embeddings matching, live load sync from the PM tool, overload warnings, and richer org-structure reasoning.
+> Added 2026-07-01 as a forward design note; **v1 shipped 2026-07-02** with the *actual* company data. `agent-project-manager`'s `agent-data/` (hr_structure.json + resume_profiles.json — 26 people, 11 departments, roles, org-chart + resume-extracted skills, capacity/load hours, ClickUp user ids) is snapshotted into **`infra/seed/hr/`** (phones stripped) and imported into **`people`** (migration `49_gtd_people.sql`) by **`scripts/import_hr_people.py`** (idempotent upsert by name; re-run to refresh — the source repo / HR system stays the source of truth). Served via **`GET /tasks/people`** (auth-gated, `q` searches name/role/department/skill); the clarify proposal is now **capability-aware** (skills word-boundary match + free-hours tiebreak → `suggested_assignee` with the person's real ClickUp id, so delegation pushes assign the actual user); the agent gained **`people(query)`**; the UI's delegation/assignee pickers hydrate from the org people. Remaining (below) = embeddings matching, live load sync from the PM tool, overload warnings, and richer org-structure reasoning.
 
 **The idea.** Today the agent only recognizes a teammate when their *name appears in the capture text* (a plain string match). The larger opportunity — inspired by our internal **`agent-project-manager`** (which already holds the company's **HR list, everyone's résumé, roles, and capabilities**) — is to give the Task Manager agent a first-class model of **who's who and who can do what**, so Clarify and delegation run with real organizational context. This is the Task-Manager equivalent of how the email assistant knows a mailbox: here the agent "knows the org."
 
-**What the agent should know (the knowledge base).** A company knowledge layer, ideally **ported/synced from `agent-project-manager`** and cached alongside `gtd_people` / the provider's `list_members()`:
+**What the agent should know (the knowledge base).** A company knowledge layer, ideally **ported/synced from `agent-project-manager`** and cached alongside `people` / the provider's `list_members()`:
 - **Org structure** — departments, teams, reporting lines (who reports to whom, who owns what area / GTD Horizon H2).
 - **Per-person profile** — role/title, seniority, **skills & capabilities distilled from résumés**, domains they own (e.g. *embedded firmware*, *lab ops*, *supply chain*), languages/tools.
 - **Live state** — current **workload / capacity** (open-task count and load from the connected PM tool), availability / time-off.
@@ -825,7 +825,7 @@ uv sync                                             # workspace venv (.venv/)
 uv pip install -e apps/skill-task-gtd               # dev-import the agent skill
 scripts/apply_migrations.sh                         # applies 48 + 49 (idempotent)
 scripts/dump_schema.sh                              # refresh schema.generated.sql (needs pgvector box) — PENDING, do here
-.venv/bin/python scripts/import_hr_people.py        # seed gtd_people from infra/seed/hr/
+.venv/bin/python scripts/import_hr_people.py        # seed people from infra/seed/hr/
 ```
 
 **Run the stack**
@@ -885,7 +885,7 @@ capability-aware delegation); GTD agent tool surface.
    is untouched). Browser-E2E-verified: capture → persist → clarify (server
    proposal, "Rahul fits…") → accept → NEXT view → reload-persist → mind
    sweep → rail quick actions.
-5. Live workload sync for `gtd_people` + overload warnings (§6.1 later-list).
+5. Live workload sync for `people` + overload warnings (§6.1 later-list).
 6. OAuth connect flow; more connectors (Asana/Jira/Linear); generic MCP connector.
 
 > **Update 2026-08-01 (doc-truth pass):** the later calendar/timeboxing workstream
@@ -1119,7 +1119,7 @@ is the single fact that makes "one store" work at all.
 
 | Above | Fate under D53/D54 |
 |---|---|
-| **§4 / §5 data model** — `gtd_items`, `gtd_projects`, `gtd_spaces`, `gtd_people`, `gtd_waiting`, `gtd_item_assignees`, `gtd_item_subtasks` | **Superseded as a build target.** Kept as the description of the app as built, and as the checklist of behaviour the lens must preserve. |
+| **§4 / §5 data model** — `gtd_items`, `gtd_projects`, `gtd_spaces`, `people`, `gtd_waiting`, `gtd_item_assignees`, `gtd_item_subtasks` | **Superseded as a build target.** Kept as the description of the app as built, and as the checklist of behaviour the lens must preserve. |
 | **§6 provider abstraction / ClickUp sync / delegation write-back** | **Deleted** (D52). No provider, no `task_accounts`, no `schema_cache`, no status→stage map. |
 | **§8 `routes/tasks/` endpoints** | **Superseded for task CRUD** — those move to `/projects/my/*` and `/projects/tasks/*`. ⚠️ **NOT superseded for calendar**: `routes/tasks/calendar.py` is real, live, and moves to the Calendar app under D54 rather than being deleted. |
 | **§9 phases** referencing sync, write-back or a connected workspace | Superseded. |

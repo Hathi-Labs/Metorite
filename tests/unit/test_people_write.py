@@ -44,6 +44,7 @@ from gateway.routes.tasks.core import (
     PEOPLE_WRITE_PERMISSION,
     can_manage_people,
 )
+from tests.unit._sql_match import hits
 
 REPO = Path(__file__).resolve().parents[2]
 MIGRATION = REPO / "infra" / "postgres" / "148_people_key_shape.sql"
@@ -93,10 +94,10 @@ class FakeDB:
         statement = " ".join(str(sql).split())
         self.statements.append(statement)
         self.params.append(dict(params or {}))
-        if "SELECT name FROM gtd_people WHERE lower(email)" in statement:
+        if hits(statement, "SELECT name FROM people WHERE lower(email)"):
             holder = self.email_holder
             return _Result([SimpleNamespace(name=holder)] if holder else [])
-        if statement.startswith("SELECT * FROM gtd_people"):
+        if hits(statement, "SELECT * FROM people"):
             return _Result([PERSON])
         return _Result([])
 
@@ -223,7 +224,7 @@ def test_two_people_may_share_a_name(monkeypatch, db):
     run(tasks_people.create_person(write(name="Priya"), ADMIN))
     assert not db.issued("LOWER(name)")
     assert not db.issued("lower(name)")
-    assert db.issued("INSERT INTO gtd_people")
+    assert db.issued("INSERT INTO people")
 
 
 def test_a_duplicate_address_is_refused_and_names_the_other_row(monkeypatch):
@@ -236,7 +237,7 @@ def test_a_duplicate_address_is_refused_and_names_the_other_row(monkeypatch):
     # Naming the holder is the difference between a message an admin can act on
     # and one that sends them looking through the directory by hand.
     assert "Priya" in str(exc.value.detail)
-    assert not database.issued("INSERT INTO gtd_people")
+    assert not database.issued("INSERT INTO people")
 
 
 def test_the_address_check_is_case_insensitive_on_both_sides(monkeypatch):
@@ -255,7 +256,7 @@ def test_a_blank_address_is_stored_as_null(monkeypatch, db):
     partial unique index — the exact mess the migration had to clean up."""
     bind(monkeypatch, db)
     run(tasks_people.create_person(write(name="Ravi", email="   "), ADMIN))
-    assert db.params_for("INSERT INTO gtd_people")["email"] is None
+    assert db.params_for("INSERT INTO people")["email"] is None
     # And a blank is not looked up either: every empty address would "match".
     assert not db.issued("lower(email)")
 
@@ -269,7 +270,7 @@ def test_patch_lets_a_person_keep_their_own_address(monkeypatch):
         PERSON.id, write(email="priya@fracktal.in"), ADMIN))
     params = database.params_for("lower(email)")
     assert params["exclude"] == PERSON.id
-    assert database.issued("UPDATE gtd_people")
+    assert database.issued("UPDATE people")
 
 
 def test_patch_refuses_somebody_elses_address(monkeypatch):
@@ -280,7 +281,7 @@ def test_patch_refuses_somebody_elses_address(monkeypatch):
             PERSON.id, write(email="ravi@fracktal.in"), ADMIN))
     assert exc.value.status_code == 409
     assert "Ravi" in str(exc.value.detail)
-    assert not database.issued("UPDATE gtd_people")
+    assert not database.issued("UPDATE people")
 
 
 def test_patch_that_never_mentions_email_does_not_check_it(monkeypatch):
@@ -291,7 +292,7 @@ def test_patch_that_never_mentions_email_does_not_check_it(monkeypatch):
     run(tasks_people.update_person(PERSON.id, write(title="Lead"), ADMIN))
     assert not database.issued("lower(email)")
     assert not database.issued("email = :email")
-    assert "email" not in database.params_for("UPDATE gtd_people")
+    assert "email" not in database.params_for("UPDATE people")
 
 
 # ── `can_manage` — the flag that lets the UI hide rather than disable ───────

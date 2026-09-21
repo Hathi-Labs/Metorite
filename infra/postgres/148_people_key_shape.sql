@@ -1,4 +1,4 @@
--- 148_people_key_shape.sql — fix gtd_people's key shape (People Center P-1/P-2).
+-- 148_people_key_shape.sql — fix people's key shape (People Center P-1/P-2).
 --
 -- What: (1) a stable per-source upsert key (`source_key`) so the HR importer
 --       keeps working once names stop being unique; (2) a partial UNIQUE on
@@ -33,35 +33,35 @@
 -- The honest key is per-SOURCE, not per-person: the HR snapshot is a JSON
 -- object keyed by name, so names are unique *within that file* whether or not
 -- they are unique among humans. `source_key` says exactly that and nothing more.
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS source_key TEXT;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS source_key TEXT;
 
 -- Backfilled BEFORE UNIQUE(name) is dropped, while name is still guaranteed
 -- distinct — which is what makes the backfill collision-free by construction.
-UPDATE gtd_people
+UPDATE people
    SET source_key = COALESCE(NULLIF(btrim(source), ''), 'manual') || ':' || lower(btrim(name))
  WHERE source_key IS NULL AND name IS NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_gtd_people_source_key
-    ON gtd_people (source_key) WHERE source_key IS NOT NULL;
+    ON people (source_key) WHERE source_key IS NOT NULL;
 
 -- ── 2. Email: normalise, quarantine, then constrain ─────────────────────────
 -- Where a duplicate address is found the LOSER's address is moved aside rather
 -- than deleted. Losing an address silently would be worse than the ambiguity
 -- this migration exists to remove, and a deploy that aborts because two rows
 -- share an address would be worse than both.
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS email_conflict TEXT;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS email_conflict TEXT;
 
-COMMENT ON COLUMN gtd_people.email_conflict IS
+COMMENT ON COLUMN people.email_conflict IS
     'An address moved aside because another row already claimed it (migration 148). '
     'Non-null means a human still has to decide which row is the real person.';
 
 -- '' is not NULL, so two blank emails would collide under the unique index.
-UPDATE gtd_people SET email = NULL
+UPDATE people SET email = NULL
  WHERE email IS NOT NULL AND btrim(email) = '';
 
 -- A trailing space makes two identical addresses look distinct to a human and
 -- to `lower(email)` alike.
-UPDATE gtd_people SET email = btrim(email)
+UPDATE people SET email = btrim(email)
  WHERE email IS NOT NULL AND email <> btrim(email);
 
 -- Winner = most recently updated, then most recently created, then lowest id.
@@ -75,17 +75,17 @@ WITH ranked AS (
                         created_at DESC NULLS LAST,
                         id
            ) AS rn
-      FROM gtd_people
+      FROM people
      WHERE email IS NOT NULL
 )
-UPDATE gtd_people p
+UPDATE people p
    SET email_conflict = COALESCE(p.email_conflict, p.email),
        email = NULL
   FROM ranked r
  WHERE r.id = p.id AND r.rn > 1;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_gtd_people_email_lower
-    ON gtd_people (lower(email)) WHERE email IS NOT NULL;
+    ON people (lower(email)) WHERE email IS NOT NULL;
 
 -- ── 3. Names stop being unique ──────────────────────────────────────────────
 -- Looked up by SHAPE rather than assuming Postgres's `gtd_people_name_key`
@@ -98,7 +98,7 @@ BEGIN
     SELECT c.conname INTO cname
       FROM pg_constraint c
       JOIN pg_class t ON t.oid = c.conrelid
-     WHERE t.relname = 'gtd_people'
+     WHERE t.relname = 'people'
        AND c.contype = 'u'
        AND (
             -- attname is type `name`; without the cast the aggregate is
@@ -112,24 +112,24 @@ BEGIN
            ) = ARRAY['name']
      LIMIT 1;
     IF cname IS NOT NULL THEN
-        EXECUTE format('ALTER TABLE gtd_people DROP CONSTRAINT %I', cname);
+        EXECUTE format('ALTER TABLE people DROP CONSTRAINT %I', cname);
     END IF;
 END $$;
 
 -- Name lookups are still common (the directory searches by name), and the
 -- dropped constraint took its implicit index with it.
-CREATE INDEX IF NOT EXISTS idx_gtd_people_name_lower ON gtd_people (lower(name));
+CREATE INDEX IF NOT EXISTS idx_gtd_people_name_lower ON people (lower(name));
 
 -- ── 4. The status vocabulary ────────────────────────────────────────────────
 -- Migration 49 documented `'active' | 'inactive' | …` — the "…" is the problem.
 -- Known legacy spellings are mapped; anything else is left alone rather than
 -- rewritten, because silently reclassifying a status nobody anticipated is a
 -- data loss disguised as a cleanup.
-UPDATE gtd_people SET status = 'active'
+UPDATE people SET status = 'active'
  WHERE status IS NULL OR btrim(status) = '';
-UPDATE gtd_people SET status = 'alumni'
+UPDATE people SET status = 'alumni'
  WHERE lower(btrim(status)) IN ('inactive', 'former', 'left');
-UPDATE gtd_people SET status = lower(btrim(status))
+UPDATE people SET status = lower(btrim(status))
  WHERE status <> lower(btrim(status));
 
 -- Added NOT VALID, then validated separately. NOT VALID enforces every future
@@ -141,9 +141,9 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint c
           JOIN pg_class t ON t.oid = c.conrelid
-         WHERE t.relname = 'gtd_people' AND c.conname = 'gtd_people_status_check'
+         WHERE t.relname = 'people' AND c.conname = 'gtd_people_status_check'
     ) THEN
-        ALTER TABLE gtd_people
+        ALTER TABLE people
           ADD CONSTRAINT gtd_people_status_check
           CHECK (status IN ('active', 'contractor', 'alumni', 'invited')) NOT VALID;
     END IF;
@@ -151,7 +151,7 @@ END $$;
 
 DO $$
 BEGIN
-    ALTER TABLE gtd_people VALIDATE CONSTRAINT gtd_people_status_check;
+    ALTER TABLE people VALIDATE CONSTRAINT gtd_people_status_check;
 EXCEPTION WHEN check_violation THEN
     -- Enforced for every new write; existing offenders stay readable and are
     -- listed by the directory's own data-quality panel rather than by a failed

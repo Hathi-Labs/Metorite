@@ -29,7 +29,7 @@ Run it::
         -o '-k /var/tmp -p 55432' start"
     uv run python tests/live/live_ws28j.py
 
-⚠️ Writes and deletes `gtd_people`, `pm_projects` and their children under
+⚠️ Writes and deletes `people`, `pm_projects` and their children under
 `@ws28j.invalid` / `WS28J`. Scratch only.
 """
 import asyncio
@@ -299,7 +299,7 @@ async def main() -> None:
         from gateway.routes.people import suggestions as sugg
         from acb_common.db import tenant_session as _ts
         ravi_id = (await db.execute(text(
-            "SELECT id FROM gtd_people WHERE email = 'ravi@ws28j.invalid'"
+            "SELECT id FROM people WHERE email = 'ravi@ws28j.invalid'"
         ))).fetchone().id
         async with _ts(str(org.id)) as scoped:
             await replace_skills(scoped, str(ravi_id), [
@@ -377,7 +377,7 @@ async def cleanup(db) -> None:
     await db.execute(text(
         "DELETE FROM pm_projects WHERE name LIKE 'WS28J %'"))
     await db.execute(text(
-        "DELETE FROM gtd_people WHERE email LIKE '%@ws28j.invalid'"))
+        "DELETE FROM people WHERE email LIKE '%@ws28j.invalid'"))
     await db.execute(text(
         "DELETE FROM app_user WHERE email LIKE '%@ws28j.invalid'"))
     await db.execute(text(

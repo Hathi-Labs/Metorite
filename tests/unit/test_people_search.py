@@ -29,6 +29,7 @@ from acb_auth import UserContext, UserRole, build_access
 from fastapi import HTTPException
 from gateway.routes.people import core as people_core
 from gateway.routes.people import search as people_search
+from tests.unit._sql_match import hits
 
 REPO = Path(__file__).resolve().parents[2]
 SOURCE = (REPO / "apps/services/gateway/gateway/routes/people/search.py"
@@ -150,13 +151,13 @@ class FakeDB:
     async def execute(self, sql: Any, params: dict | None = None) -> _Result:
         s = " ".join(str(sql).split())
         self.statements.append(s)
-        if "FROM gtd_people" in s:
+        if hits(s, "FROM people"):
             return _Result([PRIYA, RAVI])
-        if "FROM gtd_person_skills" in s:
+        if "FROM people_skills" in s:
             return _Result(self.skills)
-        if "FROM gtd_person_resumes" in s:
+        if "FROM people_resumes" in s:
             return _Result(self.resumes)
-        if "FROM gtd_person_absences" in s:
+        if "FROM people_absences" in s:
             return _Result(self.absences)
         if "FROM org_settings" in s:
             return _Result([])

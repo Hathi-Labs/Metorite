@@ -22,9 +22,9 @@ Run it::
     # apply every numbered migration to a scratch `cc` database first
     uv run python tests/live/live_ws28g.py
 
-⚠️ This script writes and deletes rows in ``gtd_people`` whose email is under
+⚠️ This script writes and deletes rows in ``people`` whose email is under
 ``@ws28g.invalid``. It does **not** TRUNCATE — unlike most of its neighbours —
-because `gtd_people` is a real roster and a scratch copy of it is still
+because `people` is a real roster and a scratch copy of it is still
 somebody's directory. It cleans up after itself in a `finally`.
 """
 import asyncio
@@ -73,7 +73,7 @@ STRANGER = user("nobody@ws28g.invalid", "feature:people")
 
 async def cleanup(db) -> None:
     await db.execute(text(
-        "DELETE FROM gtd_people WHERE email LIKE '%@ws28g.invalid'"))
+        "DELETE FROM people WHERE email LIKE '%@ws28g.invalid'"))
     await db.commit()
 
 
@@ -118,7 +118,7 @@ async def main() -> None:
 
         # ── 1. The create path did not drop the profile half ───────────────
         row = (await db.execute(
-            text("SELECT * FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            text("SELECT * FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": pid})).fetchone()
         check("timezone survived create", row.timezone, "Asia/Kolkata")
         check("array is a real text[] and not a json string",
@@ -178,7 +178,7 @@ async def main() -> None:
             check("the refusal names the field",
                   "title" in str(getattr(exc, "detail", "")), True)
         again = (await db.execute(
-            text("SELECT title FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            text("SELECT title FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": pid})).fetchone()
         check("and the row is untouched", again.title, "Firmware lead")
 
@@ -217,7 +217,7 @@ async def main() -> None:
             ADMIN)
         try:
             await db.execute(
-                text("UPDATE gtd_people SET email = :e WHERE id = CAST(:id AS uuid)"),
+                text("UPDATE people SET email = :e WHERE id = CAST(:id AS uuid)"),
                 {"e": SUBJECT_EMAIL.upper(), "id": other.id})
             await db.commit()
             check("two rows cannot share an address", "allowed", "refused")
@@ -247,7 +247,7 @@ async def main() -> None:
                   getattr(exc, "status_code", None), 403)
 
         stranger_row = (await db.execute(
-            text("SELECT department FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            text("SELECT department FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": pid})).fetchone()
         check("…and the row really is untouched",
               stranger_row.department, "Engineering")

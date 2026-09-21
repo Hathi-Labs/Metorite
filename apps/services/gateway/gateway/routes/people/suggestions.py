@@ -164,7 +164,7 @@ async def get_suggestions(
     async with _tenant_session() as db:
         skills = (await db.execute(text(
             "SELECT person_id, skill, level, last_used_year "
-            "  FROM gtd_person_skills"))).fetchall()
+            "  FROM people_skills"))).fetchall()
         unassigned = []
         if board.work_visible:
             # Scoped by the VIEWER's grant closure (§5.7.4: "projects the

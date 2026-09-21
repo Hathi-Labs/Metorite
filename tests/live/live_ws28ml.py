@@ -3,7 +3,7 @@
 Run:
     uv run python tests/live/live_ws28ml.py
 
-⚠️ Writes and deletes `gtd_people`, `app_user` and `pm_projects` rows under
+⚠️ Writes and deletes `people`, `app_user` and `pm_projects` rows under
 `@ws28ml.invalid` / `WS28ML`. Scratch only.
 
 What only a live run can show here:
@@ -121,12 +121,12 @@ async def main() -> None:
             "manager_id": asha, "timezone": "Asia/Kolkata",
             "working_hours": {"start": "09:30"}, "skills": ["python"]})
         await db.execute(text(
-            "UPDATE gtd_people SET email_conflict = 'dupe@ws28ml.invalid' "
+            "UPDATE people SET email_conflict = 'dupe@ws28ml.invalid' "
             " WHERE id = CAST(:id AS uuid)"), {"id": quarantined})
         # A NULL status is reachable (49 has no NOT NULL, 148's CHECK passes
         # NULL) and must tell ONE story across the three surfaces.
         await db.execute(text(
-            "UPDATE gtd_people SET status = NULL "
+            "UPDATE people SET status = NULL "
             " WHERE id = CAST(:id AS uuid)"), {"id": quarantined})
         await db.commit()
 
@@ -280,7 +280,7 @@ async def main() -> None:
 async def cleanup(db) -> None:
     await db.execute(text("DELETE FROM pm_projects WHERE name LIKE 'WS28ML%'"))
     await db.execute(text(
-        "DELETE FROM gtd_people WHERE name LIKE '%WS28ML'"))
+        "DELETE FROM people WHERE name LIKE '%WS28ML'"))
     await db.execute(text(
         "DELETE FROM org_group WHERE slug LIKE 'ws28ml-%'"))
     await db.execute(text(

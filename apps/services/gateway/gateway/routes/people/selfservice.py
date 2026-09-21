@@ -177,7 +177,7 @@ async def update_me(
     person = await tasks_people.update_person(person_id, body, user)
     async with _tenant_session() as db:
         saved = (await db.execute(
-            text("SELECT * FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            text("SELECT * FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": str(person.id)},
         )).fetchone()
         # Re-projected for this caller. `update_person` answers in the admin
@@ -207,7 +207,7 @@ async def upload_my_resume(
     result = await tasks_people.ingest_resume(person_id, file, user)
     async with _tenant_session() as db:
         saved = (await db.execute(
-            text("SELECT * FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            text("SELECT * FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": person_id},
         )).fetchone()
         return {

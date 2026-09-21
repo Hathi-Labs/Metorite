@@ -587,7 +587,7 @@ class Settings(BaseSettings):
     email_embedding_dim: int = 1536
 
     # Task-manager semantic capability matching (spec §5, Phase 2) — embed each
-    # person's capability text (role · skills · résumé) into gtd_people
+    # person's capability text (role · skills · résumé) into people
     # .capability_embedding and blend cosine similarity with the keyword match
     # when suggesting an assignee. OFF by default: keyword matching is complete on
     # its own and embedding the roster costs tokens. Turn on once migration 75 has

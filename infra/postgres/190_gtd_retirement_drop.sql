@@ -29,8 +29,8 @@
 --     explicitly.** They are per-member CALENDAR state, not task rows; they
 --     belong to D54's Calendar app and are not part of this retirement. A sweep
 --     that took them with the rest is the specific mistake D53.6 exists to stop.
---   * `gtd_people`, `gtd_person_absences`, `gtd_person_credentials`,
---     `gtd_person_resumes`, `gtd_person_skills` — the PEOPLE DIRECTORY. The
+--   * `people`, `people_absences`, `people_credentials`,
+--     `people_resumes`, `people_skills` — the PEOPLE DIRECTORY. The
 --     `gtd_` prefix is the only thing they share with the task store; they back
 --     `fetchPeople` / `createPerson` / `uploadResume`, which have nothing to do
 --     with D53 and no `pm_*` destination.

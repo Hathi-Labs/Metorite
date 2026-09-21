@@ -874,7 +874,7 @@ def _hours(value: Any) -> float | None:
 # estimate the temporal characteristics of each project without needing to
 # use time tracking."* Everything below derives from data we already hold:
 # `pm_activities` for what actually happened, `pm_tasks.estimate_mins` and
-# `due_at` for the plan, and `gtd_people` for who can do the work.
+# `due_at` for the plan, and `people` for who can do the work.
 #
 # ⚠️ **TWO FORECASTS, DELIBERATELY, AND THEY ANSWER DIFFERENT QUESTIONS.**
 # Velocity says *"at the rate this team actually goes"*. Capacity says *"if
@@ -991,7 +991,7 @@ def team_capacity_sql(open_where: str) -> str:
         f"                (now() + make_interval(days => :horizon_days))::date"
         f"        ) AS leaving_soon"
         f"   FROM holders h"
-        f"   LEFT JOIN gtd_people p ON lower(p.email) = h.email"
+        f"   LEFT JOIN people p ON lower(p.email) = h.email"
     )
 
 
@@ -1419,7 +1419,7 @@ async def outlook(
     deliberately** — *"we can estimate the temporal characteristics of each
     project without needing to use time tracking"*. Every number here comes
     from data the product already holds: `pm_activities` for what happened,
-    `estimate_mins` and `due_at` for the plan, `gtd_people` for who can work.
+    `estimate_mins` and `due_at` for the plan, `people` for who can work.
 
     ⚠️ **Two forecasts, and they are not redundant.** `velocity` reads the
     team's actual rate and subtracts the rate work ARRIVES, so a growing
@@ -1526,7 +1526,7 @@ async def outlook(
             "with_schedule_only": int(cap.with_schedule or 0),
             "hours_per_week": float(cap.stated_hours or 0),
             # ⚠️ An engagement that ends inside the forecast window is a risk
-            # no velocity can see. `gtd_people.end_date` already exists for
+            # no velocity can see. `people.end_date` already exists for
             # "assignment past it is a mistake" (spec §6.1); this is the same
             # fact asked at project scale.
             "leaving_within_90d": int(cap.leaving_soon or 0),

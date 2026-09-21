@@ -180,7 +180,7 @@ async def get_dashboard(
         people = (await db.execute(text(
             "SELECT id, name, email, department, team, avatar, working_hours, "
             "       status "
-            "  FROM gtd_people "
+            "  FROM people "
             " WHERE status <> 'alumni' "
             " ORDER BY department NULLS LAST, name"))).fetchall()
         policy = await load_policy(db)
@@ -487,7 +487,7 @@ async def _absences_for(db: Any, person_ids: list[str]) -> dict[str, list[dict]]
     try:
         rows = (await db.execute(text(
             "SELECT person_id, starts_on, ends_on, kind, hours_per_day "
-            "  FROM gtd_person_absences "
+            "  FROM people_absences "
             " WHERE person_id = ANY(CAST(:ids AS uuid[])) "
             "   AND ends_on >= CURRENT_DATE"), {"ids": person_ids})).fetchall()
     except Exception:

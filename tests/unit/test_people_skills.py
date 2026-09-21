@@ -5,7 +5,7 @@ Spec: `project-docs/specs/people_center_app.md` §3.3 · **D-PC-6**.
 Three claims:
 
 * **The array is a projection of the table, rewritten in the same transaction
-  by every write path.** Four live consumers read `gtd_people.skills[]` and R6
+  by every write path.** Four live consumers read `people.skills[]` and R6
   forbids breaking them; the fence is these tests asserting array == table
   after each path — replace, flat sync, résumé merge — never a paragraph
   asking people to remember.
@@ -33,6 +33,7 @@ from gateway.routes.people import core as people_core
 from gateway.routes.people import selfservice as people_self
 from gateway.routes.people import skills as people_skills
 from gateway.routes.tasks import resume_parse
+from tests.unit._sql_match import hits
 
 REPO = Path(__file__).resolve().parents[2]
 MIGRATION = (REPO / "infra" / "postgres" / "176_people_skills.sql").read_text(
@@ -187,7 +188,7 @@ class FakeDB:
         s = " ".join(str(sql).split())
         p = dict(params or {})
         self.statements.append(s)
-        if s.startswith("DELETE FROM gtd_person_skills"):
+        if s.startswith("DELETE FROM people_skills"):
             if "= ANY(:gone)" in s:
                 gone = set(p["gone"])
                 self.skills = [r for r in self.skills
@@ -195,7 +196,7 @@ class FakeDB:
             else:
                 self.skills = []
             return _Result([])
-        if s.startswith("INSERT INTO gtd_person_skills"):
+        if s.startswith("INSERT INTO people_skills"):
             row = {k: p.get(k) for k in (
                 "skill", "level", "years", "last_used_year", "evidence")}
             if ":evidence" not in s:
@@ -204,20 +205,20 @@ class FakeDB:
                 row["evidence"] = literal.group(1) if literal else "manual"
             self.skills.append(row)
             return _Result([])
-        if s.startswith("DELETE FROM gtd_person_credentials"):
+        if s.startswith("DELETE FROM people_credentials"):
             self.credentials = []
             return _Result([])
-        if s.startswith("INSERT INTO gtd_person_credentials"):
+        if s.startswith("INSERT INTO people_credentials"):
             self.credentials.append(dict(p))
             return _Result([])
-        if "FROM gtd_person_skills" in s:
+        if "FROM people_skills" in s:
             if "lower(skill) AS key" in s:
                 return _Result([SimpleNamespace(key=r["skill"].lower())
                                 for r in self.skills])
             return _Result([
                 SimpleNamespace(id=f"row-{i}", **r)
                 for i, r in enumerate(self.skills)])
-        if "FROM gtd_person_credentials" in s:
+        if "FROM people_credentials" in s:
             if "lower(title)" in s:
                 return _Result([SimpleNamespace(
                     kind=r["kind"], title=r["title"].lower(),
@@ -226,7 +227,7 @@ class FakeDB:
             return _Result([
                 SimpleNamespace(id=f"cred-{i}", source="manual", **r)
                 for i, r in enumerate(self.credentials)])
-        if s.startswith("UPDATE gtd_people SET skills"):
+        if s.startswith("UPDATE people SET skills"):
             self.projected = {"skills": p["skills"], "source": p["source"]}
             return _Result([])
         return _Result([])
@@ -239,7 +240,7 @@ class FakeDB:
 
 
 def assert_projection_matches(db: FakeDB) -> None:
-    """THE fence: what landed on gtd_people is exactly the table's content."""
+    """THE fence: what landed on people is exactly the table's content."""
     import json
     assert db.projected is not None, "no projection was written"
     assert db.projected["skills"] == db.table_names()
@@ -317,7 +318,7 @@ def test_every_write_path_ends_in_exactly_one_projection() -> None:
         db = FakeDB()
         run(call(db))
         writes = [s for s in db.statements
-                  if s.startswith("UPDATE gtd_people SET skills")]
+                  if s.startswith("UPDATE people SET skills")]
         assert len(writes) == 1, db.statements
 
 
@@ -332,7 +333,7 @@ PERSON = SimpleNamespace(id="11111111-1111-1111-1111-111111111111",
 class RouteDB(FakeDB):
     async def execute(self, sql: Any, params: dict | None = None) -> _Result:
         s = " ".join(str(sql).split())
-        if "FROM gtd_people" in s:
+        if hits(s, "FROM people"):
             self.statements.append(s)
             wanted = (params or {}).get("email")
             if wanted is not None and wanted != PERSON.email:

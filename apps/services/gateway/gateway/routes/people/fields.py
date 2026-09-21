@@ -23,7 +23,7 @@ self).
 
 A field is in exactly one write class and one read tier. The fence is
 ``tests/unit/test_people_profile.py``'s partition test, which discovers every
-column of ``gtd_people`` from the migrations themselves and fails when one is
+column of ``people`` from the migrations themselves and fails when one is
 in no class — so a column added next month cannot default into the permissive
 answer by being forgotten (R7).
 """
@@ -112,7 +112,7 @@ SELF_FIELDS: frozenset[str] = frozenset({
 UPLOAD_ONLY_FIELDS: frozenset[str] = frozenset({"avatar"})
 
 #: Computed, never posted. Present here so the partition fence can prove every
-#: column of ``gtd_people`` was classified rather than forgotten.
+#: column of ``people`` was classified rather than forgotten.
 DERIVED_FIELDS: frozenset[str] = frozenset({
     "id",
     # Which customer this row belongs to (migration 209, H-125). Written by

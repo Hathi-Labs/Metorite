@@ -36,6 +36,7 @@ from fastapi import HTTPException
 from gateway import work_schedule as ws
 from gateway.routes.people import core as people_core
 from gateway.routes.people import schedule as people_schedule
+from tests.unit._sql_match import hits
 
 REPO = Path(__file__).resolve().parents[2]
 GATEWAY = REPO / "apps" / "services" / "gateway" / "gateway"
@@ -304,11 +305,11 @@ def test_the_tasks_package_never_writes_the_people_schedule() -> None:
         body = path.read_text(encoding="utf-8")
         # A write to the People Center's half of the schedule. Reading it is
         # the point of the seam; writing it would make the seed a mirror.
-        if re.search(r"UPDATE\s+gtd_people[\s\S]{0,400}?working_hours", body) \
+        if re.search(r"UPDATE\s+people[\s\S]{0,400}?working_hours", body) \
                 or re.search(r"working_hours\s*=\s*:", body):
             offenders.append(path.name)
     assert not offenders, (
-        f"{offenders} writes gtd_people.working_hours from the tasks package — "
+        f"{offenders} writes people.working_hours from the tasks package — "
         "the calendar SEEDS from the work schedule and must never write back "
         "(D-PC-16). A seeded default that diverges is somebody changing their "
         "mind; a mirror that diverges is a bug."
@@ -358,7 +359,7 @@ class FakeDB:
             return _Result([SimpleNamespace(
                 value=json.dumps(self.policy), updated_by="admin@fracktal.in",
                 updated_at=None)])
-        if "FROM gtd_people" in statement:
+        if hits(statement, "FROM people"):
             return _Result(self.people)
         return _Result([])
 

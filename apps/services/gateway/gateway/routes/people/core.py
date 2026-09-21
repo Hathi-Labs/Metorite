@@ -82,7 +82,7 @@ def is_self(user: Any, person_email: str | None) -> bool:
 
 
 async def find_self_row(db: Any, user: Any) -> Any:
-    """The caller's own ``gtd_people`` row, or ``None``.
+    """The caller's own ``people`` row, or ``None``.
 
     The self predicate run as a query rather than over rows already in hand —
     used by ``/people/me`` and by the directory's ``self_person_id``. Resolved
@@ -112,7 +112,7 @@ async def find_self_row(db: Any, user: Any) -> Any:
     # So the predicate moves from the index to the query. `NULLIF(…, '')`
     # fails CLOSED: an unbound GUC matches no row rather than any row.
     return (await db.execute(
-        text("SELECT * FROM gtd_people "
+        text("SELECT * FROM people "
              " WHERE lower(email) = :email "
              "   AND organization_id = CAST(NULLIF("
              "         current_setting('app.tenant_id', true), '') AS uuid) "
@@ -254,7 +254,7 @@ async def _manager_name(db: Any, manager_id: Any) -> str | None:
     if not manager_id:
         return None
     row = (await db.execute(
-        text("SELECT name FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+        text("SELECT name FROM people WHERE id = CAST(:id AS uuid)"),
         {"id": str(manager_id)},
     )).fetchone()
     return str(row.name) if row is not None else None
@@ -263,7 +263,7 @@ async def _manager_name(db: Any, manager_id: Any) -> str | None:
 async def compute_load(db: Any, email: str | None) -> dict[str, Any]:
     """Load from OPEN ASSIGNED TASKS, not from the typed column (§5.2).
 
-    ``gtd_people.current_load_hours_per_week`` is a number somebody typed once;
+    ``people.current_load_hours_per_week`` is a number somebody typed once;
     it is stale the moment anyone assigns anything. This counts what the person
     is actually holding.
 
@@ -334,7 +334,7 @@ async def store_avatar(db: Any, person_id: str, data: bytes,
 
     uri = to_data_uri(normalise(data, crop=crop))
     await db.execute(
-        text("UPDATE gtd_people SET avatar = :avatar, avatar_updated_at = now(), "
+        text("UPDATE people SET avatar = :avatar, avatar_updated_at = now(), "
              "updated_by = :by, updated_at = now() "
              "WHERE id = CAST(:id AS uuid)"),
         {"avatar": uri, "by": actor, "id": person_id},
@@ -346,7 +346,7 @@ async def clear_avatar(db: Any, person_id: str, actor: str) -> None:
     """Remove it. `avatar_updated_at` is stamped, not cleared — "they took their
     picture down just now" is a change the client still has to notice."""
     await db.execute(
-        text("UPDATE gtd_people SET avatar = NULL, avatar_updated_at = now(), "
+        text("UPDATE people SET avatar = NULL, avatar_updated_at = now(), "
              "updated_by = :by, updated_at = now() "
              "WHERE id = CAST(:id AS uuid)"),
         {"by": actor, "id": person_id},

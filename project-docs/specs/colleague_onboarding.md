@@ -610,7 +610,7 @@ person, it would orphan their apps.
 | **deleted** | `access_request` | they become a stranger again. Leaving an `approved` row for somebody with no `app_user` row means their next sign-in bumps a row the Requests tab never renders (it shows `pending` only) — the invisible lockout §6 exists to end |
 | **deleted** | `app_user` | the member record, last |
 | **kept** | `app_audit`, `audit_event`, `agent_run`, `agent_file_history`, `pending_actions`, `pending_commit` | **an audit trail that disappears when you delete the person is not an audit trail.** `app_audit` already says so in its own schema: `app_id UUID` with *no* FK, commented "audit survives hard delete" |
-| **kept** | `apps`, `app_versions`, `app_data`, `app_pins`, `workflows*`, `meeting*`, `notes_glossary`, `gtd_people`, `org_group.created_by`, `person` | authored work and org records |
+| **kept** | `apps`, `app_versions`, `app_data`, `app_pins`, `workflows*`, `meeting*`, `notes_glossary`, `people`, `org_group.created_by`, `person` | authored work and org records |
 | **kept** | `gtd_items`, `gtd_projects` **where `account_id IS NULL`** | the LOCAL half — outcomes and actions they wrote here, not a mirror of anybody's provider. ⚠️ **The `account_id` predicate is load-bearing, not decoration:** without it this row counts the SYNCED rows the line above destroys, and reports them as survivors |
 | **kept** | `chat_session` **where `visibility <> 'private'`** | a shared room has other participants and cascades `chat_message`; one person's off-boarding must not take a shared transcript |
 | **anonymised** | *(none)* | see above — the address is the join key, not a display attribute |
@@ -1268,10 +1268,10 @@ is `require_feature_router("tasks")` (`core.py:29`). The people routes add
 
 | Route | Anchor | What it does with no scope |
 |---|---|---|
-| `GET /tasks/people` | `people.py:80-84` | Takes `_user` and never reads it; runs `SELECT * FROM gtd_people WHERE status='active'` at `:98` and returns every column through `_row_to_person` (`:56-77`) — name, email, role, title, department, team, `reports_to`, `manager_id`, skills **and `skills_source`**, `resume_summary`, `years_experience`, capacity / current load / available hours, and `clickup_user_id`. |
+| `GET /tasks/people` | `people.py:80-84` | Takes `_user` and never reads it; runs `SELECT * FROM people WHERE status='active'` at `:98` and returns every column through `_row_to_person` (`:56-77`) — name, email, role, title, department, team, `reports_to`, `manager_id`, skills **and `skills_source`**, `resume_summary`, `years_experience`, capacity / current load / available hours, and `clickup_user_id`. |
 | `POST /tasks/people` | `:190` | Creates a person. `user` is used only for `_uid(user)` → `updated_by` (`:233`). |
-| `PATCH /tasks/people/{person_id}` | `:241` | Edits **any** person: name, email, manager, skills, capacity, ClickUp link. Loads the row via `_get_person_row` (`:181-187`), which is `SELECT * FROM gtd_people WHERE id = :id` — id only. |
-| `POST /tasks/people/{person_id}/resume` | `:303` | Uploads a PDF/DOCX/TXT onto **any** person, parses it, writes `gtd_person_resumes` with up to 200 kB of parsed text (`:351-360`) and merges the extracted skills, summary, years and domain into the record (`:363-375`). |
+| `PATCH /tasks/people/{person_id}` | `:241` | Edits **any** person: name, email, manager, skills, capacity, ClickUp link. Loads the row via `_get_person_row` (`:181-187`), which is `SELECT * FROM people WHERE id = :id` — id only. |
+| `POST /tasks/people/{person_id}/resume` | `:303` | Uploads a PDF/DOCX/TXT onto **any** person, parses it, writes `people_resumes` with up to 200 kB of parsed text (`:351-360`) and merges the extracted skills, summary, years and domain into the record (`:363-375`). |
 | `POST /tasks/people/embed` | `capability.py:225-228` | Backfills the roster's capability embeddings; `_user` is unused. |
 
 **The contrast that sizes it.** This is *not* a blanket gap in the Tasks
@@ -1282,7 +1282,7 @@ one that never got a rule, so the fix is local to it rather than a rewrite.
 
 #### DECISION — directory open, HR fields restricted `owner-answered 2026-08-04`
 
-`gtd_people` is an *org* roster imported from `agent-project-manager` HR data
+`people` is an *org* roster imported from `agent-project-manager` HR data
 (`people.py:1-10`); it is not per-user rows, so "owner-scope it" was the wrong
 shape and the ticket could not be built until the owner said which shape it is.
 The answer:
@@ -1338,7 +1338,7 @@ The answer:
   at the **serialization** layer, not in the SQL, precisely so it is untouched.
   Do not "fix" it too; that is the capability-aware delegation the roster
   exists for.
-* Consequence on the agent path, and it is the right one: the `gtd_people`
+* Consequence on the agent path, and it is the right one: the `people`
   skill tool (`apps/skills/skill-task-gtd/skill_task_gtd/core.py`) calls
   `GET /tasks/people` **as the acting member**, so an agent run for a non-admin
   now sees the same restricted directory that member sees. An agent must never

@@ -36,12 +36,12 @@ From the request, eight threads:
 
 | Capability | Where | Status |
 |---|---|---|
-| People/HR table `gtd_people` (name, email, role, department, team, **reports_to**, status, **skills[]** GIN, resume_summary, years_experience, domain, capacity/load/available hours, **clickup_user_id**) | `infra/postgres/49_gtd_people.sql` | **Built** (read-only cache) |
+| People/HR table `people` (name, email, role, department, team, **reports_to**, status, **skills[]** GIN, resume_summary, years_experience, domain, capacity/load/available hours, **clickup_user_id**) | `infra/postgres/49_gtd_people.sql` | **Built** (read-only cache) |
 | HR seed data (Fracktal org + résumé profiles) | `infra/seed/hr/{hr_structure,resume_profiles}.json` + `scripts/import_hr_people.py` | **Built** (seed-only import) |
 | Read people API + clarify feed | `routes/tasks/people.py` `GET /tasks/people`, `fetch_people_for_clarify()` | **Built** (no write path) |
 | Capability-aware assignee match (skill word-boundary hits + résumé-domain bonus, tie-break years→free-hours) | `routes/tasks/ai.py:136` `_match_capability()` | **Built** (keyword, not vector) |
 | LLM clarify picks disposition, next-action, **assignee_name**, **project_match [P#]**, subtasks, matrix flags | `ai.py:410 _llm_propose`, `:603 propose_with_llm`, route `:808 /items/{id}/clarify` | **Built** |
-| Agent tool `gtd_people(query)` (org-knowledge search) + delegation persona rule | `skill-task-gtd/core.py:301`, `instructions.md:44-47` | **Built** |
+| Agent tool `people(query)` (org-knowledge search) + delegation persona rule | `skill-task-gtd/core.py:301`, `instructions.md:44-47` | **Built** |
 | Delegate LOCAL→ClickUp (`gtd_organize(delegate)`, `DelegateDialog.tsx`, `POST /items/{id}/delegate`) | skill + frontend | **Built** |
 | ClickUp System B (per-account tokens, `ClickUpProvider`, schema sync of projects/members/statuses into `task_accounts.schema_cache` + `gtd_projects`) | `routes/tasks/providers.py`, `accounts.py:384 _refresh_schema` | **Built** |
 | Subtasks (`parent_item_id`), local hierarchy (`gtd_spaces`/`gtd_folders`), status→stage map | migrations 59, 60, 69 | **Built** |
@@ -63,11 +63,11 @@ memory for task clarification, richer *project-planning* tools, and the *UI*.
 | # | Ask | Status | Gap | Approach |
 |---|---|---|---|---|
 | 1 | Infer project + assignee from HR | Mostly built | Keyword-only match; no live workload/overload; no reporting-line reasoning | Add embeddings match (§5), live workload (§6), overload guard, `reports_to` reasoning in the clarify prompt |
-| 2 | Résumé upload (PDF/DOCX) linked to users | Not built (parsing is in the *external* repo only) | No parser, no upload→person link, no write path | §4 résumé pipeline: reuse `attachments.py` upload + add PyMuPDF/docx parser + write to `gtd_people` |
-| 3 | Per-user title/manager/skills | Built in schema | `reports_to` is free-text; skills seed-only; no edit | §3 make `gtd_people` **editable** (write API + UI §10); keep `reports_to` but add optional `manager_id` FK |
+| 2 | Résumé upload (PDF/DOCX) linked to users | Not built (parsing is in the *external* repo only) | No parser, no upload→person link, no write path | §4 résumé pipeline: reuse `attachments.py` upload + add PyMuPDF/docx parser + write to `people` |
+| 3 | Per-user title/manager/skills | Built in schema | `reports_to` is free-text; skills seed-only; no edit | §3 make `people` **editable** (write API + UI §10); keep `reports_to` but add optional `manager_id` FK |
 | 4 | Tasks agent internal vector memory | Partially (shared Mem0 agent scope) | No *dedicated* task-clarification memory; matching is not embedding-based | §9 dedicated `agent:task-manager` memory namespace + a `task_clarification_memory` recall/save loop + ASG-style retrieval-routing protocol |
 | 5 | Document per-agent memory approach | Framework doc exists (`agent_file_and_memory_framework.md`) | Doesn't cover "give agent X a dedicated vector memory" recipe | §9 + extend the framework doc with the recipe |
-| 6 | Sync active people/projects | Projects+members sync built | `gtd_people` is seed-only; drifts from ClickUp membership; departed people linger | §6 reconcile `gtd_people` against `ClickUpProvider.list_members()` (mark active/departed, link clickup_user_id) |
+| 6 | Sync active people/projects | Projects+members sync built | `people` is seed-only; drifts from ClickUp membership; departed people linger | §6 reconcile `people` against `ClickUpProvider.list_members()` (mark active/departed, link clickup_user_id) |
 | 7 | Integrate PM-agent tools | New | PM repo has plan_project/create_project/sync_tasks/WBS/Gantt/workload/résumé/ClickUp-docs; ours has gtd_* | §8 port matrix — adopt reasoning, reuse our providers/store, don't duplicate the connector |
 | 8 | HR-mgmt UI + project-planning chat | Chat built; no People UI | No People/Skills view; planning-from-chat is shallow | §10 UI spec (PeopleView, PersonEditor, ResumeUpload, OrgTree, PlanProject flow) |
 
@@ -75,9 +75,9 @@ memory for task clarification, richer *project-planning* tools, and the *UI*.
 
 ## 3. Data-model changes
 
-Ownership shift: today `gtd_people` is a **read-only cache** whose source of truth
+Ownership shift: today `people` is a **read-only cache** whose source of truth
 is the external agent-project-manager repo. The request makes the app itself an
-**editor** of HR data. Resolution: `gtd_people` becomes the source of truth for
+**editor** of HR data. Resolution: `people` becomes the source of truth for
 fields the UI edits; `source` column already distinguishes provenance
 (`agent-project-manager` seed vs `manual` edit vs `clickup` sync vs `resume`).
 
@@ -85,15 +85,15 @@ fields the UI edits; `source` column already distinguishes provenance
 
 ```sql
 -- Make the row editable + auditable
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS title TEXT;            -- distinct from role if desired
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS manager_id UUID REFERENCES gtd_people(id);  -- structured hierarchy (reports_to stays as the display name)
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS skills_source JSONB DEFAULT '{}';  -- per-skill provenance: {skill: "resume"|"manual"|"orgchart"}
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS updated_by TEXT;        -- who last edited (audit)
+ALTER TABLE people ADD COLUMN IF NOT EXISTS title TEXT;            -- distinct from role if desired
+ALTER TABLE people ADD COLUMN IF NOT EXISTS manager_id UUID REFERENCES people(id);  -- structured hierarchy (reports_to stays as the display name)
+ALTER TABLE people ADD COLUMN IF NOT EXISTS skills_source JSONB DEFAULT '{}';  -- per-skill provenance: {skill: "resume"|"manual"|"orgchart"}
+ALTER TABLE people ADD COLUMN IF NOT EXISTS updated_by TEXT;        -- who last edited (audit)
 
 -- Résumé linkage (a person can have >1 résumé version)
-CREATE TABLE IF NOT EXISTS gtd_person_resumes (
+CREATE TABLE IF NOT EXISTS people_resumes (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    person_id UUID NOT NULL REFERENCES gtd_people(id) ON DELETE CASCADE,
+    person_id UUID NOT NULL REFERENCES people(id) ON DELETE CASCADE,
     filename TEXT NOT NULL,
     mime TEXT,
     storage_ref TEXT,            -- attachments dir path or blob-store key
@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS gtd_person_resumes (
 
 -- Vector capability index (semantic assignee/skill matching)
 -- pgvector already installed (email_embeddings uses vector(1536)).
-ALTER TABLE gtd_people ADD COLUMN IF NOT EXISTS capability_embedding vector(1536);
+ALTER TABLE people ADD COLUMN IF NOT EXISTS capability_embedding vector(1536);
 -- text the embedding is built from = role + title + skills + resume_summary + domain
 ```
 
@@ -124,25 +124,25 @@ Notes:
 Parsing lives ONLY in the external repo today (`ingest_resumes.py`, PyMuPDF +
 keyword vocab + fuzzy name-match). Bring a monorepo-native version.
 
-**Flow:** upload → store → parse → extract → (LLM enrich) → write to `gtd_people`.
+**Flow:** upload → store → parse → extract → (LLM enrich) → write to `people`.
 
 1. **Upload** — reuse `attachments.py` plumbing (multipart, size cap, owner check).
    New route `POST /tasks/people/{id}/resume` (multipart) → store file (attachments
-   dir or blob store) → insert `gtd_person_resumes` row.
+   dir or blob store) → insert `people_resumes` row.
 2. **Parse** — new `routes/tasks/resume_parse.py`:
    - PDF → text via **PyMuPDF (`pymupdf`)** with `pdfplumber` fallback.
    - DOCX → **`python-docx`**.
    - (These are new deps for the gateway service — small, pure-Python-ish.)
 3. **Extract skills** — two-tier, mirroring the PM repo but LLM-first here:
    - Fast path: keyword match against a skill vocabulary (seed from the union of
-     existing `gtd_people.skills`).
+     existing `people.skills`).
    - LLM path (default when `clarify_use_llm`): prompt the gateway model to return
      `{skills[], experience_summary, years_experience, domain, education[]}` as JSON
      (JSON-mode required — see [[llm-json-mode-required]]).
-4. **Merge** — union new skills into `gtd_people.skills`, stamp `skills_source`
+4. **Merge** — union new skills into `people.skills`, stamp `skills_source`
    per-skill = "resume", set `resume_summary`/`years_experience`/`domain` if empty
    or if the user opts to overwrite. Re-embed `capability_embedding`.
-5. **Idempotent** — re-uploading a résumé replaces its `gtd_person_resumes` row and
+5. **Idempotent** — re-uploading a résumé replaces its `people_resumes` row and
    re-merges; never duplicates skills (they're a set).
 
 **Reusable references:** external `ingest_resumes.py` (`SKILL_KEYWORDS`, `fuzzy_match`),
@@ -156,7 +156,7 @@ Current `_match_capability()` (keyword) stays as the deterministic fallback (it'
 golden-eval-adjacent — don't break `propose()`). Layer on:
 
 - **Semantic match** (flagged): embed the task's `next_action`/title, cosine against
-  `gtd_people.capability_embedding`, blend with the keyword score. Never *drops* a
+  `people.capability_embedding`, blend with the keyword score. Never *drops* a
   keyword match (same principle as the email hybrid search — see [[email-search-hybrid]]).
 - **Live workload + overload guard**: pull each candidate's open ClickUp tasks via
   `ClickUpProvider.list_tasks()` (already exists), estimate load (port the PM repo's
@@ -175,13 +175,13 @@ golden-eval-adjacent — don't break `propose()`). Layer on:
 ## 6. ClickUp sync of active people & projects
 
 Projects+members already sync via `_refresh_schema()`. Add a **people reconcile**
-step so `gtd_people` reflects *current* ClickUp membership:
+step so `people` reflects *current* ClickUp membership:
 
 - On schema refresh (and on a scheduler tick), diff `ClickUpProvider.list_members()`
-  against `gtd_people`:
-  - Member present in ClickUp but not in `gtd_people` → insert (status=active,
+  against `people`:
+  - Member present in ClickUp but not in `people` → insert (status=active,
     `source='clickup'`, link `clickup_user_id`).
-  - `gtd_people` row whose `clickup_user_id` no longer appears → mark
+  - `people` row whose `clickup_user_id` no longer appears → mark
     `status='inactive'` (don't delete — preserve history/audits).
   - Match by `clickup_user_id` first, then email, then fuzzy name.
 - This keeps assignment suggestions honest as people join/leave (the request's
@@ -223,7 +223,7 @@ better (System B provider + Mem0/pgvector).
 
 | PM asset | Port decision | Into |
 |---|---|---|
-| `hr_structure.json` / `resume_profiles.json` data model | **Adopted already** (seed → `gtd_people`) | keep; add edit path (§3) |
+| `hr_structure.json` / `resume_profiles.json` data model | **Adopted already** (seed → `people`) | keep; add edit path (§3) |
 | `ingest_resumes.py` (PDF→skills) | **Port logic** (PyMuPDF + extract), LLM-first | §4 `resume_parse.py` |
 | `workload_analysis.suggest_assignee()` (skill∩ + capacity rank) | **Port as reasoning** | fold into §5 (keep our `_match_capability` as fallback) |
 | morning-report two-tier ASSIST/BACKLOG suggester | **Port (Phase 3)** as a `gtd_rebalance` tool | new tool |
@@ -266,7 +266,7 @@ layer (retrieval-routing, write-hygiene, decision→outcome) those repos got rig
   created_at)` — a purpose-built vector index the clarify route can `ORDER BY cosine`.
   Recommend starting with Mem0 agent scope; add the table only if recall precision
   needs task-specific structure.
-- **Capability matching** (§5) is the *other* vector memory: `gtd_people.capability_embedding`.
+- **Capability matching** (§5) is the *other* vector memory: `people.capability_embedding`.
 
 **Framework doc addition** (append to `agent_file_and_memory_framework.md`): a
 "Dedicated agent memory recipe" section — how to (1) pick the `agent:<name>` scope,
@@ -288,7 +288,7 @@ slice in `taskStore.ts` (mirror `loadLocalHierarchy`); backend `people.py` (add 
 - `ListsSidebar` → new **"People"** `NavRow` (icon: Users) opening `PeopleView`.
 
 **`PeopleView.tsx`** — roster
-- Table/cards of `gtd_people`: name, title/role, department·team, manager, skills
+- Table/cards of `people`: name, title/role, department·team, manager, skills
   chips, capacity bar (`current_load / capacity`), status badge (active/inactive),
   ClickUp-linked indicator.
 - Filters: department, skill, availability, status. Search.
@@ -296,7 +296,7 @@ slice in `taskStore.ts` (mirror `loadLocalHierarchy`); backend `people.py` (add 
 - Header actions: **Add person**, **Sync from ClickUp** (§6), **Import seed**.
 
 **`PersonEditor.tsx`** — drawer/modal (the "update HR structure / edit skills")
-- Edit title, role, department, team, **manager** (picker over `gtd_people`), status,
+- Edit title, role, department, team, **manager** (picker over `people`), status,
   capacity hours, `clickup_user_id` (link to a ClickUp member via `list_members`).
 - **Skills editor**: add/remove chips; each chip shows provenance
   (`orgchart`/`resume`/`manual`); manual edits stamp `skills_source`.
@@ -309,7 +309,7 @@ slice in `taskStore.ts` (mirror `loadLocalHierarchy`); backend `people.py` (add 
   upload pattern.
 
 **`OrgTree.tsx`** (optional, Phase 2) — department→team→member tree, drag to
-re-parent (sets `manager_id`/department), read from `gtd_people`.
+re-parent (sets `manager_id`/department), read from `people`.
 
 **Plan-Project chat flow** (extends existing `AssistantRail`)
 - Quick-action "Plan a project" → the agent runs `gtd_plan_project`, streams a
@@ -330,7 +330,7 @@ re-parent (sets `manager_id`/department), read from `gtd_people`.
 Each phase is independently shippable and leaves the app working.
 
 **Phase 1 — HR editable + résumé ingestion (highest concrete value)**
-- Migration: editable columns + `gtd_person_resumes` + `capability_embedding`.
+- Migration: editable columns + `people_resumes` + `capability_embedding`.
 - Backend: `POST /tasks/people`, `PATCH /tasks/people/{id}`, `POST /tasks/people/{id}/resume`, `resume_parse.py` (PyMuPDF/docx + LLM extract).
 - Frontend: `PeopleView`, `PersonEditor`, `ResumeUpload` + `taskStore` people slice + nav.
 - Outcome: you can add/edit people, edit skills, and drop a résumé to auto-update skills.
@@ -392,7 +392,7 @@ Each phase is independently shippable and leaves the app working.
 
 ## 12. Open decisions (for the user)
 
-1. **Source of truth for HR**: make the monorepo `gtd_people` authoritative (edits
+1. **Source of truth for HR**: make the monorepo `people` authoritative (edits
    win, external repo becomes a one-time seed) — recommended — or keep two-way sync
    with the external HR system? (Two-way is more work and needs conflict rules.)
 2. **`clickup_user_id` linking**: auto-match on résumé/name, or require a manual

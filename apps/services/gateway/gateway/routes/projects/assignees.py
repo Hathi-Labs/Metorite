@@ -138,7 +138,7 @@ async def person_names(
 
     async with _tenant_session() as db:
         rows = (await db.execute(text(
-            "SELECT lower(email) AS email, name FROM gtd_people "
+            "SELECT lower(email) AS email, name FROM people "
             " WHERE lower(email) = ANY(:emails) AND name <> ''"),
             {"emails": wanted})).fetchall()
     return NamesResponse(
@@ -187,7 +187,7 @@ async def suggest_assignees(
         rows = (await db.execute(text(
             "SELECT id, name, email, title, department, avatar, end_date, "
             "       working_hours, skills "
-            "  FROM gtd_people WHERE " + " AND ".join(clauses) +
+            "  FROM people WHERE " + " AND ".join(clauses) +
             " ORDER BY name LIMIT :cap"),
             {**params, "cap": MAX_PEOPLE})).fetchall()
 

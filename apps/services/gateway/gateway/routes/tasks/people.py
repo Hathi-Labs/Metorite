@@ -304,7 +304,7 @@ async def list_people(
         rows = (
             await db.execute(
                 text(
-                    "SELECT * FROM gtd_people WHERE "
+                    "SELECT * FROM people WHERE "
                     + " AND ".join(clauses)
                     + " ORDER BY department, name"
                 ),
@@ -339,8 +339,8 @@ async def fetch_people_for_clarify(db: Any) -> list[dict[str, Any]]:
                       p.current_load_hours_per_week, p.role, p.title, p.domain,
                       p.years_experience, p.reports_to, p.department, p.team,
                       m.name AS manager_name
-                 FROM gtd_people p
-                 LEFT JOIN gtd_people m ON m.id = p.manager_id
+                 FROM people p
+                 LEFT JOIN people m ON m.id = p.manager_id
                 WHERE p.status = 'active'"""
                 )
             )
@@ -608,7 +608,7 @@ def build_person_update(
 
 async def _get_person_row(db: Any, person_id: str) -> Any:
     row = (
-        await db.execute(text("SELECT * FROM gtd_people WHERE id = :id"), {"id": person_id})
+        await db.execute(text("SELECT * FROM people WHERE id = :id"), {"id": person_id})
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Person not found")
@@ -618,7 +618,7 @@ async def _get_person_row(db: Any, person_id: str) -> Any:
 def _validate_status(status: str | None) -> None:
     """Refuse a status the database will refuse, and say what is allowed.
 
-    Migration 148 gave `gtd_people.status` a CHECK. Without this the route
+    Migration 148 gave `people.status` a CHECK. Without this the route
     would hand an illegal value straight to Postgres, which answers with a
     `CheckViolation` — a 500 whose text names a constraint rather than the four
     words the caller may type. The vocabulary is imported (never re-listed), so
@@ -666,7 +666,7 @@ async def _email_taken_by(
     # mirrors is per-organization now, so an unscoped lookup would report a
     # 409 naming somebody at ANOTHER customer — a refusal the administrator
     # cannot act on, and a disclosure of a name they should never see.
-    sql = ("SELECT name FROM gtd_people "
+    sql = ("SELECT name FROM people "
            " WHERE lower(email) = :email "
            "   AND organization_id = CAST(NULLIF("
            "         current_setting('app.tenant_id', true), '') AS uuid)")
@@ -709,7 +709,7 @@ async def create_person(
     # The vocabularies migration 172 deliberately did NOT put in a CHECK
     # (D-PC-8/P-6) — that is `172_people_profile.sql`, PEOPLE's vocabularies
     # (`employment_type`, `seniority`), NOT the Projects ones in 175, which
-    # never touches `gtd_people`: enforced in the route against ONE tuple, the same shape
+    # never touches `people`: enforced in the route against ONE tuple, the same shape
     # `_validate_status` takes for 148's CHECK, so a bad value is a 400 that
     # lists the legal words rather than a 500 naming a constraint.
     validate_person_vocabularies(body.model_dump(exclude_unset=True))
@@ -731,7 +731,7 @@ async def create_person(
             )
         await db.execute(
             text(
-                """INSERT INTO gtd_people
+                """INSERT INTO people
                (id, name, email, role, title, department, team, reports_to,
                 manager_id, status, skills, skills_source, domain, resume_summary,
                 years_experience, capacity_hours_per_week,
@@ -784,7 +784,7 @@ async def create_person(
             )
             params["id"] = pid
             await db.execute(
-                text(f"UPDATE gtd_people SET {', '.join(set_parts)} WHERE id = :id"), params
+                text(f"UPDATE people SET {', '.join(set_parts)} WHERE id = :id"), params
             )
         if skills:
             # WS-28h / D-PC-6: the child table is the source, the array the
@@ -838,7 +838,7 @@ async def update_person(
         set_parts, params = build_person_update(fields, row, actor=_uid(user))
         params["id"] = person_id
         await db.execute(
-            text(f"UPDATE gtd_people SET {', '.join(set_parts)} WHERE id = :id"), params
+            text(f"UPDATE people SET {', '.join(set_parts)} WHERE id = :id"), params
         )
         if "skills" in fields:
             # WS-28h / D-PC-6: reconcile the structured table to the flat list
@@ -898,7 +898,7 @@ async def ingest_resume(
         await _get_person_row(db, person_id)
         # Vocabulary = every skill the org already knows (broadens keyword hits).
         vocab_rows = (
-            await db.execute(text("SELECT DISTINCT unnest(skills) AS s FROM gtd_people"))
+            await db.execute(text("SELECT DISTINCT unnest(skills) AS s FROM people"))
         ).fetchall()
         known = [r.s for r in vocab_rows if r.s]
         parsed = await parse_resume(content, fname, file.content_type, known)
@@ -917,7 +917,7 @@ async def ingest_resume(
         }
         await db.execute(
             text(
-                """INSERT INTO gtd_person_resumes
+                """INSERT INTO people_resumes
                (id, person_id, filename, mime, size_bytes, storage_path,
                 parsed_text, extracted, uploaded_by)
                VALUES (:id, :pid, :fn, :mime, :size, :path, :ptext,
@@ -950,7 +950,7 @@ async def ingest_resume(
         # Fill summary/years/domain only when currently empty.
         await db.execute(
             text(
-                """UPDATE gtd_people SET
+                """UPDATE people SET
                  resume_summary = COALESCE(resume_summary, :summary),
                  years_experience = COALESCE(years_experience, :years),
                  domain = COALESCE(domain, :domain),

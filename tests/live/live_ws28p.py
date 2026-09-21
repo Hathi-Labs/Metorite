@@ -12,7 +12,7 @@ database answers, and this ticket has three:
   duplicating — `org_settings.key` is the primary key, and a fake has no
   constraints.
 * the calendar seed reaches a real ``gtd_settings`` read through
-  ``routes/tasks/settings._load``, joined to a real ``gtd_people`` row on
+  ``routes/tasks/settings._load``, joined to a real ``people`` row on
   ``lower(email)``.
 
 Run it::
@@ -22,7 +22,7 @@ Run it::
     # apply every numbered migration to a scratch `cc` database first
     uv run python tests/live/live_ws28p.py
 
-⚠️ Writes and deletes `gtd_people` rows under `@ws28p.invalid`, and **replaces
+⚠️ Writes and deletes `people` rows under `@ws28p.invalid`, and **replaces
 the org's `work_schedule` setting**, restoring whatever was there at the end.
 Point it at a scratch database.
 """
@@ -78,7 +78,7 @@ async def main() -> None:
     )).fetchone()
     try:
         await db.execute(text(
-            "DELETE FROM gtd_people WHERE email LIKE '%@ws28p.invalid'"))
+            "DELETE FROM people WHERE email LIKE '%@ws28p.invalid'"))
         await db.execute(text(
             "DELETE FROM org_settings WHERE key = 'work_schedule'"))
         await db.commit()
@@ -135,7 +135,7 @@ async def main() -> None:
                 working_hours={"fraction": 0.5, "start": "10:00"}), ADMIN)
 
         row = (await db.execute(
-            text("SELECT * FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            text("SELECT * FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": full.id})).fetchone()
         payload = await people_core.person_payload(db, row, ADMIN)
         check("the person rides the org policy",
@@ -146,7 +146,7 @@ async def main() -> None:
               payload["capacity_conflict"], -5.0)
 
         half_row = (await db.execute(
-            text("SELECT * FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            text("SELECT * FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": half.id})).fetchone()
         half_payload = await people_core.person_payload(db, half_row, ADMIN)
         check("a half-timer gets half the week",
@@ -208,7 +208,7 @@ async def main() -> None:
               ghost.day_start_hour, 7)
     finally:
         await db.execute(text(
-            "DELETE FROM gtd_people WHERE email LIKE '%@ws28p.invalid'"))
+            "DELETE FROM people WHERE email LIKE '%@ws28p.invalid'"))
         await db.execute(text(
             "DELETE FROM gtd_settings WHERE user_id LIKE '%@ws28p.invalid'"))
         await db.execute(text(

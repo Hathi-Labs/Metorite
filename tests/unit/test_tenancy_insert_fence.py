@@ -202,11 +202,11 @@ _GRANDFATHERED: dict[tuple[str, str], tuple[int, str]] = {
     # the 36-error regression that taught us), and the backfill asks
     # `information_schema.columns` once, the way 200 and 201 do. The arm
     # counted here is the no-column half of each.
-    ("206_people_from_membership.sql", "gtd_people"): (2, "GUARDED"),
+    ("206_people_from_membership.sql", "people"): (2, "GUARDED"),
     # 209 restates 206's trigger so it names no conflict target (H-125).
     # Same guarded shape: the column list is built per call from
     # `pg_attribute`, so the literal text shows the no-column arm.
-    ("209_people_email_unique_per_tenant.sql", "gtd_people"): (1, "GUARDED"),
+    ("209_people_email_unique_per_tenant.sql", "people"): (1, "GUARDED"),
     # Both arms of 207's cross-tenant grant. The no-column half is the
     # one counted; the other names `organization_id` from the ROLE being
     # granted, because the statement crosses every organization by

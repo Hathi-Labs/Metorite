@@ -19,7 +19,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-# A small base vocabulary so a résumé skill that no one in gtd_people has yet is
+# A small base vocabulary so a résumé skill that no one in people has yet is
 # still detected. The PRIMARY vocabulary is the org's existing skills (passed in),
 # so this only needs to cover common tech/PM terms the seed might miss.
 _BASE_SKILL_VOCAB: tuple[str, ...] = (

@@ -10,7 +10,7 @@ The self-service twins live on the ungated router (``selfservice.py``),
 resolving the person through the self predicate — the same two-door shape every
 People write takes. Both doors call :mod:`gateway.person_skills`, which is the
 ONE implementation and the one place the flat ``skills[]`` projection is
-rewritten (D-PC-6); nothing in this module touches ``gtd_people`` directly.
+rewritten (D-PC-6); nothing in this module touches ``people`` directly.
 
 **Reads are HR tier.** §3.3 marks the capability half H: levels, years and
 evidence are exactly what the capability search ranks on, and the oracle rule
@@ -76,7 +76,7 @@ class CredentialsWrite(BaseModel):
 
 async def _row(db: Any, person_id: str) -> Any:
     row = (await db.execute(
-        text("SELECT id, email FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+        text("SELECT id, email FROM people WHERE id = CAST(:id AS uuid)"),
         {"id": person_id},
     )).fetchone()
     if row is None:

@@ -185,7 +185,7 @@ address an `app_user`, or delete the row) rather than widening the guard.
 ### What S3c does *not* drop
 
 `gtd_settings` · `gtd_day_state` · `gtd_rollover_log` (D53.6 — the Calendar's),
-the five `gtd_people*` tables (the People directory), `gtd_horizons` (WS-21
+the five `people*` tables (the People directory, renamed off `gtd_` on 2026-09-21), `gtd_horizons` (WS-21
 owns it), `gtd_reviews` (WS-18), and `gtd_projects` · `gtd_spaces` ·
 `gtd_folders` · `gtd_contexts` · `gtd_attachments` (the LOCAL project tree —
 these wait on slice 5's port to `pm_projects`). Pinned by

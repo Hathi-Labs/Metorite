@@ -1315,7 +1315,7 @@ line — never reclaim a number by deleting the other entry.
 ### H-49 · Member deactivation must implement D63 (seal, don't inherit) · [AGENT]
 - **Check:** `grep -rn "status.*inactive" apps/services/gateway/gateway/routes/ --include=*.py`
   → if a deactivation path for `app_user` exists, this entry is live and the
-  question is whether it honours D63. If it returns only `gtd_people` hits
+  question is whether it honours D63. If it returns only `people` hits
   (the retiring connector), deactivation is still unbuilt and this is a
   standing constraint on whoever builds it.
 - **Why:** **D63 was taken 2026-08-26, before the flow it governs exists.** That
@@ -1366,7 +1366,7 @@ line — never reclaim a number by deleting the other entry.
   or delete the row — rather than widening the guard. The failure being avoided is
   not lost data; it is one member's private task published into another's lens.
   ⚠️ **`gtd_settings` / `gtd_day_state` / `gtd_rollover_log` are NOT part of this** —
-  Calendar state, they survive (D53.6). Nor are the five `gtd_people*` tables, nor
+  Calendar state, they survive (D53.6). Nor are the five `people*` tables, nor
   `gtd_horizons` (WS-21), nor `gtd_reviews` (WS-18), nor the local project tree
   (waits on slice 5). All pinned by name in `test_gtd_backfill.py`.
 - **Authority:** `work_plan.md` §6 (f) · D53.5 · `project_management_app.md` §12.8 ·
@@ -2829,7 +2829,7 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-19 · operator console session, after the backup repair
 
 ### H-132 · The `gtd_*` rename — RECOMMEND CLOSING AS WON'T DO · [OWNER]
-- **Check:** `rg -l "gtd_people" infra/postgres/*.sql | wc -l` → above zero
+- **Check:** `rg -l "people" infra/postgres/*.sql | wc -l` → above zero
   means the rename has not happened.
 - **The owner asked for it twice**, 2026-09-20 and 2026-09-21: *"I don't
   want to use the terminology GTD."* Names were decided — `people`,
@@ -2841,7 +2841,7 @@ line — never reclaim a number by deleting the other entry.
     replay** — 49, 74, 75, 148, 172 and 173 do ALTER TABLE on what is now a
     view, and 174 and 176 do CREATE INDEX on one.
   - Without the views: the ALTERs become no-ops with `IF EXISTS`, but
-    `CREATE TABLE IF NOT EXISTS gtd_people` in 49, 174 and 176 then
+    `CREATE TABLE IF NOT EXISTS people` in 49, 174 and 176 then
     **re-creates empty duplicate tables**, and 5 CREATE INDEX statements
     still fail.
 - **The true cost: 41 statements across the 8 OLDEST migrations in the
@@ -2912,6 +2912,36 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner directive 2026-09-21 · `org_access_control.md` §3 ·
   migration 207
 - **Added:** 2026-09-21 · the every-app-by-default session
+
+### H-151 · The `gtd_` name is off the People tables. Two families are left · [AGENT]
+- **Check:** `rg -l "gtd_settings|gtd_day_state|gtd_rollover_log|gtd_items|gtd_waiting"
+  --glob '!infra/postgres/generated' apps packages` → any hit means this is open.
+- **What is done:** the People family, on 2026-09-21. `gtd_people` is
+  `people`, and the four `gtd_person_*` tables are `people_*`. The mechanism
+  is a guarded rename prologue INSIDE the migration that creates each table
+  (49, 74, 174, 176), which is the only shape of the three that survives a
+  replay. `tests/unit/test_people_rename_upgrade.py` is the fence, and
+  `people_center_app.md` §7.0 is the record.
+- **What is left, in two slices:**
+  1. **The Calendar three** — `gtd_settings`, `gtd_day_state`,
+     `gtd_rollover_log`. D53.6 says these are the Calendar's, NOT the old
+     task store, so they want Calendar names and not deletion.
+  2. **The task store** — `gtd_items`, `gtd_waiting`, `gtd_projects`,
+     `gtd_spaces`, `gtd_folders`, `gtd_contexts`, `gtd_attachments`,
+     `gtd_horizons`, `gtd_reviews`. ⚠️ **Do this one AFTER H-29**, which
+     drops most of them. Renaming a table we are about to drop is work we
+     throw away, and it makes 190's drop list wrong in the meantime.
+- ⚠️ **Two traps, both measured on 2026-09-21.** A sweep rewrites the rename
+  prologue itself into `ALTER TABLE new RENAME TO new`, a silent no-op — so
+  sweep first, and add the prologue after. And a short new name can be a
+  PREFIX of its own family, which turns every `"FROM x" in sql` test fake
+  into a wrong one. `tests/unit/_sql_match.py` is the answer to the second.
+- **The agent tool names are NOT part of this.** `gtd_people(query)` in
+  `skill_task_gtd` is a tool, not a table. The sweep renamed it, and that was
+  reverted. Renaming the tool family is a separate decision.
+- **Authority:** owner directive, 2026-09-21 — *"I really don't want GTD
+  anymore... update the naming convention for all of the table names"*
+- **Added:** 2026-09-21 · the People rename session
 
 ### H-144 · `GET /people/{id}/editable` has no caller · [AGENT]
 - **Check:** `rg -n "editable" workbench/control_plane/src/app/people/lib/api.ts`

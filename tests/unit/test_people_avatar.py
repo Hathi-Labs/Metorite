@@ -39,6 +39,7 @@ from gateway.routes.people import fields as people_fields
 from gateway.routes.people import profile as people_profile
 from gateway.routes.people import selfservice as people_self
 from gateway.routes.tasks import people as tasks_people
+from tests.unit._sql_match import hits
 
 
 def run(coro):
@@ -290,7 +291,7 @@ class FakeDB:
             return _Result([SimpleNamespace()])
         if "FROM org_settings" in statement:
             return _Result([])
-        if "FROM gtd_people" in statement:
+        if hits(statement, "FROM people"):
             wanted = (params or {}).get("email")
             if wanted is not None and self.row is not None:
                 mine = (getattr(self.row, "email", None) or "").lower()
@@ -358,7 +359,7 @@ def test_a_member_with_no_grants_may_set_their_own_picture(monkeypatch) -> None:
     bind(monkeypatch, db)
     run(people_self.upload_my_avatar(
         _Upload(image(600, 400)), 0.0, 0.0, 1.0, user=SUBJECT))
-    stored = db.params_for("UPDATE gtd_people SET avatar")
+    stored = db.params_for("UPDATE people SET avatar")
     assert stored["avatar"].startswith("data:image/jpeg;base64,")
     assert stored["by"] == SUBJECT.email
 
@@ -380,7 +381,7 @@ def test_a_stranger_may_not_set_somebody_elses(monkeypatch) -> None:
         run(people_profile.upload_avatar(
             PERSON.id, _Upload(image(300, 300)), 0.0, 0.0, 1.0, user=STRANGER))
     assert exc.value.status_code == 403
-    assert not db.issued("UPDATE gtd_people SET avatar")
+    assert not db.issued("UPDATE people SET avatar")
 
 
 def test_an_admin_may_set_anyones(monkeypatch) -> None:
@@ -388,7 +389,7 @@ def test_an_admin_may_set_anyones(monkeypatch) -> None:
     bind(monkeypatch, db)
     run(people_profile.upload_avatar(
         PERSON.id, _Upload(image(300, 300)), 0.0, 0.0, 1.0, user=ADMIN))
-    assert db.issued("UPDATE gtd_people SET avatar")
+    assert db.issued("UPDATE people SET avatar")
 
 
 def test_a_refused_file_is_a_400_that_repeats_the_reason(monkeypatch) -> None:
@@ -400,7 +401,7 @@ def test_a_refused_file_is_a_400_that_repeats_the_reason(monkeypatch) -> None:
             0.0, 0.0, 1.0, user=SUBJECT))
     assert exc.value.status_code == 400
     assert "SVG" in exc.value.detail
-    assert not db.issued("UPDATE gtd_people SET avatar")
+    assert not db.issued("UPDATE people SET avatar")
 
 
 def test_removing_it_clears_the_column_and_stamps_the_change(monkeypatch) -> None:

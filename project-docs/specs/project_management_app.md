@@ -372,7 +372,7 @@ extra middle phase two-way sync demands.
 | **System B — per-user Tasks-app connector** | `gateway/routes/tasks/providers.py` — `BaseTaskProvider` + `ClickUpProvider`; `task_accounts` (per-user, encrypted creds, `schema_cache`, `last_delta_token`); pull via `POST /tasks/sync`; push via `_broker_gate` |
 | Personal store the connector fills | `gtd_projects` + `gtd_items` (`source 'LOCAL'\|'SYNCED'`, `provider_task_id`, `sync_state`, GTD overlay never clobbered on re-sync) — `infra/postgres/48_task_manager_gtd.sql` + ~20 extensions (59 subtasks, 60 spaces/folders, 91 assignees…) |
 | The `/tasks` app over it | `gateway/routes/tasks/` — 21 modules, ~11.8k lines, ~68 endpoints behind `require_feature_router("tasks")`; **27 `user_id = :` predicates in `items.py`** (owner-scoped by design) |
-| People substrate | `gtd_people` (+ resumes, `capability_embedding vector(1536)`); WS-24 N4: directory open, HR fields restricted |
+| People substrate | `people` (+ resumes, `capability_embedding vector(1536)`); WS-24 N4: directory open, HR fields restricted |
 | Centers scaffold | `lib/centers.ts` (People Center's five sub-apps all `status:"planned"`), `140_center_features.sql` + `141_seed_center_groups.sql`, `center.people` in `FEATURES` — **Centers gate navigation, not data** (migration 140's own header) |
 | Broker chokepoint for ClickUp writes | `providers.py::_broker_gate` → `broker_handlers._WRITERS`. **BO-1a + BO-1b landed 2026-08-11**: all 6 gated actions have handlers (AST-derived fence), and `_push_pending_item` honours the pending marker (`sync_state='awaiting_approval'`). ⚠️ Still open — **BO-1d**: four *other* callers index the marker as a result (`accounts.py:335`/`:403`, `planning.py:377` → HTTP 500 under enforcement; `items.py:790` swallows a queued update). **That is what blocks the `ACTION_BROKER_ENFORCE` flip**, not BO-1a/BO-1b |
 
@@ -826,7 +826,7 @@ stages today (done→DONE, backlog→SOMEDAY, assigned-to-me→NEXT, assigned-el
 with a `gtd_waiting` row). Result: clarify, calendar/timeboxing, Waiting-For, and delegation
 all work on org tasks with **zero** changes to their code.
 
-### 6.2 People (`gtd_people`) — assignment intelligence
+### 6.2 People (`people`) — assignment intelligence
 Assignee pickers and the delegate flow read the existing directory + capability layer
 (`fetch_people_for_clarify`, `capability_embedding`) — suggestion, never auto-assignment.
 WS-24 N4's HR-field projection applies unchanged; the Projects app reads only directory
@@ -966,7 +966,7 @@ independent of the ClickUp work, because it is a move between two tables we own:
    this is a copy rather than a translation.
 3. `items.py`'s 27 `user_id` predicates retire with the table they scope. They are untouched
    by WS-27e, deliberately — the blast radius WS-14 C1 measured belongs to this ticket.
-4. `gtd_projects`, `gtd_spaces`, `gtd_folders` retire with it; `gtd_people` does **not** —
+4. `gtd_projects`, `gtd_spaces`, `gtd_folders` retire with it; `people` does **not** —
    that is the People Center's store (`specs/people_center_app.md`).
 
 ⚠️ **Not started, and it is the largest single piece of WS-27 remaining.** Until it lands

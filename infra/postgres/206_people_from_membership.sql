@@ -3,7 +3,7 @@
 -- directory. Always, and with nobody pressing anything.
 --
 -- What: a trigger on `app_user` that gives every active or invited member a
---       `gtd_people` row, plus a one-time backfill for the members who
+--       `people` row, plus a one-time backfill for the members who
 --       already exist.
 -- Why:  owner directive, 2026-09-20 — *"shouldn't it automatically sync
 --       because we already have people in our organization? Why do I have to
@@ -42,7 +42,7 @@
 --   into the assignee picker.
 --
 -- ⚠️ **The trigger reads the schema at RUN time, so promoting the tenancy
---   layer cannot break it.** `gtd_people.organization_id` comes from
+--   layer cannot break it.** `people.organization_id` comes from
 --   `infra/postgres/generated/`, which `apply_migrations.sh` does not replay
 --   (H-104). See section 1 for what the first version of this file got wrong
 --   and how a real database caught it.
@@ -73,7 +73,7 @@ BEGIN;
 -- ⚠️ **THE COLUMN LIST IS BUILT AT RUN TIME, NOT AT MIGRATION TIME**, and the
 -- first version of this file got that wrong in a way a real database caught.
 --
--- `gtd_people.organization_id` comes from `infra/postgres/generated/`, which
+-- `people.organization_id` comes from `infra/postgres/generated/`, which
 -- `apply_migrations.sh` does not replay (H-104), so this file cannot know
 -- whether the column is there. Building the statement once, around the schema
 -- present on the day, produces a function that is correct until somebody
@@ -113,13 +113,13 @@ BEGIN
 
     SELECT EXISTS (
         SELECT 1 FROM pg_attribute
-         WHERE attrelid = 'gtd_people'::regclass
+         WHERE attrelid = 'people'::regclass
            AND attname = 'organization_id'
            AND NOT attisdropped
     ) INTO has_org_col;
 
     stmt := format($sql$
-        INSERT INTO gtd_people
+        INSERT INTO people
             (id, name, email, status, skills, source, source_key,
              updated_by, updated_at%1$s)
         VALUES
@@ -206,21 +206,21 @@ DECLARE
 BEGIN
     SELECT EXISTS (
         SELECT 1 FROM information_schema.columns
-         WHERE table_name = 'gtd_people' AND column_name = 'organization_id'
+         WHERE table_name = 'people' AND column_name = 'organization_id'
     ) INTO has_org_col;
 
     SELECT relrowsecurity, relforcerowsecurity
       INTO people_rls, people_force
-      FROM pg_class WHERE oid = 'gtd_people'::regclass;
+      FROM pg_class WHERE oid = 'people'::regclass;
     SELECT relrowsecurity, relforcerowsecurity
       INTO users_rls, users_force
       FROM pg_class WHERE oid = 'app_user'::regclass;
 
-    IF people_rls THEN ALTER TABLE gtd_people DISABLE ROW LEVEL SECURITY; END IF;
+    IF people_rls THEN ALTER TABLE people DISABLE ROW LEVEL SECURITY; END IF;
     IF users_rls  THEN ALTER TABLE app_user  DISABLE ROW LEVEL SECURITY; END IF;
 
     IF has_org_col THEN
-        INSERT INTO gtd_people
+        INSERT INTO people
             (id, name, email, status, skills, source, source_key,
              organization_id, updated_by, updated_at)
         SELECT gen_random_uuid(),
@@ -234,12 +234,12 @@ BEGIN
           FROM app_user u
          WHERE u.status IN ('active', 'invited')
            AND u.email IS NOT NULL AND btrim(u.email) <> ''
-           AND NOT EXISTS (SELECT 1 FROM gtd_people p
+           AND NOT EXISTS (SELECT 1 FROM people p
                             WHERE lower(p.email) = lower(btrim(u.email)))
         -- Target-free, for the reason the trigger above gives.
         ON CONFLICT DO NOTHING;
     ELSE
-        INSERT INTO gtd_people
+        INSERT INTO people
             (id, name, email, status, skills, source, source_key,
              updated_by, updated_at)
         SELECT gen_random_uuid(),
@@ -253,7 +253,7 @@ BEGIN
           FROM app_user u
          WHERE u.status IN ('active', 'invited')
            AND u.email IS NOT NULL AND btrim(u.email) <> ''
-           AND NOT EXISTS (SELECT 1 FROM gtd_people p
+           AND NOT EXISTS (SELECT 1 FROM people p
                             WHERE lower(p.email) = lower(btrim(u.email)))
         -- Target-free, for the reason the trigger above gives.
         ON CONFLICT DO NOTHING;
@@ -261,8 +261,8 @@ BEGIN
 
     GET DIAGNOSTICS made = ROW_COUNT;
 
-    IF people_rls   THEN ALTER TABLE gtd_people ENABLE ROW LEVEL SECURITY; END IF;
-    IF people_force THEN ALTER TABLE gtd_people FORCE  ROW LEVEL SECURITY; END IF;
+    IF people_rls   THEN ALTER TABLE people ENABLE ROW LEVEL SECURITY; END IF;
+    IF people_force THEN ALTER TABLE people FORCE  ROW LEVEL SECURITY; END IF;
     IF users_rls    THEN ALTER TABLE app_user  ENABLE ROW LEVEL SECURITY; END IF;
     IF users_force  THEN ALTER TABLE app_user  FORCE  ROW LEVEL SECURITY; END IF;
 

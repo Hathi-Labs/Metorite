@@ -17,7 +17,7 @@ Run it::
         -o '-k /var/tmp -p 55432' start"
     uv run python tests/live/live_ws28q.py
 
-⚠️ Writes and deletes `gtd_people` rows under `@ws28q.invalid`. Scratch only.
+⚠️ Writes and deletes `people` rows under `@ws28q.invalid`. Scratch only.
 """
 import asyncio
 import base64
@@ -110,13 +110,13 @@ async def main() -> None:
     token = bind_tenant(str(org.id))
     try:
         await db.execute(text(
-            "DELETE FROM gtd_people WHERE email LIKE '%@ws28q.invalid'"))
+            "DELETE FROM people WHERE email LIKE '%@ws28q.invalid'"))
         await db.commit()
 
         # ── The column exists and takes a data URI ─────────────────────────
         cols = (await db.execute(text(
             "SELECT column_name, data_type FROM information_schema.columns "
-            "WHERE table_name = 'gtd_people' "
+            "WHERE table_name = 'people' "
             "AND column_name IN ('avatar', 'avatar_updated_at') "
             "ORDER BY column_name"))).fetchall()
         check("migration 173 applied",
@@ -136,7 +136,7 @@ async def main() -> None:
 
         # ── It round-trips through the TEXT column unchanged ───────────────
         row = (await db.execute(
-            text("SELECT avatar, avatar_updated_at FROM gtd_people "
+            text("SELECT avatar, avatar_updated_at FROM people "
                  "WHERE id = CAST(:id AS uuid)"),
             {"id": person.id})).fetchone()
         check("the stored value is byte-identical to what was returned",
@@ -156,7 +156,7 @@ async def main() -> None:
 
         # ── Directory tier: a colleague with no HR grant still sees it ─────
         full = (await db.execute(
-            text("SELECT * FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            text("SELECT * FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": person.id})).fetchone()
         seen = await people_core.person_payload(db, full, COLLEAGUE)
         check("a colleague sees the picture", seen["avatar"], row.avatar)
@@ -172,7 +172,7 @@ async def main() -> None:
         except Exception as exc:
             check("an SVG is refused", getattr(exc, "status_code", None), 400)
         after = (await db.execute(
-            text("SELECT avatar FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+            text("SELECT avatar FROM people WHERE id = CAST(:id AS uuid)"),
             {"id": person.id})).fetchone()
         check("…and the old picture is untouched", after.avatar, before)
 
@@ -190,7 +190,7 @@ async def main() -> None:
         cleared = await people_self.delete_my_avatar(SUBJECT)
         check("removing it clears the column", cleared["avatar"], None)
         stamp = (await db.execute(
-            text("SELECT avatar, avatar_updated_at FROM gtd_people "
+            text("SELECT avatar, avatar_updated_at FROM people "
                  "WHERE id = CAST(:id AS uuid)"),
             {"id": person.id})).fetchone()
         check("…in the database too", stamp.avatar, None)
@@ -198,7 +198,7 @@ async def main() -> None:
               stamp.avatar_updated_at is not None, True)
     finally:
         await db.execute(text(
-            "DELETE FROM gtd_people WHERE email LIKE '%@ws28q.invalid'"))
+            "DELETE FROM people WHERE email LIKE '%@ws28q.invalid'"))
         await db.commit()
         release_tenant(token)
         await db.close()

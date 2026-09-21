@@ -2,13 +2,13 @@
 -- 209_people_email_unique_per_tenant.sql — one address may work for two
 -- customers.
 --
--- What: `gtd_people.organization_id` on the NUMBERED ladder, backfilled, and
+-- What: `people.organization_id` on the NUMBERED ladder, backfilled, and
 --       migration 148's global `lower(email)` unique index replaced with a
 --       per-tenant one.
 -- Why:  H-125. Two organizations cannot currently hold the same address.
 --
 -- **The bug, and it is silent.** Migration 148 added
---   `uq_gtd_people_email_lower ON gtd_people (lower(email))`
+--   `uq_gtd_people_email_lower ON people (lower(email))`
 -- with no tenant in it. `people_row_from_member` (migration 206) writes
 -- `ON CONFLICT DO NOTHING`, so when customer B invites somebody who already
 -- has a directory row at customer A, **the write is skipped and nothing is
@@ -19,7 +19,7 @@
 -- is sold for. It is the same case `people_center_app.md` §2 names when it
 -- explains why the directory exists at all.
 --
--- ⚠️ **THIS TAKES `gtd_people.organization_id` OFF THE H-104 CRITICAL PATH.**
+-- ⚠️ **THIS TAKES `people.organization_id` OFF THE H-104 CRITICAL PATH.**
 -- The column is declared by `infra/postgres/generated/01_add_columns.sql`,
 -- which `apply_migrations.sh` does not replay — so production may not have
 -- it, and H-125 was ordered behind H-104 for exactly that reason. Waiting is
@@ -75,7 +75,7 @@ BEGIN;
 -- byte-identical to `generated/01_add_columns.sql` — it is that column plus
 -- the constraint the purge path needs, and `ADD COLUMN IF NOT EXISTS` means
 -- promoting the generated phase later still finds nothing to do.
-ALTER TABLE gtd_people
+ALTER TABLE people
     ADD COLUMN IF NOT EXISTS organization_id UUID
     REFERENCES organization (id) ON DELETE CASCADE
     DEFAULT current_setting('app.tenant_id', true)::uuid;
@@ -93,7 +93,7 @@ BEGIN
     -- (a) The rows that have a member. `app_user` is the authority on which
     --     tenant an address belongs to (D-MT-1 (a)), so this is a lookup and
     --     not a guess.
-    UPDATE gtd_people p
+    UPDATE people p
        SET organization_id = u.organization_id
       FROM app_user u
      WHERE p.organization_id IS NULL
@@ -103,14 +103,14 @@ BEGIN
     GET DIAGNOSTICS by_member = ROW_COUNT;
 
     SELECT count(*) INTO orphans
-      FROM gtd_people WHERE organization_id IS NULL;
+      FROM people WHERE organization_id IS NULL;
 
     -- (b) A directory row with no member — a contractor, or a row that
     --     predates membership. There is no link to follow, so the only safe
     --     answer is the one a single-organization deployment makes obvious.
     IF orphans > 0 AND (SELECT count(*) FROM organization) = 1 THEN
         SELECT id INTO only_org FROM organization;
-        UPDATE gtd_people SET organization_id = only_org
+        UPDATE people SET organization_id = only_org
          WHERE organization_id IS NULL;
         GET DIAGNOSTICS adopted = ROW_COUNT;
         orphans := 0;
@@ -145,7 +145,7 @@ $backfill$;
 DROP INDEX IF EXISTS uq_gtd_people_email_lower;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_gtd_people_org_email_lower
-    ON gtd_people (organization_id, lower(email))
+    ON people (organization_id, lower(email))
     WHERE email IS NOT NULL;
 
 COMMENT ON INDEX uq_gtd_people_org_email_lower IS
@@ -185,13 +185,13 @@ BEGIN
 
     SELECT EXISTS (
         SELECT 1 FROM pg_attribute
-         WHERE attrelid = 'gtd_people'::regclass
+         WHERE attrelid = 'people'::regclass
            AND attname = 'organization_id'
            AND NOT attisdropped
     ) INTO has_org_col;
 
     stmt := format($sql$
-        INSERT INTO gtd_people
+        INSERT INTO people
             (id, name, email, status, skills, source, source_key,
              updated_by, updated_at%1$s)
         VALUES

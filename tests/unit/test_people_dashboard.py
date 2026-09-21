@@ -34,6 +34,7 @@ from gateway import work_schedule as ws
 from gateway import workload
 from gateway.routes.people import core as people_core
 from gateway.routes.people import dashboard as people_dashboard
+from tests.unit._sql_match import hits
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -477,11 +478,11 @@ class FakeDB:
     async def execute(self, sql: Any, params: dict | None = None) -> _Result:
         statement = " ".join(str(sql).split())
         self.statements.append(statement)
-        if "FROM gtd_person_absences" in statement:
+        if "FROM people_absences" in statement:
             return _Result(self.absences)
         if "FROM org_settings" in statement:
             return _Result([])
-        if "FROM gtd_people" in statement:
+        if hits(statement, "FROM people"):
             if "lower(email)" in statement:          # find_self_row
                 return _Result([])
             return _Result(self.people)
@@ -741,7 +742,7 @@ def test_a_database_without_migration_174_answers_present(monkeypatch) -> None:
     db = FakeDB()
 
     async def _boom(sql, params=None):
-        if "gtd_person_absences" in str(sql):
+        if "people_absences" in str(sql):
             raise RuntimeError("relation does not exist")
         return await FakeDB.execute(db, sql, params)
 

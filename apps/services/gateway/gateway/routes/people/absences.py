@@ -118,7 +118,7 @@ async def fetch_absences(db: Any, person_id: str, *,
     rows = (await db.execute(
         text("SELECT id, starts_on, ends_on, kind, hours_per_day, note, "
              "       created_by "
-             "  FROM gtd_person_absences "
+             "  FROM people_absences "
              " WHERE " + " AND ".join(clauses) + " ORDER BY starts_on"),
         params,
     )).fetchall()
@@ -141,7 +141,7 @@ async def rows_for_availability(db: Any, person_id: str) -> list[dict[str, Any]]
     """
     rows = (await db.execute(
         text("SELECT starts_on, ends_on, kind, hours_per_day "
-             "  FROM gtd_person_absences "
+             "  FROM people_absences "
              " WHERE person_id = CAST(:pid AS uuid)"),
         {"pid": person_id},
     )).fetchall()
@@ -154,7 +154,7 @@ async def create_absence(db: Any, person_id: str, body: AbsenceIn,
     """Insert one. Shared by both doors — one implementation, two audiences."""
     values = validate(body)
     row = (await db.execute(
-        text("INSERT INTO gtd_person_absences "
+        text("INSERT INTO people_absences "
              "  (person_id, starts_on, ends_on, kind, hours_per_day, note, "
              "   created_by) "
              "VALUES (CAST(:pid AS uuid), :starts_on, :ends_on, :kind, "
@@ -174,7 +174,7 @@ async def delete_absence(db: Any, person_id: str, absence_id: str) -> bool:
     been authorized against a *person*, not against a span.
     """
     result = await db.execute(
-        text("DELETE FROM gtd_person_absences "
+        text("DELETE FROM people_absences "
              " WHERE id = CAST(:aid AS uuid) "
              "   AND person_id = CAST(:pid AS uuid)"),
         {"aid": absence_id, "pid": person_id},
@@ -187,7 +187,7 @@ async def delete_absence(db: Any, person_id: str, absence_id: str) -> bool:
 async def _authorized(db: Any, person_id: str, user: Any, *,
                       write: bool) -> Any:
     row = (await db.execute(
-        text("SELECT id, email FROM gtd_people WHERE id = CAST(:id AS uuid)"),
+        text("SELECT id, email FROM people WHERE id = CAST(:id AS uuid)"),
         {"id": person_id},
     )).fetchone()
     if row is None:
@@ -256,7 +256,7 @@ async def away_today(db: Any, person_ids: list[str]) -> dict[str, dict[str, Any]
         return {}
     try:
         rows = (await db.execute(
-            text("SELECT person_id, kind, ends_on FROM gtd_person_absences "
+            text("SELECT person_id, kind, ends_on FROM people_absences "
                  " WHERE person_id = ANY(CAST(:ids AS uuid[])) "
                  "   AND starts_on <= CURRENT_DATE AND ends_on >= CURRENT_DATE "
                  " ORDER BY (kind = 'partial'), ends_on DESC"),

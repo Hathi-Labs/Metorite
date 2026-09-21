@@ -1,4 +1,4 @@
-"""WS-28a — gtd_people's key shape (People Center P-1/P-2).
+"""WS-28a — people's key shape (People Center P-1/P-2).
 
 Spec: `project-docs/specs/people_center_app.md` §2, §5, §7.
 
@@ -74,7 +74,7 @@ def test_email_gains_a_partial_unique_index(sql: str):
     a contractor in the org chart who has never had a login."""
     assert re.search(
         r"CREATE UNIQUE INDEX IF NOT EXISTS uq_gtd_people_email_lower\s+"
-        r"ON gtd_people \(lower\(email\)\) WHERE email IS NOT NULL",
+        r"ON people \(lower\(email\)\) WHERE email IS NOT NULL",
         sql,
     )
 
@@ -126,7 +126,7 @@ def test_every_new_object_is_created_idempotently(sql: str):
     """`apply_migrations.sh` replays this on every deploy."""
     for statement in re.findall(r"CREATE (?:UNIQUE )?INDEX[^;]*;", sql):
         assert "IF NOT EXISTS" in statement, statement
-    for statement in re.findall(r"ALTER TABLE gtd_people ADD COLUMN[^;]*;", sql):
+    for statement in re.findall(r"ALTER TABLE people ADD COLUMN[^;]*;", sql):
         assert "IF NOT EXISTS" in statement, statement
 
 
