@@ -115,6 +115,11 @@ UPLOAD_ONLY_FIELDS: frozenset[str] = frozenset({"avatar"})
 #: column of ``gtd_people`` was classified rather than forgotten.
 DERIVED_FIELDS: frozenset[str] = frozenset({
     "id",
+    # Which customer this row belongs to (migration 209, H-125). Written by
+    # the column DEFAULT from the bound tenant, or by the member trigger.
+    # No form may set it: a person does not move themselves between
+    # customers, and a writable tenant key is a way out of one's own tenant.
+    "organization_id",
     "avatar_updated_at",
     "created_at",
     "updated_at",

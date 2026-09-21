@@ -43,12 +43,17 @@ def sql() -> str:
     first time this file was written. Assertions must read what Postgres will
     execute, never what the file says about itself.
     """
-    hits = [
-        p for p in MIGRATIONS.glob("*.sql")
-        if "uq_gtd_people_email_lower" in p.read_text(encoding="utf-8")
-    ]
-    assert len(hits) == 1, f"expected exactly one key-shape migration, found {hits}"
-    raw = hits[0].read_text(encoding="utf-8")
+    # ⚠️ Located by FILENAME, not by grepping for the index name.
+    #
+    # It used to search every migration for `uq_gtd_people_email_lower` and
+    # assert exactly one hit. That broke the day migration 209 superseded
+    # the index (H-125) and legitimately named it in its own `DROP INDEX` —
+    # two hits, and twelve tests erroring on a change that was correct. A
+    # lookup by content finds every file that MENTIONS the thing; this suite
+    # is about one file, so it should say which.
+    path = MIGRATIONS / "148_people_key_shape.sql"
+    assert path.exists(), f"148_people_key_shape.sql is missing from {MIGRATIONS}"
+    raw = path.read_text(encoding="utf-8")
     return "\n".join(re.sub(r"--.*$", "", line) for line in raw.splitlines())
 
 

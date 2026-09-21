@@ -650,7 +650,8 @@ async def _email_taken_by(
     """The name of the person already holding this address, or ``None``.
 
     Migration 148 put a partial UNIQUE on `lower(email)` so an email→person
-    join is unambiguous. That makes a duplicate address a *database* error —
+    join is unambiguous; migration 209 made it per-organization (H-125), and
+    this query carries the same tenant predicate so the two agree. That makes a duplicate address a *database* error —
     an opaque 500 at exactly the moment an admin is typing somebody in. Checked
     here so the answer is a 409 that names the other row, which is the only
     form of this message anyone can act on.
@@ -661,7 +662,14 @@ async def _email_taken_by(
     clean = (email or "").strip().lower()
     if not clean:
         return None
-    sql = "SELECT name FROM gtd_people WHERE lower(email) = :email"
+    # ⚠️ Tenant-scoped since migration 209 (H-125). The index this check
+    # mirrors is per-organization now, so an unscoped lookup would report a
+    # 409 naming somebody at ANOTHER customer — a refusal the administrator
+    # cannot act on, and a disclosure of a name they should never see.
+    sql = ("SELECT name FROM gtd_people "
+           " WHERE lower(email) = :email "
+           "   AND organization_id = CAST(NULLIF("
+           "         current_setting('app.tenant_id', true), '') AS uuid)")
     params: dict[str, Any] = {"email": clean}
     if exclude_id:
         sql += " AND id <> CAST(:exclude AS UUID)"

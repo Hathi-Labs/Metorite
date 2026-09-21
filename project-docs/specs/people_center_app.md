@@ -554,6 +554,44 @@ beside "Your access", and not only a card on a Center page a colleague may not b
 open. Owner-directed: *"people from their personal center should be able to modify their
 profile."* It appears in both places; it is one page either way.
 
+### 4.7 An address is unique WITHIN a customer ✅ CLOSED 2026-09-21
+
+Migration 148 made `lower(email)` unique across the whole deployment.
+Migration 209 made it unique per organization (H-125).
+
+**The defect was the directory's own reason for existing.** §2 says the
+directory holds the person who works for you without being a member. A
+contractor working for two customers could only exist in the first.
+
+The member trigger writes `ON CONFLICT DO NOTHING`, so the second
+customer's invite was skipped in silence. Row-level security then hid the
+first customer's row. An administrator saw a member with no directory row,
+no error, and nothing to look at.
+
+⚠️ **`gtd_people.organization_id` is on the NUMBERED ladder now.** It was
+declared only by `infra/postgres/generated/`, which the runner does not
+replay, and H-125 was ordered behind H-104 for that reason. Waiting was the
+wrong trade: H-104 is a whole-schema question about 143 tables, and this is
+one column that a live defect needed. It carries `ON DELETE CASCADE`, which
+the generated file omits and `test_org_purge_tenant` requires — without it a
+purged customer leaves their whole directory behind.
+
+⚠️ **Widening a unique index has consequences, and they are in the same
+change.** `find_self_row` decides `is_self`, which authorises
+`PATCH /people/me`. Its guarantee used to BE the global index: one row per
+address anywhere, so `LIMIT 1` could only find the right one.
+
+The moment two rows may share an address, an unscoped query hands somebody
+another customer's row to edit. The predicate moved from the index into the
+query, and `_email_taken_by` with it.
+
+⚠️ **No migration may pin a conflict target on this table.** 206 wrote
+`ON CONFLICT (lower(email))`, which names an index BY NAME. Replacing that
+index made the trigger raise 42P10 at plan time. That is exactly how
+migration 162 took every `app_user` invite down. Both are `ON CONFLICT DO
+NOTHING` now, and `test_people_email_per_tenant` greps the ladder to keep
+it that way.
+
 ### 4.6 The tenant fence on a SHARED table ✅ CLOSED 2026-09-21
 
 An assignee is an **email string**, and the same address can belong to two
