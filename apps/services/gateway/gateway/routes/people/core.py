@@ -89,15 +89,34 @@ async def find_self_row(db: Any, user: Any) -> Any:
     independently of whatever list is being rendered, because "which row is me"
     must not depend on whether my row survived the caller's search filter.
 
-    At most one row can match: 148's partial unique index on ``lower(email)``
-    is what makes that a guarantee rather than a hope, and ``LIMIT 1`` here is
-    belt-and-braces against a database where the index was never applied.
+    At most one row can match, and since migration 209 that guarantee comes
+    from the TENANT PREDICATE below rather than from an index. 148's unique
+    index on ``lower(email)`` used to be global; 209 made it per-tenant
+    (H-125) so two customers may each hold a contractor. ``LIMIT 1`` is
+    belt-and-braces on top of the predicate, not the guarantee itself.
     """
     mine = (getattr(user, "email", None) or "").strip().lower()
     if not mine:
         return None
+    # ⚠️ **TENANT-SCOPED, and migration 209 is why it has to be.** This
+    # function's guarantee used to come from migration 148's GLOBAL unique
+    # index on `lower(email)`: at most one row could carry an address
+    # anywhere, so `LIMIT 1` could only ever find the right one.
+    #
+    # 209 made that index per-tenant (H-125), because a contractor working
+    # for two customers is the ordinary case and the global index silently
+    # refused the second one. The moment two rows may share an address, an
+    # unscoped `LIMIT 1` can return ANOTHER CUSTOMER'S ROW — and this
+    # function decides `is_self`, which authorises `PATCH /people/me`.
+    #
+    # So the predicate moves from the index to the query. `NULLIF(…, '')`
+    # fails CLOSED: an unbound GUC matches no row rather than any row.
     return (await db.execute(
-        text("SELECT * FROM gtd_people WHERE lower(email) = :email LIMIT 1"),
+        text("SELECT * FROM gtd_people "
+             " WHERE lower(email) = :email "
+             "   AND organization_id = CAST(NULLIF("
+             "         current_setting('app.tenant_id', true), '') AS uuid) "
+             " LIMIT 1"),
         {"email": mine},
     )).fetchone()
 

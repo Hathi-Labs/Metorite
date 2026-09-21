@@ -114,7 +114,12 @@ EXPECTED_SCOPED = {
     "pm_tasks", "pm_view_task_positions", "pm_views",
 }
 
-#: ⚠️ FROZEN at 114 (113 + the mig-163 mailbox cursor). Every table predating the multi-tenant decision that is
+#: ⚠️ FROZEN at 113 — it was 114 until 2026-09-21, when `gtd_people`
+#: EARNED its way out: migration 209 gave it `organization_id` on the
+#: numbered ladder (H-125). A baseline that only ever grows is a debt
+#: register; this is the first row to leave it, and the count moves
+#: DOWN with it or the register stops meaning anything.
+#: (Previously 114 = 113 + the mig-163 mailbox cursor.) Every table predating the multi-tenant decision that is
 #: neither exempt (a deliberate cross-tenant table — see the generator's
 #: `EXEMPT`) nor blocked (a name collision — see `HOMONYM_BLOCKED`).
 #:
@@ -176,7 +181,11 @@ BASELINE_UNSCOPED = {
     "email_thread_status", "email_voice_profiles",
 # gtd_*
     "gtd_attachments", "gtd_contexts", "gtd_day_state", "gtd_folders",
-    "gtd_horizons", "gtd_items", "gtd_people", "gtd_person_resumes",
+    # ⚠️ `gtd_people` LEFT this list on 2026-09-21. Migration 209 put
+    # `organization_id` on the NUMBERED ladder for that one table, because
+    # H-125 needed a per-tenant unique index and could not wait for the
+    # whole generated phase (H-104). The other 142 tables still wait.
+    "gtd_horizons", "gtd_items", "gtd_person_resumes",
     "gtd_projects", "gtd_reviews", "gtd_rollover_log", "gtd_settings",
     "gtd_spaces", "gtd_waiting",
 # live_*
@@ -415,4 +424,4 @@ def test_the_frozen_count_matches_the_baseline() -> None:
     Putting it here as well was the first attempt, and
     `test_every_table_lands_in_exactly_one_bucket` rejected it — correctly.
     """
-    assert len(BASELINE_UNSCOPED) == 114
+    assert len(BASELINE_UNSCOPED) == 113

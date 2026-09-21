@@ -2828,35 +2828,38 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `scripts/backup_db.sh` · `deploy/hostinger/BACKUP-RESTORE.md`
 - **Added:** 2026-09-19 · operator console session, after the backup repair
 
-### H-132 · Renaming the `gtd_*` directory tables breaks 8 old migrations · [AGENT]
-- **Check:** `rg -l "gtd_people" infra/postgres/*.sql | wc -l`. A count above
-  zero means the rename has not happened and this is open.
-- **The owner asked for it, 2026-09-20:** *"I don't want to use the
-  terminology GTD."* The names are decided — `people`, `people_skills`,
-  `people_credentials`, `people_absences`, `people_resumes`.
-- 🔴 **Tried and REVERTED the same day, on evidence.** A rename plus a
-  compatibility view at each old name passed every People suite. The ladder
-  was then replayed against the renamed database. **8 migrations failed.**
-  49, 74, 75, 148, 172 and 173 do ALTER TABLE on a view now. 174 and 176 do
-  CREATE INDEX on one. Dropping the views does not help. The
-  ALTERs then address a name that does not exist at all.
-- **Production is protected only by the LEDGER.** Those 8 files are applied
-  and unchanged, so a normal deploy skips them. The hazard is real wherever
-  the ledger is not in play. Three places do that.
-  - `MIGRATION_REPLAY_ALL=1`, the documented recovery path.
-  - `tests/unit/_tenant_ladder.py`, which keeps no ledger. Every R8 suite
-    then breaks on a persistent scratch database.
-  - Any later edit to one of the 8.
-- **So the first step is NOT the rename.** Guard those 8 files first, so
-  each is a no-op when its table is absent or is a view. The rename is a
-  one-file change after that.
+### H-132 · The `gtd_*` rename — RECOMMEND CLOSING AS WON'T DO · [OWNER]
+- **Check:** `rg -l "gtd_people" infra/postgres/*.sql | wc -l` → above zero
+  means the rename has not happened.
+- **The owner asked for it twice**, 2026-09-20 and 2026-09-21: *"I don't
+  want to use the terminology GTD."* Names were decided — `people`,
+  `people_skills`, `people_credentials`, `people_absences`,
+  `people_resumes`. This entry recommends NOT doing it, and says why, so the
+  decision is made once on evidence instead of tried again.
+- 🔴 **Measured twice. Both tries were abandoned.**
+  - With compatibility views at the old names: **8 migrations fail on
+    replay** — 49, 74, 75, 148, 172 and 173 do ALTER TABLE on what is now a
+    view, and 174 and 176 do CREATE INDEX on one.
+  - Without the views: the ALTERs become no-ops with `IF EXISTS`, but
+    `CREATE TABLE IF NOT EXISTS gtd_people` in 49, 174 and 176 then
+    **re-creates empty duplicate tables**, and 5 CREATE INDEX statements
+    still fail.
+- **The true cost: 41 statements across the 8 OLDEST migrations in the
+  ladder.** Editing an applied migration changes its checksum, so all 8
+  re-run against the live customer database on the next deploy. They are
+  idempotent, so it should be safe. "Should be" is the whole problem.
+- **The benefit: a table name no user sees.** Measured 2026-09-20: `gtd`
+  appears in exactly ONE string a member can read, a tooltip in the Tasks
+  inbox. Everything else is table names and code comments.
 - 📌 **The code sweep is easy and was proven** — 66 files, 294 occurrences,
-  by word boundary so `uq_gtd_people_email_lower` and the other index and
-  constraint names survive. Three static fences read migration TEXT and must
-  keep the old spelling: `test_tenancy_insert_fence`, `test_tenancy_boundary`
-  and `test_people_key_shape`.
-- **Authority:** owner directive 2026-09-20 · `people_center_app.md` §2 · R6
-- **Added:** 2026-09-20 · the People UX session
+  by word boundary so index and constraint names survive. It is the SCHEMA
+  half that is not worth it.
+- **Recommendation:** close as won't do. Fix the one visible tooltip.
+  Spend the risk budget on H-104 instead. That is the same 8 files' real
+  problem, and it has an actual consequence.
+- **Authority:** owner directive 2026-09-20 · R6 · measured 2026-09-21
+- **Added:** 2026-09-20 · **measurement and recommendation added
+  2026-09-21**, after the second try
 
 ### H-140 · `POST /tasks/people` has no caller. Decide whether it stays · [OWNER]
 - **Check:** `rg -n "peopleWriteApi.create|createPerson" workbench/control_plane/src`
@@ -2923,21 +2926,6 @@ line — never reclaim a number by deleting the other entry.
   instead of residue.
 - **Authority:** owner review 2026-09-21
 - **Added:** 2026-09-21 · the People end-to-end review
-
-### H-125 · Migration 148's email index spans EVERY tenant · [AGENT]
-- **Check:** `rg -A 2 "uq_gtd_people_email_lower" infra/postgres/148_people_key_shape.sql`
-  → an index on `(lower(email))` that does not name `organization_id` means
-  this is open.
-- **Why:** two organizations cannot hold the same address in `gtd_people`. A
-  contractor who works for two customers is the ordinary case. The second
-  tenant's member silently gets no directory row, because
-  `ensure_directory_row` uses `ON CONFLICT DO NOTHING`. Row level security
-  hides the other tenant's row, so nobody can see the reason.
-- **⚠️ Ordered AFTER H-104.** The index cannot name a column that has not
-  reached production.
-- **Authority:** `infra/postgres/148_people_key_shape.sql:87` ·
-  `project-docs/specs/saas_multitenancy.md`
-- **Added:** 2026-09-20 · the My Profile session, found while writing PR #306
 
 ### H-126 · `build_sha()` returns None in EVERY git worktree · [AGENT]
 - **Check:** from a worktree, `uv run pytest tests/unit/test_build_info.py -q`

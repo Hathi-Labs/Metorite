@@ -125,8 +125,14 @@ BEGIN
         VALUES
             (gen_random_uuid(), $1, $2, $3, ARRAY[]::text[], 'member',
              'member:' || $2, 'member-trigger', now()%2$s)
-        ON CONFLICT (lower(email)) WHERE email IS NOT NULL
-        DO NOTHING
+        -- ⚠️ NO CONFLICT TARGET, and that is deliberate (H-125).
+        -- Naming `(lower(email))` pinned this statement to migration 148's
+        -- index BY NAME, so migration 209 replacing it with a per-tenant one
+        -- made this raise 42P10 at PLAN time — the same failure migration
+        -- 162 caused for `app_user`, which took down every invite. A bare
+        -- `DO NOTHING` means "on any unique violation", which is exactly
+        -- what this wants and survives the index changing under it.
+        ON CONFLICT DO NOTHING
     $sql$,
         CASE WHEN has_org_col THEN ', organization_id' ELSE '' END,
         CASE WHEN has_org_col THEN ', $4' ELSE '' END);
@@ -230,7 +236,8 @@ BEGIN
            AND u.email IS NOT NULL AND btrim(u.email) <> ''
            AND NOT EXISTS (SELECT 1 FROM gtd_people p
                             WHERE lower(p.email) = lower(btrim(u.email)))
-        ON CONFLICT (lower(email)) WHERE email IS NOT NULL DO NOTHING;
+        -- Target-free, for the reason the trigger above gives.
+        ON CONFLICT DO NOTHING;
     ELSE
         INSERT INTO gtd_people
             (id, name, email, status, skills, source, source_key,
@@ -248,7 +255,8 @@ BEGIN
            AND u.email IS NOT NULL AND btrim(u.email) <> ''
            AND NOT EXISTS (SELECT 1 FROM gtd_people p
                             WHERE lower(p.email) = lower(btrim(u.email)))
-        ON CONFLICT (lower(email)) WHERE email IS NOT NULL DO NOTHING;
+        -- Target-free, for the reason the trigger above gives.
+        ON CONFLICT DO NOTHING;
     END IF;
 
     GET DIAGNOSTICS made = ROW_COUNT;
