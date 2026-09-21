@@ -45,6 +45,7 @@ import {
 import { FieldManager } from "./components/FieldManager";
 import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
 import { MoveDialog } from "./components/MoveDialog";
+import { MergeTasksDialog } from "./components/MergeTasksDialog";
 import { MoveTasksDialog } from "./components/MoveTasksDialog";
 import { type TreeDropTarget, planTreeDrop } from "./lib/treeDrop";
 import { LifecyclePolicy } from "./components/LifecyclePolicy";
@@ -649,6 +650,12 @@ function ProjectsWorkspace() {
   const [movingTasks, setMovingTasks] = useState<readonly string[] | null>(null);
   const [movingTasksBusy, setMovingTasksBusy] = useState(false);
   const [moveTasksError, setMoveTasksError] = useState<string | null>(null);
+  //: The tasks whose MERGE card is open. One state for both entry points,
+  //: exactly as `movingTasks` above: a single row from its right-click menu,
+  //: and the whole bulk selection.
+  const [mergingTasks, setMergingTasks] = useState<readonly string[] | null>(null);
+  const [mergeBusy, setMergeBusy] = useState(false);
+  const [mergeError, setMergeError] = useState<string | null>(null);
   // Analytics reads the portfolio roll-up — the same shape as a node's, so
   // one dashboard component draws both.
   const [portfolio, setPortfolio] = useState<NodeSummary | null>(null);
@@ -2055,10 +2062,62 @@ function ProjectsWorkspace() {
    * Those links have been generating `/projects?task=<id>` since WS-28b and
    * landing on an unchanged board, because nothing here read the parameter.
    */
+  /**
+   * Fold the open card's tasks into `targetId`.
+   *
+   * ⚠️ Reloads the BOARD and not just the target. A merge changes rows the
+   * page is holding in three ways at once — the sources leave the board, the
+   * target's fields move, and a source's subtasks re-parent under it — and
+   * patching that by hand is three chances to show something the server does
+   * not agree with. The write path this file already trusts is a refetch.
+   */
+  async function mergeInto(targetId: string) {
+    const sources = mergingTasks ?? [];
+    if (!sources.length) return;
+    setMergeBusy(true);
+    setMergeError(null);
+    try {
+      await projectsApi.mergeTasks(targetId, sources);
+      setMergingTasks(null);
+      // The merged tasks are gone from every live surface, so a selection
+      // still holding them would arm a bulk action against archived stubs.
+      setPicked(new Set());
+      await refreshRef.current();
+      toast.show({
+        variant: "success",
+        title:
+          sources.length === 1
+            ? "Merged into the task you kept"
+            : `Merged ${sources.length} tasks into the one you kept`,
+      });
+    } catch (err) {
+      // Stays ON the card. The gateway's refusals are all things the member
+      // can act on — a different project, an already-merged task — and a
+      // toast over a closed card gives them nothing to act on.
+      setMergeError(String((err as Error).message));
+    } finally {
+      setMergeBusy(false);
+    }
+  }
+
   const openTaskById = useCallback(
     async (taskId: string) => {
       try {
-        await openWithStatuses(await projectsApi.task(taskId));
+        let task = await projectsApi.task(taskId);
+        // ⚠️ Follow the merge, ONCE. A task folded into another has none of
+        // its content any more, so opening the stub shows an empty panel and
+        // leaves the reader to work out where everything went. The promise
+        // made when merging was that the old number and any pasted link keep
+        // working — this is where that promise is kept.
+        //
+        // One hop and not a loop: the gateway refuses a merge INTO a stub, so
+        // a chain cannot be created through the product. A single hop means a
+        // chain that somehow exists degrades to showing the next task rather
+        // than to spinning.
+        if (task.merged_into_task_id) {
+          task = await projectsApi.task(task.merged_into_task_id);
+        }
+        await openWithStatuses(task);
       } catch (err) {
         setError(String((err as Error).message));
       }
@@ -3103,6 +3162,10 @@ function ProjectsWorkspace() {
             setMoveTasksError(null);
             setMovingTasks([...picked]);
           }}
+          onMerge={() => {
+            setMergeError(null);
+            setMergingTasks([...picked]);
+          }}
         />
       ) : null}
 
@@ -3303,6 +3366,10 @@ function ProjectsWorkspace() {
                 setMoveTasksError(null);
                 setMovingTasks([taskId]);
               }}
+              onMergeTask={(taskId) => {
+                setMergeError(null);
+                setMergingTasks([taskId]);
+              }}
               onExtendSelection={extendSelection}
               onSelect={(task) => void openWithStatuses(task)}
               onDrop={handleDrop}
@@ -3424,6 +3491,24 @@ function ProjectsWorkspace() {
           `MoveDialog` is in the desktop return alone and opens nothing on a
           phone (H-120). Keyed on the selection so reopening never shows the
           previous set's plan. */}
+      {/* ⚠️ `tasks`, not the whole project. The card offers what the board
+          has loaded, which is what the member can see and therefore what
+          they can mean. Fetching every task in the project to populate a
+          picker would be a second, unfiltered read of a list the page
+          already holds. */}
+      <MergeTasksDialog
+        key={`merge:${mergingTasks?.join(",") ?? "none"}`}
+        sources={mergingTasks}
+        tasks={tasks}
+        busy={mergeBusy}
+        error={mergeError}
+        onClose={() => {
+          setMergingTasks(null);
+          setMergeError(null);
+        }}
+        onMerge={(targetId) => void mergeInto(targetId)}
+      />
+
       <MoveTasksDialog
         key={`move:${movingTasks?.join(",") ?? "none"}`}
         taskIds={movingTasks}

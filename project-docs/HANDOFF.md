@@ -49,6 +49,27 @@ nothing; the thing nobody wrote down costs a session.
 ## The shape of an entry
 
 ```
+### H-150 · The right-click menu on a task cannot be opened on a phone · [AGENT]
+
+- **What happens.** At 390px the board draws its cards, and a right-click
+  on one opens nothing. Measured 2026-09-21 in the visual rig: the card is
+  in the DOM, and `Copy link` — the second entry in the menu — has a count
+  of zero after the gesture.
+- **⚠️ It is EVERY entry, not one.** Open, Copy link, Select, Move to
+  project, Merge into, Change status, Rename, Add subtask, Archive, Restore
+  and Delete are all in that menu and all unreachable. Six of them have no
+  other door on a phone at all.
+- **It is pre-existing**, and predates the Merge entry that found it. The
+  entry itself is fine — it draws and works at every desktop width.
+- **Why a phone has no right-click, and what that means.** A touch device
+  does not fire `contextmenu` from a tap, and a long press raises the
+  platform's own menu instead. So the surface needs a different door: the
+  card's overflow button, or a long press the component handles itself.
+  `TaskCardActions` already draws a "more" button on hover, and hover does
+  not exist on a phone either — so the two gaps are one gap.
+- **Check:** open `/projects` at 390px, pick a project, and long-press a
+  card. If no menu appears, this is open.
+
 ### H-<n> · <one line, imperative> · [AGENT|OWNER]
 - **Check:** `<command>` → <what output means STILL PENDING>
 - **Why:** <one or two sentences — the reason, not the status>

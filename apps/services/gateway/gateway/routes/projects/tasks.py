@@ -841,10 +841,29 @@ async def unarchive_task(
         task = await load_visible_task(db, vis, task_id)
         if getattr(task, "archived_at", None) is None:
             return row_to_dict(task, TaskModel)
-        row = await update_row(db, "pm_tasks", task_id, {"archived_at": None})
+        # ⚠️ A MERGED task loses its pointer here, and it must: migration
+        # 209's `pm_tasks_merged_is_archived` refuses a row that claims to be
+        # merged while off the shelf, so clearing one without the other is a
+        # 500 from the driver.
+        #
+        # It is also the honest reading. Restoring a merged task makes it a
+        # task again, so it stops redirecting. What does NOT come back is its
+        # content — the comments, history and attachments moved to the task
+        # it went to, and they stay there. The two `merge` activities on
+        # either side are what still say where.
+        merged_away = getattr(task, "merged_into_task_id", None) is not None
+        row = await update_row(db, "pm_tasks", task_id, {
+            "archived_at": None,
+            **({"merged_into_task_id": None} if merged_away else {}),
+        })
         await record_activity(
             db, activity_type="system", created_by=actor(user),
-            task_id=task_id, body="Task restored from the archive",
+            task_id=task_id,
+            body=(
+                "Task restored from the archive and is no longer merged"
+                if merged_away
+                else "Task restored from the archive"
+            ),
         )
         result = row_to_dict(row, TaskModel)
 

@@ -84,6 +84,15 @@ interface Props {
    * build a request it is written to reject.
    */
   onAction?: (action: "archive" | "unarchive" | "delete") => void;
+  /**
+   * Open the merge card for the whole selection.
+   *
+   * ⚠️ Separate from `onAction` on purpose. Those three ACT on the
+   * click; this opens a card, because a merge needs one more answer
+   * — which task survives — and it is the least reversible thing on
+   * this bar.
+   */
+  onMerge?: () => void;
   /** See TaskBoard's prop of the same name. */
   personLabels?: ReadonlyMap<string, string>;
   /** The last outcome sentence, or null. */
@@ -98,6 +107,7 @@ export function BulkBar({
   onClear,
   onApply,
   onAction,
+  onMerge,
   personLabels,
   onMove,
   notice,
@@ -245,6 +255,21 @@ export function BulkBar({
               because a selection can hold either kind and the member cannot
               see which from here; the gateway answers per task and the
               notice says how many of each. */}
+          {/* Before Archive, because merging is the thing you do INSTEAD of
+              filing three duplicates away one by one — and it is the reason
+              a lot of multi-selections exist in the first place. */}
+          {onMerge ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="Merge"
+              loading={busy}
+              title="Fold these into one task, keeping everything"
+              onClick={onMerge}
+            >
+              Merge…
+            </Button>
+          ) : null}
           {onAction ? (
             <>
               <Button
