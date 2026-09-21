@@ -445,9 +445,22 @@ def add_credit(
     reason: str,
     ref: str | None = None,
     price_paid_inr: Decimal | None = None,
-    expires_at: Any | None = None,
 ) -> None:
     """Write ONE ledger row, and keep the lots in step with it.
+
+    🔴 **No `expires_at`, and that is a DECISION rather than an omission.**
+    Owner decision, 2026-09-21 (H-135): credits do not expire. The parameter
+    used to be here and no caller ever passed it, so every lot on every box is
+    NULL — while the operator console showed an "Expires" column and promised
+    lots burn "soonest to expire first". That was a date we displayed and never
+    acted on: `open_lots` has no expiry predicate, so an expired lot would have
+    been drawn from, and drawn FIRST.
+
+    Removing the parameter is what makes the unreachable path unreachable. The
+    `credit_lot.expires_at` COLUMN stays — R6 forbids dropping one in place —
+    and so does `open_lots`' ordering, which is correct and tested for the day
+    somebody reverses the commercial decision. Nothing in production can set
+    the value that would wake it.
 
     🔴 **The lot bookkeeping lives HERE, in the one ledger writer, and not at
     the three call sites that grant credits.** A future fourth site would
@@ -456,8 +469,8 @@ def add_credit(
     and it can only do that if the two are written together.
 
     ⚠️ **The balance is still `SUM(delta)`.** Nothing here changes what an
-    organization holds. A lot records what the credits COST and when they
-    LAPSE, and `draw_from_lots` records which of them a charge spent.
+    organization holds. A lot records what the credits COST, and
+    `draw_from_lots` records which of them a charge spent.
     """
     lot_id: int | None = None
     if delta > 0:
@@ -469,7 +482,6 @@ def add_credit(
                 source=source,
                 credits=delta,
                 price_paid_inr=price_paid_inr,
-                expires_at=expires_at,
             )
     elif delta < 0 and reason in _LOT_DRAWING_REASONS:
         drawn = draw_from_lots(conn, org_id=org_id, credits=-delta)

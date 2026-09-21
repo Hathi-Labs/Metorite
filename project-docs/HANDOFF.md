@@ -2700,28 +2700,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** D66 · `customer_console.md` · `specs/launch_surface.md` §7
 - **Added:** 2026-09-20 · credit and usage review session
 
-### H-135 · Credit expiry is stored, displayed, and never enforced · [AGENT]
-- **Check:** read `store.open_lots`. No `expires_at` predicate in the WHERE
-  clause means this is open.
-- ⚠️ **Nothing is wrong TODAY, and that is why it needs writing down.** No
-  caller passes `expires_at` to `store.add_credit`, so every lot on every box
-  is `NULL` and never expires. The machinery is inert, not broken.
-- 🔴 **The day somebody sets an expiry, three things are wrong at once.**
-  `open_lots` selects on `credits_used < credits` alone, so an EXPIRED lot is
-  still drawn from — and it is drawn FIRST, because the order is soonest
-  expiry first. The balance is `SUM(credit_ledger)` and no row ever lapses a
-  lot, so expired credit still counts. No job sweeps.
-- 🔴 **The console already promises the lapse.** The Credit lots panel says
-  the lots burn "soonest to expire first, and free before paid". It adds "so a
-  customer never loses credits they bought". One column header names when each
-  lot lapses. We would show a customer an expiry date we do not act on.
-- **The slice, when it is wanted.** Either enforce it — a predicate, a lapse
-  ledger row with its own reason, and a sweep — or remove the column and the
-  sentence. Do not leave it half-said. ⚠️ `LEDGER_REASONS` is a closed set, so
-  a lapse reason needs a migration.
-- **Authority:** migration 028 · `subscription_console.md` SC-4g
-- **Added:** 2026-09-20 · credit and usage review session
-
 ### H-137 · 🔴 The deploy reports SUCCESS while `vps_apply.sh` dies half way · [AGENT]
 - **Check:** open the newest green `deploy.yml` run, job *Deploy to Hostinger*,
   and search the log for `ssh exited non-zero`. A hit inside a run marked
@@ -2751,6 +2729,20 @@ line — never reclaim a number by deleting the other entry.
 - **The fix, in two parts.** Make the workflow FAIL when the apply exits
   non-zero, instead of falling through to the health probe. Then repair the
   ownership so the install stops failing — H-89 owns the cause.
+- ✅ **PART ONE SHIPPED, PR #343, 2026-09-21.** The workflow now greps the
+  apply output for the script's own last line, and a round needs BOTH a
+  finished apply and a passing verify. A non-zero ssh AFTER the marker is
+  still tolerated, because a teardown flake is not a failed release.
+  `test_deploy_pipeline.py::TestTheApplyMustReachItsEnd` fences both halves of
+  that string contract. Verified on its own deploy: the marker check ran and
+  the tail step was reached.
+  ⚠️ **The Check above is now the WRONG question.** A green run may hold
+  `ssh exited non-zero` legitimately. Ask instead whether a run that did not
+  finish went red.
+- ⚠️ **PART TWO IS STILL OPEN**, and it is the cause. `npm ci` hits EACCES on
+  root-owned paths inside `node_modules`. The ownership repair at the top of
+  `vps_apply.sh` deliberately prunes that directory. **H-89** owns it. Until it
+  closes, some deploys go red — correctly, and visibly.
 - **Authority:** `.github/workflows/deploy.yml` · `scripts/vps_apply.sh` · H-89
 - **Added:** 2026-09-20 · credit and usage review session
 

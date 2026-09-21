@@ -387,8 +387,8 @@ export default async function CustomerDetailPage({
         <div className="stat">
           <div className="lbl">AI credits</div>
           <div className="num small-num">{org.credit_balance}</div>
-          {/* 🔴 The balance is one number and cannot say what it cost or when
-              it lapses. The panel below breaks it down. */}
+          {/* 🔴 The balance is one number and cannot say what it cost or
+              where it came from. The panel below breaks it down. */}
           {lots !== undefined && lots.length > 0 && (
             <div className="muted small">
               {lots.length} {lots.length === 1 ? "lot" : "lots"}
@@ -409,11 +409,20 @@ export default async function CustomerDetailPage({
       <section className="panel">
         <div className="panel-head">
           <h2>Credit lots</h2>
+          {/* 🔴 **This used to promise a lapse date, and we never acted on
+              one.** The panel showed an "Expires" column, and claimed a lot
+              with the nearest lapse date burns before the others. Meanwhile
+              `open_lots` had no expiry predicate and nothing ever set one, so
+              the date was decoration on a rule that did not run (H-135). Owner decision, 2026-09-21:
+              CREDITS DO NOT EXPIRE. The column and the sentence are gone, and
+              `add_credit` no longer takes an expiry, so none can be set.
+
+              ⚠️ What survives is the half that is TRUE and still protects the
+              customer: free credits burn before paid ones. */}
           <p>
-            What this balance is <strong>made of</strong> — what each lot cost,
-            where it came from, and when it lapses. They burn in the order
-            shown: soonest to expire first, and free before paid, so a customer
-            never loses credits they bought.
+            What this balance is <strong>made of</strong> — what each lot cost
+            and where it came from. Free credits burn first, so a customer
+            never loses credits they bought. Credits do not expire.
           </p>
         </div>
         {lots === undefined ? (
@@ -422,8 +431,8 @@ export default async function CustomerDetailPage({
              feature would read as "this customer has none". */
           <p className="field-hint warn">
             This Console does not report credit lots yet. The balance above is
-            still correct — nothing here can say what it cost or when it
-            expires until the Console ships migration 028.
+            still correct — nothing here can say what it cost or where it
+            came from until the Console ships migration 028.
           </p>
         ) : lots.length === 0 ? (
           <p className="field-hint">
@@ -444,7 +453,6 @@ export default async function CustomerDetailPage({
                   <th>Remaining</th>
                   <th>Of</th>
                   <th>Paid</th>
-                  <th>Expires</th>
                 </tr>
               </thead>
               <tbody>
@@ -459,9 +467,6 @@ export default async function CustomerDetailPage({
                       {lot.pricePaidInr === null
                         ? "free"
                         : `₹${Number(lot.pricePaidInr).toLocaleString("en-IN")}`}
-                    </td>
-                    <td className={lot.expiresAt ? "" : "muted"}>
-                      {lot.expiresAt ? formatDate(lot.expiresAt) : "never"}
                     </td>
                   </tr>
                 ))}
