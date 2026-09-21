@@ -77,6 +77,14 @@ export interface TaskMenuContext {
    */
   canMoveToProject?: boolean;
   /**
+   * Absent or false where a merge cannot be offered: a read-only surface,
+   * or a task that has already been merged away. A merged stub is on the
+   * Archived shelf where Delete and Unarchive are the useful verbs; merging
+   * it again is refused by the gateway, so offering it would be a click
+   * that only ever produces an error.
+   */
+  canMerge?: boolean;
+  /**
    * The surface can edit the card in place — rename it, and compose a subtask
    * under it. False on a read-only list, and the entries drop rather than
    * grey, which is the rule `canSelect` and `canMoveToProject` already follow.
@@ -185,6 +193,16 @@ export interface TaskMenuActions {
    * offering a click that goes nowhere.
    */
   moveToProject?(task: TaskRow): void;
+  /**
+   * Open the merge card for this task (or for the whole selection).
+   *
+   * ⚠️ It OPENS a card, it does not merge — `moveToProject`'s rule, and
+   * for a stronger reason. A merge moves comments, history and attachments
+   * one way and re-running it does not undo it, so the member has to see
+   * WHICH task survives before agreeing. A menu entry that merged on click
+   * would be the most destructive single click in the product.
+   */
+  mergeInto?(task: TaskRow): void;
   /**
    * Open the inline subtask composer under this card.
    *
@@ -387,6 +405,17 @@ export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
     group: 2,
     when: (ctx) => Boolean(ctx.canMoveToProject),
     run: (actions, ctx) => actions.moveToProject?.(ctx.task),
+  },
+  {
+    id: "task.mergeInto",
+    label: () => "Merge into…",
+    icon: "Merge",
+    // Beside Move: both are about a task's PLACE rather than its state, and
+    // both open a card instead of acting. The status block below is the
+    // task's own state and is a different question.
+    group: 2,
+    when: (ctx) => Boolean(ctx.canMerge),
+    run: (actions, ctx) => actions.mergeInto?.(ctx.task),
   },
   {
     id: "task.status",

@@ -529,6 +529,20 @@ export interface TaskRow {
    * a read that asked for archived tasks, which is why nothing noticed.
    */
   archived_at?: string | null;
+  /**
+   * Migration 210 — the task this one was folded into, or absent.
+   *
+   * ⚠️ **A task carrying this is ALWAYS archived**, and the database
+   * enforces it (`pm_tasks_merged_is_archived`). So a surface may read this
+   * as "and it is on the Archived shelf" with no second check — which is
+   * what lets the archive list merged tasks without a query of its own.
+   *
+   * Its content is NOT here any more: comments, history and attachments
+   * moved to the task it names.
+   */
+  merged_into_task_id?: string | null;
+  merged_at?: string | null;
+  merged_by?: string | null;
   status_id: string;
   title: string;
   description?: string | null;
@@ -1310,6 +1324,25 @@ export const projectsApi = {
       body: JSON.stringify(
         parentId ? { body, parent_id: parentId } : { body },
       ),
+    }),
+
+  /**
+   * Fold `sources` into `targetId`. The target is the task that SURVIVES.
+   *
+   * ⚠️ One way, and re-running it does not undo it. Every source's comments,
+   * history, attachments, assignees, tags, watchers and subtasks move to the
+   * target, and each source becomes an archived stub pointing at it — which
+   * is why every caller opens a card first and never merges on a click.
+   *
+   * The gateway refuses a cross-project merge, a merge into a stub, and a
+   * task already merged. Same-project only is the owner's ruling of
+   * 2026-09-21: a cross-project merge is a Move plus a merge, and `/move`
+   * already owns the status remapping.
+   */
+  mergeTasks: (targetId: string, sources: readonly string[]) =>
+    call<TaskRow & { merged: string[] }>(`tasks/${targetId}/merge`, {
+      method: "POST",
+      body: JSON.stringify({ sources }),
     }),
 
   /**

@@ -326,7 +326,7 @@ STARTED_CATEGORY = "in_progress"
 #: the migration; anything else is a comment claiming to be an invariant.
 ACTIVITY_TYPES: tuple[str, ...] = (
     "comment", "status_change", "field_change", "link", "assignment",
-    "agent_run", "sync", "system", "attachment", "mention",
+    "agent_run", "sync", "system", "attachment", "mention", "merge",
 )
 
 #: `pm_projects.source` / `pm_tasks.source`. Tasks carry two extra origins.
@@ -624,6 +624,15 @@ class TaskModel(BaseModel):
     created_at: str | None = None
     updated_at: str | None = None
     archived_at: str | None = None
+    #: Migration 210. The task this one was folded into, or ``None``.
+    #:
+    #: ⚠️ Always accompanied by `archived_at`, and the database enforces it
+    #: (`pm_tasks_merged_is_archived`). A client may treat this as "and it is
+    #: on the Archived shelf" without checking, which is what lets the
+    #: archive surface list merged tasks with no second query.
+    merged_into_task_id: str | None = None
+    merged_at: str | None = None
+    merged_by: str | None = None
     #: This task's place in ONE saved view's hand-arranged order, joined from
     #: `pm_view_task_positions` when the caller names a `view_id`.
     #:
