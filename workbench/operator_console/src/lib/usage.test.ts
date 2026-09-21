@@ -21,6 +21,7 @@ import {
   usageHeadline,
   hasUnbilled,
   unbilledTotals,
+  customerUsageState,
 } from "./usage";
 
 const ROW = (over: Partial<OrgUsageRow> = {}): OrgUsageRow => ({
@@ -336,5 +337,48 @@ describe("a customer past zero", () => {
     // A `NaN` must not become "owing" — that would put a red chip on every
     // row the moment the field changed shape.
     expect(isOwing(ROW({ balance: "unknown" }))).toBe(false);
+  });
+});
+
+// ── H-133: what the customer page may claim ───────────────────────────────
+
+describe("customerUsageState", () => {
+  const ROW = {
+    slug: "acme", name: "Acme", calls: 12, credits: "4.5", members: 3,
+    costUsd: "0.9", balance: "100", lastSeen: null, marginRatio: "5",
+    runwayDays: 30, silent: false, refusals: 0,
+    unbilledCalls: 0, unbilledTokens: 0,
+  };
+
+  it("uses the fleet row when the organization is on the page", () => {
+    const s = customerUsageState(ROW, []);
+    expect(s.kind).toBe("full");
+  });
+
+  it("reports TRUNCATED when the series shows calls and the row is absent", () => {
+    // 🔴 H-76. `/admin/usage/orgs` is capped and sorted by spend, and takes no
+    // org filter. A quiet-but-real customer falls off it. Calling that "no
+    // calls" would print the fleet board's truncation as a fact about them.
+    const s = customerUsageState(null, [
+      { day: "2026-09-01", calls: 4, credits: "0" },
+    ]);
+    expect(s.kind).toBe("truncated");
+  });
+
+  it("reports QUIET only when the series itself is empty", () => {
+    expect(customerUsageState(null, []).kind).toBe("quiet");
+    expect(
+      customerUsageState(null, [{ day: "2026-09-01", calls: 0, credits: "0" }]).kind,
+    ).toBe("quiet");
+  });
+
+  it("judges traffic by CALLS, never by credits", () => {
+    // ⚠️ The shipped rate card is all zero, so every served call bills 0.
+    // Judging by credits would call a busy month quiet until somebody prices
+    // the card — and the page would say so on the customer most worth reading.
+    const s = customerUsageState(null, [
+      { day: "2026-09-01", calls: 900, credits: "0" },
+    ]);
+    expect(s.kind).toBe("truncated");
   });
 });

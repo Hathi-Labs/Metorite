@@ -6,6 +6,8 @@ import {
   billingSummary,
   listKeys,
   creditLedger,
+  orgUsage,
+  usageDaily,
   ConsoleUnconfigured,
 } from "@/lib/console";
 import { staffSession } from "@/lib/session";
@@ -32,7 +34,9 @@ import {
   type Catalog,
   type CatalogPlan,
 } from "@/lib/format";
+import { type OrgUsageRow, type UsageDay } from "@/lib/usage";
 import Actions from "./Actions";
+import CustomerUsage from "./CustomerUsage";
 import Header from "../../Header";
 
 export const dynamic = "force-dynamic";
@@ -82,8 +86,19 @@ type Loaded = {
    *  the read answers 404; that is "this build cannot show it", never
    *  "no entries". */
   ledgerError: string | null;
+  /** H-133 — what this customer SPENT, judged by `lib/usage.ts`.
+   *
+   * ⚠️ `null` means the window holds no metered traffic for them, which is
+   *  NOT the same as a failed read. `usageError` carries that. */
+  usageRow: OrgUsageRow | null;
+  usageDays: UsageDay[];
+  usageError: string | null;
   error: string | null;
 };
+
+/** The window the fleet board uses. One number, so the two pages cannot
+ *  quote different periods for the same customer. */
+const USAGE_WINDOW_DAYS = 30;
 
 async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
   try {
@@ -94,13 +109,20 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
     // reach the Console as `breakglass` — past the role matrix, and logged
     // as a break-glass event on every page view.
     const d = { authToken };
-    const [listRes, catRes, sumRes, keysRes, ledgerRes] = await Promise.all([
-      listOrganizations(d),
-      catalog(d),
-      billingSummary(slug, d),
-      listKeys(slug, d),
-      creditLedger(slug, d),
-    ]);
+    // 🔴 Seven now. H-133 added the two usage reads — the fleet row for this
+    // organization, and its daily series. Both are `admin` reads the /usage
+    // board already makes, so nothing new is exposed; this page simply
+    // stopped being the only place that could not answer "spent on what".
+    const [listRes, catRes, sumRes, keysRes, ledgerRes, usageRes, daysRes] =
+      await Promise.all([
+        listOrganizations(d),
+        catalog(d),
+        billingSummary(slug, d),
+        listKeys(slug, d),
+        creditLedger(slug, d),
+        orgUsage(USAGE_WINDOW_DAYS, d),
+        usageDaily(USAGE_WINDOW_DAYS, slug, d),
+      ]);
     if (listRes.status !== 200) {
       return {
         org: null,
@@ -113,6 +135,9 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
         keysError: null,
         ledger: [],
         ledgerError: null,
+        usageRow: null,
+        usageDays: [],
+        usageError: null,
         error: `Console returned ${listRes.status}`,
       };
     }
@@ -169,6 +194,33 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
       }
     }
 
+    // ⚠️ A usage read that fails must NOT blank the page. Same rule as the
+    // catalog and the roster above: the org's numbers are fine and every
+    // action still works, so the panel says what it could not read.
+    let usageRow: OrgUsageRow | null = null;
+    let usageDays: UsageDay[] = [];
+    let usageError: string | null = null;
+    if (usageRes.status !== 200) {
+      usageError = `The usage read returned ${usageRes.status}.`;
+    } else {
+      try {
+        const all = (JSON.parse(usageRes.body) as { rows?: OrgUsageRow[] })
+          .rows ?? [];
+        usageRow = all.find((r) => r.slug === slug) ?? null;
+      } catch {
+        usageError = "The usage read could not be parsed.";
+      }
+    }
+    if (usageError === null && daysRes.status === 200) {
+      try {
+        usageDays = (JSON.parse(daysRes.body) as { days?: UsageDay[] }).days ?? [];
+      } catch {
+        // ⚠️ The series is the DECORATION and the row is the answer. A
+        // sparkline that will not parse must not hide the numbers beside it.
+        usageDays = [];
+      }
+    }
+
     return {
       org,
       plans,
@@ -180,6 +232,9 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
       keysError,
       ledger,
       ledgerError,
+      usageRow,
+      usageDays,
+      usageError,
       error: null,
     };
   } catch (e) {
@@ -193,6 +248,9 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
       keysError: null,
       ledger: [],
       ledgerError: null,
+      usageRow: null,
+      usageDays: [],
+      usageError: null,
       error:
         e instanceof ConsoleUnconfigured
           ? "Customer Console is not configured."
@@ -213,6 +271,7 @@ export default async function CustomerDetailPage({
   const { slug } = await params;
   const {
     org, plans, plansError, members, membersError, lots, keys, keysError,
+    usageRow, usageDays, usageError,
     ledger, ledgerError, error,
   } = await loadOrg(slug, gate.authToken);
 
@@ -498,6 +557,17 @@ export default async function CustomerDetailPage({
           </div>
         )}
       </div>
+
+      {/* 🔴 H-133 — under the ledger, because the ledger is where the
+          question starts. "usage -1.29, eight hundred times" is what an
+          operator was left holding when a customer asked why their credits
+          went fast. */}
+      <CustomerUsage
+        row={usageRow}
+        days={usageDays}
+        windowDays={USAGE_WINDOW_DAYS}
+        error={usageError}
+      />
 
       <Actions
         slug={org.slug}
