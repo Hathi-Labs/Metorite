@@ -40,6 +40,67 @@ const VARIANTS: Record<ButtonVariant, string> = {
 };
 
 /**
+ * How a control says it is ON. One vocabulary for the whole product.
+ *
+ * **Measured 2026-09-21: 32 hand-rolled toggles across 21 files, and no
+ * primitive.** Three of them sit in Projects and are the whole remaining
+ * balance of H-148 — a view-mode switch, a saved-view chip and an icon
+ * chooser. All three had already converged on `bg-primary/10 text-primary`
+ * by hand, and `FilterBar`'s own comment records the correction that got it
+ * there: it used to be `bg-accent text-accent-foreground`, which resolves
+ * to a different colour per theme, so the applied view read as "selected"
+ * in one theme and "highlighted" in the next.
+ *
+ * So the vocabulary was already agreed and simply had nowhere to live. This
+ * is where it lives.
+ *
+ * ⚠️ **`primary` and `destructive` get a ring, not a fill.** They are
+ * already filled, so a selected fill would say nothing. A toggle whose off
+ * state is a solid button is unusual, and the ring is there so it does not
+ * silently render identically to its own off state.
+ */
+const SELECTED: Record<ButtonVariant, string> = {
+  primary: "ring-2 ring-ring ring-offset-1 ring-offset-background",
+  secondary: "border-primary/40 bg-primary/10 text-primary",
+  ghost: "bg-primary/10 text-primary",
+  destructive: "ring-2 ring-destructive/40",
+  text: "text-primary",
+};
+
+/**
+ * Should this control carry `aria-pressed`, and with what value?
+ *
+ * A pure function, and exported, because `vitest.config.ts` runs in the
+ * `node` environment — there is no DOM to render and assert against, so a
+ * decision that only exists inside JSX is a decision no test can reach.
+ * This is the same reason `SelectButton.test.ts` gives for its own shape.
+ *
+ * The rule:
+ *
+ * - An explicit `aria-pressed` from the caller always wins.
+ * - A control that declares its own `role` or `aria-checked` — a radio in a
+ *   `radiogroup`, a `menuitemcheckbox` — gets nothing. `aria-pressed` on a
+ *   radio is two conflicting answers to "what kind of control is this", and
+ *   a screen reader announces the wrong one.
+ * - Otherwise `selected` drives it, so the styling and the semantics cannot
+ *   disagree. That they CAN disagree today is the defect: of the 32
+ *   hand-rolled toggles measured on 2026-09-21, some set `aria-pressed` and
+ *   styled nothing, others styled the state and told a screen reader
+ *   nothing.
+ */
+export function pressedFor(a: {
+  selected?: boolean;
+  role?: string;
+  ariaChecked?: boolean | "true" | "false" | "mixed";
+  ariaPressed?: boolean | "true" | "false" | "mixed";
+}): boolean | "true" | "false" | "mixed" | undefined {
+  if (a.ariaPressed !== undefined) return a.ariaPressed;
+  if (a.selected === undefined) return undefined;
+  if (a.role !== undefined || a.ariaChecked !== undefined) return undefined;
+  return a.selected;
+}
+
+/**
  * Geometry per size. Three icon sizes rather than one because the app
  * genuinely uses three; collapsing them would resize ~100 existing controls.
  */
@@ -88,6 +149,20 @@ export type ButtonProps = Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "c
    * `inline-block`, and forcing `inline-flex` on one moves its content.
    */
   layout?: string;
+  /**
+   * This control is ON — a view mode, a filter chip, a chooser cell.
+   *
+   * ⚠️ **It sets the STYLING and the SEMANTICS together, and that coupling
+   * is the point.** Measured across the 32 hand-rolled toggles: some set
+   * `aria-pressed` and styled nothing, others styled the state and told a
+   * screen reader nothing. Two halves of one fact, drifting apart. Passing
+   * one prop makes that impossible.
+   *
+   * 📌 A caller that supplies its own `role` or `aria-checked` — a radio in
+   * a `radiogroup`, say — keeps them. `aria-pressed` on a radio would be
+   * two conflicting answers to "what kind of control is this".
+   */
+  selected?: boolean;
   /** Extra classes for layout only — never for colour, radius or weight. */
   className?: string;
   children?: React.ReactNode;
@@ -101,16 +176,24 @@ export default function Button({
   radius = "theme",
   layout = LAYOUT_DEFAULT,
   disabled,
+  selected,
   className = "",
   children,
   ...rest
 }: ButtonProps) {
   const iconSize = size === "lg" ? 15 : 14;
+  const pressed = pressedFor({
+    selected,
+    role: rest.role,
+    ariaChecked: rest["aria-checked"],
+    ariaPressed: rest["aria-pressed"],
+  });
   return (
     <button
       {...rest}
+      aria-pressed={pressed}
       disabled={disabled || loading}
-      className={`cc-control ${radius === "theme" ? "cc-button" : ""} ${layout} disabled:cursor-not-allowed disabled:opacity-50 ${VARIANTS[variant]} ${SIZES[size]} ${className}`}
+      className={`cc-control ${radius === "theme" ? "cc-button" : ""} ${layout} disabled:cursor-not-allowed disabled:opacity-50 ${VARIANTS[variant]} ${selected ? SELECTED[variant] : ""} ${SIZES[size]} ${className}`}
     >
       {loading ? (
         <Icon name="Loader2" size={iconSize} className="animate-spin" />

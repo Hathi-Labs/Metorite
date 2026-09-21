@@ -336,6 +336,32 @@ line — never reclaim a number by deleting the other entry.
   started.
 
 ### H-89 · Something on the box writes into the checkout as root · [OWNER]
+- **📌 2026-09-21 — MEASURED, and one part of it is still unexplained.**
+  H-137's gate turned a deploy red for the first time. The cause was this
+  entry. `.next` was `root:root` with 3803 paths under it in the control
+  plane, and 759 in the operator console. Every Next build died at
+  `EACCES … .next.staging/trace`. Run 35588464803.
+  - **Handled, not cured.** `reclaim_build_tree` in `vps_apply.sh` (#358) now
+    reclaims `.next`, `.next.staging` and `.next.previous` before each build,
+    and PRINTS the count it repaired. So every deploy is a measurement of
+    this entry from now on. Watch that number: it should trend to zero once
+    the cause is found, and it is a time series nobody had before.
+  - 🔴 **THE PART I COULD NOT EXPLAIN.** I reclaimed all 4562 paths by hand
+    and verified zero remained. The next deploy, about ten minutes later,
+    reclaimed **3807** under the same directory. So something re-created them
+    inside that window.
+  - **What it is NOT.** All four units run as `acb`, and so do their main
+    processes (`systemctl show <unit> -p User`). No root-owned file had been
+    written in the previous twenty minutes. `drop_dir`'s `sudo rm -rf`
+    deletes and creates nothing. The sherpa-onnx step at line ~401 runs
+    `uv pip install` WITHOUT sudo.
+  - **What is left root-owned**, and it looks historical instead of active:
+    20 paths, all under `.venv/lib/python3.12/site-packages/sherpa_onnx*`
+    and `.git`. The `.venv` repair higher up this script already exists for
+    exactly that shape.
+  - **The next step for whoever takes this.** Instrument, do not reason.
+    A `find -newermt` sweep on a timer, or an audit rule on the checkout,
+    will name the writer in a day. Reasoning from the unit files did not.
 - **⚠️ 2026-09-21 — the PULL path is now load-bearing, not redundant.**
   The deploy for #344 failed: ssh timed out on all three rounds from the
   GitHub runner. Production came up on the new commit anyway, because
@@ -2904,51 +2930,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner directive 2026-09-21 · `org_access_control.md` §3 ·
   migration 207
 - **Added:** 2026-09-21 · the every-app-by-default session
-
-### H-148 · The remaining raw controls in Projects · [AGENT]
-- **Check:** from `workbench/control_plane`,
-  `npx vitest run src/components/rawControls.test.ts` → the budget in that
-  file is the count. It was 3 on 2026-09-21.
-- 🔴 **THIS ENTRY OVERSTATED THE PROBLEM AND IS CORRECTED.** It said "54
-  hand-rolled buttons". `DESIGN_SYSTEM.md` §3 already says a clickable row
-  stays raw, and classified against it the 54 are:
-  - **29** rows, menu items and clickable cards. Legitimate.
-  - **5** colour swatches. Legitimate. A swatch has no control personality
-    to inherit.
-  - **5** control-shaped. The real defect. **Two converted 2026-09-21.**
-  - The rest are bare text toggles and sort headers, which are row-ish.
-- **What is left is 3, and they are BLOCKED on a missing primitive.** See
-  H-149. A view-mode switch, a view segment and an icon chooser each need a
-  SELECTED state, and `Button` has no variant for one. That absence is why
-  all three were hand-rolled. Converting them to `Button` would drop the
-  state they exist to show.
-- 📌 **The naming is done.** `DESIGN_SYSTEM.md` §6a now names the two ways a
-  surface opens. The slim app bar is for a rail app. `PageHeader` is for a
-  document surface. A third does not now arrive by default.
-- 📌 Email and CRM still open their own way. Neither is a third legitimate
-  shape. Both are drift, and both are cheap once somebody is in the file.
-- **Authority:** `DESIGN_SYSTEM.md` §3, §6a · owner directive 2026-09-21
-- **Added:** 2026-09-21 · the cohesion pass · **corrected and narrowed the
-  same day**, after classifying instead of counting
-
-### H-149 · No primitive for a control with a SELECTED state · [AGENT]
-- **Check:** `rg -n "toggle|pressed" workbench/control_plane/src/components/ui/Button.tsx`
-  → no selected-state variant means this is open.
-- **Why:** `Button` has `primary`, `secondary`, `ghost`, `destructive` and
-  `text`, and no way to say "this one is on". So every segmented control,
-  view switch and chooser in the tree is hand-rolled. Each picks its own
-  way to show the state — `bg-primary/10 text-primary` in one place,
-  `ring-2 ring-primary` in another, `bg-accent` in a third.
-- **Measured 2026-09-21:** three in Projects alone — `page.tsx`'s view
-  mode, `FilterBar.tsx`'s view segment, `SpaceSettings.tsx`'s icon chooser.
-  They are the whole remaining balance of H-148.
-- **Two shapes to choose between.** A selected variant on `Button`, or
-  `Tabs variant="segmented"` for the ones that are really tabs. The view
-  switch is probably Tabs. The icon chooser is probably a toggle.
-- 📌 Do this BEFORE the rest of H-148. Converting a toggle to a plain
-  `Button` loses the state, so that sweep is blocked on this decision.
-- **Authority:** `DESIGN_SYSTEM.md` §3 · H-148
-- **Added:** 2026-09-21 · the cohesion pass
 
 ### H-144 · `GET /people/{id}/editable` has no caller · [AGENT]
 - **Check:** `rg -n "editable" workbench/control_plane/src/app/people/lib/api.ts`

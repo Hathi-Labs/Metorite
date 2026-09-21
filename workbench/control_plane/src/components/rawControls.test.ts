@@ -43,18 +43,15 @@ const APP = path.join(__dirname, "..", "app");
  * raise it: a new control-shaped raw button is what this exists to stop.
  */
 const BUDGET: Record<string, number> = {
-  // 5 on 2026-09-21. Two converted the same day — `ReportsView`'s "New
-  // weekly report" and `TimelineView`'s scroll arrow — both plain controls
-  // wearing a class string.
+  // 5 on 2026-09-21, then 3, now 0. The last three were toggles blocked on
+  // a primitive that did not exist; `Button` gained a `selected` prop the
+  // same day (H-149) and all three converted.
   //
-  // ⚠️ **The remaining 3 are TOGGLES, and they are blocked on a primitive
-  // that does not exist.** A view-mode switch (`page.tsx`), a view segment
-  // (`FilterBar.tsx`) and an icon chooser (`SpaceSettings.tsx`) each need a
-  // SELECTED state, and `Button` has no variant for one — which is exactly
-  // why all three were hand-rolled. Converting them to `Button` would drop
-  // the state they exist to show. H-149 decides whether that is a `Toggle`
-  // primitive or `Tabs variant="segmented"`.
-  projects: 3,
+  // ⚠️ **Zero is the interesting number.** A budget above zero is debt
+  // somebody has to remember; a budget at zero is a rule. Raising it is a
+  // deliberate act with a reason, which is the conversation this file
+  // exists to force.
+  projects: 0,
 };
 
 function tsxFiles(dir: string): string[] {

@@ -469,22 +469,17 @@ function ModeSwitch({
       aria-label="View mode"
     >
       {VIEW_MODES.map((entry) => (
-        <button
+        <Button
           key={entry.id}
-          type="button"
-          aria-pressed={mode === entry.id}
+          variant="ghost"
+          size={sheet ? "lg" : "sm"}
+          selected={mode === entry.id}
+          icon={entry.icon}
           onClick={() => onPick(entry.id)}
-          className={`tech-transition flex items-center gap-2 rounded-md capitalize ${
-            sheet ? "px-3 py-2.5 text-sm" : "px-2 py-1 text-xs"
-          } ${
-            mode === entry.id
-              ? "bg-primary/10 text-primary"
-              : "text-muted-foreground hover:bg-muted"
-          }`}
+          className="capitalize"
         >
-          <Icon name={entry.icon} className={sheet ? "h-4 w-4" : "h-3.5 w-3.5"} />
           {entry.id}
-        </button>
+        </Button>
       ))}
     </div>
   );

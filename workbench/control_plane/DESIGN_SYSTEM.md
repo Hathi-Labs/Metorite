@@ -235,6 +235,33 @@ their doc comments before working around them:
 weight. If you find yourself reaching for those, the variant you want is
 missing; add it to the primitive.
 
+### A control that is ON — `selected`
+
+```tsx
+<Button variant="ghost" selected={mode === "board"} onClick={…}>Board</Button>
+```
+
+**One vocabulary for "this one is on", everywhere.** `ghost` and `secondary`
+take `bg-primary/10 text-primary`. `primary` and `destructive` take a ring
+instead, because they are already filled and a selected fill would say
+nothing.
+
+⚠️ **It sets the STYLING and the SEMANTICS together, and that is the point.**
+Measured 2026-09-21: **32 hand-rolled toggles across 21 files** and no
+primitive. Some set `aria-pressed` and styled nothing. Others styled the
+state and told a screen reader nothing. One prop makes that impossible.
+
+📌 **A radio keeps its own role.** A caller that supplies `role` or
+`aria-checked` gets the colour and no `aria-pressed`. That attribute on a
+radio is two conflicting answers to "what kind of control is this". The rule
+is `pressedFor()` in `Button.tsx`, and `Button.test.ts` pins it.
+
+⚠️ **`FilterBar` records what this replaced.** Its saved-view chip used
+`bg-accent text-accent-foreground`. That token resolves to a different
+colour per theme than every other selected thing in the app. So an applied
+view read as "selected" in one theme and "highlighted" in the next. The
+correction now lives in the primitive instead of in one comment.
+
 **Not every `<button>` is a control.** A clickable card or list row is a button
 element for accessibility, and those legitimately stay raw — the rule is about
 things that *look* like controls.
