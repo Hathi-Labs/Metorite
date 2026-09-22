@@ -90,7 +90,7 @@ The order is:
 3. Verify by evidence: `/version` reports `tasks_lens: true`, and a task
    captured in `/tasks` appears in `/projects` in the same page load.
 4. **S3c** — `gtd_items` and its satellites are dropped, a release later
-   (owner). ⚠️ `gtd_settings`, `gtd_day_state` and `gtd_rollover_log` **survive**
+   (owner). ⚠️ `user_settings`, `calendar_day_state` and `calendar_rollover_log` **survive**
    (D53.6): they are per-member calendar state, not tasks, and a sweep that
    deletes everything matching `gtd_*` takes the calendar's preferences, day
    state and roll-over log with it.
@@ -184,7 +184,9 @@ address an `app_user`, or delete the row) rather than widening the guard.
 
 ### What S3c does *not* drop
 
-`gtd_settings` · `gtd_day_state` · `gtd_rollover_log` (D53.6 — the Calendar's),
+`user_settings` · `calendar_day_state` · `calendar_rollover_log` (D53.6 — renamed off
+`gtd_` on 2026-09-22; the last two are the Calendar's, and `user_settings` is the
+member's preference row that Tasks and Calendar share),
 the five `people*` tables (the People directory, renamed off `gtd_` on 2026-09-21), `gtd_horizons` (WS-21
 owns it), `gtd_reviews` (WS-18), and `gtd_projects` · `gtd_spaces` ·
 `gtd_folders` · `gtd_contexts` · `gtd_attachments` (the LOCAL project tree —

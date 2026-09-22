@@ -104,7 +104,7 @@ async def _one_thing_for(db: Any, uid: str, day: date) -> str | None:
     Never raises — a missing table/row degrades to None so planning still runs."""
     try:
         row = (await db.execute(
-            text("SELECT one_thing_id FROM gtd_day_state "
+            text("SELECT one_thing_id FROM calendar_day_state "
                  "WHERE user_id = :uid AND day = :day"),
             {"uid": uid, "day": day})).first()
         return str(row.one_thing_id) if row and row.one_thing_id else None
@@ -124,7 +124,7 @@ async def get_day_state(
     uid = _uid(user)
     async with _tenant_session() as db:
         row = (await db.execute(
-            text("SELECT one_thing_id, seed_ids FROM gtd_day_state "
+            text("SELECT one_thing_id, seed_ids FROM calendar_day_state "
                  "WHERE user_id = :uid AND day = :day"),
             {"uid": uid, "day": d})).first()
         seeds: list[str] = []
@@ -154,19 +154,19 @@ async def put_day_state(
     async with _tenant_session() as db:
         # Ensure a row exists, then update only the provided columns.
         await db.execute(
-            text("INSERT INTO gtd_day_state (user_id, day) VALUES (:uid, :day) "
+            text("INSERT INTO calendar_day_state (user_id, day) VALUES (:uid, :day) "
                  "ON CONFLICT (user_id, day) DO NOTHING"),
             {"uid": uid, "day": d})
         if "one_thing_id" in provided:
             ot = (patch.one_thing_id or "").strip() or None
             await db.execute(
-                text("UPDATE gtd_day_state SET one_thing_id = :ot, "
+                text("UPDATE calendar_day_state SET one_thing_id = :ot, "
                      "updated_at = now() WHERE user_id = :uid AND day = :day"),
                 {"ot": ot, "uid": uid, "day": d})
         if "seed_ids" in provided:
             seeds = json.dumps([str(x) for x in (patch.seed_ids or []) if x])
             await db.execute(
-                text("UPDATE gtd_day_state SET seed_ids = CAST(:s AS jsonb), "
+                text("UPDATE calendar_day_state SET seed_ids = CAST(:s AS jsonb), "
                      "updated_at = now() WHERE user_id = :uid AND day = :day"),
                 {"s": seeds, "uid": uid, "day": d})
     # Echo the stored row — get_day_state opens its own session, so it must run
@@ -363,7 +363,7 @@ def _rank_fallback(cands: list[dict]) -> list[dict]:
 
 
 # The standing "how should the AI plan my day" instruction, used when the user
-# hasn't set their own (gtd_settings.planning_prompt). Deliberately human: leave
+# hasn't set their own (user_settings.planning_prompt). Deliberately human: leave
 # room, don't cram. Overrides nothing the packer enforces (capacity, breaks,
 # lunch) — it steers the LLM's SELECTION + ordering.
 DEFAULT_PLANNING_PROMPT = (
@@ -615,7 +615,7 @@ async def _planning_prefs(db: Any, uid: str) -> dict[str, Any]:
     try:
         row = (await db.execute(text(
             "SELECT planning_prompt, max_focus_run_mins, break_mins, "
-            "lunch_start_hour, lunch_end_hour FROM gtd_settings "
+            "lunch_start_hour, lunch_end_hour FROM user_settings "
             "WHERE user_id = :uid"), {"uid": uid})).first()
         if row:
             out["planning_prompt"] = str(row.planning_prompt or "")
@@ -652,7 +652,7 @@ async def _day_templates(db: Any, uid: str) -> list[dict]:
     """The user's recurring windows (migration 94). Never raises."""
     try:
         row = (await db.execute(text(
-            "SELECT day_templates FROM gtd_settings WHERE user_id = :uid"),
+            "SELECT day_templates FROM user_settings WHERE user_id = :uid"),
             {"uid": uid})).first()
         if row:
             from gateway.routes.tasks.settings import _day_templates as _norm
@@ -1096,7 +1096,7 @@ _OVERDUE_WHERE = (
 # which is the point, because that code is where the behaviour lives and
 # re-deriving it against a second store is how the two would drift.
 #
-# ⚠️ `gtd_settings`, `gtd_day_state` and `gtd_rollover_log` are NOT part of this.
+# ⚠️ `user_settings`, `calendar_day_state` and `calendar_rollover_log` are NOT part of this.
 # They SURVIVE the retirement (D53.6) — they are per-member calendar state, not
 # tasks — so `_planning_prefs`, `_day_templates`, `_one_thing_for` and the
 # rollover log are shared by both sources and are deliberately absent below.
@@ -1407,7 +1407,7 @@ _SETTINGS_COLS = (
 
 async def _load_settings_row(db: Any, uid: str) -> Any:
     return (await db.execute(
-        text(f"SELECT {_SETTINGS_COLS} FROM gtd_settings WHERE user_id = :uid"),
+        text(f"SELECT {_SETTINGS_COLS} FROM user_settings WHERE user_id = :uid"),
         {"uid": uid})).first()
 
 
@@ -1502,7 +1502,7 @@ async def _store_pending_plan(
     payload = json.dumps(
         {"kind": kind, "at": now.isoformat(), "plan": plan.model_dump()})
     await db.execute(
-        text("INSERT INTO gtd_day_state (user_id, day, pending_plan) "
+        text("INSERT INTO calendar_day_state (user_id, day, pending_plan) "
              "VALUES (:uid, :day, CAST(:p AS jsonb)) "
              "ON CONFLICT (user_id, day) DO UPDATE SET "
              "pending_plan = CAST(:p AS jsonb), updated_at = now()"),
@@ -1515,7 +1515,7 @@ async def _take_pending_plan(
     """Return the plan the user last PROPOSED for this day+kind and clear it —
     but only if it's fresh (< TTL). None ⇒ nothing to apply (propose first)."""
     row = (await db.execute(
-        text("SELECT pending_plan FROM gtd_day_state "
+        text("SELECT pending_plan FROM calendar_day_state "
              "WHERE user_id = :uid AND day = :day"),
         {"uid": uid, "day": local_day})).first()
     raw = getattr(row, "pending_plan", None) if row else None
@@ -1528,7 +1528,7 @@ async def _take_pending_plan(
     if not at or now - at > _PENDING_TTL:
         return None
     await db.execute(
-        text("UPDATE gtd_day_state SET pending_plan = NULL, updated_at = now() "
+        text("UPDATE calendar_day_state SET pending_plan = NULL, updated_at = now() "
              "WHERE user_id = :uid AND day = :day"),
         {"uid": uid, "day": local_day})
     try:
@@ -1662,7 +1662,7 @@ async def day_summary(
         one_id = await _one_thing_for(db, uid, local_day)
         one_title = None
         if one_id:
-            # The ★ One Thing is an id on `gtd_day_state`, which SURVIVES the
+            # The ★ One Thing is an id on `calendar_day_state`, which SURVIVES the
             # retirement (D53.6) — but the TITLE it names lives in whichever
             # store is live. Read it off the day's own blocks and candidates
             # rather than a third query against a hard-coded table.
@@ -1691,7 +1691,7 @@ async def rollover_log(
     async with _tenant_session() as db:
         rows = (await db.execute(
             text("""SELECT item_id, title, rolled_from, rolled_to, created_at
-                    FROM gtd_rollover_log WHERE user_id = :uid
+                    FROM calendar_rollover_log WHERE user_id = :uid
                     ORDER BY created_at DESC LIMIT :lim"""),
             {"uid": uid, "lim": max(1, min(limit, 100))},
         )).fetchall()
@@ -1710,7 +1710,7 @@ async def rollover_log(
 # ── Automatic roll-over background job (nightly, per local day) ───────────────
 #
 # A single loop sweeps every user with auto_rollover on; the FIRST tick after a
-# user's LOCAL day rolls over (guarded by gtd_settings.last_rollover_date) packs
+# user's LOCAL day rolls over (guarded by user_settings.last_rollover_date) packs
 # their overdue-incomplete blocks into the new day and APPLIES it (this is the
 # only place scheduling changes are written server-side, without the client).
 # Server-side geometry needs the user's timezone + prefs, all stored (mig 77/78).
@@ -1718,8 +1718,8 @@ async def rollover_log(
 # ✅ H4 DONE for the rollover sweep (WS-29 MT-1d, `saas_multitenancy_handover.md`
 # §H4). Everything below runs from `asyncio.create_task`, long after any request
 # (and its tenant binding) is gone, so the runbook forbids inheriting an ambient
-# tenant — and the sweep is CROSS-tenant by construction. `gtd_settings`/
-# `gtd_items`/`gtd_rollover_log` are FORCE-RLS'd, so a single unbound read returns
+# tenant — and the sweep is CROSS-tenant by construction. `user_settings`/
+# `gtd_items`/`calendar_rollover_log` are FORCE-RLS'd, so a single unbound read returns
 # ZERO rows under phase 4 (rollover silently stops for every customer). The H4
 # shape (exemplars: `crm/auto_lead` + `projects/run_lifecycle_sweep`): the sweep
 # enumerates organizations from the RLS-EXEMPT `organization` table on an unbound
@@ -1781,13 +1781,13 @@ async def _rollover_one_user(row: Any, org_id: str) -> None:
         await src.apply_blocks(db, uid, [], [str(m.id) for m in overdue])
         for m in overdue:
             await db.execute(
-                text("""INSERT INTO gtd_rollover_log
+                text("""INSERT INTO calendar_rollover_log
                           (user_id, item_id, title, rolled_from, rolled_to)
                         VALUES (:uid, :id, :title, :frm, NULL)"""),
                 {"uid": uid, "id": m.id, "title": m.title,
                  "frm": _parse_iso(m.scheduled_start)})
         await db.execute(
-            text("UPDATE gtd_settings SET last_rollover_date = :d "
+            text("UPDATE user_settings SET last_rollover_date = :d "
                  "WHERE user_id = :uid"),
             {"d": local_today, "uid": uid})
     # `_tenant_session` commits on clean exit (H2: a mid-block commit would drop
@@ -1800,7 +1800,7 @@ async def _rollover_one_user(row: Any, org_id: str) -> None:
 async def _run_rollover_sweep() -> None:
     """One pass over every auto-rollover user, per tenant (H4 cross-tenant sweep).
 
-    ``gtd_settings`` is FORCE-RLS'd, so a single unbound read returns ZERO rows
+    ``user_settings`` is FORCE-RLS'd, so a single unbound read returns ZERO rows
     under phase-4 RLS (rollover silently stops for every customer). So enumerate
     organizations from the RLS-EXEMPT ``organization`` table on an unbound
     session (the tenant-less "which tenants exist" read), then bind
@@ -1824,7 +1824,7 @@ async def _run_rollover_sweep() -> None:
                 text("""SELECT user_id, timezone, auto_rollover,
                                last_rollover_date, day_start_hour, day_end_hour,
                                daily_capacity_mins, buffer_mins, energy_windows
-                        FROM gtd_settings
+                        FROM user_settings
                         WHERE coalesce(auto_rollover, true) = true"""),
             )).fetchall()
         for row in rows:

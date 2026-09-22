@@ -1578,7 +1578,7 @@ owner's standing "Projects is canonical, Tasks conforms"). Mapping a boolean ont
 scale is lossy in the write direction — toggling "Important" off has no single correct level to
 return to — so the conforming surface takes the richer control rather than inventing a mapping.
 
-⚠️ **`urgent_window_hours` must be shared, not per-user.** `gtd_settings` holds it per person
+⚠️ **`urgent_window_hours` must be shared, not per-user.** `user_settings` holds it per person
 today. If urgency is a shared axis and the window is personal, Ana and Ben see different
 urgency on the same task, which is precisely the divergence this decision removes. It becomes
 an org-level setting; where exactly is an implementation call, that it is not per-user is not.

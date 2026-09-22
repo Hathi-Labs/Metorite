@@ -9,8 +9,8 @@
 > exist** — there is no `CREATE TABLE` for either anywhere in `infra/postgres/`.
 > `calendar_timeboxing.md` §13 P4 and `work_plan.md`'s WS-21 row both cite them as
 > if built. What the calendar actually persists to is **`gtd_items` directly**
-> (scheduling is fields on the task row) plus `gtd_settings`, `gtd_day_state` and
-> `gtd_rollover_log`. Any plan that begins "move the calendar's tables" is built on
+> (scheduling is fields on the task row) plus `user_settings`, `calendar_day_state` and
+> `calendar_rollover_log`. Any plan that begins "move the calendar's tables" is built on
 > a table that was never created. See §10.3.
 
 Status: **F0 + F1 BUILT** (2026-07-22, branch
@@ -25,7 +25,7 @@ tomorrow, close the day) and Focus Mode (pomodoro/flow, subtask checklist,
 - **Breaks in the packer — SHIPPED 2026-07-23** (`80722e17`, migration
   `infra/postgres/97_gtd_planning_prefs.sql`; the commit message's "mig 93" is
   the pre-renumber number and is wrong — the file itself records `93→97`).
-  `gtd_settings.max_focus_run_mins` / `break_mins` + an optional protected lunch
+  `user_settings.max_focus_run_mins` / `break_mins` + an optional protected lunch
   window; the packer widens the buffer behind the block that trips the
   focus-run limit
   (`apps/services/gateway/gateway/routes/tasks/calendar.py` — `_planning_prefs`,
@@ -37,7 +37,7 @@ tomorrow, close the day) and Focus Mode (pomodoro/flow, subtask checklist,
   is countable in the review. Typed break blocks stay F2, under
   `gtd_time_blocks`.
 - **Per-day Focus-OS state is no longer localStorage-only.** Migration
-  `infra/postgres/92_gtd_day_state.sql` (`gtd_day_state`) +
+  `infra/postgres/92_gtd_day_state.sql` (`calendar_day_state`) +
   `GET/PUT /tasks/calendar/day-state` persist the ★ One Thing and the
   tomorrow-seeds server-side; the client already calls them
   (`workbench/control_plane/src/app/tasks/components/CalendarView.tsx` hydrates
@@ -449,7 +449,7 @@ No feature above is an island; each plugs into a surface that already exists:
   F2 still owes is *typed break rows* — a break you can see on the grid, skip,
   and count in the review — which needs block kinds, i.e. `gtd_time_blocks`.
 - **F3:** ~~ideal-week templates~~ (**SUBSTANTIALLY SHIPPED 2026-07-23** —
-  migration `98_gtd_day_templates.sql` (`gtd_settings.day_templates`), the
+  migration `98_gtd_day_templates.sql` (`user_settings.day_templates`), the
   settings API round-trip
   (`apps/services/gateway/gateway/routes/tasks/settings.py` — model field,
   patch field, `_day_templates` normaliser, the write path's JSON dump), the
@@ -556,11 +556,11 @@ tomorrow-seeds move off localStorage" — done by `92_gtd_day_state.sql` +
    and **`timerMode`** — is server-backed, so the startup streak survives a
    different browser. *(One Thing + seeds already are; do not re-do them.)*
    This clause is satisfiable **independently of S1–S4** and may ship first as
-   its own small PR on `gtd_day_state`.
+   its own small PR on `calendar_day_state`.
 
 ### 9.2 F2 Email windows · **AGENT-SAFE**
 
-Foundation already shipped 2026-07-23: `gtd_settings.day_templates`
+Foundation already shipped 2026-07-23: `user_settings.day_templates`
 (`98_gtd_day_templates.sql`) already reserves a recurring window, and
 `_THEME_ENERGY` in `apps/services/gateway/gateway/routes/tasks/calendar.py`
 already recognises `theme` values `"email"` and `"inbox"`. Missing: the
@@ -802,9 +802,9 @@ vocabulary are untouched.
 | Table | Role | Fate |
 |---|---|---|
 | `gtd_items` | **the tasks themselves** — scheduling is fields on the task row | ⚠️ **re-points to `pm_tasks`** when D53's S3a lands |
-| `gtd_settings` | per-member calendar preferences (migrations 77, 78) | **survives** D53's retirement (D53.6) |
-| `gtd_day_state` | per-member day state | **survives** |
-| `gtd_rollover_log` | roll-over audit (migration 78) | **survives** |
+| `user_settings` | the member preference row. Its planning half is calendar (migrations 77, 78, 97, 98); its AI and capture half belongs to Tasks. Was `gtd_settings` until 2026-09-22 | **survives** D53's retirement (D53.6) |
+| `calendar_day_state` | per-member day state | **survives** |
+| `calendar_rollover_log` | roll-over audit (migration 78) | **survives** |
 
 So the calendar is a **third lens on the same rows** — Projects is the company board,
 Tasks is my list, Calendar is my time — and not a separate system with a store to

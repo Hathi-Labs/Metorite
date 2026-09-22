@@ -628,7 +628,7 @@ than defaulting; a test proves the refusal.
 >   from the RLS-EXEMPT `organization` table on an unbound session, then binds
 >   `tenant_session(org)` per org to read that org's `task_accounts`.
 > - `routes/tasks/calendar.py` — `_rollover_one_user` bound single-user/org;
->   `_run_rollover_sweep` is the matching per-org sweep over `gtd_settings`.
+>   `_run_rollover_sweep` is the matching per-org sweep over `user_settings`.
 >
 > Each single-org job wraps its DB work in `tenant_session(org)`; the two sweeps
 > keep ONE unbound `get_db()` each for the exempt-`organization` enumeration

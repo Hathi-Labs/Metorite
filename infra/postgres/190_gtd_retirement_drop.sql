@@ -25,7 +25,7 @@
 --
 -- ⚠️ WHAT THIS DOES NOT DROP, and why each one survives:
 --
---   * `gtd_settings`, `gtd_day_state`, `gtd_rollover_log` — **D53.6 names these
+--   * `user_settings`, `calendar_day_state`, `calendar_rollover_log` — **D53.6 names these
 --     explicitly.** They are per-member CALENDAR state, not task rows; they
 --     belong to D54's Calendar app and are not part of this retirement. A sweep
 --     that took them with the rest is the specific mistake D53.6 exists to stop.

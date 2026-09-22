@@ -17,7 +17,7 @@ until reviewed + merged" caveat is obsolete — PR #71 merged
 (`7a5c72b2 feat(calendar): timeboxing app … (#71)`) and `CalendarView.tsx` +
 the calendar routes are in main. P3's "still to do" (nightly job + roll history)
 has ALSO shipped since: migration `infra/postgres/78_gtd_calendar_rollover.sql`
-(`gtd_rollover_log`, `auto_rollover` toggle, per-user `timezone`) and
+(`calendar_rollover_log`, `auto_rollover` toggle, per-user `timezone`) and
 `start_auto_rollover()` launched at gateway startup
 (`apps/services/gateway/gateway/main.py:274-275`, defined at
 `.../routes/tasks/calendar.py:1543`).
@@ -241,7 +241,7 @@ credentials on the VPS — see §13 P4.
   packs overdue-incomplete blocks into today (deadline-aware) + the roll-over
   banner; deadline radar (due-soon badge + rail section + one-click timebox).
   *Still to do: a nightly automatic roll-over job (scheduler) + roll history.*
-  *(Update 2026-08-01: the nightly job + `gtd_rollover_log` history SHIPPED —
+  *(Update 2026-08-01: the nightly job + `calendar_rollover_log` history SHIPPED —
   mig 78 + `start_auto_rollover()`; and #235 changed the semantics to
   release-to-list, see the header note. P3 is CLOSED.)*
 - **P4 — external sync (DEFERRED · 🔒 OWNER-GATE — needs OAuth client creds):**
@@ -301,7 +301,7 @@ relative.)*
 | P0–P2 (grid, timeboxing, planner, chat) | shipped foundation under F0/F1 | **SHIPPED** (PR #71; F0/F1 2026-07-22) | — |
 | P3 remainder (nightly roll-over + history) | — (closed here) | **SHIPPED** (mig 78 + `start_auto_rollover()` at `apps/services/gateway/gateway/main.py:274-275`; #235 release-to-list, `CalendarView.tsx:387-396`) | — |
 | — (packer breaks + lunch) | F2 item, now closed | **SHIPPED 2026-07-23** (`80722e17`, mig 97) as *geometry*; typed `kind='break'` rows still owed under `gtd_time_blocks` | AGENT-SAFE |
-| — (per-day Focus-OS state) | F2 clause | **SHIPPED** (mig 92 `gtd_day_state` + `GET/PUT /tasks/calendar/day-state`); only ritual stamps + `timerMode` remain local | AGENT-SAFE |
+| — (per-day Focus-OS state) | F2 clause | **SHIPPED** (mig 92 `calendar_day_state` + `GET/PUT /tasks/calendar/day-state`); only ritual stamps + `timerMode` remain local | AGENT-SAFE |
 | P4 external sync | F3 item | **OPEN** — `calendar_accounts` absent; `POST /tasks/calendar/sync` still 501 (`calendar.py:57-64`); `GET /calendar/accounts` returns `[]` | **OWNER-GATE** (OAuth client creds) |
 | P5 `gtd_time_blocks` / batch / recurring blocks | F2 | **OPEN** — table unbuilt; focus_os §5 canonical, §9.1 has the 4-slice plan | AGENT-SAFE |
 | P5 Pomodoro | F1 Focus Mode | **SHIPPED 2026-07-22** (`FocusMode.tsx`) | — |
@@ -320,7 +320,7 @@ verify command has been rewritten; the old `-k` form was unsafe.)*
   user's local midnight, yesterday's unfinished flexible timeboxes are RELEASED
   to the unscheduled rail on first load without user action
   (`scheduled_start/end → NULL`, at most once per local day, `auto_rollover`
-  opt-out honoured), and each release is recorded as a `gtd_rollover_log` row
+  opt-out honoured), and each release is recorded as a `calendar_rollover_log` row
   with `rolled_to = NULL`; re-planning them is deliberate (drag, or Rebuild my
   day, which sweeps them in per #232).
 - **P4 external sync — OPEN · 🔒 OWNER-GATE; done when:** a `calendar_accounts`

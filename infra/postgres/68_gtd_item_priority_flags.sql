@@ -36,5 +36,5 @@ ALTER TABLE gtd_items
 -- The urgency window (hours from now within which a due task counts as urgent).
 -- A per-user setting so the threshold is tunable without a code change; default
 -- 48h (overdue or due within two days).
-ALTER TABLE gtd_settings
+ALTER TABLE user_settings
     ADD COLUMN IF NOT EXISTS urgent_window_hours INTEGER NOT NULL DEFAULT 48;

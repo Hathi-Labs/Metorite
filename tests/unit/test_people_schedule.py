@@ -15,7 +15,7 @@ Three layers, one direction, and the tests are grouped that way:
   mode is two numbers that drift where nobody is looking.
 
 The database's own half — that `org_settings` round-trips a JSONB policy, that
-the seed reaches a real `gtd_settings` read — is `tests/live/live_ws28p.py`
+the seed reaches a real `user_settings` read — is `tests/live/live_ws28p.py`
 per R8.
 """
 

@@ -11,7 +11,7 @@ database answers, and this ticket has three:
 * the ``ON CONFLICT (key) DO UPDATE`` upsert actually replaces rather than
   duplicating — `org_settings.key` is the primary key, and a fake has no
   constraints.
-* the calendar seed reaches a real ``gtd_settings`` read through
+* the calendar seed reaches a real ``user_settings`` read through
   ``routes/tasks/settings._load``, joined to a real ``people`` row on
   ``lower(email)``.
 
@@ -176,8 +176,8 @@ async def main() -> None:
         check("…and counted at least the two we made",
               dry.impact.changed >= 2, True)
 
-        # ── 6. The calendar seed reaches a real gtd_settings read ───────────
-        await db.execute(text("DELETE FROM gtd_settings WHERE user_id = :uid"),
+        # ── 6. The calendar seed reaches a real user_settings read ───────────
+        await db.execute(text("DELETE FROM user_settings WHERE user_id = :uid"),
                          {"uid": SUBJECT_EMAIL})
         await db.commit()
         seeded = await tasks_settings._load(db, SUBJECT_EMAIL)
@@ -190,13 +190,13 @@ async def main() -> None:
 
         # Nothing was written: the seed is a read-time default.
         still_empty = (await db.execute(
-            text("SELECT count(*) AS n FROM gtd_settings WHERE user_id = :uid"),
+            text("SELECT count(*) AS n FROM user_settings WHERE user_id = :uid"),
             {"uid": SUBJECT_EMAIL})).fetchone()
         check("the seed wrote no row", int(still_empty.n), 0)
 
         # A person with a row keeps THEIR value — seeded once, never mirrored.
         await db.execute(text(
-            "INSERT INTO gtd_settings (user_id, day_start_hour) "
+            "INSERT INTO user_settings (user_id, day_start_hour) "
             "VALUES (:uid, 5)"), {"uid": SUBJECT_EMAIL})
         await db.commit()
         check("an existing preference is never overwritten",
@@ -210,7 +210,7 @@ async def main() -> None:
         await db.execute(text(
             "DELETE FROM people WHERE email LIKE '%@ws28p.invalid'"))
         await db.execute(text(
-            "DELETE FROM gtd_settings WHERE user_id LIKE '%@ws28p.invalid'"))
+            "DELETE FROM user_settings WHERE user_id LIKE '%@ws28p.invalid'"))
         await db.execute(text(
             "DELETE FROM org_settings WHERE key = 'work_schedule'"))
         if saved_policy is not None:

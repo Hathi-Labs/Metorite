@@ -1744,7 +1744,7 @@ async def _llm_atomize(
     model: str = "tier-fast",
 ) -> list[dict[str, Any]] | None:
     """LLM splitting + dedup judgment on the user's configured atomize model
-    (gtd_settings). Returns candidate dicts [{title, duplicate_of: idx|None,
+    (user_settings). Returns candidate dicts [{title, duplicate_of: idx|None,
     same: yes|maybe|no}] or None on ANY failure (caller falls back to the
     deterministic path)."""
     try:
@@ -1838,7 +1838,7 @@ async def atomize_dump(
         return AtomizeResponse(items=[])
 
     uid = _uid(user)
-    # Per-user model choice (gtd_settings) — cheap read, defaults on failure.
+    # Per-user model choice (user_settings) — cheap read, defaults on failure.
     from gateway.routes.tasks.settings import gtd_models
     async with _tenant_session() as _mdb:
         models = await gtd_models(_mdb, uid)

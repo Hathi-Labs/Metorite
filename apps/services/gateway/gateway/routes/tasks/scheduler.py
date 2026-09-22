@@ -47,7 +47,7 @@ from acb_common import get_logger
 # shape (exemplars: `crm/auto_lead` + `projects/run_lifecycle_sweep`): thread an
 # EXPLICIT `organization_id` down the call chain and open `tenant_session(org)`
 # per unit of DB work, REFUSING (`TenantUnbound`, never defaulting) if no org is
-# resolvable. `task_accounts`/`gtd_settings` are FORCE-RLS'd under phase 4, so a
+# resolvable. `task_accounts`/`user_settings` are FORCE-RLS'd under phase 4, so a
 # single unbound read returns ZERO rows — the enumeration is therefore a per-org
 # sweep over the RLS-EXEMPT `organization` table (readable unbound, it is the
 # "which tenants exist" decision), binding `tenant_session(org)` per org.
@@ -235,7 +235,7 @@ async def _read_interval(account_id: str, org_id: str) -> tuple[int, bool]:
     (default, False) so the loop stops itself; a user turning background_sync
     off mid-run also self-stops the loop next cycle.
 
-    ⚠️ **H4:** reads ``task_accounts``/``gtd_settings`` (both FORCE-RLS'd) inside
+    ⚠️ **H4:** reads ``task_accounts``/``user_settings`` (both FORCE-RLS'd) inside
     ``tenant_session(org_id)`` — bound to the account's own tenant, threaded from
     the loop. Refuses (``TenantUnbound``) rather than reading on an unbound
     session (0 rows under phase-4 RLS → a spurious self-stop) or inheriting an
@@ -260,7 +260,7 @@ async def _read_interval(account_id: str, org_id: str) -> tuple[int, bool]:
             text("""SELECT a.sync_interval_secs, a.sync_enabled, a.provider,
                            coalesce(s.background_sync, true) AS background_sync
                     FROM task_accounts a
-               LEFT JOIN gtd_settings s ON s.user_id = a.user_id
+               LEFT JOIN user_settings s ON s.user_id = a.user_id
                    WHERE a.id = :id"""),
             {"id": account_id},
         )).fetchone()
@@ -278,7 +278,7 @@ async def _enabled_accounts_by_org() -> dict[str, tuple[str, int]]:
     """Every sync-enabled account, mapped ``account_id -> (organization_id,
     interval_secs)``.
 
-    ⚠️ **H4 (MT-1d) CROSS-TENANT SWEEP.** ``task_accounts``/``gtd_settings`` are
+    ⚠️ **H4 (MT-1d) CROSS-TENANT SWEEP.** ``task_accounts``/``user_settings`` are
     FORCE-RLS'd, so a single unbound read returns ZERO rows under phase-4 (the
     fail-closed cliff) — the sync would silently stop for every customer. So
     enumerate organizations from the RLS-EXEMPT ``organization`` table on an
@@ -320,7 +320,7 @@ async def _enabled_accounts_by_org() -> dict[str, tuple[str, int]]:
             rows = (await db.execute(
                 text("""SELECT a.id, a.provider, a.sync_interval_secs
                         FROM task_accounts a
-                   LEFT JOIN gtd_settings s ON s.user_id = a.user_id
+                   LEFT JOIN user_settings s ON s.user_id = a.user_id
                        WHERE a.sync_enabled = true
                          AND coalesce(s.background_sync, true) = true"""),
             )).fetchall()

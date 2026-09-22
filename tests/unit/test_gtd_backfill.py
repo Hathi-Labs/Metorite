@@ -102,9 +102,9 @@ def test_190_drops_without_cascade() -> None:
 #: with the authority that keeps it. The prefix is the only thing four unrelated
 #: subsystems have in common, which is exactly why this list is written out.
 KEEP = {
-    "gtd_settings": "D53.6 — Calendar state, not a task row",
-    "gtd_day_state": "D53.6 — Calendar state",
-    "gtd_rollover_log": "D53.6 — Calendar state",
+    "user_settings": "D53.6 — Calendar state, not a task row",
+    "calendar_day_state": "D53.6 — Calendar state",
+    "calendar_rollover_log": "D53.6 — Calendar state",
     "people": "the People directory (fetchPeople/createPerson)",
     "people_absences": "the People directory",
     "people_credentials": "the People directory",
