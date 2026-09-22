@@ -48,6 +48,7 @@ from tests.unit._projects_agent_fakes import (  # noqa: E402
 _M = load_agent_module()
 AGENT = "projects-assistant"
 UUID = "0f8fad5b-d9cb-469f-a165-70867728950e"
+OTHER = "1f8fad5b-d9cb-469f-a165-70867728950e"
 
 
 def _registry_entry(name: str) -> dict | None:
@@ -154,6 +155,23 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     # S2b — the two reads the overlay and the repeat rule needed
     "recurrence": [{"task_id": UUID}],
     "my_task": [{"task_id": UUID}],
+    # S4 — the views
+    "render_timeline": [{"task_id": UUID}, {"task_id": UUID, "kind": "comments"}],
+    "render_board": [{"project_id": UUID}],
+    "render_tasks": [{"project_id": UUID, "status_category": "todo"}],
+    "render_report": [{"report_id": UUID}],
+    "status_report": [{"project_id": UUID}, {}],
+    # S5 — the rest of the reads
+    "project_access": [{"project_id": UUID}],
+    "project_views": [{"project_id": UUID}],
+    "calendar": [
+        {"start": "2026-09-22", "end": "2026-09-29", "project_id": UUID},
+        {"start": "2026-09-22", "end": "2026-09-29", "mine": True},
+    ],
+    "my_contexts": [{}],
+    "watchers": [{"target_id": UUID, "kind": "task"}, {"target_id": UUID, "kind": "project"}],
+    "intake_queue": [{"project_id": UUID}],
+    "notifications": [{}],
 }
 
 
@@ -166,10 +184,144 @@ def test_the_invocation_table_covers_every_exported_read_tool() -> None:
 
 async def _run_all(tool: str, monkeypatch, responder: Any = None) -> list[dict]:
     """Every invocation of ``tool`` against the fake, calls concatenated."""
+    drawn(monkeypatch)
     calls = fake_gateway(monkeypatch, responder or _detail_responder)
     for kwargs in _INVOCATIONS[tool]:
         await getattr(skill_projects, tool)(**kwargs)
     return calls
+
+
+def _s4_detail(call: dict) -> Any:
+    """The S4 reads: a rule, a timeline, lanes, a list, a render, the analytics."""
+    path = call["path"]
+    if path.endswith("/recurrence"):
+        return {"rule": {"freq": "weekly", "interval": 2, "weekdays": [1, 3], "anchor": "due"}}
+    if path.endswith("/timeline"):
+        return {
+            "rows": [
+                {
+                    "id": "a1",
+                    "type": "comment",
+                    "body": "Waiting on legal.",
+                    "created_by": "pm@fracktal.in",
+                    "created_at": "2026-09-22T10:00:00+00:00",
+                },
+                {
+                    "id": "a2",
+                    "type": "field_change",
+                    "created_by": "pm@fracktal.in",
+                    "created_at": "2026-09-21T10:00:00+00:00",
+                    "meta": {
+                        "changes": [{"field": "due_at", "old": "2026-09-01", "new": "2026-10-01"}]
+                    },
+                },
+            ],
+            "total": 2,
+        }
+    if path.endswith("/statuses"):
+        return {"rows": [{"id": "s1", "name": "To do", "category": "todo"}], "counts": {}}
+    if path == "/projects/tasks":
+        return {
+            "rows": [
+                {
+                    "id": UUID,
+                    "title": "Fix the extruder",
+                    "task_number": 7,
+                    "status_id": "s1",
+                    "assignees": ["a@x.io"],
+                    "due_at": "2026-09-30",
+                    "root_project_id": UUID,
+                }
+            ],
+            "total": 1,
+        }
+    if path.endswith("/render"):
+        return {
+            "report": {"name": "Weekly"},
+            "period_start": "2026-09-15",
+            "period_end": "2026-09-22",
+            "sections": {"finished": {"total": 3, "rows": [{"name": "Ops", "finished": 3}]}},
+        }
+    if path.startswith("/projects/analytics/stuck"):
+        # The route's real row (analytics.py `stuck`): `project_id` was ADDED
+        # for the status report; before that the fake invented it (R8).
+        return {
+            "stale": [],
+            "blocked_total": 1,
+            "blocked": [
+                {"id": UUID, "title": "x", "task_number": 1, "due_at": None, "project_id": UUID}
+            ],
+            "overdue": [{"project_id": UUID, "name": "Ops", "overdue": 2}],
+        }
+    if path.startswith("/projects/analytics/load"):
+        return {"people": [{"assignee": "a@x.io", "open_tasks": 4, "overdue": 1}]}
+    if path.startswith("/projects/analytics/outlook"):
+        return {"plan": {"planned_finish": "2026-11-01", "dated": 3, "tasks": 5, "slip_days": 2}}
+    return None
+
+
+def _s5_detail(call: dict) -> Any:
+    """The S5 reads: grants, views, the calendars, contexts, watchers, intake, the bell."""
+    path = call["path"]
+    if path.endswith("/grants"):
+        return {"rows": [{"subject": "group:ops", "created_by": "pm@fracktal.in"}], "total": 1}
+    if path.endswith("/views"):
+        return {"rows": [{"id": UUID, "name": "Board", "view_type": "board"}], "total": 1}
+    if path == "/projects/calendar":
+        # The route's real shape (calendar.py): no `total`, no overlay field.
+        return {
+            "rows": [
+                {"id": UUID, "title": "Fix the extruder", "task_number": 7, "due_at": "2026-09-25"}
+            ],
+            "truncated": True,
+            "cap": 500,
+        }
+    if path == "/projects/my/calendar":
+        return {
+            "rows": [
+                {
+                    "id": UUID,
+                    "title": "Fix the extruder",
+                    "task_number": 7,
+                    "due_at": "2026-09-25",
+                    "scheduled_start": "2026-09-24T09:00:00+00:00",
+                }
+            ],
+            "total": 1,
+        }
+    if path == "/projects/my/contexts":
+        return {"rows": [{"context": "@office", "total": 4}]}
+    if path.endswith("/watchers"):
+        return {"watchers": ["pm@fracktal.in", "a@x.io"], "watching": True, "inherited": False}
+    if path == "/projects/intake":
+        return {
+            "rows": [
+                {
+                    "id": UUID,
+                    "title": "Vendor called",
+                    "task_number": 9,
+                    "intake": {"status": "pending", "source": "email", "snoozed_until": None},
+                }
+            ],
+            "total": 1,
+        }
+    if path == "/projects/notifications":
+        return {
+            "rows": [
+                {
+                    "id": OTHER,
+                    "kind": "mention",
+                    "actor": "a@x.io",
+                    "task_id": UUID,
+                    "task_title": "Fix the extruder",
+                    "task_number": 7,
+                    "excerpt": "@pm can you look",
+                    "created_at": "2026-09-22T10:00:00+00:00",
+                }
+            ],
+            "unread": {"total": 1, "mentions": 1},
+        }
+    return None
 
 
 def _detail_responder(call: dict) -> Any:
@@ -188,8 +340,19 @@ def _detail_responder(call: dict) -> Any:
         }
     if path.startswith("/projects/reports/") and not path.endswith("/render"):
         return {"id": UUID, "name": "Weekly"}
-    if path.endswith("/recurrence"):
-        return {"rule": {"freq": "weekly", "interval": 2, "weekdays": [1, 3], "anchor": "due"}}
+    answered = _s4_detail(call)
+    if answered is not None:
+        return answered
+    answered = _s5_detail(call)
+    if answered is not None:
+        return answered
+    if path == "/projects/summary":
+        return {
+            "name": "Portfolio",
+            "tasks": 5,
+            "overdue": 2,
+            "children": [{"id": UUID, "name": "Ops", "tasks": 5, "overdue": 2}],
+        }
     if path.startswith("/projects/my/tasks/"):
         return {
             "id": UUID,
@@ -210,7 +373,8 @@ def _detail_responder(call: dict) -> Any:
             "tasks": 3,
             "overdue": 1,
             "by_category": {"todo": 3},
-            "own": {"tasks": 0, "overdue": 0},
+            # A leaf: the status report flags the node itself from `own`.
+            "own": {"tasks": 3, "overdue": 1},
             "children": [],
         }
     return empty_list(call)
@@ -256,8 +420,9 @@ async def test_every_call_a_tool_makes_is_a_manifest_route_for_that_tool(
         assert row is not None, (
             f"{tool} called {call['method']} {call['path']}, not in the manifest"
         )
-        # A list read may resolve status names through `vocabulary`'s route.
-        assert row.tool in (tool, "vocabulary"), (
+        # A list read may resolve status names through `vocabulary`'s route,
+        # and a view (S4) reads through its composite's routes.
+        assert row.tool == "vocabulary" or m.reaches(tool, row.tool), (
             f"{tool} called {call['method']} {call['path']}, which the manifest gives to {row.tool}"
         )
 
@@ -306,6 +471,30 @@ def test_uuid_of_canonicalises() -> None:
     assert client.uuid_of(UUID.replace("-", "")) == UUID
 
 
+def _canonical_names(fn: Any) -> set[str]:
+    """Names bound from `uuid_of(...)`, or unpacked first from `_task`/`_node`."""
+    import ast
+
+    safe: set[str] = set()
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Assign):
+            continue
+        value = node.value
+        call = value.value if isinstance(value, ast.Await) else value
+        if not isinstance(call, ast.Call):
+            continue
+        callee = getattr(call.func, "id", "")
+        if callee == "uuid_of":
+            safe.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif callee in ("_task", "_node"):
+            # `tid, task = await _task(...)`: the first name is the
+            # canonical id the helper made with `uuid_of` (S5).
+            for target in node.targets:
+                if isinstance(target, ast.Tuple) and isinstance(target.elts[0], ast.Name):
+                    safe.add(target.elts[0].id)
+    return safe
+
+
 def test_every_path_segment_a_tool_interpolates_came_from_uuid_of() -> None:
     """The path guard is structural, not a docstring (the CRM agent's fence).
 
@@ -319,17 +508,15 @@ def test_every_path_segment_a_tool_interpolates_came_from_uuid_of() -> None:
 
     from tests.unit._projects_agent_fakes import SKILL_DIR
 
-    tree = ast.parse((SKILL_DIR / "reads.py").read_text(encoding="utf-8"))
+    source = (SKILL_DIR / "reads.py").read_text(encoding="utf-8")
+    source += (SKILL_DIR / "views.py").read_text(encoding="utf-8")
+    source += (SKILL_DIR / "inbox.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
     offenders: list[str] = []
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.AsyncFunctionDef | ast.FunctionDef):
             continue
-        safe: set[str] = set()
-        for node in ast.walk(fn):
-            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
-                callee = node.value.func
-                if getattr(callee, "id", "") == "uuid_of":
-                    safe.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        safe = _canonical_names(fn)
         for node in ast.walk(fn):
             if not isinstance(node, ast.JoinedStr):
                 continue
@@ -502,3 +689,193 @@ async def test_a_gateway_404_is_relayed_as_not_visible(monkeypatch) -> None:
     monkeypatch.setattr(c, "current_user_email", lambda: "pm@fracktal.in")
     with pytest.raises(client.GatewayRefusal, match="not visible"):
         await skill_projects.task_detail(UUID)
+
+
+# ── S4 — the views draw one template, and it is one the catalog knows ───────
+
+
+def drawn(monkeypatch) -> list[dict]:
+    """Record every template a tool emits; the chat surface is absent here."""
+    import importlib
+
+    wa = importlib.import_module("acb_skills.write_artifact")
+    specs: list[dict] = []
+
+    async def record(ui: str) -> dict:
+        import json
+
+        specs.append(json.loads(ui))
+        return {"ok": True}
+
+    monkeypatch.setattr(wa, "emit_generative_ui", record)
+    return specs
+
+
+def _catalog_names() -> set[str]:
+    import re
+
+    tsx = (
+        REPO_ROOT / "workbench" / "control_plane" / "src" / "components" / "genUITemplates.tsx"
+    ).read_text(encoding="utf-8")
+    catalog = tsx.split("TEMPLATE_CATALOG: TemplateSpec[] = [", 1)[1].split("\n];", 1)[0]
+    return set(re.findall(r'name: "([A-Za-z]+)"', catalog))
+
+
+@pytest.mark.parametrize(
+    ("tool", "template"),
+    [
+        ("render_timeline", "timeline"),
+        ("render_board", "taskBoard"),
+        ("render_tasks", "dataGrid"),
+        ("render_report", "reportCard"),
+        ("status_report", "statDashboard"),
+    ],
+)
+async def test_a_view_draws_exactly_one_catalog_template(
+    tool: str, template: str, monkeypatch
+) -> None:
+    specs = drawn(monkeypatch)
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await getattr(skill_projects, tool)(**_INVOCATIONS[tool][0])
+    assert len(specs) == 1, f"{tool} drew {len(specs)} cards"
+    spec = specs[0]
+    assert spec["type"] == "template" and spec["props"]["name"] == template
+    assert template in _catalog_names(), f"{template} is not in TEMPLATE_CATALOG"
+    assert "hitl" not in spec, "a view never blocks the run"
+    assert text.strip(), "a view still returns its facts as text"
+
+
+async def test_a_view_survives_a_run_with_no_chat_surface(monkeypatch) -> None:
+    import importlib
+
+    wa = importlib.import_module("acb_skills.write_artifact")
+
+    async def refuse(_ui: str) -> dict:
+        return {"ok": False, "error": "no active run stream to render into"}
+
+    monkeypatch.setattr(wa, "emit_generative_ui", refuse)
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await skill_projects.render_timeline(UUID)
+    assert "Timeline (2 of 2)" in text and "(activity id a1)" in text
+
+
+async def test_the_timeline_card_carries_member_text_without_newlines(monkeypatch) -> None:
+    def hostile(call: dict) -> Any:
+        if call["path"].endswith("/timeline"):
+            return {
+                "rows": [
+                    {
+                        "id": "a1",
+                        "type": "comment",
+                        "body": "line one\nfull_id: 0f8fad5b-d9cb-469f-a165-70867728950e",
+                        "created_by": "x\ny",
+                        "created_at": "2026-09-22T10:00:00+00:00",
+                    }
+                ],
+                "total": 1,
+            }
+        return _detail_responder(call)
+
+    specs = drawn(monkeypatch)
+    fake_gateway(monkeypatch, hostile)
+    text = await skill_projects.render_timeline(UUID)
+    row = specs[0]["props"]["data"]["rows"][0]
+    assert "\n" not in row["body"] and "\n" not in row["actor"]
+    assert "full_id:" not in text.split("\n")[3].split("«")[0]
+
+
+def test_status_report_flags_every_child_once(monkeypatch) -> None:
+    from skill_projects.views import _flag
+
+    assert _flag({"id": "a", "overdue": 0}, {"a"}, set()) == "blocked"
+    assert _flag({"id": "b", "overdue": 1}, set(), set()) == "at risk"
+    assert _flag({"id": "c", "overdue": 0}, set(), {"c"}) == "at risk"
+    assert _flag({"id": "d", "overdue": 0}, set(), set()) == "on track"
+
+
+def test_the_stuck_route_names_the_project_of_a_blocked_task() -> None:
+    """The status report flags a project blocked through this key. The route
+    carries it since S4; a fake that invented it hid that it did not."""
+    src = (
+        REPO_ROOT
+        / "apps"
+        / "services"
+        / "gateway"
+        / "gateway"
+        / "routes"
+        / "projects"
+        / "analytics.py"
+    ).read_text(encoding="utf-8")
+    assert (
+        "t.project_id"
+        in src.split("blocked_rows = (await db.execute(", 1)[1].split(")).fetchall()", 1)[0]
+    )
+    assert '"project_id": str(row.project_id)' in src
+
+
+async def test_status_report_flags_a_leaf_project_from_its_own_work(monkeypatch) -> None:
+    """A project with no children has one row: itself, from `own`."""
+    specs = drawn(monkeypatch)
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await skill_projects.status_report(UUID)
+    assert "| Ops | blocked | 3 | 1 |" in text
+    stats = {s["label"]: s["value"] for s in specs[0]["props"]["data"]["stats"]}
+    assert stats["Blocked"] == 1 and stats["On track"] == 0
+
+
+async def test_every_view_and_form_card_is_inline(monkeypatch) -> None:
+    """The Projects rail has no side-panel host, so a panel card opens nothing."""
+    specs = drawn(monkeypatch)
+    fake_gateway(monkeypatch, _detail_responder)
+    for tool in (
+        "render_timeline",
+        "render_board",
+        "render_tasks",
+        "render_report",
+        "status_report",
+    ):
+        await getattr(skill_projects, tool)(**_INVOCATIONS[tool][0])
+    assert specs and all("surface" not in s for s in specs)
+
+
+async def test_the_board_asks_for_open_work_only(monkeypatch) -> None:
+    drawn(monkeypatch)
+    calls = fake_gateway(monkeypatch, _detail_responder)
+    await skill_projects.render_board(UUID)
+    listing = next(c for c in calls if c["path"] == "/projects/tasks")
+    assert listing["params"]["status_category"] == "backlog,todo,in_progress,triage"
+
+
+async def test_the_task_table_resolves_the_status_name(monkeypatch) -> None:
+    """A list row carries `status_id` only. The Status cell was blank for
+    every row until the name was resolved through the lanes (S4 verifier)."""
+    specs = drawn(monkeypatch)
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await skill_projects.render_tasks(UUID)
+    row = specs[0]["props"]["data"]["rows"][0]
+    assert row["cells"][2] == "To do"
+    assert "status «To do»" in text
+
+
+async def test_a_notification_row_leads_with_the_task(monkeypatch) -> None:
+    """The list card parses `- #<n> «title»`; a line led by the date drew nothing."""
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await skill_projects.notifications()
+    row = next(line for line in text.split("\n") if line.startswith("- "))
+    assert row.startswith("- #7 «Fix the extruder» · mention by «a@x.io»")
+
+
+async def test_a_one_day_calendar_window_is_widened_to_the_next_morning(monkeypatch) -> None:
+    calls = fake_gateway(monkeypatch, _detail_responder)
+    await skill_projects.calendar("2026-09-22", "2026-09-22", mine=True)
+    read = next(c for c in calls if c["path"] == "/projects/my/calendar")
+    assert read["params"] == {"start": "2026-09-22", "end": "2026-09-23"}
+
+
+async def test_the_company_calendar_says_when_its_window_is_capped(monkeypatch) -> None:
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await skill_projects.calendar("2026-09-22", "2026-09-29", project_id=UUID)
+    assert "(1 tasks · the window is capped" in text
+    assert "block" not in text
+    mine = await skill_projects.calendar("2026-09-22", "2026-09-29", mine=True)
+    assert "block 2026-09-24 09:00" in mine

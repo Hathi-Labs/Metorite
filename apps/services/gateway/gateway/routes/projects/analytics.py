@@ -236,7 +236,7 @@ async def stuck(
 
         blocked_rows = (await db.execute(
             text(
-                f"SELECT t.id, t.title, t.task_number, t.due_at"
+                f"SELECT t.id, t.title, t.task_number, t.due_at, t.project_id"
                 f"  FROM pm_tasks t"
                 f"  JOIN pm_task_statuses s ON s.id = t.status_id"
                 f" WHERE {open_where} AND {blocker_join}"
@@ -265,6 +265,10 @@ async def stuck(
                     "title": row.title,
                     "task_number": row.task_number,
                     "due_at": row.due_at.isoformat() if row.due_at else None,
+                    # WS-27bm S4: the status report flags the PROJECT a
+                    # blocked task lives in. Without this the flag was
+                    # unreachable, and a fake that invented the key hid it.
+                    "project_id": str(row.project_id),
                 }
                 for row in blocked_rows
             ],

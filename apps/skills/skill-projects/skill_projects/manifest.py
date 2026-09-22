@@ -160,7 +160,7 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/tags/{tag_id}/merge", "merge_tags", "C"),
     Route("DELETE", "/projects/tags/{tag_id}", "delete_tag", "C"),
     # ── views.py ─────────────────────────────────────────────────────────
-    Route("GET", "/projects/nodes/{project_id}/views", "views", "A"),
+    Route("GET", "/projects/nodes/{project_id}/views", "project_views", "A"),
     Route("POST", "/projects/nodes/{project_id}/views", "save_view", "B"),
     Route("PATCH", "/projects/views/{view_id}", "save_view", "B"),
     Route("DELETE", "/projects/views/{view_id}", "delete_view", "C"),
@@ -180,6 +180,24 @@ MANIFEST: tuple[Route, ...] = (
         "(personal.py ensure_personal_project). A second door is redundant.",
     ),
     Route("POST", "/projects/my/tasks", "create_personal_task", "B"),
+    Route(
+        "POST",
+        "/projects/my/tasks/batch",
+        "",
+        "X",
+        "The multi-line capture box (WS-39 S6a). The chat captures one thought "
+        "per turn through create_personal_task; a paste of twelve lines is a "
+        "browser gesture.",
+    ),
+    Route(
+        "POST",
+        "/projects/my/tasks/{task_id}/organize",
+        "",
+        "X",
+        "The Clarify card's one-transaction decision (WS-39 S6a). The chat "
+        "holds each half as its own tool: set_my_overlay, move_task, assign, "
+        "complete, add_subtasks.",
+    ),
     Route("PATCH", "/projects/tasks/{task_id}/personal", "set_my_overlay", "B"),
     Route("GET", "/projects/my/inbox", "my_work", "A"),
     Route("GET", "/projects/my/tasks/{task_id}", "my_task", "A"),
@@ -195,19 +213,28 @@ MANIFEST: tuple[Route, ...] = (
     # is its own decision with its own card.
     Route("GET", "/projects/my/areas", "my_areas", "A"),
     Route(
-        "POST", "/projects/my/areas", "", "X",
+        "POST",
+        "/projects/my/areas",
+        "",
+        "X",
         "A member's categories are theirs to make. The chat can file a task "
         "into one (my_areas reads them), and minting one is a shaping act "
         "the member should perform where they can see the whole list.",
     ),
     Route(
-        "PATCH", "/projects/my/areas/{area_id}", "", "X",
+        "PATCH",
+        "/projects/my/areas/{area_id}",
+        "",
+        "X",
         "Renaming somebody's own category on a guess. Two of a member's "
         "areas are often near-synonyms, and the chat cannot tell which was "
         "meant from a sentence.",
     ),
     Route(
-        "DELETE", "/projects/my/areas/{area_id}", "", "X",
+        "DELETE",
+        "/projects/my/areas/{area_id}",
+        "",
+        "X",
         "An empty area is hard-deleted by this route. That is not a verb to "
         "reach through a guess at which area was meant.",
     ),
@@ -305,18 +332,10 @@ PLANNED: dict[str, str] = {
     # S3 (2026-09-23) shipped the seventeen class C acts (`guarded.py`).
     # WS-39 S6b (2026-09-23) added the personal-areas read.
     "my_areas": "S6b",
-    # S4 — workflows and the reads they need
-    "project_access": "S4",
-    "views": "S4",
-    "save_view": "S4",
-    "calendar": "S4",
-    "my_contexts": "S4",
-    "watchers": "S4",
-    "capture_intake": "S4",
-    "intake_queue": "S4",
-    "triage_intake": "S4",
-    "notifications": "S4",
-    "mark_notifications_read": "S4",
+    # S4 (2026-09-23) shipped the workflows, the views and the forms. S5
+    # (2026-09-23) shipped the rest: views, calendar, contexts, watchers,
+    # intake, notifications, grants (`inbox.py`). Every other tool the
+    # manifest names is built.
 }
 
 
@@ -332,6 +351,23 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # The create route's INSERT has no `required` column; the flag is a
     # PATCH under the same card (S2b verifier).
     "create_field": frozenset({"update_field"}),
+    # S4 — the views read through the reads' routes and draw a template.
+    "render_timeline": frozenset({"task_detail"}),
+    "render_board": frozenset({"project_summary", "vocabulary", "list_tasks"}),
+    "render_tasks": frozenset({"list_tasks", "vocabulary"}),
+    "render_report": frozenset({"report_render"}),
+    "status_report": frozenset(
+        {"project_summary", "analytics_stuck", "analytics_load", "analytics_outlook"}
+    ),
+    # S4 — the forms draw an editable card, then write through the class B
+    # tools' routes under those tools' own confirmation card.
+    # S5 — three reads name the row through another read's route.
+    "watchers": frozenset({"task_detail", "project_summary"}),
+    "project_access": frozenset({"project_summary"}),
+    "project_views": frozenset({"project_summary"}),
+    "edit_task": frozenset({"update_task"}),
+    "edit_project": frozenset({"update_project"}),
+    "propose_plan": frozenset({"create_project", "create_task"}),
 }
 
 #: POST routes that WRITE NOTHING. A preview computes what an act would do

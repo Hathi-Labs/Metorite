@@ -43,6 +43,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     archive_note,
+    clean_payload,
     emit,
     load_visible_task,
     now,
@@ -53,6 +54,13 @@ from gateway.routes.projects.core import (
     update_row,
 )
 from gateway.routes.projects.notifications import notifiable, notify
+from gateway.routes.projects.personal import (
+    PersonalIn,
+    _reject_impossible_block,
+    _reject_waiting_without_since,
+    _upsert_personal,
+    validate_overlay,
+)
 from gateway.routes.projects.tags import apply_task_tags, normalise_tag
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -75,7 +83,7 @@ MAX_BULK = 500
 #: a request meaningless. Modelling them as one exclusive verb is what lets the
 #: endpoint refuse the incoherent combinations by name instead of guessing an
 #: order.
-BULK_ACTIONS = ("archive", "unarchive", "delete")
+BULK_ACTIONS = ("archive", "unarchive", "delete", "personal")
 
 
 class BulkIn(BaseModel):
@@ -88,6 +96,53 @@ class BulkIn(BaseModel):
     tags_remove: list[str] | None = None
     #: One of :data:`BULK_ACTIONS`, and then nothing else in this payload.
     action: str | None = None
+    #: WS-39 S6a. MY overlay, written to every task in the selection, with
+    #: ``action: "personal"``. A separate field rather than keys in `patch`
+    #: because `patch` is the TASK's shared fields and this is nobody's but
+    #: mine — the same split `PATCH /tasks/{id}` and `/tasks/{id}/personal`
+    #: keep, and conflating them here would let one bulk request move the
+    #: team's board and my triage in a single unreadable body.
+    personal: PersonalIn | None = None
+
+
+def validate_personal(
+    action: str | None, personal: PersonalIn | None,
+) -> dict[str, Any]:
+    """The overlay half of a bulk request, or a 422 before any task is touched.
+
+    ``disposition: "DONE"`` is refused by name. Under one store a task is
+    completed through its project's done lane (``POST /tasks/{id}/complete``),
+    and writing DONE onto fifty overlays would mark them done in MY list while
+    the board still shows them open — the exact drift §13.5a decision 1 names.
+    The client sends completion separately, one call per task.
+    """
+    if personal is None:
+        if action == "personal":
+            raise HTTPException(
+                status_code=422,
+                detail="'personal' needs a `personal` object with the overlay to set.",
+            )
+        return {}
+    if action != "personal":
+        raise HTTPException(
+            status_code=422,
+            detail="A `personal` overlay is applied with action 'personal'.",
+        )
+    values = validate_overlay(clean_payload(personal))
+    if not values:
+        raise HTTPException(
+            status_code=422, detail="Nothing to change in `personal`.",
+        )
+    if values.get("disposition") == "DONE":
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "DONE is not an overlay write. Complete each task through "
+                "POST /projects/tasks/{id}/complete, which moves it into the "
+                "project's done lane and sets your disposition with it."
+            ),
+        )
+    return values
 
 
 def validate_patch(patch: dict[str, Any] | None) -> dict[str, Any]:
@@ -310,6 +365,7 @@ async def _apply_to_one(
 
 async def _act_on_one(
     db: Any, task: Any, action: str, *, by: str,
+    personal: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Put ONE task through a lifecycle verb. Returns ``(outcome, detail)``.
 
@@ -323,6 +379,19 @@ async def _act_on_one(
     failing it would teach people to avoid the button.
     """
     task_id = str(task.id)
+
+    if action == "personal":
+        # MY overlay on this task, through the one upsert `set_personal` uses,
+        # with the same two merged-row checks — a partial write is judged
+        # against what is already stored, per task, because the fifty rows
+        # can each hold a different block or a different chase.
+        email = by.lower()
+        values = dict(personal or {})
+        await _reject_impossible_block(db, task_id, email, values)
+        await _reject_waiting_without_since(db, task_id, email, values)
+        values["clarified_at"] = now()
+        await _upsert_personal(db, task_id, email, values)
+        return "applied", "personal"
 
     if action == "delete":
         # The tombstone is migration 168's AFTER DELETE trigger, not a
@@ -414,6 +483,7 @@ async def bulk_edit(
     drop_tags = clean_tag_list(payload.tags_remove)
 
     action = (payload.action or "").strip().lower() or None
+    personal = validate_personal(action, payload.personal)
     if action is not None:
         if action not in BULK_ACTIONS:
             raise HTTPException(
@@ -455,7 +525,9 @@ async def bulk_edit(
                 continue
 
             if action is not None:
-                verdict, detail = await _act_on_one(db, task, action, by=who)
+                verdict, detail = await _act_on_one(
+                    db, task, action, by=who, personal=personal,
+                )
                 if verdict == "applied":
                     applied.append({"task_id": task_id, "changed": [detail]})
                     changed_ids.append(task_id)
@@ -521,4 +593,5 @@ __all__ = [
     "is_noop",
     "moved_people",
     "validate_patch",
+    "validate_personal",
 ]

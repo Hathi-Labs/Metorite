@@ -131,6 +131,14 @@ read of this chapter in the tree, because it adds nothing to the stack. One rail
 file mounted in `MessageBubble` beside the email and Tasks ones. Read it before you build a chat for the
 next app: the parts to copy are the same three.
 
+Its S4 slice is the worked example of §4(c) too. A skill tool reads its routes and emits ONE template
+(`skill_projects/views.py::_emit` → `emit_generative_ui`), so a timeline, a board or a table is drawn from
+the server's rows and never transcribed by the model. An edit is `formCard` + `hitl`: the tool draws the
+form with the row's values, parses the `label — {json}` submit, and hands the diff to the class B tool
+whose confirmation card is the consent (`forms.py`). Five templates were added to the shared catalog for
+it, and `test_genui_catalog_lockstep.py` is the fence that keeps the catalog, the registry and the tool
+docstring to one list.
+
 ---
 
 ## 5. Why this matters for your build

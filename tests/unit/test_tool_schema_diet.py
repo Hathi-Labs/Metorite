@@ -127,7 +127,11 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     "call_agent_background": 250,
     "call_agents_parallel": 310,
     "code_task": 420,
-    "emit_generative_ui": 3050,
+    # 3050 after the diet. WS-27bm S4 (2026-09-23) added five templates to the
+    # catalog (timeline, taskBoard, dataGrid, reportCard, planCard), and the
+    # docstring mirrors the catalog by rule (generative_ui_2.md §3). Measured
+    # 3163 with the bullets trimmed to one shape line each.
+    "emit_generative_ui": 3200,
     "fetch_page": 270,
     "get_errors": 170,
     "list_integrations": 190,

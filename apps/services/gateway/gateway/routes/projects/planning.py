@@ -37,11 +37,12 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends
-from gateway.routes.projects.core import resolve_organization_id, router
+from gateway.routes.projects.core import router
 from gateway.routes.projects.personal import (
     MY_TASKS_FROM,
     _upsert_personal,
     derive_disposition,
+    my_tasks_binds,
 )
 from gateway.routes.tasks.calendar import (
     DayPlan,
@@ -185,14 +186,10 @@ class _LensSource(TaskSource):
         `keep` receives the EFFECTIVE disposition. It exists because the stated
         column cannot answer the question — see `_PM_ALIVE`.
         """
-        binds = {
-            "who": uid.lower(),
-            "vis_org": await resolve_organization_id(db, uid.lower()),
-            # A planner never schedules filed work, and there is no view here
-            # that would want it to.
-            "archived": False,
-            **params,
-        }
+        # A planner never schedules filed work, and there is no view here
+        # that would want it to. The binds — tenant and grant closure
+        # included — come from the one assembler `MY_TASKS_FROM` names.
+        binds = await my_tasks_binds(db, uid, archived=False, **params)
         rows = (await db.execute(
             text(_PM_SELECT + MY_TASKS_FROM + where), binds)).fetchall()
         out = [_pm_row(r) for r in rows]
@@ -204,9 +201,13 @@ class _LensSource(TaskSource):
             lambda d: d != "TRASH")
 
     async def carry_forward(self, db, uid, day0):
+        # ⚠️ WAITING is refused here and in `candidates` (WS-39 S6a). The
+        # membership fragment admits a task I delegated away so I can CHASE
+        # it; the planner must never PACK it — it is somebody else's work
+        # now, and delegating already cleared my block for it.
         return await self._rows(
             db, uid, _PM_CARRY_WHERE, {"day0": day0},
-            lambda d: d not in ("DONE", "TRASH"))
+            lambda d: d not in ("DONE", "TRASH", "WAITING"))
 
     async def candidates(self, db, uid):
         return await self._rows(

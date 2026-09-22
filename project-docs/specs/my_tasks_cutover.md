@@ -9,6 +9,9 @@ this spec and `work_plan.md` §2 disagree, the board wins.
 
 ---
 
+**Built so far.** S6a built 2026-09-23 on branch `my-tasks-s6a`. S6d built
+2026-09-23 in PR #390.
+
 ## 0. One paragraph
 
 The Tasks app becomes **My Tasks**. It reads and writes the one task store
@@ -119,10 +122,9 @@ order.
 
 ### 3.4 Two stale worktrees, one live branch
 
-`C:/wt-gtd-retire` holds uncommitted work on H-158 (the `process.env` inline
-fix in `lens.ts` and `nav.ts`). That fix is a prerequisite for the flag flip.
-This plan does not touch those two functions until that branch lands, and
-S7 checks the build output before it trusts the flag.
+H-158 (the `process.env` inline fix in `lens.ts` and `nav.ts`) landed on
+2026-09-23 in PR #382. S7 verifies the literal in the served bundle before it
+trusts the flag.
 
 ## 4. Decisions — D73, recorded here
 
@@ -193,10 +195,11 @@ goes. The default list stays in code.
 
 ### 4.6 `workflow_stage` writes resolve a status NAME against the task's project
 
-`splitPatch` throws on `workflow_stage` today, on purpose. The lens resolves
+`splitPatch` used to throw on `workflow_stage`, on purpose. The lens resolves
 the name through `GET /projects/nodes/{project_id}/statuses` and writes
 `status_id` through `PATCH /projects/tasks/{id}`. A name that matches nothing
-is a 422 with the list of valid names. This closes H-62 (1).
+is refused in the browser, before any request, with the list of valid names.
+This closes H-62 (1).
 
 ### 4.7 Identifier hygiene follows the schema, in its own slice
 
@@ -287,7 +290,7 @@ S6e follows S6a. It reads the lens seam S6a completes.
    JSX text and string literals in `app/tasks/components/`.
 4. The Projects app still says "task" for its rows. Nothing there changes.
 
-### S6a — the CRUD tail through the lens · AGENT-SAFE
+### S6a — the CRUD tail through the lens · AGENT-SAFE · BUILT 2026-09-23
 
 **Scope.** Group C of §3.1, each under `lensEnabled()`, the way the spine is.
 
@@ -299,7 +302,7 @@ S6e follows S6a. It reads the lens seam S6a completes.
 | `apiBulkArchive` | `POST /projects/tasks/bulk` `archive` / `unarchive` |
 | `apiOrganize` | new `POST /projects/my/tasks/{id}/organize`, one transaction: overlay, due date, assignees, subtasks, optional move |
 | `apiListSubtasks` / `apiAddSubtasks` | `GET /projects/tasks?parent_task_id=`, `POST /projects/tasks` with `parent_task_id` |
-| `apiMergeInto` | `POST /projects/tasks/{id}/merge` |
+| `apiMergeInto` | `POST /projects/tasks/{target}/merge` with `sources: [id]`. The path names the survivor. |
 | `apiFileUnder` | `POST /projects/tasks/{id}/move` with `parent_task_id` |
 | `apiUploadAttachment` | `POST /projects/tasks/{id}/attachments` |
 | `fetchStatusCatalog` | `GET /projects/nodes/{root}/statuses` |
@@ -307,11 +310,30 @@ S6e follows S6a. It reads the lens seam S6a completes.
 
 **Done when.**
 1. `lens.test.ts` "the cutover seam is complete" fences every group C name.
-2. The three new gateway routes carry R8 live checks in
-   `tests/live/live_ws39_s6a.sql`, run against tenant-scratch.
+2. The two new routes and the new bulk action carry R8 live checks in
+   `tests/live/live_ws39_s6a.py`, run against tenant-scratch.
 3. `test_client_route_contract.py` passes with the new paths.
 4. `apiOrganize` under the lens completes a clarify decision in one request.
    A failed subtask insert rolls back the overlay write.
+
+**Decisions taken at build, 2026-09-23.**
+
+1. `MY_TASKS_FROM` gains a third arm. A task I delegated away stays in my
+   list while my overlay says WAITING. The arm is bounded by my grant
+   closure on the task's root. The rule: the overlay may narrow a grant,
+   never widen one. Consequence: a member who reached a task by assignment
+   alone and delegates it loses it from their lists. They hold no grant to
+   keep it by. Fence: `test_projects_personal_s6a.py` and check 5c of the
+   live script.
+2. The planner never packs a WAITING task. `candidates` and `carry_forward`
+   refuse it, and a delegate decision clears the delegator's block.
+3. A personal child inherits the root's lanes. One lane vocabulary per
+   member, so a move into an Area never remaps a status. `ensure_personal_child`
+   finds an existing live child by name before it mints one.
+4. A delegate decision on a task in the personal tree needs a company
+   project. The panel requires one and sends `project_id`, so `organize`
+   moves and assigns in one transaction. A delegated task cannot become a
+   private project.
 
 ### S6b — Areas, and the local tree retires · AGENT-SAFE
 
@@ -360,7 +382,7 @@ union. The data and the routes stay (D65).
 3. `rg -c -i horizon src/app/tasks/lib/` returns zero.
 4. This closes H-59 (1) and (3).
 
-### S6d — the AI and intake tail on the gateway · AGENT-SAFE
+### S6d — the AI and intake tail on the gateway · AGENT-SAFE · BUILT 2026-09-23
 
 **Scope.** One data-access seam for the six `ai.py` routes, the five
 `capture_email.py` routes, `email_link.py`, `tasks/planning.py`,
@@ -376,10 +398,18 @@ change signature. Migration **211** adds `pm_tasks.origin` (§4.4) and
    Fence: `tests/unit/test_tasks_ai_source.py`, an AST walk that refuses a
    bare `gtd_` string in any of those modules outside the `_GtdArm` class.
 2. Email capture is idempotent on `origin->>'email_id'` under both arms.
-   R8: `tests/live/live_ws39_s6d.sql`.
+   R8: `tests/live/live_ws39_s6d.py`.
 3. `evals/trajectories/test_gtd_quality_trajectory.py` still passes.
 4. The skill's tools need no change. They call `/tasks/*` paths, and the
    paths do not move.
+
+**Accepted changes with the flag off**, measured by the verifier on
+2026-09-23. Two behaviours moved on both arms.
+
+1. `POST /tasks/plan/apply` with `target="clickup"` answers 410. No caller
+   sends it, and D52 removed the connector.
+2. `_annotate_workload` matches a person by email before it matches by name.
+   The one store assigns by email.
 
 ### S6e — continuity with Projects · AGENT-SAFE
 

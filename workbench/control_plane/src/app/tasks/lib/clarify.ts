@@ -496,3 +496,37 @@ export function proposeClarification(
     weightReason: weight.weightReason,
   };
 }
+
+// ── Delegating under the lens (WS-39 S6a) ───────────────────────────────────
+
+/** Why a delegate decision cannot be applied yet, or `null` when it can. */
+export type LensDelegateBlock = "needs-company-project" | "private-project";
+
+/**
+ * Under the one store the rule for delegating is the assign guard's, not a
+ * connector's: a colleague cannot be put on a task in my PRIVATE tree, so a
+ * delegate on a task that lives there (every inbox capture does) needs a
+ * COMPANY project to move into, in the same request. And a delegated task
+ * cannot ALSO become a private project — the outcome's child is mine, and
+ * the guard refuses a colleague there.
+ *
+ * Pure, so `ClarifyPanel` cannot drift from the fence: `companyProjectIds`
+ * is the list the lens serves (`GET /projects/nodes`, team projects only),
+ * so "is a company project" is membership and nothing more.
+ */
+export function lensDelegateBlock(input: {
+  lens: boolean;
+  delegating: boolean;
+  size: "single" | "subtasks" | "project" | string;
+  /** the project picked in the panel, if any */
+  projectId?: string;
+  /** the project the item already lives in, if any */
+  itemProjectId?: string;
+  companyProjectIds: readonly string[];
+}): LensDelegateBlock | null {
+  if (!input.lens || !input.delegating) return null;
+  if (input.size === "project") return "private-project";
+  const dest = input.projectId ?? input.itemProjectId;
+  if (dest && input.companyProjectIds.includes(dest)) return null;
+  return "needs-company-project";
+}

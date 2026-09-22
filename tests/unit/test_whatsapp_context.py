@@ -35,3 +35,21 @@ def test_context_route_registered() -> None:
     from gateway.routes.whatsapp import router
     paths = {r.path for r in router.routes}
     assert "/whatsapp/chats/{chat_id}/context" in paths
+
+
+def test_context_route_binds_the_handler_not_a_helper() -> None:
+    """The decorator must sit on `chat_context`.
+
+    WS-39 S6d put a helper between `@router.get(...)` and the handler, so the
+    decorator bound the helper: the path stayed registered, the route answered
+    422 for everyone with no auth dependency, and the test above stayed green.
+    The NAME is the fence.
+    """
+    from gateway.routes.whatsapp import router
+    from gateway.routes.whatsapp.transport import context
+
+    bound = [r for r in router.routes
+             if getattr(r, "path", "") == "/whatsapp/chats/{chat_id}/context"]
+    assert len(bound) == 1
+    assert bound[0].endpoint is context.chat_context
+    assert bound[0].name == "chat_context"

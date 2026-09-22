@@ -27,16 +27,27 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   UNMAPPED,
+  lensAddSubtasks,
+  lensBulkArchive,
+  lensBulkDispose,
   lensCapture,
+  lensCaptureBatch,
   lensDelegateItem,
   lensEnabled,
   lensEstimateStats,
   lensFetchItems,
   lensFetchProjects,
+  lensFileUnder,
+  lensItemDetail,
+  lensMergeInto,
   lensMoveTask,
+  lensOrganize,
   lensPatchItem,
   lensPlan,
+  lensSetStage,
+  lensStageAttachment,
   lensStageOptions,
+  lensStatusCatalog,
   mapLensItem,
   splitPatch,
 } from "./lens";
@@ -63,7 +74,12 @@ function stub(replies: unknown[]): {
     calls.push({
       url: String(input),
       method: init?.method ?? "GET",
-      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      body:
+        init?.body instanceof FormData
+          ? "multipart"
+          : init?.body
+            ? JSON.parse(String(init.body))
+            : undefined,
     });
     const body = replies[Math.min(i, replies.length - 1)];
     i += 1;
@@ -273,10 +289,19 @@ describe("splitPatch", () => {
   it("refuses a key it cannot place rather than dropping it", () => {
     // The whole point of the slice. A dropped key resolves the promise and
     // changes nothing, which is indistinguishable from a save that worked.
-    expect(() => splitPatch({ workflow_stage: "Done" })).toThrow(
-      /cannot write `workflow_stage`/,
+    expect(() => splitPatch({ provider_status: "x" })).toThrow(
+      /cannot write `provider_status`/,
     );
     expect(() => splitPatch({ nonsense: 1 })).toThrow(/unknown patch key/);
+  });
+
+  it("routes workflow_stage to a NAME resolution, not to either table (§4.6)", () => {
+    // S6a. It used to throw; now it is the one key that is neither a task
+    // column nor an overlay column — a lane name the project resolves.
+    const split = splitPatch({ workflow_stage: "Doing", title: "x" });
+    expect(split.stage).toBe("Doing");
+    expect(split.task).toEqual({ title: "x" });
+    expect(split.personal).toEqual({});
   });
 
   it("routes assignees to the shared set", () => {
@@ -429,6 +454,25 @@ describe("the cutover seam is complete for this slice", () => {
     "apiRollover",
     "apiReplan",
     "apiEstimateStats",
+    // slice 5a — promotion. The Tasks app's one door onto `move`, and the two
+    // reads a destination picker needs.
+    "apiMoveTask",
+    "fetchProjects",
+    "apiItemStageOptions",
+    // S6a — the CRUD tail (my_tasks_cutover.md §3.1 group C, plus the status
+    // catalogue from group F). Each is a door onto a route the Projects app
+    // serves; three of the routes were grown for this slice.
+    "apiItemDetail",
+    "apiCaptureBatch",
+    "apiBulkDispose",
+    "apiBulkArchive",
+    "apiOrganize",
+    "apiListSubtasks",
+    "apiAddSubtasks",
+    "apiMergeInto",
+    "apiFileUnder",
+    "apiUploadAttachment",
+    "fetchStatusCatalog",
   ];
 
   it("branches to the lens in every function this slice moved", () => {
@@ -474,6 +518,300 @@ describe("the cutover seam is complete for this slice", () => {
     );
     expect(lensSrc).not.toContain("/api/tasks");
     expect(lensSrc).not.toContain("gatewayFetch");
+  });
+
+  it("leaves the local tree and the AI tail for S6b and S6d, knowingly", () => {
+    // Group D (the Space→Folder→Project tree) retires under S6b's Areas, and
+    // group E (the AI routes) moves server-side in S6d. A branch here now
+    // would point at nothing.
+    for (const name of [
+      "fetchLocalHierarchy",
+      "apiCreateSpace",
+      "apiCreateFolder",
+      "apiCreateLocalProject",
+      "apiAtomize",
+      "apiClarifyPropose",
+      "apiSuggestTitle",
+      "apiEnrichItem",
+      "apiBackfillContext",
+    ]) {
+      const start = apiSrc.indexOf(`export async function ${name}(`);
+      expect(start, name).toBeGreaterThan(-1);
+      const after = apiSrc.indexOf("\nexport ", start + 1);
+      expect(apiSrc.slice(start, after), name).not.toContain("lensEnabled()");
+    }
+  });
+});
+
+// ── S6a: the CRUD tail ──────────────────────────────────────────────────────
+
+describe("the CRUD tail (S6a)", () => {
+  it("captures a batch through the one-transaction route, in order", async () => {
+    const { calls, restore } = stub([
+      { rows: [{ ...ROW, id: "a", title: "One" }, { ...ROW, id: "b", title: "Two" }], total: 2 },
+    ]);
+    try {
+      const items = await lensCaptureBatch(["One", "Two"]);
+      expect(items.map((i) => i.title)).toEqual(["One", "Two"]);
+    } finally {
+      restore();
+    }
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("/api/projects/my/tasks/batch");
+    expect(calls[0].body).toEqual({ items: [{ title: "One" }, { title: "Two" }] });
+  });
+
+  it("bulk-disposes through action=personal, and reads the selection back", async () => {
+    const { calls, restore } = stub([{ requested: 2, applied: 2 }, ROW, ROW]);
+    try {
+      const items = await lensBulkDispose(["t1", "t2"], "SOMEDAY");
+      expect(items).toHaveLength(2);
+    } finally {
+      restore();
+    }
+    expect(calls[0].url).toBe("/api/projects/tasks/bulk");
+    expect(calls[0].body).toEqual({
+      task_ids: ["t1", "t2"],
+      action: "personal",
+      personal: { disposition: "SOMEDAY" },
+    });
+    expect(calls.slice(1).map((c) => c.url)).toEqual([
+      "/api/projects/my/tasks/t1",
+      "/api/projects/my/tasks/t2",
+    ]);
+  });
+
+  it("bulk DONE is N completions, never an overlay write (§13.5a #1)", async () => {
+    // The bulk route refuses `disposition: "DONE"` by name; the lens does not
+    // even try. Each task goes through /complete so the board moves too.
+    const { calls, restore } = stub([{}, {}, ROW, ROW]);
+    try {
+      await lensBulkDispose(["t1", "t2"], "DONE");
+    } finally {
+      restore();
+    }
+    const writes = calls.filter((c) => c.method === "POST").map((c) => c.url);
+    expect(writes).toEqual([
+      "/api/projects/tasks/t1/complete",
+      "/api/projects/tasks/t2/complete",
+    ]);
+    expect(calls.some((c) => c.url.endsWith("/bulk"))).toBe(false);
+  });
+
+  it("bulk-archives and bulk-restores through the lifecycle verbs", async () => {
+    for (const [archived, action] of [[true, "archive"], [false, "unarchive"]] as const) {
+      const { calls, restore } = stub([{ applied: 1 }, ROW]);
+      try {
+        await lensBulkArchive(["t1"], archived);
+      } finally {
+        restore();
+      }
+      expect(calls[0].body).toEqual({ task_ids: ["t1"], action });
+    }
+  });
+
+  it("organizes in ONE request, dropping the connector field", async () => {
+    const { calls, restore } = stub([ROW]);
+    try {
+      await lensOrganize("task-1", {
+        kind: "next",
+        next_action: "Do it",
+        context: "@home",
+        account_id: "acct-from-a-retired-connector",
+        subtasks: ["a", "b"],
+      });
+    } finally {
+      restore();
+    }
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].url).toBe("/api/projects/my/tasks/task-1/organize");
+    expect(calls[0].body).toEqual({
+      kind: "next",
+      next_action: "Do it",
+      context: "@home",
+      subtasks: ["a", "b"],
+    });
+  });
+
+  it("honours a lane name on organize the §4.6 way, against the task's project", async () => {
+    const { calls, restore } = stub([
+      ROW,                                              // organize → project_id proj-1
+      [{ id: "s-todo", name: "Todo" }, { id: "s-doing", name: "Doing" }],
+      {},                                               // PATCH status_id
+      ROW,                                              // read back
+    ]);
+    try {
+      await lensOrganize("task-1", { kind: "next", next_action: "x", status: "doing" });
+    } finally {
+      restore();
+    }
+    expect(calls[1].url).toContain("nodes/proj-1/statuses");
+    expect(calls[2].method).toBe("PATCH");
+    expect(calls[2].body).toEqual({ status_id: "s-doing" });
+  });
+
+  it("resolves workflow_stage to a status_id, and refuses an unknown name with the list", async () => {
+    const lanes = [{ id: "s1", name: "Todo" }, { id: "s2", name: "Blocked" }];
+    const a = stub([ROW, lanes, {}, ROW]);
+    try {
+      await lensPatchItem("task-1", { workflow_stage: "Blocked" });
+    } finally {
+      a.restore();
+    }
+    const patch = a.calls.find((c) => c.method === "PATCH" && c.url.endsWith("/tasks/task-1"));
+    expect(patch?.body).toEqual({ status_id: "s2" });
+
+    const b = stub([lanes]);
+    try {
+      await expect(lensSetStage("task-1", "proj-1", "Shipped")).rejects.toThrow(
+        /no status named "Shipped".*Todo, Blocked/,
+      );
+    } finally {
+      b.restore();
+    }
+    // Refused BEFORE any write: a wrong name must not land in a default lane.
+    expect(b.calls.every((c) => c.method === "GET")).toBe(true);
+  });
+
+  it("composes the detail panel from timeline, attachments and children", async () => {
+    const { calls, restore } = stub([
+      { rows: [
+        { id: "c2", type: "comment", body: "later", created_by: "bo@x", created_at: "2026-09-02T00:00:00Z" },
+        { id: "c1", type: "comment", body: "first", created_by: "al@x", created_at: "2026-09-01T00:00:00Z" },
+      ], total: 2 },
+      { rows: [{ attachment_id: "a1", kind: "image", name: "p.png", url: "/api/projects/attachments/a1/p.png", mime: "image/png", size: 12 }], total: 1 },
+      { rows: [{ id: "s1", title: "Step", completed_at: "2026-09-01T00:00:00Z", assignees: ["al@x"] }], total: 1 },
+    ]);
+    let detail;
+    try {
+      detail = await lensItemDetail("task-1");
+    } finally {
+      restore();
+    }
+    expect(calls.map((c) => c.url)).toEqual([
+      "/api/projects/tasks/task-1/timeline?kind=comments&page_size=100",
+      "/api/projects/tasks/task-1/attachments",
+      "/api/projects/tasks?parent_task_id=task-1&page_size=100",
+    ]);
+    // Oldest first — a thread reads down, whatever order the timeline serves.
+    expect(detail.comments.map((c) => c.text)).toEqual(["first", "later"]);
+    expect(detail.attachments[0]).toMatchObject({ kind: "image", name: "p.png", attachmentId: "a1" });
+    expect(detail.subtasks[0]).toMatchObject({ providerTaskId: "s1", statusType: "done" });
+    expect(detail.subtasks[0].assignees[0].email).toBe("al@x");
+  });
+
+  it("adds subtasks in the parent's project, assigned to ME, in order", async () => {
+    const original = globalThis.fetch;
+    const { calls, restore } = stub([
+      { id: "task-1", project_id: "proj-1" },   // GET tasks/task-1
+      { email: "me@fracktal.in" },              // /api/auth/me
+      { id: "c1" }, {},                         // POST tasks, PUT assignees
+      { id: "c2" }, {},
+      { rows: [{ id: "c1", title: "a" }, { id: "c2", title: "b", completed_at: "x" }], total: 2 },
+    ]);
+    let items: Awaited<ReturnType<typeof lensAddSubtasks>> = [];
+    try {
+      items = await lensAddSubtasks("task-1", ["a", "b"]);
+    } finally {
+      restore();
+      globalThis.fetch = original;
+    }
+    const creates = calls.filter((c) => c.method === "POST");
+    expect(creates.map((c) => c.body)).toEqual([
+      { project_id: "proj-1", parent_task_id: "task-1", title: "a" },
+      { project_id: "proj-1", parent_task_id: "task-1", title: "b" },
+    ]);
+    const assigns = calls.filter((c) => c.method === "PUT");
+    expect(assigns.map((c) => c.url)).toEqual([
+      "/api/projects/tasks/c1/assignees",
+      "/api/projects/tasks/c2/assignees",
+    ]);
+    expect(assigns[0].body).toEqual({ assignees: ["me@fracktal.in"] });
+    // The checklist reads DONE off completed_at — the one fact a
+    // project-shaped row holds.
+    expect(items.map((i) => i.disposition)).toEqual(["INBOX", "DONE"]);
+  });
+
+  it("merges INTO the survivor and files UNDER the parent, answering with each", async () => {
+    const a = stub([{ id: "target" }, { ...ROW, id: "target" }]);
+    try {
+      expect((await lensMergeInto("dup", "target")).id).toBe("target");
+    } finally {
+      a.restore();
+    }
+    expect(a.calls[0].url).toBe("/api/projects/tasks/target/merge");
+    expect(a.calls[0].body).toEqual({ sources: ["dup"] });
+
+    const b = stub([{ id: "step" }, { ...ROW, id: "parent" }]);
+    try {
+      expect((await lensFileUnder("step", "parent")).id).toBe("parent");
+    } finally {
+      b.restore();
+    }
+    expect(b.calls[0].url).toBe("/api/projects/tasks/step/move");
+    expect(b.calls[0].body).toEqual({ parent_task_id: "parent" });
+  });
+
+  it("holds a picked file until the task exists, then uploads it AFTER the create", async () => {
+    const file = new File(["bytes"], "notes.txt", { type: "text/plain" });
+    const staged = lensStageAttachment(file);
+    expect(staged.file).toBe(file);
+    expect(staged.kind).toBe("file");
+    expect(staged.name).toBe("notes.txt");
+
+    const { calls, restore } = stub([
+      { id: "task-9" },                                 // POST my/tasks
+      { attachment_id: "a1", name: "notes.txt", url: "/api/projects/attachments/a1/notes.txt" },
+      ROW,                                              // read back
+    ]);
+    try {
+      await lensCapture("A thought", undefined, [
+        staged,
+        { kind: "link", name: "example.com", url: "https://example.com" },
+      ]);
+    } finally {
+      restore();
+    }
+    expect(calls[0].url).toBe("/api/projects/my/tasks");
+    // The link rides in the notes: it has no row of its own under one store.
+    expect(String((calls[0].body as { notes: string }).notes)).toContain("https://example.com");
+    expect(calls[1].url).toBe("/api/projects/tasks/task-9/attachments");
+    expect(calls[1].method).toBe("POST");
+    expect(calls[1].body).toBe("multipart"); // a FormData, not JSON
+  });
+
+  it("answers an empty catalogue for a member with no personal root yet", async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      ({ ok: false, status: 404, text: async () => JSON.stringify({ detail: "No personal project yet" }), json: async () => ({}) }) as Response
+    ) as typeof globalThis.fetch;
+    try {
+      expect(await lensStatusCatalog()).toEqual({ stages: [], entries: [], unmapped: 0 });
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("builds the catalogue from the root's lanes, each mapped to itself", async () => {
+    const { calls, restore } = stub([
+      { id: "root-1", name: "My tasks" },
+      { rows: [{ id: "s1", name: "Inbox" }, { id: "s2", name: "Next" }], total: 2 },
+    ]);
+    let catalog;
+    try {
+      catalog = await lensStatusCatalog();
+    } finally {
+      restore();
+    }
+    expect(calls[0].url).toBe("/api/projects/my/project");
+    expect(calls[1].url).toContain("nodes/root-1/statuses");
+    expect(catalog.stages).toEqual(["Inbox", "Next"]);
+    expect(catalog.entries).toEqual([
+      { status: "Inbox", stage: "Inbox", mapped: true },
+      { status: "Next", stage: "Next", mapped: true },
+    ]);
+    expect(catalog.unmapped).toBe(0);
   });
 });
 

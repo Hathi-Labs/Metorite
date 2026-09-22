@@ -22,6 +22,7 @@ import { TaskSettingsModal } from "./components/TaskSettingsModal";
 import { TaskFocusModal } from "./components/TaskFocusModal";
 import { ReclarifyModal } from "./components/ReclarifyModal";
 import { UndoToast } from "./components/UndoToast";
+import { SyncFailureToast } from "./components/SyncFailureToast";
 import { DeleteConfirmModal } from "./components/DeleteConfirmModal";
 import { SchedulePopup } from "./components/SchedulePopup";
 import { EliminatePopup } from "./components/EliminatePopup";
@@ -176,6 +177,7 @@ export default function TasksPage() {
         <TaskFocusModal />
         <ReclarifyModal />
         <UndoToast />
+        <SyncFailureToast />
         <DeleteConfirmModal />
         <SchedulePopup />
         <EliminatePopup />
@@ -294,6 +296,7 @@ export default function TasksPage() {
       )}
       <ReclarifyModal />
       <UndoToast />
+      <SyncFailureToast />
       <DeleteConfirmModal />
       <SchedulePopup />
       <EliminatePopup />

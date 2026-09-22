@@ -130,6 +130,29 @@ def _set_confirmation(monkeypatch: Any, answer: bool) -> list[dict]:
     return asked
 
 
+def form_stub(monkeypatch: Any, answers: dict[str, str] | None = None) -> list[dict]:
+    """Answer every `hitl` form with the member's submit for its title, and
+    record what was drawn. A form with no answer reads as not submitted."""
+    import importlib
+    import json
+
+    wa = importlib.import_module("acb_skills.write_artifact")
+    drawn: list[dict] = []
+    table = answers or {}
+
+    async def answer(ui: str) -> dict:
+        spec = json.loads(ui)
+        drawn.append(spec)
+        title = str(((spec.get("props") or {}).get("data") or {}).get("title") or "")
+        for prefix, response in table.items():
+            if title.startswith(prefix):
+                return {"ok": True, "response": response}
+        return {"ok": True, "response": None}
+
+    monkeypatch.setattr(wa, "emit_generative_ui", answer)
+    return drawn
+
+
 def approve(monkeypatch: Any) -> list[dict]:
     """The member approves. Returns the list of cards they were shown."""
     return _set_confirmation(monkeypatch, True)
