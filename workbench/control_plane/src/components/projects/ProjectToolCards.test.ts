@@ -15,7 +15,13 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { CANCELLED, classifyActionResult, parseTaskRows, rowIdOf } from "./ProjectToolCards";
+import {
+  CANCELLED,
+  classifyActionResult,
+  parseTaskRows,
+  receiptIdOf,
+  rowIdOf,
+} from "./ProjectToolCards";
 
 const ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
 
@@ -62,6 +68,20 @@ describe("classifyActionResult", () => {
       "done",
     );
     expect(rowIdOf(`Commented on #7 «x» (comment id abc).\n  full_id: ${ID}`)).toBe(ID);
+  });
+
+  it("is done for a vocabulary receipt, which has no task to open", () => {
+    // S2b: a status, type, field or tag has an id line but no deep link.
+    const text = `Added status «Blocked» [todo] to «Ops».\n  status_id: ${ID}`;
+    expect(classifyActionResult(text, "done")).toBe("done");
+    expect(receiptIdOf(text)).toBe(ID);
+    expect(rowIdOf(text)).toBe("");
+  });
+
+  it("is refused for a prose line that merely mentions an id", () => {
+    expect(classifyActionResult(`No comment with id ${ID} is in the latest 50 rows.`, "done")).toBe(
+      "refused",
+    );
   });
 
   it("is cancelled when the member declined the card", () => {

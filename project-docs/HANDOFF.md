@@ -96,6 +96,21 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-163 · The My Tasks cutover is in flight. The spec owns the order · [AGENT]
+- **Check:** `rg -c "lensEnabled\(\)" workbench/control_plane/src/app/tasks/lib/api.ts`
+  → below 25 means S6a has not landed. `\dt gtd_*` on the box → any row means
+  S8 has not landed. `rg -n '"Tasks"' workbench/control_plane/src/lib/nav.ts`
+  → a hit means S5 has not landed.
+- **Why:** owner directive 2026-09-23 (D73). `specs/my_tasks_cutover.md` §5
+  holds nine slices in a load-bearing order, and §6 the corrected runbook.
+  H-33, H-59, H-62, H-29 and H-151 stay open until the slice that closes each
+  one lands. §8 of the spec says which.
+- ⚠️ **Migration 190 is in the production ledger as applied.** The drop needs
+  a new migration that calls `gtd_retirement_drop()` again. Do not wait for
+  "the next deploy" to run it.
+- **Authority:** D73 · `specs/my_tasks_cutover.md` · `work_plan.md` §2 WS-39
+- **Added:** 2026-09-23 · the My Tasks planning session
+
 ### H-104 · The generated tenancy files are NOT on the migration ladder · [AGENT]
 - **Check:** `ls infra/postgres/generated/*.sql`, and read the glob in
   `scripts/apply_migrations.sh` (it matches numbered files in `infra/postgres`
@@ -2862,39 +2877,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `scripts/backup_db.sh` · `deploy/hostinger/BACKUP-RESTORE.md`
 - **Added:** 2026-09-19 · operator console session, after the backup repair
 
-### H-132 · The `gtd_*` rename — RECOMMEND CLOSING AS WON'T DO · [OWNER]
-- **Check:** `rg -l "people" infra/postgres/*.sql | wc -l` → above zero
-  means the rename has not happened.
-- **The owner asked for it twice**, 2026-09-20 and 2026-09-21: *"I don't
-  want to use the terminology GTD."* Names were decided — `people`,
-  `people_skills`, `people_credentials`, `people_absences`,
-  `people_resumes`. This entry recommends NOT doing it, and says why, so the
-  decision is made once on evidence instead of tried again.
-- 🔴 **Measured twice. Both tries were abandoned.**
-  - With compatibility views at the old names: **8 migrations fail on
-    replay** — 49, 74, 75, 148, 172 and 173 do ALTER TABLE on what is now a
-    view, and 174 and 176 do CREATE INDEX on one.
-  - Without the views: the ALTERs become no-ops with `IF EXISTS`, but
-    `CREATE TABLE IF NOT EXISTS people` in 49, 174 and 176 then
-    **re-creates empty duplicate tables**, and 5 CREATE INDEX statements
-    still fail.
-- **The true cost: 41 statements across the 8 OLDEST migrations in the
-  ladder.** Editing an applied migration changes its checksum, so all 8
-  re-run against the live customer database on the next deploy. They are
-  idempotent, so it should be safe. "Should be" is the whole problem.
-- **The benefit: a table name no user sees.** Measured 2026-09-20: `gtd`
-  appears in exactly ONE string a member can read, a tooltip in the Tasks
-  inbox. Everything else is table names and code comments.
-- 📌 **The code sweep is easy and was proven** — 66 files, 294 occurrences,
-  by word boundary so index and constraint names survive. It is the SCHEMA
-  half that is not worth it.
-- **Recommendation:** close as won't do. Fix the one visible tooltip.
-  Spend the risk budget on H-104 instead. That is the same 8 files' real
-  problem, and it has an actual consequence.
-- **Authority:** owner directive 2026-09-20 · R6 · measured 2026-09-21
-- **Added:** 2026-09-20 · **measurement and recommendation added
-  2026-09-21**, after the second try
-
 ### H-140 · `POST /tasks/people` has no caller. Decide whether it stays · [OWNER]
 - **Check:** `rg -n "peopleWriteApi.create|createPerson" workbench/control_plane/src`
   → no hit means nothing in the product calls it, and this is open.
@@ -3081,11 +3063,10 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `uv run python -c "import skill_projects.manifest as m; print(sorted(m.PLANNED))"`
   → a non-empty list means at least one slice is still open. The value is
   the slice each tool belongs to.
-- **Why:** S1 shipped the reads and S2 the fifteen daily writes, each with
-  a card. The owner asked for archive too, with a card and a rule. S2b is
-  the rest of class B (vocabulary writes, edit a comment, recurrence, the
-  personal overlay), S3 the class C acts with count-bearing cards, S4 the
-  five workflows, S5 the polish. `specs/projects_ai_chat.md` §10 is the
+- **Why:** S1 shipped the reads, S2 the fifteen daily writes and S2b the
+  rest of class B (2026-09-23), each with a card. The owner asked for
+  archive too, with a card and a rule. S3 is the class C acts with
+  count-bearing cards, S4 the five workflows, S5 the polish. `specs/projects_ai_chat.md` §10 is the
   order and §10.2 the acceptance. `writes.py` is the shape to copy, and it
   copied the CRM's. Move a tool out of `PLANNED` when it ships. The fence
   refuses a tool that is both built and planned.
@@ -3107,8 +3088,14 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
 
 ### H-157 · Flip `NEXT_PUBLIC_PROJECTS_CHAT` on the box, then look at the rail · [AGENT]
-- **Check:** `ssh metorite 'grep -c NEXT_PUBLIC_PROJECTS_CHAT=1 /opt/metorite/workbench/control_plane/.env.local 2>/dev/null || echo 0'`
-  → `0` means the flag is off and the slot still says "not built".
+- **Check:** `ssh metorite 'grep -rc NEXT_PUBLIC_PROJECTS_CHAT /opt/acb/app/.env
+  /opt/acb/app/workbench/control_plane/.env.local 2>/dev/null'`
+  → `0` on both means the flag is off and the slot still says "not built".
+  ⚠️ **Corrected 2026-09-23.** This named
+  `/opt/metorite/workbench/control_plane/.env.local`. That path does not exist
+  on the box, because the app lives at `/opt/acb/app`. The old command printed
+  `0` because the FILE was absent. So it read "flag off" for the wrong reason,
+  and it would have kept printing `0` after a successful flip.
 - **Why:** S1 shipped dark. The flag is a build-time `NEXT_PUBLIC_*` value,
   so a flip needs a frontend rebuild, not a restart. `enforcement-flip` is
   granted until 2026-09-30. After the flip, do the check no test makes.
@@ -3117,30 +3104,6 @@ line — never reclaim a number by deleting the other entry.
   confirm the numbers match the Analytics app.
 - **Authority:** `specs/projects_ai_chat.md` §4.3, §11 · CLAUDE.md §3a
 - **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
-
-### H-158 · Two frontend flags read `process.env` in a form Next cannot inline · [AGENT]
-- **Check:** `grep -n "= process.env" workbench/control_plane/src/lib/nav.ts workbench/control_plane/src/app/tasks/lib/lens.ts`
-  → a hit on `env: Record<string, string | undefined> = process.env` means
-  this is still open.
-- **Why:** Next inlines only the literal member expression
-  `process.env.NEXT_PUBLIC_X` into the browser bundle. A read through a
-  defaulted parameter (`env = process.env`, then `env.NEXT_PUBLIC_X`) is not
-  inlined. In a browser `process.env` is the `{}` polyfill, so the flag reads
-  `undefined` and the feature stays off whatever the box is set to. The
-  Projects chat's `chatEnabled` shipped in that shape, and the S1 review
-  found it in the build output on 2026-09-22 (`projectApps.ts` now reads the
-  literal, and `projectApps.test.ts` fences the spelling).
-  `previewAppsVisible` (`nav.ts`) and `lensEnabled` (`lens.ts`) carry the
-  same shape today. Each test passes an env object, so neither suite can see
-  it. ⚠️ If `NEXT_PUBLIC_TASKS_LENS` was ever flipped on the box, the Tasks
-  lens may not be reading the store the owner believes it reads. Measure in
-  the build output before you conclude either way.
-- **The repair:** read the literal when no env is passed, the way
-  `projectApps.ts::chatEnabled` does, and add the same source fence to each
-  test. One PR, two files, two tests.
-- **Authority:** `workbench/control_plane/src/app/projects/lib/projectApps.ts` (the fixed shape) ·
-  `src/lib/nav.ts:118-123` · `src/app/tasks/lib/lens.ts:70-75`
-- **Added:** 2026-09-22 · the Projects chat S1 review
 
 ### H-161 · The seats matrix cannot PROPOSE, because the queue is the wrong shape · [OWNER]
 - **Check:** `rg -n "CREATE TABLE IF NOT EXISTS access_request" -A 12
