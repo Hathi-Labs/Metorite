@@ -108,9 +108,11 @@ def build_agents() -> list[Any]:
                 "reads (stuck, load, throughput, finished, outlook) and the "
                 "saved reports, rendered now. Creates and updates tasks and "
                 "projects, assigns, comments, links, moves, watches, defers "
-                "and completes, and saves a report. Every write shows the "
-                "member a card first and does nothing if they decline. It "
-                "never deletes a project or a task."
+                "and completes, saves a report, edits the project's statuses, "
+                "types, fields and tags, sets a repeat rule, captures a "
+                "private task and files the member's own triage. Every write "
+                "shows the member a card first and does nothing if they "
+                "decline. It never deletes a project or a task."
             ),
             tools=list(_TOOLS),
         )
