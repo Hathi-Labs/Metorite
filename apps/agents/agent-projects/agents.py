@@ -119,7 +119,10 @@ def build_agents() -> list[Any]:
                 "timeline, a board, a task table and a report as cards, edits "
                 "a task or a project from a form in the chat, plans a project "
                 "from a goal as an editable plan, and writes a status report. "
-                "It never deletes a project or a task."
+                "Reads the calendar, the intake queue, notifications, watchers, "
+                "saved views and who may see a project; captures and triages "
+                "intake, saves a view and clears the bell. It never deletes a "
+                "project or a task."
             ),
             tools=list(_TOOLS),
         )

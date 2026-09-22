@@ -154,6 +154,28 @@ def _s3_reads(call: dict) -> Any:
     return None
 
 
+def _s5_answers(call: dict) -> Any:
+    """The S5 routes: views, intake, notifications."""
+    path, method = call["path"], call["method"]
+    if path.endswith("/views") and method == "GET":
+        return {"rows": [{"id": VIEW_ID, "name": "Board", "view_type": "board"}], "total": 1}
+    if path.endswith("/views") and method == "POST":
+        return {"id": VIEW_ID, "name": call["json"]["name"], "view_type": call["json"]["view_type"]}
+    if method == "PATCH" and path.startswith("/projects/views/"):
+        return {"id": VIEW_ID, **(call["json"] or {})}
+    if path == "/projects/intake" and method == "POST":
+        return {"task": {**TASK, "id": OTHER, "title": call["json"]["title"], "task_number": 9}}
+    if path.startswith("/projects/intake/") and method == "POST":
+        return {"task": TASK, "intake": {"status": path.rsplit("/", 1)[-1]}}
+    if path == "/projects/notifications/read":
+        return {"marked": 3}
+    if path == "/projects/notifications" and method == "GET":
+        return {"rows": [], "unread": {"total": 3, "mentions": 1}}
+    if path == "/projects/my/project" and method == "GET":
+        return {"id": OTHER, "name": "My tasks"}
+    return None
+
+
 def _s3_writes(call: dict) -> Any:
     """What the S3 write routes answer."""
     path, method = call["path"], call["method"]
@@ -271,7 +293,7 @@ def responder(call: dict) -> Any:
     if path.endswith("/statuses"):
         # The route's shape (admin.py `list_statuses`): rows AND per-lane counts.
         return {"rows": STATUSES, "counts": {S1: 4, S2: 2, S3: 0}, "owner_id": UUID}
-    answered = _answered(call, _s3_reads, _s3_writes, _s2b_answers)
+    answered = _answered(call, _s5_answers, _s3_reads, _s3_writes, _s2b_answers)
     if answered is not None:
         return answered
     if path.endswith("/relations"):
@@ -439,6 +461,19 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     # S4 — the forms: an editable card, then the class B card
     "edit_task": [{"task_id": UUID}],
     "edit_project": [{"project_id": UUID}],
+    # S5 — the rest of the writes
+    "save_view": [
+        {"project_id": UUID, "name": "Mine", "view_type": "list"},
+        {"project_id": UUID, "name": "Board v2", "view_id": VIEW_ID},
+    ],
+    "capture_intake": [{"title": "Vendor called", "project_id": UUID, "due": "2026-10-01"}],
+    "triage_intake": [
+        {"task_id": UUID, "action": "accept", "status": "done"},
+        {"task_id": UUID, "action": "decline"},
+        {"task_id": UUID, "action": "duplicate", "duplicate_of": OTHER},
+        {"task_id": UUID, "action": "snooze", "until": "2026-10-06"},
+    ],
+    "mark_notifications_read": [{"ids": OTHER}, {"all_unread": True}],
     "propose_plan": [
         {
             "name": "Q4 launch",
@@ -573,6 +608,7 @@ async def test_a_run_with_nobody_to_act_as_makes_no_call(tool: str, monkeypatch)
             "report_delete",
             "unarchive_project",
             "propose_plan",
+            "mark_notifications_read",
         )
     ),
 )
@@ -605,6 +641,7 @@ def test_no_tool_passes_non_interactive_approve() -> None:
     source = (SKILL_DIR / "writes.py").read_text(encoding="utf-8")
     source += (SKILL_DIR / "guarded.py").read_text(encoding="utf-8")
     source += (SKILL_DIR / "forms.py").read_text(encoding="utf-8")
+    source += (SKILL_DIR / "inbox.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     gates = [
         n
@@ -622,6 +659,7 @@ def test_every_class_b_tool_awaits_the_one_confirm_door() -> None:
     source = (SKILL_DIR / "writes.py").read_text(encoding="utf-8")
     source += (SKILL_DIR / "guarded.py").read_text(encoding="utf-8")
     source += (SKILL_DIR / "forms.py").read_text(encoding="utf-8")
+    source += (SKILL_DIR / "inbox.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     assert source.count("def _confirm(") == 1, "a second card door"
     delegates = {"edit_task": "update_task", "edit_project": "update_project"}
@@ -1168,6 +1206,7 @@ def test_every_path_segment_a_write_interpolates_is_a_canonical_id() -> None:
     source = (SKILL_DIR / "writes.py").read_text(encoding="utf-8")
     source += (SKILL_DIR / "guarded.py").read_text(encoding="utf-8")
     source += (SKILL_DIR / "forms.py").read_text(encoding="utf-8")
+    source += (SKILL_DIR / "inbox.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     offenders: list[str] = []
     for fn in ast.walk(tree):
@@ -1648,3 +1687,78 @@ async def test_propose_plan_is_one_card_then_one_batch(monkeypatch) -> None:
     assigned = [c for c in writes(calls) if c["method"] == "PUT"]
     assert len(assigned) == 2 and assigned[0]["json"] == {"assignees": ["priya@x.io"]}
     assert "project_id:" in out and out.count("full_id:") == 2
+
+
+# ── S5 — intake, the bell, a view ───────────────────────────────────────────
+
+
+async def test_triage_accept_resolves_the_status_by_name(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.triage_intake(UUID, "accept", status="done")
+    posted = next(c for c in writes(calls))
+    assert posted["path"] == f"/projects/intake/{UUID}/accept" and posted["json"] == {
+        "status_id": S3
+    }
+    assert "status: «Done»" in asked[0]["context"]
+
+
+async def test_triage_decline_says_it_archives(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.triage_intake(UUID, "decline")
+    assert "archives the task" in asked[0]["context"]
+
+
+async def test_clearing_the_bell_prints_a_done_line_and_no_row(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.mark_notifications_read(all_unread=True)
+    assert next(c for c in writes(calls))["json"] == {"all": True}
+    assert "done: 3 marked" in out and "_id:" not in out
+    calls.clear()
+    await skill_projects.mark_notifications_read(ids=OTHER)
+    assert next(c for c in writes(calls))["json"] == {"ids": [OTHER]}
+
+
+async def test_every_manifest_tool_is_now_built() -> None:
+    from skill_projects import manifest as m
+
+    assert set(m.PLANNED) <= {"my_areas"}, m.PLANNED
+
+
+async def test_a_capture_with_no_project_lands_in_the_personal_project(monkeypatch) -> None:
+    """The route refuses a capture with no project. The member's own project
+    is the one default, read first; the card names it."""
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.capture_intake("Vendor called")
+    assert "your personal project" in asked[0]["detail"]
+    posted = next(c for c in writes(calls))
+    assert posted["json"]["project_id"] == OTHER
+
+
+async def test_a_capture_with_no_project_and_no_personal_project_is_refused(monkeypatch) -> None:
+    def none_yet(call: dict) -> Any:
+        if call["path"] == "/projects/my/project":
+            raise client.GatewayRefusal("Projects GET: Not found, or not visible to you.")
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, none_yet)
+    assert "no personal project yet" in await skill_projects.capture_intake("Vendor called")
+    assert asked == [] and writes(calls) == []
+
+
+async def test_a_duplicate_decision_says_it_archives(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.triage_intake(UUID, "duplicate", duplicate_of=OTHER)
+    assert "archives this task" in asked[0]["context"]
+
+
+async def test_clearing_every_unread_leads_with_the_count(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.mark_notifications_read(all_unread=True)
+    assert "every unread notification (3)" in asked[0]["detail"]

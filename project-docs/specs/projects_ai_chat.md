@@ -2,7 +2,9 @@
 
 **Status: ACTIVE. S1 (the reads) and S2 (the daily writes) built
 2026-09-22. S2b (the rest of class B), S3 (the guarded acts) and S4 (the
-workflows, the views and the forms) built 2026-09-23. S5 open.** §10 says which slice each part
+workflows, the views and the forms) and S5 (the rest of the manifest)
+built 2026-09-23. Left: the visual review, and the frontend-tool
+dispatcher (H-164).** §10 says which slice each part
 belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
@@ -107,6 +109,13 @@ tool class in §5.2, so the ceremony a member sees follows from this table.
 | "Render the weekly report" | `report_render` | `GET /projects/reports/{id}/render` |
 | "Does this repeat?" | `recurrence` | `GET /projects/tasks/{id}/recurrence` |
 | "Show me my view of #142" | `my_task` | `GET /projects/my/tasks/{id}` |
+| "What is on the calendar this week?" | `calendar` | `GET /projects/calendar`, `GET /projects/my/calendar` |
+| "What is waiting in intake?" | `intake_queue` | `GET /projects/intake` |
+| "Anything for me?" | `notifications` | `GET /projects/notifications` |
+| "Who watches this?" | `watchers` | `GET /projects/tasks/{id}/watchers`, `GET /projects/nodes/{id}/watchers` |
+| "Which views does this project have?" | `project_views` | `GET /projects/nodes/{id}/views` |
+| "Who can see this project?" | `project_access` | `GET /projects/nodes/{id}/grants` |
+| "What contexts do I use?" | `my_contexts` | `GET /projects/my/contexts` |
 
 Every number a read returns is a **server aggregate**. The tool never sums a
 page of tasks in the agent. §9.12.7 gives the reason. The list is paginated,
@@ -142,6 +151,10 @@ and a count of one page looks right and is wrong.
 | "Repeat this every Monday" | `set_recurrence` | `PUT /projects/tasks/{id}/recurrence` | `DELETE` stops it. The task stays |
 | "Note to self: renew the domain" | `create_personal_task` | `POST /projects/my/tasks` | Archive. Nobody else sees it |
 | "File this as Someday for me" | `set_my_overlay` | `PATCH /projects/tasks/{id}/personal` | Per-member overlay, mine |
+| "Capture this into intake for Ops" | `capture_intake` | `POST /projects/intake` | Decline it. No project named means the member's own personal project, or a refusal |
+| "Accept the vendor task" | `triage_intake` | `POST /projects/intake/{id}/accept`, `decline`, `duplicate`, `snooze` | Decline and duplicate archive, and the card says so. `unarchive_task` restores |
+| "Save this as a view called Mine" | `save_view` | `POST /projects/nodes/{id}/views`, `PATCH /projects/views/{id}` | Rename back. Delete is guarded |
+| "Clear my notifications" | `mark_notifications_read` | `POST /projects/notifications/read` | The bell refills |
 
 **A vocabulary row is named, never numbered.** The member says "the Blocked
 lane". The tool reads the project's own list and resolves the name the way a
@@ -606,7 +619,8 @@ Each slice is one pull request. Each one is useful alone.
 | **S2b · The rest of class B** — ✅ **BUILT 2026-09-23** | The vocabulary writes (status, type, field, tag create and update) · edit a comment · recurrence · the personal task and overlay · the two reads they need (`recurrence`, `my_task`) · the agent instructions now describe the writes (S2 left them saying "reads only") | AGENT-SAFE |
 | **S3 · Guarded** — ✅ **BUILT 2026-09-23** | The seventeen class C tools in `guarded.py` with impact-first cards · the one-act-one-card rule and its test · the agent instructions name the guarded acts | AGENT-SAFE |
 | **S4 · Workflows** — ✅ **BUILT 2026-09-23** | W1 plan (`propose_plan` over a `planCard`), W2 status report (`status_report`), W3 weekly (`render_report`), W4 stuck and W5 triage (instructions over the tools) · five templates in the shared catalog (`timeline`, `taskBoard`, `dataGrid`, `reportCard`, `planCard`) with a lockstep fence · `edit_task` and `edit_project` over a `formCard` · the board reloads after a chat write (`cc-projects-changed`) · the chat model setting reused | AGENT-SAFE |
-| **S5 · Polish** | The eleven reads and writes still in `PLANNED` (views, calendar, contexts, watchers, intake, notifications, grants) · the visual review in light mode, compact density and a changed accent · frontend navigation tools once the platform has a dispatcher (H-164). Quick actions and the chat model setting shipped in S4 | AGENT-SAFE |
+| **S5 · The rest** — ✅ **BUILT 2026-09-23** | The eleven reads and writes that were still in `PLANNED` (`inbox.py`: views, calendar, contexts, watchers, intake, notifications, grants). `PLANNED` is empty of WS-27bm names: every `/projects` route is built or excluded by name | AGENT-SAFE |
+| **Left** | The visual review in light mode, compact density and a changed accent (H-157, after the flag flip) · frontend navigation tools once the platform has a dispatcher (H-164) | AGENT-SAFE |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-09-30 |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 

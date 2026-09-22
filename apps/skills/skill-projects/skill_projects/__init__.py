@@ -29,6 +29,19 @@ from skill_projects.guarded import (
     set_status_set,
     unarchive_project,
 )
+from skill_projects.inbox import (
+    calendar,
+    capture_intake,
+    intake_queue,
+    mark_notifications_read,
+    my_contexts,
+    notifications,
+    project_access,
+    project_views,
+    save_view,
+    triage_intake,
+    watchers,
+)
 from skill_projects.reads import (
     analytics_finished,
     analytics_load,
@@ -111,6 +124,14 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "render_tasks",
     "render_timeline",
     "status_report",
+    # Class A — the rest of the reads (S5)
+    "calendar",
+    "intake_queue",
+    "my_contexts",
+    "notifications",
+    "project_access",
+    "project_views",
+    "watchers",
     # Class B — reversible writes, one card each (S2)
     "add_subtasks",
     "assign",
@@ -145,6 +166,11 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "edit_project",
     "edit_task",
     "propose_plan",
+    # Class B — the rest of the writes (S5)
+    "capture_intake",
+    "mark_notifications_read",
+    "save_view",
+    "triage_intake",
     # Class C — hard to undo, one act one card, the impact first (S3)
     "archive_project",
     "archive_task",
