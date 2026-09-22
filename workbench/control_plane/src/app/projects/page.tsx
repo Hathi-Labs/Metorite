@@ -57,6 +57,7 @@ import { NotificationBell } from "./components/NotificationBell";
 import { type CreatingDraft, ProjectTree } from "./components/ProjectTree";
 import type { ProjectMenuHandlers } from "./lib/projectMenu";
 import { CalendarView } from "./components/CalendarView";
+import { MoreTasksBar } from "./components/MoreTasksBar";
 import { SearchPalette } from "./components/SearchPalette";
 import { TimelineView } from "./components/TimelineView";
 import { TableView } from "./components/TableView";
@@ -66,6 +67,7 @@ import { TaskPanel } from "./components/TaskPanel";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { TriageRail } from "./components/TriageRail";
 import { SAVED_VIEW_POSITION, orderBearingView, type planDrop } from "./lib/board";
+import { TASK_PAGE_SIZE, appendTasks, nextTaskPage } from "./lib/paging";
 import {
   type CalendarLayout,
   calendarGrid,
@@ -525,6 +527,24 @@ function ProjectsWorkspace() {
   const [selected, setSelected] = useState<ProjectRow | null>(null);
   const [statuses, setStatuses] = useState<StatusRow[]>([]);
   const [tasks, setTasks] = useState<TaskRow[]>([]);
+  /**
+   * How many tasks exist under the current filters, or null before the read.
+   *
+   * 🔴 **The board holds a PAGE, and until 2026-09-22 it never said so.**
+   * `GET /projects/tasks` caps a page at `MAX_PAGE_SIZE` and answers no
+   * cursor, so a 150-task project drew 100 rows, headed the lane "To do 100",
+   * and ended with the ordinary "+ Add". Fifty tasks were unreachable from the
+   * board, the list and the table, while the sidebar, the overview and the
+   * timeline all read the true 150 — the timeline because it loads from
+   * `/calendar`, a different endpoint with a different cap. One store, three
+   * lenses (D52/D53/D54), and the lenses disagreed about how much work exists.
+   *
+   * Keeping `total` beside the rows is what lets `MoreTasksBar` say "Showing
+   * 100 of 150" and go and get the rest. See `lib/paging.ts`.
+   */
+  const [taskTotal, setTaskTotal] = useState<number | null>(null);
+  /** A `Load more` read is in flight. Separate from the board's own loading. */
+  const [loadingMore, setLoadingMore] = useState(false);
   /**
    * How many tasks are on the shelf for the board in view, or null.
    *
@@ -1427,35 +1447,50 @@ function ProjectsWorkspace() {
     [views]
   );
 
+  /**
+   * The question the board asks the server, as a parameter bag.
+   *
+   * ⚠️ **ONE definition, because two readers now ask it.** `loadProject` reads
+   * page 1 and `loadMoreTasks` reads page N. If each built its own bag they
+   * would drift the first time a filter was added to one, and a `Load more`
+   * that quietly dropped the tag filter would append rows from outside the
+   * board the member is looking at — the very "hide work that is genuinely
+   * there" this code already warns about.
+   */
+  const taskParamsFor = useCallback(
+    (project: ProjectRow) => ({
+      project_id: project.id,
+      include_subtree: true,
+      page_size: TASK_PAGE_SIZE,
+      ...toQuery(filters),
+      // WS-27x — the table's header sort; {} when none, so every other
+      // surface keeps the endpoint's default ordering.
+      ...sortQuery(tableSort),
+      // H-64. The view whose hand-arranged order to read back.
+      //
+      // ⚠️ **The drag handler has written this view's positions since
+      // WS-27 and nothing ever asked for them.** Without it every row
+      // arrives with `view_position` undefined, `sortForView` sends them
+      // all down its `created_at` branch, and a drag inside a column is a
+      // silent no-op.
+      //
+      // ⚠️ Omitted rather than sent as `undefined` when views have not
+      // landed yet. `cacheKey` sorts the params into the read key, so a
+      // present-but-undefined entry would be a DIFFERENT question from the
+      // same read a moment later, and the cached rows could never be
+      // reused. It resolves on the next pass, when `views` arrives.
+      ...(boardViewId ? { view_id: boardViewId } : {}),
+    }),
+    [filters, tableSort, boardViewId]
+  );
+
   const loadProject = useCallback(
     async (project: ProjectRow) => {
       setError(null);
       // Filters travel to the server, never applied to the page after it
       // arrives: paging happens in SQL, so a filter applied here would return
       // short pages and hide work that is genuinely there.
-      const taskParams = {
-        project_id: project.id,
-        include_subtree: true,
-        page_size: 100,
-        ...toQuery(filters),
-        // WS-27x — the table's header sort; {} when none, so every other
-        // surface keeps the endpoint's default ordering.
-        ...sortQuery(tableSort),
-        // H-64. The view whose hand-arranged order to read back.
-        //
-        // ⚠️ **The drag handler has written this view's positions since
-        // WS-27 and nothing ever asked for them.** Without it every row
-        // arrives with `view_position` undefined, `sortForView` sends them
-        // all down its `created_at` branch, and a drag inside a column is a
-        // silent no-op.
-        //
-        // ⚠️ Omitted rather than sent as `undefined` when views have not
-        // landed yet. `cacheKey` sorts the params into the read key, so a
-        // present-but-undefined entry would be a DIFFERENT question from the
-        // same read a moment later, and the cached rows could never be
-        // reused. It resolves on the next pass, when `views` arrives.
-        ...(boardViewId ? { view_id: boardViewId } : {}),
-      };
+      const taskParams = taskParamsFor(project);
       const statusesKey = projectsKey(`nodes/${project.id}/statuses`);
       const tasksKey = projectsKey("tasks", taskParams);
 
@@ -1491,6 +1526,10 @@ function ProjectsWorkspace() {
         ]);
         setStatuses(statusRes.rows);
         setTasks(taskRes.rows);
+        // ⚠️ Reset, never merge. This runs on a fresh project, a changed
+        // filter and a changed sort — each of which is a DIFFERENT question,
+        // so pages read for the old one must not survive into the new answer.
+        setTaskTotal(taskRes.total ?? taskRes.rows.length);
         setArchivedCount(
           filters.archived
             ? taskRes.total ?? taskRes.rows.length
@@ -1505,12 +1544,46 @@ function ProjectsWorkspace() {
         if (!heldTasks) setTasks([]);
       }
     },
-    [filters, tableSort, boardViewId]
+    [filters, tableSort, boardViewId, taskParamsFor]
   );
 
   useEffect(() => {
     if (selected) void loadProject(selected);
   }, [selected, loadProject]);
+
+  /**
+   * Fetch the next page of tasks and add it to what is on screen.
+   *
+   * ⚠️ **Appends, never replaces.** `appendTasks` also drops a row the
+   * shifting offset served twice and keeps the held copy when ids collide, so
+   * an optimistic edit the member can see survives the merge. See
+   * `lib/paging.ts` for why both matter.
+   *
+   * ⚠️ The page asked for is derived from how many rows are HELD, not from a
+   * counter, so a read that fails half way is retried rather than stepped over.
+   */
+  const loadMoreTasks = useCallback(async () => {
+    if (!selected || loadingMore) return;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const params = {
+        ...taskParamsFor(selected),
+        page: nextTaskPage(tasks.length),
+      };
+      const res = await read(projectsKey("tasks", params), () =>
+        projectsApi.tasks(params)
+      );
+      setTasks((current) => appendTasks(current, res.rows));
+      // The count can have moved while the member read page 1. Take the
+      // server's newest answer rather than keeping the one from the first read.
+      setTaskTotal(res.total ?? null);
+    } catch (err) {
+      setError(String((err as Error).message));
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [selected, loadingMore, tasks.length, taskParamsFor]);
 
   // WS-27ae — export the filter that is on screen, with the columns it shows.
   //
@@ -3222,6 +3295,24 @@ function ProjectsWorkspace() {
           onResolved={() => {
             if (selected) void loadProject(selected);
           }}
+        />
+      ) : null}
+
+      {/* 🔴 The board holds a PAGE. Say so, above the scroll area rather than
+          inside it, so the admission cannot be scrolled away from.
+
+          ⚠️ Only the three views fed by `GET /projects/tasks`. The timeline
+          and the calendar load from `/calendar`, which reports its own
+          `truncated` flag and already prints its own sentence — a second bar
+          over them would be a second way to say one thing (§5), and it would
+          disagree, because the two endpoints cap differently. The overview
+          counts in SQL and is never short. */}
+      {selected && (mode === "board" || mode === "list" || mode === "table") ? (
+        <MoreTasksBar
+          loaded={tasks.length}
+          total={taskTotal}
+          busy={loadingMore}
+          onLoadMore={() => void loadMoreTasks()}
         />
       ) : null}
 

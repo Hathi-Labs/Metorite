@@ -356,7 +356,13 @@ export default function ReportsView({
                           : "One project and what is under it"
                       }
                     >
-                      {r.scope === "portfolio" ? "All" : "Node"}
+                      {/* ⚠️ "Project", not "Node". `node` is the table's word
+                          for a row in the tree and it reaches no other
+                          surface — the nav, the tree and this component's own
+                          report body all say "space" and "project". A badge
+                          that said "Node" made the reader look up an idea the
+                          product does not have. */}
+                      {r.scope === "portfolio" ? "All" : "Project"}
                     </span>
                   </button>
                 </li>
