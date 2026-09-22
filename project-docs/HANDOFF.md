@@ -3004,6 +3004,46 @@ line — never reclaim a number by deleting the other entry.
   `scripts/dev_db.sh` · `tests/live/README.md`
 - **Added:** 2026-09-20 · the task lifecycle session
 
+### H-152 · WS-27bm: build the Projects chat slices S2 to S5 · [AGENT]
+- **Check:** `uv run python -c "import skill_projects.manifest as m; print(sorted(m.PLANNED))"`
+  → a non-empty list means at least one slice is still open. The value is
+  the slice each tool belongs to.
+- **Why:** S1 shipped the reads. The owner asked for a chat that creates,
+  updates and archives too, with a card before every write. S2 is the
+  class B writes, S3 the class C acts with count-bearing cards, S4 the five
+  workflows, S5 the polish. `specs/projects_ai_chat.md` §10 is the order
+  and §10.2 the acceptance. The CRM write tools are the shape to copy
+  (`crm_app.md` WS-26d-write). Move a tool out of `PLANNED` when it ships.
+  The fence refuses a tool that is both built and planned.
+- **Authority:** `specs/projects_ai_chat.md` §3.2, §3.3, §5, §10 ·
+  `skill_projects/manifest.py`
+- **Added:** 2026-09-22 · the Projects chat design session
+
+### H-153 · Decide the three questions the Projects chat spec leaves to the owner · [OWNER]
+- **Check:** `grep -n "^## 12" -A 20 project-docs/specs/projects_ai_chat.md`
+  → three numbered questions with no answer under them means this is open.
+- **Why:** (1) **Delete.** D-PM-35 keeps hard delete off the chat until
+  WS-40. The interim is to gate the two tools on `projects:settings:write`.
+  The spec argues against it. (2) **Grants.** A grant write is
+  membership-shaped, and CLAUDE.md §3a rule 3 stops an agent there. The
+  spec parks it as class X. (3) **The tier.** `tier-balanced` now. The cost
+  is real once H-42 prices the card. Answer any of the three by editing the
+  manifest row and the spec, in one PR.
+- **Authority:** `specs/projects_ai_chat.md` §5.4, §12 · `org_access_control.md` §8d
+- **Added:** 2026-09-22 · the Projects chat design session
+
+### H-154 · Flip `NEXT_PUBLIC_PROJECTS_CHAT` on the box, then look at the rail · [AGENT]
+- **Check:** `ssh metorite 'grep -c NEXT_PUBLIC_PROJECTS_CHAT=1 /opt/metorite/workbench/control_plane/.env.local 2>/dev/null || echo 0'`
+  → `0` means the flag is off and the slot still says "not built".
+- **Why:** S1 shipped dark. The flag is a build-time `NEXT_PUBLIC_*` value,
+  so a flip needs a frontend rebuild, not a restart. `enforcement-flip` is
+  granted until 2026-09-30. After the flip, do the check no test makes:
+  open the rail in light mode, at compact density, under a changed accent,
+  and beside the board. Ask it "what is stuck here?" on a real space, and
+  confirm the numbers match the Analytics app.
+- **Authority:** `specs/projects_ai_chat.md` §4.3, §11 · CLAUDE.md §3a
+- **Added:** 2026-09-22 · the Projects chat design session
+
 
 # DONE — deleted, not archived
 

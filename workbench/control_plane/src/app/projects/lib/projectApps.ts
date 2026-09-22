@@ -67,12 +67,50 @@ export const PROJECT_APP_SECTIONS: ProjectAppSection[] = [
         label: "AI chat",
         icon: "Sparkles",
         note: "Ask about your work",
-        // Not built. It renders and says so — see the `preview` note above.
+        // Built dark (WS-27bm, `specs/projects_ai_chat.md` §4.3). This is the
+        // BASE entry; `projectAppSections()` flips it to `live` when
+        // `NEXT_PUBLIC_PROJECTS_CHAT` is on. Off, it renders and says so —
+        // see the `preview` note above.
         launch: "preview",
       },
     ],
   },
 ];
+
+/**
+ * Is the Projects chat on for this build?
+ *
+ * An env var rather than a feature grant, for the reason `lens.ts` gives:
+ * `preview`/`feature:` slugs say who may reach an app, and this says whether
+ * an unfinished surface is shown at all (`launch_surface.md` §2 — "`preview`
+ * is not a permission"). The backend agent is registered either way; the
+ * main chat app can reach it whether or not this is on.
+ */
+export function chatEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const raw = env.NEXT_PUBLIC_PROJECTS_CHAT;
+  return raw === "1" || raw === "true" || raw === "on";
+}
+
+/**
+ * The sections the sidebar draws, with the flagged entries resolved.
+ *
+ * `PROJECT_APP_SECTIONS` stays the shape of record and the thing tests
+ * enumerate. This is what the page renders, so a flag changes exactly one
+ * word on exactly one entry and nothing else about the list.
+ */
+export function projectAppSections(
+  env: Record<string, string | undefined> = process.env,
+): ProjectAppSection[] {
+  const chat = chatEnabled(env);
+  return PROJECT_APP_SECTIONS.map((section) => ({
+    ...section,
+    items: section.items.map((item) =>
+      item.id === "ai-chat" && chat ? { ...item, launch: "live" } : item,
+    ),
+  }));
+}
 
 /** The heading the space tree sits under. */
 export const SPACES_SECTION_LABEL = "Spaces";

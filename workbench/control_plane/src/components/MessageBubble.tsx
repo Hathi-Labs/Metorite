@@ -12,6 +12,7 @@ import GenerativeUIPanel from "@/components/GenerativeUIPanel";
 import ArtifactCard, { type ArtifactMeta } from "@/components/ArtifactCard";
 import EmailToolCards from "@/components/email/EmailToolCards";
 import TaskToolCards from "@/components/tasks/TaskToolCards";
+import ProjectToolCards from "@/components/projects/ProjectToolCards";
 import GenerativeUINode from "@/components/GenerativeUINode";
 import ErrorCard from "@/components/ChatErrorCard";
 import { DismissableCard } from "@/components/ToolCardShell";
@@ -524,6 +525,11 @@ function MessageBubble({
           confirmations). Inert unless the message contains gtd_* tool calls,
           so this renders in both the chat app and the Tasks assistant rail. */}
       <TaskToolCards toolEvents={dedupedToolEvents} />
+      {/* Inline projects-assistant cards (task lists that open in Projects,
+          titled reads). Inert unless the message contains skill-projects tool
+          calls, so this renders in both the chat app and the Projects app's
+          AI chat (WS-27bm). */}
+      <ProjectToolCards toolEvents={dedupedToolEvents} />
       <GenerativeUIPanel
         agentState={message.agentState}
         customEvents={message.customEvents}
