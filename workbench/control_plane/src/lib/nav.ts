@@ -116,9 +116,16 @@ export type NavSection = {
  * exercise both sides without reloading the module graph.
  */
 export function previewAppsVisible(
-  env: Record<string, string | undefined> = process.env,
+  env?: Record<string, string | undefined>,
 ): boolean {
-  const raw = env.NEXT_PUBLIC_SHOW_PREVIEW_APPS;
+  // ⚠️ The LITERAL member expression is the only form Next inlines into the
+  // browser bundle — see `lensEnabled` and `src/lib/publicFlags.test.ts`.
+  // A defaulted `env = process.env` reads the `{}` polyfill in a browser, so
+  // the flag is permanently false and every test still passes, because each
+  // test hands the function an env object of its own.
+  const raw = env
+    ? env.NEXT_PUBLIC_SHOW_PREVIEW_APPS
+    : process.env.NEXT_PUBLIC_SHOW_PREVIEW_APPS;
   return raw === "1" || raw === "true" || raw === "on";
 }
 
