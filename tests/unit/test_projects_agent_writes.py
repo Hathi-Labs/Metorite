@@ -169,6 +169,10 @@ def _s5_answers(call: dict) -> Any:
         return {"task": TASK, "intake": {"status": path.rsplit("/", 1)[-1]}}
     if path == "/projects/notifications/read":
         return {"marked": 3}
+    if path == "/projects/notifications" and method == "GET":
+        return {"rows": [], "unread": {"total": 3, "mentions": 1}}
+    if path == "/projects/my/project" and method == "GET":
+        return {"id": OTHER, "name": "My tasks"}
     return None
 
 
@@ -1721,3 +1725,40 @@ async def test_every_manifest_tool_is_now_built() -> None:
     from skill_projects import manifest as m
 
     assert set(m.PLANNED) <= {"my_areas"}, m.PLANNED
+
+
+async def test_a_capture_with_no_project_lands_in_the_personal_project(monkeypatch) -> None:
+    """The route refuses a capture with no project. The member's own project
+    is the one default, read first; the card names it."""
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.capture_intake("Vendor called")
+    assert "your personal project" in asked[0]["detail"]
+    posted = next(c for c in writes(calls))
+    assert posted["json"]["project_id"] == OTHER
+
+
+async def test_a_capture_with_no_project_and_no_personal_project_is_refused(monkeypatch) -> None:
+    def none_yet(call: dict) -> Any:
+        if call["path"] == "/projects/my/project":
+            raise client.GatewayRefusal("Projects GET: Not found, or not visible to you.")
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, none_yet)
+    assert "no personal project yet" in await skill_projects.capture_intake("Vendor called")
+    assert asked == [] and writes(calls) == []
+
+
+async def test_a_duplicate_decision_says_it_archives(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.triage_intake(UUID, "duplicate", duplicate_of=OTHER)
+    assert "archives this task" in asked[0]["context"]
+
+
+async def test_clearing_every_unread_leads_with_the_count(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.mark_notifications_read(all_unread=True)
+    assert "every unread notification (3)" in asked[0]["detail"]

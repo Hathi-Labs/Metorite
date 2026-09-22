@@ -3120,8 +3120,8 @@ line — never reclaim a number by deleting the other entry.
   2026-09-23** (S5, under the `enforcement-flip` grant): line 19 of
   `.env.local` reads `NEXT_PUBLIC_PROJECTS_CHAT=1`, with a `.bak-` copy
   beside it. `vps_apply.sh` preserves every key there but the internal
-  token, and the S5 merge's deploy rebuilt the frontend. What is left is
-  the check no test makes.
+  token, and the next deploy after the flip (the S5 merge) rebuilds the
+  frontend. What is left is the check no test makes.
   Open the rail in light mode, at compact density, under a changed accent,
   and beside the board. Ask it "what is stuck here?" on a real space. Then
   confirm the numbers match the Analytics app.

@@ -390,14 +390,19 @@ export type ActionOutcome = "done" | "cancelled" | "refused" | "failed";
  * change."). The first version painted those green under "Task moved"; the
  * S2 verifier caught it. Now: no id, no success.
  */
+/** The tools whose success carries no row, only a `done:` line. */
+const DONE_LINE_TOOLS = new Set(["mark_notifications_read"]);
+
 export function classifyActionResult(
   result: string,
   status: ToolEvent["status"],
+  tool = "",
 ): ActionOutcome {
   if (status === "error") return "failed";
   const text = (result || "").trim();
   if (text.startsWith(CANCELLED)) return "cancelled";
-  return receiptIdOf(text) ? "done" : "refused";
+  if (receiptIdOf(text)) return "done";
+  return DONE_LINE_TOOLS.has(tool) && /^\s*done:\s*\S/im.test(text) ? "done" : "refused";
 }
 
 /** The task a write touched, from its `full_id:` line, or "". Only a task
@@ -412,9 +417,7 @@ export function rowIdOf(result: string): string {
  * bell). Both are printed by the skill only after the write returned.
  */
 export function receiptIdOf(result: string): string {
-  const id = result.match(/^\s*[a-z_]+_id:\s*([0-9a-f-]{36})\s*$/im)?.[1];
-  if (id) return id;
-  return /^\s*done:\s*\S/im.test(result) ? "done" : "";
+  return result.match(/^\s*[a-z_]+_id:\s*([0-9a-f-]{36})\s*$/im)?.[1] ?? "";
 }
 
 /**
@@ -427,7 +430,7 @@ export function receiptIdOf(result: string): string {
 function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const meta = ACTION_META[e.name] ?? { icon: "Wrench", label: genericLabel(e.name) };
   const result = (e.result || "").trim();
-  const outcome = classifyActionResult(result, e.status);
+  const outcome = classifyActionResult(result, e.status, e.name);
   useEffect(() => {
     if (outcome === "done") announceChange(e.id);
   }, [outcome, e.id]);

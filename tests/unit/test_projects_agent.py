@@ -846,3 +846,18 @@ async def test_the_task_table_resolves_the_status_name(monkeypatch) -> None:
     row = specs[0]["props"]["data"]["rows"][0]
     assert row["cells"][2] == "To do"
     assert "status «To do»" in text
+
+
+async def test_a_notification_row_leads_with_the_task(monkeypatch) -> None:
+    """The list card parses `- #<n> «title»`; a line led by the date drew nothing."""
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await skill_projects.notifications()
+    row = [line for line in text.split("\n") if line.startswith("- ")][0]
+    assert row.startswith("- #7 «Fix the extruder» · mention by «a@x.io»")
+
+
+async def test_a_one_day_calendar_window_is_widened_to_the_next_morning(monkeypatch) -> None:
+    calls = fake_gateway(monkeypatch, _detail_responder)
+    await skill_projects.calendar("2026-09-22", "2026-09-22", mine=True)
+    read = next(c for c in calls if c["path"] == "/projects/my/calendar")
+    assert read["params"] == {"start": "2026-09-22", "end": "2026-09-23"}

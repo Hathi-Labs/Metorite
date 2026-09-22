@@ -14,9 +14,10 @@ the bell refills).
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Any
 
-from skill_projects.client import data, get, patch, post, uuid_of
+from skill_projects.client import GatewayRefusal, data, get, patch, post, uuid_of
 from skill_projects.reads import DATA_LEGEND, _day, _task_line
 from skill_projects.writes import (
     CANCELLED,
@@ -83,8 +84,14 @@ async def calendar(start: str, end: str, project_id: str = "", mine: bool = Fals
     every visible task whose schedule overlaps the window, narrowed by
     project_id. Dates are the server's."""
     frm, to = str(start or "").strip()[:10], str(end or "").strip()[:10]
-    if len(frm) != 10 or len(to) != 10:
+    try:
+        first, last = date.fromisoformat(frm), date.fromisoformat(to)
+    except ValueError:
         return "start and end are dates, YYYY-MM-DD."
+    if last <= first:
+        # The routes take a half-open window and refuse end <= start. "Today"
+        # is one day, so the end moves to the next morning.
+        to = (first + timedelta(days=1)).isoformat()
     if mine:
         payload = await get("/projects/my/calendar", {"start": frm, "end": to})
         title = f"My calendar {frm} to {to}"
@@ -98,6 +105,8 @@ async def calendar(start: str, end: str, project_id: str = "", mine: bool = Fals
     out = [DATA_LEGEND, f"{title} ({(payload or {}).get('total', len(rows))} tasks):"]
     for row in rows:
         out.extend(_task_line(row))
+        if not row.get("due_at") and row.get("start_date"):
+            out[-2] += f" · starts {_day(row.get('start_date'))}"
         block = row.get("scheduled_start")
         if block:
             out[-2] += f" · block {str(block)[:16].replace('T', ' ')}"
@@ -185,11 +194,13 @@ async def notifications(unread_only: bool = True) -> str:
         f"mentions {unread.get('mentions', 0)}):",
     ]
     for row in rows:
+        # The row grammar the list card parses: `- #<n> «title» · facts`,
+        # then `full_id:`. A line that led with the date drew no rows.
         out.append(
-            f"- {_day(row.get('created_at'))} {row.get('kind')} by {data(row.get('actor'))} on "
-            f"#{row.get('task_number')} {data(row.get('task_title'))}"
-            + (f": {data(row.get('excerpt'))}" if row.get("excerpt") else "")
-            + f" (notification id {row.get('id')})"
+            f"- #{row.get('task_number')} {data(row.get('task_title'))} · "
+            f"{row.get('kind')} by {data(row.get('actor'))} · {_day(row.get('created_at'))}"
+            + (f" · {data(row.get('excerpt'))}" if row.get("excerpt") else "")
+            + f" · notification id {row.get('id')}"
         )
         out.append(f"  full_id: {row.get('task_id')}")
     return "\n".join(out)
@@ -243,16 +254,31 @@ async def capture_intake(
 ) -> str:
     """Capture a task into a project's intake queue for someone to triage,
     rather than straight onto its board. project_id empty captures into
-    the member's own inbox. The card shows the title and where it lands."""
+    the member's own personal project, when they have one. The card shows
+    the title and where it lands."""
     label = str(title or "").strip()
     if not label:
         return "A task needs a title."
     payload: dict[str, Any] = {"title": label}
-    where = "your inbox"
     if project_id.strip():
         pid, node = await _node(project_id)
         payload["project_id"] = pid
         where = data(node.get("name"))
+    else:
+        # The route refuses a capture with no project (intake.py, 422).
+        # The member's own project is the one default the app has, and it
+        # exists once they have captured anything (`/my/project`).
+        try:
+            mine = (await get("/projects/my/project")) or {}
+        except GatewayRefusal:
+            mine = {}
+        if not mine.get("id"):
+            return (
+                "Intake needs a project, and you have no personal project yet. "
+                "projects_tree lists the projects; create_personal_task makes yours."
+            )
+        payload["project_id"] = uuid_of(str(mine.get("id")), "project_id")
+        where = f"{data(mine.get('name'))} (your personal project)"
     if description.strip():
         payload["description"] = description.strip()
     if due.strip():
@@ -280,8 +306,9 @@ async def triage_intake(
 ) -> str:
     """Decide one intake task. action is accept (onto the board, in status
     by NAME or the default lane), decline (archives it; unarchive_task
-    restores), duplicate (of duplicate_of, another task id), or snooze
-    (until YYYY-MM-DD). The card names the task and the decision."""
+    restores), duplicate (of duplicate_of, another task id; this archives
+    it too), or snooze (until YYYY-MM-DD). The card names the task and the
+    decision."""
     verb = str(action or "").strip().lower()
     if verb not in INTAKE_ACTIONS:
         return f"action is one of {', '.join(INTAKE_ACTIONS)}."
@@ -303,6 +330,7 @@ async def triage_intake(
         oid, other = await _task(duplicate_of)
         body["duplicate_of_task_id"] = oid
         card["duplicate of"] = f"#{other.get('task_number')} {data(other.get('title'))}"
+        card["note"] = "marking a duplicate archives this task; unarchive_task restores it"
     elif verb == "snooze":
         when = str(until or "").strip()[:10]
         if len(when) != 10:
@@ -341,11 +369,16 @@ async def mark_notifications_read(ids: str = "", all_unread: bool = False) -> st
     if not wanted and not all_unread:
         return "Pass ids, or all_unread=true."
     body: dict[str, Any] = {"all": True} if all_unread else {"ids": wanted}
-    what = (
-        "every unread notification"
-        if all_unread
-        else f"{len(wanted)} notification{'s' if len(wanted) != 1 else ''}"
-    )
+    if all_unread:
+        bell = (
+            await get("/projects/notifications", {"unread_only": True, "page": 1, "page_size": 1})
+        ) or {}
+        unread = int(((bell.get("unread") or {}).get("total")) or 0)
+        if not unread:
+            return "Nothing is unread."
+        what = f"every unread notification ({unread})"
+    else:
+        what = f"{len(wanted)} notification{'s' if len(wanted) != 1 else ''}"
     if not await _confirm(
         title="Mark as read?",
         detail=what,
@@ -353,9 +386,12 @@ async def mark_notifications_read(ids: str = "", all_unread: bool = False) -> st
     ):
         return CANCELLED
     result = (await post("/projects/notifications/read", body)) or {}
+    marked = int(result.get("marked") or 0)
+    if not marked:
+        return "Nothing was marked; those notifications were not yours or were read already."
     # No row to open. `done:` is the receipt line the card reads for a write
-    # that touches no single row (`classifyActionResult`).
-    return f"Marked {result.get('marked', 0)} read.\n  done: {result.get('marked', 0)} marked"
+    # that touches no single row (`classifyActionResult`, this tool only).
+    return f"Marked {marked} read.\n  done: {marked} marked"
 
 
 __all__ = [  # noqa: RUF022 — reads first, then the writes

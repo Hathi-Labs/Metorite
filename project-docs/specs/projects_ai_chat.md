@@ -151,8 +151,8 @@ and a count of one page looks right and is wrong.
 | "Repeat this every Monday" | `set_recurrence` | `PUT /projects/tasks/{id}/recurrence` | `DELETE` stops it. The task stays |
 | "Note to self: renew the domain" | `create_personal_task` | `POST /projects/my/tasks` | Archive. Nobody else sees it |
 | "File this as Someday for me" | `set_my_overlay` | `PATCH /projects/tasks/{id}/personal` | Per-member overlay, mine |
-| "Capture this into intake for Ops" | `capture_intake` | `POST /projects/intake` | Decline it |
-| "Accept the vendor task" | `triage_intake` | `POST /projects/intake/{id}/accept`, `decline`, `duplicate`, `snooze` | Decline archives. `unarchive_task` restores |
+| "Capture this into intake for Ops" | `capture_intake` | `POST /projects/intake` | Decline it. No project named means the member's own personal project, or a refusal |
+| "Accept the vendor task" | `triage_intake` | `POST /projects/intake/{id}/accept`, `decline`, `duplicate`, `snooze` | Decline and duplicate archive, and the card says so. `unarchive_task` restores |
 | "Save this as a view called Mine" | `save_view` | `POST /projects/nodes/{id}/views`, `PATCH /projects/views/{id}` | Rename back. Delete is guarded |
 | "Clear my notifications" | `mark_notifications_read` | `POST /projects/notifications/read` | The bell refills |
 
