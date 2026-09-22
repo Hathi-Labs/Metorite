@@ -81,12 +81,12 @@ SELECT s3c_check('4a re-running after the drop is a no-op',
 -- The `gtd_` prefix is shared by four unrelated things. This is the check that
 -- stops a future "tidy up the gtd_ tables" from taking the Calendar's state,
 -- the People directory, WS-21's Horizons or WS-18's reviews with it.
-SELECT s3c_check('5a gtd_settings survives (D53.6 — Calendar)',
-    (to_regclass('public.gtd_settings') IS NOT NULL), true);
-SELECT s3c_check('5b gtd_day_state survives (D53.6 — Calendar)',
-    (to_regclass('public.gtd_day_state') IS NOT NULL), true);
-SELECT s3c_check('5c gtd_rollover_log survives (D53.6 — Calendar)',
-    (to_regclass('public.gtd_rollover_log') IS NOT NULL), true);
+SELECT s3c_check('5a user_settings survives (D53.6 — Calendar)',
+    (to_regclass('public.user_settings') IS NOT NULL), true);
+SELECT s3c_check('5b calendar_day_state survives (D53.6 — Calendar)',
+    (to_regclass('public.calendar_day_state') IS NOT NULL), true);
+SELECT s3c_check('5c calendar_rollover_log survives (D53.6 — Calendar)',
+    (to_regclass('public.calendar_rollover_log') IS NOT NULL), true);
 SELECT s3c_check('5d people survives (People directory, not tasks)',
     (to_regclass('public.people') IS NOT NULL), true);
 SELECT s3c_check('5e people_skills survives (People directory)',

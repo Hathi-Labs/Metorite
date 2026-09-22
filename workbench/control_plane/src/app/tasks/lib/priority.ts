@@ -17,7 +17,7 @@
 import { GtdItem } from "./types";
 
 /** Default urgency window (hours). A due task is urgent when overdue or due
- *  within this many hours. Overridable per-user (gtd_settings). */
+ *  within this many hours. Overridable per-user (user_settings). */
 export const DEFAULT_URGENT_WINDOW_HOURS = 48;
 
 /** Header label for the "no @context" bucket when grouping by context. */

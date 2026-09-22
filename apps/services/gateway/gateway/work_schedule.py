@@ -34,7 +34,7 @@ to grow a field per exception.
 
 What this is NOT
 ----------------
-⚠️ It is **not** the calendar's day window. ``gtd_settings.day_start_hour`` /
+⚠️ It is **not** the calendar's day window. ``user_settings.day_start_hour`` /
 ``day_end_hour`` / ``daily_capacity_mins`` (migrations 77 and 97) answer *"when
 may the planner place blocks in my day"* — a private preference. This answers
 *"when is this person contracted to work"* — a fact about the engagement, visible
@@ -422,7 +422,7 @@ def calendar_seed(schedule: dict[str, Any]) -> dict[str, int]:
     """The calendar day window this schedule implies (D-PC-16).
 
     Read by ``routes/tasks/settings._load`` **only when the person has no
-    ``gtd_settings`` row at all** — i.e. has never expressed a calendar
+    ``user_settings`` row at all** — i.e. has never expressed a calendar
     preference. Nothing is written: it is a read-time default, so a schedule
     change still follows a person who has not customised anything, and the
     instant they save one setting the row exists and this stops applying

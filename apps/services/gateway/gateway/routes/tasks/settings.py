@@ -82,7 +82,7 @@ def seed_status_stage_map(
     return out
 
 # Per-function default tiers (aliases resolved by acb_llm: tier-fast→tier1 …).
-DEFAULT_GTD_MODELS = {
+DEFAULT_TASK_MODELS = {
     "chat": "tier-powerful",       # assistant rail — strong tool-caller
     "clarify": "tier-balanced",    # clarify proposals (agent seam)
     "atomize": "tier-fast",        # high-volume splitting/dedup triage
@@ -90,11 +90,11 @@ DEFAULT_GTD_MODELS = {
 }
 
 
-class GtdSettingsModel(BaseModel):
-    chat_model: str = DEFAULT_GTD_MODELS["chat"]
-    clarify_model: str = DEFAULT_GTD_MODELS["clarify"]
-    atomize_model: str = DEFAULT_GTD_MODELS["atomize"]
-    email_capture_model: str = DEFAULT_GTD_MODELS["email_capture"]
+class UserSettingsModel(BaseModel):
+    chat_model: str = DEFAULT_TASK_MODELS["chat"]
+    clarify_model: str = DEFAULT_TASK_MODELS["clarify"]
+    atomize_model: str = DEFAULT_TASK_MODELS["atomize"]
+    email_capture_model: str = DEFAULT_TASK_MODELS["email_capture"]
     capture_dedup: bool = True
     auto_sync_on_open: bool = True
     # AI-clarify cognition (Phase 3): use the LLM pass, or the instant
@@ -147,7 +147,7 @@ class GtdSettingsModel(BaseModel):
     day_templates: list[dict] = []
 
 
-class GtdSettingsPatch(BaseModel):
+class UserSettingsPatch(BaseModel):
     chat_model: str | None = None
     clarify_model: str | None = None
     atomize_model: str | None = None
@@ -179,12 +179,12 @@ async def gtd_models(db: Any, user_id: str) -> dict[str, str]:
     """The user's per-function models with per-function defaults filled in.
     Never raises — a failed lookup returns the defaults so AI features work
     before settings exist."""
-    out = dict(DEFAULT_GTD_MODELS)
+    out = dict(DEFAULT_TASK_MODELS)
     try:
         row = (await db.execute(text(
             """SELECT chat_model, clarify_model, atomize_model,
                       email_capture_model
-               FROM gtd_settings WHERE user_id = :uid"""),
+               FROM user_settings WHERE user_id = :uid"""),
             {"uid": user_id})).fetchone()
         if row:
             out["chat"] = row.chat_model or out["chat"]
@@ -206,7 +206,7 @@ async def gtd_toggles(db: Any, user_id: str) -> dict[str, bool]:
     try:
         row = (await db.execute(text(
             """SELECT clarify_use_llm, background_sync, mirror_done_tasks
-               FROM gtd_settings WHERE user_id = :uid"""),
+               FROM user_settings WHERE user_id = :uid"""),
             {"uid": user_id})).fetchone()
         if row:
             out["clarify_use_llm"] = bool(row.clarify_use_llm)
@@ -221,7 +221,7 @@ async def gtd_workflow_stages(db: Any, user_id: str) -> list[str]:
     """The user's ordered board stages, defaults filled in. Never raises."""
     try:
         row = (await db.execute(text(
-            "SELECT workflow_stages FROM gtd_settings WHERE user_id = :uid"),
+            "SELECT workflow_stages FROM user_settings WHERE user_id = :uid"),
             {"uid": user_id})).fetchone()
         if row:
             return _stages(row.workflow_stages)
@@ -252,9 +252,9 @@ async def gtd_calendar_prefs(db: Any, user_id: str) -> dict[str, Any]:
     return out
 
 
-async def _load(db: Any, user_id: str) -> GtdSettingsModel:
+async def _load(db: Any, user_id: str) -> UserSettingsModel:
     row = (await db.execute(text(
-        "SELECT * FROM gtd_settings WHERE user_id = :uid"),
+        "SELECT * FROM user_settings WHERE user_id = :uid"),
         {"uid": user_id})).fetchone()
     if not row:
         # ── WS-28p / D-PC-16: the calendar SEEDS itself from the People
@@ -274,14 +274,14 @@ async def _load(db: Any, user_id: str) -> GtdSettingsModel:
         #
         # Direction is People → Calendar and only that way: nothing in this
         # package writes `people.working_hours`, and a test asserts it.
-        return GtdSettingsModel(**await _seed_from_work_schedule(db, user_id))
+        return UserSettingsModel(**await _seed_from_work_schedule(db, user_id))
     
-    return GtdSettingsModel(
-        chat_model=row.chat_model or DEFAULT_GTD_MODELS["chat"],
-        clarify_model=row.clarify_model or DEFAULT_GTD_MODELS["clarify"],
-        atomize_model=row.atomize_model or DEFAULT_GTD_MODELS["atomize"],
+    return UserSettingsModel(
+        chat_model=row.chat_model or DEFAULT_TASK_MODELS["chat"],
+        clarify_model=row.clarify_model or DEFAULT_TASK_MODELS["clarify"],
+        atomize_model=row.atomize_model or DEFAULT_TASK_MODELS["atomize"],
         email_capture_model=(row.email_capture_model
-                             or DEFAULT_GTD_MODELS["email_capture"]),
+                             or DEFAULT_TASK_MODELS["email_capture"]),
         capture_dedup=bool(row.capture_dedup),
         auto_sync_on_open=bool(row.auto_sync_on_open),
         # getattr defaults keep a pre-migration row (no such column) working.
@@ -443,7 +443,7 @@ async def gtd_status_stage_map(db: Any, user_id: str) -> dict[str, str]:
     Never raises — a missing row / pre-migration DB returns {}."""
     try:
         row = (await db.execute(text(
-            "SELECT status_stage_map FROM gtd_settings WHERE user_id = :uid"),
+            "SELECT status_stage_map FROM user_settings WHERE user_id = :uid"),
             {"uid": user_id})).fetchone()
         if row:
             return _status_map(row.status_stage_map)
@@ -469,8 +469,8 @@ def _stages(val: Any) -> list[str]:
     return list(DEFAULT_WORKFLOW_STAGES)
 
 
-@router.get("/settings", response_model=GtdSettingsModel)
-async def get_gtd_settings(user: UserContext = Depends(get_current_user)):
+@router.get("/settings", response_model=UserSettingsModel)
+async def get_user_settings(user: UserContext = Depends(get_current_user)):
     async with _tenant_session() as db:
         return await _load(db, _uid(user))
 
@@ -539,9 +539,9 @@ async def status_catalog(user: UserContext = Depends(get_current_user)):
             stages=stages, entries=entries, unmapped=unmapped)
 
 
-@router.put("/settings", response_model=GtdSettingsModel)
-async def put_gtd_settings(
-    patch: GtdSettingsPatch,
+@router.put("/settings", response_model=UserSettingsModel)
+async def put_user_settings(
+    patch: UserSettingsPatch,
     user: UserContext = Depends(get_current_user),
 ):
     """Partial update — only the provided fields change (upsert)."""
@@ -586,7 +586,7 @@ async def put_gtd_settings(
             vals = ", ".join(_ph(k) for k in fields)
             sets = ", ".join(f"{k} = EXCLUDED.{k}" for k in fields)
             await db.execute(text(
-                f"""INSERT INTO gtd_settings (user_id, {cols})
+                f"""INSERT INTO user_settings (user_id, {cols})
                     VALUES (:uid, {vals})
                     ON CONFLICT (user_id)
                     DO UPDATE SET {sets}, updated_at = now()"""),
@@ -595,7 +595,7 @@ async def put_gtd_settings(
         # A background_sync toggle must (re)start or stop this user's
         # workspace loops at runtime — otherwise the change only takes
         # effect on the next gateway restart. Runs AFTER the block above
-        # committed: the scheduler re-reads gtd_settings on its own session
+        # committed: the scheduler re-reads user_settings on its own session
         # and must see the new value (H2 restructure).
         if "background_sync" in fields:
             async with _tenant_session() as db:

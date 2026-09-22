@@ -19,5 +19,5 @@
 --   boolean with no tie to a reviewed proposal.
 -- Depends on: 92_gtd_day_state.sql. ADDITIVE + idempotent.
 
-ALTER TABLE gtd_day_state
+ALTER TABLE calendar_day_state
     ADD COLUMN IF NOT EXISTS pending_plan JSONB;

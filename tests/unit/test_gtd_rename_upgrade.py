@@ -1,8 +1,11 @@
-"""The People tables are no longer called ``gtd_*`` — and the rows came with them.
+"""The `gtd_` tables are moving to honest names — and the rows come with them.
 
 Owner directive, 2026-09-21: *"I really don't want GTD anymore... update the
-naming convention for all of the table names accordingly."* Slice 1 is the
-People family, five tables:
+naming convention for all of the table names accordingly."* The work goes
+table family by table family, and this module is the fence for every slice
+that has landed.
+
+**Slice 1, the People family** (2026-09-21):
 
 ==========================  ======================
 old                         new
@@ -13,6 +16,25 @@ old                         new
 ``gtd_person_absences``     ``people_absences``
 ``gtd_person_resumes``      ``people_resumes``
 ==========================  ======================
+
+**Slice 2, the Calendar and the settings row** (2026-09-22):
+
+==========================  =========================
+old                         new
+==========================  =========================
+``gtd_day_state``           ``calendar_day_state``
+``gtd_rollover_log``        ``calendar_rollover_log``
+``gtd_settings``            ``user_settings``
+==========================  =========================
+
+⚠️ **`gtd_settings` did NOT become `calendar_settings`, and that was a
+decision.** The board groups it with the Calendar (D53.6) because it survives
+the S3c drop. Its contents disagree: it carries ``chat_model``,
+``capture_dedup``, ``auto_sync_on_open`` and ``workflow_stages`` for the Tasks
+app beside ``day_start_hour``, ``energy_windows`` and ``auto_rollover`` for the
+Calendar. It is one row of per-user preference, so it is the sibling of
+``org_settings`` (migration 151) and it is named for that. Owner call,
+2026-09-22.
 
 **The rename lives in the migration that CREATES the table.** Two other shapes
 were built and measured on 2026-09-21, and both were wrong:
@@ -28,10 +50,11 @@ place — a fresh install, an existing database, and a replay.
 ⚠️ **The bug this suite exists for.** The prologue names the OLD table, so a
 sweep that rewrites ``gtd_people`` to ``people`` everywhere rewrites the
 prologue too, into ``ALTER TABLE people RENAME TO people``. That is a silent
-no-op. An upgraded database keeps the old tables and gets five EMPTY new ones
+no-op. An upgraded database keeps the old tables and gets empty new ones
 beside them, and every test that only builds a fresh database still passes. It
 was found by rebuilding a real pre-change database and upgrading it, which is
-:func:`test_an_existing_table_is_renamed_WITH_its_rows` below.
+:func:`test_an_existing_table_is_renamed_WITH_its_rows` below. **Sweep first,
+add the prologue second.**
 
 ⚠️ A sync connection, not an async engine. psycopg refuses Windows' default
 ``ProactorEventLoop`` and this repo's primary dev box is Windows (CLAUDE.md §6).
@@ -52,11 +75,40 @@ MIGRATIONS = os.path.join(_ROOT, "infra", "postgres")
 
 #: new table -> (old table, the migration file that creates it)
 RENAMED: dict[str, tuple[str, str]] = {
+    # slice 1 — the People family
     "people": ("gtd_people", "49_gtd_people.sql"),
     "people_resumes": ("gtd_person_resumes", "74_gtd_people_editable_and_resumes.sql"),
     "people_absences": ("gtd_person_absences", "174_people_absences.sql"),
     "people_skills": ("gtd_person_skills", "176_people_skills.sql"),
     "people_credentials": ("gtd_person_credentials", "176_people_skills.sql"),
+    # slice 2 — the Calendar, and the per-user settings row
+    "user_settings": ("gtd_settings", "51_gtd_settings.sql"),
+    "calendar_rollover_log": ("gtd_rollover_log", "78_gtd_calendar_rollover.sql"),
+    "calendar_day_state": ("gtd_day_state", "92_gtd_day_state.sql"),
+}
+
+#: A row this table accepts with no foreign key to satisfy, so the rename can
+#: be shown to carry REAL data rather than an empty table. Not every table has
+#: one — the children of `people` need a parent first, and for those the row
+#: COUNT either side of the rename is the measurement.
+SEED: dict[str, tuple[str, str]] = {
+    "people": (
+        "INSERT INTO {t} (name, email) VALUES ('Existing Person', 'keep@rename.example')",
+        "SELECT name FROM {t} WHERE email = 'keep@rename.example'",
+    ),
+    "user_settings": (
+        "INSERT INTO {t} (user_id) VALUES ('keep@rename.example')",
+        "SELECT user_id FROM {t} WHERE user_id = 'keep@rename.example'",
+    ),
+    "calendar_day_state": (
+        "INSERT INTO {t} (user_id, day) VALUES ('keep@rename.example', DATE '2026-01-02')",
+        "SELECT user_id FROM {t} WHERE user_id = 'keep@rename.example'",
+    ),
+    "calendar_rollover_log": (
+        "INSERT INTO {t} (user_id, item_id) "
+        "VALUES ('keep@rename.example', gen_random_uuid())",
+        "SELECT user_id FROM {t} WHERE user_id = 'keep@rename.example'",
+    ),
 }
 
 
@@ -90,10 +142,20 @@ def test_the_creating_migration_carries_a_guarded_rename(new, pair):
 
 @pytest.mark.parametrize("new,pair", sorted(RENAMED.items()))
 def test_the_rename_is_not_the_swept_no_op(new, pair):
-    """``ALTER TABLE people RENAME TO people`` is what a sweep leaves behind."""
+    """``ALTER TABLE people RENAME TO people`` is what a sweep leaves behind.
+
+    Measured against the EXECUTABLE block, not the file. The prologue's own
+    warning quotes the broken statement to explain it, and an assertion over
+    the whole file reads that comment as the defect. Slice 1 passed this only
+    because the quoted text happened to wrap across two comment lines.
+    """
     sql = _sql(pair[1])
-    assert f"ALTER TABLE {new} RENAME TO {new}" not in sql
-    assert f"RENAME TO %I', '{new}', '{new}'" not in sql
+    block = re.search(rf"DO \$rename_{new}\$(.*?)\$rename_{new}\$;", sql, re.DOTALL)
+    assert block, f"{pair[1]} has no rename prologue for {new}"
+    body = re.sub(r"--.*", "", block.group(1))
+    assert f"ALTER TABLE {new} RENAME TO {new}" not in body
+    assert f"RENAME TO %I', '{new}', '{new}'" not in body
+    assert f"old_name CONSTANT text := '{new}'" not in body
 
 
 @pytest.mark.parametrize("new,pair", sorted(RENAMED.items()))
@@ -103,7 +165,7 @@ def test_the_prologue_runs_before_the_create(new, pair):
     assert sql.index(f"$rename_{new}$") < sql.index(f"CREATE TABLE IF NOT EXISTS {new}")
 
 
-def test_no_migration_creates_a_table_under_an_old_people_name():
+def test_no_migration_creates_a_table_under_an_old_name():
     for name in sorted(os.listdir(MIGRATIONS)):
         if not re.match(r"^\d+_.*\.sql$", name):
             continue
@@ -160,16 +222,19 @@ def test_an_existing_table_is_renamed_WITH_its_rows(eng, new, pair):
     This is the arm that the swept no-op failed. Everything happens inside one
     transaction and is rolled back, so the ladder database does not change.
 
-    The row count is the measurement. An INSERT would need each table's own
-    NOT NULL columns, and the property under test is that the rename carries
-    whatever rows are there.
+    Where :data:`SEED` has a row for the table, the row itself is the proof.
+    Otherwise the row COUNT is, because a child of `people` needs a parent
+    before it can hold anything.
     """
     old, filename = pair
     sql = _sql(filename)
+    seed = SEED.get(new)
     conn = eng.connect()
     trans = conn.begin()
     try:
         conn.execute(text(f"ALTER TABLE {new} RENAME TO {old}"))
+        if seed:
+            conn.execute(text(seed[0].format(t=old)))
         before = conn.execute(text(f"SELECT count(*) FROM {old}")).scalar()
 
         with conn.connection.dbapi_connection.cursor() as cur:
@@ -182,30 +247,10 @@ def test_an_existing_table_is_renamed_WITH_its_rows(eng, new, pair):
         )
         after = conn.execute(text(f"SELECT count(*) FROM {new}")).scalar()
         assert after == before
-    finally:
-        trans.rollback()
-        conn.close()
-
-
-@live
-def test_the_rename_carries_the_rows_it_is_given(eng):
-    """One table, with a row we put there ourselves, end to end."""
-    conn = eng.connect()
-    trans = conn.begin()
-    try:
-        conn.execute(text("ALTER TABLE people RENAME TO gtd_people"))
-        conn.execute(
-            text(
-                "INSERT INTO gtd_people (name, email) "
-                "VALUES ('Existing Person', 'keep@rename.example')"
+        if seed:
+            assert conn.execute(text(seed[1].format(t=new))).scalar() is not None, (
+                f"{new} exists but the seeded row did not survive the rename"
             )
-        )
-        with conn.connection.dbapi_connection.cursor() as cur:
-            cur.execute(_sql("49_gtd_people.sql"))
-        survived = conn.execute(
-            text("SELECT name FROM people WHERE email = 'keep@rename.example'")
-        ).scalar()
-        assert survived == "Existing Person"
     finally:
         trans.rollback()
         conn.close()

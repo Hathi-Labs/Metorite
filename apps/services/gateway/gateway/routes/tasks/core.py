@@ -257,7 +257,7 @@ class GtdItemModel(BaseModel):
     assignee: PersonModel | None = None
     assignees: list[PersonModel] = []
     is_mine: bool = True
-    workflow_stage: str | None = None   # local Kanban stage (see gtd_settings)
+    workflow_stage: str | None = None   # local Kanban stage (see user_settings)
     sort_key: float | None = None       # manual (drag) rank within a group/column
     parent_item_id: str | None = None   # set → this item is a subtask of another
     subtask_count: int = 0              # number of child subtasks (roll-up badge)

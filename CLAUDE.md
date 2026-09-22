@@ -84,20 +84,30 @@ reference tied to code. Do not put product specs in `docs/`.
   `(task_id, member_email)`, because two people assigned one task legitimately
   disagree about its disposition. ⚠️ **`gtd_*` is retired** — it is the old Tasks
   store, still on disk during expand/contract; do not build against it, and do not
-  sweep `gtd_settings`/`gtd_day_state`/`gtd_rollover_log` with it (they are the
-  Calendar's).
-  ⚠️ **THE NAME IS GOING, TABLE BY TABLE** *(owner directive, 2026-09-21)*. The
-  People family moved first. `gtd_people` is now **`people`**,
-  `gtd_person_skills` is **`people_skills`**, `gtd_person_credentials` is
-  **`people_credentials`**, `gtd_person_absences` is **`people_absences`**, and
-  `gtd_person_resumes` is **`people_resumes`**. The rename lives INSIDE the
-  migration that creates each table, guarded, so one file answers a fresh
-  install, an upgrade and a replay. `tests/unit/test_people_rename_upgrade.py`
-  is the fence, and its docstring carries the two shapes that failed. Index and
-  constraint names keep the old spelling on purpose. **`people` is a PREFIX of
-  its own family.** A fake that dispatches on `"FROM people" in sql` answers the
+  sweep the three tables that WERE `gtd_settings`, `gtd_day_state` and
+  `gtd_rollover_log` with it. They belong to the Calendar and the member, not
+  to the old task store, and they now carry their own names (below).
+  ⚠️ **THE NAME IS GOING, TABLE BY TABLE** *(owner directive, 2026-09-21)*.
+  `tests/unit/test_gtd_rename_upgrade.py` is the one fence for the whole
+  programme, and its docstring carries the two shapes that failed.
+  **Slice 1, the People family** — `gtd_people` is now **`people`**, and
+  `gtd_person_skills`, `gtd_person_credentials`, `gtd_person_absences` and
+  `gtd_person_resumes` are **`people_skills`**, **`people_credentials`**,
+  **`people_absences`** and **`people_resumes`**.
+  **Slice 2, the Calendar and the member's settings row** — `gtd_day_state` is
+  **`calendar_day_state`**, `gtd_rollover_log` is **`calendar_rollover_log`**,
+  and `gtd_settings` is **`user_settings`**, the sibling of `org_settings`.
+  ⚠️ It is NOT `calendar_settings`. It holds `chat_model` and `capture_dedup`
+  for Tasks beside `day_start_hour` and `auto_rollover` for the Calendar, so it
+  is one row of per-member preference. Owner call, 2026-09-22.
+  **How.** The rename lives INSIDE the migration that creates each table,
+  guarded, so one file answers a fresh install, an upgrade and a replay. Index,
+  constraint and policy names keep the old spelling on purpose.
+  ⚠️ **Sweep the tree FIRST and add the prologue SECOND**, or the sweep rewrites
+  the prologue into a silent no-op. ⚠️ **A short new name can be a PREFIX of its
+  own family.** A fake that dispatches on `"FROM people" in sql` answers the
   absences query with directory rows, so use `tests/unit/_sql_match.py`.
-  Still to move: the Calendar three and the task store.
+  Still to move: the task store, and H-29 drops most of it first.
   ⚠️ **ClickUp is gone** — no connector, no importer, no sync; Metorite
   is the PM system of record and root `AGENTS.md` constraint 8 is amended to say so.
 - **Pricing is FLAT: ₹500/user/month + AI credits**, one sellable seat

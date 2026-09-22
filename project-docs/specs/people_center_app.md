@@ -350,7 +350,7 @@ not force the policy to grow a field per exception.
 
 ⚠️ **A seam collision this spec has to settle, and it is one this spec's own author
 created.** WS-28g added `people.working_hours` without checking migrations **77** and
-**97**, which had already given `gtd_settings` a per-user `day_start_hour`,
+**97**, which had already given `user_settings` a per-user `day_start_hour`,
 `day_end_hour`, `daily_capacity_mins`, `buffer_mins`, lunch window and energy windows —
 owned by the calendar (`calendar_timeboxing.md` §5). Two places to say "when do I work" is
 exactly the drift `CLAUDE.md` §4 forbids. The resolution is that they answer **different
@@ -359,7 +359,7 @@ questions**, and the boundary is stated once here (**D-PC-16**):
 | | Owner | Question | Consumers |
 |---|---|---|---|
 | `work_schedule` + `people.working_hours` | **People Center** | *When is this person **contracted** to work?* A fact about the engagement, visible to colleagues | capacity, the dashboard's hours, the picker's warnings, "do not chase at 11pm" |
-| `gtd_settings.day_start_hour…` | **Calendar** (`calendar_timeboxing.md`) | *When may the planner **place blocks** in my day?* A private preference | the day grid, the AI planner |
+| `user_settings.day_start_hour…` | **Calendar** (`calendar_timeboxing.md`) | *When may the planner **place blocks** in my day?* A private preference | the day grid, the AI planner |
 
 **The direction is People → Calendar and never back.** A person who has never touched
 their calendar preferences gets them **seeded** from the effective schedule — which is
@@ -1568,7 +1568,7 @@ Done when: the org policy round-trips through `org_settings['work_schedule']` un
 person override and is the only place the layering happens; `contracted_hours_per_week` is
 derived from it and travels on every person read; the typed `capacity_hours_per_week` is
 **not** rewritten (R6) but is flagged by §5.10 when it disagrees; the calendar's
-`gtd_settings` day window is **seeded** from the effective schedule for a person who has
+`user_settings` day window is **seeded** from the effective schedule for a person who has
 never set it and is never written again afterwards (D-PC-16); and a test proves People→
 Calendar is the only direction — nothing in the diff writes `people.working_hours`
 from a calendar preference.
@@ -1581,7 +1581,7 @@ from a calendar preference.
   wrong for one read on **every person read**. Using the session the caller already holds
   adds no connection site (R5b) and, unlike the psycopg helper, carries the bound tenant.
 - **The seed is a read-time default, not a write.** `routes/tasks/settings._load` derives
-  the day window only when the person has **no `gtd_settings` row at all** — the one
+  the day window only when the person has **no `user_settings` row at all** — the one
   unambiguous "never expressed a preference", since the columns carry SQL defaults and a
   row created for an unrelated setting cannot be told apart from a deliberate 07:00. It
   writes nothing, so a schedule change still follows anybody who has not customised, and
@@ -1953,7 +1953,7 @@ decisions live in `work_plan.md` §3 and are never re-litigated here.
 | **D-PC-13** | The AI **suggests and never assigns**; it may write a proposal into the broker path a human releases | Auto-assigning work is a management decision the system is not entitled to make. Same rule as D-PM-10 |
 | **D-PC-14** | The activity surface renders **workload signals, never a ranking of people**. Ranking TASKS by risk is the product | Every figure here is trivially gamed and trivially misread. §3.6 refuses to store a performance rating; this is the same decision on the read side. The distinction is what lets the dashboard be genuinely useful without becoming an evaluation |
 | **D-PC-15** | **The directory is gated; your own row is not.** `/people/me` and a self-targeted write need only a signed-in identity | `feature:people` is `is_default false`, so gating the self surface made it unreachable for exactly the people it is for — the same argument that made `/access` the one ungated pane. Cross-row reads stay gated, and the self predicate is the whole control, so the fence is the negative test |
-| **D-PC-16** | `working_hours` (People) and `gtd_settings.day_start_hour…` (Calendar) are **different questions**, and the direction is People → Calendar, **seeded once, never mirrored** | Contracted hours are a fact about the engagement; the plannable day window is a private preference. A seeded default that later diverges is somebody changing their mind; a mirror that diverges is a bug. Recorded because WS-28g added `working_hours` without noticing migrations 77/97 already existed |
+| **D-PC-16** | `working_hours` (People) and `user_settings.day_start_hour…` (Calendar) are **different questions**, and the direction is People → Calendar, **seeded once, never mirrored** | Contracted hours are a fact about the engagement; the plannable day window is a private preference. A seeded default that later diverges is somebody changing their mind; a mirror that diverges is a bug. Recorded because WS-28g added `working_hours` without noticing migrations 77/97 already existed |
 | **D-PC-17** | The stored avatar is **the server's re-encode** — 256×256 JPEG — never the uploaded bytes; the client's cropper is a courtesy and the square is enforced server-side. *(Corrected 2026-08-14: this row said WebP, which the build did not ship. The property that matters is the re-encode, not the container — PyMuPDF is already a gateway dependency and cannot write WebP, and adding Pillow to the deploy path to save ~10 KB per person is the worse trade. The commit and the avatar migration recorded it; this row did not, and a decision row that disagrees with the code is worse than none.)* | One decision removes size drift, weight, the crop bypass and the whole polyglot/SVG-script class at once. A validator that inspects and admits the original leaves every one of them open |
 | **D-PC-18** | `contracted_hours_per_week` is **derived** from the effective schedule; the typed `capacity_hours_per_week` stays as an override and is flagged when it disagrees | The same lesson WS-28b applied to load, applied to the denominator it was compared against. R6 forbids rewriting the column the importer writes |
 | **D-PC-19** | *At risk* measures the **cumulative** estimate before a date — earlier deadlines and **overdue work included**, undated tasks excluded | Per-task arithmetic calls three twelve-hour tasks due Tuesday fine when there are sixteen hours before it, because none alone exceeds sixteen. Overdue work still has to be done, and dropping it makes every later deadline look reachable. An undated task carries no deadline to be late for, so counting it would pill somebody whose backlog is merely large |
