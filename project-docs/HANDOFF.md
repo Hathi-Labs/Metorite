@@ -96,6 +96,21 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-163 · The My Tasks cutover is in flight. The spec owns the order · [AGENT]
+- **Check:** `rg -c "lensEnabled\(\)" workbench/control_plane/src/app/tasks/lib/api.ts`
+  → below 25 means S6a has not landed. `\dt gtd_*` on the box → any row means
+  S8 has not landed. `rg -n '"Tasks"' workbench/control_plane/src/lib/nav.ts`
+  → a hit means S5 has not landed.
+- **Why:** owner directive 2026-09-23 (D73). `specs/my_tasks_cutover.md` §5
+  holds nine slices in a load-bearing order, and §6 the corrected runbook.
+  H-33, H-59, H-62, H-29 and H-151 stay open until the slice that closes each
+  one lands. §8 of the spec says which.
+- ⚠️ **Migration 190 is in the production ledger as applied.** The drop needs
+  a new migration that calls `gtd_retirement_drop()` again. Do not wait for
+  "the next deploy" to run it.
+- **Authority:** D73 · `specs/my_tasks_cutover.md` · `work_plan.md` §2 WS-39
+- **Added:** 2026-09-23 · the My Tasks planning session
+
 ### H-104 · The generated tenancy files are NOT on the migration ladder · [AGENT]
 - **Check:** `ls infra/postgres/generated/*.sql`, and read the glob in
   `scripts/apply_migrations.sh` (it matches numbered files in `infra/postgres`
@@ -2824,39 +2839,6 @@ line — never reclaim a number by deleting the other entry.
   change — the script already rsyncs to it and warns while it is unset.
 - **Authority:** `scripts/backup_db.sh` · `deploy/hostinger/BACKUP-RESTORE.md`
 - **Added:** 2026-09-19 · operator console session, after the backup repair
-
-### H-132 · The `gtd_*` rename — RECOMMEND CLOSING AS WON'T DO · [OWNER]
-- **Check:** `rg -l "people" infra/postgres/*.sql | wc -l` → above zero
-  means the rename has not happened.
-- **The owner asked for it twice**, 2026-09-20 and 2026-09-21: *"I don't
-  want to use the terminology GTD."* Names were decided — `people`,
-  `people_skills`, `people_credentials`, `people_absences`,
-  `people_resumes`. This entry recommends NOT doing it, and says why, so the
-  decision is made once on evidence instead of tried again.
-- 🔴 **Measured twice. Both tries were abandoned.**
-  - With compatibility views at the old names: **8 migrations fail on
-    replay** — 49, 74, 75, 148, 172 and 173 do ALTER TABLE on what is now a
-    view, and 174 and 176 do CREATE INDEX on one.
-  - Without the views: the ALTERs become no-ops with `IF EXISTS`, but
-    `CREATE TABLE IF NOT EXISTS people` in 49, 174 and 176 then
-    **re-creates empty duplicate tables**, and 5 CREATE INDEX statements
-    still fail.
-- **The true cost: 41 statements across the 8 OLDEST migrations in the
-  ladder.** Editing an applied migration changes its checksum, so all 8
-  re-run against the live customer database on the next deploy. They are
-  idempotent, so it should be safe. "Should be" is the whole problem.
-- **The benefit: a table name no user sees.** Measured 2026-09-20: `gtd`
-  appears in exactly ONE string a member can read, a tooltip in the Tasks
-  inbox. Everything else is table names and code comments.
-- 📌 **The code sweep is easy and was proven** — 66 files, 294 occurrences,
-  by word boundary so index and constraint names survive. It is the SCHEMA
-  half that is not worth it.
-- **Recommendation:** close as won't do. Fix the one visible tooltip.
-  Spend the risk budget on H-104 instead. That is the same 8 files' real
-  problem, and it has an actual consequence.
-- **Authority:** owner directive 2026-09-20 · R6 · measured 2026-09-21
-- **Added:** 2026-09-20 · **measurement and recommendation added
-  2026-09-21**, after the second try
 
 ### H-140 · `POST /tasks/people` has no caller. Decide whether it stays · [OWNER]
 - **Check:** `rg -n "peopleWriteApi.create|createPerson" workbench/control_plane/src`

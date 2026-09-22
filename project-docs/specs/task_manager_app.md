@@ -1256,6 +1256,14 @@ They are per-member **calendar** state, they belong to D54's app, and they survi
 retirement (D53.6). A sweep that deletes everything matching `gtd_*` takes the
 calendar's preferences, day state and roll-over log with it.
 
+### 13.7 The app is My Tasks, and phase 2 has its own spec (D73, 2026-09-23)
+
+The owner renamed the app to **My Tasks** on 2026-09-23. The route `/tasks`
+and the slug `feature:tasks` stay. `specs/my_tasks_cutover.md` owns the rest
+of WS-39: the lens tail, the cutover, the `gtd_*` drop, the schema rename and
+the code-name sweep. Where that spec and this section disagree, that spec wins.
+The GTD method in §13.4 does not change.
+
 ---
 
 ## Board record (2026-08-09) — moved from work_plan.md §2
