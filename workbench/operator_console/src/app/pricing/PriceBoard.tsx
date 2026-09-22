@@ -27,6 +27,7 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import type { AiCatalog, TierRate } from "@/lib/contract";
+import { FORM } from "@/lib/words";
 import { HELP_PRICING } from "@/lib/help";
 import { savedAssumptions, inrLabel, marginPct, parseMarginPct, costBasis, costBasisLabel, defaultMarginPct } from "@/lib/priceboard";
 import { marginLabelPct, roundCredits } from "@/lib/pricing";
@@ -238,8 +239,11 @@ function TierCard({
           title={HELP_PRICING.setPrice}
           disabled={row.primaryId === null && state === "unbound" && open === null}
         >
+          {/* ⚠️ `Cancel`, never `Close`. `words.ts` forbids a Close beside a
+              Save by name — the editor below carries "Save the price", and
+              two ways out read as a pair where one of them loses work. */}
           {open === "price"
-            ? "Close"
+            ? FORM.cancel
             : state === "priced" || state === "absorbed"
               ? "Change the price"
               : "Set the price"}
@@ -250,11 +254,17 @@ function TierCard({
           onClick={() => onToggle("margin")}
           title={HELP_PRICING.setMargin}
         >
+          {/* 🔴 **"margin" named two different things on one card.** The row
+              above reports the margin we EARN, which needs a price to exist
+              at all — so it read "—" while this button read "Change the
+              margin", and the card disagreed with its own control. What this
+              button edits is the TARGET we price towards. Naming it so is the
+              whole fix. Owner report, 2026-09-22. */}
           {open === "margin"
-            ? "Close"
+            ? FORM.cancel
             : row.margin && (row.margin.marginMultiplier !== null || row.margin.marginFloor !== null)
-              ? "Change the margin"
-              : "Set the margin"}
+              ? "Change the target"
+              : "Set a target margin"}
         </button>
       </div>
 
@@ -504,9 +514,24 @@ function PriceEditor({
 
           {row.tokenPriced ? (
             <div className="legs">
-              <Leg label="Input, per 1M" help={HELP_PRICING.inputPrice} value={inP} set={setInP} price={catalog} />
-              <Leg label="Output, per 1M" help={HELP_PRICING.outputPrice} value={outP} set={setOutP} price={catalog} />
-              <Leg label="Cached input, per 1M" help={HELP_PRICING.cachedPrice} value={cachedP} set={setCachedP} price={catalog} />
+              {/* 🔴 **These said "Input, per 1M" and nothing said per 1M of
+                  WHAT, in WHICH unit.** Owner report, 2026-09-22: *"I am not
+                  trying to wonder ... how to use the pricing system"*. The
+                  number is CREDITS per million TOKENS, and an operator
+                  looking at a rupee figure two lines above could reasonably
+                  type rupees. The label carries both halves now. */}
+              {/* ⚠️ **The unit is stated ONCE, above the three boxes.**
+                  Putting it in each label read "INPUT — CREDITS PER 1M
+                  TOKENS", which wraps to two lines in a card this wide and
+                  made the row look worse than the bug it fixed. Measured in
+                  the rig, 2026-09-22. One sentence carries it for all three,
+                  and the labels stay short enough to sit on one line. */}
+              <p className="legs-unit">
+                All three are in <strong>credits per 1M tokens</strong>.
+              </p>
+              <Leg label="Input" help={HELP_PRICING.inputPrice} value={inP} set={setInP} price={catalog} />
+              <Leg label="Output" help={HELP_PRICING.outputPrice} value={outP} set={setOutP} price={catalog} />
+              <Leg label="Cached input" help={HELP_PRICING.cachedPrice} value={cachedP} set={setCachedP} price={catalog} />
             </div>
           ) : (
             <div className="legs">
@@ -543,7 +568,7 @@ function PriceEditor({
           {busy ? "Saving…" : "Save the price"}
         </button>
         <span className="muted small">
-          Saving is a commercial act, so it needs an elevated admin session.
+          Saving is a commercial act, so it needs an admin.
         </span>
       </div>
     </div>
@@ -658,7 +683,7 @@ function MarginEditor({
           {busy ? "Saving…" : "Save the margin"}
         </button>
         <span className="muted small">
-          A commercial act, so it needs an elevated admin session.
+          A commercial act, so it needs an admin.
         </span>
       </div>
     </div>
