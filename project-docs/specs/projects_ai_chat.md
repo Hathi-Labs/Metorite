@@ -238,10 +238,10 @@ draw one template each. W4 and W5 stay instructions over the tools.
 1. The member states a goal and a deadline.
 2. The agent reads the space (`projects_tree`), the vocabulary, and the
    people (`people_for`).
-3. The agent proposes phases, tasks, owners and dates as a `formCard` panel
-   (`emit_generative_ui`, `surface: "panel"`, `hitl: true`). Each task has a
-   verb-plus-object title, an owner, an effort estimate and a date. A task
-   that lacks one of the four is not proposed.
+3. The agent proposes phases, tasks, owners and dates as a `planCard`
+   (`emit_generative_ui`, `hitl: true`, inline — the rail has no panel host).
+   Each task has a verb-plus-object title, an owner, an effort estimate and
+   a date. A task that lacks one of the four is not proposed.
 4. Priority score is `impact × urgency × effort`, each 1 to 5, shown per task
    and never stored. It is a sorting aid, not a field.
 5. The agent names three ways the plan fails, before it asks for approval.
@@ -253,10 +253,13 @@ draw one template each. W4 and W5 stay instructions over the tools.
 
 - Scope is a node or the portfolio. The agent reads `analytics_stuck`,
   `analytics_load` and `analytics_outlook`.
-- Every project gets one of three flags. **On track**: nothing overdue and no
-  open blocker. **At risk**: a task due within 3 days with no status change
-  in 7 days. An assignee in the top band of the load read also marks the
-  project at risk. **Blocked**: a task with an open blocking link.
+- Every project gets one of three flags, from the server's reads. **Blocked**:
+  a task in it has an open blocking link (the stuck read names the task's
+  project). **At risk**: it has overdue work, or the stuck read's overdue
+  list names it. **On track**: neither. The load read's top holder is named
+  in the report's Load section, not folded into a flag. *(As built in S4.
+  The draft said "due within 3 days with no status change in 7 days", which
+  no route answers per project.)*
 - The output is a `statDashboard` inline card and a Markdown artifact
   (`write_artifact`) the member can open in the side panel.
 - The agent offers to comment on each at-risk task. Each comment is a class B
@@ -289,7 +292,9 @@ apps/skills/skill-projects/
     manifest.py      every /projects route → tool, class, or an exclusion
     client.py        the gateway client, copied from agent-crm (identity, verbs, paths)
     reads.py         class A tools
+    views.py         class A tools that draw a template (S4)
     writes.py        class B tools
+    forms.py         class B tools over an editable card (S4)
     guarded.py       class C tools
 ```
 
@@ -366,7 +371,7 @@ read.** `PlanCard` and `ReportCard` are S4, `ActionResultCard` is S2.
 | `TaskListCard` | `list_tasks`, `find_tasks`, `my_work` | A row opens the task panel by `?task=` |
 | `SummaryCard` | `project_summary`, the five analytics reads | Opens the node, or the Analytics app |
 | `planCard` (template) | W1's proposal, editable, before approval | Submits the edited plan back to `propose_plan` |
-| `reportCard`, `timeline`, `taskBoard`, `dataGrid` (templates) | `render_report`, `render_timeline`, `render_board`, `render_tasks` | A row opens the task in the app |
+| `timeline`, `taskBoard`, `dataGrid`, `reportCard` (templates) | `render_timeline`, `render_board`, `render_tasks`, `render_report` | The timeline's title opens its task. A board card and a table row open their task. The report's title opens the Reports app |
 | `formCard` (template) | `edit_task`, `edit_project` | Submits the edited fields back to the tool |
 | `ActionResultCard` | Every write | Says what changed, links the row, danger tone for class C |
 
@@ -601,7 +606,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S2b · The rest of class B** — ✅ **BUILT 2026-09-23** | The vocabulary writes (status, type, field, tag create and update) · edit a comment · recurrence · the personal task and overlay · the two reads they need (`recurrence`, `my_task`) · the agent instructions now describe the writes (S2 left them saying "reads only") | AGENT-SAFE |
 | **S3 · Guarded** — ✅ **BUILT 2026-09-23** | The seventeen class C tools in `guarded.py` with impact-first cards · the one-act-one-card rule and its test · the agent instructions name the guarded acts | AGENT-SAFE |
 | **S4 · Workflows** — ✅ **BUILT 2026-09-23** | W1 plan (`propose_plan` over a `planCard`), W2 status report (`status_report`), W3 weekly (`render_report`), W4 stuck and W5 triage (instructions over the tools) · five templates in the shared catalog (`timeline`, `taskBoard`, `dataGrid`, `reportCard`, `planCard`) with a lockstep fence · `edit_task` and `edit_project` over a `formCard` · the board reloads after a chat write (`cc-projects-changed`) · the chat model setting reused | AGENT-SAFE |
-| **S5 · Polish** | Frontend navigation tools · quick actions · the chat model setting · the visual review in light mode, compact density and a changed accent | AGENT-SAFE |
+| **S5 · Polish** | The eleven reads and writes still in `PLANNED` (views, calendar, contexts, watchers, intake, notifications, grants) · the visual review in light mode, compact density and a changed accent · frontend navigation tools once the platform has a dispatcher (H-164). Quick actions and the chat model setting shipped in S4 | AGENT-SAFE |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-09-30 |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 

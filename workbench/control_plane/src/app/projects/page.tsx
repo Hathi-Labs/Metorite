@@ -41,6 +41,7 @@ import {
   projectsKey,
   projectWatchersApi,
   type ProjectWatchState,
+  PROJECTS_CACHE,
 } from "./lib/api";
 import { FieldManager } from "./components/FieldManager";
 import { DeleteProjectDialog } from "./components/DeleteProjectDialog";
@@ -68,6 +69,7 @@ import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { TriageRail } from "./components/TriageRail";
 import { AssistantRail } from "./components/AssistantRail";
 import { PROJECTS_CHANGED_EVENT } from "@/components/projects/ProjectToolCards";
+import { invalidate } from "@/lib/dataCache";
 import { SAVED_VIEW_POSITION, orderBearingView, type planDrop } from "./lib/board";
 import { TASK_PAGE_SIZE, appendTasks, nextTaskPage } from "./lib/paging";
 import {
@@ -2226,6 +2228,10 @@ function ProjectsWorkspace() {
   // is the one seam.
   useEffect(() => {
     const onChanged = () => {
+      // The app's own writes invalidate the family in `api.ts`; a chat write
+      // ran server-side, so this is where the same drop happens. It notifies
+      // the tree and the summaries too, not only the selected board.
+      invalidate(PROJECTS_CACHE);
       if (selected) void loadProject(selected);
     };
     window.addEventListener(PROJECTS_CHANGED_EVENT, onChanged);

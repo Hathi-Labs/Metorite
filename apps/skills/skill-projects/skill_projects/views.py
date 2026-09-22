@@ -17,6 +17,10 @@ to the registry, so a name emitted here is a name the renderer draws.
 
 Emitting is best-effort: with no active run stream (a test, a batch run) the
 emit returns ``ok: False`` and the tool still returns its text.
+
+Every card is INLINE. The Projects rail renders ``AgentChat`` and no side
+panel host, so a ``surface: "panel"`` spec is a chip that opens nothing
+there (S4 review). The templates scroll inside the card instead.
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from skill_projects.reads import (
     DATA_LEGEND,
     _day,
     _report_section,
+    _status_names,
     _task_line,
 )
 
@@ -49,6 +54,9 @@ except Exception:  # pragma: no cover — platform package absent in isolation
 TIMELINE_CARD_ROWS = 40
 #: How many tasks a board or a table draws. The route caps a page at 50.
 BOARD_ROWS = 50
+#: The board shows OPEN work. The list route hides nothing by default, so the
+#: categories are named (a CSV the route splits); done and cancelled stay off.
+OPEN_CATEGORIES = "backlog,todo,in_progress,triage"
 
 
 async def _emit(spec: dict[str, Any]) -> dict[str, Any]:
@@ -176,15 +184,20 @@ def _list_params(project_id: str, **extra: Any) -> dict[str, Any]:
 @_annotate(read_only=True, idempotent=True)
 async def render_board(project_id: str, assignee: str = "", tags: str = "") -> str:
     """Draw a project's board as a card: one column per status lane, the
-    open tasks in each, with assignee and due date. Up to 50 tasks; the
-    text names the total. assignee and tags narrow it the way the app's
-    filters do. Each row opens the task in the app."""
+    OPEN tasks in each (done and cancelled lanes stay empty), with assignee
+    and due date. Up to 50 tasks; the text names the total. assignee and
+    tags narrow it the way the app's filters do. Each row opens the task in
+    the app."""
     pid = uuid_of(project_id, "project_id")
     node = await get(f"/projects/nodes/{pid}")
     lanes = ((await get(f"/projects/nodes/{pid}/statuses")) or {}).get("rows") or []
-    listing = await get("/projects/tasks", _list_params(pid, assignees=assignee, tags=tags))
+    listing = await get(
+        "/projects/tasks",
+        _list_params(pid, assignees=assignee, tags=tags, status_category=OPEN_CATEGORIES),
+    )
     tasks = (listing or {}).get("rows") or []
     total = int((listing or {}).get("total") or len(tasks))
+    lane_names = {str(lane.get("id")): str(lane.get("name") or "") for lane in lanes}
     by_status: dict[str, list[dict[str, Any]]] = {}
     for t in tasks:
         by_status.setdefault(str(t.get("status_id")), []).append(t)
@@ -205,12 +218,11 @@ async def render_board(project_id: str, assignee: str = "", tags: str = "") -> s
         held = by_status.get(str(lane.get("id")), [])
         lines.append(f"{data(lane.get('name'))} ({len(held)}):")
         for t in held:
-            lines.extend(_task_line(t))
+            lines.extend(_task_line(t, lane_names.get(str(t.get("status_id")), "")))
     await _emit(
         _template(
             "taskBoard",
             {"title": _plain(node.get("name")), "total": total, "columns": columns},
-            surface="panel" if len(tasks) > 12 else "inline",
         )
     )
     return "\n".join(lines)
@@ -240,13 +252,19 @@ async def render_tasks(
     listing = await get("/projects/tasks", params)
     tasks = (listing or {}).get("rows") or []
     total = int((listing or {}).get("total") or len(tasks))
+    # A list row carries `status_id` only (`SELECT t.*`); the name lives on
+    # the lane. Resolved the way `list_tasks` does (S4 verifier: the Status
+    # column was blank for every row).
+    names = await _status_names(
+        {str(t.get("root_project_id")) for t in tasks if t.get("root_project_id")}
+    )
     rows = [
         {
             "id": str(t.get("id") or ""),
             "cells": [
                 f"#{t.get('task_number')}",
                 _plain(t.get("title")),
-                _plain(t.get("status_name") or t.get("category") or ""),
+                _plain(names.get(str(t.get("status_id")), "")),
                 ", ".join(_plain(a) for a in t.get("assignees") or []) or "unassigned",
                 _day(t.get("due_at")),
                 t.get("importance") or "",
@@ -256,7 +274,7 @@ async def render_tasks(
     ]
     lines = [DATA_LEGEND, f"Tasks ({total} total, showing {len(tasks)}):"]
     for t in tasks:
-        lines.extend(_task_line(t))
+        lines.extend(_task_line(t, names.get(str(t.get("status_id")), "")))
     await _emit(
         _template(
             "dataGrid",
@@ -266,7 +284,6 @@ async def render_tasks(
                 "rows": rows,
                 "openBase": "/projects?task=",
             },
-            surface="panel" if len(tasks) > 12 else "inline",
         )
     )
     return "\n".join(lines)
@@ -318,7 +335,6 @@ async def render_report(report_id: str) -> str:
                 "stats": stats[:8],
                 "tables": tables,
             },
-            surface="panel",
         )
     )
     return "\n".join(lines)
@@ -370,7 +386,19 @@ async def status_report(project_id: str = "") -> str:
     overdue_ids = {
         str(r.get("project_id")) for r in stuck.get("overdue") or [] if int(r.get("overdue") or 0)
     }
-    children = summary.get("children") or []
+    children = list(summary.get("children") or [])
+    if not children and pid:
+        # A leaf project has no children row. Its own work (`own`, always
+        # present on the summary) is the one row the report flags.
+        own = summary.get("own") or {}
+        children = [
+            {
+                "id": pid,
+                "name": summary.get("name"),
+                "tasks": own.get("tasks", summary.get("tasks", 0)),
+                "overdue": own.get("overdue", summary.get("overdue", 0)),
+            }
+        ]
     flags = [(c, _flag(c, blocked_ids, overdue_ids)) for c in children]
     counts = {f: sum(1 for _, flag in flags if flag == f) for f in FLAG_ORDER}
     people = load.get("people") or []

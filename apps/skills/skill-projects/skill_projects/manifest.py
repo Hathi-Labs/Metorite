@@ -307,7 +307,7 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # S4 — the views read through the reads' routes and draw a template.
     "render_timeline": frozenset({"task_detail"}),
     "render_board": frozenset({"project_summary", "vocabulary", "list_tasks"}),
-    "render_tasks": frozenset({"list_tasks"}),
+    "render_tasks": frozenset({"list_tasks", "vocabulary"}),
     "render_report": frozenset({"report_render"}),
     "status_report": frozenset(
         {"project_summary", "analytics_stuck", "analytics_load", "analytics_outlook"}

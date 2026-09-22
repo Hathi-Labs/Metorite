@@ -1554,7 +1554,9 @@ async def test_edit_task_draws_the_form_then_confirms_only_the_changes(monkeypat
     asked = approve(monkeypatch)
     calls = fake_gateway(monkeypatch, responder)
     out = await skill_projects.edit_task(UUID)
-    assert drawn[0]["hitl"] is True and drawn[0]["surface"] == "panel"
+    assert drawn[0]["hitl"] is True
+    # INLINE: the Projects rail mounts no side-panel host (S4 review).
+    assert "surface" not in drawn[0]
     assert drawn[0]["props"]["name"] == "formCard"
     names = [f["name"] for f in drawn[0]["props"]["data"]["fields"]]
     assert names == [
@@ -1595,6 +1597,20 @@ async def test_a_malformed_submit_writes_nothing(monkeypatch) -> None:
     assert "not submitted" in await skill_projects.edit_task(UUID)
     assert "not submitted" in await skill_projects.edit_project(UUID)
     assert asked == [] and writes(calls) == []
+
+
+async def test_propose_plan_refuses_a_date_that_is_not_one(monkeypatch) -> None:
+    """`len(due) == 10` let "next Frida" through, and the task POST failed
+    after the project was created (S4 review)."""
+    drawn = form_stub(monkeypatch, FORM_ANSWERS)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.propose_plan(
+        "Q4",
+        '[{"title": "Call", "owner": "priya@x.io", "effort_mins": 60, "due": "next Friday"}]',
+    )
+    assert "is a date" in out
+    assert drawn == [] and asked == [] and calls == []
 
 
 async def test_propose_plan_refuses_a_task_missing_one_of_the_four(monkeypatch) -> None:

@@ -951,9 +951,16 @@ const CARD_BOX: React.CSSProperties = {
   borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 14,
 };
 
-function taskHref(id: unknown, base = "/projects?task="): string | null {
+/** The app link for a row that carries a task id, or null. Exported for its test. */
+export function taskHref(id: unknown, base = "/projects?task="): string | null {
   const s = str(id);
   return /^[0-9a-f-]{36}$/i.test(s) ? `${base}${encodeURIComponent(s)}` : null;
+}
+
+function TitleLink({ href, children }: { href: string | null; children: React.ReactNode }) {
+  return href
+    ? <a href={href} style={{ color: "var(--foreground)", textDecoration: "none" }}>{children}</a>
+    : <>{children}</>;
 }
 
 function Timeline({ data }: { data: Data }) {
@@ -968,7 +975,9 @@ function Timeline({ data }: { data: Data }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <TIcon name="history" size={15} color="var(--primary)" />
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title, "Timeline")}</span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>
+            <TitleLink href={taskHref(data.taskId)}>{str(data.title, "Timeline")}</TitleLink>
+          </span>
         </div>
         {data.total != null && <span style={MUTED}>{rows.length} of {num(data.total)}</span>}
       </div>
@@ -1018,7 +1027,12 @@ function TaskChip({ t }: { t: Data }) {
       padding: "6px 8px", marginBottom: 6, opacity: t.done ? 0.6 : 1 }}>
       <div style={{ ...CELL, display: "flex", gap: 6 }}>
         {t.number != null && <span style={MUTED}>#{str(t.number)}</span>}
-        <span style={{ textDecoration: t.done ? "line-through" : "none" }}>{str(t.title)}</span>
+        <span style={{ textDecoration: t.done ? "line-through" : "none", flex: 1 }}>{str(t.title)}</span>
+        {num(t.importance) > 0 && (
+          <span style={{ ...MUTED, fontVariantNumeric: "tabular-nums" }} title="importance">
+            !{num(t.importance)}
+          </span>
+        )}
       </div>
       {(people.length > 0 || t.due != null) && (
         <div style={{ ...MUTED, display: "flex", gap: 8, marginTop: 2, flexWrap: "wrap" }}>
@@ -1130,7 +1144,9 @@ function ReportCard({ data }: { data: Data }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
         <TIcon name="file-text" size={15} color="var(--primary)" />
-        <span style={{ fontSize: 14, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title, "Report")}</span>
+        <span style={{ fontSize: 14, fontWeight: 600, color: "var(--foreground)" }}>
+          <TitleLink href="/projects?app=reports">{str(data.title, "Report")}</TitleLink>
+        </span>
         {data.period != null && <span style={MUTED}>{str(data.period)}</span>}
       </div>
       {stats.length > 0 && <StatDashboard data={{ stats }} />}

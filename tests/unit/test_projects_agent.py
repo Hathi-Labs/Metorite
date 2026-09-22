@@ -231,6 +231,7 @@ def _detail_responder(call: dict) -> Any:
                     "status_id": "s1",
                     "assignees": ["a@x.io"],
                     "due_at": "2026-09-30",
+                    "root_project_id": UUID,
                 }
             ],
             "total": 1,
@@ -243,10 +244,14 @@ def _detail_responder(call: dict) -> Any:
             "sections": {"finished": {"total": 3, "rows": [{"name": "Ops", "finished": 3}]}},
         }
     if path.startswith("/projects/analytics/stuck"):
+        # The route's real row (analytics.py `stuck`): `project_id` was ADDED
+        # for the status report; before that the fake invented it (R8).
         return {
             "stale": [],
             "blocked_total": 1,
-            "blocked": [{"id": UUID, "title": "x", "task_number": 1, "project_id": UUID}],
+            "blocked": [
+                {"id": UUID, "title": "x", "task_number": 1, "due_at": None, "project_id": UUID}
+            ],
             "overdue": [{"project_id": UUID, "name": "Ops", "overdue": 2}],
         }
     if path.startswith("/projects/analytics/load"):
@@ -280,7 +285,8 @@ def _detail_responder(call: dict) -> Any:
             "tasks": 3,
             "overdue": 1,
             "by_category": {"todo": 3},
-            "own": {"tasks": 0, "overdue": 0},
+            # A leaf: the status report flags the node itself from `own`.
+            "own": {"tasks": 3, "overdue": 1},
             "children": [],
         }
     return empty_list(call)
@@ -677,3 +683,67 @@ def test_status_report_flags_every_child_once(monkeypatch) -> None:
     assert _flag({"id": "b", "overdue": 1}, set(), set()) == "at risk"
     assert _flag({"id": "c", "overdue": 0}, set(), {"c"}) == "at risk"
     assert _flag({"id": "d", "overdue": 0}, set(), set()) == "on track"
+
+
+def test_the_stuck_route_names_the_project_of_a_blocked_task() -> None:
+    """The status report flags a project blocked through this key. The route
+    carries it since S4; a fake that invented it hid that it did not."""
+    src = (
+        REPO_ROOT
+        / "apps"
+        / "services"
+        / "gateway"
+        / "gateway"
+        / "routes"
+        / "projects"
+        / "analytics.py"
+    ).read_text(encoding="utf-8")
+    assert (
+        "t.project_id"
+        in src.split("blocked_rows = (await db.execute(", 1)[1].split(")).fetchall()", 1)[0]
+    )
+    assert '"project_id": str(row.project_id)' in src
+
+
+async def test_status_report_flags_a_leaf_project_from_its_own_work(monkeypatch) -> None:
+    """A project with no children has one row: itself, from `own`."""
+    specs = drawn(monkeypatch)
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await skill_projects.status_report(UUID)
+    assert "| Ops | blocked | 3 | 1 |" in text
+    stats = {s["label"]: s["value"] for s in specs[0]["props"]["data"]["stats"]}
+    assert stats["Blocked"] == 1 and stats["On track"] == 0
+
+
+async def test_every_view_and_form_card_is_inline(monkeypatch) -> None:
+    """The Projects rail has no side-panel host, so a panel card opens nothing."""
+    specs = drawn(monkeypatch)
+    fake_gateway(monkeypatch, _detail_responder)
+    for tool in (
+        "render_timeline",
+        "render_board",
+        "render_tasks",
+        "render_report",
+        "status_report",
+    ):
+        await getattr(skill_projects, tool)(**_INVOCATIONS[tool][0])
+    assert specs and all("surface" not in s for s in specs)
+
+
+async def test_the_board_asks_for_open_work_only(monkeypatch) -> None:
+    drawn(monkeypatch)
+    calls = fake_gateway(monkeypatch, _detail_responder)
+    await skill_projects.render_board(UUID)
+    listing = next(c for c in calls if c["path"] == "/projects/tasks")
+    assert listing["params"]["status_category"] == "backlog,todo,in_progress,triage"
+
+
+async def test_the_task_table_resolves_the_status_name(monkeypatch) -> None:
+    """A list row carries `status_id` only. The Status cell was blank for
+    every row until the name was resolved through the lanes (S4 verifier)."""
+    specs = drawn(monkeypatch)
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await skill_projects.render_tasks(UUID)
+    row = specs[0]["props"]["data"]["rows"][0]
+    assert row["cells"][2] == "To do"
+    assert "status «To do»" in text

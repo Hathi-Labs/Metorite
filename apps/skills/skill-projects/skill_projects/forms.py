@@ -3,7 +3,9 @@
 Spec: ``project-docs/specs/projects_ai_chat.md`` §3.4 W1, §4.2 (S4).
 
 Each tool here draws an EDITABLE card (``formCard`` or ``planCard`` with
-``hitl: true``), waits for the member to submit it, and then writes through
+``hitl: true``), INLINE in the transcript — the Projects rail mounts no side
+panel host, so a ``surface: "panel"`` card would be a chip that opens
+nothing (S4 review) — waits for the member to submit it, and then writes through
 the class B tools' own routes under the one confirmation card those tools
 use. So an edit from the chat is two gestures, and both are the member's:
 the form says WHAT, the card says "yes, write it". The form is not consent
@@ -22,6 +24,7 @@ assigns through ``assign``).
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any
 
 from skill_projects.client import GatewayRefusal, data, post, put, uuid_of
@@ -156,7 +159,6 @@ async def edit_task(task_id: str) -> str:
                 "submitLabel": "Review changes",
                 "fields": fields,
             },
-            surface="panel",
         )
     )
     if values is None:
@@ -293,7 +295,6 @@ async def edit_project(project_id: str) -> str:
                 "submitLabel": "Review changes",
                 "fields": fields,
             },
-            surface="panel",
         )
     )
     if values is None:
@@ -340,14 +341,19 @@ def _plan_rows(raw: Any) -> list[dict[str, Any]] | str:
             return f"Task {i} is not an object."
         missing = [f for f in PLAN_FIELDS if not _clean(item.get(f))]
         if missing:
-            return f"Task {i} ({data(item.get('title') or '?')}) lacks {', '.join(missing)}. Every task needs all four."
+            return (
+                f"Task {i} ({data(item.get('title') or '?')}) lacks {', '.join(missing)}. "
+                "Every task needs all four."
+            )
         try:
             effort = int(item.get("effort_mins"))
         except (TypeError, ValueError):
             return f"Task {i}: effort_mins is a number of minutes."
         due = _clean(item.get("due"))[:10]
-        if len(due) != 10:
-            return f"Task {i}: due is a date, YYYY-MM-DD."
+        try:
+            date.fromisoformat(due)
+        except ValueError:
+            return f"Task {i}: due is a date, YYYY-MM-DD, not {data(item.get('due'))}."
         row: dict[str, Any] = {
             "title": _clean(item.get("title")),
             "owner": _clean(item.get("owner")),
@@ -419,7 +425,6 @@ async def propose_plan(
                 "risks": [r.strip() for r in str(risks or "").splitlines() if r.strip()][:5],
                 "submitLabel": "Review plan",
             },
-            surface="panel",
         )
     )
     if values is None:
@@ -434,11 +439,16 @@ async def propose_plan(
         who = row["owner"]
         if who not in owners:
             owners[who] = await _resolve_assignee(who)
+    about = _clean(project.get("description") or description)
     card: dict[str, Any] = {"project": data(label), "under": parent_label}
+    if about:
+        card["description"] = about
     for i, row in enumerate(final, start=1):
+        # Every field the POST carries is on this line (spec §5.3).
         card[f"task {i}"] = (
             f"{data(row['title'])} · {data(owners[row['owner']])} · {row['effort_mins']} min · "
             f"due {row['due']}"
+            + (f" · importance {row['importance']}" if row.get("importance") is not None else "")
         )
     if not await _confirm(
         title=f"Create {data(label)} with {len(final)} task{'s' if len(final) != 1 else ''}?",
@@ -449,8 +459,8 @@ async def propose_plan(
     payload: dict[str, Any] = {"name": label, "kind": "project"}
     if parent_id:
         payload["parent_project_id"] = parent_id
-    if _clean(project.get("description") or description):
-        payload["description"] = _clean(project.get("description") or description)
+    if about:
+        payload["description"] = about
     node = await post("/projects/nodes", payload)
     pid = uuid_of(str(node.get("id")), "project_id")
     out = [f"Created project {data(node.get('name'))} under {parent_label}.\n  project_id: {pid}"]

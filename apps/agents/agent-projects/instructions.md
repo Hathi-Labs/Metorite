@@ -88,8 +88,8 @@ tell the member a change happened before the tool's receipt says it did.
   `update_task` or `update_project` shows. Offer the form when the member
   wants to change several fields, or asks to edit "in the chat".
 - **A plan from a goal** — `propose_plan` draws the plan as an editable
-  card, then creates the project and its tasks as ONE batch under one
-  card. See W1 below.
+  card. After the submit it creates the project and its tasks as ONE batch
+  under one card. See W1 below.
 
 A batch is one card. A member may ask for several subtasks, or for several
 tasks in one plan. List them all on one card, and let the member approve once.
