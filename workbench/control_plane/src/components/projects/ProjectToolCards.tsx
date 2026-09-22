@@ -32,7 +32,7 @@ import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
 /** Tools whose result is a list of task rows. */
-const LIST_TOOLS = new Set(["list_tasks", "find_tasks", "my_work", "my_task"]);
+const LIST_TOOLS = new Set(["list_tasks", "find_tasks", "my_work"]);
 
 /** Every other read, with the icon and label its card wears. */
 const INFO_META: Record<string, { icon: string; label: string }> = {
@@ -49,6 +49,8 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   report_list: { icon: "FileText", label: "Reports" },
   report_render: { icon: "FileText", label: "Report" },
   recurrence: { icon: "Repeat", label: "Repeat rule" },
+  // The overlay line is the point of this read, and a list card drops it.
+  my_task: { icon: "UserRound", label: "My task" },
 };
 
 /**
@@ -227,9 +229,7 @@ function TaskListCard({ event: e }: { event: ToolEvent }) {
       ? `Search${args.query ? ` · ${String(args.query)}` : ""}`
       : e.name === "my_work"
         ? String(args.view ?? "") === "inbox" ? "My inbox" : "Assigned to me"
-        : e.name === "my_task"
-          ? "My task"
-          : "Tasks";
+        : "Tasks";
   const title = `${label} (${rows.length})`;
   if (rows.length === 0) {
     return <InfoCard event={e} icon="ListChecks" label={label} />;

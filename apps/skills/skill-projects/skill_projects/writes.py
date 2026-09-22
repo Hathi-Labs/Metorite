@@ -86,11 +86,13 @@ def _fields_block(payload: dict[str, Any], *, before: dict[str, Any] | None = No
     """
 
     def shown(value: Any) -> Any:
-        # A value that already carries a fence came from `data()` or `_ref()`
-        # — `data()` strips a member's own guillemets, so a « can only be
-        # ours. Fencing it again would strip the inner pair of `#7 «title»`.
+        # A value that carries a fence is usually ours (`data()`, `_ref()`),
+        # and fencing it again would strip the inner pair of `#7 «title»`.
+        # A raw payload string may carry one too, so the newline collapse
+        # runs regardless: a card is read line by line, and a value that
+        # spans lines can forge one (S2b review).
         if isinstance(value, str):
-            return value if "«" in value else data(value)
+            return " ".join(value.split()) if "«" in value else data(value)
         return value
 
     lines: list[str] = []
@@ -120,9 +122,12 @@ CANCELLED = "Cancelled — nothing was changed."
 # ── Naming the row, and resolving names ──────────────────────────────────────
 
 
-async def _task(task_id: str) -> dict[str, Any]:
+async def _task(task_id: str) -> tuple[str, dict[str, Any]]:
+    """``(canonical id, row)``. The id is the one every path below uses, so a
+    server-supplied ``row["id"]`` never reaches a URL: the writes fence
+    accepts a path segment bound from ``uuid_of``, ``_task`` or ``_node``."""
     tid = uuid_of(task_id, "task_id")
-    return await get(f"/projects/tasks/{tid}")
+    return tid, await get(f"/projects/tasks/{tid}")
 
 
 def _ref(task: dict[str, Any]) -> str:
@@ -145,7 +150,10 @@ def _matches_by_name(rows: list[dict[str, Any]], wanted: str) -> list[dict[str, 
 
 
 def _names(rows: list[dict[str, Any]]) -> str:
-    found = [str(r.get("name")).strip() for r in rows if str(r.get("name") or "").strip()]
+    """The rows' names, each fenced. A refusal prints these, and the receipt
+    card reads a refusal line by line: an unfenced name with a newline and a
+    ``status_id:`` in it would paint the refusal green (S2b review)."""
+    found = [data(r.get("name")) for r in rows if str(r.get("name") or "").strip()]
     return ", ".join(found) if found else "(none are configured)"
 
 
@@ -165,7 +173,7 @@ def _one_named(
         raise GatewayRefusal(
             f"No {what} is called {data(wanted)} in that project. The {many} are: {_names(rows)}."
         )
-    quoted = ", ".join(f"'{r.get('name')}'" for r in found)
+    quoted = ", ".join(data(r.get("name")) for r in found)
     raise GatewayRefusal(
         f"{data(wanted)} matches more than one {what} ({quoted}). "
         "Ask the member which one they mean."
@@ -278,8 +286,8 @@ async def create_task(
     if tags.strip():
         payload["tags"] = _split(tags)
     if parent_task_id.strip():
-        parent = await _task(parent_task_id)
-        payload["parent_task_id"] = str(parent.get("id"))
+        parent_id, _parent = await _task(parent_task_id)
+        payload["parent_task_id"] = parent_id
     who = [await _resolve_assignee(a) for a in _split(assignees)]
 
     card = dict(payload)
@@ -293,7 +301,7 @@ async def create_task(
     ):
         return CANCELLED
     task = await post("/projects/tasks", payload)
-    tid = str(task.get("id"))
+    tid = uuid_of(str(task.get("id")), "task_id")
     if who:
         await put(f"/projects/tasks/{tid}/assignees", {"assignees": who})
         task["assignees"] = who
@@ -320,8 +328,7 @@ async def update_task(
     estimate, importance. The card shows each change as
     before → after. The timeline records every field change, and the app
     can revert one."""
-    task = await _task(task_id)
-    tid = str(task.get("id"))
+    tid, task = await _task(task_id)
     payload: dict[str, Any] = {}
     before: dict[str, Any] = {}
     if title.strip():
@@ -397,8 +404,7 @@ async def assign(task_id: str, assignees: str) -> str:
     each). This REPLACES the set; pass every holder you want to keep. An
     empty string unassigns. The card shows the old set and the new one.
     Assigning agent:<name> starts an agent run on the task (§6.4)."""
-    task = await _task(task_id)
-    tid = str(task.get("id"))
+    tid, task = await _task(task_id)
     who = [await _resolve_assignee(a) for a in _split(assignees)]
     current = [str(a).lower() for a in task.get("assignees") or []]
     if sorted(who) == sorted(current):
@@ -430,8 +436,7 @@ async def comment(task_id: str, body: str, reply_to: str = "") -> str:
     text_body = str(body or "").strip()
     if not text_body:
         return "A comment needs a body."
-    task = await _task(task_id)
-    tid = str(task.get("id"))
+    tid, task = await _task(task_id)
     payload: dict[str, Any] = {"body": text_body}
     if reply_to.strip():
         payload["parent_id"] = uuid_of(reply_to, "reply_to")
@@ -451,9 +456,8 @@ async def add_subtasks(task_id: str, titles: str) -> str:
     comma-separated. ONE card lists every subtask; the member approves the
     batch once. Each subtask lands in the parent's project with the default
     status. Archive undoes any of them."""
-    parent = await _task(task_id)
+    tid, parent = await _task(task_id)
     pid = str(parent.get("project_id"))
-    tid = str(parent.get("id"))
     raw = str(titles or "")
     parts = [p.strip() for p in (raw.split("\n") if "\n" in raw else raw.split(",")) if p.strip()]
     if not parts:
@@ -483,9 +487,9 @@ async def link_tasks(task_id: str, other_task_id: str, link_type: str = "relates
     kind = str(link_type or "relates_to").strip().lower()
     if kind not in LINK_TYPES:
         return f"link_type is one of {', '.join(LINK_TYPES)}."
-    task = await _task(task_id)
-    other = await _task(other_task_id)
-    if task.get("id") == other.get("id"):
+    tid, task = await _task(task_id)
+    oid, other = await _task(other_task_id)
+    if tid == oid:
         return "A task cannot be linked to itself."
     if not await _confirm(
         title="Link these tasks?",
@@ -494,12 +498,12 @@ async def link_tasks(task_id: str, other_task_id: str, link_type: str = "relates
     ):
         return CANCELLED
     row = await post(
-        f"/projects/tasks/{task['id']}/links",
-        {"target_task_id": str(other.get("id")), "link_type": kind},
+        f"/projects/tasks/{tid}/links",
+        {"target_task_id": oid, "link_type": kind},
     )
     return (
         f"Linked: {_ref(task)} {kind.replace('_', ' ')} {_ref(other)} (link id {row.get('id')})."
-        f"\n  full_id: {task.get('id')}"
+        f"\n  full_id: {tid}"
     )
 
 
@@ -507,9 +511,9 @@ async def link_tasks(task_id: str, other_task_id: str, link_type: str = "relates
 async def unlink_tasks(task_id: str, link_id: str) -> str:
     """Remove a link from a task. link_id comes from task_detail's Links
     list. The card names the task and the link."""
-    task = await _task(task_id)
+    tid, task = await _task(task_id)
     lid = uuid_of(link_id, "link_id")
-    relations = await get(f"/projects/tasks/{task['id']}/relations")
+    relations = await get(f"/projects/tasks/{tid}/relations")
     links = (relations or {}).get("links") or []
     # The relations route's row (relations.py `_row`): `link_id` is the link
     # row, `id` is the OTHER task. The first version matched on `id` and so
@@ -524,8 +528,8 @@ async def unlink_tasks(task_id: str, link_id: str) -> str:
         context=_fields_block({"link_id": lid, "link": label}),
     ):
         return CANCELLED
-    await delete(f"/projects/tasks/{task['id']}/links/{lid}")
-    return f"Removed the link: {label}.\n  full_id: {task.get('id')}"
+    await delete(f"/projects/tasks/{tid}/links/{lid}")
+    return f"Removed the link: {label}.\n  full_id: {tid}"
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False)
@@ -549,7 +553,7 @@ async def move_task(
         # The card NAMES every task it moves (class B may list many rows),
         # so the member sees which three, not "3 tasks". Read before the
         # card, like every other row a card names.
-        tasks = [await _task(t) for t in ids]
+        tasks = [(await _task(t))[1] for t in ids]
         if all(str(t.get("project_id")) == dest for t in tasks):
             return f"Those tasks are already in {data(dest_node.get('name'))}."
         # The preview WRITES NOTHING (move.py `preview_move`). It computes
@@ -599,17 +603,15 @@ async def move_task(
     if parent_task_id.strip():
         if len(ids) != 1:
             return "Re-parenting takes exactly one task id."
-        task = await _task(ids[0])
-        parent = await _task(parent_task_id)
+        tid, task = await _task(ids[0])
+        parent_id, parent = await _task(parent_task_id)
         if not await _confirm(
             title="Make this a subtask?",
             detail=f"{_ref(task)} under {_ref(parent)}",
             context=_fields_block({"task": _ref(task), "parent": _ref(parent)}),
         ):
             return CANCELLED
-        row = await post(
-            f"/projects/tasks/{task['id']}/move", {"parent_task_id": str(parent.get("id"))}
-        )
+        row = await post(f"/projects/tasks/{tid}/move", {"parent_task_id": parent_id})
         return "\n".join([f"Now a subtask of {_ref(parent)}:", *_task_line(row)])
     return "Pass destination_project_id to move between projects, or parent_task_id to re-parent."
 
@@ -623,9 +625,9 @@ async def watch(target_id: str, kind: str = "task", stop: bool = False) -> str:
     if which not in ("task", "project"):
         return "kind is task or project."
     if which == "task":
-        row = await _task(target_id)
+        rid, row = await _task(target_id)
         label = _ref(row)
-        path = f"/projects/tasks/{row['id']}/watch"
+        path = f"/projects/tasks/{rid}/watch"
     else:
         pid = uuid_of(target_id, "project_id")
         row = await get(f"/projects/nodes/{pid}")
@@ -648,7 +650,7 @@ async def complete(task_id: str) -> str:
     """Mark a task done. This moves the task's SHARED status to its
     project's done lane, for everyone. To reopen, set a status by name with
     update_task."""
-    task = await _task(task_id)
+    tid, task = await _task(task_id)
     if task.get("completed_at"):
         return f"{_ref(task)} is already done."
     if not await _confirm(
@@ -657,7 +659,7 @@ async def complete(task_id: str) -> str:
         context=_fields_block({"task": _ref(task), "status": "the project's done lane"}),
     ):
         return CANCELLED
-    row = await post(f"/projects/tasks/{task['id']}/complete")
+    row = await post(f"/projects/tasks/{tid}/complete")
     merged = {**task, **(row if isinstance(row, dict) else {})}
     return "\n".join(["Done:", *_task_line(merged, "done")])
 
@@ -669,22 +671,22 @@ async def defer(task_id: str, until: str) -> str:
     when = str(until or "").strip()
     if len(when) != 10:
         return "until is a date, YYYY-MM-DD."
-    task = await _task(task_id)
+    tid, task = await _task(task_id)
     if not await _confirm(
         title=f"Defer until {when}?",
         detail=_ref(task),
         context=_fields_block({"task": _ref(task), "until": when, "scope": "your inbox only"}),
     ):
         return CANCELLED
-    await post(f"/projects/tasks/{task['id']}/defer", {"until": when})
-    return f"Deferred {_ref(task)} until {when} in your inbox.\n  full_id: {task.get('id')}"
+    await post(f"/projects/tasks/{tid}/defer", {"until": when})
+    return f"Deferred {_ref(task)} until {when} in your inbox.\n  full_id: {tid}"
 
 
 @_annotate(read_only=False, destructive=False, idempotent=True)
 async def unarchive_task(task_id: str) -> str:
     """Bring an archived task back onto its board. This is the undo of
     archiving. list_tasks with include_archived=true finds archived tasks."""
-    task = await _task(task_id)
+    tid, task = await _task(task_id)
     if not task.get("archived_at"):
         return f"{_ref(task)} is not archived."
     if not await _confirm(
@@ -695,7 +697,7 @@ async def unarchive_task(task_id: str) -> str:
         ),
     ):
         return CANCELLED
-    row = await post(f"/projects/tasks/{task['id']}/unarchive")
+    row = await post(f"/projects/tasks/{tid}/unarchive")
     merged = {**task, **(row if isinstance(row, dict) else {}), "archived_at": None}
     return "\n".join(["Restored:", *_task_line(merged)])
 
@@ -863,13 +865,16 @@ async def report_save(
 
 # ── Vocabulary — statuses, types, fields, tags (S2b) ─────────────────────────
 #
-# A vocabulary write lands on the ROOT's set (types, fields, tags) or on the
-# nearest node that owns a status set. The card says where, because "add a
+# A vocabulary write lands on the tree's ROOT (types, fields, tags) or on the
+# nearest node that owns a status set. The card names that node, because
+# "add a type to Website" reaches every project in Website's tree, and "add a
 # status" to a subproject that inherits its lanes changes every sibling's
-# board. The route's own permission (`assert_can_manage_settings`) is the
-# authority; the card is consent. An org-wide row (WS-27bj) is minted only
-# when the member says `org_wide=true`, and the route refuses it unless they
-# hold that permission too.
+# board. Authority is the route's: a status write needs the settings
+# permission (`admin.assert_can_manage_settings`); a type, field or tag write
+# needs only visibility today (board H-4 records the gap). The card is
+# consent, never authority. An org-wide row (WS-27bj) is minted only when the
+# member says `org_wide=true`, and the route refuses it without the
+# organization settings permission.
 
 STATUS_CATEGORIES = ("backlog", "todo", "in_progress", "done", "cancelled", "triage")
 FIELD_TYPES = ("text", "number", "date", "select", "multi_select", "boolean", "url")
@@ -884,8 +889,9 @@ async def _node(project_id: str) -> tuple[str, dict[str, Any]]:
     return pid, await get(f"/projects/nodes/{pid}")
 
 
-async def _vocab(pid: str, kind: str) -> list[dict[str, Any]]:
-    """One of the four vocabulary lists. ``pid`` came from ``uuid_of``."""
+async def _vocab(project_id: str, kind: str) -> list[dict[str, Any]]:
+    """One of the four vocabulary lists."""
+    pid = uuid_of(project_id, "project_id")
     paths = {
         "statuses": f"/projects/nodes/{pid}/statuses",
         "types": f"/projects/nodes/{pid}/types",
@@ -893,6 +899,40 @@ async def _vocab(pid: str, kind: str) -> list[dict[str, Any]]:
         "tags": f"/projects/nodes/{pid}/tags",
     }
     return ((await get(paths[kind])) or {}).get("rows") or []
+
+
+async def _root_of(pid: str, node: dict[str, Any]) -> dict[str, Any]:
+    """The tree's root, walked up through ``parent_project_id``.
+
+    Types, fields and tags are root-scoped, so the card names the root and
+    not the node the member pointed at (S2b review). Capped, because a cycle
+    is a database fault and not a reason to loop.
+    """
+    current = node
+    for _ in range(8):
+        parent = current.get("parent_project_id")
+        if not parent:
+            return current
+        parent_id = uuid_of(str(parent), "parent_project_id")
+        current = await get(f"/projects/nodes/{parent_id}")
+    return current
+
+
+def _tree_scope(root: dict[str, Any], node: dict[str, Any]) -> str:
+    """``«Root» and every project in its tree`` for the card."""
+    if root.get("id") == node.get("id"):
+        return f"{data(root.get('name'))} and every project under it"
+    return f"{data(root.get('name'))}, the root of {data(node.get('name'))}, and its whole tree"
+
+
+def _local(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Root-local rows only. A root-local row may SHADOW an org-wide one of
+    the same name (D-PM-16), so a duplicate check compares these alone."""
+    return [r for r in rows if r.get("project_id") is not None]
+
+
+def _org_wide(row: dict[str, Any]) -> bool:
+    return row.get("project_id") is None
 
 
 def _yes_no(value: str, what: str) -> bool | None:
@@ -1013,8 +1053,9 @@ async def create_type(
     if not label:
         return "A task type needs a name."
     rows = await _vocab(pid, "types")
-    if _matches_by_name(rows, label):
+    if _matches_by_name(_local(rows), label):
         return f"{data(label)} already exists here. The types are: {_names(rows)}."
+    root = await _root_of(pid, node)
     payload: dict[str, Any] = {"name": label}
     if icon.strip():
         payload["icon"] = icon.strip()
@@ -1026,7 +1067,7 @@ async def create_type(
         payload["is_epic"] = True
     if org_wide:
         payload["scope"] = "org"
-    where = "every project (organization-wide)" if org_wide else data(node.get("name"))
+    where = "every project (organization-wide)" if org_wide else _tree_scope(root, node)
     if not await _confirm(
         title="Add this task type?",
         detail=f"{data(label)} in {where}",
@@ -1052,7 +1093,8 @@ async def update_type(
     the arguments you pass change. The Epic system type cannot be renamed
     or un-flagged; the route says so."""
     pid, node = await _node(project_id)
-    row = _one_named(await _vocab(pid, "types"), type_name, "type")
+    rows = await _vocab(pid, "types")
+    row = _one_named(rows, type_name, "type")
     tid = uuid_of(str(row.get("id")), "type_id")
     payload: dict[str, Any] = {}
     before: dict[str, Any] = {}
@@ -1065,20 +1107,30 @@ async def update_type(
     if color.strip():
         payload["color"] = color.strip()
         before["color"] = row.get("color")
+    demoted = ""
     if make_default:
         payload["is_default"] = True
         before["is_default"] = row.get("is_default")
+        # `admin._clear_other_defaults` un-defaults the rest. The card names
+        # the one that loses, because that is the other half of the act.
+        current = [t for t in rows if t.get("is_default") and t.get("id") != row.get("id")]
+        demoted = ", ".join(data(t.get("name")) for t in current)
     flag = _yes_no(epic, "epic")
     if flag is not None:
         payload["is_epic"] = flag
         before["is_epic"] = row.get("is_epic")
     if not payload:
         return "Nothing to change. Pass at least one field."
-    scope = "organization-wide" if row.get("project_id") is None else data(node.get("name"))
+    scope = "organization-wide" if _org_wide(row) else data(node.get("name"))
+    card: dict[str, Any] = dict(payload)
+    if demoted:
+        card["no longer the default"] = demoted
+    if _org_wide(row):
+        card["scope"] = "organization-wide — every project"
     if not await _confirm(
         title="Change this task type?",
         detail=f"{data(row.get('name'))} in {scope}",
-        context=_fields_block({**payload, "project": data(node.get("name"))}, before=before),
+        context=_fields_block({**card, "project": data(node.get("name"))}, before=before),
     ):
         return CANCELLED
     updated = await patch(f"/projects/types/{tid}", payload)
@@ -1101,7 +1153,9 @@ def _field_of(rows: list[dict[str, Any]], wanted: str) -> dict[str, Any]:
         return found[0]
     if not found:
         keys = ", ".join(
-            f"{r.get('name')} ({r.get('field_key')})" for r in rows if r.get("field_key")
+            f"{data(r.get('name'))} ({data(r.get('field_key'))})"
+            for r in rows
+            if r.get("field_key")
         )
         raise GatewayRefusal(
             f"No custom field is called {data(wanted)} here. The fields are: {keys or '(none)'}."
@@ -1135,8 +1189,9 @@ async def create_field(
     if kind in ("select", "multi_select") and not choices:
         return f"A {kind} field needs options."
     rows = await _vocab(pid, "fields")
-    if _matches_by_name(rows, label):
+    if _matches_by_name(_local(rows), label):
         return f"A field called {data(label)} already exists here."
+    root = await _root_of(pid, node)
     payload: dict[str, Any] = {"name": label, "field_type": kind}
     if choices:
         payload["options"] = choices
@@ -1146,7 +1201,7 @@ async def create_field(
         payload["required"] = True
     if org_wide:
         payload["scope"] = "org"
-    where = "every project (organization-wide)" if org_wide else data(node.get("name"))
+    where = "every project (organization-wide)" if org_wide else _tree_scope(root, node)
     if not await _confirm(
         title="Add this custom field?",
         detail=f"{data(label)} ({kind}) in {where}",
@@ -1200,10 +1255,14 @@ async def update_field(
         before["field_type"] = row.get("field_type")
     if not payload:
         return "Nothing to change. Pass at least one field."
+    scope = "organization-wide" if _org_wide(row) else data(node.get("name"))
+    card: dict[str, Any] = dict(payload)
+    if _org_wide(row):
+        card["scope"] = "organization-wide — every project"
     if not await _confirm(
         title="Change this custom field?",
-        detail=f"{data(row.get('name'))} (key {row.get('field_key')}) in {data(node.get('name'))}",
-        context=_fields_block({**payload, "project": data(node.get("name"))}, before=before),
+        detail=f"{data(row.get('name'))} (key {data(row.get('field_key'))}) in {scope}",
+        context=_fields_block({**card, "project": data(node.get("name"))}, before=before),
     ):
         return CANCELLED
     updated = await patch(f"/projects/fields/{fid}", payload)
@@ -1226,8 +1285,9 @@ async def create_tag(
     if not label:
         return "A tag needs a name."
     rows = await _vocab(pid, "tags")
-    if _matches_by_name(rows, label):
+    if _matches_by_name(_local(rows), label):
         return f"{data(label)} already exists here. The tags are: {_names(rows)}."
+    root = await _root_of(pid, node)
     payload: dict[str, Any] = {"name": label}
     if color.strip():
         payload["color"] = color.strip()
@@ -1235,7 +1295,7 @@ async def create_tag(
         payload["description"] = description.strip()
     if org_wide:
         payload["scope"] = "org"
-    where = "every project (organization-wide)" if org_wide else data(node.get("name"))
+    where = "every project (organization-wide)" if org_wide else _tree_scope(root, node)
     if not await _confirm(
         title="Add this tag?",
         detail=f"{data(label)} in {where}",
@@ -1271,14 +1331,25 @@ async def update_tag(
         return "Nothing to change. Pass at least one field."
     worn = int(row.get("task_count") or 0)
     card: dict[str, Any] = dict(payload)
-    if "name" in payload:
+    size = ""
+    if "name" in payload and _org_wide(row):
+        # The list's count is scoped to THIS tree on purpose (tags.py
+        # `list_tags`), and an org-wide rename rewrites every project's
+        # tasks. No number the tool can read is the truth, so the card says
+        # the scope and no count (S2b review).
+        card = {"scope": "organization-wide — every project's tasks that wear it", **payload}
+        size = " · organization-wide"
+    elif "name" in payload:
         # The count FIRST on a rename: it is the size of the act. The route
         # rewrites every task that wears the tag (tags.py `_rewrite`).
         card = {"tasks renamed": worn, **payload}
+        size = f" · renames {worn} task{'s' if worn != 1 else ''}"
+    elif _org_wide(row):
+        card["scope"] = "organization-wide — every project"
+    scope = "organization-wide" if _org_wide(row) else data(node.get("name"))
     if not await _confirm(
         title="Change this tag?",
-        detail=f"{data(row.get('name'))} in {data(node.get('name'))}"
-        + (f" · renames {worn} task{'s' if worn != 1 else ''}" if "name" in payload else ""),
+        detail=f"{data(row.get('name'))} in {scope}{size}",
         context=_fields_block({**card, "project": data(node.get("name"))}, before=before),
     ):
         return CANCELLED
@@ -1300,9 +1371,11 @@ async def edit_comment(task_id: str, comment_id: str, body: str) -> str:
     text_body = str(body or "").strip()
     if not text_body:
         return "A comment needs a body."
-    task = await _task(task_id)
+    tid, task = await _task(task_id)
     aid = uuid_of(comment_id, "comment_id")
-    timeline = await get(f"/projects/tasks/{task['id']}/timeline", {"page": 1, "page_size": 50})
+    timeline = await get(
+        f"/projects/tasks/{tid}/timeline", {"kind": "comments", "page": 1, "page_size": 50}
+    )
     rows = (timeline or {}).get("rows") or []
     old = next((r for r in rows if str(r.get("id")) == aid and r.get("type") == "comment"), None)
     if old is None:
@@ -1322,7 +1395,7 @@ async def edit_comment(task_id: str, comment_id: str, body: str) -> str:
     ):
         return CANCELLED
     await patch(f"/projects/comments/{aid}", {"body": text_body})
-    return f"Edited your comment on {_ref(task)} (comment id {aid}).\n  full_id: {task['id']}"
+    return f"Edited your comment on {_ref(task)} (comment id {aid}).\n  full_id: {tid}"
 
 
 # ── The repeat rule ──────────────────────────────────────────────────────────
@@ -1361,6 +1434,8 @@ def _build_rule(
         return "weekdays are 1 (Monday) to 7 (Sunday)."
     if kind == "weekly" and not days:
         return "A weekly rule needs weekdays, 1 (Monday) to 7 (Sunday)."
+    if kind in ("monthly", "yearly") and not day_of_month:
+        return f"A {kind} rule needs day_of_month."
     if days:
         rule["weekdays"] = days
     if day_of_month:
@@ -1396,8 +1471,7 @@ async def set_recurrence(
     schedule) or completed (measure from when the last one was finished).
     until is YYYY-MM-DD. The card shows the current rule and the new one.
     Stopping keeps the task and every occurrence already made."""
-    task = await _task(task_id)
-    tid = str(task.get("id"))
+    tid, task = await _task(task_id)
     current = ((await get(f"/projects/tasks/{tid}/recurrence")) or {}).get("rule")
     if stop:
         if not current:
@@ -1482,14 +1556,17 @@ async def set_my_overlay(
     next_action, estimate_mins, two_minute (yes or no). clear empties
     fields: context, energy, next_action, estimate. A DONE disposition does
     not complete the shared task; complete does. defer sets a date."""
-    task = await _task(task_id)
-    tid = str(task.get("id"))
+    tid, task = await _task(task_id)
+    unread = ""
     try:
         mine = await get(f"/projects/my/tasks/{tid}")
     except GatewayRefusal:
-        # Not in the member's lens yet (never triaged, not assigned). The
-        # route still accepts the overlay for any visible task.
+        # The lens lists what is assigned to the member or in their personal
+        # project (personal.py `MY_TASKS_FROM`). The overlay route accepts
+        # any VISIBLE task, so a triage may exist that this read cannot see.
+        # The card must not claim "None →" for a value it never read.
         mine = {}
+        unread = "not readable here — the task is not in your lens, so the card cannot show it"
     payload: dict[str, Any] = {}
     before: dict[str, Any] = {}
     if disposition.strip():
@@ -1528,10 +1605,13 @@ async def set_my_overlay(
     payload = {**cleared, **payload}
     if not payload:
         return "Nothing to change. Pass at least one field."
+    card: dict[str, Any] = {**payload, "scope": "your overlay only"}
+    if unread:
+        card["current triage"] = unread
     if not await _confirm(
         title="Update your triage of this task?",
         detail=_ref(task),
-        context=_fields_block({**payload, "scope": "your overlay only"}, before=before),
+        context=_fields_block(card, before=None if unread else before),
     ):
         return CANCELLED
     row = await patch(f"/projects/tasks/{tid}/personal", payload)

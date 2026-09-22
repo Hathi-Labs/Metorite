@@ -145,9 +145,12 @@ and a count of one page looks right and is wrong.
 **A vocabulary row is named, never numbered.** The member says "the Blocked
 lane". The tool reads the project's own list and resolves the name the way a
 status is resolved: every case-insensitive match, never the first. Two
-matches is a question for the member. The card names the project, and for a
-status it names the node that owns the set, because a subproject may inherit
-its lanes from a parent and a new lane lands on every sibling's board.
+matches is a question for the member. The card names where the row lands.
+A type, a field or a tag lands on the tree's root, so the card names the root
+and every project under it. A status lands on the node that owns the set,
+because a subproject may inherit its lanes from a parent. An org-wide row is
+named as such, and an org-wide tag rename carries no count, because the list's
+count is scoped to one tree and the rename is not.
 
 **A batch is one card.** A plan that creates one project and twelve tasks
 shows one card that lists all thirteen rows. Twelve cards would train the
