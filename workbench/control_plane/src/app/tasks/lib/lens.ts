@@ -68,9 +68,22 @@ interface ListResponse {
  * empty list. Board WS-39 records the sequencing.
  */
 export function lensEnabled(
-  env: Record<string, string | undefined> = process.env,
+  env?: Record<string, string | undefined>,
 ): boolean {
-  const raw = env.NEXT_PUBLIC_TASKS_LENS;
+  // ⚠️ The LITERAL member expression is the only form Next inlines into the
+  // browser bundle. `env.NEXT_PUBLIC_X` off a defaulted `env = process.env`
+  // is NOT inlined: in a browser `process.env` is the `{}` polyfill, so the
+  // flag reads undefined and the lens stays off whatever the box is set to.
+  //
+  // This one is the D53 cutover switch, so the failure is worse than a
+  // hidden pane. Flip it on the box, watch nothing happen, and the obvious
+  // reading is "the S3b backfill did not work" rather than "the flag was
+  // never readable". Measured 2026-09-23: neither flag was set on the box,
+  // so nothing was broken yet — which is why this is fixed BEFORE the flip.
+  //
+  // Tests pass an env object; the app passes nothing and hits the literal.
+  // `src/lib/publicFlags.test.ts` holds every flag reader to this shape.
+  const raw = env ? env.NEXT_PUBLIC_TASKS_LENS : process.env.NEXT_PUBLIC_TASKS_LENS;
   return raw === "1" || raw === "true" || raw === "on";
 }
 
