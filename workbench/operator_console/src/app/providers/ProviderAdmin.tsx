@@ -56,6 +56,7 @@ import {
   wouldRotate,
 } from "@/lib/providers";
 import { chipClass, type Tone } from "@/lib/tone";
+import { FORM } from "@/lib/words";
 
 type Props = { creds: ProviderAccount[] };
 
@@ -296,10 +297,12 @@ function SetupPanel({ slug, ctx }: { slug: string; ctx: Ctx }) {
 
       <div className="job-actions">
         <button type="submit" disabled={ctx.busy}>
-          {ctx.busy ? "Saving…" : ctx.rotating ? "Rotate the key" : "Install the key"}
+          {ctx.busy ? FORM.busy : ctx.rotating ? "Rotate the key" : "Install the key"}
         </button>
-        <button type="button" className="linklike" onClick={ctx.cancel}>
-          Cancel
+        {/* `secondary`, never `linklike`: a peer in a paired row matches its
+            partner's metrics and differs only in weight. */}
+        <button type="button" className="secondary" onClick={ctx.cancel}>
+          {FORM.cancel}
         </button>
       </div>
     </form>

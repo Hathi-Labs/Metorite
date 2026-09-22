@@ -1,4 +1,4 @@
-// The Models page's button vocabulary — ONE name per act, in one file.
+// The operator console's button vocabulary — ONE name per act, in one file.
 //
 // 🔴 **Why this exists.** The page grew four doors to "put a vendor's numbers
 // into our profile" and called them four things: "Fill all N from the feed",
@@ -22,6 +22,12 @@
 // ⚠️ **R7 — the fence is `words.test.ts`.** It pins every string here AND
 // scans `src/app/models/*.tsx` for the retired vocabulary, so the old names
 // cannot come back one component at a time, which is how they arrived.
+//
+// 📌 **It grew past the Models page on 2026-09-22.** The owner reported the
+// same complaint one page over — Tiers and Pricing named their commit and
+// their back-out whatever each component felt like, and Pricing put a
+// "Close" beside a Save, which the SAVE / DONE rule above already forbids by
+// name. `FORM` below is that rule made reusable.
 
 /** Put a model into the catalog. */
 export const ADD = {
@@ -85,4 +91,38 @@ export const LIST = {
   readyToAdd: (n: number) => `${n} ready to add →`,
   clear: "Clear filters",
   showMore: (n: number) => `Show ${n} more`,
+} as const;
+
+
+/** The controls every editing surface shares — commit, back out, revert.
+ *
+ * 🔴 **Why this is not per-page.** The Models page took the vocabulary rule
+ * above and the other three pages did not, so one console spelled the same
+ * two acts four ways. The owner read it as "the button names are all over
+ * the place", twice, five weeks apart.
+ *
+ * ⚠️ **`cancel` and `undo` are DIFFERENT ACTS, and the split is the point.**
+ * `cancel` abandons an editor that was never committed — nothing existed to
+ * go back to. `undo` throws away edits to something that IS saved, and puts
+ * the stored version back. Labelling both "Cancel" tells the operator the
+ * second one is harmless, and it is not.
+ */
+export const FORM = {
+  /** Commit an editor. Plain, because the surrounding heading says what of. */
+  save: "Save",
+  /** Commit a re-ordered failover chain. Says "order" because the act is the
+   *  ORDER, not the membership — an operator who added a model and expects
+   *  "Save" to add it is reading the right word for the wrong act. */
+  saveOrder: "Save this order",
+  /** Put a thing into a list that is being built. */
+  add: "Add",
+  /** Abandon an editor that has committed NOTHING yet.
+   *  ⚠️ Never "Close" beside a Save. Two ways out, and one loses work. */
+  cancel: "Cancel",
+  /** Throw away edits and restore what is stored. */
+  undo: "Undo",
+  /** Leave an editor whose work is already committed. */
+  done: "Done",
+  /** Present participle for the disabled state. One spelling, everywhere. */
+  busy: "Saving…",
 } as const;

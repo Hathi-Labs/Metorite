@@ -618,7 +618,7 @@ export default function ModelDetails({
         </button>
         <button
           type="button"
-          className="linklike"
+          className="secondary"
           title={HELP_DETAILS.close}
           onClick={() => setOpen(false)}
         >

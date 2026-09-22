@@ -193,6 +193,15 @@ function MembersPanel({
                         <button
                           type="button"
                           className={seated ? "secondary" : undefined}
+                          title={
+                            busy === m.email
+                              ? "Working on this person now."
+                              : seated
+                                ? "Take this person's seat back. They keep " +
+                                  "their account and lose the paid plan."
+                                : "Give this person a seat from the " +
+                                  "purchased pool."
+                          }
                           disabled={busy === m.email}
                           onClick={() =>
                             act(
@@ -317,7 +326,15 @@ function ActivatePanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) 
         placeholder="bank ref / invoice no."
         onChange={(e) => setReference(e.target.value)}
       />
-      <button type="submit" disabled={busy || !plan}>
+      <button
+        type="submit"
+        title={
+          !plan
+            ? "Choose a plan first."
+            : "End the trial and start charging for this plan."
+        }
+        disabled={busy || !plan}
+      >
         {busy ? "Activating…" : "Activate"}
       </button>
       <ResultLine result={result} />
@@ -359,6 +376,11 @@ function SeatsPanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) {
       <div style={{ display: "flex", gap: 8 }}>
         <button
           type="button"
+          title={
+            !email
+              ? "Type the person's email address first."
+              : "Give this person one of the purchased seats."
+          }
           disabled={busy || !email}
           onClick={() => act("/api/operator/seats")}
         >
@@ -367,6 +389,11 @@ function SeatsPanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) {
         <button
           type="button"
           className="secondary"
+          title={
+            !email
+              ? "Type the person's email address first."
+              : "Return this person's seat to the pool. Their account stays."
+          }
           disabled={busy || !email}
           onClick={() => act("/api/operator/seats/release")}
         >
@@ -441,11 +468,29 @@ function CreditsPanel({ slug }: { slug: string }) {
           <i>adjustment</i> citing the same reference.
         </p>
       )}
+      {/* 📌 **This said "need an elevated admin session" until 2026-09-22,
+          and by then no such session existed.** D72 turned elevation
+          enforcement off four days earlier, and the Elevate control came off
+          the surface with it. The sentence sent the reader hunting for a
+          button that was gone, to satisfy a rule that was not running.
+
+          What `check_credit_amount` actually enforces is RANK, and only
+          rank: above the threshold an editor is refused and an admin is not.
+          That half never depended on a window. */}
       <p className="muted small">
-        Grants above 15,000 credits need an elevated admin session.
+        Grants above 15,000 credits need an admin. An editor is refused.
       </p>
       <button
         type="submit"
+        title={
+          !credits.trim()
+            ? "Type how many credits to add."
+            : reason === "manual" && !ref.trim()
+              ? "A manual payment needs its bank reference. It is what stops " +
+                "the same transfer being credited twice."
+              : "Add these credits to the balance. Additions are logged, and " +
+                "a correction is another entry rather than an edit."
+        }
         disabled={
           busy || !credits.trim() || (reason === "manual" && !ref.trim())
         }
@@ -649,6 +694,12 @@ function DangerPanel({ slug }: { slug: string }) {
       <button
         type="submit"
         className="danger"
+        title={
+          typed !== slug
+            ? "Type the customer's exact short ID above to unlock this."
+            : "Destroy this customer's personal data and live secrets. " +
+              "This cannot be undone."
+        }
         disabled={busy || typed !== slug}
       >
         {busy ? "Purging…" : "Purge data permanently"}
