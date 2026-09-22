@@ -420,10 +420,9 @@ async def test_report_render_prints_the_sections_the_route_returns(monkeypatch) 
                         ],
                         "total_completed": 4,
                         "total_cancelled": 1,
-                        "median_hours": 12.5,
                     },
                     "throughput": {
-                        "series": [{"week_start": "2026-09-08", "completed": 4, "cancelled": 1}],
+                        "series": [{"week_start": "2026-09-08", "completed": 4}],
                         "median_hours": 12.5,
                         "measured": 3,
                     },
@@ -444,9 +443,10 @@ async def test_report_render_prints_the_sections_the_route_returns(monkeypatch) 
     fake_gateway(monkeypatch, responder)
     text = await skill_projects.report_render(UUID)
     assert "period 2026-09-08 to 2026-09-15" in text
-    assert "finished: total_completed 4, total_cancelled 1, median_hours 12.5" in text
+    assert "finished: total_completed 4, total_cancelled 1" in text
     assert "- «Ops» · completed 4, cancelled 1" in text
-    assert "throughput:" in text and "- 2026-09-08 · completed 4, cancelled 1" in text
+    assert "throughput: median_hours 12.5, measured 3" in text
+    assert "- 2026-09-08 · completed 4" in text
     assert "load: total_tasks 9" in text and "- «a@x.io» · open_tasks 9, overdue 2" in text
     assert "stuck: overdue_total 2" in text
 
