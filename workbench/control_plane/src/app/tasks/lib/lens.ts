@@ -358,10 +358,13 @@ const MY_ROUTES: Readonly<Record<string, string>> = {
   task: "my/tasks/{task_id}",
   organize: "my/tasks/{task_id}/organize",
   project: "my/project",
+  // S6b — a member's own categories (`routes/projects/personal.py`, PR #391).
+  areas: "my/areas",
+  area: "my/areas/{area_id}",
 };
 
-const at = (template: string, taskId: string): string =>
-  template.replace("{task_id}", taskId);
+const at = (template: string, id: string): string =>
+  template.replace("{task_id}", id).replace("{area_id}", id);
 
 // ── Reads ───────────────────────────────────────────────────────────────────
 
@@ -1123,5 +1126,87 @@ export async function lensStatusCatalog(): Promise<StatusCatalog> {
     stages: names,
     entries: names.map((name) => ({ status: name, stage: name, mapped: true })),
     unmapped: 0,
+  };
+}
+
+// ── Areas (S6b) ─────────────────────────────────────────────────────────────
+//
+// An Area is a child of my personal root that carries `personal_owner`
+// (migration 191). It is the whole of a member's own structure under one
+// store: FLAT, by decision D65 — no space above it and no folder inside it.
+// The Space→Folder→Project tree the old Tasks app drew (group D of
+// `my_tasks_cutover.md` §3.1) retires under the flag, and these four doors
+// are what replaces it. The gateway half is `routes/projects/personal.py`
+// (PR #391): list with open counts, mint, rename, and a delete that ARCHIVES
+// when tasks remain and says which it did.
+
+/** One of my categories, as `/my/areas` answers it. */
+export interface LensArea {
+  id: string;
+  name: string;
+  /** Archived by a delete that found tasks inside. Listed only on request. */
+  archived: boolean;
+  /** Live tasks inside — `0` on a row a write answered with, which carries none. */
+  openTasks: number;
+}
+
+/** What `DELETE /my/areas/{id}` did. The two are different promises. */
+export interface LensAreaRemoval {
+  id: string;
+  outcome: "deleted" | "archived";
+  /** How many tasks the Area held — the reason it was archived, when it was. */
+  tasks: number;
+}
+
+function mapArea(raw: Raw): LensArea {
+  return {
+    id: String(raw.id ?? ""),
+    name: String(raw.name ?? ""),
+    archived: Boolean(raw.archived),
+    openTasks: raw.open_tasks == null ? 0 : Number(raw.open_tasks),
+  };
+}
+
+/** My Areas, live ones only, in name order — the sidebar's and the picker's read. */
+export async function lensFetchAreas(): Promise<LensArea[]> {
+  const res = await projectsCall<ListResponse>(MY_ROUTES.areas);
+  return rowsOf(res).map(mapArea);
+}
+
+/**
+ * Mint one. A name I already have live answers 409, and that surfaces as the
+ * thrown error's message — the panel and the sidebar show it rather than a
+ * generic "could not create".
+ */
+export async function lensCreateArea(name: string): Promise<LensArea> {
+  return mapArea(await post(MY_ROUTES.areas, { name }));
+}
+
+/** Rename one. The name is the only field an Area has. */
+export async function lensRenameArea(id: string, name: string): Promise<LensArea> {
+  return mapArea(
+    await projectsCall<Raw>(at(MY_ROUTES.area, id), {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+  );
+}
+
+/**
+ * Remove one, without removing what is in it.
+ *
+ * The server decides between a hard delete (empty) and an archive (holds
+ * tasks), and answers with which. The caller must SAY which — "archived, 3
+ * tasks kept" and "deleted" are different things to have done to somebody's
+ * list, and a toast that says "Deleted" over an archive is a lie.
+ */
+export async function lensDeleteArea(id: string): Promise<LensAreaRemoval> {
+  const raw = await projectsCall<Raw>(at(MY_ROUTES.area, id), {
+    method: "DELETE",
+  });
+  return {
+    id: String(raw.id ?? id),
+    outcome: raw.outcome === "archived" ? "archived" : "deleted",
+    tasks: raw.tasks == null ? 0 : Number(raw.tasks),
   };
 }

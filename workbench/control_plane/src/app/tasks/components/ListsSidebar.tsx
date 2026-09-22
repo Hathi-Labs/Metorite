@@ -1,9 +1,16 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import Icon from "@/components/Icon";
-import { useTaskStore, viewCounts } from "../lib/taskStore";
-import { ViewKey } from "../lib/types";
+import Button from "@/components/ui/Button";
+import Input from "@/components/ui/Input";
+import Modal from "@/components/ui/Modal";
+import { useToast } from "@/components/ui/Toast";
+import { categoricalAccent } from "@/lib/categorical";
+import type { LensArea } from "../lib/api";
+import { lensEnabled } from "../lib/lens";
+import { itemsInArea, useTaskStore, viewCounts } from "../lib/taskStore";
+import { GtdItem, ViewKey } from "../lib/types";
 
 type NavRow = {
   view: ViewKey;
@@ -61,7 +68,7 @@ export function ListsSidebar({
   const loadArchive = useTaskStore((s) => s.loadArchive);
   const loadDone = useTaskStore((s) => s.loadDone);
   const sourceFilter = useTaskStore((s) => s.sourceFilter);
-  const setSourceFilter = useTaskStore((s) => s.setSourceFilter);
+  const selectedAreaId = useTaskStore((s) => s.selectedAreaId);
   const selectView: typeof selectViewRaw = (v) => {
     selectViewRaw(v);
     // Archived tasks aren't in the normal hydrate — pull them on demand.
@@ -72,9 +79,11 @@ export function ListsSidebar({
   };
   // Counts must honor the All / Mine / ClickUp source toggle, otherwise the
   // badges stay frozen at the "All" totals while the list below re-filters.
+  // The same holds for a selected Area (S6b): the lists narrow to it, so the
+  // badges narrow with them.
   const counts = useMemo(
-    () => viewCounts(items, sourceFilter),
-    [items, sourceFilter],
+    () => viewCounts(itemsInArea(items, selectedAreaId), sourceFilter),
+    [items, sourceFilter, selectedAreaId],
   );
 
   return (
@@ -83,6 +92,66 @@ export function ListsSidebar({
         <h2 className="text-sm font-semibold text-foreground">My Tasks</h2>
         <p className="text-[11px] text-muted-foreground">Getting Things Done</p>
       </div>
+
+      {/* ⚠️ The view rows below were DELETED by mistake in WS-39 S3a-client
+          slice 4 (b6192110), which meant to remove only the Workspaces list
+          under them and took the whole nav with it. `NavButton`, `PRIMARY`,
+          `SECONDARY` and the assistant props survived unused, which is how
+          it was noticed (S6b, 2026-09-23). Restored as they were. */}
+      {PRIMARY.map((row) => {
+        const count = counts[row.view];
+        // My Next Actions stays highlighted even when an in-view @context pill is
+        // active (selectedContext set) — it's still the Next Actions view.
+        const active =
+          selectedView === row.view &&
+          (row.view === "next" ? true : !selectedContext);
+        return (
+          <NavButton
+            key={row.view}
+            row={row}
+            active={active}
+            count={count}
+            onClick={() => selectView(row.view)}
+          />
+        );
+      })}
+
+      {/* S6b — my Areas. Only under the lens: the legacy store has no such
+          rows, and a section that can only render empty is a dead branch. */}
+      {lensEnabled() && <AreasSection items={items} onNavigate={onNavigate} />}
+
+      <div className="mt-3 border-t border-border pt-3">
+        <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Higher altitude
+        </p>
+        {SECONDARY.map((row) => (
+          <NavButton key={row.view} row={row} active={false} onClick={() => {}} />
+        ))}
+      </div>
+
+      {/* AI assistant — opens as a scene (mirrors the email app's left-rail
+          Chat entry) instead of an always-on right rail. */}
+      {onOpenAssistant && (
+        <div className="mt-3 border-t border-border pt-3">
+          <button
+            type="button"
+            onClick={() => {
+              onOpenAssistant();
+              onNavigate?.();
+            }}
+            aria-pressed={assistantActive}
+            className={[
+              "tech-transition flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left",
+              assistantActive
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+            ].join(" ")}
+          >
+            <Icon name="Sparkles" className="h-4 w-4 shrink-0" />
+            <span className="flex-1">Assistant</span>
+          </button>
+        </div>
+      )}
 
       {/* ⚠️ The read-only "Workspaces" list was DELETED here (WS-39
           S3a-client slice 4), superseding S1 repair round 1's compromise.
@@ -154,6 +223,300 @@ function NavButton({
         </span>
       ) : null}
     </button>
+  );
+}
+
+// ── Areas (WS-39 S6b) ────────────────────────────────────────────────────────
+//
+// A member's own categories under one store: flat (D65), private, and the
+// only structure they own. Each row is a SCOPE on every view (the store's
+// `selectedAreaId`), not a view of its own, so "Home" narrows the inbox, the
+// next actions and the badges together. Create is inline; rename and delete
+// go through the shared `Modal`, and the delete says which of the two things
+// the gateway did, because "deleted" over an archive would be a lie.
+
+/** Live work in one Area, from the loaded rows — the same rule the badges use. */
+function openInArea(items: GtdItem[], areaId: string): number {
+  return itemsInArea(items, areaId).filter(
+    (i) => !i.archivedAt && i.disposition !== "DONE",
+  ).length;
+}
+
+function AreasSection({
+  items,
+  onNavigate,
+}: {
+  items: GtdItem[];
+  onNavigate?: () => void;
+}) {
+  const areas = useTaskStore((s) => s.areas);
+  const selectedAreaId = useTaskStore((s) => s.selectedAreaId);
+  const selectArea = useTaskStore((s) => s.selectArea);
+  const createArea = useTaskStore((s) => s.createArea);
+  const renameArea = useTaskStore((s) => s.renameArea);
+  const deleteArea = useTaskStore((s) => s.deleteArea);
+  const toast = useToast();
+
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [renaming, setRenaming] = useState<LensArea | null>(null);
+  const [renameTo, setRenameTo] = useState("");
+  const [removing, setRemoving] = useState<LensArea | null>(null);
+
+  const submitCreate = async () => {
+    const clean = newName.trim();
+    if (!clean || busy) return;
+    setBusy(true);
+    try {
+      const made = await createArea(clean);
+      if (made) {
+        setNewName("");
+        setCreating(false);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitRename = async () => {
+    if (!renaming || busy) return;
+    setBusy(true);
+    try {
+      await renameArea(renaming.id, renameTo);
+      setRenaming(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const submitDelete = async () => {
+    if (!removing || busy) return;
+    setBusy(true);
+    try {
+      const removal = await deleteArea(removing.id);
+      setRemoving(null);
+      if (removal) {
+        // The gateway's own outcome, said back in its words.
+        toast.show({
+          key: `tasks-area:${removal.id}`,
+          variant: "success",
+          title:
+            removal.outcome === "archived"
+              ? `Archived "${removing.name}"`
+              : `Deleted "${removing.name}"`,
+          description:
+            removal.outcome === "archived"
+              ? `${removal.tasks} ${removal.tasks === 1 ? "task" : "tasks"} kept.`
+              : undefined,
+        });
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-3 border-t border-border pt-3">
+      <div className="flex items-center justify-between px-2 pb-1">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Areas
+        </p>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          radius="keep"
+          layout=""
+          icon="Plus"
+          aria-label="New area"
+          title="New area"
+          className="rounded-md"
+          onClick={() => setCreating(true)}
+        />
+      </div>
+
+      {areas.length === 0 && !creating && (
+        <p className="px-2.5 py-1 text-[11px] text-muted-foreground">
+          No areas yet. An area is a category of your own.
+        </p>
+      )}
+
+      {areas.map((area) => {
+        const active = selectedAreaId === area.id;
+        const count = openInArea(items, area.id);
+        return (
+          <div
+            key={area.id}
+            className={[
+              "group tech-transition flex w-full items-center gap-2 rounded-lg pr-1",
+              active
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+            ].join(" ")}
+          >
+            <button
+              type="button"
+              aria-pressed={active}
+              onClick={() => {
+                selectArea(area.id);
+                onNavigate?.();
+              }}
+              className="flex min-w-0 flex-1 items-center gap-2.5 px-2.5 py-2 text-left"
+            >
+              <span
+                aria-hidden
+                className={`h-2 w-2 shrink-0 rounded-full ${categoricalAccent(area.name).dot}`}
+              />
+              <span className="flex-1 truncate">{area.name}</span>
+              {count > 0 && (
+                <span
+                  className={[
+                    "min-w-[18px] rounded-full px-1.5 py-0.5 text-center text-[10px] font-semibold",
+                    active ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground",
+                  ].join(" ")}
+                >
+                  {count}
+                </span>
+              )}
+            </button>
+            {/* Row actions. Hidden until hover or focus so the list reads as
+                a list. `reveal-on-hover` (globals.css) also shows them on a
+                touch display and on keyboard focus, which a bare Tailwind
+                hover variant never would — `revealOnHover.test.ts` fences it. */}
+            <span className="reveal-on-hover tech-transition flex shrink-0 items-center">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                radius="keep"
+                layout=""
+                icon="Pencil"
+                aria-label={`Rename ${area.name}`}
+                title="Rename"
+                className="rounded-md"
+                onClick={() => {
+                  setRenaming(area);
+                  setRenameTo(area.name);
+                }}
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                radius="keep"
+                layout=""
+                icon="Trash2"
+                aria-label={`Remove ${area.name}`}
+                title="Remove"
+                className="rounded-md"
+                onClick={() => setRemoving(area)}
+              />
+            </span>
+          </div>
+        );
+      })}
+
+      {creating && (
+        <div className="flex items-center gap-1.5 px-2 py-1.5">
+          <Input
+            inputSize="sm"
+            autoFocus
+            value={newName}
+            placeholder="Area name…"
+            aria-label="New area name"
+            disabled={busy}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void submitCreate();
+              }
+              if (e.key === "Escape") {
+                setCreating(false);
+                setNewName("");
+              }
+            }}
+            className="min-w-0 flex-1"
+          />
+          <Button
+            type="button"
+            size="sm"
+            loading={busy}
+            disabled={!newName.trim()}
+            onClick={() => void submitCreate()}
+          >
+            Add
+          </Button>
+        </div>
+      )}
+
+      <Modal
+        open={renaming !== null}
+        onClose={() => setRenaming(null)}
+        title="Rename area"
+        icon="Pencil"
+        size="sm"
+      >
+        <form
+          className="space-y-3 p-3 text-xs"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void submitRename();
+          }}
+        >
+          <label className="block space-y-1">
+            <span className="text-muted-foreground">Name</span>
+            <Input
+              inputSize="sm"
+              autoFocus
+              value={renameTo}
+              disabled={busy}
+              onChange={(e) => setRenameTo(e.target.value)}
+              aria-label="Area name"
+              className="w-full"
+            />
+          </label>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" size="sm" onClick={() => setRenaming(null)} disabled={busy}>
+              Cancel
+            </Button>
+            <Button type="submit" size="sm" loading={busy} disabled={!renameTo.trim()}>
+              Rename
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={removing !== null}
+        onClose={() => setRemoving(null)}
+        title="Remove area"
+        icon="Trash2"
+        size="sm"
+        description={
+          removing
+            ? `Tasks in "${removing.name}" are kept. An area that still holds tasks is archived, not deleted.`
+            : undefined
+        }
+      >
+        <div className="flex justify-end gap-2 p-3">
+          <Button type="button" variant="secondary" size="sm" onClick={() => setRemoving(null)} disabled={busy}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            size="sm"
+            icon="Trash2"
+            loading={busy}
+            onClick={() => void submitDelete()}
+          >
+            Remove
+          </Button>
+        </div>
+      </Modal>
+    </div>
   );
 }
 

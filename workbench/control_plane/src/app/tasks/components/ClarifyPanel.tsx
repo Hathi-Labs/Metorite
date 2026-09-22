@@ -19,6 +19,7 @@ import { Energy, GtdItem, GtdProject, Person, Target } from "../lib/types";
 import { durationLabel, formatStatus, initials, originEmailHref, snoozeOptions } from "../lib/utils";
 import { SourceBadge } from "./SourceBadge";
 import { AttachmentChips } from "./AttachmentComposer";
+import { WherePicker } from "./WherePicker";
 
 // F2 — Clarify, redesigned as SORT → SHAPE.
 //
@@ -110,6 +111,9 @@ export function ClarifyPanel({
   const projects = useTaskStore((s) => s.projects);
   const providers = useTaskStore((s) => s.providers);
   const localHierarchy = useTaskStore((s) => s.localHierarchy);
+  // S6b — under the lens the Where picker reads these two, never the tree.
+  const areas = useTaskStore((s) => s.areas);
+  const createArea = useTaskStore((s) => s.createArea);
   const loadPeople = useTaskStore((s) => s.loadPeople);
   const loadLocalHierarchy = useTaskStore((s) => s.loadLocalHierarchy);
   const createLocalSpace = useTaskStore((s) => s.createLocalSpace);
@@ -518,13 +522,20 @@ export function ClarifyPanel({
   const needsProjectForDelegate =
     (delegatingToSynced && !projectId && !targetSpaceId) || lensBlock !== null;
 
+  // Under the lens a Size=project decision IS "make this an Area" (S6b): the
+  // gateway's `organize` kind=project mints a child of my root named for the
+  // outcome, so there is no space or folder to choose first and the decision
+  // is complete the moment the outcome and the first action are.
+  const projectDecisionReady = lensEnabled()
+    ? !!buildDecision()
+    : !!(projectId || targetSpaceId) && !!buildDecision();
   const canApply =
     sort !== "actionable"
       ? true
       : needsProjectForDelegate
         ? false
         : size === "project"
-          ? !!(projectId || targetSpaceId) && !!buildDecision()
+          ? projectDecisionReady
           : !!buildDecision();
 
   // Progressive disclosure: show the manual Sort→Shape form only when the user
@@ -1168,6 +1179,11 @@ export function ClarifyPanel({
                       statuses={statusesForDest} status={status} setStatus={setStatus} />
                   ) : (
                     <div className="flex flex-col gap-2.5">
+                      {/* The destination row is a choice between STORES, and
+                          under the lens there is one (D52, D53). Drawing
+                          "ClickUp" and "Jira" chips there offers a move onto a
+                          board that does not exist. S6b hides the row. */}
+                      {!lensEnabled() && (
                       <div className="flex flex-wrap gap-1.5">
                         {providers.map((cp) => {
                           const active = destEntry(dest, providers)?.id === cp.id;
@@ -1193,8 +1209,35 @@ export function ClarifyPanel({
                           );
                         })}
                       </div>
+                      )}
 
-                      {size === "project" ? (
+                      {lensEnabled() && size === "project" ? (
+                        /* S6b. Under one store a private project is an AREA —
+                           a flat child of my root, named for the outcome, and
+                           the gateway mints it from this decision. There is
+                           nothing to place it under, so no tree is drawn. */
+                        <div className="flex items-center gap-2 rounded-md border border-border bg-background/40 px-3 py-2 text-xs text-muted-foreground">
+                          <AppIcon name="FolderPlus" className="h-3.5 w-3.5 shrink-0 text-primary/70" />
+                          <span>
+                            This becomes an Area called{" "}
+                            <span className="font-medium text-foreground">
+                              {outcome.trim() ? short(outcome.trim(), 40) : "the outcome"}
+                            </span>
+                            , with the first action inside it.
+                          </span>
+                        </div>
+                      ) : lensEnabled() ? (
+                        /* S6b. My Areas, then the company's projects — and
+                           never `/tasks/hierarchy` (spec S6b done-when 3). */
+                        <WherePicker
+                          areas={areas}
+                          projects={projectsForDest}
+                          value={projectId}
+                          suggestedId={proposal.projectInferred ? proposal.projectId : undefined}
+                          onChange={setProjectId}
+                          onCreateArea={createArea}
+                        />
+                      ) : size === "project" ? (
                         <ProjectTargetTree
                           dest={dest}
                           localHierarchy={localHierarchy}
@@ -1248,7 +1291,9 @@ export function ClarifyPanel({
                       )}
                       {!isSynced && (
                         <p className="text-[10px] text-muted-foreground">
-                          Private to you. File it in a local space/list, or leave it loose.
+                          {lensEnabled()
+                            ? "Private to you until it joins a company project. File it in an Area, or leave it loose."
+                            : "Private to you. File it in a local space/list, or leave it loose."}
                         </p>
                       )}
                     </div>

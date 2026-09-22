@@ -17,7 +17,7 @@ import {
   type SelectionState,
   clickSelect,
 } from "@/lib/selection";
-import { useTaskStore } from "../lib/taskStore";
+import { itemsInArea, useTaskStore } from "../lib/taskStore";
 import { Disposition, GtdItem } from "../lib/types";
 import {
   DateBucketKey,
@@ -84,14 +84,18 @@ export function InboxView() {
   const clarifyModalOpen = useTaskStore((s) => s.clarifyModalOpen);
   const quickCaptureOpen = useTaskStore((s) => s.quickCaptureOpen);
   const sourceFilter = useTaskStore((s) => s.sourceFilter);
+  const selectedAreaId = useTaskStore((s) => s.selectedAreaId);
 
   // Respect the sidebar's Mine / ClickUp / All filter so the inbox matches the
-  // rest of the app when local and synced tasks are mixed.
+  // rest of the app when local and synced tasks are mixed — and the selected
+  // Area (S6b), the same scope every other view honours. `itemsInArea` says
+  // why membership is `projectId` alone.
   const sourced = useMemo(() => {
-    if (sourceFilter === "local") return items.filter((i) => i.source === "LOCAL");
-    if (sourceFilter === "synced") return items.filter((i) => i.source !== "LOCAL");
-    return items;
-  }, [items, sourceFilter]);
+    const scoped = itemsInArea(items, selectedAreaId);
+    if (sourceFilter === "local") return scoped.filter((i) => i.source === "LOCAL");
+    if (sourceFilter === "synced") return scoped.filter((i) => i.source !== "LOCAL");
+    return scoped;
+  }, [items, sourceFilter, selectedAreaId]);
 
   // Active inbox = to-process (INBOX, not tickled). Tickler = deferred items.
   const activeInbox = useMemo(

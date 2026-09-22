@@ -530,3 +530,49 @@ export function lensDelegateBlock(input: {
   if (dest && input.companyProjectIds.includes(dest)) return null;
   return "needs-company-project";
 }
+
+// ── The Where picker under the lens (WS-39 S6b) ─────────────────────────────
+
+/** One row a member can file a task into. */
+export interface WhereRow {
+  id: string;
+  name: string;
+  /** Mine and private, or the company's board. The two never mix in a group. */
+  kind: "area" | "project";
+}
+
+/** One heading and the rows under it, in the order the picker draws them. */
+export interface WhereGroup {
+  label: "My Areas" | "Company projects";
+  kind: WhereRow["kind"];
+  rows: WhereRow[];
+}
+
+/**
+ * The two groups the Where picker shows under the lens: my Areas first, the
+ * company's projects second. Pure, so the panel cannot drift from the fence
+ * (`areas.test.ts`).
+ *
+ * Why two groups and not one list: an Area is private and a project is not,
+ * and the delegate rule (`lensDelegateBlock`) turns on which was picked. A
+ * flat list would let a member pick "Home" while delegating and learn from a
+ * 422 that "Home" was the wrong kind of thing.
+ *
+ * An archived Area is left out. It is not a destination any more, and the
+ * gateway's own list omits it unless asked.
+ */
+export function whereGroups(input: {
+  areas: readonly { id: string; name: string; archived?: boolean }[];
+  projects: readonly { id: string; outcome: string; status?: string }[];
+}): WhereGroup[] {
+  const areas = input.areas
+    .filter((a) => !a.archived)
+    .map((a) => ({ id: a.id, name: a.name, kind: "area" as const }));
+  const projects = input.projects
+    .filter((p) => p.status === undefined || p.status === "ACTIVE")
+    .map((p) => ({ id: p.id, name: p.outcome, kind: "project" as const }));
+  return [
+    { label: "My Areas", kind: "area", rows: areas },
+    { label: "Company projects", kind: "project", rows: projects },
+  ];
+}

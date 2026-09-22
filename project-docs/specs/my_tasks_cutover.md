@@ -335,20 +335,53 @@ S6e follows S6a. It reads the lens seam S6a completes.
    moves and assigns in one transaction. A delegated task cannot become a
    private project.
 
-### S6b — Areas, and the local tree retires · AGENT-SAFE
+### S6b — Areas, and the local tree retires · AGENT-SAFE · BUILT 2026-09-23 (client)
 
 ⚠️ **SPLIT IN TWO, 2026-09-23.** The gateway half shipped on its own. One PR
 carrying four routes, a privacy guard and a sidebar reviews badly, and the
 guard should not wait behind a UI.
 
 **S6b-1 ✅ BUILT** — `GET/POST/PATCH/DELETE /projects/my/areas`, the privacy
-guard on node moves, and the fences. See the build record below.
+guard on node moves, and the fences. The gateway half landed in PR #391.
 
-**S6b-2 🔲 OWED** — `ListsSidebar` gains the Areas section with create, rename
-and delete. The Clarify "Where" picker reads Areas plus the company projects.
-Group D of §3.1 retires under the flag. **H-29 stays blocked until this
-lands.** Its constraint is the UI one. The backfill creates Areas, and a
-member needs somewhere to rename or delete them.
+**S6b-2 ✅ BUILT 2026-09-23** — `ListsSidebar` gains the Areas section with
+create, rename and delete. The Clarify "Where" picker reads Areas plus the
+company projects. Group D of §3.1 retires under the flag. This lifts the UI
+constraint H-29 carries. The backfill creates Areas, and a member now has a
+place to rename or delete them.
+
+**Build record, client half (2026-09-23).**
+
+| Function | Lens path |
+|---|---|
+| `fetchAreas` | `GET /projects/my/areas` |
+| `apiCreateArea` | `POST /projects/my/areas` |
+| `apiRenameArea` | `PATCH /projects/my/areas/{id}` |
+| `apiDeleteArea` | `DELETE /projects/my/areas/{id}`, and the answer names `outcome` |
+| `fetchLocalHierarchy` | The Areas, as one flat level. `/tasks/hierarchy` is never called. |
+| `apiCreateLocalProject` | `POST /projects/my/areas` |
+| `apiCreateSpace`, `apiCreateFolder` | Refused by name. Areas are flat (D65). |
+
+Fences: `lens.test.ts` (the SPINE fences 30 names), `areas.test.ts` (the
+store slice, the picker groups, group D under the flag),
+`test_client_route_contract.py` (the two new paths).
+
+**Decisions taken at build, 2026-09-23.**
+
+1. An Area is a scope, not a view. A selected Area narrows every view and
+   the sidebar badges together. It persists across views, like the source
+   filter. The same row again clears it.
+2. Membership is `projectId` alone. A subtask made through the lens carries
+   its parent's `project_id`, so it needs no walk. `GtdItem` carries no
+   root-project fact, and the client does not invent one.
+3. Under the lens the Size=project decision is "make this an Area". The
+   panel sends `kind: "project"` with `outcome`, and the gateway mints the
+   child. The member picks no space or folder first.
+4. The three Area writes throw with the flag off. `fetchAreas` answers `[]`
+   with the flag off, because the section does not render then.
+5. This slice restored the sidebar's view rows. Slice 4 (`b6192110`) removed
+   them by mistake with the Workspaces list. `NavButton` and `PRIMARY` had
+   stayed in the file unused.
 
 **Scope.** The gateway learns to mint, rename, archive and list a member's
 Areas: children of the personal root with `personal_owner` inherited.

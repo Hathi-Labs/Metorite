@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { dropIndexFor } from "@/lib/boardDrop";
-import { LensPartialFailure } from "./lens";
+import { LensPartialFailure, lensEnabled } from "./lens";
 import {
   allSelected,
   clickSelect,
@@ -71,8 +71,14 @@ import {
   apiCreateSpace,
   apiCreateFolder,
   apiCreateLocalProject,
+  fetchAreas,
+  apiCreateArea,
+  apiRenameArea,
+  apiDeleteArea,
   type LocalHierarchy,
   type OrganizeBody,
+  type LensArea,
+  type LensAreaRemoval,
 } from "./api";
 
 /** Fire-and-forget a live-backend sync; the optimistic local update already
@@ -749,9 +755,31 @@ interface TaskState {
   /** Load live data from the gateway; silently stays on mock data if absent. */
   hydrate: () => Promise<void>;
   /** The LOCAL Space→Folder→Project tree (Projects view). Loaded lazily when
-   *  the Projects view opens; null until then. */
+   *  the Projects view opens; null until then. Under the lens it is a flat
+   *  mirror of `areas` (S6b) — read `areas` instead. */
   localHierarchy: LocalHierarchy | null;
   loadLocalHierarchy: () => Promise<void>;
+  /**
+   * My Areas (WS-39 S6b) — a member's own categories under one store, flat
+   * by D65. Empty with the flag off, and nothing renders them then.
+   *
+   * Every write is optimistic and lands through the S6a failure path: on a
+   * refusal the list is re-read and `syncFailure` carries the reason, so the
+   * sidebar shows the truth and the toast says why it moved back.
+   */
+  areas: LensArea[];
+  loadAreas: () => Promise<void>;
+  /** Mint one. Resolves with the row, or `undefined` when refused (the
+   *  reason is on `syncFailure`). */
+  createArea: (name: string) => Promise<LensArea | undefined>;
+  renameArea: (id: string, name: string) => Promise<void>;
+  /** Remove one. Resolves with what the server DID — deleted, or archived
+   *  with its tasks kept — or `undefined` when refused. The caller says which. */
+  deleteArea: (id: string) => Promise<LensAreaRemoval | undefined>;
+  /** The Area the lists are narrowed to, or null for all. Persists across
+   *  views like `sourceFilter` — it is a scope, not a per-view filter. */
+  selectedAreaId: string | null;
+  selectArea: (id: string | null) => void;
   /** People view: lazy roster load + create/edit + résumé ingestion. */
   loadPeople: (opts?: { q?: string; includeInactive?: boolean }) => Promise<void>;
   savePerson: (id: string | null, body: OrgPersonWrite) => Promise<OrgPerson>;
@@ -865,6 +893,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   loading: true,
   providers: CONNECTED_PROVIDERS,
   localHierarchy: null,
+  areas: [],
+  selectedAreaId: null,
 
   selectedView: "inbox",
   selectedContext: null,
@@ -1519,12 +1549,133 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   loadLocalHierarchy: async () => {
     if (get().backend !== "live") return;
+    // Under the lens the tree IS my Areas (S6b). One read fills both, so a
+    // panel that still asks for the tree does not fetch `/my/areas` twice.
+    if (lensEnabled()) return get().loadAreas();
     try {
       set({ localHierarchy: await fetchLocalHierarchy() });
     } catch {
       /* keep current */
     }
   },
+
+  // ── Areas (S6b) ───────────────────────────────────────────────────────────
+  //
+  // Each write moves the sidebar first and asks the server second, the way
+  // every other write in this store does. What makes a refusal safe is the
+  // pair after it: `loadAreas` reads the truth back, and `reportSyncFailure`
+  // hands the reason to the toast seam. Without the second half a refused
+  // rename would snap back with no word why — the failure S6a's repair
+  // round closed for tasks, and would otherwise reopen for Areas.
+
+  loadAreas: async () => {
+    if (get().backend !== "live" || !lensEnabled()) return;
+    try {
+      const areas = await fetchAreas();
+      set({
+        areas,
+        // The retiring tree's shape, for any reader that still speaks it.
+        localHierarchy: {
+          spaces: [],
+          folders: [],
+          projects: areas.map((a) => ({
+            id: a.id,
+            outcome: a.name,
+            hasNextAction: a.openTasks > 0,
+            status: a.archived ? "DONE" : "ACTIVE",
+          })),
+        },
+      });
+    } catch {
+      /* keep current */
+    }
+  },
+
+  createArea: async (name) => {
+    const clean = name.trim();
+    if (!clean || get().backend !== "live") return undefined;
+    // A temporary row, so the sidebar answers the keystroke. Replaced by the
+    // server's row (with its real id) the moment it lands.
+    const tempId = `tmp-area-${Date.now()}`;
+    set((s) => ({
+      areas: [...s.areas, { id: tempId, name: clean, archived: false, openTasks: 0 }]
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    }));
+    try {
+      const created = await apiCreateArea(clean);
+      set((s) => ({
+        areas: s.areas.map((a) => (a.id === tempId ? created : a)),
+      }));
+      return created;
+    } catch (err) {
+      await get().loadAreas();
+      // A 409 ("You already have an area called X") is the common refusal,
+      // and the server's sentence is the one to show.
+      get().reportSyncFailure(
+        err instanceof Error && err.message
+          ? err.message
+          : `Couldn't create the area "${clean}".`,
+      );
+      return undefined;
+    }
+  },
+
+  renameArea: async (id, name) => {
+    const clean = name.trim();
+    if (!clean || get().backend !== "live") return;
+    const before = get().areas.find((a) => a.id === id)?.name;
+    if (before === clean) return;
+    set((s) => ({
+      areas: s.areas.map((a) => (a.id === id ? { ...a, name: clean } : a)),
+    }));
+    try {
+      const after = await apiRenameArea(id, clean);
+      set((s) => ({
+        // The server's row carries no count; keep the one the list had.
+        areas: s.areas.map((a) => (a.id === id ? { ...after, openTasks: a.openTasks } : a)),
+      }));
+    } catch (err) {
+      await get().loadAreas();
+      get().reportSyncFailure(
+        err instanceof Error && err.message
+          ? err.message
+          : `Couldn't rename "${before ?? "the area"}".`,
+      );
+    }
+  },
+
+  deleteArea: async (id) => {
+    if (get().backend !== "live") return undefined;
+    const gone = get().areas.find((a) => a.id === id);
+    set((s) => ({
+      areas: s.areas.filter((a) => a.id !== id),
+      // A scope on a row that is gone would show an empty list with no way
+      // to see why. Drop it with the row.
+      selectedAreaId: s.selectedAreaId === id ? null : s.selectedAreaId,
+    }));
+    try {
+      const removal = await apiDeleteArea(id);
+      // An archive keeps the tasks, and they keep their `projectId` — the
+      // rows stay in the lists, only the Area row leaves the sidebar. Nothing
+      // to re-read on either outcome.
+      return removal;
+    } catch (err) {
+      await get().loadAreas();
+      get().reportSyncFailure(
+        err instanceof Error && err.message
+          ? err.message
+          : `Couldn't remove "${gone?.name ?? "the area"}".`,
+      );
+      return undefined;
+    }
+  },
+
+  selectArea: (id) =>
+    set((s) => ({
+      // Same row again clears the scope; a second row swaps it.
+      selectedAreaId: s.selectedAreaId === id ? null : id,
+      selectedItemId: null,
+    })),
 
   loadPeople: async (opts) => {
     if (get().backend !== "live") return;
@@ -2114,6 +2265,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         projects,
         people,
       });
+      // My Areas (S6b) — the sidebar draws them on first paint under the
+      // lens. A no-op with the flag off, and never a reason to stay loading.
+      void get().loadAreas();
       // Settings load in parallel — defaults already render, so the panes are
       // usable before they arrive.
       const settings = await fetchTaskSettings().catch(() => get().settings);
@@ -2188,6 +2342,23 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 }));
 
 // ── Derived selectors (pure; keep view logic in one place) ──────────────────
+
+/**
+ * The items that live in one Area (S6b) — or every item when no Area is
+ * selected. Applied on top of `itemsForView` by every list, and by the
+ * sidebar's counts, so the badges and the rows agree.
+ *
+ * ⚠️ Membership is `projectId` ALONE. A subtask made through the lens is
+ * created in its parent's project (`lensAddSubtasks` sends the parent's
+ * `project_id`), so it carries the Area's id itself and needs no walk. A row
+ * that only names `parentItemId` and no `projectId` is not in any Area here:
+ * `GtdItem` carries no root-project fact to resolve it by, and inventing one
+ * from the loaded list would answer wrong the moment the parent is not loaded.
+ */
+export function itemsInArea(items: GtdItem[], areaId: string | null): GtdItem[] {
+  if (!areaId) return items;
+  return items.filter((i) => i.projectId === areaId);
+}
 
 /** Items shown for a given view (+ optional context drill-down + source
  *  filter). ``source`` hides the connected-workspace mirror ("local") or shows
