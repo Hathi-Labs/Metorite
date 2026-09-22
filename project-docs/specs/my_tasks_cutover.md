@@ -347,7 +347,7 @@ union. The data and the routes stay (D65).
 3. `rg -c -i horizon src/app/tasks/lib/` returns zero.
 4. This closes H-59 (1) and (3).
 
-### S6d — the AI and intake tail on the gateway · AGENT-SAFE
+### S6d — the AI and intake tail on the gateway · AGENT-SAFE · BUILT 2026-09-23
 
 **Scope.** One data-access seam for the six `ai.py` routes, the five
 `capture_email.py` routes, `email_link.py`, `tasks/planning.py`,
@@ -363,10 +363,18 @@ change signature. Migration **211** adds `pm_tasks.origin` (§4.4) and
    Fence: `tests/unit/test_tasks_ai_source.py`, an AST walk that refuses a
    bare `gtd_` string in any of those modules outside the `_GtdArm` class.
 2. Email capture is idempotent on `origin->>'email_id'` under both arms.
-   R8: `tests/live/live_ws39_s6d.sql`.
+   R8: `tests/live/live_ws39_s6d.py`.
 3. `evals/trajectories/test_gtd_quality_trajectory.py` still passes.
 4. The skill's tools need no change. They call `/tasks/*` paths, and the
    paths do not move.
+
+**Accepted changes with the flag off**, measured by the verifier on
+2026-09-23. Two behaviours moved on both arms.
+
+1. `POST /tasks/plan/apply` with `target="clickup"` answers 410. No caller
+   sends it, and D52 removed the connector.
+2. `_annotate_workload` matches a person by email before it matches by name.
+   The one store assigns by email.
 
 ### S6e — continuity with Projects · AGENT-SAFE
 

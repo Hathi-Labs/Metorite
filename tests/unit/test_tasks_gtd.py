@@ -1401,11 +1401,16 @@ def test_email_capture_is_owner_checked_and_idempotent():
     import inspect
 
     from gateway.routes.tasks import capture_email
+    from gateway.routes.tasks.item_source import GTD_ITEMS
 
     src = inspect.getsource(capture_email.capture_from_email)
     assert "a.user_id = :uid" in src            # ownership through the mailbox
-    assert "origin->>'email_id'" in src         # idempotency per source email
-    assert "NOT IN ('DONE', 'TRASH')" in src    # only OPEN items block re-capture
+    assert "_find_existing_capture" in src      # idempotency per source email
+    # The read moved into the seam (WS-39 S6d). The gtd arm keeps the shape.
+    finder = inspect.getsource(capture_email._find_existing_capture)
+    assert '"email_id"' in finder
+    arm = inspect.getsource(GTD_ITEMS.items_by_origin)
+    assert "NOT IN ('DONE', 'TRASH')" in arm    # only OPEN items block re-capture
 
 
 def test_email_capture_finds_pm_account_for_a_delegate():
@@ -1746,18 +1751,23 @@ def test_title_similarity_flags_near_duplicate_asks_and_ignores_scaffolding():
 
 def test_route_and_persist_is_the_shared_write_used_by_popup_create():
     """The popup's /create endpoint must write through the SAME routing/persist
-    helper (delegate destination rules, gtd_waiting for follow-ups) rather than
-    a divergent second code path."""
+    helper (delegate destination rules, a Waiting-For for follow-ups) rather
+    than a divergent second code path. Since WS-39 S6d the write itself is the
+    seam's (`insert_capture`), and the gtd arm keeps the two inserts."""
     import inspect
 
     from gateway.routes.tasks import capture_email as ce
+    from gateway.routes.tasks.item_source import GTD_ITEMS
 
     persist = inspect.getsource(ce._route_and_persist)
     # Same destination rule as the one-click endpoint.
     assert 'source, sync_state = "SYNCED", "pending"' in persist
     assert 'assignee, disposition = None, "INBOX"' in persist
-    assert "INSERT INTO gtd_items" in persist
-    assert "INSERT INTO gtd_waiting" in persist
+    assert "insert_capture" in persist
+    assert 'fields["waiting_on"]' in persist
+    arm = inspect.getsource(GTD_ITEMS.insert_capture)
+    assert "INSERT INTO gtd_items" in arm
+    assert "INSERT INTO gtd_waiting" in inspect.getsource(GTD_ITEMS.record_waiting)
 
     create = inspect.getsource(ce.create_capture_from_email)
     assert "_route_and_persist" in create
@@ -1936,15 +1946,36 @@ def test_expected_by_round_trips_from_row_to_item_model():
 
 
 def test_stale_waiting_rule_is_five_days_since_delegation():
-    """The client's isStaleWaiting (tasks/lib/waiting.ts) and this SQL are the
-    same rule stated twice; if one moves the view and /tasks/insights disagree
-    about the same list. Pin the SQL side here."""
+    """The client's isStaleWaiting (tasks/lib/waiting.ts) and the server are
+    the same rule stated three times: the gtd arm's SQL, the pm arm's Python
+    and the client's constant. If one moves, the view and /tasks/insights
+    disagree about the same list. Pin all three here (WS-39 S6d)."""
     import inspect
+    import re
+    from pathlib import Path
 
-    from gateway.routes.tasks import ai as tasks_ai_mod
+    from gateway.routes.projects import item_lens
+    from gateway.routes.tasks.item_source import GTD_ITEMS
 
-    src = inspect.getsource(tasks_ai_mod.inbox_insights)
+    # The SQL moved into the seam's gtd arm (WS-39 S6d), unchanged.
+    src = inspect.getsource(GTD_ITEMS.insight_counts)
     assert "w.delegated_at < now() - interval '5 days'" in src
+
+    # The pm arm: strictly more than STALE_WAITING_DAYS since delegated_at,
+    # and NOTHING else. A nudge does not reset it, a promised date does not
+    # enter it, because the client's rule reads only `delegatedAt`.
+    pm = inspect.getsource(item_lens._PmLens.insight_counts)
+    assert item_lens.STALE_WAITING_DAYS == 5
+    assert "timedelta(days=STALE_WAITING_DAYS)" in pm
+    assert "last_nudged_at" not in pm and "expected_by" not in pm
+
+    client = Path(__file__).resolve().parents[2] / (
+        "workbench/control_plane/src/app/tasks/lib/waiting.ts")
+    ts = client.read_text(encoding="utf-8")
+    assert re.search(r"STALE_WAITING_DAYS\s*=\s*5;", ts)
+    body = ts[ts.index("export function isStaleWaiting"):]
+    body = body[:body.index("}\n")]
+    assert "delegatedAt" in body and "lastNudgedAt" not in body
 
 
 def test_no_insert_site_derives_expected_by_from_a_due_date():
@@ -1965,12 +1996,16 @@ def test_no_insert_site_derives_expected_by_from_a_due_date():
     from gateway.routes.tasks import capture_email as capture_mod
     from gateway.routes.tasks import items as items_mod
     from gateway.routes.tasks import sync as sync_mod
+    from gateway.routes.tasks.item_source import GTD_ITEMS
 
+    # The two email captures write through the seam since WS-39 S6d. Their
+    # `fields` carry no `expected_by` either, checked below.
+    for fn in (capture_mod.capture_from_email, capture_mod._route_and_persist):
+        assert '"expected_by"' not in inspect.getsource(fn), fn.__name__
     sites = [
         items_mod.delegate_item,          # POST /items/{id}/delegate
         items_mod.organize_item,          # clarify → delegate
-        capture_mod.capture_from_email,   # one-click email capture
-        capture_mod._route_and_persist,   # clarify-popup email capture
+        GTD_ITEMS.record_waiting,         # both email captures, the gtd arm
         sync_mod._sync_account,           # provider pull (monitored task)
     ]
     for fn in sites:

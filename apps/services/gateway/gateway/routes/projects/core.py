@@ -865,6 +865,10 @@ JSONB_COLUMNS: frozenset[str] = frozenset({
     # normal state — so it stays OUT of JSONB_OBJECT_COLUMNS below, where an
     # absent value would read as `{}` and put every task on the Waiting list.
     "waiting_on",
+    # The task's provenance (211, WS-39 S6d). Email and WhatsApp capture write
+    # it through `insert_row`, so it needs the cast and the dump like the
+    # rest. Nullable: "captured by hand" is the normal state.
+    "origin",
 })
 
 #: JSONB columns declared ``NOT NULL DEFAULT '{}'``, where absent means an

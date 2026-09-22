@@ -13,6 +13,10 @@ POST /tasks/capture/from-email {account_id, email_id}
 Idempotent per email: capturing the same message twice returns the existing
 open item instead of duplicating it (``origin->>'email_id'``).
 
+Which store the capture lands in is the seam's call: ``item_source()``
+(WS-39 S6d) answers ``gtd_items`` with ``TASKS_LENS`` off and the one task
+store with it on. Nothing here names a table.
+
 Untrusted-content posture (task_manager_harness_2026-07.md T1-2): the email
 body/subject/thread are other-people-authored. The LLM prompt pins them as
 DATA, the deterministic fallback never interprets them, the drafted title is
@@ -26,12 +30,10 @@ import json
 import re
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.tasks.core import (
-    ITEM_SELECT,
     GtdItemModel,
     _parse_jsonb,
     _row_to_item,
@@ -39,6 +41,7 @@ from gateway.routes.tasks.core import (
     _uid,
     router,
 )
+from gateway.routes.tasks.item_source import item_source
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -462,13 +465,7 @@ async def _load_email(db: Any, uid: str, account_id: str, email_id: str) -> Any:
 async def _find_existing_capture(db: Any, uid: str, email_id: str) -> Any:
     """The OPEN item already captured from THIS exact email, or None
     (idempotency by origin->>'email_id')."""
-    return (await db.execute(text(
-        ITEM_SELECT + """
-            WHERE i.user_id = :uid AND i.origin->>'email_id' = :eid
-              AND i.disposition NOT IN ('DONE', 'TRASH')
-            LIMIT 1"""),
-        {"uid": uid, "eid": str(email_id)},
-    )).fetchone()
+    return await item_source().find_by_origin(db, uid, "email_id", str(email_id))
 
 
 async def _find_similar_tasks(
@@ -481,18 +478,11 @@ async def _find_similar_tasks(
     out: list[SimilarTaskModel] = []
     seen: set[str] = set()
 
+    src = item_source()
     if thread_id:
-        rows = (await db.execute(text(
-            ITEM_SELECT + """
-                WHERE i.user_id = :uid
-                  AND i.origin->>'thread_id' = :tid
-                  AND coalesce(i.origin->>'email_id', '') <> :eid
-                  AND i.disposition NOT IN ('DONE', 'TRASH')
-                ORDER BY i.created_at DESC
-                LIMIT :lim"""),
-            {"uid": uid, "tid": str(thread_id), "eid": str(this_email_id),
-             "lim": _SIMILAR_MAX},
-        )).fetchall()
+        rows = await src.items_by_origin(
+            db, uid, "thread_id", str(thread_id),
+            exclude_email_id=str(this_email_id), limit=_SIMILAR_MAX)
         for r in rows:
             item = _row_to_item(r)
             seen.add(item.id)
@@ -503,16 +493,7 @@ async def _find_similar_tasks(
     # Fuzzy title match over the user's other OPEN items. Capture is a
     # low-frequency action, so scanning open titles in Python is fine and keeps
     # us off a pg_trgm migration.
-    rows = (await db.execute(text(
-        """SELECT id, title, disposition FROM gtd_items
-            WHERE user_id = :uid
-              AND disposition NOT IN ('DONE', 'TRASH')
-              AND parent_item_id IS NULL
-              AND archived_at IS NULL
-            ORDER BY created_at DESC
-            LIMIT 400"""),
-        {"uid": uid},
-    )).fetchall()
+    rows = await src.open_items(db, uid, 400, top_level=True)
     scored: list[tuple[float, Any]] = []
     for r in rows:
         if str(r.id) in seen:
@@ -533,8 +514,8 @@ async def _route_and_persist(
 ) -> tuple[str, str, str | None]:
     """The shared WRITE: takes a resolved draft (from the LLM, the fallback, or
     the popup's edited fields), applies the delegate/destination routing rules,
-    inserts the gtd_items row (+ gtd_waiting for follow-ups) and returns
-    (item_id, disposition, assignee_name). Caller commits."""
+    writes the item through the seam (plus its Waiting-For for follow-ups)
+    and returns (item_id, disposition, assignee_name). Caller commits."""
     from_addr = _parse_addr(email.from_address)
     from_name = str(from_addr.get("name") or from_addr.get("email") or "")
     from_email_ = str(from_addr.get("email") or "")
@@ -582,50 +563,31 @@ async def _route_and_persist(
         "from_name": from_name[:120],
         "from_email": from_email_[:200],
     }
-    item_id = str(uuid4())
-    await db.execute(text(
-        """INSERT INTO gtd_items
-               (id, user_id, title, description, disposition, next_action,
-                context, energy, time_estimate_mins, assignee, is_mine, due_at,
-                is_hard_date, defer_until, source, account_id, sync_state,
-                clarified_at, origin)
-           VALUES
-               (:id, :uid, :title, :notes, :disp, :next_action,
-                :context, :energy, :est, :assignee, :is_mine, :due_at,
-                :is_hard, :defer_until, :source, :account_id, :sync_state,
-                :clarified_at, :origin)"""),
-        {"id": item_id, "uid": uid,
-         "title": _clean_title(str(draft.get("title") or ""), "Handle email"),
-         "notes": (draft.get("notes") or None), "disp": disposition,
-         "next_action": draft.get("next_action") or None,
-         "context": ctx or None, "energy": energy, "est": est,
-         "assignee": json.dumps(assignee) if assignee else None,
-         "is_mine": is_mine, "due_at": due_at, "is_hard": is_hard,
-         "defer_until": defer_until,
-         "source": source, "account_id": account_id, "sync_state": sync_state,
-         "clarified_at": datetime.now(tz=UTC) if clarified else None,
-         "origin": json.dumps(origin)},
-    )
-    # Break the task into its child next-actions when the LLM decomposed it.
-    if subtasks:
-        from gateway.routes.tasks.items import _create_subtasks
-        await _create_subtasks(
-            db, uid, item_id, subtasks, source, account_id, None, sync_state)
+    fields: dict[str, Any] = {
+        "title": _clean_title(str(draft.get("title") or ""), "Handle email"),
+        "description": (draft.get("notes") or None),
+        "disposition": disposition,
+        "next_action": draft.get("next_action") or None,
+        "context": ctx or None, "energy": energy,
+        "time_estimate_mins": est,
+        "assignee": assignee, "is_mine": is_mine,
+        "due_at": due_at, "is_hard_date": is_hard,
+        "defer_until": defer_until,
+        "source": source, "account_id": account_id, "sync_state": sync_state,
+        "clarified_at": datetime.now(tz=UTC) if clarified else None,
+        # Break the task into its child next-actions when the LLM decomposed it.
+        "subtasks": subtasks,
+    }
     if disposition == "WAITING":
-        waiting_on = assignee or {
+        # `expected_by` stays NULL. The drafter's `due_at` is already this
+        # item's own deadline — nobody stated a promised-by date, so copying
+        # it here would only freeze a value that the overdue line can read
+        # live from `due_at` instead.
+        fields["waiting_on"] = assignee or {
             "name": from_name or "the sender", "email": from_email_ or None,
             "provider_user_id": None}
-        # `expected_by` stays NULL. The drafter's `due_at` is already this
-        # item's own deadline (written to gtd_items.due_at above) — nobody
-        # stated a promised-by date, so copying it here would only freeze a
-        # value that the overdue line can read live from `due_at` instead.
-        await db.execute(text(
-            """INSERT INTO gtd_waiting
-                   (item_id, waiting_on, delegated_at)
-               VALUES (:iid, :who, :now)"""),
-            {"iid": item_id, "who": json.dumps(waiting_on),
-             "now": datetime.now(tz=UTC)},
-        )
+        fields["delegated_at"] = datetime.now(tz=UTC)
+    item_id = await item_source().insert_capture(db, uid, fields, origin)
     assignee_name = assignee.get("name") if assignee else None
     return item_id, disposition, assignee_name
 
@@ -653,13 +615,7 @@ async def capture_from_email(
             raise HTTPException(status_code=404, detail="Email not found")
 
         # Idempotent: an OPEN item already captured from this email wins.
-        existing = (await db.execute(text(
-            ITEM_SELECT + """
-                WHERE i.user_id = :uid AND i.origin->>'email_id' = :eid
-                  AND i.disposition NOT IN ('DONE', 'TRASH')
-                LIMIT 1"""),
-            {"uid": uid, "eid": str(email.id)},
-        )).fetchone()
+        existing = await _find_existing_capture(db, uid, str(email.id))
         if existing is not None:
             item = _row_to_item(existing)
             return CaptureFromEmailResponse(
@@ -750,56 +706,36 @@ async def capture_from_email(
             "from_name": from_name[:120],
             "from_email": from_email_[:200],
         }
-        item_id = str(uuid4())
-        await db.execute(text(
-            """INSERT INTO gtd_items
-                   (id, user_id, title, description, disposition, next_action,
-                    context, energy, time_estimate_mins, assignee, is_mine,
-                    due_at, is_hard_date, defer_until, source, account_id,
-                    sync_state, clarified_at, origin)
-               VALUES
-                   (:id, :uid, :title, :notes, :disp, :next_action,
-                    :context, :energy, :est, :assignee, :is_mine,
-                    :due_at, :is_hard, :defer_until, :source, :account_id,
-                    :sync_state, :clarified_at, :origin)"""),
-            {"id": item_id, "uid": uid, "title": draft["title"],
-             "notes": draft["notes"] or None, "disp": disposition,
-             "next_action": draft.get("next_action") or None,
-             "context": draft.get("context") or None,
-             "energy": energy, "est": est,
-             "assignee": json.dumps(assignee) if assignee else None,
-             "is_mine": is_mine, "due_at": due_at, "is_hard": is_hard,
-             "defer_until": defer_until,
-             "source": source, "account_id": account_id,
-             "sync_state": sync_state,
-             "clarified_at": datetime.now(tz=UTC) if clarified else None,
-             "origin": json.dumps(origin)},
-        )
-        # Break the task into its child next-actions when the LLM decomposed it.
-        if subtasks:
-            from gateway.routes.tasks.items import _create_subtasks
-            await _create_subtasks(
-                db, uid, item_id, subtasks, source, account_id, None, sync_state)
+        fields: dict[str, Any] = {
+            "title": draft["title"],
+            "description": draft["notes"] or None,
+            "disposition": disposition,
+            "next_action": draft.get("next_action") or None,
+            "context": draft.get("context") or None,
+            "energy": energy, "time_estimate_mins": est,
+            "assignee": assignee, "is_mine": is_mine,
+            "due_at": due_at, "is_hard_date": is_hard,
+            "defer_until": defer_until,
+            "source": source, "account_id": account_id,
+            "sync_state": sync_state,
+            "clarified_at": datetime.now(tz=UTC) if clarified else None,
+            # Break the task into its child next-actions when the LLM
+            # decomposed it.
+            "subtasks": subtasks,
+        }
         # A monitored follow-up/delegation gets an open waiting-for record so it
         # shows in Waiting and the nudge/stale logic tracks it. `expected_by`
         # stays NULL — same reason as the popup path above: `due_at` is the
-        # item's own deadline, already stored on gtd_items, and a second frozen
+        # item's own deadline, already stored on the item, and a second frozen
         # copy of it is exactly what made the Overdue badge lie.
         if disposition == "WAITING":
-            waiting_on = assignee or {
+            fields["waiting_on"] = assignee or {
                 "name": from_name or "the sender", "email": from_email_ or None,
                 "provider_user_id": None}
-            await db.execute(text(
-                """INSERT INTO gtd_waiting
-                       (item_id, waiting_on, delegated_at)
-                   VALUES (:iid, :who, :now)"""),
-                {"iid": item_id, "who": json.dumps(waiting_on),
-                 "now": datetime.now(tz=UTC)},
-            )
-        row = (await db.execute(
-            text(ITEM_SELECT + " WHERE i.id = :id"), {"id": item_id},
-        )).fetchone()
-        item = _row_to_item(row)
+            fields["delegated_at"] = datetime.now(tz=UTC)
+        src = item_source()
+        item_id = await src.insert_capture(db, uid, fields, origin)
+        item = _row_to_item(await src.fetch_item(db, uid, item_id))
         return CaptureFromEmailResponse(
             item=item, created=True, used_llm=used_llm,
             disposition=item.disposition,
@@ -939,10 +875,7 @@ async def create_capture_from_email(
 
         item_id, _disp, _assignee = await _route_and_persist(
             db, uid, email, req.draft.model_dump(), people)
-        row = (await db.execute(
-            text(ITEM_SELECT + " WHERE i.id = :id"), {"id": item_id},
-        )).fetchone()
-        item = _row_to_item(row)
+        item = _row_to_item(await item_source().fetch_item(db, uid, item_id))
         return CaptureFromEmailResponse(
             item=item, created=True, used_llm=False,
             disposition=item.disposition,
@@ -1049,15 +982,8 @@ async def _find_existing_commitment(db: Any, uid: str, thread_id: str) -> Any:
     thread is a different task and mustn't suppress the commitment popup."""
     if not thread_id:
         return None
-    return (await db.execute(text(
-        ITEM_SELECT + """
-            WHERE i.user_id = :uid
-              AND i.origin->>'thread_id' = :tid
-              AND i.origin->>'commitment' = 'true'
-              AND i.disposition NOT IN ('DONE', 'TRASH')
-            LIMIT 1"""),
-        {"uid": uid, "tid": str(thread_id)},
-    )).fetchone()
+    return await item_source().find_by_origin(
+        db, uid, "thread_id", str(thread_id), commitment=True)
 
 
 async def _account_owner(db: Any, uid: str, account_id: str) -> tuple[str, str]:
@@ -1346,18 +1272,12 @@ async def create_commitment_from_reply(
             db, uid, reply, req.draft.model_dump(), people)
         # Mark the origin as a commitment so the thread-scoped idempotency guard
         # can tell it apart from an inbound capture on the same thread.
-        await db.execute(text(
-            "UPDATE gtd_items SET origin = jsonb_set("
-            "coalesce(origin, '{}'::jsonb), '{commitment}', 'true'::jsonb) "
-            "WHERE id = :id"
-        ), {"id": item_id})
+        src = item_source()
+        await src.update_origin(db, uid, item_id, {"commitment": True})
         await _tag_thread_task_category(
             db, req.account_id, req.thread_id, uid)
 
-        row = (await db.execute(
-            text(ITEM_SELECT + " WHERE i.id = :id"), {"id": item_id},
-        )).fetchone()
-        item = _row_to_item(row)
+        item = _row_to_item(await src.fetch_item(db, uid, item_id))
         return CaptureFromEmailResponse(
             item=item, created=True, disposition=item.disposition,
             assignee_name=item.assignee.name if item.assignee else None,

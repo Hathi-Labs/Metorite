@@ -10,12 +10,12 @@ old data.
 This module adds the missing piece: a background loop per sync-enabled
 ``task_accounts`` row, launched from the gateway lifespan, that
 
-  1. pulls the workspace's tasks into the ``gtd_items`` mirror
+  1. pulls the workspace's tasks into the local mirror
      (``sync._sync_account`` — incremental via ``last_delta_token``, members
      cache refreshed every run), and
   2. periodically re-fetches the full provider schema
      (projects/statuses/hierarchy into ``task_accounts.schema_cache`` +
-     mirrored ``gtd_projects``) so the clarify pickers and the agent's
+     mirrored projects) so the clarify pickers and the agent's
      project/stage knowledge stay current, and
   3. sleeps ``sync_interval_secs`` (re-read each cycle so a settings change
      takes effect without a restart).
