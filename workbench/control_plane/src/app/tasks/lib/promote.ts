@@ -20,6 +20,57 @@ import {
 } from "@/app/projects/lib/customFields";
 
 import type { LensMoveRequest } from "./lens";
+import type { GtdItem } from "./types";
+
+/**
+ * Whether "Move to project…" is offered on a card — ONE rule, one spelling.
+ *
+ * Lens only: `apiMoveTask` throws when the flag is off (the old store has no
+ * board to move onto), and a door that opens onto an error is worse than no
+ * door. An archived row stays where it is until it is restored.
+ */
+export function promoteAllowed(
+  item: Pick<GtdItem, "archivedAt">,
+  lens: boolean,
+): boolean {
+  return lens && !item.archivedAt;
+}
+
+/**
+ * What a promote left behind in MY list.
+ *
+ * `left: false` is the ordinary case: the task is still mine, re-read through
+ * the lens. `left: true` is a promote that handed the task to a colleague, or
+ * from which I had already removed myself: `my/tasks/{id}` answers 404
+ * because the row is no longer in my membership, and that is a SUCCESS the
+ * store must not report as a failure.
+ */
+export type PromoteOutcome =
+  | { left: false; item: GtdItem }
+  | { left: true; projectId?: string; assignees: string[] };
+
+/** The success toast, in one place so the two outcomes cannot drift. */
+export function promoteToast(
+  outcome: PromoteOutcome,
+  projectName: string,
+  dropped: readonly string[] | null,
+): { title: string; description: string } {
+  const drops =
+    dropped && dropped.length > 0
+      ? ` Dropped ${dropped.join(", ")}: the old values are on the timeline.`
+      : "";
+  if (outcome.left) {
+    const who = outcome.assignees.length > 0 ? outcome.assignees.join(", ") : "nobody";
+    return {
+      title: `Moved to ${projectName}, handed to ${who}.`,
+      description: `It left your list. It is on the board now.${drops}`,
+    };
+  }
+  return {
+    title: `Moved to ${projectName}`,
+    description: `It is the same task, now on the board. Completing it there completes it here.${drops}`,
+  };
+}
 
 export interface PromoteAnswers {
   destinationId: string;

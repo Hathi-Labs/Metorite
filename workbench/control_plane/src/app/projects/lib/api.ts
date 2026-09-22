@@ -776,11 +776,25 @@ export interface GrantRow {
 export class ProjectsApiError extends Error {
   constructor(
     message: string,
-    readonly status: number
+    readonly status: number,
+    /**
+     * The gateway's `detail`, as it came. S6c: a 422 from
+     * `assert_required_fields_present` carries `{error, message, fields}`,
+     * and the move dialog draws `fields` as inputs so the member answers
+     * the exact field the refusal named rather than reading its name.
+     */
+    readonly detail?: unknown
   ) {
     super(message);
     this.name = "ProjectsApiError";
   }
+}
+
+/** The field definitions a structured 422 named, or none. */
+export function refusedFields(err: unknown): FieldRow[] {
+  const detail = err instanceof ProjectsApiError ? err.detail : undefined;
+  const fields = (detail as { fields?: unknown } | undefined)?.fields;
+  return Array.isArray(fields) ? (fields as FieldRow[]) : [];
 }
 
 /**
@@ -858,7 +872,8 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     throw new ProjectsApiError(
       detailText(body?.detail) || describeFailure(res.status, text),
-      res.status
+      res.status,
+      body?.detail
     );
   }
 

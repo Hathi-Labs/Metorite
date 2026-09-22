@@ -16,25 +16,38 @@
  * card's project label changes in place because it is the same row with a new
  * `project_id` (D53.4). Nothing moves before the server answers.
  *
+ * A promote that handed the task to a colleague takes it OUT of my list: the
+ * read-back answers 404, the store drops the row, and the toast says where it
+ * went and to whom (`PromoteOutcome.left`). The move committed; that is not a
+ * failure and is never reported as one.
+ *
  * ## What happens on a refusal
  *
  * D62 (into somebody's personal tree), the assign guard (a colleague on a
  * task with no project) and a blank required field all come back as the
  * gateway's own sentence. It renders IN the card, as the Projects flow does,
  * and goes through the toast seam (`reportSyncFailure`) so a member who
- * closed the card still hears it. Nothing optimistic, nothing to undo.
+ * closed the card still hears it. A structured 422 also carries the field
+ * DEFINITIONS it named, and the card draws those as inputs. Nothing
+ * optimistic, nothing to undo.
+ *
+ * ⚠️ Hosts render this OUTSIDE their clickable root. The Modal portals to
+ * `document.body`, but React events bubble the REACT tree, so a dialog
+ * rendered inside a card's `onClick` subtree opens the card on every click
+ * in it. `TaskCard` and `InboxCard` both host it beside the root, not in it.
  */
 
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { MoveTasksDialog, type PromoteAnswers } from "@/app/projects/components/MoveTasksDialog";
-import { projectsApi } from "@/app/projects/lib/api";
+import { projectsApi, refusedFields } from "@/app/projects/lib/api";
 import { taskDeepLink } from "@/app/projects/lib/card";
+import type { FieldDef } from "@/app/projects/lib/customFields";
 import type { ProjectNode } from "@/app/projects/lib/tree";
 import { useToast } from "@/components/ui/Toast";
 
-import { promotePlan } from "../lib/promote";
+import { promotePlan, promoteToast } from "../lib/promote";
 import { useTaskStore } from "../lib/taskStore";
 import type { GtdItem } from "../lib/types";
 
@@ -66,6 +79,12 @@ export function PromoteDialog({
   const [treeError, setTreeError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The fields a 422 named, drawn as inputs on the next attempt.
+  const [refused, setRefused] = useState<FieldDef[]>([]);
+  // Seeded ONCE, when the dialog opens. The owners the member started from
+  // are the baseline "unchanged" is judged against; re-deriving them on
+  // every render would move the baseline under the member's edits.
+  const [initialAssignees] = useState(() => ownerIds(item));
 
   // The destination picker wants the TREE, folders and all, so the member
   // sees the same shape they know from /projects. The store's flat list is
@@ -85,7 +104,11 @@ export function PromoteDialog({
     };
   }, []);
 
-  async function confirm(destinationId: string, answers?: PromoteAnswers) {
+  async function confirm(
+    destinationId: string,
+    dropped: string[] | null,
+    answers?: PromoteAnswers,
+  ) {
     const plan = promotePlan({
       destinationId,
       fields: answers?.fields ?? [],
@@ -102,27 +125,30 @@ export function PromoteDialog({
     setBusy(true);
     setError(null);
     try {
-      const moved = await promoteItem(item.id, plan.request);
+      const outcome = await promoteItem(item.id, plan.request);
       // Read AFTER the move: `promoteItem` re-reads the company list when
       // the destination is new to it, and the render's `projects` is older.
+      const projectId = outcome.left ? outcome.projectId : outcome.item.projectId;
       const name =
-        useTaskStore.getState().projects.find((p) => p.id === moved.projectId)
-          ?.outcome ?? "the project";
+        useTaskStore.getState().projects.find((p) => p.id === projectId)?.outcome ??
+        "the project";
       onClose();
       toast.show({
         key: `tasks-promote:${item.id}`,
         variant: "success",
-        title: `Moved to ${name}`,
-        description: "It is the same task, now on the board. Completing it there completes it here.",
+        ...promoteToast(outcome, name, dropped),
         action: {
           label: "Open board",
-          onClick: () => router.push(taskDeepLink(moved)),
+          // The id survives the move (D53.4: same row), so the deep link
+          // holds whether or not the task is still in my list.
+          onClick: () => router.push(taskDeepLink({ id: item.id })),
         },
       });
     } catch (err) {
       const message =
         err instanceof Error && err.message ? err.message : "Couldn't move the task.";
       setError(message);
+      setRefused(refusedFields(err) as FieldDef[]);
       reportSyncFailure(`Couldn't move it: ${message}`);
     } finally {
       setBusy(false);
@@ -135,10 +161,10 @@ export function PromoteDialog({
       roots={roots}
       busy={busy}
       error={error ?? treeError}
-      promote={{ initialAssignees: ownerIds(item), due: item.dueAt ?? null }}
+      promote={{ initialAssignees, due: item.dueAt ?? null, refusedFields: refused }}
       onClose={onClose}
-      onConfirm={(destinationId, _statusMap, _drops, answers) =>
-        void confirm(destinationId, answers)
+      onConfirm={(destinationId, _statusMap, dropped, answers) =>
+        void confirm(destinationId, dropped, answers)
       }
     />
   );

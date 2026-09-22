@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { dropIndexFor } from "@/lib/boardDrop";
 import { LensPartialFailure, type LensMoveRequest, lensEnabled, lensGetItem } from "./lens";
+import { ProjectsApiError } from "@/app/projects/lib/api";
+import type { PromoteOutcome } from "./promote";
 import {
   allSelected,
   clickSelect,
@@ -840,7 +842,7 @@ interface TaskState {
    * Under the lens a personal task that lands on a board is a PROMOTION
    * (D53.4): same row, new `project_id`, so the card's project label follows.
    */
-  promoteItem: (id: string, req: LensMoveRequest) => Promise<GtdItem>;
+  promoteItem: (id: string, req: LensMoveRequest) => Promise<PromoteOutcome>;
   /** Per-user task-manager settings (AI tiers + toggles). Defaults render
    *  immediately; hydrate() refreshes from the gateway. */
   settings: TaskSettings;
@@ -1086,7 +1088,22 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     // gateway's refusals throw with their own sentence. Neither touches the
     // list: the card only changes once `my/tasks/{id}` says where it is.
     await apiMoveTask(id, req);
-    const moved = await lensGetItem(id);
+    let moved: GtdItem;
+    try {
+      moved = await lensGetItem(id);
+    } catch (err) {
+      // The move COMMITTED. A 404 here is not a failure: `my/tasks/{id}`
+      // reads through my membership, and a promote that handed the task to
+      // a colleague (or from which I had already removed myself) takes it
+      // out of my list. Reporting that as "couldn't move it" told the member
+      // the opposite of what happened. Drop the row; the caller says where
+      // it went.
+      if (err instanceof ProjectsApiError && err.status === 404) {
+        set((s) => ({ items: s.items.filter((i) => i.id !== id) }));
+        return { left: true, projectId: req.projectId, assignees: req.assignees ?? [] };
+      }
+      throw err;
+    }
     set((s) => ({ items: s.items.map((i) => (i.id === id ? moved : i)) }));
     // The label on the card reads `projects`, the company list. A destination
     // the list does not hold yet (a project created since the hydrate) would
@@ -1099,7 +1116,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         /* the next hydrate reconciles */
       }
     }
-    return moved;
+    return { left: false, item: moved };
   },
 
   resolveDupNotice: (action, newTitle) => {

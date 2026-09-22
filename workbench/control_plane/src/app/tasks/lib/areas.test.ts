@@ -108,15 +108,12 @@ describe("isPersonalTask", () => {
 });
 
 describe("the sidebar carries no altitude block (D65)", () => {
-  it("never names the withdrawn view", () => {
+  it("never names a horizon", () => {
     const src = readFileSync(
       fileURLToPath(new URL("../components/ListsSidebar.tsx", import.meta.url)),
       "utf-8",
     );
-    // Assembled at runtime, so S6c's own check — `rg -c -i <the word>
-    // src/app/tasks/lib/` returns zero — is not tripped by its fence.
-    const withdrawn = ["hori", "zon"].join("");
-    expect(new RegExp(withdrawn, "i").test(src)).toBe(false);
+    expect(/horizon/i.test(src)).toBe(false);
   });
 });
 

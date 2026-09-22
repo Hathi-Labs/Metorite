@@ -421,9 +421,12 @@ union. The data and the routes stay (D65).
 its `promote` mode from `PromoteDialog.tsx`, so both apps draw one card.
 
 **Done when.**
-1. `rg -l "apiMoveTask" src/app/tasks/components/` returns one hit.
+1. `promote.test.ts` proves the payload `PromoteDialog` builds reaches
+   `apiMoveTask`, and `promoteItem` in `taskStore.ts` is its one caller.
 2. A move with a blank required field is refused with the field named.
-3. `rg -c -i horizon src/app/tasks/lib/` returns zero.
+   Fence: `test_projects_landing.py`, on both move routes.
+3. Horizons is off the surface. The `ViewKey` union has no such member,
+   and `ListsSidebar.test.ts` reads the sidebar and the union for it.
 4. This closes H-59 (1) and (3).
 
 ### S6d — the AI and intake tail on the gateway · AGENT-SAFE · BUILT 2026-09-23
@@ -465,8 +468,8 @@ overlay row for me. `GET /projects/my/led` lists the projects where
 
 Client: the "From Projects" inbox group. The led projects in the Projects view
 of My Tasks. `ItemDetail.tsx` rebuilt from the `TaskPanel` composition. The
-project link on the card. The viewer's disposition chip in the Projects task
-panel.
+viewer's disposition chip in the Projects task panel. The project link on the
+card landed in S6c (`ProjectLabel.tsx`), so S6e does not build it again.
 
 **Done when.**
 1. Assign a task to Bob in Projects. Bob's inbox shows it under "From

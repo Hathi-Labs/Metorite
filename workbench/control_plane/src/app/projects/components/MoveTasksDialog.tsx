@@ -28,7 +28,7 @@
  * is clean rather than drawing three empty tables.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
@@ -97,7 +97,24 @@ interface Props {
     initialAssignees: string[];
     /** The task's due date, to sharpen the picker's availability warning. */
     due?: string | null;
+    /**
+     * The definitions a 422 named (`ProjectsApiError.detail.fields`). Drawn
+     * as inputs beside the ones the preview asked for, so the member answers
+     * the exact field the refusal named rather than reading its name.
+     */
+    refusedFields?: FieldDef[];
   };
+}
+
+/** The preview's required definitions plus the refusal's, keyed once. */
+function askedFields(
+  fromPreview: FieldDef[] | null,
+  fromRefusal: readonly FieldDef[] | undefined
+): FieldDef[] | null {
+  if (fromPreview === null) return null;
+  const seen = new Set(fromPreview.map((def) => def.field_key));
+  const extra = (fromRefusal ?? []).filter((def) => !seen.has(def.field_key));
+  return extra.length ? [...fromPreview, ...extra] : fromPreview;
 }
 
 /** Control values → wire values, for the blank check the server will make. */
@@ -189,9 +206,15 @@ export function MoveTasksDialog({
   const ids = taskIds ?? [];
   const key = ids.join(",");
   const promoting = Boolean(promote);
+  // A request token. Two destinations picked quickly are two previews in
+  // flight, and the slow one used to land last and overwrite the fast one:
+  // the card then showed one project's name over another's mapping.
+  const loadSeq = useRef(0);
 
   const load = useCallback(
     async (destinationId: string) => {
+      const seq = ++loadSeq.current;
+      const stale = () => seq !== loadSeq.current;
       setPlanning(true);
       setPlanError(null);
       // Cleared, not kept: the previous destination's mapping under a new
@@ -205,6 +228,7 @@ export function MoveTasksDialog({
           task_ids: [...ids],
           destination_project_id: destinationId,
         });
+        if (stale()) return;
         setPlan(next);
         // S6c. The preview names the required fields the task does not
         // answer; the definitions say what KIND of answer each wants. Only
@@ -212,6 +236,7 @@ export function MoveTasksDialog({
         if (promote && next.required_missing.length > 0) {
           setRequiredDefs(null);
           const { rows } = await projectsApi.fields(next.destination_project_id);
+          if (stale()) return;
           const wanted = new Set(next.required_missing);
           const defs = (rows as FieldDef[]).filter(
             (def) => def.required && (wanted.has(def.name) || wanted.has(def.field_key))
@@ -222,10 +247,11 @@ export function MoveTasksDialog({
           setRequiredDefs(defs);
         }
       } catch (err) {
+        if (stale()) return;
         setPlanError(String((err as Error).message));
         setRequiredDefs([]);
       } finally {
-        setPlanning(false);
+        if (!stale()) setPlanning(false);
       }
     },
     [key, promoting] // eslint-disable-line react-hooks/exhaustive-deps
@@ -237,8 +263,12 @@ export function MoveTasksDialog({
 
   if (!taskIds || ids.length === 0) return null;
 
-  const missing = requiredDefs
-    ? requiredBlanks(requiredDefs, wireOf(requiredDefs, draft)).map((def) => def.name)
+  // The fields to ask about: the preview's, plus any a refusal named. A
+  // refused field the preview did not list (a definition added between the
+  // preview and the move) is drawn with an empty control, not merely named.
+  const asked = askedFields(requiredDefs, promote?.refusedFields);
+  const missing = asked
+    ? requiredBlanks(asked, wireOf(asked, draft)).map((def) => def.name)
     : [];
   const blocked = missingSentence(missing);
   const addAssignee = (raw: string) => {
@@ -466,13 +496,13 @@ export function MoveTasksDialog({
                 Reading what {destName || "the destination"} requires…
               </p>
             ) : null}
-            {promote && requiredDefs && requiredDefs.length > 0 ? (
+            {promote && asked && asked.length > 0 ? (
               <div className="space-y-2">
                 <p className="font-medium text-foreground">
                   Required in {destName || "the destination"}
                 </p>
                 <dl className="space-y-2">
-                  {requiredDefs.map((def) => (
+                  {asked.map((def) => (
                     <div key={def.id}>
                       <dt className="text-[11px] text-muted-foreground">
                         {def.name}
@@ -483,7 +513,7 @@ export function MoveTasksDialog({
                       <dd className="mt-0.5">
                         <FieldControl
                           def={def}
-                          value={draft[def.field_key]}
+                          value={draft[def.field_key] ?? toInput(def.field_type, undefined)}
                           disabled={busy}
                           onChange={(next) =>
                             setDraft((current) => ({ ...current, [def.field_key]: next }))
@@ -610,7 +640,7 @@ export function MoveTasksDialog({
              card knows what the move costs is agreeing to nothing. On the
              promote door a blank required field holds the button too, and
              `title` says which one. */
-          disabled={!plan || planning || requiredDefs === null || missing.length > 0}
+          disabled={!plan || planning || asked === null || missing.length > 0}
           title={blocked || undefined}
           variant={drops.length > 0 ? "destructive" : "primary"}
           onClick={() =>
@@ -621,7 +651,7 @@ export function MoveTasksDialog({
               drops.length > 0 ? drops.map(([key]) => key) : null,
               promote
                 ? {
-                    fields: requiredDefs ?? [],
+                    fields: asked ?? [],
                     draft,
                     assignees,
                     initialAssignees: promote.initialAssignees,
