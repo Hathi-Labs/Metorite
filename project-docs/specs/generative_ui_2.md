@@ -70,7 +70,7 @@ emit_generative_ui({
 Lucide-only via `resolveIcon` (bundled, no network — Font Awesome rejected to
 keep one icon system, per DESIGN_SYSTEM.md).
 
-## 3. Template library (Phase 1 catalog — 11 templates)
+## 3. Template library (Phase 1 catalog — 16 templates)
 
 Display: `weatherCard`, `statDashboard`, `barChart`, `sparkTrend`,
 `comparison`, `progressTracker` *(pre-existing)* + `recipeCard` (meta chips,
@@ -83,8 +83,17 @@ Input (HITL-first): **`formCard`** — schema-driven fields
 labels) that submit `label — {json}` back; **`optionPicker`** — rich choice
 cards (icon/badge/recommended★, single=tap-to-submit, multi=confirm).
 
+The Projects chat's views (WS-27bm S4, 2026-09-23): **`timeline`** (an
+activity feed), **`taskBoard`** (a kanban board, a card opens the task),
+**`dataGrid`** (a sortable table, a row opens its record), **`reportCard`**
+(tiles plus one table per section), and **`planCard`** (an editable project
+plan, HITL). Data-only like the rest. A skill tool emits them from its own
+reads (`skill_projects/views.py`), so the model never transcribes rows.
+
 Data shapes live in `genUITemplates.tsx::TEMPLATE_CATALOG` (source of truth,
-mirrored into the `emit_generative_ui` docstring — keep in lockstep).
+mirrored into the `emit_generative_ui` docstring). Since S4 the lockstep is a
+fence: `tests/unit/test_genui_catalog_lockstep.py` holds the catalog, the
+registry and the docstring to one set of names.
 
 ## 4. Scenario → element mapping (brainstorm; build on demand)
 
@@ -105,8 +114,10 @@ mirrored into the `emit_generative_ui` docstring — keep in lockstep).
 **A consumer, not a new tier (2026-09-22).** The Projects chat adds no
 surface and no template. It reuses `request_confirmation` for every write
 and the per-app card slot in `MessageBubble` for its receipts, the way the
-Tasks and email assistants do. Its W1 plan will be a `formCard` with `hitl`
-(§2), so the plan is approved in the same turn it is proposed.
+Tasks and email assistants do. Its W1 plan is a `planCard` with `hitl`
+(§2), so the plan is edited and approved in the same turn it is proposed,
+and `edit_task` / `edit_project` are a `formCard` with `hitl` over the row's
+values (S4, 2026-09-23).
 
 Rule of thumb for adding: a scenario earns a TEMPLATE when agents hit it
 repeatedly in Tier 3 (grep run traces for `type":"html` payloads) — promote the

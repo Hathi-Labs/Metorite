@@ -78,6 +78,27 @@ describe("classifyActionResult", () => {
     expect(rowIdOf(text)).toBe("");
   });
 
+  it("is done for a `done:` line, for the one tool that prints it", () => {
+    const text = "Marked 3 read.\n  done: 3 marked";
+    expect(classifyActionResult(text, "done", "mark_notifications_read")).toBe("done");
+    expect(rowIdOf(text)).toBe("");
+    // Any other tool: a `done:` line is not a receipt, so a member string
+    // that reached line start could never paint another write green.
+    expect(classifyActionResult(text, "done", "update_task")).toBe("refused");
+    expect(classifyActionResult("Nothing done: pass ids.", "done", "mark_notifications_read")).toBe(
+      "refused",
+    );
+  });
+
+  it("parses a notification row, which leads with the task like every row", () => {
+    const text = [
+      `- #7 «Fix the extruder» · mention by «a@x.io» · 2026-09-22 · «@pm can you look» · notification id 1f8f`,
+      `  full_id: ${ID}`,
+    ].join("\n");
+    expect(parseTaskRows(text)).toHaveLength(1);
+    expect(parseTaskRows(text)[0].meta).toContain("mention by");
+  });
+
   it("is refused for a prose line that merely mentions an id", () => {
     expect(classifyActionResult(`No comment with id ${ID} is in the latest 50 rows.`, "done")).toBe(
       "refused",

@@ -337,6 +337,19 @@ S6e follows S6a. It reads the lens seam S6a completes.
 
 ### S6b — Areas, and the local tree retires · AGENT-SAFE
 
+⚠️ **SPLIT IN TWO, 2026-09-23.** The gateway half shipped on its own. One PR
+carrying four routes, a privacy guard and a sidebar reviews badly, and the
+guard should not wait behind a UI.
+
+**S6b-1 ✅ BUILT** — `GET/POST/PATCH/DELETE /projects/my/areas`, the privacy
+guard on node moves, and the fences. See the build record below.
+
+**S6b-2 🔲 OWED** — `ListsSidebar` gains the Areas section with create, rename
+and delete. The Clarify "Where" picker reads Areas plus the company projects.
+Group D of §3.1 retires under the flag. **H-29 stays blocked until this
+lands.** Its constraint is the UI one. The backfill creates Areas, and a
+member needs somewhere to rename or delete them.
+
 **Scope.** The gateway learns to mint, rename, archive and list a member's
 Areas: children of the personal root with `personal_owner` inherited.
 Routes: `GET /projects/my/areas`, `POST /projects/my/areas`,

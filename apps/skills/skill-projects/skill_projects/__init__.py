@@ -9,6 +9,7 @@ Spec: ``project-docs/specs/projects_ai_chat.md``.
 tool that is not exported is in ``manifest.PLANNED`` with its slice.
 """
 
+from skill_projects.forms import edit_project, edit_task, propose_plan
 from skill_projects.guarded import (
     archive_project,
     archive_task,
@@ -28,6 +29,19 @@ from skill_projects.guarded import (
     set_status_set,
     unarchive_project,
 )
+from skill_projects.inbox import (
+    calendar,
+    capture_intake,
+    intake_queue,
+    mark_notifications_read,
+    my_contexts,
+    notifications,
+    project_access,
+    project_views,
+    save_view,
+    triage_intake,
+    watchers,
+)
 from skill_projects.reads import (
     analytics_finished,
     analytics_load,
@@ -46,6 +60,13 @@ from skill_projects.reads import (
     report_render,
     task_detail,
     vocabulary,
+)
+from skill_projects.views import (
+    render_board,
+    render_report,
+    render_tasks,
+    render_timeline,
+    status_report,
 )
 from skill_projects.writes import (
     add_subtasks,
@@ -97,6 +118,20 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     # Class A — the two reads S2b needed
     "my_task",
     "recurrence",
+    # Class A — the views: reads that draw a card (S4)
+    "render_board",
+    "render_report",
+    "render_tasks",
+    "render_timeline",
+    "status_report",
+    # Class A — the rest of the reads (S5)
+    "calendar",
+    "intake_queue",
+    "my_contexts",
+    "notifications",
+    "project_access",
+    "project_views",
+    "watchers",
     # Class B — reversible writes, one card each (S2)
     "add_subtasks",
     "assign",
@@ -127,6 +162,15 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "update_status",
     "update_tag",
     "update_type",
+    # Class B — the forms: an editable card, then the class B card (S4)
+    "edit_project",
+    "edit_task",
+    "propose_plan",
+    # Class B — the rest of the writes (S5)
+    "capture_intake",
+    "mark_notifications_read",
+    "save_view",
+    "triage_intake",
     # Class C — hard to undo, one act one card, the impact first (S3)
     "archive_project",
     "archive_task",

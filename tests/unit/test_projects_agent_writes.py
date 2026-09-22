@@ -43,6 +43,7 @@ from tests.unit._projects_agent_fakes import (
     deny,
     empty_list,
     fake_gateway,
+    form_stub,
     writes,
 )
 
@@ -150,6 +151,28 @@ def _s3_reads(call: dict) -> Any:
             ],
             "total": 1,
         }
+    return None
+
+
+def _s5_answers(call: dict) -> Any:
+    """The S5 routes: views, intake, notifications."""
+    path, method = call["path"], call["method"]
+    if path.endswith("/views") and method == "GET":
+        return {"rows": [{"id": VIEW_ID, "name": "Board", "view_type": "board"}], "total": 1}
+    if path.endswith("/views") and method == "POST":
+        return {"id": VIEW_ID, "name": call["json"]["name"], "view_type": call["json"]["view_type"]}
+    if method == "PATCH" and path.startswith("/projects/views/"):
+        return {"id": VIEW_ID, **(call["json"] or {})}
+    if path == "/projects/intake" and method == "POST":
+        return {"task": {**TASK, "id": OTHER, "title": call["json"]["title"], "task_number": 9}}
+    if path.startswith("/projects/intake/") and method == "POST":
+        return {"task": TASK, "intake": {"status": path.rsplit("/", 1)[-1]}}
+    if path == "/projects/notifications/read":
+        return {"marked": 3}
+    if path == "/projects/notifications" and method == "GET":
+        return {"rows": [], "unread": {"total": 3, "mentions": 1}}
+    if path == "/projects/my/project" and method == "GET":
+        return {"id": OTHER, "name": "My tasks"}
     return None
 
 
@@ -270,7 +293,7 @@ def responder(call: dict) -> Any:
     if path.endswith("/statuses"):
         # The route's shape (admin.py `list_statuses`): rows AND per-lane counts.
         return {"rows": STATUSES, "counts": {S1: 4, S2: 2, S3: 0}, "owner_id": UUID}
-    answered = _answered(call, _s3_reads, _s3_writes, _s2b_answers)
+    answered = _answered(call, _s5_answers, _s3_reads, _s3_writes, _s2b_answers)
     if answered is not None:
         return answered
     if path.endswith("/relations"):
@@ -337,6 +360,20 @@ def responder(call: dict) -> Any:
         }
     return empty_list(call)
 
+
+#: What the member submits on each form, keyed by the form's title prefix.
+#: The frontend sends `"<label> — <json>"`; the stub answers that shape.
+PLAN_TASKS = (
+    '[{"title": "Call the vendor", "owner": "priya@x.io", "effort_mins": 60, '
+    '"due": "2026-10-03", "impact": 5, "urgency": 4, "effort": 2}, '
+    '{"title": "Draft the brief", "owner": "Priya", "effort_mins": 120, "due": "2026-10-05"}]'
+)
+FORM_ANSWERS: dict[str, str] = {
+    "Edit #7": 'Review changes — {"title": "Fix the extruder", "description": "", "status": "Done", '
+    '"due": "2026-10-01", "start": "", "importance": 2, "estimate_mins": 30, "tags": ""}',
+    "Edit Ops": 'Review changes — {"name": "Ops v2", "description": "", "status": "paused", "lead": ""}',
+    "Plan": 'Review plan — {"project": {"name": "Q4 launch"}, "tasks": ' + PLAN_TASKS + "}",
+}
 
 #: One or more invocations per class B tool. Together they must reach every
 #: class B route the manifest gives a built tool.
@@ -421,6 +458,30 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "delete_view": [{"project_id": UUID, "view_name": "Board"}],
     "report_delete": [{"report_id": UUID}],
     "delete_attachment": [{"task_id": UUID, "attachment_id": FILE}],
+    # S4 — the forms: an editable card, then the class B card
+    "edit_task": [{"task_id": UUID}],
+    "edit_project": [{"project_id": UUID}],
+    # S5 — the rest of the writes
+    "save_view": [
+        {"project_id": UUID, "name": "Mine", "view_type": "list"},
+        {"project_id": UUID, "name": "Board v2", "view_id": VIEW_ID},
+    ],
+    "capture_intake": [{"title": "Vendor called", "project_id": UUID, "due": "2026-10-01"}],
+    "triage_intake": [
+        {"task_id": UUID, "action": "accept", "status": "done"},
+        {"task_id": UUID, "action": "decline"},
+        {"task_id": UUID, "action": "duplicate", "duplicate_of": OTHER},
+        {"task_id": UUID, "action": "snooze", "until": "2026-10-06"},
+    ],
+    "mark_notifications_read": [{"ids": OTHER}, {"all_unread": True}],
+    "propose_plan": [
+        {
+            "name": "Q4 launch",
+            "parent_project_id": UUID,
+            "tasks": PLAN_TASKS,
+            "risks": "Vendor slips\nNo owner for QA",
+        }
+    ],
 }
 
 #: The class C tools and the ONE-id argument each takes. A list there is
@@ -469,6 +530,11 @@ def test_the_tools_are_annotated_as_writes_not_reads() -> None:
 
 
 # ── 1. No mutation before consent ───────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _forms_answered(monkeypatch) -> None:
+    form_stub(monkeypatch, FORM_ANSWERS)
 
 
 @pytest.mark.parametrize("tool", sorted(_WRITES))
@@ -541,6 +607,8 @@ async def test_a_run_with_nobody_to_act_as_makes_no_call(tool: str, monkeypatch)
             "create_personal_task",
             "report_delete",
             "unarchive_project",
+            "propose_plan",
+            "mark_notifications_read",
         )
     ),
 )
@@ -572,6 +640,8 @@ async def test_the_card_carries_the_fixed_note_first(monkeypatch) -> None:
 def test_no_tool_passes_non_interactive_approve() -> None:
     source = (SKILL_DIR / "writes.py").read_text(encoding="utf-8")
     source += (SKILL_DIR / "guarded.py").read_text(encoding="utf-8")
+    source += (SKILL_DIR / "forms.py").read_text(encoding="utf-8")
+    source += (SKILL_DIR / "inbox.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     gates = [
         n
@@ -588,13 +658,19 @@ def test_every_class_b_tool_awaits_the_one_confirm_door() -> None:
     imported. A tool that built its own card would escape the source fence."""
     source = (SKILL_DIR / "writes.py").read_text(encoding="utf-8")
     source += (SKILL_DIR / "guarded.py").read_text(encoding="utf-8")
+    source += (SKILL_DIR / "forms.py").read_text(encoding="utf-8")
+    source += (SKILL_DIR / "inbox.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     assert source.count("def _confirm(") == 1, "a second card door"
+    delegates = {"edit_task": "update_task", "edit_project": "update_project"}
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.AsyncFunctionDef) or fn.name not in _class_b_built():
             continue
         awaited = {getattr(n.func, "id", "") for n in ast.walk(fn) if isinstance(n, ast.Call)}
-        assert "_confirm" in awaited, f"{fn.name} never awaits _confirm"
+        # A form (S4) delegates its card to the class B tool it wraps.
+        assert "_confirm" in awaited or delegates.get(fn.name) in awaited, (
+            f"{fn.name} never awaits _confirm"
+        )
 
 
 # ── 4 and 5. The wire, and the manifest ─────────────────────────────────────
@@ -1129,6 +1205,8 @@ def test_every_path_segment_a_write_interpolates_is_a_canonical_id() -> None:
     a path is a traversal waiting for a hostile row."""
     source = (SKILL_DIR / "writes.py").read_text(encoding="utf-8")
     source += (SKILL_DIR / "guarded.py").read_text(encoding="utf-8")
+    source += (SKILL_DIR / "forms.py").read_text(encoding="utf-8")
+    source += (SKILL_DIR / "inbox.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     offenders: list[str] = []
     for fn in ast.walk(tree):
@@ -1505,3 +1583,182 @@ async def test_report_delete_names_the_scope_project(monkeypatch) -> None:
     fake_gateway(monkeypatch, scoped)
     await skill_projects.report_delete(UUID)
     assert "«Ops»" in asked[0]["detail"]
+
+
+# ── S4 — the forms: an editable card, the member's submit, then the class B card
+
+
+async def test_edit_task_draws_the_form_then_confirms_only_the_changes(monkeypatch) -> None:
+    drawn = form_stub(monkeypatch, FORM_ANSWERS)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.edit_task(UUID)
+    assert drawn[0]["hitl"] is True
+    # INLINE: the Projects rail mounts no side-panel host (S4 review).
+    assert "surface" not in drawn[0]
+    assert drawn[0]["props"]["name"] == "formCard"
+    names = [f["name"] for f in drawn[0]["props"]["data"]["fields"]]
+    assert names == [
+        "title",
+        "description",
+        "status",
+        "due",
+        "start",
+        "importance",
+        "estimate_mins",
+        "tags",
+    ]
+    # Title unchanged, status Done, due set, importance 2, estimate 30.
+    patched = [c for c in writes(calls) if c["method"] == "PATCH"]
+    assert patched[0]["json"] == {
+        "status_id": S3,
+        "due_at": "2026-10-01",
+        "importance": 2,
+        "estimate_mins": 30,
+    }
+    assert len(asked) == 1 and "status → Done" in asked[0]["detail"]
+    assert "Updated:" in out
+
+
+async def test_a_form_that_is_not_submitted_writes_nothing(monkeypatch) -> None:
+    form_stub(monkeypatch, {})
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    assert "not submitted" in await skill_projects.edit_task(UUID)
+    assert "not submitted" in await skill_projects.propose_plan("Q4", PLAN_TASKS)
+    assert asked == [] and writes(calls) == []
+
+
+async def test_a_malformed_submit_writes_nothing(monkeypatch) -> None:
+    form_stub(monkeypatch, {"Edit #7": "Review changes — not json", "Edit Ops": '["a"]'})
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    assert "not submitted" in await skill_projects.edit_task(UUID)
+    assert "not submitted" in await skill_projects.edit_project(UUID)
+    assert asked == [] and writes(calls) == []
+
+
+async def test_propose_plan_refuses_a_date_that_is_not_one(monkeypatch) -> None:
+    """`len(due) == 10` let "next Frida" through, and the task POST failed
+    after the project was created (S4 review)."""
+    drawn = form_stub(monkeypatch, FORM_ANSWERS)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.propose_plan(
+        "Q4",
+        '[{"title": "Call", "owner": "priya@x.io", "effort_mins": 60, "due": "next Friday"}]',
+    )
+    assert "is a date" in out
+    assert drawn == [] and asked == [] and calls == []
+
+
+async def test_propose_plan_refuses_a_task_missing_one_of_the_four(monkeypatch) -> None:
+    drawn = form_stub(monkeypatch, FORM_ANSWERS)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.propose_plan(
+        "Q4", '[{"title": "Call the vendor", "owner": "priya@x.io", "due": "2026-10-03"}]'
+    )
+    assert "lacks effort_mins" in out
+    assert drawn == [] and asked == [] and calls == []
+
+
+async def test_propose_plan_is_one_card_then_one_batch(monkeypatch) -> None:
+    drawn = form_stub(monkeypatch, FORM_ANSWERS)
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.propose_plan(
+        "Q4 launch", PLAN_TASKS, parent_project_id=UUID, risks="Vendor slips\nNo owner for QA"
+    )
+    plan = drawn[0]["props"]["data"]
+    assert drawn[0]["props"]["name"] == "planCard" and drawn[0]["hitl"] is True
+    # Priority is impact times urgency times effort, shown and never sent.
+    assert plan["tasks"][0]["priority"] == 40 and plan["tasks"][1]["priority"] == 27
+    assert plan["risks"] == ["Vendor slips", "No owner for QA"]
+    assert len(asked) == 1
+    context = asked[0]["context"]
+    assert "task 1: «Call the vendor» · «priya@x.io» · 60 min · due 2026-10-03" in context
+    assert "task 2: «Draft the brief» · «priya@x.io»" in context
+    posted = [c for c in writes(calls) if c["method"] == "POST"]
+    assert posted[0]["path"] == "/projects/nodes" and posted[0]["json"]["name"] == "Q4 launch"
+    assert [c["json"]["title"] for c in posted[1:]] == ["Call the vendor", "Draft the brief"]
+    assert all(c["json"].get("estimate_mins") for c in posted[1:])
+    assert "priority" not in posted[1]["json"]
+    assigned = [c for c in writes(calls) if c["method"] == "PUT"]
+    assert len(assigned) == 2 and assigned[0]["json"] == {"assignees": ["priya@x.io"]}
+    assert "project_id:" in out and out.count("full_id:") == 2
+
+
+# ── S5 — intake, the bell, a view ───────────────────────────────────────────
+
+
+async def test_triage_accept_resolves_the_status_by_name(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.triage_intake(UUID, "accept", status="done")
+    posted = next(c for c in writes(calls))
+    assert posted["path"] == f"/projects/intake/{UUID}/accept" and posted["json"] == {
+        "status_id": S3
+    }
+    assert "status: «Done»" in asked[0]["context"]
+
+
+async def test_triage_decline_says_it_archives(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.triage_intake(UUID, "decline")
+    assert "archives the task" in asked[0]["context"]
+
+
+async def test_clearing_the_bell_prints_a_done_line_and_no_row(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.mark_notifications_read(all_unread=True)
+    assert next(c for c in writes(calls))["json"] == {"all": True}
+    assert "done: 3 marked" in out and "_id:" not in out
+    calls.clear()
+    await skill_projects.mark_notifications_read(ids=OTHER)
+    assert next(c for c in writes(calls))["json"] == {"ids": [OTHER]}
+
+
+async def test_every_manifest_tool_is_now_built() -> None:
+    from skill_projects import manifest as m
+
+    assert set(m.PLANNED) <= {"my_areas"}, m.PLANNED
+
+
+async def test_a_capture_with_no_project_lands_in_the_personal_project(monkeypatch) -> None:
+    """The route refuses a capture with no project. The member's own project
+    is the one default, read first; the card names it."""
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.capture_intake("Vendor called")
+    assert "your personal project" in asked[0]["detail"]
+    posted = next(c for c in writes(calls))
+    assert posted["json"]["project_id"] == OTHER
+
+
+async def test_a_capture_with_no_project_and_no_personal_project_is_refused(monkeypatch) -> None:
+    def none_yet(call: dict) -> Any:
+        if call["path"] == "/projects/my/project":
+            raise client.GatewayRefusal("Projects GET: Not found, or not visible to you.")
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, none_yet)
+    assert "no personal project yet" in await skill_projects.capture_intake("Vendor called")
+    assert asked == [] and writes(calls) == []
+
+
+async def test_a_duplicate_decision_says_it_archives(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.triage_intake(UUID, "duplicate", duplicate_of=OTHER)
+    assert "archives this task" in asked[0]["context"]
+
+
+async def test_clearing_every_unread_leads_with_the_count(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.mark_notifications_read(all_unread=True)
+    assert "every unread notification (3)" in asked[0]["detail"]

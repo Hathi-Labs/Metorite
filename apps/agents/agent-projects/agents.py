@@ -115,8 +115,14 @@ def build_agents() -> list[Any]:
                 "decline. Archives, restores and moves a project, archives, "
                 "merges and bulk-edits tasks, deletes a status, type, field, "
                 "tag, view, report, comment or attachment and reverts a "
-                "change, one act per card with the counts on the card. It "
-                "never deletes a project or a task."
+                "change, one act per card with the counts on the card. Draws a "
+                "timeline, a board, a task table and a report as cards, edits "
+                "a task or a project from a form in the chat, plans a project "
+                "from a goal as an editable plan, and writes a status report. "
+                "Reads the calendar, the intake queue, notifications, watchers, "
+                "saved views and who may see a project; captures and triages "
+                "intake, saves a view and clears the bell. It never deletes a "
+                "project or a task."
             ),
             tools=list(_TOOLS),
         )

@@ -35,6 +35,7 @@ import { useActiveSessions } from "@/hooks/useActiveSessions";
 import { useChatMemories } from "@/hooks/useChatMemories";
 import { useAccess } from "@/components/AccessProvider";
 import { hasCapability } from "@/lib/access";
+import { fetchTaskSettings } from "@/app/tasks/lib/api";
 import {
   buildProjectsAssistantPersona,
   describeFilters,
@@ -53,8 +54,8 @@ const SETTINGS_WRITE = "projects:settings:write";
 export const QUICK_ACTIONS: ReadonlyArray<{ label: string; prompt: string }> = [
   { label: "What is stuck here?", prompt: "What is stuck in this space? Lead with what needs attention." },
   { label: "Summarise this task", prompt: "Summarise this task: what it is, who has it, what is blocking it, and what happened last." },
-  { label: "Who is overloaded?", prompt: "Who is overloaded here, and what is unassigned?" },
-  { label: "What did we finish?", prompt: "What did we finish here in the last two weeks, by project?" },
+  { label: "Plan a project from a goal", prompt: "Plan a project from a goal. Ask me for the goal and the deadline, then propose the plan as an editable card." },
+  { label: "Weekly report for this space", prompt: "Write the weekly status report for this space: flag each project, draw the dashboard, and save the report." },
 ];
 
 export interface AssistantRailProps {
@@ -84,6 +85,17 @@ export function AssistantRail({
   const [activeId, setActiveId] = useState<string>("");
   const [showSessions, setShowSessions] = useState(false);
   const [pendingInput, setPendingInput] = useState<string | undefined>();
+  // The member's chat model is ONE row of preference (`user_settings.chat_model`),
+  // set in the Tasks app's settings. The Projects chat reads the same row, so
+  // there is no second setting to keep in step. Unset until it arrives.
+  const [chatModel, setChatModel] = useState<string | undefined>();
+  useEffect(() => {
+    let cancelled = false;
+    fetchTaskSettings()
+      .then((s) => { if (!cancelled && s.chatModel) setChatModel(s.chatModel); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   // Mem0 parity with the chat, email and tasks apps.
   const { memories: memoryObjs } = useChatMemories(userId);
@@ -328,6 +340,7 @@ export function AssistantRail({
             agentName={PROJECTS_AGENT}
             sessionId={activeSession.id}
             compact
+            model={chatModel}
             persona={persona}
             memories={memories}
             memoryUserId={userId}
