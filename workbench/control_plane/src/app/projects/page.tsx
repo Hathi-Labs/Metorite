@@ -2201,6 +2201,24 @@ function ProjectsWorkspace() {
     [openWithStatuses]
   );
 
+  // `?app=analytics|reports` opens one of the app's own destinations — the
+  // door a chat card uses (WS-27bm, `ProjectToolCards`). Only a LIVE entry
+  // opens; a preview slug is ignored, because the sidebar would refuse it.
+  // Consumed after the open, like `?task=`, so the same link works twice.
+  const appLink = searchParams.get("app");
+  useEffect(() => {
+    if (!appLink) return;
+    const live = PROJECT_APP_SECTIONS.flatMap((s) => s.items).find(
+      (i) => i.id === appLink && i.launch === "live",
+    );
+    if (live) setApp(live.id);
+    const rest = new URLSearchParams(searchParams.toString());
+    rest.delete("app");
+    const qs = rest.toString();
+    router.replace(qs ? `/projects?${qs}` : "/projects");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appLink]);
+
   const deepLink = searchParams.get("task");
   useEffect(() => {
     // Keyed on the id alone, deliberately: `openTaskById` closes over the

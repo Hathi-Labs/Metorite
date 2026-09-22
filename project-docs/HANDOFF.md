@@ -3073,9 +3073,9 @@ line — never reclaim a number by deleting the other entry.
   → `0` means the flag is off and the slot still says "not built".
 - **Why:** S1 shipped dark. The flag is a build-time `NEXT_PUBLIC_*` value,
   so a flip needs a frontend rebuild, not a restart. `enforcement-flip` is
-  granted until 2026-09-30. After the flip, do the check no test makes:
-  open the rail in light mode, at compact density, under a changed accent,
-  and beside the board. Ask it "what is stuck here?" on a real space, and
+  granted until 2026-09-30. After the flip, do the check no test makes.
+  Open the rail in light mode, at compact density, under a changed accent,
+  and beside the board. Ask it "what is stuck here?" on a real space. Then
   confirm the numbers match the Analytics app.
 - **Authority:** `specs/projects_ai_chat.md` §4.3, §11 · CLAUDE.md §3a
 - **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
@@ -3103,6 +3103,21 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `workbench/control_plane/src/app/projects/lib/projectApps.ts` (the fixed shape) ·
   `src/lib/nav.ts:118-123` · `src/app/tasks/lib/lens.ts:70-75`
 - **Added:** 2026-09-22 · the Projects chat S1 review
+
+### H-159 · A timeline tie-break is decided by a random UUID, and one test flakes on it · [AGENT]
+- **Check:** `for i in 1 2 3 4 5 6; do uv run pytest tests/unit/test_projects_hardening.py -q -k test_an_intervening_activity_breaks_the_run 2>&1 | tail -1; done`
+  → any `failed` line means this is still open.
+- **Why:** `core.py` orders the activity spine by `created_at DESC, id DESC`.
+  Two rows written inside one clock tick tie on `created_at`, and the tie is
+  then decided by a random UUID. The S1 verifier measured
+  `test_an_intervening_activity_breaks_the_run` failing 3 times in 6 on
+  Python 3.12 in a worktree, and 16 of 16 passing on `main`'s 3.13 venv. The
+  code under test is byte-identical. The coalescing rule in
+  `record_field_change` reads "the latest row", so the flake is a real
+  ordering fragility, not a test artefact. H-88 records a sibling.
+- **Authority:** `routes/projects/core.py` (`ORDER BY created_at DESC, id DESC`) ·
+  `tests/unit/test_projects_hardening.py` · H-88
+- **Added:** 2026-09-22 · the Projects chat S1 verification
 
 
 # DONE — deleted, not archived

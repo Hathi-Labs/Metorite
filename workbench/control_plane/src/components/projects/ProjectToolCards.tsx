@@ -51,6 +51,22 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
 };
 
 /**
+ * The app destination a read's card opens, when it has one. The five
+ * analytics reads and the summary open the Analytics app, where the same
+ * numbers are drawn; a rendered report opens the Reports app on the list.
+ */
+const OPENS_APP: Record<string, { app: "analytics" | "reports"; label: string }> = {
+  project_summary: { app: "analytics", label: "Open Analytics" },
+  analytics_stuck: { app: "analytics", label: "Open Analytics" },
+  analytics_load: { app: "analytics", label: "Open Analytics" },
+  analytics_throughput: { app: "analytics", label: "Open Analytics" },
+  analytics_finished: { app: "analytics", label: "Open Analytics" },
+  analytics_outlook: { app: "analytics", label: "Open Analytics" },
+  report_list: { app: "reports", label: "Open Reports" },
+  report_render: { app: "reports", label: "Open Reports" },
+};
+
+/**
  * Is this a Projects tool at all? The manifest's tool names are the
  * `skill-projects` exports; anything else belongs to another card file.
  * Kept as a prefix-free explicit set so a `gtd_*` or email tool never lands
@@ -200,8 +216,10 @@ function InfoCard({
   icon: string;
   label: string;
 }) {
+  const router = useRouter();
   const body = withoutLegend(e.result || "");
   const failed = e.status === "error";
+  const opens = failed ? undefined : OPENS_APP[e.name];
   return (
     <ToolCardShell
       title={label}
@@ -215,6 +233,18 @@ function InfoCard({
       >
         {body || "(no result)"}
       </div>
+      {opens && (
+        <div className="mt-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            icon="ExternalLink"
+            onClick={() => router.push(`/projects?app=${opens.app}`)}
+          >
+            {opens.label}
+          </Button>
+        </div>
+      )}
     </ToolCardShell>
   );
 }

@@ -151,11 +151,14 @@ async def request(
     ok, why = allowed(method, path)
     if not ok:
         raise GatewayRefusal(why)
+    # Both refusals come BEFORE the client exists: the manifest's, and the
+    # no-acting-user one `headers()` raises. A refused call builds nothing.
+    sent = headers()
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.request(
             method.upper(),
             f"{gateway_url()}{path}",
-            headers=headers(),
+            headers=sent,
             **kwargs,
         )
         _raise_if_error(resp, method.upper(), path)

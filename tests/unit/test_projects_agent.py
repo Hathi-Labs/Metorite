@@ -94,6 +94,12 @@ def test_the_catalog_registry_agrees_with_the_gateway_one() -> None:
     assert entry is not None
     assert entry["local_path"] == "apps/agents/agent-projects"
     assert entry["agent_runtime"] == "maf"
+    # The two registries drifted on tags on the first review. Hold the
+    # whole advertised shape equal, not three fields of it.
+    gateway = _registry_entry(AGENT)
+    assert gateway is not None
+    for key in ("description", "tags", "status", "integrations", "optional_integrations"):
+        assert entry[key] == gateway[key], key
 
 
 def test_config_scope_matches_the_exported_tools() -> None:

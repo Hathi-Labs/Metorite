@@ -1,9 +1,11 @@
 # Projects · the AI chat — WS-27bm
 
-**Status: PLAN, verified against the tree on 2026-09-22.** Nothing below is
-built. Every "already there" claim was re-derived from the code, not from a
-write-up. Each anchor carries a file name and a line number. A later reader
-can check them again.
+**Status: ACTIVE. S1 (the reads) built 2026-09-22. S2 to S5 open.** §10
+says which slice each part belongs to.
+
+The design was verified against the tree on 2026-09-22. Every "already
+there" claim was re-derived from the code, not from a write-up. Each anchor
+carries a file name and a line number. A later reader can check them again.
 
 **Owner directive:** 2026-09-22, "I want the AI chat fully functional for the
 project app". In the same session: "continuously update the AI chat so
@@ -492,7 +494,7 @@ Each slice is one pull request. Each one is useful alone.
 
 | Slice | Builds | Gate |
 |---|---|---|
-| **S1 · Read** | `skill-projects` class A tools · `manifest.py` with every route classified · the coverage fence · `agent-projects` registered · the rail behind the flag · the persona · `TaskListCard` and `SummaryCard` | AGENT-SAFE |
+| **S1 · Read** — ✅ **BUILT 2026-09-22** | `skill-projects` class A tools · `manifest.py` with every route classified · the coverage fence · `agent-projects` registered · the rail behind the flag · the persona · `TaskListCard` and a titled card for every other read | AGENT-SAFE |
 | **S2 · Write** | Class B tools with the card · `ActionResultCard` · `X-Actor-Via` and `meta.via` (D-PM-36) | AGENT-SAFE |
 | **S3 · Guarded** | Class C tools with count-bearing cards · the one-act-one-card rule and its test | AGENT-SAFE |
 | **S4 · Workflows** | W1 plan, W2 status report, W3 weekly, W4 stuck, W5 triage · `PlanCard` and `ReportCard` · the `formCard` plan panel | AGENT-SAFE |

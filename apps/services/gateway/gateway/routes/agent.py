@@ -544,7 +544,7 @@ _AGENT_REGISTRY: list[dict] = [
             "the member who is asking. Reads only in this version. It never "
             "deletes a project or a task."
         ),
-        "tags": ["projects", "tasks", "project-management", "analytics", "apps"],
+        "tags": ["projects", "tasks", "project-management", "analytics", "reports"],
         "status": "live",
         # Native MAF (apps/agents/agent-projects/agents.py build_agents() +
         # config.json "runtime": "maf"). Same trap as its siblings: labelling
