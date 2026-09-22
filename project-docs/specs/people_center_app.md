@@ -862,7 +862,7 @@ to make (**D-PC-13**).
 
 The **ranking prompt is EVAL-LOCKED**: a change to it needs the eval, not a review.
 
-### 5.6 Seats & roles 🔴 WS-28f (write half is an owner gate)
+### 5.6 Seats & roles ✅ BUILT (WS-28f, 2026-09-22) · 🟡 the propose half is not
 
 The bridge to `org_access_control.md`, rendered here because "who is in Sales" is a People
 question that today requires visiting `/settings/groups`.
@@ -881,6 +881,54 @@ a thing, and that editor already exists.
 acted on; the join is `lower(email)` on both sides, so the action is well-defined. It
 belongs beside the seats matrix (both are membership acts), and it is an **invite**, which
 §6 (d) gates. Propose-only, like the rest of this surface.
+
+#### What WS-28f built, 2026-09-22
+
+`/people/seats`, a tab on the People bar gated on `admin:members:read`.
+
+**No new endpoint and no new write path.** The matrix is a pivot in
+`app/people/lib/seats.ts` over three reads that already exist — `GET
+/admin/groups` (groups WITH members inline, and `is_center`), `GET
+/admin/members` (the roster and its roles) and `GET /people` (the directory).
+All three sit on the same `admin:members:read` floor, because
+`require_admin_user` IS that permission. A toggle calls the two endpoints that
+already own group membership, `POST` and `DELETE
+/admin/groups/{slug}/members`. A fourth read endpoint and a third write door
+would both be the CLAUDE.md §5 defect.
+
+**Three states, and the controls differ rather than the labels.** With
+`admin:members:manage` the checkboxes are live. With `admin:members:read`
+alone the matrix renders ticks and no checkboxes at all — §4.3's rule, applied
+to the whole surface. Without either, the tab is absent and the gateway
+refuses the reads.
+
+⚠️ **A seat needs a login, and the schema says so.** `org_group_member`
+references `app_user`, so a directory-only person cannot hold one. Their row
+carries an em-dash in every column rather than an unchecked box, because a
+control that cannot do anything is worse than no control. That is what makes
+the invite half of this surface the NEXT thing to do rather than a separate
+idea.
+
+**Rows are the UNION of the directory and the roster**, keyed on
+`lower(email)`. The directory alone misses a member whose address predates
+migration 206's trigger. The roster alone misses every directory-only person,
+who is exactly who the invite exists for. Both counts are reported on the
+page.
+
+#### 🟡 What it does NOT do, and why
+
+The paragraph above asks that a non-owner's toggle *"produce a request in the
+existing access-request queue"*. **That queue cannot carry it.**
+`access_request` (migration 143) is the SIGN-IN queue: unique on
+`lower(email)`, one row per person, no column for what is being asked, and
+approving one provisions an `app_user` through `_provision_member`. There is
+nowhere to put "please add Priya to Sales", and a second row for the same
+address is refused by the index.
+
+So the propose path needs a store of its own, and that is a decision rather
+than a detail — see **H-161**. Until it exists, a caller without
+`admin:members:manage` reads the matrix and is told, in one line, which
+permission would let them change it.
 
 ### 5.7 The people-management dashboard ✅ BUILT (WS-28j1+j2+j3, 2026-08-14) — *the surface this whole spec serves*
 
