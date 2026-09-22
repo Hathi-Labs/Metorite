@@ -28,11 +28,16 @@ from dataclasses import dataclass
 
 __all__ = [
     "CLASSES",
+    "COMPOSITE",
     "MANIFEST",
     "PLANNED",
+    "READ_ONLY_POSTS",
     "Route",
     "allowed",
+    "is_read",
+    "reaches",
     "route_for",
+    "tool_class",
     "tools_by_class",
 ]
 
@@ -261,34 +266,21 @@ MANIFEST: tuple[Route, ...] = (
 #: builds each. The coverage fence holds this against ``__all__``: a tool is
 #: exported OR it is here, never both and never neither.
 PLANNED: dict[str, str] = {
-    # S2 — class B
-    "create_project": "S2",
-    "update_project": "S2",
-    "create_task": "S2",
-    "update_task": "S2",
-    "move_task": "S2",
-    "unarchive_task": "S2",
-    "assign": "S2",
-    "link_tasks": "S2",
-    "unlink_tasks": "S2",
-    "comment": "S2",
-    "edit_comment": "S2",
-    "create_status": "S2",
-    "update_status": "S2",
-    "create_type": "S2",
-    "update_type": "S2",
-    "create_field": "S2",
-    "update_field": "S2",
-    "create_tag": "S2",
-    "update_tag": "S2",
-    "create_personal_task": "S2",
-    "set_my_overlay": "S2",
-    "complete": "S2",
-    "defer": "S2",
-    "report_save": "S2",
-    "set_recurrence": "S2",
-    "watch": "S2",
-    "recurrence": "S2",
+    # S2b — class B, the vocabulary and personal writes. S2 (built 2026-09-22)
+    # shipped the fifteen daily verbs; these are the rest of class B.
+    "edit_comment": "S2b",
+    "create_status": "S2b",
+    "update_status": "S2b",
+    "create_type": "S2b",
+    "update_type": "S2b",
+    "create_field": "S2b",
+    "update_field": "S2b",
+    "create_tag": "S2b",
+    "update_tag": "S2b",
+    "create_personal_task": "S2b",
+    "set_my_overlay": "S2b",
+    "set_recurrence": "S2b",
+    "recurrence": "S2b",
     # S3 — class C
     "move_project": "S3",
     "archive_project": "S3",
@@ -323,9 +315,59 @@ PLANNED: dict[str, str] = {
 }
 
 
+#: A COMPOSITE tool writes through another tool's routes under ONE card, so
+#: the member signs once for one act. ``create_task`` assigns through
+#: ``assign``'s route after the create; ``add_subtasks`` creates through
+#: ``create_task``'s. The class of a composite is the class of what it
+#: reaches. ``test_projects_agent_writes.py`` holds every non-GET a tool
+#: issues to its own routes or to these.
+COMPOSITE: dict[str, frozenset[str]] = {
+    "create_task": frozenset({"assign"}),
+    "add_subtasks": frozenset({"create_task"}),
+}
+
+#: POST routes that WRITE NOTHING. A preview computes what an act would do
+#: and returns it. The fences treat these as reads, so a tool may call one
+#: before its card — it is how the card gets its numbers (D-PM-29).
+READ_ONLY_POSTS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("POST", "/projects/tasks/move/preview"),
+        ("POST", "/projects/nodes/{project_id}/status-set/preview"),
+    }
+)
+
+
+def tool_class(name: str) -> str | None:
+    """The class a tool acts at: its own rows, or its composite's."""
+    own = {r.cls for r in MANIFEST if r.tool == name}
+    if own:
+        return sorted(own)[0]
+    reached = COMPOSITE.get(name)
+    if not reached:
+        return None
+    classes = {c for t in reached for c in [tool_class(t)] if c}
+    return sorted(classes)[-1] if classes else None
+
+
 def tools_by_class(cls: str) -> set[str]:
-    """Every tool name the manifest puts in ``cls``."""
-    return {r.tool for r in MANIFEST if r.cls == cls and r.tool}
+    """Every tool name the manifest puts in ``cls``, composites included."""
+    direct = {r.tool for r in MANIFEST if r.cls == cls and r.tool}
+    return direct | {t for t in COMPOSITE if tool_class(t) == cls}
+
+
+def reaches(tool: str, route_tool: str) -> bool:
+    """May ``tool`` issue a call on a route the manifest gives ``route_tool``?"""
+    if tool == route_tool:
+        return True
+    return any(reaches(t, route_tool) for t in COMPOSITE.get(tool, ()))
+
+
+def is_read(method: str, path: str) -> bool:
+    """A GET, or a POST the manifest records as writing nothing."""
+    if method.upper() == "GET":
+        return True
+    row = route_for(method, path)
+    return row is not None and (row.method, row.path) in READ_ONLY_POSTS
 
 
 def _template_regex(template: str) -> re.Pattern[str]:

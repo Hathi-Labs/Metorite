@@ -121,6 +121,16 @@ navigate, open a panel) whose descriptions are injected into the agent's prompt.
 them like any tool, and the handler runs **in the browser**. This lets an agent manipulate the UI directly,
 not just produce content for it.
 
+### (e) A worked example — the Projects chat
+
+The Projects assistant (`project-docs/specs/projects_ai_chat.md`, WS-27bm) is the shortest complete
+read of this chapter in the tree, because it adds nothing to the stack. One rail over the shared
+`AgentChat` (`src/app/projects/components/AssistantRail.tsx`), one agent
+(`apps/agents/agent-projects`), one tool family (`apps/skills/skill-projects`). Every write calls
+`request_confirmation` (§4a) and does nothing on a decline. Every result renders through a per-app card
+file mounted in `MessageBubble` beside the email and Tasks ones. Read it before you build a chat for the
+next app: the parts to copy are the same three.
+
 ---
 
 ## 5. Why this matters for your build

@@ -129,9 +129,12 @@ def test_build_agents_constructs_one_native_maf_agent() -> None:
 
 # ── Identity at the transport ────────────────────────────────────────────────
 
-#: The invocations per exported tool, with the arguments real calls carry.
-#: More than one where a tool has branches that reach different routes, so
-#: the route-reach fence below sees every route the manifest gives the tool.
+#: The invocations per exported CLASS A tool, with the arguments real calls
+#: carry. More than one where a tool has branches that reach different routes,
+#: so the route-reach fence below sees every route the manifest gives the tool.
+#: The class B tools have their own table in ``test_projects_agent_writes.py``,
+#: because a write needs the confirmation gate stubbed and a responder that
+#: answers the write.
 _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "projects_tree": [{}],
     "project_summary": [{"project_id": UUID}, {}],
@@ -151,8 +154,11 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
 }
 
 
-def test_the_invocation_table_covers_every_exported_tool() -> None:
-    assert set(_INVOCATIONS) == set(skill_projects.__all__)
+def test_the_invocation_table_covers_every_exported_read_tool() -> None:
+    from skill_projects import manifest as m
+
+    reads = m.tools_by_class("A") & set(skill_projects.__all__)
+    assert set(_INVOCATIONS) == reads
 
 
 async def _run_all(tool: str, monkeypatch, responder: Any = None) -> list[dict]:
@@ -258,7 +264,7 @@ async def test_every_route_mapped_to_a_built_tool_is_reached_by_it(monkeypatch) 
             row = m.route_for(call["method"], call["path"])
             assert row is not None
             reached.add((row.method, row.path))
-    built = set(skill_projects.__all__)
+    built = set(skill_projects.__all__) & m.tools_by_class("A")
     expected = {(r.method, r.path) for r in m.MANIFEST if r.tool in built}
     unreached = sorted(expected - reached)
     assert not unreached, (

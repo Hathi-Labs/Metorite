@@ -26,8 +26,26 @@ from skill_projects.reads import (
     task_detail,
     vocabulary,
 )
+from skill_projects.writes import (
+    add_subtasks,
+    assign,
+    comment,
+    complete,
+    create_project,
+    create_task,
+    defer,
+    link_tasks,
+    move_task,
+    report_save,
+    unarchive_task,
+    unlink_tasks,
+    update_project,
+    update_task,
+    watch,
+)
 
-__all__ = [
+__all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
+    # Class A — reads (S1)
     "analytics_finished",
     "analytics_load",
     "analytics_outlook",
@@ -43,4 +61,20 @@ __all__ = [
     "report_render",
     "task_detail",
     "vocabulary",
+    # Class B — reversible writes, one card each (S2)
+    "add_subtasks",
+    "assign",
+    "comment",
+    "complete",
+    "create_project",
+    "create_task",
+    "defer",
+    "link_tasks",
+    "move_task",
+    "report_save",
+    "unarchive_task",
+    "unlink_tasks",
+    "update_project",
+    "update_task",
+    "watch",
 ]

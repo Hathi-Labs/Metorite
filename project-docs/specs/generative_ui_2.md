@@ -100,6 +100,13 @@ mirrored into the `emit_generative_ui` docstring — keep in lockstep).
 | Shopping / orders | — | `productCards`, `orderStatus` (reuse journey pattern) |
 | Documents | report kit (`.html` artifact) | genUI panel + `markdown` node already covers light cases |
 | Data tables | Tier-1 `table` | `dataGrid` (sort/filter, row actions → ccAction) |
+| Projects chat (WS-27bm, `projects_ai_chat.md`) | `confirmation` before every write · per-app tool cards (`ProjectToolCards`) · `statDashboard` for analytics | `formCard` + `hitl` as the W1 plan panel (S4) |
+
+**A consumer, not a new tier (2026-09-22).** The Projects chat adds no
+surface and no template. It reuses `request_confirmation` for every write
+and the per-app card slot in `MessageBubble` for its receipts, the way the
+Tasks and email assistants do. Its W1 plan will be a `formCard` with `hitl`
+(§2), so the plan is approved in the same turn it is proposed.
 
 Rule of thumb for adding: a scenario earns a TEMPLATE when agents hit it
 repeatedly in Tier 3 (grep run traces for `type":"html` payloads) — promote the

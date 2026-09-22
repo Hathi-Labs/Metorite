@@ -3044,13 +3044,14 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `uv run python -c "import skill_projects.manifest as m; print(sorted(m.PLANNED))"`
   → a non-empty list means at least one slice is still open. The value is
   the slice each tool belongs to.
-- **Why:** S1 shipped the reads. The owner asked for a chat that creates,
-  updates and archives too, with a card before every write. S2 is the
-  class B writes, S3 the class C acts with count-bearing cards, S4 the five
-  workflows, S5 the polish. `specs/projects_ai_chat.md` §10 is the order
-  and §10.2 the acceptance. The CRM write tools are the shape to copy
-  (`crm_app.md` WS-26d-write). Move a tool out of `PLANNED` when it ships.
-  The fence refuses a tool that is both built and planned.
+- **Why:** S1 shipped the reads and S2 the fifteen daily writes, each with
+  a card. The owner asked for archive too, with a card and a rule. S2b is
+  the rest of class B (vocabulary writes, edit a comment, recurrence, the
+  personal overlay), S3 the class C acts with count-bearing cards, S4 the
+  five workflows, S5 the polish. `specs/projects_ai_chat.md` §10 is the
+  order and §10.2 the acceptance. `writes.py` is the shape to copy, and it
+  copied the CRM's. Move a tool out of `PLANNED` when it ships. The fence
+  refuses a tool that is both built and planned.
 - **Authority:** `specs/projects_ai_chat.md` §3.2, §3.3, §5, §10 ·
   `skill_projects/manifest.py`
 - **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first

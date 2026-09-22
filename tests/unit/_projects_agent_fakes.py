@@ -93,10 +93,48 @@ def fake_gateway(
 
 
 def writes(calls: list[dict]) -> list[dict]:
-    """Every call that was not a GET."""
-    return [c for c in calls if str(c.get("method", "")).upper() != "GET"]
+    """Every call that could change something.
+
+    A GET is a read. So is a POST the manifest records in ``READ_ONLY_POSTS``
+    (a preview): it computes what an act would do and writes nothing, and a
+    tool may call it before its card — that is how the card gets its numbers.
+    """
+    from skill_projects.manifest import is_read
+
+    return [c for c in calls if not is_read(str(c.get("method", "")), str(c.get("path", "")))]
 
 
 def empty_list(_call: dict) -> dict:
     """A responder that answers every read with an empty collection."""
     return {"rows": [], "total": 0, "reports": [], "people": [], "agents": []}
+
+
+# ── The confirmation gate, stubbed both ways (the CRM fakes' shape) ─────────
+
+
+def _set_confirmation(monkeypatch: Any, answer: bool) -> list[dict]:
+    """Replace ``request_confirmation`` with a recorder returning ``answer``.
+
+    The write tools import it inside ``_confirm`` at call time, so patching
+    the attribute on ``acb_skills.ask_tools`` is what they see.
+    """
+    import acb_skills.ask_tools as ask_tools
+
+    asked: list[dict] = []
+
+    async def _stub(**kwargs: Any) -> bool:
+        asked.append(dict(kwargs))
+        return answer
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", _stub)
+    return asked
+
+
+def approve(monkeypatch: Any) -> list[dict]:
+    """The member approves. Returns the list of cards they were shown."""
+    return _set_confirmation(monkeypatch, True)
+
+
+def deny(monkeypatch: Any) -> list[dict]:
+    """The member declines. Returns the list of cards they were shown."""
+    return _set_confirmation(monkeypatch, False)

@@ -1,6 +1,6 @@
 {
   "name": "Projects Assistant",
-  "description": "The AI chat inside the Projects app. Reads the tree, a node's summary, task lists, one task in full, the member's own work, who could take a task, a project's vocabulary, the five analytics reads and the saved reports — as the member who is asking, through the same routes the app uses. Reads only in this version. It never deletes a project or a task.",
+  "description": "The AI chat inside the Projects app. Reads the tree, a node's summary, task lists, one task in full, the member's own work, who could take a task, a project's vocabulary, the five analytics reads and the saved reports — as the member who is asking, through the same routes the app uses. Creates and updates tasks and projects, assigns, comments, links, moves, watches, defers and completes, and saves a report — every write shows the member a card first and does nothing if they decline. It never deletes a project or a task.",
   "version": "0.1.0",
   "author": "Metorite",
   "tags": [
@@ -48,6 +48,21 @@
     "report_list",
     "report_render",
     "task_detail",
-    "vocabulary"
+    "vocabulary",
+    "add_subtasks",
+    "assign",
+    "comment",
+    "complete",
+    "create_project",
+    "create_task",
+    "defer",
+    "link_tasks",
+    "move_task",
+    "report_save",
+    "unarchive_task",
+    "unlink_tasks",
+    "update_project",
+    "update_task",
+    "watch"
   ]
 }

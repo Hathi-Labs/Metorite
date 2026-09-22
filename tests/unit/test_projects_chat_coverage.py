@@ -84,7 +84,24 @@ def test_the_manifest_has_no_duplicate_rows() -> None:
 
 
 def _manifest_tools() -> set[str]:
-    return {r.tool for r in m.MANIFEST if r.tool}
+    """Every tool the manifest names: a row's tool, or a composite over one."""
+    return {r.tool for r in m.MANIFEST if r.tool} | set(m.COMPOSITE)
+
+
+def test_every_composite_reaches_a_manifest_tool() -> None:
+    direct = {r.tool for r in m.MANIFEST if r.tool}
+    for tool, reached in m.COMPOSITE.items():
+        assert reached, f"{tool} is a composite over nothing"
+        for other in reached:
+            assert other in direct or other in m.COMPOSITE, f"{tool} reaches unknown {other}"
+        assert m.tool_class(tool) is not None, tool
+
+
+def test_every_read_only_post_is_a_manifest_route() -> None:
+    rows = {(r.method, r.path) for r in m.MANIFEST}
+    for pair in m.READ_ONLY_POSTS:
+        assert pair in rows, f"{pair} is not a manifest route"
+        assert pair[1].endswith("/preview"), f"{pair} does not look like a preview"
 
 
 def test_every_exported_tool_is_in_the_manifest() -> None:
@@ -118,7 +135,8 @@ def test_built_read_tools_are_annotated_read_only() -> None:
     from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
     for name in skill_projects.__all__:
-        cls = next(r.cls for r in m.MANIFEST if r.tool == name)
+        cls = m.tool_class(name)
+        assert cls is not None, f"{name} has no class in the manifest"
         hints = TOOL_ANNOTATIONS.get(name)
         assert hints is not None, f"{name} carries no risk annotation"
         if cls == "A":
