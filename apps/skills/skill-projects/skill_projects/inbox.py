@@ -102,12 +102,17 @@ async def calendar(start: str, end: str, project_id: str = "", mine: bool = Fals
         payload = await get("/projects/calendar", params)
         title = f"Calendar {frm} to {to}"
     rows = (payload or {}).get("rows") or []
-    out = [DATA_LEGEND, f"{title} ({(payload or {}).get('total', len(rows))} tasks):"]
+    # `/projects/calendar` returns no `total`: a window is capped
+    # (`truncated`), and the cap is what the member must hear about.
+    capped = " · the window is capped; narrow the dates" if (payload or {}).get("truncated") else ""
+    out = [DATA_LEGEND, f"{title} ({len(rows)} tasks{capped}):"]
     for row in rows:
         out.extend(_task_line(row))
         if not row.get("due_at") and row.get("start_date"):
             out[-2] += f" · starts {_day(row.get('start_date'))}"
-        block = row.get("scheduled_start")
+        # A scheduled block lives on the member's overlay, so only the
+        # `mine=true` rows carry it (`personal.py`); the company rows never do.
+        block = row.get("scheduled_start") if mine else None
         if block:
             out[-2] += f" · block {str(block)[:16].replace('T', ' ')}"
     return "\n".join(out)

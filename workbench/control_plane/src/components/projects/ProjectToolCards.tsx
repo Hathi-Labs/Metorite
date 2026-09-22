@@ -438,7 +438,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const openTask = useOpenTask();
   const detail = withoutLegend(result)
     .split("\n")
-    .filter((l) => !/^\s*full_id:/.test(l))
+    .filter((l) => !/^\s*(?:full_id|done):/.test(l))
     .join("\n")
     .trim();
   const tone =

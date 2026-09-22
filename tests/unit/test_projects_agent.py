@@ -267,7 +267,16 @@ def _s5_detail(call: dict) -> Any:
         return {"rows": [{"subject": "group:ops", "created_by": "pm@fracktal.in"}], "total": 1}
     if path.endswith("/views"):
         return {"rows": [{"id": UUID, "name": "Board", "view_type": "board"}], "total": 1}
-    if path in ("/projects/calendar", "/projects/my/calendar"):
+    if path == "/projects/calendar":
+        # The route's real shape (calendar.py): no `total`, no overlay field.
+        return {
+            "rows": [
+                {"id": UUID, "title": "Fix the extruder", "task_number": 7, "due_at": "2026-09-25"}
+            ],
+            "truncated": True,
+            "cap": 500,
+        }
+    if path == "/projects/my/calendar":
         return {
             "rows": [
                 {
@@ -861,3 +870,12 @@ async def test_a_one_day_calendar_window_is_widened_to_the_next_morning(monkeypa
     await skill_projects.calendar("2026-09-22", "2026-09-22", mine=True)
     read = next(c for c in calls if c["path"] == "/projects/my/calendar")
     assert read["params"] == {"start": "2026-09-22", "end": "2026-09-23"}
+
+
+async def test_the_company_calendar_says_when_its_window_is_capped(monkeypatch) -> None:
+    fake_gateway(monkeypatch, _detail_responder)
+    text = await skill_projects.calendar("2026-09-22", "2026-09-29", project_id=UUID)
+    assert "(1 tasks · the window is capped" in text
+    assert "block" not in text
+    mine = await skill_projects.calendar("2026-09-22", "2026-09-29", mine=True)
+    assert "block 2026-09-24 09:00" in mine
