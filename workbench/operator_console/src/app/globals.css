@@ -1215,6 +1215,25 @@ button:disabled {
   flex-wrap: wrap;
 }
 .job-actions { margin-top: 8px; }
+/* 🔴 **A paired action row owns its own spacing, and its members share one
+   size.** Owner report, 2026-09-22: "the Save this order button is larger
+   than the Undo button".
+
+   It was, and by two separate amounts. The base `button` rule carries
+   `font-size: 14px`, `padding: 8px 14px` and `margin-top: 12px`. `.linklike`
+   carries `12px`, `5px 11px` and `margin: 0`. So the primary stood about 9px
+   taller AND, because `align-items: center` centres the MARGIN box, sat
+   roughly 6px lower than the control beside it.
+
+   ⚠️ The size half is fixed in the markup, not here: a secondary action in
+   one of these rows is `button.secondary`, which differs from the primary in
+   WEIGHT and never in metrics. `.linklike` stays what it always was — a
+   tertiary control inside a list row, beside `↑` and `↓`.
+   `tiers.test.ts` is the fence.
+
+   This rule fixes the other half. The row places its own children, so a
+   child may not also push itself down. */
+.job-actions > button { margin-top: 0; }
 .job select { margin-top: 4px; }
 .add-job {
   margin-top: 10px;

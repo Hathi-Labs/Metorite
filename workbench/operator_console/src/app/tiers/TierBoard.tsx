@@ -45,6 +45,7 @@ import {
   unusedModels,
 } from "@/lib/fallback";
 import { HELP_TIERS } from "@/lib/help";
+import { FORM } from "@/lib/words";
 import { describeTierRate } from "@/lib/catalog";
 import { capableModelsFor } from "@/lib/readiness";
 import { chipClass, pricingTone } from "@/lib/tone";
@@ -241,11 +242,14 @@ function Job({
           )}
           <div className="job-actions">
             <button type="button" disabled={!pick}
+              title={pick ? HELP_TIERS.addStep : "Choose a model above first."}
               onClick={() => { setChain([...chain, pick]); setAdding(null); setPick(""); }}>
-              Add
+              {FORM.add}
             </button>
-            <button type="button" className="linklike" onClick={() => setAdding(null)}>
-              Cancel
+            {/* `secondary`, never `linklike`. A peer action in a paired row
+                matches its partner's metrics and differs only in weight. */}
+            <button type="button" className="secondary" onClick={() => setAdding(null)}>
+              {FORM.cancel}
             </button>
           </div>
         </div>
@@ -257,16 +261,38 @@ function Job({
       )}
 
       {dirty && (
-        <div className="job-actions">
-          <button type="button" disabled={busy || chain.length === 0}
-            onClick={() => saveChain(tier.slug, job.task, chain)}>
-            Save this order
-          </button>
-          <button type="button" className="linklike"
-            onClick={() => { const d = { ...drafts }; delete d[k]; setDrafts(d); }}>
-            Undo
-          </button>
-        </div>
+        <>
+          {/* 🔴 **The dead end this closes.** Owner report, 2026-09-22:
+              "I do not see a way in which I can save my changes."
+
+              An operator who empties a chain to rebuild it met a greyed-out
+              Save with NO reason on it. Nothing on screen said the chain
+              needed a model, so the button read as broken rather than as
+              refusing. The refusal itself is right — saving an empty chain
+              takes the tier off the air — so it stays, and now it speaks. */}
+          {chain.length === 0 && (
+            <p className="field-hint">
+              This job has no model left, so it cannot be saved. Add one below,
+              or press {FORM.undo} to put back what was here.
+            </p>
+          )}
+          <div className="job-actions">
+            <button type="button" disabled={busy || chain.length === 0}
+              title={
+                chain.length === 0
+                  ? "Add at least one model. A job with none cannot serve."
+                  : HELP_TIERS.saveOrder
+              }
+              onClick={() => saveChain(tier.slug, job.task, chain)}>
+              {FORM.saveOrder}
+            </button>
+            <button type="button" className="secondary"
+              title="Put back the saved order and lose these changes."
+              onClick={() => { const d = { ...drafts }; delete d[k]; setDrafts(d); }}>
+              {FORM.undo}
+            </button>
+          </div>
+        </>
       )}
     </div>
   );

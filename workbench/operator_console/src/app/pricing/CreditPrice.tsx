@@ -22,6 +22,7 @@ import { useState } from "react";
 import type { CreditPrice as Price } from "@/lib/contract";
 import { formatDate } from "@/lib/format";
 import { chipClass } from "@/lib/tone";
+import { FORM } from "@/lib/words";
 
 /** "1.500000" → "1.5" — the wire is exact, the input box is for humans. */
 function trim(s: string): string {
@@ -141,17 +142,30 @@ export default function CreditPrice({ price }: { price: Price | null }) {
             <button
               type="button"
               disabled={busy || !inr.trim() || !fx.trim()}
+              title={
+                !inr.trim() || !fx.trim()
+                  ? "Fill both boxes above. A credit price needs the rupee " +
+                    "value and the planning rate together."
+                  : "Save what one credit costs. Every margin on this page " +
+                    "is worked out from it."
+              }
               onClick={save}
             >
-              {busy ? "Saving…" : "Save the credit price"}
+              {busy ? FORM.busy : "Save the credit price"}
             </button>
             {price && (
+              /* ⚠️ **"Cancel", never "Close", and `secondary`, never
+                 `linklike`.** `words.ts` forbids a Close beside a Save by
+                 name — the two read as a pair of ways to leave, and only one
+                 of them keeps the typed values. This surface broke that rule
+                 while the file stating it sat two directories away. */
               <button
                 type="button"
-                className="linklike"
+                className="secondary"
+                title="Leave the boxes as they were saved and lose what you typed."
                 onClick={() => setFormOpen(false)}
               >
-                Close
+                {FORM.cancel}
               </button>
             )}
           </div>

@@ -98,6 +98,15 @@ export const HELP_TIERS = {
   noPrice:
     "No rate card for this tier and job, so calls through it bill nothing. " +
     "Price it on the Pricing page.",
+  // 📌 Added 2026-09-22. The owner emptied a chain to rebuild it and met a
+  // greyed-out Save carrying no reason at all. A disabled control with no
+  // title reads as broken, not as refusing.
+  saveOrder:
+    "Write this order to the Router. Step 1 serves every call, and the rest " +
+    "run only when the step above them fails.",
+  addStep:
+    "Put the chosen model at the end of the chain. Nothing reaches the " +
+    "Router until you press Save this order.",
   sameProvider:
     "Every step runs on one vendor. The VENDOR is the thing that goes down, " +
     "so this is one point of failure written several times. Add a step from " +
