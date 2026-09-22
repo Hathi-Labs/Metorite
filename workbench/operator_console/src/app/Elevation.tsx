@@ -27,6 +27,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   MIN_REASON,
   type ElevationWindow,
+  elevationVisible,
   reasonIsUsable,
   remaining,
 } from "@/lib/elevation";
@@ -124,7 +125,14 @@ export default function Elevation() {
     }
   }
 
-  if (win === null) return null;
+  // 🔴 The Console decides, and it now answers the right question.
+  //
+  // This used to be `win === null`, which relied on a 403 to hide the control.
+  // Break-glass gets a 200, so the owner saw an "Elevate" button whose only
+  // outcome was a refusal — and with D72 elevation off, no route demands a
+  // window anyway. `elevationVisible` holds all three conditions and has its
+  // own test.
+  if (!elevationVisible(win)) return null;
 
   if (win.elevated) {
     return (
