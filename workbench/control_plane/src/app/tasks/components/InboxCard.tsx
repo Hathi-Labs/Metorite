@@ -11,6 +11,8 @@ import { detectDateHint, originEmailHref, relativeTime, snoozeOptions } from "..
 import { AttachmentChips } from "./AttachmentComposer";
 import { SourceBadge } from "./SourceBadge";
 import { ContextMenu, type CtxItem } from "./ContextMenu";
+import { PromoteDialog } from "./PromoteDialog";
+import { useCardActions } from "../lib/useCardActions";
 
 // The assistant's at-a-glance read of a capture — shown on the card so you see
 // the *shape* of your inbox (what's yours, what to delegate, what's a project,
@@ -58,6 +60,9 @@ export function InboxCard({
   const people = useTaskStore((s) => s.people);
   const projects = useTaskStore((s) => s.projects);
   const providers = useTaskStore((s) => s.providers);
+  // S6c — the one rule for the promote door (`promoteAllowed`), read the way
+  // TaskCard and ItemDetail read it, so the three cannot disagree.
+  const { canPromote } = useCardActions(item);
 
   const hint = useMemo(
     () => buildHint(item, people, projects, providers),
@@ -68,6 +73,9 @@ export function InboxCard({
   const [draftTitle, setDraftTitle] = useState(item.title);
   const [draftNote, setDraftNote] = useState(item.notes ?? "");
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  // S6c — an inbox capture can go straight to a board (H-59: "a Tasks inbox
+  // item can be upgraded into the Projects app"). Lens only, like the card.
+  const [promoting, setPromoting] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
   // Keep the keyboard cursor row visible as you navigate with j/k.
@@ -135,6 +143,16 @@ export function InboxCard({
       icon: themedIcon("CalendarClock"),
       onSelect: () => openSchedule(item.id),
     },
+    ...(canPromote
+      ? [
+          {
+            kind: "item" as const,
+            label: "Move to project…",
+            icon: themedIcon("FolderInput"),
+            onSelect: () => setPromoting(true),
+          },
+        ]
+      : []),
     { kind: "sep" },
     {
       kind: "item",
@@ -164,6 +182,7 @@ export function InboxCard({
   };
 
   return (
+    <>
     <div
       ref={rootRef}
       role="button"
@@ -327,6 +346,16 @@ export function InboxCard({
         />
       )}
     </div>
+    {/* OUTSIDE the clickable root, on purpose. The Modal portals to
+        `document.body`, but React events bubble the REACT tree, not the
+        DOM: a dialog rendered inside the root above called `openClarify`
+        on every click in it, and the root's `onKeyDown` swallowed every
+        Space typed into a required field. `TaskCard` hosts its dialog the
+        same way. Review found it (S6c repair round). */}
+    {promoting && (
+      <PromoteDialog item={item} onClose={() => setPromoting(false)} />
+    )}
+    </>
   );
 }
 

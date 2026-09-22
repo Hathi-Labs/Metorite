@@ -110,7 +110,7 @@ export interface GtdProject {
   status: "ACTIVE" | "SOMEDAY" | "DONE" | "DROPPED";
   /** the cardinal GTD health check — does it have a defined next action? */
   hasNextAction: boolean;
-  /** link up to an Area of Focus (Horizon H2) */
+  /** link up to an Area of Focus (migration 191, D65) */
   areaId?: string;
 }
 
@@ -276,8 +276,7 @@ export type ViewKey =
   | "reference"
   | "done"
   | "engage"
-  | "archive"
-  | "horizons";
+  | "archive";
 
 /** A context reference kept with a capture. Files/images are served from the
  *  gateway attachment store; links are references only. */

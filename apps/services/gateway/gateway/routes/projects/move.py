@@ -47,7 +47,6 @@ from fastapi import Depends, HTTPException
 from gateway.routes.projects.bulk import MAX_BULK, dedupe_ids
 from gateway.routes.projects.core import (
     _REMAP_TARGET_SQL,
-    CLOSING_CATEGORIES,
     TRIAGE_CATEGORY,
     _tenant_session,
     actor,
@@ -58,7 +57,6 @@ from gateway.routes.projects.core import (
     load_visible_task,
     next_task_number,
     node_kind,
-    now,
     record_activity,
     remap_one_type,
     require_status_in_project,
@@ -71,69 +69,30 @@ from gateway.routes.projects.core import (
 )
 from gateway.routes.projects.custom_fields import (
     _is_blank,
-    assert_required_fields_present,
     load_definitions,
+)
+from gateway.routes.projects.landing import (
+    CHOICE_TYPES as _CHOICE_TYPES,
+)
+from gateway.routes.projects.landing import (
+    COMPATIBLE_TYPES as _COMPATIBLE_TYPES,
+)
+from gateway.routes.projects.landing import (
+    apply_field_map as _apply_field_map,
+)
+from gateway.routes.projects.landing import (
+    compatible as _compatible,
+)
+from gateway.routes.projects.landing import (
+    completion_correction,
+    land_custom_fields,
+    record_drops,
+)
+from gateway.routes.projects.landing import (
+    resolve_field_map as _resolve_field_map,
 )
 from pydantic import BaseModel, field_validator
 from sqlalchemy import text
-
-#: Which destination field types may receive which source type.
-#:
-#: ⚠️ Deliberately NOT "anything to text". Widening everything into a text field
-#: would make every map succeed and quietly turn a date into a string that no
-#: filter can compare. A mapping that cannot round-trip is a drop wearing a
-#: mapping's clothes, and D-PM-29 says a drop must be NAMED.
-#:
-#: `select` → `multi_select` is the one widening allowed: one chosen option is
-#: a legal list of one, and nothing about the value changes.
-COMPATIBLE_TYPES: dict[str, frozenset[str]] = {
-    "text": frozenset({"text"}),
-    "number": frozenset({"number"}),
-    "date": frozenset({"date"}),
-    "boolean": frozenset({"boolean"}),
-    "url": frozenset({"url"}),
-    # ⚠️ `select` does NOT widen into `multi_select`. The earlier comment here
-    # claimed "one chosen option is a legal list of one, and nothing about the
-    # value changes" — and those two clauses contradict each other. A list of
-    # one is `["High"]`, and `_coerce_multi_select` refuses a bare string. The
-    # widening would have written a value the destination's own coercer
-    # rejects, which is the failure this table exists to prevent.
-    "select": frozenset({"select"}),
-    "multi_select": frozenset({"multi_select"}),
-}
-
-
-#: The choice types, whose OPTIONS have to agree as well as their type.
-CHOICE_TYPES = frozenset({"select", "multi_select"})
-
-
-def compatible(
-    source_type: str,
-    dest_type: str,
-    source_options: Any = None,
-    dest_options: Any = None,
-) -> bool:
-    """May a value of ``source_type`` be written into a ``dest_type`` field?
-
-    ⚠️ **For a choice field the TYPE is not enough, and assuming it was is a
-    real defect this module shipped once.** Two spaces can each hold a
-    `select` named "Severity" with `[Low, High]` and `[S1, S2, S3]`. The types
-    match, so the value `"High"` was copied straight across — and
-    `_coerce_select` refuses exactly that value on every later write. The
-    task then carried a value its own field rejects: unfilterable,
-    uneditable except by hand, and reported as landed rather than dropped.
-
-    So a choice field carries only when the destination's options are a
-    SUPERSET of the source's. Anything else is an orphan, which means the
-    member is told.
-    """
-    if dest_type not in COMPATIBLE_TYPES.get(source_type, frozenset()):
-        return False
-    if source_type not in CHOICE_TYPES:
-        return True
-    have = {str(o) for o in (source_options or [])}
-    allowed = {str(o) for o in (dest_options or [])}
-    return have <= allowed
 
 
 def shared_source(tasks: list[Any]) -> str:
@@ -170,99 +129,15 @@ def shared_source(tasks: list[Any]) -> str:
     )
 
 
-def resolve_field_map(
-    source_defs: list[dict[str, Any]],
-    dest_defs: list[dict[str, Any]],
-) -> tuple[dict[str, str], list[dict[str, Any]]]:
-    """``(field_key → destination field_key, unmappable source definitions)``.
-
-    ``field_key`` first, because it is the stable identity the schema calls one
-    (migration 155: *"Free to change; field_key is not"*). A case-folded NAME is
-    the fallback, for the ordinary case of two spaces that each grew a
-    "Severity" independently.
-
-    A match on either is still refused when the types cannot carry the value,
-    and that refusal makes the field unmappable rather than silently mapped.
-    """
-    by_key = {str(d["field_key"]): d for d in dest_defs}
-    by_name = {str(d["name"]).strip().lower(): d for d in dest_defs}
-
-    mapping: dict[str, str] = {}
-    orphans: list[dict[str, Any]] = []
-    # 🔴 Which destination keys are already spoken for.
-    #
-    # Two source fields can legitimately resolve to ONE destination field, and
-    # it is the ORDINARY case rather than a curiosity: `pm_custom_fields` is
-    # UNIQUE on (project_id, field_key) and on nothing else, so two rows may
-    # share a NAME — and WS-27bj's org-wide plus root-local union produces exactly
-    # that, an org-wide `priority` beside a root-local `prio`, both called
-    # "Priority". One matches by key, the other by name, and both aimed at the
-    # same target.
-    #
-    # Without this, the second value overwrote the first in `landed` and the
-    # loser never entered `drops` — so no warning, no `accept_drops` gate and
-    # no timeline row. Which value survived followed JSONB key order, so it
-    # differed task by task inside ONE bulk move. Found by review, 2026-09-19.
-    claimed: dict[str, str] = {}
-    # Exact-key matches first, so the order `load_definitions` happens to
-    # return cannot decide which of two contenders wins a shared target.
-    ordered = sorted(
-        source_defs, key=lambda d: 0 if str(d["field_key"]) in by_key else 1
-    )
-    for definition in ordered:
-        key = str(definition["field_key"])
-        source_type = str(definition["field_type"])
-        # An exact key match is the stronger claim and is resolved first, so a
-        # name match can never displace it — see the second pass below.
-        target = by_key.get(key) or by_name.get(str(definition["name"]).strip().lower())
-        if target is None or not compatible(
-            source_type,
-            str(target["field_type"]),
-            definition.get("options"),
-            target.get("options"),
-        ):
-            orphans.append(definition)
-            continue
-        target_key = str(target["field_key"])
-        if target_key in claimed:
-            # Contested. The loser is an ORPHAN, which means the member is told
-            # its value will be dropped instead of losing it silently.
-            orphans.append(definition)
-            continue
-        claimed[target_key] = key
-        mapping[key] = target_key
-    return mapping, orphans
-
-
-def apply_field_map(
-    values: dict[str, Any],
-    mapping: dict[str, str],
-    dest_keys: frozenset[str],
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """``(values as they land, values that are DROPPED)``.
-
-    ⚠️ **A key already legal in the destination is carried through unmapped.**
-    Two spaces that share a `field_key` need no map entry, and requiring one
-    would make the common case the noisy one.
-
-    A mapped key whose target is not in the destination's definitions is a
-    DROP, not a write: the map can be stale by the time it is applied, and
-    writing a value under a key nothing defines recreates the orphan this
-    feature exists to remove.
-    """
-    landed: dict[str, Any] = {}
-    dropped: dict[str, Any] = {}
-    for key, value in values.items():
-        target = mapping.get(key, key if key in dest_keys else None)
-        # 🔴 `target in landed` is the second half of the collision guard.
-        # `resolve_field_map` stops two DEFINITIONS claiming one target, and
-        # this stops a hand-supplied `field_map` doing the same. A caller
-        # posts the map, so the rule cannot live only where we build it.
-        if target is not None and target in dest_keys and target not in landed:
-            landed[target] = value
-        else:
-            dropped[key] = value
-    return landed, dropped
+# `COMPATIBLE_TYPES`, `compatible`, `resolve_field_map` and `apply_field_map`
+# live in `landing.py` since the S6c repair round, so the narrow route can
+# reach them without an import cycle. Re-exported here because the rule
+# suite and the SQL suite import them from this module.
+COMPATIBLE_TYPES = _COMPATIBLE_TYPES
+CHOICE_TYPES = _CHOICE_TYPES
+compatible = _compatible
+resolve_field_map = _resolve_field_map
+apply_field_map = _apply_field_map
 
 
 # ── The wire ────────────────────────────────────────────────────────────────
@@ -616,6 +491,7 @@ async def _plan(db: Any, vis: Any, payload: MoveIn) -> dict[str, Any]:
         "types": types,
         "tags": {"carried": carried, "unregistered": unregistered},
         "dest_keys": dest_keys,
+        "dest_defs": dest_defs,
         "dest_home": dest_home,
     }
 
@@ -624,7 +500,7 @@ def _public(plan: dict[str, Any]) -> dict[str, Any]:
     """The plan minus the rows and the internals the wire has no use for."""
     public = {
         key: value for key, value in plan.items()
-        if key not in {"tasks", "dest_keys", "dest_home"}
+        if key not in {"tasks", "dest_keys", "dest_defs", "dest_home"}
     }
     public["task_count"] = len(plan["tasks"])
     return public
@@ -762,16 +638,16 @@ async def move_tasks(
 
             dropped: dict[str, Any] = {}
             if plan["crosses_root"]:
-                landed, dropped = apply_field_map(
-                    from_jsonb(task.custom_fields),
-                    plan["field_map"],
-                    plan["dest_keys"],
-                )
-                # The guard `tasks.py` calls, on the values as they LAND.
-                # `required_missing` above is the preview's answer; this is
-                # the one that refuses, so the two cannot drift.
-                await assert_required_fields_present(
-                    db, plan["destination_root_id"], landed,
+                # The ONE landing seam (`landing.py`), shared with the narrow
+                # route: the map, then the required check on the values as
+                # they LAND. `required_missing` above is the preview's
+                # answer; this is the one that refuses, so the two cannot
+                # drift — and the two routes cannot either.
+                landed, dropped = await land_custom_fields(
+                    db, task,
+                    dest_root=plan["destination_root_id"],
+                    field_map=plan["field_map"],
+                    dest_defs=plan["dest_defs"],
                 )
                 values["custom_fields"] = landed
                 values["root_project_id"] = plan["destination_root_id"]
@@ -806,28 +682,13 @@ async def move_tasks(
             # `remap_task_statuses` is the precedent for a BULK remap and it
             # does neither: it writes the lane and corrects completion from
             # the lane's CATEGORY. Same rule here, one task at a time.
-            if landing_category is not None:
-                closing = landing_category in CLOSING_CATEGORIES
-                was_closed = task.completed_at is not None
-                if closing != was_closed:
-                    values["completed_at"] = now() if closing else None
+            values.update(completion_correction(task, landing_category))
 
             await update_row(db, "pm_tasks", str(task.id), values)
 
-            if dropped:
-                await record_activity(
-                    db, activity_type="system", created_by=actor(user),
-                    task_id=str(task.id),
-                    # 🔴 The VALUES, not just the keys. D-PM-29 promises the
-                    # old value is readable in history and the card repeats
-                    # that promise to the member; `"; ".join(sorted(dropped))`
-                    # yielded the KEYS and kept none of it.
-                    body=(
-                        "Dropped on move, no field in the destination: "
-                        + "; ".join(f"{k}={dropped[k]!r}" for k in sorted(dropped))
-                    ),
-                    meta={"dropped_custom_fields": dropped},
-                )
+            await record_drops(
+                db, task_id=str(task.id), dropped=dropped, by=actor(user),
+            )
             if lost_type:
                 await record_activity(
                     db, activity_type="system", created_by=actor(user),

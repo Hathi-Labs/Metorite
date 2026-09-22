@@ -95,9 +95,19 @@ export function readJsonBody(
  * ⚠️ It is a string for our own `HTTPException` and an ARRAY OF OBJECTS for a
  * Pydantic validation failure. Rendering the array gives "[object Object]",
  * which has reached a member's screen in this repo before.
+ *
+ * A third shape since S6c: an OBJECT with a `message`. The required-fields
+ * refusal on a move (`assert_required_fields_present`, migration 192) answers
+ * `{error, message, fields}` so a client can draw the fields as inputs. Read
+ * as a string it was "", and the member saw a generic 422 instead of the
+ * names of the fields to fill in.
  */
 export function detailText(detail: unknown): string {
   if (typeof detail === "string") return detail.trim();
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const message = (detail as { message?: unknown }).message;
+    return typeof message === "string" ? message.trim() : "";
+  }
   if (Array.isArray(detail)) {
     const parts = detail
       .map((d) =>

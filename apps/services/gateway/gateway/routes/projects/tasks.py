@@ -24,8 +24,6 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, Header, HTTPException
 from gateway.routes.projects.core import (
-    archive_note,
-    CLOSING_CATEGORIES,
     DIRECTIONS,
     TASK_SORTS,
     TASK_SOURCES,
@@ -36,6 +34,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     apply_status_transition,
+    archive_note,
     assert_assignable_here,
     assert_epic_has_no_parent,
     assert_move_keeps_privacy,
@@ -72,13 +71,19 @@ from gateway.routes.projects.core import (
 )
 from gateway.routes.projects.custom_fields import (
     apply_values,
-    assert_required_fields_present,
     load_definitions,
 )
 from gateway.routes.projects.filters import (
     attach_assignees,
     attach_relation_counts,
     build_task_filters,
+)
+from gateway.routes.projects.landing import (
+    completion_correction,
+    land_custom_fields,
+    lane_category,
+    record_drops,
+    resolve_field_map,
 )
 from gateway.routes.projects.notifications import (
     excerpt_of,
@@ -517,6 +522,53 @@ async def patch_task(
     return result
 
 
+async def _cross_root_values(
+    db: Any, task: Any, new_root: str, answers: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """What a task's row owes when its ROOT changes: ``(values, dropped)``.
+
+    Only when the root changes: definitions, types and numbers are per-root,
+    so a move between two projects of one tree cannot introduce a
+    requirement the task has not already satisfied, and asking again would
+    be a prompt with nothing behind it.
+
+    The custom fields go through the ONE landing seam the bulk route uses
+    (`landing.land_custom_fields`): the field map is resolved here by key
+    and then by name, so the client need not send one, and the caller's
+    answers are merged AFTER the map, under destination keys, so a required
+    field renamed between roots is answerable. Before this the answers were
+    merged onto the RAW values, and `po` → `customer_po` (same name) was
+    refused on this path and accepted on the bulk one. Checked BEFORE any
+    value is written, so a refusal leaves the task exactly where it was.
+    """
+    source_defs = await load_definitions(db, str(task.root_project_id))
+    dest_defs = await load_definitions(db, new_root)
+    field_map, _orphans = resolve_field_map(source_defs, dest_defs)
+    landed, dropped = await land_custom_fields(
+        db, task, dest_root=new_root, field_map=field_map,
+        dest_defs=dest_defs, answers=answers,
+    )
+    values: dict[str, Any] = {
+        "custom_fields": landed,
+        "root_project_id": new_root,
+    }
+    # WS-27bl. Types are root-scoped too, and this path carried `type_id`
+    # across untouched until 2026-09-19 — the task then pointed at a row in
+    # the OLD root's registry and its type silently stopped resolving. Same
+    # helper as `/tasks/move`, so the narrow path and the mapping-aware one
+    # cannot disagree about what a move does to a type.
+    if getattr(task, "type_id", None):
+        values["type_id"] = await remap_one_type(
+            db, type_id=str(task.type_id), root_id=new_root,
+        )
+    # The number belongs to the old root's sequence and would collide in the
+    # new one, so it is reallocated rather than carried. The old number is
+    # recorded on the timeline by the caller — a task's human id changing
+    # with no trace is how a reference in a comment stops resolving.
+    values["task_number"] = await next_task_number(db, new_root)
+    return values, dropped
+
+
 async def move_task_in(
     db: Any, vis: Any, task: Any, payload: MoveTask, *, by: str,
 ) -> dict:
@@ -533,6 +585,9 @@ async def move_task_in(
     """
     task_id = str(task.id)
     values: dict[str, Any] = {}
+    #: Values that had no field in the destination (D-PM-29). Written to
+    #: the timeline after the move, with their values, by `record_drops`.
+    dropped: dict[str, Any] = {}
 
     if payload.parent_task_id is not None or "parent_task_id" in payload.model_fields_set:
         new_parent = payload.parent_task_id
@@ -571,42 +626,18 @@ async def move_task_in(
             values["status_id"] = await remap_one_status(
                 db, status_id=str(task.status_id), owner_id=new_status_home,
             )
+            # The landing lane's CATEGORY decides `completed_at`, the same
+            # rule the bulk path applies (`landing.completion_correction`).
+            # Without it a DONE task promoted to a board with no closing
+            # lane arrived in "Backlog" with a completion date.
+            values.update(completion_correction(
+                task, await lane_category(db, values["status_id"]),
+            ))
         if new_root != str(task.root_project_id):
-            # The destination's REQUIRED fields (migration 192), merged from
-            # what the task already carries plus what this call supplies.
-            # Checked BEFORE any value is written, so a refusal leaves the
-            # task exactly where it was rather than half-moved.
-            #
-            # Only when the ROOT changes: definitions are per-root, so a
-            # move between two projects of the same tree cannot introduce a
-            # requirement the task has not already satisfied, and asking
-            # again would be a prompt with nothing behind it.
-            merged, custom_changes = apply_values(
-                from_jsonb(task.custom_fields),
-                payload.custom_fields or {},
-                await load_definitions(db, new_root),
+            crossed, dropped = await _cross_root_values(
+                db, task, new_root, payload.custom_fields,
             )
-            await assert_required_fields_present(db, new_root, merged)
-            if custom_changes:
-                values["custom_fields"] = merged
-
-            values["root_project_id"] = new_root
-            # WS-27bl. Types are root-scoped too, and this path carried
-            # `type_id` across untouched until 2026-09-19 — the task then
-            # pointed at a row in the OLD root's registry and its type
-            # silently stopped resolving. Same helper as `/tasks/move`, so
-            # the narrow path and the mapping-aware one cannot disagree
-            # about what a move does to a type.
-            if getattr(task, "type_id", None):
-                values["type_id"] = await remap_one_type(
-                    db, type_id=str(task.type_id), root_id=new_root,
-                )
-            # The number belongs to the old root's sequence and would
-            # collide in the new one, so it is reallocated rather than
-            # carried. The old number is recorded on the timeline below —
-            # a task's human id changing without a trace is how a reference
-            # in a comment stops resolving.
-            values["task_number"] = await next_task_number(db, new_root)
+            values.update(crossed)
 
     if payload.assignees is not None:
         # Promote-and-assign, in ONE transaction. `assert_assignable_here`
@@ -641,6 +672,7 @@ async def move_task_in(
             meta={"from_project": str(task.project_id),
                   "from_number": getattr(task, "task_number", None)},
         )
+        await record_drops(db, task_id=task_id, dropped=dropped, by=by)
 
     # ── Promote-and-assign, in the SAME transaction ─────────────────────
     #

@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { dropIndexFor } from "@/lib/boardDrop";
-import { LensPartialFailure, lensEnabled } from "./lens";
+import { LensPartialFailure, type LensMoveRequest, lensEnabled, lensGetItem } from "./lens";
+import { ProjectsApiError } from "@/app/projects/lib/api";
+import type { PromoteOutcome } from "./promote";
 import {
   allSelected,
   clickSelect,
@@ -57,6 +59,7 @@ import {
   apiEnrichItem,
   apiBackfillContext,
   apiDelegateItem,
+  apiMoveTask,
   fetchTaskSettings,
   updateTaskSettings,
   type TaskSettings,
@@ -828,6 +831,18 @@ interface TaskState {
   syncFailure: { message: string; at: number } | null;
   reportSyncFailure: (message: string) => void;
   clearSyncFailure: () => void;
+  /**
+   * S6c — the promote door. Move a task into a company project through ONE
+   * request (`apiMoveTask`: destination, required fields, assignees), then
+   * read it back through the lens so the card shows the row the server holds.
+   *
+   * ⚠️ Nothing optimistic. A refusal (D62, the assign guard, a blank required
+   * field) THROWS with the gateway's sentence, and the caller says it through
+   * the toast seam. The row does not move until the server says it did.
+   * Under the lens a personal task that lands on a board is a PROMOTION
+   * (D53.4): same row, new `project_id`, so the card's project label follows.
+   */
+  promoteItem: (id: string, req: LensMoveRequest) => Promise<PromoteOutcome>;
   /** Per-user task-manager settings (AI tiers + toggles). Defaults render
    *  immediately; hydrate() refreshes from the gateway. */
   settings: TaskSettings;
@@ -1066,6 +1081,43 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   reportSyncFailure: (message) =>
     set({ syncFailure: { message, at: Date.now() } }),
   clearSyncFailure: () => set({ syncFailure: null }),
+
+  promoteItem: async (id, req) => {
+    // One request, then the truth. `apiMoveTask` throws when the lens is off
+    // (on purpose — the old store has no board to move onto), and the
+    // gateway's refusals throw with their own sentence. Neither touches the
+    // list: the card only changes once `my/tasks/{id}` says where it is.
+    await apiMoveTask(id, req);
+    let moved: GtdItem;
+    try {
+      moved = await lensGetItem(id);
+    } catch (err) {
+      // The move COMMITTED. A 404 here is not a failure: `my/tasks/{id}`
+      // reads through my membership, and a promote that handed the task to
+      // a colleague (or from which I had already removed myself) takes it
+      // out of my list. Reporting that as "couldn't move it" told the member
+      // the opposite of what happened. Drop the row; the caller says where
+      // it went.
+      if (err instanceof ProjectsApiError && err.status === 404) {
+        set((s) => ({ items: s.items.filter((i) => i.id !== id) }));
+        return { left: true, projectId: req.projectId, assignees: req.assignees ?? [] };
+      }
+      throw err;
+    }
+    set((s) => ({ items: s.items.map((i) => (i.id === id ? moved : i)) }));
+    // The label on the card reads `projects`, the company list. A destination
+    // the list does not hold yet (a project created since the hydrate) would
+    // leave a promoted task with no name, so re-read the list when it is
+    // missing — and only then, so the common case stays one round trip.
+    if (moved.projectId && !get().projects.some((p) => p.id === moved.projectId)) {
+      try {
+        set({ projects: await fetchProjects() });
+      } catch {
+        /* the next hydrate reconciles */
+      }
+    }
+    return { left: false, item: moved };
+  },
 
   resolveDupNotice: (action, newTitle) => {
     const n = get().dupNotice;
@@ -2470,7 +2522,7 @@ export function viewCounts(
   else if (source === "synced") items = items.filter((i) => i.source !== "LOCAL");
   const c = {
     inbox: 0, next: 0, priority: 0, waiting: 0, calendar: 0, projects: 0,
-    someday: 0, reference: 0, done: 0, engage: 0, archive: 0, horizons: 0,
+    someday: 0, reference: 0, done: 0, engage: 0, archive: 0,
   } as Record<ViewKey, number>;
   for (const i of items) {
     if (i.archivedAt) continue; // archived rows never count toward active views

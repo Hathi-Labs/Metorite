@@ -2,6 +2,8 @@
 
 import { useTaskStore } from "./taskStore";
 import { GtdItem } from "./types";
+import { lensEnabled } from "./lens";
+import { promoteAllowed } from "./promote";
 import { statusColumnForItem } from "./ordering";
 
 // One place that turns a Next-Action card's affordances (schedule / change stage
@@ -49,5 +51,7 @@ export function useCardActions(item: GtdItem) {
     doneStage,
     currentStage,
     isDone,
+    /** S6c — whether "Move to project…" is offered. `promoteAllowed` is the rule. */
+    canPromote: promoteAllowed(item, lensEnabled()),
   };
 }

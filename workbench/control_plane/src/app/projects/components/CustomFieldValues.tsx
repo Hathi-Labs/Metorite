@@ -104,82 +104,121 @@ export function CustomFieldValues({ task, fields, onChanged }: Props) {
               ) : null}
             </dt>
             <dd className="mt-0.5">
-              {def.field_type === "boolean" ? (
-                <label className="flex items-center gap-2 text-xs text-foreground">
-                  <Checkbox
-                    checked={draft[def.field_key] === true}
-                    onChange={(e) => set(def.field_key, e.target.checked)}
-                    aria-label={def.name}
-                  />
-                  {draft[def.field_key] === true ? "Yes" : "No"}
-                </label>
-              ) : def.field_type === "select" ? (
-                <SelectButton
-                  label={def.name}
-                  widthClass="w-full"
-                  value={String(draft[def.field_key] ?? "")}
-                  onChange={(next) => set(def.field_key, next)}
-                  options={[
-                    // An explicit "not set" row: without it the field can
-                    // never be emptied once somebody has chosen something.
-                    { value: "", label: "— not set —" },
-                    ...def.options.map((option) => ({
-                      value: option,
-                      label: option,
-                    })),
-                  ]}
-                />
-              ) : def.field_type === "multi_select" ? (
-                <div className="flex flex-wrap gap-1">
-                  {def.options.map((option) => {
-                    const chosen = Array.isArray(draft[def.field_key])
-                      ? (draft[def.field_key] as string[])
-                      : [];
-                    const on = chosen.includes(option);
-                    return (
-                      <Button
-                        key={option}
-                        size="sm"
-                        variant={on ? "primary" : "secondary"}
-                        aria-pressed={on}
-                        onClick={() =>
-                          set(
-                            def.field_key,
-                            on
-                              ? chosen.filter((v) => v !== option)
-                              : [...chosen, option]
-                          )
-                        }
-                      >
-                        {option}
-                      </Button>
-                    );
-                  })}
-                </div>
-              ) : (
-                <Input
-                  inputSize="sm"
-                  aria-label={def.name}
-                  type={
-                    def.field_type === "number"
-                      ? "number"
-                      : def.field_type === "date"
-                        ? "date"
-                        : def.field_type === "url"
-                          ? "url"
-                          : "text"
-                  }
-                  value={String(draft[def.field_key] ?? "")}
-                  onChange={(e) => set(def.field_key, e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void save();
-                  }}
-                />
-              )}
+              <FieldControl
+                def={def}
+                value={draft[def.field_key]}
+                onChange={(next) => set(def.field_key, next)}
+                onEnter={() => void save()}
+              />
             </dd>
           </div>
         ))}
       </dl>
     </section>
+  );
+}
+
+/**
+ * ONE control per field type, for every surface that edits a custom field.
+ *
+ * Lifted out of the task panel's block (S6c) so the move dialog's
+ * required-field step draws the same checkbox, the same picker and the same
+ * input as the panel — a second set of controls for the same definitions is
+ * the drift `DESIGN_SYSTEM.md` rule 4 names. `value` is what the control
+ * holds (see `toInput`), and `onChange` hands back the raw control value;
+ * `toWire` is the caller's job, at save time.
+ */
+export function FieldControl({
+  def,
+  value,
+  onChange,
+  onEnter,
+  disabled,
+}: {
+  def: FieldDef;
+  value: unknown;
+  onChange: (next: unknown) => void;
+  onEnter?: () => void;
+  disabled?: boolean;
+}) {
+  if (def.field_type === "boolean") {
+    return (
+      <label className="flex items-center gap-2 text-xs text-foreground">
+        <Checkbox
+          checked={value === true}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.checked)}
+          aria-label={def.name}
+        />
+        {value === true ? "Yes" : "No"}
+      </label>
+    );
+  }
+  if (def.field_type === "select") {
+    return (
+      <SelectButton
+        label={def.name}
+        widthClass="w-full"
+        disabled={disabled}
+        value={String(value ?? "")}
+        onChange={(next) => onChange(next)}
+        options={[
+          // An explicit "not set" row: without it the field can
+          // never be emptied once somebody has chosen something.
+          { value: "", label: "— not set —" },
+          ...def.options.map((option) => ({
+            value: option,
+            label: option,
+          })),
+        ]}
+      />
+    );
+  }
+  if (def.field_type === "multi_select") {
+    const chosen = Array.isArray(value) ? (value as string[]) : [];
+    return (
+      <div className="flex flex-wrap gap-1">
+        {def.options.map((option) => {
+          const on = chosen.includes(option);
+          return (
+            <Button
+              key={option}
+              size="sm"
+              disabled={disabled}
+              variant={on ? "primary" : "secondary"}
+              aria-pressed={on}
+              onClick={() =>
+                onChange(
+                  on ? chosen.filter((v) => v !== option) : [...chosen, option]
+                )
+              }
+            >
+              {option}
+            </Button>
+          );
+        })}
+      </div>
+    );
+  }
+  return (
+    <Input
+      inputSize="sm"
+      aria-label={def.name}
+      disabled={disabled}
+      type={
+        def.field_type === "number"
+          ? "number"
+          : def.field_type === "date"
+            ? "date"
+            : def.field_type === "url"
+              ? "url"
+              : "text"
+      }
+      value={String(value ?? "")}
+      onChange={(e) => onChange(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") onEnter?.();
+      }}
+    />
   );
 }

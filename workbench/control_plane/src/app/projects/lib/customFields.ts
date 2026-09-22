@@ -55,6 +55,47 @@ export interface FieldDef {
   field_type: FieldType;
   options: string[];
   position: number;
+  /** Migration 192 — a task cannot enter this root without an answer. */
+  required?: boolean;
+}
+
+/**
+ * Absent, the way a FORM judges it. Mirrors the gateway's `_is_blank`.
+ *
+ * `""` and `"   "` are blank: somebody tabbed past the box. An empty list is
+ * blank: nothing was chosen. ⚠️ `0` and `false` are ANSWERS. A number field
+ * answered zero and a checkbox answered no are real answers, and treating
+ * them as missing refuses a move over a field the member can see is filled.
+ */
+export function isBlank(value: unknown): boolean {
+  if (value === null || value === undefined) return true;
+  if (typeof value === "string") return value.trim() === "";
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === "object") return Object.keys(value).length === 0;
+  return false;
+}
+
+/**
+ * The REQUIRED definitions `values` does not answer, in form order.
+ *
+ * `values` holds WIRE values (after `toWire`), so a blank text box has already
+ * become `null` and an unticked checkbox `false`, and the two read differently
+ * here exactly as they do on the server.
+ */
+export function requiredBlanks(
+  defs: readonly FieldDef[],
+  values: Record<string, unknown>
+): FieldDef[] {
+  return ordered(defs.filter((def) => def.required)).filter((def) =>
+    isBlank(values[def.field_key])
+  );
+}
+
+/** The sentence a Move button carries while a required field is blank. */
+export function missingSentence(missing: readonly string[]): string {
+  if (missing.length === 0) return "";
+  if (missing.length === 1) return `Fill in ${missing[0]} first.`;
+  return `Fill in ${missing.slice(0, -1).join(", ")} and ${missing[missing.length - 1]} first.`;
 }
 
 /** The types that choose from `options`. Mirrors the gateway's `CHOICE_TYPES`. */

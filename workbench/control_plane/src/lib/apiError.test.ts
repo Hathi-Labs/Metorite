@@ -115,4 +115,17 @@ describe("detailText", () => {
     expect(detailText({ unexpected: true })).toBe("");
     expect(detailText("   ")).toBe("");
   });
+
+  it("reads the message off a structured refusal (S6c, migration 192)", () => {
+    // `assert_required_fields_present` answers an OBJECT so the client can
+    // draw the fields. The member still needs the sentence.
+    expect(
+      detailText({
+        error: "required_fields_missing",
+        message: "This project requires 'Cost centre' before a task can be moved into it.",
+        fields: [{ field_key: "cost_centre" }],
+      }),
+    ).toBe("This project requires 'Cost centre' before a task can be moved into it.");
+    expect(detailText({ message: 42 })).toBe("");
+  });
 });

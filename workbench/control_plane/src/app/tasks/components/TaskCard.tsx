@@ -13,6 +13,8 @@ import { SourceBadge } from "./SourceBadge";
 import { PriorityBadge, SuggestionBadge } from "./PriorityControls";
 import { StatusPill } from "./StatusPill";
 import { ContextMenu, type CtxItem } from "./ContextMenu";
+import { ProjectLabel } from "./ProjectLabel";
+import { PromoteDialog } from "./PromoteDialog";
 
 // Due/overdue read the REAL clock (isOverdue and relativeTime both default
 // nowMs to Date.now()). A frozen `MOCK_NOW` demo constant used to be passed
@@ -92,6 +94,9 @@ export function TaskCard({
   // controls and the right-click menu, so they never drift.
   const actions = useCardActions(item);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  // S6c — the promote door. Local to the card: the dialog reads the tree on
+  // open and nothing else needs to know it is up.
+  const [promoting, setPromoting] = useState(false);
   const menuItems: CtxItem[] = [
     {
       kind: "item",
@@ -99,6 +104,16 @@ export function TaskCard({
       icon: themedIcon("CalendarClock"),
       onSelect: actions.schedule,
     },
+    ...(actions.canPromote
+      ? [
+          {
+            kind: "item" as const,
+            label: "Move to project…",
+            icon: themedIcon("FolderInput"),
+            onSelect: () => setPromoting(true),
+          },
+        ]
+      : []),
     { kind: "sep" },
     { kind: "label", label: "Change stage" },
     ...actions.stages.map(
@@ -129,14 +144,21 @@ export function TaskCard({
     e.stopPropagation();
     setMenu({ x: e.clientX, y: e.clientY });
   };
-  const contextMenu = menu ? (
-    <ContextMenu
-      x={menu.x}
-      y={menu.y}
-      items={menuItems}
-      onClose={() => setMenu(null)}
-    />
-  ) : null;
+  const contextMenu = (
+    <>
+      {menu ? (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuItems}
+          onClose={() => setMenu(null)}
+        />
+      ) : null}
+      {promoting ? (
+        <PromoteDialog item={item} onClose={() => setPromoting(false)} />
+      ) : null}
+    </>
+  );
 
   const meta = (
     <>
@@ -233,10 +255,12 @@ export function TaskCard({
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             {meta}
             {project && (
-              <span className="hidden items-center gap-1 text-[10px] text-muted-foreground sm:inline-flex">
-                <Icon name="FolderKanban" className="h-3 w-3" />
-                <span className="max-w-[120px] truncate">{project.outcome}</span>
-              </span>
+              <ProjectLabel
+                item={item}
+                name={project.outcome}
+                className="hidden items-center gap-1 text-[10px] text-muted-foreground sm:inline-flex"
+                nameClass="max-w-[120px] truncate"
+              />
             )}
             <ScheduleButton onClick={actions.schedule} />
             {/* `max={1}` keeps this app's one-avatar-plus-"+N" reading, which
@@ -331,10 +355,12 @@ export function TaskCard({
             </p>
           )}
           {project && (
-            <span className="inline-flex w-fit items-center gap-1 rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
-              <Icon name="FolderKanban" className="h-3 w-3" />
-              <span className="max-w-[160px] truncate">{project.outcome}</span>
-            </span>
+            <ProjectLabel
+              item={item}
+              name={project.outcome}
+              className="inline-flex w-fit items-center gap-1 rounded bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground"
+              nameClass="max-w-[160px] truncate"
+            />
           )}
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">{meta}</div>
           <div className="mt-0.5 flex items-center justify-between">
