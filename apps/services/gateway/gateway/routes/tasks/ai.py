@@ -22,13 +22,12 @@ from acb_auth import UserContext, get_current_user
 from fastapi import Depends
 from gateway.routes.tasks.core import (
     DEFAULT_CONTEXTS,
-    PROJECT_SELECT,
     _parse_jsonb,
     _tenant_session,
     _uid,
     router,
 )
-from gateway.routes.tasks.items import _fetch_item
+from gateway.routes.tasks.item_source import item_source
 from sqlalchemy import text
 
 # ── Shared prompt context (system information every AI decision needs) ───────
@@ -42,20 +41,12 @@ def _today_brief() -> str:
 
 
 async def _user_contexts(db: Any, uid: str) -> list[str]:
-    """The user's @context vocabulary (gtd_contexts) — the ONLY values the
-    prompts may pick from. The old prompts hard-coded four of the six defaults,
-    so a user-added context (or @office/@home) could never be suggested. Falls
-    back to the GTD defaults before the row is first seeded."""
-    try:
-        rows = (await db.execute(text(
-            """SELECT name FROM gtd_contexts WHERE user_id = :uid
-               ORDER BY sort_order, name"""), {"uid": uid})).fetchall()
-        names = [r.name for r in rows if r.name]
-        if names:
-            return names
-    except Exception:
-        pass
-    return [name for name, _icon in DEFAULT_CONTEXTS]
+    """The user's @context vocabulary — the ONLY values the prompts may pick
+    from. The old prompts hard-coded four of the six defaults, so a user-added
+    context (or @office/@home) could never be suggested. Falls back to the
+    GTD defaults before the member has any. Which store answers is the
+    seam's call (`item_source`, WS-39 S6d)."""
+    return await item_source().contexts_for(db, uid)
 
 
 def _canon_context(raw: Any, contexts: list[str]) -> str | None:
@@ -430,7 +421,7 @@ async def annotate_people_context(
     a golden trajectory.
 
     - ``open_task_count`` / ``overloaded``: this user's open tasks assigned to
-      each person (includes synced ClickUp tasks mirrored into gtd_items), so the
+      each person (includes synced tasks mirrored into the store), so the
       model + card can warn when assigning to someone already at capacity.
     - ``capability_score``: cosine of the task text vs the person's capability
       embedding when ``task_semantic_match_enabled`` is on (else absent → keyword
@@ -459,32 +450,31 @@ async def _annotate_workload(db: Any, uid: str, people: list[dict]) -> None:
     """Attach ``open_task_count`` + ``overloaded`` to each person from the user's
     open assigned tasks. Best-effort — a failure leaves the roster unannotated
     (the model simply loses the load hint). Matches by provider_user_id first
-    (the assignment target), then by name."""
+    (the assignment target), then by email (the one store assigns by email),
+    then by name."""
     if not people:
         return
     try:
-        rows = (await db.execute(text(
-            """SELECT assignee->>'provider_user_id' AS pid,
-                      lower(assignee->>'name') AS nm, count(*) AS n
-                 FROM gtd_items
-                WHERE user_id = :uid
-                  AND disposition IN ('NEXT', 'WAITING', 'CALENDAR', 'DO_NOW')
-                  AND archived_at IS NULL
-                  AND assignee IS NOT NULL
-                GROUP BY 1, 2"""), {"uid": uid})).fetchall()
+        rows = await item_source().assignee_load(db, uid)
     except Exception:
         return
     by_pid: dict[str, int] = {}
     by_name: dict[str, int] = {}
+    by_email: dict[str, int] = {}
     for r in rows:
         if r.pid:
             by_pid[str(r.pid)] = by_pid.get(str(r.pid), 0) + int(r.n)
         if r.nm:
             by_name[r.nm] = by_name.get(r.nm, 0) + int(r.n)
+        if getattr(r, "em", None):
+            by_email[r.em] = by_email.get(r.em, 0) + int(r.n)
     for p in people:
         pid = str(p.get("provider_user_id") or "")
         nm = (p.get("name") or "").strip().lower()
+        em = (p.get("email") or "").strip().lower()
         count = by_pid.get(pid, 0) if pid else 0
+        if not count and em:
+            count = by_email.get(em, 0)
         if not count and nm:
             count = by_name.get(nm, 0)
         p["open_task_count"] = count
@@ -1068,7 +1058,7 @@ async def _find_synced_duplicate(
     """Token-free duplicate check for inbox processing (§2.2).
 
     Matches the inbox capture's title against the user's SYNCED (PM-tool) tasks
-    ALREADY mirrored into gtd_items — pure lexical similarity (dedup_verdict),
+    ALREADY mirrored into the store — pure lexical similarity (dedup_verdict),
     so it costs NO LLM tokens and NO provider API call. Returns the best
     similar/duplicate PM-tool task (its title + ClickUp link/stage/project) or
     None. Only meaningful for LOCAL captures — a SYNCED item already IS the
@@ -1078,18 +1068,7 @@ async def _find_synced_duplicate(
     title = (getattr(item, "title", "") or "").strip()
     if not title:
         return None
-    rows = (await db.execute(text(
-        """SELECT i.id, i.title, i.provider_url, i.provider_status,
-                  p.outcome AS project_name
-             FROM gtd_items i
-             LEFT JOIN gtd_projects p ON p.id = i.project_id
-            WHERE i.user_id = :uid
-              AND i.source <> 'LOCAL'
-              AND i.parent_item_id IS NULL
-              AND i.disposition NOT IN ('DONE', 'TRASH')
-            ORDER BY i.updated_at DESC
-            LIMIT 400"""),
-        {"uid": uid})).fetchall()
+    rows = await item_source().synced_candidates(db, uid)
     if not rows:
         return None
     existing = [{"id": str(r.id), "title": r.title} for r in rows]
@@ -1124,14 +1103,7 @@ async def _find_parent_task(
     title = (getattr(item, "title", "") or "").strip()
     if not title:
         return None
-    rows = (await db.execute(text(
-        """SELECT id, title FROM gtd_items
-            WHERE user_id = :uid AND project_id = :pid
-              AND parent_item_id IS NULL
-              AND disposition NOT IN ('DONE', 'TRASH')
-              AND id <> :self
-            ORDER BY updated_at DESC LIMIT 40"""),
-        {"uid": uid, "pid": project_id, "self": str(item.id)})).fetchall()
+    rows = await item_source().siblings(db, uid, project_id, str(item.id), 40)
     if not rows:
         return None
     candidates = [{"id": str(r.id), "title": r.title} for r in rows]
@@ -1196,11 +1168,10 @@ async def clarify_item(
     An optional `note` (request body) is freeform user guidance that steers the
     title/project/steps for this pass."""
     uid = _uid(user)
+    src = item_source()
     async with _tenant_session() as db:
-        item = await _fetch_item(db, item_id, uid)
-        projects = (await db.execute(
-            text(PROJECT_SELECT + " WHERE p.user_id = :uid"), {"uid": uid},
-        )).fetchall()
+        item = await src.fetch_item(db, uid, item_id)
+        projects = await src.projects_for(db, uid)
         accounts = (await db.execute(
             text("""SELECT id, label, provider, schema_cache
                     FROM task_accounts WHERE user_id = :uid"""),
@@ -1222,16 +1193,10 @@ async def clarify_item(
                               if isinstance(h, dict)],
             })
         # Every place a task/list can be filed (workspaces › spaces › folders
-        # + the local tree): lets guidance like "put this in ClickUp under
-        # Proposals" actually steer the destination (where_match).
-        local_spaces = (await db.execute(
-            text("SELECT id, name FROM gtd_spaces WHERE user_id = :uid "
-                 "ORDER BY sort_key ASC NULLS LAST, name"),
-            {"uid": uid})).fetchall()
-        local_folders = (await db.execute(
-            text("SELECT id, space_id, name FROM gtd_folders "
-                 "WHERE user_id = :uid ORDER BY sort_key ASC NULLS LAST, name"),
-            {"uid": uid})).fetchall()
+        # + the local tree): lets guidance like "put this under Proposals"
+        # actually steer the destination (where_match). On the one store the
+        # local tree is the personal root and its Areas, and nothing else.
+        local_spaces, local_folders = await src.local_tree(db, uid)
         places = _collect_places(account_briefs, local_spaces, local_folders)
         # Org-knowledge people (skills + availability, §6.1) power the
         # cognition; provider members are the fallback when none imported.
@@ -1506,7 +1471,7 @@ async def enrich_item(
     when nothing was missing or nothing could be confidently filled."""
     uid = _uid(user)
     async with _tenant_session() as db:
-        item = await _fetch_item(db, item_id, uid)
+        item = await item_source().fetch_item(db, uid, item_id)
         return {"item_id": item_id, "fields": await _enrich_fields(
             db, uid, item, only=None)}
 
@@ -1567,7 +1532,7 @@ async def suggest_title(
     null} when the assistant is off/unreachable."""
     uid = _uid(user)
     async with _tenant_session() as db:
-        item = await _fetch_item(db, item_id, uid)
+        item = await item_source().fetch_item(db, uid, item_id)
         from gateway.routes.tasks.settings import gtd_models, gtd_toggles
         if not (await gtd_toggles(db, uid))["clarify_use_llm"]:
             return {"is_vague": False, "suggested_title": None}
@@ -1585,14 +1550,9 @@ async def backfill_context(user: UserContext = Depends(get_current_user)):
     pushed upstream); returns how many were set. LLM-backed with a heuristic
     fallback, capped so one call can't run unbounded."""
     uid = _uid(user)
+    src = item_source()
     async with _tenant_session() as db:
-        rows = (await db.execute(text(
-            """SELECT * FROM gtd_items
-               WHERE user_id = :uid
-                 AND disposition IN ('NEXT', 'WAITING', 'CALENDAR')
-                 AND (context IS NULL OR context = '')
-                 AND archived_at IS NULL
-               ORDER BY updated_at DESC LIMIT 40"""), {"uid": uid})).fetchall()
+        rows = await src.context_less_actionables(db, uid, 40)
         if not rows:
             return {"scanned": 0, "updated": 0}
         # Load the per-user enrich context ONCE, then fan the proposals out
@@ -1618,10 +1578,7 @@ async def backfill_context(user: UserContext = Depends(get_current_user)):
         for item, ctx in zip(rows, contexts, strict=True):
             if not ctx:
                 continue
-            await db.execute(
-                text("""UPDATE gtd_items SET context = :ctx, updated_at = now()
-                        WHERE id = :id AND user_id = :uid"""),
-                {"ctx": ctx, "id": str(item.id), "uid": uid})
+            await src.set_context(db, uid, str(item.id), ctx)
             updated += 1
         return {"scanned": len(rows), "updated": updated}
 
@@ -1632,35 +1589,7 @@ async def inbox_insights(user: UserContext = Depends(get_current_user)):
     project clusters, stale waiting-fors. (Agent narration comes later.)"""
     uid = _uid(user)
     async with _tenant_session() as db:
-        counts = (await db.execute(text(
-            """SELECT disposition, count(*) AS n FROM gtd_items
-               WHERE user_id = :uid GROUP BY disposition"""), {"uid": uid},
-        )).fetchall()
-        oldest = (await db.execute(text(
-            """SELECT min(created_at) AS oldest FROM gtd_items
-               WHERE user_id = :uid AND disposition = 'INBOX'
-                 AND (defer_until IS NULL OR defer_until <= now())"""),
-            {"uid": uid})).fetchone()
-        stale = (await db.execute(text(
-            """SELECT count(*) AS n FROM gtd_waiting w
-               JOIN gtd_items i ON i.id = w.item_id
-               WHERE i.user_id = :uid AND w.resolved = false
-                 AND w.delegated_at < now() - interval '5 days'"""),
-            {"uid": uid})).fetchone()
-        no_next = (await db.execute(text(
-            """SELECT count(*) AS n FROM gtd_projects p
-               WHERE p.user_id = :uid AND p.status = 'ACTIVE'
-                 AND NOT EXISTS (SELECT 1 FROM gtd_items i
-                                 WHERE i.project_id = p.id
-                                   AND i.disposition = 'NEXT')"""),
-            {"uid": uid})).fetchone()
-        return {
-            "counts": {r.disposition: r.n for r in counts},
-            "oldest_inbox_at": oldest.oldest.isoformat()
-            if oldest and oldest.oldest else None,
-            "stale_waiting": stale.n if stale else 0,
-            "projects_without_next_action": no_next.n if no_next else 0,
-        }
+        return await item_source().insight_counts(db, uid)
 
 
 # ── Atomize + dedup: mind-dump → atomic captures (§2.1 seam) ─────────────────
@@ -1845,12 +1774,7 @@ async def atomize_dump(
     existing: list[dict[str, Any]] = []
     if req.dedup:
         async with _tenant_session() as db:
-            rows = (await db.execute(text(
-                """SELECT id, title, disposition, source FROM gtd_items
-                   WHERE user_id = :uid
-                     AND disposition NOT IN ('DONE', 'TRASH')
-                   ORDER BY created_at DESC LIMIT 300"""),
-                {"uid": uid})).fetchall()
+            rows = await item_source().open_items(db, uid, 300)
             skip = set(req.exclude_ids or [])
             existing = [{"id": str(r.id), "title": r.title,
                          "disposition": r.disposition, "source": r.source}

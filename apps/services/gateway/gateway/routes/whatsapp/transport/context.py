@@ -14,6 +14,7 @@ that fills the ``crm`` block; until then it degrades to the parsed ref, honestly
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -101,6 +102,24 @@ def parse_entity_ref(ref: str | None) -> EntityRef | None:
 
 
 @router.get("/chats/{chat_id}/context", response_model=ChatContextModel)
+def _is_commitment(row: object) -> bool:
+    """Whether a captured task's origin carries the commitment mark.
+
+    The mark is written as JSON ``true`` by ``update_origin``; a row read
+    through bare ``text()`` may hand the origin back as a string, so both
+    shapes are read.
+    """
+    origin = getattr(row, "origin", None)
+    if isinstance(origin, str):
+        try:
+            origin = json.loads(origin)
+        except ValueError:
+            return False
+    if not isinstance(origin, dict):
+        return False
+    return origin.get("commitment") in (True, "true")
+
+
 async def chat_context(
     chat_id: str,
     user: UserContext = Depends(get_current_user),
@@ -145,21 +164,14 @@ async def chat_context(
 
         # Open loops: tasks captured from this chat (origin.wa_chat_id) that are
         # still open — the "you promised / this needs doing" the rail surfaces.
-        loop_rows = (await db.execute(
-            text("""SELECT id, title, disposition,
-                           COALESCE(origin->>'commitment', 'false') AS commitment
-                    FROM gtd_items
-                    WHERE user_id = :uid
-                      AND origin->>'wa_chat_id' = :wcid
-                      AND disposition NOT IN ('DONE', 'TRASH')
-                    ORDER BY created_at DESC
-                    LIMIT 10"""),
-            {"uid": uid, "wcid": chat.wa_chat_id},
-        )).fetchall()
+        from gateway.routes.tasks.item_source import item_source
+
+        loop_rows = await item_source().items_by_origin(
+            db, uid, "wa_chat_id", chat.wa_chat_id, limit=10)
         open_loops = [
             OpenLoop(
                 id=str(r.id), title=r.title or "", disposition=r.disposition,
-                kind="commitment" if r.commitment == "true" else "captured",
+                kind="commitment" if _is_commitment(r) else "captured",
             )
             for r in loop_rows
         ]

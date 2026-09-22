@@ -461,7 +461,7 @@ def test_priority_formula_maps_all_8_input_combos_to_7_levels():
     low-priority, so 8 input combos resolve to 7 distinct levels."""
     from gateway.routes.tasks.priority import PriorityInputs, cell_for_inputs
 
-    I, U, L = True, True, True  # noqa: E741 (mirror the flag names)
+    I, U, L = True, True, True
     n = False
     cases = {
         # leveraged branch (rank 1/3/5/6)
@@ -1257,7 +1257,7 @@ def test_propose_attaches_capability_owner_without_forcing_delegate():
 # Sync pull (§9.3 #1): provider list_tasks + the GTD lens on pulled tasks
 # ---------------------------------------------------------------------------
 
-from gateway.routes.tasks.sync import map_pulled_task  # noqa: E402
+from gateway.routes.tasks.sync import map_pulled_task
 
 
 def _pulled(**over):
@@ -1382,7 +1382,7 @@ def test_sync_upsert_preserves_user_overlay_and_owns_completion():
 # Email → task capture (origin linkage) + calendar-date validation
 # ---------------------------------------------------------------------------
 
-from gateway.routes.tasks.capture_email import draft_task_fallback  # noqa: E402
+from gateway.routes.tasks.capture_email import draft_task_fallback
 
 
 def test_email_capture_fallback_draft_names_sender_and_strips_reply_prefixes():
@@ -1401,11 +1401,16 @@ def test_email_capture_is_owner_checked_and_idempotent():
     import inspect
 
     from gateway.routes.tasks import capture_email
+    from gateway.routes.tasks.item_source import GTD_ITEMS
 
     src = inspect.getsource(capture_email.capture_from_email)
     assert "a.user_id = :uid" in src            # ownership through the mailbox
-    assert "origin->>'email_id'" in src         # idempotency per source email
-    assert "NOT IN ('DONE', 'TRASH')" in src    # only OPEN items block re-capture
+    assert "_find_existing_capture" in src      # idempotency per source email
+    # The read moved into the seam (WS-39 S6d). The gtd arm keeps the shape.
+    finder = inspect.getsource(capture_email._find_existing_capture)
+    assert '"email_id"' in finder
+    arm = inspect.getsource(GTD_ITEMS.items_by_origin)
+    assert "NOT IN ('DONE', 'TRASH')" in arm    # only OPEN items block re-capture
 
 
 def test_email_capture_finds_pm_account_for_a_delegate():
@@ -1746,18 +1751,23 @@ def test_title_similarity_flags_near_duplicate_asks_and_ignores_scaffolding():
 
 def test_route_and_persist_is_the_shared_write_used_by_popup_create():
     """The popup's /create endpoint must write through the SAME routing/persist
-    helper (delegate destination rules, gtd_waiting for follow-ups) rather than
-    a divergent second code path."""
+    helper (delegate destination rules, a Waiting-For for follow-ups) rather
+    than a divergent second code path. Since WS-39 S6d the write itself is the
+    seam's (`insert_capture`), and the gtd arm keeps the two inserts."""
     import inspect
 
     from gateway.routes.tasks import capture_email as ce
+    from gateway.routes.tasks.item_source import GTD_ITEMS
 
     persist = inspect.getsource(ce._route_and_persist)
     # Same destination rule as the one-click endpoint.
     assert 'source, sync_state = "SYNCED", "pending"' in persist
     assert 'assignee, disposition = None, "INBOX"' in persist
-    assert "INSERT INTO gtd_items" in persist
-    assert "INSERT INTO gtd_waiting" in persist
+    assert "insert_capture" in persist
+    assert 'fields["waiting_on"]' in persist
+    arm = inspect.getsource(GTD_ITEMS.insert_capture)
+    assert "INSERT INTO gtd_items" in arm
+    assert "INSERT INTO gtd_waiting" in inspect.getsource(GTD_ITEMS.record_waiting)
 
     create = inspect.getsource(ce.create_capture_from_email)
     assert "_route_and_persist" in create
@@ -1941,9 +1951,10 @@ def test_stale_waiting_rule_is_five_days_since_delegation():
     about the same list. Pin the SQL side here."""
     import inspect
 
-    from gateway.routes.tasks import ai as tasks_ai_mod
+    from gateway.routes.tasks.item_source import GTD_ITEMS
 
-    src = inspect.getsource(tasks_ai_mod.inbox_insights)
+    # The SQL moved into the seam's gtd arm (WS-39 S6d), unchanged.
+    src = inspect.getsource(GTD_ITEMS.insight_counts)
     assert "w.delegated_at < now() - interval '5 days'" in src
 
 
@@ -1965,12 +1976,16 @@ def test_no_insert_site_derives_expected_by_from_a_due_date():
     from gateway.routes.tasks import capture_email as capture_mod
     from gateway.routes.tasks import items as items_mod
     from gateway.routes.tasks import sync as sync_mod
+    from gateway.routes.tasks.item_source import GTD_ITEMS
 
+    # The two email captures write through the seam since WS-39 S6d. Their
+    # `fields` carry no `expected_by` either, checked below.
+    for fn in (capture_mod.capture_from_email, capture_mod._route_and_persist):
+        assert '"expected_by"' not in inspect.getsource(fn), fn.__name__
     sites = [
         items_mod.delegate_item,          # POST /items/{id}/delegate
         items_mod.organize_item,          # clarify → delegate
-        capture_mod.capture_from_email,   # one-click email capture
-        capture_mod._route_and_persist,   # clarify-popup email capture
+        GTD_ITEMS.record_waiting,         # both email captures, the gtd arm
         sync_mod._sync_account,           # provider pull (monitored task)
     ]
     for fn in sites:

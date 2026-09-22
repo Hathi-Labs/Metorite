@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import json
 import re
-from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.tasks.item_source import item_source
 from gateway.routes.whatsapp.core import _tenant_session, router
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -66,14 +66,9 @@ async def capture_task(
             raise HTTPException(status_code=404, detail="Message not found")
 
         # Idempotent: an OPEN item already captured from this message wins.
-        existing = (await db.execute(
-            text("""SELECT id, title FROM gtd_items
-                    WHERE user_id = :uid
-                      AND origin->>'wa_message_id' = :wamid
-                      AND disposition NOT IN ('DONE', 'TRASH')
-                    LIMIT 1"""),
-            {"uid": uid, "wamid": msg.wa_message_id},
-        )).fetchone()
+        src = item_source()
+        existing = await src.find_by_origin(
+            db, uid, "wa_message_id", msg.wa_message_id)
         if existing is not None:
             return CaptureTaskResponse(
                 item_id=str(existing.id), title=existing.title, created=False)
@@ -95,16 +90,10 @@ async def capture_task(
             "wa_message_id": msg.wa_message_id,
             "sender_name": sender_name[:120],
         }
-        item_id = str(uuid4())
-        await db.execute(
-            text("""INSERT INTO gtd_items
-                      (id, user_id, title, description, disposition, source,
-                       sync_state, origin)
-                    VALUES
-                      (:id, :uid, :title, :notes, 'INBOX', 'LOCAL', 'local',
-                       :origin)"""),
-            {"id": item_id, "uid": uid, "title": title,
-             "notes": (msg.body_text or "")[:500] or None,
-             "origin": json.dumps(origin)},
-        )
+        item_id = await src.insert_capture(db, uid, {
+            "title": title,
+            "description": (msg.body_text or "")[:500] or None,
+            "disposition": "INBOX",
+            "source": "LOCAL", "sync_state": "local", "is_mine": True,
+        }, origin)
         return CaptureTaskResponse(item_id=item_id, title=title, created=True)

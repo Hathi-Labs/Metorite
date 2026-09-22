@@ -1008,17 +1008,7 @@ async def my_contexts(user: UserContext = Depends(get_current_user)) -> dict:
     """
     email = actor(user).lower()
     async with _tenant_session() as db:
-        rows = (await db.execute(
-            text(
-                "SELECT p.context AS context, count(*) AS total "
-                "FROM pm_task_personal p "
-                "JOIN pm_tasks t ON t.id = p.task_id "
-                "WHERE lower(p.member_email) = :who AND p.context IS NOT NULL "
-                "  AND t.archived_at IS NULL "
-                "GROUP BY p.context ORDER BY count(*) DESC, p.context"
-            ),
-            {"who": email},
-        )).fetchall()
+        rows = await member_contexts(db, email)
         return {
             "rows": [
                 {"context": r.context, "total": int(r.total)} for r in rows
@@ -1027,7 +1017,59 @@ async def my_contexts(user: UserContext = Depends(get_current_user)) -> dict:
         }
 
 
+async def member_contexts(db: Any, email: str) -> list[Any]:
+    """The contexts one member uses, from their overlay rows, with counts.
+
+    Shared by `GET /projects/my/contexts` and the AI seam's pm arm
+    (`routes/projects/item_lens.py`). One query, so the prompts and the
+    picker agree about which contexts exist.
+    """
+    return (await db.execute(
+        text(
+            "SELECT p.context AS context, count(*) AS total "
+            "FROM pm_task_personal p "
+            "JOIN pm_tasks t ON t.id = p.task_id "
+            "WHERE lower(p.member_email) = :who AND p.context IS NOT NULL "
+            "  AND t.archived_at IS NULL "
+            "GROUP BY p.context ORDER BY count(*) DESC, p.context"
+        ),
+        {"who": email},
+    )).fetchall()
+
+
 # ── Completion, from the personal side ──────────────────────────────────────
+
+async def complete_for_member(db: Any, task: Any, email: str) -> dict[str, Any]:
+    """Move a task into its done lane, and mark it DONE on MY overlay.
+
+    The one completion path. `POST /projects/tasks/{id}/complete` calls it,
+    and so does the AI seam when an email thread closes
+    (`routes/projects/item_lens.py`). Two effects, one helper, because a
+    caller that moved the status and forgot the overlay would leave a
+    finished task in the member's Next list, and the reverse would mark a
+    team task finished in one list while the board still shows it open.
+
+    `task` is any row carrying `id`, `project_id` and `status_id`.
+    """
+    from gateway.routes.projects.core import apply_status_transition
+
+    # The owner's chosen done lane, not whichever one sorts first. This read
+    # was its own SQL and never consulted `is_default`, so a root holding
+    # both "Done" and "Shipped" completed into whichever carried the lower
+    # position regardless of which the owner had marked. `load_default_status`
+    # is the one place that question is answered, and it raises the same 422
+    # when the project has no done status at all.
+    done = await load_default_status(
+        db, await status_owner_id(db, str(task.project_id)), "done",
+    )
+    moved = await apply_status_transition(
+        db, task, str(done.id), created_by=email,
+    )
+    # And the member's own view of it follows, so a completed task does not
+    # sit in their Next list contradicting the board.
+    await _upsert_personal(db, str(task.id), email, {"disposition": "DONE"})
+    return moved
+
 
 @router.post("/tasks/{task_id}/complete")
 async def complete_task(
@@ -1042,27 +1084,11 @@ async def complete_task(
     a member quietly marking a team task finished while the board still shows it
     open, which is the exact drift a mirror produces.
     """
-    from gateway.routes.projects.core import apply_status_transition
-
     email = actor(user).lower()
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
-        # The owner's chosen done lane, not whichever one sorts first. This read
-        # was its own SQL and never consulted `is_default`, so a root holding
-        # both "Done" and "Shipped" completed into whichever carried the lower
-        # position regardless of which the owner had marked. `load_default_status`
-        # is the one place that question is answered, and it raises the same 422
-        # when the project has no done status at all.
-        done = await load_default_status(
-            db, await status_owner_id(db, str(task.project_id)), "done",
-        )
-        moved = await apply_status_transition(
-            db, task, str(done.id), created_by=email,
-        )
-        # And the member's own view of it follows, so a completed task does not
-        # sit in their Next list contradicting the board.
-        await _upsert_personal(db, task_id, email, {"disposition": "DONE"})
+        moved = await complete_for_member(db, task, email)
         result = row_to_dict(moved["row"], TaskModel)
 
     await emit("pm.task.status_changed", {
