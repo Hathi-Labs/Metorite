@@ -17,7 +17,6 @@
  * round-trip for a file that obviously will not do.
  */
 
-import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
@@ -32,6 +31,7 @@ import {
   formatBytes,
   precheckLogoFile,
 } from "@/lib/orgBranding";
+import SettingsHeader from "@/components/SettingsHeader";
 
 export default function BrandingTab() {
   const { access } = useAccess();
@@ -138,20 +138,13 @@ export default function BrandingTab() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-3 border-b border-border px-4 py-3 shrink-0 sm:px-6 sm:py-4">
-        <Link
-          href="/settings/models"
-          className="rounded-lg border border-border p-2 text-muted-foreground tech-transition hover:bg-secondary"
-          aria-label="Back to settings"
-        >
-          <Icon name="ArrowLeft" size={15} />
-        </Link>
-        <div>
-          <h1 className="text-base font-bold text-foreground sm:text-lg">Organization</h1>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            How your company appears to everyone in it
-          </p>
-        </div>
+      <div className="shrink-0 border-b border-border px-4 py-3 sm:px-6 sm:py-4">
+        <SettingsHeader
+          title="Organization"
+          subtitle="How your company appears to everyone in it"
+          backHref="/settings/models"
+          backLabel="Back to settings"
+        />
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 sm:p-6">

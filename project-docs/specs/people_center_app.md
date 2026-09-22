@@ -542,6 +542,12 @@ distinguishable in that registry, or the next person to read it learns the wrong
 
 ## 5. The surfaces
 
+⚠️ **Every state marker below was re-derived from the code on 2026-09-22**, not
+carried forward. Six were stale: 5.2, 5.5, 5.7, 5.8, 5.11 and the P-5/P-7/P-8
+rows in §7 all said "not built" for work the board had marked ✅ weeks earlier.
+A spec that under-reports is the more dangerous direction, because it invites
+somebody to build a thing twice. **5.6 is the one surface genuinely not built.**
+
 Route: **`/people`**, gated on its own feature slug `people` (§8) — **except `/people/me`,
 which is ungated per §4.5**. The People Center's landing page (`/centers/people`) links
 here, and it is one app, not one per Center — the same (app + scope) rule the Projects app
@@ -742,7 +748,11 @@ are projected to null, and `?q=` drops its skills clause so search cannot become
 state says "restricted" rather than "none", because a blank skills strip that means "you
 may not see this" and one that means "nobody filled it in" are different facts.
 
-### 5.2 Person page ✅ BUILT (four panels) · 🔲 extended to six (P-3/P-4)
+### 5.2 Person page ✅ BUILT — all six panels
+
+`PersonPanel.tsx` renders every panel below. Panels 5 and 6 come from
+`ProfilePanels`, the SAME component `/people/me` renders, so a field added to
+one cannot go missing from the other.
 
 1. **Identity** — name, title, email, department, team, manager, status, and the
    **login badge** (`app_user` exists / directory-only) that makes §2 visible.
@@ -751,9 +761,9 @@ may not see this" and one that means "nobody filled it in" are different facts.
    makes a keyword match wrong in a way nobody notices.
 3. **Capacity** — one bar, not three numbers, computed from open assigned tasks (§6.2).
 4. **Work** — this person's open tasks across every project the *viewer* may see.
-5. **Profile** *(new)* — §3.1's directory half plus timezone, working hours, languages,
+5. **Profile** — §3.1's directory half plus timezone, working hours, languages,
    links, bio. Editable in place when `editable_fields` says so.
-6. **Employment** *(new, HR tier)* — §3.2. Collapsed by default: it is the panel a
+6. **Employment** *(HR tier)* — §3.2. Collapsed by default: it is the panel a
    colleague has no reason to read and an admin needs three times a year.
 
 **Writes** are gated per field by §4.3 — not by one flag. A viewer with no write rights at
@@ -832,7 +842,7 @@ diagram).
   `people.department` (free text) and group membership (the real scoping).
   **That mismatch is the point of the overlay**, not a rendering bug to smooth over.
 
-### 5.5 Capability search — "who should do this?" 🟢 WS-28d
+### 5.5 Capability search — "who should do this?" ✅ BUILT (WS-28d, 2026-08-14)
 
 A single box: *"Who can help with extruder firmware?"* Answers from three signals, most
 defensible first, each labelled in the result:
@@ -872,7 +882,7 @@ acted on; the join is `lower(email)` on both sides, so the action is well-define
 belongs beside the seats matrix (both are membership acts), and it is an **invite**, which
 §6 (d) gates. Propose-only, like the rest of this surface.
 
-### 5.7 The people-management dashboard 🟢 WS-28j — *the surface this whole spec serves*
+### 5.7 The people-management dashboard ✅ BUILT (WS-28j1+j2+j3, 2026-08-14) — *the surface this whole spec serves*
 
 Owner-directed 2026-08-13, and worth quoting because it sets the bar:
 
@@ -989,7 +999,7 @@ rating; this is the same decision on the read side (**D-PC-14**). The distinctio
 makes the owner's ask and this constraint compatible: **ranking TASKS by risk is the
 product; ranking PEOPLE by output is not.**
 
-### 5.8 Availability & absences — not leave management 🟢 WS-28k
+### 5.8 Availability & absences — not leave management ✅ BUILT (WS-28k, 2026-08-13)
 
 An assigner needs to know that Rahul is away next week. That is a **fact**, and it is one
 table: `people_absences(person_id, starts_on, ends_on, kind, note)` where `kind` is
@@ -1088,7 +1098,7 @@ The `email_conflict` and un-validated-CHECK rows are **listed here by design** �
 148 deliberately quarantined rather than failed the deploy, and this panel is where that
 decision gets paid off. A quarantine nobody surfaces is a data-loss with a delay.
 
-### 5.11 Work-schedule settings 🟢 WS-28p
+### 5.11 Work-schedule settings ✅ BUILT (WS-28p, 2026-08-13)
 
 Where the org policy of §3.4a is edited: working days, hours per day, week start, the
 shift list, the default timezone, and the holiday calendar. **Admin-gated**
@@ -1253,10 +1263,10 @@ new table is tenant-scoped by construction (R5(a): discovered by
 | **P-2** | ✅ Status vocabulary + `has_login` derived, never a column | WS-28a |
 | **P-3** | ✅ Profile columns on `people` — §3.1's self half, §3.2's employment half, §3.4's `max_concurrent_tasks`, §3.5's private half | WS-28g |
 | **P-4** | ✅ `people_skills` (structured skills) + `people_credentials` (education, certifications, prior roles) — migration 176 | WS-28h |
-| **P-5** | 🔲 `people_absences` | WS-28k |
+| **P-5** | ✅ `people_absences` — migration 174 | WS-28k |
 | **P-6** | 🔲 The tightening half: narrow `employment_type` / `seniority` CHECKs once real data is in, and validate 148's status CHECK where the quarantine panel (§5.10) has been cleared | later release, R6 contract half |
-| **P-7** | 🔲 The work schedule — **no migration at all**: the org policy is a row in `org_settings` (151's existing key→JSON store) and the person override is the `working_hours` column P-3 already shipped. `contracted_hours_per_week` is computed, never stored | WS-28p |
-| **P-8** | 🔲 `people.avatar` (data URI of the server's 256×256 WebP re-encode) + `avatar_updated_at` | WS-28q |
+| **P-7** | ✅ The work schedule — **no migration at all**: the org policy is a row in `org_settings` (151's existing key→JSON store) and the person override is the `working_hours` column P-3 already shipped. `contracted_hours_per_week` is computed, never stored. `gateway/work_schedule.py` is the one effective-schedule function | WS-28p |
+| **P-8** | ✅ `people.avatar` (data URI of the server's 256×256 re-encode) + `avatar_updated_at` — migration 173 | WS-28q |
 
 **Every P-3 column is nullable with no NOT NULL and no rewrite of an existing column**
 (R6). The deploy applies migrations *before* restarting services, so the currently-running

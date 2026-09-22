@@ -15,9 +15,9 @@
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
 import { useAccess } from "@/components/AccessProvider";
 import type { Feature, Role } from "../members/types";
+import SettingsHeader from "@/components/SettingsHeader";
 
 export default function RolesPage() {
   const { access } = useAccess();
@@ -86,26 +86,19 @@ export default function RolesPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3 shrink-0 sm:px-6 sm:py-4">
-        <div className="flex items-center gap-3">
-          <Link
-            href="/settings/organization"
-            className="rounded-lg border border-border p-2 text-muted-foreground tech-transition hover:bg-secondary"
-            aria-label="Back to Organisation"
-          >
-            <Icon name="ArrowLeft" size={15} />
-          </Link>
-          <div>
-            <h1 className="text-base font-bold text-foreground sm:text-lg">Roles</h1>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Permission bundles you assign to members
-            </p>
-          </div>
-        </div>
-        <Button size="lg" layout="flex items-center" onClick={() => setCreating(true)}>
-          <Icon name="Plus" size={15} />
-          New role
-        </Button>
+      <div className="shrink-0 border-b border-border px-4 py-3 sm:px-6 sm:py-4">
+        <SettingsHeader
+          title="Roles"
+          subtitle="Permission bundles you assign to members"
+          backHref="/settings/organization"
+          backLabel="Back to Organisation"
+          actions={
+            <Button size="lg" layout="flex items-center" onClick={() => setCreating(true)}>
+              <Icon name="Plus" size={15} />
+              New role
+            </Button>
+          }
+        />
       </div>
 
       {error && (

@@ -16,7 +16,6 @@
  * surfaces come to disagree about a customer's money.
  */
 
-import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 import Icon from "@/components/Icon";
@@ -56,6 +55,7 @@ import {
   readMembers,
   releaseBody,
 } from "./lib/manage";
+import SettingsHeader from "@/components/SettingsHeader";
 
 interface BillingPayload {
   credits: CreditSummary;
@@ -170,22 +170,13 @@ export default function BillingPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3 shrink-0 sm:px-6 sm:py-4">
-        <div className="flex items-center gap-3">
-          <Link
-            href="/settings"
-            className="rounded-lg border border-border p-2 text-muted-foreground tech-transition hover:bg-secondary"
-            aria-label="Back to settings"
-          >
-            <Icon name="ArrowLeft" size={15} />
-          </Link>
-          <div>
-            <h1 className="text-base font-bold text-foreground sm:text-lg">Billing</h1>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              AI credits, subscription and bills
-            </p>
-          </div>
-        </div>
+      <div className="shrink-0 border-b border-border px-4 py-3 sm:px-6 sm:py-4">
+        <SettingsHeader
+          title="Billing"
+          subtitle="AI credits, subscription and bills"
+          backHref="/settings"
+          backLabel="Back to settings"
+        />
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 sm:p-6">

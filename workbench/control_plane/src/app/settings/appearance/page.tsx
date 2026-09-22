@@ -27,6 +27,7 @@ import { useAppearanceStore, effectiveDensity } from "@/lib/theme/store";
 import { isSafeColor } from "@/lib/theme/css";
 import type { AppearanceSettings, Density, ThemeMode } from "@/lib/theme/types";
 import { DENSITY_SCALE } from "@/lib/theme/types";
+import SettingsHeader from "@/components/SettingsHeader";
 
 const DENSITY_LABELS: Record<Density, string> = {
   compact: "Compact",
@@ -56,7 +57,7 @@ export default function AppearancePage() {
   if (!hydrated) {
     return (
       <div className="flex h-full flex-col">
-        <PageHeader />
+        <AppearanceHeader />
         <div className="flex-1 p-4 text-xs text-muted-foreground">Loading preferences…</div>
       </div>
     );
@@ -64,7 +65,7 @@ export default function AppearancePage() {
 
   return (
     <div className="flex h-full flex-col">
-      <PageHeader />
+      <AppearanceHeader />
       <Tabs
         tabs={[
           { id: "personal", label: "Your appearance" },
@@ -81,15 +82,18 @@ export default function AppearancePage() {
   );
 }
 
-function PageHeader() {
+/**
+ * ⚠️ This used to declare a LOCAL component called `PageHeader` — a different
+ * component wearing the shared one's name (CLAUDE.md §5). It is now the
+ * shared `SettingsHeader`, inside the bordered bar this pane still wants.
+ */
+function AppearanceHeader() {
   return (
-    <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3 sm:px-6 sm:py-4">
-      <div>
-        <h1 className="text-base font-bold text-foreground sm:text-lg">Appearance</h1>
-        <p className="mt-0.5 text-xs text-muted-foreground">
-          Colour mode, density and accent across the Control Plane
-        </p>
-      </div>
+    <div className="shrink-0 border-b border-border px-4 py-3 sm:px-6 sm:py-4">
+      <SettingsHeader
+        title="Appearance"
+        subtitle="Colour mode, density and accent across the Control Plane"
+      />
     </div>
   );
 }
