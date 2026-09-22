@@ -260,11 +260,24 @@ function TierCard({
               margin", and the card disagreed with its own control. What this
               button edits is the TARGET we price towards. Naming it so is the
               whole fix. Owner report, 2026-09-22. */}
+          {/* 🔴 **"What does set the price and set a target margin even
+              have [to do with each other]?"** Owner report, 2026-09-23.
+
+              Nothing, and that was the problem: two buttons side by side, one
+              size, one weight, reading as two halves of one job. They are not
+              peers.
+
+              **Set the price** is the ONLY control that changes a bill.
+              **This** one writes `margin_multiplier` and `margin_floor`, and
+              the Console's own docstring calls the first "an intention" and
+              the second an alarm threshold. Nothing in `router.py` or
+              `credits.py` reads either. So the label says optional, and the
+              editor below says what it does instead. */}
           {open === "margin"
             ? FORM.cancel
             : row.margin && (row.margin.marginMultiplier !== null || row.margin.marginFloor !== null)
-              ? "Change the target"
-              : "Set a target margin"}
+              ? "Profit goal (set)"
+              : "Profit goal (optional)"}
         </button>
       </div>
 
@@ -526,12 +539,58 @@ function PriceEditor({
                   made the row look worse than the bug it fixed. Measured in
                   the rig, 2026-09-22. One sentence carries it for all three,
                   and the labels stay short enough to sit on one line. */}
-              <p className="legs-unit">
-                All three are in <strong>credits per 1M tokens</strong>.
-              </p>
+              {/* 🔴 **"I do not know what cached input is, and what do I need
+                  to put in that box."** Owner report, 2026-09-23.
+
+                  Every word of this used to live in a `title` tooltip, which
+                  a person has to already suspect is there before they can
+                  read it. An operator who is not from the AI industry cannot
+                  price a thing nobody has named for them.
+
+                  ⚠️ The third line is a REVENUE warning, not a definition.
+                  `RateCard.cached_input_per_1m` defaults to `Decimal(0)`, so
+                  a blank box does not mean "same as input" — it means the
+                  customer is charged NOTHING for those tokens. An agent that
+                  re-sends one long prompt sends mostly cached tokens, so the
+                  hole is largest exactly where the traffic is. */}
+              <div className="legs-unit">
+                <p>
+                  All three are in <strong>credits per 1M tokens</strong> — the
+                  price a <em>customer</em> pays, not what the vendor charges
+                  us.
+                </p>
+                <dl className="legs-key">
+                  <dt>Input</dt>
+                  <dd>the text a customer sends — their question, and anything
+                    your app puts in front of it.</dd>
+                  <dt>Output</dt>
+                  <dd>the text the AI writes back. Usually the dearest of the
+                    three.</dd>
+                  <dt>Cached input</dt>
+                  <dd>
+                    repeated text the vendor already has, and charges us less
+                    for. A chat that re-sends the same history every turn is
+                    mostly this.{" "}
+                    <strong>
+                      Leave it blank and the customer pays nothing for it.
+                    </strong>{" "}
+                    Type the same number as Input to charge full price.
+                  </dd>
+                </dl>
+              </div>
               <Leg label="Input" help={HELP_PRICING.inputPrice} value={inP} set={setInP} price={catalog} />
               <Leg label="Output" help={HELP_PRICING.outputPrice} value={outP} set={setOutP} price={catalog} />
               <Leg label="Cached input" help={HELP_PRICING.cachedPrice} value={cachedP} set={setCachedP} price={catalog} />
+              {/* ⚠️ Live, and only when it matters: a priced tier whose cached
+                  box is empty. Saying it on an untouched form would be noise
+                  on every first visit. */}
+              {inP.trim() !== "" && cachedP.trim() === "" && (
+                <p className="legs-unit legs-warn">
+                  Cached input is empty, so repeated text will bill{" "}
+                  <strong>zero</strong>. That is most of a chat conversation.
+                  Type {inP.trim()} to charge the same as Input.
+                </p>
+              )}
             </div>
           ) : (
             <div className="legs">
@@ -653,6 +712,16 @@ function MarginEditor({
   return (
     <div className="priceeditor">
       <div className="legs">
+        {/* ⚠️ First, because both boxes below are meaningless without it. An
+            operator who thinks this sets a price will type a price here. */}
+        <div className="legs-unit">
+          <p>
+            <strong>This changes no bill.</strong> Prices are set by{" "}
+            <em>Set the price</em>. These two numbers only help you get there:
+            the first suggests prices for you, the second warns you when a tier
+            earns less than you wanted.
+          </p>
+        </div>
         <label title={HELP_PRICING.multiplier}>
           Aim to keep, %
           <input inputMode="numeric" value={keep} onChange={(e) => setKeep(e.target.value)} />
@@ -670,10 +739,9 @@ function MarginEditor({
       </div>
 
       <p className="muted small">
-        Neither number bills anything. The first seeds what this tier suggests
-        when you price it. The second is measured against traffic that already
-        happened, so a tier can sit above its floor while the first is wrong.
-        Leave a box empty to turn that half off.
+        The alarm is measured against traffic that already happened, so a tier
+        can sit above its floor while the goal is still wrong. Leave either box
+        empty to turn that half off.
       </p>
 
       {err && <p className="result err">{err}</p>}

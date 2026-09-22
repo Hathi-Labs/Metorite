@@ -702,7 +702,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
 
           <TBtn
             icon={themedIcon("ListChecks")}
-            label="Add to Tasks"
+            label="Add to My Tasks"
             onClick={() => {
               if (email) captureEmailToTasks(email.id);
             }}
@@ -964,11 +964,11 @@ export function EmailDetail({ email }: EmailDetailProps) {
           <button
             type="button"
             onClick={() => captureEmailToTasks(email.id)}
-            title="Add to Tasks — the assistant reads the thread and files a routed task (follow-up / delegated / next action) with a due date if implied."
+            title="Add to My Tasks — the assistant reads the thread and files a routed task (follow-up / delegated / next action) with a due date if implied."
             className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:border-primary/40 hover:text-primary transition-colors"
           >
             <AppIcon name="ListChecks" size={14} />
-            <span className="hidden sm:inline">Add to Tasks</span>
+            <span className="hidden sm:inline">Add to My Tasks</span>
           </button>
         </div>
 

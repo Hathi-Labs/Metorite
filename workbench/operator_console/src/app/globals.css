@@ -2669,6 +2669,33 @@ main.wrap {
   color: var(--muted);
 }
 .legs-unit strong { color: var(--text); font-weight: 600; }
+.legs-unit p { margin: 0 0 4px; }
+/* The plain-English key for the three token boxes. A definition list, because
+   that is what it is — a term and what it means. */
+.legs-key {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 10px;
+  margin: 0;
+}
+.legs-key dt {
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.legs-key dd { margin: 0; }
+/* ⚠️ A live revenue warning, not a definition. It must not read as the same
+   grey note as the key above it. */
+.legs-warn {
+  color: var(--warn);
+  border-left: 2px solid var(--warn);
+  padding-left: 8px;
+}
+.legs-warn strong { color: var(--warn); }
+@media (max-width: 560px) {
+  .legs-key { grid-template-columns: 1fr; }
+  .legs-key dd { margin-bottom: 4px; }
+}
 .editoractions {
   display: flex;
   align-items: center;

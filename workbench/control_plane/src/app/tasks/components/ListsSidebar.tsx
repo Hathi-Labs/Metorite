@@ -80,7 +80,7 @@ export function ListsSidebar({
   return (
     <nav className="flex h-full flex-col gap-1 overflow-y-auto p-3 text-sm">
       <div className="px-2 pb-2 pt-1">
-        <h2 className="text-sm font-semibold text-foreground">Tasks</h2>
+        <h2 className="text-sm font-semibold text-foreground">My Tasks</h2>
         <p className="text-[11px] text-muted-foreground">Getting Things Done</p>
       </div>
 

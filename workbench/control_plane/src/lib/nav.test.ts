@@ -107,6 +107,11 @@ describe("the launch allowlist (LS-1)", () => {
     }
   });
 
+  it("calls the personal lens My Tasks — D73, the mirror of launch_surface.md §2", () => {
+    const pane = panesWithSection().find(([, p]) => p.href === "/tasks");
+    expect(pane?.[1].label).toBe("My Tasks");
+  });
+
   it("has no Centers section — D49 withdrew the surface", () => {
     for (const s of NAV_SECTIONS) {
       expect(s.id).not.toBe("centers");

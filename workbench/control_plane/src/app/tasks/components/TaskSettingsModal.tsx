@@ -64,7 +64,7 @@ const MODEL_FIELDS: {
     title: "Email → task drafting model",
     description:
       "Turns an email into an actionable capture title + context when you " +
-      "use “Add to Tasks” in the email app.",
+      "use “Add to My Tasks” in the email app.",
     def: "tier-fast",
   },
   {
@@ -240,7 +240,7 @@ function SettingsPanel() {
                 onChange={(v) => void updateSettings({ backgroundSync: v })}
               />
               <Toggle
-                title="Sync workspaces when Tasks opens"
+                title="Sync workspaces when My Tasks opens"
                 description="Pull the latest tasks from your connected PM workspaces (incremental) each time you open the app. Manual sync stays available per workspace."
                 checked={settings.autoSyncOnOpen}
                 onChange={(v) => void updateSettings({ autoSyncOnOpen: v })}

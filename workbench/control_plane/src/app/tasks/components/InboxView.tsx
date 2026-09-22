@@ -648,7 +648,7 @@ export function InboxView() {
                     type="button"
                     disabled={!oldest}
                     onClick={() => oldest && startClarify(oldest.id)}
-                    title="Process the oldest item first (GTD FIFO)"
+                    title="Process the oldest item first (first in, first out)"
                     className="tech-transition inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md bg-primary/10 px-2.5 py-1.5 text-xs font-medium text-primary hover:bg-primary/20 disabled:opacity-40"
                   >
                     <AppIcon name="Sparkles" className="h-3.5 w-3.5" />
