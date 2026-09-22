@@ -3900,6 +3900,12 @@ closes the question H-132 asked, and it closes it the other way.
    reversible exception.
 7. **The code names follow the schema in a slice of their own** (S9). One
    `tsc` run and one pytest run then verify the sweep.
+8. **Continuity with Projects is a property to verify, not a sync to build**
+   *(added 2026-09-23, same day, second directive)*. A task assigned to me in
+   Projects is in my inbox, my day and my calendar. It is one row.
+   S6e adds three things. A project where I am the lead shows in My Tasks. An
+   assigned task I have not triaged sits in a "From Projects" group. Both apps
+   draw one task panel composition. `specs/my_tasks_cutover.md` §4.8.
 
 **The mechanism does not change.** The guarded rename prologue in the creating
 migration (`people_center_app.md` §7.0), registered in
