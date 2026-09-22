@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { formatDateTime } from "@/lib/format";
+import { chipClass } from "@/lib/tone";
+import { refusalTitle } from "@/lib/refusal";
 
 // The audit feed — WS-31 CP-12f.
 //
@@ -178,7 +180,22 @@ export default function ActivityFeed({ actions }: { actions: string[] }) {
                   <td>
                     <ActorCell actor={r.actor} />
                   </td>
-                  <td>{r.action}</td>
+                  {/* 🔴 A refusal is the row you came here to find, so it
+                      does not look like every other row. The trail recorded
+                      successes only until 2026-09-22 — the owner spent days
+                      on a tier save that never landed, and nothing on this
+                      page could have told them why. Making the answer
+                      present but indistinguishable would repeat the fault in
+                      a quieter way. */}
+                  <td>
+                    {r.action === "refused" ? (
+                      <span className={chipClass("danger")} title={refusalTitle(r.detail)}>
+                        refused
+                      </span>
+                    ) : (
+                      r.action
+                    )}
+                  </td>
                   <td>
                     {/* A null company is normal: `operator.*` acts name none, and
                         a purged customer's rows keep their history with the
@@ -190,7 +207,14 @@ export default function ActivityFeed({ actions }: { actions: string[] }) {
                     )}
                   </td>
                   <td className="small">
-                    <code>{JSON.stringify(r.detail)}</code>
+                    {/* A refusal reads as a sentence, because "why did this
+                        not work" is answered by prose and not by a JSON blob
+                        the reader has to parse by eye. */}
+                    {r.action === "refused" ? (
+                      <span>{refusalTitle(r.detail)}</span>
+                    ) : (
+                      <code>{JSON.stringify(r.detail)}</code>
+                    )}
                   </td>
                 </tr>
               ))}

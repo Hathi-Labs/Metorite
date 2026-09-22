@@ -69,7 +69,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -1064,6 +1064,69 @@ def _seat_grid(conn, org_id: str) -> list[SeatPlanView]:
             )
         )
     return grid
+
+
+#: Methods that CHANGE something. A refused GET is a permission probe or a
+#: stale link, and recording every one would bury the writes under noise.
+_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+@app.exception_handler(HTTPException)
+async def _audit_refusals(request: Request, exc: HTTPException) -> JSONResponse:
+    """Record a REFUSED staff write, then answer exactly as FastAPI would.
+
+    🔴 **Every refusal on this service was invisible, and that is how a
+    console comes to look broken.** Measured 2026-09-22: `tier_binding` held
+    one row, seeded by a migration in January. `control_audit` held no
+    `catalog.binding` row at all — so not one tier save had ever succeeded,
+    the owner had been trying for days, and NOTHING anywhere said why. The
+    audit trail recorded successes only, because `_audit` is called after the
+    write. A trail that logs only what worked cannot answer "why did nothing
+    happen", which is the only question anybody asks it under pressure.
+
+    ⚠️ **STAFF WRITES ONLY, and each half of that is deliberate.**
+    A customer key's 402 is metering, not an operator action, and the Router
+    refuses on balance all day long — those belong in `usage_event`. A refused
+    GET is a probe. Both would drown the rows this exists to surface.
+
+    ⚠️ **The request BODY is never recorded.** `POST /keys` and
+    `POST /providers/credentials` carry secrets, and a refusal is exactly when
+    somebody is retrying with a credential in hand. The path, the status and
+    our own `detail` string are enough to name the cause, and none of them is
+    a secret.
+
+    ⚠️ **Its OWN connection.** The request's transaction is already rolling
+    back — that is what a raised `HTTPException` does — so a row written on it
+    would roll back with it and this whole function would be a no-op that
+    reads as working.
+
+    ⚠️ **It can never change the answer.** Any failure here is swallowed. An
+    audit trail that can turn a 400 into a 500 is worse than no audit trail.
+    """
+    if request.method in _WRITE_METHODS and exc.status_code >= 400:
+        staff = getattr(getattr(request, "state", None), "staff", None)
+        # No `staff` means the caller never got past authentication, or is not
+        # staff at all. Either way this is not an operator action.
+        if staff is not None:
+            try:
+                with get_engine().begin() as conn:
+                    _audit(
+                        conn,
+                        None,
+                        "refused",
+                        {
+                            "method": request.method,
+                            "path": request.url.path,
+                            "status": exc.status_code,
+                            # Our own message, never the caller's input.
+                            "why": str(exc.detail)[:500],
+                        },
+                        actor=getattr(staff, "actor", "operator"),
+                    )
+            except Exception:  # see the docstring — this may never raise
+                _log.warning("console.refusal_audit_failed", exc_info=True)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail},
+                        headers=getattr(exc, "headers", None))
 
 
 def _audit(
