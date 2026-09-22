@@ -12,7 +12,13 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { MIN_REASON, reasonIsUsable, remaining } from "./elevation";
+import {
+  MIN_REASON,
+  type ElevationWindow,
+  elevationVisible,
+  reasonIsUsable,
+  remaining,
+} from "./elevation";
 
 const SRC = join(__dirname, "..");
 const COMPONENT = readFileSync(join(SRC, "app", "Elevation.tsx"), "utf8");
@@ -94,11 +100,57 @@ describe("the surface exists and is reachable", () => {
     expect(COMPONENT).not.toContain("operatorId");
   });
 
-  it("renders nothing when the Console refuses the read", () => {
-    // `usesSessions()` is server env, so a client component cannot see the
-    // mode. The sanctioned answer (H-67) is to accept the Console's answer:
-    // break-glass and signed-out both get no control rather than a button
-    // that cannot work.
-    expect(COMPONENT).toContain("if (win === null) return null;");
+  it("asks `elevationVisible`, not whether the read merely succeeded", () => {
+    // 🔴 This used to assert `if (win === null) return null;`, and that was
+    // the DEFECT. It hid the control by expecting a 403 — but
+    // `GET /operators/elevate` is `viewer`-readable and break-glass BYPASSES
+    // the matrix, so break-glass gets a 200. The owner, on the passphrase
+    // path, saw an "Elevate" button whose only outcome was
+    // "only a signed-in operator can elevate". Measured 2026-09-22.
+    expect(COMPONENT).toContain("if (!elevationVisible(win)) return null;");
+    expect(COMPONENT).not.toContain("if (win === null) return null;");
+  });
+});
+
+// ── Should the control be on screen at all? ───────────────────────────────
+
+describe("elevationVisible", () => {
+  const W = (over: Partial<ElevationWindow> = {}): ElevationWindow => ({
+    elevated: false,
+    can_elevate: true,
+    required: true,
+    ...over,
+  });
+
+  it("hides when the Console answered nothing", () => {
+    expect(elevationVisible(null)).toBe(false);
+  });
+
+  it("🔴 hides on the BREAK-GLASS path, which answers 200", () => {
+    // The whole bug. `can_elevate` is false and the read still succeeded.
+    expect(elevationVisible(W({ can_elevate: false }))).toBe(false);
+  });
+
+  it("hides when NO route demands a window (D72)", () => {
+    // A control for a feature that is not running can only ever refuse.
+    expect(elevationVisible(W({ required: false }))).toBe(false);
+  });
+
+  it("shows when a window can be opened AND something demands one", () => {
+    expect(elevationVisible(W())).toBe(true);
+  });
+
+  it("⚠️ ALWAYS shows an OPEN window, whatever the flag says", () => {
+    // A window opened before the flag changed still confers the privilege.
+    // Hiding the countdown would leave it running with no way to end it.
+    expect(
+      elevationVisible(W({ elevated: true, required: false, can_elevate: false })),
+    ).toBe(true);
+  });
+
+  it("treats a Console that omits the fields as NOT visible", () => {
+    // ⚠️ Absent is not permission. A Console predating the fields cannot tell
+    // us, and drawing a control we cannot justify is the defect this closes.
+    expect(elevationVisible({ elevated: false })).toBe(false);
   });
 });

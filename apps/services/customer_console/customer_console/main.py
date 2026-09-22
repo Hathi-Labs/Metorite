@@ -1486,13 +1486,31 @@ def read_elevation(staff: Operator) -> dict[str, Any]:
     The surface needs this to show a countdown. A window whose end nobody can
     see is one people re-open out of habit.
     """
-    if not staff.is_session or staff.operator_id is None:
-        return {"elevated": False}
+    # 🔴 **`can_elevate` and `required`, because `elevated: False` alone made
+    # the surface draw a button nobody could use.** Measured 2026-09-22: the
+    # operator console hid its control by expecting a 403 on this route. This
+    # route is `viewer`-readable and break-glass BYPASSES the matrix, so the
+    # break-glass caller — the owner, on the passphrase path — got a 200, the
+    # control rendered, and `POST` then answered "only a signed-in operator can
+    # elevate". A button whose only outcome is a refusal.
+    #
+    # ⚠️ `required` is D72's flag. With elevation off, no window is demanded
+    # anywhere, so a control to open one is a control for a feature that is not
+    # running. The surface reads this and draws nothing.
+    can = staff.is_session and staff.operator_id is not None
+    base = {
+        "elevated": False,
+        "can_elevate": can,
+        "required": operator_elevation.elevation_required(),
+    }
+    if not can:
+        return base
     with get_engine().begin() as conn:
         window = store.operator_elevation_live(conn, staff.operator_id)
     if window is None:
-        return {"elevated": False}
+        return base
     return {
+        **base,
         "elevated": True,
         "reason": window["reason"],
         "reference": window["reference"],
