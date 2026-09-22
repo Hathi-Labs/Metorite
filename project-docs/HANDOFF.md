@@ -3004,7 +3004,7 @@ line — never reclaim a number by deleting the other entry.
   `scripts/dev_db.sh` · `tests/live/README.md`
 - **Added:** 2026-09-20 · the task lifecycle session
 
-### H-152 · WS-27bm: build the Projects chat slices S2 to S5 · [AGENT]
+### H-155 · WS-27bm: build the Projects chat slices S2 to S5 · [AGENT]
 - **Check:** `uv run python -c "import skill_projects.manifest as m; print(sorted(m.PLANNED))"`
   → a non-empty list means at least one slice is still open. The value is
   the slice each tool belongs to.
@@ -3017,9 +3017,9 @@ line — never reclaim a number by deleting the other entry.
   The fence refuses a tool that is both built and planned.
 - **Authority:** `specs/projects_ai_chat.md` §3.2, §3.3, §5, §10 ·
   `skill_projects/manifest.py`
-- **Added:** 2026-09-22 · the Projects chat design session
+- **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
 
-### H-153 · Decide the three questions the Projects chat spec leaves to the owner · [OWNER]
+### H-156 · Decide the three questions the Projects chat spec leaves to the owner · [OWNER]
 - **Check:** `grep -n "^## 12" -A 20 project-docs/specs/projects_ai_chat.md`
   → three numbered questions with no answer under them means this is open.
 - **Why:** (1) **Delete.** D-PM-35 keeps hard delete off the chat until
@@ -3030,9 +3030,9 @@ line — never reclaim a number by deleting the other entry.
   is real once H-42 prices the card. Answer any of the three by editing the
   manifest row and the spec, in one PR.
 - **Authority:** `specs/projects_ai_chat.md` §5.4, §12 · `org_access_control.md` §8d
-- **Added:** 2026-09-22 · the Projects chat design session
+- **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
 
-### H-154 · Flip `NEXT_PUBLIC_PROJECTS_CHAT` on the box, then look at the rail · [AGENT]
+### H-157 · Flip `NEXT_PUBLIC_PROJECTS_CHAT` on the box, then look at the rail · [AGENT]
 - **Check:** `ssh metorite 'grep -c NEXT_PUBLIC_PROJECTS_CHAT=1 /opt/metorite/workbench/control_plane/.env.local 2>/dev/null || echo 0'`
   → `0` means the flag is off and the slot still says "not built".
 - **Why:** S1 shipped dark. The flag is a build-time `NEXT_PUBLIC_*` value,
@@ -3042,7 +3042,7 @@ line — never reclaim a number by deleting the other entry.
   and beside the board. Ask it "what is stuck here?" on a real space, and
   confirm the numbers match the Analytics app.
 - **Authority:** `specs/projects_ai_chat.md` §4.3, §11 · CLAUDE.md §3a
-- **Added:** 2026-09-22 · the Projects chat design session
+- **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
 
 
 # DONE — deleted, not archived
