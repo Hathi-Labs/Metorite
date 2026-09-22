@@ -564,6 +564,12 @@ export interface WhereGroup {
 export function whereGroups(input: {
   areas: readonly { id: string; name: string; archived?: boolean }[];
   projects: readonly { id: string; outcome: string; status?: string }[];
+  /**
+   * Whether the Areas group is offered at all. `false` for a task that lives
+   * on a company board: D62 refuses a move from a team node into anybody's
+   * personal tree, so offering an Area there is offering a 422. Default true.
+   */
+  includeAreas?: boolean;
 }): WhereGroup[] {
   const areas = input.areas
     .filter((a) => !a.archived)
@@ -571,8 +577,33 @@ export function whereGroups(input: {
   const projects = input.projects
     .filter((p) => p.status === undefined || p.status === "ACTIVE")
     .map((p) => ({ id: p.id, name: p.outcome, kind: "project" as const }));
-  return [
-    { label: "My Areas", kind: "area", rows: areas },
-    { label: "Company projects", kind: "project", rows: projects },
-  ];
+  const groups: WhereGroup[] = [];
+  if (input.includeAreas !== false) {
+    groups.push({ label: "My Areas", kind: "area", rows: areas });
+  }
+  groups.push({ label: "Company projects", kind: "project", rows: projects });
+  return groups;
+}
+
+/**
+ * Is this task in MY tree — the personal root, or one of my Areas?
+ *
+ * Under the lens the answer decides two things in Clarify (S6b repair):
+ * whether the Where picker offers my Areas, and whether Size=project (which
+ * mints an Area) is offered at all. Both are moves INTO the personal tree,
+ * and D62 refuses them for a task that lives on a company board.
+ *
+ * A task with no project at all can only be mine — the lens creates every
+ * capture in the root — so it reads as personal. `rootId` is null before a
+ * member's first capture, and then nothing they see can be a team task
+ * either, which is why null does not flip the answer.
+ */
+export function isPersonalTask(
+  item: { projectId?: string },
+  rootId: string | null,
+  areaIds: readonly string[],
+): boolean {
+  if (!item.projectId) return true;
+  if (rootId !== null && item.projectId === rootId) return true;
+  return areaIds.includes(item.projectId);
 }

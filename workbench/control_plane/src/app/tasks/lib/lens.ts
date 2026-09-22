@@ -1104,6 +1104,22 @@ export async function lensUploadAttachment(
 }
 
 /**
+ * My personal root (`GET /projects/my/project`), or `null` for a member who
+ * has never captured — a 404 there is an answer, not a fault. ONE read
+ * behind the status catalogue and the store's `personalRootId` (S6b repair),
+ * so "which project is my root" has one door.
+ */
+export async function lensFetchMyRoot(): Promise<{ id: string; name: string } | null> {
+  try {
+    const root = await projectsCall<Raw>(MY_ROUTES.project);
+    return { id: String(root.id ?? ""), name: String(root.name ?? "") };
+  } catch (err) {
+    if ((err as { status?: number }).status === 404) return null;
+    throw err;
+  }
+}
+
+/**
  * The settings modal's status catalogue: the lanes of my personal root.
  *
  * Under one store there is no upstream vocabulary to map — a lane IS the
@@ -1112,16 +1128,9 @@ export async function lensUploadAttachment(
  * not an error.
  */
 export async function lensStatusCatalog(): Promise<StatusCatalog> {
-  let root: Raw;
-  try {
-    root = await projectsCall<Raw>(MY_ROUTES.project);
-  } catch (err) {
-    if ((err as { status?: number }).status === 404) {
-      return { stages: [], entries: [], unmapped: 0 };
-    }
-    throw err;
-  }
-  const names = (await lensStatuses(String(root.id))).map((r) => r.name);
+  const root = await lensFetchMyRoot();
+  if (!root) return { stages: [], entries: [], unmapped: 0 };
+  const names = (await lensStatuses(root.id)).map((r) => r.name);
   return {
     stages: names,
     entries: names.map((name) => ({ status: name, stage: name, mapped: true })),

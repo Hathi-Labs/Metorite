@@ -45,9 +45,9 @@ const PRIMARY: NavRow[] = [
   { view: "archive", label: "Archive", icon: "Archive" },
 ];
 
-const SECONDARY: NavRow[] = [
-  { view: "horizons", label: "Horizons of Focus", icon: "Mountain", soon: true },
-];
+// ⚠️ No "higher altitude" block below the views. D65 took that surface off
+// (S6b repair, 2026-09-23), and S6c removes the view key. `naming`-style
+// fence: `areas.test.ts` refuses the word in this file.
 
 export function ListsSidebar({
   onNavigate,
@@ -79,25 +79,28 @@ export function ListsSidebar({
   };
   // Counts must honor the All / Mine / ClickUp source toggle, otherwise the
   // badges stay frozen at the "All" totals while the list below re-filters.
-  // The same holds for a selected Area (S6b): the lists narrow to it, so the
-  // badges narrow with them.
-  const counts = useMemo(
-    () => viewCounts(itemsInArea(items, selectedAreaId), sourceFilter),
-    [items, sourceFilter, selectedAreaId],
-  );
+  // The same holds for a selected Area (S6b): the organised lists narrow to
+  // it, so their badges narrow with them. ⚠️ NOT the Inbox: a capture lands
+  // in the personal ROOT, before any Area, so an Area scope would empty the
+  // Inbox and hide the badge. The Inbox is pre-organisation and never scoped.
+  const counts = useMemo(() => {
+    const scoped = viewCounts(itemsInArea(items, selectedAreaId), sourceFilter);
+    if (selectedAreaId) scoped.inbox = viewCounts(items, sourceFilter).inbox;
+    return scoped;
+  }, [items, sourceFilter, selectedAreaId]);
 
   return (
     <nav className="flex h-full flex-col gap-1 overflow-y-auto p-3 text-sm">
       <div className="px-2 pb-2 pt-1">
         <h2 className="text-sm font-semibold text-foreground">My Tasks</h2>
-        <p className="text-[11px] text-muted-foreground">Getting Things Done</p>
+        <p className="text-[11px] text-muted-foreground">Your lists, your Areas, your day</p>
       </div>
 
       {/* ⚠️ The view rows below were DELETED by mistake in WS-39 S3a-client
           slice 4 (b6192110), which meant to remove only the Workspaces list
-          under them and took the whole nav with it. `NavButton`, `PRIMARY`,
-          `SECONDARY` and the assistant props survived unused, which is how
-          it was noticed (S6b, 2026-09-23). Restored as they were. */}
+          under them and took the whole nav with it. `NavButton`, `PRIMARY`
+          and the assistant props survived unused, which is how it was
+          noticed (S6b, 2026-09-23). Restored as they were. */}
       {PRIMARY.map((row) => {
         const count = counts[row.view];
         // My Next Actions stays highlighted even when an in-view @context pill is
@@ -119,15 +122,6 @@ export function ListsSidebar({
       {/* S6b — my Areas. Only under the lens: the legacy store has no such
           rows, and a section that can only render empty is a dead branch. */}
       {lensEnabled() && <AreasSection items={items} onNavigate={onNavigate} />}
-
-      <div className="mt-3 border-t border-border pt-3">
-        <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-          Higher altitude
-        </p>
-        {SECONDARY.map((row) => (
-          <NavButton key={row.view} row={row} active={false} onClick={() => {}} />
-        ))}
-      </div>
 
       {/* AI assistant — opens as a scene (mirrors the email app's left-rail
           Chat entry) instead of an always-on right rail. */}

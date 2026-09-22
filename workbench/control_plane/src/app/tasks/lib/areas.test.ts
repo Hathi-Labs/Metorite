@@ -10,9 +10,12 @@
  *
  * Spec: `project-docs/specs/my_tasks_cutover.md` §5 S6b.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { whereGroups } from "./clarify";
+import { isPersonalTask, whereGroups } from "./clarify";
 
 vi.mock("./api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api")>();
@@ -71,6 +74,46 @@ describe("whereGroups", () => {
     const groups = whereGroups({ areas: [], projects: [] });
     expect(groups).toHaveLength(2);
     expect(groups.every((g) => g.rows.length === 0)).toBe(true);
+  });
+
+  it("drops the Areas group for a team task — D62 would refuse the move", () => {
+    const groups = whereGroups({
+      areas: [{ id: "a1", name: "Home" }],
+      projects: [{ id: "p1", outcome: "Sales Q4" }],
+      includeAreas: false,
+    });
+    expect(groups.map((g) => g.label)).toEqual(["Company projects"]);
+  });
+});
+
+describe("isPersonalTask", () => {
+  const areas = ["a-home", "a-garden"];
+
+  it("is true for the root, an Area, or no project at all", () => {
+    expect(isPersonalTask({ projectId: "root-1" }, "root-1", areas)).toBe(true);
+    expect(isPersonalTask({ projectId: "a-garden" }, "root-1", areas)).toBe(true);
+    expect(isPersonalTask({}, "root-1", areas)).toBe(true);
+  });
+
+  it("is false for a task on a company board", () => {
+    expect(isPersonalTask({ projectId: "p-sales" }, "root-1", areas)).toBe(false);
+  });
+
+  it("does not let an unknown root claim a company task", () => {
+    // Before a first capture there is no root; a task in some project that
+    // is not one of my Areas is still not mine.
+    expect(isPersonalTask({ projectId: "p-sales" }, null, areas)).toBe(false);
+    expect(isPersonalTask({ projectId: "a-home" }, null, areas)).toBe(true);
+  });
+});
+
+describe("the sidebar carries no altitude block (D65)", () => {
+  it("never names a horizon", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL("../components/ListsSidebar.tsx", import.meta.url)),
+      "utf-8",
+    );
+    expect(/horizon/i.test(src)).toBe(false);
   });
 });
 
@@ -135,6 +178,8 @@ describe("the local tree under the lens", () => {
     } finally {
       restore();
     }
+    // ONE request — the Area mint and nothing to `/tasks/local-projects`.
+    expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
       method: "POST", url: "/api/projects/my/areas", body: { name: "Errands" },
     });

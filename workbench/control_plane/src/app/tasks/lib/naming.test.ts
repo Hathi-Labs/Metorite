@@ -23,7 +23,9 @@ import { describe, expect, it } from "vitest";
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const DIRS = [
-  path.join(ROOT, "tasks", "components"),
+  // The app root, so `page.tsx` (the toolbar title) is read — the first
+  // sweep scanned only `components/` and missed it (S6b repair).
+  path.join(ROOT, "tasks"),
   path.join(ROOT, "calendar"),
   path.join(ROOT, "..", "components", "tasks"),
 ];
@@ -66,6 +68,10 @@ const BANNED: Array<[RegExp, string]> = [
   [/\bin Tasks\b/, '"in Tasks" — say "in My Tasks"'],
   [/\bto Tasks\b/, '"to Tasks" — say "to My Tasks"'],
   [/\bOpen Tasks\b/, '"Open Tasks" — say "Open My Tasks"'],
+  // S6b repair (2026-09-23): the survivors the first sweep missed — the
+  // toolbar title, the settings header and the sidebar subtitle.
+  [/\bTask Manager\b/, '"Task Manager" — the app is My Tasks'],
+  [/\bGetting Things Done\b/, 'the method name "Getting Things Done"'],
 ];
 
 describe("My Tasks — the name a member reads (D73)", () => {

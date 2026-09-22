@@ -72,6 +72,7 @@ import {
   apiCreateFolder,
   apiCreateLocalProject,
   fetchAreas,
+  fetchMyRoot,
   apiCreateArea,
   apiRenameArea,
   apiDeleteArea,
@@ -769,6 +770,10 @@ interface TaskState {
    */
   areas: LensArea[];
   loadAreas: () => Promise<void>;
+  /** My personal root's id under the lens (S6b repair), read once on
+   *  hydrate through `fetchMyRoot`. Null off-flag or before a first capture.
+   *  `isPersonalTask` reads it to keep Areas off a team task's Where picker. */
+  personalRootId: string | null;
   /** Mint one. Resolves with the row, or `undefined` when refused (the
    *  reason is on `syncFailure`). */
   createArea: (name: string) => Promise<LensArea | undefined>;
@@ -894,6 +899,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   providers: CONNECTED_PROVIDERS,
   localHierarchy: null,
   areas: [],
+  personalRootId: null,
   selectedAreaId: null,
 
   selectedView: "inbox",
@@ -1355,6 +1361,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       // say why through the toast seam.
       const onRefused = async (err: unknown) => {
         await refetchAfterFailure(set);
+        // A refused kind=project may still have minted the Area before the
+        // rest rolled back, or not — the list is the only honest answer.
+        void get().loadAreas();
         get().reportSyncFailure(
           err instanceof Error && err.message
             ? `Couldn't organize it: ${err.message}`
@@ -1390,6 +1399,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
               fetchProjects(),
             ]);
             set({ items, projects });
+            // Under the lens kind=project minted an AREA (S6b). The sidebar
+            // reads `areas`, not `projects`, so re-read it or the new Area
+            // is invisible until a reload (S6b repair).
+            void get().loadAreas();
           }, onRefused),
         );
       } else {
@@ -1398,6 +1411,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
             set((s) => ({
               items: s.items.map((i) => (i.id === id ? server : i)),
             }));
+            // The open counts on the Areas moved with this task (S6b).
+            void get().loadAreas();
             // ⚠️ The push-on-accept arm was DELETED here (D52, WS-39
             // S3a-client slice 4). It pushed an accepted decision to the
             // connected tool when `syncState` said it was stageable — and
@@ -2245,10 +2260,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   hydrate: async () => {
     try {
-      const [items, projects, orgPeople] = await Promise.all([
+      const [items, projects, orgPeople, myRoot] = await Promise.all([
         fetchItems("all"),
         fetchProjects(),
         fetchPeople().catch(() => [] as Person[]),
+        // S6b repair. The personal root's id, so Clarify can tell a task
+        // in MY tree from one on a company board. Null off-flag, and null
+        // for a member who has never captured (no root yet).
+        fetchMyRoot().catch(() => null),
       ]);
       // People: the org-knowledge layer (roles/skills, §6.1), or the bundled
       // mocks in demo mode. ⚠️ The middle rung — "provider workspace
@@ -2264,6 +2283,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         items,
         projects,
         people,
+        personalRootId: myRoot?.id ?? null,
       });
       // My Areas (S6b) — the sidebar draws them on first paint under the
       // lens. A no-op with the flag off, and never a reason to stay loading.

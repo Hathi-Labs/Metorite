@@ -368,9 +368,12 @@ store slice, the picker groups, group D under the flag),
 
 **Decisions taken at build, 2026-09-23.**
 
-1. An Area is a scope, not a view. A selected Area narrows every view and
-   the sidebar badges together. It persists across views, like the source
-   filter. The same row again clears it.
+1. An Area is a scope, not a view. A selected Area narrows five views:
+   My Next Actions, Waiting For, Someday / Maybe, Done and Archive. Their
+   sidebar badges narrow with them. It never narrows the Inbox. A capture lands in
+   the personal root before it has an Area, so an Area scope would empty the
+   Inbox. The scope persists across views, like the source filter. The same
+   row again clears it.
 2. Membership is `projectId` alone. A subtask made through the lens carries
    its parent's `project_id`, so it needs no walk. `GtdItem` carries no
    root-project fact, and the client does not invent one.
@@ -381,7 +384,12 @@ store slice, the picker groups, group D under the flag),
    with the flag off, because the section does not render then.
 5. This slice restored the sidebar's view rows. Slice 4 (`b6192110`) removed
    them by mistake with the Workspaces list. `NavButton` and `PRIMARY` had
-   stayed in the file unused.
+   stayed in the file unused. The altitude block did not come back (D65).
+6. Clarify offers Areas, and "make this an Area", only for a task in my
+   tree. `isPersonalTask` reads the personal root id and the loaded Areas.
+   D62 refuses both moves for a task on a company board.
+7. An organize decision re-reads the Areas on success and after a refusal.
+   So an Area minted from Clarify reaches the sidebar at once.
 
 **Scope.** The gateway learns to mint, rename, archive and list a member's
 Areas: children of the personal root with `personal_owner` inherited.

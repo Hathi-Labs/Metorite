@@ -114,7 +114,7 @@ function SettingsPanel() {
         <div className="flex items-center gap-2 border-b border-border px-4 py-3">
           <Icon name="Settings2" className="h-4 w-4 text-primary" />
           <h2 className="text-sm font-semibold text-foreground">
-            Task Manager settings
+            My Tasks settings
           </h2>
           <Button variant="ghost" size="icon-sm" radius="keep" layout="" type="button" onClick={close} aria-label="Close" className="ml-auto rounded-md">
             <Icon name="X" className="h-4 w-4" />

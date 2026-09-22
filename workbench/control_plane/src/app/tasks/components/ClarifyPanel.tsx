@@ -8,6 +8,7 @@ import { useTaskStore, type ClarifyDecision } from "../lib/taskStore";
 import {
   proposeClarification,
   defaultStatus,
+  isPersonalTask,
   lensDelegateBlock,
   type ClarifyDisposition,
   type ClarifyProposal,
@@ -113,6 +114,7 @@ export function ClarifyPanel({
   const localHierarchy = useTaskStore((s) => s.localHierarchy);
   // S6b — under the lens the Where picker reads these two, never the tree.
   const areas = useTaskStore((s) => s.areas);
+  const personalRootId = useTaskStore((s) => s.personalRootId);
   const createArea = useTaskStore((s) => s.createArea);
   const loadPeople = useTaskStore((s) => s.loadPeople);
   const loadLocalHierarchy = useTaskStore((s) => s.loadLocalHierarchy);
@@ -518,6 +520,14 @@ export function ClarifyPanel({
     itemProjectId: item.projectId,
     companyProjectIds: projects.map((p) => p.id),
   });
+  // S6b repair. A task on a company board cannot be filed into an Area, nor
+  // become one (D62 refuses both moves into a personal tree). The rule is
+  // `lib/clarify.ts::isPersonalTask`, fenced by `areas.test.ts`; this hides
+  // the two controls that would otherwise offer a 422. Off-flag, every task
+  // is "personal" for this purpose — the legacy store has no team boards.
+  const personalTask =
+    !lensEnabled() ||
+    isPersonalTask(item, personalRootId, areas.map((a) => a.id));
   const delegateIntoPrivateProject = lensBlock === "private-project";
   const needsProjectForDelegate =
     (delegatingToSynced && !projectId && !targetSpaceId) || lensBlock !== null;
@@ -1000,6 +1010,9 @@ export function ClarifyPanel({
                 <SubField label="Size" inline>
                   <div className="flex flex-wrap gap-1.5">
                     {(["single", "subtasks", "project"] as Size[]).map((s) => {
+                      // "Project" mints an AREA under the lens, and a team
+                      // task cannot become one (S6b repair, D62).
+                      if (s === "project" && !personalTask) return null;
                       const M = SIZE_META[s];
                       const active = size === s;
                       return (
@@ -1231,6 +1244,7 @@ export function ClarifyPanel({
                            never `/tasks/hierarchy` (spec S6b done-when 3). */
                         <WherePicker
                           areas={areas}
+                          includeAreas={personalTask}
                           projects={projectsForDest}
                           value={projectId}
                           suggestedId={proposal.projectInferred ? proposal.projectId : undefined}

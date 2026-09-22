@@ -20,6 +20,7 @@ import {
   lensEstimateStats,
   lensFetchAreas,
   lensFetchItems,
+  lensFetchMyRoot,
   lensFetchProjects,
   lensFileUnder,
   lensItemDetail,
@@ -919,6 +920,17 @@ export interface LocalHierarchy {
 export async function fetchAreas(): Promise<LensArea[]> {
   if (!lensEnabled()) return [];
   return lensFetchAreas();
+}
+
+/**
+ * My personal root's id and name (S6b repair). Null off-flag — the legacy
+ * store has no root node — and null for a member who has never captured.
+ * One door, shared with the status catalogue, so "which project is my root"
+ * has one answer.
+ */
+export async function fetchMyRoot(): Promise<{ id: string; name: string } | null> {
+  if (!lensEnabled()) return null;
+  return lensFetchMyRoot();
 }
 
 /** Why the three Area WRITES refuse with the flag off, rather than no-op. */

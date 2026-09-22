@@ -28,6 +28,7 @@ import type { GtdProject } from "../lib/types";
  */
 export function WherePicker({
   areas,
+  includeAreas = true,
   projects,
   value,
   suggestedId,
@@ -35,6 +36,8 @@ export function WherePicker({
   onCreateArea,
 }: {
   areas: LensArea[];
+  /** False for a task on a company board — see `isPersonalTask`. */
+  includeAreas?: boolean;
   projects: GtdProject[];
   value?: string;
   suggestedId?: string;
@@ -45,7 +48,7 @@ export function WherePicker({
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
-  const groups = whereGroups({ areas, projects });
+  const groups = whereGroups({ areas, projects, includeAreas });
 
   const submit = async () => {
     const clean = name.trim();
