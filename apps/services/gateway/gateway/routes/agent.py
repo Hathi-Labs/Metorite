@@ -550,7 +550,10 @@ _AGENT_REGISTRY: list[dict] = [
             "restores and moves a project, archives, merges and bulk-edits "
             "tasks, deletes a status, type, field, tag, view, report, comment "
             "or attachment and reverts a change, one act per card with the "
-            "counts on the card. It never deletes a project or a task."
+            "counts on the card. Draws a timeline, a board, a task table and "
+            "a report as cards, edits a task or a project from a form in the "
+            "chat, plans a project from a goal as an editable plan, and "
+            "writes a status report. It never deletes a project or a task."
         ),
         "tags": ["projects", "tasks", "project-management", "analytics", "reports"],
         "status": "live",

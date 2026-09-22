@@ -588,6 +588,24 @@ async def emit_generative_ui(ui: str) -> dict:
          • optionPicker — {title?, description?, multi?:bool, options:[{id,
              label, description?, icon?, badge?, recommended?:bool}]} — rich
              choice cards for decisions; PAIR WITH ``"hitl":true``.
+         • timeline — {title?, taskId?, total?, rows:[{id?, at, type, actor,
+             body?, field?, before?, after?, via?}]} — a record's activity
+             feed, newest first.
+         • taskBoard — {title?, total?, columns:[{id?, name, category?,
+             tasks:[{id, number?, title, assignees?:[string], due?,
+             importance?, done?:bool}]}]} — a kanban board; a card opens the
+             task.
+         • dataGrid — {title?, columns:[string], rows:[{id?,
+             cells:[string|number]}], openBase?} — a sortable table; a row
+             with an id opens openBase + id.
+         • reportCard — {title, period?, reportId?, stats?:[{label, value,
+             unit?, icon?}], tables?:[{title, columns:[string],
+             rows:[{cells:[string|number]}]}]} — a saved report as tiles
+             and tables.
+         • planCard — {title?, description?, submitLabel?, project:{name,
+             parent?, description?}, tasks:[{title, owner, effort_mins, due,
+             importance?, priority?}], risks?:[string]} — an editable
+             project plan; PAIR WITH ``"hitl":true``.
 
     2. COMPONENT TREE — a safe whitelist of typed primitives (data, not code).
        Each node is ``{"type":<kind>,"props":{...},"children":[...]}``. Kinds:

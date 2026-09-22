@@ -112,6 +112,32 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
     summary: "Rich choice cards (single or multi select) that submit the pick back — pair with hitl.",
     data: "{ title?, description?, multi?:bool, options:[{ id, label, description?, icon?, badge?, recommended?:bool }] }",
   },
+  // ── The Projects chat's views (WS-27bm S4) ───────────────────────────────
+  {
+    name: "timeline",
+    summary: "A record's activity feed, newest first: comments, field changes, system notes, who and when.",
+    data: "{ title?, taskId?, total?, rows:[{ id?, at, type, actor, body?, field?, before?, after?, via? }] }",
+  },
+  {
+    name: "taskBoard",
+    summary: "A kanban board: one column per lane, task cards with assignees and due dates; a card opens the task.",
+    data: "{ title?, total?, columns:[{ id?, name, category?, tasks:[{ id, number?, title, assignees?:[string], due?, importance?, done?:bool }] }] }",
+  },
+  {
+    name: "dataGrid",
+    summary: "A sortable table of rows; a row with an id opens `openBase + id`.",
+    data: "{ title?, columns:[string], rows:[{ id?, cells:[string|number] }], openBase? }",
+  },
+  {
+    name: "reportCard",
+    summary: "A saved report: headline tiles plus one table per section.",
+    data: "{ title, period?, reportId?, stats?:[{label,value,unit?,icon?}], tables?:[{ title, columns:[string], rows:[{cells:[string|number]}] }] }",
+  },
+  {
+    name: "planCard",
+    summary: "An editable project plan (title, owner, effort, due per task, with a priority score) that submits the edited rows back — pair with hitl.",
+    data: "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ title, owner, effort_mins, due, importance?, priority? }], risks?:[string] }",
+  },
 ];
 
 // ── Shared bits ──────────────────────────────────────────────────────────────
@@ -911,6 +937,313 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   );
 }
 
+// ── The Projects chat's views (WS-27bm S4) ────────────────────────────────────
+//
+// Five templates the Projects assistant draws from its own reads
+// (`skill_projects/views.py`, `forms.py`). Same rules as the rest of the
+// file: tokens only, CSS motion only, an unknown or missing field renders
+// as nothing. A row with an `id` is a plain link into the app (`?task=`),
+// which is the same door the tool cards use.
+
+const CELL: React.CSSProperties = { fontSize: 12, color: "var(--foreground)" };
+const MUTED: React.CSSProperties = { fontSize: 11, color: "var(--muted-foreground)" };
+const CARD_BOX: React.CSSProperties = {
+  borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 14,
+};
+
+function taskHref(id: unknown, base = "/projects?task="): string | null {
+  const s = str(id);
+  return /^[0-9a-f-]{36}$/i.test(s) ? `${base}${encodeURIComponent(s)}` : null;
+}
+
+function Timeline({ data }: { data: Data }) {
+  const rows = arr(data.rows).map((r) => (r ?? {}) as Data);
+  const tone = (type: string): string =>
+    type === "comment" ? "var(--primary)"
+      : type === "field_change" ? "var(--warning)"
+        : type === "merge" || type === "attachment" ? "var(--accent)"
+          : "var(--border)";
+  return (
+    <div style={CARD_BOX}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <TIcon name="history" size={15} color="var(--primary)" />
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title, "Timeline")}</span>
+        </div>
+        {data.total != null && <span style={MUTED}>{rows.length} of {num(data.total)}</span>}
+      </div>
+      {rows.length === 0 && <div style={MUTED}>Nothing has happened here yet.</div>}
+      <div style={{ borderLeft: "2px solid var(--secondary)", marginLeft: 6, paddingLeft: 14,
+        maxHeight: 420, overflowY: "auto" }}>
+        {rows.map((r, i) => {
+          const type = str(r.type);
+          return (
+            <div key={str(r.id) || i} style={{ position: "relative", padding: "6px 0",
+              animation: `ccFadeUp .3s ease ${Math.min(i, 20) * 0.03}s both` }}>
+              <span style={{ position: "absolute", left: -20, top: 11, width: 10, height: 10,
+                borderRadius: "50%", background: tone(type) }} />
+              <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+                <span style={{ ...CELL, fontWeight: 600 }}>{str(r.actor, "someone")}</span>
+                <span style={MUTED}>{type.replace(/_/g, " ")}</span>
+                <span style={{ ...MUTED, marginLeft: "auto", fontVariantNumeric: "tabular-nums" }}>
+                  {str(r.at).slice(0, 16).replace("T", " ")}
+                </span>
+              </div>
+              {r.body != null && str(r.body) !== "" && (
+                <div style={{ ...CELL, whiteSpace: "pre-wrap", marginTop: 2 }}>{str(r.body)}</div>
+              )}
+              {r.field != null && (
+                <div style={{ ...CELL, marginTop: 2 }}>
+                  <span style={MUTED}>{str(r.field)}: </span>
+                  <span style={{ textDecoration: "line-through", color: "var(--muted-foreground)" }}>{str(r.before, "—")}</span>
+                  <span style={MUTED}> → </span>
+                  <span>{str(r.after, "—")}</span>
+                </div>
+              )}
+              {r.via != null && <div style={MUTED}>via {str(r.via)}</div>}
+            </div>
+          );
+        })}
+      </div>
+      <style>{`@keyframes ccFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
+    </div>
+  );
+}
+
+function TaskChip({ t }: { t: Data }) {
+  const href = taskHref(t.id);
+  const people = arr(t.assignees).map((a) => str(a)).filter(Boolean);
+  const body = (
+    <div style={{ borderRadius: 10, border: "1px solid var(--border)", background: "var(--secondary)",
+      padding: "6px 8px", marginBottom: 6, opacity: t.done ? 0.6 : 1 }}>
+      <div style={{ ...CELL, display: "flex", gap: 6 }}>
+        {t.number != null && <span style={MUTED}>#{str(t.number)}</span>}
+        <span style={{ textDecoration: t.done ? "line-through" : "none" }}>{str(t.title)}</span>
+      </div>
+      {(people.length > 0 || t.due != null) && (
+        <div style={{ ...MUTED, display: "flex", gap: 8, marginTop: 2, flexWrap: "wrap" }}>
+          {people.length > 0 && <span>{people.join(", ")}</span>}
+          {t.due != null && str(t.due) !== "" && <span>due {str(t.due)}</span>}
+        </div>
+      )}
+    </div>
+  );
+  return href ? <a href={href} style={{ textDecoration: "none", display: "block" }}>{body}</a> : body;
+}
+
+function TaskBoard({ data }: { data: Data }) {
+  const columns = arr(data.columns).map((c) => (c ?? {}) as Data);
+  return (
+    <div style={CARD_BOX}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <TIcon name="kanban" size={15} color="var(--primary)" />
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title, "Board")}</span>
+        </div>
+        {data.total != null && <span style={MUTED}>{num(data.total)} tasks</span>}
+      </div>
+      <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 4 }}>
+        {columns.map((c, i) => {
+          const tasks = arr(c.tasks).map((t) => (t ?? {}) as Data);
+          return (
+            <div key={str(c.id) || i} style={{ minWidth: 180, flex: "0 0 180px" }}>
+              <div style={{ ...MUTED, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4,
+                marginBottom: 6, display: "flex", justifyContent: "space-between" }}>
+                <span>{str(c.name)}</span><span>{tasks.length}</span>
+              </div>
+              {tasks.map((t, k) => <TaskChip key={str(t.id) || k} t={t} />)}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DataGrid({ data }: { data: Data }) {
+  const columns = arr(data.columns).map((c) => str(c));
+  const rows = arr(data.rows).map((r) => (r ?? {}) as Data);
+  const base = str(data.openBase, "/projects?task=");
+  const [sort, setSort] = useState<{ col: number; dir: 1 | -1 } | null>(null);
+  const sorted = sort
+    ? [...rows].sort((a, b) => {
+      const av = arr(a.cells)[sort.col];
+      const bv = arr(b.cells)[sort.col];
+      const an = typeof av === "number" ? av : parseFloat(str(av));
+      const bn = typeof bv === "number" ? bv : parseFloat(str(bv));
+      if (Number.isFinite(an) && Number.isFinite(bn)) return (an - bn) * sort.dir;
+      return str(av).localeCompare(str(bv)) * sort.dir;
+    })
+    : rows;
+  return (
+    <div style={CARD_BOX}>
+      {data.title != null && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <TIcon name="table-2" size={15} color="var(--primary)" />
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title)}</span>
+        </div>
+      )}
+      <div style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              {columns.map((c, i) => (
+                <th key={i} onClick={() => setSort((s) =>
+                  s && s.col === i ? { col: i, dir: s.dir === 1 ? -1 : 1 } : { col: i, dir: 1 })}
+                  style={{ ...MUTED, textAlign: "left", padding: "4px 6px", cursor: "pointer",
+                    borderBottom: "1px solid var(--border)", position: "sticky", top: 0,
+                    background: "var(--card)", userSelect: "none", whiteSpace: "nowrap" }}>
+                  {c}{sort && sort.col === i ? (sort.dir === 1 ? " ↑" : " ↓") : ""}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((r, i) => {
+              const href = taskHref(r.id, base);
+              return (
+                <tr key={str(r.id) || i} style={{ borderBottom: "1px solid var(--border)" }}>
+                  {arr(r.cells).map((cell, k) => (
+                    <td key={k} style={{ ...CELL, padding: "5px 6px", verticalAlign: "top" }}>
+                      {k === 1 && href
+                        ? <a href={href} style={{ color: "var(--primary)", textDecoration: "none" }}>{str(cell)}</a>
+                        : str(cell)}
+                    </td>
+                  ))}
+                </tr>
+              );
+            })}
+            {sorted.length === 0 && (
+              <tr><td colSpan={Math.max(1, columns.length)} style={{ ...MUTED, padding: 8 }}>No rows.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ReportCard({ data }: { data: Data }) {
+  const stats = arr(data.stats);
+  const tables = arr(data.tables).map((t) => (t ?? {}) as Data);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+        <TIcon name="file-text" size={15} color="var(--primary)" />
+        <span style={{ fontSize: 14, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title, "Report")}</span>
+        {data.period != null && <span style={MUTED}>{str(data.period)}</span>}
+      </div>
+      {stats.length > 0 && <StatDashboard data={{ stats }} />}
+      {tables.map((t, i) => <DataGrid key={i} data={{ title: t.title, columns: t.columns, rows: t.rows, openBase: "" }} />)}
+    </div>
+  );
+}
+
+const PLAN_COLS: Array<{ key: string; label: string; type: "text" | "number" | "date"; width: string }> = [
+  { key: "title", label: "Task", type: "text", width: "38%" },
+  { key: "owner", label: "Owner", type: "text", width: "22%" },
+  { key: "effort_mins", label: "Effort (min)", type: "number", width: "14%" },
+  { key: "due", label: "Due", type: "date", width: "18%" },
+];
+
+function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
+  const project = (data.project ?? {}) as Data;
+  const [name, setName] = useState(str(project.name));
+  const [rows, setRows] = useState<Data[]>(() => arr(data.tasks).map((t) => ({ ...((t ?? {}) as Data) })));
+  const [submitted, setSubmitted] = useState(false);
+  const risks = arr(data.risks).map((r) => str(r)).filter(Boolean);
+  const setCell = (i: number, key: string, v: unknown) =>
+    setRows((p) => p.map((r, k) => (k === i ? { ...r, [key]: v } : r)));
+  const drop = (i: number) => setRows((p) => p.filter((_, k) => k !== i));
+  const add = () => setRows((p) => [...p, { title: "", owner: "", effort_mins: 60, due: "" }]);
+  const incomplete = !name.trim() || rows.length === 0 || rows.some((r) =>
+    !str(r.title).trim() || !str(r.owner).trim() || !str(r.due).trim() || !(num(r.effort_mins) > 0));
+  const submit = () => {
+    if (!ctx?.onAction || submitted || incomplete) return;
+    setSubmitted(true);
+    const label = str(data.submitLabel ?? data.title, "Plan");
+    ctx.onAction(`${label} — ${JSON.stringify({
+      project: { ...project, name: name.trim() },
+      tasks: rows.map((r) => ({
+        title: str(r.title).trim(), owner: str(r.owner).trim(),
+        effort_mins: num(r.effort_mins), due: str(r.due).slice(0, 10),
+        importance: r.importance ?? null,
+      })),
+    })}`);
+  };
+  return (
+    <div style={CARD_BOX}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+        <TIcon name="list-todo" size={15} color="var(--primary)" />
+        <span style={{ fontSize: 13.5, fontWeight: 600, color: "var(--foreground)" }}>{str(data.title, "Plan")}</span>
+      </div>
+      {data.description != null && <div style={{ ...MUTED, marginBottom: 10 }}>{str(data.description)}</div>}
+      <label style={{ ...MUTED, display: "block", marginBottom: 10 }}>
+        Project name
+        <input value={name} onChange={(e) => setName(e.target.value)} disabled={submitted}
+          style={{ ...FIELD_INPUT_STYLE, marginTop: 4 }} />
+      </label>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              {PLAN_COLS.map((c) => (
+                <th key={c.key} style={{ ...MUTED, textAlign: "left", padding: "4px 4px", width: c.width,
+                  borderBottom: "1px solid var(--border)" }}>{c.label}</th>
+              ))}
+              <th style={{ ...MUTED, textAlign: "right", padding: "4px 4px", borderBottom: "1px solid var(--border)" }}>Score</th>
+              <th style={{ borderBottom: "1px solid var(--border)" }} />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i}>
+                {PLAN_COLS.map((c) => (
+                  <td key={c.key} style={{ padding: "3px 4px" }}>
+                    <input type={c.type} value={str(r[c.key])} disabled={submitted}
+                      onChange={(e) => setCell(i, c.key, c.type === "number" ? num(e.target.value) : e.target.value)}
+                      style={{ ...FIELD_INPUT_STYLE, padding: "5px 8px" }} />
+                  </td>
+                ))}
+                <td style={{ ...MUTED, textAlign: "right", padding: "3px 4px", fontVariantNumeric: "tabular-nums" }}>
+                  {r.priority != null ? str(r.priority) : ""}
+                </td>
+                <td style={{ padding: "3px 4px", textAlign: "right" }}>
+                  {!submitted && (
+                    <button type="button" onClick={() => drop(i)} aria-label="Remove task"
+                      style={{ border: "none", background: "transparent", cursor: "pointer",
+                        color: "var(--muted-foreground)", fontSize: 12 }}>✕</button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {!submitted && (
+        <button type="button" onClick={add}
+          style={{ ...MUTED, marginTop: 6, border: "1px dashed var(--border)", background: "transparent",
+            borderRadius: 8, padding: "5px 10px", cursor: "pointer" }}>+ Add a task</button>
+      )}
+      {risks.length > 0 && (
+        <div style={{ marginTop: 10, borderRadius: 10, padding: "8px 10px",
+          background: "color-mix(in srgb, var(--warning) 12%, transparent)" }}>
+          <div style={{ ...MUTED, fontWeight: 600, marginBottom: 4 }}>How this plan fails</div>
+          {risks.map((r, i) => <div key={i} style={CELL}>• {r}</div>)}
+        </div>
+      )}
+      <button type="button" onClick={submit} disabled={!ctx?.onAction || submitted || incomplete}
+        style={{ marginTop: 12, fontSize: 12.5, fontWeight: 600, borderRadius: 8, padding: "8px 16px",
+          border: "none", cursor: "pointer", color: "var(--primary-foreground)",
+          background: submitted ? "var(--success)" : "var(--primary)",
+          opacity: !ctx?.onAction || incomplete ? 0.5 : 1 }}>
+        {submitted ? "✓ Submitted" : str(data.submitLabel, "Review plan")}
+      </button>
+      <div style={{ ...MUTED, marginTop: 6 }}>A confirmation card follows. Nothing is created until you approve it.</div>
+    </div>
+  );
+}
+
 // ── Registry ─────────────────────────────────────────────────────────────────
 
 /** Interaction context threaded from the transcript/panel host: `onAction`
@@ -934,6 +1267,11 @@ export const TEMPLATE_REGISTRY: Record<string, TemplateRenderer> = {
   trainStatus: (data) => <TrainStatus data={data} />,
   formCard: (data, ctx) => <FormCard data={data} ctx={ctx} />,
   optionPicker: (data, ctx) => <OptionPicker data={data} ctx={ctx} />,
+  timeline: (data) => <Timeline data={data} />,
+  taskBoard: (data) => <TaskBoard data={data} />,
+  dataGrid: (data) => <DataGrid data={data} />,
+  reportCard: (data) => <ReportCard data={data} />,
+  planCard: (data, ctx) => <PlanCard data={data} ctx={ctx} />,
 };
 
 /** Render a template node, or an inert fallback if the name is unknown. */

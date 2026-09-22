@@ -304,6 +304,19 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # The create route's INSERT has no `required` column; the flag is a
     # PATCH under the same card (S2b verifier).
     "create_field": frozenset({"update_field"}),
+    # S4 — the views read through the reads' routes and draw a template.
+    "render_timeline": frozenset({"task_detail"}),
+    "render_board": frozenset({"project_summary", "vocabulary", "list_tasks"}),
+    "render_tasks": frozenset({"list_tasks"}),
+    "render_report": frozenset({"report_render"}),
+    "status_report": frozenset(
+        {"project_summary", "analytics_stuck", "analytics_load", "analytics_outlook"}
+    ),
+    # S4 — the forms draw an editable card, then write through the class B
+    # tools' routes under those tools' own confirmation card.
+    "edit_task": frozenset({"update_task"}),
+    "edit_project": frozenset({"update_project"}),
+    "propose_plan": frozenset({"create_project", "create_task"}),
 }
 
 #: POST routes that WRITE NOTHING. A preview computes what an act would do
