@@ -852,7 +852,7 @@ async def test_a_notification_row_leads_with_the_task(monkeypatch) -> None:
     """The list card parses `- #<n> «title»`; a line led by the date drew nothing."""
     fake_gateway(monkeypatch, _detail_responder)
     text = await skill_projects.notifications()
-    row = [line for line in text.split("\n") if line.startswith("- ")][0]
+    row = next(line for line in text.split("\n") if line.startswith("- "))
     assert row.startswith("- #7 «Fix the extruder» · mention by «a@x.io»")
 
 
