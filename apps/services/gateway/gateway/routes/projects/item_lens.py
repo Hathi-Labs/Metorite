@@ -65,6 +65,7 @@ from gateway.routes.projects.personal import (
     derive_disposition,
     ensure_personal_project,
     member_contexts,
+    my_tasks_binds,
 )
 from gateway.routes.projects.planning import _PM_ALIVE
 from gateway.routes.tasks.core import DEFAULT_CONTEXTS
@@ -205,14 +206,9 @@ class _PmLens(ItemSource):
     """`pm_tasks` + `pm_task_personal` — the one store, D53."""
 
     async def _binds(self, db: Any, uid: str, **params: Any) -> dict[str, Any]:
-        who = uid.lower()
-        return {
-            "who": who,
-            "vis_org": await resolve_organization_id(db, who),
-            # The AI never reasons over filed work.
-            "archived": False,
-            **params,
-        }
+        # The AI never reasons over filed work. Tenant and grant closure come
+        # from the one assembler `MY_TASKS_FROM` names (WS-39 S6a).
+        return await my_tasks_binds(db, uid, archived=False, **params)
 
     async def _items(
         self, db: Any, uid: str, where: str = "", **params: Any,

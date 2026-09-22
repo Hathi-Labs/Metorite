@@ -180,6 +180,24 @@ MANIFEST: tuple[Route, ...] = (
         "(personal.py ensure_personal_project). A second door is redundant.",
     ),
     Route("POST", "/projects/my/tasks", "create_personal_task", "B"),
+    Route(
+        "POST",
+        "/projects/my/tasks/batch",
+        "",
+        "X",
+        "The multi-line capture box (WS-39 S6a). The chat captures one thought "
+        "per turn through create_personal_task; a paste of twelve lines is a "
+        "browser gesture.",
+    ),
+    Route(
+        "POST",
+        "/projects/my/tasks/{task_id}/organize",
+        "",
+        "X",
+        "The Clarify card's one-transaction decision (WS-39 S6a). The chat "
+        "holds each half as its own tool: set_my_overlay, move_task, assign, "
+        "complete, add_subtasks.",
+    ),
     Route("PATCH", "/projects/tasks/{task_id}/personal", "set_my_overlay", "B"),
     Route("GET", "/projects/my/inbox", "my_work", "A"),
     Route("GET", "/projects/my/tasks/{task_id}", "my_task", "A"),

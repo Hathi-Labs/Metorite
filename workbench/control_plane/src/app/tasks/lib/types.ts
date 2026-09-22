@@ -288,6 +288,14 @@ export interface TaskAttachment {
   attachmentId?: string;
   mime?: string;
   size?: number;
+  /**
+   * The bytes, still in the browser. Under the Tasks lens (WS-39 S6a) an
+   * attachment belongs to a TASK, so a file picked at capture time cannot be
+   * uploaded until the task exists: the composer holds it here and
+   * `lensCapture` uploads it after the create. Never serialised — the legacy
+   * capture path maps the descriptor field by field and leaves this behind.
+   */
+  file?: File;
 }
 
 /** ClickUp-shaped navigation node for the project picker accordion. */

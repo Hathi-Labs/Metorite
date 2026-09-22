@@ -471,6 +471,10 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "position": None, "archived_at": None, "clickup_id": None,
         "clickup_kind": None, "task_prefix": None, "lead": None,
         "description": None,
+        # Migration 147/191. NULL is a team project; `assert_move_keeps_privacy`
+        # reads the column off every row it compares, so a seeded team project
+        # must carry the NULL Postgres would have returned.
+        "personal_owner": None,
         # WS-27z — migration 166's lifecycle policy. NULL = off, the default.
         "archive_after_months": None, "close_after_months": None,
         "timezone": "UTC",
@@ -1617,6 +1621,10 @@ class FakeProjectsDB:
         # module's docstring warns about, caught by mutation rather than review.
         wants_assigned = "lower(a.assignee) = :who" in statement
         wants_personal = "lower(proj.personal_owner) = :who" in statement
+        # WS-39 S6a — the third arm: a task I delegated away stays mine while
+        # my overlay says I am waiting on it. Keyed off the statement like the
+        # other two, so dropping the arm from the SQL drops it here.
+        wants_waiting = "p.disposition = 'WAITING'" in statement
         # ⚠️ WS-29b's tenant, composed above both arms. Read off the statement
         # like everything else here: the inbox has no GRANT clause by design, so
         # this line is the ONLY thing standing between it and another
@@ -1647,13 +1655,24 @@ class FakeProjectsDB:
             if tenanted and str(task.get("organization_id")) != org:
                 continue
             assignees = self._assignees_of(task["id"])
+            mine = overlay.get(str(task["id"]), {})
+            # The WAITING arm is BOUNDED by the member's grant closure on the
+            # task's root (S6a P0): mirrored through the same closure helper
+            # the visibility clauses use, off the binds the route supplied.
+            waiting_reaches = (
+                wants_waiting and mine.get("disposition") == "WAITING"
+                and str(task.get("root_project_id")) in self.visible_project_ids(
+                    str(args.get("vis_email") or ""),
+                    list(args.get("vis_groups") or []),
+                    organization_id=args.get("vis_org"),
+                )
+            )
             reached = (wants_assigned and who in assignees) or (
                 wants_personal and str(task.get("project_id")) in personal_projects
-            )
+            ) or waiting_reaches
             if not reached:
                 continue
 
-            mine = overlay.get(str(task["id"]), {})
             if "p.defer_until IS NULL OR p.defer_until <= now()" in statement:
                 deferred = mine.get("defer_until")
                 if deferred is not None and _as_datetime(deferred) > _now():

@@ -625,6 +625,11 @@ is stale — it does not know 188's columns, and 187/188 did not regenerate it e
 The README requires a refresh alongside each migration. Regenerating now would mix
 20+ migrations of unrelated drift into this PR.
 
+🆕 **WS-39 S6a BUILT 2026-09-23.** The CRUD tail reaches the one store
+through the lens, on branch `my-tasks-s6a`. S6d landed in PR #390. The
+row above still reads slice 5 next. That text carries semicolons the
+lint refuses, so this paragraph records the state instead.
+
 🆕 **WS-39 PHASE 2 MINTED 2026-09-23 (D73).** `specs/my_tasks_cutover.md` owns
 the tail, in five steps.
 

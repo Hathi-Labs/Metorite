@@ -307,6 +307,15 @@ def _patch_pm_helpers(monkeypatch) -> None:
             params={"vis_org": "org-1", "who": "a@x"},
             project_clause=lambda column: f"{column} IN (SELECT id FROM visible)",
         )))
+
+    # The one bind assembler `MY_TASKS_FROM` names (WS-39 S6a). Stubbed so the
+    # directory reads it makes (tenant, groups) do not land in `db.calls`; what
+    # these tests pin is the pm arm's OWN statements.
+    async def binds(db, uid, *, archived, **params):
+        who = uid.lower()
+        return {"who": who, "vis_org": "org-1", "vis_email": who,
+                "vis_groups": [], "archived": archived, **params}
+    monkeypatch.setattr(item_lens, "my_tasks_binds", binds)
     # The capture helper's own collaborators, on the module that owns it.
     monkeypatch.setattr(personal, "next_task_number", AsyncMock(return_value=7))
     monkeypatch.setattr(personal, "record_activity", AsyncMock())
@@ -340,6 +349,7 @@ async def test_pm_reads_compose_the_shared_membership_clause(monkeypatch) -> Non
     assert "t.origin->>'email_id' = :val" in sql
     assert "p.disposition NOT IN ('DONE','TRASH')" in sql
     assert params == {"who": "alice@fracktal.in", "vis_org": "org-1",
+                      "vis_email": "alice@fracktal.in", "vis_groups": [],
                       "archived": False, "val": "m-9"}
 
 
@@ -589,7 +599,10 @@ async def test_pm_insights_count_the_effective_disposition(monkeypatch) -> None:
         SimpleNamespace(id="area-b", name="B", description=None,
                         status="active", parent_project_id="root-1", is_root=False),
     ]
-    db = _FakeDB(lambda sql, p: tree if "FROM pm_projects" in sql else rows)
+    # The tree read is told apart by ITS predicate, not by the table name:
+    # `_MY_TASKS_SQL` now embeds the grant closure, which also reads
+    # `pm_projects` (WS-39 S6a, the bounded WAITING arm).
+    db = _FakeDB(lambda sql, p: tree if "lower(personal_owner) = :who" in sql else rows)
     out = await PM_ITEMS.insight_counts(db, "a@x")
     assert out["counts"] == {"INBOX": 2, "WAITING": 3, "NEXT": 2, "DONE": 1}
     assert out["oldest_inbox_at"] == (at - timedelta(days=3)).isoformat()
