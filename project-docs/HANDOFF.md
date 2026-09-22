@@ -3136,6 +3136,21 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-22 · the Projects chat S1 merge
 
 
+### H-161 · Two Projects chat follow-ups from the S2 review · [AGENT]
+- **Check:** `grep -n 'if "@" in raw' apps/skills/skill-projects/skill_projects/writes.py`
+  → a hit means the first item is still open.
+- **Why:** (1) `_resolve_assignee` passes any address-shaped string
+  through to `PUT /tasks/{id}/assignees`, which accepts any string
+  (D-PM-4). The card shows the address, so consent holds. The chat is still
+  wider than the picker. One directory read before the card would let the
+  card say "the directory does not know this address". (2)
+  `ActionResultCard` jumps to the FIRST `full_id` in a result, so the
+  receipt for `add_subtasks` opens the first subtask under a heading that
+  names the parent. Print the parent's id first, or jump to it. Both are
+  small. Neither loses data.
+- **Authority:** `specs/projects_ai_chat.md` §3.2 · the S2 review, 2026-09-22
+- **Added:** 2026-09-22 · the Projects chat S2 session
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
