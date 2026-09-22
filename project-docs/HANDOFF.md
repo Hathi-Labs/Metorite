@@ -3165,7 +3165,7 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-22 · the Projects chat S1 merge
 
 
-### H-161 · Two Projects chat follow-ups from the S2 review · [AGENT]
+### H-162 · Two Projects chat follow-ups from the S2 review · [AGENT]
 - **Check:** `grep -n 'if "@" in raw' apps/skills/skill-projects/skill_projects/writes.py`
   → a hit means the first item is still open.
 - **Why:** (1) `_resolve_assignee` passes any address-shaped string
@@ -3178,7 +3178,7 @@ line — never reclaim a number by deleting the other entry.
   names the parent. Print the parent's id first, or jump to it. Both are
   small. Neither loses data.
 - **Authority:** `specs/projects_ai_chat.md` §3.2 · the S2 review, 2026-09-22
-- **Added:** 2026-09-22 · the Projects chat S2 session
+- **Added:** 2026-09-22 · the Projects chat S2 session. **Renumbered from H-161 to H-162** on 2026-09-22 (R1): #377 took the same id against a different base and merged first. An id is never reused, so H-161 stays with that entry.
 
 # DONE — deleted, not archived
 
