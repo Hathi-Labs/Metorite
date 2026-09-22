@@ -3119,6 +3119,21 @@ line — never reclaim a number by deleting the other entry.
   `tests/unit/test_projects_hardening.py` · H-88
 - **Added:** 2026-09-22 · the Projects chat S1 verification
 
+### H-160 · A key-mint audit test splits the token on the wrong underscore, and flakes red · [AGENT]
+- **Check:** `grep -n 'token.split("_")\[-1\]' tests/unit/test_provision_mints_the_key.py`
+  → a hit means this is still open.
+- **Why:** `test_the_mint_is_AUDITED_by_prefix_and_never_by_token` takes the
+  secret as `token.split("_")[-1]`. A base64url secret can carry an
+  underscore, so the tail is sometimes one character. On 2026-09-22 CI run
+  35697285473 the tail was `c`, `'c' in <the audit row>` was true, and the
+  test failed with "the audit trail recorded the SECRET" on a branch that
+  does not touch keys. The same commit's merge run passed. Use
+  `split_key(token)` for both halves, the way the test already does for the
+  prefix, and assert on the whole secret. Landed with #370 on main.
+- **What it costs:** a deploy gated on `tests/unit/` goes red at random.
+- **Authority:** `tests/unit/test_provision_mints_the_key.py` · `apps/services/customer_console/customer_console/keys.py::split_key`
+- **Added:** 2026-09-22 · the Projects chat S1 merge
+
 
 # DONE — deleted, not archived
 
