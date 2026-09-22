@@ -488,3 +488,45 @@ class TestTheOwnerCanJustDoIt:
         monkeypatch.delenv("OPERATOR_ELEVATION_REQUIRED", raising=False)
         _, _, viewer = _make(eng, "viewer")
         assert _suspend(client, viewer, _org(eng)).status_code == 403
+
+
+# ── The control must not draw where it cannot work ─────────────────────────
+
+
+def test_break_glass_reads_can_elevate_FALSE(client):
+    """🔴 The defect the owner hit, 2026-09-22.
+
+    The operator console hid its Elevate control by expecting a **403** on this
+    route. `GET /operators/elevate` is `viewer`-readable, and the shared token
+    BYPASSES the matrix — so break-glass gets a **200**, the control rendered,
+    and `POST` then answered "only a signed-in operator can elevate".
+
+    A button whose only possible outcome is a refusal. The read has to say so.
+    """
+    body = client.get("/operators/elevate", headers=_auth(SHARED)).json()
+    assert body["elevated"] is False
+    assert body["can_elevate"] is False, (
+        "break-glass cannot open a window, and the surface needs to be told "
+        "that rather than inferring it from a status code it never gets")
+
+
+def test_the_read_reports_whether_a_window_is_REQUIRED_at_all(client, monkeypatch):
+    """D72 turned elevation off. A control for a feature that is not running
+    can only ever refuse, so the surface needs the flag too."""
+    from customer_console import operator_elevation
+
+    monkeypatch.delenv(operator_elevation.ELEVATION_FLAG, raising=False)
+    off = client.get("/operators/elevate", headers=_auth(SHARED)).json()
+    assert off["required"] is False
+
+    monkeypatch.setenv(operator_elevation.ELEVATION_FLAG, "true")
+    on = client.get("/operators/elevate", headers=_auth(SHARED)).json()
+    assert on["required"] is True
+
+
+def test_a_signed_in_admin_reads_can_elevate_TRUE(client, eng):
+    """The other side of the partition: a real session CAN open a window, so
+    the control is right to draw for them."""
+    _, _, admin = _make(eng, "admin")
+    body = client.get("/operators/elevate", headers=_auth(admin)).json()
+    assert body["can_elevate"] is True
