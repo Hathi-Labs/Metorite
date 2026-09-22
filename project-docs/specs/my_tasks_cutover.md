@@ -310,7 +310,7 @@ S6e follows S6a. It reads the lens seam S6a completes.
 
 **Done when.**
 1. `lens.test.ts` "the cutover seam is complete" fences every group C name.
-2. The three new gateway routes carry R8 live checks in
+2. The two new routes and the new bulk action carry R8 live checks in
    `tests/live/live_ws39_s6a.py`, run against tenant-scratch.
 3. `test_client_route_contract.py` passes with the new paths.
 4. `apiOrganize` under the lens completes a clarify decision in one request.

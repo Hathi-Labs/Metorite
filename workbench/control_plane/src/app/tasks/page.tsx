@@ -296,7 +296,7 @@ export default function TasksPage() {
       )}
       <ReclarifyModal />
       <UndoToast />
-        <SyncFailureToast />
+      <SyncFailureToast />
       <DeleteConfirmModal />
       <SchedulePopup />
       <EliminatePopup />

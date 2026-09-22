@@ -350,12 +350,34 @@ async def _grant_owner(db: Any, project_id: str, email: str) -> None:
     )
 
 
-async def ensure_personal_child(db: Any, email: str, name: str) -> Any:
+async def find_personal_child(
+    db: Any, email: str, root: Any, name: str,
+) -> Any | None:
+    """A LIVE child of my root called ``name``, case-insensitively, or None.
+
+    The one name-collision lookup. ``organize`` reuses a match;
+    ``POST /my/areas`` refuses on one. An archived Area of the same name is
+    not a match: it stays archived, and a new one may be minted beside it.
+    """
+    return (await db.execute(
+        text(
+            "SELECT * FROM pm_projects "
+            "WHERE parent_project_id = CAST(:root AS uuid) "
+            "  AND lower(personal_owner) = :who "
+            "  AND lower(name) = :name AND archived_at IS NULL "
+            "ORDER BY created_at LIMIT 1"
+        ),
+        {"root": str(root.id), "who": email, "name": name.strip().lower()},
+    )).fetchone()
+
+
+async def mint_personal_child(db: Any, email: str, root: Any, name: str) -> Any:
     """A CHILD of this member's personal root, private like the root.
 
-    WS-39 S6a. The first writer of a personal node below the root: before this
-    only :func:`ensure_personal_project` wrote ``personal_owner``, and only for
-    a root. A child carries the owner too — since migration 191 the column
+    THE ONE minting path for a personal node below the root (WS-39 S6a and
+    #391's Areas, reconciled 2026-09-23). Before it only
+    :func:`ensure_personal_project` wrote ``personal_owner``, and only for a
+    root. A child carries the owner too — since migration 191 the column
     means *private to this person* at every depth — so the team tree
     (``tree.py``, ``personal_owner IS NULL``) never lists it, and
     ``assert_move_keeps_privacy`` reads root and child as one private tree.
@@ -368,28 +390,15 @@ async def ensure_personal_child(db: Any, email: str, name: str) -> Any:
     everywhere at once. A child that owned a copy of the set would be four
     more rows per Area and a remap on every move.
 
-    **Find or create, by name.** Two clarifies into "Website redesign" share
-    one Area rather than minting two, the way a folder named twice is one
-    folder. Matched on ``lower(name)`` among the root's LIVE children: an
-    archived Area of the same name stays archived, and a new one is minted
-    beside it. S6b's Areas routes reuse this.
+    It carries the owner's grant row, like the root: the grant is what the
+    visibility model reads, and ``personal_owner`` is only the fast path.
+
+    Does NOT check the name. Callers decide what a collision means:
+    :func:`ensure_personal_child` reuses, ``create_my_area`` refuses.
     """
     clean = (name or "").strip()
     if not clean:
         raise HTTPException(status_code=422, detail="A project needs a name.")
-    root = await ensure_personal_project(db, email)
-    existing = (await db.execute(
-        text(
-            "SELECT * FROM pm_projects "
-            "WHERE parent_project_id = CAST(:root AS uuid) "
-            "  AND lower(personal_owner) = :who "
-            "  AND lower(name) = :name AND archived_at IS NULL "
-            "ORDER BY created_at LIMIT 1"
-        ),
-        {"root": str(root.id), "who": email, "name": clean.lower()},
-    )).fetchone()
-    if existing is not None:
-        return existing
     child = await insert_row(db, "pm_projects", {
         "name": clean,
         "personal_owner": email,
@@ -404,6 +413,23 @@ async def ensure_personal_child(db: Any, email: str, name: str) -> Any:
     })
     await _grant_owner(db, str(child.id), email)
     return child
+
+
+async def ensure_personal_child(db: Any, email: str, name: str) -> Any:
+    """Find or create, by name.
+
+    Two clarifies into "Website redesign" share one Area rather than minting
+    two, the way a folder named twice is one folder. The root is minted first
+    if this is the member's first use of their tree.
+    """
+    clean = (name or "").strip()
+    if not clean:
+        raise HTTPException(status_code=422, detail="A project needs a name.")
+    root = await ensure_personal_project(db, email)
+    existing = await find_personal_child(db, email, root, clean)
+    if existing is not None:
+        return existing
+    return await mint_personal_child(db, email, root, clean)
 
 
 @router.get("/my/project")
@@ -1751,33 +1777,16 @@ async def create_my_area(
         # place that decides what a personal root looks like, and it seeds the
         # lanes this Area is about to inherit.
         root = await ensure_personal_project(db, email)
-        existing = (await db.execute(
-            text(
-                "SELECT id FROM pm_projects "
-                " WHERE parent_project_id = CAST(:root AS uuid) "
-                "   AND lower(personal_owner) = :who "
-                "   AND lower(name) = lower(:name) "
-                "   AND archived_at IS NULL"
-            ),
-            {"root": str(root.id), "who": email, "name": name},
-        )).fetchone()
-        if existing is not None:
+        # ONE lookup and ONE mint, shared with `organize` kind=project
+        # (`ensure_personal_child`). Here a name that already exists is a
+        # refusal; there it is a reuse. The helpers carry the rule that is
+        # the same in both: the owner, the inherited lanes, the grant row.
+        if await find_personal_child(db, email, root, name) is not None:
             raise HTTPException(
                 status_code=409,
                 detail=f"You already have an area called {name}.",
             )
-        area = await insert_row(db, "pm_projects", {
-            "name": name,
-            "parent_project_id": str(root.id),
-            # Inherited, and written explicitly rather than left to a trigger:
-            # this column is what every privacy read filters on, so it belongs
-            # where a reader of this function can see it.
-            "personal_owner": email,
-            "created_by": email,
-            "source": "manual",
-            "organization_id": await require_organization_of(db, email),
-            "owns_statuses": False,
-        })
+        area = await mint_personal_child(db, email, root, name)
         result = _area_to_dict(area, 0)
     await emit("pm.project.created", {"project_id": result["id"], "name": name})
     return result

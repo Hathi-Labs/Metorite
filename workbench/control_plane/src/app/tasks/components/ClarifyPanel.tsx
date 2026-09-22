@@ -8,6 +8,7 @@ import { useTaskStore, type ClarifyDecision } from "../lib/taskStore";
 import {
   proposeClarification,
   defaultStatus,
+  lensDelegateBlock,
   type ClarifyDisposition,
   type ClarifyProposal,
 } from "../lib/clarify";
@@ -503,19 +504,19 @@ export function ClarifyPanel({
   // company's list under the lens, so "is a company project" is membership.
   // `isSynced` is permanently false here, which is why the old gate never
   // fired and every such delegate came back 422 (S6a repair).
-  const delegatingUnderLens =
-    lensEnabled() && sort === "actionable" && owner === "delegate" && !!assignee;
-  const inCompanyProject = (id?: string) =>
-    !!id && projects.some((p) => p.id === id);
-  const delegateNeedsCompanyProject =
-    delegatingUnderLens && !inCompanyProject(projectId ?? item.projectId);
-  // A delegated task cannot ALSO become a private project: the outcome's
-  // child is mine, and the guard refuses a colleague there.
-  const delegateIntoPrivateProject = delegatingUnderLens && size === "project";
+  // The rule itself is `lib/clarify.ts::lensDelegateBlock`, pure and fenced
+  // by `lensRepair.test.ts`; this is only the wiring.
+  const lensBlock = lensDelegateBlock({
+    lens: lensEnabled(),
+    delegating: sort === "actionable" && owner === "delegate" && !!assignee,
+    size,
+    projectId,
+    itemProjectId: item.projectId,
+    companyProjectIds: projects.map((p) => p.id),
+  });
+  const delegateIntoPrivateProject = lensBlock === "private-project";
   const needsProjectForDelegate =
-    (delegatingToSynced && !projectId && !targetSpaceId) ||
-    delegateNeedsCompanyProject ||
-    delegateIntoPrivateProject;
+    (delegatingToSynced && !projectId && !targetSpaceId) || lensBlock !== null;
 
   const canApply =
     sort !== "actionable"

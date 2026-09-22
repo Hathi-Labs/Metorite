@@ -179,7 +179,8 @@ function mapItem(raw: Raw): GtdItem {
   };
 }
 
-function mapProject(raw: Raw): GtdProject {
+/** Exported for its lens branch's test; `fetchProjects` is the caller. */
+export function mapProject(raw: Raw): GtdProject {
   if (lensEnabled()) {
     // A `pm_projects` NODE, not a `gtd_projects` row: the title is `name`,
     // the status is lowercase (`146_projects.sql`), and there is no tree
