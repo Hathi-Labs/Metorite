@@ -32,6 +32,7 @@ describe("which tab a People route lights", () => {
       "/people/search",
       "/people/dashboard",
       "/people/schedule",
+      "/people/seats",
       "/people/me",
     ]) {
       expect(activeTabFor(path), path).not.toBe("directory");
@@ -43,6 +44,7 @@ describe("which tab a People route lights", () => {
     expect(activeTabFor("/people/search")).toBe("search");
     expect(activeTabFor("/people/dashboard")).toBe("workload");
     expect(activeTabFor("/people/schedule")).toBe("schedule");
+    expect(activeTabFor("/people/seats")).toBe("seats");
     expect(activeTabFor("/people/me")).toBe("me");
   });
 

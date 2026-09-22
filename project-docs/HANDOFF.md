@@ -3104,6 +3104,35 @@ line — never reclaim a number by deleting the other entry.
   `src/lib/nav.ts:118-123` · `src/app/tasks/lib/lens.ts:70-75`
 - **Added:** 2026-09-22 · the Projects chat S1 review
 
+### H-161 · The seats matrix cannot PROPOSE, because the queue is the wrong shape · [OWNER]
+- **Check:** `rg -n "CREATE TABLE IF NOT EXISTS access_request" -A 12
+  infra/postgres/143_access_request.sql` → a unique index on `lower(email)`
+  and no column naming what is asked means this is still open.
+- **What is built:** `/people/seats` (WS-28f, 2026-09-22). The matrix, the
+  role pill, the read tier, and live checkboxes for a caller who holds
+  `admin:members:manage`.
+- **What is not, and it is not an oversight.** `people_center_app.md` §5.6
+  asks that a caller WITHOUT that permission have their toggle "produce a
+  request in the existing access-request queue". That queue cannot carry it:
+  `access_request` is the SIGN-IN queue, unique on `lower(email)`, one row per
+  person, with no column for what is being asked. Approving a row provisions
+  an `app_user` through `_provision_member`. There is nowhere to put "please
+  add Priya to Sales", and the index refuses a second row for that address.
+- **The decision, and it is a product one:**
+  - **Do nothing.** A caller who cannot write is told which permission would
+    let them, which is what ships today. Cheapest, and it may be enough for
+    an org of four.
+  - **A new `membership_request` table** — subject, group, requested_by,
+    status — read by the same Requests tab. Honest, and it is a migration
+    plus a route plus a tab, so it is a slice, not a detail.
+  - **Reuse the access-request queue by widening it** — a `kind` column and
+    dropping the unique index for a partial one. ⚠️ That index is what stops
+    one knocking address producing 53 rows, so widening it needs care.
+- 📌 Not urgent. Nobody is blocked: an admin can act, and a non-admin gets a
+  sentence instead of a silent 403.
+- **Authority:** `people_center_app.md` §5.6 · `work_plan.md` §6 (d)
+- **Added:** 2026-09-22 · the seats-and-roles session
+
 ### H-159 · A timeline tie-break is decided by a random UUID, and one test flakes on it · [AGENT]
 - **Check:** `for i in 1 2 3 4 5 6; do uv run pytest tests/unit/test_projects_hardening.py -q -k test_an_intervening_activity_breaks_the_run 2>&1 | tail -1; done`
   → any `failed` line means this is still open.

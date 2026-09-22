@@ -41,10 +41,12 @@ import { hasCapability } from "@/lib/access";
 /**
  * The roster, in the order a person meets it.
  *
- * `hr` marks the four surfaces the gateway gates on `admin:members:read`
+ * `hr` marks the surfaces the gateway gates on `admin:members:read`
  * (§4.2) — measured against the routes, not assumed: `search.py:186`,
  * `dashboard.py:166`, `overview.py:70` and `quality.py:381` each refuse
- * without it. Directory, org chart and the working week need only
+ * without it. Seats is `hr` for the same reason, one layer along: it reads
+ * `/admin/groups` and `/admin/members`, and `require_admin_user` IS
+ * `admin:members:read`. Directory, org chart and the working week need only
  * `feature:people`.
  */
 const TABS: ReadonlyArray<TabDef & { hr?: boolean; exact?: boolean }> = [
@@ -57,6 +59,9 @@ const TABS: ReadonlyArray<TabDef & { hr?: boolean; exact?: boolean }> = [
   { id: "workload", label: "Workload", icon: "Activity",
     href: "/people/dashboard", hr: true,
     note: "Who is behind, overloaded or idle — and who could help whom" },
+  { id: "seats", label: "Seats", icon: "LayoutGrid",
+    href: "/people/seats", hr: true,
+    note: "Which teams and Centers each person is in" },
   { id: "schedule", label: "Working week", icon: "Clock",
     href: "/people/schedule", note: "The hours the scheduler plans against" },
   { id: "me", label: "My profile", icon: "User", href: "/people/me",
