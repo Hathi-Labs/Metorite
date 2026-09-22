@@ -762,6 +762,8 @@ export interface FieldRow {
     | "url";
   options: string[];
   position: number;
+  /** Migration 192. The move dialog asks for these before a task may enter. */
+  required?: boolean;
   created_by?: string | null;
 }
 

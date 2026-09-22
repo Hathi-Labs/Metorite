@@ -11,6 +11,8 @@ import { detectDateHint, originEmailHref, relativeTime, snoozeOptions } from "..
 import { AttachmentChips } from "./AttachmentComposer";
 import { SourceBadge } from "./SourceBadge";
 import { ContextMenu, type CtxItem } from "./ContextMenu";
+import { PromoteDialog } from "./PromoteDialog";
+import { lensEnabled } from "../lib/lens";
 
 // The assistant's at-a-glance read of a capture — shown on the card so you see
 // the *shape* of your inbox (what's yours, what to delegate, what's a project,
@@ -68,6 +70,9 @@ export function InboxCard({
   const [draftTitle, setDraftTitle] = useState(item.title);
   const [draftNote, setDraftNote] = useState(item.notes ?? "");
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  // S6c — an inbox capture can go straight to a board (H-59: "a Tasks inbox
+  // item can be upgraded into the Projects app"). Lens only, like the card.
+  const [promoting, setPromoting] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
   // Keep the keyboard cursor row visible as you navigate with j/k.
@@ -135,6 +140,16 @@ export function InboxCard({
       icon: themedIcon("CalendarClock"),
       onSelect: () => openSchedule(item.id),
     },
+    ...(lensEnabled()
+      ? [
+          {
+            kind: "item" as const,
+            label: "Move to project…",
+            icon: themedIcon("FolderInput"),
+            onSelect: () => setPromoting(true),
+          },
+        ]
+      : []),
     { kind: "sep" },
     {
       kind: "item",
@@ -325,6 +340,9 @@ export function InboxCard({
           items={menuItems}
           onClose={() => setMenu(null)}
         />
+      )}
+      {promoting && (
+        <PromoteDialog item={item} onClose={() => setPromoting(false)} />
       )}
     </div>
   );

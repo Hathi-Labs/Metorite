@@ -368,13 +368,16 @@ create, rename and delete. Group D of §3.1 retires under the flag.
    `/hierarchy` data.
 4. This closes H-59 (2) and the constraint H-29 carries.
 
-### S6c — the promote door, and Horizons off the surface · AGENT-SAFE
+### S6c — the promote door, and Horizons off the surface · AGENT-SAFE · BUILT 2026-09-23
 
 **Scope.** A "Move to project" action on the task card and in the detail
 panel. The dialog asks for the destination project, then the destination's
 required custom fields (migration 192), then assignees. It calls
 `apiMoveTask`. The `horizons` view leaves `ListsSidebar` and the `ViewKey`
 union. The data and the routes stay (D65).
+
+**Built.** The dialog is the Projects app's own `MoveTasksDialog`, opened in
+its `promote` mode from `PromoteDialog.tsx`, so both apps draw one card.
 
 **Done when.**
 1. `rg -l "apiMoveTask" src/app/tasks/components/` returns one hit.

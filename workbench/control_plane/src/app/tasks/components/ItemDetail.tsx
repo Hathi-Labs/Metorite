@@ -32,6 +32,8 @@ import { WeightToggles, PriorityBadge, SuggestionBadge } from "./PriorityControl
 import { isUntagged } from "../lib/priority";
 import { isWaitingOverdue } from "../lib/waiting";
 import { useCardActions } from "../lib/useCardActions";
+import { ProjectLabel } from "./ProjectLabel";
+import { PromoteDialog } from "./PromoteDialog";
 
 // Ages/overdue on this panel are read against the REAL clock — `isOverdue` and
 // `relativeTime` both default their `nowMs` to Date.now(). They used to be
@@ -180,6 +182,9 @@ export function TaskDetail({
   // (a teammate can't be assigned to a private local task). Holds the picked
   // person until the destination dialog resolves.
   const [delegateTo, setDelegateTo] = useState<Person | null>(null);
+  // S6c — "Move to project…" is up. Keyed by item.id at every call site, so
+  // it resets with the task like `offerDropFromNext` below.
+  const [promoting, setPromoting] = useState(false);
   // After reassigning/unassigning a task that's currently in MY Next Actions,
   // offer to drop it from my list (is_mine=false) — it stays on ClickUp. This
   // component is keyed by item.id at every call site, so it remounts per task
@@ -257,6 +262,23 @@ export function TaskDetail({
               <AppIcon name="Timer" className="h-3 w-3" />
               Focus
             </button>
+          )}
+          {/* S6c — the promote door, beside Focus. Lens only: the old store
+              has no board to move onto (`useCardActions.canPromote`). */}
+          {stageActions.canPromote && (
+            <Button
+              variant="ghost"
+              size="none"
+              radius="keep"
+              layout="inline-flex items-center"
+              icon="FolderInput"
+              type="button"
+              onClick={() => setPromoting(true)}
+              title="Move this task to a company project"
+              className="gap-1 rounded-md px-2 py-1 text-[11px] font-medium"
+            >
+              Move to project…
+            </Button>
           )}
           {/* Maximise — the docked pane is 380px and this detail is dense
               (nine sections plus the provider ones), so the reading width the
@@ -533,16 +555,19 @@ export function TaskDetail({
               </MetaEdit>
             )}
 
-            {/* Project (read-only link for now — re-file happens via clarify) */}
+            {/* Project — the way back to the board (S6c, §4.8 point 4).
+                Re-filing happens through Clarify or "Move to project…". */}
             {project && (
               <div className="min-w-0 rounded-md border border-border bg-card px-3 py-2">
                 <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                   Project
                 </div>
-                <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-sm text-foreground">
-                  <AppIcon name="FolderKanban" className="h-3.5 w-3.5 shrink-0 text-primary/70" />
-                  <span className="truncate" title={project.outcome}>{project.outcome}</span>
-                </div>
+                <ProjectLabel
+                  item={item}
+                  name={project.outcome}
+                  className="mt-0.5 flex min-w-0 items-center gap-1.5 text-sm text-foreground"
+                  nameClass="truncate"
+                />
               </div>
             )}
           </div>
@@ -741,6 +766,9 @@ export function TaskDetail({
           assignee={delegateTo}
           onClose={() => setDelegateTo(null)}
         />
+      )}
+      {promoting && (
+        <PromoteDialog item={item} onClose={() => setPromoting(false)} />
       )}
     </div>
   );

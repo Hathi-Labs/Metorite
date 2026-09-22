@@ -25,7 +25,7 @@ export interface ColumnDef {
   label: string;
   /** fixed track width for the CSS grid (Name takes the remaining 1fr) */
   width: string;
-  /** horizontal alignment of the cell content */
+  /** left-to-right alignment of the cell content */
   align: "left" | "center" | "right";
 }
 

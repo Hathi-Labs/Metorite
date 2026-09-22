@@ -38,9 +38,8 @@ const PRIMARY: NavRow[] = [
   { view: "archive", label: "Archive", icon: "Archive" },
 ];
 
-const SECONDARY: NavRow[] = [
-  { view: "horizons", label: "Horizons of Focus", icon: "Mountain", soon: true },
-];
+// The "Higher altitude" section that used to follow PRIMARY is gone (D65,
+// S6c): the altitude ladder left the surface, and the data and routes stay.
 
 export function ListsSidebar({
   onNavigate,
@@ -94,6 +93,28 @@ export function ListsSidebar({
           Provenance is not lost: a row imported before the retirement keeps
           its source badge and its deep link in the task detail, which is
           where somebody actually asks where a task came from. */}
+
+      {/* ⚠️ Restored in S6c. The same deletion (b6192110, 2026-08-25) took
+          these rows with the source filter, and for a month the sidebar drew
+          a heading and Settings — no way to reach Next Actions, Waiting For,
+          Someday, Done or Archive. `ListsSidebar.test.ts` fences the render. */}
+      {PRIMARY.map((row) => {
+        const count = counts[row.view];
+        // My Next Actions stays highlighted even when an in-view @context pill
+        // is active (selectedContext set) — it is still the Next Actions view.
+        const active =
+          selectedView === row.view &&
+          (row.view === "next" ? true : !selectedContext);
+        return (
+          <NavButton
+            key={row.view}
+            row={row}
+            active={active}
+            count={count}
+            onClick={() => selectView(row.view)}
+          />
+        );
+      })}
 
       <div className="mt-3 border-t border-border pt-3">
         <button
