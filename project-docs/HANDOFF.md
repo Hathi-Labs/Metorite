@@ -281,10 +281,32 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-01 · WS-31 D70 documentation session
 
 ### H-92 · A Projects test passes alone and fails in the suite · [AGENT]
-- **Check:** run `uv run pytest tests/unit -k "projects" -q`. A failure on
-  `test_projects_hardening.py::test_an_intervening_activity_breaks_the_run`
-  means this is open. Then run that test on its own. It passes. Measured
-  2026-09-01, on `main` and on a branch alike.
+- **🔴 2026-09-22 — THE OLD CHECK NO LONGER DETECTS IT. Widen it.**
+  `-k "projects"` now passes. Measured six consecutive runs, 1490 tests each,
+  all green. A session read that as a fix and nearly deleted this entry.
+  Nobody fixed it. The WIDER selection still reproduces it:
+
+      -k "projects"                                6 runs: all pass
+      -k "(project or tree or task or personal)    run 1: FAIL
+          and not memory and not calendar"         run 2: pass
+                                                   run 3: FAIL (another test)
+
+  So the suite that leaks the state is one the narrow filter EXCLUDES. That is
+  the most useful thing anybody has learned about this defect. Look at what
+  `tree`, `task` and `personal` pull in and `projects` does not.
+- **🔴 A THIRD test fails the same way, and it is not a Projects test.** Run 3
+  above failed
+  `test_customer_console_catalog.py::TestRemovingAModelFromTheCatalog::test_removing_one_task_is_not_blocked_by_a_binding_on_ANOTHER`
+  — pulled into the selection by the word "task" in its name. Either the leak
+  is wider than Projects, or there are two of them. Nobody has looked.
+- **Check:** run `uv run pytest tests/unit/ -k "(project or tree or task or
+  personal) and not memory and not calendar" -q` **three times**. A failure on
+  `test_projects_hardening.py::test_an_intervening_activity_breaks_the_run` on
+  ANY run means this is open. Then run that test on its own. It passes.
+  ⚠️ Keep the `not memory and not calendar` half. Without it the run hangs and
+  never reports (WS-9, and [[H-88]] carries the same trap).
+  ⚠️ Do not use `-k "projects"` alone. It has stopped failing, and it now reads
+  green while the defect is live.
 - **What happens:** the test asserts two `field_change` activities and reads
   one. On its own it reads two. So something survives between tests. The
   `FakeProjectsDB` fixture and any module-level cache are the first two places
@@ -2256,11 +2278,20 @@ line — never reclaim a number by deleting the other entry.
   cost real minutes on 2026-09-20, when a lifecycle change had to be
   isolated from it by reverting the test file and re-running.
 - **The failing case:** `test_an_intervening_activity_breaks_the_run`.
-- **Check:** run `uv run pytest tests/unit/ -k "project or tree or task or
-  personal" -q` three times. If
+- **🔴 2026-09-22 — the Check below HUNG, and a hung check reads as a slow
+  one.** `-k "project or tree or task or personal"` over `tests/unit/` never
+  reported. It is WS-9's directory hang, which the board already warns about.
+  A session waited on it, killed it, and re-ran with the hanging suites
+  deselected. Corrected command below. Fix the command, not the run.
+- **Check:** run `uv run pytest tests/unit/ -k "(project or tree or task or
+  personal) and not memory and not calendar" -q` three times. If
   `test_projects_hardening.py::test_an_intervening_activity_breaks_the_run`
   fails on some runs and passes on others, this is still open. Measured
-  2026-08-31: it failed on 2 runs out of 5.
+  2026-08-31: it failed on 2 runs out of 5. Measured again 2026-09-22 with the
+  corrected command: it failed on run 1, passed run 2, and run 3 failed a
+  DIFFERENT test — see [[H-92]], which now carries the sharper evidence.
+  ⚠️ **`-k "projects"` alone no longer reproduces it** — six green runs while
+  the defect is live. Do not narrow this selection.
 - **What happens:** `_coalescible_prior` in
   `apps/services/gateway/gateway/routes/projects/core.py` reads the last
   activity with `ORDER BY created_at DESC, id DESC LIMIT 1`. The test writes
