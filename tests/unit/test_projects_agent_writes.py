@@ -63,6 +63,7 @@ CHANGE = "bf8fad5b-d9cb-469f-a165-70867728950e"
 FILE = "cf8fad5b-d9cb-469f-a165-70867728950e"
 VIEW_ID = "df8fad5b-d9cb-469f-a165-70867728950e"
 LIVE = "ef8fad5b-d9cb-469f-a165-70867728950e"
+SALES = "ff8fad5b-d9cb-469f-a165-70867728950e"
 TASK = {
     "id": UUID,
     "title": "Fix the extruder",
@@ -101,9 +102,10 @@ def _s3_reads(call: dict) -> Any:
                             "children": [],
                         },
                     ],
-                }
+                },
+                {"id": SALES, "name": "Sales", "children": []},
             ],
-            "total": 3,
+            "total": 4,
         }
     if path == f"/projects/tasks/{LIVE}":
         return {**TASK, "id": LIVE, "task_number": 9, "archived_at": None}
@@ -134,8 +136,6 @@ def _s3_reads(call: dict) -> Any:
             "can_inherit": True,
             "inherit_from_name": "Space",
         }
-    if path == "/projects/tasks" and method == "GET":
-        return {"rows": [], "total": 4}
     if path.endswith("/timeline") and call["params"].get("kind") == "events":
         return {
             "rows": [
@@ -157,7 +157,14 @@ def _s3_writes(call: dict) -> Any:
     """What the S3 write routes answer."""
     path, method = call["path"], call["method"]
     if path == "/projects/tasks/bulk":
-        return {"requested": 2, "applied": 2, "results": [], "skipped": [], "failed": []}
+        ids = call["json"]["task_ids"]
+        return {
+            "requested": len(ids),
+            "applied": len(ids),
+            "results": [{"task_id": i, "changed": ["status"]} for i in ids],
+            "skipped": [],
+            "failed": [],
+        }
     if path.endswith("/merge") and "/tasks/" in path:
         return {**TASK, "merged": [OTHER]}
     if path.endswith("/merge") and "/tags/" in path:
@@ -169,7 +176,8 @@ def _s3_writes(call: dict) -> Any:
     if path.endswith("/revert"):
         return {"task_id": UUID, "reverted": ["due_at"], "skipped": []}
     if method == "DELETE" and path.startswith("/projects/statuses/"):
-        return {"deleted": S1, "moved": 4}
+        # The route's real shape (admin.py `delete_status`).
+        return {"deleted": S1, "tasks_affected": 4}
     if method == "DELETE" and path.startswith("/projects/types/"):
         return {"deleted": TYPE_ID, "tasks_untyped": 2}
     if method == "DELETE" and path.startswith("/projects/fields/"):
@@ -260,7 +268,8 @@ def responder(call: dict) -> Any:
     if path == f"/projects/tasks/{OTHER}":
         return OTHER_TASK
     if path.endswith("/statuses"):
-        return {"rows": STATUSES}
+        # The route's shape (admin.py `list_statuses`): rows AND per-lane counts.
+        return {"rows": STATUSES, "counts": {S1: 4, S2: 2, S3: 0}, "owner_id": UUID}
     answered = _answered(call, _s3_reads, _s3_writes, _s2b_answers)
     if answered is not None:
         return answered
@@ -391,7 +400,7 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     # S3 — class C, one act one card
     "archive_project": [{"project_id": UUID}],
     "unarchive_project": [{"project_id": ARCHIVED}],
-    "move_project": [{"project_id": UUID, "parent_project_id": OTHER}],
+    "move_project": [{"project_id": UUID, "parent_project_id": SALES}],
     "archive_task": [{"task_id": LIVE}],
     "merge_tasks": [{"target_task_id": UUID, "source_task_ids": OTHER}],
     "bulk_update": [
@@ -1257,8 +1266,10 @@ async def test_archive_project_counts_the_subtree_and_open_tasks_before_the_card
     calls = fake_gateway(monkeypatch, responder)
     out = await skill_projects.archive_project(UUID)
     # The tree has one live child and one archived; the summary has 3 open.
-    assert asked[0]["context"].split("\n")[1] == (
-        "impact: «2 projects archived · 3 open tasks leave the boards, lists and searches with them»"
+    assert (
+        asked[0]["context"]
+        .split("\n")[1]
+        .startswith("impact: 2 projects you can see archived · 3 open tasks you can see leave")
     )
     assert [c["method"] for c in writes(calls)] == ["POST"]
     assert "project_id:" in out
@@ -1326,3 +1337,171 @@ async def test_an_org_wide_vocabulary_row_is_not_deleted_from_a_project(monkeypa
     calls = fake_gateway(monkeypatch, org_rows)
     assert "organization-wide" in await skill_projects.delete_type(UUID, "bug")
     assert asked == [] and writes(calls) == []
+
+
+# ── The S3 verifier's findings, each pinned ────────────────────────────────
+
+
+async def test_merge_tags_counts_with_the_impact_read_not_the_list(monkeypatch) -> None:
+    """The list's `task_count` skips archived tasks; the merge does not."""
+
+    def impact_differs(call: dict) -> Any:
+        if call["path"].endswith("/impact"):
+            return {"tag": "urgent", "scope": "project", "tasks": 15, "projects": 1}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, impact_differs)
+    await skill_projects.merge_tags(UUID, "urgent", into="p0")
+    assert "impact: 15 tasks retagged" in asked[0]["context"]
+
+
+async def test_delete_status_receipt_reads_the_routes_key(monkeypatch) -> None:
+    def real_shape(call: dict) -> Any:
+        if call["method"] == "DELETE" and call["path"].startswith("/projects/statuses/"):
+            return {"deleted": S1, "tasks_affected": 9}
+        return responder(call)
+
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, real_shape)
+    out = await skill_projects.delete_status(UUID, "to do", move_to="done")
+    assert "9 tasks moved" in out
+
+
+async def test_the_last_closing_lane_is_refused_before_the_card(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.delete_status(UUID, "done", move_to="to do")
+    assert "only lane that closes" in out
+    assert asked == [] and writes(calls) == []
+
+
+async def test_a_row_filed_by_an_ancestor_is_refused_before_the_card(monkeypatch) -> None:
+    def swept(call: dict) -> Any:
+        if call["path"] == f"/projects/nodes/{ARCHIVED}" and call["method"] == "GET":
+            return {
+                "id": ARCHIVED,
+                "name": "Old",
+                "archived_at": "2026-09-01T00:00:00+00:00",
+                "archived_root_id": UUID,
+            }
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, swept)
+    assert "ancestor" in await skill_projects.unarchive_project(ARCHIVED)
+    assert asked == [] and writes(calls) == []
+
+
+async def test_a_move_that_would_loop_is_refused_before_the_card(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    # OTHER is a child of UUID in the fake tree.
+    assert "cannot loop" in await skill_projects.move_project(UUID, parent_project_id=OTHER)
+    assert asked == [] and writes(calls) == []
+
+
+async def test_a_source_already_merged_is_refused_before_the_card(monkeypatch) -> None:
+    def stub(call: dict) -> Any:
+        if call["path"] == f"/projects/tasks/{OTHER}":
+            return {**OTHER_TASK, "merged_into_task_id": UUID}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, stub)
+    assert "Already merged away" in await skill_projects.merge_tasks(UUID, OTHER)
+    assert asked == [] and writes(calls) == []
+
+
+async def test_deleting_another_members_comment_is_refused_before_the_card(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.delete_comment(UUID, OTHER)
+    assert "Only the author" in out
+    assert asked == [] and writes(calls) == []
+
+
+# ── The S3 reviewer's findings, each pinned ────────────────────────────────
+
+
+async def test_delete_status_takes_the_count_from_the_statuses_read(monkeypatch) -> None:
+    """One read, the route's own per-lane count. No task list, whose total
+    drops triage-parked tasks and everything the member cannot see."""
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.delete_status(UUID, "to do", move_to="done")
+    assert "/projects/tasks" not in {c["path"] for c in calls}
+    assert asked[0]["context"].split("\n")[1] == "impact: 1 lane deleted · 4 tasks moved to «Done»"
+
+
+async def test_a_member_who_may_not_edit_the_set_is_refused_before_the_card(monkeypatch) -> None:
+    def read_only(call: dict) -> Any:
+        if call["path"].endswith("/status-set") and call["method"] == "GET":
+            return {"owns": True, "owner_id": UUID, "owner_name": "Ops", "may_edit": False}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, read_only)
+    assert "may not edit" in await skill_projects.delete_status(UUID, "to do", move_to="done")
+    assert "may not edit" in await skill_projects.set_status_set(UUID, "own")
+    assert asked == [] and writes(calls) == []
+
+
+async def test_fifty_long_titles_all_fit_the_card(monkeypatch) -> None:
+    long_title = "A very long title that a member wrote " * 4
+
+    def long_rows(call: dict) -> Any:
+        if call["path"].startswith("/projects/tasks/") and call["path"].count("/") == 3:
+            return {**TASK, "id": call["path"].rsplit("/", 1)[-1], "title": long_title}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, long_rows)
+    ids = [f"{i:08x}-d9cb-469f-a165-70867728950e" for i in range(1, 51)]
+    await skill_projects.bulk_update(",".join(ids), status="done")
+    context = asked[0]["context"]
+    assert "truncated" not in context
+    assert "task 50:" in context and "…" in context
+
+
+async def test_bulk_refuses_a_clear_beside_a_value_and_names_a_clear(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    assert "both set and cleared" in await skill_projects.bulk_update(
+        UUID, due="2026-10-01", clear="due"
+    )
+    assert asked == [] and writes(calls) == []
+    await skill_projects.bulk_update(UUID, clear="due")
+    assert "due_at → cleared" in asked[0]["context"]
+
+
+async def test_bulk_receipt_prints_rows_for_applied_ids_only(monkeypatch) -> None:
+    def half(call: dict) -> Any:
+        if call["path"] == "/projects/tasks/bulk":
+            return {
+                "requested": 2,
+                "applied": 1,
+                "results": [{"task_id": UUID, "changed": ["archived"]}],
+                "skipped": [{"task_id": OTHER, "reason": "already archived"}],
+                "failed": [],
+            }
+        return responder(call)
+
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, half)
+    out = await skill_projects.bulk_update(f"{UUID},{OTHER}", action="archive")
+    assert "Applied to 1 of 2" in out
+    assert f"full_id: {UUID}" in out and f"full_id: {OTHER}" not in out
+    assert "skipped" in out and "«already archived»" in out
+
+
+async def test_report_delete_names_the_scope_project(monkeypatch) -> None:
+    def scoped(call: dict) -> Any:
+        if call["path"].startswith("/projects/reports/") and call["method"] == "GET":
+            return {"id": UUID, "name": "Weekly", "project_id": OTHER}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, scoped)
+    await skill_projects.report_delete(UUID)
+    assert "«Ops»" in asked[0]["detail"]

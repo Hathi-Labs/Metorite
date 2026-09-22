@@ -173,7 +173,7 @@ every call before the card is a `GET`.
 | "Merge #12 into #9" | `merge_tasks` | `POST /projects/tasks/{id}/merge` | Both titles, what moves |
 | "Set all of these to Done" | `bulk_update` | `POST /projects/tasks/bulk` | The exact ids and the change |
 | "Move the folder into Ops" | `move_project` | `POST /projects/nodes/{id}/move` | The subtree, the new parent |
-| "Delete the Blocked status" | `delete_status` | `DELETE /projects/statuses/{id}?move_to=` | Count in use (the task list's total), the target |
+| "Delete the Blocked status" | `delete_status` | `DELETE /projects/statuses/{id}?move_to=` | Count in use (the statuses read's per-lane `counts`, the route's own number), the target |
 | "Use the parent's statuses" | `set_status_set` | `POST …/status-set/preview`, then `…/status-set` | The preview's counts: moving, completing, reopening |
 | "Delete the tag" | `delete_tag` | `DELETE /projects/tags/{id}` | `GET /tags/{id}/impact` first |
 | "Merge the tag into p0" | `merge_tags` | `POST /projects/tags/{id}/merge` | The source's task count, both names |
@@ -198,8 +198,9 @@ Three rules bind every row of this table.
 
 **How S3 built it** (`skill_projects/guarded.py`). The card's first line after
 the fixed note is `impact: …`. Where a read exists, the line carries its
-numbers: the summary and the tree for an archive, the task list's total for a
-status, the impact read for a tag, the preview for a status set. Where no read
+numbers: the summary and the tree for an archive (what the member can see,
+and the card says so), the statuses read's per-lane counts for a status, the
+impact read for a tag and a tag merge, the preview for a status set. Where no read
 exists (a type's tasks, a field's values, a view's positions), the line names
 the scope and says the receipt carries the count the route reports. A tool
 that takes one row refuses a comma-separated list before any read
@@ -606,7 +607,8 @@ Each slice is one pull request. Each one is useful alone.
 **Done when:**
 1. Every class B and C tool awaits `request_confirmation` before any mutating
    request is built. A denied card makes zero mutating calls, and every call
-   before the card is a `GET`.
+   before the card is a `GET` or a preview the manifest records as writing
+   nothing (`READ_ONLY_POSTS`, D-PM-29).
 2. No class B or C tool passes `non_interactive_default="approve"`. The test
    asserts the absence in the source.
 3. A class C tool given a list refuses before the card.

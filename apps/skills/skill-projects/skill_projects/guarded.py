@@ -55,7 +55,6 @@ from skill_projects.writes import (
     _org_wide,
     _ref,
     _resolve_assignee,
-    _resolve_status,
     _split,
     _task,
     _vocab,
@@ -84,10 +83,15 @@ def _many(value: str) -> bool:
 
 
 def _guard_card(impact: str, rest: dict[str, Any]) -> str:
-    """The class C card body: the note, then ``impact: …``, then the rest."""
-    body = _fields_block({"impact": impact, **rest})
+    """The class C card body: the note, then ``impact: …``, then the rest.
+
+    The impact line is the tool's own sentence, so it is not fenced the way
+    a member value is. Member values inside it already carry their fence.
+    """
+    body = _fields_block(rest)
     assert body.startswith(CARD_NOTE)
-    return body
+    line = "impact: " + " ".join(impact.split())
+    return CARD_NOTE + "\n" + line + body[len(CARD_NOTE) :]
 
 
 def _open_count(summary: dict[str, Any]) -> int:
@@ -135,6 +139,21 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
+#: A title on a many-row card is clipped here, so all fifty rows fit the
+#: 4000-character card and the member sees every NAME (S3 review). The
+#: clip cuts titles, never rows: a row behind the truncation marker is a
+#: row the member never signed.
+TITLE_CLIP = 60
+
+
+def _short_ref(task: dict[str, Any]) -> str:
+    title = " ".join(str(task.get("title") or "").split())
+    if len(title) > TITLE_CLIP:
+        title = title[: TITLE_CLIP - 1] + "…"
+    number = task.get("task_number")
+    return f"#{number} {data(title)}" if number is not None else data(title)
+
+
 # ── Projects ─────────────────────────────────────────────────────────────────
 
 
@@ -152,9 +171,13 @@ async def archive_project(project_id: str) -> str:
     summary = (await get(f"/projects/nodes/{pid}/summary")) or {}
     below = _descendants(await _tree_node(pid), archived=False)
     open_tasks = _open_count(summary)
+    # Both reads are visibility-filtered and the archive is not: it stamps
+    # the whole subtree. So the card says "you can see", and never claims
+    # the number is the whole.
     impact = (
-        f"{_plural(1 + below, 'project')} archived · {_plural(open_tasks, 'open task')} "
-        "leave the boards, lists and searches with them"
+        f"{_plural(1 + below, 'project')} you can see archived · "
+        f"{_plural(open_tasks, 'open task')} you can see leave the boards, lists and "
+        "searches with them; the whole subtree is filed, including any rows you cannot see"
     )
     if not await _confirm(
         title="Archive this project?",
@@ -188,6 +211,14 @@ async def unarchive_project(project_id: str) -> str:
     pid, node = await _node(project_id)
     if not node.get("archived_at"):
         return f"{data(node.get('name'))} is not archived."
+    origin = node.get("archived_root_id")
+    if origin and str(origin) != pid:
+        # The route's 422 (tree.py `unarchive_node`), said before the card.
+        return (
+            f"{data(node.get('name'))} was filed by an ancestor's archive (project {origin}). "
+            "Restore that project instead; restoring this one alone would leave it "
+            "visible inside an archived tree."
+        )
     filed = _descendants(await _tree_node(pid), archived=True)
     impact = (
         f"up to {_plural(1 + filed, 'project')} restored — this one and the archived rows "
@@ -237,7 +268,11 @@ async def move_project(
     elif node.get("parent_project_id") is None:
         return f"{data(node.get('name'))} is already a space."
     summary = (await get(f"/projects/nodes/{pid}/summary")) or {}
-    below = _descendants(await _tree_node(pid))
+    subtree = await _tree_node(pid)
+    if parent_id and subtree is not None and _find_node(subtree.get("children") or [], parent_id):
+        # `assert_no_project_cycle`'s 422, said before the card.
+        return f"{data(parent.get('name'))} is inside {data(node.get('name'))}. A tree cannot loop."
+    below = _descendants(subtree)
     tasks = int(summary.get("tasks") or 0)
     where = "the top level (a space)" if parent is None else data(parent.get("name"))
     impact = (
@@ -325,6 +360,9 @@ async def merge_tasks(target_task_id: str, source_task_ids: str) -> str:
     if target.get("merged_into_task_id"):
         return f"{_ref(target)} has itself been merged away. Merge into the task it went to."
     sources = [(await _task(s))[1] for s in ids]
+    gone = [s for s in sources if s.get("merged_into_task_id")]
+    if gone:
+        return "Already merged away: " + ", ".join(_ref(s) for s in gone) + "."
     wrong = [s for s in sources if str(s.get("project_id")) != str(target.get("project_id"))]
     if wrong:
         return (
@@ -335,7 +373,7 @@ async def merge_tasks(target_task_id: str, source_task_ids: str) -> str:
     impact = f"{_plural(len(sources), 'task')} merged into {_ref(target)} and archived as stubs"
     rest: dict[str, Any] = {"survivor": _ref(target)}
     for i, s in enumerate(sources):
-        rest[f"source {i + 1}"] = _ref(s)
+        rest[f"source {i + 1}"] = _short_ref(s)
     rest["moves"] = "comments, attachments, links, subtasks and watchers go to the survivor"
     if not await _confirm(
         title=f"Merge {_plural(len(sources), 'task')} into {_ref(target)}?",
@@ -376,6 +414,8 @@ def _bulk_patch(
         key = {**_CLEARABLE, "priority": "importance"}.get(field.lower(), field.lower())
         if key not in ("due_at", "start_date", "estimate_mins", "importance"):
             return f"clear takes due, start, estimate or importance, not {data(field)}."
+        if key in patch:
+            return f"{key} is both set and cleared. Pass one or the other."
         patch[key] = None
     return patch
 
@@ -423,7 +463,9 @@ def _bulk_impact(body: dict[str, Any], n: int) -> str:
     for key in ("assignees_add", "assignees_remove", "tags_add", "tags_remove"):
         if key in body:
             described[key] = ", ".join(body[key])
-    return f"{_plural(n, 'task')} changed: " + ", ".join(f"{k} → {v}" for k, v in described.items())
+    return f"{_plural(n, 'task')} changed: " + ", ".join(
+        f"{k} → {'cleared' if v is None else v}" for k, v in described.items()
+    )
 
 
 @_annotate(read_only=False, destructive=True, idempotent=False)
@@ -465,7 +507,7 @@ async def bulk_update(
     impact = _bulk_impact(body, len(tasks))
     rest: dict[str, Any] = {}
     for i, t in enumerate(tasks):
-        rest[f"task {i + 1}"] = _ref(t)
+        rest[f"task {i + 1}"] = _short_ref(t)
     if not await _confirm(
         title=f"Change {_plural(len(tasks), 'task')} at once?",
         detail=impact,
@@ -478,8 +520,12 @@ async def bulk_update(
         out.append(f"- skipped {row.get('task_id')}: {data(row.get('reason'))}")
     for row in result.get("failed") or []:
         out.append(f"- failed {row.get('task_id')}: {data(row.get('reason'))}")
+    # Rows for what the route APPLIED. A skipped or failed id printed as a
+    # task row would read as done on the receipt card.
+    applied = {str(r.get("task_id")) for r in result.get("results") or [] if isinstance(r, dict)}
     for t in tasks:
-        out.extend(_task_line(t))
+        if str(t.get("id")) in applied:
+            out.extend(_task_line(t))
     return "\n".join(out)
 
 
@@ -575,33 +621,38 @@ async def revert_activity(task_id: str, activity_id: str) -> str:
 @_annotate(read_only=False, destructive=True, idempotent=False)
 async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
     """Delete a lane, moving the tasks in it to move_to (a status NAME in
-    the same set) first. The card leads with how many tasks move. The last
-    lane, and the last lane that closes a task, cannot be deleted; the
-    route says so."""
+    the same set) first. The card leads with how many tasks move: the count
+    the statuses read returns per lane, which is the count the route acts
+    on. The last lane, and the last lane that closes a task, cannot be
+    deleted, and the tool says so before any card."""
     if _many(status):
         return f"delete_status {ONE_ACT.replace('id', 'name')}"
     pid, node = await _node(project_id)
-    row = await _resolve_status(pid, status)
+    # ONE read for the lanes AND the counts (admin.py `list_statuses`): its
+    # docstring says the count exists so a delete can be offered safely.
+    # A second count through the task list was visibility- and
+    # triage-filtered, and the route's own `count_where` is neither.
+    listing = (await get(f"/projects/nodes/{pid}/statuses")) or {}
+    lanes = listing.get("rows") or []
+    counts = listing.get("counts") or {}
+    row = _one_named(lanes, status, "status", "statuses")
     sid = uuid_of(str(row.get("id")), "status_id")
-    owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
-    scope = uuid_of(str(owner.get("owner_id") or pid), "owner_id")
-    listing = (
-        await get(
-            "/projects/tasks",
-            {
-                "project_id": scope,
-                "include_subtree": True,
-                "include_archived": True,
-                "status_id": sid,
-                "page": 1,
-                "page_size": 1,
-            },
+    survivors = [lane for lane in lanes if str(lane.get("id")) != sid]
+    # The route's two 409s (admin.py `delete_status`), said before the card.
+    if not survivors:
+        return f"{data(row.get('name'))} is the only status here. A project needs at least one."
+    if not any(str(lane.get("category")) in CLOSING for lane in survivors):
+        return (
+            f"{data(row.get('name'))} is the only lane that closes a task. Add another Done "
+            "or Cancelled lane first."
         )
-    ) or {}
-    in_use = int(listing.get("total") or 0)
+    owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
+    if owner.get("may_edit") is False:
+        return "You may not edit this project's statuses. It needs the settings permission."
+    in_use = int(counts.get(sid) or 0)
     target: dict[str, Any] | None = None
     if move_to.strip():
-        target = await _resolve_status(pid, move_to)
+        target = _one_named(lanes, move_to, "status", "statuses")
         if str(target.get("id")) == sid:
             return "A status cannot hand its tasks to itself."
     elif in_use:
@@ -624,7 +675,10 @@ async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
     if target is not None:
         params["move_to"] = uuid_of(str(target.get("id")), "move_to")
     result = (await delete(f"/projects/statuses/{sid}", params)) or {}
-    moved = result.get("moved", in_use)
+    # The route returns `tasks_affected` (admin.py `delete_status`). The
+    # first version read `moved`, which a fake that echoed anything let
+    # through (R8).
+    moved = result.get("tasks_affected", in_use)
     return (
         f"Deleted status {data(row.get('name'))}; {_plural(int(moved or 0), 'task')} moved to {where}."
         f"\n  status_id: {sid}"
@@ -646,6 +700,8 @@ async def set_status_set(project_id: str, mode: str, copy_from: str = "") -> str
         return "mode is inherit or own."
     pid, node = await _node(project_id)
     current = (await get(f"/projects/nodes/{pid}/status-set")) or {}
+    if current.get("may_edit") is False:
+        return "You may not edit this project's statuses. It needs the settings permission."
     if which == "inherit" and not current.get("can_inherit"):
         return f"{data(node.get('name'))} is a space. It has nothing to inherit from."
     if which == "inherit" and not current.get("owns"):
@@ -793,8 +849,14 @@ async def merge_tags(project_id: str, tag: str, into: str) -> str:
         return "An organization-wide tag is not merged from a project."
     sid = uuid_of(str(source.get("id")), "tag_id")
     tid = uuid_of(str(target.get("id")), "into")
-    worn = int(source.get("task_count") or 0)
-    impact = f"{_plural(worn, 'task')} retagged {data(source.get('name'))} → {data(target.get('name'))} · 1 tag deleted"
+    # The list's `task_count` excludes archived tasks; the merge's rewrite
+    # does not (tags.py `_rewrite`). `/impact` counts with the merge's scope.
+    hit = (await get(f"/projects/tags/{sid}/impact")) or {}
+    worn = int(hit.get("tasks") or 0)
+    impact = (
+        f"{_plural(worn, 'task')} retagged {data(source.get('name'))} → "
+        f"{data(target.get('name'))} · 1 tag deleted"
+    )
     if not await _confirm(
         title="Merge these tags?",
         detail=f"{data(source.get('name'))} into {data(target.get('name'))} in {data(node.get('name'))}",
@@ -851,7 +913,10 @@ async def report_delete(report_id: str) -> str:
         return f"report_delete {ONE_ACT}"
     rid = uuid_of(report_id, "report_id")
     row = (await get(f"/projects/reports/{rid}")) or {}
-    scope = "the portfolio" if not row.get("project_id") else f"project {row.get('project_id')}"
+    scope = "the portfolio"
+    if row.get("project_id"):
+        _scope_id, scope_node = await _node(str(row.get("project_id")))
+        scope = data(scope_node.get("name"))
     impact = "1 report deleted, with its schedule and recipient list"
     if not await _confirm(
         title="Delete this report?",
