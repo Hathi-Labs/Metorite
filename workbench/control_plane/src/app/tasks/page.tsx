@@ -197,7 +197,7 @@ export default function TasksPage() {
           icon="PanelLeft"
         />
         <span className="text-xs font-medium text-muted-foreground">
-          Task Manager
+          My Tasks
         </span>
         <button
           type="button"

@@ -32,9 +32,12 @@ import {
   lensBulkDispose,
   lensCapture,
   lensCaptureBatch,
+  lensCreateArea,
   lensDelegateItem,
+  lensDeleteArea,
   lensEnabled,
   lensEstimateStats,
+  lensFetchAreas,
   lensFetchItems,
   lensFetchProjects,
   lensFileUnder,
@@ -44,6 +47,7 @@ import {
   lensOrganize,
   lensPatchItem,
   lensPlan,
+  lensRenameArea,
   lensSetStage,
   lensStageAttachment,
   lensStageOptions,
@@ -473,6 +477,15 @@ describe("the cutover seam is complete for this slice", () => {
     "apiFileUnder",
     "apiUploadAttachment",
     "fetchStatusCatalog",
+    // S6b — group D, the local Space→Folder→Project tree, retires under the
+    // flag. Left behind, the Clarify picker would draw `/tasks/hierarchy`
+    // (the old store's tree) beside `/projects/nodes` (the new store's
+    // projects) and file a task into a `gtd_projects` id that `pm_tasks`
+    // cannot hold — spec S6b done-when 3 says the picker never shows it.
+    "fetchLocalHierarchy",
+    "apiCreateSpace",
+    "apiCreateFolder",
+    "apiCreateLocalProject",
   ];
 
   it("branches to the lens in every function this slice moved", () => {
@@ -520,15 +533,12 @@ describe("the cutover seam is complete for this slice", () => {
     expect(lensSrc).not.toContain("gatewayFetch");
   });
 
-  it("leaves the local tree and the AI tail for S6b and S6d, knowingly", () => {
-    // Group D (the Space→Folder→Project tree) retires under S6b's Areas, and
-    // group E (the AI routes) moves server-side in S6d. A branch here now
-    // would point at nothing.
+  it("leaves the AI tail on the gateway's own flag (S6d), knowingly", () => {
+    // Group E (the AI routes) moved server-side in S6d: the gateway reads
+    // the one store behind ITS flag, so a client branch here would be a
+    // second switch that has to agree with the first. Group D used to be
+    // pinned here too, until S6b lensed it (see SPINE).
     for (const name of [
-      "fetchLocalHierarchy",
-      "apiCreateSpace",
-      "apiCreateFolder",
-      "apiCreateLocalProject",
       "apiAtomize",
       "apiClarifyPropose",
       "apiSuggestTitle",
@@ -812,6 +822,66 @@ describe("the CRUD tail (S6a)", () => {
       { status: "Next", stage: "Next", mapped: true },
     ]);
     expect(catalog.unmapped).toBe(0);
+  });
+});
+
+// ── S6b: Areas ──────────────────────────────────────────────────────────────
+
+describe("Areas (S6b)", () => {
+  it("lists my Areas from /my/areas, with the open count", async () => {
+    const { calls, restore } = stub([
+      { rows: [{ id: "a1", name: "Home", archived: false, open_tasks: 3 }], total: 1 },
+    ]);
+    let areas;
+    try {
+      areas = await lensFetchAreas();
+    } finally {
+      restore();
+    }
+    expect(calls[0].url).toBe("/api/projects/my/areas");
+    expect(calls[0].method).toBe("GET");
+    expect(areas).toEqual([{ id: "a1", name: "Home", archived: false, openTasks: 3 }]);
+  });
+
+  it("mints and renames through the my/areas doors", async () => {
+    const a = stub([{ id: "a2", name: "Garden", archived: false }]);
+    try {
+      expect((await lensCreateArea("Garden")).openTasks).toBe(0);
+    } finally {
+      a.restore();
+    }
+    expect(a.calls[0]).toMatchObject({
+      method: "POST", url: "/api/projects/my/areas", body: { name: "Garden" },
+    });
+
+    const b = stub([{ id: "a2", name: "Yard", archived: false }]);
+    try {
+      expect((await lensRenameArea("a2", "Yard")).name).toBe("Yard");
+    } finally {
+      b.restore();
+    }
+    expect(b.calls[0]).toMatchObject({
+      method: "PATCH", url: "/api/projects/my/areas/a2", body: { name: "Yard" },
+    });
+  });
+
+  it("reports which of the two things a delete did", async () => {
+    // "archived, 3 tasks kept" and "deleted" are different promises, and the
+    // caller has to say the right one. The mapping must not flatten them.
+    const a = stub([{ id: "a1", outcome: "archived", tasks: 3 }]);
+    try {
+      expect(await lensDeleteArea("a1")).toEqual({ id: "a1", outcome: "archived", tasks: 3 });
+    } finally {
+      a.restore();
+    }
+    expect(a.calls[0]).toMatchObject({ method: "DELETE", url: "/api/projects/my/areas/a1" });
+
+    const b = stub([{ id: "a9", outcome: "deleted", tasks: 0 }]);
+    try {
+      expect((await lensDeleteArea("a9")).outcome).toBe("deleted");
+    } finally {
+      b.restore();
+    }
   });
 });
 
