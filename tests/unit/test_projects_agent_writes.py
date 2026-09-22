@@ -84,9 +84,9 @@ def _s2b_answers(call: dict) -> Any:
     path, method = call["path"], call["method"]
     if path.endswith("/status-set"):
         return {"owns": False, "owner_name": "Ops", "may_edit": True}
-    if path.endswith("/types"):
+    if path.endswith("/types") and method == "GET":
         return {"rows": [{"id": TYPE_ID, "name": "Bug", "project_id": UUID, "is_epic": False}]}
-    if path.endswith("/fields"):
+    if path.endswith("/fields") and method == "GET":
         return {
             "rows": [
                 {
@@ -964,3 +964,49 @@ def test_every_path_segment_a_write_interpolates_is_a_canonical_id() -> None:
     assert not offenders, "path interpolation not bound from a canonical id:\n  " + "\n  ".join(
         offenders
     )
+
+
+# ── The S2b verifier's findings ─────────────────────────────────────────────
+
+
+async def test_a_required_field_is_set_by_a_patch_under_the_one_card(monkeypatch) -> None:
+    """`POST /nodes/{id}/fields` has no `required` column in its INSERT. The
+    first version put the flag on the card and never wrote it."""
+
+    def created(call: dict) -> Any:
+        if call["path"].endswith("/fields") and call["method"] == "POST":
+            return {"id": FIELD_ID, "name": "Region", "field_key": "region"}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, created)
+    out = await skill_projects.create_field(UUID, "Region", required=True)
+    assert len(asked) == 1 and "required" in asked[0]["context"]
+    posted, patched = (
+        [c for c in writes(calls) if c["method"] == "POST"],
+        [c for c in writes(calls) if c["method"] == "PATCH"],
+    )
+    assert "required" not in posted[0]["json"]
+    assert patched[0]["path"] == f"/projects/fields/{FIELD_ID}"
+    assert patched[0]["json"] == {"required": True}
+    assert "required" in out
+
+
+async def test_a_route_refusal_is_said_before_the_card_not_after(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    assert "cannot be the default" in await skill_projects.create_type(
+        UUID, "Chore", is_default=True, org_wide=True
+    )
+    assert "belong to a select" in await skill_projects.create_field(
+        UUID, "Region", field_type="text", options="EU"
+    )
+
+    def org_bug(call: dict) -> Any:
+        if call["path"].endswith("/types"):
+            return {"rows": [{"id": TYPE_ID, "name": "Bug", "project_id": None}]}
+        return responder(call)
+
+    fake_gateway(monkeypatch, org_bug)
+    assert "Only its name" in await skill_projects.update_type(UUID, "bug", color="red")
+    assert asked == [] and writes(calls) == []

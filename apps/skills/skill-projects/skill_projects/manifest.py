@@ -318,6 +318,9 @@ PLANNED: dict[str, str] = {
 COMPOSITE: dict[str, frozenset[str]] = {
     "create_task": frozenset({"assign"}),
     "add_subtasks": frozenset({"create_task"}),
+    # The create route's INSERT has no `required` column; the flag is a
+    # PATCH under the same card (S2b verifier).
+    "create_field": frozenset({"update_field"}),
 }
 
 #: POST routes that WRITE NOTHING. A preview computes what an act would do

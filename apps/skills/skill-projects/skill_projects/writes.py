@@ -1061,6 +1061,10 @@ async def create_type(
         payload["icon"] = icon.strip()
     if color.strip():
         payload["color"] = color.strip()
+    if is_default and org_wide:
+        # The route's rule (admin.create_type): the default is each project's
+        # own choice. Refused here, so the card is not shown for a 422.
+        return "An organization-wide type cannot be the default. Set one per project."
     if is_default:
         payload["is_default"] = True
     if is_epic:
@@ -1121,6 +1125,13 @@ async def update_type(
         before["is_epic"] = row.get("is_epic")
     if not payload:
         return "Nothing to change. Pass at least one field."
+    if _org_wide(row) and set(payload) - {"name"}:
+        # `refuse_org_wide_rescope` allows a rename only on an org-wide type.
+        # Said here, before the card, not as a 422 after it.
+        return (
+            f"{data(row.get('name'))} is organization-wide. Only its name can change "
+            "from here. Set an icon, colour or default on a project's own type."
+        )
     scope = "organization-wide" if _org_wide(row) else data(node.get("name"))
     card: dict[str, Any] = dict(payload)
     if demoted:
@@ -1188,6 +1199,10 @@ async def create_field(
     choices = _split(options)
     if kind in ("select", "multi_select") and not choices:
         return f"A {kind} field needs options."
+    if choices and kind not in ("select", "multi_select"):
+        # `clean_options` drops them silently for any other type, and the
+        # card would have listed them. Refused instead.
+        return f"Options belong to a select or multi_select field, not {kind}."
     rows = await _vocab(pid, "fields")
     if _matches_by_name(_local(rows), label):
         return f"A field called {data(label)} already exists here."
@@ -1197,21 +1212,29 @@ async def create_field(
         payload["options"] = choices
     if description.strip():
         payload["description"] = description.strip()
-    if required:
-        payload["required"] = True
     if org_wide:
         payload["scope"] = "org"
     where = "every project (organization-wide)" if org_wide else _tree_scope(root, node)
+    card: dict[str, Any] = {**payload, "project": data(node.get("name")), "scope": where}
+    if required:
+        # The create route's INSERT carries no `required` column
+        # (custom_fields.py `create_field`); only the PATCH sets it. The
+        # card shows the flag, and the tool sets it right after the create,
+        # under the one card, through `update_field`'s route (COMPOSITE).
+        card["required"] = "a task cannot move into this project without a value"
     if not await _confirm(
         title="Add this custom field?",
-        detail=f"{data(label)} ({kind}) in {where}",
-        context=_fields_block({**payload, "project": data(node.get("name")), "scope": where}),
+        detail=f"{data(label)} ({kind}) in {where}" + (" · required" if required else ""),
+        context=_fields_block(card),
     ):
         return CANCELLED
     row = await post(f"/projects/nodes/{pid}/fields", payload)
+    fid = uuid_of(str(row.get("id")), "field_id")
+    if required:
+        await patch(f"/projects/fields/{fid}", {"required": True})
     return (
-        f"Added field {data(row.get('name') or label)} (key {row.get('field_key')}, {kind}) "
-        f"to {where}.\n  field_id: {row.get('id')}"
+        f"Added field {data(row.get('name') or label)} (key {data(row.get('field_key'))}, {kind}"
+        f"{', required' if required else ''}) to {where}.\n  field_id: {fid}"
     )
 
 
