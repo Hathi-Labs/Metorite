@@ -517,6 +517,194 @@ async def patch_task(
     return result
 
 
+async def move_task_in(
+    db: Any, vis: Any, task: Any, payload: MoveTask, *, by: str,
+) -> dict:
+    """The body of ``POST /tasks/{id}/move``, inside a caller's transaction.
+
+    Split out of the route on 2026-09-23 (WS-39 S6a) so the personal
+    ``organize`` decision can move and assign a task through THIS seam rather
+    than growing a second reading of what a move does. Every guard the route
+    applies — privacy (D62), required custom fields (192), the assign guard —
+    runs here, because this IS the route minus the session and the event.
+
+    ``task`` is the row ``load_visible_task`` returned. ``by`` is the actor.
+    Returns the wire task with ``notified`` and ``skipped`` attached.
+    """
+    task_id = str(task.id)
+    values: dict[str, Any] = {}
+
+    if payload.parent_task_id is not None or "parent_task_id" in payload.model_fields_set:
+        new_parent = payload.parent_task_id
+        if new_parent:
+            await load_visible_task(db, vis, str(new_parent))
+        await assert_no_task_cycle(db, task_id, new_parent)
+        await assert_epic_has_no_parent(
+            db, getattr(task, "type_id", None), new_parent,
+        )
+        values["parent_task_id"] = new_parent
+
+    if payload.project_id and str(payload.project_id) != str(task.project_id):
+        dest = await load_visible_project(db, vis, str(payload.project_id))
+        # Migration 193 — after the visibility load, same as the privacy
+        # guard below: a caller who cannot see the folder still gets 404.
+        if node_kind(getattr(dest, "kind", None)) == "folder":
+            raise HTTPException(
+                status_code=422,
+                detail="A folder holds projects, not tasks. Move the "
+                       "task into a project inside it.",
+            )
+        # Before anything is computed: a task may only move INTO a personal
+        # project it already lives in. Checked after the visibility load so
+        # a caller who cannot see the destination still gets 404 and never
+        # learns from a 422 that it exists (R5: 404, never 403).
+        await assert_move_keeps_privacy(db, task, str(payload.project_id))
+        new_root = await root_project_id(db, str(payload.project_id))
+        # ⚠️ Tracked SEPARATELY from the root, because since migration 196
+        # the set can change while the root does not: moving a task from a
+        # subproject that overrides into a sibling that inherits stays
+        # inside one space and still crosses two status sets.
+        old_status_home = await status_owner_id(db, str(task.project_id))
+        new_status_home = await status_owner_id(db, str(payload.project_id))
+        values["project_id"] = str(payload.project_id)
+        if new_status_home != old_status_home:
+            values["status_id"] = await remap_one_status(
+                db, status_id=str(task.status_id), owner_id=new_status_home,
+            )
+        if new_root != str(task.root_project_id):
+            # The destination's REQUIRED fields (migration 192), merged from
+            # what the task already carries plus what this call supplies.
+            # Checked BEFORE any value is written, so a refusal leaves the
+            # task exactly where it was rather than half-moved.
+            #
+            # Only when the ROOT changes: definitions are per-root, so a
+            # move between two projects of the same tree cannot introduce a
+            # requirement the task has not already satisfied, and asking
+            # again would be a prompt with nothing behind it.
+            merged, custom_changes = apply_values(
+                from_jsonb(task.custom_fields),
+                payload.custom_fields or {},
+                await load_definitions(db, new_root),
+            )
+            await assert_required_fields_present(db, new_root, merged)
+            if custom_changes:
+                values["custom_fields"] = merged
+
+            values["root_project_id"] = new_root
+            # WS-27bl. Types are root-scoped too, and this path carried
+            # `type_id` across untouched until 2026-09-19 — the task then
+            # pointed at a row in the OLD root's registry and its type
+            # silently stopped resolving. Same helper as `/tasks/move`, so
+            # the narrow path and the mapping-aware one cannot disagree
+            # about what a move does to a type.
+            if getattr(task, "type_id", None):
+                values["type_id"] = await remap_one_type(
+                    db, type_id=str(task.type_id), root_id=new_root,
+                )
+            # The number belongs to the old root's sequence and would
+            # collide in the new one, so it is reallocated rather than
+            # carried. The old number is recorded on the timeline below —
+            # a task's human id changing without a trace is how a reference
+            # in a comment stops resolving.
+            values["task_number"] = await next_task_number(db, new_root)
+
+    if payload.assignees is not None:
+        # Promote-and-assign, in ONE transaction. `assert_assignable_here`
+        # is re-run against the DESTINATION rather than the task's current
+        # project, which is the whole point of allowing it here: assigning a
+        # colleague is refused in a personal project, and the fix offered is
+        # this very call — so the check has to see where the task is GOING.
+        await assert_assignable_here(
+            db,
+            str(values.get("project_id", task.project_id)),
+            {a.strip().lower() for a in payload.assignees if (a or "").strip()},
+        )
+
+    if not values and payload.assignees is None:
+        return row_to_dict(task, TaskModel)
+
+    row = await update_row(db, "pm_tasks", task_id, values) if values else task
+    # WS-27ae / P-27 — SUBTASK MEMBERSHIP is a satellite of the PARENT, and
+    # it is the one satellite that lives on the child's own row. Re-parenting
+    # changes what both parents contain (`attach_relation_counts` draws
+    # `{done, total}` from exactly this), and neither parent row is touched
+    # by the UPDATE above.
+    if "parent_task_id" in values:
+        await touch_task(
+            db, getattr(task, "parent_task_id", None),
+            values.get("parent_task_id"),
+        )
+    if values:
+        await record_activity(
+            db, activity_type="system", created_by=by, task_id=task_id,
+            body="Task moved",
+            meta={"from_project": str(task.project_id),
+                  "from_number": getattr(task, "task_number", None)},
+        )
+
+    # ── Promote-and-assign, in the SAME transaction ─────────────────────
+    #
+    # The whole reason this lives here rather than in a follow-up call to
+    # `set_assignees`: between two calls, the move can commit and the
+    # assignment fail, leaving a task promoted onto a team board and owned
+    # by nobody. That is a worse state than either failure alone, and it is
+    # the state a client cannot repair without knowing what it was trying to
+    # do. One transaction or neither.
+    notified: dict[str, list[str]] = {"notified": [], "skipped": []}
+    if payload.assignees is not None:
+        wanted = {
+            a.strip().lower() for a in payload.assignees if (a or "").strip()
+        }
+        current = {
+            r.assignee for r in (await db.execute(
+                text(
+                    "SELECT assignee FROM pm_task_assignees "
+                    "WHERE task_id = CAST(:tid AS uuid)"
+                ),
+                {"tid": task_id},
+            )).fetchall()
+        }
+        added = wanted - current
+        for who in sorted(current - wanted):
+            await db.execute(
+                text(
+                    "DELETE FROM pm_task_assignees "
+                    "WHERE task_id = CAST(:tid AS uuid) AND assignee = :who"
+                ),
+                {"tid": task_id, "who": who},
+            )
+        for who in sorted(added):
+            await db.execute(
+                text(
+                    "INSERT INTO pm_task_assignees "
+                    "(task_id, assignee, assigned_by) "
+                    "VALUES (CAST(:tid AS uuid), :who, :by) "
+                    "ON CONFLICT (task_id, assignee) DO NOTHING"
+                ),
+                {"tid": task_id, "who": who, "by": by},
+            )
+        if added or (current - wanted):
+            await record_activity(
+                db, activity_type="assignment", created_by=by,
+                task_id=task_id,
+                meta={"added": sorted(added),
+                      "removed": sorted(current - wanted)},
+            )
+        if added:
+            # Inside the transaction, for `notify`'s own stated reason: an
+            # assignment that committed while its notification did not is
+            # the silent assignment WS-27j exists to end.
+            notified = await notify(
+                db, recipients=sorted(added), kind="assigned",
+                task_id=task_id, actor_id=by,
+            )
+
+    result = row_to_dict(row, TaskModel)
+    result["notified"] = notified["notified"]
+    result["skipped"] = notified["skipped"]
+    return result
+
+
 @router.post("/tasks/{task_id}/move")
 async def move_task(
     task_id: str, payload: MoveTask,
@@ -527,180 +715,14 @@ async def move_task(
     Crossing into another project re-stamps ``root_project_id`` and re-points
     the status, because statuses are per-root: carrying the old status across
     would leave the task in a lane the destination board does not render.
+
+    The work is :func:`move_task_in`. This route only opens the session and
+    emits the event.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
-        values: dict[str, Any] = {}
-
-        if payload.parent_task_id is not None or "parent_task_id" in payload.model_fields_set:
-            new_parent = payload.parent_task_id
-            if new_parent:
-                await load_visible_task(db, vis, str(new_parent))
-            await assert_no_task_cycle(db, task_id, new_parent)
-            await assert_epic_has_no_parent(
-                db, getattr(task, "type_id", None), new_parent,
-            )
-            values["parent_task_id"] = new_parent
-
-        if payload.project_id and str(payload.project_id) != str(task.project_id):
-            dest = await load_visible_project(db, vis, str(payload.project_id))
-            # Migration 193 — after the visibility load, same as the privacy
-            # guard below: a caller who cannot see the folder still gets 404.
-            if node_kind(getattr(dest, "kind", None)) == "folder":
-                raise HTTPException(
-                    status_code=422,
-                    detail="A folder holds projects, not tasks. Move the "
-                           "task into a project inside it.",
-                )
-            # Before anything is computed: a task may only move INTO a personal
-            # project it already lives in. Checked after the visibility load so
-            # a caller who cannot see the destination still gets 404 and never
-            # learns from a 422 that it exists (R5: 404, never 403).
-            await assert_move_keeps_privacy(db, task, str(payload.project_id))
-            new_root = await root_project_id(db, str(payload.project_id))
-            # ⚠️ Tracked SEPARATELY from the root, because since migration 196
-            # the set can change while the root does not: moving a task from a
-            # subproject that overrides into a sibling that inherits stays
-            # inside one space and still crosses two status sets.
-            old_status_home = await status_owner_id(db, str(task.project_id))
-            new_status_home = await status_owner_id(db, str(payload.project_id))
-            values["project_id"] = str(payload.project_id)
-            if new_status_home != old_status_home:
-                values["status_id"] = await remap_one_status(
-                    db, status_id=str(task.status_id), owner_id=new_status_home,
-                )
-            if new_root != str(task.root_project_id):
-                # The destination's REQUIRED fields (migration 192), merged from
-                # what the task already carries plus what this call supplies.
-                # Checked BEFORE any value is written, so a refusal leaves the
-                # task exactly where it was rather than half-moved.
-                #
-                # Only when the ROOT changes: definitions are per-root, so a
-                # move between two projects of the same tree cannot introduce a
-                # requirement the task has not already satisfied, and asking
-                # again would be a prompt with nothing behind it.
-                merged, custom_changes = apply_values(
-                    from_jsonb(task.custom_fields),
-                    payload.custom_fields or {},
-                    await load_definitions(db, new_root),
-                )
-                await assert_required_fields_present(db, new_root, merged)
-                if custom_changes:
-                    values["custom_fields"] = merged
-
-                values["root_project_id"] = new_root
-                # WS-27bl. Types are root-scoped too, and this path carried
-                # `type_id` across untouched until 2026-09-19 — the task then
-                # pointed at a row in the OLD root's registry and its type
-                # silently stopped resolving. Same helper as `/tasks/move`, so
-                # the narrow path and the mapping-aware one cannot disagree
-                # about what a move does to a type.
-                if getattr(task, "type_id", None):
-                    values["type_id"] = await remap_one_type(
-                        db, type_id=str(task.type_id), root_id=new_root,
-                    )
-                # The number belongs to the old root's sequence and would
-                # collide in the new one, so it is reallocated rather than
-                # carried. The old number is recorded on the timeline below —
-                # a task's human id changing without a trace is how a reference
-                # in a comment stops resolving.
-                values["task_number"] = await next_task_number(db, new_root)
-
-        if payload.assignees is not None:
-            # Promote-and-assign, in ONE transaction. `assert_assignable_here`
-            # is re-run against the DESTINATION rather than the task's current
-            # project, which is the whole point of allowing it here: assigning a
-            # colleague is refused in a personal project, and the fix offered is
-            # this very call — so the check has to see where the task is GOING.
-            await assert_assignable_here(
-                db,
-                str(values.get("project_id", task.project_id)),
-                {a.strip().lower() for a in payload.assignees if (a or "").strip()},
-            )
-
-        if not values and payload.assignees is None:
-            return row_to_dict(task, TaskModel)
-
-        row = await update_row(db, "pm_tasks", task_id, values) if values else task
-        # WS-27ae / P-27 — SUBTASK MEMBERSHIP is a satellite of the PARENT, and
-        # it is the one satellite that lives on the child's own row. Re-parenting
-        # changes what both parents contain (`attach_relation_counts` draws
-        # `{done, total}` from exactly this), and neither parent row is touched
-        # by the UPDATE above.
-        if "parent_task_id" in values:
-            await touch_task(
-                db, getattr(task, "parent_task_id", None),
-                values.get("parent_task_id"),
-            )
-        if values:
-            await record_activity(
-                db, activity_type="system", created_by=actor(user), task_id=task_id,
-                body="Task moved",
-                meta={"from_project": str(task.project_id),
-                      "from_number": getattr(task, "task_number", None)},
-            )
-
-        # ── Promote-and-assign, in the SAME transaction ─────────────────────
-        #
-        # The whole reason this lives here rather than in a follow-up call to
-        # `set_assignees`: between two calls, the move can commit and the
-        # assignment fail, leaving a task promoted onto a team board and owned
-        # by nobody. That is a worse state than either failure alone, and it is
-        # the state a client cannot repair without knowing what it was trying to
-        # do. One transaction or neither.
-        notified: dict[str, list[str]] = {"notified": [], "skipped": []}
-        if payload.assignees is not None:
-            wanted = {
-                a.strip().lower() for a in payload.assignees if (a or "").strip()
-            }
-            current = {
-                r.assignee for r in (await db.execute(
-                    text(
-                        "SELECT assignee FROM pm_task_assignees "
-                        "WHERE task_id = CAST(:tid AS uuid)"
-                    ),
-                    {"tid": task_id},
-                )).fetchall()
-            }
-            added = wanted - current
-            for who in sorted(current - wanted):
-                await db.execute(
-                    text(
-                        "DELETE FROM pm_task_assignees "
-                        "WHERE task_id = CAST(:tid AS uuid) AND assignee = :who"
-                    ),
-                    {"tid": task_id, "who": who},
-                )
-            for who in sorted(added):
-                await db.execute(
-                    text(
-                        "INSERT INTO pm_task_assignees "
-                        "(task_id, assignee, assigned_by) "
-                        "VALUES (CAST(:tid AS uuid), :who, :by) "
-                        "ON CONFLICT (task_id, assignee) DO NOTHING"
-                    ),
-                    {"tid": task_id, "who": who, "by": actor(user)},
-                )
-            if added or (current - wanted):
-                await record_activity(
-                    db, activity_type="assignment", created_by=actor(user),
-                    task_id=task_id,
-                    meta={"added": sorted(added),
-                          "removed": sorted(current - wanted)},
-                )
-            if added:
-                # Inside the transaction, for `notify`'s own stated reason: an
-                # assignment that committed while its notification did not is
-                # the silent assignment WS-27j exists to end.
-                notified = await notify(
-                    db, recipients=sorted(added), kind="assigned",
-                    task_id=task_id, actor_id=actor(user),
-                )
-
-        result = row_to_dict(row, TaskModel)
-        result["notified"] = notified["notified"]
-        result["skipped"] = notified["skipped"]
+        result = await move_task_in(db, vis, task, payload, by=actor(user))
 
     await emit("pm.task.moved", {"task_id": task_id})
     return result

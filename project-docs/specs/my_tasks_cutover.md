@@ -119,10 +119,9 @@ order.
 
 ### 3.4 Two stale worktrees, one live branch
 
-`C:/wt-gtd-retire` holds uncommitted work on H-158 (the `process.env` inline
-fix in `lens.ts` and `nav.ts`). That fix is a prerequisite for the flag flip.
-This plan does not touch those two functions until that branch lands, and
-S7 checks the build output before it trusts the flag.
+H-158 (the `process.env` inline fix in `lens.ts` and `nav.ts`) landed on
+2026-09-23 in PR #382. S7 verifies the literal in the served bundle before it
+trusts the flag.
 
 ## 4. Decisions — D73, recorded here
 

@@ -302,15 +302,16 @@ def test_an_empty_selection_is_refused_the_same_way():
 # existed since WS-27w; nothing could reach them from a multi-select, and
 # nothing in the UI could reach them at all.
 
-def test_the_three_verbs_are_the_three_the_routes_already_have():
-    """No fourth verb invented here.
+def test_the_verbs_are_the_ones_the_single_task_routes_already_have():
+    """No verb invented here.
 
     `tasks.py` owns `DELETE /tasks/{id}`, `POST /{id}/archive` and
-    `POST /{id}/unarchive`. Bulk is a second door onto those three, not a
+    `POST /{id}/unarchive`; `personal.py` owns `PATCH /tasks/{id}/personal`
+    (the fourth, WS-39 S6a). Bulk is a second door onto those four, not a
     second vocabulary — a verb here with no single-task twin would be a
     behaviour only reachable in batches.
     """
-    assert set(BULK_ACTIONS) == {"archive", "unarchive", "delete"}
+    assert set(BULK_ACTIONS) == {"archive", "unarchive", "delete", "personal"}
 
 
 def test_an_action_is_not_an_edit():

@@ -7,19 +7,30 @@ import { GtdItem, GtdProject, Person, OrgPerson, OrgPersonWrite, ResumeIngestRes
 import type { ClarifyProposal, ClarifyDisposition, Confidence } from "./clarify";
 import type { ConnectedProvider } from "./mockData";
 import {
+  lensAddSubtasks,
   lensArchiveItem,
+  lensBulkArchive,
+  lensBulkDispose,
   lensCapture,
+  lensCaptureBatch,
   lensDelegateItem,
   lensEnabled,
   lensEstimateStats,
   lensFetchItems,
   lensFetchProjects,
+  lensFileUnder,
+  lensItemDetail,
+  lensListSubtasks,
+  lensMergeInto,
   lensMoveTask,
+  lensOrganize,
   lensPlan,
   lensPatchItem,
   lensPurgeItem,
   lensRestoreItem,
+  lensStageAttachment,
   lensStageOptions,
+  lensStatusCatalog,
   lensTrashItem,
 } from "./lens";
 import type { LensMoveRequest } from "./lens";
@@ -224,6 +235,9 @@ export interface ProviderTaskDetail {
 /** Pull the connected tool's comments/attachments/subtasks for one task.
  *  Returns empty sections for a LOCAL / not-yet-pushed item. */
 export async function apiItemDetail(id: string): Promise<ProviderTaskDetail> {
+  // Composed from three Projects reads (timeline, attachments, children) —
+  // the same three sections, from the store the task actually lives in.
+  if (lensEnabled()) return lensItemDetail(id);
   const r = await gatewayFetch<Raw>(`/items/${id}/detail`);
   const asPersonList = (v: unknown): Person[] =>
     Array.isArray(v)
@@ -466,6 +480,7 @@ export async function apiCapture(
 }
 
 export async function apiCaptureBatch(titles: string[]): Promise<GtdItem[]> {
+  if (lensEnabled()) return lensCaptureBatch(titles);
   const rows = await gatewayFetch<Raw[]>(`/items/batch`, {
     method: "POST",
     body: JSON.stringify({ titles }),
@@ -742,6 +757,8 @@ export async function apiBulkDispose(
   ids: string[],
   disposition: Disposition
 ): Promise<GtdItem[]> {
+  // DONE completes each task for the project; anything else is my overlay.
+  if (lensEnabled()) return lensBulkDispose(ids, disposition);
   const rows = await gatewayFetch<Raw[]>(`/items/bulk`, {
     method: "POST",
     body: JSON.stringify({ ids, disposition }),
@@ -755,6 +772,7 @@ export async function apiBulkArchive(
   ids: string[],
   archived: boolean
 ): Promise<GtdItem[]> {
+  if (lensEnabled()) return lensBulkArchive(ids, archived);
   const rows = await gatewayFetch<Raw[]>(`/items/bulk-archive`, {
     method: "POST",
     body: JSON.stringify({ ids, archived }),
@@ -778,6 +796,8 @@ export interface OrganizeBody {
 }
 
 export async function apiOrganize(id: string, body: OrganizeBody): Promise<GtdItem> {
+  // One request, one transaction, on the gateway (S6a done-when 4).
+  if (lensEnabled()) return lensOrganize(id, body);
   return mapItem(
     await gatewayFetch<Raw>(`/items/${id}/organize`, {
       method: "POST",
@@ -788,6 +808,7 @@ export async function apiOrganize(id: string, body: OrganizeBody): Promise<GtdIt
 
 /** The child subtasks of a task (local rows), in manual order. */
 export async function apiListSubtasks(id: string): Promise<GtdItem[]> {
+  if (lensEnabled()) return lensListSubtasks(id);
   const rows = await gatewayFetch<Raw[]>(`/items/${id}/subtasks`);
   return rows.map(mapItem);
 }
@@ -797,6 +818,7 @@ export async function apiAddSubtasks(
   id: string,
   titles: string[],
 ): Promise<GtdItem[]> {
+  if (lensEnabled()) return lensAddSubtasks(id, titles);
   const rows = await gatewayFetch<Raw[]>(`/items/${id}/subtasks`, {
     method: "POST",
     body: JSON.stringify({ titles }),
@@ -938,6 +960,10 @@ export async function apiCreateLocalProject(req: {
 /** Upload one attachment (multipart through the proxy) → descriptor for the
  *  capture payload. */
 export async function apiUploadAttachment(file: File): Promise<TaskAttachment> {
+  // Under the lens an attachment belongs to a TASK, and at capture time there
+  // is none yet: the descriptor holds the file, and `lensCapture` uploads it
+  // once the task exists (lens.ts header, S6a).
+  if (lensEnabled()) return lensStageAttachment(file);
   const fd = new FormData();
   fd.append("file", file, file.name);
   const res = await fetch(`/api/tasks/attachments`, { method: "POST", body: fd });
@@ -1141,6 +1167,8 @@ export interface StatusCatalog {
 /** The unique ClickUp statuses across the user's connected projects + their
  *  (mapped or auto-guessed) Next-Actions stage — powers the mapping settings. */
 export async function fetchStatusCatalog(): Promise<StatusCatalog> {
+  // The lanes of my personal root; each maps to itself (a lane IS the stage).
+  if (lensEnabled()) return lensStatusCatalog();
   const r = await gatewayFetch<Raw>(`/status-catalog`);
   return {
     stages: Array.isArray(r.stages)
@@ -1281,6 +1309,7 @@ export async function apiClarifyPropose(
 /** Fold an inbox capture into an existing synced task (dedup "add to existing")
  *  instead of creating a duplicate. Returns the enriched target task. */
 export async function apiMergeInto(id: string, targetId: string): Promise<GtdItem> {
+  if (lensEnabled()) return lensMergeInto(id, targetId);
   return mapItem(
     await gatewayFetch<Raw>(`/items/${id}/merge-into`, {
       method: "POST",
@@ -1292,6 +1321,7 @@ export async function apiMergeInto(id: string, targetId: string): Promise<GtdIte
 /** File an inbox capture as a SUB-STEP of an existing task (clarify "this is a
  *  step of X"). Returns the parent task (now with the new child). */
 export async function apiFileUnder(id: string, parentId: string): Promise<GtdItem> {
+  if (lensEnabled()) return lensFileUnder(id, parentId);
   return mapItem(
     await gatewayFetch<Raw>(`/items/${id}/file-under`, {
       method: "POST",

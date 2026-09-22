@@ -34,10 +34,36 @@
  * page.** Taking the first page and calling it "my tasks" is how an app shows
  * 100 of somebody's 340 and looks perfectly healthy doing it. `fetchAll`
  * pages to exhaustion.
+ *
+ * ── S6a: the CRUD tail (my_tasks_cutover.md §5 S6a, 2026-09-23) ───────────
+ *
+ * Group C of `api.ts` follows the spine through here. Four decisions the spec
+ * left open, each recorded once:
+ *
+ * * **An attachment needs a task.** `pm_task_attachments` hangs off a task,
+ *   so a file picked BEFORE capture cannot be uploaded yet. `lensStageAttachment`
+ *   returns a descriptor holding the `File` (and an object URL for the chip),
+ *   and `lensCapture` creates the task FIRST and then uploads each held file —
+ *   the smallest change that keeps the composer untouched. A pasted LINK has
+ *   no home in that table; it is appended to the notes, which is where "for
+ *   more context later" lives under one store.
+ * * **Subtask rows are project-shaped.** `GET /projects/tasks?parent_task_id=`
+ *   carries no overlay, so `mapLensItem` cannot state a disposition for them.
+ *   The checklist reads `disposition === "DONE"`, so DONE is derived from
+ *   `completed_at` — the one fact the shared row does hold — and nothing else
+ *   is invented.
+ * * **Bulk DONE is N completions.** `POST /projects/tasks/bulk` refuses
+ *   `disposition: "DONE"` by design (§13.5a decision 1); the lens completes
+ *   each task through `/complete` and reads the selection back.
+ * * **`workflow_stage` is a NAME, resolved against the task's project**
+ *   (§4.6). `splitPatch` no longer throws on it: it lands in `stage`, and
+ *   `lensPatchItem` resolves it to a `status_id` through `lensStatuses`. A
+ *   name that matches nothing throws with the valid names listed.
  */
 
 import { projectsCall } from "@/app/projects/lib/api";
 
+import type { OrganizeBody, ProviderTaskDetail, StatusCatalog } from "./api";
 import type {
   Disposition,
   GtdItem,
@@ -102,8 +128,9 @@ export const UNMAPPED: Readonly<Record<string, string>> = {
   providerStatus: "D52 — `workflowStage` is the status, and it is ours",
   syncState: "D52 — every task is local; there is nothing to be pending to",
   attachments:
-    "slice 2 — `pm_task_attachments` exists and `/my/inbox` does not " +
-    "project it; mapping it to [] here would read as 'no attachments'",
+    "`/my/inbox` does not project `pm_task_attachments`, and mapping it to " +
+    "[] here would read as 'no attachments'. The detail panel reads them " +
+    "through `lensItemDetail` (S6a) — per task, when opened, not per row",
   origin:
     "UNDECIDED, and per-TASK rather than per-member (H-33). " +
     "`pm_tasks.source` is the nearest existing fact. Settle it before the " +
@@ -252,9 +279,6 @@ const OVERLAY_KEYS: readonly string[] = [
  * from a save that worked. This slice is explicitly about not doing that.
  */
 const NOT_YET: Readonly<Record<string, string>> = {
-  workflow_stage:
-    "needs a status name → `status_id` lookup against the task's project " +
-    "(WS-39 S3a-client slice 2)",
   provider_status: "retired with the connector (D52) — nothing writes it",
   is_mine: "derived from `pm_task_assignees`; set assignees instead",
 };
@@ -263,6 +287,12 @@ export interface SplitPatch {
   task: Record<string, unknown>;
   personal: Record<string, unknown>;
   assignees?: string[];
+  /**
+   * A status NAME for the task's project (S6a, §4.6). Not a task field: the
+   * write is `status_id`, and the id is only knowable once the project is —
+   * `lensPatchItem` resolves it through `lensSetStage`.
+   */
+  stage?: string;
 }
 
 /**
@@ -289,6 +319,8 @@ export function splitPatch(patch: Record<string, unknown>): SplitPatch {
       out.task[TASK_KEYS[key]] = value;
     } else if (OVERLAY_KEYS.includes(key)) {
       out.personal[key] = value;
+    } else if (key === "workflow_stage") {
+      out.stage = String(value);
     } else if (key === "assignees") {
       out.assignees = (value as { email?: string; name: string }[])
         .map((p) => p.email ?? p.name)
@@ -308,6 +340,28 @@ export function splitPatch(patch: Record<string, unknown>): SplitPatch {
   }
   return out;
 }
+
+// ── Routes ──────────────────────────────────────────────────────────────────
+
+/**
+ * Every `my/*` door the lens opens, spelled the way the gateway serves it.
+ *
+ * `{task_id}` is the ROUTE's own placeholder, kept verbatim so that
+ * `tests/unit/test_client_route_contract.py` — which reads these literals off
+ * this file and compares them with the mounted routes — sees the whole path,
+ * `organize` included. A door renamed on one side fails there.
+ */
+const MY_ROUTES: Readonly<Record<string, string>> = {
+  inbox: "my/inbox",
+  capture: "my/tasks",
+  batch: "my/tasks/batch",
+  task: "my/tasks/{task_id}",
+  organize: "my/tasks/{task_id}/organize",
+  project: "my/project",
+};
+
+const at = (template: string, taskId: string): string =>
+  template.replace("{task_id}", taskId);
 
 // ── Reads ───────────────────────────────────────────────────────────────────
 
@@ -354,7 +408,7 @@ async function fetchAll(path: string, flags: string): Promise<Raw[]> {
 /** My work, as the Tasks store wants it. `view` is one of `VIEW_FLAGS`. */
 export async function lensFetchItems(view = "all"): Promise<GtdItem[]> {
   const flags = VIEW_FLAGS[view] ?? VIEW_FLAGS.all;
-  return (await fetchAll("my/inbox", flags)).map(mapLensItem);
+  return (await fetchAll(MY_ROUTES.inbox, flags)).map(mapLensItem);
 }
 
 /**
@@ -365,7 +419,7 @@ export async function lensFetchItems(view = "all"): Promise<GtdItem[]> {
  * task back with their disposition, context and block missing.
  */
 export async function lensGetItem(id: string): Promise<GtdItem> {
-  return mapLensItem(await projectsCall<Raw>(`my/tasks/${id}`));
+  return mapLensItem(await projectsCall<Raw>(at(MY_ROUTES.task, id)));
 }
 
 // ── Writes ──────────────────────────────────────────────────────────────────
@@ -387,12 +441,22 @@ const post = (path: string, body?: unknown) =>
 export async function lensCapture(
   title: string,
   notes?: string,
-  _attachments?: TaskAttachment[],
+  attachments?: TaskAttachment[],
   dates?: { deferUntil?: string; dueAt?: string; isHardDate?: boolean },
 ): Promise<GtdItem> {
-  const created = await post("my/tasks", {
+  // A pasted link has no row of its own under one store (`pm_task_attachments`
+  // is the FILE registry), so it rides in the notes — which is where "keep it
+  // for context later" lives. Files wait for the task to exist, below.
+  const links = (attachments ?? []).filter((a) => a.kind === "link" && !a.file);
+  const body = [
+    notes,
+    links.length ? links.map((l) => `- ${l.name}: ${l.url}`).join("\n") : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+  const created = await post(MY_ROUTES.capture, {
     title,
-    notes: notes ?? null,
+    notes: body || null,
     due_at: dates?.dueAt ?? null,
   });
   const id = String(created.id ?? "");
@@ -404,6 +468,11 @@ export async function lensCapture(
       method: "PATCH",
       body: JSON.stringify(overlay),
     });
+  }
+  // AFTER the task exists, and after the overlay: a failed upload leaves a
+  // captured thought without its file, never a file without its thought.
+  for (const a of attachments ?? []) {
+    if (a.file) await lensUploadAttachment(id, a.file);
   }
   return lensGetItem(id);
 }
@@ -450,6 +519,15 @@ export async function lensPatchItem(
       method: "PUT",
       body: JSON.stringify({ assignees: split.assignees }),
     });
+  }
+  if (split.stage !== undefined) {
+    // §4.6. The NAME is resolved against the task's OWN project, which only
+    // the task knows — one read, then the resolved `status_id` write.
+    const current = await lensGetItem(id);
+    if (!current.projectId) {
+      throw new Error("Tasks lens: cannot set a stage on a task with no project.");
+    }
+    await lensSetStage(id, current.projectId, split.stage);
   }
   // Last, so a failure here cannot leave the task closed with the edit that
   // accompanied it unsaved.
@@ -631,11 +709,53 @@ export async function lensFetchProjects(): Promise<Raw[]> {
  * is precisely the wrong answer inside a move dialog.
  */
 export async function lensStageOptions(projectId: string): Promise<string[]> {
+  return (await lensStatuses(projectId)).map((r) => r.name);
+}
+
+/** A project's lanes, id and name, in board order. The one read behind both
+ *  `lensStageOptions` (names, for a picker) and `lensSetStage` (the id, for
+ *  the write). */
+export async function lensStatuses(
+  projectId: string,
+): Promise<{ id: string; name: string }[]> {
   const res = await projectsCall<ListResponse | Raw[]>(
     `nodes/${projectId}/statuses`,
   );
   const rows = Array.isArray(res) ? res : (res.rows ?? []);
-  return rows.map((r) => String((r as Raw).name ?? "")).filter(Boolean);
+  return rows
+    .map((r) => ({ id: String((r as Raw).id ?? ""), name: String((r as Raw).name ?? "") }))
+    .filter((r) => r.name);
+}
+
+/**
+ * Put a task in the lane called `name` in `projectId` (§4.6, closes H-62 (1)).
+ *
+ * The name is matched exactly first, then case-insensitively — "done" typed
+ * for a lane called "Done" is the same intent, and two lanes differing only
+ * in case is a board nobody should have. A name that matches nothing THROWS
+ * with the valid names listed rather than landing the task in a default lane,
+ * which is how a "Blocked" task used to arrive as "To do".
+ */
+export async function lensSetStage(
+  taskId: string,
+  projectId: string,
+  name: string,
+): Promise<void> {
+  const rows = await lensStatuses(projectId);
+  const wanted = name.trim();
+  const hit =
+    rows.find((r) => r.name === wanted) ??
+    rows.find((r) => r.name.toLowerCase() === wanted.toLowerCase());
+  if (!hit?.id) {
+    throw new Error(
+      `Tasks lens: no status named "${wanted}" in this project. Valid names: ` +
+        `${rows.map((r) => r.name).join(", ") || "(none)"}.`,
+    );
+  }
+  await projectsCall<Raw>(`tasks/${taskId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status_id: hit.id }),
+  });
 }
 
 export interface LensMoveRequest {
@@ -692,4 +812,282 @@ export async function lensPlan(
 /** How long my work actually takes against what I planned. */
 export async function lensEstimateStats(): Promise<Raw> {
   return projectsCall<Raw>("my/calendar/estimate-stats");
+}
+
+// ── The CRUD tail (S6a) ──────────────────────────────────────────────────────
+//
+// Group C of `api.ts` (my_tasks_cutover.md §3.1). The header records the four
+// decisions; the functions below are each one door onto a route the Projects
+// app already serves, plus the three the gateway grew for this slice
+// (`my/tasks/batch`, `my/tasks/{id}/organize`, `tasks/bulk` action `personal`).
+
+/** Rows the paginated Projects reads answer with, or a bare array. */
+const rowsOf = (res: ListResponse | Raw[]): Raw[] =>
+  Array.isArray(res) ? res : (res.rows ?? []);
+
+/** `attachments.descriptor` → the chip the Tasks UI draws. */
+function mapAttachment(raw: Raw): TaskAttachment {
+  return {
+    kind: raw.kind === "image" ? "image" : "file",
+    name: String(raw.name ?? "attachment"),
+    url: String(raw.url ?? ""),
+    attachmentId: text(raw.attachment_id),
+    mime: text(raw.mime),
+    size: num(raw.size),
+  };
+}
+
+/**
+ * A child row as the checklist wants it. Project-shaped (no overlay), so the
+ * only disposition it can honestly state is DONE, read off `completed_at`.
+ */
+function mapSubtask(raw: Raw): GtdItem {
+  const item = mapLensItem(raw);
+  if (raw.completed_at) item.disposition = "DONE";
+  return item;
+}
+
+/**
+ * Comments, attachments and subtasks for one task — the detail panel's read.
+ * Three routes, one answer, fetched together because the panel draws all
+ * three sections at once and a serial fetch would draw them one by one.
+ */
+export async function lensItemDetail(id: string): Promise<ProviderTaskDetail> {
+  const [timeline, attachments, children] = await Promise.all([
+    projectsCall<ListResponse>(
+      `tasks/${id}/timeline?kind=comments&page_size=${PAGE_SIZE}`,
+    ),
+    projectsCall<ListResponse>(`tasks/${id}/attachments`),
+    projectsCall<ListResponse>(`tasks?parent_task_id=${id}&page_size=${PAGE_SIZE}`),
+  ]);
+  return {
+    // The timeline answers newest first; a thread reads oldest first.
+    comments: rowsOf(timeline)
+      .map((c) => ({
+        id: String(c.id ?? ""),
+        author: String(c.created_by ?? "Someone"),
+        text: String(c.body ?? ""),
+        createdAtMs: c.created_at ? Date.parse(String(c.created_at)) : undefined,
+      }))
+      .reverse(),
+    attachments: rowsOf(attachments).map(mapAttachment),
+    subtasks: rowsOf(children).map((s) => ({
+      providerTaskId: String(s.id ?? ""),
+      title: String(s.title ?? "Untitled"),
+      statusType: s.completed_at ? "done" : undefined,
+      assignees: (Array.isArray(s.assignees) ? s.assignees : [])
+        .map(emailPerson)
+        .filter(Boolean) as Person[],
+    })),
+  };
+}
+
+/** Many thoughts, ONE transaction — the multi-line capture box. */
+export async function lensCaptureBatch(titles: string[]): Promise<GtdItem[]> {
+  const res = (await post(MY_ROUTES.batch, {
+    items: titles.map((title) => ({ title })),
+  })) as unknown as ListResponse;
+  return rowsOf(res).map(mapLensItem);
+}
+
+/** The selection, read back after a bulk write. */
+const readBack = (ids: string[]): Promise<GtdItem[]> =>
+  Promise.all(ids.map(lensGetItem));
+
+/**
+ * One disposition onto a selection — MY overlay on each task.
+ *
+ * ⚠️ DONE is not an overlay write (§13.5a decision 1), and the bulk route
+ * refuses it by name. Completion goes through `/complete`, per task, so the
+ * board moves with the list.
+ */
+export async function lensBulkDispose(
+  ids: string[],
+  disposition: Disposition,
+): Promise<GtdItem[]> {
+  if (!ids.length) return [];
+  if (disposition === "DONE") {
+    await Promise.all(ids.map((id) => post(`tasks/${id}/complete`)));
+  } else {
+    await post("tasks/bulk", {
+      task_ids: ids,
+      action: "personal",
+      personal: { disposition },
+    });
+  }
+  return readBack(ids);
+}
+
+/** Archive or restore a selection. The P-3 note on `lensArchiveItem` applies. */
+export async function lensBulkArchive(
+  ids: string[],
+  archived: boolean,
+): Promise<GtdItem[]> {
+  if (!ids.length) return [];
+  await post("tasks/bulk", {
+    task_ids: ids,
+    action: archived ? "archive" : "unarchive",
+  });
+  return readBack(ids);
+}
+
+/**
+ * One clarify decision, one request, one transaction (S6a done-when 4).
+ *
+ * `account_id` is dropped: it named a connected workspace and there are none
+ * (D52). `status` is a lane NAME for the destination and is honoured the §4.6
+ * way — resolved against the task's project AFTER the move, so a decision
+ * that promotes and names a lane lands in that lane.
+ */
+export async function lensOrganize(
+  id: string,
+  body: OrganizeBody,
+): Promise<GtdItem> {
+  const { account_id: _account, status, ...decision } = body;
+  void _account;
+  const raw = await post(at(MY_ROUTES.organize, id), decision);
+  if (status) {
+    const projectId = text(raw.project_id);
+    if (!projectId) {
+      throw new Error("Tasks lens: cannot set a stage on a task with no project.");
+    }
+    await lensSetStage(id, projectId, status);
+    return lensGetItem(id);
+  }
+  return mapLensItem(raw);
+}
+
+/** A task's children, in board order. See `mapSubtask` for what they carry. */
+export async function lensListSubtasks(id: string): Promise<GtdItem[]> {
+  const res = await projectsCall<ListResponse>(
+    `tasks?parent_task_id=${id}&sort=created_at&direction=asc&page_size=${PAGE_SIZE}`,
+  );
+  return rowsOf(res).map(mapSubtask);
+}
+
+let whoAmI: Promise<string> | undefined;
+
+/**
+ * My own address, from the session — needed once, to self-assign a subtask
+ * (`POST /projects/tasks` assigns nobody). Memoised: it cannot change within
+ * a page, and it is the same door `resolveAccess` opens.
+ */
+export function lensWhoAmI(): Promise<string> {
+  whoAmI ??= (async () => {
+    const res = await fetch("/api/auth/me", { cache: "no-store" });
+    if (!res.ok) throw new Error(`Tasks lens: who am I? (${res.status})`);
+    const email = text(((await res.json()) as Raw).email);
+    if (!email) throw new Error("Tasks lens: the session has no email.");
+    return email;
+  })();
+  // A failed lookup must not be cached as the answer.
+  whoAmI.catch(() => {
+    whoAmI = undefined;
+  });
+  return whoAmI;
+}
+
+/**
+ * Add steps under a task: each an ordinary task in the parent's project,
+ * assigned to me, created in the order given so the list reads as typed.
+ */
+export async function lensAddSubtasks(
+  id: string,
+  titles: string[],
+): Promise<GtdItem[]> {
+  const parent = await projectsCall<Raw>(`tasks/${id}`);
+  const me = await lensWhoAmI();
+  for (const title of titles) {
+    const child = await post("tasks", {
+      project_id: parent.project_id,
+      parent_task_id: id,
+      title,
+    });
+    await projectsCall<Raw>(`tasks/${String(child.id)}/assignees`, {
+      method: "PUT",
+      body: JSON.stringify({ assignees: [me] }),
+    });
+  }
+  return lensListSubtasks(id);
+}
+
+/** Fold `id` into `targetId`. The path names the SURVIVOR (merge.py). */
+export async function lensMergeInto(
+  id: string,
+  targetId: string,
+): Promise<GtdItem> {
+  await post(`tasks/${targetId}/merge`, { sources: [id] });
+  return lensGetItem(targetId);
+}
+
+/** File `id` as a step of `parentId`. Answers with the PARENT, as before. */
+export async function lensFileUnder(
+  id: string,
+  parentId: string,
+): Promise<GtdItem> {
+  await post(`tasks/${id}/move`, { parent_task_id: parentId });
+  return lensGetItem(parentId);
+}
+
+/**
+ * Hold a picked file until its task exists. The object URL is what the chip
+ * previews; the `File` is what `lensCapture` uploads.
+ */
+export function lensStageAttachment(file: File): TaskAttachment {
+  const url =
+    typeof URL !== "undefined" && "createObjectURL" in URL
+      ? URL.createObjectURL(file)
+      : "";
+  return {
+    kind: file.type.startsWith("image/") ? "image" : "file",
+    name: file.name,
+    url,
+    mime: file.type || undefined,
+    size: file.size,
+    file,
+  };
+}
+
+/** Multipart, like `attachmentsApi.upload` in the Projects app. */
+export async function lensUploadAttachment(
+  taskId: string,
+  file: File,
+): Promise<TaskAttachment> {
+  const body = new FormData();
+  body.append("file", file, file.name);
+  const res = await fetch(`/api/projects/tasks/${taskId}/attachments`, {
+    method: "POST",
+    body,
+  });
+  const raw = (await res.json().catch(() => ({}))) as Raw;
+  if (!res.ok) {
+    throw new Error(text(raw.detail) ?? `Upload failed (${res.status})`);
+  }
+  return mapAttachment(raw);
+}
+
+/**
+ * The settings modal's status catalogue: the lanes of my personal root.
+ *
+ * Under one store there is no upstream vocabulary to map — a lane IS the
+ * stage — so every entry maps to itself and nothing is unmapped. A member
+ * who has never captured has no root yet, and that is an empty catalogue,
+ * not an error.
+ */
+export async function lensStatusCatalog(): Promise<StatusCatalog> {
+  let root: Raw;
+  try {
+    root = await projectsCall<Raw>(MY_ROUTES.project);
+  } catch (err) {
+    if ((err as { status?: number }).status === 404) {
+      return { stages: [], entries: [], unmapped: 0 };
+    }
+    throw err;
+  }
+  const names = (await lensStatuses(String(root.id))).map((r) => r.name);
+  return {
+    stages: names,
+    entries: names.map((name) => ({ status: name, stage: name, mapped: true })),
+    unmapped: 0,
+  };
 }
