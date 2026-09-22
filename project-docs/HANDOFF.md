@@ -3144,8 +3144,8 @@ line — never reclaim a number by deleting the other entry.
   (D-PM-4). The card shows the address, so consent holds. The chat is still
   wider than the picker. One directory read before the card would let the
   card say "the directory does not know this address". (2)
-  `ActionResultCard` jumps to the FIRST `full_id` in a result, so the
-  receipt for `add_subtasks` opens the first subtask under a heading that
+  `ActionResultCard` jumps to the FIRST `full_id` in a result. So the
+  receipt for `add_subtasks` opens the first subtask, under a heading that
   names the parent. Print the parent's id first, or jump to it. Both are
   small. Neither loses data.
 - **Authority:** `specs/projects_ai_chat.md` §3.2 · the S2 review, 2026-09-22
