@@ -3040,6 +3040,100 @@ line — never reclaim a number by deleting the other entry.
   `scripts/dev_db.sh` · `tests/live/README.md`
 - **Added:** 2026-09-20 · the task lifecycle session
 
+### H-155 · WS-27bm: build the Projects chat slices S2 to S5 · [AGENT]
+- **Check:** `uv run python -c "import skill_projects.manifest as m; print(sorted(m.PLANNED))"`
+  → a non-empty list means at least one slice is still open. The value is
+  the slice each tool belongs to.
+- **Why:** S1 shipped the reads. The owner asked for a chat that creates,
+  updates and archives too, with a card before every write. S2 is the
+  class B writes, S3 the class C acts with count-bearing cards, S4 the five
+  workflows, S5 the polish. `specs/projects_ai_chat.md` §10 is the order
+  and §10.2 the acceptance. The CRM write tools are the shape to copy
+  (`crm_app.md` WS-26d-write). Move a tool out of `PLANNED` when it ships.
+  The fence refuses a tool that is both built and planned.
+- **Authority:** `specs/projects_ai_chat.md` §3.2, §3.3, §5, §10 ·
+  `skill_projects/manifest.py`
+- **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
+
+### H-156 · Decide the three questions the Projects chat spec leaves to the owner · [OWNER]
+- **Check:** `grep -n "^## 12" -A 20 project-docs/specs/projects_ai_chat.md`
+  → three numbered questions with no answer under them means this is open.
+- **Why:** (1) **Delete.** D-PM-35 keeps hard delete off the chat until
+  WS-40. The interim is to gate the two tools on `projects:settings:write`.
+  The spec argues against it. (2) **Grants.** A grant write is
+  membership-shaped, and CLAUDE.md §3a rule 3 stops an agent there. The
+  spec parks it as class X. (3) **The tier.** `tier-balanced` now. The cost
+  is real once H-42 prices the card. Answer any of the three by editing the
+  manifest row and the spec, in one PR.
+- **Authority:** `specs/projects_ai_chat.md` §5.4, §12 · `org_access_control.md` §8d
+- **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
+
+### H-157 · Flip `NEXT_PUBLIC_PROJECTS_CHAT` on the box, then look at the rail · [AGENT]
+- **Check:** `ssh metorite 'grep -c NEXT_PUBLIC_PROJECTS_CHAT=1 /opt/metorite/workbench/control_plane/.env.local 2>/dev/null || echo 0'`
+  → `0` means the flag is off and the slot still says "not built".
+- **Why:** S1 shipped dark. The flag is a build-time `NEXT_PUBLIC_*` value,
+  so a flip needs a frontend rebuild, not a restart. `enforcement-flip` is
+  granted until 2026-09-30. After the flip, do the check no test makes.
+  Open the rail in light mode, at compact density, under a changed accent,
+  and beside the board. Ask it "what is stuck here?" on a real space. Then
+  confirm the numbers match the Analytics app.
+- **Authority:** `specs/projects_ai_chat.md` §4.3, §11 · CLAUDE.md §3a
+- **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
+
+### H-158 · Two frontend flags read `process.env` in a form Next cannot inline · [AGENT]
+- **Check:** `grep -n "= process.env" workbench/control_plane/src/lib/nav.ts workbench/control_plane/src/app/tasks/lib/lens.ts`
+  → a hit on `env: Record<string, string | undefined> = process.env` means
+  this is still open.
+- **Why:** Next inlines only the literal member expression
+  `process.env.NEXT_PUBLIC_X` into the browser bundle. A read through a
+  defaulted parameter (`env = process.env`, then `env.NEXT_PUBLIC_X`) is not
+  inlined. In a browser `process.env` is the `{}` polyfill, so the flag reads
+  `undefined` and the feature stays off whatever the box is set to. The
+  Projects chat's `chatEnabled` shipped in that shape, and the S1 review
+  found it in the build output on 2026-09-22 (`projectApps.ts` now reads the
+  literal, and `projectApps.test.ts` fences the spelling).
+  `previewAppsVisible` (`nav.ts`) and `lensEnabled` (`lens.ts`) carry the
+  same shape today. Each test passes an env object, so neither suite can see
+  it. ⚠️ If `NEXT_PUBLIC_TASKS_LENS` was ever flipped on the box, the Tasks
+  lens may not be reading the store the owner believes it reads. Measure in
+  the build output before you conclude either way.
+- **The repair:** read the literal when no env is passed, the way
+  `projectApps.ts::chatEnabled` does, and add the same source fence to each
+  test. One PR, two files, two tests.
+- **Authority:** `workbench/control_plane/src/app/projects/lib/projectApps.ts` (the fixed shape) ·
+  `src/lib/nav.ts:118-123` · `src/app/tasks/lib/lens.ts:70-75`
+- **Added:** 2026-09-22 · the Projects chat S1 review
+
+### H-159 · A timeline tie-break is decided by a random UUID, and one test flakes on it · [AGENT]
+- **Check:** `for i in 1 2 3 4 5 6; do uv run pytest tests/unit/test_projects_hardening.py -q -k test_an_intervening_activity_breaks_the_run 2>&1 | tail -1; done`
+  → any `failed` line means this is still open.
+- **Why:** `core.py` orders the activity spine by `created_at DESC, id DESC`.
+  Two rows written inside one clock tick tie on `created_at`, and the tie is
+  then decided by a random UUID. The S1 verifier measured
+  `test_an_intervening_activity_breaks_the_run` failing 3 times in 6 on
+  Python 3.12 in a worktree, and 16 of 16 passing on `main`'s 3.13 venv. The
+  code under test is byte-identical. The coalescing rule in
+  `record_field_change` reads "the latest row", so the flake is a real
+  ordering fragility, not a test artefact. H-88 records a sibling.
+- **Authority:** `routes/projects/core.py` (`ORDER BY created_at DESC, id DESC`) ·
+  `tests/unit/test_projects_hardening.py` · H-88
+- **Added:** 2026-09-22 · the Projects chat S1 verification
+
+### H-160 · A key-mint audit test splits the token on the wrong underscore, and flakes red · [AGENT]
+- **Check:** `grep -n 'token.split("_")\[-1\]' tests/unit/test_provision_mints_the_key.py`
+  → a hit means this is still open.
+- **Why:** `test_the_mint_is_AUDITED_by_prefix_and_never_by_token` takes the
+  secret as `token.split("_")[-1]`. A base64url secret can carry an
+  underscore, so the tail is sometimes one character. On 2026-09-22 CI run
+  35697285473 the tail was `c`, `'c' in <the audit row>` was true, and the
+  test failed with "the audit trail recorded the SECRET" on a branch that
+  does not touch keys. The same commit's merge run passed. Use
+  `split_key(token)` for both halves, the way the test already does for the
+  prefix, and assert on the whole secret. Landed with #370 on main.
+- **What it costs:** a deploy gated on `tests/unit/` goes red at random.
+- **Authority:** `tests/unit/test_provision_mints_the_key.py` · `apps/services/customer_console/customer_console/keys.py::split_key`
+- **Added:** 2026-09-22 · the Projects chat S1 merge
+
 
 # DONE — deleted, not archived
 

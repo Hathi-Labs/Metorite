@@ -26,6 +26,7 @@ members = [
     "agent-crm",
     "agent-email-assistant",
     "agent-orchestrator",
+    "agent-projects",
     "agent-task-manager",
     "agent-whatsapp-assistant",
     "customer-console",
@@ -35,6 +36,7 @@ members = [
     "orchestrator",
     "project-docs",
     "reconciler",
+    "skill-projects",
     "skill-task-gtd",
     "whatsapp-ingestion",
 ]
@@ -389,6 +391,27 @@ wheels = [
 name = "agent-orchestrator"
 version = "0.1.0"
 source = { editable = "apps/agents/agent-orchestrator" }
+
+[[package]]
+name = "agent-projects"
+version = "0.1.0"
+source = { editable = "apps/agents/agent-projects" }
+dependencies = [
+    { name = "acb-common" },
+    { name = "acb-skills" },
+    { name = "agent-framework-core" },
+    { name = "agent-framework-openai" },
+    { name = "skill-projects" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "acb-common", editable = "packages/acb_common" },
+    { name = "acb-skills", editable = "packages/acb_skills" },
+    { name = "agent-framework-core", specifier = ">=1.8.0" },
+    { name = "agent-framework-openai", specifier = ">=1.7.0" },
+    { name = "skill-projects", editable = "apps/skills/skill-projects" },
+]
 
 [[package]]
 name = "agent-task-manager"
@@ -2403,6 +2426,7 @@ dependencies = [
     { name = "orchestrator" },
     { name = "python-multipart" },
     { name = "reconciler" },
+    { name = "skill-projects" },
     { name = "skill-task-gtd" },
 ]
 
@@ -2438,6 +2462,7 @@ requires-dist = [
     { name = "orchestrator", editable = "apps/services/orchestrator" },
     { name = "python-multipart", specifier = ">=0.0.32" },
     { name = "reconciler", editable = "apps/services/reconciler" },
+    { name = "skill-projects", editable = "apps/skills/skill-projects" },
     { name = "skill-task-gtd", editable = "apps/skills/skill-task-gtd" },
 ]
 
@@ -3223,6 +3248,30 @@ sdist = { url = "https://files.pythonhosted.org/packages/94/e7/b2c673351809dca68
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274", size = 11050, upload-time = "2024-12-04T17:35:26.475Z" },
 ]
+
+[[package]]
+name = "skill-projects"
+version = "0.1.0"
+source = { editable = "apps/skills/skill-projects" }
+dependencies = [
+    { name = "acb-common" },
+    { name = "httpx" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "acb-common", editable = "packages/acb_common" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "skill-task-gtd"

@@ -4800,6 +4800,26 @@ a write to a shared vocabulary, taken as a side effect of one member's move, and
 it needs its own decision. Moving a task and its **subtree** as one act:
 `parent_task_id` is its own axis and §9.13 does not touch it.
 
+### 9.14 WS-27bm — the AI chat (minted 2026-09-22, owner directive)
+
+**The owning spec is `specs/projects_ai_chat.md`.** It is its own file because
+it binds three seams outside this app: the chat component, the confirmation
+card and the agent registry. This section is the pointer, so a reader of §9
+finds it.
+
+In one line: a rail over the shared `AgentChat`, pinned to a new
+`projects-assistant` agent whose tools call these routes **as the acting
+member**. The route's rule is the one authority. Every write shows a card.
+The chat cannot hard-delete a project or a task until WS-40 (D-PM-35).
+
+**The `skill-projects` family §6.4 named is that spec's §4.1**, built in the
+same package the assigned-agent path will use. §6.4's permission intersection
+belongs to the dispatch path, which runs as `agent:<name>`. The chat path runs
+as the member.
+
+**S1 (the reads) built 2026-09-22.** The manifest covers all 121 routes.
+S2 to S5 are open. See `projects_ai_chat.md` §10.
+
 ---
 
 ## 10. Verification

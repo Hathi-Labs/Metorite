@@ -66,6 +66,7 @@ import { TaskList } from "./components/TaskList";
 import { TaskPanel } from "./components/TaskPanel";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { TriageRail } from "./components/TriageRail";
+import { AssistantRail } from "./components/AssistantRail";
 import { SAVED_VIEW_POSITION, orderBearingView, type planDrop } from "./lib/board";
 import { TASK_PAGE_SIZE, appendTasks, nextTaskPage } from "./lib/paging";
 import {
@@ -149,10 +150,17 @@ import ReportsView from "./components/ReportsView";
 import NodeDashboard from "./components/NodeDashboard";
 import SpaceSettings from "./components/SpaceSettings";
 import {
-  PROJECT_APP_SECTIONS,
+  projectAppSections,
   type ProjectAppId,
   SPACES_SECTION_LABEL,
 } from "./lib/projectApps";
+
+/**
+ * The sidebar's own destinations, with the flagged entries resolved
+ * (WS-27bm — `NEXT_PUBLIC_PROJECTS_CHAT` flips "AI chat" to live). Read once:
+ * `NEXT_PUBLIC_*` is inlined at build time, so this cannot change at runtime.
+ */
+const PROJECT_APP_SECTIONS = projectAppSections();
 
 /**
  * Five modes, not Tasks' two, because the domain genuinely has five — the
@@ -2193,6 +2201,24 @@ function ProjectsWorkspace() {
     [openWithStatuses]
   );
 
+  // `?app=analytics|reports` opens one of the app's own destinations — the
+  // door a chat card uses (WS-27bm, `ProjectToolCards`). Only a LIVE entry
+  // opens; a preview slug is ignored, because the sidebar would refuse it.
+  // Consumed after the open, like `?task=`, so the same link works twice.
+  const appLink = searchParams.get("app");
+  useEffect(() => {
+    if (!appLink) return;
+    const live = PROJECT_APP_SECTIONS.flatMap((s) => s.items).find(
+      (i) => i.id === appLink && i.launch === "live",
+    );
+    if (live) setApp(live.id);
+    const rest = new URLSearchParams(searchParams.toString());
+    rest.delete("app");
+    const qs = rest.toString();
+    router.replace(qs ? `/projects?${qs}` : "/projects");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appLink]);
+
   const deepLink = searchParams.get("task");
   useEffect(() => {
     // Keyed on the id alone, deliberately: `openTaskById` closes over the
@@ -2203,7 +2229,17 @@ function ProjectsWorkspace() {
     (async () => {
       try {
         const task = await projectsApi.task(deepLink);
-        if (live) await openWithStatuses(task);
+        if (live) {
+          await openWithStatuses(task);
+          // Consume the link. The effect is keyed on the id, so a second
+          // click on the same chat card row (WS-27bm) would push an
+          // unchanged URL and open nothing. Clearing `task` — and only
+          // `task` — after the open makes the next push a change again.
+          const rest = new URLSearchParams(searchParams.toString());
+          rest.delete("task");
+          const qs = rest.toString();
+          router.replace(qs ? `/projects?${qs}` : "/projects");
+        }
       } catch (err) {
         if (live) setError(String((err as Error).message));
       }
@@ -3095,10 +3131,36 @@ function ProjectsWorkspace() {
 
   /** Everything between the chrome and the canvas, plus the canvas. */
   const workArea = app === "ai-chat" ? (
-    // Unreachable today — the sidebar disables a `preview` entry. Written
-    // anyway so the destination exists the moment the flag flips, and so
-    // "not built" is a surface rather than a blank pane.
-    renderState("empty", "AI chat is not built yet.")
+    // WS-27bm — the AI chat, full width in its own slot. Reachable only when
+    // `NEXT_PUBLIC_PROJECTS_CHAT` flips the entry to live; off, the sidebar
+    // disables it and says so. The rail gets the member's PLACE — the node
+    // they last selected (the rail header names it, because the tree does
+    // not highlight it while an app is open), the filters, the open task
+    // and the selection — so "this project" resolves without an id. No
+    // `view`: the member is looking at the chat, not at a canvas.
+    <div className="min-w-0 flex-1 overflow-hidden">
+      <AssistantRail
+        node={
+          selected
+            ? {
+                id: selected.id,
+                name: selected.name,
+                level: selectedLevel,
+                archived: Boolean(selected.archived_at),
+              }
+            : null
+        }
+        view={null}
+        filters={filters}
+        openTask={
+          openTask
+            ? { id: openTask.id, title: openTask.title, number: openTask.task_number ?? null }
+            : null
+        }
+        selectedTaskIds={Array.from(picked)}
+        onClose={() => setApp(null)}
+      />
+    </div>
   ) : app === "reports" ? (
     // §9.12.8 — a saved question, rendered on screen before anything sends.
     // Its own reads; it shares only `finished`, to say how much there is to

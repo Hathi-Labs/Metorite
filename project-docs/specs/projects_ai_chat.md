@@ -1,0 +1,572 @@
+# Projects · the AI chat — WS-27bm
+
+**Status: ACTIVE. S1 (the reads) built 2026-09-22. S2 to S5 open.** §10
+says which slice each part belongs to.
+
+The design was verified against the tree on 2026-09-22. Every "already
+there" claim was re-derived from the code, not from a write-up. Each anchor
+carries a file name and a line number. A later reader can check them again.
+
+**Owner directive:** 2026-09-22, "I want the AI chat fully functional for the
+project app". In the same session: "continuously update the AI chat so
+that we consider new features and abilities of the project app".
+
+**Board row:** WS-27 · **ticket WS-27bm** · **owning spec:** this file.
+
+**Parent spec:** `project_management_app.md` §6.4 names a `skill-projects`
+tool family. That family does not exist. This spec builds it.
+
+**Companions:** `generative_ui_2.md` (the HITL and UI doctrine) ·
+`crm_app.md` WS-26d-write (the write-tool precedent this copies) ·
+`org_access_control.md` §8d (why the chat cannot delete yet).
+
+---
+
+## 1. The answer, in one screen
+
+**The chat is a thin surface over three seams that already exist.** It adds no
+transport, no second chat component, no second authorization rule and no
+second confirmation mechanism.
+
+| It reuses | Where it is | What the chat adds |
+|---|---|---|
+| The chat component and its stream | `src/components/AgentChat.tsx` · `POST /agent/run/stream` (`routes/agent.py:1739`) | One rail, pinned to a new agent name |
+| The confirmation card | `acb_skills/ask_tools.py:345` `request_confirmation`, fail-closed | A card before every write, with the counts read first |
+| The Projects API and its rules | `routes/projects/*`, 130 routes, one visibility model | Tools that call those routes **as the acting member** |
+| The agent shape | `apps/agents/agent-crm/agents.py` | `apps/agents/agent-projects/` + `apps/skills/skill-projects/` |
+| The per-app cards | `src/components/tasks/TaskToolCards.tsx` | `src/components/projects/ProjectToolCards.tsx` |
+| The sidebar slot | `src/app/projects/lib/projectApps.ts:65-72`, `launch: "preview"` | The slot goes `live` behind a flag |
+
+**Three guards protect a write, and each one is a different thing.**
+
+1. **The route decides authority.** The tool calls the gateway with the
+   member's own identity, so the route's rule answers, and there is one rule.
+2. **The tool class decides the ceremony.** A read has none. A reversible
+   write shows one card. A hard-to-reverse act shows a card that carries the
+   counts, and it can never be batched or pre-approved.
+3. **The card decides consent.** No card, no write. A run with nobody there to
+   answer writes nothing (`ask_tools.py:446-448`).
+
+**The chat cannot hard-delete a project or a task.** The delete route has no
+authority rule today (H-121, WS-40). A chat tool over it would let any reader
+destroy a space, with a card as the only brake. Archive is the chat's remove
+verb until WS-40 answers who may delete. §5.4 records this as D-PM-35.
+
+**The chat keeps pace with the app by a fence, not by memory.** Every Projects
+route is either mapped to a tool or excluded by name with a reason.
+`tests/unit/test_projects_chat_coverage.py` fails on the first route that is
+neither. §7 is the design.
+
+---
+
+## 2. Scope and non-goals
+
+**In scope.** A member opens the Projects app, opens the chat, and can
+understand, create, update and organise projects, tasks and their details by
+talking. Five built-in workflows: plan a project from a goal, a status report,
+the weekly report, a stuck review, and "my work" triage.
+
+**Not in scope.**
+- A second chat surface. The main chat app at `/chat` sees the same sessions,
+  because the session store is shared by agent name.
+- Hard delete of a project or a task. D-PM-35, until WS-40.
+- Sending a report by email from the chat. Recipients and the schedule stay
+  in the Reports app, and arming the schedule is owner-gated (§9.12.8).
+- Assign-to-AI as a product feature. Parked by the owner (§9.12.10). This spec
+  builds the `skill-projects` family that feature will later need, and nothing
+  more.
+- A second status vocabulary, a second grant mechanism, a second read cache.
+- Product copy in STE. Owner decision 2026-08-26, `docs/style_ste.md` §1.
+
+---
+
+## 3. What a member can do — the workflow
+
+The verbs below are grouped by what they cost to undo. That grouping is the
+tool class in §5.2, so the ceremony a member sees follows from this table.
+
+### 3.1 Understand — reads, no ceremony
+
+| Ask | Tool | Route it calls |
+|---|---|---|
+| "What is in this space?" | `projects_tree` | `GET /projects/tree` |
+| "How is Marketing doing?" | `project_summary` | `GET /projects/nodes/{id}/summary` |
+| "Find the extruder task" | `find_tasks` | `GET /projects/search`, `GET /projects/tasks?q=` |
+| "Show me open tasks due this week for Ayush" | `list_tasks` | `GET /projects/tasks` with the filter set the app uses |
+| "Tell me about #142" | `task_detail` | `GET /projects/tasks/{id}` + `/timeline` + `/relations` |
+| "What is mine?" | `my_work` | `GET /projects/assigned-to-me`, `GET /projects/my/inbox` |
+| "Who could take this?" | `people_for` | `GET /projects/assignees`, `GET /projects/people/names` |
+| "What statuses does this project use?" | `vocabulary` | `GET /nodes/{id}/statuses`, `/types`, `/tags`, `/fields` |
+| "Where is work stuck?" | `analytics_stuck` | `GET /projects/analytics/stuck` |
+| "Who is overloaded?" | `analytics_load` | `GET /projects/analytics/load` |
+| "Are we getting faster?" | `analytics_throughput` | `GET /projects/analytics/throughput` |
+| "What did we finish last week?" | `analytics_finished` | `GET /projects/analytics/finished` |
+| "What is due?" | `analytics_outlook` | `GET /projects/analytics/outlook` |
+| "Render the weekly report" | `report_render` | `GET /projects/reports/{id}/render` |
+
+Every number a read returns is a **server aggregate**. The tool never sums a
+page of tasks in the agent. §9.12.7 gives the reason. The list is paginated,
+and a count of one page looks right and is wrong.
+
+### 3.2 Create and update — reversible writes, one card
+
+| Ask | Tool | Route it calls | Why it is reversible |
+|---|---|---|---|
+| "Add a task: call the vendor about the quote" | `create_task` | `POST /projects/tasks` | Archive undoes it |
+| "Rename it, set due Friday, priority high" | `update_task` | `PATCH /projects/tasks/{id}` | The timeline holds a revert |
+| "Move it to In progress" | `set_status` | `PATCH /projects/tasks/{id}` (status by name) | Any status may be set again |
+| "Assign it to Priya" | `assign` | `PUT /projects/tasks/{id}/assignees` | Reassign |
+| "Comment: waiting on legal" | `comment` | `POST /projects/tasks/{id}/comments` | Soft delete by the author |
+| "Break it into three steps" | `add_subtasks` | `POST /projects/tasks` × n, `parent_task_id` | Archive |
+| "It is blocked by #140" | `link_tasks` | `POST /projects/tasks/{id}/links` | `DELETE …/links/{id}` |
+| "Move it into the Q4 project" | `move_task` | `POST /projects/tasks/move/preview`, then `/move` | Move back |
+| "Watch this task for me" | `watch` | `PUT /projects/tasks/{id}/watch` | Unwatch |
+| "Defer it to Monday" | `defer` | `POST /projects/tasks/{id}/defer` | Per-member overlay, mine |
+| "Make a project called Q4 launch under Marketing" | `create_project` | `POST /projects/nodes` | Archive |
+| "Rename the project" | `update_project` | `PATCH /projects/nodes/{id}` | Rename back |
+| "Bring the archived task back" | `unarchive_task` | `POST /projects/tasks/{id}/unarchive` | It is the undo |
+| "Save this as a weekly report" | `report_save` | `POST /projects/reports` | `DELETE /projects/reports/{id}` |
+
+**A batch is one card.** A plan that creates one project and twelve tasks
+shows one card that lists all thirteen rows. Twelve cards would train the
+member to click through, which defeats the card.
+
+**The card names the row.** Before a write that targets an existing row, the
+tool reads the row so the card can say its title and its project. A card that
+reads "update task 8f3c…" is a signature bought under a misdescription.
+WS-26d-write decision 1 is the precedent, and its test shape is the fence:
+every call before the card is a `GET`.
+
+### 3.3 The guarded acts — hard to reverse, one card each, never batched
+
+| Ask | Tool | Route it calls | What the card carries |
+|---|---|---|---|
+| "Archive this project" | `archive_project` | `POST /projects/nodes/{id}/archive` | Subtree count, open-task count, the name |
+| "Archive the task" | `archive_task` | `POST /projects/tasks/{id}/archive` | Title, status, open subtask count |
+| "Restore the project" | `unarchive_project` | `POST /projects/nodes/{id}/unarchive` | The rows it will clear |
+| "Merge #12 into #9" | `merge_tasks` | `POST /projects/tasks/{id}/merge` | Both titles, what moves |
+| "Set all of these to Done" | `bulk_update` | `POST /projects/tasks/bulk` | The exact ids and the change |
+| "Move the folder into Ops" | `move_project` | `POST /projects/nodes/{id}/move` | The subtree, the new parent |
+| "Delete the Blocked status" | `delete_status` | `DELETE /projects/statuses/{id}?move_to=` | Count in use, the target |
+| "Delete the tag" | `delete_tag` | `DELETE /projects/tags/{id}` | `GET /tags/{id}/impact` first |
+| "Delete the field" | `delete_field` | `DELETE /projects/fields/{id}` | Count of values it drops |
+| "Undo that change" | `revert_activity` | `POST /projects/activities/{id}/revert` | The before and after values |
+| "Delete my comment" | `delete_comment` | `DELETE /projects/comments/{id}` | The comment text |
+
+Three rules bind every row of this table.
+
+1. **One act, one card.** The tool refuses a list. A member who wants five
+   projects archived answers five cards.
+2. **No pre-approval.** "Archive it without asking" is not an argument the
+   tool accepts. Neither the agent, the persona, nor an earlier answer in the
+   session can skip a class C card.
+3. **The counts come from the route, before the write.** Archive and delete
+   routes already read their counts first (`tree.py:934-936`, R7/R8). The card
+   shows those numbers, so the member signs what the server will do.
+
+**Not on the chat surface, and the reason.** `DELETE /projects/nodes/{id}` and
+`DELETE /projects/tasks/{id}` are hard deletes. `pm_projects` cascades over the
+subtree, every task and every grant. Their only guard is read visibility
+(`tree.py:938-940`). D-PM-35 keeps them out of the chat until WS-40 lands.
+
+### 3.4 The built-in workflows
+
+Each workflow is a **prompted sequence over the tools above**, not a new
+endpoint. The agent's instructions carry the sequence. The tools carry the
+guards. A workflow cannot reach a write that its tool class forbids.
+
+**W1 · Plan a project from a goal.** Carried forward from the CommandCenter
+`agent-project-manager` satellite repo (`.github/skills/project-planning`).
+
+1. The member states a goal and a deadline.
+2. The agent reads the space (`projects_tree`), the vocabulary, and the
+   people (`people_for`).
+3. The agent proposes phases, tasks, owners and dates as a `formCard` panel
+   (`emit_generative_ui`, `surface: "panel"`, `hitl: true`). Each task has a
+   verb-plus-object title, an owner, an effort estimate and a date. A task
+   that lacks one of the four is not proposed.
+4. Priority score is `impact × urgency × effort`, each 1 to 5, shown per task
+   and never stored. It is a sorting aid, not a field.
+5. The agent names three ways the plan fails, before it asks for approval.
+   That step was the satellite skill's inversion check, and it stays.
+6. On approval, `create_project` and `create_task` run as **one class B
+   batch**, one card, every row listed.
+
+**W2 · Status report.** Carried forward from `.github/skills/project-tracking`.
+
+- Scope is a node or the portfolio. The agent reads `analytics_stuck`,
+  `analytics_load` and `analytics_outlook`.
+- Every project gets one of three flags. **On track**: nothing overdue and no
+  open blocker. **At risk**: a task due within 3 days with no status change
+  in 7 days. An assignee in the top band of the load read also marks the
+  project at risk. **Blocked**: a task with an open blocking link.
+- The output is a `statDashboard` inline card and a Markdown artifact
+  (`write_artifact`) the member can open in the side panel.
+- The agent offers to comment on each at-risk task. Each comment is a class B
+  write in one batch card.
+
+**W3 · The weekly report.** The Reports app owns the numbers (§9.12.8). The
+chat finds or saves a definition (`report_save`, class B) and renders it
+(`report_render`). It never computes a second set of numbers, and it never
+sends.
+
+**W4 · Stuck review.** `analytics_stuck` for the scope, then one question per
+stuck task: move it, reassign it, comment, or leave it. Each answer is a
+class B write, batched into one card at the end of the review.
+
+**W5 · My work triage.** `my_work`, then the member's own overlay only:
+`defer`, `watch`, `complete`. No shared field changes without a card.
+
+---
+
+## 4. Where it runs — the seams, and what is new
+
+### 4.1 Backend — one agent, one skill package
+
+```
+apps/agents/agent-projects/
+  config.json        runtime "maf" · skill_repos ["skill-projects"] · tool_scope
+  instructions.md    the workflows in §3.4, the rules in §5, the data fence
+apps/skills/skill-projects/
+  skill_projects/
+    manifest.py      every /projects route → tool, class, or an exclusion
+    client.py        the gateway client, copied from agent-crm (identity, verbs, paths)
+    reads.py         class A tools
+    writes.py        class B tools
+    guarded.py       class C tools
+```
+
+**Identity is the acting member, and nothing else.** The client sends the
+internal bearer and `X-User-Email` from the per-run ContextVar the executor
+binds (`agent-crm/agents.py:93-104`). A run with no attributed user gets no
+header and the gateway refuses. That answers the one design question §6.4
+left open. The chat path runs as the member, and the route's rule is the
+authority.
+
+`EffectiveAccess.intersect()` is for the assigned-agent path
+(`agent_dispatch.py`), which runs under `agent:<name>`. The two paths share
+the skill package and differ only in who they act as.
+
+**The verb is bounded in the client.** `_ALLOWED_METHODS` holds `GET`, `POST`,
+`PATCH`, `PUT` and `DELETE`, and every `DELETE` path is listed by literal in
+`manifest.py`. The two hard-delete routes are not in that list, so no tool can
+reach them even by mistake. The path is bounded the way `_record_uuid` and
+`_entity_slug` bound it in the CRM agent (`agents.py:23-30`).
+
+**Names, not ids, where a person speaks names.** A status, a type, a tag and a
+person are given by name. The tool resolves the name against the project's
+own vocabulary, the way `update_deal_status` resolves a stage. Two rows with
+one spoken name is a question for the member, never a first-match pick
+(WS-26d-write decision 3).
+
+**Every tool prints `full_id: <uuid>`** for each row it returns, the
+`skill-task-gtd` convention the cards read.
+
+### 4.2 Frontend — one rail, one card file, one persona
+
+```
+src/app/projects/components/AssistantRail.tsx     thin wrapper over <AgentChat>
+src/app/projects/lib/assistantPersona.ts          the live context, from code
+src/components/projects/ProjectToolCards.tsx      the cards, two lines in MessageBubble
+src/app/projects/lib/projectApps.ts               "ai-chat" goes live behind the flag
+```
+
+**The rail is the Tasks rail, re-pointed.** `AssistantRail.tsx:1-33` in the
+Tasks app does four things. The Projects rail does the same four and nothing
+else.
+
+- A session list scoped by agent name.
+- A persona from the live app state.
+- Quick actions into the composer.
+- Memory parity with the main chat app.
+
+**Where it mounts.** Two places, one component. The `ai-chat` sidebar slot
+(`page.tsx:3024-3029`) shows it full-width. **S1 builds this one.**
+
+A rail toggle beside the triage rail (`page.tsx:3218`) shows it docked, so a
+member can talk while the board is open. On a phone the chat is a full scene,
+like the email assistant. **Those two are S5.**
+
+While the slot is open the tree highlights no node. So the rail header names
+the scope itself, and the persona says "current scope", not "looking at".
+The persona carries no `view` in the slot, because the member sees the chat
+and no canvas.
+
+**The persona carries the member's place, as data.** The selected node and
+its level, the view and its filters, the open task id, the bulk selection ids,
+today's date and the member's timezone. Every title is quoted as data with the
+fence sentence the Tasks persona uses (`taskAssistantPersona.ts:47-55`). The
+persona also carries whether the member holds `projects:settings:write`, so the
+agent can say "ask your admin" instead of trying and failing.
+
+**The cards.** `ProjectToolCards` is inert unless a message carries a
+`skill-projects` tool, so the same cards render in the main chat app. Five
+kinds. **S1 builds `TaskListCard` and a titled text card for every other
+read.** `PlanCard` and `ReportCard` are S4, `ActionResultCard` is S2.
+
+| Card | For | Action |
+|---|---|---|
+| `TaskListCard` | `list_tasks`, `find_tasks`, `my_work` | A row opens the task panel by `?task=` |
+| `SummaryCard` | `project_summary`, the five analytics reads | Opens the node, or the Analytics app |
+| `PlanCard` | W1's proposal, after approval | Opens the new project |
+| `ReportCard` | `report_render` | Opens the Reports app on that report |
+| `ActionResultCard` | Every write | Says what changed, links the row, danger tone for class C |
+
+**The generic card is the default.** A tool the card file does not know
+renders as `ActionResultCard` from its class. A new tool never renders as
+raw text, and it never needs a card file change to ship. §7.3 depends on this.
+
+**Frontend tools, navigation only.** Through `useFrontendTool`
+(`src/hooks/useFrontendTool.ts`): `open_task(id)`, `open_project(id)`,
+`open_app("analytics" | "reports")`, `set_filter(...)`. None writes data.
+
+**Quick actions.** Four composer suggestions, scoped to the selected node.
+They read "What is stuck here?", "Summarise this task", "Plan a project from
+a goal" and "Weekly report for this space".
+
+### 4.3 The flag
+
+`NEXT_PUBLIC_PROJECTS_CHAT` on the frontend flips the `ai-chat` slot from
+`preview` to `live` and shows the rail toggle. Default OFF. The agent is
+registered on the backend whether or not the flag is on. The main chat app can
+reach any registered agent, so a member with `feature:projects` and
+`feature:chat` may already talk to it there. There is no backend flag, because
+the routes the tools call are the routes the app already serves.
+
+---
+
+## 5. The three guards
+
+### 5.1 Authority — the route's, and only the route's
+
+The tool never opens a database session and never holds SQL. It asks the
+gateway, as the member. So every refusal the app already makes is the chat's
+refusal too. The agent relays the refusal in plain words and does not try the
+same write again.
+
+- 404 for a row the member may not see (R5).
+- 403 naming the permission the member lacks (`core.py:512-529`).
+- 422 for a shape or privacy rule (`core.py:1258`, `:1318`).
+
+The permissions that exist today, and the routes they guard, are the whole
+authority model. The table in `project_management_app.md` §4 and the map in
+`org_access_control.md` §8d.1 hold them. This spec adds **none**.
+
+### 5.2 The tool class — the ceremony a write earns
+
+| Class | Meaning | Card | Batch | `non_interactive_default` |
+|---|---|---|---|---|
+| **A** | Reads | None | — | — |
+| **B** | A write the app can undo | One card, may list many rows | Yes | `"deny"` |
+| **C** | A write that is hard to undo | One card per act, with counts | **No** | `"deny"` |
+| **X** | Excluded from the chat | — | — | — |
+
+`manifest.py` assigns the class. `@annotate` from
+`acb_skills.tool_annotations` carries it to the permission layer, which defers
+to the card (`permission_policy.py:197`). Annotation is not enforcement. The
+tool awaits the card itself, and the fence in §12 asserts both.
+
+No class B or C tool passes `non_interactive_default="approve"`. A test asserts
+the absence structurally, the way `test_crm_agent_write.py` does.
+
+### 5.3 Consent — the card
+
+`request_confirmation(title, detail, context)` at the top of every class B and
+C tool, before any mutating request is built. The `context` block is budgeted
+under 4000 characters with the warning line first (WS-26d-write, "the card
+stopped matching the wire"). A class C card starts with the counts.
+
+### 5.4 D-PM-35 — the chat cannot hard-delete until WS-40 answers who may
+
+**Decision (agent-proposed, owner may overrule).** `delete_project` and
+`delete_task` are class X. The chat's remove verb is archive.
+
+**Why.** H-121 measured that no Projects route carries a permission check, and
+that `DELETE /projects/nodes/{id}` cascades over a subtree on read visibility
+alone. The owner deferred the fix as WS-40 and asked for a record. A chat tool
+over that route would put the cascade one sentence away from any reader, with
+a card as the only brake. A card guards against a mistake. It is not
+authority, and §8d.3 says it must never be described as authority.
+
+**What changes when WS-40 lands.** The two routes gain a permission. The two
+tools move from class X to class C in `manifest.py`, and their cards carry the
+counts the route already reads. Nothing else changes.
+
+**The interim the owner may choose instead.** Gate the two tools on
+`projects:settings:write`, the one permission Projects already has. This spec
+does not recommend it, because that permission means "may edit the
+vocabulary", and reusing it for delete is the near-miss §8d.1 warns about.
+
+---
+
+## 6. Data and attribution
+
+**No new table, and no new column in slice 1.** Every write lands through a
+route that already records a `pm_activities` row with `created_by` set from
+the authenticated context (`core.py:2585`, R3). A chat write is attributed to
+the member, because the member approved it.
+
+**D-PM-36 — a chat write says it came from the chat.** Slice 2 adds one
+request header, `X-Actor-Via: chat:projects-assistant`, that `record_activity`
+copies into `meta.via` when present. `created_by` stays the member, so
+authorship rules such as comment edit (`activities.py:306`) keep working. The
+timeline can then show "by Priya, through the assistant", and a member who
+reverts an assistant edit can see which ones those were. One seam, one field.
+The fence is `test_projects_activities.py`: a write with the header carries
+`meta.via`, and a write without it does not.
+
+---
+
+## 7. Keeping pace — the chat follows the app by a fence
+
+The owner's second directive is the hard one. The app gains features every
+week, and a chat that lists its abilities in prose is stale by the next merge.
+The Tasks persona proved that: it sent members to a "Connect workspace" button
+for two weeks after the button was deleted (`taskAssistantPersona.ts:33-40`).
+
+### 7.1 D-PM-37 — every Projects route is mapped or excluded, and a test says so
+
+`manifest.py` is a table. One row per route template, in the shape the router
+reports it: method, path, tool name, class. A row may instead say `excluded`
+and carry a reason. `tests/unit/test_projects_chat_coverage.py` does three
+things.
+
+1. It imports `gateway.routes.projects.router` and walks `router.routes`.
+2. It fails on any route that has no manifest row. The message names the
+   route and says: map it to a tool, or exclude it with a reason.
+3. It fails on any manifest row that names a route the router no longer
+   serves. A stale tool is a lie the agent will tell.
+
+So a pull request that adds a Projects endpoint fails CI until its author
+decides what the chat does with it. The decision costs one line. The fence
+is R7's answer to "continuously update".
+
+### 7.2 The persona and the instructions come from code
+
+The agent's instruction file names workflows and rules. It does not list
+tools. The executor already injects the tool docstrings, and the tools come
+from the manifest, so the list the model sees is the list that runs. A tool's
+docstring is the one place its behaviour is described, and it is beside the
+code that does it.
+
+### 7.3 The card file never blocks a ship
+
+§4.2's generic card renders any unknown tool from its class. So a new tool
+reaches the member with a correct card on the day it merges. A bespoke card
+is a later polish, not a gate.
+
+### 7.4 What still needs a person
+
+A new **workflow** (§3.4) needs a paragraph in `instructions.md`. A new
+**guarded act** needs its counts on the card, and a reviewer must check that
+the route reads those counts before it writes. The fence catches the route.
+It cannot judge the card.
+
+---
+
+## 8. Cost
+
+The agent declares `tier-balanced` as its default (D-AI-4). The rail passes the
+member's chat model through `AgentChat model=… lockModel`, and a Projects
+settings entry for it follows the Tasks shape (`TaskSettingsModal.tsx:40-77`)
+in slice 5. Every completion passes the gateway's `/v1` chokepoint
+(`orchestrator/agents.py:412-438`), so local metering and the Router hop both
+apply without a change here. ⚠️ `ROUTER_SERVING_ENABLED` is off, and H-42 says
+the rate card is unpriced. So the chat spends no credits today, and a customer
+sees no AI usage for it. This spec does not change that.
+
+---
+
+## 9. Decisions
+
+- **D-PM-35** — the chat cannot hard-delete until WS-40 answers who may. §5.4.
+- **D-PM-36** — a chat write carries `meta.via` on its activity row. §6.
+- **D-PM-37** — every Projects route is mapped or excluded in
+  `manifest.py`, and `test_projects_chat_coverage.py` fails otherwise. §7.1.
+
+All three are agent-proposed. The owner may overrule any of them.
+
+---
+
+## 10. Slices
+
+Each slice is one pull request. Each one is useful alone.
+
+| Slice | Builds | Gate |
+|---|---|---|
+| **S1 · Read** — ✅ **BUILT 2026-09-22** | `skill-projects` class A tools · `manifest.py` with every route classified · the coverage fence · `agent-projects` registered · the rail behind the flag · the persona · `TaskListCard` and a titled card for every other read | AGENT-SAFE |
+| **S2 · Write** | Class B tools with the card · `ActionResultCard` · `X-Actor-Via` and `meta.via` (D-PM-36) | AGENT-SAFE |
+| **S3 · Guarded** | Class C tools with count-bearing cards · the one-act-one-card rule and its test | AGENT-SAFE |
+| **S4 · Workflows** | W1 plan, W2 status report, W3 weekly, W4 stuck, W5 triage · `PlanCard` and `ReportCard` · the `formCard` plan panel | AGENT-SAFE |
+| **S5 · Polish** | Frontend navigation tools · quick actions · the chat model setting · the visual review in light mode, compact density and a changed accent | AGENT-SAFE |
+| **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-09-30 |
+| **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
+
+### 10.1 Acceptance — S1
+
+**Done when:**
+1. `agent_registry.json` lists `projects-assistant`, and `GET /agent/list`
+   returns it for a member with `feature:projects`.
+2. Every class A tool calls the gateway with `X-User-Email` from the run
+   ContextVar. A run with no user makes zero HTTP calls.
+3. `manifest.py` classifies every route `router.routes` reports, and
+   `test_projects_chat_coverage.py` passes. Removing one row makes it fail.
+4. The rail renders in the `ai-chat` slot when the flag is on. The slot stays
+   `preview` when it is off. `projectApps.test.ts` covers both.
+5. "What is stuck in Marketing?" in the rail returns the server's numbers,
+   and the card opens the Analytics app.
+
+**Tests:** `tests/unit/test_projects_chat_coverage.py` ·
+`tests/unit/test_projects_agent.py` (the recording fake client, copied from
+`tests/unit/_crm_agent_fakes.py`) · `src/app/projects/lib/projectApps.test.ts`
+· `src/app/projects/lib/assistantPersona.test.ts`.
+
+### 10.2 Acceptance — S2 and S3
+
+**Done when:**
+1. Every class B and C tool awaits `request_confirmation` before any mutating
+   request is built. A denied card makes zero mutating calls, and every call
+   before the card is a `GET`.
+2. No class B or C tool passes `non_interactive_default="approve"`. The test
+   asserts the absence in the source.
+3. A class C tool given a list refuses before the card.
+4. The class C card's first line carries the counts the route reads.
+5. A write with `X-Actor-Via` lands `meta.via` on its activity row, against a
+   real database (R8).
+
+---
+
+## 11. Verification
+
+Run from the repo root, with a database up. R8: with no database, 843 tests
+skip and the run still reads green.
+
+```
+bash scripts/dev_db.sh
+eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_agent.py
+uv run pytest tests/unit/test_tenant_coverage.py
+```
+
+In `workbench/control_plane`:
+
+```
+npx tsc --noEmit
+npx vitest run src/app/projects/lib/projectApps.test.ts src/app/projects/lib/assistantPersona.test.ts
+```
+
+Then the check no test makes (`DESIGN_SYSTEM.md` §8). Look at the rail in
+light mode, at compact density, under a changed accent, and beside the board.
+
+---
+
+## 12. Open questions for the owner
+
+1. **Delete.** Accept D-PM-35, or take the interim gate on
+   `projects:settings:write`. §5.4 gives the case against the interim.
+2. **Grants.** `POST /projects/nodes/{id}/grants` writes visibility. CLAUDE.md
+   §3a rule 3 stops an agent from writing a live organization's membership.
+   A grant is narrower than membership, and this spec puts it in class X
+   until the owner says otherwise.
+3. **The tier.** `tier-balanced` by default, or `tier-powerful` as the Tasks
+   rail chose. The cost difference is real once H-42 prices the card.

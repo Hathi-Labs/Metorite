@@ -32,6 +32,9 @@ dependencies = [
     # into the shared venv by `uv sync` or CI fails with ModuleNotFoundError
     # (they resolve locally only because a dev venv already has them editable).
     "skill-task-gtd",
+    # WS-27bm — the Projects chat's tool family. `tests/unit/
+    # test_projects_chat_coverage.py` imports it beside the gateway router.
+    "skill-projects",
     "bcrypt>=5.0.0",
     "python-multipart>=0.0.32",
 ]
@@ -88,6 +91,7 @@ customer-console   = { workspace = true }
 email-ingestion = { workspace = true }
 whatsapp-ingestion = { workspace = true }
 skill-task-gtd  = { workspace = true }
+skill-projects  = { workspace = true }
 
 # ---------- Tooling config ----------
 

@@ -30,6 +30,22 @@
     "optional_integrations": []
   },
   {
+    "name": "projects-assistant",
+    "description": "Projects Assistant — the AI chat inside the Projects app. Reads the tree of spaces and projects, a node's summary, task lists with the app's own filters, one task in full with its timeline, the member's own work, who could take a task, a project's vocabulary, the five analytics reads and the saved reports, as the member who is asking. Reads only in this version. It never deletes a project or a task.",
+    "tags": [
+      "projects",
+      "tasks",
+      "project-management",
+      "analytics",
+      "reports"
+    ],
+    "status": "live",
+    "agent_runtime": "maf",
+    "local_path": "apps/agents/agent-projects",
+    "integrations": [],
+    "optional_integrations": []
+  },
+  {
     "name": "sales",
     "description": "Zoho CRM sales pipeline + deal follow-ups",
     "tags": [

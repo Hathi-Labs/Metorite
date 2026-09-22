@@ -408,6 +408,7 @@ _KNOWN_AGENTS: frozenset[str] = frozenset(
         "whatsapp-assistant",
         "app-builder",
         "crm-assistant",
+        "projects-assistant",
     ]
 )
 
@@ -529,6 +530,29 @@ _AGENT_REGISTRY: list[dict] = [
         # Reads the NATIVE CRM through the gateway, never Zoho: the Zoho
         # credential belongs to the sync engine (D-CRM-7/D-CRM-8), so this
         # agent needs no integration of its own.
+        "integrations": [],
+        "optional_integrations": [],
+    },
+    {
+        "name": "projects-assistant",
+        "description": (
+            "Projects Assistant — the AI chat inside the Projects app. Reads "
+            "the tree of spaces and projects, a node's summary, task lists "
+            "with the app's own filters, one task in full with its timeline, "
+            "the member's own work, who could take a task, a project's "
+            "vocabulary, the five analytics reads and the saved reports, as "
+            "the member who is asking. Reads only in this version. It never "
+            "deletes a project or a task."
+        ),
+        "tags": ["projects", "tasks", "project-management", "analytics", "reports"],
+        "status": "live",
+        # Native MAF (apps/agents/agent-projects/agents.py build_agents() +
+        # config.json "runtime": "maf"). Same trap as its siblings: labelling
+        # it github-copilot routes it through the Copilot SDK and 402s.
+        "agent_runtime": "maf",
+        # The directory is agent-projects; the agent is projects-assistant.
+        # This entry is the whole mapping (WS-27bm, projects_ai_chat.md §4.1).
+        "local_path": "apps/agents/agent-projects",
         "integrations": [],
         "optional_integrations": [],
     },
