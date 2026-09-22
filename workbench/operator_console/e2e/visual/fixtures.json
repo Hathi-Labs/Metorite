@@ -1,0 +1,703 @@
+{
+ "catalog/models": {
+  "tasks": [
+   {
+    "slug": "chat",
+    "label": "Chat completion",
+    "natural_unit": "tokens"
+   },
+   {
+    "slug": "embed",
+    "label": "Embeddings",
+    "natural_unit": "tokens"
+   },
+   {
+    "slug": "vision",
+    "label": "Image understanding",
+    "natural_unit": "tokens"
+   },
+   {
+    "slug": "transcribe",
+    "label": "Speech to text",
+    "natural_unit": "minutes"
+   },
+   {
+    "slug": "speak",
+    "label": "Text to speech",
+    "natural_unit": "characters"
+   },
+   {
+    "slug": "image",
+    "label": "Image generation",
+    "natural_unit": "images"
+   },
+   {
+    "slug": "video",
+    "label": "Video generation",
+    "natural_unit": "seconds"
+   },
+   {
+    "slug": "music",
+    "label": "Music generation",
+    "natural_unit": "seconds"
+   }
+  ],
+  "capabilities": [
+   {
+    "model": "deepseek/deepseek-chat",
+    "task": "chat",
+    "invocation": "acompletion",
+    "streams": true
+   },
+   {
+    "model": "deepseek/deepseek-v4-flash",
+    "task": "chat",
+    "invocation": "acompletion",
+    "streams": true
+   },
+   {
+    "model": "deepseek/deepseek-v4-pro",
+    "task": "chat",
+    "invocation": "acompletion",
+    "streams": true
+   },
+   {
+    "model": "groq/whisper-large-v3-turbo",
+    "task": "transcribe",
+    "invocation": "atranscription",
+    "streams": false
+   }
+  ],
+  "profiles": [
+   {
+    "model": "deepseek/deepseek-chat",
+    "label": null,
+    "context_window": 131072,
+    "max_output": 8192,
+    "vendor_input_per_1m_usd": "0.2800",
+    "vendor_output_per_1m_usd": "0.4200",
+    "vendor_cached_input_per_1m_usd": "0.0280",
+    "vendor_per_minute_usd": null,
+    "vendor_per_character_usd": null,
+    "vendor_per_image_usd": null,
+    "vendor_input_offpeak_per_1m_usd": null,
+    "vendor_output_offpeak_per_1m_usd": null,
+    "vendor_cached_input_offpeak_per_1m_usd": null,
+    "offpeak_start_utc": null,
+    "offpeak_end_utc": null,
+    "context_tier_threshold": null,
+    "vendor_input_long_per_1m_usd": null,
+    "vendor_output_long_per_1m_usd": null,
+    "vendor_cached_input_long_per_1m_usd": null,
+    "description": "",
+    "reads_images": false,
+    "thinks_first": false
+   },
+   {
+    "model": "deepseek/deepseek-v4-flash",
+    "label": null,
+    "context_window": 1000000,
+    "max_output": 393216,
+    "vendor_input_per_1m_usd": "0.3000",
+    "vendor_output_per_1m_usd": "1.2000",
+    "vendor_cached_input_per_1m_usd": "0.0060",
+    "vendor_per_minute_usd": null,
+    "vendor_per_character_usd": null,
+    "vendor_per_image_usd": null,
+    "vendor_input_offpeak_per_1m_usd": null,
+    "vendor_output_offpeak_per_1m_usd": null,
+    "vendor_cached_input_offpeak_per_1m_usd": null,
+    "offpeak_start_utc": null,
+    "offpeak_end_utc": null,
+    "context_tier_threshold": null,
+    "vendor_input_long_per_1m_usd": null,
+    "vendor_output_long_per_1m_usd": null,
+    "vendor_cached_input_long_per_1m_usd": null,
+    "description": "",
+    "reads_images": true,
+    "thinks_first": true
+   },
+   {
+    "model": "deepseek/deepseek-v4-pro",
+    "label": null,
+    "context_window": 1000000,
+    "max_output": 393216,
+    "vendor_input_per_1m_usd": "1.3200",
+    "vendor_output_per_1m_usd": "3.9600",
+    "vendor_cached_input_per_1m_usd": "0.0440",
+    "vendor_per_minute_usd": null,
+    "vendor_per_character_usd": null,
+    "vendor_per_image_usd": null,
+    "vendor_input_offpeak_per_1m_usd": null,
+    "vendor_output_offpeak_per_1m_usd": null,
+    "vendor_cached_input_offpeak_per_1m_usd": null,
+    "offpeak_start_utc": null,
+    "offpeak_end_utc": null,
+    "context_tier_threshold": null,
+    "vendor_input_long_per_1m_usd": null,
+    "vendor_output_long_per_1m_usd": null,
+    "vendor_cached_input_long_per_1m_usd": null,
+    "description": "",
+    "reads_images": false,
+    "thinks_first": true
+   }
+  ],
+  "bindings": [
+   {
+    "tier": "tier-balanced",
+    "task": "chat",
+    "model": "deepseek/deepseek-v4-pro",
+    "rank": 1,
+    "effective_from": "2026-01-01T00:00:00+00:00"
+   },
+   {
+    "tier": "tier-code",
+    "task": "chat",
+    "model": "deepseek/deepseek-v4-pro",
+    "rank": 1,
+    "effective_from": "2026-09-22T18:36:54.960175+00:00"
+   },
+   {
+    "tier": "tier-fast",
+    "task": "chat",
+    "model": "deepseek/deepseek-v4-flash",
+    "rank": 1,
+    "effective_from": "2026-09-22T18:36:56.477888+00:00"
+   },
+   {
+    "tier": "tier-powerful",
+    "task": "chat",
+    "model": "deepseek/deepseek-v4-pro",
+    "rank": 1,
+    "effective_from": "2026-01-01T00:00:00+00:00"
+   },
+   {
+    "tier": "tier-stt",
+    "task": "transcribe",
+    "model": "groq/whisper-large-v3-turbo",
+    "rank": 1,
+    "effective_from": "2026-01-01T00:00:00+00:00"
+   }
+  ],
+  "rates": [
+   {
+    "model": "deepseek/deepseek-chat",
+    "task": "chat",
+    "unit": "tokens",
+    "pricing_mode": "unpriced",
+    "input_per_1k": "0.000000",
+    "output_per_1k": "0.000000",
+    "cached_input_per_1k": "0.000000",
+    "credits_per_unit": "0.000000",
+    "effective_from": "2026-01-01T00:00:00+00:00"
+   },
+   {
+    "model": "deepseek/deepseek-v4-pro",
+    "task": "chat",
+    "unit": "tokens",
+    "pricing_mode": "unpriced",
+    "input_per_1k": "0.000000",
+    "output_per_1k": "0.000000",
+    "cached_input_per_1k": "0.000000",
+    "credits_per_unit": "0.000000",
+    "effective_from": "2026-01-01T00:00:00+00:00"
+   },
+   {
+    "model": "groq/whisper-large-v3-turbo",
+    "task": "chat",
+    "unit": "tokens",
+    "pricing_mode": "unpriced",
+    "input_per_1k": "0.000000",
+    "output_per_1k": "0.000000",
+    "cached_input_per_1k": "0.000000",
+    "credits_per_unit": "0.000000",
+    "effective_from": "2026-01-01T00:00:00+00:00"
+   }
+  ],
+  "tier_registry": [
+   {
+    "slug": "tier-fast",
+    "label": "Fast",
+    "blurb": "Quick answers at the lowest price.",
+    "sort_order": 10,
+    "task": "chat",
+    "customer_visible": true
+   },
+   {
+    "slug": "tier-balanced",
+    "label": "Balanced",
+    "blurb": "The everyday setting - good answers, fair price.",
+    "sort_order": 20,
+    "task": "chat",
+    "customer_visible": true
+   },
+   {
+    "slug": "tier-powerful",
+    "label": "Powerful",
+    "blurb": "The strongest models, for hard problems.",
+    "sort_order": 30,
+    "task": "chat",
+    "customer_visible": true
+   },
+   {
+    "slug": "tier-code",
+    "label": "Code",
+    "blurb": "Tuned for writing and fixing software.",
+    "sort_order": 40,
+    "task": "chat",
+    "customer_visible": true
+   },
+   {
+    "slug": "tier-vision",
+    "label": "Vision",
+    "blurb": "Reads and understands images.",
+    "sort_order": 50,
+    "task": "vision",
+    "customer_visible": false
+   },
+   {
+    "slug": "tier-image",
+    "label": "Image",
+    "blurb": "Makes images from a description.",
+    "sort_order": 60,
+    "task": "image",
+    "customer_visible": true
+   },
+   {
+    "slug": "tier-stt",
+    "label": "Speech to text",
+    "blurb": "Turns audio into text.",
+    "sort_order": 70,
+    "task": "transcribe",
+    "customer_visible": false
+   },
+   {
+    "slug": "tier-tts",
+    "label": "Text to speech",
+    "blurb": "Reads text aloud.",
+    "sort_order": 80,
+    "task": "speak",
+    "customer_visible": false
+   },
+   {
+    "slug": "tier-embed",
+    "label": "Search index",
+    "blurb": "Builds the vectors behind search.",
+    "sort_order": 90,
+    "task": "embed",
+    "customer_visible": false
+   },
+   {
+    "slug": "tier-video",
+    "label": "Video",
+    "blurb": "Makes video from a description.",
+    "sort_order": 100,
+    "task": "video",
+    "customer_visible": false
+   },
+   {
+    "slug": "tier-music",
+    "label": "Music",
+    "blurb": "Makes music and sound.",
+    "sort_order": 110,
+    "task": "music",
+    "customer_visible": false
+   }
+  ],
+  "tier_rates": [],
+  "tier_margins": [
+   {
+    "tier": "tier-fast",
+    "calls": 0,
+    "costed_calls": 0,
+    "measured_calls": 0,
+    "credits": "0",
+    "cost_usd": "0",
+    "margin_multiplier": "2.000",
+    "margin_floor": "0.400",
+    "realised_margin": null
+   },
+   {
+    "tier": "tier-balanced",
+    "calls": 0,
+    "costed_calls": 0,
+    "measured_calls": 0,
+    "credits": "0",
+    "cost_usd": "0",
+    "margin_multiplier": null,
+    "margin_floor": null,
+    "realised_margin": null
+   },
+   {
+    "tier": "tier-powerful",
+    "calls": 0,
+    "costed_calls": 0,
+    "measured_calls": 0,
+    "credits": "0",
+    "cost_usd": "0",
+    "margin_multiplier": null,
+    "margin_floor": null,
+    "realised_margin": null
+   },
+   {
+    "tier": "tier-code",
+    "calls": 0,
+    "costed_calls": 0,
+    "measured_calls": 0,
+    "credits": "0",
+    "cost_usd": "0",
+    "margin_multiplier": null,
+    "margin_floor": null,
+    "realised_margin": null
+   },
+   {
+    "tier": "tier-vision",
+    "calls": 0,
+    "costed_calls": 0,
+    "measured_calls": 0,
+    "credits": "0",
+    "cost_usd": "0",
+    "margin_multiplier": null,
+    "margin_floor": null,
+    "realised_margin": null
+   },
+   {
+    "tier": "tier-image",
+    "calls": 0,
+    "costed_calls": 0,
+    "measured_calls": 0,
+    "credits": "0",
+    "cost_usd": "0",
+    "margin_multiplier": null,
+    "margin_floor": null,
+    "realised_margin": null
+   },
+   {
+    "tier": "tier-stt",
+    "calls": 0,
+    "costed_calls": 0,
+    "measured_calls": 0,
+    "credits": "0",
+    "cost_usd": "0",
+    "margin_multiplier": null,
+    "margin_floor": null,
+    "realised_margin": null
+   },
+   {
+    "tier": "tier-tts",
+    "calls": 0,
+    "costed_calls": 0,
+    "measured_calls": 0,
+    "credits": "0",
+    "cost_usd": "0",
+    "margin_multiplier": null,
+    "margin_floor": null,
+    "realised_margin": null
+   },
+   {
+    "tier": "tier-embed",
+    "calls": 0,
+    "costed_calls": 0,
+    "measured_calls": 0,
+    "credits": "0",
+    "cost_usd": "0",
+    "margin_multiplier": null,
+    "margin_floor": null,
+    "realised_margin": null
+   },
+   {
+    "tier": "tier-video",
+    "calls": 0,
+    "costed_calls": 0,
+    "measured_calls": 0,
+    "credits": "0",
+    "cost_usd": "0",
+    "margin_multiplier": null,
+    "margin_floor": null,
+    "realised_margin": null
+   },
+   {
+    "tier": "tier-music",
+    "calls": 0,
+    "costed_calls": 0,
+    "measured_calls": 0,
+    "credits": "0",
+    "cost_usd": "0",
+    "margin_multiplier": null,
+    "margin_floor": null,
+    "realised_margin": null
+   }
+  ],
+  "credit_price": {
+   "inr_per_credit": "1.000000",
+   "usd_to_inr": "97.000000",
+   "effective_from": "2026-09-22T18:39:07.285620+00:00"
+  },
+  "failovers": [],
+  "unbound": [
+   {
+    "model": "deepseek/deepseek-chat",
+    "task": "chat"
+   }
+  ],
+  "unserved": [],
+  "feed": {
+   "synced_at": "2026-09-20T19:29:26.045892+00:00",
+   "source": "github",
+   "models": 4297,
+   "rows": [
+    {
+     "model": "deepseek/deepseek-chat",
+     "provider": "deepseek",
+     "mode": "chat",
+     "task": "chat",
+     "invocation": "acompletion",
+     "context_window": 131072,
+     "max_output": 8192,
+     "vendor_input_per_1m_usd": "0.280000",
+     "vendor_output_per_1m_usd": "0.420000",
+     "vendor_cached_input_per_1m_usd": "0.028000",
+     "reads_images": false,
+     "thinks_first": false,
+     "deprecated_on": null,
+     "vendor_per_minute_usd": null,
+     "vendor_per_character_usd": null,
+     "vendor_per_image_usd": null,
+     "profiled": true
+    },
+    {
+     "model": "deepseek/deepseek-v4-flash",
+     "provider": "deepseek",
+     "mode": "chat",
+     "task": "chat",
+     "invocation": "acompletion",
+     "context_window": 1000000,
+     "max_output": 393216,
+     "vendor_input_per_1m_usd": "0.300000",
+     "vendor_output_per_1m_usd": "1.200000",
+     "vendor_cached_input_per_1m_usd": "0.006000",
+     "reads_images": true,
+     "thinks_first": true,
+     "deprecated_on": null,
+     "vendor_per_minute_usd": null,
+     "vendor_per_character_usd": null,
+     "vendor_per_image_usd": null,
+     "profiled": true
+    },
+    {
+     "model": "deepseek/deepseek-v4-pro",
+     "provider": "deepseek",
+     "mode": "chat",
+     "task": "chat",
+     "invocation": "acompletion",
+     "context_window": 1000000,
+     "max_output": 393216,
+     "vendor_input_per_1m_usd": "1.320000",
+     "vendor_output_per_1m_usd": "3.960000",
+     "vendor_cached_input_per_1m_usd": "0.044000",
+     "reads_images": false,
+     "thinks_first": true,
+     "deprecated_on": null,
+     "vendor_per_minute_usd": null,
+     "vendor_per_character_usd": null,
+     "vendor_per_image_usd": null,
+     "profiled": true
+    },
+    {
+     "model": "groq/whisper-large-v3-turbo",
+     "provider": "groq",
+     "mode": "audio_transcription",
+     "task": "transcribe",
+     "invocation": "atranscription",
+     "context_window": null,
+     "max_output": null,
+     "vendor_input_per_1m_usd": null,
+     "vendor_output_per_1m_usd": null,
+     "vendor_cached_input_per_1m_usd": null,
+     "reads_images": false,
+     "thinks_first": false,
+     "deprecated_on": null,
+     "vendor_per_minute_usd": "0.0006666000",
+     "vendor_per_character_usd": null,
+     "vendor_per_image_usd": null,
+     "profiled": false
+    }
+   ],
+   "available": [
+    {
+     "model": "deepseek/deepseek-coder",
+     "provider": "deepseek",
+     "mode": "chat",
+     "task": "chat",
+     "invocation": "acompletion",
+     "context_window": 128000,
+     "max_output": 4096,
+     "vendor_input_per_1m_usd": "0.140000",
+     "vendor_output_per_1m_usd": "0.280000",
+     "vendor_cached_input_per_1m_usd": null,
+     "reads_images": false,
+     "thinks_first": false,
+     "deprecated_on": null,
+     "vendor_per_minute_usd": null,
+     "vendor_per_character_usd": null,
+     "vendor_per_image_usd": null,
+     "profiled": false
+    },
+    {
+     "model": "deepseek/deepseek-flash",
+     "provider": "deepseek",
+     "mode": "chat",
+     "task": "chat",
+     "invocation": "acompletion",
+     "context_window": 1000000,
+     "max_output": 393216,
+     "vendor_input_per_1m_usd": "0.300000",
+     "vendor_output_per_1m_usd": "1.200000",
+     "vendor_cached_input_per_1m_usd": "0.006000",
+     "reads_images": true,
+     "thinks_first": true,
+     "deprecated_on": null,
+     "vendor_per_minute_usd": null,
+     "vendor_per_character_usd": null,
+     "vendor_per_image_usd": null,
+     "profiled": false
+    },
+    {
+     "model": "deepseek/deepseek-r1",
+     "provider": "deepseek",
+     "mode": "chat",
+     "task": "chat",
+     "invocation": "acompletion",
+     "context_window": 65536,
+     "max_output": 8192,
+     "vendor_input_per_1m_usd": "0.550000",
+     "vendor_output_per_1m_usd": "2.190000",
+     "vendor_cached_input_per_1m_usd": null,
+     "reads_images": false,
+     "thinks_first": true,
+     "deprecated_on": null,
+     "vendor_per_minute_usd": null,
+     "vendor_per_character_usd": null,
+     "vendor_per_image_usd": null,
+     "profiled": false
+    },
+    {
+     "model": "deepseek/deepseek-reasoner",
+     "provider": "deepseek",
+     "mode": "chat",
+     "task": "chat",
+     "invocation": "acompletion",
+     "context_window": 131072,
+     "max_output": 65536,
+     "vendor_input_per_1m_usd": "0.280000",
+     "vendor_output_per_1m_usd": "0.420000",
+     "vendor_cached_input_per_1m_usd": "0.028000",
+     "reads_images": false,
+     "thinks_first": true,
+     "deprecated_on": null,
+     "vendor_per_minute_usd": null,
+     "vendor_per_character_usd": null,
+     "vendor_per_image_usd": null,
+     "profiled": false
+    },
+    {
+     "model": "deepseek/deepseek-v3",
+     "provider": "deepseek",
+     "mode": "chat",
+     "task": "chat",
+     "invocation": "acompletion",
+     "context_window": 65536,
+     "max_output": 8192,
+     "vendor_input_per_1m_usd": "0.270000",
+     "vendor_output_per_1m_usd": "1.100000",
+     "vendor_cached_input_per_1m_usd": "0.070000",
+     "reads_images": false,
+     "thinks_first": false,
+     "deprecated_on": null,
+     "vendor_per_minute_usd": null,
+     "vendor_per_character_usd": null,
+     "vendor_per_image_usd": null,
+     "profiled": false
+    },
+    {
+     "model": "deepseek/deepseek-v3.2",
+     "provider": "deepseek",
+     "mode": "chat",
+     "task": "chat",
+     "invocation": "acompletion",
+     "context_window": 163840,
+     "max_output": 163840,
+     "vendor_input_per_1m_usd": "0.280000",
+     "vendor_output_per_1m_usd": "0.400000",
+     "vendor_cached_input_per_1m_usd": null,
+     "reads_images": false,
+     "thinks_first": true,
+     "deprecated_on": null,
+     "vendor_per_minute_usd": null,
+     "vendor_per_character_usd": null,
+     "vendor_per_image_usd": null,
+     "profiled": false
+    },
+    {
+     "model": "deepseek/deepseek-v4-flash-vision-exp",
+     "provider": "deepseek",
+     "mode": "chat",
+     "task": "chat",
+     "invocation": "acompletion",
+     "context_window": 1000000,
+     "max_output": 393216,
+     "vendor_input_per_1m_usd": "0.300000",
+     "vendor_output_per_1m_usd": "1.200000",
+     "vendor_cached_input_per_1m_usd": "0.006000",
+     "reads_images": true,
+     "thinks_first": true,
+     "deprecated_on": null,
+     "vendor_per_minute_usd": null,
+     "vendor_per_character_usd": null,
+     "vendor_per_image_usd": null,
+     "profiled": false
+    }
+   ]
+  }
+ },
+ "providers/credentials?include_revoked=true": {
+  "credentials": [
+   {
+    "id": "4a9665b3-9220-499b-9949-4f23ee6adde1",
+    "provider": "deepseek",
+    "api_base": null,
+    "label": null,
+    "org_slug": null,
+    "scope": "platform",
+    "created_at": "2026-09-20T19:28:38.190361+00:00",
+    "revoked_at": null
+   }
+  ]
+ },
+ "orgs": {
+  "organizations": [
+   {
+    "slug": "hathi-labs-llp",
+    "name": "Hathi Labs LLP",
+    "status": "active",
+    "subscription_status": "active",
+    "provider": null,
+    "trial_ends_at": "2026-10-01T17:10:03.435118+00:00",
+    "current_period_end": null,
+    "live_keys": 1,
+    "export_until": null,
+    "credit_balance": "0",
+    "mrr_paise": 200000,
+    "seats": [
+     {
+      "plan_slug": "core",
+      "purchased": 4,
+      "assigned": 3,
+      "available": 1,
+      "oversubscribed": false
+     }
+    ]
+   }
+  ]
+ }
+}
