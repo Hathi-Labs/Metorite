@@ -54,6 +54,7 @@ limitations). Do not add product specs to `docs/`.
 | `specs/deploy_delivery_path.md` | WS-25 |
 | `specs/email_app_master_plan.md` | WS-17 |
 | `specs/task_manager_app.md` | WS-18 · **WS-39** — ⚠️ **§13 (D53) wins over the body**: Tasks is the **personal lens over Projects**, not an app with its own store. `gtd_*` is retired; the `gtd_*` schema described above is the app *as built*, not a build target. |
+| `specs/my_tasks_cutover.md` | **WS-39 phase 2** — the Tasks app becomes **My Tasks** (D73, 2026-09-23). Owns the lens tail (S6a-d), the cutover (S7), the `gtd_*` drop and the schema rename (S8), and the code-name sweep (S9). Wins over `task_manager_app.md` §13 where they disagree. |
 | `specs/note_taker_app.md` + `specs/meeting_bot_platform_plan.md` | WS-19 |
 | `specs/whatsapp_message_manager.md` | WS-20 |
 | `specs/calendar_focus_os.md` + `specs/calendar_timeboxing.md` | WS-21 · **WS-39** — ⚠️ **§10 (D54)**: Calendar becomes its own `live` pane at `/calendar` under Personal Center. 🔴 **Correction both these specs carry:** `gtd_time_blocks` and `calendar_accounts` **do not exist** (measured 2026-08-24) — `calendar_timeboxing.md` §13 P4 cites them as built. The calendar persists to `gtd_items` directly, plus `user_settings`/`calendar_day_state`/`calendar_rollover_log`. |

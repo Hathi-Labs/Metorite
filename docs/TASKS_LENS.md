@@ -130,6 +130,12 @@ TASKS_LENS=0
 
 ## The cutover runbook (S3b → flip → S3c)
 
+⚠️ **Corrected 2026-09-23.** Migration 190 is in the production ledger as
+applied. The runner skips a file with an unchanged checksum. So step 8 below
+does not happen by itself. The drop needs a new migration that calls
+`gtd_retirement_drop()` again. `project-docs/specs/my_tasks_cutover.md` §6
+carries the full corrected order, and it wins over the diagram below.
+
 **Added 2026-08-26 with migrations 189 and 190.** Everything below is the
 owner's act: `work_plan.md` §6 (f) gates *running* the move against a real
 database, and building it — which is what landed — is the half that was
