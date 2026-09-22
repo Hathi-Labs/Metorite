@@ -1,7 +1,7 @@
 # Projects · the AI chat — WS-27bm
 
 **Status: ACTIVE. S1 (the reads) and S2 (the daily writes) built
-2026-09-22. S2b, S3, S4 and S5 open.** §10 says which slice each part
+2026-09-22. S2b (the rest of class B) built 2026-09-23. S3, S4 and S5 open.** §10 says which slice each part
 belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
@@ -104,6 +104,8 @@ tool class in §5.2, so the ceremony a member sees follows from this table.
 | "What did we finish last week?" | `analytics_finished` | `GET /projects/analytics/finished` |
 | "What is due?" | `analytics_outlook` | `GET /projects/analytics/outlook` |
 | "Render the weekly report" | `report_render` | `GET /projects/reports/{id}/render` |
+| "Does this repeat?" | `recurrence` | `GET /projects/tasks/{id}/recurrence` |
+| "Show me my view of #142" | `my_task` | `GET /projects/my/tasks/{id}` |
 
 Every number a read returns is a **server aggregate**. The tool never sums a
 page of tasks in the agent. §9.12.7 gives the reason. The list is paginated,
@@ -127,6 +129,25 @@ and a count of one page looks right and is wrong.
 | "Rename the project" | `update_project` | `PATCH /projects/nodes/{id}` | Rename back |
 | "Bring the archived task back" | `unarchive_task` | `POST /projects/tasks/{id}/unarchive` | It is the undo |
 | "Save this as a weekly report" | `report_save` | `POST /projects/reports` | `DELETE /projects/reports/{id}` |
+| "Add a Blocked status" | `create_status` | `POST /projects/nodes/{id}/statuses` | An empty lane costs nothing. Delete is guarded |
+| "Rename the lane to In review" | `update_status` | `PATCH /projects/statuses/{id}` | Rename back |
+| "Add a Bug type" | `create_type` | `POST /projects/nodes/{id}/types` | Delete is guarded, and tasks keep existing |
+| "Make Bug the default type" | `update_type` | `PATCH /projects/types/{id}` | Set another default |
+| "Add a Customer field" | `create_field` | `POST /projects/nodes/{id}/fields` | Delete is guarded |
+| "Add the option Enterprise" | `update_field` | `PATCH /projects/fields/{id}` | Drop the option while nothing holds it |
+| "Register a tag called urgent" | `create_tag` | `POST /projects/nodes/{id}/tags` | Delete is guarded |
+| "Rename the tag to p0" | `update_tag` | `PATCH /projects/tags/{id}` | Rename back. Every task follows, and the card says how many |
+| "Fix the typo in my comment" | `edit_comment` | `PATCH /projects/comments/{id}` | Edit again. The author only |
+| "Repeat this every Monday" | `set_recurrence` | `PUT /projects/tasks/{id}/recurrence` | `DELETE` stops it. The task stays |
+| "Note to self: renew the domain" | `create_personal_task` | `POST /projects/my/tasks` | Archive. Nobody else sees it |
+| "File this as Someday for me" | `set_my_overlay` | `PATCH /projects/tasks/{id}/personal` | Per-member overlay, mine |
+
+**A vocabulary row is named, never numbered.** The member says "the Blocked
+lane". The tool reads the project's own list and resolves the name the way a
+status is resolved: every case-insensitive match, never the first. Two
+matches is a question for the member. The card names the project, and for a
+status it names the node that owns the set, because a subproject may inherit
+its lanes from a parent and a new lane lands on every sibling's board.
 
 **A batch is one card.** A plan that creates one project and twelve tasks
 shows one card that lists all thirteen rows. Twelve cards would train the
@@ -532,7 +553,7 @@ Each slice is one pull request. Each one is useful alone.
 |---|---|---|
 | **S1 · Read** — ✅ **BUILT 2026-09-22** | `skill-projects` class A tools · `manifest.py` with every route classified · the coverage fence · `agent-projects` registered · the rail behind the flag · the persona · `TaskListCard` and a titled card for every other read | AGENT-SAFE |
 | **S2 · Write** — ✅ **BUILT 2026-09-22** | The fifteen daily class B tools with the card (create, update, assign, comment, subtasks, link, unlink, move, watch, complete, defer, restore a task, create and update a project, save a report) · `ActionResultCard` · `X-Actor-Via` and `meta.via` (D-PM-36) | AGENT-SAFE |
-| **S2b · The rest of class B** | The vocabulary writes (status, type, field, tag create and update) · edit a comment · recurrence · the personal task and overlay | AGENT-SAFE |
+| **S2b · The rest of class B** — ✅ **BUILT 2026-09-23** | The vocabulary writes (status, type, field, tag create and update) · edit a comment · recurrence · the personal task and overlay · the two reads they need (`recurrence`, `my_task`) · the agent instructions now describe the writes (S2 left them saying "reads only") | AGENT-SAFE |
 | **S3 · Guarded** | Class C tools with count-bearing cards · the one-act-one-card rule and its test | AGENT-SAFE |
 | **S4 · Workflows** | W1 plan, W2 status report, W3 weekly, W4 stuck, W5 triage · `PlanCard` and `ReportCard` · the `formCard` plan panel | AGENT-SAFE |
 | **S5 · Polish** | Frontend navigation tools · quick actions · the chat model setting · the visual review in light mode, compact density and a changed accent | AGENT-SAFE |

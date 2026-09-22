@@ -464,6 +464,87 @@ async def my_work(view: str = "assigned", include_done: bool = False, page: int 
 # ── People and vocabulary ────────────────────────────────────────────────────
 
 
+WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+def _rule_text(rule: dict[str, Any] | None) -> str:
+    """``every 2 weeks on Mon, Wed · from the due date · until 2026-12-31``.
+
+    One renderer for the read, the card and the receipt, so the three cannot
+    describe one rule three ways.
+    """
+    if not rule:
+        return "does not repeat"
+    freq = str(rule.get("freq") or "")
+    every = int(rule.get("interval") or 1)
+    unit = {"daily": "day", "weekly": "week", "monthly": "month", "yearly": "year"}.get(freq, freq)
+    head = f"every {unit}" if every == 1 else f"every {every} {unit}s"
+    parts = [head]
+    days = [int(d) for d in rule.get("weekdays") or [] if 1 <= int(d) <= 7]
+    if days:
+        parts.append("on " + ", ".join(WEEKDAYS[d - 1] for d in days))
+    if rule.get("day_of_month"):
+        parts.append(f"on day {rule['day_of_month']}")
+    if rule.get("month_of_year"):
+        parts.append(f"in month {rule['month_of_year']}")
+    anchor = str(rule.get("anchor") or "due")
+    parts.append("from the due date" if anchor == "due" else "from the last completion")
+    if rule.get("until_at"):
+        parts.append(f"until {_day(rule['until_at'])}")
+    if rule.get("max_occurrences"):
+        parts.append(f"at most {rule['max_occurrences']} times")
+    made = rule.get("occurrences_made")
+    if made:
+        parts.append(f"{made} made so far")
+    return " · ".join(parts)
+
+
+@_annotate(read_only=True, idempotent=True)
+async def recurrence(task_id: str) -> str:
+    """Whether a task repeats, and its rule: frequency, interval, weekdays,
+    anchor (from the due date or from the last completion), end date or
+    count, and how many occurrences exist. set_recurrence changes it."""
+    tid = uuid_of(task_id, "task_id")
+    rule = ((await get(f"/projects/tasks/{tid}/recurrence")) or {}).get("rule")
+    return f"Repeats: {_rule_text(rule)}\n  full_id: {tid}"
+
+
+OVERLAY_FACTS = (
+    "disposition",
+    "context",
+    "energy",
+    "next_action",
+    "time_estimate_mins",
+    "defer_until",
+    "scheduled_start",
+    "scheduled_end",
+)
+
+
+@_annotate(read_only=True, idempotent=True)
+async def my_task(task_id: str) -> str:
+    """One task as the member's own lens sees it: the shared fields plus
+    THEIR overlay (disposition, context, energy, next action, deferred
+    until, the scheduled block). Not found when the task is not theirs.
+    task_detail is the project's view of the same task, with no overlay."""
+    tid = uuid_of(task_id, "task_id")
+    row = await get(f"/projects/my/tasks/{tid}")
+    out = [DATA_LEGEND, "My task:", *_task_line(row)]
+    facts: list[str] = []
+    for key in OVERLAY_FACTS:
+        value = row.get(key)
+        if value in (None, "", [], False):
+            continue
+        shown = _day(value) if key in ("defer_until",) else value
+        facts.append(f"{key} {data(shown)}")
+    if row.get("is_two_minute"):
+        facts.append("two-minute")
+    if row.get("is_triaged") is False:
+        facts.append("not yet triaged")
+    out.append("Your overlay: " + (" · ".join(facts) if facts else "(nothing set)"))
+    return "\n".join(out)
+
+
 def _person_line(p: dict[str, Any]) -> str:
     """One picker row: who, what they do, how loaded, and any warning."""
     facts = [f"assignee {data(p.get('assignee'))}"]

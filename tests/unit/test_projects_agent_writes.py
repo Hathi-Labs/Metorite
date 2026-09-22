@@ -49,11 +49,19 @@ from tests.unit._projects_agent_fakes import (
 UUID = "0f8fad5b-d9cb-469f-a165-70867728950e"
 OTHER = "1f8fad5b-d9cb-469f-a165-70867728950e"
 LINK = "2f8fad5b-d9cb-469f-a165-70867728950e"
+# Vocabulary rows carry real uuids: a tool puts one in a PATH, and
+# `uuid_of` refuses anything else — a server-supplied id gets no exemption.
+S1 = "3f8fad5b-d9cb-469f-a165-70867728950e"
+S2 = "4f8fad5b-d9cb-469f-a165-70867728950e"
+S3 = "5f8fad5b-d9cb-469f-a165-70867728950e"
+TYPE_ID = "6f8fad5b-d9cb-469f-a165-70867728950e"
+FIELD_ID = "7f8fad5b-d9cb-469f-a165-70867728950e"
+TAG_ID = "8f8fad5b-d9cb-469f-a165-70867728950e"
 TASK = {
     "id": UUID,
     "title": "Fix the extruder",
     "task_number": 7,
-    "status_id": "s1",
+    "status_id": S1,
     "root_project_id": UUID,
     "project_id": UUID,
     "assignees": ["a@x.io"],
@@ -62,10 +70,61 @@ TASK = {
 }
 OTHER_TASK = {**TASK, "id": OTHER, "title": "Order the nozzle", "task_number": 8}
 STATUSES = [
-    {"id": "s1", "name": "To do", "category": "todo"},
-    {"id": "s2", "name": "In progress", "category": "in_progress"},
-    {"id": "s3", "name": "Done", "category": "done"},
+    {"id": S1, "name": "To do", "category": "todo"},
+    {"id": S2, "name": "In progress", "category": "in_progress"},
+    {"id": S3, "name": "Done", "category": "done"},
 ]
+
+
+def _s2b_answers(call: dict) -> Any:
+    """The S2b routes: the vocabulary lists, a timeline, a rule, the overlay, the capture.
+
+    ``None`` means "not mine", and ``responder`` carries on.
+    """
+    path, method = call["path"], call["method"]
+    if path.endswith("/status-set"):
+        return {"owns": False, "owner_name": "Ops", "may_edit": True}
+    if path.endswith("/types"):
+        return {"rows": [{"id": TYPE_ID, "name": "Bug", "project_id": UUID, "is_epic": False}]}
+    if path.endswith("/fields"):
+        return {
+            "rows": [
+                {
+                    "id": FIELD_ID,
+                    "name": "Customer",
+                    "field_key": "customer",
+                    "field_type": "select",
+                    "options": ["SMB"],
+                    "required": False,
+                }
+            ]
+        }
+    if path.endswith("/tags") and method == "GET":
+        return {"rows": [{"id": TAG_ID, "name": "urgent", "task_count": 4, "color": "red"}]}
+    if path.endswith("/timeline"):
+        return {
+            "rows": [
+                {
+                    "id": LINK,
+                    "type": "comment",
+                    "body": "Waiting on legal.",
+                    "created_by": "pm@fracktal.in",
+                },
+                {"id": OTHER, "type": "comment", "body": "Theirs.", "created_by": "other@x.io"},
+            ],
+            "total": 2,
+        }
+    if path.endswith("/recurrence") and method == "GET":
+        return {"rule": {"freq": "weekly", "interval": 1, "weekdays": [1], "anchor": "due"}}
+    if path.endswith("/recurrence"):
+        return {"rule": call["json"] or None}
+    if path.startswith("/projects/my/tasks/") and method == "GET":
+        return {**TASK, "disposition": "INBOX", "context": None, "energy": "high"}
+    if path == "/projects/my/tasks" and method == "POST":
+        return {**TASK, "id": OTHER, "title": call["json"].get("title"), "task_number": 1}
+    if path.endswith("/personal") and method == "PATCH":
+        return {"task_id": UUID, **(call["json"] or {})}
+    return None
 
 
 def responder(call: dict) -> Any:
@@ -77,6 +136,9 @@ def responder(call: dict) -> Any:
         return OTHER_TASK
     if path.endswith("/statuses"):
         return {"rows": STATUSES}
+    answered = _s2b_answers(call)
+    if answered is not None:
+        return answered
     if path.endswith("/relations"):
         return {
             "subtasks": [],
@@ -123,7 +185,16 @@ def responder(call: dict) -> Any:
             "assignees": [],
         }
     if method in ("POST", "PATCH", "PUT") and path.startswith("/projects/nodes"):
-        return {"id": UUID, "name": (call["json"] or {}).get("name", "Ops")}
+        return {"id": UUID, "name": (call["json"] or {}).get("name", "Ops"), **(call["json"] or {})}
+    if method == "PATCH" and path.startswith(
+        ("/projects/statuses/", "/projects/types/", "/projects/fields/", "/projects/tags/")
+    ):
+        return {
+            "id": path.rsplit("/", 1)[-1],
+            "name": "Renamed",
+            "retagged": 4,
+            **(call["json"] or {}),
+        }
     if method in ("POST", "PATCH", "PUT", "DELETE"):
         return {
             **TASK,
@@ -174,6 +245,24 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
         {"name": "Weekly", "sections": "finished,load", "weeks": 4},
         {"report_id": UUID, "name": "Weekly v2"},
     ],
+    # S2b — the rest of class B
+    "create_status": [{"project_id": UUID, "name": "Blocked", "category": "todo"}],
+    "update_status": [{"project_id": UUID, "status": "to do", "name": "Backlog"}],
+    "create_type": [{"project_id": UUID, "name": "Chore", "is_default": True}],
+    "update_type": [{"project_id": UUID, "type_name": "bug", "color": "red", "epic": "no"}],
+    "create_field": [
+        {"project_id": UUID, "name": "Region", "field_type": "select", "options": "EU, US"}
+    ],
+    "update_field": [{"project_id": UUID, "field": "customer", "options": "SMB, Enterprise"}],
+    "create_tag": [{"project_id": UUID, "name": "q4", "color": "blue"}],
+    "update_tag": [{"project_id": UUID, "tag": "urgent", "name": "p0"}],
+    "edit_comment": [{"task_id": UUID, "comment_id": LINK, "body": "Waiting on finance."}],
+    "set_recurrence": [
+        {"task_id": UUID, "freq": "weekly", "weekdays": "1,3", "interval": 2},
+        {"task_id": UUID, "stop": True},
+    ],
+    "create_personal_task": [{"title": "Renew the domain", "due": "2026-10-01"}],
+    "set_my_overlay": [{"task_id": UUID, "disposition": "someday", "clear": "energy"}],
 }
 
 
@@ -255,7 +344,11 @@ async def test_a_run_with_nobody_to_act_as_makes_no_call(tool: str, monkeypatch)
 
 @pytest.mark.parametrize(
     "tool",
-    sorted(t for t in _WRITES if t not in ("create_task", "create_project", "report_save")),
+    sorted(
+        t
+        for t in _WRITES
+        if t not in ("create_task", "create_project", "report_save", "create_personal_task")
+    ),
 )
 async def test_the_card_names_the_row_being_written_to(tool: str, monkeypatch) -> None:
     asked = approve(monkeypatch)
@@ -315,7 +408,7 @@ async def test_create_task_sends_the_resolved_status_and_assigns_after(monkeypat
     calls = fake_gateway(monkeypatch, responder)
     await skill_projects.create_task(**_WRITES["create_task"][0])
     posted = [c for c in writes(calls) if c["path"] == "/projects/tasks"]
-    assert posted and posted[0]["json"]["status_id"] == "s2"
+    assert posted and posted[0]["json"]["status_id"] == S2
     assert posted[0]["json"]["tags"] == ["urgent"]
     assert posted[0]["json"]["due_at"] == "2026-09-30"
     put = [c for c in writes(calls) if c["method"] == "PUT"]
@@ -328,7 +421,7 @@ async def test_update_task_shows_before_and_after(monkeypatch) -> None:
     calls = fake_gateway(monkeypatch, responder)
     await skill_projects.update_task(UUID, status="done", due="2026-10-01")
     patched = [c for c in writes(calls) if c["method"] == "PATCH"]
-    assert patched[0]["json"] == {"status_id": "s3", "due_at": "2026-10-01"}
+    assert patched[0]["json"] == {"status_id": S3, "due_at": "2026-10-01"}
     assert "status: «Done»" in asked[0]["context"]
     assert "→" in asked[0]["context"]
 
@@ -532,3 +625,119 @@ async def test_a_clear_stays_on_the_card_under_a_long_description(monkeypatch) -
     await skill_projects.update_task(UUID, description="x" * 5000, clear="due")
     context = asked[0]["context"]
     assert "due_at:" in context.split("description:")[0]
+
+
+# ── S2b — the vocabulary, the comment, the rule, the overlay ────────────────
+
+
+async def test_a_vocabulary_write_names_the_project_and_where_the_set_lives(
+    monkeypatch,
+) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.create_status(UUID, "Blocked", category="todo")
+    context = asked[0]["context"]
+    assert "project: «Ops»" in context and "status set: «Ops»" in context
+    posted = [c for c in writes(calls) if c["path"].endswith("/statuses")]
+    assert posted[0]["json"] == {"name": "Blocked", "category": "todo", "position": 10}
+    assert "status_id:" in out
+
+
+async def test_update_status_resolves_the_spoken_name_and_shows_before_after(
+    monkeypatch,
+) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.update_status(UUID, "to do", name="Backlog")
+    patched = [c for c in writes(calls) if c["method"] == "PATCH"]
+    assert patched[0]["path"] == f"/projects/statuses/{S1}"
+    assert "name: «To do» → «Backlog»" in asked[0]["context"]
+
+
+async def test_a_duplicate_vocabulary_name_is_refused_before_the_card(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    assert "already exists" in await skill_projects.create_tag(UUID, "URGENT")
+    assert "already exists" in await skill_projects.create_type(UUID, "bug")
+    assert asked == [] and writes(calls) == []
+
+
+async def test_a_tag_rename_card_leads_with_the_task_count(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    out = await skill_projects.update_tag(UUID, "urgent", name="p0")
+    assert asked[0]["context"].split("\n")[1].startswith("tasks renamed: 4")
+    assert "renames 4 tasks" in asked[0]["detail"]
+    assert "on 4 tasks" in out
+
+
+async def test_update_field_takes_the_key_and_never_sends_it(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.update_field(UUID, "customer", options="SMB, Enterprise", required="yes")
+    patched = [c for c in writes(calls) if c["method"] == "PATCH"]
+    assert patched[0]["path"] == f"/projects/fields/{FIELD_ID}"
+    assert patched[0]["json"] == {"options": ["SMB", "Enterprise"], "required": True}
+
+
+async def test_editing_another_members_comment_is_refused_before_the_card(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.edit_comment(UUID, OTHER, "mine now")
+    assert "Only the author" in out
+    assert asked == [] and writes(calls) == []
+
+
+async def test_edit_comment_shows_the_old_text_and_the_new(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.edit_comment(UUID, LINK, "Waiting on finance.")
+    assert "body: «Waiting on legal.» → «Waiting on finance.»" in asked[0]["context"]
+    patched = [c for c in writes(calls) if c["method"] == "PATCH"]
+    assert patched[0]["path"] == f"/projects/comments/{LINK}"
+
+
+async def test_set_recurrence_puts_the_rule_and_stop_deletes_it(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.set_recurrence(UUID, freq="weekly", weekdays="1,3", interval=2)
+    put = [c for c in writes(calls) if c["method"] == "PUT"]
+    assert put[0]["json"] == {"freq": "weekly", "interval": 2, "anchor": "due", "weekdays": [1, 3]}
+    assert (
+        "rule: «every week · on Mon · from the due date» → «every 2 weeks · on Mon, Wed"
+        in (asked[0]["context"])
+    )
+    calls.clear()
+    await skill_projects.set_recurrence(UUID, stop=True)
+    assert [c["method"] for c in writes(calls)] == ["DELETE"]
+
+
+async def test_a_weekly_rule_without_weekdays_is_refused_before_the_card(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    assert "weekdays" in await skill_projects.set_recurrence(UUID, freq="weekly")
+    assert asked == [] and writes(calls) == []
+
+
+async def test_the_overlay_card_shows_the_members_own_before_values(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.set_my_overlay(UUID, disposition="someday", clear="energy")
+    context = asked[0]["context"]
+    assert "energy: «high» → None" in context
+    assert "disposition: «INBOX» → «SOMEDAY»" in context
+    assert "scope: «your overlay only»" in context
+    patched = [c for c in writes(calls) if c["method"] == "PATCH"]
+    assert patched[0]["path"] == f"/projects/tasks/{UUID}/personal"
+    assert patched[0]["json"] == {"energy": None, "disposition": "SOMEDAY"}
+
+
+async def test_a_private_capture_lands_in_my_tasks_and_says_who_sees_it(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.create_personal_task("Renew the domain", due="2026-10-01")
+    assert "visible to: «you only»" in asked[0]["context"]
+    posted = [c for c in writes(calls) if c["method"] == "POST"]
+    assert posted[0]["path"] == "/projects/my/tasks"
+    assert posted[0]["json"] == {"title": "Renew the domain", "due_at": "2026-10-01"}
+    assert out.startswith("Captured (private, yours):") and f"full_id: {OTHER}" in out

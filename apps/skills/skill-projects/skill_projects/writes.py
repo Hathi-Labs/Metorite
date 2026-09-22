@@ -22,9 +22,15 @@ WS-26d-write), copied rather than reinvented:
    4000-character clip with the fixed line first (the CRM's ``_fields_block``
    lesson).
 
-What is deliberately NOT here: hard delete (D-PM-35), the class C acts
-(archive, merge, bulk, move a project — S3), and the vocabulary writes
-(statuses, types, fields, tags — S2b). ``manifest.py`` is the record.
+What is deliberately NOT here: hard delete (D-PM-35) and the class C acts
+(archive, merge, bulk, move a project, every delete — S3). ``manifest.py``
+is the record.
+
+S2b (2026-09-23) added the rest of class B: the vocabulary writes (a status,
+a type, a field, a tag — create and update), editing the member's own
+comment, the repeat rule, the private capture and the member's own overlay.
+A vocabulary row is named by the member; the tool resolves it against the
+project's own list the way a status is, every match and never the first.
 """
 
 from __future__ import annotations
@@ -41,7 +47,7 @@ from skill_projects.client import (
     put,
     uuid_of,
 )
-from skill_projects.reads import _task_line
+from skill_projects.reads import _rule_text, _task_line
 
 try:
     from acb_skills.tool_annotations import annotate as _annotate
@@ -143,21 +149,32 @@ def _names(rows: list[dict[str, Any]]) -> str:
     return ", ".join(found) if found else "(none are configured)"
 
 
-async def _resolve_status(project_id: str, status: str) -> dict[str, Any]:
-    """The one status row a spoken name means, or a refusal that lists them."""
-    rows = await _statuses_of(project_id)
-    found = _matches_by_name(rows, status)
+def _one_named(
+    rows: list[dict[str, Any]], wanted: str, what: str, plural: str = ""
+) -> dict[str, Any]:
+    """The one row a spoken name means, or a refusal that lists them all.
+
+    Every case-insensitive match, never the first. Two matches is a question
+    for the member, not a coin toss (WS-26d-write decision 3).
+    """
+    found = _matches_by_name(rows, wanted)
     if len(found) == 1:
         return found[0]
+    many = plural or f"{what}s"
     if not found:
         raise GatewayRefusal(
-            f"No status is called {data(status)} in that project. The statuses are: {_names(rows)}."
+            f"No {what} is called {data(wanted)} in that project. The {many} are: {_names(rows)}."
         )
     quoted = ", ".join(f"'{r.get('name')}'" for r in found)
     raise GatewayRefusal(
-        f"{data(status)} matches more than one status ({quoted}). "
+        f"{data(wanted)} matches more than one {what} ({quoted}). "
         "Ask the member which one they mean."
     )
+
+
+async def _resolve_status(project_id: str, status: str) -> dict[str, Any]:
+    """The one status row a spoken name means, or a refusal that lists them."""
+    return _one_named(await _statuses_of(project_id), status, "status", "statuses")
 
 
 async def _resolve_assignee(value: str) -> str:
@@ -844,7 +861,688 @@ async def report_save(
     return f"Saved report {data(row.get('name'))} for {scope}.\n  full_id: {row.get('id')}"
 
 
-__all__ = [
+# ── Vocabulary — statuses, types, fields, tags (S2b) ─────────────────────────
+#
+# A vocabulary write lands on the ROOT's set (types, fields, tags) or on the
+# nearest node that owns a status set. The card says where, because "add a
+# status" to a subproject that inherits its lanes changes every sibling's
+# board. The route's own permission (`assert_can_manage_settings`) is the
+# authority; the card is consent. An org-wide row (WS-27bj) is minted only
+# when the member says `org_wide=true`, and the route refuses it unless they
+# hold that permission too.
+
+STATUS_CATEGORIES = ("backlog", "todo", "in_progress", "done", "cancelled", "triage")
+FIELD_TYPES = ("text", "number", "date", "select", "multi_select", "boolean", "url")
+FREQS = ("daily", "weekly", "monthly", "yearly")
+ANCHORS = ("due", "completed")
+DISPOSITIONS = ("INBOX", "NEXT", "WAITING", "SOMEDAY", "PROJECT", "REFERENCE", "DONE", "TRASH")
+ENERGIES = ("low", "medium", "high")
+
+
+async def _node(project_id: str) -> tuple[str, dict[str, Any]]:
+    pid = uuid_of(project_id, "project_id")
+    return pid, await get(f"/projects/nodes/{pid}")
+
+
+async def _vocab(pid: str, kind: str) -> list[dict[str, Any]]:
+    """One of the four vocabulary lists. ``pid`` came from ``uuid_of``."""
+    paths = {
+        "statuses": f"/projects/nodes/{pid}/statuses",
+        "types": f"/projects/nodes/{pid}/types",
+        "fields": f"/projects/nodes/{pid}/fields",
+        "tags": f"/projects/nodes/{pid}/tags",
+    }
+    return ((await get(paths[kind])) or {}).get("rows") or []
+
+
+def _yes_no(value: str, what: str) -> bool | None:
+    """``yes``/``no`` → bool, empty → None (leave it), anything else refuses."""
+    v = str(value or "").strip().lower()
+    if not v:
+        return None
+    if v in ("yes", "true", "y", "1"):
+        return True
+    if v in ("no", "false", "n", "0"):
+        return False
+    raise GatewayRefusal(f"{what} is yes or no.")
+
+
+def _next_position(rows: list[dict[str, Any]]) -> int:
+    taken = [int(r.get("position") or 0) for r in rows]
+    return (max(taken) + 10) if taken else 10
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False)
+async def create_status(project_id: str, name: str, category: str = "todo", color: str = "") -> str:
+    """Add a status lane. category is backlog, todo, in_progress, done,
+    cancelled or triage. The lane lands LAST in the set the project uses;
+    the card names the project that owns that set, because a subproject
+    may inherit its lanes from a parent. Deleting a lane is a guarded act."""
+    pid, node = await _node(project_id)
+    label = str(name or "").strip()
+    if not label:
+        return "A status needs a name."
+    cat = str(category or "todo").strip().lower()
+    if cat not in STATUS_CATEGORIES:
+        return f"category is one of {', '.join(STATUS_CATEGORIES)}."
+    owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
+    rows = await _vocab(pid, "statuses")
+    if _matches_by_name(rows, label):
+        return f"{data(label)} already exists here. The statuses are: {_names(rows)}."
+    payload: dict[str, Any] = {"name": label, "category": cat, "position": _next_position(rows)}
+    if color.strip():
+        payload["color"] = color.strip()
+    set_of = "this project" if owner.get("owns") else data(owner.get("owner_name"))
+    if not await _confirm(
+        title="Add this status?",
+        detail=f"{data(label)} [{cat}] in {data(node.get('name'))}",
+        context=_fields_block({**payload, "project": data(node.get("name")), "status set": set_of}),
+    ):
+        return CANCELLED
+    row = await post(f"/projects/nodes/{pid}/statuses", payload)
+    return (
+        f"Added status {data(row.get('name') or label)} [{row.get('category') or cat}] "
+        f"to {data(node.get('name'))}.\n  status_id: {row.get('id')}"
+    )
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False)
+async def update_status(
+    project_id: str,
+    status: str,
+    name: str = "",
+    category: str = "",
+    color: str = "",
+    position: int = -1,
+) -> str:
+    """Rename, recategorise, recolour or reorder one lane, found by NAME in
+    the project's set. Only the arguments you pass change. A rename changes
+    what every task in the lane reads. The card shows before → after."""
+    pid, node = await _node(project_id)
+    row = await _resolve_status(pid, status)
+    sid = uuid_of(str(row.get("id")), "status_id")
+    payload: dict[str, Any] = {}
+    before: dict[str, Any] = {}
+    if name.strip():
+        payload["name"] = name.strip()
+        before["name"] = row.get("name")
+    if category.strip():
+        cat = category.strip().lower()
+        if cat not in STATUS_CATEGORIES:
+            return f"category is one of {', '.join(STATUS_CATEGORIES)}."
+        payload["category"] = cat
+        before["category"] = row.get("category")
+    if color.strip():
+        payload["color"] = color.strip()
+        before["color"] = row.get("color")
+    if position >= 0:
+        payload["position"] = int(position)
+        before["position"] = row.get("position")
+    if not payload:
+        return "Nothing to change. Pass at least one field."
+    if not await _confirm(
+        title="Change this status?",
+        detail=f"{data(row.get('name'))} in {data(node.get('name'))}",
+        context=_fields_block({**payload, "project": data(node.get("name"))}, before=before),
+    ):
+        return CANCELLED
+    updated = await patch(f"/projects/statuses/{sid}", payload)
+    return (
+        f"Updated status {data(updated.get('name') or row.get('name'))} "
+        f"[{updated.get('category') or row.get('category')}].\n  status_id: {sid}"
+    )
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False)
+async def create_type(
+    project_id: str,
+    name: str,
+    icon: str = "",
+    color: str = "",
+    is_default: bool = False,
+    is_epic: bool = False,
+    org_wide: bool = False,
+) -> str:
+    """Add a task type to the project's root. is_default makes new tasks
+    start as it. is_epic makes it a top level in the hierarchy rule.
+    org_wide=true mints it for every project (needs the organization
+    settings permission, and cannot be the default). Deleting a type is a
+    guarded act; tasks keep existing, untyped."""
+    pid, node = await _node(project_id)
+    label = str(name or "").strip()
+    if not label:
+        return "A task type needs a name."
+    rows = await _vocab(pid, "types")
+    if _matches_by_name(rows, label):
+        return f"{data(label)} already exists here. The types are: {_names(rows)}."
+    payload: dict[str, Any] = {"name": label}
+    if icon.strip():
+        payload["icon"] = icon.strip()
+    if color.strip():
+        payload["color"] = color.strip()
+    if is_default:
+        payload["is_default"] = True
+    if is_epic:
+        payload["is_epic"] = True
+    if org_wide:
+        payload["scope"] = "org"
+    where = "every project (organization-wide)" if org_wide else data(node.get("name"))
+    if not await _confirm(
+        title="Add this task type?",
+        detail=f"{data(label)} in {where}",
+        context=_fields_block({**payload, "project": data(node.get("name")), "scope": where}),
+    ):
+        return CANCELLED
+    row = await post(f"/projects/nodes/{pid}/types", payload)
+    return f"Added type {data(row.get('name') or label)} to {where}.\n  type_id: {row.get('id')}"
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False)
+async def update_type(
+    project_id: str,
+    type_name: str,
+    name: str = "",
+    icon: str = "",
+    color: str = "",
+    make_default: bool = False,
+    epic: str = "",
+) -> str:
+    """Rename, re-icon, recolour a task type found by NAME, make it the
+    project's default (make_default=true), or set epic to yes or no. Only
+    the arguments you pass change. The Epic system type cannot be renamed
+    or un-flagged; the route says so."""
+    pid, node = await _node(project_id)
+    row = _one_named(await _vocab(pid, "types"), type_name, "type")
+    tid = uuid_of(str(row.get("id")), "type_id")
+    payload: dict[str, Any] = {}
+    before: dict[str, Any] = {}
+    if name.strip():
+        payload["name"] = name.strip()
+        before["name"] = row.get("name")
+    if icon.strip():
+        payload["icon"] = icon.strip()
+        before["icon"] = row.get("icon")
+    if color.strip():
+        payload["color"] = color.strip()
+        before["color"] = row.get("color")
+    if make_default:
+        payload["is_default"] = True
+        before["is_default"] = row.get("is_default")
+    flag = _yes_no(epic, "epic")
+    if flag is not None:
+        payload["is_epic"] = flag
+        before["is_epic"] = row.get("is_epic")
+    if not payload:
+        return "Nothing to change. Pass at least one field."
+    scope = "organization-wide" if row.get("project_id") is None else data(node.get("name"))
+    if not await _confirm(
+        title="Change this task type?",
+        detail=f"{data(row.get('name'))} in {scope}",
+        context=_fields_block({**payload, "project": data(node.get("name"))}, before=before),
+    ):
+        return CANCELLED
+    updated = await patch(f"/projects/types/{tid}", payload)
+    return f"Updated type {data(updated.get('name') or row.get('name'))}.\n  type_id: {tid}"
+
+
+def _field_of(rows: list[dict[str, Any]], wanted: str) -> dict[str, Any]:
+    """A field by its name OR its key. Every match, never the first."""
+    target = str(wanted or "").strip().lower()
+    found = [
+        r
+        for r in rows
+        if target
+        and (
+            str(r.get("name") or "").strip().lower() == target
+            or str(r.get("field_key") or "").strip().lower() == target
+        )
+    ]
+    if len(found) == 1:
+        return found[0]
+    if not found:
+        keys = ", ".join(
+            f"{r.get('name')} ({r.get('field_key')})" for r in rows if r.get("field_key")
+        )
+        raise GatewayRefusal(
+            f"No custom field is called {data(wanted)} here. The fields are: {keys or '(none)'}."
+        )
+    raise GatewayRefusal(f"{data(wanted)} matches more than one field. Pass its key.")
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False)
+async def create_field(
+    project_id: str,
+    name: str,
+    field_type: str = "text",
+    options: str = "",
+    description: str = "",
+    required: bool = False,
+    org_wide: bool = False,
+) -> str:
+    """Add a custom field to the project's root. field_type is text, number,
+    date, select, multi_select, boolean or url. options is comma-separated,
+    for select and multi_select. required=true means a task cannot MOVE
+    into this project without a value. org_wide=true mints it for every
+    project. The key is derived from the name and never changes."""
+    pid, node = await _node(project_id)
+    label = str(name or "").strip()
+    if not label:
+        return "A custom field needs a name."
+    kind = str(field_type or "text").strip().lower()
+    if kind not in FIELD_TYPES:
+        return f"field_type is one of {', '.join(FIELD_TYPES)}."
+    choices = _split(options)
+    if kind in ("select", "multi_select") and not choices:
+        return f"A {kind} field needs options."
+    rows = await _vocab(pid, "fields")
+    if _matches_by_name(rows, label):
+        return f"A field called {data(label)} already exists here."
+    payload: dict[str, Any] = {"name": label, "field_type": kind}
+    if choices:
+        payload["options"] = choices
+    if description.strip():
+        payload["description"] = description.strip()
+    if required:
+        payload["required"] = True
+    if org_wide:
+        payload["scope"] = "org"
+    where = "every project (organization-wide)" if org_wide else data(node.get("name"))
+    if not await _confirm(
+        title="Add this custom field?",
+        detail=f"{data(label)} ({kind}) in {where}",
+        context=_fields_block({**payload, "project": data(node.get("name")), "scope": where}),
+    ):
+        return CANCELLED
+    row = await post(f"/projects/nodes/{pid}/fields", payload)
+    return (
+        f"Added field {data(row.get('name') or label)} (key {row.get('field_key')}, {kind}) "
+        f"to {where}.\n  field_id: {row.get('id')}"
+    )
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False)
+async def update_field(
+    project_id: str,
+    field: str,
+    name: str = "",
+    description: str = "",
+    options: str = "",
+    required: str = "",
+    field_type: str = "",
+) -> str:
+    """Change a custom field found by NAME or KEY: its label, description,
+    options (comma-separated, REPLACES the list; an option still in use
+    cannot be dropped), required (yes or no) or type (only while no task
+    holds a value). The key never changes. The card shows before → after."""
+    pid, node = await _node(project_id)
+    row = _field_of(await _vocab(pid, "fields"), field)
+    fid = uuid_of(str(row.get("id")), "field_id")
+    payload: dict[str, Any] = {}
+    before: dict[str, Any] = {}
+    if name.strip():
+        payload["name"] = name.strip()
+        before["name"] = row.get("name")
+    if description.strip():
+        payload["description"] = description.strip()
+        before["description"] = row.get("description")
+    if options.strip():
+        payload["options"] = _split(options)
+        before["options"] = row.get("options")
+    flag = _yes_no(required, "required")
+    if flag is not None:
+        payload["required"] = flag
+        before["required"] = row.get("required")
+    if field_type.strip():
+        kind = field_type.strip().lower()
+        if kind not in FIELD_TYPES:
+            return f"field_type is one of {', '.join(FIELD_TYPES)}."
+        payload["field_type"] = kind
+        before["field_type"] = row.get("field_type")
+    if not payload:
+        return "Nothing to change. Pass at least one field."
+    if not await _confirm(
+        title="Change this custom field?",
+        detail=f"{data(row.get('name'))} (key {row.get('field_key')}) in {data(node.get('name'))}",
+        context=_fields_block({**payload, "project": data(node.get("name"))}, before=before),
+    ):
+        return CANCELLED
+    updated = await patch(f"/projects/fields/{fid}", payload)
+    return (
+        f"Updated field {data(updated.get('name') or row.get('name'))} "
+        f"(key {row.get('field_key')}).\n  field_id: {fid}"
+    )
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False)
+async def create_tag(
+    project_id: str, name: str, color: str = "", description: str = "", org_wide: bool = False
+) -> str:
+    """Register a tag on the project's root, with a colour and a
+    description. A tag typed onto a task registers itself; this is for
+    naming one before it is used, or giving it a colour. org_wide=true
+    mints it for every project. Deleting a tag is a guarded act."""
+    pid, node = await _node(project_id)
+    label = str(name or "").strip()
+    if not label:
+        return "A tag needs a name."
+    rows = await _vocab(pid, "tags")
+    if _matches_by_name(rows, label):
+        return f"{data(label)} already exists here. The tags are: {_names(rows)}."
+    payload: dict[str, Any] = {"name": label}
+    if color.strip():
+        payload["color"] = color.strip()
+    if description.strip():
+        payload["description"] = description.strip()
+    if org_wide:
+        payload["scope"] = "org"
+    where = "every project (organization-wide)" if org_wide else data(node.get("name"))
+    if not await _confirm(
+        title="Add this tag?",
+        detail=f"{data(label)} in {where}",
+        context=_fields_block({**payload, "project": data(node.get("name")), "scope": where}),
+    ):
+        return CANCELLED
+    row = await post(f"/projects/nodes/{pid}/tags", payload)
+    return f"Added tag {data(row.get('name') or label)} to {where}.\n  tag_id: {row.get('id')}"
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False)
+async def update_tag(
+    project_id: str, tag: str, name: str = "", color: str = "", description: str = ""
+) -> str:
+    """Rename, recolour or describe a tag found by NAME. A rename rewrites
+    every task that wears the tag, and the card says how many. Renaming
+    onto an existing tag is refused by the route; merging is a guarded act."""
+    pid, node = await _node(project_id)
+    row = _one_named(await _vocab(pid, "tags"), tag, "tag")
+    gid = uuid_of(str(row.get("id")), "tag_id")
+    payload: dict[str, Any] = {}
+    before: dict[str, Any] = {}
+    if name.strip():
+        payload["name"] = name.strip()
+        before["name"] = row.get("name")
+    if color.strip():
+        payload["color"] = color.strip()
+        before["color"] = row.get("color")
+    if description.strip():
+        payload["description"] = description.strip()
+        before["description"] = row.get("description")
+    if not payload:
+        return "Nothing to change. Pass at least one field."
+    worn = int(row.get("task_count") or 0)
+    card: dict[str, Any] = dict(payload)
+    if "name" in payload:
+        # The count FIRST on a rename: it is the size of the act. The route
+        # rewrites every task that wears the tag (tags.py `_rewrite`).
+        card = {"tasks renamed": worn, **payload}
+    if not await _confirm(
+        title="Change this tag?",
+        detail=f"{data(row.get('name'))} in {data(node.get('name'))}"
+        + (f" · renames {worn} task{'s' if worn != 1 else ''}" if "name" in payload else ""),
+        context=_fields_block({**card, "project": data(node.get("name"))}, before=before),
+    ):
+        return CANCELLED
+    updated = await patch(f"/projects/tags/{gid}", payload)
+    retagged = updated.get("retagged")
+    tail = f" on {retagged} task{'s' if retagged != 1 else ''}" if "name" in payload else ""
+    return f"Updated tag {data(updated.get('name') or row.get('name'))}{tail}.\n  tag_id: {gid}"
+
+
+# ── A comment of the member's own ────────────────────────────────────────────
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False)
+async def edit_comment(task_id: str, comment_id: str, body: str) -> str:
+    """Reword a comment the member wrote. comment_id comes from task_detail's
+    timeline or from comment's receipt. Only the author can edit, and the
+    tool checks that before the card. The card shows the old text and the
+    new. Newly @mentioned people are notified; the rest are not re-pinged."""
+    text_body = str(body or "").strip()
+    if not text_body:
+        return "A comment needs a body."
+    task = await _task(task_id)
+    aid = uuid_of(comment_id, "comment_id")
+    timeline = await get(f"/projects/tasks/{task['id']}/timeline", {"page": 1, "page_size": 50})
+    rows = (timeline or {}).get("rows") or []
+    old = next((r for r in rows if str(r.get("id")) == aid and r.get("type") == "comment"), None)
+    if old is None:
+        return (
+            f"No comment with id {aid} is in the latest 50 timeline rows of {_ref(task)}. "
+            "task_detail lists them."
+        )
+    from skill_projects.client import current_user_email
+
+    author = str(old.get("created_by") or "").lower()
+    if author != current_user_email().lower():
+        return f"Only the author can edit a comment. This one is by {data(author)}."
+    if not await _confirm(
+        title="Edit your comment?",
+        detail=f"on {_ref(task)}",
+        context=_fields_block({"body": text_body}, before={"body": old.get("body")}),
+    ):
+        return CANCELLED
+    await patch(f"/projects/comments/{aid}", {"body": text_body})
+    return f"Edited your comment on {_ref(task)} (comment id {aid}).\n  full_id: {task['id']}"
+
+
+# ── The repeat rule ──────────────────────────────────────────────────────────
+
+
+def _build_rule(
+    freq: str,
+    interval: int,
+    weekdays: str,
+    day_of_month: int,
+    month_of_year: int,
+    anchor: str,
+    until: str,
+    max_occurrences: int,
+) -> dict[str, Any] | str:
+    """The rule as the route takes it (``RecurrenceIn``), or the refusal.
+
+    The same checks ``recurrence.validate_rule`` makes, made here so the
+    member reads the reason before a card, not a 422 after one.
+    """
+    kind = str(freq or "").strip().lower()
+    if kind not in FREQS:
+        return f"freq is one of {', '.join(FREQS)}."
+    every = int(interval or 1)
+    if not 1 <= every <= 365:
+        return "interval is 1 to 365."
+    how = str(anchor or "due").strip().lower()
+    if how not in ANCHORS:
+        return f"anchor is {' or '.join(ANCHORS)}."
+    rule: dict[str, Any] = {"freq": kind, "interval": every, "anchor": how}
+    parts = _split(weekdays)
+    if not all(p.isdigit() for p in parts):
+        return "weekdays are numbers, 1 (Monday) to 7 (Sunday)."
+    days = [int(p) for p in parts]
+    if any(d < 1 or d > 7 for d in days):
+        return "weekdays are 1 (Monday) to 7 (Sunday)."
+    if kind == "weekly" and not days:
+        return "A weekly rule needs weekdays, 1 (Monday) to 7 (Sunday)."
+    if days:
+        rule["weekdays"] = days
+    if day_of_month:
+        rule["day_of_month"] = int(day_of_month)
+    if month_of_year:
+        rule["month_of_year"] = int(month_of_year)
+    if until.strip():
+        if len(until.strip()) != 10:
+            return "until is a date, YYYY-MM-DD."
+        rule["until_at"] = until.strip()
+    if max_occurrences:
+        rule["max_occurrences"] = int(max_occurrences)
+    return rule
+
+
+@_annotate(read_only=False, destructive=False, idempotent=True)
+async def set_recurrence(
+    task_id: str,
+    freq: str = "",
+    interval: int = 1,
+    weekdays: str = "",
+    day_of_month: int = 0,
+    month_of_year: int = 0,
+    anchor: str = "due",
+    until: str = "",
+    max_occurrences: int = 0,
+    stop: bool = False,
+) -> str:
+    """Make a task repeat, change its cadence, or stop it (stop=true). freq
+    is daily, weekly, monthly or yearly. interval is every N. weekdays is
+    comma-separated 1 (Monday) to 7, required for weekly. day_of_month for
+    monthly and yearly; month_of_year for yearly. anchor is due (keep the
+    schedule) or completed (measure from when the last one was finished).
+    until is YYYY-MM-DD. The card shows the current rule and the new one.
+    Stopping keeps the task and every occurrence already made."""
+    task = await _task(task_id)
+    tid = str(task.get("id"))
+    current = ((await get(f"/projects/tasks/{tid}/recurrence")) or {}).get("rule")
+    if stop:
+        if not current:
+            return f"{_ref(task)} does not repeat."
+        if not await _confirm(
+            title="Stop repeating this task?",
+            detail=_ref(task),
+            context=_fields_block(
+                {"task": _ref(task), "rule": _rule_text(current), "after": "does not repeat"}
+            ),
+        ):
+            return CANCELLED
+        await delete(f"/projects/tasks/{tid}/recurrence")
+        return f"{_ref(task)} no longer repeats. Existing occurrences stay.\n  full_id: {tid}"
+    built = _build_rule(
+        freq, interval, weekdays, day_of_month, month_of_year, anchor, until, max_occurrences
+    )
+    if isinstance(built, str):
+        return built
+    rule = built
+    card = {"task": _ref(task), "rule": _rule_text(rule)}
+    before = {"rule": _rule_text(current)} if current else None
+    if not await _confirm(
+        title="Repeat this task?" if not current else "Change how this task repeats?",
+        detail=f"{_ref(task)} · {_rule_text(rule)}",
+        context=_fields_block(card, before=before),
+    ):
+        return CANCELLED
+    saved = (await put(f"/projects/tasks/{tid}/recurrence", rule)) or {}
+    return f"{_ref(task)} now repeats {_rule_text(saved.get('rule') or rule)}.\n  full_id: {tid}"
+
+
+# ── The member's own: a private capture, and the overlay ─────────────────────
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False)
+async def create_personal_task(
+    title: str, notes: str = "", due: str = "", context: str = "", next_action: str = ""
+) -> str:
+    """Capture a PRIVATE task into the member's own personal project,
+    assigned to them. Nobody else can see it. due is YYYY-MM-DD. context
+    is a GTD context such as @office. To share it later, move_task it into
+    a team project. Archive is the undo."""
+    label = str(title or "").strip()
+    if not label:
+        return "A task needs a title."
+    payload: dict[str, Any] = {"title": label}
+    if notes.strip():
+        payload["notes"] = notes.strip()
+    if due.strip():
+        if len(due.strip()) != 10:
+            return "due is a date, YYYY-MM-DD."
+        payload["due_at"] = due.strip()
+    if context.strip():
+        payload["context"] = context.strip()
+    if next_action.strip():
+        payload["next_action"] = next_action.strip()
+    if not await _confirm(
+        title="Capture this private task?",
+        detail=data(label),
+        context=_fields_block({**payload, "visible to": "you only"}),
+    ):
+        return CANCELLED
+    row = await post("/projects/my/tasks", payload)
+    return "\n".join(["Captured (private, yours):", *_task_line(row)])
+
+
+@_annotate(read_only=False, destructive=False, idempotent=True)
+async def set_my_overlay(
+    task_id: str,
+    disposition: str = "",
+    context: str = "",
+    energy: str = "",
+    next_action: str = "",
+    estimate_mins: int = 0,
+    two_minute: str = "",
+    clear: str = "",
+) -> str:
+    """Set the member's OWN triage of a task, which the team's board never
+    sees: disposition (INBOX, NEXT, WAITING, SOMEDAY, PROJECT, REFERENCE,
+    DONE, TRASH), context (@office), energy (low, medium, high),
+    next_action, estimate_mins, two_minute (yes or no). clear empties
+    fields: context, energy, next_action, estimate. A DONE disposition does
+    not complete the shared task; complete does. defer sets a date."""
+    task = await _task(task_id)
+    tid = str(task.get("id"))
+    try:
+        mine = await get(f"/projects/my/tasks/{tid}")
+    except GatewayRefusal:
+        # Not in the member's lens yet (never triaged, not assigned). The
+        # route still accepts the overlay for any visible task.
+        mine = {}
+    payload: dict[str, Any] = {}
+    before: dict[str, Any] = {}
+    if disposition.strip():
+        state = disposition.strip().upper()
+        if state not in DISPOSITIONS:
+            return f"disposition is one of {', '.join(DISPOSITIONS)}."
+        payload["disposition"] = state
+        before["disposition"] = mine.get("disposition")
+    if context.strip():
+        payload["context"] = context.strip()
+        before["context"] = mine.get("context")
+    if energy.strip():
+        level = energy.strip().lower()
+        if level not in ENERGIES:
+            return f"energy is one of {', '.join(ENERGIES)}."
+        payload["energy"] = level
+        before["energy"] = mine.get("energy")
+    if next_action.strip():
+        payload["next_action"] = next_action.strip()
+        before["next_action"] = mine.get("next_action")
+    est = _int_or_none(estimate_mins)
+    if est is not None:
+        payload["time_estimate_mins"] = est
+        before["time_estimate_mins"] = mine.get("time_estimate_mins")
+    flag = _yes_no(two_minute, "two_minute")
+    if flag is not None:
+        payload["is_two_minute"] = flag
+        before["is_two_minute"] = mine.get("is_two_minute")
+    cleared: dict[str, Any] = {}
+    for field in _split(clear):
+        key = {"estimate": "time_estimate_mins"}.get(field.lower(), field.lower())
+        if key not in ("context", "energy", "next_action", "time_estimate_mins"):
+            return f"clear takes context, energy, next_action or estimate, not {data(field)}."
+        cleared[key] = None
+        before[key] = mine.get(key)
+    payload = {**cleared, **payload}
+    if not payload:
+        return "Nothing to change. Pass at least one field."
+    if not await _confirm(
+        title="Update your triage of this task?",
+        detail=_ref(task),
+        context=_fields_block({**payload, "scope": "your overlay only"}, before=before),
+    ):
+        return CANCELLED
+    row = await patch(f"/projects/tasks/{tid}/personal", payload)
+    facts = [f"{k} {data(row.get(k))}" for k in payload if row.get(k) not in (None, "", False)]
+    return (
+        f"Your triage of {_ref(task)}: {' · '.join(facts) if facts else 'cleared'}."
+        f"\n  full_id: {tid}"
+    )
+
+
+__all__ = [  # noqa: RUF022 — S2 first, then S2b, the way the spec lists them
     "add_subtasks",
     "assign",
     "comment",
@@ -860,4 +1558,17 @@ __all__ = [
     "update_project",
     "update_task",
     "watch",
+    # S2b
+    "create_field",
+    "create_personal_task",
+    "create_status",
+    "create_tag",
+    "create_type",
+    "edit_comment",
+    "set_my_overlay",
+    "set_recurrence",
+    "update_field",
+    "update_status",
+    "update_tag",
+    "update_type",
 ]

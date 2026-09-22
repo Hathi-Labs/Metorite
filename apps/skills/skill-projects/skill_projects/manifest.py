@@ -171,7 +171,14 @@ MANIFEST: tuple[Route, ...] = (
     # ── me.py · personal.py ──────────────────────────────────────────────
     Route("GET", "/projects/assigned-to-me", "my_work", "A"),
     Route("GET", "/projects/my/project", "my_work", "A"),
-    Route("POST", "/projects/my/project", "create_personal_task", "B"),
+    Route(
+        "POST",
+        "/projects/my/project",
+        "",
+        "X",
+        "The first capture creates the personal project itself "
+        "(personal.py ensure_personal_project). A second door is redundant.",
+    ),
     Route("POST", "/projects/my/tasks", "create_personal_task", "B"),
     Route("PATCH", "/projects/tasks/{task_id}/personal", "set_my_overlay", "B"),
     Route("GET", "/projects/my/inbox", "my_work", "A"),
@@ -266,21 +273,9 @@ MANIFEST: tuple[Route, ...] = (
 #: builds each. The coverage fence holds this against ``__all__``: a tool is
 #: exported OR it is here, never both and never neither.
 PLANNED: dict[str, str] = {
-    # S2b — class B, the vocabulary and personal writes. S2 (built 2026-09-22)
-    # shipped the fifteen daily verbs; these are the rest of class B.
-    "edit_comment": "S2b",
-    "create_status": "S2b",
-    "update_status": "S2b",
-    "create_type": "S2b",
-    "update_type": "S2b",
-    "create_field": "S2b",
-    "update_field": "S2b",
-    "create_tag": "S2b",
-    "update_tag": "S2b",
-    "create_personal_task": "S2b",
-    "set_my_overlay": "S2b",
-    "set_recurrence": "S2b",
-    "recurrence": "S2b",
+    # S2 (2026-09-22) shipped the fifteen daily class B verbs. S2b
+    # (2026-09-23) shipped the rest of class B and the two reads it needed
+    # (`recurrence`, `my_task`).
     # S3 — class C
     "move_project": "S3",
     "archive_project": "S3",
@@ -303,7 +298,6 @@ PLANNED: dict[str, str] = {
     "project_access": "S4",
     "views": "S4",
     "save_view": "S4",
-    "my_task": "S4",
     "calendar": "S4",
     "my_contexts": "S4",
     "watchers": "S4",

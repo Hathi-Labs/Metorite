@@ -3044,11 +3044,10 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `uv run python -c "import skill_projects.manifest as m; print(sorted(m.PLANNED))"`
   → a non-empty list means at least one slice is still open. The value is
   the slice each tool belongs to.
-- **Why:** S1 shipped the reads and S2 the fifteen daily writes, each with
-  a card. The owner asked for archive too, with a card and a rule. S2b is
-  the rest of class B (vocabulary writes, edit a comment, recurrence, the
-  personal overlay), S3 the class C acts with count-bearing cards, S4 the
-  five workflows, S5 the polish. `specs/projects_ai_chat.md` §10 is the
+- **Why:** S1 shipped the reads, S2 the fifteen daily writes and S2b the
+  rest of class B (2026-09-23), each with a card. The owner asked for
+  archive too, with a card and a rule. S3 is the class C acts with
+  count-bearing cards, S4 the five workflows, S5 the polish. `specs/projects_ai_chat.md` §10 is the
   order and §10.2 the acceptance. `writes.py` is the shape to copy, and it
   copied the CRM's. Move a tool out of `PLANNED` when it ships. The fence
   refuses a tool that is both built and planned.
