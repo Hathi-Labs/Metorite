@@ -835,7 +835,9 @@ async def test_the_calendar_read_is_scoped_to_the_caller(
     src = inspect.getsource(pm_personal.my_calendar)
     assert "_MY_TASKS_SQL" in src
     assert "actor(user)" in src
-    assert "resolve_organization_id" in src
+    # The tenant and the grant closure come from the ONE assembler (S6a);
+    # a composer that binds by hand is a composer that can forget one.
+    assert "my_tasks_binds" in src
 
 
 # ── The overlay's remaining per-member fields (migration 188, S3a-server-2) ──

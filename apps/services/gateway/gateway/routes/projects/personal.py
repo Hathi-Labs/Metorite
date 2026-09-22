@@ -38,6 +38,8 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.core import (
+    _MY_GROUPS_SQL,
+    _VISIBLE_PROJECTS_SQL,
     CLOSING_CATEGORIES,
     ListResponse,
     Page,
@@ -46,7 +48,6 @@ from gateway.routes.projects.core import (
     _placeholder,
     _tenant_session,
     actor,
-    apply_status_transition,
     clean_payload,
     coerce_write_values,
     emit,
@@ -367,14 +368,28 @@ async def ensure_personal_child(db: Any, email: str, name: str) -> Any:
     everywhere at once. A child that owned a copy of the set would be four
     more rows per Area and a remap on every move.
 
-    Not idempotent by name, on purpose: two Areas may share a name the way two
-    folders may. Callers that want "find or create" ask first. S6b's Areas
-    routes reuse this.
+    **Find or create, by name.** Two clarifies into "Website redesign" share
+    one Area rather than minting two, the way a folder named twice is one
+    folder. Matched on ``lower(name)`` among the root's LIVE children: an
+    archived Area of the same name stays archived, and a new one is minted
+    beside it. S6b's Areas routes reuse this.
     """
     clean = (name or "").strip()
     if not clean:
         raise HTTPException(status_code=422, detail="A project needs a name.")
     root = await ensure_personal_project(db, email)
+    existing = (await db.execute(
+        text(
+            "SELECT * FROM pm_projects "
+            "WHERE parent_project_id = CAST(:root AS uuid) "
+            "  AND lower(personal_owner) = :who "
+            "  AND lower(name) = :name AND archived_at IS NULL "
+            "ORDER BY created_at LIMIT 1"
+        ),
+        {"root": str(root.id), "who": email, "name": clean.lower()},
+    )).fetchone()
+    if existing is not None:
+        return existing
     child = await insert_row(db, "pm_projects", {
         "name": clean,
         "personal_owner": email,
@@ -427,63 +442,47 @@ async def capture(
     async with _tenant_session() as db:
         project = await ensure_personal_project(db, email)
         project_id = str(project.id)
-        task = await _capture_one(db, email, project, payload)
-        task_id = str(task.id)
-        result = row_to_dict(task, TaskModel)
-
-    await emit("pm.task.created", {"task_id": task_id, "project_id": project_id,
-                                   "title": title})
-    return result
-
-
-def _clean_title(payload: CaptureIn) -> str:
-    """The title, or the 422 a blank one earns — BEFORE any write."""
-    title = (payload.title or "").strip()
-    if not title:
-        raise HTTPException(status_code=422, detail="A task needs a title.")
-    return title
+        status = await load_default_status(db, project_id)
+        overlay = None
+        if payload.next_action or payload.context:
+            overlay = {"next_action": payload.next_action,
+                       "context": payload.context}
+        task = await create_personal_task(
+            db, email, project_id, project_id, str(status.id), {
+                "title": title,
+                "description": payload.notes,
+                "due_at": payload.due_at,
+                "source": "manual",
+            }, overlay)
+        return row_to_dict(task, TaskModel)
 
 
-async def _capture_one(
-    db: Any, email: str, project: Any, payload: CaptureIn,
+async def create_personal_task(
+    db: Any, email: str, project_id: str, root_id: str, status_id: str,
+    values: dict[str, Any], overlay: dict[str, Any] | None = None,
 ) -> Any:
-    """One captured thought into ``project``, assigned to ``email``.
+    """One `pm_tasks` row in the member's own tree, assigned to them.
 
-    The ONE capture path (WS-39 S6a). ``capture`` and ``capture_batch`` both
-    come through here, so a column added to a captured task is added once.
-    Returns the inserted ``pm_tasks`` row.
+    The one capture path. `POST /projects/my/tasks` calls it, and so does the
+    AI seam's pm arm for every email and WhatsApp capture
+    (`routes/projects/item_lens.py`). Four effects, one helper: the row, the
+    assignee row (what the board's "mine" reads), the member's overlay when
+    there is one, and the `pm.task.created` event the workflow engine binds
+    triggers to (`routes/workflows/catalog.py`). A second capture site that
+    forgot the event would create tasks no automation ever sees.
+
+    `values` carries the task columns beside the ones this helper owns:
+    `title`, `description`, `due_at`, `source`, `parent_task_id`, `origin`.
     """
-    title = _clean_title(payload)
-    project_id = str(project.id)
-    status = await load_default_status(db, project_id)
     task = await insert_row(db, "pm_tasks", {
         "project_id": project_id,
-        "root_project_id": project_id,
-        "task_number": await next_task_number(db, project_id),
-        "status_id": str(status.id),
-        "title": title,
-        "description": payload.notes,
-        "due_at": payload.due_at,
+        "root_project_id": root_id,
+        "task_number": await next_task_number(db, root_id),
+        "status_id": status_id,
         "created_by": email,
-        "source": "manual",
+        **values,
     })
     task_id = str(task.id)
-    await _assign_self(db, task_id, email)
-    if payload.next_action or payload.context:
-        await _upsert_personal(db, task_id, email, {
-            "next_action": payload.next_action,
-            "context": payload.context,
-        })
-    await record_activity(
-        db, activity_type="system", created_by=email, task_id=task_id,
-        body="Captured",
-    )
-    return task
-
-
-async def _assign_self(db: Any, task_id: str, email: str) -> None:
-    """Put the capturer on their own task, so it reaches their inbox by the
-    assignment arm as well as the personal-project arm."""
     await db.execute(
         text(
             "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by) "
@@ -492,6 +491,25 @@ async def _assign_self(db: Any, task_id: str, email: str) -> None:
         ),
         {"tid": task_id, "who": email},
     )
+    if overlay:
+        await _upsert_personal(db, task_id, email, overlay)
+    await record_activity(
+        db, activity_type="system", created_by=email, task_id=task_id,
+        body="Captured",
+    )
+    await emit("pm.task.created", {
+        "task_id": task_id, "project_id": project_id,
+        "title": str(values.get("title") or ""),
+    })
+    return task
+
+
+def _clean_title(payload: CaptureIn) -> str:
+    """The title, or the 422 a blank one earns — BEFORE any write."""
+    title = (payload.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="A task needs a title.")
+    return title
 
 
 @router.post("/my/tasks/batch", status_code=201)
@@ -523,16 +541,23 @@ async def capture_batch(
     async with _tenant_session() as db:
         project = await ensure_personal_project(db, email)
         project_id = str(project.id)
-        task_ids = [
-            str((await _capture_one(db, email, project, item)).id)
-            for item in items
-        ]
-        rows = [await _read_my_task(db, email, task_id) for task_id in task_ids]
-
-    for task_id, row in zip(task_ids, rows, strict=True):
-        await emit("pm.task.created", {
-            "task_id": task_id, "project_id": project_id, "title": row["title"],
-        })
+        status = await load_default_status(db, project_id)
+        rows: list[dict[str, Any]] = []
+        for item in items:
+            # The ONE capture path: `create_personal_task` owns the row, the
+            # assignee, the overlay and the `pm.task.created` event.
+            overlay = None
+            if item.next_action or item.context:
+                overlay = {"next_action": item.next_action,
+                           "context": item.context}
+            task = await create_personal_task(
+                db, email, project_id, project_id, str(status.id), {
+                    "title": _clean_title(item),
+                    "description": item.notes,
+                    "due_at": item.due_at,
+                    "source": "manual",
+                }, overlay)
+            rows.append(await _read_my_task(db, email, str(task.id)))
     return ListResponse(rows=rows, total=len(rows))
 
 
@@ -870,7 +895,24 @@ def _apply_overlay(task: dict[str, Any], row: Any) -> None:
 #:   Measured as a 404 on `organize`'s read-back; `lensDelegateItem` had the
 #:   same hole. The chase is mine until my overlay stops saying so.
 #:
-#: Binds: ``:who`` (lower-cased email), ``:vis_org``, ``:archived``.
+#:   ⚠️ **BOUNDED by my grant closure, and the bound is the rule: the overlay
+#:   may NARROW a grant, never WIDEN one.** An overlay row is a thing the
+#:   member writes for themselves, and an unbounded arm would be a read grant
+#:   no revocation reaches — remove Alice from a group and from every task,
+#:   and her WAITING rows would keep the team's work in her inbox, her
+#:   calendar and her read-back. So the arm carries the closure the write side
+#:   checks (`Visibility.project_clause`, `_VISIBLE_PROJECTS_SQL`) on the
+#:   task's ROOT. The closure is the member's own grants whoever they are:
+#:   `data:org:read` widens the BOARD, not a member's private list.
+#:   Consequence, accepted and recorded in `my_tasks_cutover.md` §5 S6a: a
+#:   member who reached a task by assignment ALONE and delegates it loses it
+#:   from their lists, because they hold no grant to keep it by.
+#:
+#: Binds: ``:who`` (lower-cased email), ``:vis_org``, ``:archived``, and the
+#: closure's ``:vis_email`` and ``:vis_groups``. :func:`my_tasks_binds` is
+#: the one place they are assembled, so a composer cannot forget one — a
+#: missing bind raises at the seam before a row is returned (the R7 fence
+#: the ``:archived`` note below describes).
 MY_TASKS_FROM = """
 FROM pm_tasks t
 JOIN pm_task_statuses s ON s.id = t.status_id
@@ -883,9 +925,38 @@ WHERE (t.archived_at IS NULL OR CAST(:archived AS boolean))
         EXISTS (SELECT 1 FROM pm_task_assignees a
                 WHERE a.task_id = t.id AND lower(a.assignee) = :who)
      OR lower(proj.personal_owner) = :who
-     OR p.disposition = 'WAITING'
+     OR (p.disposition = 'WAITING'
+         AND t.root_project_id IN (""" + _VISIBLE_PROJECTS_SQL + """))
   )
 """
+
+
+async def my_tasks_binds(
+    db: Any, who: str, *, archived: bool, **extra: Any,
+) -> dict[str, Any]:
+    """Every bind ``MY_TASKS_FROM`` needs, assembled once.
+
+    ``who`` is the member. The tenant and the grant closure are resolved from
+    the directory, never taken from a request. Every composer of the fragment
+    — the inbox, the single read, the calendar, the planner's ``_LensSource``
+    and the AI seam's ``_PmLens`` — binds through here, so the WAITING arm's
+    closure cannot be left half-bound by one of them.
+
+    The closure is the member's OWN grants and groups. ``resolve_visibility``
+    would answer ``unrestricted`` for a ``data:org:read`` holder and drop the
+    groups; that permission widens the board, and a member's private list is
+    not the board (the fragment's docstring).
+    """
+    email = (who or "").strip().lower()
+    groups = (await db.execute(text(_MY_GROUPS_SQL), {"email": email})).fetchall()
+    return {
+        "who": email,
+        "vis_org": await resolve_organization_id(db, email),
+        "vis_email": email,
+        "vis_groups": [r.subject for r in groups if getattr(r, "subject", None)],
+        "archived": archived,
+        **extra,
+    }
 
 
 #: My work: everything assigned to me, plus everything in my personal project.
@@ -1029,18 +1100,20 @@ async def my_inbox(
 
     email = actor(user).lower()
     clauses: list[str] = []
-    params: dict[str, Any] = {"who": email, "archived": include_archived}
+    extra: dict[str, Any] = {}
     if not include_deferred:
         # The tickler: a deferred task is not in the inbox until its date.
         clauses.append("(p.defer_until IS NULL OR p.defer_until <= now())")
     if context:
         clauses.append("lower(p.context) = :context")
-        params["context"] = context.strip().lower()
+        extra["context"] = context.strip().lower()
 
     sql = _MY_TASKS_SQL + ("".join(f" AND {c}" for c in clauses))
     items: list[dict[str, Any]] = []
     async with _tenant_session() as db:
-        params["vis_org"] = await resolve_organization_id(db, email)
+        params = await my_tasks_binds(
+            db, email, archived=include_archived, **extra,
+        )
         rows = (await db.execute(text(sql), params)).fetchall()
         for row in rows:
             task, effective = _project_task(row)
@@ -1098,15 +1171,12 @@ async def _read_my_task(db: Any, email: str, task_id: str) -> dict[str, Any]:
     write answers with (WS-39 S6a: batch and organize read back through here,
     for the reason ``my_task``'s docstring gives)."""
     sql = _MY_TASKS_SQL + " AND t.id = CAST(:tid AS uuid)"
-    row = (await db.execute(text(sql), {
-        "who": email,
-        "vis_org": await resolve_organization_id(db, email),
-        # Reachable when archived: the client reads a task back after
-        # archiving it, and a 404 there would look like the task was
-        # destroyed rather than filed.
-        "archived": True,
-        "tid": task_id,
-    })).fetchone()
+    # Reachable when archived: the client reads a task back after archiving
+    # it, and a 404 there would look like the task was destroyed rather than
+    # filed.
+    row = (await db.execute(
+        text(sql), await my_tasks_binds(db, email, archived=True, tid=task_id),
+    )).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="No such task")
     task, _ = _project_task(row)
@@ -1185,16 +1255,11 @@ async def my_calendar(
     )
     items: list[dict[str, Any]] = []
     async with _tenant_session() as db:
-        params: dict[str, Any] = {
-            "who": email,
-            "vis_org": await resolve_organization_id(db, email),
-            # A week never shows archived work. There is no `include_archived`
-            # here on purpose: "show me the archive" is a list question, and a
-            # calendar that could answer it would draw archived tasks over live
-            # ones in the same hour.
-            "archived": False,
-            **window,
-        }
+        # A week never shows archived work. There is no `include_archived`
+        # here on purpose: "show me the archive" is a list question, and a
+        # calendar that could answer it would draw archived tasks over live
+        # ones in the same hour.
+        params = await my_tasks_binds(db, email, archived=False, **window)
         rows = (await db.execute(text(sql), params)).fetchall()
         for row in rows:
             task, effective = _project_task(row)
@@ -1219,17 +1284,7 @@ async def my_contexts(user: UserContext = Depends(get_current_user)) -> dict:
     """
     email = actor(user).lower()
     async with _tenant_session() as db:
-        rows = (await db.execute(
-            text(
-                "SELECT p.context AS context, count(*) AS total "
-                "FROM pm_task_personal p "
-                "JOIN pm_tasks t ON t.id = p.task_id "
-                "WHERE lower(p.member_email) = :who AND p.context IS NOT NULL "
-                "  AND t.archived_at IS NULL "
-                "GROUP BY p.context ORDER BY count(*) DESC, p.context"
-            ),
-            {"who": email},
-        )).fetchall()
+        rows = await member_contexts(db, email)
         return {
             "rows": [
                 {"context": r.context, "total": int(r.total)} for r in rows
@@ -1238,7 +1293,80 @@ async def my_contexts(user: UserContext = Depends(get_current_user)) -> dict:
         }
 
 
+async def member_contexts(db: Any, email: str) -> list[Any]:
+    """The contexts one member uses, from their overlay rows, with counts.
+
+    Shared by `GET /projects/my/contexts` and the AI seam's pm arm
+    (`routes/projects/item_lens.py`). One query, so the prompts and the
+    picker agree about which contexts exist.
+    """
+    return (await db.execute(
+        text(
+            "SELECT p.context AS context, count(*) AS total "
+            "FROM pm_task_personal p "
+            "JOIN pm_tasks t ON t.id = p.task_id "
+            "WHERE lower(p.member_email) = :who AND p.context IS NOT NULL "
+            "  AND t.archived_at IS NULL "
+            "GROUP BY p.context ORDER BY count(*) DESC, p.context"
+        ),
+        {"who": email},
+    )).fetchall()
+
+
 # ── Completion, from the personal side ──────────────────────────────────────
+
+async def complete_for_member(db: Any, task: Any, email: str) -> dict[str, Any]:
+    """Move a task into its done lane, and mark it DONE on MY overlay.
+
+    The one completion path. `POST /projects/tasks/{id}/complete` calls it,
+    and so does the AI seam when an email thread closes
+    (`routes/projects/item_lens.py`). Two effects, one helper, because a
+    caller that moved the status and forgot the overlay would leave a
+    finished task in the member's Next list, and the reverse would mark a
+    team task finished in one list while the board still shows it open.
+
+    Three more effects ride on it, so no caller can forget one: the
+    `pm.task.status_changed` event the workflow engine binds triggers to
+    (`routes/workflows/catalog.py`), and, for a task captured from an email,
+    the thread is marked Done through `propagate_task_done_to_thread`, the
+    same hop `PATCH /tasks/items/{id}` makes on the retiring store. That hop
+    is best-effort: the close stands if the mailbox is unreachable.
+
+    `task` is any row carrying `id`, `project_id`, `status_id` and, when it
+    has one, `origin`.
+    """
+    import contextlib
+
+    from gateway.routes.projects.core import apply_status_transition
+
+    # The owner's chosen done lane, not whichever one sorts first. This read
+    # was its own SQL and never consulted `is_default`, so a root holding
+    # both "Done" and "Shipped" completed into whichever carried the lower
+    # position regardless of which the owner had marked. `load_default_status`
+    # is the one place that question is answered, and it raises the same 422
+    # when the project has no done status at all.
+    done = await load_default_status(
+        db, await status_owner_id(db, str(task.project_id)), "done",
+    )
+    moved = await apply_status_transition(
+        db, task, str(done.id), created_by=email,
+    )
+    # And the member's own view of it follows, so a completed task does not
+    # sit in their Next list contradicting the board.
+    await _upsert_personal(db, str(task.id), email, {"disposition": "DONE"})
+    if getattr(task, "origin", None):
+        # projects -> tasks is the allowed import direction. Function-local so
+        # the leaf this package imports at load gains no edge.
+        from gateway.routes.tasks.email_link import propagate_task_done_to_thread
+
+        with contextlib.suppress(Exception):
+            await propagate_task_done_to_thread(db, task)
+    await emit("pm.task.status_changed", {
+        "task_id": str(task.id), "from": moved["from"].name,
+        "to": moved["to"].name, "to_category": moved["to"].category,
+    })
+    return moved
+
 
 @router.post("/tasks/{task_id}/complete")
 async def complete_task(
@@ -1257,41 +1385,8 @@ async def complete_task(
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
-        moved = await _complete(db, task, email)
-        result = row_to_dict(moved["row"], TaskModel)
-
-    await emit("pm.task.status_changed", {
-        "task_id": task_id, "from": moved["from"].name, "to": moved["to"].name,
-        "to_category": moved["to"].category,
-    })
-    return result
-
-
-async def _complete(db: Any, task: Any, email: str) -> dict[str, Any]:
-    """Move ``task`` into its project's done lane and mark MY view DONE.
-
-    The body of ``complete_task``, callable inside another transaction: the
-    ``do-now`` clarify decision completes through here rather than by writing
-    DONE onto the overlay (§13.5a decision 1). Returns what
-    ``apply_status_transition`` returns.
-    """
-    task_id = str(task.id)
-    # The owner's chosen done lane, not whichever one sorts first. This read
-    # was its own SQL and never consulted `is_default`, so a root holding
-    # both "Done" and "Shipped" completed into whichever carried the lower
-    # position regardless of which the owner had marked. `load_default_status`
-    # is the one place that question is answered, and it raises the same 422
-    # when the project has no done status at all.
-    done = await load_default_status(
-        db, await status_owner_id(db, str(task.project_id)), "done",
-    )
-    moved = await apply_status_transition(
-        db, task, str(done.id), created_by=email,
-    )
-    # And the member's own view of it follows, so a completed task does not
-    # sit in their Next list contradicting the board.
-    await _upsert_personal(db, task_id, email, {"disposition": "DONE"})
-    return moved
+        moved = await complete_for_member(db, task, email)
+        return row_to_dict(moved["row"], TaskModel)
 
 
 # ── Organize: one clarify decision, atomically ──────────────────────────────
@@ -1344,26 +1439,18 @@ async def _add_subtasks(
         title = (raw or "").strip()
         if not title:
             continue
-        child = await insert_row(db, "pm_tasks", {
-            "project_id": project_id,
-            "root_project_id": root,
-            "parent_task_id": str(parent.id),
-            "task_number": await next_task_number(db, root),
-            "status_id": str(status.id),
-            "title": title,
-            "created_by": email,
-            "source": "manual",
-            # R5: the tenant travels with the row, read off the parent it
-            # hangs from rather than inferred later.
-            "organization_id": getattr(parent, "organization_id", None),
-        })
-        child_id = str(child.id)
-        await _assign_self(db, child_id, email)
-        await record_activity(
-            db, activity_type="system", created_by=email, task_id=child_id,
-            body="Task created",
-        )
-        created.append(child_id)
+        # The ONE capture path, with a parent: row, assignee, activity and
+        # the `pm.task.created` event come from `create_personal_task`.
+        child = await create_personal_task(
+            db, email, project_id, root, str(status.id), {
+                "title": title,
+                "parent_task_id": str(parent.id),
+                "source": "manual",
+                # R5: the tenant travels with the row, read off the parent it
+                # hangs from rather than inferred later.
+                "organization_id": getattr(parent, "organization_id", None),
+            })
+        created.append(str(child.id))
     if created:
         # Subtask membership is a satellite of the PARENT (WS-27ae / P-27):
         # its `{done, total}` changed and no statement above touched its row.
@@ -1396,6 +1483,15 @@ async def _organize(
     # and the refusal rolls the freshly minted child back with it.
     project_id = payload.project_id
     if payload.kind == "project":
+        if delegated:
+            # A private child is where a project outcome lives, and the
+            # assign guard refuses a colleague there. Say so before minting
+            # one, in the words the Clarify card shows.
+            raise HTTPException(
+                status_code=400,
+                detail="A delegated task cannot become a private project. "
+                       "Choose Next and pick a project to delegate into.",
+            )
         child = await ensure_personal_child(db, email, payload.outcome or "")
         project_id = str(child.id)
     who = None
@@ -1417,8 +1513,9 @@ async def _organize(
     if payload.kind == "do-now":
         # Completed for the PROJECT, then the two-minute marker on my view.
         # Writing DONE onto the overlay alone would leave the board open
-        # (§13.5a decision 1).
-        await _complete(db, task, email)
+        # (§13.5a decision 1). `complete_for_member` is the one completion
+        # path: it emits the status event and closes an email thread too.
+        await complete_for_member(db, task, email)
     values: dict[str, Any] = {
         "disposition": disposition,
         "next_action": (payload.next_action or "").strip() or None,
@@ -1426,10 +1523,12 @@ async def _organize(
         "energy": payload.energy,
         "time_estimate_mins": payload.time_estimate_mins,
         "is_two_minute": payload.kind == "do-now",
+        # Written on EVERY decision, as `items.py` did: a re-clarify from
+        # "calendar" to "next" must drop the hard date, or the task stays
+        # pinned to a day nobody chose.
+        "is_hard_date": payload.kind == "calendar",
         "clarified_at": now(),
     }
-    if payload.kind == "calendar":
-        values["is_hard_date"] = True
     if delegated and payload.assignee is not None:
         # No `expected_by`: `due_at` is the task's own deadline, written above.
         # NULL means nobody promised, and the overdue line reads `due_at` live
@@ -1438,6 +1537,11 @@ async def _organize(
             "name": payload.assignee.name, "email": payload.assignee.email,
         }
         values["delegated_at"] = now()
+        # The delegator's day keeps no block for work they handed away. The
+        # planner's `carry_forward` also refuses WAITING rows, so a block that
+        # somehow survived cannot roll into tomorrow either.
+        values["scheduled_start"] = None
+        values["scheduled_end"] = None
     await _upsert_personal(db, task_id, email, values)
 
     # ── 4. The steps — children of the task where it now lives ─────────────

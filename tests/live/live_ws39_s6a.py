@@ -33,13 +33,15 @@ The script imports the module's own helpers — it does not restate their SQL.
 tenant database) is used with its driver swapped for asyncpg, which is the
 driver production runs.
 
-── Result, 2026-09-23, PostgreSQL 16 (metorite-scratch-tenant), asyncpg: 11/11 ─
+── Result, 2026-09-23, PostgreSQL 16 (metorite-scratch-tenant), asyncpg: 13/13 ─
 
      1 three captures land, in my inbox's own query ......................... PASS
      2 a failing 4th capture rolls the first 3 back ......................... PASS
      3 organize NEXT writes the overlay and two self-assigned children ...... PASS
      4 a failed subtask insert rolls the overlay back ....................... PASS
      5 delegate replaces the assignee and the WAITING arm keeps it mine ..... PASS
+    5b a WAITING task never enters carry_forward or candidates ............. PASS
+    5c revoking the grant takes the delegated task out of my lists ......... PASS
      6 kind=project mints a private child the team tree cannot see .......... PASS
      7 the child inherits the root's lanes, and the task kept its lane ...... PASS
      8 a task filed in the child is still in my inbox ....................... PASS
@@ -49,27 +51,36 @@ driver production runs.
 
 Checks 2 and 4 are the ones a fake cannot give: each provokes a failure AFTER
 rows are written and proves the earlier rows are gone. Check 5 is the arm
-this slice added to the one membership query, proven on the real join.
+this slice added to the one membership query, proven on the real join; 5c is
+its BOUND (the overlay may narrow a grant, never widen one), and 5b is the
+planner refusing what the arm admits.
 """
 from __future__ import annotations
 
 import asyncio
 import os
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
 from gateway.routes.projects.bulk import _act_on_one
-from gateway.routes.projects.core import Visibility, status_owner_id
+from gateway.routes.projects.core import (
+    Visibility,
+    load_default_status,
+    status_owner_id,
+)
 from gateway.routes.projects.personal import (
     _MY_TASKS_SQL,
-    CaptureIn,
     OrganizeAssignee,
     OrganizeIn,
-    _capture_one,
     _organize,
     _read_my_task,
+    _upsert_personal,
+    create_personal_task,
     ensure_personal_project,
+    my_tasks_binds,
 )
+from gateway.routes.projects.planning import _LensSource
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -89,11 +100,22 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     results.append((name, ok, detail))
 
 
+async def capture(db, root, title: str, **cols):
+    """One capture through the ONE capture path, the way the batch route
+    and the organize subtasks reach it."""
+    status = await load_default_status(db, str(root.id))
+    return await create_personal_task(
+        db, WHO, str(root.id), str(root.id), str(status.id),
+        {"title": title, "source": "manual", **cols},
+    )
+
+
 async def _titles(db, org, who: str, archived: bool = True) -> set[str]:
-    rows = (await db.execute(
-        text(_MY_TASKS_SQL),
-        {"who": who, "vis_org": str(org), "archived": archived},
-    )).fetchall()
+    # Through the ONE bind assembler, so the closure binds ride with the
+    # tenant. `org` is overridden only by check 11, which asks the question
+    # from another tenant's side.
+    binds = {**await my_tasks_binds(db, who, archived=archived), "vis_org": str(org)}
+    rows = (await db.execute(text(_MY_TASKS_SQL), binds)).fetchall()
     return {r.title for r in rows}
 
 
@@ -121,7 +143,7 @@ async def main() -> None:
         root = await ensure_personal_project(db, WHO)
         async with db.begin_nested():
             for title in ("One", "Two", "Three"):
-                await _capture_one(db, WHO, root, CaptureIn(title=title))
+                await capture(db, root, title)
         mine = await _titles(db, org, WHO)
         check("1 three captures land, in my inbox's own query",
               {"One", "Two", "Three"} <= mine, f"got {sorted(mine)}")
@@ -134,10 +156,8 @@ async def main() -> None:
         try:
             async with db.begin_nested():
                 for title in ("Four", "Five", "Six"):
-                    await _capture_one(db, WHO, root, CaptureIn(title=title))
-                await _capture_one(
-                    db, WHO, root, CaptureIn(title="Seven", due_at="not-a-date"),
-                )
+                    await capture(db, root, title)
+                await capture(db, root, "Seven", due_at="not-a-date")
             check("2 a failing 4th capture rolls the first 3 back", False,
                   "the 4th was ACCEPTED")
         except HTTPException as exc:
@@ -147,7 +167,7 @@ async def main() -> None:
                   f"status={exc.status_code} survivors={sorted(after & {'Four', 'Five', 'Six'})}")
 
         # ── 3. organize: NEXT with subtasks, self-assigned, in order ───────
-        task = await _capture_one(db, WHO, root, CaptureIn(title="Plan the offsite"))
+        task = await capture(db, root, "Plan the offsite")
         await _organize(db, vis, WHO, task, OrganizeIn(
             kind="next", next_action="Book the venue", context="@computer",
             subtasks=["Shortlist venues", "Call the top two"],
@@ -178,7 +198,7 @@ async def main() -> None:
         await db.execute(text(
             "CREATE TRIGGER s6a_boom BEFORE INSERT ON pm_tasks "
             "FOR EACH ROW EXECUTE FUNCTION pg_temp.s6a_boom()"))
-        victim = await _capture_one(db, WHO, root, CaptureIn(title="Half clarified"))
+        victim = await capture(db, root, "Half clarified")
         try:
             async with db.begin_nested():
                 await _organize(db, vis, WHO, victim, OrganizeIn(
@@ -243,8 +263,40 @@ async def main() -> None:
         check("5 delegate replaces the assignee and the WAITING arm keeps it mine",
               assignees == {OTHER} and still_mine, detail)
 
+        # ── 5b. the planner never packs a WAITING task the arm admitted (F4)
+        #     Give it a block in the past, as if a plan had been applied
+        #     before the hand-off: carry_forward must still refuse it, and
+        #     candidates never offered it.
+        yesterday = datetime.now(UTC) - timedelta(days=1)
+        await _upsert_personal(db, str(team_task), WHO, {
+            "scheduled_start": yesterday,
+            "scheduled_end": yesterday + timedelta(hours=1),
+        })
+        lens = _LensSource("pm")
+        carried = {r.id for r in await lens.carry_forward(db, WHO, datetime.now(UTC))}
+        offered = {r.id for r in await lens.candidates(db, WHO)}
+        check("5b a WAITING task never enters carry_forward or candidates",
+              str(team_task) not in carried and str(team_task) not in offered,
+              f"carried={str(team_task) in carried} offered={str(team_task) in offered}")
+
+        # ── 5c. the arm is BOUNDED: revoke the grant and the chase is gone ──
+        #     P0. The overlay may narrow a grant, never widen one: with no
+        #     grant on the team project, WAITING keeps nothing in my list.
+        await db.execute(text(
+            "DELETE FROM pm_project_grants WHERE project_id = :p AND subject = :s"),
+            {"p": team, "s": WHO})
+        gone_from_list = "Draft the quote" not in await _titles(db, org, WHO)
+        try:
+            await _read_my_task(db, WHO, str(team_task))
+            gone_singly = False
+        except HTTPException as exc:
+            gone_singly = exc.status_code == 404
+        check("5c revoking the grant takes the delegated task out of my lists",
+              gone_from_list and gone_singly,
+              f"in_list={not gone_from_list} single_404={gone_singly}")
+
         # ── 6. kind=project mints a private child the team tree cannot see ─
-        proj_task = await _capture_one(db, WHO, root, CaptureIn(title="Redo the kitchen"))
+        proj_task = await capture(db, root, "Redo the kitchen")
         await _organize(db, vis, WHO, proj_task, OrganizeIn(
             kind="project", next_action="Measure", outcome="Kitchen renovated",
         ))

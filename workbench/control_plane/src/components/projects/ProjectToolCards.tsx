@@ -48,6 +48,9 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   analytics_outlook: { icon: "Telescope", label: "Outlook" },
   report_list: { icon: "FileText", label: "Reports" },
   report_render: { icon: "FileText", label: "Report" },
+  recurrence: { icon: "Repeat", label: "Repeat rule" },
+  // The overlay line is the point of this read, and a list card drops it.
+  my_task: { icon: "UserRound", label: "My task" },
 };
 
 /**
@@ -88,6 +91,38 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   create_project: { icon: "FolderPlus", label: "Project created" },
   update_project: { icon: "PenLine", label: "Project updated" },
   report_save: { icon: "FileText", label: "Report saved" },
+  // S2b — the rest of class B
+  create_status: { icon: "Columns3", label: "Status added" },
+  update_status: { icon: "PenLine", label: "Status updated" },
+  create_type: { icon: "Shapes", label: "Type added" },
+  update_type: { icon: "PenLine", label: "Type updated" },
+  create_field: { icon: "TextCursorInput", label: "Field added" },
+  update_field: { icon: "PenLine", label: "Field updated" },
+  create_tag: { icon: "Tag", label: "Tag added" },
+  update_tag: { icon: "PenLine", label: "Tag updated" },
+  edit_comment: { icon: "MessageSquare", label: "Comment edited" },
+  set_recurrence: { icon: "Repeat", label: "Repeat rule set" },
+  create_personal_task: { icon: "Plus", label: "Private task captured" },
+  set_my_overlay: { icon: "SlidersHorizontal", label: "Your triage updated" },
+  // S3 — the guarded acts. Same receipt: the card BEFORE the act carried
+  // the counts, this one says what the route reported.
+  archive_project: { icon: "Archive", label: "Project archived" },
+  unarchive_project: { icon: "ArchiveRestore", label: "Project restored" },
+  move_project: { icon: "FolderInput", label: "Project moved" },
+  archive_task: { icon: "Archive", label: "Task archived" },
+  merge_tasks: { icon: "Merge", label: "Tasks merged" },
+  bulk_update: { icon: "ListChecks", label: "Tasks changed" },
+  delete_comment: { icon: "MessageSquareX", label: "Comment deleted" },
+  revert_activity: { icon: "Undo2", label: "Change reverted" },
+  delete_status: { icon: "Trash2", label: "Status deleted" },
+  set_status_set: { icon: "Columns3", label: "Status set switched" },
+  delete_type: { icon: "Trash2", label: "Type deleted" },
+  delete_field: { icon: "Trash2", label: "Field deleted" },
+  delete_tag: { icon: "Trash2", label: "Tag deleted" },
+  merge_tags: { icon: "Merge", label: "Tags merged" },
+  delete_view: { icon: "Trash2", label: "View deleted" },
+  report_delete: { icon: "Trash2", label: "Report deleted" },
+  delete_attachment: { icon: "Paperclip", label: "File detached" },
 };
 
 /**
@@ -290,11 +325,13 @@ export type ActionOutcome = "done" | "cancelled" | "refused" | "failed";
 /**
  * Classify a write tool's result.
  *
- * A write that HAPPENED carries a `full_id:` line — every success return in
- * `writes.py` does, so the card can jump to the row. A result without one
- * is a refusal or a no-op the tool reported in prose ("A task needs a
- * title.", "Nothing to change."). The first version painted those green
- * under "Task moved"; the S2 verifier caught it. Now: no id, no success.
+ * A write that HAPPENED carries an id line — `full_id:` for a task the
+ * card can jump to, or `status_id:` / `type_id:` / `field_id:` / `tag_id:`
+ * for a vocabulary row (S2b) that has no page of its own. Every success
+ * return in `writes.py` prints one. A result without one is a refusal or a
+ * no-op the tool reported in prose ("A task needs a title.", "Nothing to
+ * change."). The first version painted those green under "Task moved"; the
+ * S2 verifier caught it. Now: no id, no success.
  */
 export function classifyActionResult(
   result: string,
@@ -303,12 +340,18 @@ export function classifyActionResult(
   if (status === "error") return "failed";
   const text = (result || "").trim();
   if (text.startsWith(CANCELLED)) return "cancelled";
-  return rowIdOf(text) ? "done" : "refused";
+  return receiptIdOf(text) ? "done" : "refused";
 }
 
-/** The row a write touched, from its `full_id:` line, or "". */
+/** The task a write touched, from its `full_id:` line, or "". Only a task
+ *  has a deep link, so only this id makes the "Open in Projects" button. */
 export function rowIdOf(result: string): string {
   return result.match(/full_id:\s*([0-9a-f-]{36})/i)?.[1] ?? "";
+}
+
+/** Any `<kind>_id: <uuid>` receipt line — a task, or a vocabulary row. */
+export function receiptIdOf(result: string): string {
+  return result.match(/^\s*[a-z_]+_id:\s*([0-9a-f-]{36})\s*$/im)?.[1] ?? "";
 }
 
 /**

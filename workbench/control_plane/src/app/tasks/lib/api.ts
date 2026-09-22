@@ -180,6 +180,23 @@ function mapItem(raw: Raw): GtdItem {
 }
 
 function mapProject(raw: Raw): GtdProject {
+  if (lensEnabled()) {
+    // A `pm_projects` NODE, not a `gtd_projects` row: the title is `name`,
+    // the status is lowercase (`146_projects.sql`), and there is no tree
+    // placement or connector. Read as the old shape, every label was blank
+    // and `status === "ACTIVE"` filtered the whole list away (S6a repair).
+    const status = String(raw.status ?? "active").toUpperCase();
+    return {
+      id: String(raw.id ?? ""),
+      source: "LOCAL",
+      outcome: String(raw.name ?? raw.outcome ?? ""),
+      purpose: raw.description ? String(raw.description) : undefined,
+      // `active` is the only node status a picker offers; anything else
+      // (archived, closed) reads as DONE so the ACTIVE filter drops it.
+      status: status === "ACTIVE" ? "ACTIVE" : "DONE",
+      hasNextAction: false,
+    };
+  }
   return {
     id: String(raw.id ?? ""),
     source: (raw.source === "SYNCED" ? "SYNCED" : "LOCAL") as Source,
@@ -292,7 +309,7 @@ export async function apiMoveTask(
 ): Promise<Raw> {
   if (!lensEnabled()) {
     throw new Error(
-      "Moving a task into a project needs the Tasks lens (NEXT_PUBLIC_TASKS_LENS). " +
+      "Moving a task into a project needs the My Tasks lens (NEXT_PUBLIC_TASKS_LENS). " +
         "The legacy store has no company board to move onto — see docs/TASKS_LENS.md.",
     );
   }

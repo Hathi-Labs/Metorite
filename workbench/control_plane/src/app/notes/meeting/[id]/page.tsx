@@ -317,7 +317,7 @@ export default function MeetingPage({
       } else if (res.kind === "document") {
         flashToast("Document drafted — view in Artifacts");
       } else {
-        flashToast("Task created — view in Tasks");
+        flashToast("Task created — view in My Tasks");
       }
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
@@ -1192,7 +1192,7 @@ export default function MeetingPage({
                                   }
                                   className="flex items-center gap-1 text-xs text-success hover:underline"
                                 >
-                                  <Icon name="Check" className="w-3.5 h-3.5" /> In Tasks
+                                  <Icon name="Check" className="w-3.5 h-3.5" /> In My Tasks
                                   <Icon name="ExternalLink" className="w-3 h-3" />
                                 </Link>
                               ))}

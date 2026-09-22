@@ -188,7 +188,7 @@ function TaskRowView({ row }: { row: TaskRow }) {
       <button
         onClick={() => openTask(row.id)}
         className="flex-1 min-w-0 text-left px-1.5 py-1 rounded-md hover:bg-secondary/60"
-        title="Open in Tasks"
+        title="Open in My Tasks"
       >
         <span
           className={`block text-[11px] truncate ${
@@ -215,7 +215,7 @@ function TaskRowView({ row }: { row: TaskRow }) {
             <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={complete} title="Mark done" aria-label="Mark done" className="rounded">
               <AppIcon name="CheckCircle2" size={11} />
             </Button>
-            <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={() => openTask(row.id)} title="Open in Tasks" aria-label="Open in Tasks" className="rounded">
+            <Button variant="ghost" size="icon-xs" radius="keep" layout="" onClick={() => openTask(row.id)} title="Open in My Tasks" aria-label="Open in My Tasks" className="rounded">
               <AppIcon name="ExternalLink" size={11} />
             </Button>
           </>
@@ -234,7 +234,7 @@ function TaskListCard({ event: e }: { event: ToolEvent }) {
   const title =
     e.name === SCHEDULE_TOOL
       ? `Scheduled (${rows.length})`
-      : `Tasks${view ? ` · ${view}` : ""} (${rows.length})`;
+      : `My Tasks${view ? ` · ${view}` : ""} (${rows.length})`;
   // Nothing parseable (e.g. "No items in inbox.") → plain text info card.
   if (rows.length === 0) {
     return (
@@ -359,7 +359,7 @@ function InfoResultCard({ event: e }: { event: ToolEvent }) {
           onClick={() => openTask(itemId)}
           className="mt-1.5 inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
         >
-          <AppIcon name="ExternalLink" size={10} /> Open in Tasks
+          <AppIcon name="ExternalLink" size={10} /> Open in My Tasks
         </button>
       )}
     </ToolCardShell>
@@ -422,7 +422,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
               onClick={() => openTask(itemId)}
               className="mt-1 inline-flex items-center gap-1 text-[10px] text-primary hover:underline"
             >
-              <AppIcon name="ExternalLink" size={10} /> Open in Tasks
+              <AppIcon name="ExternalLink" size={10} /> Open in My Tasks
             </button>
           )}
         </div>

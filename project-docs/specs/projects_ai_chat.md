@@ -1,7 +1,8 @@
 # Projects · the AI chat — WS-27bm
 
 **Status: ACTIVE. S1 (the reads) and S2 (the daily writes) built
-2026-09-22. S2b, S3, S4 and S5 open.** §10 says which slice each part
+2026-09-22. S2b (the rest of class B) and S3 (the guarded acts) built
+2026-09-23. S4 and S5 open.** §10 says which slice each part
 belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
@@ -104,6 +105,8 @@ tool class in §5.2, so the ceremony a member sees follows from this table.
 | "What did we finish last week?" | `analytics_finished` | `GET /projects/analytics/finished` |
 | "What is due?" | `analytics_outlook` | `GET /projects/analytics/outlook` |
 | "Render the weekly report" | `report_render` | `GET /projects/reports/{id}/render` |
+| "Does this repeat?" | `recurrence` | `GET /projects/tasks/{id}/recurrence` |
+| "Show me my view of #142" | `my_task` | `GET /projects/my/tasks/{id}` |
 
 Every number a read returns is a **server aggregate**. The tool never sums a
 page of tasks in the agent. §9.12.7 gives the reason. The list is paginated,
@@ -127,6 +130,28 @@ and a count of one page looks right and is wrong.
 | "Rename the project" | `update_project` | `PATCH /projects/nodes/{id}` | Rename back |
 | "Bring the archived task back" | `unarchive_task` | `POST /projects/tasks/{id}/unarchive` | It is the undo |
 | "Save this as a weekly report" | `report_save` | `POST /projects/reports` | `DELETE /projects/reports/{id}` |
+| "Add a Blocked status" | `create_status` | `POST /projects/nodes/{id}/statuses` | An empty lane costs nothing. Delete is guarded |
+| "Rename the lane to In review" | `update_status` | `PATCH /projects/statuses/{id}` | Rename back |
+| "Add a Bug type" | `create_type` | `POST /projects/nodes/{id}/types` | Delete is guarded, and tasks keep existing |
+| "Make Bug the default type" | `update_type` | `PATCH /projects/types/{id}` | Set another default |
+| "Add a Customer field" | `create_field` | `POST /projects/nodes/{id}/fields` | Delete is guarded |
+| "Add the option Enterprise" | `update_field` | `PATCH /projects/fields/{id}` | Drop the option while nothing holds it |
+| "Register a tag called urgent" | `create_tag` | `POST /projects/nodes/{id}/tags` | Delete is guarded |
+| "Rename the tag to p0" | `update_tag` | `PATCH /projects/tags/{id}` | Rename back. Every task follows, and the card says how many |
+| "Fix the typo in my comment" | `edit_comment` | `PATCH /projects/comments/{id}` | Edit again. The author only |
+| "Repeat this every Monday" | `set_recurrence` | `PUT /projects/tasks/{id}/recurrence` | `DELETE` stops it. The task stays |
+| "Note to self: renew the domain" | `create_personal_task` | `POST /projects/my/tasks` | Archive. Nobody else sees it |
+| "File this as Someday for me" | `set_my_overlay` | `PATCH /projects/tasks/{id}/personal` | Per-member overlay, mine |
+
+**A vocabulary row is named, never numbered.** The member says "the Blocked
+lane". The tool reads the project's own list and resolves the name the way a
+status is resolved: every case-insensitive match, never the first. Two
+matches is a question for the member. The card names where the row lands.
+A type, a field or a tag lands on the tree's root, so the card names the root
+and every project under it. A status lands on the node that owns the set,
+because a subproject may inherit its lanes from a parent. An org-wide row is
+named as such, and an org-wide tag rename carries no count, because the list's
+count is scoped to one tree and the rename is not.
 
 **A batch is one card.** A plan that creates one project and twelve tasks
 shows one card that lists all thirteen rows. Twelve cards would train the
@@ -148,11 +173,17 @@ every call before the card is a `GET`.
 | "Merge #12 into #9" | `merge_tasks` | `POST /projects/tasks/{id}/merge` | Both titles, what moves |
 | "Set all of these to Done" | `bulk_update` | `POST /projects/tasks/bulk` | The exact ids and the change |
 | "Move the folder into Ops" | `move_project` | `POST /projects/nodes/{id}/move` | The subtree, the new parent |
-| "Delete the Blocked status" | `delete_status` | `DELETE /projects/statuses/{id}?move_to=` | Count in use, the target |
+| "Delete the Blocked status" | `delete_status` | `DELETE /projects/statuses/{id}?move_to=` | Count in use (the statuses read's per-lane `counts`, the route's own number), the target |
+| "Use the parent's statuses" | `set_status_set` | `POST …/status-set/preview`, then `…/status-set` | The preview's counts: moving, completing, reopening |
 | "Delete the tag" | `delete_tag` | `DELETE /projects/tags/{id}` | `GET /tags/{id}/impact` first |
-| "Delete the field" | `delete_field` | `DELETE /projects/fields/{id}` | Count of values it drops |
-| "Undo that change" | `revert_activity` | `POST /projects/activities/{id}/revert` | The before and after values |
-| "Delete my comment" | `delete_comment` | `DELETE /projects/comments/{id}` | The comment text |
+| "Merge the tag into p0" | `merge_tags` | `POST /projects/tags/{id}/merge` | The source's task count, both names |
+| "Delete the type" | `delete_type` | `DELETE /projects/types/{id}` | The tree it clears from. No read counts the tasks, so the receipt carries the route's number |
+| "Delete the field" | `delete_field` | `DELETE /projects/fields/{id}` | The key and the tree. No read counts the values, so the receipt carries the route's number |
+| "Undo that change" | `revert_activity` | `POST /projects/activities/{id}/revert` | Each field as now → restored |
+| "Delete my comment" | `delete_comment` | `DELETE /projects/comments/{id}` | The comment text. The author only |
+| "Delete the view" | `delete_view` | `DELETE /projects/views/{id}` | The name and type. The receipt carries the cascade counts |
+| "Delete the report" | `report_delete` | `DELETE /projects/reports/{id}` | The name and scope |
+| "Detach the file" | `delete_attachment` | `DELETE /projects/tasks/{id}/attachments/{id}` | The file name. The bytes stay |
 
 Three rules bind every row of this table.
 
@@ -164,6 +195,19 @@ Three rules bind every row of this table.
 3. **The counts come from the route, before the write.** Archive and delete
    routes already read their counts first (`tree.py:934-936`, R7/R8). The card
    shows those numbers, so the member signs what the server will do.
+
+**How S3 built it** (`skill_projects/guarded.py`). The card's first line after
+the fixed note is `impact: …`. Where a read exists, the line carries its
+numbers: the summary and the tree for an archive (what the member can see,
+and the card says so), the statuses read's per-lane counts for a status, the
+impact read for a tag and a tag merge, the preview for a status set. Where no read
+exists (a type's tasks, a field's values, a view's positions), the line names
+the scope and says the receipt carries the count the route reports. A tool
+that takes one row refuses a comma-separated list before any read
+(`_many`). `bulk_update` and `merge_tasks` take a selection because the route
+does it in one transaction. Both cap it at 50 and name every task. A bulk
+`delete` action is refused (D-PM-35). `test_projects_agent_writes.py` holds
+the three rules: the list refusal, the impact line, and one card per call.
 
 **Not on the chat surface, and the reason.** `DELETE /projects/nodes/{id}` and
 `DELETE /projects/tasks/{id}` are hard deletes. `pm_projects` cascades over the
@@ -532,8 +576,8 @@ Each slice is one pull request. Each one is useful alone.
 |---|---|---|
 | **S1 · Read** — ✅ **BUILT 2026-09-22** | `skill-projects` class A tools · `manifest.py` with every route classified · the coverage fence · `agent-projects` registered · the rail behind the flag · the persona · `TaskListCard` and a titled card for every other read | AGENT-SAFE |
 | **S2 · Write** — ✅ **BUILT 2026-09-22** | The fifteen daily class B tools with the card (create, update, assign, comment, subtasks, link, unlink, move, watch, complete, defer, restore a task, create and update a project, save a report) · `ActionResultCard` · `X-Actor-Via` and `meta.via` (D-PM-36) | AGENT-SAFE |
-| **S2b · The rest of class B** | The vocabulary writes (status, type, field, tag create and update) · edit a comment · recurrence · the personal task and overlay | AGENT-SAFE |
-| **S3 · Guarded** | Class C tools with count-bearing cards · the one-act-one-card rule and its test | AGENT-SAFE |
+| **S2b · The rest of class B** — ✅ **BUILT 2026-09-23** | The vocabulary writes (status, type, field, tag create and update) · edit a comment · recurrence · the personal task and overlay · the two reads they need (`recurrence`, `my_task`) · the agent instructions now describe the writes (S2 left them saying "reads only") | AGENT-SAFE |
+| **S3 · Guarded** — ✅ **BUILT 2026-09-23** | The seventeen class C tools in `guarded.py` with impact-first cards · the one-act-one-card rule and its test · the agent instructions name the guarded acts | AGENT-SAFE |
 | **S4 · Workflows** | W1 plan, W2 status report, W3 weekly, W4 stuck, W5 triage · `PlanCard` and `ReportCard` · the `formCard` plan panel | AGENT-SAFE |
 | **S5 · Polish** | Frontend navigation tools · quick actions · the chat model setting · the visual review in light mode, compact density and a changed accent | AGENT-SAFE |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-09-30 |
@@ -563,7 +607,8 @@ Each slice is one pull request. Each one is useful alone.
 **Done when:**
 1. Every class B and C tool awaits `request_confirmation` before any mutating
    request is built. A denied card makes zero mutating calls, and every call
-   before the card is a `GET`.
+   before the card is a `GET` or a preview the manifest records as writing
+   nothing (`READ_ONLY_POSTS`, D-PM-29).
 2. No class B or C tool passes `non_interactive_default="approve"`. The test
    asserts the absence in the source.
 3. A class C tool given a list refuses before the card.

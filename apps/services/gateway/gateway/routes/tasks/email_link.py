@@ -14,8 +14,9 @@ DONE and stops — one hop each way, no oscillation.
 
 These run best-effort (a failure to propagate never fails the originating
 action) and are called from the task patch/sync paths and the email resolve
-path. Kept in the tasks package because the linkage lives on ``gtd_items``; the
-email side imports lazily to avoid a package cycle.
+path. Kept in the tasks package because the linkage lives on the task's
+``origin``, whichever store holds it (``item_source``, WS-39 S6d); the email
+side imports lazily to avoid a package cycle.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ from sqlalchemy import text
 
 
 def _thread_from_origin(origin: Any) -> tuple[str, str] | None:
-    """(account_id, thread_id) from a gtd_items.origin, or None if it isn't an
+    """(account_id, thread_id) from a task's origin, or None if it isn't an
     email-linked item with a usable thread. ``origin`` may be a dict (asyncpg
     JSONB) or a JSON string depending on the driver path."""
     if not origin:
@@ -114,18 +115,6 @@ async def propagate_thread_done_to_tasks(
     already handled and this finds nothing new. Best-effort; caller commits."""
     if not thread_id:
         return []
-    rows = (await db.execute(text(
-        "UPDATE gtd_items SET disposition = 'DONE', completed_at = now(), "
-        "updated_at = now() "
-        "WHERE user_id = :uid AND origin->>'thread_id' = :tid "
-        "AND disposition NOT IN ('DONE', 'TRASH') "
-        "RETURNING id"
-    ), {"uid": uid, "tid": str(thread_id)})).fetchall()
-    ids = [str(r.id) for r in rows]
-    if ids:
-        # A closed task can't be waited on — resolve its open waiting records.
-        await db.execute(text(
-            "UPDATE gtd_waiting SET resolved = true "
-            "WHERE item_id = ANY(:ids) AND resolved = false"
-        ), {"ids": ids})
-    return ids
+    from gateway.routes.tasks.item_source import item_source
+
+    return await item_source().mark_done_by_thread(db, uid, str(thread_id))

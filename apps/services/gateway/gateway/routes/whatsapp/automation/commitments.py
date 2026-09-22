@@ -147,7 +147,8 @@ async def list_commitments(
             params["dir"] = direction
         rows = (await db.execute(
             text(f"""SELECT k.id, k.chat_id, k.direction, k.text, k.due_hint,
-                            k.status, k.gtd_item_id
+                            k.status,
+                            coalesce(k.task_id, k.gtd_item_id) AS gtd_item_id
                      FROM wa_commitments k
                      JOIN wa_accounts a ON a.id = k.account_id
                      WHERE {' AND '.join(where)}

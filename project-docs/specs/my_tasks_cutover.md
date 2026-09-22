@@ -9,6 +9,9 @@ this spec and `work_plan.md` §2 disagree, the board wins.
 
 ---
 
+**Built so far.** S6a built 2026-09-23 on branch `my-tasks-s6a`. S6d built
+2026-09-23 in PR #390.
+
 ## 0. One paragraph
 
 The Tasks app becomes **My Tasks**. It reads and writes the one task store
@@ -192,10 +195,11 @@ goes. The default list stays in code.
 
 ### 4.6 `workflow_stage` writes resolve a status NAME against the task's project
 
-`splitPatch` throws on `workflow_stage` today, on purpose. The lens resolves
+`splitPatch` used to throw on `workflow_stage`, on purpose. The lens resolves
 the name through `GET /projects/nodes/{project_id}/statuses` and writes
 `status_id` through `PATCH /projects/tasks/{id}`. A name that matches nothing
-is a 422 with the list of valid names. This closes H-62 (1).
+is refused in the browser, before any request, with the list of valid names.
+This closes H-62 (1).
 
 ### 4.7 Identifier hygiene follows the schema, in its own slice
 
@@ -204,11 +208,63 @@ is a 422 with the list of valid names. This closes H-62 (1).
 code. They change in S9, after the schema, so one `tsc` run and one pytest run
 verify the sweep. The tool family moves all at once (H-151).
 
+### 4.8 Continuity with Projects — one product, two lenses (D73.8)
+
+Owner directive, 2026-09-23, in two messages:
+
+> "the tasks app works harmoniously with the projects app, and there's a
+> continuity of integration between the tasks app and the projects app"
+
+> "When a project is set up for a particular person and I am that person"
+
+> "it should show up in my tasks in an appropriate way"
+
+> "that helps me manage my day, calendar, and tasks list"
+
+Projects is project management across the organization. My Tasks is personal
+planning: my day, my calendar, my tasks, and my private projects. Both read
+the one store, so continuity is a property to verify, not a sync to build.
+
+**What already carries over (measured 2026-09-23).**
+
+- A task assigned to me in Projects is in `/projects/my/inbox`, through the
+  assignee arm of `MY_TASKS_FROM`. Its disposition is derived until I state
+  one. NEXT when assigned to me. SOMEDAY in a backlog lane. DONE when closed.
+- The day planner's candidate pool and the overdue strip compose the same
+  fragment, so an assigned task enters my day and my calendar.
+- The card vocabulary is shared: `TaskCardShell`, `TaskMeta`, `StatusChip`
+  and `statusAccent` draw a task the same way in both apps.
+
+**What does not carry over, and S6e builds.**
+
+1. **A project where I am the lead** is invisible in My Tasks today. Only a
+   task assigned to me in it shows. The lead is `pm_projects.lead`. The project
+   must appear in the Projects view of My Tasks with its open tasks. The ones
+   assigned to me come first.
+2. **A task assigned to me that I have not looked at** has no overlay row. It
+   lands straight in Next Actions. My Tasks must show it in a "From Projects"
+   group at the top of the inbox until I triage it. Triage writes the overlay.
+   The derivation rule of D53 does not change.
+3. **The task detail is two panels.** My Tasks draws `ItemDetail.tsx`, a
+   ClickUp-era composition. Projects draws `TaskPanel.tsx`. A member who opens
+   a task in each app must meet the same fields in the same order. The fields
+   are lane, priority, assignees, due date, custom fields, tags, comments,
+   attachments and timeline. My Tasks adds its overlay strip above them. That
+   strip holds disposition, context, energy, estimate and defer. One
+   composition, imported, not copied.
+4. **The way back.** A task card in My Tasks names its project and links to
+   that board. The task panel in Projects shows the viewer's own disposition
+   chip when they hold an overlay row. It shows nothing about anybody else's.
+5. **The move dialog is the Projects one.** S6c reuses `move.py`'s preview and
+   the Projects move dialog rather than drawing a second one.
+
 ## 5. The slices
 
 Each slice is one PR, merged and watched to a serving SHA (CLAUDE.md §4).
-Each names its fence (R7). The order is load-bearing. S5 and S6d do not depend
-on each other. They may run in parallel worktrees.
+Each names its fence (R7). The order is load-bearing.
+
+S5 and S6d do not depend on each other. They may run in parallel worktrees.
+S6e follows S6a. It reads the lens seam S6a completes.
 
 ### S5 — the surface rename · AGENT-SAFE
 
@@ -234,7 +290,7 @@ on each other. They may run in parallel worktrees.
    JSX text and string literals in `app/tasks/components/`.
 4. The Projects app still says "task" for its rows. Nothing there changes.
 
-### S6a — the CRUD tail through the lens · AGENT-SAFE
+### S6a — the CRUD tail through the lens · AGENT-SAFE · BUILT 2026-09-23
 
 **Scope.** Group C of §3.1, each under `lensEnabled()`, the way the spine is.
 
@@ -246,7 +302,7 @@ on each other. They may run in parallel worktrees.
 | `apiBulkArchive` | `POST /projects/tasks/bulk` `archive` / `unarchive` |
 | `apiOrganize` | new `POST /projects/my/tasks/{id}/organize`, one transaction: overlay, due date, assignees, subtasks, optional move |
 | `apiListSubtasks` / `apiAddSubtasks` | `GET /projects/tasks?parent_task_id=`, `POST /projects/tasks` with `parent_task_id` |
-| `apiMergeInto` | `POST /projects/tasks/{id}/merge` |
+| `apiMergeInto` | `POST /projects/tasks/{target}/merge` with `sources: [id]`. The path names the survivor. |
 | `apiFileUnder` | `POST /projects/tasks/{id}/move` with `parent_task_id` |
 | `apiUploadAttachment` | `POST /projects/tasks/{id}/attachments` |
 | `fetchStatusCatalog` | `GET /projects/nodes/{root}/statuses` |
@@ -255,10 +311,29 @@ on each other. They may run in parallel worktrees.
 **Done when.**
 1. `lens.test.ts` "the cutover seam is complete" fences every group C name.
 2. The three new gateway routes carry R8 live checks in
-   `tests/live/live_ws39_s6a.sql`, run against tenant-scratch.
+   `tests/live/live_ws39_s6a.py`, run against tenant-scratch.
 3. `test_client_route_contract.py` passes with the new paths.
 4. `apiOrganize` under the lens completes a clarify decision in one request.
    A failed subtask insert rolls back the overlay write.
+
+**Decisions taken at build, 2026-09-23.**
+
+1. `MY_TASKS_FROM` gains a third arm. A task I delegated away stays in my
+   list while my overlay says WAITING. The arm is bounded by my grant
+   closure on the task's root. The rule: the overlay may narrow a grant,
+   never widen one. Consequence: a member who reached a task by assignment
+   alone and delegates it loses it from their lists. They hold no grant to
+   keep it by. Fence: `test_projects_personal_s6a.py` and check 5c of the
+   live script.
+2. The planner never packs a WAITING task. `candidates` and `carry_forward`
+   refuse it, and a delegate decision clears the delegator's block.
+3. A personal child inherits the root's lanes. One lane vocabulary per
+   member, so a move into an Area never remaps a status. `ensure_personal_child`
+   finds an existing live child by name before it mints one.
+4. A delegate decision on a task in the personal tree needs a company
+   project. The panel requires one and sends `project_id`, so `organize`
+   moves and assigns in one transaction. A delegated task cannot become a
+   private project.
 
 ### S6b — Areas, and the local tree retires · AGENT-SAFE
 
@@ -294,7 +369,7 @@ union. The data and the routes stay (D65).
 3. `rg -c -i horizon src/app/tasks/lib/` returns zero.
 4. This closes H-59 (1) and (3).
 
-### S6d — the AI and intake tail on the gateway · AGENT-SAFE
+### S6d — the AI and intake tail on the gateway · AGENT-SAFE · BUILT 2026-09-23
 
 **Scope.** One data-access seam for the six `ai.py` routes, the five
 `capture_email.py` routes, `email_link.py`, `tasks/planning.py`,
@@ -310,10 +385,44 @@ change signature. Migration **211** adds `pm_tasks.origin` (§4.4) and
    Fence: `tests/unit/test_tasks_ai_source.py`, an AST walk that refuses a
    bare `gtd_` string in any of those modules outside the `_GtdArm` class.
 2. Email capture is idempotent on `origin->>'email_id'` under both arms.
-   R8: `tests/live/live_ws39_s6d.sql`.
+   R8: `tests/live/live_ws39_s6d.py`.
 3. `evals/trajectories/test_gtd_quality_trajectory.py` still passes.
 4. The skill's tools need no change. They call `/tasks/*` paths, and the
    paths do not move.
+
+**Accepted changes with the flag off**, measured by the verifier on
+2026-09-23. Two behaviours moved on both arms.
+
+1. `POST /tasks/plan/apply` with `target="clickup"` answers 410. No caller
+   sends it, and D52 removed the connector.
+2. `_annotate_workload` matches a person by email before it matches by name.
+   The one store assigns by email.
+
+### S6e — continuity with Projects · AGENT-SAFE
+
+**Scope.** §4.8's five points.
+
+Server: `GET /projects/my/inbox` gains `untriaged=true`, the rows with no
+overlay row for me. `GET /projects/my/led` lists the projects where
+`lower(lead) = :who`, with their open task counts and my assigned tasks.
+
+Client: the "From Projects" inbox group. The led projects in the Projects view
+of My Tasks. `ItemDetail.tsx` rebuilt from the `TaskPanel` composition. The
+project link on the card. The viewer's disposition chip in the Projects task
+panel.
+
+**Done when.**
+1. Assign a task to Bob in Projects. Bob's inbox shows it under "From
+   Projects" in the same page load. Bob sets a context. It leaves the group.
+   Fence: `tests/unit/test_projects_personal_s6e.py` and a live check in
+   `tests/live/live_ws39_s6e.py` with two members in one org.
+2. Make Bob the lead of a project with no task assigned to him. Bob's My Tasks
+   Projects view lists it. Alice's does not.
+3. One task panel composition. `ItemDetail.tsx` imports from
+   `app/projects/components/` and holds no field list of its own. Fence: a
+   source test that refuses a second field list.
+4. The visual pass of CLAUDE.md §4. Light mode, compact density and a changed
+   accent. My Tasks beside Projects at four widths. Screenshots in the PR.
 
 ### S7 — the cutover · dev-phase window, reported by evidence
 
@@ -414,6 +523,8 @@ the owner.
 | every client path is a served path | `test_client_route_contract.py` |
 | the AI modules name no store outside the seam | `test_tasks_ai_source.py` |
 | a personal child never reaches the company board | `test_personal_tree.py`, `live_ws39_personal_tree.sql` |
+| a task assigned to me in Projects reaches my inbox untriaged | `test_projects_personal_s6e.py`, `live_ws39_s6e.py` |
+| My Tasks and Projects share one task panel composition | the S6e source fence |
 | the rename prologues are guarded and not swept | `test_gtd_rename_upgrade.py` |
 | the drop is inert until armed and accounted for | `test_gtd_backfill.py` |
 | the ladder replays clean | `pr-check.yml` migrations job |

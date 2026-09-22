@@ -310,7 +310,7 @@ export function splitPatch(patch: Record<string, unknown>): SplitPatch {
     if (value === undefined) continue;
     if (key in NOT_YET) {
       throw new Error(
-        `Tasks lens: cannot write \`${key}\` — ${NOT_YET[key]}. Refusing ` +
+        `My Tasks lens: cannot write \`${key}\` — ${NOT_YET[key]}. Refusing ` +
           "rather than dropping it: a silently discarded field looks exactly " +
           "like a successful save.",
       );
@@ -332,7 +332,7 @@ export function splitPatch(patch: Record<string, unknown>): SplitPatch {
       if (value) out.assignees = [];
     } else {
       throw new Error(
-        `Tasks lens: unknown patch key \`${key}\`. Every GtdItem field has a ` +
+        `My Tasks lens: unknown patch key \`${key}\`. Every GtdItem field has a ` +
           "`pm_*` home (task_manager_app.md §13.4a) — if this one is new, " +
           "give it one there before writing it.",
       );
@@ -400,7 +400,7 @@ async function fetchAll(path: string, flags: string): Promise<Raw[]> {
     if (res.rows.length < PAGE_SIZE || rows.length >= res.total) return rows;
   }
   throw new Error(
-    `Tasks lens: ${path} did not terminate after ${PAGE_LIMIT} pages — the ` +
+    `My Tasks lens: ${path} did not terminate after ${PAGE_LIMIT} pages — the ` +
       "server's `total` disagrees with the rows it returns.",
   );
 }
@@ -895,6 +895,25 @@ const readBack = (ids: string[]): Promise<GtdItem[]> =>
   Promise.all(ids.map(lensGetItem));
 
 /**
+ * Some of a selection went through and some did not. Carries the rows that
+ * DID, so a caller can show them rather than pretend nothing happened.
+ */
+export class LensPartialFailure extends Error {
+  constructor(
+    readonly items: GtdItem[],
+    readonly failed: number,
+    readonly total: number,
+    cause?: unknown,
+  ) {
+    super(
+      `${failed} of ${total} could not be completed` +
+        (cause instanceof Error && cause.message ? `: ${cause.message}` : ""),
+    );
+    this.name = "LensPartialFailure";
+  }
+}
+
+/**
  * One disposition onto a selection — MY overlay on each task.
  *
  * ⚠️ DONE is not an overlay write (§13.5a decision 1), and the bulk route
@@ -907,7 +926,22 @@ export async function lensBulkDispose(
 ): Promise<GtdItem[]> {
   if (!ids.length) return [];
   if (disposition === "DONE") {
-    await Promise.all(ids.map((id) => post(`tasks/${id}/complete`)));
+    // Settled, not raced: `Promise.all` would report the first refusal and
+    // hide that the other forty completed. The ones that did are read back
+    // and handed to the caller ON the error, so the list can show them.
+    const settled = await Promise.allSettled(
+      ids.map((id) => post(`tasks/${id}/complete`)),
+    );
+    const done = ids.filter((_, i) => settled[i].status === "fulfilled");
+    const failed = ids.length - done.length;
+    const items = await readBack(done);
+    if (failed) {
+      const first = settled.find((s) => s.status === "rejected") as
+        | PromiseRejectedResult
+        | undefined;
+      throw new LensPartialFailure(items, failed, ids.length, first?.reason);
+    }
+    return items;
   } else {
     await post("tasks/bulk", {
       task_ids: ids,

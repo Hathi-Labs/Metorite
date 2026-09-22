@@ -22,6 +22,7 @@ from fastapi import HTTPException
 from gateway.routes.projects import bulk as pm_bulk
 from gateway.routes.projects import core as pm_core
 from gateway.routes.projects import personal as pm_personal
+from gateway.routes.projects import planning as pm_planning
 from gateway.routes.projects import tasks as pm_tasks
 from gateway.routes.projects import tree as pm_tree
 
@@ -29,6 +30,7 @@ from tests.unit._projects_fakes import (
     FakeProjectsDB,
     bind_db,
     member_user,
+    page,
     projects_user,
     silence_events,
 )
@@ -527,3 +529,123 @@ async def test_bulk_personal_judges_the_block_per_task(db: FakeProjectsDB) -> No
         )
     assert caught.value.status_code == 422
     assert "scheduled_end must be after" in str(caught.value.detail)
+
+
+# ── The WAITING arm is bounded (P0), and the planner never packs it (F4) ────
+
+async def test_a_delegated_task_leaves_my_lists_when_my_grant_is_revoked(
+    db: FakeProjectsDB,
+) -> None:
+    """The overlay may NARROW a grant, never WIDEN one.
+
+    Alice delegates a team task and keeps it by the WAITING arm. An admin
+    then removes her grant. Her overlay row still says WAITING — and it must
+    keep nothing: an overlay is a thing she wrote for herself, and a read
+    grant no revocation reaches is not a grant.
+    """
+    project, todo = _team_project(db)
+    task = db.seed_task(project.id, todo.id, title="Draft the quote")
+    _assign(db, task.id, "alice@fracktal.in")
+    await pm_personal.organize_my_task(
+        str(task.id),
+        pm_personal.OrganizeIn(
+            kind="delegate", next_action="Draft it",
+            assignee=pm_personal.OrganizeAssignee(name="Bob", email="bob@fracktal.in"),
+        ),
+        user=ALICE,
+    )
+    assert (await pm_personal.my_task(str(task.id), user=ALICE))["disposition"] == "WAITING"
+
+    db.tables["pm_project_grants"] = []  # the revocation
+
+    inbox = await pm_personal.my_inbox(user=ALICE, page=page())
+    assert inbox.rows == []
+    with pytest.raises(HTTPException) as caught:
+        await pm_personal.my_task(str(task.id), user=ALICE)
+    assert caught.value.status_code == 404
+    # The overlay row is untouched: the BOUND did the work, not a delete.
+    assert _overlay(db, str(task.id), "alice@fracktal.in")["disposition"] == "WAITING"
+
+
+async def test_delegating_clears_my_block_for_the_work_i_handed_away(
+    db: FakeProjectsDB,
+) -> None:
+    project, todo = _team_project(db)
+    task = db.seed_task(project.id, todo.id)
+    _assign(db, task.id, "alice@fracktal.in")
+    await pm_personal.set_personal(
+        str(task.id),
+        pm_personal.PersonalIn(
+            scheduled_start="2026-09-24T09:00:00+00:00",
+            scheduled_end="2026-09-24T10:00:00+00:00",
+        ),
+        user=ALICE,
+    )
+    await pm_personal.organize_my_task(
+        str(task.id),
+        pm_personal.OrganizeIn(
+            kind="delegate", next_action="Do it",
+            assignee=pm_personal.OrganizeAssignee(name="Bob", email="bob@fracktal.in"),
+        ),
+        user=ALICE,
+    )
+    overlay = _overlay(db, str(task.id), "alice@fracktal.in")
+    assert overlay["scheduled_start"] is None and overlay["scheduled_end"] is None
+
+
+async def test_the_planner_never_packs_a_waiting_task(monkeypatch) -> None:
+    """F4. The membership fragment admits a WAITING task so I can CHASE it;
+    `candidates` and `carry_forward` must refuse it, because it is somebody
+    else's work now. Pinned on the rows the SQL hands back, whatever the
+    SQL let through."""
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    yesterday = datetime.now(UTC) - timedelta(days=1)
+
+    def row(id_, disposition):
+        return SimpleNamespace(
+            id=id_, title=id_, notes=None, due_at=None, project_id="p",
+            parent_task_id=None, status_category="todo",
+            stated_disposition=disposition, next_action=None, context=None,
+            energy=None, time_estimate_mins=None, scheduled_start=yesterday,
+            scheduled_end=yesterday, flexible=None, is_hard_date=None,
+            actual_start=None, actual_end=None, important=None,
+            leveraged=None, deep_work=None, kept_mine=None, sort_key=None,
+            assignee_count=1, is_mine=True,
+        )
+
+    class _Rows:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class _DB:
+        async def execute(self, statement, params=None):
+            return _Rows([row("next", "NEXT"), row("waiting", "WAITING")])
+
+    async def binds(db, who, *, archived, **extra):
+        return {"who": who, "vis_org": "o", "vis_email": who,
+                "vis_groups": [], "archived": archived, **extra}
+    monkeypatch.setattr(pm_planning, "my_tasks_binds", binds)
+
+    lens = pm_planning._LensSource("pm")
+    assert [r.id for r in await lens.candidates(_DB(), "alice@fracktal.in")] == ["next"]
+    assert [r.id for r in await lens.carry_forward(
+        _DB(), "alice@fracktal.in", datetime.now(UTC))] == ["next"]
+    # And the SQL half prunes with the stated column before Python rules.
+    assert "p.disposition = 'NEXT'" in pm_planning._PM_CANDIDATE_WHERE
+
+
+async def test_a_second_project_outcome_of_the_same_name_shares_the_area(
+    db: FakeProjectsDB,
+) -> None:
+    """Find-or-create on `lower(name)`: two clarifies into "Website redesign"
+    share one Area rather than minting two."""
+    first = await pm_personal.ensure_personal_child(db, "alice@fracktal.in", "Website redesign")
+    again = await pm_personal.ensure_personal_child(db, "alice@fracktal.in", "website REDESIGN")
+    assert str(again.id) == str(first.id)
+    children = [p for p in db.rows("pm_projects") if p.get("parent_project_id")]
+    assert len(children) == 1

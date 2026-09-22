@@ -151,6 +151,9 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "analytics_outlook": [{"project_id": UUID}],
     "report_list": [{}],
     "report_render": [{"report_id": UUID}],
+    # S2b — the two reads the overlay and the repeat rule needed
+    "recurrence": [{"task_id": UUID}],
+    "my_task": [{"task_id": UUID}],
 }
 
 
@@ -185,6 +188,20 @@ def _detail_responder(call: dict) -> Any:
         }
     if path.startswith("/projects/reports/") and not path.endswith("/render"):
         return {"id": UUID, "name": "Weekly"}
+    if path.endswith("/recurrence"):
+        return {"rule": {"freq": "weekly", "interval": 2, "weekdays": [1, 3], "anchor": "due"}}
+    if path.startswith("/projects/my/tasks/"):
+        return {
+            "id": UUID,
+            "title": "Fix the extruder",
+            "task_number": 7,
+            "project_id": UUID,
+            "assignees": ["pm@fracktal.in"],
+            "disposition": "NEXT",
+            "context": "@office",
+            "energy": None,
+            "is_triaged": True,
+        }
     if path.startswith("/projects/nodes/") and path.endswith("/summary"):
         return {
             "id": UUID,

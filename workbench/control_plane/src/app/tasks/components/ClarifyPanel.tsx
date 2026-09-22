@@ -12,6 +12,7 @@ import {
   type ClarifyProposal,
 } from "../lib/clarify";
 import { apiClarifyPropose, apiSuggestTitle } from "../lib/api";
+import { lensEnabled } from "../lib/lens";
 import type { ConnectedProvider } from "../lib/mockData";
 import { Energy, GtdItem, GtdProject, Person, Target } from "../lib/types";
 import { durationLabel, formatStatus, initials, originEmailHref, snoozeOptions } from "../lib/utils";
@@ -426,6 +427,9 @@ export function ClarifyPanel({
         dueAt: dueIso ?? snoozeOptions()[0].iso,
         context,
         dest,
+        // Carried like `next` carries it: under the lens a delegated
+        // calendar decision moves INTO this project in the same request.
+        projectId,
         status,
         assignee: delegateTo,
       };
@@ -492,8 +496,26 @@ export function ClarifyPanel({
   // one being created) whenever we're handing a synced task off to someone.
   const delegatingToSynced =
     sort === "actionable" && owner === "delegate" && !!assignee && isSynced;
+  // Under the lens (one store) the rule is the assign guard's, not a
+  // connector's: a colleague cannot be put on a task in my PRIVATE tree, so
+  // delegating a task that lives there (every inbox capture does) needs a
+  // COMPANY project to move into, in the same request. `projects` is the
+  // company's list under the lens, so "is a company project" is membership.
+  // `isSynced` is permanently false here, which is why the old gate never
+  // fired and every such delegate came back 422 (S6a repair).
+  const delegatingUnderLens =
+    lensEnabled() && sort === "actionable" && owner === "delegate" && !!assignee;
+  const inCompanyProject = (id?: string) =>
+    !!id && projects.some((p) => p.id === id);
+  const delegateNeedsCompanyProject =
+    delegatingUnderLens && !inCompanyProject(projectId ?? item.projectId);
+  // A delegated task cannot ALSO become a private project: the outcome's
+  // child is mine, and the guard refuses a colleague there.
+  const delegateIntoPrivateProject = delegatingUnderLens && size === "project";
   const needsProjectForDelegate =
-    delegatingToSynced && !projectId && !targetSpaceId;
+    (delegatingToSynced && !projectId && !targetSpaceId) ||
+    delegateNeedsCompanyProject ||
+    delegateIntoPrivateProject;
 
   const canApply =
     sort !== "actionable"
@@ -1237,8 +1259,10 @@ export function ClarifyPanel({
             {needsProjectForDelegate && (
               <p className="inline-flex items-center gap-1 text-[11px] font-medium text-warning">
                 <AppIcon name="AlertTriangle" className="h-3 w-3 shrink-0" />
-                Pick a project to delegate into — {assignee?.name.split(/\s+/)[0]}{" "}
-                needs to be able to find it.
+                {delegateIntoPrivateProject
+                  ? "A delegated task cannot become a private project. Choose Next and pick a project."
+                  : <>Pick a project to delegate into — {assignee?.name.split(/\s+/)[0]}{" "}
+                    needs to be able to find it.</>}
               </p>
             )}
           </div>
@@ -1726,7 +1750,16 @@ function ProjectListTree({
   onCreateFolder: (spaceId: string, name: string) => Promise<void>;
 }) {
   const tree = useMemo(
-    () => buildTree(localHierarchy, projectsForDest),
+    () =>
+      // Under the lens the projects are the COMPANY's (`GET /projects/nodes`)
+      // and carry no Space/Folder placement, so the tree is flat: one list
+      // node per project. `buildTree` would drop every one of them for
+      // having no folder (S6a repair). The local tree retires in S6b.
+      lensEnabled()
+        ? projectsForDest.map((p) => ({
+            id: p.id, type: "list" as const, name: p.outcome, projectId: p.id,
+          }))
+        : buildTree(localHierarchy, projectsForDest),
     [localHierarchy, projectsForDest],
   );
   return (

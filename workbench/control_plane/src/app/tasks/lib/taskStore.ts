@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { dropIndexFor } from "@/lib/boardDrop";
+import { LensPartialFailure } from "./lens";
 import {
   allSelected,
   clickSelect,
@@ -78,6 +79,54 @@ import {
  *  happened, so a transient failure only means the next hydrate reconciles. */
 function sync(promise: Promise<unknown>): void {
   void promise.catch(() => {});
+}
+
+type Setter = (partial: Partial<TaskState> | ((s: TaskState) => Partial<TaskState>)) => void;
+type Getter = () => TaskState;
+
+/** After a live write is refused: read the truth back, best-effort. */
+async function refetchAfterFailure(set: Setter): Promise<void> {
+  try {
+    set({ items: await fetchItems("all") });
+  } catch {
+    /* the next hydrate reconciles */
+  }
+}
+
+/**
+ * The live half of a disposition change, for one item or a selection.
+ *
+ * Under the lens a bulk DONE is N completions, and some can be refused while
+ * the rest go through (`LensPartialFailure`). The ones that landed are swapped
+ * in from the error itself; the count that did not is said out loud through
+ * the toast seam, and the list is re-read so nothing optimistic outlives a
+ * refusal.
+ */
+function disposeLive(
+  set: Setter,
+  get: Getter,
+  ids: string[],
+  disposition: Disposition,
+): void {
+  void apiBulkDispose(ids, disposition).then(
+    (rows) => {
+      if (!rows.length) return;
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      set((s) => ({ items: s.items.map((i) => byId.get(i.id) ?? i) }));
+    },
+    async (err: unknown) => {
+      if (err instanceof LensPartialFailure) {
+        const byId = new Map(err.items.map((r) => [r.id, r]));
+        set((s) => ({ items: s.items.map((i) => byId.get(i.id) ?? i) }));
+      }
+      await refetchAfterFailure(set);
+      get().reportSyncFailure(
+        err instanceof Error && err.message
+          ? err.message
+          : `Couldn't file ${ids.length === 1 ? "the item" : "the selection"}.`,
+      );
+    },
+  );
 }
 
 /** Finalize any soft delete still pending in a snapshot — purge the rows (and
@@ -740,6 +789,12 @@ interface TaskState {
     action: "keep" | "same" | "dismiss" | "rename",
     newTitle?: string,
   ) => void;
+  /** A live write that did not land, after the optimistic row already moved.
+   *  `SyncFailureToast` hands it to the toast seam; the store has re-fetched
+   *  by the time it is set, so the list already shows the truth. */
+  syncFailure: { message: string; at: number } | null;
+  reportSyncFailure: (message: string) => void;
+  clearSyncFailure: () => void;
   /** Per-user task-manager settings (AI tiers + toggles). Defaults render
    *  immediately; hydrate() refreshes from the gateway. */
   settings: TaskSettings;
@@ -971,6 +1026,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   dupNotice: null,
 
+  syncFailure: null,
+  reportSyncFailure: (message) =>
+    set({ syncFailure: { message, at: Date.now() } }),
+  clearSyncFailure: () => set({ syncFailure: null }),
+
   resolveDupNotice: (action, newTitle) => {
     const n = get().dupNotice;
     if (!n) return;
@@ -1145,11 +1205,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   delegateToPerson: async (id, req) => {
     if (get().backend !== "live") return;
-    const server = await apiDelegateItem(id, {
-      assignee: { name: req.assignee.name, email: req.assignee.email },
-      next_action: req.nextAction,
-      due_at: req.dueAt,
-    });
+    let server: GtdItem;
+    try {
+      server = await apiDelegateItem(id, {
+        assignee: { name: req.assignee.name, email: req.assignee.email },
+        next_action: req.nextAction,
+        due_at: req.dueAt,
+      });
+    } catch (err) {
+      // The dialog shows the reason inline; the list must not keep showing
+      // a hand-off that did not happen.
+      await refetchAfterFailure(set);
+      throw err;
+    }
     // The row is now WAITING (no longer in My Next Actions). Swap in the
     // authoritative server row rather than patching locally: the server is
     // what stamped `delegated_at`, and a local guess at it would be the one
@@ -1249,6 +1317,20 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     });
     if (get().backend === "live") {
       const apply = apiOrganize(id, decisionToOrganizeBody(decision));
+      // ⚠️ A refused decision is NOT swallowed (S6a repair). The row moved
+      // optimistically above; a 4xx from organize (the assign guard, a
+      // privacy refusal, a missing project) used to vanish into `sync`, and
+      // the member watched the item leave the inbox while the server kept
+      // it exactly where it was. Refetch, so the list tells the truth, and
+      // say why through the toast seam.
+      const onRefused = async (err: unknown) => {
+        await refetchAfterFailure(set);
+        get().reportSyncFailure(
+          err instanceof Error && err.message
+            ? `Couldn't organize it: ${err.message}`
+            : "Couldn't organize it. The item is back where it was.",
+        );
+      };
       // Persist the confirmed matrix flags as a local overlay (best-effort;
       // independent of organize so a flag hiccup never blocks the decision).
       if (weight) {
@@ -1278,7 +1360,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
               fetchProjects(),
             ]);
             set({ items, projects });
-          }),
+          }, onRefused),
         );
       } else {
         sync(
@@ -1294,7 +1376,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
             // behind a Push button that had also been deleted. Same class as
             // S1's auto-sync-on-open: a control that cannot succeed, firing
             // where nobody asked it to.
-          }),
+          }, onRefused),
         );
       }
     }
@@ -1326,7 +1408,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         changedIds: [id],
       },
     }));
-    if (get().backend === "live") sync(apiBulkDispose([id], disposition));
+    if (get().backend === "live") disposeLive(set, get, [id], disposition);
   },
 
   bulkDispose: (ids, disposition) => {
@@ -1351,7 +1433,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         },
       };
     });
-    if (get().backend === "live") sync(apiBulkDispose(ids, disposition));
+    if (get().backend === "live") disposeLive(set, get, ids, disposition);
   },
 
   archiveItem: (id, archived) => {

@@ -1656,9 +1656,20 @@ class FakeProjectsDB:
                 continue
             assignees = self._assignees_of(task["id"])
             mine = overlay.get(str(task["id"]), {})
+            # The WAITING arm is BOUNDED by the member's grant closure on the
+            # task's root (S6a P0): mirrored through the same closure helper
+            # the visibility clauses use, off the binds the route supplied.
+            waiting_reaches = (
+                wants_waiting and mine.get("disposition") == "WAITING"
+                and str(task.get("root_project_id")) in self.visible_project_ids(
+                    str(args.get("vis_email") or ""),
+                    list(args.get("vis_groups") or []),
+                    organization_id=args.get("vis_org"),
+                )
+            )
             reached = (wants_assigned and who in assignees) or (
                 wants_personal and str(task.get("project_id")) in personal_projects
-            ) or (wants_waiting and mine.get("disposition") == "WAITING")
+            ) or waiting_reaches
             if not reached:
                 continue
 

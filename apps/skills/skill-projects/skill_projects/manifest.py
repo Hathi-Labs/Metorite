@@ -171,8 +171,33 @@ MANIFEST: tuple[Route, ...] = (
     # ── me.py · personal.py ──────────────────────────────────────────────
     Route("GET", "/projects/assigned-to-me", "my_work", "A"),
     Route("GET", "/projects/my/project", "my_work", "A"),
-    Route("POST", "/projects/my/project", "create_personal_task", "B"),
+    Route(
+        "POST",
+        "/projects/my/project",
+        "",
+        "X",
+        "The first capture creates the personal project itself "
+        "(personal.py ensure_personal_project). A second door is redundant.",
+    ),
     Route("POST", "/projects/my/tasks", "create_personal_task", "B"),
+    Route(
+        "POST",
+        "/projects/my/tasks/batch",
+        "",
+        "X",
+        "The multi-line capture box (WS-39 S6a). The chat captures one thought "
+        "per turn through create_personal_task; a paste of twelve lines is a "
+        "browser gesture.",
+    ),
+    Route(
+        "POST",
+        "/projects/my/tasks/{task_id}/organize",
+        "",
+        "X",
+        "The Clarify card's one-transaction decision (WS-39 S6a). The chat "
+        "holds each half as its own tool: set_my_overlay, move_task, assign, "
+        "complete, add_subtasks.",
+    ),
     Route("PATCH", "/projects/tasks/{task_id}/personal", "set_my_overlay", "B"),
     Route("GET", "/projects/my/inbox", "my_work", "A"),
     Route("GET", "/projects/my/tasks/{task_id}", "my_task", "A"),
@@ -266,44 +291,14 @@ MANIFEST: tuple[Route, ...] = (
 #: builds each. The coverage fence holds this against ``__all__``: a tool is
 #: exported OR it is here, never both and never neither.
 PLANNED: dict[str, str] = {
-    # S2b — class B, the vocabulary and personal writes. S2 (built 2026-09-22)
-    # shipped the fifteen daily verbs; these are the rest of class B.
-    "edit_comment": "S2b",
-    "create_status": "S2b",
-    "update_status": "S2b",
-    "create_type": "S2b",
-    "update_type": "S2b",
-    "create_field": "S2b",
-    "update_field": "S2b",
-    "create_tag": "S2b",
-    "update_tag": "S2b",
-    "create_personal_task": "S2b",
-    "set_my_overlay": "S2b",
-    "set_recurrence": "S2b",
-    "recurrence": "S2b",
-    # S3 — class C
-    "move_project": "S3",
-    "archive_project": "S3",
-    "unarchive_project": "S3",
-    "archive_task": "S3",
-    "bulk_update": "S3",
-    "merge_tasks": "S3",
-    "delete_comment": "S3",
-    "revert_activity": "S3",
-    "delete_status": "S3",
-    "set_status_set": "S3",
-    "delete_type": "S3",
-    "delete_field": "S3",
-    "delete_tag": "S3",
-    "merge_tags": "S3",
-    "delete_view": "S3",
-    "report_delete": "S3",
-    "delete_attachment": "S3",
+    # S2 (2026-09-22) shipped the fifteen daily class B verbs. S2b
+    # (2026-09-23) shipped the rest of class B and the two reads it needed
+    # (`recurrence`, `my_task`).
+    # S3 (2026-09-23) shipped the seventeen class C acts (`guarded.py`).
     # S4 — workflows and the reads they need
     "project_access": "S4",
     "views": "S4",
     "save_view": "S4",
-    "my_task": "S4",
     "calendar": "S4",
     "my_contexts": "S4",
     "watchers": "S4",
@@ -324,6 +319,9 @@ PLANNED: dict[str, str] = {
 COMPOSITE: dict[str, frozenset[str]] = {
     "create_task": frozenset({"assign"}),
     "add_subtasks": frozenset({"create_task"}),
+    # The create route's INSERT has no `required` column; the flag is a
+    # PATCH under the same card (S2b verifier).
+    "create_field": frozenset({"update_field"}),
 }
 
 #: POST routes that WRITE NOTHING. A preview computes what an act would do

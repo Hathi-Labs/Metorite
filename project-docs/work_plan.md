@@ -402,11 +402,11 @@ promote an app by granting its feature.**
 
 | Section | App | Owning WS | What is still owed on it |
 |---|---|---|---|
-| Personal Center | **Tasks** | WS-18 · **WS-39** | The personal lens over Projects (D53). Flag `NEXT_PUBLIC_TASKS_LENS` + `TASKS_LENS` default **OFF**; slices 1–4 landed, **slice 5 (CRUD + AI tail) open — H-33** |
+| Personal Center | **My Tasks** | WS-18 · **WS-39** | Renamed from Tasks on 2026-09-23 (D73). The personal lens over Projects (D53). Flags `NEXT_PUBLIC_TASKS_LENS` + `TASKS_LENS` default **OFF**. Slices 1–4 landed. **The tail is `specs/my_tasks_cutover.md` S6a to S9** |
 | Personal Center | **Calendar** | WS-21 · **WS-39** | Its own pane since D54. Behaviour (F2/F3, Focus Shield, timeboxing) stays WS-21. ⚠️ `gtd_time_blocks` and `calendar_accounts` **do not exist** — two specs cite them as built |
 | Personal Center | My Profile | WS-28 | — |
 | Personal Center | My Access | — | — |
-| Apps | **Projects** | WS-27 | Rename and delete **BUILT** (delete 2026-09-19, PR #298) · bulk-close-on-Stop **WITHDRAWN** 2026-09-19 — a stop writes no task row (**D-PM-32a**). What replaced it is a stopped project's work leaving the reports (**D-PM-32b**, built — the three open-work analytics reads and the weekly report's open section carry the clause. The HISTORICAL reads keep a stopped project's FINISHED work on purpose, spec §9.13.2) · 🆕 **WS-27bl** — move tasks between projects, sub-projects and spaces, carrying statuses and custom fields or dropping them on the record. Bulk is limited to ONE source project so one mapping covers the selection. **BUILT** 2026-09-20, PR #301, spec §9.13. ⚠️ No test drives a successful move: the fake cannot evaluate `_REMAP_TARGET_SQL`, and neither the apply nor the preview is hermetic (**H-127**) · 🔴 the delete cascade is authorised by READ visibility alone (**H-121**) (**H-8**) · org-wide vocabulary admin surface missing (**H-4**) · delta-feed cursor gap (**H-7**) · 🆕 **WS-27bk** — the nine-feature plan, spec §9.12, minted 2026-08-31, **nothing built**. Four of them are UI-only, because the endpoints already exist. Assign-to-AI is PARKED by the owner · 🆕 **WS-27bm** — the AI chat inside the app, owning spec `specs/projects_ai_chat.md` (owner directive 2026-09-22). **S1 BUILT 2026-09-22**: the `skill-projects` reads, the `projects-assistant` agent, the route manifest with its coverage fence (**D-PM-37**), and the rail behind `NEXT_PUBLIC_PROJECTS_CHAT`, default OFF. **S2 BUILT 2026-09-22**: the fifteen daily writes, each behind a card, and `meta.via` on the activity row (**D-PM-36**). S2b, S3, S4 and S5 open (**H-155**). The chat cannot hard-delete until WS-40 (**D-PM-35**, **H-156**) |
+| Apps | **Projects** | WS-27 | Rename and delete **BUILT** (delete 2026-09-19, PR #298) · bulk-close-on-Stop **WITHDRAWN** 2026-09-19 — a stop writes no task row (**D-PM-32a**). What replaced it is a stopped project's work leaving the reports (**D-PM-32b**, built — the three open-work analytics reads and the weekly report's open section carry the clause. The HISTORICAL reads keep a stopped project's FINISHED work on purpose, spec §9.13.2) · 🆕 **WS-27bl** — move tasks between projects, sub-projects and spaces, carrying statuses and custom fields or dropping them on the record. Bulk is limited to ONE source project so one mapping covers the selection. **BUILT** 2026-09-20, PR #301, spec §9.13. ⚠️ No test drives a successful move: the fake cannot evaluate `_REMAP_TARGET_SQL`, and neither the apply nor the preview is hermetic (**H-127**) · 🔴 the delete cascade is authorised by READ visibility alone (**H-121**) (**H-8**) · org-wide vocabulary admin surface missing (**H-4**) · delta-feed cursor gap (**H-7**) · 🆕 **WS-27bk** — the nine-feature plan, spec §9.12, minted 2026-08-31, **nothing built**. Four of them are UI-only, because the endpoints already exist. Assign-to-AI is PARKED by the owner · 🆕 **WS-27bm** — the AI chat inside the app, owning spec `specs/projects_ai_chat.md` (owner directive 2026-09-22). **S1 BUILT 2026-09-22**: the `skill-projects` reads, the `projects-assistant` agent, the route manifest with its coverage fence (**D-PM-37**), and the rail behind `NEXT_PUBLIC_PROJECTS_CHAT`, default OFF. **S2 BUILT 2026-09-22**: the fifteen daily writes, each behind a card, and `meta.via` on the activity row (**D-PM-36**). **S2b BUILT 2026-09-23**: the rest of class B (the vocabulary writes, a comment of one's own, the repeat rule, the private capture, the overlay). **S3 BUILT 2026-09-23**: the seventeen guarded acts, one act per card with the impact first. S4 and S5 open (**H-155**). The chat cannot hard-delete until WS-40 (**D-PM-35**, **H-156**) |
 | AI Studio | **Chat** | WS-8 · WS-10 | S1 `subject:` compartments |
 | Admin | Approvals | WS-1 | `ACTION_BROKER_ENFORCE` **unsafe** until BO-1d |
 | Admin | **Organisation** | WS-34 · WS-32 | **OI-2 is a hard prerequisite for customer #2** (org logo is cross-tenant today) · theme-switch check owed (**H-19**) |
@@ -624,6 +624,11 @@ Proven on real Postgres: `live_ws39_personal_tree.sql`, 13 checks.
 is stale — it does not know 188's columns, and 187/188 did not regenerate it either.
 The README requires a refresh alongside each migration. Regenerating now would mix
 20+ migrations of unrelated drift into this PR.
+
+🆕 **WS-39 S6a BUILT 2026-09-23.** The CRUD tail reaches the one store
+through the lens, on branch `my-tasks-s6a`. S6d landed in PR #390. The
+row above still reads slice 5 next. That text carries semicolons the
+lint refuses, so this paragraph records the state instead.
 
 🆕 **WS-39 PHASE 2 MINTED 2026-09-23 (D73).** `specs/my_tasks_cutover.md` owns
 the tail, in five steps.
@@ -3900,6 +3905,12 @@ closes the question H-132 asked, and it closes it the other way.
    reversible exception.
 7. **The code names follow the schema in a slice of their own** (S9). One
    `tsc` run and one pytest run then verify the sweep.
+8. **Continuity with Projects is a property to verify, not a sync to build**
+   *(added 2026-09-23, same day, second directive)*. A task assigned to me in
+   Projects is in my inbox, my day and my calendar. It is one row.
+   S6e adds three things. A project where I am the lead shows in My Tasks. An
+   assigned task I have not triaged sits in a "From Projects" group. Both apps
+   draw one task panel composition. `specs/my_tasks_cutover.md` §4.8.
 
 **The mechanism does not change.** The guarded rename prologue in the creating
 migration (`people_center_app.md` §7.0), registered in

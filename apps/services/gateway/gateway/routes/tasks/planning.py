@@ -7,10 +7,9 @@ Two endpoints, PROPOSE → APPLY (AI proposes, the human decides):
                           (resolved against the capability-ranked roster), effort,
                           priority and a relative due date. NO writes.
   POST /tasks/plan/apply  Materialise an (optionally edited) plan: LOCAL creates a
-                          gtd_projects row + gtd_items (parent tasks +
-                          parent_item_id subtasks); CLICKUP creates the List +
-                          tasks + subtasks through the per-account provider
-                          (user-approved, broker-gated) and mirrors them locally.
+                          project + a task per plan task + its subtasks, through
+                          the store seam (``item_source``, WS-39 S6d). The
+                          CLICKUP target is gone (D52) and answers 410.
 
 The plan CONTRACT is ported from agent-project-manager's
 ``create_tasks_with_subtasks`` (phases/tasks/subtasks with owner_role, effort,
@@ -24,21 +23,17 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.tasks.core import (
-    PROJECT_SELECT,
-    _assert_account_owner,
-    _key_store,
     _log,
     _tenant_session,
     _uid,
     router,
 )
+from gateway.routes.tasks.item_source import item_source
 from pydantic import BaseModel
-from sqlalchemy import text
 
 _PRIORITIES = {"low", "medium", "high", "urgent"}
 _CONTEXTS = {"@computer", "@calls", "@errands", "@agenda"}
@@ -118,8 +113,7 @@ async def _plan_context(db: Any, uid: str, brief: str) -> tuple[list[dict], str]
     from gateway.routes.tasks.people import fetch_people_for_clarify
     people = await fetch_people_for_clarify(db)
     people = await annotate_people_context(db, uid, people, brief)
-    projects = (await db.execute(
-        text(PROJECT_SELECT + " WHERE p.user_id = :uid"), {"uid": uid})).fetchall()
+    projects = await item_source().projects_for(db, uid)
     return people, _projects_brief(projects)
 
 
@@ -288,148 +282,29 @@ async def apply_plan(
     req: ApplyRequest,
     user: UserContext = Depends(get_current_user),
 ):
-    """Materialise a plan. LOCAL is always safe (our store). CLICKUP creates the
-    List + tasks + subtasks through the account's provider (user-approved,
-    broker-gated) and mirrors them locally."""
+    """Materialise a plan. LOCAL is always safe (our store).
+
+    ⚠️ The CLICKUP target answers **410 Gone**. D52 removed every provider
+    connector, and Metorite is the PM system of record. The request field
+    stays so an old client gets a clear refusal rather than a 422 it cannot
+    read.
+    """
     uid = _uid(user)
     tasks = _all_tasks(req.plan)
     if not tasks:
         raise HTTPException(status_code=400, detail="The plan has no tasks.")
     if req.target not in ("local", "clickup"):
         raise HTTPException(status_code=400, detail="target must be local|clickup")
-    async with _tenant_session() as db:
-        if req.target == "clickup":
-            return await _apply_clickup(db, uid, req, tasks)
-        return await _apply_local(db, uid, req.plan, tasks)
-
-
-async def _apply_local(
-    db: Any, uid: str, plan: ProjectPlan, tasks: list[PlanTask],
-) -> ApplyResult:
-    """Create a LOCAL project + a NEXT gtd_item per task + parent_item_id
-    subtasks. Phase names ride on the task title prefix (kept simple — no phase
-    table). All in one transaction — the caller's `_tenant_session` block
-    commits on clean exit (H2), so this helper issues no commit of its own."""
-    project_id = str(uuid4())
-    await db.execute(text(
-        """INSERT INTO gtd_projects
-           (id, user_id, source, outcome, purpose, status, has_next_action)
-           VALUES (:id, :uid, 'LOCAL', :outcome, :purpose, 'ACTIVE', true)"""),
-        {"id": project_id, "uid": uid, "outcome": plan.name.strip(),
-         "purpose": (plan.description or None)})
-    tasks_created = subtasks_created = 0
-    rank = 0.0
-    for t in tasks:
-        item_id = str(uuid4())
-        assignee = t.assignee if isinstance(t.assignee, dict) else None
-        await db.execute(text(
-            """INSERT INTO gtd_items
-               (id, user_id, title, next_action, description, disposition,
-                context, energy, project_id, source, sync_state, due_at,
-                assignee, is_mine, sort_key, clarified_at)
-               VALUES (:id, :uid, :title, :na, :descr, 'NEXT', :ctx, :energy,
-                       :proj, 'LOCAL', 'local', :due, :assignee, :is_mine,
-                       :rank, now())"""),
-            {"id": item_id, "uid": uid, "title": t.title,
-             "na": t.title, "descr": t.description,
-             "ctx": t.context, "energy": t.energy, "proj": project_id,
-             "due": _due_from_offset(t.due_offset_days),
-             "assignee": json.dumps(assignee) if assignee else None,
-             "is_mine": assignee is None, "rank": rank})
-        tasks_created += 1
-        rank += 1000.0
-        srank = 0.0
-        for sub in t.subtasks:
-            await db.execute(text(
-                """INSERT INTO gtd_items
-                   (id, user_id, parent_item_id, title, next_action,
-                    disposition, source, project_id, sync_state, sort_key,
-                    clarified_at)
-                   VALUES (:id, :uid, :pid, :title, :title, 'NEXT', 'LOCAL',
-                           :proj, 'local', :rank, now())"""),
-                {"id": str(uuid4()), "uid": uid, "pid": item_id, "title": sub,
-                 "proj": project_id, "rank": srank})
-            subtasks_created += 1
-            srank += 1000.0
-    return ApplyResult(project_id=project_id, tasks_created=tasks_created,
-                       subtasks_created=subtasks_created, target="local")
-
-
-async def _apply_clickup(
-    db: Any, uid: str, req: ApplyRequest, tasks: list[PlanTask],
-) -> ApplyResult:
-    """Create the plan in ClickUp: a List (under space/folder) + a task per plan
-    task + child subtasks (via ClickUp's `parent`). Every provider write goes
-    through the account's connector (broker-gated). The created List + parent
-    tasks are mirrored locally as SYNCED so they show immediately; subtasks
-    reconcile on the next sync."""
-    from gateway.routes.tasks.providers import build_provider
-    if not req.account_id or not req.space_id:
+    if req.target == "clickup":
         raise HTTPException(
-            status_code=400,
-            detail="ClickUp target needs account_id and space_id.")
-    row = await _assert_account_owner(db, req.account_id, uid)
-    creds = json.loads(_key_store().decrypt(row.credentials_encrypted))
-    provider = build_provider(row.provider, creds, row.workspace_id, str(row.id))
-
-    created = await provider.create_project(
-        row.workspace_id, req.plan.name.strip(), req.space_id, req.folder_id)
-    list_ref = created["id"]
-
-    # Mirror the List → gtd_projects (same upsert the schema refresh uses).
-    project_id = str(uuid4())
-    proj = (await db.execute(text(
-        """INSERT INTO gtd_projects
-           (id, user_id, source, account_id, provider_ref, outcome, status)
-           VALUES (:id, :uid, 'SYNCED', :aid, :ref, :outcome, 'ACTIVE')
-           ON CONFLICT (account_id, provider_ref) WHERE source <> 'LOCAL'
-           DO UPDATE SET outcome = EXCLUDED.outcome, updated_at = now()
-           RETURNING id"""),
-        {"id": project_id, "uid": uid, "aid": req.account_id,
-         "ref": list_ref, "outcome": req.plan.name.strip()})).fetchone()
-    project_id = str(proj.id)
-
-    me = str(getattr(row, "provider_user_id", "") or "")
-    tasks_created = subtasks_created = 0
-    for t in tasks:
-        assignee = t.assignee if isinstance(t.assignee, dict) else None
-        payload: dict[str, Any] = {"title": t.title}
-        if t.description:
-            payload["description"] = t.description
-        due = _due_from_offset(t.due_offset_days)
-        if due is not None:
-            payload["due_at_ms"] = int(due.timestamp() * 1000)
-        if assignee and assignee.get("provider_user_id"):
-            payload["assignee_id"] = assignee["provider_user_id"]
-        res = await provider.create_task(list_ref, payload)
-        ptid = res.get("provider_task_id") or ""
-        if not ptid:
-            # Broker queued or the write was rejected — skip mirroring this one.
-            continue
-        assignee_pid = (assignee or {}).get("provider_user_id")
-        await db.execute(text(
-            """INSERT INTO gtd_items
-               (id, user_id, source, account_id, provider_task_id, provider_url,
-                title, description, disposition, project_id, provider_status,
-                sync_state, assignee, is_mine, clarified_at)
-               VALUES (:id, :uid, 'SYNCED', :aid, :ptid, :url, :title, :descr,
-                       'NEXT', :proj, :pstatus, 'synced', :assignee, :mine,
-                       now())
-               ON CONFLICT (account_id, provider_task_id)
-                   WHERE source <> 'LOCAL' DO NOTHING"""),
-            {"id": str(uuid4()), "uid": uid, "aid": req.account_id,
-             "ptid": ptid, "url": res.get("provider_url"),
-             "title": t.title, "descr": t.description,
-             "proj": project_id, "pstatus": res.get("provider_status"),
-             "assignee": json.dumps(assignee) if assignee else None,
-             "mine": bool(me and assignee_pid and str(assignee_pid) == me)})
-        tasks_created += 1
-        for sub in t.subtasks:
-            sres = await provider.create_task(
-                list_ref, {"title": sub, "parent": ptid})
-            if sres.get("provider_task_id"):
-                subtasks_created += 1
+            status_code=410,
+            detail="The ClickUp target is gone (D52). Apply the plan locally.")
+    async with _tenant_session() as db:
+        # One transaction — the caller's `_tenant_session` block commits on
+        # clean exit (H2), so the seam issues no commit of its own.
+        created = await item_source().plan_apply(db, uid, req.plan, tasks)
     return ApplyResult(
-        project_id=project_id, provider_ref=list_ref,
-        tasks_created=tasks_created, subtasks_created=subtasks_created,
-        target="clickup")
+        project_id=str(created["project_id"]),
+        tasks_created=int(created["tasks_created"]),
+        subtasks_created=int(created["subtasks_created"]),
+        target="local")

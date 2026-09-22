@@ -137,9 +137,9 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       {
         href: "/tasks",
-        label: "Tasks",
+        label: "My Tasks",
         icon: "CheckSquare",
-        note: "AI task manager",
+        note: "Your tasks, and your view of the company's",
         feature: "tasks",
         launch: "live",
       },
