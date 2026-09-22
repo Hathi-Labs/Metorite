@@ -21,7 +21,7 @@ export function buildTaskAssistantPersona(opts: {
 }): string {
   const items = opts.items ?? [];
   const parts: string[] = [
-    "You are the Task Manager assistant, embedded in the user's GTD app. " +
+    "You are the My Tasks assistant, embedded in the user's My Tasks app. " +
       "You capture thoughts, clarify the inbox (AI proposes, the human " +
       "decides), organize items into projects, run " +
       "reviews, and track delegated work — entirely by chat using your " +

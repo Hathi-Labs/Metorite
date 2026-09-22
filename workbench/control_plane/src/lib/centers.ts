@@ -88,12 +88,12 @@ export const CENTERS: Center[] = [
         status: "planned",
       },
       {
-        label: "Tasks",
+        label: "My Tasks",
         note: "The sales team's slice of tasks and projects",
         icon: "CheckSquare",
         status: "live",
         href: "/tasks",
-        caveat: "Opens the full Tasks app today — the team-scoped slice arrives with groups",
+        caveat: "Opens the full My Tasks app today — the team-scoped slice arrives with groups",
       },
       {
         label: "Proposal generator",

@@ -98,7 +98,7 @@ match it exactly, and `nav.test.ts` is the fence that says so (§9 LS-1).
 
 | Section | App | Route | Gate | Note |
 |---|---|---|---|---|
-| **Personal Center** | Tasks | `/tasks` | `feature:tasks` | The **personal lens over Projects** since D53 — one store, not a second one (`task_manager_app.md` §13) |
+| **Personal Center** | My Tasks | `/tasks` | `feature:tasks` | Renamed from "Tasks" on 2026-09-23 (D73). The **personal lens over Projects** since D53 — one store, not a second one (`task_manager_app.md` §13) |
 | **Personal Center** | Calendar | `/calendar` | `feature:tasks` | 🆕 **Added 2026-08-24 by D54**, extracted from a *view* inside `/tasks` (there was never a `/tasks/calendar` route — D54.5, measured). ⚠️ The gate is **`feature:tasks`, not a new `feature:calendar`** (D54.1): the calendar lived inside Tasks, so every `feature:tasks` holder already had it, and minting a new slug would ship the app dark to all of them until an admin granted it. Code + fence agree — `nav.ts:142`, `access.ts:94` (`["/calendar", "tasks"]`), `nav.test.ts:43`. `live` and not `preview` deliberately: it is reachable inside a live app today, so holding it back would *withdraw* a shipped capability (`calendar_focus_os.md` §10) |
 | **Personal Center** | My Profile | `/people/me` | ungated | Your own record is never the directory (D-PC-15) |
 | **Personal Center** | My Access | `/access` | ungated | Renamed from "Your access". Ungated by construction — it is the page that explains a missing pane |
