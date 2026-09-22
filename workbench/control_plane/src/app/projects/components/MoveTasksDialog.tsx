@@ -49,6 +49,7 @@ import {
   toInput,
   toWire,
 } from "../lib/customFields";
+import { askedFields, readPlan } from "../lib/movePlan";
 import { LEVEL_ICONS, type ProjectNode, nodeKind, nodeLevel } from "../lib/tree";
 import { AssigneePicker } from "./AssigneePicker";
 import { FieldControl } from "./CustomFieldValues";
@@ -104,17 +105,6 @@ interface Props {
      */
     refusedFields?: FieldDef[];
   };
-}
-
-/** The preview's required definitions plus the refusal's, keyed once. */
-function askedFields(
-  fromPreview: FieldDef[] | null,
-  fromRefusal: readonly FieldDef[] | undefined
-): FieldDef[] | null {
-  if (fromPreview === null) return null;
-  const seen = new Set(fromPreview.map((def) => def.field_key));
-  const extra = (fromRefusal ?? []).filter((def) => !seen.has(def.field_key));
-  return extra.length ? [...fromPreview, ...extra] : fromPreview;
 }
 
 /** Control values → wire values, for the blank check the server will make. */
@@ -233,7 +223,7 @@ export function MoveTasksDialog({
         // S6c. The preview names the required fields the task does not
         // answer; the definitions say what KIND of answer each wants. Only
         // the promote door asks — the bulk move has no place to type one.
-        if (promote && next.required_missing.length > 0) {
+        if (promote && (next.required_missing ?? []).length > 0) {
           setRequiredDefs(null);
           const { rows } = await projectsApi.fields(next.destination_project_id);
           if (stale()) return;
@@ -277,31 +267,27 @@ export function MoveTasksDialog({
   };
 
   const destRows = destinations(roots);
-  const drops = Object.entries(plan?.drops ?? {});
-  const lostTypes = (plan?.types ?? []).filter((row) => !row.to);
-  // `plan?.tags` — the guard has to be at BOTH levels. `plan?.tags.x`
-  // only checks `plan`, so a preview that omits `tags` throws and the
-  // whole page goes white. Every neighbour here already guards this way.
-  const unregistered = plan?.tags?.unregistered ?? [];
-  // ⚠️ From the PLAN, not from the page. The page holds only the selected
-  // project's lanes and the destination is never the selected project, so the
-  // old source answered `undefined` every time — every dropdown rendered one
-  // option and the override was a shipped no-op.
-  const destStatuses = plan?.destination_statuses ?? [];
-  /**
-   * Every source field and where it lands, mapped ones first.
-   *
-   * An orphan is listed with an explicit "dropped" rather than omitted: a
-   * table that silently skips the fields it cannot carry is the table that
-   * made this feature necessary.
-   */
-  const fieldRows: { from: string; to: string | null }[] = [
-    ...Object.entries(plan?.field_map ?? {}).map(([from, to]) => ({ from, to })),
-    ...(plan?.orphan_fields ?? []).map((field) => ({
-      from: field.name || field.field_key,
-      to: null,
-    })),
-  ];
+  // ⚠️ Every array the card reads off the preview is guarded ONCE, in
+  // `readPlan`, and `movePlan.test.ts` feeds it the bulk e2e stub — which
+  // carries no promote-only field. The S6c version read
+  // `plan.required_missing.length` inline, the bulk preview omits that key,
+  // and the page went white on PR #395's browser suite.
+  //
+  // `destStatuses` is from the PLAN, not from the page. The page holds only
+  // the selected project's lanes and the destination is never the selected
+  // project, so the old source answered `undefined` every time — every
+  // dropdown rendered one option and the override was a shipped no-op.
+  //
+  // An orphan is listed in `fieldRows` with an explicit "dropped" rather
+  // than omitted: a table that silently skips the fields it cannot carry is
+  // the table that made this feature necessary.
+  const reading = readPlan(plan);
+  const drops = reading?.drops ?? [];
+  const lostTypes = reading?.lostTypes ?? [];
+  const unregistered = reading?.unregistered ?? [];
+  const destStatuses = reading?.destStatuses ?? [];
+  const fieldRows = reading?.fieldRows ?? [];
+  const requiredMissing = reading?.requiredMissing ?? [];
   const sourceName = nameOf(destRows, plan?.source_project_id ?? null);
   // ⚠️ From the PICKED node first, not the plan's id. The member chose it from
   // this very list, so the name is always resolvable — whereas the plan's id
@@ -311,11 +297,7 @@ export function MoveTasksDialog({
   const destName =
     nameOf(destRows, destination) ||
     nameOf(destRows, plan?.destination_project_id ?? null);
-  const clean =
-    plan !== null &&
-    !plan.crosses_status_set &&
-    !plan.crosses_root &&
-    drops.length === 0;
+  const clean = reading?.clean ?? false;
 
   return (
     <Modal
@@ -383,11 +365,11 @@ export function MoveTasksDialog({
               </p>
             ) : null}
 
-            {plan.statuses.length > 0 ? (
+            {reading && reading.statuses.length > 0 ? (
               <div className="space-y-1">
                 <p className="font-medium text-foreground">Statuses</p>
                 <MapHeader source={sourceName} destination={destName} />
-                {plan.statuses.map((row) => (
+                {reading.statuses.map((row) => (
                   <div key={row.from.id} className="flex items-center gap-2">
                     {/* ⚠️ `basis-0` with a floor, not a bare `flex-1`.
                         The Select beside this one also grew, and its intrinsic
@@ -479,10 +461,10 @@ export function MoveTasksDialog({
             {/* Migration 192. On the bulk path there is nowhere to type an
                 answer, so the card SAYS which fields block the move rather
                 than letting the apply teach it by 422. */}
-            {!promote && plan.required_missing.length > 0 ? (
+            {!promote && requiredMissing.length > 0 ? (
               <p className="rounded border border-destructive/40 bg-destructive/10 p-2 text-destructive">
                 {destName || "The destination"} requires{" "}
-                {plan.required_missing.join(", ")}, which{" "}
+                {requiredMissing.join(", ")}, which{" "}
                 {ids.length === 1 ? "this task does" : "these tasks do"} not
                 carry. Fill them in first.
               </p>
