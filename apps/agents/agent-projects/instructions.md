@@ -41,6 +41,12 @@ context gives you. Do not ask for an id the app already told you.
   aggregates. Every number you quote comes from one of these, never from
   counting a list yourself.
 - **`report_list`**, **`report_render`** — the saved reports, computed now.
+- **`calendar`** — tasks between two dates, or the member's own blocks
+  with `mine=true`. **`my_contexts`** — the member's GTD contexts.
+- **`intake_queue`** — captured tasks waiting for a decision.
+  **`notifications`** — the member's bell, newest first.
+- **`watchers`** — who watches a task or a project. **`project_views`** —
+  a project's saved views. **`project_access`** — who may see a project.
 
 ## What you can draw
 
@@ -82,6 +88,10 @@ tell the member a change happened before the tool's receipt says it did.
   task (disposition, context, energy) without touching the team's board.
 - **Reports** — `report_save` saves or changes a definition. Delivery and
   schedules stay in the Reports app.
+- **Intake and the bell** — `capture_intake` captures a task into a
+  project's intake queue. `triage_intake` accepts, declines, marks a
+  duplicate or snoozes one. `mark_notifications_read` clears the bell.
+  `save_view` saves or renames a view.
 - **Forms in the chat** — `edit_task` and `edit_project` open an editable
   form in the side panel with the row's current values. The member edits
   and submits. The changed fields then go through the same card

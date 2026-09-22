@@ -48,6 +48,7 @@ from tests.unit._projects_agent_fakes import (  # noqa: E402
 _M = load_agent_module()
 AGENT = "projects-assistant"
 UUID = "0f8fad5b-d9cb-469f-a165-70867728950e"
+OTHER = "1f8fad5b-d9cb-469f-a165-70867728950e"
 
 
 def _registry_entry(name: str) -> dict | None:
@@ -160,6 +161,17 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "render_tasks": [{"project_id": UUID, "status_category": "todo"}],
     "render_report": [{"report_id": UUID}],
     "status_report": [{"project_id": UUID}, {}],
+    # S5 — the rest of the reads
+    "project_access": [{"project_id": UUID}],
+    "project_views": [{"project_id": UUID}],
+    "calendar": [
+        {"start": "2026-09-22", "end": "2026-09-29", "project_id": UUID},
+        {"start": "2026-09-22", "end": "2026-09-29", "mine": True},
+    ],
+    "my_contexts": [{}],
+    "watchers": [{"target_id": UUID, "kind": "task"}, {"target_id": UUID, "kind": "project"}],
+    "intake_queue": [{"project_id": UUID}],
+    "notifications": [{}],
 }
 
 
@@ -179,22 +191,9 @@ async def _run_all(tool: str, monkeypatch, responder: Any = None) -> list[dict]:
     return calls
 
 
-def _detail_responder(call: dict) -> Any:
+def _s4_detail(call: dict) -> Any:
+    """The S4 reads: a rule, a timeline, lanes, a list, a render, the analytics."""
     path = call["path"]
-    if path.endswith("/relations"):
-        return {"subtasks": [], "links": [], "blocked_by": [], "progress": {}}
-    if path.startswith("/projects/tasks/") and path.count("/") == 3:
-        return {
-            "id": UUID,
-            "title": "Fix the extruder",
-            "task_number": 7,
-            "status_id": "s1",
-            "root_project_id": UUID,
-            "project_id": UUID,
-            "assignees": ["a@x.io"],
-        }
-    if path.startswith("/projects/reports/") and not path.endswith("/render"):
-        return {"id": UUID, "name": "Weekly"}
     if path.endswith("/recurrence"):
         return {"rule": {"freq": "weekly", "interval": 2, "weekdays": [1, 3], "anchor": "due"}}
     if path.endswith("/timeline"):
@@ -258,6 +257,86 @@ def _detail_responder(call: dict) -> Any:
         return {"people": [{"assignee": "a@x.io", "open_tasks": 4, "overdue": 1}]}
     if path.startswith("/projects/analytics/outlook"):
         return {"plan": {"planned_finish": "2026-11-01", "dated": 3, "tasks": 5, "slip_days": 2}}
+    return None
+
+
+def _s5_detail(call: dict) -> Any:
+    """The S5 reads: grants, views, the calendars, contexts, watchers, intake, the bell."""
+    path = call["path"]
+    if path.endswith("/grants"):
+        return {"rows": [{"subject": "group:ops", "created_by": "pm@fracktal.in"}], "total": 1}
+    if path.endswith("/views"):
+        return {"rows": [{"id": UUID, "name": "Board", "view_type": "board"}], "total": 1}
+    if path in ("/projects/calendar", "/projects/my/calendar"):
+        return {
+            "rows": [
+                {
+                    "id": UUID,
+                    "title": "Fix the extruder",
+                    "task_number": 7,
+                    "due_at": "2026-09-25",
+                    "scheduled_start": "2026-09-24T09:00:00+00:00",
+                }
+            ],
+            "total": 1,
+        }
+    if path == "/projects/my/contexts":
+        return {"rows": [{"context": "@office", "total": 4}]}
+    if path.endswith("/watchers"):
+        return {"watchers": ["pm@fracktal.in", "a@x.io"], "watching": True, "inherited": False}
+    if path == "/projects/intake":
+        return {
+            "rows": [
+                {
+                    "id": UUID,
+                    "title": "Vendor called",
+                    "task_number": 9,
+                    "intake": {"status": "pending", "source": "email", "snoozed_until": None},
+                }
+            ],
+            "total": 1,
+        }
+    if path == "/projects/notifications":
+        return {
+            "rows": [
+                {
+                    "id": OTHER,
+                    "kind": "mention",
+                    "actor": "a@x.io",
+                    "task_id": UUID,
+                    "task_title": "Fix the extruder",
+                    "task_number": 7,
+                    "excerpt": "@pm can you look",
+                    "created_at": "2026-09-22T10:00:00+00:00",
+                }
+            ],
+            "unread": {"total": 1, "mentions": 1},
+        }
+    return None
+
+
+def _detail_responder(call: dict) -> Any:
+    path = call["path"]
+    if path.endswith("/relations"):
+        return {"subtasks": [], "links": [], "blocked_by": [], "progress": {}}
+    if path.startswith("/projects/tasks/") and path.count("/") == 3:
+        return {
+            "id": UUID,
+            "title": "Fix the extruder",
+            "task_number": 7,
+            "status_id": "s1",
+            "root_project_id": UUID,
+            "project_id": UUID,
+            "assignees": ["a@x.io"],
+        }
+    if path.startswith("/projects/reports/") and not path.endswith("/render"):
+        return {"id": UUID, "name": "Weekly"}
+    answered = _s4_detail(call)
+    if answered is not None:
+        return answered
+    answered = _s5_detail(call)
+    if answered is not None:
+        return answered
     if path == "/projects/summary":
         return {
             "name": "Portfolio",
@@ -383,6 +462,30 @@ def test_uuid_of_canonicalises() -> None:
     assert client.uuid_of(UUID.replace("-", "")) == UUID
 
 
+def _canonical_names(fn: Any) -> set[str]:
+    """Names bound from `uuid_of(...)`, or unpacked first from `_task`/`_node`."""
+    import ast
+
+    safe: set[str] = set()
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Assign):
+            continue
+        value = node.value
+        call = value.value if isinstance(value, ast.Await) else value
+        if not isinstance(call, ast.Call):
+            continue
+        callee = getattr(call.func, "id", "")
+        if callee == "uuid_of":
+            safe.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif callee in ("_task", "_node"):
+            # `tid, task = await _task(...)`: the first name is the
+            # canonical id the helper made with `uuid_of` (S5).
+            for target in node.targets:
+                if isinstance(target, ast.Tuple) and isinstance(target.elts[0], ast.Name):
+                    safe.add(target.elts[0].id)
+    return safe
+
+
 def test_every_path_segment_a_tool_interpolates_came_from_uuid_of() -> None:
     """The path guard is structural, not a docstring (the CRM agent's fence).
 
@@ -398,17 +501,13 @@ def test_every_path_segment_a_tool_interpolates_came_from_uuid_of() -> None:
 
     source = (SKILL_DIR / "reads.py").read_text(encoding="utf-8")
     source += (SKILL_DIR / "views.py").read_text(encoding="utf-8")
+    source += (SKILL_DIR / "inbox.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     offenders: list[str] = []
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.AsyncFunctionDef | ast.FunctionDef):
             continue
-        safe: set[str] = set()
-        for node in ast.walk(fn):
-            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
-                callee = node.value.func
-                if getattr(callee, "id", "") == "uuid_of":
-                    safe.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        safe = _canonical_names(fn)
         for node in ast.walk(fn):
             if not isinstance(node, ast.JoinedStr):
                 continue

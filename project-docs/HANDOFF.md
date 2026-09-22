@@ -3082,10 +3082,10 @@ line — never reclaim a number by deleting the other entry.
   the slice each tool belongs to.
 - **Why:** S1 shipped the reads, S2 the fifteen daily writes, S2b the
   rest of class B, S3 the seventeen guarded acts and S4 the workflows, the
-  views and the forms (2026-09-23). S5 is left: the eleven reads and
-  writes still in `PLANNED` (views, calendar, contexts, watchers, intake,
-  notifications, grants), the visual review, and the frontend-tool
-  dispatcher (H-164). `specs/projects_ai_chat.md` §10 is the
+  views and the forms, and S5 the rest of the manifest (2026-09-23).
+  `PLANNED` is empty of WS-27bm names. Left: the visual review after the
+  flag flip (H-157), and the frontend-tool dispatcher (H-164). Delete
+  this entry when both are closed. `specs/projects_ai_chat.md` §10 is the
   order and §10.2 the acceptance. `writes.py` is the shape to copy, and it
   copied the CRM's. Move a tool out of `PLANNED` when it ships. The fence
   refuses a tool that is both built and planned.

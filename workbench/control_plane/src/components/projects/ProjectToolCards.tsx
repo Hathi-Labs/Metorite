@@ -33,7 +33,15 @@ import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
 /** Tools whose result is a list of task rows. */
-const LIST_TOOLS = new Set(["list_tasks", "find_tasks", "my_work"]);
+const LIST_TOOLS = new Set([
+  "list_tasks",
+  "find_tasks",
+  "my_work",
+  // S5 — each prints task rows with a `full_id` line, so the list card fits.
+  "calendar",
+  "intake_queue",
+  "notifications",
+]);
 
 /** Every other read, with the icon and label its card wears. */
 const INFO_META: Record<string, { icon: string; label: string }> = {
@@ -59,6 +67,11 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   render_tasks: { icon: "Table2", label: "Task table" },
   render_report: { icon: "FileText", label: "Report" },
   status_report: { icon: "Flag", label: "Status report" },
+  // S5 — the rest of the reads
+  project_access: { icon: "Users", label: "Access" },
+  project_views: { icon: "LayoutList", label: "Views" },
+  my_contexts: { icon: "AtSign", label: "Contexts" },
+  watchers: { icon: "Eye", label: "Watchers" },
 };
 
 /**
@@ -137,6 +150,11 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   edit_task: { icon: "PenLine", label: "Task updated" },
   edit_project: { icon: "PenLine", label: "Project updated" },
   propose_plan: { icon: "ListTodo", label: "Plan created" },
+  // S5 — the rest of the writes
+  save_view: { icon: "LayoutList", label: "View saved" },
+  capture_intake: { icon: "Inbox", label: "Captured into intake" },
+  triage_intake: { icon: "Inbox", label: "Intake decided" },
+  mark_notifications_read: { icon: "BellOff", label: "Bell cleared" },
 };
 
 /**
@@ -281,7 +299,13 @@ function TaskListCard({ event: e }: { event: ToolEvent }) {
       ? `Search${args.query ? ` · ${String(args.query)}` : ""}`
       : e.name === "my_work"
         ? String(args.view ?? "") === "inbox" ? "My inbox" : "Assigned to me"
-        : "Tasks";
+        : e.name === "calendar"
+          ? "Calendar"
+          : e.name === "intake_queue"
+            ? "Intake"
+            : e.name === "notifications"
+              ? "Notifications"
+              : "Tasks";
   const title = `${label} (${rows.length})`;
   if (rows.length === 0) {
     return <InfoCard event={e} icon="ListChecks" label={label} />;
@@ -382,9 +406,15 @@ export function rowIdOf(result: string): string {
   return result.match(/full_id:\s*([0-9a-f-]{36})/i)?.[1] ?? "";
 }
 
-/** Any `<kind>_id: <uuid>` receipt line — a task, or a vocabulary row. */
+/**
+ * Any `<kind>_id: <uuid>` receipt line — a task, or a vocabulary row — or a
+ * `done: …` line for a write that touches no single row (clearing the
+ * bell). Both are printed by the skill only after the write returned.
+ */
 export function receiptIdOf(result: string): string {
-  return result.match(/^\s*[a-z_]+_id:\s*([0-9a-f-]{36})\s*$/im)?.[1] ?? "";
+  const id = result.match(/^\s*[a-z_]+_id:\s*([0-9a-f-]{36})\s*$/im)?.[1];
+  if (id) return id;
+  return /^\s*done:\s*\S/im.test(result) ? "done" : "";
 }
 
 /**

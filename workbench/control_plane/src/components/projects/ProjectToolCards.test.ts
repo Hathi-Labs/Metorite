@@ -78,6 +78,13 @@ describe("classifyActionResult", () => {
     expect(rowIdOf(text)).toBe("");
   });
 
+  it("is done for a `done:` line, which a write with no single row prints", () => {
+    expect(classifyActionResult("Marked 3 read.\n  done: 3 marked", "done")).toBe("done");
+    expect(rowIdOf("Marked 3 read.\n  done: 3 marked")).toBe("");
+    // The word alone in prose is not a receipt line.
+    expect(classifyActionResult("Nothing done: pass ids.", "done")).toBe("refused");
+  });
+
   it("is refused for a prose line that merely mentions an id", () => {
     expect(classifyActionResult(`No comment with id ${ID} is in the latest 50 rows.`, "done")).toBe(
       "refused",
