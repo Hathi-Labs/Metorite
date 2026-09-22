@@ -60,16 +60,20 @@ def _number(task: dict[str, Any]) -> str:
 
 
 def _people(values: Any) -> str:
+    """Assignees, fenced: an assignee is a bare string nothing validates
+    (D-PM-4), so it is member text like any title."""
     if not values:
         return "unassigned"
-    return ", ".join(str(v) for v in values)
+    return ", ".join(data(v) for v in values)
 
 
 def _task_line(task: dict[str, Any], status_name: str = "") -> list[str]:
     facts: list[str] = []
     status = status_name or task.get("status_name") or ""
     if status:
-        facts.append(f"status {status}")
+        # A status name is member-written (admin.py only strips it), so it
+        # is fenced like a title. Unfenced, a newline in it forged card rows.
+        facts.append(f"status {data(status)}")
     if task.get("category"):
         facts.append(str(task["category"]))
     due = _day(task.get("due_at"))
@@ -101,9 +105,9 @@ def _project_line(node: dict[str, Any], level: str = "") -> list[str]:
     if node.get("archived_at") or node.get("archived"):
         facts.append("archived")
     if node.get("lead"):
-        facts.append(f"lead {node['lead']}")
+        facts.append(f"lead {data(node['lead'])}")
     if node.get("task_prefix"):
-        facts.append(f"prefix {node['task_prefix']}")
+        facts.append(f"prefix {data(node['task_prefix'])}")
     tag = f" [{level}]" if level else ""
     head = f"- {data(node.get('name'))}{tag}"
     if facts:
@@ -117,7 +121,10 @@ async def _status_names(root_ids: set[str]) -> dict[str, str]:
     names: dict[str, str] = {}
     for root in sorted(root_ids)[:5]:
         try:
-            payload = await get(f"/projects/nodes/{root}/statuses")
+            # Server-supplied, and still canonicalised: every id that reaches
+            # a path goes through `uuid_of`, so the AST fence has one rule.
+            rid = uuid_of(root, "root_project_id")
+            payload = await get(f"/projects/nodes/{rid}/statuses")
         except Exception:
             continue
         for row in (payload or {}).get("rows") or []:
@@ -167,12 +174,23 @@ async def project_summary(project_id: str = "") -> str:
     a server aggregate over the subtree the member can see."""
     if project_id:
         pid = uuid_of(project_id, "project_id")
+        node = await get(f"/projects/nodes/{pid}")
         payload = await get(f"/projects/nodes/{pid}/summary")
         title = f"{data(payload.get('name'))} [{payload.get('level', 'node')}]"
     else:
+        node = {}
         payload = await get("/projects/summary")
         title = "Portfolio"
     out = [DATA_LEGEND, f"Summary of {title}:"]
+    if node:
+        facts = [f"full_id: {node.get('id')}", f"state {node.get('status') or 'active'}"]
+        if node.get("lead"):
+            facts.append(f"lead {data(node['lead'])}")
+        if node.get("archived_at"):
+            facts.append("archived")
+        out.append("  " + " · ".join(facts))
+        if node.get("description"):
+            out.append(f"  description: {data(str(node['description'])[:600])}")
     out.append(
         f"  tasks {payload.get('tasks', 0)} · overdue {payload.get('overdue', 0)}"
         f" · projects {payload.get('projects', 0)}"
@@ -284,8 +302,9 @@ async def list_tasks(
     return "\n".join(out)
 
 
-async def _relations_block(tid: str) -> list[str]:
+async def _relations_block(task_id: str) -> list[str]:
     """Subtasks, links and open blockers, from the one relations read."""
+    tid = uuid_of(task_id, "task_id")
     relations = await get(f"/projects/tasks/{tid}/relations")
     out: list[str] = []
     subtasks = (relations or {}).get("subtasks") or []
@@ -312,7 +331,8 @@ async def _relations_block(tid: str) -> list[str]:
     return out
 
 
-async def _attachments_block(tid: str) -> list[str]:
+async def _attachments_block(task_id: str) -> list[str]:
+    tid = uuid_of(task_id, "task_id")
     attachments = await get(f"/projects/tasks/{tid}/attachments")
     files = (attachments or {}).get("rows") or []
     if not files:
@@ -320,8 +340,9 @@ async def _attachments_block(tid: str) -> list[str]:
     return [f"Attachments ({len(files)}): " + ", ".join(data(f.get("name")) for f in files)]
 
 
-async def _timeline_block(tid: str) -> list[str]:
+async def _timeline_block(task_id: str) -> list[str]:
     """The latest timeline rows, newest first, bodies fenced."""
+    tid = uuid_of(task_id, "task_id")
     timeline = await get(
         f"/projects/tasks/{tid}/timeline",
         {"page": 1, "page_size": TIMELINE_ROWS},
@@ -333,7 +354,7 @@ async def _timeline_block(tid: str) -> list[str]:
     for ev in events:
         body = ev.get("body") or ""
         meta = ev.get("meta") or {}
-        line = f"- {_day(ev.get('created_at'))} {ev.get('type')} by {ev.get('created_by') or '?'}"
+        line = f"- {_day(ev.get('created_at'))} {ev.get('type')} by {data(ev.get('created_by') or '?')}"
         if body:
             line += f": {data(str(body)[:300])}"
         elif meta.get("field"):
@@ -357,7 +378,7 @@ async def task_detail(task_id: str) -> str:
     out.append(f"  full_id: {task.get('id')}")
     out.append(f"  project_id: {task.get('project_id')}")
     status = names.get(str(task.get("status_id")), str(task.get("status_id")))
-    out.append(f"  status: {status}")
+    out.append(f"  status: {data(status)}")
     out.append(f"  assignees: {_people(task.get('assignees'))}")
     for key, label in (
         ("due_at", "due"),
@@ -370,7 +391,12 @@ async def task_detail(task_id: str) -> str:
     ):
         value = task.get(key)
         if value not in (None, "", 0):
-            shown = _day(value) if key.endswith("_at") or key == "start_date" else value
+            if key.endswith("_at") or key == "start_date":
+                shown: Any = _day(value)
+            elif key == "created_by":
+                shown = data(value)
+            else:
+                shown = value
             out.append(f"  {label}: {shown}")
     if task.get("tags"):
         out.append("  tags: " + ", ".join(data(t) for t in task["tags"]))
@@ -398,11 +424,17 @@ async def my_work(view: str = "assigned", include_done: bool = False, page: int 
     with assignee for that."""
     which = (view or "assigned").strip().lower()
     params: dict[str, Any] = {"page": max(1, int(page or 1)), "page_size": MAX_PAGE}
+    home: list[str] = []
     if which == "inbox":
         if include_done:
             params["include_done"] = True
         payload = await get("/projects/my/inbox", params)
         title = "My inbox"
+        # The personal project is where a private task lives (D53). Named
+        # here so "add this to my own list" has an id to land on later.
+        mine = await get("/projects/my/project")
+        if mine and mine.get("id"):
+            home.append(f"Personal project {data(mine.get('name'))} · project_id {mine.get('id')}")
     else:
         if include_done:
             params["include_done"] = True
@@ -411,17 +443,17 @@ async def my_work(view: str = "assigned", include_done: bool = False, page: int 
     rows = (payload or {}).get("rows") or []
     total = int((payload or {}).get("total") or 0)
     if not rows:
-        return f"{title}: nothing."
+        return "\n".join([*home, f"{title}: nothing."])
     names = await _status_names(
         {str(r.get("root_project_id")) for r in rows if r.get("root_project_id")}
     )
-    out = [DATA_LEGEND, f"{title} ({total} total, showing {len(rows)}):"]
+    out = [DATA_LEGEND, *home, f"{title} ({total} total, showing {len(rows)}):"]
     for row in rows:
         head, ident = _task_line(row, names.get(str(row.get("status_id")), ""))
         overlay: list[str] = []
         for key in ("disposition", "context", "energy", "deferred_until"):
             if row.get(key):
-                overlay.append(f"{key} {row[key]}")
+                overlay.append(f"{key} {data(row[key])}")
         if overlay:
             head += " · " + " · ".join(overlay)
         out.append(head)
@@ -432,12 +464,46 @@ async def my_work(view: str = "assigned", include_done: bool = False, page: int 
 # ── People and vocabulary ────────────────────────────────────────────────────
 
 
+def _person_line(p: dict[str, Any]) -> str:
+    """One picker row: who, what they do, how loaded, and any warning."""
+    facts = [f"assignee {data(p.get('assignee'))}"]
+    if p.get("title"):
+        facts.append(data(p["title"]))
+    if p.get("department"):
+        facts.append(data(p["department"]))
+    load = p.get("load") or {}
+    if isinstance(load, dict) and load:
+        facts.append("load " + ", ".join(f"{k} {v}" for k, v in load.items()))
+    if p.get("top_skills"):
+        facts.append("skills " + ", ".join(data(s) for s in p["top_skills"]))
+    if p.get("away"):
+        facts.append("away")
+    if p.get("has_login") is False:
+        facts.append("directory only")
+    for warning in p.get("warnings") or []:
+        facts.append(f"⚠ {data(warning)}")
+    return f"- {data(p.get('name'))} · " + " · ".join(facts)
+
+
 @_annotate(read_only=True, idempotent=True)
-async def people_for(query: str = "", due: str = "") -> str:
+async def people_for(query: str = "", due: str = "", emails: str = "") -> str:
     """Who could take a task: people and agents matching the query, with
     their role, current load and any warning (away, engagement ending). Pass
     the task's due date as due=YYYY-MM-DD to sharpen the warning. The value
-    to assign is the `assignee` field, an email or agent:<name>."""
+    to assign is the `assignee` field, an email or agent:<name>. Pass
+    emails="a@x.io,b@x.io" (from a task's assignees) to get the names people
+    read for addresses you already hold, with no suggestion machinery."""
+    out = [DATA_LEGEND]
+    wanted = [e.strip() for e in (emails or "").split(",") if e.strip()]
+    if wanted:
+        labels = await get("/projects/people/names", {"emails": ",".join(wanted)})
+        names = (labels or {}).get("names") or {}
+        out.append(f"Names ({len(names)} of {len(wanted)} known):")
+        for email in wanted:
+            name = names.get(email.lower())
+            out.append(f"- {data(email)} · {data(name) if name else 'not in the directory'}")
+        if not (query or "").strip():
+            return "\n".join(out)
     params: dict[str, Any] = {"q": (query or "").strip()}
     if due:
         params["due"] = due
@@ -445,33 +511,17 @@ async def people_for(query: str = "", due: str = "") -> str:
     people = (payload or {}).get("people") or []
     agents = (payload or {}).get("agents") or []
     if not people and not agents:
-        return f"Nobody matches {data(query)}." if query else "No people found."
-    out = [DATA_LEGEND]
+        out.append(f"Nobody matches {data(query)}." if query else "No people found.")
+        return "\n".join(out)
     if people:
         out.append(f"People ({len(people)}):")
-        for p in people:
-            facts = [f"assignee {p.get('assignee')}"]
-            if p.get("title"):
-                facts.append(data(p["title"]))
-            if p.get("department"):
-                facts.append(data(p["department"]))
-            load = p.get("load") or {}
-            if isinstance(load, dict) and load:
-                facts.append("load " + ", ".join(f"{k} {v}" for k, v in load.items()))
-            if p.get("top_skills"):
-                facts.append("skills " + ", ".join(data(s) for s in p["top_skills"]))
-            if p.get("away"):
-                facts.append("away")
-            if p.get("has_login") is False:
-                facts.append("directory only")
-            for warning in p.get("warnings") or []:
-                facts.append(f"⚠ {data(warning)}")
-            out.append(f"- {data(p.get('name'))} · " + " · ".join(facts))
+        out.extend(_person_line(p) for p in people)
     if agents:
         out.append(f"Agents ({len(agents)}):")
         for a in agents:
             out.append(
-                f"- {data(a.get('name'))} · assignee {a.get('assignee')} · {data(a.get('description'))}"
+                f"- {data(a.get('name'))} · assignee {data(a.get('assignee'))}"
+                f" · {data(a.get('description'))}"
             )
     if (payload or {}).get("hr_visible") is False:
         out.append("(load and skills are hidden: no HR read permission)")
@@ -487,6 +537,13 @@ async def vocabulary(project_id: str) -> str:
     project's vocabulary answers."""
     pid = uuid_of(project_id, "project_id")
     out = [DATA_LEGEND]
+    status_set = (await get(f"/projects/nodes/{pid}/status-set")) or {}
+    if status_set.get("owner_name"):
+        owner = "this project" if status_set.get("owns") else data(status_set.get("owner_name"))
+        out.append(
+            f"Status set owned by {owner}"
+            + (" · you may edit it" if status_set.get("may_edit") else " · you may not edit it")
+        )
     statuses = ((await get(f"/projects/nodes/{pid}/statuses")) or {}).get("rows") or []
     out.append(f"Statuses ({len(statuses)}):")
     for s in statuses:
@@ -569,7 +626,7 @@ async def analytics_load(project_id: str = "") -> str:
         f"Load in {_scope_title(payload)}: {payload.get('total_tasks', 0)} open tasks",
     ]
     for p in payload.get("people") or []:
-        who = p.get("assignee") or "unassigned"
+        who = data(p["assignee"]) if p.get("assignee") else "unassigned"
         out.append(
             f"- {who} · open {p.get('open_tasks', 0)} · overdue {p.get('overdue', 0)}"
             f" · next 7 days {p.get('due_next_7d', p.get('due_soon', 0))} · later {p.get('later', 0)}"
@@ -687,40 +744,56 @@ async def report_render(report_id: str) -> str:
     rid = uuid_of(report_id, "report_id")
     definition = await get(f"/projects/reports/{rid}")
     body = await get(f"/projects/reports/{rid}/render")
+    # The route's shape (reports.py `render_report`): `report`, `period_start`,
+    # `period_end`, and `sections`, a dict keyed by section name whose values
+    # are the analytics module's own aggregates. Read THAT, not a guess: the
+    # first version of this tool read `period` and dropped every number.
     out = [DATA_LEGEND, f"Report {data(definition.get('name'))} (full_id: {rid})"]
-    period = body.get("period") or {}
-    if period:
-        out.append(f"  period {_day(period.get('start'))} to {_day(period.get('end'))}")
-    for key, value in body.items():
-        if key in ("period", "report", "id", "name"):
-            continue
-        if isinstance(value, dict):
-            out.append(
-                f"  {key}: "
-                + ", ".join(f"{k} {v}" for k, v in value.items() if not isinstance(v, (dict, list)))
-            )
-            rows = value.get("rows") or value.get("projects") or value.get("people") or []
-            for row in rows[:25]:
-                if isinstance(row, dict):
-                    label = row.get("name") or row.get("title") or row.get("assignee") or ""
-                    facts = ", ".join(
-                        f"{k} {v}"
-                        for k, v in row.items()
-                        if k not in ("name", "title", "id", "project_id")
-                        and not isinstance(v, (dict, list))
-                    )
-                    out.append(f"  - {data(label)} · {facts}")
-        elif isinstance(value, list):
-            out.append(f"  {key}: {len(value)} rows")
-            for row in value[:25]:
-                if isinstance(row, dict):
-                    label = row.get("name") or row.get("title") or ""
-                    facts = ", ".join(
-                        f"{k} {v}"
-                        for k, v in row.items()
-                        if k not in ("name", "title", "id") and not isinstance(v, (dict, list))
-                    )
-                    out.append(f"  - {data(label)} · {facts}")
-        else:
-            out.append(f"  {key}: {value}")
+    scope = definition.get("scope") or ("node" if definition.get("project_id") else "portfolio")
+    out.append(
+        f"  scope {scope}"
+        + (f" · project_id {definition.get('project_id')}" if definition.get("project_id") else "")
+        + f" · period {_day(body.get('period_start'))} to {_day(body.get('period_end'))}"
+    )
+    sections = body.get("sections") or {}
+    if not sections:
+        out.append("  (no sections rendered)")
+    for name, section in sections.items():
+        out.extend(_report_section(str(name), section if isinstance(section, dict) else {}))
     return "\n".join(out)
+
+
+#: Section name → (the list key, the label key per row, the scalar keys).
+_REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
+    "finished": ("projects", "name", ("total_completed", "total_cancelled", "median_hours")),
+    "throughput": ("series", "week_start", ("completed", "cancelled", "median_hours", "measured")),
+    "load": ("people", "assignee", ("total_tasks",)),
+    "stuck": ("overdue", "name", ("overdue_total", "blocked_total")),
+}
+
+
+def _report_section(name: str, section: dict[str, Any]) -> list[str]:
+    """One report section as lines: its totals, then one line per row."""
+    list_key, label_key, scalar_keys = _REPORT_SECTIONS.get(
+        name,
+        ("rows", "name", tuple(k for k, v in section.items() if not isinstance(v, (dict, list)))),
+    )
+    totals = ", ".join(f"{k} {section[k]}" for k in scalar_keys if k in section)
+    out = [f"{name}:" + (f" {totals}" if totals else "")]
+    rows = section.get(list_key) or []
+    if not isinstance(rows, list):
+        return out
+    for row in rows[:25]:
+        if not isinstance(row, dict):
+            continue
+        label = row.get(label_key)
+        facts = ", ".join(
+            f"{k} {v}"
+            for k, v in row.items()
+            if k not in (label_key, "id", "project_id") and not isinstance(v, (dict, list))
+        )
+        shown = _day(label) if label_key == "week_start" else data(label or "unassigned")
+        out.append(f"- {shown} · {facts}")
+    if len(rows) > 25:
+        out.append(f"  (and {len(rows) - 25} more rows)")
+    return out

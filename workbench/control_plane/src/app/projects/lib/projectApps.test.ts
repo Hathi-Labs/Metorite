@@ -7,6 +7,9 @@
  * held equal, because a flag that quietly reordered or renamed a sibling is
  * the kind of drift nobody notices until a screenshot.
  */
+import fs from "node:fs";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -33,6 +36,18 @@ describe("chatEnabled", () => {
     expect(chatEnabled({ NEXT_PUBLIC_PROJECTS_CHAT: "1" })).toBe(true);
     expect(chatEnabled({ NEXT_PUBLIC_PROJECTS_CHAT: "true" })).toBe(true);
     expect(chatEnabled({ NEXT_PUBLIC_PROJECTS_CHAT: "on" })).toBe(true);
+  });
+});
+
+describe("the flag reaches the browser", () => {
+  it("reads the flag through the literal member expression Next inlines", () => {
+    // `env.NEXT_PUBLIC_X` off a defaulted `env = process.env` is NOT inlined
+    // and reads undefined in a browser. The literal is the only safe form,
+    // and a refactor that "simplifies" it to the default-parameter shape
+    // turns the whole feature off with every test still green.
+    const source = fs.readFileSync(path.join(__dirname, "projectApps.ts"), "utf8");
+    expect(source).toContain("process.env.NEXT_PUBLIC_PROJECTS_CHAT");
+    expect(source).not.toMatch(/env: Record<string, string \| undefined> = process\.env/);
   });
 });
 

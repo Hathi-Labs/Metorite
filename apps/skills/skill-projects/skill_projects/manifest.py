@@ -88,7 +88,13 @@ _PLANNER_REASON = (
 MANIFEST: tuple[Route, ...] = (
     # ── tree.py ──────────────────────────────────────────────────────────
     Route("GET", "/projects/tree", "projects_tree", "A"),
-    Route("GET", "/projects/nodes", "projects_tree", "A"),
+    Route(
+        "GET",
+        "/projects/nodes",
+        "",
+        "X",
+        "The flat form of /projects/tree. The chat reads the tree.",
+    ),
     Route("GET", "/projects/nodes/{project_id}", "project_summary", "A"),
     Route("GET", "/projects/summary", "project_summary", "A"),
     Route("GET", "/projects/nodes/{project_id}/summary", "project_summary", "A"),

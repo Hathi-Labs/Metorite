@@ -110,8 +110,14 @@ def uuid_of(value: Any, what: str = "id") -> str:
 def data(value: Any) -> str:
     """Fence a string other people wrote — a title, a name, a comment — so an
     instruction inside it reads as data. Guillemets are a firmer boundary than
-    quotes, and any embedded ones are stripped so the fence stays unambiguous."""
-    return "«" + str(value or "").replace("«", "").replace("»", "") + "»"
+    quotes, and any embedded ones are stripped so the fence stays unambiguous.
+
+    Line breaks collapse to one space, and that is not cosmetic. The cards
+    parse the tool output LINE BY LINE (``- #<n> «title»`` then ``full_id:``),
+    so a status name carrying a newline could forge a row that renders as a
+    real, clickable task. Inside one line the fence holds."""
+    text = str(value or "").replace("«", "").replace("»", "")
+    return "«" + " ".join(text.split()) + "»"
 
 
 def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:

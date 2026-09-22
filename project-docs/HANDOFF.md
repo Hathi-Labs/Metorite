@@ -3080,6 +3080,30 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_ai_chat.md` §4.3, §11 · CLAUDE.md §3a
 - **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
 
+### H-158 · Two frontend flags read `process.env` in a form Next cannot inline · [AGENT]
+- **Check:** `grep -n "= process.env" workbench/control_plane/src/lib/nav.ts workbench/control_plane/src/app/tasks/lib/lens.ts`
+  → a hit on `env: Record<string, string | undefined> = process.env` means
+  this is still open.
+- **Why:** Next inlines only the literal member expression
+  `process.env.NEXT_PUBLIC_X` into the browser bundle. A read through a
+  defaulted parameter (`env = process.env`, then `env.NEXT_PUBLIC_X`) is not
+  inlined. In a browser `process.env` is the `{}` polyfill, so the flag reads
+  `undefined` and the feature stays off whatever the box is set to. The
+  Projects chat's `chatEnabled` shipped in that shape, and the S1 review
+  found it in the build output on 2026-09-22 (`projectApps.ts` now reads the
+  literal, and `projectApps.test.ts` fences the spelling).
+  `previewAppsVisible` (`nav.ts`) and `lensEnabled` (`lens.ts`) carry the
+  same shape today. Each test passes an env object, so neither suite can see
+  it. ⚠️ If `NEXT_PUBLIC_TASKS_LENS` was ever flipped on the box, the Tasks
+  lens may not be reading the store the owner believes it reads. Measure in
+  the build output before you conclude either way.
+- **The repair:** read the literal when no env is passed, the way
+  `projectApps.ts::chatEnabled` does, and add the same source fence to each
+  test. One PR, two files, two tests.
+- **Authority:** `workbench/control_plane/src/app/projects/lib/projectApps.ts` (the fixed shape) ·
+  `src/lib/nav.ts:118-123` · `src/app/tasks/lib/lens.ts:70-75`
+- **Added:** 2026-09-22 · the Projects chat S1 review
+
 
 # DONE — deleted, not archived
 

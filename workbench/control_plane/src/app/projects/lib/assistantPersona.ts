@@ -96,8 +96,9 @@ export function buildProjectsAssistantPersona(input: PersonaInput): string {
   if (input.node) {
     const level = input.node.level ? ` ${input.node.level}` : " node";
     parts.push(
-      `The member has the${level} ${data(input.node.name)} selected ` +
-        `(project_id: ${input.node.id}${input.node.archived ? ", archived" : ""}). ` +
+      `The member's current scope is the${level} ${data(input.node.name)} ` +
+        `(project_id: ${input.node.id}${input.node.archived ? ", archived" : ""}), ` +
+        `the node they selected last; the chat header names it. ` +
         `Its name is ${FENCE}. When they say "this space", "this project" or ` +
         `"here", they mean this node — pass its project_id to the tools.`,
     );

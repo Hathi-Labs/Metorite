@@ -2211,7 +2211,17 @@ function ProjectsWorkspace() {
     (async () => {
       try {
         const task = await projectsApi.task(deepLink);
-        if (live) await openWithStatuses(task);
+        if (live) {
+          await openWithStatuses(task);
+          // Consume the link. The effect is keyed on the id, so a second
+          // click on the same chat card row (WS-27bm) would push an
+          // unchanged URL and open nothing. Clearing `task` — and only
+          // `task` — after the open makes the next push a change again.
+          const rest = new URLSearchParams(searchParams.toString());
+          rest.delete("task");
+          const qs = rest.toString();
+          router.replace(qs ? `/projects?${qs}` : "/projects");
+        }
       } catch (err) {
         if (live) setError(String((err as Error).message));
       }
@@ -3106,8 +3116,10 @@ function ProjectsWorkspace() {
     // WS-27bm — the AI chat, full width in its own slot. Reachable only when
     // `NEXT_PUBLIC_PROJECTS_CHAT` flips the entry to live; off, the sidebar
     // disables it and says so. The rail gets the member's PLACE — the node
-    // they last selected, the view, the filters, the open task and the
-    // selection — so "this project" resolves without an id.
+    // they last selected (the rail header names it, because the tree does
+    // not highlight it while an app is open), the filters, the open task
+    // and the selection — so "this project" resolves without an id. No
+    // `view`: the member is looking at the chat, not at a canvas.
     <div className="min-w-0 flex-1 overflow-hidden">
       <AssistantRail
         node={
@@ -3120,7 +3132,7 @@ function ProjectsWorkspace() {
               }
             : null
         }
-        view={selected ? mode : null}
+        view={null}
         filters={filters}
         openTask={
           openTask

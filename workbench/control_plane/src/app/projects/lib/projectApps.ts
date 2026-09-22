@@ -87,9 +87,16 @@ export const PROJECT_APP_SECTIONS: ProjectAppSection[] = [
  * main chat app can reach it whether or not this is on.
  */
 export function chatEnabled(
-  env: Record<string, string | undefined> = process.env,
+  env?: Record<string, string | undefined>,
 ): boolean {
-  const raw = env.NEXT_PUBLIC_PROJECTS_CHAT;
+  // ⚠️ The LITERAL member expression is the only form Next inlines into the
+  // browser bundle. `env.NEXT_PUBLIC_X` off a defaulted `env = process.env`
+  // is NOT inlined: in a browser `process.env` is the `{}` polyfill, so the
+  // flag reads undefined and the slot never goes live — measured in this
+  // repo's own build output on 2026-09-22. Tests pass an env object; the
+  // page passes nothing and hits the literal. `projectApps.test.ts` holds
+  // this file to the literal spelling.
+  const raw = env ? env.NEXT_PUBLIC_PROJECTS_CHAT : process.env.NEXT_PUBLIC_PROJECTS_CHAT;
   return raw === "1" || raw === "true" || raw === "on";
 }
 
@@ -101,7 +108,7 @@ export function chatEnabled(
  * word on exactly one entry and nothing else about the list.
  */
 export function projectAppSections(
-  env: Record<string, string | undefined> = process.env,
+  env?: Record<string, string | undefined>,
 ): ProjectAppSection[] {
   const chat = chatEnabled(env);
   return PROJECT_APP_SECTIONS.map((section) => ({

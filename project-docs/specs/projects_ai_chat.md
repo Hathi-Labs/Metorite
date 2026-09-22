@@ -279,9 +279,16 @@ else.
 - Memory parity with the main chat app.
 
 **Where it mounts.** Two places, one component. The `ai-chat` sidebar slot
-(`page.tsx:3024-3029`) shows it full-width. A rail toggle beside the triage
-rail (`page.tsx:3218`) shows it docked, so a member can talk while the board
-is open. On a phone the chat is a full scene, like the email assistant.
+(`page.tsx:3024-3029`) shows it full-width. **S1 builds this one.**
+
+A rail toggle beside the triage rail (`page.tsx:3218`) shows it docked, so a
+member can talk while the board is open. On a phone the chat is a full scene,
+like the email assistant. **Those two are S5.**
+
+While the slot is open the tree highlights no node. So the rail header names
+the scope itself, and the persona says "current scope", not "looking at".
+The persona carries no `view` in the slot, because the member sees the chat
+and no canvas.
 
 **The persona carries the member's place, as data.** The selected node and
 its level, the view and its filters, the open task id, the bulk selection ids,
@@ -291,7 +298,9 @@ persona also carries whether the member holds `projects:settings:write`, so the
 agent can say "ask your admin" instead of trying and failing.
 
 **The cards.** `ProjectToolCards` is inert unless a message carries a
-`projects_*` tool, so the same cards render in the main chat app. Five kinds:
+`skill-projects` tool, so the same cards render in the main chat app. Five
+kinds. **S1 builds `TaskListCard` and a titled text card for every other
+read.** `PlanCard` and `ReportCard` are S4, `ActionResultCard` is S2.
 
 | Card | For | Action |
 |---|---|---|
