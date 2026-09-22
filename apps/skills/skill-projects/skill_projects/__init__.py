@@ -9,6 +9,25 @@ Spec: ``project-docs/specs/projects_ai_chat.md``.
 tool that is not exported is in ``manifest.PLANNED`` with its slice.
 """
 
+from skill_projects.guarded import (
+    archive_project,
+    archive_task,
+    bulk_update,
+    delete_attachment,
+    delete_comment,
+    delete_field,
+    delete_status,
+    delete_tag,
+    delete_type,
+    delete_view,
+    merge_tags,
+    merge_tasks,
+    move_project,
+    report_delete,
+    revert_activity,
+    set_status_set,
+    unarchive_project,
+)
 from skill_projects.reads import (
     analytics_finished,
     analytics_load,
@@ -108,4 +127,22 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "update_status",
     "update_tag",
     "update_type",
+    # Class C — hard to undo, one act one card, the impact first (S3)
+    "archive_project",
+    "archive_task",
+    "bulk_update",
+    "delete_attachment",
+    "delete_comment",
+    "delete_field",
+    "delete_status",
+    "delete_tag",
+    "delete_type",
+    "delete_view",
+    "merge_tags",
+    "merge_tasks",
+    "move_project",
+    "report_delete",
+    "revert_activity",
+    "set_status_set",
+    "unarchive_project",
 ]

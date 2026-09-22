@@ -302,25 +302,9 @@ PLANNED: dict[str, str] = {
     # S2 (2026-09-22) shipped the fifteen daily class B verbs. S2b
     # (2026-09-23) shipped the rest of class B and the two reads it needed
     # (`recurrence`, `my_task`).
-    # S3 — class C
+    # S3 (2026-09-23) shipped the seventeen class C acts (`guarded.py`).
+    # WS-39 S6b (2026-09-23) added the personal-areas read.
     "my_areas": "S6b",
-    "move_project": "S3",
-    "archive_project": "S3",
-    "unarchive_project": "S3",
-    "archive_task": "S3",
-    "bulk_update": "S3",
-    "merge_tasks": "S3",
-    "delete_comment": "S3",
-    "revert_activity": "S3",
-    "delete_status": "S3",
-    "set_status_set": "S3",
-    "delete_type": "S3",
-    "delete_field": "S3",
-    "delete_tag": "S3",
-    "merge_tags": "S3",
-    "delete_view": "S3",
-    "report_delete": "S3",
-    "delete_attachment": "S3",
     # S4 — workflows and the reads they need
     "project_access": "S4",
     "views": "S4",

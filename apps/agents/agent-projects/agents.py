@@ -112,7 +112,11 @@ def build_agents() -> list[Any]:
                 "types, fields and tags, sets a repeat rule, captures a "
                 "private task and files the member's own triage. Every write "
                 "shows the member a card first and does nothing if they "
-                "decline. It never deletes a project or a task."
+                "decline. Archives, restores and moves a project, archives, "
+                "merges and bulk-edits tasks, deletes a status, type, field, "
+                "tag, view, report, comment or attachment and reverts a "
+                "change, one act per card with the counts on the card. It "
+                "never deletes a project or a task."
             ),
             tools=list(_TOOLS),
         )

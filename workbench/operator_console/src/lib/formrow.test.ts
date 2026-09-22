@@ -110,12 +110,42 @@ describe("pricing says what it actually enforces", () => {
     }
   });
 
-  it("⚠️ 'margin' on a card and 'target' on its button are different words", () => {
-    // They were both "margin". The row reports what a tier EARNS, which needs
-    // a price to exist — so it read "—" while the button read "Change the
-    // margin", and the card contradicted its own control.
+  it("⚠️ the margin button never uses the card row's word, and says it is optional", () => {
+    // 🔴 Two reports, two days. First: the row and the button were both
+    // "margin", and the row read "—" while the button read "Change the
+    // margin" — a card contradicting its own control. Then: *"what does set
+    // the price and set a target margin even have [to do with each other]"*.
+    //
+    // Nothing. `Set the price` is the only control that changes a bill. This
+    // one writes `margin_multiplier` (the Console calls it "an intention")
+    // and `margin_floor` (an alarm). Neither is read by `router.py` or
+    // `credits.py`. So the label carries "optional" and drops the word the
+    // row above it already owns.
     const BOARD = readFileSync(join(SRC, "app", "pricing", "PriceBoard.tsx"), "utf8");
-    expect(BOARD).toContain("Set a target margin");
+    expect(BOARD).toContain("Profit goal (optional)");
     expect(BOARD).not.toContain('"Set the margin"');
+    expect(BOARD).not.toContain('"Set a target margin"');
+    // And the editor leads by saying what it does NOT do.
+    expect(BOARD).toContain("This changes no bill.");
+  });
+
+  it("🔴 the token boxes are explained in the page, not in a tooltip", () => {
+    // *"I do not know what cached input is, and what do I need to put in
+    // that box."* Every word of the explanation lived in a `title`, which a
+    // person must already suspect is there before they can read it.
+    const BOARD = readFileSync(join(SRC, "app", "pricing", "PriceBoard.tsx"), "utf8");
+    expect(BOARD).toContain("the text a customer sends");
+    expect(BOARD).toContain("the text the AI writes back");
+    expect(BOARD).toContain("repeated text the vendor already has");
+  });
+
+  it("🔴 a blank cached box is named as a REVENUE hole, not a default", () => {
+    // `RateCard.cached_input_per_1m` defaults to `Decimal(0)`. Blank does not
+    // mean "same as input" — it means the customer pays NOTHING for those
+    // tokens, and a re-sent chat history is mostly those tokens.
+    const BOARD = readFileSync(join(SRC, "app", "pricing", "PriceBoard.tsx"), "utf8");
+    expect(BOARD).toContain("Leave it blank and the customer pays nothing");
+    // And it says so again, live, while the form is in that state.
+    expect(BOARD).toContain("Cached input is empty");
   });
 });

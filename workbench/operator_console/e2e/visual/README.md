@@ -17,6 +17,10 @@ So the stub is a whole fake Console, and the app is pointed at it.
 
 ## Run it
 
+⚠️ `playwright-core` is a devDependency of THIS app. The first version of
+this README told you to run the scripts here. The package lived only in the
+control plane, so each one died on `ERR_MODULE_NOT_FOUND`.
+
 Three terminals, or three background jobs.
 
 ```
