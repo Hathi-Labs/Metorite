@@ -1276,7 +1276,7 @@ line — never reclaim a number by deleting the other entry.
   ⚠️ These need GATEWAY work, not just client wiring: `routes/tasks/ai.py`
   names `gtd_items` **12 times**. Probably its own slice.
   📌 **Measured and still true:** `fetchTaskSettings` needs **no** work —
-  `gtd_settings`/`gtd_day_state`/`gtd_rollover_log` SURVIVE (D53.6).
+  `user_settings`/`calendar_day_state`/`calendar_rollover_log` SURVIVE (D53.6).
   📌 **Three decisions still open:**
   (1) `workflow_stage` writes need a status name → `status_id` lookup against
   the task's own project; `splitPatch` THROWS on it today rather than dropping
@@ -1408,7 +1408,7 @@ line — never reclaim a number by deleting the other entry.
   unauthenticated capture). Decide each deliberately — give the address an `app_user`,
   or delete the row — rather than widening the guard. The failure being avoided is
   not lost data; it is one member's private task published into another's lens.
-  ⚠️ **`gtd_settings` / `gtd_day_state` / `gtd_rollover_log` are NOT part of this** —
+  ⚠️ **`user_settings` / `calendar_day_state` / `calendar_rollover_log` are NOT part of this** —
   Calendar state, they survive (D53.6). Nor are the five `people*` tables, nor
   `gtd_horizons` (WS-21), nor `gtd_reviews` (WS-18), nor the local project tree
   (waits on slice 5). All pinned by name in `test_gtd_backfill.py`.
@@ -2050,7 +2050,7 @@ line — never reclaim a number by deleting the other entry.
   down for the live customer. D57.7 leaves no fallback.
 - **✅ H-72 IS CLOSED, and its Check was looking in the wrong place.** It named
   a `task_settings` table. No such table exists. The columns live on
-  `gtd_settings` and `email_assistant_settings`. BOTH hold **zero rows** on the
+  `user_settings` and `email_assistant_settings`. BOTH hold **zero rows** on the
   tenant database. So no raw model id is stored anywhere, and nothing breaks
   on the flip. ⚠️ A Check that names a table that does not exist reads
   as "closed" whatever the truth is. Confirm you are on the tenant database by
@@ -2910,35 +2910,38 @@ line — never reclaim a number by deleting the other entry.
   migration 207
 - **Added:** 2026-09-21 · the every-app-by-default session
 
-### H-151 · The `gtd_` name is off the People tables. Two families are left · [AGENT]
-- **Check:** `rg -l "gtd_settings|gtd_day_state|gtd_rollover_log|gtd_items|gtd_waiting"
+### H-151 · The `gtd_` name is off eight tables. The task store is left · [AGENT]
+- **Check:** `rg -l "gtd_items|gtd_waiting|gtd_spaces|gtd_folders|gtd_contexts"
   --glob '!infra/postgres/generated' apps packages` → any hit means this is open.
-- **What is done:** the People family, on 2026-09-21. `gtd_people` is
-  `people`, and the four `gtd_person_*` tables are `people_*`. The mechanism
-  is a guarded rename prologue INSIDE the migration that creates each table
-  (49, 74, 174, 176), which is the only shape of the three that survives a
-  replay. `tests/unit/test_people_rename_upgrade.py` is the fence, and
-  `people_center_app.md` §7.0 is the record.
-- **What is left, in two slices:**
-  1. **The Calendar three** — `gtd_settings`, `gtd_day_state`,
-     `gtd_rollover_log`. D53.6 says these are the Calendar's, NOT the old
-     task store, so they want Calendar names and not deletion.
-  2. **The task store** — `gtd_items`, `gtd_waiting`, `gtd_projects`,
-     `gtd_spaces`, `gtd_folders`, `gtd_contexts`, `gtd_attachments`,
-     `gtd_horizons`, `gtd_reviews`. ⚠️ **Do this one AFTER H-29**, which
-     drops most of them. Renaming a table we are about to drop is work we
-     throw away, and it makes 190's drop list wrong in the meantime.
-- ⚠️ **Two traps, both measured on 2026-09-21.** A sweep rewrites the rename
-  prologue itself into `ALTER TABLE new RENAME TO new`, a silent no-op — so
-  sweep first, and add the prologue after. And a short new name can be a
-  PREFIX of its own family, which turns every `"FROM x" in sql` test fake
-  into a wrong one. `tests/unit/_sql_match.py` is the answer to the second.
-- **The agent tool names are NOT part of this.** `gtd_people(query)` in
-  `skill_task_gtd` is a tool, not a table. The sweep renamed it, and that was
-  reverted. Renaming the tool family is a separate decision.
+- **What is done.** Slice 1, the People family, on 2026-09-21: `gtd_people` is
+  `people`, and the four `gtd_person_*` tables are `people_*`. Slice 2, on
+  2026-09-22: `gtd_day_state` is `calendar_day_state`, `gtd_rollover_log` is
+  `calendar_rollover_log`, and `gtd_settings` is `user_settings`.
+  `tests/unit/test_gtd_rename_upgrade.py` is the one fence for all eight, and
+  `people_center_app.md` §7.0 carries the mechanism.
+- **What is left: the task store** — `gtd_items`, `gtd_waiting`,
+  `gtd_projects`, `gtd_spaces`, `gtd_folders`, `gtd_contexts`,
+  `gtd_attachments`, `gtd_horizons`, `gtd_reviews`. ⚠️ **Do this AFTER H-29**,
+  which drops most of them. Renaming a table we are about to drop is work we
+  throw away, and it makes 190's drop list wrong in the meantime.
+- ⚠️ **Three traps, all measured.** A sweep rewrites the rename prologue
+  itself into `ALTER TABLE new RENAME TO new`, a silent no-op — so sweep
+  first, and add the prologue after. A short new name can be a PREFIX of its
+  own family, which turns every `"FROM x" in sql` test fake into a wrong one
+  (`tests/unit/_sql_match.py` answers that). And an assertion over a whole
+  migration file reads the prologue's own warning comment as the defect, so
+  measure the executable block.
+- **The agent tool names are NOT part of this.** `gtd_people(query)` and its
+  family in `skill_task_gtd` are tools, not tables. The slice 1 sweep renamed
+  one and that was reverted. Renaming the tool family is a separate decision,
+  and it should move all of them at once or none.
+- **The HTTP surface has not moved once**, across both slices. No route path
+  and no JSON field carries a table name, so no client call had to change.
+  `tests/unit/test_client_route_contract.py` is the fence that keeps it that
+  way, and it was proved to bite by moving a route and watching it fail.
 - **Authority:** owner directive, 2026-09-21 — *"I really don't want GTD
   anymore... update the naming convention for all of the table names"*
-- **Added:** 2026-09-21 · the People rename session
+- **Added:** 2026-09-21 · the People rename session. **Updated:** 2026-09-22.
 
 ### H-144 · `GET /people/{id}/editable` has no caller · [AGENT]
 - **Check:** `rg -n "editable" workbench/control_plane/src/app/people/lib/api.ts`

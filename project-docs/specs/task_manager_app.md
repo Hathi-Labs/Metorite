@@ -746,7 +746,7 @@ old provider-stage grouping was removed). The list view is **status-segmented**
 (`TaskListGrouped`): Next Actions groups rows under collapsible **workflow-stage**
 headers (same global stages as the board), each with a count. Stages are
 edited/created/renamed/reordered in Settings → Kanban stages (`StageEditor`,
-`gtd_settings.workflow_stages`, per-user global); a card whose stage was renamed/
+`user_settings.workflow_stages`, per-user global); a card whose stage was renamed/
 removed falls back to the first stage (guarded by `workflowStages.includes`).
 **Manual drag-to-reorder** works in BOTH list and board — a drop computes a
 fractional `gtd_items.sort_key` (`DOUBLE PRECISION`, `rankForDrop` = midpoint of
@@ -940,7 +940,7 @@ pushing an email-origin item to a PM tool appends "— Captured from email
 — <sender>: <subject>" to the task description so the assignee sees the
 source; the agent's `gtd_list` lines carry "from email: <sender>".
 
-**Per-user settings (2026-07-03)** — `gtd_settings` (migration 51) +
+**Per-user settings (2026-07-03)** — `user_settings` (migration 51) +
 `GET/PUT /tasks/settings` + a Settings dialog in the tasks sidebar (email-app
 model-roles parity, per USER since GTD is personal): pick the tier/model per
 AI function — assistant chat (default tier-powerful, the rail now locks to
@@ -1197,7 +1197,7 @@ so "the UIs re-point" is not one reviewable diff.
 
 | | Slices 1–4 — **BUILT 2026-08-25** | Slice 5 — H-33 |
 |---|---|---|
-| **Reads** | `fetchItems` → `/projects/my/inbox` (all · done · archive) · **slice 2:** the day planner's four reads, via `/projects/my/calendar/*` | `apiItemDetail`, `apiListSubtasks`, `fetchProjects`, `fetchStatusCatalog` — **not** `fetchTaskSettings`, whose `gtd_settings` survives (D53.6) |
+| **Reads** | `fetchItems` → `/projects/my/inbox` (all · done · archive) · **slice 2:** the day planner's four reads, via `/projects/my/calendar/*` | `apiItemDetail`, `apiListSubtasks`, `fetchProjects`, `fetchStatusCatalog` — **not** `fetchTaskSettings`, whose `user_settings` survives (D53.6) |
 | **Writes** | capture · patch · complete · defer · archive · delete/restore/purge · delegate · **slice 3:** the agent apply path and the nightly roll-over sweep, via `TaskSource.apply_blocks` | organize · bulk · merge/file-under · subtasks · the AI routes · `createLocalProject` (writes `gtd_projects`, should write `pm_projects`) |
 | **Retired, not ported** | **slice 4:** `/accounts*`, `POST /tasks/sync`, `POST /items/{id}/push`, the workspace/folder/list writes, and `apiCalendarRange` (no callers at all) | — |
 | ⚠️ **NOT retired** | | `/hierarchy` · `/spaces` · `/folders` · `/local-projects` are the **LOCAL** Space→Folder→Project tree, not a connector surface (`routes/tasks/hierarchy.py`: *"SYNCED projects are NOT here"*). They write `gtd_projects`; their destination is `pm_projects`, which nests via `parent_task_id`’s sibling `parent_project_id`. A **port**, and H-33 said otherwise for a day. |
@@ -1251,7 +1251,7 @@ S3a is the **expand** half of R6: new readers, old tables untouched, nothing dro
 The backfill (S3b) and the drop (S3c) are separate releases and both are
 🔴 **OWNER-GATE** (`work_plan.md` §6 (f)).
 
-⚠️ **Do not drop `gtd_settings`, `gtd_day_state` or `gtd_rollover_log` with the rest.**
+⚠️ **Do not drop `user_settings`, `calendar_day_state` or `calendar_rollover_log` with the rest.**
 They are per-member **calendar** state, they belong to D54's app, and they survive the
 retirement (D53.6). A sweep that deletes everything matching `gtd_*` takes the
 calendar's preferences, day state and roll-over log with it.

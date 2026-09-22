@@ -454,10 +454,10 @@ CREATE POLICY gtd_contexts_tenant_isolation ON gtd_contexts
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
-ALTER TABLE gtd_day_state ENABLE ROW LEVEL SECURITY;
-ALTER TABLE gtd_day_state FORCE  ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS gtd_day_state_tenant_isolation ON gtd_day_state;
-CREATE POLICY gtd_day_state_tenant_isolation ON gtd_day_state
+ALTER TABLE calendar_day_state ENABLE ROW LEVEL SECURITY;
+ALTER TABLE calendar_day_state FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS gtd_day_state_tenant_isolation ON calendar_day_state;
+CREATE POLICY gtd_day_state_tenant_isolation ON calendar_day_state
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
@@ -531,17 +531,17 @@ CREATE POLICY gtd_reviews_tenant_isolation ON gtd_reviews
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
-ALTER TABLE gtd_rollover_log ENABLE ROW LEVEL SECURITY;
-ALTER TABLE gtd_rollover_log FORCE  ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS gtd_rollover_log_tenant_isolation ON gtd_rollover_log;
-CREATE POLICY gtd_rollover_log_tenant_isolation ON gtd_rollover_log
+ALTER TABLE calendar_rollover_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE calendar_rollover_log FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS gtd_rollover_log_tenant_isolation ON calendar_rollover_log;
+CREATE POLICY gtd_rollover_log_tenant_isolation ON calendar_rollover_log
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
-ALTER TABLE gtd_settings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE gtd_settings FORCE  ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS gtd_settings_tenant_isolation ON gtd_settings;
-CREATE POLICY gtd_settings_tenant_isolation ON gtd_settings
+ALTER TABLE user_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_settings FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS gtd_settings_tenant_isolation ON user_settings;
+CREATE POLICY gtd_settings_tenant_isolation ON user_settings
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 

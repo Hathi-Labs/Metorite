@@ -24,10 +24,11 @@ import { UndoToast } from "@/app/tasks/components/UndoToast";
  * recorded as D54.5, because two specs said otherwise. `gtd_time_blocks` and
  * `calendar_accounts` **do not exist**; scheduling is fields on the task row
  * (`routes/tasks/calendar.py` writes `gtd_items` directly), and the only
- * calendar-owned tables are `gtd_settings`, `gtd_day_state` and
- * `gtd_rollover_log`. That is why this page imports the task store rather than
- * owning one, and why those three tables must survive the `gtd_*` retirement
- * (D53.6).
+ * calendar-owned tables are `calendar_day_state` and `calendar_rollover_log`,
+ * plus the planning half of `user_settings` (which the Tasks app shares). That
+ * is why this page imports the task store rather than owning one, and why
+ * those three tables survive the `gtd_*` retirement (D53.6). They were
+ * `gtd_day_state`, `gtd_rollover_log` and `gtd_settings` until 2026-09-22.
  *
  * **Why it imports from `@/app/tasks/lib/`.** That is the shared task store,
  * and sharing it is the point — a second copy would be the CLAUDE.md §5

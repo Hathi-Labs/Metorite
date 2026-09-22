@@ -5,7 +5,7 @@
 -- with a configurable philosophy, breaks between long focus runs, and an
 -- optional protected lunch.
 --
--- What (all on gtd_settings, additive + idempotent):
+-- What (all on user_settings, additive + idempotent):
 --   planning_prompt      free-text standing instruction the LLM planner obeys
 --                        every time ("leave breathing room, batch calls, protect
 --                        deep work…"). NULL → the app's sensible default is used.
@@ -20,7 +20,7 @@
 --   the packer leave room to be human.
 -- Depends on: 48_task_manager_gtd.sql, 77_gtd_calendar_prefs.sql.
 
-ALTER TABLE gtd_settings
+ALTER TABLE user_settings
     ADD COLUMN IF NOT EXISTS planning_prompt    TEXT,
     ADD COLUMN IF NOT EXISTS max_focus_run_mins INT  DEFAULT 90,
     ADD COLUMN IF NOT EXISTS break_mins         INT  DEFAULT 10,

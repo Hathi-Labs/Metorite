@@ -180,13 +180,13 @@ BASELINE_UNSCOPED = {
     "email_rule_patterns", "email_rules", "email_senders", "email_sync_log",
     "email_thread_status", "email_voice_profiles",
 # gtd_*
-    "gtd_attachments", "gtd_contexts", "gtd_day_state", "gtd_folders",
+    "gtd_attachments", "gtd_contexts", "calendar_day_state", "gtd_folders",
     # ⚠️ `people` LEFT this list on 2026-09-21. Migration 209 put
     # `organization_id` on the NUMBERED ladder for that one table, because
     # H-125 needed a per-tenant unique index and could not wait for the
     # whole generated phase (H-104). The other 142 tables still wait.
     "gtd_horizons", "gtd_items", "people_resumes",
-    "gtd_projects", "gtd_reviews", "gtd_rollover_log", "gtd_settings",
+    "gtd_projects", "gtd_reviews", "calendar_rollover_log", "user_settings",
     "gtd_spaces", "gtd_waiting",
 # live_*
     "live_session",

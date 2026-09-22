@@ -8,7 +8,7 @@
 --       NULL = unset → the board treats it as the first configured stage.
 --   gtd_items.archived_at    — when set, the task is archived: hidden from every
 --       active view and only shown in the Archive view. Independent of DONE.
---   gtd_settings.workflow_stages — the user's ordered board stages (JSONB array
+--   user_settings.workflow_stages — the user's ordered board stages (JSONB array
 --       of strings). Default matches the built-in stage set.
 -- Why:  the board grouped only by @context; a real workflow board (Jira/ClickUp
 --       style) needs per-user configurable stages, and archiving keeps finished
@@ -25,6 +25,6 @@ ALTER TABLE gtd_items
 CREATE INDEX IF NOT EXISTS idx_gtd_items_archived
     ON gtd_items(user_id, archived_at);
 
-ALTER TABLE gtd_settings
+ALTER TABLE user_settings
     ADD COLUMN IF NOT EXISTS workflow_stages JSONB
         NOT NULL DEFAULT '["TODO", "IN PROCESS", "WAITING FOR", "DONE"]'::jsonb;

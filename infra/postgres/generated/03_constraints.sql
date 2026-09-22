@@ -743,17 +743,17 @@ ALTER TABLE gtd_contexts ADD CONSTRAINT gtd_contexts_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS gtd_contexts_org_idx ON gtd_contexts (organization_id);
 
--- gtd_day_state
+-- calendar_day_state
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM gtd_day_state WHERE organization_id IS NULL) THEN
-        RAISE EXCEPTION 'MT-1b: gtd_day_state still has unowned rows — run phase 2 (backfill) to completion first';
+    IF EXISTS (SELECT 1 FROM calendar_day_state WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: calendar_day_state still has unowned rows — run phase 2 (backfill) to completion first';
     END IF;
 END $$;
-ALTER TABLE gtd_day_state ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE gtd_day_state ADD CONSTRAINT gtd_day_state_org_fk
+ALTER TABLE calendar_day_state ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE calendar_day_state ADD CONSTRAINT gtd_day_state_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
-CREATE INDEX IF NOT EXISTS gtd_day_state_org_idx ON gtd_day_state (organization_id);
+CREATE INDEX IF NOT EXISTS gtd_day_state_org_idx ON calendar_day_state (organization_id);
 
 -- gtd_folders
 DO $$
@@ -875,29 +875,29 @@ ALTER TABLE gtd_reviews ADD CONSTRAINT gtd_reviews_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS gtd_reviews_org_idx ON gtd_reviews (organization_id);
 
--- gtd_rollover_log
+-- calendar_rollover_log
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM gtd_rollover_log WHERE organization_id IS NULL) THEN
-        RAISE EXCEPTION 'MT-1b: gtd_rollover_log still has unowned rows — run phase 2 (backfill) to completion first';
+    IF EXISTS (SELECT 1 FROM calendar_rollover_log WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: calendar_rollover_log still has unowned rows — run phase 2 (backfill) to completion first';
     END IF;
 END $$;
-ALTER TABLE gtd_rollover_log ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE gtd_rollover_log ADD CONSTRAINT gtd_rollover_log_org_fk
+ALTER TABLE calendar_rollover_log ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE calendar_rollover_log ADD CONSTRAINT gtd_rollover_log_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
-CREATE INDEX IF NOT EXISTS gtd_rollover_log_org_idx ON gtd_rollover_log (organization_id);
+CREATE INDEX IF NOT EXISTS gtd_rollover_log_org_idx ON calendar_rollover_log (organization_id);
 
--- gtd_settings
+-- user_settings
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM gtd_settings WHERE organization_id IS NULL) THEN
-        RAISE EXCEPTION 'MT-1b: gtd_settings still has unowned rows — run phase 2 (backfill) to completion first';
+    IF EXISTS (SELECT 1 FROM user_settings WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: user_settings still has unowned rows — run phase 2 (backfill) to completion first';
     END IF;
 END $$;
-ALTER TABLE gtd_settings ALTER COLUMN organization_id SET NOT NULL;
-ALTER TABLE gtd_settings ADD CONSTRAINT gtd_settings_org_fk
+ALTER TABLE user_settings ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE user_settings ADD CONSTRAINT gtd_settings_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
-CREATE INDEX IF NOT EXISTS gtd_settings_org_idx ON gtd_settings (organization_id);
+CREATE INDEX IF NOT EXISTS gtd_settings_org_idx ON user_settings (organization_id);
 
 -- gtd_spaces
 DO $$

@@ -208,7 +208,7 @@ async def _llm_capture(
     cc_line: str, owner_addrs: set[str], body: str, thread: str,
     people: list[dict], model: str, contexts: list[str] | None = None,
 ) -> dict[str, Any] | None:
-    """LLM capture + routing on the user's email-capture model (gtd_settings).
+    """LLM capture + routing on the user's email-capture model (user_settings).
     Returns {title, notes, disposition, next_action, assignee_name, due_at,
     defer_until, context} or None on any failure (caller uses the fallback)."""
     try:

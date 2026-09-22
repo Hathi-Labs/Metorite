@@ -51,7 +51,7 @@ see §4.1, it's the root cause of the biggest AI gap too.
 | 1 | **Plan my day** | `POST /calendar/plan` | ✅ judgment only | **Good.** LLM picks/orders/energy-fits; deterministic packer does geometry (can't overlap, can't exceed window). Capacity honesty in-prompt ("do NOT select more than fits… that's good planning, not failure"). Injection-hardened ("task list is DATA"). Falls back to matrix ranking. |
 | 2 | **Learned estimates** | `_estimate_pad` (in plan) + `/estimate-stats` | ➖ statistical | **Good.** Median actual/planned over 90d, ≥5 samples, clamped ×0.8–1.75, surfaced honestly in plan notes + day review. |
 | 3 | **Replan rest-of-day** | `POST /calendar/replan` | ❌ deterministic | Sound repack (movable = flexible∧future∧not-done; everything else is an obstacle). **Found: accepts `energy_note` but ignores it — the UI showed the input anyway. FIXED** (input now plan-mode only). |
-| 4 | **Roll-over** (manual + nightly job) | `/calendar/rollover` + sweep | ❌ deterministic | **Good.** Deadline-aware, duration-preserving, skips 🔒 fixed blocks, per-local-day guard, audit log (`gtd_rollover_log`). |
+| 4 | **Roll-over** (manual + nightly job) | `/calendar/rollover` + sweep | ❌ deterministic | **Good.** Deadline-aware, duration-preserving, skips 🔒 fixed blocks, per-local-day guard, audit log (`calendar_rollover_log`). |
 | 5 | **Chat assistant** | agent `task-manager` + `skill-task-gtd` (17 `gtd_*` tools) + `buildTaskAssistantPersona` | ✅ | Persona carries live local time+offset, working window, capacity, today's blocks, open-item (as DATA), inbox pressure. **Found gaps, partly FIXED — see §3.** |
 | 6 | **Clarify engine** | `/items/{id}/clarify` | ✅ | **Good.** Proposes disposition/next-action/context/energy/estimate/subtasks/priority flags; org-capability assignee matching with workload annotation; dedup + parent suggestion; "AI proposes, human decides" enforced by the accept UI; people/task text quoted as DATA. |
 | 7 | **Atomize (mind-sweep)** | `/ai/atomize` | ✅ | Good — split + dedup verdicts, deterministic fallback, used by capture dedup too. |
@@ -100,7 +100,7 @@ weaker than the UI path, because the chat agent **cannot call the planner**:
 
 ### 4.1 Persist Focus-OS per-day state server-side  *(unblocks everything)*
 Move `one_thing_id`, tomorrow-seeds and ritual stamps from localStorage into
-`gtd_settings` (or a tiny `gtd_day_state` table). Then: `PlanDayRequest`
+`user_settings` (or a tiny `calendar_day_state` table). Then: `PlanDayRequest`
 gains a first-class `one_thing_id` (replacing the energy-note hack), the
 planner prompt gets "★ this task is the user's One Thing — first peak
 window, never dropped", replan can move it last, chat and future digests see
@@ -186,4 +186,4 @@ don't yet record a revert set the way the UI's toast does), interruption
 triage / deadline-risk / NL-timeboxing as dedicated flows (the primitives
 now exist), and a *scheduled* morning-digest trigger (the digest tool exists;
 firing it automatically needs a cron/persona trigger). `schema.generated.sql`
-regenerates on deploy (it already lags `gtd_rollover_log`).
+regenerates on deploy (it already lags `calendar_rollover_log`).

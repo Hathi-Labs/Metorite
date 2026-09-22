@@ -2,7 +2,7 @@
 -- stages (task_manager_app.md).
 --
 -- What:
---   gtd_settings.status_stage_map — a JSON object {clickup_status: local_stage}
+--   user_settings.status_stage_map — a JSON object {clickup_status: local_stage}
 --       mapping each UNIQUE upstream status name (across every connected
 --       ClickUp project) to one of the user's workflow_stages
 --       (TODO / IN PROCESS / WAITING FOR / DONE). Keyed by the normalized
@@ -25,5 +25,5 @@
 -- callers fall back to the name heuristic + first stage, so the board works.
 -- Depends on: 48_task_manager_gtd.sql. Idempotent.
 
-ALTER TABLE gtd_settings
+ALTER TABLE user_settings
     ADD COLUMN IF NOT EXISTS status_stage_map JSONB NOT NULL DEFAULT '{}'::jsonb;

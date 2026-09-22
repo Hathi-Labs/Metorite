@@ -1,7 +1,7 @@
 -- 55_gtd_mirror_done_tasks.sql — control whether completed provider tasks are
 -- mirrored into the local board (task_manager_app.md §5.1 dual-source model).
 --
--- What: one per-user boolean on gtd_settings —
+-- What: one per-user boolean on user_settings —
 --       mirror_done_tasks — when TRUE, the sync imports already-completed
 --                          provider tasks as SYNCED/DONE rows. When FALSE
 --                          (default), NEW closed tasks are skipped so a
@@ -15,5 +15,5 @@
 --       LOCAL-first list ordering.
 -- Depends on: 51_gtd_settings.sql. Idempotent.
 
-ALTER TABLE gtd_settings
+ALTER TABLE user_settings
     ADD COLUMN IF NOT EXISTS mirror_done_tasks BOOLEAN NOT NULL DEFAULT false;

@@ -206,7 +206,7 @@ UPDATE gtd_attachments SET organization_id = (SELECT id FROM organization WHERE 
 UPDATE gtd_contexts SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
-UPDATE gtd_day_state SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+UPDATE calendar_day_state SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE gtd_folders SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
@@ -239,10 +239,10 @@ UPDATE gtd_projects SET organization_id = (SELECT id FROM organization WHERE slu
 UPDATE gtd_reviews SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
-UPDATE gtd_rollover_log SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+UPDATE calendar_rollover_log SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
-UPDATE gtd_settings SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+UPDATE user_settings SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE gtd_spaces SET organization_id = (SELECT id FROM organization WHERE slug = 'default')

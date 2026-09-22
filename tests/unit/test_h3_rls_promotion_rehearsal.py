@@ -1339,8 +1339,8 @@ class TestProvisionOrgBindUnderForceRls:
 class TestCalendarRolloverBindUnderForceRls:
     """`_run_rollover_sweep` / `_rollover_one_user` under FORCE RLS (H4, MT-1d).
 
-    R7 name: ``calendar-rollover-bound-under-rls``. `gtd_settings` / `gtd_items` /
-    `gtd_rollover_log` are FORCE-RLS'd, so the pre-H4 unbound sweep read 0 rows
+    R7 name: ``calendar-rollover-bound-under-rls``. `user_settings` / `gtd_items` /
+    `calendar_rollover_log` are FORCE-RLS'd, so the pre-H4 unbound sweep read 0 rows
     and released nothing post-phase-4. The fix enumerates orgs from the EXEMPT
     `organization` table then binds `tenant_session(org)` per org / per user.
     """
@@ -1351,14 +1351,14 @@ class TestCalendarRolloverBindUnderForceRls:
 
     @staticmethod
     def _seed_rollover_user(admin_engine, *, org_id: str, user_id: str) -> str:
-        """Seed (as the RLS-bypassing admin) an auto_rollover ``gtd_settings`` row
+        """Seed (as the RLS-bypassing admin) an auto_rollover ``user_settings`` row
         + one OVERDUE flexible block for ``user_id`` in ``org_id``. Every INSERT
         stamps ``organization_id`` explicitly (the phase-1 DEFAULT reads the unset
         GUC as NULL for the admin). Returns the item id."""
         item_id = str(uuid.uuid4())
         with admin_engine.begin() as conn:
             conn.execute(text(
-                "INSERT INTO gtd_settings (user_id, timezone, auto_rollover, "
+                "INSERT INTO user_settings (user_id, timezone, auto_rollover, "
                 "last_rollover_date, organization_id) "
                 "VALUES (:u, 'UTC', true, NULL, :o)"),
                 {"u": user_id, "o": org_id})
@@ -1375,18 +1375,18 @@ class TestCalendarRolloverBindUnderForceRls:
         with admin_engine.begin() as conn:
             for u in user_ids:
                 conn.execute(text(
-                    "DELETE FROM gtd_rollover_log WHERE user_id = :u"), {"u": u})
+                    "DELETE FROM calendar_rollover_log WHERE user_id = :u"), {"u": u})
                 conn.execute(text(
                     "DELETE FROM gtd_items WHERE user_id = :u"), {"u": u})
                 conn.execute(text(
-                    "DELETE FROM gtd_settings WHERE user_id = :u"), {"u": u})
+                    "DELETE FROM user_settings WHERE user_id = :u"), {"u": u})
 
     async def test_the_sweep_rolls_over_each_org_green(self, promoted):
         """GREEN + cross-tenant: two orgs, each an auto-rollover user with an
         overdue block. The REAL `_run_rollover_sweep` — enumerating orgs from the
         exempt table, binding `tenant_session(org)` per org — RELEASES BOTH users'
         blocks and logs BOTH, never leaking one org's rows into the other's
-        processing. The `gtd_rollover_log` rows are stamped with the RIGHT tenant
+        processing. The `calendar_rollover_log` rows are stamped with the RIGHT tenant
         (the phase-1 DEFAULT under the bind), proving the per-org bind is real."""
         from gateway.routes.tasks.calendar import _run_rollover_sweep
 
@@ -1407,16 +1407,16 @@ class TestCalendarRolloverBindUnderForceRls:
                         "SELECT scheduled_start FROM gtd_items WHERE id = :id"),
                         {"id": ib}).scalar_one()
                     log_a = a.execute(text(
-                        "SELECT count(*) FROM gtd_rollover_log WHERE user_id=:u"),
+                        "SELECT count(*) FROM calendar_rollover_log WHERE user_id=:u"),
                         {"u": ua}).scalar_one()
                     log_b = a.execute(text(
-                        "SELECT count(*) FROM gtd_rollover_log WHERE user_id=:u"),
+                        "SELECT count(*) FROM calendar_rollover_log WHERE user_id=:u"),
                         {"u": ub}).scalar_one()
                     org_of_a = a.execute(text(
-                        "SELECT organization_id FROM gtd_rollover_log "
+                        "SELECT organization_id FROM calendar_rollover_log "
                         "WHERE user_id = :u LIMIT 1"), {"u": ua}).scalar_one()
                     org_of_b = a.execute(text(
-                        "SELECT organization_id FROM gtd_rollover_log "
+                        "SELECT organization_id FROM calendar_rollover_log "
                         "WHERE user_id = :u LIMIT 1"), {"u": ub}).scalar_one()
                 assert cleared_a is None, "org A's overdue block was not released"
                 assert cleared_b is None, "org B's overdue block was not released"
@@ -1468,7 +1468,7 @@ class TestCalendarRolloverBindUnderForceRls:
         """RED (the brick): the exact overdue-read and rollover-log INSERT the job
         runs, on an UNBOUND `acb_app` session under phase-4 RLS. The FORCE-RLS'd
         `gtd_items` read returns 0 rows (nothing would be released) and the
-        `gtd_rollover_log` INSERT's DEFAULT org is the unset GUC (NULL) → WITH
+        `calendar_rollover_log` INSERT's DEFAULT org is the unset GUC (NULL) → WITH
         CHECK refuses. This is the silent stop the per-org bind removes.
 
         NullPool + a fresh backend: a SET LOCAL GUC resets to '' (not NULL) on a
@@ -1492,7 +1492,7 @@ class TestCalendarRolloverBindUnderForceRls:
             with eng.connect() as c, c.begin():  # noqa: SIM117
                 with pytest.raises((DBAPIError, ProgrammingError)) as exc:
                     c.execute(text(
-                        "INSERT INTO gtd_rollover_log (user_id, item_id, title, "
+                        "INSERT INTO calendar_rollover_log (user_id, item_id, title, "
                         "rolled_from, rolled_to) "
                         "VALUES (:u, :id, 't', now(), NULL)"),
                         {"u": ua, "id": ia})
@@ -1522,7 +1522,7 @@ class TestCalendarRolloverBindUnderForceRls:
 class TestSchedulerBindUnderForceRls:
     """Task-manager scheduler enumeration/read under FORCE RLS (H4, MT-1d).
 
-    R7 name: ``tasks-scheduler-bound-under-rls``. `task_accounts` / `gtd_settings`
+    R7 name: ``tasks-scheduler-bound-under-rls``. `task_accounts` / `user_settings`
     are FORCE-RLS'd, so a single unbound read returned 0 rows post-phase-4 and the
     scheduler launched nothing. The fix enumerates orgs from the EXEMPT
     `organization` table then binds `tenant_session(org)` per org.

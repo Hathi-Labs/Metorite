@@ -598,9 +598,9 @@ def test_llm_clarify_proposes_matrix_flags_and_they_propagate():
 
 
 def test_urgent_window_setting_defaults_to_48h():
-    from gateway.routes.tasks.settings import GtdSettingsModel
+    from gateway.routes.tasks.settings import UserSettingsModel
 
-    assert GtdSettingsModel().urgent_window_hours == 48
+    assert UserSettingsModel().urgent_window_hours == 48
 
 
 # ---------------------------------------------------------------------------
@@ -1790,21 +1790,21 @@ def test_preview_uses_deterministic_default_not_the_llm():
 def test_settings_defaults_per_function():
     """Each AI function has its own default tier (email-app parity): chat on
     the strong tool-caller, high-volume triage on the fast tier."""
-    from gateway.routes.tasks.settings import DEFAULT_GTD_MODELS, GtdSettingsModel
+    from gateway.routes.tasks.settings import DEFAULT_TASK_MODELS, UserSettingsModel
 
-    assert DEFAULT_GTD_MODELS == {
+    assert DEFAULT_TASK_MODELS == {
         "chat": "tier-powerful",
         "clarify": "tier-balanced",
         "atomize": "tier-fast",
         "email_capture": "tier-fast",
     }
-    s = GtdSettingsModel()
+    s = UserSettingsModel()
     assert s.capture_dedup is True and s.auto_sync_on_open is True
 
 
 def test_ai_call_sites_use_configured_models():
     """The atomizer and the email-capture drafter run on the user's
-    configured tier (gtd_settings), not a hardcoded one."""
+    configured tier (user_settings), not a hardcoded one."""
     import inspect
 
     from gateway.routes.tasks import ai as tasks_ai
@@ -1822,9 +1822,9 @@ def test_ai_call_sites_use_configured_models():
 
 def test_settings_update_is_partial():
     """PUT /tasks/settings only touches provided fields (patch semantics)."""
-    from gateway.routes.tasks.settings import GtdSettingsPatch
+    from gateway.routes.tasks.settings import UserSettingsPatch
 
-    p = GtdSettingsPatch(capture_dedup=False)
+    p = UserSettingsPatch(capture_dedup=False)
     fields = {k: v for k, v in p.model_dump().items() if v is not None}
     assert fields == {"capture_dedup": False}
 
