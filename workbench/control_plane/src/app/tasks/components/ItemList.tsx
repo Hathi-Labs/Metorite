@@ -3,9 +3,10 @@
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
+import { categoricalAccent } from "@/lib/categorical";
 import { allSelected } from "@/lib/selection";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { useTaskStore, itemsForView } from "../lib/taskStore";
+import { useTaskStore, itemsForView, itemsInArea } from "../lib/taskStore";
 import { isUntagged } from "../lib/priority";
 import { ViewKey } from "../lib/types";
 import { isWaitingOverdue } from "../lib/waiting";
@@ -76,6 +77,12 @@ export function ItemList() {
   const bulkArchive = useTaskStore((s) => s.bulkArchive);
   const requestDelete = useTaskStore((s) => s.requestDelete);
   const groupByChoice = useTaskStore((s) => s.groupBy);
+  // The Area scope (S6b) — set from the sidebar, cleared from the header chip.
+  const selectedAreaId = useTaskStore((s) => s.selectedAreaId);
+  const selectArea = useTaskStore((s) => s.selectArea);
+  const selectedArea = useTaskStore((s) =>
+    s.selectedAreaId ? s.areas.find((a) => a.id === s.selectedAreaId) : undefined,
+  );
   const mode = useSyncExternalStore(subscribeMode, readMode, () => "list");
 
   // Multi-select for bulk archive/restore/delete. Lifted into the store so it
@@ -112,9 +119,12 @@ export function ItemList() {
   // context/assignee filter, then the active sort. `inView` is the pre-toolbar
   // set — used to populate the toolbar's context/assignee dropdowns so they
   // never offer an option that returns nothing.
+  // …and the selected Area (S6b) narrows every view the same way. Applied
+  // BEFORE the toolbar so its context/assignee dropdowns only offer what the
+  // Area holds. `itemsInArea` says why membership is `projectId` alone.
   const inView = useMemo(
-    () => itemsForView(items, view, context, sourceFilter),
-    [items, view, context, sourceFilter],
+    () => itemsInArea(itemsForView(items, view, context, sourceFilter), selectedAreaId),
+    [items, view, context, sourceFilter, selectedAreaId],
   );
   // The legacy Priority view (no longer a sidebar entry, but still reachable in
   // code) forces the priority sort so its sections read rank-ordered; every
@@ -215,6 +225,23 @@ export function ItemList() {
               <span className="ml-2 font-mono text-sm font-normal text-primary/80">
                 {context}
               </span>
+            )}
+            {selectedArea && (
+              /* The Area scope, named in the header — the sidebar row that
+                 set it is a drawer on a phone, so the list has to say it. */
+              <button
+                type="button"
+                onClick={() => selectArea(null)}
+                title="Show every area"
+                className="tech-transition ml-2 inline-flex items-center gap-1.5 rounded-full border border-border px-2 py-0.5 align-middle text-xs font-normal text-muted-foreground hover:bg-secondary hover:text-foreground"
+              >
+                <span
+                  aria-hidden
+                  className={`h-2 w-2 rounded-full ${categoricalAccent(selectedArea.name).dot}`}
+                />
+                {selectedArea.name}
+                <AppIcon name="X" className="h-3 w-3" />
+              </button>
             )}
           </h1>
           {/* List ⇄ Board view mode toggle (Jira-style). Sticky per browser. */}

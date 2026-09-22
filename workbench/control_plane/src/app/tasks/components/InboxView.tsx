@@ -87,6 +87,11 @@ export function InboxView() {
 
   // Respect the sidebar's Mine / ClickUp / All filter so the inbox matches the
   // rest of the app when local and synced tasks are mixed.
+  // ⚠️ The Inbox is NEVER scoped by an Area (S6b repair, 2026-09-23). A
+  // capture lands in the personal ROOT, before any Area, so an Area scope
+  // would empty this list and read as "nothing to process". The scope
+  // narrows the organised views only (`ItemList`). Clarify is where a
+  // capture gets its Area.
   const sourced = useMemo(() => {
     if (sourceFilter === "local") return items.filter((i) => i.source === "LOCAL");
     if (sourceFilter === "synced") return items.filter((i) => i.source !== "LOCAL");
@@ -331,7 +336,7 @@ export function InboxView() {
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5 sm:hidden">
         <AppIcon name="Inbox" className="h-4 w-4 shrink-0 text-primary" />
         <h1 className="text-sm font-bold text-foreground">Inbox</h1>
-        <span className="text-[11px] text-muted-foreground">Getting Things Done</span>
+        <span className="text-[11px] text-muted-foreground">Capture now, clarify later</span>
       </div>
 
       {/* Capture header — desktop only, ONE compact full-width row (mobile

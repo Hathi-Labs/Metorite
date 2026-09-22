@@ -13,10 +13,14 @@ import {
   lensBulkDispose,
   lensCapture,
   lensCaptureBatch,
+  lensCreateArea,
   lensDelegateItem,
+  lensDeleteArea,
   lensEnabled,
   lensEstimateStats,
+  lensFetchAreas,
   lensFetchItems,
+  lensFetchMyRoot,
   lensFetchProjects,
   lensFileUnder,
   lensItemDetail,
@@ -27,13 +31,15 @@ import {
   lensPlan,
   lensPatchItem,
   lensPurgeItem,
+  lensRenameArea,
   lensRestoreItem,
   lensStageAttachment,
   lensStageOptions,
   lensStatusCatalog,
   lensTrashItem,
 } from "./lens";
-import type { LensMoveRequest } from "./lens";
+import type { LensArea, LensAreaRemoval, LensMoveRequest } from "./lens";
+export type { LensArea, LensAreaRemoval } from "./lens";
 
 // ── The cutover seam (WS-39 S3a-client) ────────────────────────────────
 //
@@ -899,9 +905,89 @@ export interface LocalHierarchy {
   projects: LocalProjectNode[];
 }
 
-/** The LOCAL Space→Folder→Project tree (SYNCED projects live on their account
- *  hierarchy, not here). */
+// ── Areas (S6b) — what the local tree becomes under the flag ────────────────
+//
+// Under one store a member's own structure is their Areas: children of the
+// personal root, FLAT (D65). The four functions below are the doors, and the
+// four group-D functions after them fold onto the same doors under
+// `lensEnabled()`, so a caller that still speaks Space/Folder/Project gets
+// Areas back without being rewritten. `lens.test.ts` fences all eight.
+
+/**
+ * My Areas. Answers `[]` with the flag off: the legacy store has no such
+ * table, and a sidebar section that does not render needs nothing to render.
+ */
+export async function fetchAreas(): Promise<LensArea[]> {
+  if (!lensEnabled()) return [];
+  return lensFetchAreas();
+}
+
+/**
+ * My personal root's id and name (S6b repair). Null off-flag — the legacy
+ * store has no root node — and null for a member who has never captured.
+ * One door, shared with the status catalogue, so "which project is my root"
+ * has one answer.
+ */
+export async function fetchMyRoot(): Promise<{ id: string; name: string } | null> {
+  if (!lensEnabled()) return null;
+  return lensFetchMyRoot();
+}
+
+/** Why the three Area WRITES refuse with the flag off, rather than no-op. */
+const AREAS_NEED_LENS =
+  "Areas need the My Tasks lens (NEXT_PUBLIC_TASKS_LENS). The legacy store " +
+  "has no Areas to write — see docs/TASKS_LENS.md.";
+
+/**
+ * Mint an Area. LENS ONLY, and it throws with the flag off: a create that
+ * resolves and creates nothing is indistinguishable from one that worked.
+ */
+export async function apiCreateArea(name: string): Promise<LensArea> {
+  if (!lensEnabled()) throw new Error(AREAS_NEED_LENS);
+  return lensCreateArea(name);
+}
+
+export async function apiRenameArea(id: string, name: string): Promise<LensArea> {
+  if (!lensEnabled()) throw new Error(AREAS_NEED_LENS);
+  return lensRenameArea(id, name);
+}
+
+/** Remove an Area. The answer says whether it was deleted or archived. */
+export async function apiDeleteArea(id: string): Promise<LensAreaRemoval> {
+  if (!lensEnabled()) throw new Error(AREAS_NEED_LENS);
+  return lensDeleteArea(id);
+}
+
+/** An Area in the shape the retiring tree's callers still read. */
+function areaAsLocalProject(a: LensArea): LocalProjectNode {
+  return {
+    id: a.id,
+    outcome: a.name,
+    hasNextAction: a.openTasks > 0,
+    status: a.archived ? "DONE" : "ACTIVE",
+  };
+}
+
+/** Under the lens: no space or folder can exist (D65), so the tree is one flat level. */
+const AREAS_ARE_FLAT =
+  "Areas are flat (D65): there is no space or folder to create. Make an Area instead.";
+
+/**
+ * The LOCAL Space→Folder→Project tree (SYNCED projects live on their account
+ * hierarchy, not here).
+ *
+ * Under the lens the tree is my Areas: one flat level, no spaces and no
+ * folders, each Area a project node. `/tasks/hierarchy` is never called.
+ */
 export async function fetchLocalHierarchy(): Promise<LocalHierarchy> {
+  if (lensEnabled()) {
+    const areas = await lensFetchAreas();
+    return {
+      spaces: [],
+      folders: [],
+      projects: areas.filter((a) => !a.archived).map(areaAsLocalProject),
+    };
+  }
   const r = await gatewayFetch<Raw>(`/hierarchy`);
   return {
     spaces: ((r.spaces as Raw[]) ?? []).map((s) => ({
@@ -928,6 +1014,8 @@ export async function fetchLocalHierarchy(): Promise<LocalHierarchy> {
  *  space — an explicit user-approved provider write from the picker's
  *  "new folder" action. */
 export async function apiCreateSpace(name: string): Promise<LocalSpace> {
+  // Under the lens there is nothing above an Area to create (D65).
+  if (lensEnabled()) throw new Error(AREAS_ARE_FLAT);
   const r = await gatewayFetch<Raw>(`/spaces`, {
     method: "POST",
     body: JSON.stringify({ name }),
@@ -939,6 +1027,8 @@ export async function apiCreateFolder(
   spaceId: string,
   name: string,
 ): Promise<LocalFolder> {
+  // Under the lens there is nothing inside an Area but tasks (D65).
+  if (lensEnabled()) throw new Error(AREAS_ARE_FLAT);
   const r = await gatewayFetch<Raw>(`/folders`, {
     method: "POST",
     body: JSON.stringify({ space_id: spaceId, name }),
@@ -956,6 +1046,11 @@ export async function apiCreateLocalProject(req: {
   folderId?: string;
   purpose?: string;
 }): Promise<LocalProjectNode> {
+  // Under the lens a "local project" IS an Area. The placement and the
+  // purpose have no home there (an Area has a name and nothing else), and
+  // they are dropped knowingly: `spaceId`/`folderId` cannot be non-empty
+  // under the flag, because nothing can create a space or folder to name.
+  if (lensEnabled()) return areaAsLocalProject(await lensCreateArea(req.outcome));
   const r = await gatewayFetch<Raw>(`/local-projects`, {
     method: "POST",
     body: JSON.stringify({
