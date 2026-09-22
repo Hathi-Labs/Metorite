@@ -3044,13 +3044,14 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `uv run python -c "import skill_projects.manifest as m; print(sorted(m.PLANNED))"`
   → a non-empty list means at least one slice is still open. The value is
   the slice each tool belongs to.
-- **Why:** S1 shipped the reads. The owner asked for a chat that creates,
-  updates and archives too, with a card before every write. S2 is the
-  class B writes, S3 the class C acts with count-bearing cards, S4 the five
-  workflows, S5 the polish. `specs/projects_ai_chat.md` §10 is the order
-  and §10.2 the acceptance. The CRM write tools are the shape to copy
-  (`crm_app.md` WS-26d-write). Move a tool out of `PLANNED` when it ships.
-  The fence refuses a tool that is both built and planned.
+- **Why:** S1 shipped the reads and S2 the fifteen daily writes, each with
+  a card. The owner asked for archive too, with a card and a rule. S2b is
+  the rest of class B (vocabulary writes, edit a comment, recurrence, the
+  personal overlay), S3 the class C acts with count-bearing cards, S4 the
+  five workflows, S5 the polish. `specs/projects_ai_chat.md` §10 is the
+  order and §10.2 the acceptance. `writes.py` is the shape to copy, and it
+  copied the CRM's. Move a tool out of `PLANNED` when it ships. The fence
+  refuses a tool that is both built and planned.
 - **Authority:** `specs/projects_ai_chat.md` §3.2, §3.3, §5, §10 ·
   `skill_projects/manifest.py`
 - **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
@@ -3163,6 +3164,21 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `tests/unit/test_provision_mints_the_key.py` · `apps/services/customer_console/customer_console/keys.py::split_key`
 - **Added:** 2026-09-22 · the Projects chat S1 merge
 
+
+### H-161 · Two Projects chat follow-ups from the S2 review · [AGENT]
+- **Check:** `grep -n 'if "@" in raw' apps/skills/skill-projects/skill_projects/writes.py`
+  → a hit means the first item is still open.
+- **Why:** (1) `_resolve_assignee` passes any address-shaped string
+  through to `PUT /tasks/{id}/assignees`, which accepts any string
+  (D-PM-4). The card shows the address, so consent holds. The chat is still
+  wider than the picker. One directory read before the card would let the
+  card say "the directory does not know this address". (2)
+  `ActionResultCard` jumps to the FIRST `full_id` in a result. So the
+  receipt for `add_subtasks` opens the first subtask, under a heading that
+  names the parent. Print the parent's id first, or jump to it. Both are
+  small. Neither loses data.
+- **Authority:** `specs/projects_ai_chat.md` §3.2 · the S2 review, 2026-09-22
+- **Added:** 2026-09-22 · the Projects chat S2 session
 
 # DONE — deleted, not archived
 

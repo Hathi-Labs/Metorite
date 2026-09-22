@@ -46,6 +46,11 @@ __all__ = [
 ]
 
 
+#: What the timeline says a chat write came through (D-PM-36). Bounded by the
+#: gateway's ``ACTOR_VIA_PATTERN``; a value outside it is dropped, not refused.
+ACTOR_VIA = "chat:projects-assistant"
+
+
 class GatewayRefusal(RuntimeError):
     """A call the client refused, or the gateway refused. The message is what
     the agent relays to the member, so it is written for them."""
@@ -93,6 +98,9 @@ def headers() -> dict[str, str]:
         "Authorization": f"Bearer {internal_token()}",
         "Content-Type": "application/json",
         "X-User-Email": user,
+        # D-PM-36 — the activity row records that the assistant prepared the
+        # write. `created_by` stays the member; this is `meta.via`.
+        "X-Actor-Via": ACTOR_VIA,
     }
 
 

@@ -67,12 +67,47 @@ const OPENS_APP: Record<string, { app: "analytics" | "reports"; label: string }>
 };
 
 /**
+ * The class B writes (S2), with the label each result card wears. Every one
+ * showed the member a confirmation card BEFORE it ran — that card is the
+ * shared `ConfirmationCard` the chat already renders for `request_confirmation`.
+ * This card is the receipt: what changed, and a jump to the row.
+ */
+const ACTION_META: Record<string, { icon: string; label: string }> = {
+  create_task: { icon: "Plus", label: "Task created" },
+  update_task: { icon: "PenLine", label: "Task updated" },
+  assign: { icon: "UserPlus", label: "Assignees changed" },
+  comment: { icon: "MessageSquare", label: "Comment posted" },
+  add_subtasks: { icon: "ListTree", label: "Subtasks added" },
+  link_tasks: { icon: "Link", label: "Tasks linked" },
+  unlink_tasks: { icon: "Unlink", label: "Link removed" },
+  move_task: { icon: "MoveRight", label: "Task moved" },
+  watch: { icon: "Eye", label: "Watching changed" },
+  complete: { icon: "CheckCircle2", label: "Task done" },
+  defer: { icon: "CalendarClock", label: "Deferred" },
+  unarchive_task: { icon: "ArchiveRestore", label: "Task restored" },
+  create_project: { icon: "FolderPlus", label: "Project created" },
+  update_project: { icon: "PenLine", label: "Project updated" },
+  report_save: { icon: "FileText", label: "Report saved" },
+};
+
+/**
+ * The first line of a cancelled write, verbatim from `writes.py::CANCELLED`.
+ * `ProjectToolCards.test.ts` reads that file and holds the two equal, so an
+ * edit on either side fails a test instead of painting a decline green.
+ */
+export const CANCELLED = "Cancelled — nothing was changed.";
+
+/**
  * Is this a Projects tool at all? The manifest's tool names are the
  * `skill-projects` exports; anything else belongs to another card file.
  * Kept as a prefix-free explicit set so a `gtd_*` or email tool never lands
  * here — a name-based guess would collide the day two skills share a verb.
  */
-const PROJECT_TOOLS = new Set([...LIST_TOOLS, ...Object.keys(INFO_META)]);
+const PROJECT_TOOLS = new Set([
+  ...LIST_TOOLS,
+  ...Object.keys(INFO_META),
+  ...Object.keys(ACTION_META),
+]);
 
 /**
  * A tool the manifest names in a later slice. Recognised by the result text
@@ -249,6 +284,99 @@ function InfoCard({
   );
 }
 
+/** What a write tool's result says happened. Pure, so the card is testable. */
+export type ActionOutcome = "done" | "cancelled" | "refused" | "failed";
+
+/**
+ * Classify a write tool's result.
+ *
+ * A write that HAPPENED carries a `full_id:` line — every success return in
+ * `writes.py` does, so the card can jump to the row. A result without one
+ * is a refusal or a no-op the tool reported in prose ("A task needs a
+ * title.", "Nothing to change."). The first version painted those green
+ * under "Task moved"; the S2 verifier caught it. Now: no id, no success.
+ */
+export function classifyActionResult(
+  result: string,
+  status: ToolEvent["status"],
+): ActionOutcome {
+  if (status === "error") return "failed";
+  const text = (result || "").trim();
+  if (text.startsWith(CANCELLED)) return "cancelled";
+  return rowIdOf(text) ? "done" : "refused";
+}
+
+/** The row a write touched, from its `full_id:` line, or "". */
+export function rowIdOf(result: string): string {
+  return result.match(/full_id:\s*([0-9a-f-]{36})/i)?.[1] ?? "";
+}
+
+/**
+ * The receipt for a class B write. Four states, each with its own tone from
+ * the theme's tokens: done (success), refused by the tool in prose (muted),
+ * cancelled at the card (muted), failed (destructive). The confirmation
+ * card BEFORE the write is the shared `ConfirmationCard`; this is the
+ * receipt after it.
+ */
+function ActionResultCard({ event: e }: { event: ToolEvent }) {
+  const meta = ACTION_META[e.name] ?? { icon: "Wrench", label: genericLabel(e.name) };
+  const result = (e.result || "").trim();
+  const outcome = classifyActionResult(result, e.status);
+  const rowId = rowIdOf(result);
+  const openTask = useOpenTask();
+  const detail = withoutLegend(result)
+    .split("\n")
+    .filter((l) => !/^\s*full_id:/.test(l))
+    .join("\n")
+    .trim();
+  const tone =
+    outcome === "failed"
+      ? "border-destructive/40 text-destructive"
+      : outcome === "done"
+        ? "border-success/40 text-success"
+        : "border-border text-muted-foreground";
+  const icon =
+    outcome === "failed" ? "X" : outcome === "cancelled" ? "Ban" : outcome === "refused" ? "Info" : meta.icon;
+  const heading =
+    outcome === "failed"
+      ? `${meta.label} — failed`
+      : outcome === "cancelled"
+        ? "Cancelled"
+        : outcome === "refused"
+          ? "Not done"
+          : meta.label;
+  return (
+    <div className={`rounded-lg border bg-card/40 px-2.5 py-2 ${tone}`}>
+      <div className="flex items-start gap-2">
+        <span className="mt-0.5 flex-shrink-0">
+          <AppIcon name={icon} size={13} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-[11px] font-medium text-foreground">{heading}</div>
+          {detail && (
+            <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap line-clamp-4">
+              {detail}
+            </div>
+          )}
+          {outcome === "done" && rowId && (
+            <div className="mt-1">
+              <Button
+                variant="text"
+                size="none"
+                icon="ExternalLink"
+                onClick={() => openTask(rowId)}
+                className="text-[10px]"
+              >
+                Open in Projects
+              </Button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** A label for a tool this file has no entry for — the generic card. */
 function genericLabel(name: string): string {
   const words = name.replace(/_/g, " ").trim();
@@ -273,6 +401,10 @@ export default function ProjectToolCards({ toolEvents }: { toolEvents?: ToolEven
     const meta = INFO_META[e.name];
     if (meta) {
       items.push(<InfoCard key={e.id} event={e} icon={meta.icon} label={meta.label} />);
+      continue;
+    }
+    if (e.name in ACTION_META) {
+      items.push(<ActionResultCard key={e.id} event={e} />);
       continue;
     }
     // A tool the manifest added after this file was written. The generic

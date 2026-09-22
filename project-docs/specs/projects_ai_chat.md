@@ -1,7 +1,8 @@
 # Projects · the AI chat — WS-27bm
 
-**Status: ACTIVE. S1 (the reads) built 2026-09-22. S2 to S5 open.** §10
-says which slice each part belongs to.
+**Status: ACTIVE. S1 (the reads) and S2 (the daily writes) built
+2026-09-22. S2b, S3, S4 and S5 open.** §10 says which slice each part
+belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -333,6 +334,36 @@ reach any registered agent, so a member with `feature:projects` and
 `feature:chat` may already talk to it there. There is no backend flag, because
 the routes the tools call are the routes the app already serves.
 
+### 4.4 What the chat reuses, file by file
+
+The owner's rule for this build: extend the chat and AG-UI stack that exists,
+never a second one. This table is the audit. Every row names the file the
+chat reuses and the file that reuses it. A new seam would be a new row with
+nothing in the first column.
+
+| Existing piece | Where it lives | What reuses it |
+|---|---|---|
+| The chat component, streaming, reconnect, persistence | `src/components/AgentChat.tsx` · `src/hooks/useAgentChat.ts` | `AssistantRail.tsx` mounts it, as the Tasks and email rails do |
+| The AG-UI stream | `POST /agent/run/stream` (`routes/agent.py`) · `src/app/api/agent/chat/route.ts` | Untouched. The agent is one more name on it |
+| The confirmation card | `acb_skills/ask_tools.py::request_confirmation` · `src/components/ConfirmationCard.tsx` | Every class B tool, through `writes.py::_confirm` |
+| The per-app card slot | `src/components/MessageBubble.tsx` (beside `EmailToolCards`, `TaskToolCards`) | `ProjectToolCards.tsx` |
+| The tool-card chrome and dismiss | `src/components/ToolCardShell.tsx` · `src/lib/dismissedTools.ts` | Every Projects card |
+| The session store | `src/lib/sessions.ts` | The rail's session list, scoped by agent name |
+| The memory hook | `src/hooks/useChatMemories.ts` | The rail, for parity with the other assistants |
+| The risk annotations and the permission policy | `acb_skills/tool_annotations.py` · `permission_policy.py` | Every tool is annotated. The policy defers to the card |
+| The acting-member identity | The run ContextVar the executor binds (`memory_tools._get_memory_user_id`) | `client.py::current_user_email` |
+| The gateway client shape and its refusals | `apps/agents/agent-crm/agents.py` | `client.py` copies the verb bound, the path bound and the identity rule |
+| The write-tool shape | `agent-crm` WS-26d-write | `writes.py` copies read-then-card-then-write, name resolution, the card budget |
+| The registries and the loader | `agent_registry.json` · `routes/agent.py::_AGENT_REGISTRY` · `acb_skills/loader.py` | The agent is registered the way the CRM agent is |
+| The activity writer | `routes/projects/core.py::record_activity` | D-PM-36 adds one field to its `meta`, not a second writer |
+| The generative UI templates | `emit_generative_ui`, `genUITemplates.tsx` | The agent's `tool_scope` carries it. W1's plan panel is a `formCard` (S4) |
+| The design system | `src/components/ui/Button.tsx`, the `--success` and `--destructive` tokens | The rail's controls and the result cards |
+
+**Read alongside.** `generative_ui_2.md` §4 lists the chat as a consumer.
+`learning-resources/13-ag-ui-and-generative-ui.md` §4(e) is the worked
+example. `apps/services/gateway/AGENTS.md` carries the second-consumer note
+on `routes/projects/`.
+
 ---
 
 ## 5. The three guards
@@ -406,14 +437,19 @@ route that already records a `pm_activities` row with `created_by` set from
 the authenticated context (`core.py:2585`, R3). A chat write is attributed to
 the member, because the member approved it.
 
-**D-PM-36 — a chat write says it came from the chat.** Slice 2 adds one
-request header, `X-Actor-Via: chat:projects-assistant`, that `record_activity`
-copies into `meta.via` when present. `created_by` stays the member, so
-authorship rules such as comment edit (`activities.py:306`) keep working. The
-timeline can then show "by Priya, through the assistant", and a member who
-reverts an assistant edit can see which ones those were. One seam, one field.
-The fence is `test_projects_activities.py`: a write with the header carries
-`meta.via`, and a write without it does not.
+**D-PM-36 — a chat write says it came from the chat. Built in S2.** The
+skill sends one request header, `X-Actor-Via: chat:projects-assistant`. A
+router-level dependency (`core.py::capture_actor_via`) binds it for the
+request, and `record_activity` copies it into `meta.via`. `created_by` stays
+the member, so authorship rules such as comment edit (`activities.py:306`)
+keep working.
+
+The timeline can then show "by Priya, through the assistant". A member who
+reverts an assistant edit can see which ones those were. One seam, one
+field. A header outside the pattern binds nothing, so the human path is
+unchanged. The fences are `tests/unit/test_projects_actor_via.py` (the
+dict, the dependency and the router) and `tests/live/live_actor_via.py`,
+which reads the JSONB back from a real Postgres (R8).
 
 ---
 
@@ -495,7 +531,8 @@ Each slice is one pull request. Each one is useful alone.
 | Slice | Builds | Gate |
 |---|---|---|
 | **S1 · Read** — ✅ **BUILT 2026-09-22** | `skill-projects` class A tools · `manifest.py` with every route classified · the coverage fence · `agent-projects` registered · the rail behind the flag · the persona · `TaskListCard` and a titled card for every other read | AGENT-SAFE |
-| **S2 · Write** | Class B tools with the card · `ActionResultCard` · `X-Actor-Via` and `meta.via` (D-PM-36) | AGENT-SAFE |
+| **S2 · Write** — ✅ **BUILT 2026-09-22** | The fifteen daily class B tools with the card (create, update, assign, comment, subtasks, link, unlink, move, watch, complete, defer, restore a task, create and update a project, save a report) · `ActionResultCard` · `X-Actor-Via` and `meta.via` (D-PM-36) | AGENT-SAFE |
+| **S2b · The rest of class B** | The vocabulary writes (status, type, field, tag create and update) · edit a comment · recurrence · the personal task and overlay | AGENT-SAFE |
 | **S3 · Guarded** | Class C tools with count-bearing cards · the one-act-one-card rule and its test | AGENT-SAFE |
 | **S4 · Workflows** | W1 plan, W2 status report, W3 weekly, W4 stuck, W5 triage · `PlanCard` and `ReportCard` · the `formCard` plan panel | AGENT-SAFE |
 | **S5 · Polish** | Frontend navigation tools · quick actions · the chat model setting · the visual review in light mode, compact density and a changed accent | AGENT-SAFE |
@@ -546,6 +583,7 @@ bash scripts/dev_db.sh
 eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_agent.py
 uv run pytest tests/unit/test_tenant_coverage.py
+uv run python tests/live/live_actor_via.py   # D-PM-36 on a real row
 ```
 
 In `workbench/control_plane`:

@@ -1,0 +1,534 @@
+"""The Projects assistant's class B tools (WS-27bm S2) — confirm first, fail closed.
+
+Spec: ``project-docs/specs/projects_ai_chat.md`` §3.2, §5 and §10.2.
+
+The invariants are the CRM write half's (``test_crm_agent_write.py``), held
+per tool over the whole exported class B surface rather than a hand-typed
+list:
+
+1. **No mutation before consent.** A denied card makes zero non-GET calls.
+   Every call BEFORE the card is a GET (the read that names the row).
+2. **The card names the row.** For a tool that changes an existing row, the
+   card's ``detail`` carries the task number or the node name the tool read.
+3. **Non-interactive runs deny.** No tool passes
+   ``non_interactive_default="approve"``. Asserted in the source.
+4. **The card shows the wire.** What the card lists is what the write sends.
+5. **The manifest is the allowlist, both ways.** Every non-GET a tool issues
+   is a class B row the manifest gives to that tool, and every class B row
+   whose tool is built is reached by some invocation here.
+6. **Names resolve to every match, never the first.** Two statuses with one
+   spoken name is a refusal that lists both.
+
+No gateway and no database: the client is patched at httpx, and the
+confirmation gate is stubbed both ways.
+"""
+
+from __future__ import annotations
+
+import ast
+from typing import Any
+
+import pytest
+
+pytest.importorskip("skill_projects", reason="skill-projects not installed")
+
+import skill_projects
+import skill_projects.client as client
+from skill_projects import manifest as m
+from skill_projects import writes as W
+
+from tests.unit._projects_agent_fakes import (
+    SKILL_DIR,
+    approve,
+    deny,
+    empty_list,
+    fake_gateway,
+    writes,
+)
+
+UUID = "0f8fad5b-d9cb-469f-a165-70867728950e"
+OTHER = "1f8fad5b-d9cb-469f-a165-70867728950e"
+LINK = "2f8fad5b-d9cb-469f-a165-70867728950e"
+TASK = {
+    "id": UUID,
+    "title": "Fix the extruder",
+    "task_number": 7,
+    "status_id": "s1",
+    "root_project_id": UUID,
+    "project_id": UUID,
+    "assignees": ["a@x.io"],
+    "archived_at": "2026-09-01T00:00:00+00:00",
+    "due_at": None,
+}
+OTHER_TASK = {**TASK, "id": OTHER, "title": "Order the nozzle", "task_number": 8}
+STATUSES = [
+    {"id": "s1", "name": "To do", "category": "todo"},
+    {"id": "s2", "name": "In progress", "category": "in_progress"},
+    {"id": "s3", "name": "Done", "category": "done"},
+]
+
+
+def responder(call: dict) -> Any:
+    """A gateway that answers every read the write tools make, and every write."""
+    path, method = call["path"], call["method"]
+    if path == f"/projects/tasks/{UUID}":
+        return TASK
+    if path == f"/projects/tasks/{OTHER}":
+        return OTHER_TASK
+    if path.endswith("/statuses"):
+        return {"rows": STATUSES}
+    if path.endswith("/relations"):
+        return {
+            "subtasks": [],
+            # The route's real row (relations.py `_row`): `id` is the OTHER
+            # task, `link_id` is the link. The first fake invented `other`,
+            # and `unlink_tasks` matched the wrong key for a whole review.
+            "links": [
+                {
+                    "id": OTHER,
+                    "link_id": LINK,
+                    "direction": "outgoing",
+                    "link_type": "blocks",
+                    "title": "Order the nozzle",
+                    "task_number": 8,
+                }
+            ],
+            "blocked_by": [],
+        }
+    if path == "/projects/assignees":
+        return {
+            "people": [{"assignee": "priya@x.io", "name": "Priya"}],
+            "agents": [],
+            "hr_visible": True,
+        }
+    if path.startswith("/projects/nodes/") and path.count("/") == 3:
+        return {"id": UUID, "name": "Ops", "status": "active", "lead": None}
+    if path == "/projects/tasks/move/preview":
+        return {
+            "task_count": 1,
+            "drops": ["cost"],
+            "required_missing": [],
+            "crosses_status_set": True,
+        }
+    if path == "/projects/tasks/move":
+        return {"moved": 1}
+    if path.startswith("/projects/reports/") and method == "GET":
+        return {"id": UUID, "name": "Weekly", "project_id": None, "scope": "portfolio"}
+    if method == "POST" and path == "/projects/tasks":
+        return {
+            **TASK,
+            "id": OTHER,
+            "title": call["json"].get("title"),
+            "task_number": 9,
+            "assignees": [],
+        }
+    if method in ("POST", "PATCH", "PUT") and path.startswith("/projects/nodes"):
+        return {"id": UUID, "name": (call["json"] or {}).get("name", "Ops")}
+    if method in ("POST", "PATCH", "PUT", "DELETE"):
+        return {
+            **TASK,
+            "id": UUID,
+            **((call["json"] or {}) if isinstance(call["json"], dict) else {}),
+        }
+    return empty_list(call)
+
+
+#: One or more invocations per class B tool. Together they must reach every
+#: class B route the manifest gives a built tool.
+_WRITES: dict[str, list[dict[str, Any]]] = {
+    "create_task": [
+        {
+            "project_id": UUID,
+            "title": "Call the vendor",
+            "status": "in progress",
+            "assignees": "Priya",
+            "due": "2026-09-30",
+            "tags": "urgent",
+        }
+    ],
+    "update_task": [
+        {"task_id": UUID, "status": "done", "due": "2026-10-01"},
+        {"task_id": UUID, "clear": "due"},
+    ],
+    "assign": [{"task_id": UUID, "assignees": "priya@x.io, agent:crm-assistant"}],
+    "comment": [{"task_id": UUID, "body": "Waiting on legal."}],
+    "add_subtasks": [{"task_id": UUID, "titles": "Draft the spec\nReview it"}],
+    "link_tasks": [{"task_id": UUID, "other_task_id": OTHER, "link_type": "blocks"}],
+    "unlink_tasks": [{"task_id": UUID, "link_id": LINK}],
+    "move_task": [
+        {"task_ids": UUID, "destination_project_id": OTHER},
+        {"task_ids": UUID, "parent_task_id": OTHER},
+    ],
+    "watch": [
+        {"target_id": UUID, "kind": "task"},
+        {"target_id": UUID, "kind": "task", "stop": True},
+        {"target_id": UUID, "kind": "project"},
+        {"target_id": UUID, "kind": "project", "stop": True},
+    ],
+    "complete": [{"task_id": UUID}],
+    "defer": [{"task_id": UUID, "until": "2026-10-06"}],
+    "unarchive_task": [{"task_id": UUID}],
+    "create_project": [{"name": "Q4 launch", "parent_project_id": UUID, "lead": "Priya"}],
+    "update_project": [{"project_id": UUID, "name": "Q4 launch v2", "status": "paused"}],
+    "report_save": [
+        {"name": "Weekly", "sections": "finished,load", "weeks": 4},
+        {"report_id": UUID, "name": "Weekly v2"},
+    ],
+}
+
+
+def _class_b_built() -> set[str]:
+    return m.tools_by_class("B") & set(skill_projects.__all__)
+
+
+def test_the_table_covers_every_built_class_b_tool() -> None:
+    assert set(_WRITES) == _class_b_built()
+
+
+def test_the_tools_are_annotated_as_writes_not_reads() -> None:
+    from acb_skills.tool_annotations import TOOL_ANNOTATIONS
+
+    for name in _class_b_built():
+        hints = TOOL_ANNOTATIONS[name]
+        assert hints["read_only"] is False, name
+
+
+# ── 1. No mutation before consent ───────────────────────────────────────────
+
+
+@pytest.mark.parametrize("tool", sorted(_WRITES))
+async def test_a_denied_card_writes_nothing(tool: str, monkeypatch) -> None:
+    deny(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    for kwargs in _WRITES[tool]:
+        out = await getattr(skill_projects, tool)(**kwargs)
+        assert out == W.CANCELLED, f"{tool} did not report the cancel: {out!r}"
+    assert writes(calls) == [], f"{tool} wrote before consent: {writes(calls)}"
+
+
+@pytest.mark.parametrize("tool", sorted(_WRITES))
+async def test_everything_before_the_card_is_a_read(tool: str, monkeypatch) -> None:
+    """The card's place in the call sequence is MEASURED, not inferred.
+
+    The first version found "the first non-GET" and checked what came before
+    it — true of any sequence whose reads come first, card or no card. The
+    verifier showed it passing with the write moved ahead of the card. Now the
+    stubbed gate drops a marker into the same call list the fake gateway
+    records, so the order is a fact: every call before the marker is a read
+    (a GET, or a manifest preview), and at least one write follows it.
+    """
+    import acb_skills.ask_tools as ask_tools
+
+    calls = fake_gateway(monkeypatch, responder)
+
+    async def marker(**kwargs: Any) -> bool:
+        calls.append({"method": "CARD", "path": "", "headers": {}, "params": {}, "json": kwargs})
+        return True
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", marker)
+    for kwargs in _WRITES[tool]:
+        before = len(calls)
+        await getattr(skill_projects, tool)(**kwargs)
+        seq = calls[before:]
+        cards = [i for i, c in enumerate(seq) if c["method"] == "CARD"]
+        assert len(cards) == 1, f"{tool} showed {len(cards)} cards, not one"
+        at = cards[0]
+        for c in seq[:at]:
+            assert m.is_read(c["method"], c["path"]), f"{tool} wrote before the card: {c}"
+        assert any(not m.is_read(c["method"], c["path"]) for c in seq[at + 1 :]), (
+            f"{tool} approved and then wrote nothing"
+        )
+
+
+@pytest.mark.parametrize("tool", sorted(_WRITES))
+async def test_a_run_with_nobody_to_act_as_makes_no_call(tool: str, monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder, user=None)
+    for kwargs in _WRITES[tool]:
+        with pytest.raises(client.GatewayRefusal):
+            await getattr(skill_projects, tool)(**kwargs)
+    assert calls == []
+
+
+# ── 2. The card names the row ───────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "tool",
+    sorted(t for t in _WRITES if t not in ("create_task", "create_project", "report_save")),
+)
+async def test_the_card_names_the_row_being_written_to(tool: str, monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    for kwargs in _WRITES[tool]:
+        await getattr(skill_projects, tool)(**kwargs)
+    for card in asked:
+        text = f"{card.get('detail', '')}\n{card.get('context', '')}"
+        assert "#7" in text or "«Ops»" in text or "«Fix the extruder»" in text, (
+            f"{tool}'s card names no row: {card}"
+        )
+
+
+async def test_the_card_carries_the_fixed_note_first(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.comment(UUID, "x" * 5000)
+    context = asked[0]["context"]
+    assert context.startswith(W.CARD_NOTE)
+    assert len(context) <= W.CARD_CONTEXT_LIMIT
+    assert "truncated" in context
+
+
+# ── 3. Non-interactive runs deny ────────────────────────────────────────────
+
+
+def test_no_tool_passes_non_interactive_approve() -> None:
+    source = (SKILL_DIR / "writes.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    gates = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "request_confirmation"
+    ]
+    assert gates, "no request_confirmation call in writes.py"
+    for call in gates:
+        assert not any(k.arg == "non_interactive_default" for k in call.keywords)
+
+
+def test_every_class_b_tool_awaits_the_one_confirm_door() -> None:
+    """Every tool goes through ``_confirm``, which is the one place the gate is
+    imported. A tool that built its own card would escape the source fence."""
+    source = (SKILL_DIR / "writes.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.AsyncFunctionDef) or fn.name not in _class_b_built():
+            continue
+        awaited = {getattr(n.func, "id", "") for n in ast.walk(fn) if isinstance(n, ast.Call)}
+        assert "_confirm" in awaited, f"{fn.name} never awaits _confirm"
+
+
+# ── 4 and 5. The wire, and the manifest ─────────────────────────────────────
+
+
+async def test_create_task_sends_the_resolved_status_and_assigns_after(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.create_task(**_WRITES["create_task"][0])
+    posted = [c for c in writes(calls) if c["path"] == "/projects/tasks"]
+    assert posted and posted[0]["json"]["status_id"] == "s2"
+    assert posted[0]["json"]["tags"] == ["urgent"]
+    assert posted[0]["json"]["due_at"] == "2026-09-30"
+    put = [c for c in writes(calls) if c["method"] == "PUT"]
+    assert put and put[0]["json"] == {"assignees": ["priya@x.io"]}
+    assert "In progress" in asked[0]["context"]
+
+
+async def test_update_task_shows_before_and_after(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.update_task(UUID, status="done", due="2026-10-01")
+    patched = [c for c in writes(calls) if c["method"] == "PATCH"]
+    assert patched[0]["json"] == {"status_id": "s3", "due_at": "2026-10-01"}
+    assert "status: «Done»" in asked[0]["context"]
+    assert "→" in asked[0]["context"]
+
+
+async def test_move_between_projects_previews_then_accepts_only_the_drops_shown(
+    monkeypatch,
+) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.move_task(UUID, destination_project_id=OTHER)
+    paths = [c["path"] for c in calls]
+    assert paths.index("/projects/tasks/move/preview") < paths.index("/projects/tasks/move")
+    body = next(c for c in calls if c["path"] == "/projects/tasks/move")["json"]
+    assert body["accept_drops"] is True and body["accepted_drops"] == ["cost"]
+    assert "cost" in asked[0]["context"]
+
+
+@pytest.mark.parametrize("tool", sorted(_WRITES))
+async def test_every_write_is_a_class_b_route_the_manifest_gives_this_tool(
+    tool: str,
+    monkeypatch,
+) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    for kwargs in _WRITES[tool]:
+        await getattr(skill_projects, tool)(**kwargs)
+    for call in writes(calls):
+        row = m.route_for(call["method"], call["path"])
+        assert row is not None, f"{tool}: {call['method']} {call['path']} not in the manifest"
+        assert row.cls == "B", f"{tool} issued a class {row.cls} write: {call['path']}"
+        # A composite (`create_task` assigns after the create, `add_subtasks`
+        # creates) writes through another tool's route under ONE card, and
+        # `manifest.COMPOSITE` is the record of which.
+        assert m.reaches(tool, row.tool), f"{tool} wrote through {row.tool}'s route {call['path']}"
+
+
+async def test_every_class_b_route_of_a_built_tool_is_reached(monkeypatch) -> None:
+    approve(monkeypatch)
+    reached: set[tuple[str, str]] = set()
+    for tool, invocations in _WRITES.items():
+        calls = fake_gateway(monkeypatch, responder)
+        for kwargs in invocations:
+            await getattr(skill_projects, tool)(**kwargs)
+        for call in calls:
+            row = m.route_for(call["method"], call["path"])
+            assert row is not None
+            reached.add((row.method, row.path))
+    expected = {(r.method, r.path) for r in m.MANIFEST if r.tool in _class_b_built()}
+    unreached = sorted(expected - reached)
+    assert not unreached, "class B rows no invocation reaches:\n  " + "\n  ".join(
+        f"{mth} {p}" for mth, p in unreached
+    )
+
+
+# ── 6. Names resolve to every match ─────────────────────────────────────────
+
+
+async def test_two_statuses_with_one_spoken_name_is_a_refusal(monkeypatch) -> None:
+    def twin(call: dict) -> Any:
+        if call["path"].endswith("/statuses"):
+            return {"rows": [{"id": "a", "name": "Done"}, {"id": "b", "name": "done"}]}
+        return responder(call)
+
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, twin)
+    with pytest.raises(client.GatewayRefusal, match="more than one"):
+        await skill_projects.update_task(UUID, status="done")
+    assert writes(calls) == []
+
+
+async def test_an_unknown_status_lists_the_real_ones(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    with pytest.raises(client.GatewayRefusal, match="To do, In progress, Done"):
+        await skill_projects.update_task(UUID, status="blocked")
+    assert writes(calls) == []
+
+
+async def test_an_ambiguous_person_is_a_refusal(monkeypatch) -> None:
+    def twins(call: dict) -> Any:
+        if call["path"] == "/projects/assignees":
+            return {
+                "people": [
+                    {"assignee": "p1@x.io", "name": "Priya S"},
+                    {"assignee": "p2@x.io", "name": "Priya R"},
+                ],
+                "agents": [],
+            }
+        return responder(call)
+
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, twins)
+    # Two people whose names CONTAIN the word and neither is an exact match:
+    # the refusal lists both, and assigns nobody.
+    with pytest.raises(client.GatewayRefusal, match="Close matches"):
+        await skill_projects.assign(UUID, "Priya")
+    assert writes(calls) == []
+
+
+async def test_a_batch_of_subtasks_is_one_card(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.add_subtasks(UUID, "a\nb\nc")
+    assert len(asked) == 1
+    assert len([c for c in writes(calls) if c["path"] == "/projects/tasks"]) == 3
+    assert "1: «a»" in asked[0]["context"] and "3: «c»" in asked[0]["context"]
+
+
+async def test_the_actor_via_header_rides_every_call(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.comment(UUID, "hi")
+    assert calls and all(c["headers"].get("X-Actor-Via") == client.ACTOR_VIA for c in calls)
+
+
+# ── The review's findings, each pinned ──────────────────────────────────────
+
+
+async def test_unlink_sends_the_link_id_not_the_other_task(monkeypatch) -> None:
+    """The relations row's `id` is the other task and `link_id` is the link.
+    Matching on `id` made every unlink a false refusal or a 404."""
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.unlink_tasks(UUID, LINK)
+    deleted = [c for c in writes(calls) if c["method"] == "DELETE"]
+    assert deleted and deleted[0]["path"] == f"/projects/tasks/{UUID}/links/{LINK}"
+    assert "«Order the nozzle»" in out
+
+
+async def test_task_detail_prints_the_link_id_the_unlink_tool_takes(monkeypatch) -> None:
+    fake_gateway(monkeypatch, responder)
+    text = await skill_projects.task_detail(UUID)
+    assert f"(link id {LINK})" in text
+
+
+async def test_report_update_merges_config_and_keeps_the_scope(monkeypatch) -> None:
+    def with_config(call: dict) -> Any:
+        if call["path"] == f"/projects/reports/{UUID}" and call["method"] == "GET":
+            return {
+                "id": UUID,
+                "name": "Weekly",
+                "project_id": None,
+                "config": {"sections": ["stuck"], "weeks": 1, "include_subtree": True},
+            }
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, with_config)
+    await skill_projects.report_save("", report_id=UUID, weeks=8)
+    patched = [c for c in writes(calls) if c["method"] == "PATCH"]
+    assert patched[0]["json"] == {
+        "config": {"sections": ["stuck"], "weeks": 8, "include_subtree": True}
+    }
+    assert "scope" not in asked[0]["context"]
+    # A scope change is refused before any card, because the route drops it.
+    out = await skill_projects.report_save("", report_id=UUID, project_id=OTHER)
+    assert "keeps its scope" in out
+    assert len(asked) == 1
+
+
+async def test_a_fuzzy_person_match_is_a_refusal(monkeypatch) -> None:
+    def fuzzy(call: dict) -> Any:
+        if call["path"] == "/projects/assignees":
+            return {
+                "people": [{"assignee": "lead@x.io", "name": "Rahul", "title": "Ops Lead"}],
+                "agents": [],
+            }
+        return responder(call)
+
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, fuzzy)
+    with pytest.raises(client.GatewayRefusal, match="No person is called exactly"):
+        await skill_projects.assign(UUID, "ops")
+    assert writes(calls) == []
+
+
+async def test_importance_zero_is_a_real_value(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.update_task(UUID, importance=0)
+    patched = [c for c in writes(calls) if c["method"] == "PATCH"]
+    assert patched and patched[0]["json"] == {"importance": 0}
+    calls.clear()
+    await skill_projects.update_task(UUID, clear="importance")
+    patched = [c for c in writes(calls) if c["method"] == "PATCH"]
+    assert patched and patched[0]["json"] == {"importance": None}
+
+
+async def test_the_move_card_names_every_task(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    out = await skill_projects.move_task(f"{UUID},{OTHER}", destination_project_id=OTHER)
+    assert "task 1: #7 «Fix the extruder»" in asked[0]["context"]
+    assert "task 2: #8 «Order the nozzle»" in asked[0]["context"]
+    assert f"full_id: {UUID}" in out and f"full_id: {OTHER}" in out
+
+
+async def test_a_clear_stays_on_the_card_under_a_long_description(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.update_task(UUID, description="x" * 5000, clear="due")
+    context = asked[0]["context"]
+    assert "due_at:" in context.split("description:")[0]

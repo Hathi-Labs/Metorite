@@ -35,7 +35,9 @@ correct in the UI and silently empties the timeline — the CRM learned this in
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -44,7 +46,7 @@ from uuid import UUID
 
 from acb_auth import UserContext, require_feature_router
 from acb_common import get_logger
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 # The shared seam (BO-10 → MT-1c/H2). `_tenant_session` IS
 # `acb_common.db.tenant_session`, aliased per-package for the same reason
@@ -61,9 +63,43 @@ from sqlalchemy import text
 
 _log = get_logger("gateway.projects")
 
+#: D-PM-36 (`specs/projects_ai_chat.md` §6) — THROUGH WHAT the member acted.
+#:
+#: A chat write is the member's own write: `created_by` stays their address,
+#: so authorship rules (comment edit, revert) keep working. What the timeline
+#: could not say was that the assistant prepared it. The skill sends
+#: ``X-Actor-Via: chat:projects-assistant`` on every call, the dependency
+#: below binds it for the request, and :func:`record_activity` copies it into
+#: ``meta.via``. One header, one field, no new column and no new actor shape.
+#:
+#: The value is bounded by :data:`ACTOR_VIA_PATTERN` so a header cannot put a
+#: sentence into a JSONB column the timeline renders. An absent or malformed
+#: header binds ``""``, which stamps nothing — the human path is unchanged.
+ACTOR_VIA: ContextVar[str] = ContextVar("projects_actor_via", default="")
+ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
+
+
+async def capture_actor_via(
+    x_actor_via: str | None = Header(None, alias="X-Actor-Via"),
+) -> None:
+    """Bind the request's ``X-Actor-Via`` for :func:`record_activity`.
+
+    A router-level dependency, so no route has to remember it. It NEVER
+    refuses: a bad value is dropped, because provenance is a courtesy on the
+    row, not a gate on the act.
+
+    ⚠️ ``async``, and that is load-bearing. Starlette runs a SYNC dependency
+    in a threadpool with a COPY of the request context, so a ContextVar set
+    there never reaches the async handler. Measured 2026-09-22 by the fence
+    in ``test_projects_actor_via.py``: the sync form bound nothing.
+    """
+    value = x_actor_via.strip().lower() if isinstance(x_actor_via, str) else ""
+    ACTOR_VIA.set(value if ACTOR_VIA_PATTERN.match(value) else "")
+
+
 router = APIRouter(
     prefix="/projects", tags=["projects"],
-    dependencies=[require_feature_router("projects")],
+    dependencies=[require_feature_router("projects"), Depends(capture_actor_via)],
 )
 
 #: `pm_projects.status` — the RUN STATE axis (D-PM-25), mirrored from the CHECK
@@ -2619,6 +2655,11 @@ async def record_activity(
         )
     if automation:
         meta = {**(meta or {}), "automation": True}
+    # D-PM-36 — through what the member acted, when a caller said so. The
+    # caller's word wins if it set `meta.via` itself; the header fills the gap.
+    via = ACTOR_VIA.get("")
+    if via and not (meta or {}).get("via"):
+        meta = {**(meta or {}), "via": via}
     # WS-27ae / P-27 — the satellite bump, at the ONE choke point rather than at
     # thirty call sites. An activity naming a task IS the statement "this task
     # changed", so anything that earns a timeline entry earns a bump: comments,

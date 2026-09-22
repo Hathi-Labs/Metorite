@@ -4817,8 +4817,10 @@ same package the assigned-agent path will use. §6.4's permission intersection
 belongs to the dispatch path, which runs as `agent:<name>`. The chat path runs
 as the member.
 
-**S1 (the reads) built 2026-09-22.** The manifest covers all 121 routes.
-S2 to S5 are open. See `projects_ai_chat.md` §10.
+**S1 (the reads) and S2 (the fifteen daily writes) built 2026-09-22.** The
+manifest covers all 121 routes. S2b, S3, S4 and S5 are open. See
+`projects_ai_chat.md` §10. D-PM-36 landed with S2: `X-Actor-Via` on a request
+puts `meta.via` on the activity row `record_activity` writes.
 
 ---
 
