@@ -25,6 +25,7 @@
 import Button from "@/components/ui/Button";
 import AppIcon from "@/components/Icon";
 import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { ToolCardShell } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
@@ -51,6 +52,13 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   recurrence: { icon: "Repeat", label: "Repeat rule" },
   // The overlay line is the point of this read, and a list card drops it.
   my_task: { icon: "UserRound", label: "My task" },
+  // S4 — the views. Each drew a template card beside this one; this card
+  // keeps the facts as text, dismissable, and offers the app.
+  render_timeline: { icon: "History", label: "Timeline" },
+  render_board: { icon: "Kanban", label: "Board" },
+  render_tasks: { icon: "Table2", label: "Task table" },
+  render_report: { icon: "FileText", label: "Report" },
+  status_report: { icon: "Flag", label: "Status report" },
 };
 
 /**
@@ -67,6 +75,8 @@ const OPENS_APP: Record<string, { app: "analytics" | "reports"; label: string }>
   analytics_outlook: { app: "analytics", label: "Open Analytics" },
   report_list: { app: "reports", label: "Open Reports" },
   report_render: { app: "reports", label: "Open Reports" },
+  render_report: { app: "reports", label: "Open Reports" },
+  status_report: { app: "analytics", label: "Open Analytics" },
 };
 
 /**
@@ -123,7 +133,30 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   delete_view: { icon: "Trash2", label: "View deleted" },
   report_delete: { icon: "Trash2", label: "Report deleted" },
   delete_attachment: { icon: "Paperclip", label: "File detached" },
+  // S4 — the forms. The receipt is the wrapped tool's.
+  edit_task: { icon: "PenLine", label: "Task updated" },
+  edit_project: { icon: "PenLine", label: "Project updated" },
+  propose_plan: { icon: "ListTodo", label: "Plan created" },
 };
+
+/**
+ * The event the Projects page listens for to reload the board after a chat
+ * write (S4). Fired once per receipt that reports a done write. The page
+ * owns its loaders, so this is the one seam between the two; a card never
+ * reaches into the page's state.
+ */
+export const PROJECTS_CHANGED_EVENT = "cc-projects-changed";
+const announced = new Set<string>();
+
+function announceChange(eventId: string): void {
+  if (announced.has(eventId)) return;
+  announced.add(eventId);
+  try {
+    window.dispatchEvent(new CustomEvent(PROJECTS_CHANGED_EVENT, { detail: { eventId } }));
+  } catch {
+    /* a non-browser render */
+  }
+}
 
 /**
  * The first line of a cancelled write, verbatim from `writes.py::CANCELLED`.
@@ -365,6 +398,9 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const meta = ACTION_META[e.name] ?? { icon: "Wrench", label: genericLabel(e.name) };
   const result = (e.result || "").trim();
   const outcome = classifyActionResult(result, e.status);
+  useEffect(() => {
+    if (outcome === "done") announceChange(e.id);
+  }, [outcome, e.id]);
   const rowId = rowIdOf(result);
   const openTask = useOpenTask();
   const detail = withoutLegend(result)
