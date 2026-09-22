@@ -7,17 +7,19 @@ that the SQL is unchanged. That argument is true and it is still an argument
 (R8: "hermetic fakes agree with whatever SQL they are handed"). This is the
 half that reads the JSONB back from the table.
 
-It seeds one project, one status and one task under a marker, binds the
-tenant, calls ``record_activity`` with the ContextVar bound and unbound, and
-reads ``pm_activities.meta`` back. It removes what it made in a ``finally``.
+It seeds one project, one lane and one task under a marker, the way
+``live_comment_threads.py`` does, binds the tenant, calls ``record_activity``
+with the ContextVar bound and unbound, and reads ``pm_activities.meta`` back.
+It removes what it made in a ``finally``.
 
 Running it::
 
-    LIVE_DATABASE_URL="postgresql+asyncpg://acb:acb@localhost:5432/acb_r8" \\
+    LIVE_DATABASE_URL="postgresql+asyncpg://acb:acb@127.0.0.1:5434/acb_tenant" \\
       uv run python tests/live/live_actor_via.py
 """
 
 import asyncio
+import json
 import os
 import sys
 import uuid
@@ -49,98 +51,119 @@ def check(label: str, got: object, want: object) -> None:
         failures.append(label)
 
 
-async def main() -> None:
-    org = None
-    project = task = None
-    async for db in get_db():
+async def seed() -> dict:
+    """One project, one lane, one task — the comment-threads seed, trimmed."""
+    db = await get_db()
+    try:
         org = (
             await db.execute(text("SELECT id FROM organization ORDER BY created_at LIMIT 1"))
-        ).scalar()
+        ).fetchone()
         if org is None:
-            print("no organization row — seed one first")
-            sys.exit(2)
-        bind_tenant(str(org))
-        try:
-            project = (
-                await db.execute(
-                    text(
-                        "INSERT INTO pm_projects (name, organization_id, created_by) "
-                        "VALUES (:n, CAST(:o AS uuid), :by) RETURNING id"
-                    ),
-                    {"n": MARK, "o": str(org), "by": ME},
-                )
-            ).scalar()
-            status = (
-                await db.execute(
-                    text(
-                        "INSERT INTO pm_task_statuses (project_id, name, category, position, is_default) "
-                        "VALUES (CAST(:p AS uuid), 'To do', 'todo', 1, true) RETURNING id"
-                    ),
-                    {"p": str(project)},
-                )
-            ).scalar()
-            task = (
-                await db.execute(
-                    text(
-                        "INSERT INTO pm_tasks (project_id, root_project_id, status_id, title, created_by, task_number) "
-                        "VALUES (CAST(:p AS uuid), CAST(:p AS uuid), CAST(:s AS uuid), :t, :by, 1) RETURNING id"
-                    ),
-                    {"p": str(project), "s": str(status), "t": MARK, "by": ME},
-                )
-            ).scalar()
+            raise SystemExit("no organization in this database")
+        org_id = str(org.id)
+        pid, sid, tid = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+        await db.execute(
+            text(
+                "INSERT INTO pm_projects (id, organization_id, name, source, "
+                "created_by, owns_statuses) VALUES (CAST(:id AS uuid), "
+                "CAST(:o AS uuid), :n, 'manual', :me, true)"
+            ),
+            {"id": pid, "o": org_id, "n": f"{MARK} tree", "me": ME},
+        )
+        await db.execute(
+            text(
+                "INSERT INTO pm_task_statuses (id, project_id, name, position, "
+                "category, is_default) VALUES (CAST(:id AS uuid), CAST(:p AS uuid), "
+                "'To do', 1, 'todo', true)"
+            ),
+            {"id": sid, "p": pid},
+        )
+        await db.execute(
+            text(
+                "INSERT INTO pm_tasks (id, organization_id, project_id, "
+                "root_project_id, status_id, title, source, created_by, "
+                "task_number) VALUES (CAST(:id AS uuid), CAST(:o AS uuid), "
+                "CAST(:p AS uuid), CAST(:p AS uuid), CAST(:s AS uuid), :t, "
+                "'manual', :me, 1)"
+            ),
+            {"id": tid, "o": org_id, "p": pid, "s": sid, "t": f"{MARK} task", "me": ME},
+        )
+        await db.commit()
+        return {"org": org_id, "project": pid, "task": tid}
+    finally:
+        await db.close()
 
+
+async def clean(made: dict) -> None:
+    db = await get_db()
+    try:
+        for sql in (
+            "DELETE FROM pm_activities WHERE task_id = CAST(:t AS uuid)",
+            "DELETE FROM pm_tasks WHERE id = CAST(:t AS uuid)",
+        ):
+            await db.execute(text(sql), {"t": made["task"]})
+        for sql in (
+            "DELETE FROM pm_task_statuses WHERE project_id = CAST(:p AS uuid)",
+            "DELETE FROM pm_projects WHERE id = CAST(:p AS uuid)",
+        ):
+            await db.execute(text(sql), {"p": made["project"]})
+        await db.commit()
+    finally:
+        await db.close()
+
+
+def _meta(value: object) -> dict | None:
+    if value is None:
+        return None
+    return value if isinstance(value, dict) else json.loads(str(value))
+
+
+async def main() -> None:
+    made = await seed()
+    try:
+        bind_tenant(made["org"])
+        db = await get_db()
+        try:
             pm_core.ACTOR_VIA.set("chat:projects-assistant")
-            row = await pm_core.record_activity(
+            via = await pm_core.record_activity(
                 db,
                 activity_type="comment",
                 created_by=ME,
-                task_id=str(task),
-                body="via chat",
+                task_id=made["task"],
+                body=f"{MARK} via chat",
             )
             pm_core.ACTOR_VIA.set("")
             plain = await pm_core.record_activity(
                 db,
                 activity_type="comment",
                 created_by=ME,
-                task_id=str(task),
-                body="by hand",
+                task_id=made["task"],
+                body=f"{MARK} by hand",
             )
             await db.commit()
-
-            got = (
+            rows = (
                 await db.execute(
                     text(
-                        "SELECT id, meta, created_by FROM pm_activities WHERE task_id = CAST(:t AS uuid) ORDER BY created_at"
+                        "SELECT id, meta, created_by FROM pm_activities "
+                        "WHERE task_id = CAST(:t AS uuid)"
                     ),
-                    {"t": str(task)},
+                    {"t": made["task"]},
                 )
             ).fetchall()
-            by_id = {str(r.id): r for r in got}
-            chat = by_id[str(row.id)]
-            hand = by_id[str(plain.id)]
-            meta = (
-                chat.meta
-                if isinstance(chat.meta, dict)
-                else __import__("json").loads(chat.meta or "{}")
-            )
-            check("meta.via on the real row", meta.get("via"), "chat:projects-assistant")
-            check("created_by stays the member", chat.created_by, ME)
-            check("no via stamps nothing", hand.meta, None)
         finally:
-            if task is not None:
-                await db.execute(
-                    text("DELETE FROM pm_activities WHERE task_id = CAST(:t AS uuid)"),
-                    {"t": str(task)},
-                )
-                await db.execute(
-                    text("DELETE FROM pm_tasks WHERE id = CAST(:t AS uuid)"), {"t": str(task)}
-                )
-            if project is not None:
-                await db.execute(
-                    text("DELETE FROM pm_projects WHERE id = CAST(:p AS uuid)"), {"p": str(project)}
-                )
-            await db.commit()
-        break
+            await db.close()
+        by_id = {str(r.id): r for r in rows}
+        chat, hand = by_id[str(via.id)], by_id[str(plain.id)]
+        check(
+            "meta.via on the real row",
+            (_meta(chat.meta) or {}).get("via"),
+            "chat:projects-assistant",
+        )
+        check("created_by stays the member", chat.created_by, ME)
+        check("no via stamps nothing", _meta(hand.meta), None)
+        check("two rows were written", len(rows), 2)
+    finally:
+        await clean(made)
     if failures:
         print(f"FAILURES: {failures}")
         sys.exit(1)
@@ -149,4 +172,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-    _ = uuid  # keep the import for callers that extend the seed
