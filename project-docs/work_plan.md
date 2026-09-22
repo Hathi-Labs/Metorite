@@ -626,9 +626,13 @@ The README requires a refresh alongside each migration. Regenerating now would m
 20+ migrations of unrelated drift into this PR.
 
 🆕 **WS-39 PHASE 2 MINTED 2026-09-23 (D73).** `specs/my_tasks_cutover.md` owns
-the tail, in five steps: S5 the rename to **My Tasks**, S6a to S6d the lens
-tail, S7 the cutover, S8 the contract with the schema rename, and S9 the
-code-name sweep.
+the tail, in five steps.
+
+- S5 — the rename to **My Tasks**.
+- S6a to S6d — the lens tail.
+- S7 — the cutover.
+- S8 — the contract, with the schema rename.
+- S9 — the code-name sweep.
 
 Production measured on 2026-09-23: 2 `gtd_items` rows with one owner, 15
 `pm_tasks` rows, and migration 190 in the ledger as applied and inert.
