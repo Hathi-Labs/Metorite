@@ -36,6 +36,52 @@ export default defineConfig({
   },
   projects: [
     {
+      // ── What CI gates (H-27) ─────────────────────────────────────────────
+      //
+      // 🔴 **The whole suite is not green, and pretending otherwise is how a
+      // gate gets deleted instead of fixed.** Measured 2026-09-22 on `main`,
+      // one full `--project=chromium` run: **62 passed, 33 failed, 18 fixme**,
+      // in 8 minutes. Wiring all of it in as a blocking check would have made
+      // `main` red on the next push.
+      //
+      // So this project is the part that holds TODAY, and `testIgnore` below
+      // is the quarantine register — dated, named, and owed. Everything left
+      // out of it runs and must stay green.
+      //
+      // ⚠️ **`--project=chromium` still runs EVERYTHING.** That is deliberate.
+      // The local run is the honest picture, and the rot has to stay visible
+      // to the person who can fix it. A quarantine that hides its contents is
+      // the same defect as a suite nothing runs, one level up.
+      //
+      // ⚠️ **Adding a name below removes a fence.** Take one out when you fix
+      // it. Nothing removes an entry automatically, and nothing will notice if
+      // this list only ever grows — that is the failure mode to watch.
+      name: "ci",
+      testIgnore: [
+        // 10 of 10 failing. Nothing in this file passes.
+        "**/project-state.spec.ts",
+        // 9 of 10 failing — a shared primitive, so worth the most attention.
+        "**/modal.spec.ts",
+        // 6 of 9 failing. `getByText("Memory (2)")` finds nothing: the chat
+        // surface moved and the spec did not follow it.
+        "**/chat.spec.ts",
+        // 4 of 12 failing.
+        "**/theming.spec.ts",
+        // 2 of 13 failing.
+        "**/email-search.spec.ts",
+        // 1 of 1 failing.
+        "**/email.spec.ts",
+        // 1 of 8 failing.
+        "**/project-rename.spec.ts",
+      ],
+      use: {
+        ...devices["Desktop Chrome"],
+        ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH
+          ? { launchOptions: { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH } }
+          : {}),
+      },
+    },
+    {
       name: "chromium",
       use: {
         ...devices["Desktop Chrome"],
