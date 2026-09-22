@@ -23,6 +23,7 @@
  */
 
 import Icon from "@/components/Icon";
+import Button from "@/components/ui/Button";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useSession } from "next-auth/react";
 import AgentChat from "@/components/AgentChat";
@@ -204,38 +205,34 @@ export function AssistantRail({
           ) : null}
         </div>
         <div className="flex items-center gap-0.5">
-          <button
-            type="button"
+          {/* DESIGN_SYSTEM §3: a control is a <Button>. `selected` carries
+              the history toggle's state and its aria-pressed together. */}
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            icon="MessagesSquare"
+            selected={showSessions}
             onClick={() => setShowSessions((v) => !v)}
             title="Chat history"
             aria-label="Chat history"
-            className={`p-1 rounded transition-colors ${
-              showSessions
-                ? "text-primary bg-primary/10"
-                : "text-muted-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent"
-            }`}
-          >
-            <Icon name="MessagesSquare" size={14} />
-          </button>
-          <button
-            type="button"
+          />
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            icon="Plus"
             onClick={newSession}
             title="New chat"
             aria-label="New chat"
-            className="p-1 rounded text-muted-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent transition-colors"
-          >
-            <Icon name="Plus" size={15} />
-          </button>
+          />
           {onClose && (
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon="X"
               onClick={onClose}
               title="Close AI chat"
               aria-label="Close AI chat"
-              className="p-1 rounded text-muted-foreground hover:text-sidebar-foreground hover:bg-sidebar-accent transition-colors"
-            >
-              <Icon name="X" size={15} />
-            </button>
+            />
           )}
         </div>
       </div>
@@ -247,14 +244,13 @@ export function AssistantRail({
             <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
               Conversations
             </span>
-            <button
-              type="button"
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              icon="X"
               onClick={() => setShowSessions(false)}
               aria-label="Hide conversations"
-              className="text-muted-foreground hover:text-foreground"
-            >
-              <Icon name="X" size={12} />
-            </button>
+            />
           </div>
           {mySessions.length === 0 ? (
             <div className="px-3 py-2 text-[11px] text-muted-foreground">
@@ -287,18 +283,18 @@ export function AssistantRail({
                     </div>
                   )}
                 </div>
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  icon="Trash2"
                   onClick={(e) => {
                     e.stopPropagation();
                     removeSession(s.id);
                   }}
                   title="Delete conversation"
                   aria-label="Delete conversation"
-                  className="reveal-on-hover text-muted-foreground hover:text-destructive flex-shrink-0"
-                >
-                  <Icon name="Trash2" size={12} />
-                </button>
+                  className="reveal-on-hover flex-shrink-0"
+                />
               </div>
             ))
           )}
@@ -310,14 +306,16 @@ export function AssistantRail({
       {showQuickActions && (
         <div className="flex flex-col gap-1.5 border-b border-sidebar-border p-3 flex-shrink-0">
           {QUICK_ACTIONS.map((qa) => (
-            <button
+            <Button
               key={qa.label}
-              type="button"
+              variant="secondary"
+              size="md"
+              layout="flex items-center justify-start w-full"
+              className="text-left"
               onClick={() => setPendingInput(qa.prompt)}
-              className="tech-transition rounded-lg border border-border bg-background/40 px-3 py-2 text-left text-sm text-foreground hover:border-primary/50 hover:bg-secondary/50"
             >
               {qa.label}
-            </button>
+            </Button>
           ))}
         </div>
       )}
