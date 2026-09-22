@@ -311,7 +311,7 @@ export const HELP_PRICING = {
     "change it.",
   saveCredit:
     "Records the credit's value. It is a commercial act, so it needs an " +
-    "elevated admin session, and every save is kept as history.",
+    "an admin, and every save is kept as history.",
   costsUs:
     "What the VENDOR charges us for this tier's first model, converted to " +
     "credits. This is our cost, never what a customer pays.",
@@ -375,6 +375,7 @@ export const HELP_PRICING = {
     "want to be told about. A tier can miss one and hold the other, which " +
     "is why they are two numbers.",
   saveMargin:
-    "Record both numbers. It is a commercial act, so it needs an elevated " +
-    "admin session, and the previous pair stays readable as history.",
+    "The margin you price TOWARDS, not the one you have earned. The card " +
+    "reports what a tier actually earns, and that needs a price first. " +
+    "Setting a target here lets the price editor suggest one for you.",
 } as const;

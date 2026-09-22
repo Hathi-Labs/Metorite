@@ -880,21 +880,50 @@ button:disabled {
 /* A form laid out as fields rather than a bare flex row. `.row` put a label
    above each control and then let the controls fall out of alignment; this
    keeps a label glued to its own input. */
+/* 🔴 **`align-items: flex-end` put two inputs on two different lines.**
+   Owner report, 2026-09-22: *"the text input sections are horrible UI, nothing
+   is properly aligned"*. Seen in the rig on the credit-price editor.
+
+   Bottom-aligning a row of fields aligns their BOTTOM EDGES. A field that
+   carries a `.field-hint` under its input is taller, so its input floats UP by
+   the height of that hint while the field without one keeps its input at the
+   bottom. "One credit is ₹" and "One dollar is ₹" are the same control, and
+   they sat on different lines because only one of them had a note.
+
+   The fix is a grid with THREE named rows — label, input, hint — that every
+   field shares through `subgrid`. Each part then lines up with the same part
+   of its neighbour, and it keeps lining up when a label wraps to two lines,
+   which `align-items: start` alone does not.
+
+   ⚠️ The `@supports` fallback is not decoration. Without subgrid the row still
+   has to be readable, and `start` is the right wrong answer: a two-line label
+   misaligns, a hint never does. `formrow.test.ts` is the fence. */
 .formrow {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  align-items: flex-end;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  grid-template-rows: auto auto auto;
+  gap: 4px 12px;
+  align-items: start;
 }
 .formrow .field {
-  flex: 1 1 170px;
-  min-width: 140px;
+  min-width: 0;
+  display: grid;
+  grid-row: span 3;
+  grid-template-rows: subgrid;
+  gap: 0;
+}
+@supports not (grid-template-rows: subgrid) {
+  .formrow .field {
+    display: block;
+    grid-row: auto;
+  }
+}
+/* A field that should take two columns of the row rather than one. */
+.formrow .field.grow {
+  grid-column: span 2;
 }
 .formrow .field label {
   margin-top: 0;
-}
-.formrow .field.grow {
-  flex: 2 1 240px;
 }
 .formrow button {
   margin-top: 0;
@@ -2631,6 +2660,15 @@ main.wrap {
   cursor: help;
 }
 .legs input { width: 100%; }
+/* The unit, said once for the whole row. It spans every column so the boxes
+   below it keep their own grid. */
+.legs-unit {
+  grid-column: 1 / -1;
+  margin: 0 0 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.legs-unit strong { color: var(--text); font-weight: 600; }
 .editoractions {
   display: flex;
   align-items: center;
