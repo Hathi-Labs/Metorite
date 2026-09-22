@@ -461,7 +461,7 @@ def test_priority_formula_maps_all_8_input_combos_to_7_levels():
     low-priority, so 8 input combos resolve to 7 distinct levels."""
     from gateway.routes.tasks.priority import PriorityInputs, cell_for_inputs
 
-    I, U, L = True, True, True
+    I, U, L = True, True, True  # noqa: E741 (mirror the flag names)
     n = False
     cases = {
         # leveraged branch (rank 1/3/5/6)
@@ -1257,7 +1257,7 @@ def test_propose_attaches_capability_owner_without_forcing_delegate():
 # Sync pull (§9.3 #1): provider list_tasks + the GTD lens on pulled tasks
 # ---------------------------------------------------------------------------
 
-from gateway.routes.tasks.sync import map_pulled_task
+from gateway.routes.tasks.sync import map_pulled_task  # noqa: E402
 
 
 def _pulled(**over):
@@ -1382,7 +1382,7 @@ def test_sync_upsert_preserves_user_overlay_and_owns_completion():
 # Email → task capture (origin linkage) + calendar-date validation
 # ---------------------------------------------------------------------------
 
-from gateway.routes.tasks.capture_email import draft_task_fallback
+from gateway.routes.tasks.capture_email import draft_task_fallback  # noqa: E402
 
 
 def test_email_capture_fallback_draft_names_sender_and_strips_reply_prefixes():
@@ -1946,16 +1946,36 @@ def test_expected_by_round_trips_from_row_to_item_model():
 
 
 def test_stale_waiting_rule_is_five_days_since_delegation():
-    """The client's isStaleWaiting (tasks/lib/waiting.ts) and this SQL are the
-    same rule stated twice; if one moves the view and /tasks/insights disagree
-    about the same list. Pin the SQL side here."""
+    """The client's isStaleWaiting (tasks/lib/waiting.ts) and the server are
+    the same rule stated three times: the gtd arm's SQL, the pm arm's Python
+    and the client's constant. If one moves, the view and /tasks/insights
+    disagree about the same list. Pin all three here (WS-39 S6d)."""
     import inspect
+    import re
+    from pathlib import Path
 
+    from gateway.routes.projects import item_lens
     from gateway.routes.tasks.item_source import GTD_ITEMS
 
     # The SQL moved into the seam's gtd arm (WS-39 S6d), unchanged.
     src = inspect.getsource(GTD_ITEMS.insight_counts)
     assert "w.delegated_at < now() - interval '5 days'" in src
+
+    # The pm arm: strictly more than STALE_WAITING_DAYS since delegated_at,
+    # and NOTHING else. A nudge does not reset it, a promised date does not
+    # enter it, because the client's rule reads only `delegatedAt`.
+    pm = inspect.getsource(item_lens._PmLens.insight_counts)
+    assert item_lens.STALE_WAITING_DAYS == 5
+    assert "timedelta(days=STALE_WAITING_DAYS)" in pm
+    assert "last_nudged_at" not in pm and "expected_by" not in pm
+
+    client = Path(__file__).resolve().parents[2] / (
+        "workbench/control_plane/src/app/tasks/lib/waiting.ts")
+    ts = client.read_text(encoding="utf-8")
+    assert re.search(r"STALE_WAITING_DAYS\s*=\s*5;", ts)
+    body = ts[ts.index("export function isStaleWaiting"):]
+    body = body[:body.index("}\n")]
+    assert "delegatedAt" in body and "lastNudgedAt" not in body
 
 
 def test_no_insert_site_derives_expected_by_from_a_due_date():

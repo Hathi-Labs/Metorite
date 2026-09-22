@@ -70,9 +70,9 @@ from uuid import uuid4
 from gateway.routes.tasks.core import DEFAULT_CONTEXTS, ITEM_SELECT, PROJECT_SELECT
 from sqlalchemy import text
 
-#: The origin keys a capture may look a task up by. Each has an expression
-#: index on `pm_tasks` (211). A key outside this set is refused, because it
-#: would be spliced into SQL as a literal.
+#: The origin keys a capture may look a task up by. Each of the four has a
+#: partial expression index on `pm_tasks` (211). A key outside this set is
+#: refused, because it would be spliced into SQL as a literal.
 ORIGIN_KEYS: frozenset[str] = frozenset({
     "email_id", "thread_id", "wa_message_id", "wa_chat_id",
 })

@@ -7,8 +7,8 @@
 -- What: two nullable columns.
 --   * `pm_tasks.origin JSONB` — where a task came from. Email capture, reply
 --     capture and WhatsApp capture write `{kind, email_id, thread_id,
---     wa_message_id, ...}` here. Three expression indexes serve the three
---     idempotency lookups those captures perform.
+--     wa_message_id, wa_chat_id, ...}` here. Four expression indexes serve
+--     the four lookups those captures and the WhatsApp context rail perform.
 --   * `wa_commitments.task_id UUID` — the `pm_tasks` row a WhatsApp promise
 --     was captured into. It REPLACES `gtd_item_id`, which points at the
 --     retiring `gtd_items` table.
@@ -64,6 +64,11 @@ CREATE INDEX IF NOT EXISTS idx_pm_tasks_origin_thread_id
 
 CREATE INDEX IF NOT EXISTS idx_pm_tasks_origin_wa_message_id
     ON pm_tasks ((origin->>'wa_message_id'))
+    WHERE origin IS NOT NULL;
+
+-- The WhatsApp context rail lists the open tasks captured from one chat.
+CREATE INDEX IF NOT EXISTS idx_pm_tasks_origin_wa_chat_id
+    ON pm_tasks ((origin->>'wa_chat_id'))
     WHERE origin IS NOT NULL;
 
 -- The EXPAND half of `gtd_item_id` -> `task_id`. S8 (migration 212) copies

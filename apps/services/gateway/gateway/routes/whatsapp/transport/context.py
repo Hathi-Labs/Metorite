@@ -101,7 +101,6 @@ def parse_entity_ref(ref: str | None) -> EntityRef | None:
     return EntityRef(system=system.lower(), kind=kind, id=ident)
 
 
-@router.get("/chats/{chat_id}/context", response_model=ChatContextModel)
 def _is_commitment(row: object) -> bool:
     """Whether a captured task's origin carries the commitment mark.
 
@@ -120,6 +119,7 @@ def _is_commitment(row: object) -> bool:
     return origin.get("commitment") in (True, "true")
 
 
+@router.get("/chats/{chat_id}/context", response_model=ChatContextModel)
 async def chat_context(
     chat_id: str,
     user: UserContext = Depends(get_current_user),

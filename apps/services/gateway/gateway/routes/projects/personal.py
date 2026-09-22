@@ -313,40 +313,65 @@ async def capture(
         project = await ensure_personal_project(db, email)
         project_id = str(project.id)
         status = await load_default_status(db, project_id)
-        task = await insert_row(db, "pm_tasks", {
-            "project_id": project_id,
-            "root_project_id": project_id,
-            "task_number": await next_task_number(db, project_id),
-            "status_id": str(status.id),
-            "title": title,
-            "description": payload.notes,
-            "due_at": payload.due_at,
-            "created_by": email,
-            "source": "manual",
-        })
-        task_id = str(task.id)
-        await db.execute(
-            text(
-                "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by) "
-                "VALUES (CAST(:tid AS uuid), :who, :who) "
-                "ON CONFLICT (task_id, assignee) DO NOTHING"
-            ),
-            {"tid": task_id, "who": email},
-        )
+        overlay = None
         if payload.next_action or payload.context:
-            await _upsert_personal(db, task_id, email, {
-                "next_action": payload.next_action,
-                "context": payload.context,
-            })
-        await record_activity(
-            db, activity_type="system", created_by=email, task_id=task_id,
-            body="Captured",
-        )
-        result = row_to_dict(task, TaskModel)
+            overlay = {"next_action": payload.next_action,
+                       "context": payload.context}
+        task = await create_personal_task(
+            db, email, project_id, project_id, str(status.id), {
+                "title": title,
+                "description": payload.notes,
+                "due_at": payload.due_at,
+                "source": "manual",
+            }, overlay)
+        return row_to_dict(task, TaskModel)
 
-    await emit("pm.task.created", {"task_id": task_id, "project_id": project_id,
-                                   "title": title})
-    return result
+
+async def create_personal_task(
+    db: Any, email: str, project_id: str, root_id: str, status_id: str,
+    values: dict[str, Any], overlay: dict[str, Any] | None = None,
+) -> Any:
+    """One `pm_tasks` row in the member's own tree, assigned to them.
+
+    The one capture path. `POST /projects/my/tasks` calls it, and so does the
+    AI seam's pm arm for every email and WhatsApp capture
+    (`routes/projects/item_lens.py`). Four effects, one helper: the row, the
+    assignee row (what the board's "mine" reads), the member's overlay when
+    there is one, and the `pm.task.created` event the workflow engine binds
+    triggers to (`routes/workflows/catalog.py`). A second capture site that
+    forgot the event would create tasks no automation ever sees.
+
+    `values` carries the task columns beside the ones this helper owns:
+    `title`, `description`, `due_at`, `source`, `parent_task_id`, `origin`.
+    """
+    task = await insert_row(db, "pm_tasks", {
+        "project_id": project_id,
+        "root_project_id": root_id,
+        "task_number": await next_task_number(db, root_id),
+        "status_id": status_id,
+        "created_by": email,
+        **values,
+    })
+    task_id = str(task.id)
+    await db.execute(
+        text(
+            "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by) "
+            "VALUES (CAST(:tid AS uuid), :who, :who) "
+            "ON CONFLICT (task_id, assignee) DO NOTHING"
+        ),
+        {"tid": task_id, "who": email},
+    )
+    if overlay:
+        await _upsert_personal(db, task_id, email, overlay)
+    await record_activity(
+        db, activity_type="system", created_by=email, task_id=task_id,
+        body="Captured",
+    )
+    await emit("pm.task.created", {
+        "task_id": task_id, "project_id": project_id,
+        "title": str(values.get("title") or ""),
+    })
+    return task
 
 
 # ── The overlay ─────────────────────────────────────────────────────────────
@@ -1049,8 +1074,18 @@ async def complete_for_member(db: Any, task: Any, email: str) -> dict[str, Any]:
     finished task in the member's Next list, and the reverse would mark a
     team task finished in one list while the board still shows it open.
 
-    `task` is any row carrying `id`, `project_id` and `status_id`.
+    Three more effects ride on it, so no caller can forget one: the
+    `pm.task.status_changed` event the workflow engine binds triggers to
+    (`routes/workflows/catalog.py`), and, for a task captured from an email,
+    the thread is marked Done through `propagate_task_done_to_thread`, the
+    same hop `PATCH /tasks/items/{id}` makes on the retiring store. That hop
+    is best-effort: the close stands if the mailbox is unreachable.
+
+    `task` is any row carrying `id`, `project_id`, `status_id` and, when it
+    has one, `origin`.
     """
+    import contextlib
+
     from gateway.routes.projects.core import apply_status_transition
 
     # The owner's chosen done lane, not whichever one sorts first. This read
@@ -1068,6 +1103,17 @@ async def complete_for_member(db: Any, task: Any, email: str) -> dict[str, Any]:
     # And the member's own view of it follows, so a completed task does not
     # sit in their Next list contradicting the board.
     await _upsert_personal(db, str(task.id), email, {"disposition": "DONE"})
+    if getattr(task, "origin", None):
+        # projects -> tasks is the allowed import direction. Function-local so
+        # the leaf this package imports at load gains no edge.
+        from gateway.routes.tasks.email_link import propagate_task_done_to_thread
+
+        with contextlib.suppress(Exception):
+            await propagate_task_done_to_thread(db, task)
+    await emit("pm.task.status_changed", {
+        "task_id": str(task.id), "from": moved["from"].name,
+        "to": moved["to"].name, "to_category": moved["to"].category,
+    })
     return moved
 
 
@@ -1089,13 +1135,7 @@ async def complete_task(
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
         moved = await complete_for_member(db, task, email)
-        result = row_to_dict(moved["row"], TaskModel)
-
-    await emit("pm.task.status_changed", {
-        "task_id": task_id, "from": moved["from"].name, "to": moved["to"].name,
-        "to_category": moved["to"].category,
-    })
-    return result
+        return row_to_dict(moved["row"], TaskModel)
 
 
 class DeferIn(BaseModel):

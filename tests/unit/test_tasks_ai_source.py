@@ -31,7 +31,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
-from gateway.routes.projects import item_lens
+from gateway.routes.projects import core as pm_core
+from gateway.routes.projects import item_lens, personal
 from gateway.routes.projects.item_lens import PM_ITEMS, _pm_item, pm_disposition
 from gateway.routes.projects.personal import _MY_TASKS_SQL
 from gateway.routes.tasks import ai as tasks_ai
@@ -301,8 +302,15 @@ def _patch_pm_helpers(monkeypatch) -> None:
                         AsyncMock(return_value=SimpleNamespace(id="st-1")))
     monkeypatch.setattr(item_lens, "status_owner_id",
                         AsyncMock(return_value="root-1"))
-    monkeypatch.setattr(item_lens, "next_task_number", AsyncMock(return_value=7))
-    monkeypatch.setattr(item_lens, "record_activity", AsyncMock())
+    monkeypatch.setattr(item_lens, "resolve_visibility_for", AsyncMock(
+        return_value=SimpleNamespace(
+            params={"vis_org": "org-1", "who": "a@x"},
+            project_clause=lambda column: f"{column} IN (SELECT id FROM visible)",
+        )))
+    # The capture helper's own collaborators, on the module that owns it.
+    monkeypatch.setattr(personal, "next_task_number", AsyncMock(return_value=7))
+    monkeypatch.setattr(personal, "record_activity", AsyncMock())
+    monkeypatch.setattr(personal, "emit", AsyncMock())
 
 
 def _pm_writes():
@@ -387,6 +395,8 @@ async def test_pm_capture_lands_in_my_root_self_assigned_with_origin(
     assert ov["disposition"] == "NEXT", "CALENDAR is a view, not a bucket"
     assert ov["context"] == "@computer" and ov["is_hard_date"] is True
     assert [p["disposition"] for _s, p in sub_ov] == ["NEXT", "NEXT"]
+    # Ranked by input order, like plan_apply.
+    assert [p["sort_key"] for _s, p in sub_ov] == [0.0, 1000.0]
 
     assert not db.sql("INSERT INTO gtd_items")
     assert not db.sql("INSERT INTO gtd_waiting")
@@ -446,6 +456,95 @@ async def test_pm_mark_done_by_thread_uses_the_one_completion_path(
     assert await PM_ITEMS.mark_done_by_thread(db, "a@x", "") == []
 
 
+# ── The workflow engine hears the pm arm ────────────────────────────────────
+
+def _capture_emits(monkeypatch) -> list[tuple[str, dict]]:
+    """`core.emit` on the module that owns the helpers, recorded in order.
+    The workflow catalog serves `pm.task.created` and `pm.task.status_changed`
+    as triggers, so a write that stops emitting breaks every automation with
+    the route tests still green."""
+    captured: list[tuple[str, dict]] = []
+
+    async def _emit(event_type, payload):
+        captured.append((event_type, payload))
+
+    monkeypatch.setattr(personal, "emit", _emit)
+    return captured
+
+
+async def test_pm_capture_emits_task_created_from_the_shared_helper(
+    monkeypatch,
+) -> None:
+    _patch_pm_helpers(monkeypatch)
+    events = _capture_emits(monkeypatch)
+    db = _FakeDB(_pm_writes())
+    item_id = await PM_ITEMS.insert_capture(db, "a@x", {
+        "title": "Send the quote", "subtasks": ["Draft it"],
+    }, {"kind": "email", "email_id": "m-1"})
+    kinds = [e for e, _p in events]
+    assert kinds == ["pm.task.created", "pm.task.created"], kinds
+    assert events[0][1] == {"task_id": item_id, "project_id": "root-1",
+                            "title": "Send the quote"}
+    # The route and the seam share the helper, so the event has ONE source.
+    src = inspect.getsource(personal.capture)
+    assert "create_personal_task" in src and "emit(" not in src
+
+
+async def test_pm_mark_done_by_thread_emits_status_changed_and_closes_the_thread(
+    monkeypatch,
+) -> None:
+    """The REAL `complete_for_member`: status transition, overlay DONE, the
+    email thread marked Done, and the event, from one helper."""
+    _patch_pm_helpers(monkeypatch)
+    events = _capture_emits(monkeypatch)
+    from gateway.routes.tasks import email_link
+
+    propagate = AsyncMock()
+    monkeypatch.setattr(email_link, "propagate_task_done_to_thread", propagate)
+    monkeypatch.setattr(personal, "load_default_status",
+                        AsyncMock(return_value=SimpleNamespace(id="done-1")))
+    monkeypatch.setattr(personal, "status_owner_id",
+                        AsyncMock(return_value="root-1"))
+    moved = {"row": None,
+             "from": SimpleNamespace(name="Inbox", category="backlog"),
+             "to": SimpleNamespace(name="Done", category="done")}
+    transition = AsyncMock(return_value=moved)
+    monkeypatch.setattr(pm_core, "apply_status_transition", transition)
+    db = _FakeDB(lambda sql, p: [
+        _full_row(id="open", p_disposition="NEXT",
+                  origin='{"kind": "email", "account_id": "a1", '
+                         '"thread_id": "th-1"}'),
+    ] if "t.origin->>'thread_id'" in sql else [])
+
+    assert await PM_ITEMS.mark_done_by_thread(db, "A@x", "th-1") == ["open"]
+    assert transition.await_args.args[2] == "done-1"
+    assert transition.await_args.kwargs == {"created_by": "a@x"}
+    (_ov_sql, ov), = db.sql("INSERT INTO pm_task_personal")
+    assert ov == {"task_id": "open", "member_email": "a@x", "disposition": "DONE"}
+    assert propagate.await_count == 1
+    assert propagate.await_args.args[1].origin["thread_id"] == "th-1"
+    assert events == [("pm.task.status_changed", {
+        "task_id": "open", "from": "Inbox", "to": "Done", "to_category": "done",
+    })]
+    # The route shares the helper, so it emits from ONE place.
+    src = inspect.getsource(personal.complete_task)
+    assert "complete_for_member" in src and "emit(" not in src
+
+
+async def test_pm_assignee_load_is_scoped_to_the_callers_visibility(
+    monkeypatch,
+) -> None:
+    """One member's private tasks never count into another member's roster."""
+    _patch_pm_helpers(monkeypatch)
+    db = _FakeDB()
+    await PM_ITEMS.assignee_load(db, "A@x")
+    (sql, params), = db.calls
+    assert "t.root_project_id IN (SELECT id FROM visible)" in sql
+    assert "GROUP BY 1" in sql and "t.archived_at IS NULL" in sql
+    assert params == {"vis_org": "org-1", "who": "a@x"}
+    item_lens.resolve_visibility_for.assert_awaited_once_with(db, "a@x")
+
+
 async def test_pm_update_origin_merges_and_scopes_to_the_tenant(monkeypatch) -> None:
     _patch_pm_helpers(monkeypatch)
     db = _FakeDB(lambda sql, p: (
@@ -470,12 +569,14 @@ async def test_pm_insights_count_the_effective_disposition(monkeypatch) -> None:
         _full_row(id="i2", p_disposition="INBOX", created_at=at - timedelta(days=9),
                   p_defer_until=at + timedelta(days=1)),   # deferred: not oldest
         _full_row(id="w1", p_disposition="WAITING",
-                  p_delegated_at=at - timedelta(days=10)),  # stale, never nudged
+                  p_delegated_at=at - timedelta(days=6)),   # stale: > 5 days
         _full_row(id="w2", p_disposition="WAITING",
                   p_delegated_at=at - timedelta(days=10),
-                  p_last_nudged_at=at - timedelta(days=1)),  # nudged: not stale
+                  p_last_nudged_at=at - timedelta(days=1)),  # still stale: the
+        # client's rule reads delegatedAt only, a nudge does not reset it
         _full_row(id="w3", p_disposition="WAITING",
-                  p_expected_by=at - timedelta(hours=1)),    # overdue promise
+                  p_delegated_at=at - timedelta(days=4),
+                  p_expected_by=at - timedelta(hours=1)),    # overdue, not stale
         _full_row(id="n1", p_disposition="NEXT", project_id="area-a"),
         _full_row(id="d1", status_category="done"),          # derived DONE
         _full_row(id="u1", status_category="todo"),          # derived NEXT

@@ -99,7 +99,7 @@ async def main() -> None:
         idx = {r.indexname for r in (await db.execute(text(
             "SELECT indexname FROM pg_indexes WHERE tablename = 'pm_tasks' "
             "AND indexname LIKE 'idx_pm_tasks_origin_%'"))).fetchall()}
-        check("0.4 three origin indexes, once each", len(idx) == 3, str(sorted(idx)))
+        check("0.4 four origin indexes, once each", len(idx) == 4, str(sorted(idx)))
         await db.execute(text(
             "SELECT coalesce(k.task_id, k.gtd_item_id) FROM wa_commitments k "
             "LIMIT 0"))
@@ -285,8 +285,11 @@ async def main() -> None:
               bare in {r.id for r in todo}, str([r.title for r in todo]))
         load = await PM_ITEMS.assignee_load(db, ALICE)
         by_em = {r.em: r.n for r in load}
-        check("8.2 assignee_load counts open work by email",
-              by_em.get(ALICE, 0) >= 3 and by_em.get(BOB) == 1, str(by_em))
+        check("8.2 assignee_load counts MY open work, never bob's private task",
+              by_em.get(ALICE, 0) >= 3 and BOB not in by_em, str(by_em))
+        bob_load = {r.em: r.n for r in await PM_ITEMS.assignee_load(db, BOB)}
+        check("8.3 bob's load is his own capture and none of alice's",
+              bob_load == {BOB: 1}, str(bob_load))
 
         await outer.rollback()
     await eng.dispose()

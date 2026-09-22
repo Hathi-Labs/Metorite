@@ -49,11 +49,10 @@ from gateway.routes.projects.core import (
     from_jsonb,
     insert_row,
     load_default_status,
-    next_task_number,
     now,
-    record_activity,
     require_organization_of,
     resolve_organization_id,
+    resolve_visibility_for,
     status_owner_id,
 )
 from gateway.routes.projects.personal import (
@@ -62,6 +61,7 @@ from gateway.routes.projects.personal import (
     _as_utc,
     _upsert_personal,
     complete_for_member,
+    create_personal_task,
     derive_disposition,
     ensure_personal_project,
     member_contexts,
@@ -85,6 +85,14 @@ _OVERLAY = (
 #: produce are views, not buckets, on the one store: the Calendar is `due_at`
 #: with `is_hard_date`, and DO_NOW is a NEXT the member does at once.
 _DISPOSITION_MAP = {"CALENDAR": "NEXT", "DO_NOW": "NEXT"}
+
+#: Days of silence after `delegated_at` before a Waiting-For is stale. The
+#: SAME rule as the client's `tasks/lib/waiting.ts::isStaleWaiting`
+#: (`STALE_WAITING_DAYS`) and the gtd arm's `interval '5 days'`: strictly
+#: more than five days since delegation, and nothing else. A nudge does not
+#: reset it and a promised date does not enter it. `test_tasks_gtd.py` pins
+#: all three together.
+STALE_WAITING_DAYS = 5
 
 #: `pm_projects.status` → the ACTIVE/ON_HOLD/DONE vocabulary the clarify brief
 #: filters on (`ai._active_projects` reads `status == "ACTIVE"`).
@@ -172,19 +180,21 @@ SELECT id::text AS id, name, description, status, parent_project_id,
  ORDER BY parent_project_id NULLS FIRST, position NULLS LAST, name
 """
 
-#: Open work per assignee, for the clarify roster's load hint. The count is
-#: over the caller's tenant, and "open" is "not in a closing category and not
-#: archived", which is the same reading the board applies.
+#: Open work per assignee, for the clarify roster's load hint. "Open" is
+#: "not in a closing category and not archived", the reading the board
+#: applies. ⚠️ The caller's grant closure is composed onto it at call time
+#: (`Visibility.project_clause`), the way `people/dashboard.py::_totals`
+#: scopes the same count. Without it one member's PRIVATE tasks are counted
+#: into another member's roster card and prompt.
 _ASSIGNEE_LOAD_SQL = (
     "SELECT lower(a.assignee) AS em, count(*) AS n"
     "  FROM pm_task_assignees a"
     "  JOIN pm_tasks t ON t.id = a.task_id"
     "  JOIN pm_task_statuses s ON s.id = t.status_id"
-    " WHERE t.organization_id = CAST(:vis_org AS uuid)"
-    "   AND t.archived_at IS NULL"
+    " WHERE t.archived_at IS NULL"
     "   AND s.category NOT IN ("
     + ", ".join(f"'{c}'" for c in sorted(CLOSING_CATEGORIES))
-    + ") GROUP BY 1"
+    + ")"
 )
 
 _ONE_ITEM = _MY_TASKS_SQL + " AND t.id = CAST(:tid AS uuid)"
@@ -273,8 +283,12 @@ class _PmLens(ItemSource):
         return []
 
     async def assignee_load(self, db, uid):
+        vis = await resolve_visibility_for(db, uid.lower())
         rows = (await db.execute(
-            text(_ASSIGNEE_LOAD_SQL), await self._binds(db, uid),
+            text(_ASSIGNEE_LOAD_SQL
+                 + " AND " + vis.project_clause("t.root_project_id")
+                 + " GROUP BY 1"),
+            dict(vis.params),
         )).fetchall()
         return [SimpleNamespace(pid=None, nm=None, em=r.em, n=int(r.n))
                 for r in rows]
@@ -305,13 +319,9 @@ class _PmLens(ItemSource):
                         and (oldest is None or created < oldest):
                     oldest = created
             elif it.disposition == "WAITING":
-                expected = _as_utc(it.expected_by)
                 delegated = _as_utc(it.delegated_at)
-                if (expected is not None and expected < at) or (
-                    delegated is not None
-                    and delegated < at - timedelta(days=7)
-                    and it.last_nudged_at is None
-                ):
+                if delegated is not None and \
+                        delegated < at - timedelta(days=STALE_WAITING_DAYS):
                     stale += 1
             elif it.disposition == "NEXT" and it.project_id:
                 next_in.add(it.project_id)
@@ -346,32 +356,18 @@ class _PmLens(ItemSource):
 
     async def _new_task(
         self, db: Any, who: str, project: Any, root_id: str, status_id: str,
-        values: dict[str, Any],
+        values: dict[str, Any], overlay: dict[str, Any] | None = None,
     ) -> str:
-        """One `pm_tasks` row in the member's tree, assigned to them.
+        """One task in the member's tree, through the ONE capture helper.
 
-        The same three writes `personal.capture` performs, for the same
-        reason: an assignee row is what the board's "mine" reads, and
-        `personal_owner` on the project is only the fast path to it.
+        `create_personal_task` is what `POST /projects/my/tasks` calls. It
+        writes the row, the assignee, the overlay, the activity and the
+        `pm.task.created` event, so a capture from an email announces itself
+        to the workflow engine exactly as a typed one does.
         """
-        task = await insert_row(db, "pm_tasks", {
-            "project_id": str(project.id),
-            "root_project_id": root_id,
-            "task_number": await next_task_number(db, root_id),
-            "status_id": status_id,
-            "created_by": who,
-            **values,
-        })
-        task_id = str(task.id)
-        await db.execute(
-            text(
-                "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by) "
-                "VALUES (CAST(:tid AS uuid), :who, :who) "
-                "ON CONFLICT (task_id, assignee) DO NOTHING"
-            ),
-            {"tid": task_id, "who": who},
-        )
-        return task_id
+        task = await create_personal_task(
+            db, who, str(project.id), root_id, status_id, values, overlay)
+        return str(task.id)
 
     async def insert_capture(self, db, uid, fields, origin):
         who = uid.lower()
@@ -387,8 +383,7 @@ class _PmLens(ItemSource):
             "due_at": fields.get("due_at"),
             "source": source,
             "origin": origin,
-        })
-        await _upsert_personal(db, task_id, who, {
+        }, {
             "disposition": disposition,
             "next_action": fields.get("next_action") or None,
             "context": fields.get("context") or None,
@@ -398,25 +393,24 @@ class _PmLens(ItemSource):
             "is_hard_date": bool(fields.get("is_hard_date", False)),
             "clarified_at": fields.get("clarified_at"),
         })
+        # Ranked by input order, the same arithmetic `plan_apply` uses, so
+        # the steps keep the sequence the drafter gave them.
+        rank = 0.0
         for sub in fields.get("subtasks") or []:
             title = str(sub or "").strip()
             if not title:
                 continue
-            sub_id = await self._new_task(
+            await self._new_task(
                 db, who, root, root_id, str(status.id), {
                     "title": title, "parent_task_id": task_id, "source": source,
+                }, {
+                    "disposition": "NEXT", "next_action": title,
+                    "sort_key": rank, "clarified_at": now(),
                 })
-            await _upsert_personal(db, sub_id, who, {
-                "disposition": "NEXT", "next_action": title,
-                "clarified_at": now(),
-            })
+            rank += 1000.0
         if disposition == "WAITING" and fields.get("waiting_on"):
             await self.record_waiting(
                 db, uid, task_id, fields["waiting_on"], fields["delegated_at"])
-        await record_activity(
-            db, activity_type="system", created_by=who, task_id=task_id,
-            body="Captured",
-        )
         return task_id
 
     async def record_waiting(self, db, uid, item_id, who, delegated_at):
@@ -489,13 +483,6 @@ class _PmLens(ItemSource):
         rank = 0.0
         for t in tasks:
             assignee = t.assignee if isinstance(t.assignee, dict) else None
-            task_id = await self._new_task(
-                db, who, project, root_id, str(status.id), {
-                    "title": t.title,
-                    "description": t.description,
-                    "due_at": _due_from_offset(t.due_offset_days),
-                    "source": "manual",
-                })
             overlay: dict[str, Any] = {
                 "disposition": "NEXT", "next_action": t.title,
                 "context": t.context, "energy": t.energy,
@@ -509,20 +496,25 @@ class _PmLens(ItemSource):
                     "disposition": "WAITING", "waiting_on": assignee,
                     "delegated_at": now(),
                 })
-            await _upsert_personal(db, task_id, who, overlay)
+            task_id = await self._new_task(
+                db, who, project, root_id, str(status.id), {
+                    "title": t.title,
+                    "description": t.description,
+                    "due_at": _due_from_offset(t.due_offset_days),
+                    "source": "manual",
+                }, overlay)
             tasks_created += 1
             rank += 1000.0
             srank = 0.0
             for sub in t.subtasks:
-                sub_id = await self._new_task(
+                await self._new_task(
                     db, who, project, root_id, str(status.id), {
                         "title": sub, "parent_task_id": task_id,
                         "source": "manual",
+                    }, {
+                        "disposition": "NEXT", "next_action": sub,
+                        "sort_key": srank, "clarified_at": now(),
                     })
-                await _upsert_personal(db, sub_id, who, {
-                    "disposition": "NEXT", "next_action": sub,
-                    "sort_key": srank, "clarified_at": now(),
-                })
                 subtasks_created += 1
                 srank += 1000.0
         return {"project_id": project_id, "tasks_created": tasks_created,
