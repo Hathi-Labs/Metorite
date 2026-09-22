@@ -90,8 +90,12 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   report_save: { icon: "FileText", label: "Report saved" },
 };
 
-/** The first line of a cancelled write, verbatim from `writes.py`. */
-const CANCELLED = "Cancelled — nothing was changed.";
+/**
+ * The first line of a cancelled write, verbatim from `writes.py::CANCELLED`.
+ * `ProjectToolCards.test.ts` reads that file and holds the two equal, so an
+ * edit on either side fails a test instead of painting a decline green.
+ */
+export const CANCELLED = "Cancelled — nothing was changed.";
 
 /**
  * Is this a Projects tool at all? The manifest's tool names are the
@@ -280,44 +284,81 @@ function InfoCard({
   );
 }
 
+/** What a write tool's result says happened. Pure, so the card is testable. */
+export type ActionOutcome = "done" | "cancelled" | "refused" | "failed";
+
 /**
- * The receipt for a class B write. Three states, each with its own tone from
- * the theme's tokens: done (success), cancelled at the card (muted), failed
- * (destructive). A `full_id:` line in the result is the jump to the row.
+ * Classify a write tool's result.
+ *
+ * A write that HAPPENED carries a `full_id:` line — every success return in
+ * `writes.py` does, so the card can jump to the row. A result without one
+ * is a refusal or a no-op the tool reported in prose ("A task needs a
+ * title.", "Nothing to change."). The first version painted those green
+ * under "Task moved"; the S2 verifier caught it. Now: no id, no success.
+ */
+export function classifyActionResult(
+  result: string,
+  status: ToolEvent["status"],
+): ActionOutcome {
+  if (status === "error") return "failed";
+  const text = (result || "").trim();
+  if (text.startsWith(CANCELLED)) return "cancelled";
+  return rowIdOf(text) ? "done" : "refused";
+}
+
+/** The row a write touched, from its `full_id:` line, or "". */
+export function rowIdOf(result: string): string {
+  return result.match(/full_id:\s*([0-9a-f-]{36})/i)?.[1] ?? "";
+}
+
+/**
+ * The receipt for a class B write. Four states, each with its own tone from
+ * the theme's tokens: done (success), refused by the tool in prose (muted),
+ * cancelled at the card (muted), failed (destructive). The confirmation
+ * card BEFORE the write is the shared `ConfirmationCard`; this is the
+ * receipt after it.
  */
 function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const meta = ACTION_META[e.name] ?? { icon: "Wrench", label: genericLabel(e.name) };
   const result = (e.result || "").trim();
-  const failed = e.status === "error";
-  const cancelled = !failed && result.startsWith(CANCELLED);
-  const rowId = result.match(/full_id:\s*([0-9a-f-]{36})/i)?.[1] ?? "";
+  const outcome = classifyActionResult(result, e.status);
+  const rowId = rowIdOf(result);
   const openTask = useOpenTask();
   const detail = withoutLegend(result)
     .split("\n")
     .filter((l) => !/^\s*full_id:/.test(l))
     .join("\n")
     .trim();
-  const tone = failed
-    ? "border-destructive/40 text-destructive"
-    : cancelled
-      ? "border-border text-muted-foreground"
-      : "border-success/40 text-success";
+  const tone =
+    outcome === "failed"
+      ? "border-destructive/40 text-destructive"
+      : outcome === "done"
+        ? "border-success/40 text-success"
+        : "border-border text-muted-foreground";
+  const icon =
+    outcome === "failed" ? "X" : outcome === "cancelled" ? "Ban" : outcome === "refused" ? "Info" : meta.icon;
+  const heading =
+    outcome === "failed"
+      ? `${meta.label} — failed`
+      : outcome === "cancelled"
+        ? "Cancelled"
+        : outcome === "refused"
+          ? "Not done"
+          : meta.label;
   return (
     <div className={`rounded-lg border bg-card/40 px-2.5 py-2 ${tone}`}>
       <div className="flex items-start gap-2">
         <span className="mt-0.5 flex-shrink-0">
-          <AppIcon name={failed ? "X" : cancelled ? "Ban" : meta.icon} size={13} />
+          <AppIcon name={icon} size={13} />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-medium text-foreground">
-            {failed ? `${meta.label} — failed` : cancelled ? "Cancelled" : meta.label}
-          </div>
+          <div className="text-[11px] font-medium text-foreground">{heading}</div>
           {detail && (
             <div className="mt-0.5 text-[10px] text-muted-foreground whitespace-pre-wrap line-clamp-4">
               {detail}
             </div>
           )}
-          {!failed && !cancelled && rowId && (
+          {outcome === "done" && rowId && (
             <div className="mt-1">
               <Button
                 variant="text"

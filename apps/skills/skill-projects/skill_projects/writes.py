@@ -78,12 +78,21 @@ def _fields_block(payload: dict[str, Any], *, before: dict[str, Any] | None = No
     ``before`` adds the current value beside each changed field, so a member
     approving an update sees the change and not only the result.
     """
+
+    def shown(value: Any) -> Any:
+        # A value that already carries a fence came from `data()` or `_ref()`
+        # — `data()` strips a member's own guillemets, so a « can only be
+        # ours. Fencing it again would strip the inner pair of `#7 «title»`.
+        if isinstance(value, str):
+            return value if "«" in value else data(value)
+        return value
+
     lines: list[str] = []
     for key, value in payload.items():
         if before is not None and key in before and before[key] != value:
-            lines.append(f"{key}: {data(before[key])} → {data(value)}")
+            lines.append(f"{key}: {shown(before[key])} → {shown(value)}")
         else:
-            lines.append(f"{key}: {data(value) if isinstance(value, str) else value}")
+            lines.append(f"{key}: {shown(value)}")
     body = "\n".join(lines)
     budget = CARD_CONTEXT_LIMIT - len(CARD_NOTE) - 1
     if len(body) <= budget:
@@ -162,14 +171,23 @@ async def _resolve_assignee(value: str) -> str:
     payload = await get("/projects/assignees", {"q": raw})
     people = (payload or {}).get("people") or []
     agents = (payload or {}).get("agents") or []
+    # The picker matches name, email AND title by substring, so "ops" can
+    # return one person whose title is "Ops Lead". Only an exact name match
+    # resolves on its own. Anything looser is a list for the member to pick
+    # from, never a silent pick.
     exact = [p for p in people + agents if str(p.get("name") or "").strip().lower() == raw.lower()]
+    if len(exact) == 1:
+        return str(exact[0].get("assignee")).lower()
     found = exact or (people + agents)
-    if len(found) == 1:
-        return str(found[0].get("assignee")).lower()
     if not found:
         raise GatewayRefusal(f"Nobody matches {data(raw)}. Use people_for to find them.")
-    names = ", ".join(f"{data(p.get('name'))} ({p.get('assignee')})" for p in found[:8])
-    raise GatewayRefusal(f"{data(raw)} matches more than one person: {names}. Ask which.")
+    names = ", ".join(f"{data(p.get('name'))} ({data(p.get('assignee'))})" for p in found[:8])
+    if len(exact) > 1:
+        raise GatewayRefusal(f"{data(raw)} matches more than one person: {names}. Ask which.")
+    raise GatewayRefusal(
+        f"No person is called exactly {data(raw)}. Close matches: {names}. "
+        "Pass the address, or ask which one."
+    )
 
 
 def _split(csv: str) -> list[str]:
@@ -177,10 +195,21 @@ def _split(csv: str) -> list[str]:
 
 
 def _int_or_none(value: Any) -> int | None:
+    """An estimate: absent, empty or zero means "not passed"."""
     try:
         return int(value) if value not in (None, "", 0, "0") else None
     except (TypeError, ValueError):
         return None
+
+
+def _importance(value: Any) -> int | None:
+    """Importance: -1 (the default) means "not passed". 0 is a real value —
+    it is how a member drops the priority — so it must not read as absent."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return None if parsed < 0 else parsed
 
 
 # ── Tasks ────────────────────────────────────────────────────────────────────
@@ -194,7 +223,7 @@ async def create_task(
     status: str = "",
     assignees: str = "",
     due: str = "",
-    importance: int = 0,
+    importance: int = -1,
     estimate_mins: int = 0,
     tags: str = "",
     parent_task_id: str = "",
@@ -203,7 +232,7 @@ async def create_task(
     projects_tree (a project or subproject, never a folder). status is by
     NAME from that project's vocabulary, or omitted for the default.
     assignees is comma-separated emails, agent:<name>, or people's names.
-    due is YYYY-MM-DD. importance is 0 to 4. tags is comma-separated.
+    due is YYYY-MM-DD. importance is 0 to 4 (omit to leave it). tags is comma-separated.
     parent_task_id makes it a subtask. The member approves a card first;
     nothing is created if they decline. Archive is the undo."""
     pid = uuid_of(project_id, "project_id")
@@ -221,7 +250,7 @@ async def create_task(
         status_label = "the default"
     if due.strip():
         payload["due_at"] = due.strip()
-    imp = _int_or_none(importance)
+    imp = _importance(importance)
     if imp is not None:
         if imp not in IMPORTANCE:
             return "importance is 0 to 4."
@@ -262,15 +291,16 @@ async def update_task(
     status: str = "",
     due: str = "",
     start: str = "",
-    importance: int = 0,
+    importance: int = -1,
     estimate_mins: int = 0,
     tags: str = "",
     clear: str = "",
 ) -> str:
     """Change a task's fields. Only the arguments you pass change. status is
     by NAME from the task's project. due and start are YYYY-MM-DD. tags
-    REPLACES the tag list. clear is a comma-separated list of fields to
-    empty: due, start, description, estimate. The card shows each change as
+    REPLACES the tag list. importance 0 to 4 (omit to leave it). clear is a
+    comma-separated list of fields to empty: due, start, description,
+    estimate, importance. The card shows each change as
     before → after. The timeline records every field change, and the app
     can revert one."""
     task = await _task(task_id)
@@ -294,7 +324,7 @@ async def update_task(
     if start.strip():
         payload["start_date"] = start.strip()
         before["start_date"] = (task.get("start_date") or "")[:10]
-    imp = _int_or_none(importance)
+    imp = _importance(importance)
     if imp is not None:
         if imp not in IMPORTANCE:
             return "importance is 0 to 4."
@@ -307,14 +337,24 @@ async def update_task(
     if tags.strip():
         payload["tags"] = _split(tags)
         before["tags"] = task.get("tags")
+    cleared: dict[str, Any] = {}
     for field in _split(clear):
-        key = {"due": "due_at", "start": "start_date", "estimate": "estimate_mins"}.get(
-            field.lower(), field.lower()
-        )
-        if key not in ("due_at", "start_date", "description", "estimate_mins"):
-            return f"clear takes due, start, description or estimate, not {data(field)}."
-        payload[key] = None
+        key = {
+            "due": "due_at",
+            "start": "start_date",
+            "estimate": "estimate_mins",
+            "priority": "importance",
+        }.get(field.lower(), field.lower())
+        if key not in ("due_at", "start_date", "description", "estimate_mins", "importance"):
+            return (
+                f"clear takes due, start, description, estimate or importance, not {data(field)}."
+            )
+        cleared[key] = None
         before[key] = task.get(key)
+    # Cleared fields go FIRST in the card. The card clips its tail at 4000
+    # characters, and a long description must never push "due → None" out of
+    # sight: a clear is the change a member most needs to see.
+    payload = {**cleared, **payload}
     if not payload:
         return "Nothing to change. Pass at least one field."
 
@@ -454,13 +494,13 @@ async def unlink_tasks(task_id: str, link_id: str) -> str:
     lid = uuid_of(link_id, "link_id")
     relations = await get(f"/projects/tasks/{task['id']}/relations")
     links = (relations or {}).get("links") or []
-    link = next((row for row in links if str(row.get("id")) == lid), None)
+    # The relations route's row (relations.py `_row`): `link_id` is the link
+    # row, `id` is the OTHER task. The first version matched on `id` and so
+    # never removed a link. The test fake now carries the route's real shape.
+    link = next((row for row in links if str(row.get("link_id")) == lid), None)
     if link is None:
         return f"{_ref(task)} has no link with id {lid}. task_detail lists its links."
-    other = link.get("other") or link
-    label = (
-        f"{link.get('direction', '')} {link.get('link_type', 'link')} {data(other.get('title'))}"
-    )
+    label = f"{link.get('direction', '')} {link.get('link_type', 'link')} {_ref(link)}"
     if not await _confirm(
         title="Remove this link?",
         detail=f"{_ref(task)}: {label}",
@@ -485,11 +525,21 @@ async def move_task(
     if not ids:
         return "Give at least one task id."
     if destination_project_id.strip():
+        if len(ids) > MAX_BATCH:
+            return f"That is {len(ids)} tasks. The limit for one card is {MAX_BATCH}."
         dest = uuid_of(destination_project_id, "destination_project_id")
         dest_node = await get(f"/projects/nodes/{dest}")
-        # The preview WRITES NOTHING (move.py `preview_move`), and it makes
-        # every refusal the apply makes, so the card cannot offer a move the
-        # apply then rejects. It is the read that names what this costs.
+        # The card NAMES every task it moves (class B may list many rows),
+        # so the member sees which three, not "3 tasks". Read before the
+        # card, like every other row a card names.
+        tasks = [await _task(t) for t in ids]
+        if all(str(t.get("project_id")) == dest for t in tasks):
+            return f"Those tasks are already in {data(dest_node.get('name'))}."
+        # The preview WRITES NOTHING (move.py `preview_move`). It computes
+        # the plan the apply will use, and it is the read that names what
+        # this costs. Two refusals live in the apply alone (same-project,
+        # and a status the destination lacks per task), so a 422 after the
+        # card is still possible and is relayed as the gateway's own words.
         plan = await post(
             "/projects/tasks/move/preview", {"task_ids": ids, "destination_project_id": dest}
         )
@@ -504,6 +554,8 @@ async def move_task(
             "tasks": plan.get("task_count", len(ids)),
             "to": data(dest_node.get("name")),
         }
+        for i, t in enumerate(tasks):
+            card[f"task {i + 1}"] = _ref(t)
         if plan.get("crosses_status_set"):
             card["statuses"] = "re-pointed to the destination's lanes by category"
         if drops:
@@ -523,7 +575,10 @@ async def move_task(
         result = await post("/projects/tasks/move", body)
         moved = result.get("moved") if isinstance(result, dict) else None
         moved = moved if isinstance(moved, int) else len(ids)
-        return f"Moved {moved} task{'s' if moved != 1 else ''} to {card['to']}."
+        out = [f"Moved {moved} task{'s' if moved != 1 else ''} to {card['to']}:"]
+        for t in tasks:
+            out.extend(_task_line({**t, "project_id": dest}))
+        return "\n".join(out)
     if parent_task_id.strip():
         if len(ids) != 1:
             return "Re-parenting takes exactly one task id."
@@ -739,27 +794,44 @@ async def report_save(
     payload: dict[str, Any] = {}
     if label:
         payload["name"] = label
+    scope = "the portfolio"
+    if report_id.strip():
+        # An UPDATE. The route changes `name` and `config` only, and it
+        # REPLACES `config` (reports.py `update_report`), so the tool merges
+        # the member's change into the saved config first and never sends a
+        # scope: a report's scope cannot change, and the card must not say
+        # it can. Save a new report for another scope.
+        rid = uuid_of(report_id, "report_id")
+        if project_id.strip():
+            return (
+                "A saved report keeps its scope. Save a new report for another "
+                "project, or leave project_id empty to change this one."
+            )
+        existing = await get(f"/projects/reports/{rid}")
+        if config:
+            merged = dict(existing.get("config") or {})
+            merged.update(config)
+            payload["config"] = merged
+        if not payload:
+            return "Nothing to change."
+        card = dict(payload)
+        if "config" in card:
+            card["config"] = ", ".join(f"{k} {v}" for k, v in payload["config"].items())
+        if not await _confirm(
+            title="Change this report?",
+            detail=data(existing.get("name")),
+            context=_fields_block(card),
+        ):
+            return CANCELLED
+        row = await patch(f"/projects/reports/{rid}", payload)
+        return f"Updated report {data(row.get('name'))}.\n  full_id: {rid}"
     if config:
         payload["config"] = config
-    scope = "the portfolio"
     if project_id.strip():
         pid = uuid_of(project_id, "project_id")
         node = await get(f"/projects/nodes/{pid}")
         payload["project_id"] = pid
         scope = data(node.get("name"))
-    if report_id.strip():
-        rid = uuid_of(report_id, "report_id")
-        existing = await get(f"/projects/reports/{rid}")
-        if not payload:
-            return "Nothing to change."
-        if not await _confirm(
-            title="Change this report?",
-            detail=data(existing.get("name")),
-            context=_fields_block({**payload, "scope": scope}),
-        ):
-            return CANCELLED
-        row = await patch(f"/projects/reports/{rid}", payload)
-        return f"Updated report {data(row.get('name'))}.\n  full_id: {rid}"
     if not label:
         return "A report needs a name."
     if not await _confirm(

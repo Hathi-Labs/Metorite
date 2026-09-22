@@ -447,7 +447,9 @@ keep working.
 The timeline can then show "by Priya, through the assistant". A member who
 reverts an assistant edit can see which ones those were. One seam, one
 field. A header outside the pattern binds nothing, so the human path is
-unchanged. The fence is `tests/unit/test_projects_actor_via.py`.
+unchanged. The fences are `tests/unit/test_projects_actor_via.py` (the
+dict, the dependency and the router) and `tests/live/live_actor_via.py`,
+which reads the JSONB back from a real Postgres (R8).
 
 ---
 
@@ -581,6 +583,7 @@ bash scripts/dev_db.sh
 eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_agent.py
 uv run pytest tests/unit/test_tenant_coverage.py
+uv run python tests/live/live_actor_via.py   # D-PM-36 on a real row
 ```
 
 In `workbench/control_plane`:

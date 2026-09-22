@@ -80,8 +80,18 @@ def responder(call: dict) -> Any:
     if path.endswith("/relations"):
         return {
             "subtasks": [],
+            # The route's real row (relations.py `_row`): `id` is the OTHER
+            # task, `link_id` is the link. The first fake invented `other`,
+            # and `unlink_tasks` matched the wrong key for a whole review.
             "links": [
-                {"id": LINK, "direction": "outgoing", "link_type": "blocks", "other": OTHER_TASK}
+                {
+                    "id": OTHER,
+                    "link_id": LINK,
+                    "direction": "outgoing",
+                    "link_type": "blocks",
+                    "title": "Order the nozzle",
+                    "task_number": 8,
+                }
             ],
             "blocked_by": [],
         }
@@ -198,19 +208,36 @@ async def test_a_denied_card_writes_nothing(tool: str, monkeypatch) -> None:
 
 @pytest.mark.parametrize("tool", sorted(_WRITES))
 async def test_everything_before_the_card_is_a_read(tool: str, monkeypatch) -> None:
-    asked = approve(monkeypatch)
+    """The card's place in the call sequence is MEASURED, not inferred.
+
+    The first version found "the first non-GET" and checked what came before
+    it — true of any sequence whose reads come first, card or no card. The
+    verifier showed it passing with the write moved ahead of the card. Now the
+    stubbed gate drops a marker into the same call list the fake gateway
+    records, so the order is a fact: every call before the marker is a read
+    (a GET, or a manifest preview), and at least one write follows it.
+    """
+    import acb_skills.ask_tools as ask_tools
+
     calls = fake_gateway(monkeypatch, responder)
+
+    async def marker(**kwargs: Any) -> bool:
+        calls.append({"method": "CARD", "path": "", "headers": {}, "params": {}, "json": kwargs})
+        return True
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", marker)
     for kwargs in _WRITES[tool]:
         before = len(calls)
-        cards = len(asked)
         await getattr(skill_projects, tool)(**kwargs)
-        assert len(asked) == cards + 1, f"{tool} showed {len(asked) - cards} cards, not one"
-        # Find where the card fell in the call sequence: every call up to the
-        # first non-GET must be a GET, and the first non-GET comes after it.
         seq = calls[before:]
-        first_write = next((i for i, c in enumerate(seq) if c["method"] != "GET"), len(seq))
-        assert all(c["method"] == "GET" for c in seq[:first_write]), tool
-        assert first_write < len(seq), f"{tool} approved and then wrote nothing"
+        cards = [i for i, c in enumerate(seq) if c["method"] == "CARD"]
+        assert len(cards) == 1, f"{tool} showed {len(cards)} cards, not one"
+        at = cards[0]
+        for c in seq[:at]:
+            assert m.is_read(c["method"], c["path"]), f"{tool} wrote before the card: {c}"
+        assert any(not m.is_read(c["method"], c["path"]) for c in seq[at + 1 :]), (
+            f"{tool} approved and then wrote nothing"
+        )
 
 
 @pytest.mark.parametrize("tool", sorted(_WRITES))
@@ -394,7 +421,9 @@ async def test_an_ambiguous_person_is_a_refusal(monkeypatch) -> None:
 
     approve(monkeypatch)
     calls = fake_gateway(monkeypatch, twins)
-    with pytest.raises(client.GatewayRefusal, match="more than one person"):
+    # Two people whose names CONTAIN the word and neither is an exact match:
+    # the refusal lists both, and assigns nobody.
+    with pytest.raises(client.GatewayRefusal, match="Close matches"):
         await skill_projects.assign(UUID, "Priya")
     assert writes(calls) == []
 
@@ -413,3 +442,93 @@ async def test_the_actor_via_header_rides_every_call(monkeypatch) -> None:
     calls = fake_gateway(monkeypatch, responder)
     await skill_projects.comment(UUID, "hi")
     assert calls and all(c["headers"].get("X-Actor-Via") == client.ACTOR_VIA for c in calls)
+
+
+# ── The review's findings, each pinned ──────────────────────────────────────
+
+
+async def test_unlink_sends_the_link_id_not_the_other_task(monkeypatch) -> None:
+    """The relations row's `id` is the other task and `link_id` is the link.
+    Matching on `id` made every unlink a false refusal or a 404."""
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.unlink_tasks(UUID, LINK)
+    deleted = [c for c in writes(calls) if c["method"] == "DELETE"]
+    assert deleted and deleted[0]["path"] == f"/projects/tasks/{UUID}/links/{LINK}"
+    assert "«Order the nozzle»" in out
+
+
+async def test_task_detail_prints_the_link_id_the_unlink_tool_takes(monkeypatch) -> None:
+    fake_gateway(monkeypatch, responder)
+    text = await skill_projects.task_detail(UUID)
+    assert f"(link id {LINK})" in text
+
+
+async def test_report_update_merges_config_and_keeps_the_scope(monkeypatch) -> None:
+    def with_config(call: dict) -> Any:
+        if call["path"] == f"/projects/reports/{UUID}" and call["method"] == "GET":
+            return {
+                "id": UUID,
+                "name": "Weekly",
+                "project_id": None,
+                "config": {"sections": ["stuck"], "weeks": 1, "include_subtree": True},
+            }
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, with_config)
+    await skill_projects.report_save("", report_id=UUID, weeks=8)
+    patched = [c for c in writes(calls) if c["method"] == "PATCH"]
+    assert patched[0]["json"] == {
+        "config": {"sections": ["stuck"], "weeks": 8, "include_subtree": True}
+    }
+    assert "scope" not in asked[0]["context"]
+    # A scope change is refused before any card, because the route drops it.
+    out = await skill_projects.report_save("", report_id=UUID, project_id=OTHER)
+    assert "keeps its scope" in out
+    assert len(asked) == 1
+
+
+async def test_a_fuzzy_person_match_is_a_refusal(monkeypatch) -> None:
+    def fuzzy(call: dict) -> Any:
+        if call["path"] == "/projects/assignees":
+            return {
+                "people": [{"assignee": "lead@x.io", "name": "Rahul", "title": "Ops Lead"}],
+                "agents": [],
+            }
+        return responder(call)
+
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, fuzzy)
+    with pytest.raises(client.GatewayRefusal, match="No person is called exactly"):
+        await skill_projects.assign(UUID, "ops")
+    assert writes(calls) == []
+
+
+async def test_importance_zero_is_a_real_value(monkeypatch) -> None:
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    await skill_projects.update_task(UUID, importance=0)
+    patched = [c for c in writes(calls) if c["method"] == "PATCH"]
+    assert patched and patched[0]["json"] == {"importance": 0}
+    calls.clear()
+    await skill_projects.update_task(UUID, clear="importance")
+    patched = [c for c in writes(calls) if c["method"] == "PATCH"]
+    assert patched and patched[0]["json"] == {"importance": None}
+
+
+async def test_the_move_card_names_every_task(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    out = await skill_projects.move_task(f"{UUID},{OTHER}", destination_project_id=OTHER)
+    assert "task 1: #7 «Fix the extruder»" in asked[0]["context"]
+    assert "task 2: #8 «Order the nozzle»" in asked[0]["context"]
+    assert f"full_id: {UUID}" in out and f"full_id: {OTHER}" in out
+
+
+async def test_a_clear_stays_on_the_card_under_a_long_description(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.update_task(UUID, description="x" * 5000, clear="due")
+    context = asked[0]["context"]
+    assert "due_at:" in context.split("description:")[0]

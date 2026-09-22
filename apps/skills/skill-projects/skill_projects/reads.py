@@ -320,7 +320,7 @@ async def _relations_block(task_id: str) -> list[str]:
             other = link.get("other") or link
             out.append(
                 f"- {link.get('direction', '')} {link.get('link_type', 'link')} "
-                f"{_number(other)} {data(other.get('title'))} (link id {link.get('id')})"
+                f"{_number(other)} {data(other.get('title'))} (link id {link.get('link_id')})"
             )
     blocked = (relations or {}).get("blocked_by") or []
     if blocked:
