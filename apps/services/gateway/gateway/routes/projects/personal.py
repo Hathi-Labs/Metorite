@@ -1092,3 +1092,256 @@ async def defer_task(
             "defer_until": payload.until, "disposition": "SOMEDAY",
         })
         return _personal_to_dict(row)
+
+
+# -- Areas: a member's own categories (WS-39 S6b) ----------------------------
+#
+# An **Area** is a child of the personal root carrying `personal_owner`. That
+# is the whole shape, and migration 191 is what makes it work: before it,
+# `personal_owner` was unique across every row, so it could only ever mark a
+# root. 191 re-keyed the index onto the root, and the column now means
+# *private to this person at any depth*.
+#
+# **Why this slice exists**, and it is not symmetry with the Projects app.
+# H-29 says it in as many words: the `gtd_*` backfill CREATES Areas from a
+# member's old `gtd_projects`, and the owner may not arm it until the app can
+# rename or delete one. Otherwise a member wakes to categories they did not
+# make and cannot remove. These four routes are the precondition on the
+# cutover, not a convenience beside it.
+#
+# WARNING: authorization here is the LOOKUP, not a check after it. Every route
+# resolves the caller from the session and finds the Area by
+# `(personal_owner = me, and it has a parent)`. Somebody else's Area is not
+# refused, it is NOT FOUND, because the query never had a way to reach it.
+# There is deliberately no `?member=`, matching this module's header rule.
+
+#: Long enough for "Home: renovation and council paperwork", short enough that
+#: a sidebar row cannot become a text file.
+AREA_NAME_MAX = 120
+
+
+class AreaIn(BaseModel):
+    name: str
+
+
+def _clean_area_name(raw: str) -> str:
+    name = (raw or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="An area needs a name.")
+    if len(name) > AREA_NAME_MAX:
+        raise HTTPException(
+            status_code=422,
+            detail=f"An area name is at most {AREA_NAME_MAX} characters.",
+        )
+    return name
+
+
+def _area_to_dict(row: Any, open_tasks: int | None = None) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "id": str(row.id),
+        "name": row.name,
+        "archived": getattr(row, "archived_at", None) is not None,
+    }
+    if open_tasks is not None:
+        out["open_tasks"] = int(open_tasks)
+    return out
+
+
+async def _load_my_area(db: Any, email: str, area_id: str) -> Any:
+    """One Area of mine, or 404.
+
+    The two predicates together ARE the authorization. `personal_owner` says
+    the row is private to me, and `parent_project_id IS NOT NULL` says it is a
+    category rather than my root — so this can never return the root itself
+    and let a rename or a delete reach it.
+    """
+    row = (await db.execute(
+        text(
+            "SELECT * FROM pm_projects "
+            " WHERE id = CAST(:aid AS uuid) "
+            "   AND lower(personal_owner) = :who "
+            "   AND parent_project_id IS NOT NULL"
+        ),
+        {"aid": area_id, "who": email},
+    )).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="No such area")
+    return row
+
+
+@router.get("/my/areas")
+async def list_my_areas(
+    include_archived: bool = False,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """My categories, with how much live work each holds.
+
+    The count is `open_tasks` rather than every task, because the question a
+    sidebar answers is "is there anything here for me". A category whose work
+    is all done should read as empty.
+    """
+    email = actor(user).lower()
+    async with _tenant_session() as db:
+        root = await _load_personal_project(db, email)
+        if root is None:
+            return {"rows": [], "total": 0}
+        clause = "" if include_archived else " AND p.archived_at IS NULL"
+        rows = (await db.execute(
+            text(
+                "SELECT p.*, ( "
+                "   SELECT count(*) FROM pm_tasks t "
+                "     JOIN pm_task_statuses s ON s.id = t.status_id "
+                "    WHERE t.project_id = p.id "
+                "      AND t.archived_at IS NULL "
+                "      AND s.category <> 'done' "
+                " ) AS open_tasks "
+                "  FROM pm_projects p "
+                " WHERE p.parent_project_id = CAST(:root AS uuid) "
+                "   AND lower(p.personal_owner) = :who "
+                + clause +
+                " ORDER BY lower(p.name)"
+            ),
+            {"root": str(root.id), "who": email},
+        )).fetchall()
+    return {
+        "rows": [_area_to_dict(r, getattr(r, "open_tasks", 0)) for r in rows],
+        "total": len(rows),
+    }
+
+
+@router.post("/my/areas", status_code=201)
+async def create_my_area(
+    payload: AreaIn, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Mint a category under my personal root.
+
+    WARNING: `owns_statuses` is FALSE, and that is load-bearing. An Area
+    inherits its root's four lanes, so a task moved between two of my Areas
+    keeps its status. A category that owned its own set would strand every
+    task the moment it moved — the defect `move_node` had to grow
+    `remap_task_statuses` to repair.
+    """
+    email = actor(user).lower()
+    name = _clean_area_name(payload.name)
+    async with _tenant_session() as db:
+        # Creating an Area can be the first use of the personal tree, so the
+        # root may not exist yet. Reusing `ensure_personal_project` keeps ONE
+        # place that decides what a personal root looks like, and it seeds the
+        # lanes this Area is about to inherit.
+        root = await ensure_personal_project(db, email)
+        existing = (await db.execute(
+            text(
+                "SELECT id FROM pm_projects "
+                " WHERE parent_project_id = CAST(:root AS uuid) "
+                "   AND lower(personal_owner) = :who "
+                "   AND lower(name) = lower(:name) "
+                "   AND archived_at IS NULL"
+            ),
+            {"root": str(root.id), "who": email, "name": name},
+        )).fetchone()
+        if existing is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"You already have an area called {name}.",
+            )
+        area = await insert_row(db, "pm_projects", {
+            "name": name,
+            "parent_project_id": str(root.id),
+            # Inherited, and written explicitly rather than left to a trigger:
+            # this column is what every privacy read filters on, so it belongs
+            # where a reader of this function can see it.
+            "personal_owner": email,
+            "created_by": email,
+            "source": "manual",
+            "organization_id": await require_organization_of(db, email),
+            "owns_statuses": False,
+        })
+        result = _area_to_dict(area, 0)
+    await emit("pm.project.created", {"project_id": result["id"], "name": name})
+    return result
+
+
+@router.patch("/my/areas/{area_id}")
+async def rename_my_area(
+    area_id: str, payload: AreaIn,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Rename one. It is the only field an Area has."""
+    email = actor(user).lower()
+    name = _clean_area_name(payload.name)
+    async with _tenant_session() as db:
+        area = await _load_my_area(db, email, area_id)
+        await db.execute(
+            text(
+                "UPDATE pm_projects SET name = :name, updated_at = now() "
+                " WHERE id = CAST(:aid AS uuid)"
+            ),
+            {"name": name, "aid": str(area.id)},
+        )
+        after = await _load_my_area(db, email, area_id)
+        result = _area_to_dict(after)
+    await emit("pm.project.updated", {"project_id": area_id})
+    return result
+
+
+@router.delete("/my/areas/{area_id}")
+async def remove_my_area(
+    area_id: str, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Remove a category, without removing what is in it.
+
+    Two outcomes, and the row count decides which:
+
+    - **Empty** — the row goes. A category somebody made by accident should
+      not leave a tombstone in their own sidebar.
+    - **Holds tasks** — ARCHIVED, never deleted. `pm_tasks.project_id` is what
+      a task lives on, so deleting the project would take the work with it, or
+      refuse on the foreign key. The member asked to tidy a list, not to lose
+      a month of captures.
+
+    The response says which happened, because "deleted" and "archived" are
+    different promises and the UI has to tell the truth about them.
+    """
+    email = actor(user).lower()
+    async with _tenant_session() as db:
+        area = await _load_my_area(db, email, area_id)
+        # Counted BEFORE the write, for `archive_node`'s reason: afterwards the
+        # honest number is unobtainable.
+        held = int((await db.execute(
+            text(
+                "SELECT count(*) FROM pm_tasks "
+                " WHERE project_id = CAST(:aid AS uuid)"
+            ),
+            {"aid": str(area.id)},
+        )).scalar() or 0)
+
+        if held == 0:
+            await db.execute(
+                text("DELETE FROM pm_projects WHERE id = CAST(:aid AS uuid)"),
+                {"aid": str(area.id)},
+            )
+            outcome = "deleted"
+        else:
+            await db.execute(
+                text(
+                    "UPDATE pm_projects "
+                    "   SET archived_at = now(), "
+                    "       archived_root_id = CAST(:aid AS uuid) "
+                    " WHERE id = CAST(:aid AS uuid) AND archived_at IS NULL"
+                ),
+                {"aid": str(area.id)},
+            )
+            outcome = "archived"
+        # Attached to the ROOT, not to the area, and for both outcomes. A
+        # hard delete leaves nothing to hang it on — `record_activity` refuses
+        # an entry that names neither a task nor a project, which is right —
+        # and an archived area's own timeline is filed away with it. The
+        # member's root is the one timeline that survives either way, so
+        # "Area 'Scratch' deleted" stays findable.
+        await record_activity(
+            db, activity_type="system", created_by=email,
+            project_id=str(area.parent_project_id),
+            body=f"Area '{area.name}' {outcome}",
+        )
+    await emit(f"pm.project.{outcome}", {"project_id": area_id})
+    return {"id": area_id, "outcome": outcome, "tasks": held}

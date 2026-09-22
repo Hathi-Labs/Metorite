@@ -38,6 +38,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     assert_no_project_cycle,
+    assert_project_move_keeps_privacy,
     assert_node_grammar,
     assert_run_state_allowed,
     clean_payload,
@@ -834,6 +835,10 @@ async def move_node(
         if new_parent:
             parent_row = await load_visible_project(db, vis, str(new_parent))
         await assert_no_project_cycle(db, project_id, new_parent)
+        # WS-39 S6b. The line between the company tree and a private one is
+        # not crossable in either direction, and nothing checked it before the
+        # Areas routes made a personal tree more than one node deep.
+        await assert_project_move_keeps_privacy(db, project_id, new_parent)
 
         # The grammar holds through a move, with the subtree's own shape in
         # the sum: a project that carries subprojects cannot land under a

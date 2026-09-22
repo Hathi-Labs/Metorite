@@ -1351,6 +1351,83 @@ async def assert_assignable_here(
     )
 
 
+async def assert_project_move_keeps_privacy(
+    db: Any, project_id: str, new_parent_id: str | None,
+) -> None:
+    """A node may not cross the line between the company tree and a private one.
+
+    The sibling of :func:`assert_move_keeps_privacy`, which says the same thing
+    about a TASK. This one is about a NODE, and it was missing: `move_node`
+    checked cycles and the grammar and nothing else.
+
+    Four combinations, and two of them are refusals:
+
+        team -> team                    allowed
+        personal(mine) -> personal(mine) allowed  — re-filing my own Areas
+        personal -> team                REFUSED
+        team -> personal                REFUSED
+
+    **Why each refusal, because neither is obvious.**
+
+    *Personal into team* would put a row carrying `personal_owner` under a
+    company space. `tree.py` filters `personal_owner IS NULL`, so the node and
+    its tasks would be invisible on the board they now sit in — work that
+    exists, in a place nobody can see it. Worse, it reads as a move that
+    "worked" from the mover's side, because their own lens still shows it.
+
+    *Team into personal* is the taking act `assert_move_keeps_privacy` already
+    describes, one level up. The node keeps `personal_owner IS NULL`, so it
+    stays on the board — but its ancestor is now somebody's private root, and
+    every ancestor walk in the package (archive, lifecycle sweep, status
+    inheritance) would climb into a tree its caller cannot see.
+
+    ⚠️ **Latent until WS-39 S6b, and that is why it lands with it.** Before the
+    Areas routes there was no way to create a personal child, so a personal
+    tree was one node deep and neither refusal could be reached. Shipping the
+    routes is what makes the hole reachable, so the guard ships in the same
+    slice rather than in a follow-up nobody writes.
+
+    Deliberately does NOT consult the caller, for the same reason its sibling
+    gives: the act is incoherent whoever performs it, and phrasing it on the
+    two NODES lets an admin tidy somebody's tree without a special case.
+    """
+    ids = [project_id] + ([str(new_parent_id)] if new_parent_id else [])
+    rows = (await db.execute(
+        text(
+            "SELECT id, personal_owner FROM pm_projects "
+            " WHERE id = ANY(CAST(:ids AS uuid[]))"
+        ),
+        {"ids": ids},
+    )).fetchall()
+    owners = {str(r.id): (r.personal_owner or "").lower() or None for r in rows}
+    moved = owners.get(str(project_id))
+    # A move to the top level is a move OUT of whatever held it. For a personal
+    # node that is promotion into the open, which is the same refusal.
+    destination = owners.get(str(new_parent_id)) if new_parent_id else None
+
+    if moved == destination:
+        return  # team to team, or one of my Areas to another place of mine
+    if moved is not None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "That is a personal area, so it cannot be moved out of your "
+                "own space. The company board hides private rows, so the work "
+                "inside it would still be invisible there — move the TASKS to "
+                "a project instead, which is what promotion is for."
+            ),
+        )
+    raise HTTPException(
+        status_code=422,
+        detail=(
+            "That destination is somebody's personal space, so a project "
+            "cannot be moved into it. Personal areas are private, and a "
+            "project filed inside one would leave everyone whose access came "
+            "from a grant unable to reach its parent."
+        ),
+    )
+
+
 async def assert_move_keeps_privacy(
     db: Any, task: Any, new_project_id: str,
 ) -> None:

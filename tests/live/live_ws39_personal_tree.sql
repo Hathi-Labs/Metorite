@@ -37,9 +37,10 @@ INSERT INTO app_user (email, display_name, organization_id) VALUES
   ('omar@ptree.invalid','Omar','c7000000-0000-0000-0000-0000000000c7');
 
 -- Nia's private tree: a root, two categories, one project under a category.
-INSERT INTO pm_projects (id, organization_id, name, personal_owner, created_by)
+INSERT INTO pm_projects (id, organization_id, name, personal_owner, created_by,
+                         owns_statuses)
 VALUES ('c7100000-0000-0000-0000-000000000001','c7000000-0000-0000-0000-0000000000c7',
-        'My Tasks','nia@ptree.invalid','nia@ptree.invalid');
+        'My Tasks','nia@ptree.invalid','nia@ptree.invalid', true);
 INSERT INTO pm_projects (id, organization_id, name, personal_owner, created_by,
                          parent_project_id)
 VALUES ('c7100000-0000-0000-0000-000000000002','c7000000-0000-0000-0000-0000000000c7',
@@ -50,9 +51,9 @@ VALUES ('c7100000-0000-0000-0000-000000000002','c7000000-0000-0000-0000-00000000
         'Kitchen reno','nia@ptree.invalid','nia@ptree.invalid','c7100000-0000-0000-0000-000000000003');
 
 -- An ordinary TEAM project, for contrast.
-INSERT INTO pm_projects (id, organization_id, name, created_by)
+INSERT INTO pm_projects (id, organization_id, name, created_by, owns_statuses)
 VALUES ('c7100000-0000-0000-0000-00000000000a','c7000000-0000-0000-0000-0000000000c7',
-        'Sales pipeline','nia@ptree.invalid');
+        'Sales pipeline','nia@ptree.invalid', true);
 
 -- ── 1. The tree exists, and depth is what distinguishes root from category ──
 SELECT ptree_check('1a Nia has four private projects',
@@ -71,9 +72,10 @@ SELECT ptree_check('1c nesting goes two deep (category -> project)',
 DO $t$
 DECLARE v_msg text;
 BEGIN
-    INSERT INTO pm_projects (organization_id, name, personal_owner, created_by)
+    INSERT INTO pm_projects (organization_id, name, personal_owner, created_by,
+                             owns_statuses)
     VALUES ('c7000000-0000-0000-0000-0000000000c7','Second inbox',
-            'nia@ptree.invalid','nia@ptree.invalid');
+            'nia@ptree.invalid','nia@ptree.invalid', true);
     RAISE EXCEPTION 'FAIL 2a — a member was allowed TWO personal roots';
 EXCEPTION WHEN unique_violation THEN
     RAISE NOTICE 'ok   2a a second personal ROOT is still refused';
@@ -88,9 +90,10 @@ SELECT ptree_check('2c ...but a SECOND CATEGORY is fine',
        ('c7100000-0000-0000-0000-000000000002','c7100000-0000-0000-0000-000000000003')), 2::bigint);
 
 -- Omar, a different member, still gets his own root.
-INSERT INTO pm_projects (organization_id, name, personal_owner, created_by)
+INSERT INTO pm_projects (organization_id, name, personal_owner, created_by,
+                         owns_statuses)
 VALUES ('c7000000-0000-0000-0000-0000000000c7','My Tasks',
-        'omar@ptree.invalid','omar@ptree.invalid');
+        'omar@ptree.invalid','omar@ptree.invalid', true);
 SELECT ptree_check('2d a DIFFERENT member still gets a root',
     (SELECT count(*) FROM pm_projects
       WHERE lower(personal_owner) = 'omar@ptree.invalid'), 1::bigint);
@@ -164,6 +167,84 @@ SELECT ptree_check('5a the root lookup returns the ROOT',
 SELECT ptree_check('5b the OLD lookup would now be ambiguous — 4 rows, not 1',
     (SELECT count(*) FROM pm_projects
       WHERE lower(personal_owner) = 'nia@ptree.invalid'), 4::bigint);
+
+-- == 6. Areas, and the line around them (WS-39 S6b) =========================
+--
+-- The four routes in `personal.py` read and write exactly the rows below.
+-- What matters is not the CRUD, it is that two members with the same shape of
+-- tree cannot see or reach each other's categories, and that the list query
+-- answers the same way for each.
+
+-- Omar already has a ROOT from 2d, and he may not have a second: the partial
+-- unique index refuses one, which is migration 191's whole point. So this
+-- hangs a category off the root he has -- deliberately with the SAME NAME as
+-- one of Nia's, because two people both having a "Home" is the ordinary case
+-- and a uniqueness rule that spanned members would refuse the second.
+INSERT INTO pm_projects (id, organization_id, name, personal_owner, created_by,
+                         parent_project_id)
+SELECT 'c7200000-0000-0000-0000-000000000002',
+       'c7000000-0000-0000-0000-0000000000c7',
+       'Home','omar@ptree.invalid','omar@ptree.invalid', p.id
+  FROM pm_projects p
+ WHERE lower(p.personal_owner) = 'omar@ptree.invalid'
+   AND p.parent_project_id IS NULL;
+
+SELECT ptree_check('6a two members may each have a category called Home',
+    (SELECT count(*) FROM pm_projects
+      WHERE lower(name) = 'home' AND personal_owner IS NOT NULL), 2::bigint);
+
+-- The list query, as `list_my_areas` issues it: children of MY root that carry
+-- MY address. Run for each member, it must answer only their own.
+SELECT ptree_check('6b Nia lists her OWN two areas',
+    (SELECT count(*) FROM pm_projects p
+      WHERE p.parent_project_id = 'c7100000-0000-0000-0000-000000000001'
+        AND lower(p.personal_owner) = 'nia@ptree.invalid'
+        AND p.archived_at IS NULL), 2::bigint);
+SELECT ptree_check('6c Omar lists his OWN one, not Nia''s',
+    (SELECT count(*) FROM pm_projects p
+      WHERE p.parent_project_id = (SELECT id FROM pm_projects
+                                    WHERE lower(personal_owner) = 'omar@ptree.invalid'
+                                      AND parent_project_id IS NULL)
+        AND lower(p.personal_owner) = 'omar@ptree.invalid'
+        AND p.archived_at IS NULL), 1::bigint);
+
+-- `_load_my_area` is the authorization. Omar asking for Nia's "Home" by id
+-- must find NOTHING — not a refusal, which would confirm the row exists.
+SELECT ptree_check('6d Omar cannot reach Nia''s area by id',
+    (SELECT count(*) FROM pm_projects
+      WHERE id = 'c7100000-0000-0000-0000-000000000003'
+        AND lower(personal_owner) = 'omar@ptree.invalid'
+        AND parent_project_id IS NOT NULL), 0::bigint);
+
+-- ...and the same predicate can never return a member's own ROOT, which is
+-- what stops a rename or a delete reaching the project captures land in.
+SELECT ptree_check('6e the area lookup cannot return my own root',
+    (SELECT count(*) FROM pm_projects
+      WHERE id = 'c7100000-0000-0000-0000-000000000001'
+        AND lower(personal_owner) = 'nia@ptree.invalid'
+        AND parent_project_id IS NOT NULL), 0::bigint);
+
+-- An archived area leaves the default list and keeps its work.
+UPDATE pm_projects
+   SET archived_at = now(),
+       archived_root_id = 'c7100000-0000-0000-0000-000000000003'
+ WHERE id = 'c7100000-0000-0000-0000-000000000003';
+SELECT ptree_check('6f an archived area drops out of the default list',
+    (SELECT count(*) FROM pm_projects p
+      WHERE p.parent_project_id = 'c7100000-0000-0000-0000-000000000001'
+        AND lower(p.personal_owner) = 'nia@ptree.invalid'
+        AND p.archived_at IS NULL), 1::bigint);
+SELECT ptree_check('6g ...and comes back with include_archived',
+    (SELECT count(*) FROM pm_projects p
+      WHERE p.parent_project_id = 'c7100000-0000-0000-0000-000000000001'
+        AND lower(p.personal_owner) = 'nia@ptree.invalid'), 2::bigint);
+
+-- Neither member's tree reaches the company board, at any depth. This is the
+-- claim migration 191 exists for, re-asserted now that TWO trees exist.
+SELECT ptree_check('6h the Projects app still shows one team project only',
+    (SELECT count(*) FROM pm_projects
+      WHERE organization_id = 'c7000000-0000-0000-0000-0000000000c7'
+        AND personal_owner IS NULL), 1::bigint);
 
 ROLLBACK;
 

@@ -185,6 +185,32 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/my/tasks/{task_id}", "my_task", "A"),
     Route("GET", "/projects/my/calendar", "calendar", "A"),
     Route("GET", "/projects/my/contexts", "my_contexts", "A"),
+    # WS-39 S6b — a member's own categories. The READ is on the surface,
+    # because "file this under Home" needs to know Home exists. The three
+    # writes are not, and that is a decision rather than an oversight: an
+    # Area is the member's own filing scheme, the names are theirs and often
+    # near-duplicates ("Home" / "House"), and an assistant that renames or
+    # deletes one on a guess is the kind of help nobody asked for. S6c owns
+    # the promote door; if the chat should ever shape a member's tree, that
+    # is its own decision with its own card.
+    Route("GET", "/projects/my/areas", "my_areas", "A"),
+    Route(
+        "POST", "/projects/my/areas", "", "X",
+        "A member's categories are theirs to make. The chat can file a task "
+        "into one (my_areas reads them), and minting one is a shaping act "
+        "the member should perform where they can see the whole list.",
+    ),
+    Route(
+        "PATCH", "/projects/my/areas/{area_id}", "", "X",
+        "Renaming somebody's own category on a guess. Two of a member's "
+        "areas are often near-synonyms, and the chat cannot tell which was "
+        "meant from a sentence.",
+    ),
+    Route(
+        "DELETE", "/projects/my/areas/{area_id}", "", "X",
+        "An empty area is hard-deleted by this route. That is not a verb to "
+        "reach through a guess at which area was meant.",
+    ),
     Route("POST", "/projects/tasks/{task_id}/complete", "complete", "B"),
     Route("POST", "/projects/tasks/{task_id}/defer", "defer", "B"),
     # ── planning.py ──────────────────────────────────────────────────────
@@ -277,6 +303,7 @@ PLANNED: dict[str, str] = {
     # (2026-09-23) shipped the rest of class B and the two reads it needed
     # (`recurrence`, `my_task`).
     # S3 — class C
+    "my_areas": "S6b",
     "move_project": "S3",
     "archive_project": "S3",
     "unarchive_project": "S3",
