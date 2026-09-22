@@ -190,6 +190,50 @@ describe("the words on the chip", () => {
     expect(chainLabel(job("chat"), [])).toBe("not set");
   });
 
+  it("🔴 the verdict never says 'every tier' about the ones it filtered out", () => {
+    // Measured 2026-09-22: 7 of 11 registered tiers had no chain. Fixing the
+    // last broken one would have turned the rail green under the title
+    // "Every tier has a backup" — a claim about the tiers this function had
+    // already excluded.
+    const tier = (slug: string, jobs: Tier["jobs"]): Tier => ({
+      slug,
+      label: slug,
+      blurb: "",
+      registered: true,
+      customerVisible: true,
+      jobs,
+    });
+    const bound = tier("tier-fast", [
+      job("chat", "anthropic/haiku", "openai/gpt-4o"),
+    ]);
+    const empty = tier("tier-image", []);
+
+    const both = tierNextStep([bound, empty], CTX);
+    expect(both.title).not.toContain("Every tier");
+    expect(both.title).toContain("1 tier still empty");
+    expect(both.detail).toContain("tier-image");
+    // ⚠️ Still `ok`. An unsold job is not a fault, it just may not hide.
+    expect(both.tone).toBe("ok");
+
+    // With nothing left empty the original sentence returns.
+    expect(tierNextStep([bound], CTX).title).toBe("Every tier has a backup");
+  });
+
+  it("🔴 but 'not set' is NOT painted green", () => {
+    // Measured 2026-09-22: `chainProblems` returned [] for an unbound job,
+    // so `chainTone([])` answered `ok`. Seven of eleven registered tiers had
+    // no chain, and the board drew every one of them in a healthy chip — a
+    // tier that serves nothing and sells nothing, reading as fine.
+    //
+    // The LABEL is unchanged, and the clause above still guards it. What
+    // changes is the colour and the fact that the job now explains itself.
+    const j = job("chat");
+    const problems = chainProblems(j, CTX);
+    expect(problems.map((p) => p.label)).toEqual(["nothing bound"]);
+    expect(chainTone(problems)).toBe("warn");
+    expect(chainLabel(j, problems)).toBe("not set");
+  });
+
   it("uses no word that needs looking up", () => {
     const jobs = [
       job("chat"),

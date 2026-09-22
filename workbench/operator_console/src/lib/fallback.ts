@@ -74,7 +74,26 @@ export type Problem = { tone: Tone; label: string; detail: string };
  * operator triage by reading rather than by looking. */
 export function chainProblems(job: TierJob, ctx: ChainContext): Problem[] {
   const steps = orderedChain(job);
-  if (steps.length === 0) return [];
+  // 🔴 **An unbound job used to produce NO problems, so `chainTone` painted
+  // it `ok` — GREEN.** Measured 2026-09-22: 7 of the 11 registered tiers had
+  // no chain at all, and the board rendered "not set" in a healthy chip.
+  //
+  // ⚠️ The LABEL stays "not set" and that is deliberate — the test above
+  // records why: *"nothing set is a job nobody has done, it is not a broken
+  // job"*. This does not reopen that. What was never defended is the COLOUR.
+  // A tier that serves nothing and sells nothing is not `ok`, and it is not
+  // `danger` either, because nobody has broken anything. It is `warn`.
+  if (steps.length === 0) {
+    return [
+      {
+        tone: "warn",
+        label: "nothing bound",
+        detail:
+          "This job points at no model, so every call to it fails and it " +
+          "earns nothing. Add a first choice below.",
+      },
+    ];
+  }
 
   const byId = new Map(ctx.models.map((m) => [m.id, m]));
   const armed = new Set(ctx.armed.map((p) => p.toLowerCase()));
@@ -309,6 +328,29 @@ export function tierNextStep(tiers: Tier[], ctx: ChainContext): NextStep {
         "or busy. A backup from a DIFFERENT provider is the one that helps — " +
         "the provider is the thing that goes down, not the model.",
       tone: "warn",
+    };
+  }
+
+  // 🔴 **"Every tier" was a claim about the tiers this function had already
+  // filtered OUT.** `set` holds the BOUND jobs, so on a box where 7 of 11
+  // registered tiers had no chain at all, fixing the last broken one would
+  // have turned the go-live rail green under the title "Every tier has a
+  // backup". Measured 2026-09-22.
+  //
+  // ⚠️ An unbound tier is not a fault — most of these are jobs we do not sell
+  // yet, and the tone stays `ok` because nothing here is broken. What it must
+  // not do is disappear behind the word "every".
+  const unbound = tiers.filter((t) => t.jobs.every((j) => j.chain.length === 0));
+  if (unbound.length > 0) {
+    return {
+      title: `${set.length} ${set.length === 1 ? "job" : "jobs"} set, ${unbound.length} ${unbound.length === 1 ? "tier" : "tiers"} still empty`,
+      detail:
+        "Everything that is set can serve customers, and each has somewhere " +
+        "to go if its first choice stops answering. The empty ones sell " +
+        `nothing until they point at a model: ${unbound
+          .map((t) => t.slug)
+          .join(", ")}.`,
+      tone: "ok",
     };
   }
 
