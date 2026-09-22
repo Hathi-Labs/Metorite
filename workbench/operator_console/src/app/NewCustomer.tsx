@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { slugProblem, suggestSlug } from "@/lib/slug";
+import { mintedKeyFrom, type MintedKey } from "@/lib/provision";
 
 // The "create a new customer" ACTION on the customers list. Create-only: it
 // POSTs to the server-side `/api/operator/provision` BFF route, which holds the
@@ -55,6 +56,16 @@ export default function NewCustomer({
   const [result, setResult] = useState<Result>(null);
   const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);
+  // 🔴 The organization key, minted BY the create and shown ONCE.
+  //
+  // A customer whose deployment holds no `cc_live_` key cannot be served by
+  // the Router at all. `hathi-labs-llp` ran for weeks that way, because
+  // minting was a separate act an operator had to remember. Provisioning now
+  // does it, and this is the only moment the secret exists anywhere.
+  //
+  // ⚠️ Null is NORMAL on a re-create — that guard is what stops a retried
+  // form issuing a pile of credentials. The panel is simply absent then.
+  const [minted, setMinted] = useState<MintedKey | null>(null);
 
   function setNameAndMaybeSlug(v: string) {
     setName(v);
@@ -78,7 +89,10 @@ export default function NewCustomer({
     const r = await post("/api/operator/provision", body);
     setResult(r);
     setBusy(false);
-    if (r?.ok) setDone(true);
+    if (r?.ok) {
+      setMinted(mintedKeyFrom(r.text));
+      setDone(true);
+    }
   }
 
   // Advisory only — the Console's `ProvisionRequest` validator is the fence.
@@ -111,6 +125,28 @@ export default function NewCustomer({
           <strong>{name.trim()}</strong> is set up with {coreSeats} seat
           {Number(coreSeats) === 1 ? "" : "s"} on a free trial.
         </p>
+        {/* 🔴 The organization key, shown ONCE and never again.
+            Placed ABOVE "what to tell them" on purpose: everything below is
+            advice the operator can come back for, and this is the one thing on
+            the screen that ceases to exist when they navigate away.
+            The `banner danger` + `pre.token` pair is the SAME shape the key
+            panel on the customer page uses — one look, one vocabulary. */}
+        {minted && (
+          <div className="banner danger">
+            <strong>Copy this key now. It is shown once and never again.</strong>
+            <p>
+              This is the key their deployment presents to our AI Router. We
+              store only a hash, so nobody — including us — can look it up
+              later. If it is lost, revoke it on the customer page and mint
+              another.
+            </p>
+            <pre className="token">{minted.token}</pre>
+            <p className="muted">
+              Put it on their box as <code>CUSTOMER_CONSOLE_ORG_KEY</code>.
+            </p>
+          </div>
+        )}
+
         <p className="muted">What to tell them:</p>
         <ul className="muted">
           <li>

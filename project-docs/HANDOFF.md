@@ -2943,6 +2943,42 @@ line — never reclaim a number by deleting the other entry.
   anymore... update the naming convention for all of the table names"*
 - **Added:** 2026-09-21 · the People rename session. **Updated:** 2026-09-22.
 
+### H-152 · A SELF-SERVE customer can never be served AI · [AGENT]
+- **Check:** `rg -n "customer_console_org_key" packages/acb_auth/acb_auth/console_resolve.py`
+  → a hit inside `router_is_wired` means this is open.
+- 🔴 **The gateway reads ONE `CUSTOMER_CONSOLE_ORG_KEY` from its
+  environment.** That names one tenant. A shared box has one slot and N
+  tenants, so every tenant after the first can never reach the Router. The
+  box does not fail. It serves tenant one and is dark for the rest.
+- **This is not a missing flag flip.** `gateway/routes/seats.py` states the
+  same shape in its own words — *"On a shared multi-tenant deployment no
+  single org key is correct ... a STRUCTURAL dark"*.
+- **The answer is already proved out, one plane over.** The Seats tab had
+  this exact defect, and D-SEAT-4 fixed it. `GET /seats/overview` presents
+  the **deployment** key, which is per-box. The Console then derives the
+  organization from `deployment_visible_orgs(deployment_id, actor_email)`.
+  The caller makes no tenant claim (R11).
+- **What to build.** A second arm on the four Router doors, with a capability
+  of its own. Put it on the same `deployment_or_operator` dispatcher the seat
+  doors use. The four are `/v1/chat/completions`,
+  `/v1/audio/transcriptions`, `/v1/images/generations` and
+  `/v1/audio/speech`. The member already arrives:
+  `_attribution_headers` sends `X-CC-Member` on every call.
+- ⚠️ **Do this beside H-86**, which asks for one serving prelude across those
+  same four doors. Two agents editing four doors twice is how the doors
+  drift apart.
+- ⚠️ **What this un-blocks.** `POST /orgs/provision` mints the organization
+  key on its OPERATOR arm as of 2026-09-22. The deployment-key arm mints
+  nothing on purpose, because a key for tenant N+1 has nowhere to live. So
+  self-serve signup stays dark until this lands, and no amount of minting
+  changes that.
+- ⚠️ **Retire `CUSTOMER_CONSOLE_ORG_KEY` only after** the per-org billing
+  pages move too. `seats.py` records that they stay on the org-key path.
+- **Authority:** owner directive, 2026-09-22 — *"you are automatically
+  creating the connections for when they sign up for the organization and
+  when the organization is created"*
+- **Added:** 2026-09-22 · the auto-mint session.
+
 ### H-144 · `GET /people/{id}/editable` has no caller · [AGENT]
 - **Check:** `rg -n "editable" workbench/control_plane/src/app/people/lib/api.ts`
   → no hit means nothing calls it, and this is open.
