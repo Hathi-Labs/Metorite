@@ -76,8 +76,8 @@ export default function MeetingOutcomes({
             {actions.length === 0
               ? "None found"
               : pending > 0
-                ? "Approved ones become Tasks"
-                : `${approved} sent to Tasks`}
+                ? "Approved ones become tasks in My Tasks"
+                : `${approved} sent to My Tasks`}
           </p>
         </button>
 

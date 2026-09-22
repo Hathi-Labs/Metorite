@@ -278,7 +278,7 @@ export async function apiMoveTask(
 ): Promise<Raw> {
   if (!lensEnabled()) {
     throw new Error(
-      "Moving a task into a project needs the Tasks lens (NEXT_PUBLIC_TASKS_LENS). " +
+      "Moving a task into a project needs the My Tasks lens (NEXT_PUBLIC_TASKS_LENS). " +
         "The legacy store has no company board to move onto — see docs/TASKS_LENS.md.",
     );
   }

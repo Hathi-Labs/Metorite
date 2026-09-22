@@ -280,7 +280,7 @@ export function splitPatch(patch: Record<string, unknown>): SplitPatch {
     if (value === undefined) continue;
     if (key in NOT_YET) {
       throw new Error(
-        `Tasks lens: cannot write \`${key}\` — ${NOT_YET[key]}. Refusing ` +
+        `My Tasks lens: cannot write \`${key}\` — ${NOT_YET[key]}. Refusing ` +
           "rather than dropping it: a silently discarded field looks exactly " +
           "like a successful save.",
       );
@@ -300,7 +300,7 @@ export function splitPatch(patch: Record<string, unknown>): SplitPatch {
       if (value) out.assignees = [];
     } else {
       throw new Error(
-        `Tasks lens: unknown patch key \`${key}\`. Every GtdItem field has a ` +
+        `My Tasks lens: unknown patch key \`${key}\`. Every GtdItem field has a ` +
           "`pm_*` home (task_manager_app.md §13.4a) — if this one is new, " +
           "give it one there before writing it.",
       );
@@ -346,7 +346,7 @@ async function fetchAll(path: string, flags: string): Promise<Raw[]> {
     if (res.rows.length < PAGE_SIZE || rows.length >= res.total) return rows;
   }
   throw new Error(
-    `Tasks lens: ${path} did not terminate after ${PAGE_LIMIT} pages — the ` +
+    `My Tasks lens: ${path} did not terminate after ${PAGE_LIMIT} pages — the ` +
       "server's `total` disagrees with the rows it returns.",
   );
 }

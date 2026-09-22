@@ -654,7 +654,7 @@ function DangerPanel({ slug }: { slug: string }) {
           `roles, settings and integrations — and strips their people from ` +
           `the registry. Billing history is kept. There is NO undo and NO ` +
           `backup restore for this.\n\nNot yet covered (apps that predate ` +
-          `per-organization scoping): chat, email, WhatsApp, meetings, GTD ` +
+          `per-organization scoping): chat, email, WhatsApp, meetings, My Tasks ` +
           `and CRM data.`,
       )
     ) {

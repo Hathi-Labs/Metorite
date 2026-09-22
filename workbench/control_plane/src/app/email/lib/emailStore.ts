@@ -1099,7 +1099,7 @@ export const useEmailStore = create<EmailState>((set, get) => ({
       // capture from, so show a hint instead of opening an empty popup.
       set({
         taskCaptureNotice: {
-          title: "Save this draft first, then add it to Tasks",
+          title: "Save this draft first, then add it to My Tasks",
           created: false,
         },
       });

@@ -723,7 +723,7 @@ function ContextMenu({
 
         <CtxItem
           icon={themedIcon("ListChecks")}
-          label={bulk ? `Add ${count} to Tasks` : "Add to Tasks"}
+          label={bulk ? `Add ${count} to My Tasks` : "Add to My Tasks"}
           onClick={() => run(onAddToTasks)}
         />
         {snoozedView ? (
