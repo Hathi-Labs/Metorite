@@ -264,28 +264,50 @@ class TestTheLiveKeyCount:
     had carried no key facts — its own comment said so. `hathi-labs-llp` was
     provisioned and ran for weeks with zero keys, and nothing anywhere said
     so. Measured 2026-09-21.
+
+    📌 **The hole itself closed on 2026-09-22** — `POST /orgs/provision` mints
+    the key on its operator arm, so a new customer can no longer be born
+    keyless. This column stays, because a key can still be REVOKED and because
+    a self-serve organization is armed by a different route entirely.
     """
 
-    def test_a_fresh_org_reports_ZERO_keys(self, client, deployment):
-        """🔴 The state that caused this. Provisioning mints no key, so every
-        new customer starts unable to be served — and that must be VISIBLE."""
-        slug = _provision(client, deployment)
-        assert _row_for(client, slug)["live_keys"] == 0
+    def test_a_fresh_org_reports_ONE_key_because_PROVISIONING_MINTS_IT(
+        self, client, deployment
+    ):
+        """📌 This clause INVERTED on 2026-09-22, and the inversion is the fix.
 
-    def test_issuing_a_key_moves_the_count(self, client, deployment):
+        It used to assert 0, and its own comment read *"provisioning mints no
+        key, so every new customer starts unable to be served"*. That was the
+        defect stated as an expectation. `POST /orgs/provision` now mints the
+        key on its operator arm, so a new customer starts ARMED and this
+        column's job changes from *reporting the hole* to *proving there is
+        no hole*.
+        """
+        slug = _provision(client, deployment)
+        assert _row_for(client, slug)["live_keys"] == 1
+
+    def test_a_SECOND_key_moves_the_count(self, client, deployment):
+        """The column counts keys, not organizations. `POST /keys` is still
+        how an operator issues an extra one — for a rotation, or a second
+        deployment — and the count has to follow it."""
         slug = _provision(client, deployment)
         r = client.post("/keys", headers=AUTH, json={"org_slug": slug})
         assert r.status_code == 200, r.text
-        assert _row_for(client, slug)["live_keys"] == 1
+        assert _row_for(client, slug)["live_keys"] == 2
 
     def test_a_REVOKED_key_does_not_count(self, client, deployment):
         """⚠️ A revoked key authenticates nothing. Counting it would report a
-        deployment as armed while every call it makes is refused."""
+        deployment as armed while every call it makes is refused.
+
+        ⚠️ Revokes BOTH keys the org now holds — the provisioned one and the
+        issued one — because the subject is the `revoked_at IS NULL` filter,
+        not arithmetic.
+        """
         from sqlalchemy import text
 
         slug = _provision(client, deployment)
         client.post("/keys", headers=AUTH, json={"org_slug": slug})
-        assert _row_for(client, slug)["live_keys"] == 1
+        assert _row_for(client, slug)["live_keys"] == 2
 
         eng = create_engine(_URL, future=True)
         with eng.begin() as c:

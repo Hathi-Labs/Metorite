@@ -3678,6 +3678,17 @@ def provision(req: ProvisionRequest, caller: ProvisionCaller, request: Request) 
     idempotent same-owner retry and the crash-before-membership resume (org with
     NO owner yet) both still complete, because the guard keys on *owned by
     someone else*, not on *exists*.
+
+    **It also MINTS the organization key, on the operator arm** (2026-09-22).
+    An org whose deployment holds no key can never be served by the Router and
+    never billed, and nothing said so: `hathi-labs-llp` ran for weeks that way.
+    A key an operator must remember to mint is a step that gets skipped
+    silently, so the key now arrives with the organization — like its
+    placement, its seats and its trial. The token is in the response **once**.
+    A re-provision answers with no `key` at all, because the mint is guarded on
+    a live key already existing.
+
+    ⚠️ The deployment-key arm mints NOTHING. See the note at the step.
     """
     with get_engine().begin() as conn:
         # Resolved FIRST, before anything is written: a refusal discovered
@@ -3898,7 +3909,71 @@ def provision(req: ProvisionRequest, caller: ProvisionCaller, request: Request) 
             ),
         )
 
-    return {"organization_id": org_id, "slug": req.slug}
+        # ── The organization key, minted HERE so nobody has to remember to ──
+        #
+        # 🔴 **`hathi-labs-llp` was provisioned and ran for weeks with ZERO
+        # keys.** A customer's deployment presents its organization key to the
+        # Router on every AI call, so an org without one can never be served
+        # and never be billed. Nothing failed loudly. The org simply existed
+        # and could not buy anything. Measured 2026-09-21, owner-reported.
+        #
+        # A key an operator must remember to mint is a step that WILL be
+        # skipped, and its absence is silent. So the key is now a property of
+        # an organization existing, exactly like its placement, its seats and
+        # its trial subscription — every one of which this same handler writes
+        # for the same reason.
+        #
+        # ⚠️ **OPERATOR ARM ONLY, and this is not an oversight.**
+        # The secret exists exactly once, in this response. Returning a
+        # credential is safe to a staff caller who already holds
+        # `POST /keys` — it is the same act through the same door. The
+        # DEPLOYMENT-KEY arm is driven by an unauthenticated signup form, and
+        # handing a credential back through it would make account creation a
+        # credential-issuing endpoint for anyone who can post to it.
+        #
+        # ⚠️ **A self-serve org therefore still gets NO key, and minting one
+        # would not help it.** The gateway reads ONE
+        # `CUSTOMER_CONSOLE_ORG_KEY` from its environment, so a shared box has
+        # exactly one slot and N tenants. A key minted for tenant N+1 would
+        # have nowhere to live. The fix is the deployment-key arm on the
+        # Router doors, which `GET /seats/overview` already proved out for
+        # seats (D-SEAT-4) — recorded as a handoff, not faked here.
+        #
+        # ⚠️ Idempotent on LIVE keys, because provisioning is re-run by design.
+        minted_token: str | None = None
+        minted_prefix: str | None = None
+        if caller is None and not store.has_live_key(conn, org_id=org_id):
+            minted = mint_key()
+            store.issue_key(
+                conn,
+                org_id=org_id,
+                prefix=minted.prefix,
+                key_hash=minted.key_hash,
+                label="provisioned",
+                created_by="operator",
+            )
+            minted_token, minted_prefix = minted.token, minted.prefix
+            # The SAME act name `POST /keys` writes, so the key trail is one
+            # story rather than two. The audit row records the PREFIX, never
+            # the token.
+            _audit(
+                conn,
+                org_id,
+                "key.issue",
+                {"prefix": minted.prefix, "label": "provisioned",
+                 "source": "provision"},
+                actor=getattr(
+                    getattr(request, "state", None), "staff", None
+                ).actor,
+            )
+
+    body: dict[str, Any] = {"organization_id": org_id, "slug": req.slug}
+    if minted_token is not None:
+        # ⚠️ **Shown once and never again.** Only the hash is stored, so this
+        # is the only moment the secret exists anywhere. A re-provision answers
+        # with no `key` at all rather than a second one.
+        body["key"] = {"prefix": minted_prefix, "token": minted_token}
+    return body
 
 
 @app.post("/orgs/lifecycle")

@@ -36,6 +36,7 @@
  */
 
 import type { ReactNode } from "react";
+import { HEADING_SUBTITLE, HEADING_TITLE } from "@/components/headingScale";
 
 export interface PageHeaderProps {
   /** What this surface is. Required — a surface without a name is a bug. */
@@ -65,17 +66,13 @@ export function PageHeader({
     >
       <div className="min-w-0">
         <div className="flex items-baseline gap-2">
-          <h1 className="truncate text-sm font-medium text-foreground">
-            {title}
-          </h1>
+          <h1 className={`truncate ${HEADING_TITLE}`}>{title}</h1>
           {meta ? (
             <span className="shrink-0 text-xs text-muted-foreground">{meta}</span>
           ) : null}
         </div>
         {subtitle ? (
-          <p className="mt-0.5 max-w-prose text-[11px] text-muted-foreground">
-            {subtitle}
-          </p>
+          <p className={HEADING_SUBTITLE}>{subtitle}</p>
         ) : null}
       </div>
       {actions ? (

@@ -65,6 +65,7 @@ import type {
   PurgeResult,
   Role,
 } from "@/app/settings/members/types";
+import SettingsHeader from "@/components/SettingsHeader";
 
 const STATUS_STYLES: Record<Member["status"], string> = {
   active: "text-success",
@@ -425,17 +426,19 @@ export default function OrganizationAdmin() {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3 shrink-0 sm:px-6 sm:py-4">
-        <div>
-          <h1 className="text-base font-bold text-foreground sm:text-lg">Organisation</h1>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {access.organization?.display_name ?? "Organization"} ·{" "}
-            {counts.active} active of {counts.all}
-          </p>
-        </div>
-        {/* Roster actions, on the roster tabs only. Teams/Roles/Invite make no
-            sense above the branding form, and an Invite button that is always
-            there is one an admin eventually clicks on the wrong screen. */}
+      <div className="shrink-0 border-b border-border px-4 py-3 sm:px-6 sm:py-4">
+        <SettingsHeader
+          title="Organisation"
+          subtitle={
+            <>
+              {access.organization?.display_name ?? "Organization"} ·{" "}
+              {counts.active} active of {counts.all}
+            </>
+          }
+          actions={
+        /* Roster actions, on the roster tabs only. Teams/Roles/Invite make no
+           sense above the branding form, and an Invite button that is always
+           there is one an admin eventually clicks on the wrong screen. */
         <div
           className="flex items-center gap-2"
           hidden={tab === "branding" || tab === "seats"}
@@ -464,6 +467,8 @@ export default function OrganizationAdmin() {
             Invite
           </Button>
         </div>
+          }
+        />
       </div>
 
       <Tabs

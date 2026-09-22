@@ -1651,6 +1651,32 @@ def live_key_count_by_org(conn: Connection) -> dict[str, int]:
     return {r.slug: int(r.live_keys) for r in rows}
 
 
+def has_live_key(conn: Connection, *, org_id: str) -> bool:
+    """Does this ONE organization hold an unrevoked key?
+
+    The single-org form of :func:`live_key_count_by_org`, and the guard that
+    makes provisioning's auto-mint idempotent. Provisioning is re-run by
+    design — on a retrying signup form, on an operator correcting a name — and
+    a mint with no guard would issue a fresh key on every one of those, leaving
+    a pile of live credentials nobody asked for and nobody can tell apart.
+
+    ⚠️ **LIVE only, for the reason its sibling states.** A revoked key
+    authenticates nothing, so treating it as "already has one" would leave an
+    organization permanently unable to be re-armed by a re-provision.
+
+    ⚠️ **EXISTS, never a count.** The caller asks a yes/no question, and the
+    planner can stop at the first row.
+    """
+    row = conn.execute(
+        text(
+            "SELECT 1 FROM llm_api_key "
+            "WHERE organization_id = :org AND revoked_at IS NULL LIMIT 1"
+        ),
+        {"org": org_id},
+    ).first()
+    return row is not None
+
+
 def issue_key(
     conn: Connection,
     *,
