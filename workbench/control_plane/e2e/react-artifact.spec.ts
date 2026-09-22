@@ -103,6 +103,28 @@ test("a React artifact renders, stays interactive, and reaches the agent", async
   await expect(frame.locator(".cc-eyebrow")).toHaveCSS("color", "rgb(14, 173, 241)");
 
   await frame.locator("#send").click();
+
+  // ⚠️ **The click's message is not there the instant the click resolves.** It
+  // crosses an iframe `postMessage` boundary to the host, which is a turn of
+  // the event loop later, and a plain `expect` on a JS array does NOT retry —
+  // only locator assertions auto-wait. So reading `__msgs` straight after the
+  // click is a race, and a slower machine loses it.
+  //
+  // 🔴 Measured on CI 2026-09-22, in the first two runs of the new `e2e` job:
+  // flaky in BOTH, failing with `["mounted"]` against the expected
+  // `["mounted", "Count"]` and passing on retry #1. It had never failed on a
+  // dev box. `expect.poll` makes the read WAIT for the second message instead
+  // of hoping it has landed.
+  await expect
+    .poll(async () =>
+      (
+        await page.evaluate(
+          () => (window as unknown as { __msgs: unknown[] }).__msgs,
+        )
+      ).length,
+    )
+    .toBe(2);
+
   const messages = await page.evaluate(
     () => (window as unknown as { __msgs: { payload: { label: string; value: unknown } }[] }).__msgs,
   );

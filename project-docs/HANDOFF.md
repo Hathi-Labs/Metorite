@@ -1432,10 +1432,47 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-24 · WS-39 S1 session *(re-cut 2026-08-26 when 189/190 landed:
   this is now a RUN entry, not a BUILD one.)*
 
-### H-27 · Nothing runs `e2e/`, and it was silently dead for an unknown period · [AGENT]
-- **Check:** `rg -n "playwright|e2e" .github/workflows/pr-check.yml` → no hit means
-  CI still never runs the browser suite. Separately, `rg -n "127.0.0.1" workbench/
-  control_plane/playwright.config.ts` → a hit means the hydration trap is back.
+### H-27 · 33 browser tests are red, and CI gates only the half that is green · [AGENT]
+- **🟢 2026-09-22 — CI RUNS THE BROWSER SUITE.** `pr-check.yml` has an `e2e`
+  job. It is BLOCKING, it needs no gateway and no database, and it takes about
+  four minutes. The original defect — nothing ran `e2e/` at all — is closed.
+- **🔴 What replaced it, and why this entry stays open.** The first full run
+  anybody had done measured **62 passed, 33 failed, 18 fixme**, in 8 minutes.
+  So the job gates a SUBSET, and the rest is quarantined by name in the `ci`
+  project's `testIgnore` in `playwright.config.ts`:
+
+      project-state.spec.ts   10 of 10 failing   <- nothing in it passes
+      modal.spec.ts            9 of 10 failing   <- a shared primitive
+      chat.spec.ts             6 of  9 failing
+      theming.spec.ts          4 of 12 failing
+      email-search.spec.ts     2 of 13 failing
+      email.spec.ts            1 of  1 failing
+      project-rename.spec.ts   1 of  8 failing
+
+  Gated and green, 3 runs out of 3: the four Projects specs, `toast`,
+  `status-accent`, `sandbox-theming`, `react-artifact` — 32 tests.
+  `org-branding` rides along as 18 `fixme`, which is honest and deliberate.
+- **What is owed:** empty that list. `modal` and `project-state` first —
+  `modal` because it is a shared primitive, `project-state` because nothing in
+  it passes at all, so it fences nothing today. A sample failure reads
+  `getByText("Memory (2)")` finding nothing: the surface moved and the spec did
+  not follow, which is what a suite nobody runs does over time.
+- **⚠️ The register only shrinks by hand.** Nothing removes an entry
+  automatically, and nothing notices if it only ever grows.
+  `src/lib/e2eGate.test.ts` fences the shape of the list — every entry names a
+  real spec, no spec is listed twice, the local `--project=chromium` run is
+  never narrowed, and the eight green specs stay gated so the job can never
+  pass vacuously. It does NOT and cannot judge whether the list is too long.
+- **Check:** `rg -n "project=ci" .github/workflows/pr-check.yml` → no hit means
+  CI has stopped running the browser suite. Then read `testIgnore` in
+  `workbench/control_plane/playwright.config.ts` → a non-empty list means this
+  entry is still open. Run `npx playwright test --project=chromium` for the
+  true picture, which is always wider than what CI gates.
+  ⚠️ **The old second check was wrong and is dropped.**
+  `rg -n "127.0.0.1" playwright.config.ts` was supposed to catch the hydration
+  trap coming back. It matches the `webServer.url` readiness probe, which is
+  correct and harmless — `baseURL` is what must stay `localhost`, and it is.
+  As written that check cried wolf on a healthy config.
 - **Why:** D-PM-21 makes a real browser the **only** fence for UI behaviour here —
   `vitest.config.ts` is `environment: "node"` and does not even collect `.tsx`, and
   jsdom is refused by decision. That fence was **completely dead** and nothing said

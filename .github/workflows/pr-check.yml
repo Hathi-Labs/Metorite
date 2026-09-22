@@ -654,6 +654,79 @@ jobs:
       - name: Unit tests
         run: npm test
 
+  # ── H-27: the browser suite finally has a job ──────────────────────────────
+  #
+  # 🔴 **Nothing ran `e2e/`, and it was dead for an unknown period.** D-PM-21
+  # makes a real browser the ONLY fence for UI behaviour here: `vitest.config.ts`
+  # is `environment: "node"` and does not even collect a `.tsx`, and jsdom is
+  # refused by decision. So every component in the control plane was unfenced,
+  # and the suite that was supposed to fence it had rotted quietly — its own
+  # as-builts record it green, and no job would ever have reported otherwise.
+  #
+  # ⚠️ **This gates a SUBSET, and the subset is named in `playwright.config.ts`.**
+  # Measured 2026-09-22 on `main`: 62 passed, 33 failed, 18 fixme. The failing
+  # specs are quarantined by name in the `ci` project's `testIgnore`, with the
+  # count beside each one. Gating all of it would have turned `main` red on the
+  # next push, and a gate that does that gets deleted rather than repaired.
+  #
+  # ⚠️ **It BLOCKS.** A browser check that only warns is the same thing H-27 is
+  # about, in a new costume — "a fence that never runs is advisory by accident"
+  # (R7, and the `frontend-operator` job above says it first). `retries: 1`
+  # under CI absorbs genuine flake without hiding a real failure.
+  #
+  # The suite needs no gateway and no database: 12 of its specs stub `/api/**`
+  # through `page.route` and the rest are pure UI. That is why this job is a
+  # browser and a dev server, and nothing else.
+  e2e:
+    name: "Browser suite (e2e)"
+    runs-on: ubuntu-latest
+    # A hung dev server must cost minutes, not the runner's six-hour default.
+    # The measured run is ~3 min for 32 tests, plus install.
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: workbench/control_plane
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: workbench/control_plane/package-lock.json
+
+      - name: Install deps
+        run: npm ci --no-audit --no-fund
+
+      # Keyed on the lockfile, because that is what pins the Playwright version
+      # and therefore the browser revision it demands.
+      - name: Cache the browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('workbench/control_plane/package-lock.json') }}
+
+      # Runs on a cache hit too: the download is skipped, the OS libraries are
+      # not, and without them Chromium fails to launch with a missing .so.
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser suite
+        run: npx playwright test --project=ci
+
+      # ⚠️ Without this a red run is a wall of text and no screenshot, and an
+      # undiagnosable gate is one somebody deletes. The report carries the
+      # failure screenshot and the trace from the retry.
+      - name: Keep the report when it fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            workbench/control_plane/playwright-report/
+            workbench/control_plane/test-results/
+          retention-days: 7
+
   secret-scan:
     name: "Secret scan"
     runs-on: ubuntu-latest
