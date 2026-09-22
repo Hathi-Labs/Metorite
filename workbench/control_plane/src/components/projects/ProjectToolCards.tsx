@@ -104,6 +104,25 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   set_recurrence: { icon: "Repeat", label: "Repeat rule set" },
   create_personal_task: { icon: "Plus", label: "Private task captured" },
   set_my_overlay: { icon: "SlidersHorizontal", label: "Your triage updated" },
+  // S3 — the guarded acts. Same receipt: the card BEFORE the act carried
+  // the counts, this one says what the route reported.
+  archive_project: { icon: "Archive", label: "Project archived" },
+  unarchive_project: { icon: "ArchiveRestore", label: "Project restored" },
+  move_project: { icon: "FolderInput", label: "Project moved" },
+  archive_task: { icon: "Archive", label: "Task archived" },
+  merge_tasks: { icon: "Merge", label: "Tasks merged" },
+  bulk_update: { icon: "ListChecks", label: "Tasks changed" },
+  delete_comment: { icon: "MessageSquareX", label: "Comment deleted" },
+  revert_activity: { icon: "Undo2", label: "Change reverted" },
+  delete_status: { icon: "Trash2", label: "Status deleted" },
+  set_status_set: { icon: "Columns3", label: "Status set switched" },
+  delete_type: { icon: "Trash2", label: "Type deleted" },
+  delete_field: { icon: "Trash2", label: "Field deleted" },
+  delete_tag: { icon: "Trash2", label: "Tag deleted" },
+  merge_tags: { icon: "Merge", label: "Tags merged" },
+  delete_view: { icon: "Trash2", label: "View deleted" },
+  report_delete: { icon: "Trash2", label: "Report deleted" },
+  delete_attachment: { icon: "Paperclip", label: "File detached" },
 };
 
 /**
