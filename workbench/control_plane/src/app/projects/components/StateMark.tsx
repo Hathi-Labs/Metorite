@@ -93,10 +93,17 @@ export function StateMark({
   progress,
   className,
   label,
+  dim = false,
 }: {
   state: string;
   progress?: NodeProgress;
   className?: string;
+  /**
+   * Draw at half strength, for a state the row INHERITS from a parent. On the
+   * svg itself, not the wrapper: `opacity` does not inherit, so a class on the
+   * span leaves the svg's own computed opacity at 1.
+   */
+  dim?: boolean;
   /** The accessible name. Omit it where a text label already sits beside. */
   label?: string;
 }) {
@@ -107,7 +114,7 @@ export function StateMark({
     <span className={`inline-flex ${className ?? ""}`} title={label}>
       <svg
         viewBox={`0 0 ${MARK_BOX} ${MARK_BOX}`}
-        className="h-full w-full"
+        className={`h-full w-full ${dim ? "opacity-50" : ""}`}
         role={label ? "img" : undefined}
         aria-label={label}
         aria-hidden={label ? undefined : true}

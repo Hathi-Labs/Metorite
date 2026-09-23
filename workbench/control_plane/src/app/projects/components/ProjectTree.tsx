@@ -76,10 +76,6 @@ function StateDot({
 }) {
   const accent = projectStateAccent(state);
   const label = PROJECT_STATES[state]?.label ?? state;
-  // A subproject draws the same glyph one step smaller. Indentation alone
-  // stops being readable once a folder sits between the two (owner
-  // directive 2026-08-31), and the STATE must stay the information — so the
-  // level changes the size, never the hue.
   // A subproject draws the same mark one step smaller. Indentation alone
   // stops being readable once a folder sits between the two (owner
   // directive 2026-08-31), and the STATE must stay the information — so the
@@ -87,9 +83,10 @@ function StateDot({
   //
   // ⚠️ One step up from 14/12 px, 2026-09-23. The mark family draws every
   // state on one heavy ring, and at 14px a pause or a stop left too small a
-  // hole to read. 16px is also what the space marker beside these already
-  // uses, so the column now lines up.
-  const size = level === "subproject" ? "h-3.5 w-3.5" : "h-4 w-4";
+  // hole to read. The folder glyph and the draft row's glyph moved to 16px in
+  // the same change (`MARKER_SIZE`), or a folder beside a project at one depth
+  // would start its label 2px to the left of the project's.
+  const size = level === "subproject" ? "h-3.5 w-3.5" : MARKER_SIZE;
 
   // ⚠️ **A LIVE project draws a completion wheel.** Owner directive
   // 2026-09-23. Every live project, including one with no tasks — it draws an
@@ -109,13 +106,26 @@ function StateDot({
     <StateMark
       state={state}
       progress={live ? progress : undefined}
-      className={`${size} shrink-0 ${accent.text} ${
-        inherited ? "opacity-50" : ""
-      }`}
-      label={inherited ? `${name} Inherited from a parent project.` : name}
+      className={`${size} shrink-0 ${accent.text}`}
+      // ⚠️ `dim`, not `opacity-50` in `className`. The class would land on the
+      // wrapper span, and `opacity` does not inherit, so anything that reads
+      // the svg's own computed opacity (e2e/project-state.spec.ts does) sees
+      // 1 on a row that is visibly dimmed.
+      dim={inherited}
+      // ⚠️ Lower-case "inherited", as the Lucide path said it before. The
+      // browser spec matches the word case-sensitively, and a screen reader
+      // gains nothing from a capital in the middle of one sentence.
+      label={inherited ? `${name} (inherited from a parent project)` : name}
     />
   );
 }
+
+/**
+ * The marker size for a project row, a folder row and a draft row. One value,
+ * so the three start their labels at the same x at one depth. A space marker
+ * draws at the same 16px by its own class.
+ */
+const MARKER_SIZE = "h-4 w-4";
 
 /**
  * The marker for a node that is NOT a project or subproject — a space or a
@@ -154,7 +164,7 @@ function LevelGlyph({
   return (
     <Icon
       name="Folder"
-      className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+      className={`${MARKER_SIZE} shrink-0 text-muted-foreground`}
       aria-label={`Folder — ${node.name}`}
     />
   );
@@ -213,7 +223,7 @@ function DraftRow({
         <span className="w-[18px] shrink-0" />
         <Icon
           name={LEVEL_ICONS[draft.level]}
-          className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+          className={`${MARKER_SIZE} shrink-0 text-muted-foreground`}
         />
         <form
           className="min-w-0 flex-1"

@@ -62,8 +62,11 @@ describe("one weight for the whole family", () => {
   });
 
   it("every ring in every mark is the SAME ring", () => {
-    // The owner's ask was continuity of weight. A part that set its own
-    // radius or stroke would break it, so the parts carry neither.
+    // The owner's ask was continuity of weight. A ring or arc part that set
+    // its own radius or stroke would break it, so the parts carry neither.
+    // ⚠️ What this does NOT prove: the check's own line is thinner by design
+    // (`width`, two thirds of the ring), so this pins the RING, not every
+    // stroke in the mark.
     for (const state of PROJECT_STATE_ORDER) {
       for (const part of markParts(markKind(state), { tasks: 4, done: 1 })) {
         expect(Object.keys(part)).not.toContain("r");
