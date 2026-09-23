@@ -103,6 +103,13 @@ export type ProjectMenuItem =
        * it until Delete.
        */
       danger?: boolean;
+      /**
+       * A run-state row names its state here, and the surface draws the
+       * state's mark from `lib/stateMark.ts` instead of `icon`. The key, not
+       * a component, so this module stays free of React. `icon` stays set as
+       * the Lucide fallback for any surface that cannot draw a mark.
+       */
+      runState?: string;
       onSelect: () => void;
     }
   | { kind: "label"; label: string }
@@ -365,6 +372,7 @@ export function projectMenuItems(
         kind: "item",
         label: visual.label,
         icon: visual.icon,
+        runState: state,
         checked: state === current,
         // Re-selecting the current state is a no-op the caller can skip, but
         // the item stays offered: a menu that hides the state you are in makes
