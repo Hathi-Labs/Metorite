@@ -20,8 +20,14 @@
  * a reading preference with no meaning on another device.
  */
 
-/** The narrowest viewport that docks. Tailwind's `xl`, which the column uses. */
-export const DOCK_MIN_WIDTH = 1280;
+/**
+ * The viewport that docks, as a media query. The SAME string the page's
+ * `matchMedia` reads, and the same `80rem` Tailwind's `xl` is. A pixel count
+ * compared with `window.innerWidth` disagrees with `80rem` as soon as a member
+ * raises the browser's font size, and then the toggle docks a column that CSS
+ * hides (review of PR #415).
+ */
+export const DOCK_QUERY = "(min-width: 80rem)";
 
 export const CHAT_DOCK_STORAGE_KEY = "cc-projects-chat-docked";
 
@@ -65,30 +71,44 @@ export function writeChatDocked(docked: boolean, store?: ChatDockStore | null): 
 /**
  * What the dock column does on this render.
  *
- * - `absent` — not mounted. The flag is off, the member closed it, or the
- *   page shows no project chrome (a space, a folder, or one of the app's own
- *   destinations — the `ai-chat` slot among them, which would be two chats).
+ * - `absent` — not mounted. The flag is off, the member closed it, the
+ *   viewport is too narrow, or the `ai-chat` slot is open (two chats).
  * - `hidden` — mounted and not shown, because a task panel holds the column.
- * - `shown` — the column, at `xl` and wider.
+ * - `shown` — the column.
+ *
+ * ⚠️ A space, a folder, Analytics and Reports do NOT remove the dock. The
+ * chat's own navigation (`projects.open_project`, `projects.open_app`) goes
+ * there, and a dock that unmounted on arrival would take the reply that was
+ * still streaming with it (review of PR #415). Width is decided here and not
+ * by a CSS class, so a narrow viewport mounts nothing and fetches nothing.
  */
 export type ChatDockState = "absent" | "hidden" | "shown";
 
 export function chatDockState(a: {
   live: boolean;
   docked: boolean;
-  chrome: boolean;
+  wide: boolean;
+  slotOpen: boolean;
   taskDocked: boolean;
 }): ChatDockState {
-  if (!a.live || !a.docked || !a.chrome) return "absent";
+  if (!a.live || !a.docked || !a.wide || a.slotOpen) return "absent";
   return a.taskDocked ? "hidden" : "shown";
 }
 
 /**
- * What the toggle does. Wide enough: dock or undock. Too narrow: open the
- * full slot, and leave the stored choice alone, so widening the window later
- * does not surprise anybody with a column they never asked for.
+ * What the toggle does, from what the member SEES. The button is pressed only
+ * while the column is `shown`, so a press always does what the button says.
+ *
+ * - `shown` → undock.
+ * - `hidden` → show the chat: close the task that holds the column.
+ * - `absent` and wide → dock. Too narrow → open the full slot, and leave the
+ *   stored choice alone.
  */
-export function toggleAction(docked: boolean, viewportWidth: number): "dock" | "undock" | "open-slot" {
-  if (docked) return "undock";
-  return viewportWidth >= DOCK_MIN_WIDTH ? "dock" : "open-slot";
+export function toggleAction(
+  state: ChatDockState,
+  wide: boolean,
+): "dock" | "undock" | "show" | "open-slot" {
+  if (state === "shown") return "undock";
+  if (state === "hidden") return "show";
+  return wide ? "dock" : "open-slot";
 }

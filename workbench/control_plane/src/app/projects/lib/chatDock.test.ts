@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   CHAT_DOCK_STORAGE_KEY,
-  DOCK_MIN_WIDTH,
   chatDockState,
   readChatDocked,
   toggleAction,
@@ -49,17 +48,19 @@ describe("the stored choice", () => {
 });
 
 describe("the column", () => {
-  const on = { live: true, docked: true, chrome: true, taskDocked: false };
+  const on = { live: true, docked: true, wide: true, slotOpen: false, taskDocked: false };
 
-  it("shows when the flag is on, the member docked it and the page has a project", () => {
+  it("shows when the flag is on, the member docked it and the viewport is wide", () => {
     expect(chatDockState(on)).toBe("shown");
   });
 
-  it("is absent when the flag is off, it is closed, or there is no project chrome", () => {
+  it("is absent when the flag is off, it is closed, it is narrow, or the slot is open", () => {
     expect(chatDockState({ ...on, live: false })).toBe("absent");
     expect(chatDockState({ ...on, docked: false })).toBe("absent");
-    // The ai-chat slot is no-chrome: a dock there would be a second chat.
-    expect(chatDockState({ ...on, chrome: false })).toBe("absent");
+    // Narrow mounts nothing, so a hidden rail fetches nothing.
+    expect(chatDockState({ ...on, wide: false })).toBe("absent");
+    // The ai-chat slot is the chat: a dock beside it would be a second one.
+    expect(chatDockState({ ...on, slotOpen: true })).toBe("absent");
   });
 
   it("hides but stays mounted while a docked task panel holds the column", () => {
@@ -67,14 +68,17 @@ describe("the column", () => {
   });
 });
 
-describe("the toggle", () => {
-  it("docks when wide, and opens the slot when narrow", () => {
-    expect(toggleAction(false, DOCK_MIN_WIDTH)).toBe("dock");
-    expect(toggleAction(false, DOCK_MIN_WIDTH - 1)).toBe("open-slot");
+describe("the toggle does what the member sees", () => {
+  it("undocks a shown column", () => {
+    expect(toggleAction("shown", true)).toBe("undock");
   });
 
-  it("always undocks an open dock", () => {
-    expect(toggleAction(true, 390)).toBe("undock");
-    expect(toggleAction(true, 1920)).toBe("undock");
+  it("brings back a column a task hides, rather than closing it", () => {
+    expect(toggleAction("hidden", true)).toBe("show");
+  });
+
+  it("docks when wide, and opens the slot when narrow", () => {
+    expect(toggleAction("absent", true)).toBe("dock");
+    expect(toggleAction("absent", false)).toBe("open-slot");
   });
 });

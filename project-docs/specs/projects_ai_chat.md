@@ -363,16 +363,21 @@ can talk while the board is open. On a phone the chat is a full scene, like
 the email assistant. **BUILT, 2026-09-23.** `lib/chatDock.ts` owns the rules,
 and `chatDock.test.ts` is their fence:
 
-- The dock is a 26rem column at `xl` (1280px) and wider. Below that width, the
-  toggle opens the full slot. On a phone, the sidebar's AI chat entry opens
-  the slot as a full scene.
+- The dock is a 26rem column while `DOCK_QUERY` (`80rem`, Tailwind's `xl`)
+  matches. Below that width the page mounts no rail, and the toggle opens the
+  full slot. On a phone, the sidebar's AI chat entry opens the slot as a full
+  scene.
 - The dock and the docked task panel share one right-hand column. While a task
   holds it, the chat hides and stays mounted, so a streaming reply keeps
   streaming. A full-width task panel is an overlay and hides nothing.
-- The page shows no dock where it shows no project chrome. That includes the
-  `ai-chat` slot, so the page never shows two chats.
+- The toggle is pressed only while the column is on screen. While a task holds
+  the column, a press closes the task and shows the chat.
+- A space, a folder, Analytics and Reports keep the dock, because the chat's
+  own navigation goes there in the middle of a reply. Only the `ai-chat` slot
+  removes it, so the member never sees two chats.
 - Each browser remembers the choice in `localStorage`, as `panelMode.ts` does.
-- The dock persona gets the real `view`. The slot passes none.
+- A write receipt reloads the board only if it finished in the last minute
+  (`isFreshReceipt`). A receipt replayed from history does not reload it.
 
 While the slot is open the tree highlights no node. So the rail header names
 the scope itself, and the persona says "current scope", not "looking at".

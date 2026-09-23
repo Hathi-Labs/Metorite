@@ -17,7 +17,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   CANCELLED,
+  FRESH_RECEIPT_MS,
   classifyActionResult,
+  isFreshReceipt,
   forPeople,
   parseTaskRows,
   receiptIdOf,
@@ -158,5 +160,19 @@ describe("forPeople", () => {
     expect(forPeople("Projects PUT /projects/tasks/x/assignees: Not permitted.")).toBe(
       "Not permitted.",
     );
+  });
+});
+
+describe("a receipt reloads the board only when it is fresh", () => {
+  const now = 1_000_000_000;
+
+  it("announces a write that finished just now", () => {
+    expect(isFreshReceipt({ endedAt: now - 500 }, now)).toBe(true);
+  });
+
+  it("does not announce a receipt replayed from history, or one with no time", () => {
+    expect(isFreshReceipt({ endedAt: now - FRESH_RECEIPT_MS }, now)).toBe(false);
+    expect(isFreshReceipt({ endedAt: now - 86_400_000 }, now)).toBe(false);
+    expect(isFreshReceipt({}, now)).toBe(false);
   });
 });

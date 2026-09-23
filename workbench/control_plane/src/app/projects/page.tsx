@@ -160,6 +160,7 @@ import {
   SPACES_SECTION_LABEL,
 } from "./lib/projectApps";
 import {
+  DOCK_QUERY,
   chatDockState,
   readChatDocked,
   toggleAction,
@@ -597,9 +598,17 @@ function ProjectsWorkspace() {
   // WS-27bm — the AI chat docked beside the board (`lib/chatDock.ts`). Read in
   // an effect for the reason `panelMode` is: no storage on the server.
   const [chatDocked, setChatDocked] = useState(false);
+  // Wide enough to dock — the same media query the CSS `xl` is, subscribed,
+  // so the column follows the window and a narrow one mounts no rail at all.
+  const [dockWide, setDockWide] = useState(false);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setChatDocked(readChatDocked());
+    const mql = window.matchMedia(DOCK_QUERY);
+    const onChange = () => setDockWide(mql.matches);
+    onChange();
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
   }, []);
   // The panel's statuses are held apart from the selected project's, because a
   // task opened from a deep link can belong to a project that is not selected —
@@ -3873,6 +3882,17 @@ function ProjectsWorkspace() {
   // One pane. The tree and the mode picker are sheets in the shell drawer
   // (AppShell's `isProjectsPage` tabs), and an opened task is a full-screen
   // surface rather than the third column it is on desktop.
+  // WS-27bm — the docked chat's one state for this render (`lib/chatDock.ts`).
+  // The toggle and the column both read it, so the button is pressed exactly
+  // when the column is on screen.
+  const dockState = chatDockState({
+    live: CHAT_LIVE,
+    docked: chatDocked,
+    wide: dockWide && !isMobile,
+    slotOpen: app === "ai-chat",
+    taskDocked: Boolean(taskPanel) && !isOverlayMode(panelMode),
+  });
+
   if (isMobile) {
     return (
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
@@ -4012,21 +4032,25 @@ function ProjectsWorkspace() {
                       variant="ghost"
                       size="sm"
                       icon="Sparkles"
-                      selected={chatDocked}
+                      selected={dockState === "shown"}
                       title={
-                        chatDocked
+                        dockState === "shown"
                           ? "Close the assistant"
-                          : "Ask the assistant about this project"
+                          : dockState === "hidden"
+                            ? "Show the assistant (closes the task)"
+                            : "Ask the assistant about this project"
                       }
                       onClick={() => {
-                        const act = toggleAction(chatDocked, window.innerWidth);
+                        const act = toggleAction(dockState, dockWide);
                         if (act === "open-slot") {
                           setApp("ai-chat");
-                          return;
+                        } else if (act === "show") {
+                          setOpenTask(null);
+                        } else {
+                          const next = act === "dock";
+                          setChatDocked(next);
+                          writeChatDocked(next);
                         }
-                        const next = act === "dock";
-                        setChatDocked(next);
-                        writeChatDocked(next);
                       }}
                     >
                       Assistant
@@ -4048,35 +4072,23 @@ function ProjectsWorkspace() {
         {/* WS-27bm — the AI chat DOCKED beside the canvas (`lib/chatDock.ts`).
             It shares the right-hand column with the docked task panel: while
             a task holds the column the chat hides but stays mounted, so a
-            streaming reply keeps streaming. `xl` is DOCK_MIN_WIDTH; below it
-            the toggle opens the full slot instead. */}
-        {(() => {
-          const dock = chatDockState({
-            live: CHAT_LIVE,
-            docked: chatDocked,
-            chrome: !noProjectChrome,
-            taskDocked: Boolean(taskPanel) && !isOverlayMode(panelMode),
-          });
-          if (dock === "absent") return null;
-          return (
-            <aside
-              aria-label="Assistant"
-              className={[
-                "w-[26rem] shrink-0 flex-col overflow-hidden border-l border-border",
-                dock === "shown" ? "hidden xl:flex" : "hidden",
-              ].join(" ")}
-            >
-              <AssistantRail
-                {...railPlace}
-                view={mode}
-                onClose={() => {
-                  setChatDocked(false);
-                  writeChatDocked(false);
-                }}
-              />
-            </aside>
-          );
-        })()}
+            streaming reply keeps streaming. */}
+        {dockState === "absent" ? null : (
+          <aside
+            aria-label="Assistant"
+            hidden={dockState === "hidden"}
+            className="flex w-[26rem] shrink-0 flex-col overflow-hidden border-l border-border"
+          >
+            <AssistantRail
+              {...railPlace}
+              view={noProjectChrome ? null : mode}
+              onClose={() => {
+                setChatDocked(false);
+                writeChatDocked(false);
+              }}
+            />
+          </aside>
+        )}
       </div>
 
       {/* WS-27ab — the `full` stop. A scrim plus the same panel, at the same
