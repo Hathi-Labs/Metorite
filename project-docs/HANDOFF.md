@@ -96,6 +96,53 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-165 · Build CP-13a to CP-13d: the `decide` task, its door, the Console pages and the chat tool · [AGENT]
+- **Check:** `rg -n "native_typesafe" apps/services/customer_console/` → no hit
+  means CP-13a has not landed. `rg -n 'decide' workbench/operator_console/src/lib/`
+  → no hit means CP-13b has not landed.
+- **Why:** owner decision 2026-09-23 (D75). The owner chose TypeSafe's Jev for
+  fast typed decisions, and asked for the Operator Console first.
+- **Do this in order:** CP-13a, then CP-13b, then CP-13c, then CP-13d. Build
+  against a test key and made-up data. Ship `DECIDE_ENABLED` OFF.
+- ⚠️ **Do not seed a binding or a price in the migration.** An operator makes
+  the binding on `/tiers`. The owner sets the price (H-42).
+- ⚠️ **Three fences break by design.** Update them in the same PR. §6A.14
+  CP-13a names them, and CP-13d names two more.
+- ⚠️ **CP-13c needs H-152's tenant slice.** The client presents the per-box
+  deployment key, and never the one organization key.
+- 🔴 **Do not set `DECIDE_ENABLED` on a live box.** It is owner-only, and
+  the §3a window does not open it (H-166).
+- ⚠️ **Take the migration number at build time.** It is 033 at `ddd2d6ad`
+  (R1).
+- **Authority:** `specs/customer_console.md` §6A.14 · `work_plan.md` §3 D75 ·
+  board WS-31
+- **Added:** 2026-09-23 · the Jev planning session
+
+### H-166 · Open the TypeSafe account, install the key, and answer residency · [OWNER]
+- **Check:** on `/providers`, look for a live `typesafe` credential. None
+  means this is open. Then read `work_plan.md` D19.6. If it still says
+  India-only with no AI sub-processor clause, the residency answer is open.
+- **Why:** three acts gate CP-13 on a real tenant (§6.1 WS-31 (i)).
+  1. **Open the account and accept the terms.** An external commercial
+     account is an owner act. Ask TypeSafe for its DPA, its region, and
+     zero retention. The vendor gives zero retention to enterprise customers
+     on request.
+  2. **Install the key** on `/providers`, with provider `typesafe` (§6.0 B1).
+  3. **Answer residency.** D19.6 promises India-only data at launch, and the
+     vendor states no region. Choose one: amend D19.6 for AI sub-processors,
+     get a region in writing, or keep `decide` off real tenant content.
+  4. **Acknowledge the D61.1 amendment**, or reject it. D61.1 says every
+     Router door copies an OpenAI shape, and no such shape exists for a
+     decision. `work_plan.md` D75 clause 3 holds the proposal.
+  5. **Set `DECIDE_ENABLED`** on the box, after answer 3. No agent sets it.
+- ⚠️ **Shadow mode sends tenant content too.** Without answer 3, nothing
+  runs on Fracktal's data: not the chat tool, not an app slice, and not
+  shadow mode.
+- ⚠️ **Add TypeSafe to the sub-processor list** when WS-37 writes one (H-36).
+- **Authority:** `specs/customer_console.md` §8 gate 9 and §9 item 8 ·
+  `work_plan.md` §6.1 WS-31 (i)
+- **Added:** 2026-09-23 · the Jev planning session
+
 ### H-163 · The My Tasks cutover is in flight. The spec owns the order · [AGENT]
 - **Check:** `gh pr view 411 --json state` → `OPEN` means S8 PR 1 has not
   merged. `\dt gtd_*` on the box → any row means S8 PR 2 has not landed.
@@ -1483,7 +1530,11 @@ line — never reclaim a number by deleting the other entry.
   Router unpriced so a month of real per-org burn lands in `usage_event` first
   (`002_seed_catalog.sql`'s own header). CP-11 is what finally produces that traffic, so
   this entry becomes actionable only after CP-11 has been serving for a while.
-  🔴 Pricing live is an owner act (D19.2, §6) and **must not be done via migration**.
+  🔴 Pricing live is an owner act (D19.2, §6) and **must not be done through a migration**.
+- 📌 **Added 2026-09-23 (D75): one more tier, `tier-decide`, and one more
+  question.** One decision costs about USD 0.000042. So choose one: exempt
+  `decide` from `MIN_CHARGE`, as `embed` is, or absorb it.
+  `credit_pricing.md` §5.4 clause 6 holds the question.
 - **Authority:** `work_plan.md` §6 · §2.0 M2.9c · D19.2 · **D57.4** clause 5 ·
   `specs/customer_console.md` CP-6
 - **Added:** 2026-08-26 · AI credits + keys session
@@ -1668,6 +1719,9 @@ line — never reclaim a number by deleting the other entry.
   📌 **Home: `customer_console/handlers.py`**, and `packages/acb_stt` stays the
   tenant package. §6A.10b clause 1 holds the plane-boundary argument and the
   rejected `acb_provider` alternative.
+  📌 **2026-09-23: the first caller exists. It is TypeSafe's Jev** (D75).
+  H-165 builds this seam in CP-13a, with `native_typesafe` as its first value.
+  When H-165 merges, delete this entry.
 - **Authority:** `customer_console.md` **§6A.10b** (the done-when) ·
   `work_plan.md` §3 **D60.11(a)** · `specs/customer_console.md` **§6A.10
   G-2 / G-5** · CLAUDE.md §5 · `work_plan.md` §4 (the seam's owner row)
