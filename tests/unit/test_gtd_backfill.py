@@ -390,7 +390,7 @@ def test_216_arms_then_lets_190s_guard_decide() -> None:
 #: gtd_items columns the backfill (212) never copies. A value in any of them
 #: would be lost, so 216 refuses. `flexible` is exempt: NULL reads as flexible.
 UNCOPIED = (
-    "origin", "attachments", "sort_key", "leveraged", "kept_mine", "deep_work",
+    "origin", "attachments", "sort_key", "important", "leveraged", "kept_mine", "deep_work",
     "scheduled_start", "scheduled_end", "actual_start", "actual_end",
     "parent_item_id", "archived_at", "workflow_stage", "assignees", "horizon_id",
 )

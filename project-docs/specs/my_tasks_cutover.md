@@ -969,7 +969,7 @@ flip (§6 step 10).**
 1. **Migration 216.** Main ended at 214 and #427 holds 215, so this one is
    216. The file is one transaction, and its steps run in this order:
    - (0) refuses when a `gtd_items` row holds a value in a column that the
-     backfill never copied. There are 15 such columns, from `origin` to
+     backfill never copied. There are 16 such columns, from `origin` to
      `horizon_id`. `flexible` is exempt. The RAISE names the column and the
      row count.
    - (c) copies `wa_commitments.gtd_item_id` into `task_id` through
@@ -1001,7 +1001,8 @@ flip (§6 step 10).**
    19:00 UTC. The coordinator ran them read-only.
    - Both `gtd_items` rows are migrated. Every column that the backfill
      never copied holds its default. The one exception is `flexible = true`,
-     and the new store reads that as its default.
+     and the new store reads that as its default. A second check at about
+     19:30 UTC found `important = false` on both rows.
    - `gtd_projects`, `gtd_spaces`, `gtd_folders`, `gtd_contexts` and
      `gtd_waiting` hold 0 rows. `gtd_attachments` holds 2 rows, and they
      survive as `attachments`.

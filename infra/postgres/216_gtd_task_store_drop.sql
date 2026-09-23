@@ -86,6 +86,7 @@ BEGIN
             ('origin',          'origin IS NOT NULL AND origin NOT IN (''{}''::jsonb, ''null''::jsonb)'),
             ('attachments',     'attachments IS NOT NULL AND attachments NOT IN (''[]''::jsonb, ''null''::jsonb)'),
             ('sort_key',        'sort_key IS NOT NULL'),
+            ('important',       'important'),
             ('leveraged',       'leveraged'),
             ('kept_mine',       'kept_mine'),
             ('deep_work',       'deep_work'),
