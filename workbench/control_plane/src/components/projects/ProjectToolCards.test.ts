@@ -174,5 +174,7 @@ describe("a receipt reloads the board only when it is fresh", () => {
     expect(isFreshReceipt({ endedAt: now - FRESH_RECEIPT_MS }, now)).toBe(false);
     expect(isFreshReceipt({ endedAt: now - 86_400_000 }, now)).toBe(false);
     expect(isFreshReceipt({}, now)).toBe(false);
+    // A server stamp ahead of a slow client clock is not fresh.
+    expect(isFreshReceipt({ endedAt: now + 5_000 }, now)).toBe(false);
   });
 });

@@ -181,7 +181,10 @@ export const FRESH_RECEIPT_MS = 60_000;
  *  `endedAt` they finished with, so a replay is old; one with no time at all
  *  predates the field and is old too. */
 export function isFreshReceipt(e: { endedAt?: number }, now: number = Date.now()): boolean {
-  return typeof e.endedAt === "number" && now - e.endedAt < FRESH_RECEIPT_MS;
+  if (typeof e.endedAt !== "number") return false;
+  // A negative age is a server stamp ahead of this machine's clock: not fresh.
+  const age = now - e.endedAt;
+  return age >= 0 && age < FRESH_RECEIPT_MS;
 }
 
 function announceChange(eventId: string): void {
