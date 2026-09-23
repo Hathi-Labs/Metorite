@@ -96,6 +96,44 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-167 · D49 orphaned the People landing page. Nothing links to it · [OWNER]
+- **Check:** `rg -n "people/overview" workbench/control_plane/src` → if every
+  hit is in `lib/centers.ts`, `app/people/overview/` or a test, then nothing a
+  member can reach links to it, and this is open.
+- **What is built:** `/people/overview` (§5.9, WS-28l) — headcount by
+  department and status, who is away this week, the load spread, the health of
+  the record itself, and the org's unmanaged roots. Each section links to the
+  surface that owns the full answer instead of re-answering. Rendered in all
+  five contexts on 2026-09-23: it works, it is clean, and it is the best
+  summary screen in the app.
+- **Why nobody can reach it.** Its one entry point is the People Center
+  landing card at `lib/centers.ts:305`, and **D49 withdrew Centers from the
+  surface** on 2026-08-24. The card is still in the registry. Nothing
+  navigates to a Center any more. The People tab bar gives this route no tab
+  on purpose (`app/people/layout.tsx`), and `layout.test.ts:62` pins that.
+- ⚠️ **This is the same defect the owner directed fixed on 2026-09-20** —
+  *"Every surface in §5 was built and none of them could be reached… A feature
+  nobody can navigate to is a feature nobody has."* That pass built the tab bar
+  and reached six surfaces. It missed this one, because this one's door was a
+  withdrawn Center and not a missing tab.
+- **The decision, and it sets the app's front door.** It is not a bug fix.
+  Three ways, and they say different things about the product:
+  1. **An eighth tab, first in the bar.** Overview becomes where People opens,
+     and Directory moves one along. Closest to the 2026-09-20 directive. Costs
+     a tab in a bar that already carries seven, and invites the question
+     "Overview versus Workload".
+  2. **Fold it into Workload.** Workload already carries the org and
+     department rollups and already links out to Data quality. What Overview
+     adds is the headcount matrix and the unmanaged roots. One destination
+     fewer, and §5.9 stops being a surface of its own.
+  3. **Delete it.** Honest, if the answer is that Workload is the landing
+     page. ⚠️ Then say so in §5.9, so nobody builds it a third time.
+- 📌 Costs nothing while it sits there, so this is not urgent. It is also a
+  built, tested, working surface that no customer can see.
+- **Authority:** D49 · `specs/people_center_app.md` §5.9 · owner directive
+  2026-09-20 (recorded in `app/people/layout.tsx`'s header)
+- **Added:** 2026-09-23 · the People and Profile UI review
+
 ### H-165 · Build CP-13a to CP-13d: the `decide` task, its door, the Console pages and the chat tool · [AGENT]
 - **Check:** `rg -n "native_typesafe" apps/services/customer_console/` → no hit
   means CP-13a has not landed. `rg -n 'decide' workbench/operator_console/src/lib/`
@@ -368,9 +406,16 @@ line — never reclaim a number by deleting the other entry.
           and not memory and not calendar"         run 2: pass
                                                    run 3: FAIL (another test)
 
-  So the suite that leaks the state is one the narrow filter EXCLUDES. That is
-  the most useful thing anybody has learned about this defect. Look at what
-  `tree`, `task` and `personal` pull in and `projects` does not.
+  So the suite that leaks the state is one the narrow filter EXCLUDES. Look at
+  what `tree`, `task` and `personal` pull in and `projects` does not.
+- **⚠️ 2026-09-23 — `-k "projects"` FAILED once, so yesterday's line above is
+  too strong.** It read as though the narrow selection had stopped failing.
+  Six green runs is not "stopped" — it is intermittent under that selection
+  too, and one run out of 2151 tests reproduced it the next day. The wider
+  selection remains the reliable reproduction. **Neither selection is a
+  clean bill of health**, which is the real hazard: a branch that touches
+  nothing near this can go red, and a branch that breaks something can go
+  green. It still passes alone, every time.
 - **🔴 A THIRD test fails the same way, and it is not a Projects test.** Run 3
   above failed
   `test_customer_console_catalog.py::TestRemovingAModelFromTheCatalog::test_removing_one_task_is_not_blocked_by_a_binding_on_ANOTHER`
@@ -2466,23 +2511,6 @@ line — never reclaim a number by deleting the other entry.
   through it is correct, and `email/automation/followups.py` does that. A
   lint there would fail correct code and grow an allowlist. The asyncpg
   suites are the answer for that half.
-
-### H-113 · Wave 6 needs only its NUDGE. The columns shipped in 188 · [AGENT]
-- **⚠️ This entry was wrong, and the correction is the point.** It said
-  §9.12.9 needs two new columns, and its Check looked for `follow_up_at`. That
-  name never existed. Migration **188** already shipped `waiting_on`,
-  `delegated_at`, `expected_by` and `last_nudged_at` on `pm_task_personal`,
-  with a partial index built for the "what is due back" read.
-- **Check:** `grep -n "last_nudged_at" apps/services/gateway/gateway/routes/projects/personal.py`
-  → the field is accepted and **nothing writes it**. That is the open half.
-- **What is already built.** The Tasks app sets and draws all of it —
-  `DelegateDialog`, `WaitingForView` and `ItemDetail` carry the date, the
-  person and the overdue badge.
-- **What is open.** The optional nudge. One notification to the person you
-  wait on, through `routes/projects/notifications.py` `notify()`, which
-  exists. It is off by default, and it stamps `last_nudged_at` once.
-  ⚠️ In-app only. A mail to a real person is owner-gated (CLAUDE.md §3a).
-- **Corrected:** 2026-09-19 · found while auditing wave 6 for dispatch.
 
 ### H-110 · Operator OTP sends now. Two dashboard acts are still unverified · [OWNER]
 - **Check:** ask Supabase project `uttxlicdccfkramtjfpi` for an OTP at an address
