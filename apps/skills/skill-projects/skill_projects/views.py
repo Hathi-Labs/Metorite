@@ -134,7 +134,10 @@ async def render_timeline(task_id: str, kind: str = "all") -> str:
         if field:
             row.update({"field": field, "before": before, "after": after})
         if isinstance(meta, dict) and meta.get("via"):
-            row["via"] = str(meta.get("via"))
+            # D-PM-36 stamps `chat:projects-assistant`. A member reads "the AI
+            # chat", not the identifier (visual review, 2026-09-23).
+            via = str(meta.get("via"))
+            row["via"] = "the AI chat" if via.startswith("chat:") else via
         rows.append(row)
         line = f"- {_day(ev.get('created_at'))} {ev.get('type')} by {data(ev.get('created_by') or '?')}"
         if ev.get("body"):

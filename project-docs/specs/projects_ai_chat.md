@@ -4,7 +4,7 @@
 2026-09-22. S2b (the rest of class B), S3 (the guarded acts) and S4 (the
 workflows, the views and the forms) and S5 (the rest of the manifest)
 built 2026-09-23. S6 (navigation and the frontend-tool dispatcher) built
-2026-09-23. Left: the visual review (H-157).** §10 says which slice each part
+2026-09-23. The visual review ran 2026-09-23 (§4.2).** §10 says which slice each part
 belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
@@ -407,6 +407,18 @@ the event. A dispatch is kept off the stored message and runs once per event
 id, across a reload. `set_filter` is not
 built. The page's filter state has no stable shape to hand a model yet.
 
+**The visual review (2026-09-23).** The rail and every card were rendered in
+a browser, in dark and light mode, at compact density, under a changed accent
+and at phone width. It found five defects, all fixed. The board's view tabs
+sat above the chat, because the chat pane was missing from the rule that
+hides them for Analytics and Reports. Two headers both said "AI chat", so the
+rail's header now names the scope it answers about. Two sets of suggestions
+competed, so the four prompts are now the shared chat's own "Try asking"
+pills, the pattern the main chat and the email assistant use. The receipts
+showed the model's «guillemet» fence, the `full_id:` lines and raw routes,
+so they now show plain words. The timeline coloured a comment with the
+member's accent, so its dots now use the categorical ramp.
+
 **The board follows the chat.** A receipt card that reports a done write
 fires `cc-projects-changed` once, and the Projects page reloads the selected
 project. The chat never reaches the page's state. That event is the one
@@ -629,7 +641,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S4 · Workflows** — ✅ **BUILT 2026-09-23** | W1 plan (`propose_plan` over a `planCard`), W2 status report (`status_report`), W3 weekly (`render_report`), W4 stuck and W5 triage (instructions over the tools) · five templates in the shared catalog (`timeline`, `taskBoard`, `dataGrid`, `reportCard`, `planCard`) with a lockstep fence · `edit_task` and `edit_project` over a `formCard` · the board reloads after a chat write (`cc-projects-changed`) · the chat model setting reused | AGENT-SAFE |
 | **S5 · The rest** — ✅ **BUILT 2026-09-23** | The eleven reads and writes that were still in `PLANNED` (`inbox.py`: views, calendar, contexts, watchers, intake, notifications, grants). `PLANNED` is empty of WS-27bm names: every `/projects` route is built or excluded by name | AGENT-SAFE |
 | **S6 · Navigation** — ✅ **BUILT 2026-09-23** | The frontend-tool dispatcher (`acb_skills.frontend_tools`, `runFrontendToolEvent`) · `open_in_app` and the page's three handlers · the two S2 follow-ups (an unknown address named on the card, the subtasks receipt opens the parent) | AGENT-SAFE |
-| **Left** | The visual review in light mode, compact density and a changed accent (H-157) | AGENT-SAFE |
+| **Visual review** — ✅ **DONE 2026-09-23** | The rail and the cards seen in eight contexts. The defects it found are fixed (§4.2) | AGENT-SAFE |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-09-30 |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 

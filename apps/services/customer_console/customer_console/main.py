@@ -102,6 +102,7 @@ from customer_console.auth import (
     ProvisionCaller,
     ResolveCaller,
     SeatAdminCaller,
+    ServingCaller,
     SignedWebhook,
     StaffIdentity,
 )
@@ -6808,10 +6809,17 @@ def _preflight_gates(
 
 
 @app.post("/v1/chat/completions")
-def chat_completions(req: CompletionRequest, caller: KeyCaller) -> Any:
+def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
     """Proxy one completion, gate it, and charge it.
 
-    The organization comes from the API key, the model comes from the tier
+    📌 **`ServingCaller`, not `KeyCaller`, since 2026-09-23 (H-152).** An
+    organization key still opens this door and behaves exactly as before. A
+    per-box DEPLOYMENT key carrying `serve` now opens it too, and the Console
+    derives the organization from the acting member. Without that arm a shared
+    box could serve only whichever single tenant its one
+    `CUSTOMER_CONSOLE_ORG_KEY` happened to name.
+
+    The organization comes from the credential, the model comes from the tier
     binding, and the usage row is written here — on our infrastructure, from
     numbers we observed — rather than reported by the party being metered.
 
