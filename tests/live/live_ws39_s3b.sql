@@ -10,10 +10,17 @@
 -- twice. A hermetic fake agrees with whatever SQL it is handed (R8) — this runs
 -- the real function against the real schema.
 --
--- Run:  docker exec -i tenant-scratch psql -U acb -d acb_tenant \
+-- Run:  docker exec -i metorite-scratch-tenant psql -U acb -d acb_tenant \
 --         -v ON_ERROR_STOP=1 < tests/live/live_ws39_s3b.sql
 --
 -- Self-cleaning: it drops its own fixtures first, so it is re-runnable.
+--
+-- ⚠️ 2026-09-23: this suite went RED against the current ladder with the exact
+-- error production raised (`pm_projects_root_owns_statuses`, function line 71),
+-- because 189's function predates 196/197. Migration 212 re-asserts the body
+-- and §4k–4l, §7e–7g and §9c–9d below are the checks that pin what it fixed:
+-- the ROOT path (Dana and Erin both start with no personal project), the CHILD
+-- path (Dana's LOCAL `gtd_projects` row), and the re-run root lookup.
 -- ============================================================================
 
 \set ON_ERROR_STOP on
@@ -201,6 +208,22 @@ SELECT s3b_check('4j ...and it is a CHILD, so it did not take the root''s slot',
     (SELECT parent_project_id IS NOT NULL FROM pm_projects
       WHERE name = 'Kitchen Reno'), true);
 
+-- ── 4k-4l. THE ROOT PATH — a root owns its statuses (mig 196/197) ───────────
+--
+-- This is the line production died on. Both members arrive with NO personal
+-- project, so both roots are minted by the function, and 197's CHECK refuses a
+-- root with `owns_statuses = false`. The CHECK itself is what makes 4k
+-- meaningful: had the insert been refused, nothing after §3 would exist.
+SELECT s3b_check('4k every minted personal ROOT owns its statuses',
+    (SELECT count(*) FROM pm_projects
+      WHERE lower(personal_owner) LIKE '%@s3btest.invalid'
+        AND parent_project_id IS NULL AND owns_statuses), 2::bigint);
+SELECT s3b_check('4l ...and each root carries the gateway''s four lanes, in order',
+    (SELECT string_agg(s.name, ',' ORDER BY s.position)
+       FROM pm_task_statuses s JOIN pm_projects p ON p.id = s.project_id
+      WHERE lower(p.personal_owner) = 'erin@s3btest.invalid'
+        AND p.parent_project_id IS NULL), 'Inbox,Next,Doing,Done');
+
 -- The lens itself. This is MY_TASKS_FROM's ownership arm from
 -- routes/projects/personal.py, run as each member. Erin's private salary
 -- review must not appear for Dana — that is the sentence §12.8 asks us to prove.
@@ -286,6 +309,25 @@ SELECT s3b_check('7d the sub-projected task is still assigned (else it vanishes)
        JOIN gtd_items i ON i.migrated_task_id = a.task_id
       WHERE i.id = 'd1000000-0000-0000-0000-00000000d102'), 1::bigint);
 
+-- ── 7e-7g. THE CHILD PATH — a category INHERITS the root's lanes ────────────
+--
+-- `mint_personal_child` is the shape of record: `owns_statuses = false`, no
+-- status rows of its own, and every task under it resolves its status against
+-- the ROOT. A child that owned a copy of the set would be four more rows per
+-- category and a remap on every move between root and category.
+SELECT s3b_check('7e the backfilled category does NOT own statuses',
+    (SELECT owns_statuses FROM pm_projects WHERE name = 'Kitchen Reno'), false);
+SELECT s3b_check('7f ...and seeded no status rows of its own',
+    (SELECT count(*) FROM pm_task_statuses s
+       JOIN pm_projects p ON p.id = s.project_id
+      WHERE p.name = 'Kitchen Reno'), 0::bigint);
+SELECT s3b_check('7g ...so its task''s status belongs to the ROOT''s set',
+    (SELECT (s.project_id = t.root_project_id) AND (s.project_id <> t.project_id)
+       FROM pm_tasks t
+       JOIN pm_task_statuses s ON s.id = t.status_id
+       JOIN gtd_items i ON i.migrated_task_id = t.id
+      WHERE i.id = 'd1000000-0000-0000-0000-00000000d102'), true);
+
 -- ── 8. Re-running is a no-op — the property the cutover depends on ──────────
 SELECT * FROM gtd_backfill_to_pm(true);
 
@@ -306,6 +348,24 @@ SELECT s3b_check('9a the straggler moved',
       WHERE id = 'd1000000-0000-0000-0000-00000000d199' AND migrated_task_id IS NOT NULL), 1::bigint);
 SELECT s3b_check('9b and only it — no duplicates of the first eight',
     (SELECT count(*) FROM pm_tasks WHERE created_by LIKE '%@s3btest.invalid'), 9::bigint);
+
+-- ── 9c-9d. The re-run found the ROOT, not the category (mig 212, edit 0) ────
+--
+-- On this pass Dana's tree has TWO rows carrying `personal_owner`: the root
+-- and 'Kitchen Reno'. 189's lookup had no `parent_project_id IS NULL` and
+-- could answer with either; a straggler rooted at the category would resolve
+-- no status at all. The check is on the straggler because it is the only task
+-- minted while the category already existed.
+SELECT s3b_check('9c the straggler is rooted at the personal ROOT',
+    (SELECT p.parent_project_id IS NULL AND p.owns_statuses
+       FROM pm_tasks t JOIN pm_projects p ON p.id = t.root_project_id
+       JOIN gtd_items i ON i.migrated_task_id = t.id
+      WHERE i.id = 'd1000000-0000-0000-0000-00000000d199'), true);
+SELECT s3b_check('9d ...and its status is one of the root''s lanes',
+    (SELECT s.project_id = t.root_project_id
+       FROM pm_tasks t JOIN pm_task_statuses s ON s.id = t.status_id
+       JOIN gtd_items i ON i.migrated_task_id = t.id
+      WHERE i.id = 'd1000000-0000-0000-0000-00000000d199'), true);
 
 \echo ''
 \echo '════════════════════════════════════════════════════════'

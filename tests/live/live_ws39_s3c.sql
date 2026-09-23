@@ -9,7 +9,7 @@
 -- transactional, so the `DROP TABLE` this exercises is undone at the end and
 -- the scratch database is left exactly as it was found.
 --
--- Run:  docker exec -i tenant-scratch psql -U acb -d acb_tenant \
+-- Run:  docker exec -i metorite-scratch-tenant psql -U acb -d acb_tenant \
 --         -v ON_ERROR_STOP=1 < tests/live/live_ws39_s3c.sql
 -- ============================================================================
 
