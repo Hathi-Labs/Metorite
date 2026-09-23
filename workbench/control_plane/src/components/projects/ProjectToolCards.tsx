@@ -57,6 +57,9 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   analytics_outlook: { icon: "Telescope", label: "Outlook" },
   // S7a — who holds the work, and whether they have the hours.
   team_capacity: { icon: "Gauge", label: "Capacity" },
+  // S7b — who fits one task, and who could help whom.
+  fit_for_task: { icon: "UserCheck", label: "Fit" },
+  rebalance: { icon: "Scale", label: "Rebalance" },
   report_list: { icon: "FileText", label: "Reports" },
   report_render: { icon: "FileText", label: "Report" },
   recurrence: { icon: "Repeat", label: "Repeat rule" },
