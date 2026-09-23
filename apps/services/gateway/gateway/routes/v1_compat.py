@@ -14,13 +14,49 @@ import re
 import time
 from typing import Any
 
-from acb_auth import require_llm_api_auth
+from acb_auth import member_proof, require_llm_api_auth
 from acb_common import get_logger
+from acb_common.settings import get_settings
 from acb_llm.client import _ensure_keys_loaded
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 _log = get_logger("v1")
+
+
+def _member_for(request: Request) -> tuple[str | None, bool]:
+    """Who is calling, and whether they PROVED it. H-73.
+
+    Returns ``(member, proven)``.
+
+    🔴 **The cap engine is built and unwired because this used to be one
+    line** — ``request.headers.get("x-cc-member")``, forwarded verbatim from
+    the inbound request. The party being capped chose which cap applied, and
+    omitting the header meant no cap row at all, which means unlimited.
+
+    ⚠️ **Both halves are returned on purpose.** H-73 records the distinction
+    that makes this safe to land in one step: *"attribution is good enough to
+    REPORT and not good enough to ENFORCE."* An unsigned header still names
+    the caller in ``usage_event``, exactly as today. Only a PROVEN address may
+    decide a cap. Dropping the unsigned one would blank every existing
+    per-member report to fix a problem those reports do not have.
+
+    ⚠️ **A proof WINS when both are present and disagree.** The header is the
+    caller's claim and the proof is a server's. Preferring the claim would
+    make the signature decorative.
+    """
+    secret = getattr(get_settings(), "gateway_session_secret", "")
+    # ⚠️ **Lowercased, like the line below it.** A real Starlette `Headers` is
+    # case-insensitive, so the mixed-case constant works in production and
+    # MISSES on any plain-dict request — which fails open to "unproven" and
+    # silently ignores a valid proof. The convention in this file is lowercase
+    # lookup, and it is the only one that works on both.
+    proven = member_proof.verify_member(
+        request.headers.get(member_proof.MEMBER_PROOF_HEADER.lower()), secret
+    )
+    if proven:
+        return proven, True
+    return (request.headers.get("x-cc-member") or None), False
 
 # Whether to honour a caller-supplied ``api_base``/``api_key`` in the request
 # body (for Ollama / vLLM / self-hosted endpoints). OFF by default: an
@@ -484,10 +520,14 @@ async def _serve_via_router_stream(
         body.get("messages", []), ""
     )
 
+    # One call, one answer: the helper reads headers and verifies an HMAC,
+    # and two calls could in principle disagree.
+    _who, _proven = _member_for(request)
     started = time.monotonic()
     frames = stream_completion_on_console(
         outbound,
-        member=request.headers.get("x-cc-member") or None,
+        member=_who,
+        member_proven=_proven,
         agent=request.headers.get("x-cc-agent") or None,
         module_slug=request.headers.get("x-cc-module") or None,
         run_id=request.headers.get("x-cc-run") or None,
@@ -571,11 +611,15 @@ async def _serve_via_router(
         body.get("messages", []), ""
     )
 
+    # One call, one answer: the helper reads headers and verifies an HMAC,
+    # and two calls could in principle disagree.
+    _who, _proven = _member_for(request)
     started = time.monotonic()
     try:
         status, payload = await chat_completion_on_console(
             outbound,
-            member=request.headers.get("x-cc-member") or None,
+            member=_who,
+            member_proven=_proven,
             agent=request.headers.get("x-cc-agent") or None,
             module_slug=request.headers.get("x-cc-module") or None,
             run_id=request.headers.get("x-cc-run") or None,
