@@ -384,6 +384,8 @@ COMPOSITE: dict[str, frozenset[str]] = {
     "edit_task": frozenset({"update_task"}),
     "edit_project": frozenset({"update_project"}),
     "propose_plan": frozenset({"create_project", "create_task"}),
+    # S6 — navigation reads the row it opens, then dispatches to the page.
+    "open_in_app": frozenset({"task_detail", "project_summary"}),
 }
 
 #: POST routes that WRITE NOTHING. A preview computes what an act would do

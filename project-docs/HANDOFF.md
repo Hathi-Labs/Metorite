@@ -96,23 +96,6 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-164 · `useFrontendTool` describes tools the run can never call · [AGENT]
-- **Check:** `grep -rn "executeFrontendTool(" workbench/control_plane/src --include=*.ts --include=*.tsx | grep -v "hooks/useFrontendTool.ts"`
-  → no hit outside the hook's own file means no dispatcher exists.
-- **Why:** `src/hooks/useFrontendTool.ts` registers browser-side tools and
-  `AgentChat` adds their description to the persona, so the model believes
-  it can call `open_task(id)`. Nothing maps a TOOL_CALL event for such a
-  name back to the registered handler, so the call lands nowhere. The
-  Projects chat spec §4.2 lists four navigation tools on this seam. S4
-  (2026-09-23) served navigation through card links instead (`?task=`,
-  `?app=`) and left the seam alone, because a second half-mechanism in one
-  app is the drift CLAUDE.md §4 forbids. The repair is one dispatcher in
-  `AgentChat`: on a TOOL_CALL whose name is registered, run the handler and
-  answer the run through `/agent/respond-input`. Then the four tools cost
-  one registration each.
-- **Authority:** `specs/projects_ai_chat.md` §4.2 · `src/hooks/useFrontendTool.ts` · `generative_ui_2.md` §2
-- **Added:** 2026-09-23 · the Projects chat S4 build
-
 ### H-163 · The My Tasks cutover is in flight. The spec owns the order · [AGENT]
 - **Check:** `rg -c "lensEnabled\(\)" workbench/control_plane/src/app/tasks/lib/api.ts`
   → below 25 means S6a has not landed. `\dt gtd_*` on the box → any row means
@@ -896,25 +879,6 @@ line — never reclaim a number by deleting the other entry.
 - **The fix.** Run the caller's map through the same `claimed` check the
   resolved map uses, and refuse a colliding pair with 422. One rule, not two.
 - **Authority:** `specs/project_management_app.md` §9.13 · D-PM-29 · CLAUDE.md §5
-- **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
-
-### H-130 · A two-key ORDER BY in the fake honours only the first key · [AGENT]
-- **Check:** `grep -n "_ordered" tests/unit/_projects_fakes.py` → it sorts on
-  the first key of `ORDER BY created_at DESC, id DESC` and drops the tiebreak.
-- **How it shows.** `test_projects_hardening.py::test_an_intervening_activity_breaks_the_run`
-  fails 3 of 3 runs under Python 3.12 and passes 6 of 6 under 3.13. It is not
-  the code. `time.get_clock_info('time').resolution` is `0.015625` on 3.12 and
-  `1e-07` on 3.13 — a verifier measured 19995 of 20000 consecutive
-  `datetime.now(UTC)` calls returning the SAME value on 3.12. Every
-  `created_at` ties, the stable sort returns insertion order,
-  `_coalescible_prior` picks the OLDEST row, and the assertion is `1 == 2`.
-- **⚠️ CI cannot see it.** CI pins 3.12, but the Linux clock is fine, so it
-  stays green. This bites on a Windows checkout and reads as the branch under
-  test being broken.
-- **Proved pre-existing** by running the merge-base tree under the same
-  interpreter: 4 of 6 runs fail there too.
-- **The fix.** Teach `_ordered` the remaining keys.
-- **Authority:** `tests/unit/_projects_fakes.py` · R8
 - **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
 
 ### H-127 · The move has no end-to-end test, and that is where its P0s live · [AGENT]
@@ -2542,42 +2506,6 @@ line — never reclaim a number by deleting the other entry.
   related: H-95, H-103, H-65
 - **Added:** 2026-09-18 · operator console workspace session
 
-### H-122 · The Operator Console has NO browser rig, and its suite renders nothing · [AGENT]
-- **Check:** `grep -c playwright workbench/operator_console/package.json`. A
-  zero means this is open.
-- **What I measured, 2026-09-18.** `visual-review` renders `control_plane`. The
-  Operator Console is a second Next.js app and carries no Playwright, no `e2e/`
-  and no renderer in `vitest.config.ts`, which is `environment: "node"`. So its
-  719 passing tests say nothing about how any screen draws.
-- **What that cost, on one panel.** I stood the stack up by hand and looked.
-  Five defects that every test passed over. A `banner ok` class that
-  `globals.css` does not define, so a good-news banner drew amber through the
-  base `.banner` rule. A JSX-collapsed space reading *"the last 30days"*. A `.glyph`
-  span outside `.chip`, rendering a naked capital beside each name. Nineteen
-  rows burying the four that carried the money. An empty state that could print
-  *"$0.00 across 0 vendors"* above an empty table.
-- ⚠️ **A hand-built rig can report a FALSE PASS, and mine nearly did.** I
-  toggled a `.light` class, which is `control_plane`'s mechanism. This app
-  themes through `data-theme`. Five identical images came back and I almost
-  read them as a light-mode pass.
-- ⚠️ **Looking proves how a screen DRAWS, never who can reach it.** I drove the
-  console with the shared operator token. `auth.py` states that it carries no
-  role and the matrix cannot judge it. So the panel rendered perfectly through
-  the one door that skips the role check my endpoint was missing, and CI caught
-  the 403 afterwards.
-- **What it needs.** Playwright in `workbench/operator_console`, a harness that
-  stubs `/api/operator/**`, and contexts for `data-theme` and width. Density
-  and accent do not apply here — this app carries one fixed accent token and no
-  `--ui-scale`.
-- 📌 Related: **H-27** says nothing runs `control_plane`'s `e2e/`. That is a rig
-  nobody runs. This is a rig that does not exist.
-- **Authority:** CLAUDE.md §4 (the look-at-it gate) ·
-  `workbench/operator_console/AGENTS.md`
-- **Added:** 2026-09-18 · operator console vendor-spend session
-  *(minted H-117. Renumbered to H-122 on 2026-09-19, because `main`
-  had taken 117 for the no-organization outage and merged first. Ids
-  are never reused, so that entry keeps the number.)*
-
 ### H-133 · The customer's page shows their BALANCE and never their USAGE · [AGENT]
 - **Check:** open `workbench/operator_console/src/app/customers/[slug]/page.tsx`
   and read `loadOrg`. Five reads, none of them a usage read, means this is open.
@@ -2942,28 +2870,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_ai_chat.md` §5.4, §12 · `org_access_control.md` §8d
 - **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
 
-### H-157 · Flip `NEXT_PUBLIC_PROJECTS_CHAT` on the box, then look at the rail · [AGENT]
-- **Check:** `ssh metorite 'grep -rc NEXT_PUBLIC_PROJECTS_CHAT /opt/acb/app/.env
-  /opt/acb/app/workbench/control_plane/.env.local 2>/dev/null'`
-  → `0` on both means the flag is off and the slot still says "not built".
-  ⚠️ **Corrected 2026-09-23.** This named
-  `/opt/metorite/workbench/control_plane/.env.local`. That path does not exist
-  on the box, because the app lives at `/opt/acb/app`. The old command printed
-  `0` because the FILE was absent. So it read "flag off" for the wrong reason,
-  and it would have kept printing `0` after a successful flip.
-- **Why:** S1 shipped dark. The flag is a build-time `NEXT_PUBLIC_*` value,
-  so a flip needs a frontend rebuild, not a restart. **Set on the box on
-  2026-09-23** (S5, under the `enforcement-flip` grant): line 19 of
-  `.env.local` reads `NEXT_PUBLIC_PROJECTS_CHAT=1`, with a `.bak-` copy
-  beside it. `vps_apply.sh` preserves every key there but the internal
-  token, and the next deploy after the flip (the S5 merge) rebuilds the
-  frontend. What is left is the check no test makes.
-  Open the rail in light mode, at compact density, under a changed accent,
-  and beside the board. Ask it "what is stuck here?" on a real space. Then
-  confirm the numbers match the Analytics app.
-- **Authority:** `specs/projects_ai_chat.md` §4.3, §11 · CLAUDE.md §3a
-- **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
-
 ### H-161 · The seats matrix cannot PROPOSE, because the queue is the wrong shape · [OWNER]
 - **Check:** `rg -n "CREATE TABLE IF NOT EXISTS access_request" -A 12
   infra/postgres/143_access_request.sql` → a unique index on `lower(email)`
@@ -2992,37 +2898,6 @@ line — never reclaim a number by deleting the other entry.
   sentence instead of a silent 403.
 - **Authority:** `people_center_app.md` §5.6 · `work_plan.md` §6 (d)
 - **Added:** 2026-09-22 · the seats-and-roles session
-
-### H-159 · A timeline tie-break is decided by a random UUID, and one test flakes on it · [AGENT]
-- **Check:** `for i in 1 2 3 4 5 6; do uv run pytest tests/unit/test_projects_hardening.py -q -k test_an_intervening_activity_breaks_the_run 2>&1 | tail -1; done`
-  → any `failed` line means this is still open.
-- **Why:** `core.py` orders the activity spine by `created_at DESC, id DESC`.
-  Two rows written inside one clock tick tie on `created_at`, and the tie is
-  then decided by a random UUID. The S1 verifier measured
-  `test_an_intervening_activity_breaks_the_run` failing 3 times in 6 on
-  Python 3.12 in a worktree, and 16 of 16 passing on `main`'s 3.13 venv. The
-  code under test is byte-identical. The coalescing rule in
-  `record_field_change` reads "the latest row", so the flake is a real
-  ordering fragility, not a test artefact. H-88 records a sibling.
-- **Authority:** `routes/projects/core.py` (`ORDER BY created_at DESC, id DESC`) ·
-  `tests/unit/test_projects_hardening.py` · H-88
-- **Added:** 2026-09-22 · the Projects chat S1 verification
-
-### H-160 · A key-mint audit test splits the token on the wrong underscore, and flakes red · [AGENT]
-- **Check:** `grep -n 'token.split("_")\[-1\]' tests/unit/test_provision_mints_the_key.py`
-  → a hit means this is still open.
-- **Why:** `test_the_mint_is_AUDITED_by_prefix_and_never_by_token` takes the
-  secret as `token.split("_")[-1]`. A base64url secret can carry an
-  underscore, so the tail is sometimes one character. On 2026-09-22 CI run
-  35697285473 the tail was `c`, `'c' in <the audit row>` was true, and the
-  test failed with "the audit trail recorded the SECRET" on a branch that
-  does not touch keys. The same commit's merge run passed. Use
-  `split_key(token)` for both halves, the way the test already does for the
-  prefix, and assert on the whole secret. Landed with #370 on main.
-- **What it costs:** a deploy gated on `tests/unit/` goes red at random.
-- **Authority:** `tests/unit/test_provision_mints_the_key.py` · `apps/services/customer_console/customer_console/keys.py::split_key`
-- **Added:** 2026-09-22 · the Projects chat S1 merge
-
 
 ### H-162 · Two Projects chat follow-ups from the S2 review · [AGENT]
 - **Check:** `grep -n 'if "@" in raw' apps/skills/skill-projects/skill_projects/writes.py`

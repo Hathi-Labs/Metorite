@@ -174,6 +174,12 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "watchers": [{"target_id": UUID, "kind": "task"}, {"target_id": UUID, "kind": "project"}],
     "intake_queue": [{"project_id": UUID}],
     "notifications": [{}],
+    # S6 — navigation
+    "open_in_app": [
+        {"target": "task", "target_id": UUID},
+        {"target": "project", "target_id": UUID},
+        {"target": "app", "target_id": "analytics"},
+    ],
 }
 
 
@@ -187,6 +193,7 @@ def test_the_invocation_table_covers_every_exported_read_tool() -> None:
 async def _run_all(tool: str, monkeypatch, responder: Any = None) -> list[dict]:
     """Every invocation of ``tool`` against the fake, calls concatenated."""
     drawn(monkeypatch)
+    dispatched(monkeypatch)
     calls = fake_gateway(monkeypatch, responder or _detail_responder)
     for kwargs in _INVOCATIONS[tool]:
         await getattr(skill_projects, tool)(**kwargs)
@@ -881,3 +888,60 @@ async def test_the_company_calendar_says_when_its_window_is_capped(monkeypatch) 
     assert "block" not in text
     mine = await skill_projects.calendar("2026-09-22", "2026-09-29", mine=True)
     assert "block 2026-09-24 09:00" in mine
+
+
+# ── S6 — navigation dispatches one frontend event, and always links ────────
+
+
+def dispatched(monkeypatch, ok: bool = True) -> list[tuple[str, dict]]:
+    import importlib
+
+    ft = importlib.import_module("acb_skills.frontend_tools")
+    sent: list[tuple[str, dict]] = []
+
+    async def record(name: str, args: dict | None = None) -> dict:
+        sent.append((name, dict(args or {})))
+        return {"ok": ok, "id": "x"} if ok else {"ok": False, "error": "no stream"}
+
+    monkeypatch.setattr(ft, "emit_frontend_tool", record)
+    return sent
+
+
+async def test_open_in_app_reads_the_row_then_dispatches_to_the_page(monkeypatch) -> None:
+    sent = dispatched(monkeypatch)
+    calls = fake_gateway(monkeypatch, _detail_responder)
+    out = await skill_projects.open_in_app("task", UUID)
+    assert [c["path"] for c in calls] == [f"/projects/tasks/{UUID}"]
+    assert sent == [("projects.open_task", {"task_id": UUID})]
+    assert out.startswith("Asked the Projects page to open #7")
+    assert f"link: /projects?task={UUID}" in out
+
+
+async def test_open_in_app_still_links_when_no_page_is_open(monkeypatch) -> None:
+    dispatched(monkeypatch, ok=False)
+    fake_gateway(monkeypatch, _detail_responder)
+    out = await skill_projects.open_in_app("app", "reports")
+    assert out.startswith("Open the reports app with the link.")
+    assert "link: /projects?app=reports" in out
+
+
+async def test_every_open_in_app_result_carries_a_link(monkeypatch) -> None:
+    dispatched(monkeypatch)
+    fake_gateway(monkeypatch, _detail_responder)
+    for kwargs in _INVOCATIONS["open_in_app"]:
+        out = await skill_projects.open_in_app(**kwargs)
+        assert "\n  link: /projects?" in out, out
+
+
+async def test_open_in_app_refuses_an_app_that_is_not_one(monkeypatch) -> None:
+    sent = dispatched(monkeypatch)
+    calls = fake_gateway(monkeypatch, _detail_responder)
+    assert "app is one of" in await skill_projects.open_in_app("app", "../admin")
+    assert sent == [] and calls == []
+
+
+async def test_the_dispatcher_refuses_a_name_that_is_not_one() -> None:
+    from acb_skills.frontend_tools import emit_frontend_tool
+
+    out = await emit_frontend_tool("Open Task; drop", {})
+    assert out["ok"] is False

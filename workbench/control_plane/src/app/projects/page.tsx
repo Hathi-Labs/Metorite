@@ -70,6 +70,7 @@ import { TriageRail } from "./components/TriageRail";
 import { AssistantRail } from "./components/AssistantRail";
 import { PROJECTS_CHANGED_EVENT } from "@/components/projects/ProjectToolCards";
 import { invalidate } from "@/lib/dataCache";
+import { useFrontendTool } from "@/hooks/useFrontendTool";
 import { SAVED_VIEW_POSITION, orderBearingView, type planDrop } from "./lib/board";
 import { TASK_PAGE_SIZE, appendTasks, nextTaskPage } from "./lib/paging";
 import {
@@ -1230,8 +1231,11 @@ function ProjectsWorkspace() {
   const dashboardOnly =
     !app && Boolean(selected) && showsDashboard(selectedLevel);
   /** Any surface that is not a project's board — no views, no composer. */
+  // An app pane (Analytics, Reports, the AI chat) is not a view of the
+  // selected project, so the board's view switcher and project actions go.
+  // `ai-chat` was missing here, and the board's tabs sat above the chat.
   const noProjectChrome =
-    dashboardOnly || app === "analytics" || app === "reports";
+    dashboardOnly || app === "analytics" || app === "reports" || app === "ai-chat";
 
   // The roll-up behind the dashboard AND behind a parent project's
   // aggregate header. Fetched for every level: a project with subprojects
@@ -2222,6 +2226,49 @@ function ProjectsWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appLink]);
 
+  // The chat's navigation (WS-27bm S6, H-164). `open_in_app` reads the row,
+  // then dispatches one of these through a CUSTOM `frontend_tool` event.
+  // `dispatched`: the model reaches them through that skill tool, so they
+  // stay out of the prompt addendum.
+  useFrontendTool({
+    name: "projects.open_task",
+    description: "Open a task in the Projects page.",
+    dispatched: true,
+    handler: async (args) => {
+      const id = String(args.task_id ?? "");
+      if (!/^[0-9a-f-]{36}$/i.test(id)) return "not a task id";
+      await openTaskById(id);
+      return "opened";
+    },
+  });
+  useFrontendTool({
+    name: "projects.open_project",
+    description: "Select a space, folder or project in the Projects page.",
+    dispatched: true,
+    handler: (args) => {
+      const id = String(args.project_id ?? "");
+      const row = flatten(visibleRoots).find((e) => e.node.id === id);
+      if (!row) return "not visible";
+      setApp(null);
+      setSelected(row.node as ProjectRow);
+      return "opened";
+    },
+  });
+  useFrontendTool({
+    name: "projects.open_app",
+    description: "Open a live Projects app (analytics, reports).",
+    dispatched: true,
+    handler: (args) => {
+      const id = String(args.app ?? "");
+      const live = PROJECT_APP_SECTIONS.flatMap((s) => s.items).find(
+        (i) => i.id === id && i.launch === "live",
+      );
+      if (!live) return "not a live app";
+      setApp(live.id);
+      return "opened";
+    },
+  });
+
   // A chat write (WS-27bm S4) announces itself once per receipt card, and
   // the board reloads the selected project so the member sees the change
   // without a click. The chat never reaches the page's state; this event
@@ -2237,6 +2284,26 @@ function ProjectsWorkspace() {
     window.addEventListener(PROJECTS_CHANGED_EVENT, onChanged);
     return () => window.removeEventListener(PROJECTS_CHANGED_EVENT, onChanged);
   }, [selected, loadProject]);
+
+  // `?project=<id>` selects a node (WS-27bm S6): the link `open_in_app`
+  // returns for a member who is not on this page. Consumed after the select,
+  // like `?app=` and `?task=`, so the same link works twice.
+  const projectLink = searchParams.get("project");
+  useEffect(() => {
+    if (!projectLink) return;
+    const row = flatten(visibleRoots).find((e) => e.node.id === projectLink);
+    if (!row) return; // the tree is still loading; the effect runs again when it lands
+    // A deep link is consumed by setting state once, as `?app=` above does.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setApp(null);
+    setSelected(row.node as ProjectRow);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    const rest = new URLSearchParams(searchParams.toString());
+    rest.delete("project");
+    const qs = rest.toString();
+    router.replace(qs ? `/projects?${qs}` : "/projects");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectLink, visibleRoots]);
 
   const deepLink = searchParams.get("task");
   useEffect(() => {
@@ -3177,7 +3244,6 @@ function ProjectsWorkspace() {
             : null
         }
         selectedTaskIds={Array.from(picked)}
-        onClose={() => setApp(null)}
       />
     </div>
   ) : app === "reports" ? (
