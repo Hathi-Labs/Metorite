@@ -7,9 +7,11 @@ questions.
 
 Tool surface:
   skill-task-gtd     — the task tools over the gateway's lens routes
-                       (``/projects/my/*``, ``/projects/tasks/*``) and the
-                       store-neutral ``/tasks/ai``, ``/tasks/calendar``,
-                       ``/tasks/people`` and ``/tasks/plan`` doors.
+                       (``/projects/my/*``, ``/projects/tasks/*``), plus the
+                       ``/tasks/*`` doors that pick their store at call time
+                       (``item_source()`` for the AI and plan routes,
+                       ``agent_source()`` for four day-planner routes) or read
+                       a table that survives (``day-state``, ``people``).
 
 ⚠️ **There is no external PM system, and there is no connector.** **D52**
 (2026-08-24, board WS-39 S1) retired ClickUp outright: Metorite is the

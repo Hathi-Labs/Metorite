@@ -523,11 +523,18 @@ route the browser calls. `lens.ts` is the contract of record. The map:
 | `gtd_list_schedule` | `GET /projects/my/calendar` |
 | `gtd_accounts`, `gtd_sync` | No call. They answer that no tool is connected (D52) |
 
-Ten tools keep their routes, because those routes pick the store at call
-time. `gtd_clarify`, `gtd_inbox_insights` and `gtd_plan_project` read through
-`item_source()` (S6d). The six calendar tools read through `agent_source()`.
-`gtd_people` reads the `people` table. Tool names and signatures do not
-change. S9 renames them, and `TaskToolCards.tsx` keys on the names.
+Nine tools keep a `/tasks/*` route, because the handler picks its store at
+call time or reads a table that survives. `gtd_clarify`, `gtd_inbox_insights`
+and `gtd_plan_project` read through `item_source()` (S6d). `gtd_plan_day`,
+`gtd_replan_day`, `gtd_rollover` and `gtd_day_digest` read through
+`agent_source()`. `gtd_set_one_thing` writes `calendar_day_state`, and
+`gtd_people` reads `people`.
+
+`gtd_estimate_stats` is NOT one of them. `/tasks/calendar/estimate-stats`
+answers from the retired store. So the tool calls
+`GET /projects/my/calendar/estimate-stats`, as `lensEstimateStats` does.
+Tool names and signatures do not change. S9 renames them, and
+`TaskToolCards.tsx` keys on the names.
 
 **Done when.**
 1. Every tool calls the exact routes in the map. Fence:
@@ -537,15 +544,45 @@ change. S9 renames them, and `TaskToolCards.tsx` keys on the names.
 3. Every path the skill calls is a path the gateway serves, with that
    method. Same fence, with the routers imported the way
    `test_client_route_contract.py` imports them.
-4. `SKILL.md` and `instructions.md` describe no connected tool.
+4. Every kept `/tasks/*` handler names `item_source()` or `agent_source()`
+   in its source, or sits on the store-neutral list with a reason. Same
+   fence, `inspect` over the mounted endpoint.
+5. A capture answers `/my/inbox?disposition=INBOX`. Fences:
+   `tests/unit/test_projects_personal_s8a.py` and
+   `tests/live/live_ws39_s8a.py` (R8).
+6. `SKILL.md` and `instructions.md` describe no connected tool.
 
 **Decisions taken at build, 2026-09-23.**
-1. A `[TEAM]` marker replaces `[SYNCED]`. A row another member wrote
-   (`created_by`) carries the data fence. The two `sync_state` markers are
-   gone.
-2. Reopen is the reverse of `/complete`. The task goes to the project's
-   default lane, or its first open lane. Then the overlay says NEXT.
+1. A `[TEAM]` marker replaces `[SYNCED]`. A row carries the data fence when
+   another member wrote it (`created_by`). It also carries the fence when
+   its project is outside the caller's personal tree. The tree is the root
+   from `GET /projects/my/project` plus the Areas. Comments carry the fence
+   always. The two `sync_state` markers are gone.
+2. Reopen is the reverse of `/complete`, and SHARED for the same reason
+   (`task_manager_app.md` §13.5a decision 1). The task goes to the first
+   lane by position whose category is neither closing nor triage, the rule
+   `load_default_status` applies. Then the overlay says NEXT. The browser
+   has no reopen yet. Chat is the one place it exists.
 3. `gtd_sync` is read-only. It calls nothing.
+4. **A capture states INBOX.** `create_personal_task` writes the overlay
+   row with `disposition = 'INBOX'` and `clarified_at` NULL when the
+   caller states no disposition. Without it the row derived SOMEDAY from
+   the root's `backlog` lane, and no Inbox showed a fresh capture. A
+   subtask gets no default. Recorded in `task_manager_app.md` §13.5a as
+   decision 4.
+5. `GET /projects/my/inbox` orders by `p.sort_key ASC NULLS LAST,
+   t.created_at DESC, t.id`, the rule `tasks/lib/ordering.ts` applies. The
+   route pages in Python, and an unordered set can repeat or skip a row
+   across pages. `gtd_list` applies the same order before it cuts to 30.
+6. `/my/inbox` and `/my/tasks/{id}` project `origin`, through `from_jsonb`,
+   on the one seam (`_project_task`). The email marker in the skill was
+   dead without it.
+7. After a committed organize or delegate, the tool reports a lane-name
+   miss with the valid names. It never raises over the committed writes.
+8. `gtd_list_schedule` asks for done blocks (`include_done=true`) and marks
+   them. A done block still occupies its hour.
+9. `gtd_capture_many` sends batches of `MAX_BATCH` (100) and reports the
+   total captured.
 
 ### S8 — the contract: code first, then schema · AGENT-SAFE
 
