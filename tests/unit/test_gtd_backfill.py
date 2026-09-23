@@ -417,6 +417,17 @@ def test_216_refuses_a_tree_table_that_holds_rows() -> None:
         "DROP TABLE IF EXISTS gtd_projects;"), "the check must run before the drop"
 
 
+def test_216_remaps_a_task_actions_dispatch_ref_before_the_drop() -> None:
+    """Migration 129 put the gtd id in `action_item.dispatch_ref` for
+    `kind = 'task'`. It must name the pm task before gtd_items goes."""
+    body = sql(S8)
+    remap = body.index("SET dispatch_ref = i.migrated_task_id::text")
+    assert remap < body.index("PERFORM gtd_retirement_drop()")
+    block = body[body.index("$s8_dispatch_ref$"):body.rindex("$s8_dispatch_ref$")]
+    assert "a.kind = 'task'" in block
+    assert "JOIN pm_tasks t ON t.id = i.migrated_task_id" in block
+
+
 def test_216_moves_the_commitment_before_the_drop() -> None:
     """`task_id` is filled from `gtd_items.migrated_task_id`, so the copy must
     run while `gtd_items` exists, and only onto a pm_tasks row that exists."""

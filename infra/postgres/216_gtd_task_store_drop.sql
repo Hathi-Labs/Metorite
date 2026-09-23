@@ -173,6 +173,45 @@ END
 $s8_commitments$;
 
 
+-- ── (c2) `action_item.dispatch_ref` for a meeting action approved as a task ─
+--
+-- Migration 129's convention put the `gtd_items` id in `dispatch_ref` for
+-- `kind = 'task'`. S8c now writes the `pm_tasks` id there. Rows written
+-- before S8c keep the old id, which names nothing once the table is gone. So
+-- this remaps them the same way as the commitments above: through
+-- `migrated_task_id`, and only onto a `pm_tasks` row that exists. The
+-- column is TEXT, so the other kinds (`sent:...`, `artifact:...`) never
+-- match a uuid and stay as they are.
+
+DO $s8_dispatch_ref$
+DECLARE
+    v_moved bigint := 0;
+BEGIN
+    -- A lone re-run of 48 builds a gtd_items without migrated_task_id (189
+    -- adds it). That table is empty, so there is nothing to remap.
+    IF to_regclass('public.gtd_items') IS NULL
+       OR to_regclass('public.action_item') IS NULL
+       OR NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name = 'gtd_items' AND column_name = 'migrated_task_id')
+    THEN
+        RETURN;
+    END IF;
+
+    UPDATE action_item a
+       SET dispatch_ref = i.migrated_task_id::text
+      FROM gtd_items i
+      JOIN pm_tasks t ON t.id = i.migrated_task_id
+     WHERE a.kind = 'task'
+       AND a.dispatch_ref = i.id::text;
+    GET DIAGNOSTICS v_moved = ROW_COUNT;
+
+    RAISE NOTICE 'S8: action_item.dispatch_ref remapped on % task rows.', v_moved;
+END
+$s8_dispatch_ref$;
+
+
 -- ── (a) Arm, and let 190's guard decide ─────────────────────────────────────
 --
 -- The row names this file and the S7 run record. 190's guard reads the arm

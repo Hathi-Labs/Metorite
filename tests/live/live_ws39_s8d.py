@@ -13,12 +13,17 @@ claim below is proven against a real Postgres, in a database built for it:
      a deploy re-runs, because their checksums changed or they are new.
      1. Every `gtd_*` table, the view and both functions are gone.
      2. The WhatsApp commitment that pointed at a gtd row now points at the
-        `pm_tasks` row it became, and `gtd_item_id` is gone.
+        `pm_tasks` row it became, and `gtd_item_id` is gone. A meeting
+        action approved as a task has its `dispatch_ref` remapped the same
+        way, and an email action keeps its ref.
      3. `attachments`, `my_tasks_horizons` and `my_tasks_reviews` hold the
         seeded rows. The D53.6 survivors still exist.
      4. A second run of all three files changes nothing.
-  B. THE REFUSAL. The same shape with one gtd row the backfill never moved.
-     216 must RAISE, and every table, column and row must stay where it was.
+  B, C, D. THE REFUSALS. The same shape with one thing 216 must not lose:
+     B a gtd row the backfill never moved, C a moved row with
+     `leveraged = true` (a column the backfill never copied), D a row in
+     `gtd_projects`. 216 must RAISE, and every table, column and row must
+     stay where it was.
 
 ── How to run ───────────────────────────────────────────────────────────────
 
@@ -267,6 +272,13 @@ def scenario_upgrade(admin: psycopg.Connection, template: str) -> None:
         check("A12 the D53.6 survivors and the one store are intact",
               not missing, f"missing={missing}")
 
+        a1 = _one(conn, "SELECT dispatch_ref FROM action_item WHERE id = %s", ids["a1"])
+        check("A13 a task action's dispatch_ref names the pm task now",
+              a1 == str(task), f"dispatch_ref={a1} want={task}")
+        a2 = _one(conn, "SELECT dispatch_ref FROM action_item WHERE id = %s", ids["a2"])
+        check("A14 an email action's dispatch_ref is untouched",
+              a2 == f"sent:{ids['item']}", f"dispatch_ref={a2}")
+
         try:
             for filename in RERUN:
                 _run_file(conn, filename)
@@ -274,7 +286,7 @@ def scenario_upgrade(admin: psycopg.Connection, template: str) -> None:
             detail = ""
         except psycopg.Error as exc:  # pragma: no cover - reported, not raised
             again, detail = False, str(exc).splitlines()[0]
-        check("A13 a second run of 48, 52 and 216 is a no-op",
+        check("A15 a second run of 48, 52 and 216 is a no-op",
               again and _one(conn, "SELECT task_id::text FROM wa_commitments "
                                    "WHERE id = %s", ids["k1"]) == str(task)
               and not any(_exists(conn, t) for t in DROPPED),
