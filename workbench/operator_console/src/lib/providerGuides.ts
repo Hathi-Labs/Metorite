@@ -37,7 +37,15 @@
 
 /** What we would USE a vendor for. Matches `task_catalog.slug`, plus `vision`,
  *  which is a property of a chat model rather than a job a tier binds. */
-export type VendorJob = "chat" | "vision" | "transcribe" | "speak" | "image" | "embed";
+export type VendorJob =
+  | "chat"
+  | "vision"
+  | "transcribe"
+  | "speak"
+  | "image"
+  | "embed"
+  // CP-13b (§6A.14): typed decisions, served by a native handler.
+  | "decide";
 
 export type ProviderGuide = {
   /** The vendor's own name for itself. The slug is the litellm id, which is
@@ -262,6 +270,27 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
     steps: ["Sign in at elevenlabs.io.", "Open Settings, then API Keys."],
     serves: ["speak"],
   },
+  // 🔴 **The one vendor here that litellm cannot call** (CP-13b, D75). litellm
+  // reaches TypeSafe only through its Proxy, and D58 rejects the Proxy. So the
+  // Console calls it with its own handler (`handlers.py`, `native_typesafe`).
+  // `test_operator_console_vendor_slugs.py` exempts this slug by name, because
+  // the handler table and not litellm is what finds the key.
+  typesafe: {
+    label: "TypeSafe",
+    description:
+      "Jev answers typed questions about a state — yes or no, one of a list, " +
+      "or a score — in well under a second. The tier-decide chain runs on it.",
+    setupUrl: "https://typesafe.ai",
+    docsUrl: "https://typesafe.ai",
+    steps: [
+      "Open an account at typesafe.ai and create an API key.",
+      "Install it here with the provider id typesafe.",
+      "On Models, declare typesafe/jev-1.13.0 for Makes decisions, with the verb native_typesafe and no streaming.",
+      "Fill its profile: input USD 0.042 for each million tokens, output 0 (enter 0, not blank), window 64000.",
+      "Bind tier-decide to it on Tiers, then use Try a decision there to prove it.",
+    ],
+    serves: ["decide"],
+  },
 };
 
 /** Vendors we can offer a guide for. Insertion order, which is roughly the
@@ -286,8 +315,12 @@ export function vendorLabel(provider: string): string {
  *  H-46 owns the remaining endpoints and D61.1 decided their shape.
  *
  *  ⚠️ This must be shown, not hidden. An operator who installs an ElevenLabs
- *  key and hears silence will look for the fault in the key. */
-export const ROUTED_TODAY: VendorJob[] = ["chat", "vision"];
+ *  key and hears silence will look for the fault in the key.
+ *
+ *  📌 `decide` joined on 2026-09-23 (CP-13b). `POST /v1/decide` serves it, so
+ *  a TypeSafe key is called. Without it this page said that nothing TypeSafe
+ *  does reaches a customer. */
+export const ROUTED_TODAY: VendorJob[] = ["chat", "vision", "decide"];
 
 /** Can anything this vendor does reach a customer today? */
 export function isRoutedToday(provider: string): boolean {
@@ -304,7 +337,7 @@ export function isRoutedToday(provider: string): boolean {
 // beside `serves` is two facts that can disagree, and the one that renders
 // would quietly win.
 
-export type SectionKey = "chat" | "listen" | "voice" | "other";
+export type SectionKey = "chat" | "decide" | "listen" | "voice" | "other";
 
 export type Section = {
   key: SectionKey;
@@ -320,6 +353,13 @@ export const SECTIONS: Section[] = [
     note:
       "These arm the Router today. Two vendors here, bound as a tier's first " +
       "and second choice, is what turns a vendor outage into a retry.",
+  },
+  {
+    key: "decide",
+    title: "Decisions",
+    note:
+      "These arm tier-decide. The Router calls this vendor with its own " +
+      "handler, not through litellm. Prove a binding with Try a decision on Tiers.",
   },
   {
     key: "listen",
@@ -350,6 +390,7 @@ export function sectionOf(provider: string): SectionKey {
   const g = guideFor(provider);
   if (!g) return "other";
   if (g.serves.includes("chat")) return "chat";
+  if (g.serves.includes("decide")) return "decide";
   if (g.serves.includes("transcribe")) return "listen";
   if (g.serves.includes("speak")) return "voice";
   return "other";

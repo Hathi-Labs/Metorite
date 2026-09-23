@@ -1504,7 +1504,7 @@ Seven slices, in order:
 | Slice | What | Gate |
 |---|---|---|
 | CP-13a | The task, the tier, the handler seam and `POST /v1/decide` | 🟢 AGENT-SAFE |
-| CP-13b | The Operator Console learns the task, and "Try a decision" | 🟢 AGENT-SAFE. The live key is §8 gate 9 |
+| CP-13b | ✅ BUILT 2026-09-23. The Operator Console learns the task, and "Try a decision" | 🟢 AGENT-SAFE. The live key is §8 gate 9 |
 | CP-13c | The tenant client on the per-box deployment key, and the one facade, `acb_llm.decide` | 🟢 AGENT-SAFE. Needs H-152's tenant slice. Ships dark behind `DECIDE_ENABLED`, an owner-only flag |
 | CP-13d | A `decide` tool for every MAF agent, the main chat included | 🟢 AGENT-SAFE to build. 🔴 a real tenant is §8 gate 9 |
 | CP-13e | Email triage adopts it, shadow first | 🔴 real tenant content is §8 gate 9 |
@@ -9391,7 +9391,7 @@ nothing.
 **Verification:** `uv run pytest tests/unit/test_customer_console_credit_price.py`
 against a real Postgres (R8).
 
-### 6A.14 The `decide` task — System One decisions through the Router (CP-13, D75) — CP-13a BUILT 2026-09-23 · CP-13b to CP-13g SPEC ONLY
+### 6A.14 The `decide` task — System One decisions through the Router (CP-13, D75) — CP-13a BUILT 2026-09-23 · CP-13b BUILT 2026-09-23 · CP-13c to CP-13g SPEC ONLY
 
 ✅ **CP-13a is BUILT, on branch `cp13a-decide`.** Migration `033` seeds
 the task and the hidden tier. `handlers.py` holds the handler table, and
@@ -9399,7 +9399,12 @@ the task and the hidden tier. `handlers.py` holds the handler table, and
 `tests/unit/test_customer_console_decide.py`. The door ships dark, because
 nothing binds `tier-decide` and nobody has installed a key.
 
-**CP-13b to CP-13g are not built.** Owner directive, 2026-09-23:
+✅ **CP-13b is BUILT, on branch `cp13b-console`.** The seven UI vocabularies
+know `decide`, `/providers` carries a TypeSafe guide, and `/tiers` carries
+"Try a decision" on the `tier-decide` card. The "As built" note under CP-13b
+names the route and its fences.
+
+**CP-13c to CP-13g are not built.** Owner directive, 2026-09-23:
 
 > *"Let's go with Jev. Build out the operator console for it first, and then we
 > will figure out how to make changes in the app to [use] this in the best
@@ -9750,6 +9755,38 @@ The streaming default in `src/lib/feed.ts:247` is an inline expression,
   names no endpoint and no fence for it yet. It stays out of CP-13b until a
   spec names both.
 
+**As built (CP-13b, 2026-09-23).**
+
+- **The route is `POST /catalog/decide/try`** in
+  `customer_console/main.py`. It takes a state and questions, and never a
+  tier. It tries `tier-decide` only.
+- **The same rules as the door.** The route builds a `DecideRequest`, and
+  `decide_refusal` judges it. A clause-13 breach is a 400 before the chain
+  resolves. An unbound tier is a 400 that names `tier_unknown`.
+- **The platform key only.** The route reads the credential with no
+  organization, so a BYOK key is never spent. No key is a 503 that names the
+  vendor and nothing secret.
+- **The call goes through `router.call_provider`**, inside `call_chain`. A
+  test fake set by `set_provider_call` sees it. A vendor failure maps through
+  `_upstream_refusal`.
+- **One `control_audit` row, action `catalog.decide_try`.** The row has no
+  organization, and it names the operator, the model, both token counts,
+  the vendor cost and the latency. The route writes no `usage_event` row.
+- **The `MATRIX` row is `("POST", "/catalog/decide/try")` at `admin`, with
+  no elevation window.** The call spends our key, and it changes nothing a
+  customer runs on or pays.
+- **Three fences moved on purpose.** `_PROBES` in `test_operator_roles.py`
+  gained the route. `NOT_COMMERCIAL` in `test_customer_console_catalog.py`
+  gained it, because it writes no catalog row.
+  `test_operator_console_vendor_slugs.py` exempts `typesafe` by name, because
+  litellm has no provider id for it. A second test fails if litellm learns it.
+- **The declare form follows the pairing rule.** `src/lib/invocation.ts`
+  mirrors `check_invocation_for_task`, so `/models` offers only
+  `native_typesafe` for `decide`, and never offers it for another job.
+- **The TypeSafe guide sits in a new "Decisions" section on `/providers`.**
+- `METERING_EXEMPTION` and `_CAPABILITY_GATED_ROUTES` did not change. The
+  route reaches no credit write, and a deployment key meets 401 on it.
+
 #### CP-13c · The tenant client
 
 The tenant gateway reaches the Router for chat only today. A search for
@@ -9926,12 +9963,12 @@ needs the key and not the residency answer.
 | 8 | ✅ A vendor 429 stays 429, and a 529 becomes 502, through `_upstream_refusal` | `test_customer_console_decide.py` — the handler's error carries `status_code` |
 | 9 | ✅ The response never names the model | `test_customer_console_decide.py` — no `jev` in the body |
 | 10 | ✅ The litellm family serves as it does today | `test_customer_console_tasks.py` — `atranscription` still serves `tier-stt` |
-| 11 | The seven UI vocabularies know `decide` | `vitest` in `workbench/operator_console` — one case for each map |
+| 11 | ✅ The seven UI vocabularies know `decide` | `vitest` in `workbench/operator_console` — `src/lib/vocabulary.test.ts`, one case for each map. The verb and task pair is in the same file, and the Try panel is in `src/lib/decide.test.ts` |
 | 12 | The facade raises `DecideUnavailable` with the switch off, and makes no call | `tests/unit/test_acb_llm_decide.py` (new) |
 | 13 | The chat tool is in the core floor for every MAF agent | `test_core_tool_floor.py` and `test_tool_schema_diet.py` — both hold `decide` |
 | 14 | ✅ The door takes the deployment key, and it needs `X-CC-Member` on that arm | `test_customer_console_decide.py` — a `cc_depl_` call without the header is refused |
 | 15 | ✅ The new door is a named metering exemption | `test_customer_console_payments.py` — `METERING_EXEMPTION` holds 11 edges (add_credit and release_hold) |
-| 16 | "Try a decision" writes no `usage_event` row | `test_customer_console_decide.py` — the row count does not change |
+| 16 | ✅ "Try a decision" writes no `usage_event` row | `test_customer_console_decide.py::TestTryADecision` — the row count does not change, and one `control_audit` row names the operator |
 
 ⚠️ **R8: fence 6 needs a real database.** The `usage_event` write is SQL, and
 a hermetic fake agrees with any SQL it is given.

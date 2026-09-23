@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import os
 import pathlib
-import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -137,6 +136,9 @@ _PROBES: dict[tuple[str, str], dict] = {
                                           "reason": "manual"}},
     ("POST", "/keys"): {"json": {"org_slug": "nope", "label": "t"}},
     ("POST", "/keys/revoke"): {"json": {"org_slug": "nope", "prefix": "x"}},
+    # CP-13b. No questions, so an admin meets clause 13's 400 before the
+    # chain resolves. No vendor is ever called from this probe.
+    ("POST", "/catalog/decide/try"): {"json": {"state": "x", "questions": {}}},
 }
 
 _CELLS = [

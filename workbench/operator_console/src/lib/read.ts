@@ -192,6 +192,7 @@ const KIND_FROM_TASK: Record<string, ModelKind> = {
   transcribe: "transcribe",
   speak: "speak",
   embed: "embed",
+  decide: "decide",
 };
 
 export function catalogFromWire(w: WireCatalog): AiCatalog {

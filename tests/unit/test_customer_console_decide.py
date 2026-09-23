@@ -993,6 +993,143 @@ class TestTheDeploymentArm:
         assert "serve" in r.json()["detail"]
 
 
+# ── CP-13b: "Try a decision" on /tiers (§6A.14, row 16) ───────────────────
+
+def _operator(db, role: str) -> tuple[dict[str, str], str]:
+    """An operator holding *role*, with a live session. Returns the header
+    and the email, so a test can find the audit row that names them."""
+    from datetime import UTC, datetime, timedelta
+
+    from customer_console import operator_sessions, store
+
+    email = f"try-{role}-{uuid.uuid4().hex[:8]}@fracktal.in"
+    now = datetime.now(UTC)
+    issued = operator_sessions.issue(now=now)
+    with db.begin() as c:
+        row = c.execute(text(
+            "INSERT INTO operator (email, role) VALUES (:e, :r) RETURNING id"),
+            {"e": email, "r": role}).first()
+        store.operator_session_insert(
+            c, operator_id=str(row[0]), prefix=issued.prefix,
+            key_hash=issued.key_hash, expires_at=now + timedelta(hours=12))
+    return {"Authorization": f"Bearer {issued.token}"}, email
+
+
+def _try(client, headers, *, questions=None, state=STATE):
+    return client.post("/catalog/decide/try", headers=headers, json={
+        "state": state, "questions": QUESTIONS if questions is None else questions})
+
+
+def _usage_count(db) -> int:
+    with db.begin() as c:
+        return c.execute(text("SELECT count(*) FROM usage_event")).scalar_one()
+
+
+def _try_audits(db, actor: str) -> list:
+    with db.begin() as c:
+        return c.execute(text(
+            "SELECT organization_id, detail FROM control_audit "
+            "WHERE action = 'catalog.decide_try' AND actor = :a"), {"a": actor}).all()
+
+
+@_DB
+class TestTryADecision:
+    """Row 16. The operator route answers, meters nothing, and audits once."""
+
+    def test_an_admin_sees_the_answer_tokens_latency_and_cost(
+        self, client, db, bound
+    ):
+        headers, email = _operator(db, "admin")
+        before = _usage_count(db)
+        r = _try(client, headers)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["tier"] == "tier-decide"
+        assert body["model"] == JEV
+        assert body["answers"]["cold"] == {"type": "boolean", "probability": 0.93}
+        assert body["usage"] == {"input_tokens": INPUT_TOKENS,
+                                 "output_tokens": OUTPUT_TOKENS}
+        assert isinstance(body["latency_ms"], int) and body["latency_ms"] >= 0
+        # Clause 9: output is free, so the input alone, at 8 places.
+        assert Decimal(body["vendor_cost_usd"]) == CALL_COST
+        # 🔴 The key never comes back, and the vendor's words stay home.
+        assert "sk-typesafe" not in r.text
+        for word in ("noul", "legend"):
+            assert word not in r.text.lower(), word
+        # 🔴 Row 16: no usage_event row.
+        assert _usage_count(db) == before
+        audits = _try_audits(db, email)
+        assert len(audits) == 1
+        org_id, detail = audits[0]
+        assert org_id is None
+        assert detail["input_tokens"] == INPUT_TOKENS
+        assert detail["output_tokens"] == OUTPUT_TOKENS
+        assert Decimal(detail["vendor_cost_usd"]) == CALL_COST
+        assert "sk-typesafe" not in json.dumps(detail)
+
+    def test_the_call_goes_through_the_provider_seam_with_the_platform_key(
+        self, client, db, bound, recording_fake
+    ):
+        """A fake set by `set_provider_call` sees the call, so no real vendor
+        is reached from a test. The payload names no organization."""
+        headers, _ = _operator(db, "admin")
+        before = _usage_count(db)
+        r = _try(client, headers)
+        assert r.status_code == 200, r.text
+        assert len(recording_fake["calls"]) == 1
+        call = recording_fake["calls"][0]
+        assert call["invocation"] == "native_typesafe"
+        assert call["task"] == "decide"
+        payload = call["payload"]
+        assert isinstance(payload, DecidePayload)
+        assert payload.organization_id is None
+        assert payload.api_key == "sk-typesafe-fence"
+        assert bound.requests == []
+        assert _usage_count(db) == before
+
+    @pytest.mark.parametrize("role", ["viewer", "editor"])
+    def test_a_rank_below_admin_is_403(self, client, db, bound, recording_fake, role):
+        headers, _ = _operator(db, role)
+        r = _try(client, headers)
+        assert r.status_code == 403, r.text
+        assert recording_fake["calls"] == []
+
+    def test_a_clause_13_breach_is_a_400_with_no_vendor_call(
+        self, client, db, bound, recording_fake
+    ):
+        headers, email = _operator(db, "admin")
+        before = _usage_count(db)
+        r = _try(client, headers, questions={f"q{i}": {"type": "boolean", "instructions": "x"}
+                                             for i in range(MAX_QUESTIONS + 1)})
+        assert r.status_code == 400, r.text
+        assert f"at most {MAX_QUESTIONS} questions" in r.json()["detail"]
+        assert recording_fake["calls"] == []
+        assert _usage_count(db) == before
+        assert _try_audits(db, email) == []
+
+    def test_an_unbound_tier_is_a_400_naming_tier_unknown(
+        self, client, db, recording_fake
+    ):
+        headers, email = _operator(db, "admin")
+        r = _try(client, headers)
+        assert r.status_code == 400, r.text
+        assert "tier_unknown" in r.json()["detail"]
+        assert recording_fake["calls"] == []
+        assert _try_audits(db, email) == []
+
+    def test_a_vendor_failure_goes_through_the_one_mapping(
+        self, client, db, bound
+    ):
+        headers, email = _operator(db, "admin")
+        bound.status = 429
+        bound.body = {"error": "the vendor quotes the request here"}
+        r = _try(client, headers)
+        assert r.status_code == 429, r.text
+        assert r.json()["detail"] == "upstream provider error"
+        assert "quotes the request" not in r.text
+        assert _try_audits(db, email) == []
+
+
 def test_this_suite_is_named_in_the_ci_skip_guard():
     """A new R8 suite that CI does not name still SKIPS silently and reports
     green. This reads the hand-list and fails if the entry is gone."""
