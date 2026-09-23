@@ -135,9 +135,11 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-23 · the People and Profile UI review
 
 ### H-165 · Build CP-13a to CP-13d: the `decide` task, its door, the Console pages and the chat tool · [AGENT]
-- **Check:** `rg -n "native_typesafe" apps/services/customer_console/` → no hit
-  means CP-13a has not landed. `rg -n 'decide' workbench/operator_console/src/lib/`
-  → no hit means CP-13b has not landed.
+- **Check:** CP-13a is BUILT (2026-09-23, branch `cp13a-decide`).
+  `rg -n 'native_typesafe' apps/services/customer_console/customer_console/handlers.py`
+  → no hit means CP-13a has not reached `main` yet.
+  `rg -n 'native_typesafe' workbench/operator_console/src/` → no hit means
+  CP-13b has not landed.
 - **Why:** owner decision 2026-09-23 (D75). The owner chose TypeSafe's Jev for
   fast typed decisions, and asked for the Operator Console first.
 - **Do this in order:** CP-13a, then CP-13b, then CP-13c, then CP-13d. Build
@@ -150,8 +152,8 @@ line — never reclaim a number by deleting the other entry.
   deployment key, and never the one organization key.
 - 🔴 **Do not set `DECIDE_ENABLED` on a live box.** It is owner-only, and
   the §3a window does not open it (H-166).
-- ⚠️ **Take the migration number at build time.** It is 033 at `ddd2d6ad`
-  (R1).
+- ⚠️ **CP-13a took migration `033`** (`033_decide_task.sql`). Check it
+  again at merge (R1).
 - **Authority:** `specs/customer_console.md` §6A.14 · `work_plan.md` §3 D75 ·
   board WS-31
 - **Added:** 2026-09-23 · the Jev planning session

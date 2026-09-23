@@ -23,12 +23,19 @@ from decimal import Decimal
 #: The provider verbs we know how to call. Data rather than a frozenset in the
 #: database (`model_capability.invocation`); this list is what an operator may
 #: choose FROM, so a typo cannot invent a verb litellm has never heard of.
+#:
+#: 🔴 **Two families since CP-13a (§6A.10b clause 3, §6A.14 clause 5).** The
+#: ``a*`` names are litellm verbs. A ``native_*`` name is a handler in
+#: ``customer_console.handlers``, for a vendor litellm cannot call from the
+#: SDK. ``native_typesafe`` is the first one. It is still an ALLOWLIST, so an
+#: operator cannot bind a handler that does not exist.
 KNOWN_INVOCATIONS = frozenset({
     "acompletion",
     "aembedding",
     "atranscription",
     "aspeech",
     "aimage_generation",
+    "native_typesafe",
 })
 
 #: Only these tasks stream (§6A.9 rule 4). A `transcribe` capability claiming

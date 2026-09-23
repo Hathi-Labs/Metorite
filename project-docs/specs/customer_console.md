@@ -8390,10 +8390,14 @@ uv run pytest tests/unit/test_customer_console_tasks.py \
   tests/unit/test_customer_console_catalog.py -q
 ```
 
-### 6A.10b The handler seam (H-47) — SPEC ONLY, 2026-08-30
+### 6A.10b The handler seam (H-47) — BUILT 2026-09-23 by CP-13a
 
-**Nothing below is built.** Every default here is an **agent-proposed answer
-the owner may overrule**. Re-verify every anchor at dispatch.
+✅ **CP-13a built this seam on 2026-09-23**, with `native_typesafe` as its
+first value. `customer_console/handlers.py` holds the table. The dispatch
+sits inside `router._default_provider_call`, the production value of
+`_PROVIDER_CALL[0]`. Rows 1 to 4 of the table below now name
+`test_customer_console_decide.py`. Every default here is an
+**agent-proposed answer the owner may overrule**.
 
 📌 **2026-09-23: the first caller is named, and it is not AssemblyAI.** D75
 chose TypeSafe's Jev for the new `decide` task, and litellm cannot call Jev
@@ -8461,11 +8465,11 @@ another, and today only the litellm family can exist.
 
 | # | Artefact | Fence (R7) |
 |---|---|---|
-| 1 | `handlers.py` holds the handler table, and it imports no tenant package | `test_customer_console_catalog.py` — the module imports nothing under `packages/acb_*` |
-| 2 | One `call(task, payload)` per handler, returning `ProviderResult` | `test_customer_console_catalog.py` — every registered handler answers the same call |
-| 3 | `KNOWN_INVOCATIONS` holds `native_assemblyai` | `test_customer_console_catalog.py` — the set holds it, and a typo is refused |
-| 4 | A capability write refuses an unknown invocation | `test_customer_console_catalog.py` — free text returns a `CatalogRefused` |
-| 5 | The litellm family behaves as it does today | `test_customer_console_tasks.py` — `atranscription` still serves `tier-stt` |
+| 1 | ✅ `handlers.py` holds the handler table, and it imports no tenant package | `test_customer_console_decide.py` — the module imports nothing under `packages/acb_*` |
+| 2 | ✅ One `call(task, payload)` per handler, returning `ProviderResult` | `test_customer_console_decide.py` — every registered handler answers the same call |
+| 3 | ✅ `KNOWN_INVOCATIONS` holds `native_typesafe` | `test_customer_console_decide.py` — the set holds it, and a typo is refused |
+| 4 | ✅ A capability write refuses an unknown invocation | `test_customer_console_decide.py` — free text returns a 400 from `POST /catalog/capabilities` |
+| 5 | ✅ The litellm family behaves as it does today | `test_customer_console_tasks.py` — `atranscription` still serves `tier-stt` |
 
 **Verification.** The suites are database-gated (R8), so start the database
 first.
@@ -8473,7 +8477,8 @@ first.
 ```bash
 bash scripts/dev_db.sh
 eval "$(bash scripts/dev_db.sh --export)"
-uv run pytest tests/unit/test_customer_console_catalog.py \
+uv run pytest tests/unit/test_customer_console_decide.py \
+  tests/unit/test_customer_console_catalog.py \
   tests/unit/test_customer_console_tasks.py -q
 ```
 
@@ -9386,9 +9391,15 @@ nothing.
 **Verification:** `uv run pytest tests/unit/test_customer_console_credit_price.py`
 against a real Postgres (R8).
 
-### 6A.14 The `decide` task — System One decisions through the Router (CP-13, D75) — SPEC ONLY, 2026-09-23
+### 6A.14 The `decide` task — System One decisions through the Router (CP-13, D75) — CP-13a BUILT 2026-09-23 · CP-13b to CP-13g SPEC ONLY
 
-**Nothing below is built.** Owner directive, 2026-09-23:
+✅ **CP-13a is BUILT, on branch `cp13a-decide`.** Migration `033` seeds
+the task and the hidden tier. `handlers.py` holds the handler table, and
+`POST /v1/decide` serves on `ServingCaller`. The fence is
+`tests/unit/test_customer_console_decide.py`. The door ships dark, because
+nothing binds `tier-decide` and nobody has installed a key.
+
+**CP-13b to CP-13g are not built.** Owner directive, 2026-09-23:
 
 > *"Let's go with Jev. Build out the operator console for it first, and then we
 > will figure out how to make changes in the app to [use] this in the best
@@ -9599,8 +9610,26 @@ time and check it again at merge (R1). The next free number on
 | 3 | Add `native_typesafe` to `KNOWN_INVOCATIONS` and `SERVING_INVOCATIONS` | `catalog.py`, `router.py` |
 | 4 | `handlers.py`: the handler table, the `TypeSafeHandler`, and `ProviderResult` | new Console module |
 | 5 | The default provider call sends a native invocation to the handler table, and a litellm verb to `_litellm_call` as today. The dispatch goes INSIDE `_PROVIDER_CALL[0]`, never in front of `call_provider` (`router.py:661`), so a test fake set by `set_provider_call` (`:656`) still sees every call | `router.py` |
-| 6 | `POST /v1/decide` on `_serving_prelude` (`main.py:7546`), with `ServingCaller` | `main.py` |
+| 6 | `POST /v1/decide` on `_serving_prelude` (`main.py:7550` at `3aad7aad`, and `main.py::_serving_prelude` after the build), with `ServingCaller` | `main.py` |
 | 7 | Request validation from clause 13 | `main.py` or a `decide.py` beside it |
+
+📌 **As built, 2026-09-23.** Each artefact landed where the table says.
+Validation and the request body live in `customer_console/decide.py`. Four
+facts the table did not state:
+
+- **The request needs one or more questions.** An empty map is a 400 that
+  names the rule, beside clause 13's four limits. An empty request buys a
+  vendor round trip and no answer.
+- **The handler takes the TYPE from our question, and never from the
+  vendor's answer.** So `noul` cannot reach a caller. Each answer is built
+  from named fields, so `legend` and the echoed model id stay in the handler.
+- **The fence carries a vendor body that we built from the API REFERENCE.**
+  No key exists yet. The handler reads `answers` keyed by question id and `usage`
+  with `input_tokens` and `output_tokens`. The live check below proves that
+  shape against the vendor.
+- **A fourth fence changed.** `_CAPABILITY_GATED_ROUTES` in
+  `test_customer_console_resolve.py` gains `/v1/decide` on `serve`, as the
+  other four serving doors carry it.
 
 ⚠️ **The migration seeds NO `model_capability`, `model_profile`,
 `tier_binding` or rate row.** Those are operator writes, and the operator
@@ -9610,13 +9639,15 @@ The operator must make that choice.
 ⚠️ **Three fences break by design. Update each one in the same PR.**
 
 1. `test_the_eight_tasks_are_seeded` (`test_customer_console_tasks.py:87-91`)
-   becomes nine.
+   becomes nine. The build renamed it `test_the_nine_tasks_are_seeded`.
 2. The `body["tasks"]` set in `test_customer_console_catalog.py:337-339`
    gains `decide`.
 3. `METERING_EXEMPTION` in `test_customer_console_payments.py` holds an exact
    route set, and `len == 9` (`:969`). The new door reaches
-   `store.add_credit`, so the call-graph fence goes red. Add the route by
-   name, and raise the count to 10. §9 item 6 records the rule.
+   `store.add_credit` and `store.release_hold`, because it meters through
+   `record_usage`. So the fence over the call graph goes red. Add the route
+   by name with its two edges (add_credit and release_hold). The set then
+   holds 11 edges, so raise the count to 11. §9 item 6 records the rule.
 
 Two fences stay green, and each one needs a reason to stay so:
 
@@ -9642,15 +9673,17 @@ Add the task to each one. Do not add an eighth.
 
 | Vocabulary | File |
 |---|---|
-| `VERBS` (the invocation dropdown) | `app/models/DeclareModel.tsx:17-23` |
-| `TASK_KIND` | `lib/fallback.ts:~28-34` |
-| `KIND_FROM_TASK` | `lib/read.ts:~188-195` |
-| `ModelKind` and `MODEL_KINDS` | `lib/contract.ts:~64-75` |
-| `VendorJob` | `lib/providerGuides.ts:40` |
-| `ROUTED_TODAY` | `lib/providerGuides.ts:290`. It holds `["chat", "vision"]` today. Without `decide`, `/providers` tells the operator that nothing TypeSafe does reaches a customer |
-| `SectionKey` | `lib/providerGuides.ts:307`. Choose the section the TypeSafe guide sits in |
+| `VERBS` (the invocation dropdown) | `src/app/models/DeclareModel.tsx:17-23` |
+| `TASK_KIND` | `src/lib/fallback.ts:~28-34` |
+| `KIND_FROM_TASK` | `src/lib/read.ts:~188-195` |
+| `ModelKind` and `MODEL_KINDS` | `src/lib/contract.ts:~64-75` |
+| `VendorJob` | `src/lib/providerGuides.ts:40` |
+| `ROUTED_TODAY` | `src/lib/providerGuides.ts:290`. It holds `["chat", "vision"]` today. Without `decide`, `/providers` tells the operator that nothing TypeSafe does reaches a customer |
+| `SectionKey` | `src/lib/providerGuides.ts:307`. Choose the section the TypeSafe guide sits in |
 
-The streaming default in `lib/feed.ts:247` is an inline expression,
+Each path sits under `workbench/operator_console/`.
+
+The streaming default in `src/lib/feed.ts:247` is an inline expression,
 `f.task === "chat" || f.task === "speak"`. It stays as it is, because
 `decide` does not stream.
 
@@ -9667,7 +9700,7 @@ The streaming default in `lib/feed.ts:247` is an inline expression,
 
 **Three additions to the Console pages** *(agent default)*:
 
-- **A provider guide for TypeSafe** in `lib/providerGuides.ts`. It says where
+- **A provider guide for TypeSafe** in `src/lib/providerGuides.ts`. It says where
   to get the key, and that the vendor is proxy-only in litellm.
 - **A "Try a decision" panel on `/tiers`**, on the `tier-decide` card. The
   operator types a state and one question. It shows the answer, the
@@ -9684,8 +9717,16 @@ The streaming default in `lib/feed.ts:247` is an inline expression,
   the tokens and the cost.
   **Fence:** `test_customer_console_decide.py` asserts that the operator test
   route leaves `usage_event` unchanged.
-- **The `/usage` page splits by task.** A decision row counts calls and input
-  tokens. It never shows a completion count as if it meant something.
+  ⚠️ **The operator route needs a `MATRIX` row at `admin` rank**
+  (`customer_console/operator_roles.py:89`). The matrix fails closed on a
+  route it does not hold, so without the row every operator gets a 403.
+  **Fence:** add the route to `_PROBES` in `tests/unit/test_operator_roles.py`.
+  Then `test_each_matrix_cell` proves that `viewer` and `editor` get 403, and
+  that `admin` does not.
+- ⛔ **OUT OF SCOPE: "the `/usage` page splits by task".** A decision row
+  would count calls and input tokens, and never a completion count. The spec
+  names no endpoint and no fence for it yet. It stays out of CP-13b until a
+  spec names both.
 
 #### CP-13c · The tenant client
 
@@ -9853,27 +9894,30 @@ needs the key and not the residency answer.
 
 | # | Artefact | Fence (R7) |
 |---|---|---|
-| 1 | `decide` is a task, and `tier-decide` is hidden | `test_customer_console_tasks.py` — nine tasks, and `tier-decide` has `customer_visible` FALSE |
-| 2 | The migration prices nothing | `test_customer_console_sql.py::test_the_rate_card_ships_unpriced` — unchanged, still green. It is the fence that sees `tier-decide` |
-| 3 | `handlers.py` imports no tenant package | `test_customer_console_catalog.py` — no import under `packages/acb_*` |
-| 4 | `native_typesafe` is in both invocation sets, and a typo is refused | `test_customer_console_catalog.py` |
-| 5 | The handler maps `boolean` to `noul` and back, and never leaks `noul` or `legend` | `test_customer_console_decide.py` (new) — a recorded vendor response in, our shape out |
-| 6 | Input tokens land in `prompt_tokens`, and a zero output price costs zero | `test_customer_console_decide.py` — the `usage_event` row and `vendor_cost_usd` |
-| 7 | Clause 13's limits refuse before the vendor call | `test_customer_console_decide.py` — the fake vendor records no call |
-| 8 | A vendor 429 stays 429, and a 529 becomes 502, through `_upstream_refusal` | `test_customer_console_decide.py` — the handler's error carries `status_code` |
-| 9 | The response never names the model | `test_customer_console_decide.py` — no `jev` in the body |
-| 10 | The litellm family serves as it does today | `test_customer_console_tasks.py` — `atranscription` still serves `tier-stt` |
+| 1 | ✅ `decide` is a task, and `tier-decide` is hidden | `test_customer_console_tasks.py` — nine tasks. `test_customer_console_decide.py` — `tier-decide` has `customer_visible` FALSE |
+| 2 | ✅ The migration prices nothing | `test_customer_console_sql.py::test_the_rate_card_ships_unpriced` — unchanged, still green. It is the fence that sees `tier-decide` |
+| 3 | ✅ `handlers.py` imports no tenant package | `test_customer_console_decide.py` — no import under `packages/acb_*` |
+| 4 | ✅ `native_typesafe` is in both invocation sets, and a typo is refused | `test_customer_console_decide.py` — both sets, and the capability write refuses a typo |
+| 5 | ✅ The handler maps `boolean` to `noul` and back, and never leaks `noul` or `legend` | `test_customer_console_decide.py` (new) — a recorded vendor response in, our shape out |
+| 6 | ✅ Input tokens land in `prompt_tokens`, and a zero output price costs zero | `test_customer_console_decide.py` — the `usage_event` row and `vendor_cost_usd` |
+| 7 | ✅ Clause 13's limits refuse before the vendor call | `test_customer_console_decide.py` — the fake vendor records no call |
+| 8 | ✅ A vendor 429 stays 429, and a 529 becomes 502, through `_upstream_refusal` | `test_customer_console_decide.py` — the handler's error carries `status_code` |
+| 9 | ✅ The response never names the model | `test_customer_console_decide.py` — no `jev` in the body |
+| 10 | ✅ The litellm family serves as it does today | `test_customer_console_tasks.py` — `atranscription` still serves `tier-stt` |
 | 11 | The seven UI vocabularies know `decide` | `vitest` in `workbench/operator_console` — one case for each map |
 | 12 | The facade raises `DecideUnavailable` with the switch off, and makes no call | `tests/unit/test_acb_llm_decide.py` (new) |
 | 13 | The chat tool is in the core floor for every MAF agent | `test_core_tool_floor.py` and `test_tool_schema_diet.py` — both hold `decide` |
-| 14 | The door takes the deployment key, and it needs `X-CC-Member` on that arm | `test_customer_console_decide.py` — a `cc_depl_` call without the header is refused |
-| 15 | The new door is a named metering exemption | `test_customer_console_payments.py` — `METERING_EXEMPTION` holds 10 routes |
+| 14 | ✅ The door takes the deployment key, and it needs `X-CC-Member` on that arm | `test_customer_console_decide.py` — a `cc_depl_` call without the header is refused |
+| 15 | ✅ The new door is a named metering exemption | `test_customer_console_payments.py` — `METERING_EXEMPTION` holds 11 edges (add_credit and release_hold) |
 | 16 | "Try a decision" writes no `usage_event` row | `test_customer_console_decide.py` — the row count does not change |
 
 ⚠️ **R8: fence 6 needs a real database.** The `usage_event` write is SQL, and
 a hermetic fake agrees with any SQL it is given.
 
-**Verification.**
+**Verification, slice by slice.** Rows 1 to 10, 14 and 15 are CP-13a.
+Rows 11 and 16 are CP-13b. Rows 12 and 13 are CP-13c and CP-13d.
+
+CP-13a. Start the database first, and confirm that no suite skips.
 
 ```bash
 bash scripts/dev_db.sh
@@ -9884,10 +9928,24 @@ uv run pytest tests/unit/test_customer_console_decide.py \
   tests/unit/test_customer_console_tier_pricing.py \
   tests/unit/test_customer_console_sql.py \
   tests/unit/test_customer_console_payments.py \
-  tests/unit/test_core_tool_floor.py \
-  tests/unit/test_tool_schema_diet.py \
-  tests/unit/test_acb_llm_decide.py -q
+  tests/unit/test_customer_console_router.py \
+  tests/unit/test_handoff_queue.py -q -rs
+```
+
+CP-13b adds the operator pages.
+
+```bash
 cd workbench/operator_console && npx tsc --noEmit && npx vitest run
+```
+
+CP-13c and CP-13d add the tenant facade and the chat tool. CP-13c creates
+`test_acb_llm_decide.py`. The other two suites exist, and they gain the
+`decide` tool in CP-13d.
+
+```bash
+uv run pytest tests/unit/test_acb_llm_decide.py \
+  tests/unit/test_core_tool_floor.py \
+  tests/unit/test_tool_schema_diet.py -q
 ```
 
 **The live check, in two steps.**
@@ -10098,7 +10156,10 @@ uv run pytest tests/unit/test_customer_console_seats.py tests/unit/test_customer
               tests/unit/test_customer_console_member_write.py \
               tests/unit/test_customer_console_seat_overview.py \
               tests/unit/test_customer_console_tasks.py \
-              tests/unit/test_customer_console_catalog.py
+              tests/unit/test_customer_console_catalog.py \
+              tests/unit/test_customer_console_decide.py
+# The `_decide.py` line is CP-13a's suite (§6A.14), added 2026-09-23 in the PR
+# that created it, with its `pr-check.yml` entry.
 # ⚠️ The `_tasks.py` and `_catalog.py` lines joined this block on 2026-08-30.
 # `pr-check.yml:345-346` had run both since CP-10 slice 2, and this hand-list
 # did not name them — so the workflow and the spec disagreed. §6A.10a clause 8
