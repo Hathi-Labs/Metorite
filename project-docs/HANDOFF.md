@@ -2706,42 +2706,6 @@ line — never reclaim a number by deleting the other entry.
   related: H-95, H-103, H-65
 - **Added:** 2026-09-18 · operator console workspace session
 
-### H-122 · The Operator Console has NO browser rig, and its suite renders nothing · [AGENT]
-- **Check:** `grep -c playwright workbench/operator_console/package.json`. A
-  zero means this is open.
-- **What I measured, 2026-09-18.** `visual-review` renders `control_plane`. The
-  Operator Console is a second Next.js app and carries no Playwright, no `e2e/`
-  and no renderer in `vitest.config.ts`, which is `environment: "node"`. So its
-  719 passing tests say nothing about how any screen draws.
-- **What that cost, on one panel.** I stood the stack up by hand and looked.
-  Five defects that every test passed over. A `banner ok` class that
-  `globals.css` does not define, so a good-news banner drew amber through the
-  base `.banner` rule. A JSX-collapsed space reading *"the last 30days"*. A `.glyph`
-  span outside `.chip`, rendering a naked capital beside each name. Nineteen
-  rows burying the four that carried the money. An empty state that could print
-  *"$0.00 across 0 vendors"* above an empty table.
-- ⚠️ **A hand-built rig can report a FALSE PASS, and mine nearly did.** I
-  toggled a `.light` class, which is `control_plane`'s mechanism. This app
-  themes through `data-theme`. Five identical images came back and I almost
-  read them as a light-mode pass.
-- ⚠️ **Looking proves how a screen DRAWS, never who can reach it.** I drove the
-  console with the shared operator token. `auth.py` states that it carries no
-  role and the matrix cannot judge it. So the panel rendered perfectly through
-  the one door that skips the role check my endpoint was missing, and CI caught
-  the 403 afterwards.
-- **What it needs.** Playwright in `workbench/operator_console`, a harness that
-  stubs `/api/operator/**`, and contexts for `data-theme` and width. Density
-  and accent do not apply here — this app carries one fixed accent token and no
-  `--ui-scale`.
-- 📌 Related: **H-27** says nothing runs `control_plane`'s `e2e/`. That is a rig
-  nobody runs. This is a rig that does not exist.
-- **Authority:** CLAUDE.md §4 (the look-at-it gate) ·
-  `workbench/operator_console/AGENTS.md`
-- **Added:** 2026-09-18 · operator console vendor-spend session
-  *(minted H-117. Renumbered to H-122 on 2026-09-19, because `main`
-  had taken 117 for the no-organization outage and merged first. Ids
-  are never reused, so that entry keeps the number.)*
-
 ### H-133 · The customer's page shows their BALANCE and never their USAGE · [AGENT]
 - **Check:** open `workbench/operator_console/src/app/customers/[slug]/page.tsx`
   and read `loadOrg`. Five reads, none of them a usage read, means this is open.
@@ -3013,7 +2977,26 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner directive, 2026-09-22 — *"you are automatically
   creating the connections for when they sign up for the organization and
   when the organization is created"*
-- **Added:** 2026-09-22 · the auto-mint session.
+- 📌 **SLICE 1 LANDED, 2026-09-23.** `POST /v1/chat/completions` now takes
+  a per-box deployment key carrying the new `serve` capability, and derives
+  the organization from `X-CC-Member` through
+  `deployment_visible_orgs` — the D-SEAT-4 move. The organization arm is
+  unchanged, and its 62 existing tests still pass.
+  `auth.organization_from_key_or_deployment` is the seam, `ServingCaller` is
+  the alias, and `tests/unit/test_router_deployment_arm.py` is the fence.
+- ⚠️ **What is LEFT: the other three doors.** `/v1/audio/transcriptions`,
+  `/v1/images/generations` and `/v1/audio/speech` still take `KeyCaller`
+  alone. Move them onto `ServingCaller` **with H-86**, which asks for one
+  serving prelude across all four. Two agents editing four doors twice is how
+  the doors drift apart.
+- ⚠️ **The gateway has not moved.** `console_resolve.router_is_wired()` still
+  reads `customer_console_org_key`, so nothing USES the new arm yet. The
+  gateway side is the next slice, and until it lands this is capability
+  without a caller.
+- ⚠️ **No key holds `serve` yet.** The column default is `{resolve}`, and
+  there is no route that grants a capability (§8 gate 7). Widen the box's
+  deployment key by hand when the gateway arm is ready.
+- **Added:** 2026-09-22 · the auto-mint session. **Updated:** 2026-09-23.
 
 ### H-144 · `GET /people/{id}/editable` has no caller · [AGENT]
 - **Check:** `rg -n "editable" workbench/control_plane/src/app/people/lib/api.ts`
@@ -3171,22 +3154,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `routes/projects/core.py` (`ORDER BY created_at DESC, id DESC`) ·
   `tests/unit/test_projects_hardening.py` · H-88
 - **Added:** 2026-09-22 · the Projects chat S1 verification
-
-### H-160 · A key-mint audit test splits the token on the wrong underscore, and flakes red · [AGENT]
-- **Check:** `grep -n 'token.split("_")\[-1\]' tests/unit/test_provision_mints_the_key.py`
-  → a hit means this is still open.
-- **Why:** `test_the_mint_is_AUDITED_by_prefix_and_never_by_token` takes the
-  secret as `token.split("_")[-1]`. A base64url secret can carry an
-  underscore, so the tail is sometimes one character. On 2026-09-22 CI run
-  35697285473 the tail was `c`, `'c' in <the audit row>` was true, and the
-  test failed with "the audit trail recorded the SECRET" on a branch that
-  does not touch keys. The same commit's merge run passed. Use
-  `split_key(token)` for both halves, the way the test already does for the
-  prefix, and assert on the whole secret. Landed with #370 on main.
-- **What it costs:** a deploy gated on `tests/unit/` goes red at random.
-- **Authority:** `tests/unit/test_provision_mints_the_key.py` · `apps/services/customer_console/customer_console/keys.py::split_key`
-- **Added:** 2026-09-22 · the Projects chat S1 merge
-
 
 ### H-162 · Two Projects chat follow-ups from the S2 review · [AGENT]
 - **Check:** `grep -n 'if "@" in raw' apps/skills/skill-projects/skill_projects/writes.py`

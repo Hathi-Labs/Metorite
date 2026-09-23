@@ -100,6 +100,7 @@ __all__ = [
     "PROVISION_CAPABILITY",
     "RESOLVE_CAPABILITY",
     "SEAT_ADMIN_CAPABILITY",
+    "SERVE_CAPABILITY",
     "SHARED_TOKEN_ACTOR",
     "Caller",
     "CatalogCaller",
@@ -112,12 +113,14 @@ __all__ = [
     "ProvisionCaller",
     "ResolveCaller",
     "SeatAdminCaller",
+    "ServingCaller",
     "SignedWebhook",
     "StaffIdentity",
     "customer_or_operator",
     "deployment_or_operator",
     "organization_for_payment",
     "organization_from_key",
+    "organization_from_key_or_deployment",
     "razorpay_webhook_event",
     "require_internal",
     "require_operator",
@@ -190,6 +193,27 @@ SEAT_ADMIN_CAPABILITY = "seat_admin"
 #: live key carries it until the owner adds it by hand (``customer_console.md``
 #: §8 gate 8's capability-growth class, registered in ``work_plan.md`` §6).
 MEMBER_ADMIN_CAPABILITY = "member_admin"
+
+#: **The FIFTH capability, and the one that serves AI** (H-152).
+#:
+#: 🔴 **Why a deployment key needs to reach the Router at all.** The gateway
+#: presents ONE `CUSTOMER_CONSOLE_ORG_KEY` from its environment, and that names
+#: one tenant. A shared box has one slot and N tenants, so every tenant after
+#: the first can never be served — the box does not fail, it serves tenant one
+#: and is dark for the rest. `gateway/routes/seats.py` states the same shape in
+#: its own words: *"On a shared multi-tenant deployment no single org key is
+#: correct ... a STRUCTURAL dark, not a missing flag flip."*
+#:
+#: D-SEAT-4 already solved this one plane over. `GET /seats/overview` presents
+#: the DEPLOYMENT key, which is per-box, and the Console derives the
+#: organization from placement ∩ membership. This is the same move for the
+#: Router.
+#:
+#: ⚠️ **Same three rules as `provision`, `seat_admin` and `member_admin`.** The
+#: column default is `{resolve}`, so no existing key gains this by accident. A
+#: key is widened by hand under §8 gate 7, and there is no HTTP route that
+#: grants it.
+SERVE_CAPABILITY = "serve"
 
 
 @dataclass(frozen=True)
@@ -528,6 +552,134 @@ def organization_from_key(
     )
 
 
+def organization_from_key_or_deployment(
+    request: Request,
+    authorization: Annotated[str | None, Header()] = None,
+    x_cc_member: Annotated[str | None, Header()] = None,
+    x_cc_agent: Annotated[str | None, Header()] = None,
+    x_cc_module: Annotated[str | None, Header()] = None,
+    x_cc_run: Annotated[str | None, Header()] = None,
+) -> Caller:
+    """The Router's door, opened by an ORG key or a DEPLOYMENT key (H-152).
+
+    🔴 **A self-serve customer could never be served.** The gateway holds one
+    ``CUSTOMER_CONSOLE_ORG_KEY``, which names one tenant, so a shared box is
+    dark for every tenant after the first. Minting more organization keys does
+    not help — there is one environment slot and N tenants, so the second key
+    has nowhere to live.
+
+    **The deployment key is per-BOX**, so it works for every tenant on it. The
+    organization is then DERIVED Console-side from placement ∩ membership,
+    exactly as ``GET /seats/overview`` derives it (D-SEAT-4).
+
+    ⚠️ **The caller still makes no tenant claim (R11).** It presents its own
+    credential and the acting member, and the Console decides which
+    organization that pair resolves to. There is no ``X-CC-Org``, on either
+    arm, for the reason :func:`organization_from_key` states.
+
+    ⚠️ **The org arm is UNCHANGED and is still the first thing tried**, so
+    every existing caller, test and refusal keeps its exact behaviour. The
+    shape of the token dispatches, never a fallback ladder — an org key that
+    fails is refused as an org key, not retried as a deployment key.
+
+    Three refusals the deployment arm adds, and each is a different question:
+
+    * **400** — no ``X-CC-Member``. The arm cannot derive an organization
+      without one, and guessing "the only org on this box" is the
+      ``count(*) = 1`` inference D46.6 item 3 forbids by name.
+    * **403** — the member resolves to NO organization on this deployment.
+      Same body as an unknown member on purpose: telling those two apart is an
+      existence oracle over the membership of every tenant on the box.
+    * **409** — the member belongs to MORE THAN ONE organization here. The
+      same answer ``/registry/seats/overview`` gives, for the same reason: the
+      Console will not pick one, because picking would bill the wrong tenant.
+    """
+    token = ""
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ").strip()
+    parsed = split_key(token) if token else None
+
+    # ⚠️ Shape dispatch. Anything that is not a deployment key — including a
+    # malformed token — goes to the organization arm and gets its refusal,
+    # unchanged. This must never become a ladder that retries.
+    if parsed is None or not is_deployment_key(parsed[0]):
+        return organization_from_key(
+            authorization, x_cc_member, x_cc_agent, x_cc_module, x_cc_run
+        )
+
+    prefix, secret = parsed
+    with get_engine().begin() as conn:
+        resolved = store.resolve_deployment_key(conn, prefix=prefix)
+
+    # The same dummy-hash shape both sibling doors use, and the same single
+    # body for all four bad-credential cases.
+    if resolved is None:
+        verify_secret(secret, "0" * 64)
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    deployment_id, key_hash, capabilities = resolved
+    if not verify_secret(secret, key_hash):
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    if SERVE_CAPABILITY not in capabilities:
+        _log.warning(
+            "deployment_key.capability_refused",
+            extra={"capability": SERVE_CAPABILITY, "key_prefix": prefix},
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=f"deployment key lacks the {SERVE_CAPABILITY!r} capability",
+        )
+
+    member = (x_cc_member or "").strip()
+    if not member:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "a deployment key must send X-CC-Member; the organization is "
+                "derived from it, never inferred"
+            ),
+        )
+
+    with get_engine().begin() as conn:
+        visible = store.deployment_visible_orgs(
+            conn, deployment_id=deployment_id, email=member
+        )
+    if not visible:
+        # 403 and NOT a message naming the member or the box. Telling "no such
+        # member" apart from "not on this deployment" reads out the membership
+        # of every tenant placed here.
+        raise HTTPException(status_code=403, detail="no organization for this member")
+    if len(visible) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "this member belongs to more than one organization on this "
+                "deployment; the Console will not choose one"
+            ),
+        )
+
+    org = visible[0]
+    org_status = str(org.get("status") or "trial")
+    # ⚠️ **The SAME lifecycle gate the organization arm applies.** Without this
+    # the deployment arm would serve a `suspended` or `cancelled` tenant that
+    # the org-key door refuses — F4's defect, reachable through a second door.
+    if not capabilities_of(org_status).can_use_ai:
+        raise HTTPException(status_code=403, detail=f"organization is {org_status}")
+
+    return Caller(
+        organization_id=str(org["organization_id"]),
+        # The DEPLOYMENT key's prefix. It is what acted, and the usage row has
+        # to name the credential that acted rather than an org key that was
+        # never presented.
+        key_prefix=prefix,
+        organization_status=org_status,
+        member=x_cc_member,
+        agent=x_cc_agent,
+        module_slug=x_cc_module,
+        run_id=x_cc_run,
+    )
+
+
 def organization_for_payment(
     authorization: Annotated[str | None, Header()] = None,
 ) -> Caller:
@@ -766,6 +918,15 @@ async def razorpay_webhook_event(request: Request) -> payments.WebhookEvent:
 Operator = Annotated[StaffIdentity, Depends(require_operator)]
 Internal = Annotated[None, Depends(require_internal)]
 KeyCaller = Annotated[Caller, Depends(organization_from_key)]
+#: The ROUTER's door (H-152). Same `Caller`, two ways in: the organization key
+#: a single-tenant box holds, or the per-box deployment key that works for
+#: every tenant on a shared one.
+#:
+#: ⚠️ Deliberately SEPARATE from :data:`KeyCaller`. `/me`, the checkout and the
+#: customer's own reads stay organization-key only — widening them would let a
+#: box read any tenant it hosts, which is a different decision with a different
+#: blast radius. This alias names exactly the doors that SERVE AI.
+ServingCaller = Annotated[Caller, Depends(organization_from_key_or_deployment)]
 #: CP-9's checkout door. Same credential as :data:`KeyCaller`, different
 #: lifecycle gate — see :func:`organization_for_payment`.
 PayingCaller = Annotated[Caller, Depends(organization_for_payment)]
@@ -849,6 +1010,7 @@ AUTHENTICATING_DEPENDENCIES: frozenset = frozenset({
     require_operator,
     require_internal,
     organization_from_key,
+    organization_from_key_or_deployment,
     organization_for_payment,
     customer_or_operator,
     razorpay_webhook_event,
@@ -869,6 +1031,13 @@ AUTHENTICATING_DEPENDENCIES: frozenset = frozenset({
 #: while the widest credential in the product reaches a grant writer.
 ORGANIZATION_KEY_DEPENDENCIES: frozenset = frozenset({
     organization_from_key,
+    # ⚠️ **The Router's dual-arm door belongs here, not only above** (H-152).
+    # Its deployment arm is new, but its ORGANIZATION arm is unchanged — a
+    # customer's `cc_live_` key still opens it. Registering it only as
+    # authenticating would make every route it guards look unreachable by a
+    # customer, and CP-9's transitive fence would stop watching the widest
+    # credential in the product on exactly the doors that spend money.
+    organization_from_key_or_deployment,
     organization_for_payment,
     # A customer key still opens the catalog — the operator arm is ADDITIONAL,
     # not a replacement — so the transitive fence must keep covering it.

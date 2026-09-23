@@ -214,7 +214,20 @@ class TestProvisioningMintsTheKey:
         issued = [d for act, d in rows if act == "key.issue"]
         assert len(issued) == 1, f"expected one key.issue row, got {rows}"
         assert prefix in issued[0]
-        secret = token.split("_")[-1]
+        # 🔴 **`split_key`, never `split("_")[-1]`** — H-160.
+        #
+        # The secret is base64url, so it can CARRY an underscore. Taking the
+        # tail then yields a fragment, and on CI run 35697285473 that fragment
+        # was the single character `c`. `"c" in <the audit row>` is true of
+        # almost any row, so this assertion failed on a branch that touches no
+        # key at all, while the same commit's merge run passed. A deploy gated
+        # on `tests/unit/` went red at random.
+        #
+        # `split_key` is what the prefix assertion above already uses, and it
+        # splits on the LAST separator the format defines rather than on the
+        # last underscore that happens to be in the string.
+        secret = split_key(token)[1]
+        assert len(secret) > 8, f"split_key returned a stub: {len(secret)} chars"
         assert secret not in issued[0], "the audit trail recorded the SECRET"
 
 
