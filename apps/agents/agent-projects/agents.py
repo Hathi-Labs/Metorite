@@ -121,7 +121,8 @@ def build_agents() -> list[Any]:
                 "from a goal as an editable plan, and writes a status report. "
                 "Reads the calendar, the intake queue, notifications, watchers, "
                 "saved views and who may see a project; captures and triages "
-                "intake, saves a view and clears the bell. It never deletes a "
+                "intake, saves a view and clears the bell. Opens a task, a "
+                "project or an app in the member's page. It never deletes a "
                 "project or a task."
             ),
             tools=list(_TOOLS),

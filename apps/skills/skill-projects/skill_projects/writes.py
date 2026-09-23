@@ -215,6 +215,24 @@ async def _resolve_assignee(value: str) -> str:
     )
 
 
+async def _unknown_addresses(who: list[str]) -> list[str]:
+    """The addresses among ``who`` that the people directory does not know.
+
+    An assignee is a bare string the route accepts whatever it is (D-PM-4),
+    so an address passes through ``_resolve_assignee`` unchecked. The card
+    names the ones the picker cannot find, so a typo is seen before it is
+    signed (H-162). Agents are not addresses and are skipped.
+    """
+    addresses = [a for a in who if "@" in a]
+    if not addresses:
+        return []
+    # One exact lookup (`/people/names`), not the picker: the picker matches
+    # by substring and only among active people (S6 review).
+    payload = (await get("/projects/people/names", {"emails": ",".join(addresses)})) or {}
+    known = {str(k).lower() for k in (payload.get("names") or {})}
+    return [a for a in addresses if a.lower() not in known]
+
+
 def _split(csv: str) -> list[str]:
     return [part.strip() for part in str(csv or "").split(",") if part.strip()]
 
@@ -294,6 +312,9 @@ async def create_task(
     card["status"] = status_label
     if who:
         card["assignees"] = ", ".join(who)
+        strangers = await _unknown_addresses(who)
+        if strangers:
+            card["not in the directory"] = ", ".join(strangers)
     if not await _confirm(
         title="Create this task?",
         detail=f"{data(name)} · status {status_label}" + (f" · {', '.join(who)}" if who else ""),
@@ -416,6 +437,9 @@ async def assign(task_id: str, assignees: str) -> str:
     )
     if agents:
         context += f"\nAssigning {', '.join(agents)} starts an agent run on this task."
+    strangers = await _unknown_addresses([a for a in who if a not in current])
+    if strangers:
+        context += f"\nThe people directory does not know {data(', '.join(strangers))}."
     if not await _confirm(
         title="Change who holds this task?",
         detail=f"{_ref(task)} → {', '.join(who) or 'nobody'}",
@@ -470,7 +494,9 @@ async def add_subtasks(task_id: str, titles: str) -> str:
         context=_fields_block({f"{i + 1}": t for i, t in enumerate(parts)}),
     ):
         return CANCELLED
-    out = [f"Added under {_ref(parent)}:"]
+    # The parent's id FIRST: the receipt card opens the first `full_id`,
+    # and its heading names the parent (H-162).
+    out = [f"Added under {_ref(parent)}:", f"  full_id: {tid}"]
     for title in parts:
         row = await post(
             "/projects/tasks", {"project_id": pid, "title": title, "parent_task_id": tid}

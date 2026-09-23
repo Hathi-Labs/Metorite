@@ -72,6 +72,9 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   project_views: { icon: "LayoutList", label: "Views" },
   my_contexts: { icon: "AtSign", label: "Contexts" },
   watchers: { icon: "Eye", label: "Watchers" },
+  // S6 — navigation. The page usually opens the row itself; this card keeps
+  // the link for a member who is not on the Projects page.
+  open_in_app: { icon: "ExternalLink", label: "Open in Projects" },
 };
 
 /**
@@ -347,6 +350,9 @@ function InfoCard({
   const body = withoutLegend(e.result || "");
   const failed = e.status === "error";
   const opens = failed ? undefined : OPENS_APP[e.name];
+  // `open_in_app` prints `link: /projects?...`. Only an in-app link becomes
+  // a button; anything else stays text.
+  const link = failed ? "" : (body.match(/^\s*link:\s*(\/projects\?[\w=&-]+)\s*$/m)?.[1] ?? "");
   return (
     <ToolCardShell
       title={label}
@@ -360,6 +366,13 @@ function InfoCard({
       >
         {body || "(no result)"}
       </div>
+      {link && !opens && (
+        <div className="mt-2">
+          <Button variant="secondary" size="sm" icon="ExternalLink" onClick={() => router.push(link)}>
+            Open in Projects
+          </Button>
+        </div>
+      )}
       {opens && (
         <div className="mt-2">
           <Button
