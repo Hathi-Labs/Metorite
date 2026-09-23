@@ -96,6 +96,38 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-170 · A Console migration runs with NO backup of the Console database · [AGENT]
+- **Check:** on the box, run
+  `for d in $(ls -1t /opt/acb/backups | head -14); do ls /opt/acb/backups/$d; done | grep -ci console`.
+  A zero means no backup on the box holds the Console database, and this is
+  open.
+- **What happens.** Measured 2026-09-23 on the deploy of `13988178`. The
+  pre-migration step calls `scripts/backup_db.sh` from
+  `scripts/apply_migrations.sh:91`. That environment has no
+  `CUSTOMER_CONSOLE_DATABASE_URL`, so the script prints "the Console database
+  is NOT in this backup" (`backup_db.sh:322`). Then
+  `apply_customer_console_migrations.sh` applies the Console ladder with no
+  backup of its own. It applied `033_decide_task.sql` that way.
+- 🔴 **The nightly dump does not save it.** `KEEP_DAILY` is 14
+  (`backup_db.sh:44`), and every deploy adds one dump. Fourteen deploys on
+  2026-09-23 pushed the 02:33 UTC nightly dump out. At 16:40 UTC, all 14
+  dumps on the box held `postgres.dump` and `globals.sql` only.
+- **The warning text points at a closed entry.** It says "that is H-98".
+  H-98 closed on 2026-09-19 for the TIMER's unit, which loads the Console
+  env file. The deploy path does not load it, and nothing tracked that.
+- **Fix, in order.** Make the deploy's backup call load
+  `/opt/acb/app/apps/services/customer_console/.env`, as `acb-backup.service`
+  does. Then refuse the Console ladder when that dump failed, as
+  `apply_migrations.sh:100` refuses the tenant ladder. Then keep the newest
+  nightly dump out of the retention count, so deploys cannot evict it.
+- ⚠️ **Supabase may hold its own backups of this project.** Nobody has checked
+  what the plan keeps. Check it before you call the risk closed.
+- 📌 **033 carried no real risk.** It is two `INSERT ... ON CONFLICT DO
+  NOTHING` rows. The next Console migration may not be so small.
+- **Authority:** `CLAUDE.md` §3a "A production migration is still one-way"
+  · R6
+- **Added:** 2026-09-23 · the CP-13a deploy check
+
 ### H-165 · Build CP-13a to CP-13d: the `decide` task, its door, the Console pages and the chat tool · [AGENT]
 - **Check:** CP-13a is BUILT (2026-09-23, branch `cp13a-decide`).
   `rg -n 'native_typesafe' apps/services/customer_console/customer_console/handlers.py`
