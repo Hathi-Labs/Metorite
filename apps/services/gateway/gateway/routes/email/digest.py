@@ -7,7 +7,8 @@ there), so it stays importable from the original location.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import json
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
@@ -235,48 +236,58 @@ async def _digest_commitments(
     db: Any, account_id: str, horizon_days: int = 3, limit: int = 8,
     *, include_undated: bool = False,
 ) -> list[dict[str, Any]]:
-    """Open commitments (GTD tasks captured from a sent reply on this account)
+    """Open commitments (tasks captured from a sent reply on this account)
     that are due within the horizon or already overdue — the "loops I promised
-    to close" half of the brief. Linked via gtd_items.origin.thread/account_id
+    to close" half of the brief. Linked via the task's ``origin.account_id``
     (see tasks/email_link.py). ``include_undated`` (dashboard) adds the open
     promises with NO due date — 3 of the 4 live commitments had none and were
     invisible to the horizon filter. Best-effort: the tasks feature may be
     absent, and a digest must never fail because of it.
 
+    The tasks come from the ONE task seam, ``item_source()`` (WS-39 S8c), for
+    the account's owner. Which tasks are the owner's, and whether one is still
+    open, is the seam's rule and is not restated here.
+
     Each row carries ``message_id`` — the latest message of the linked thread —
     so the dashboard can open the email the commitment came from (context on
     what was promised, not just the captured title)."""
+    from gateway.routes.tasks.item_source import item_source
+
     try:
-        # ``:aid`` binds ONCE, against the uuid column. The json text on the
-        # other side compares to ``ea.id::text`` — binding the same parameter in
-        # both a uuid and a text context makes Postgres deduce uuid for it and
-        # fail with "operator does not exist: text = uuid" on every call.
-        rows = (await db.execute(text(
-            """SELECT gi.id AS task_id, gi.title,
-                      gi.origin->>'thread_id' AS thread_id,
-                      lm.id AS message_id,
-                      to_char(gi.due_at, 'Mon DD') AS due_label,
-                      (gi.due_at < now()) AS overdue
-               FROM gtd_items gi
-               JOIN email_accounts ea ON ea.id = :aid
-               LEFT JOIN LATERAL (
-                   SELECT em.id FROM email_messages em
-                   WHERE em.account_id = ea.id
-                     AND em.thread_id = gi.origin->>'thread_id'
-                   ORDER BY em.received_at DESC NULLS LAST
-                   LIMIT 1
-               ) lm ON true
-               WHERE gi.user_id = ea.user_id
-                 AND gi.origin->>'account_id' = ea.id::text
-                 AND gi.disposition NOT IN ('DONE', 'TRASH')
-                 AND ((gi.due_at IS NOT NULL
-                       AND gi.due_at <= now()
-                           + make_interval(days => :horizon))
-                      OR (:undated AND gi.due_at IS NULL))
-               ORDER BY gi.due_at ASC NULLS LAST
-               LIMIT :lim"""
-        ), {"aid": account_id, "horizon": horizon_days, "lim": limit,
-            "undated": include_undated})).fetchall()
+        owner = (await db.execute(text(
+            "SELECT user_id FROM email_accounts WHERE id = :aid"
+        ), {"aid": account_id})).fetchone()
+        uid = str(getattr(owner, "user_id", "") or "") if owner else ""
+        if not uid:
+            return []
+        items = await item_source().items_by_origin(
+            db, uid, "account_id", str(account_id))
+        at = datetime.now(UTC)
+        until = at + timedelta(days=horizon_days)
+        picked: list[tuple[Any, datetime | None]] = []
+        for it in items:
+            due = _as_utc(getattr(it, "due_at", None))
+            if (due is not None and due <= until) or (
+                    include_undated and due is None):
+                picked.append((it, due))
+        # Soonest first, undated last: the order the SQL gave with NULLS LAST.
+        picked.sort(key=lambda p: (p[1] is None, p[1] or at))
+        picked = picked[:limit]
+        threads = sorted({
+            str(_origin_of(it).get("thread_id"))
+            for it, _due in picked if _origin_of(it).get("thread_id")
+        })
+        latest: dict[str, str] = {}
+        if threads:
+            rows = (await db.execute(text(
+                """SELECT DISTINCT ON (em.thread_id)
+                          em.thread_id, em.id AS message_id
+                   FROM email_messages em
+                   WHERE em.account_id = :aid
+                     AND em.thread_id = ANY(:tids)
+                   ORDER BY em.thread_id, em.received_at DESC NULLS LAST"""
+            ), {"aid": account_id, "tids": threads})).fetchall()
+            latest = {str(r.thread_id): str(r.message_id) for r in rows}
     except Exception as exc:  # noqa: BLE001
         # Best-effort must leave the SESSION usable, not just return []: a
         # failed query aborts the transaction, and without a rollback every
@@ -288,11 +299,47 @@ async def _digest_commitments(
             pass
         _log.warning("email.digest_commitments_failed", error=str(exc))
         return []
-    return [{"title": (r.title or "(untitled)"), "due": r.due_label,
-             "overdue": bool(r.overdue), "task_id": str(r.task_id),
-             "thread_id": r.thread_id,
-             "message_id": (str(r.message_id) if r.message_id else None)}
-            for r in rows]
+    out: list[dict[str, Any]] = []
+    for it, due in picked:
+        thread_id = _origin_of(it).get("thread_id") or None
+        out.append({
+            "title": (it.title or "(untitled)"),
+            # 'Mon DD', as Postgres `to_char(due_at, 'Mon DD')` wrote it.
+            "due": due.strftime("%b %d") if due else None,
+            "overdue": bool(due is not None and due < at),
+            "task_id": str(it.id),
+            "thread_id": thread_id,
+            "message_id": latest.get(str(thread_id)) if thread_id else None,
+        })
+    return out
+
+
+def _origin_of(item: Any) -> dict[str, Any]:
+    """A task's origin as a dict. The pm arm decodes it, and a raw JSONB text
+    value is decoded here, so either arm's row reads the same."""
+    origin = getattr(item, "origin", None)
+    if isinstance(origin, str):
+        try:
+            origin = json.loads(origin)
+        except ValueError:
+            return {}
+    return origin if isinstance(origin, dict) else {}
+
+
+def _as_utc(value: Any) -> datetime | None:
+    """A timestamp as an aware UTC datetime, or None. A naive value is UTC."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _digest_is_empty(digest: dict) -> bool:

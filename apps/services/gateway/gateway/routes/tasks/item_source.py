@@ -70,11 +70,16 @@ from uuid import uuid4
 from gateway.routes.tasks.core import DEFAULT_CONTEXTS, ITEM_SELECT, PROJECT_SELECT
 from sqlalchemy import text
 
-#: The origin keys a capture may look a task up by. Each of the four has a
-#: partial expression index on `pm_tasks` (211). A key outside this set is
+#: The origin keys a capture may look a task up by. A key outside this set is
 #: refused, because it would be spliced into SQL as a literal.
+#:
+#: The first four have a partial expression index on `pm_tasks` (211).
+#: `action_item_id` (a meeting action, WS-39 S8c) and `account_id` (the email
+#: digest, S8c) have none on purpose. Each lookup runs inside one member's own
+#: list (`MY_TASKS_FROM`), so the key is a residual filter on a few rows.
 ORIGIN_KEYS: frozenset[str] = frozenset({
     "email_id", "thread_id", "wa_message_id", "wa_chat_id",
+    "action_item_id", "account_id",
 })
 
 
@@ -165,6 +170,14 @@ class ItemSource:
         rows = await self.items_by_origin(
             db, uid, key, value, commitment=commitment, limit=1)
         return rows[0] if rows else None
+
+    async def hard_dated_items(
+        self, db: Any, uid: str, *, days: int, limit: int,
+    ) -> list[Any]:
+        """My OPEN hard-date items due from now to ``days`` ahead, soonest
+        first. The Calendar's "fixed appointment" predicate. The email drafter
+        reads it to offer slots that do not clash (WS-39 S8c)."""
+        raise NotImplementedError
 
     # ── writes ───────────────────────────────────────────────────────────
 
@@ -393,6 +406,16 @@ class _GtdItems(ItemSource):
             params["lim"] = limit
         return (await db.execute(
             text(ITEM_SELECT + where), params)).fetchall()
+
+    async def hard_dated_items(self, db, uid, *, days, limit):
+        return (await db.execute(text(
+            """SELECT id, title, due_at FROM gtd_items
+               WHERE user_id = :uid AND is_hard_date = true
+                 AND due_at IS NOT NULL""" + _GTD_ALIVE + """
+                 AND due_at >= now()
+                 AND due_at <= now() + make_interval(days => :days)
+               ORDER BY due_at ASC LIMIT :lim"""),
+            {"uid": uid, "days": days, "lim": limit})).fetchall()
 
     async def insert_capture(self, db, uid, fields, origin):
         item_id = str(uuid4())
