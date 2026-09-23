@@ -842,6 +842,22 @@ def _flag(v: str) -> bool | None:
     return None
 
 
+async def _importance_for(item_id: str, wants: bool | None) -> int | None:
+    """The shared Priority an "important" flag means (D76), or None to leave
+    it. Important is Priority at High or above: true raises a lower task to
+    High, false lowers High or Urgent to Normal, and a flag that already
+    agrees changes nothing — so "important" never demotes Urgent."""
+    if wants is None:
+        return None
+    current = (await _my_task(item_id)).get("importance")
+    level = current if isinstance(current, int) else None
+    if wants and (level is None or level < _IMPORTANT_AT):
+        return _IMPORTANT_AT
+    if not wants and level is not None and level >= _IMPORTANT_AT:
+        return _IMPORTANT_AT - 1
+    return None
+
+
 @_annotate_risk(idempotent=True)
 async def gtd_update(item_id: str, title: str = "", notes: str = "",
                      defer_until: str = "", context: str = "",
@@ -888,15 +904,9 @@ async def gtd_update(item_id: str, title: str = "", notes: str = "",
         patch["time_estimate_mins"] = time_estimate_mins
     if due_at:
         patch["due_at"] = None if due_at == "clear" else due_at
-    wants = _flag(important)
-    if wants is not None:
-        # D76: "important" is the shared Priority read at High or above.
-        current = (await _my_task(item_id)).get("importance")
-        level = current if isinstance(current, int) else None
-        if wants and (level is None or level < _IMPORTANT_AT):
-            patch["importance"] = _IMPORTANT_AT
-        elif not wants and level is not None and level >= _IMPORTANT_AT:
-            patch["importance"] = _IMPORTANT_AT - 1
+    level = await _importance_for(item_id, _flag(important))
+    if level is not None:
+        patch["importance"] = level
     for key, raw in (("leveraged", leveraged), ("deep_work", deep_work)):
         val = _flag(raw)
         if val is not None:
