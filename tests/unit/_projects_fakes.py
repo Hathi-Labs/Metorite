@@ -62,6 +62,36 @@ _WHERE_RE = re.compile(
     r"\bWHERE\b(.*?)(?:\bORDER\s+BY\b|\bLIMIT\b|\bRETURNING\b|$)", re.I | re.S
 )
 _ORDER_RE = re.compile(r"\bORDER\s+BY\s+(?:\w+\.)?([a-z_][a-z0-9_]*)\s*(ASC|DESC)?", re.I)
+
+#: The whole ORDER BY list, up to LIMIT/OFFSET/FOR. `_ORDER_RE` reads only the
+#: FIRST key, which is the H-130 defect: the fake honoured `created_at DESC`
+#: and silently dropped the tie-break beside it. Postgres does not, so the fake
+#: and the database disagreed about exactly the rows a tie-break exists for.
+_ORDER_LIST_RE = re.compile(
+    r"\bORDER\s+BY\s+(.+?)(?:\s+LIMIT\b|\s+OFFSET\b|\s+FOR\b|\s*$)",
+    re.I | re.S,
+)
+_ORDER_KEY_RE = re.compile(r"^\s*(?:\w+\.)?([a-z_][a-z0-9_]*)\s*(ASC|DESC)?\s*$", re.I)
+
+
+def _order_keys(statement: str) -> list[tuple[str, bool]]:
+    """Every `(column, descending)` in the ORDER BY, in order.
+
+    Returns `[]` for anything this cannot parse — an expression, a CASE, a
+    function call — so the caller falls back to the single-key path rather
+    than inventing an order. A fake that guesses is worse than one that
+    admits it does not know.
+    """
+    found = _ORDER_LIST_RE.search(statement)
+    if not found:
+        return []
+    keys: list[tuple[str, bool]] = []
+    for part in found.group(1).split(","):
+        key = _ORDER_KEY_RE.match(part)
+        if not key:
+            return []
+        keys.append((key.group(1), (key.group(2) or "ASC").upper() == "DESC"))
+    return keys
 _LIMIT_RE = re.compile(r"\bLIMIT\s+:(\w+)", re.I)
 _OFFSET_RE = re.compile(r"\bOFFSET\s+:(\w+)", re.I)
 _INSERT_COLS_RE = re.compile(r"INSERT\s+INTO\s+\w+\s*\(([^)]*)\)", re.I)
@@ -522,6 +552,11 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
     },
 }
 
+#: Tables whose rows carry a BIGSERIAL the database would mint. Only the
+#: activity spine has one today (migration 213); a second belongs here rather
+#: than in a second mechanism.
+_SERIAL_SEQ = frozenset({"pm_activities"})
+
 _TIMESTAMPED = {
     "pm_projects", "pm_tasks", "pm_task_statuses", "pm_task_types",
     "pm_activities", "pm_views", "pm_intake", "pm_view_user_state",
@@ -551,6 +586,10 @@ class FakeProjectsDB:
         self.bound_tenants: list[str | None] = []
         self.committed = 0
         self.closed = False
+        #: Stands in for migration 213's sequence. Monotonic across the whole
+        #: fake, exactly like a Postgres sequence, so two rows written in one
+        #: "transaction" still order.
+        self._seq = 0
 
     # seeding ------------------------------------------------------------
     def seed(self, table: str, **columns: Any) -> SimpleNamespace:
@@ -569,6 +608,13 @@ class FakeProjectsDB:
         if table in _TIMESTAMPED:
             row.setdefault("created_at", _now() - timedelta(days=1))
             row.setdefault("updated_at", _now() - timedelta(days=1))
+        # Migration 213's BIGSERIAL. Minted here because the real column is
+        # minted by the database: a fake that left it None would sort every
+        # activity into one undifferentiated tie, which is the state this
+        # column exists to end.
+        if table in _SERIAL_SEQ:
+            self._seq += 1
+            row.setdefault("seq", self._seq)
         self.tables.setdefault(table, []).append(row)
         return SimpleNamespace(**row)
 
@@ -1259,6 +1305,13 @@ class FakeProjectsDB:
         if table in _TIMESTAMPED:
             row.setdefault("created_at", _now())
             row.setdefault("updated_at", _now())
+        # Migration 213's BIGSERIAL, on the INSERT path as well as `seed`.
+        # Stamping it in only one of the two is what made the H-159 fix look
+        # half-applied: `record_activity` writes through HERE, so every row
+        # the test actually exercises had no `seq` and fell back into the tie.
+        if table in _SERIAL_SEQ:
+            self._seq += 1
+            row.setdefault("seq", self._seq)
         self.tables.setdefault(table, []).append(row)
         return _Result([SimpleNamespace(**row)])
 
@@ -2109,6 +2162,20 @@ class FakeProjectsDB:
                 rows,
                 key=lambda r: (_sortable(r.get(first)), str(r.get(second))),
             )
+        # Every key, not just the first (H-130). Applied innermost-LAST so
+        # each key keeps its own direction: Python's sort is stable, so
+        # sorting by the last key first and the first key last gives exactly
+        # the SQL meaning, and a `DESC, ASC` pair no longer collapses into one
+        # direction the way a single tuple key would.
+        keys = _order_keys(statement)
+        if len(keys) > 1:
+            out = list(rows)
+            for column, reverse in reversed(keys):
+                out.sort(
+                    key=lambda r, c=column: (r.get(c) is None, _sortable(r.get(c))),
+                    reverse=reverse,
+                )
+            return out
         order = _ORDER_RE.search(statement)
         if order is None:
             return rows
