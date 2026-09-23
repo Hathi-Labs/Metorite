@@ -97,6 +97,12 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   new backend surfaces this app consumes are `GET /orgs` + `POST /orgs/purge`
   (on the Console) and the gateway's CP-2g operator door (via
   `src/lib/tenantDoor.ts`, its one permitted use).
+  `POST /catalog/decide/try` joined them on 2026-09-23 (CP-13b). It is the
+  "Try a decision" panel on `/tiers`, and it never calls the customer door.
+- The invocation verbs and their pairing rule live in `src/lib/invocation.ts`.
+  It mirrors the Console's `check_invocation_for_task`. Do not write a second
+  verb list. `tests/unit/test_operator_console_invocations.py` fails when its
+  three constants differ from `catalog.py`.
 - Everything server-shaped or rule-shaped is a pure `src/lib/*` module,
   unit-tested; `src/app` is composition.
 

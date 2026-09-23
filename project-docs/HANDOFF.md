@@ -129,11 +129,12 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-23 · the CP-13a deploy check
 
 ### H-165 · Build CP-13a to CP-13d: the `decide` task, its door, the Console pages and the chat tool · [AGENT]
-- **Check:** CP-13a is BUILT (2026-09-23, branch `cp13a-decide`).
-  `rg -n 'native_typesafe' apps/services/customer_console/customer_console/handlers.py`
-  → no hit means CP-13a has not reached `main` yet.
-  `rg -n 'native_typesafe' workbench/operator_console/src/` → no hit means
-  CP-13b has not landed.
+- **Check:** CP-13a and CP-13b are BUILT (2026-09-23, branches
+  `cp13a-decide` and `cp13b-console`).
+  `rg -n 'decide/try' apps/services/customer_console/customer_console/operator_roles.py`
+  → no hit means CP-13b has not reached `main` yet.
+  `rg -n 'def decide' packages/acb_llm/` → no hit means CP-13c has not
+  landed.
 - **Why:** owner decision 2026-09-23 (D75). The owner chose TypeSafe's Jev for
   fast typed decisions, and asked for the Operator Console first.
 - **Do this in order:** CP-13a, then CP-13b, then CP-13c, then CP-13d. Build

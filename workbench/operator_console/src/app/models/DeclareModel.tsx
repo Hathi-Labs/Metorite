@@ -12,15 +12,8 @@
 import { useState } from "react";
 
 import type { ProviderAccount, Task } from "@/lib/contract";
+import { verbAfterTaskChange, verbsForTask } from "@/lib/invocation";
 import { vendorWarning } from "@/lib/readiness";
-
-const VERBS = [
-  "acompletion",
-  "aembedding",
-  "atranscription",
-  "aspeech",
-  "aimage_generation",
-];
 
 import { HELP_DECLARE } from "@/lib/help";
 import { ADD } from "@/lib/words";
@@ -37,7 +30,9 @@ export default function DeclareModel({
 }) {
   const [model, setModel] = useState("");
   const [task, setTask] = useState(tasks[0]?.slug ?? "chat");
-  const [verb, setVerb] = useState("acompletion");
+  const [verb, setVerb] = useState(() =>
+    verbAfterTaskChange("acompletion", tasks[0]?.slug ?? "chat"),
+  );
   const [streams, setStreams] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
@@ -72,7 +67,8 @@ export default function DeclareModel({
       <p className="field-hint">
         A model has to be declared before any tier can use it. The provider verb
         is how the Router calls it — chat models use <span className="mono">
-        acompletion</span>.
+        acompletion</span>, and a decision model uses <span className="mono">
+        native_typesafe</span>.
       </p>
 
       <div className="formrow">
@@ -92,7 +88,13 @@ export default function DeclareModel({
           <label htmlFor="cap-task" title={HELP_DECLARE.task}>
             What it does
           </label>
-          <select id="cap-task" title={HELP_DECLARE.task} value={task} onChange={(e) => setTask(e.target.value)}>
+          <select id="cap-task" title={HELP_DECLARE.task} value={task}
+            onChange={(e) => {
+              // 🔴 The verb follows the job. `invocation.ts` mirrors the
+              // Console's pairing rule, so a pair it refuses is never offered.
+              setTask(e.target.value);
+              setVerb(verbAfterTaskChange(verb, e.target.value));
+            }}>
             {tasks.map((t) => (
               <option key={t.slug} value={t.slug}>
                 {t.label}
@@ -105,7 +107,7 @@ export default function DeclareModel({
             Provider verb
           </label>
           <select id="cap-verb" title={HELP_DECLARE.verb} value={verb} onChange={(e) => setVerb(e.target.value)}>
-            {VERBS.map((v) => (
+            {verbsForTask(task).map((v) => (
               <option key={v} value={v}>
                 {v}
               </option>
