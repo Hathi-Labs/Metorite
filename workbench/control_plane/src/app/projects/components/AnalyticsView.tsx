@@ -28,6 +28,7 @@ import { statusAccent } from "@/lib/statusAccent";
 import { accentForSlot } from "@/lib/categorical";
 
 import type {
+  CapacityReport,
   FinishedReport,
   LoadReport,
   NodeSummary,
@@ -37,6 +38,7 @@ import type {
   ThroughputReport,
 } from "../lib/api";
 import {
+  CapacityPanel,
   FinishedPanel,
   LoadPanel,
   OutlookPanel,
@@ -131,6 +133,7 @@ export default function AnalyticsView({
   throughput,
   finished,
   outlook,
+  capacity = null,
   onOpen,
 }: {
   /** The PORTFOLIO roll-up — every space the caller can see. */
@@ -154,6 +157,12 @@ export default function AnalyticsView({
    * can print, and it appears where no date would.
    */
   outlook: OutlookReport | null;
+  /**
+   * WS-27bm S7a — who has the hours, drawn beside Load. Optional so a caller
+   * that does not fetch it still compiles; `null` renders nothing, as every
+   * other panel here does.
+   */
+  capacity?: CapacityReport | null;
   onOpen: (id: string) => void;
 }) {
   /**
@@ -209,10 +218,14 @@ export default function AnalyticsView({
           <OutlookPanel data={outlook} />
         </div>
       )}
-      {(stuck || load || throughput || finished) && (
+      {(stuck || load || capacity || throughput || finished) && (
         <div className="mb-5 grid gap-3 lg:grid-cols-2 2xl:grid-cols-4">
-          {stuck && <StuckPanel data={stuck} />}
+          {/* ⚠️ Load leads since S7a, so Capacity can sit BESIDE it: the
+              two read one set of open work, and a reader compares them row by
+              row. The node dashboards already lead with Load. */}
           {load && <LoadPanel data={load} />}
+          {capacity && <CapacityPanel data={capacity} />}
+          {stuck && <StuckPanel data={stuck} />}
           {throughput && <ThroughputPanel data={throughput} />}
           {finished && <FinishedPanel data={finished} />}
         </div>
