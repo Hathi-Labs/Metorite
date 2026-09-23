@@ -66,7 +66,7 @@ function SpendRow({
         </span>
         <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
           {calls.toLocaleString("en-IN")} call{calls === 1 ? "" : "s"}
-          {measured ? ` · ${formatCredits(Number(credits) || 0)}` : ""}
+          {measured ? ` · ${formatCredits(Number(credits) || 0)} credits` : ""}
         </span>
       </div>
       {/* The bar is a proportion, never a number. `spendShare` returns 0
@@ -172,7 +172,10 @@ export default function SpendBreakdown() {
           <p className="mt-3 text-xs text-muted-foreground">
             {aTotals.calls.toLocaleString("en-IN")} call
             {aTotals.calls === 1 ? "" : "s"} in total
-            {aMeasured ? `, ${formatCredits(aTotals.credits)}` : ""}.
+            {aMeasured
+              ? `, costing ${formatCredits(aTotals.credits)} credits`
+              : ""}
+            .
           </p>
         </Panel>
       )}
