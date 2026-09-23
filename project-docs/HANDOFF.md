@@ -2744,40 +2744,45 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-21 · the People rename session. **Updated:** 2026-09-22.
 
 ### H-152 · A SELF-SERVE customer can never be served AI · [AGENT]
-- **Check:** `rg -n "customer_console_org_key" packages/acb_auth/acb_auth/console_resolve.py`
-  → a hit inside `router_is_wired` means this is open.
-- 🔴 **The gateway reads ONE `CUSTOMER_CONSOLE_ORG_KEY` from its
-  environment.** That names one tenant. A shared box has one slot and N
-  tenants, so every tenant after the first can never reach the Router. The
-  box does not fail. It serves tenant one and is dark for the rest.
-- **This is not a missing flag flip.** `gateway/routes/seats.py` states the
-  same shape in its own words — *"On a shared multi-tenant deployment no
-  single org key is correct ... a STRUCTURAL dark"*.
-- **The answer is already proved out, one plane over.** The Seats tab had
-  this exact defect, and D-SEAT-4 fixed it. `GET /seats/overview` presents
-  the **deployment** key, which is per-box. The Console then derives the
-  organization from `deployment_visible_orgs(deployment_id, actor_email)`.
-  The caller makes no tenant claim (R11).
-- **What to build.** A second arm on the four Router doors, with a capability
-  of its own. Put it on the same `deployment_or_operator` dispatcher the seat
-  doors use. The four are `/v1/chat/completions`,
-  `/v1/audio/transcriptions`, `/v1/images/generations` and
-  `/v1/audio/speech`. The member already arrives:
-  `_attribution_headers` sends `X-CC-Member` on every call.
-- ⚠️ **Do this beside H-86**, which asks for one serving prelude across those
-  same four doors. Two agents editing four doors twice is how the doors
-  drift apart.
-- ⚠️ **What this un-blocks.** `POST /orgs/provision` mints the organization
-  key on its OPERATOR arm as of 2026-09-22. The deployment-key arm mints
-  nothing on purpose, because a key for tenant N+1 has nowhere to live. So
-  self-serve signup stays dark until this lands, and no amount of minting
-  changes that.
-- ⚠️ **Retire `CUSTOMER_CONSOLE_ORG_KEY` only after** the per-org billing
-  pages move too. `seats.py` records that they stay on the org-key path.
+- **Check:** `rg -n "CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY" /opt/acb/app/.env`
+  on the box. No hit means the shared-box arm is built and not turned on.
+- 🔴 **Why this exists.** `CUSTOMER_CONSOLE_ORG_KEY` is ONE value naming ONE
+  tenant. A box serving several had one slot and N tenants. It served the
+  first and was dark for the rest, and it never failed while doing so.
+  Minting more organization keys does not help, because the second has
+  nowhere to live.
+- **The answer was already proved out one plane over.** D-SEAT-4 moved the
+  Seats tab onto the per-box DEPLOYMENT key and derived the organization
+  Console-side. This is the same move for the Router.
+- 📌 **BUILT, in two slices, 2026-09-23.** Slice 1: the Console door.
+  `auth.organization_from_key_or_deployment` and the `ServingCaller` alias,
+  gated on a new `serve` capability, deriving the tenant from `X-CC-Member`
+  through `deployment_visible_orgs`. Slice 2: all FOUR serving doors take it,
+  and the gateway can present the key —
+  `console_resolve.router_credential()` picks and `router_is_wired()` asks it.
+- 🔴 **The arm is behind `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY`, and
+  that flag is not optional design.** A first try armed on the key being
+  PRESENT, and `test_the_deployment_key_alone_does_not_arm_the_router` caught
+  it. Every box holds a deployment key already, because resolve, provision and
+  the seat doors have needed one since CP-2b. Arming on presence would turn
+  the Router on everywhere the day somebody configured sign-in. That fence
+  holds a real property. Do not relax it.
+- ⚠️ **The ORG key wins a tie, for compatibility and not preference.** A box
+  already serving one tenant must not change behaviour the day somebody sets
+  the flag. So the shared arm arms only where the single-tenant answer is
+  absent, and the whole change ships dark.
+- ⚠️ **What is LEFT is three acts on the BOX, and none of them is code.**
+  Widen the deployment key to hold `serve`, which is a hand edit under §8
+  gate 7 because no route grants a capability. Unset
+  `CUSTOMER_CONSOLE_ORG_KEY`. Set the new flag. The third alone changes
+  nothing, by design.
+- ⚠️ **The per-org billing pages still read the org key**, so retiring that
+  variable entirely is a separate move. `seats.py` records which reads stay.
+- **Fences:** `tests/unit/test_router_deployment_arm.py` (12) ·
+  `tests/unit/test_console_router_client.py` (5 new).
 - **Authority:** owner directive, 2026-09-22 — *"you are automatically
-  creating the connections for when they sign up for the organization and
-  when the organization is created"*
-- **Added:** 2026-09-22 · the auto-mint session.
+  creating the connections for when they sign up"*
+- **Added:** 2026-09-22 · the auto-mint session. **Updated:** 2026-09-23.
 
 ### H-144 · `GET /people/{id}/editable` has no caller · [AGENT]
 - **Check:** `rg -n "editable" workbench/control_plane/src/app/people/lib/api.ts`
