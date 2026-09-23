@@ -1599,13 +1599,14 @@ async def set_my_overlay(
     two_minute: str = "",
     clear: str = "",
 ) -> str:
-    """Set the member's OWN triage of a task, which the team's board never
-    sees: disposition (INBOX, NEXT, WAITING, SOMEDAY, PROJECT, REFERENCE,
-    DONE, TRASH), context (@office), energy (low, medium, high),
-    two_minute (yes or no). clear empties fields: context, energy,
-    next_action. A DONE disposition does not complete the shared task;
-    complete does. defer sets a date. The estimate is the TASK's, shared
-    with the board since D76: set it with update_task, not here."""
+    """Set the member's OWN triage of a task: disposition (INBOX, NEXT,
+    WAITING, SOMEDAY, PROJECT, REFERENCE, TRASH), context (@office), energy
+    (low, medium, high), two_minute (yes or no). clear empties fields:
+    context, energy, next_action. DONE is refused here: completion is the
+    task's shared lane (D76), so finish a task with complete. An open
+    disposition on a finished task reopens it for the board. defer sets a
+    date. The estimate is the TASK's, shared with the board since D76: set
+    it with update_task, not here."""
     tid, task = await _task(task_id)
     unread = ""
     try:
@@ -1623,6 +1624,14 @@ async def set_my_overlay(
         state = disposition.strip().upper()
         if state not in DISPOSITIONS:
             return f"disposition is one of {', '.join(DISPOSITIONS)}."
+        if state == "DONE":
+            # D76 — refused, not routed. This tool's confirmation card says
+            # "your overlay only" (manifest class B on /personal); a shared
+            # completion behind that card would move the board without the
+            # member being asked about the board. `complete` asks.
+            return ("DONE is not your own triage any more: a task is done when "
+                    "its shared lane is done (D76). Use complete to finish it "
+                    "for everyone.")
         payload["disposition"] = state
         before["disposition"] = mine.get("disposition")
     if context.strip():

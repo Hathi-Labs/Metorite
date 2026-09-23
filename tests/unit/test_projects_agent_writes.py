@@ -1009,6 +1009,25 @@ async def test_the_overlay_card_shows_the_members_own_before_values(monkeypatch)
     assert patched[0]["json"] == {"energy": None, "disposition": "SOMEDAY"}
 
 
+async def test_the_overlay_refuses_done_and_points_at_complete(monkeypatch) -> None:
+    """D76: completion is the shared lane. A DONE behind a card that says
+    "your overlay only" would be a no-op, and routing it to /complete there
+    would move the board without asking about the board."""
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.set_my_overlay(UUID, disposition="done")
+    assert "complete" in out and "D76" in out
+    assert asked == [] and writes(calls) == []
+
+
+async def test_the_overlay_refuses_an_estimate_and_points_at_update_task(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.set_my_overlay(UUID, estimate_mins=30)
+    assert "update_task" in out
+    assert asked == [] and writes(calls) == []
+
+
 async def test_a_private_capture_lands_in_my_tasks_and_says_who_sees_it(monkeypatch) -> None:
     asked = approve(monkeypatch)
     calls = fake_gateway(monkeypatch, responder)

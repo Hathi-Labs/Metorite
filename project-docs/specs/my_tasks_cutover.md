@@ -711,7 +711,10 @@ PASS. `test_projects_personal_s6e.py`, 12 tests. The vitest fences:
    the earliest `updated_at`. It also carries the `important` flags. Where
    the chosen flag is true, an unset, Low or Normal Priority becomes High.
    It never lowers a Priority. The ledger guard makes a replay a no-op.
-8. `skill-task-gtd` and `skill-projects` follow the split.
+8. `skill-task-gtd` and `skill-projects` follow the split. The chat tool
+   `set_my_overlay` refuses DONE and points at `complete`. Its card says
+   "your overlay only", so a shared completion behind that card would move
+   the board without asking. `complete` asks.
 
 **Client.**
 
