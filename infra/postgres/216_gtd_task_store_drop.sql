@@ -120,6 +120,21 @@ BEGIN
         RETURN;
     END IF;
 
+    -- A re-run of migration 48 by itself, after this file ran, builds the
+    -- store again, empty. 189's arm and 190's guard are gone by then. An
+    -- empty table holds nothing to lose, so it goes. A table with rows is a
+    -- writer nobody removed, and that stops the deploy.
+    IF to_regclass('public.gtd_retirement_arm') IS NULL THEN
+        IF EXISTS (SELECT 1 FROM gtd_items) THEN
+            RAISE EXCEPTION
+                'S8 REFUSED: gtd_items is back and holds rows, and the arm '
+                'is gone. Something still writes the retired store. Find it.';
+        END IF;
+        DROP TABLE IF EXISTS gtd_waiting;
+        DROP TABLE IF EXISTS gtd_items;
+        RETURN;
+    END IF;
+
     IF NOT EXISTS (
         SELECT 1 FROM gtd_retirement_arm
          WHERE armed_by = 'migration 216 (WS-39 S8, D73)'
