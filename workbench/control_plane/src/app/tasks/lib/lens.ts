@@ -551,6 +551,29 @@ export type MyOverlay = Pick<
   "disposition" | "context" | "isTriaged" | "important" | "leveraged" | "deepWork"
 >;
 
+/**
+ * The focus controls' patch, in the overlay's own keys.
+ *
+ * 🔴 `WeightToggles` speaks `GtdItem` (`deepWork`), and `splitPatch` speaks the
+ * wire (`deep_work`) and throws on anything else. My Tasks never met this,
+ * because its store renames `deepWork` before calling the lens
+ * (`taskStore.ts`). The Projects focus row called the lens directly, so its
+ * Deep work toggle drew on, threw, re-read, and drew off — a control that
+ * visibly did nothing. `important` and `leveraged` only worked because both
+ * spellings happen to match. Caught in review, 2026-09-23.
+ */
+export function focusPatch(patch: {
+  important?: boolean;
+  leveraged?: boolean;
+  deepWork?: boolean;
+}): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  if (patch.important !== undefined) out.important = patch.important;
+  if (patch.leveraged !== undefined) out.leveraged = patch.leveraged;
+  if (patch.deepWork !== undefined) out.deep_work = patch.deepWork;
+  return out;
+}
+
 export function overlayOf(item: GtdItem): MyOverlay {
   return {
     disposition: item.disposition,

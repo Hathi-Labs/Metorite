@@ -55,7 +55,7 @@ import { StatusChip } from "@/components/StatusChip";
 import { useEffect, useState } from "react";
 
 import { lensEnabled, lensMyOverlay } from "@/app/tasks/lib/lens";
-import { filedByMe, lensPatchItem, overlayOf } from "@/app/tasks/lib/lens";
+import { filedByMe, focusPatch, lensPatchItem, overlayOf } from "@/app/tasks/lib/lens";
 import { MyFocusRow } from "./MyFocusRow";
 import {
   type FieldRow,
@@ -367,7 +367,9 @@ export function TaskPanel({
               // Optimistic, then the server's answer. A failed write re-reads
               // rather than leaving a flag drawn that was never saved.
               setMine((m) => (m ? { ...m, ...patch } : m));
-              void lensPatchItem(task.id, patch)
+              // `focusPatch`, not `patch`: the controls say `deepWork` and
+              // the lens takes `deep_work`, and throws on the other spelling.
+              void lensPatchItem(task.id, focusPatch(patch))
                 .then((next) => setMine(overlayOf(next)))
                 .catch(() => {
                   void lensMyOverlay(task.id).then(setMine);

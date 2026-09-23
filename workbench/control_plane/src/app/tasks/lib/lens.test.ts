@@ -44,6 +44,7 @@ import {
   lensFetchUntriaged,
   lensMyOverlay,
   filedByMe,
+  focusPatch,
   overlayOf,
   lensMyTaskLanes,
   lensFileUnder,
@@ -1177,6 +1178,26 @@ describe("continuity with Projects (S6e)", () => {
     expect(filedByMe({ ...overlay!, isTriaged: true })).toBe(true);
     expect(filedByMe({ ...overlay!, context: "@calls" })).toBe(true);
     expect(filedByMe(null)).toBe(false);
+  });
+
+  it("sends every focus flag in the overlay's own keys", () => {
+    // 🔴 The Projects focus row shipped a dead Deep work toggle. The controls
+    // say `deepWork`, `splitPatch` takes `deep_work` and throws on the other
+    // spelling, so the toggle drew on, threw, re-read and drew off. Each
+    // flag goes through the REAL splitter here, not a copy of its key list.
+    for (const [flag, key] of [
+      ["important", "important"],
+      ["leveraged", "leveraged"],
+      ["deepWork", "deep_work"],
+    ] as const) {
+      for (const value of [true, false]) {
+        const split = splitPatch(focusPatch({ [flag]: value }));
+        expect(split.personal, `${flag}=${value}`).toEqual({ [key]: value });
+        expect(split.task).toEqual({});
+      }
+    }
+    // The raw control patch is exactly what used to throw.
+    expect(() => splitPatch({ deepWork: true })).toThrow();
   });
 
   it("carries only MY flags, never the shared facts the panel already holds", () => {
