@@ -2560,23 +2560,6 @@ line — never reclaim a number by deleting the other entry.
   lint there would fail correct code and grow an allowlist. The asyncpg
   suites are the answer for that half.
 
-### H-113 · Wave 6 needs only its NUDGE. The columns shipped in 188 · [AGENT]
-- **⚠️ This entry was wrong, and the correction is the point.** It said
-  §9.12.9 needs two new columns, and its Check looked for `follow_up_at`. That
-  name never existed. Migration **188** already shipped `waiting_on`,
-  `delegated_at`, `expected_by` and `last_nudged_at` on `pm_task_personal`,
-  with a partial index built for the "what is due back" read.
-- **Check:** `grep -n "last_nudged_at" apps/services/gateway/gateway/routes/projects/personal.py`
-  → the field is accepted and **nothing writes it**. That is the open half.
-- **What is already built.** The Tasks app sets and draws all of it —
-  `DelegateDialog`, `WaitingForView` and `ItemDetail` carry the date, the
-  person and the overdue badge.
-- **What is open.** The optional nudge. One notification to the person you
-  wait on, through `routes/projects/notifications.py` `notify()`, which
-  exists. It is off by default, and it stamps `last_nudged_at` once.
-  ⚠️ In-app only. A mail to a real person is owner-gated (CLAUDE.md §3a).
-- **Corrected:** 2026-09-19 · found while auditing wave 6 for dispatch.
-
 ### H-110 · Operator OTP sends now. Two dashboard acts are still unverified · [OWNER]
 - **Check:** ask Supabase project `uttxlicdccfkramtjfpi` for an OTP at an address
   that is NOT a project member. `POST /auth/v1/otp {"email":"…","create_user":true}`.

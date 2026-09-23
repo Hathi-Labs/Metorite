@@ -68,6 +68,11 @@ from gateway.routes.projects.core import (
     update_row,
 )
 from gateway.routes.projects.filters import attach_assignees
+
+# `notifications` imports only `core` and `watchers`, so this direction adds no
+# cycle — the same note `notifications` itself carries about `watchers`, and the
+# same import `tasks`, `bulk` and `activities` already take.
+from gateway.routes.projects.notifications import EXCERPT_CHARS, notify
 from gateway.routes.projects.tasks import MoveTask, move_task_in
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -137,8 +142,12 @@ class PersonalIn(BaseModel):
     waiting_on: dict | None = None
     delegated_at: str | None = None
     expected_by: str | None = None
-    #: Set by the nudge SENDER, which is owner-gated and unbuilt. Accepted here
-    #: so the field is not forgotten when it ships; nothing writes it today.
+    #: When I last chased the person I am waiting on.
+    #: ⚠️ This said "set by the nudge SENDER, which is owner-gated and unbuilt",
+    #: which conflated two acts. `POST /tasks/{id}/nudge` writes it now — one
+    #: in-app notification, AGENT-SAFE (§9.12.9). An OUTWARD message (mail,
+    #: WhatsApp) is the owner-gated one, and is still unbuilt. Accepted on a
+    #: PATCH as well, so a client can clear it.
     last_nudged_at: str | None = None
 
 
@@ -1640,6 +1649,92 @@ async def defer_task(
             "defer_until": payload.until, "disposition": "SOMEDAY",
         })
         return _personal_to_dict(row)
+
+
+@router.post("/tasks/{task_id}/nudge")
+async def nudge_task(
+    task_id: str, user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Tell the person I am waiting on that I am waiting on them.
+
+    WS-27bk wave 6, spec §9.12.9, H-113. Migration 188 shipped the four
+    Waiting-For columns and the Tasks app has drawn them since — including
+    "nudged 3d ago". Nothing ever wrote `last_nudged_at`, because the act that
+    should write it did not exist. This is that act.
+
+    ⚠️ **IN-APP, and only in-app.** It writes one `pm_notifications` row through
+    the shared `notify()`, the same path a mention and an assignment take. An
+    OUTWARD nudge — mail, WhatsApp — is Action-Broker work and owner-gated
+    (CLAUDE.md §3a rule 3). Two comments in the tree said "the nudge" was
+    owner-gated without saying which one they meant, and this slice corrects
+    both rather than leaving the reader to guess.
+
+    ⚠️ **Explicit, never automatic.** §9.12.9: "A follow-up that always pings
+    somebody is a tool people stop using." Nothing here runs on a timer. A
+    member presses it, or nobody is told anything.
+
+    ⚠️ **The stamp follows the NOTIFICATION, not the request.** If the person
+    cannot open the task, `notify` delivers nothing — and stamping
+    `last_nudged_at` anyway would draw "nudged just now" beside a chase that
+    reached nobody. So the write is conditional and the refusals come back in
+    the body for the surface to show.
+    """
+    email = actor(user).lower()
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        task = await load_visible_task(db, vis, task_id)
+
+        stored = (await db.execute(
+            text(
+                "SELECT waiting_on FROM pm_task_personal "
+                "WHERE task_id = CAST(:tid AS uuid) AND member_email = :who"
+            ),
+            {"tid": task_id, "who": email},
+        )).fetchone()
+        waiting_on = from_jsonb(getattr(stored, "waiting_on", None))
+        if not waiting_on:
+            # 409, not 422: the payload is fine, the STATE is not. There is
+            # nobody to chase because this task is not delegated.
+            raise HTTPException(
+                status_code=409,
+                detail="You are not waiting on anybody for this task.",
+            )
+
+        who = str(waiting_on.get("email") or "").strip().lower()
+        if not who:
+            raise HTTPException(
+                status_code=409,
+                detail="The person you are waiting on has no email to notify.",
+            )
+        # ⚠️ Said by name rather than left to `notifiable`, which drops an agent
+        # silently and would report "nobody was told" with no reason.
+        # `pm_notifications_recipient_is_human` refuses the row anyway.
+        if who.startswith("agent:"):
+            raise HTTPException(
+                status_code=409,
+                detail="An agent has no inbox to nudge. Agents are handed work "
+                       "by dispatch, not by a notification.",
+            )
+
+        sent = await notify(
+            db, recipients=[who], kind="nudge", task_id=task_id,
+            actor_id=email, excerpt=(task.title or "")[:EXCERPT_CHARS],
+        )
+
+        stamped: Any = None
+        if sent["notified"]:
+            stamped = await _upsert_personal(
+                db, task_id, email, {"last_nudged_at": now()},
+            )
+
+        return {
+            **sent,
+            # None until somebody was actually told, so the surface can draw
+            # "nudged …" from the same fact the stamp records.
+            "last_nudged_at": (
+                _iso(stamped, "last_nudged_at") if stamped is not None else None
+            ),
+        }
 
 
 # -- Areas: a member's own categories (WS-39 S6b) ----------------------------
