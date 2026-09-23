@@ -249,7 +249,7 @@ export function toneFor(outcome: string, tool: string): string {
   if (outcome === "failed") return "bg-card/40 border-destructive/40 text-destructive";
   if (outcome !== "done") return "bg-card/40 border-border text-muted-foreground";
   return GUARDED_TOOLS.has(tool)
-    ? "bg-warning/10 border-warning/60 text-warning"
+    ? "bg-warning/5 border-warning/40 text-warning"
     : "bg-card/40 border-success/40 text-success";
 }
 
@@ -277,8 +277,24 @@ function isProjectsTool(e: ToolEvent): boolean {
   return typeof e.result === "string" && e.result.includes(LEGEND);
 }
 
+/**
+ * The tools that DRAW a template (`skill_projects/views.py`). Their text
+ * result is the facts for the model, and printing it as a card as well showed
+ * every view twice — the status report as raw Markdown source (UX review
+ * 2026-09-23). A failed view still shows its card, because then there is no
+ * template to look at.
+ */
+export const VIEW_TOOLS: ReadonlySet<string> = new Set([
+  "render_timeline",
+  "render_board",
+  "render_tasks",
+  "render_report",
+  "status_report",
+]);
+
 function hasProjectCard(e: ToolEvent): boolean {
   if (e.status !== "done" && e.status !== "error") return false;
+  if (e.status === "done" && VIEW_TOOLS.has(e.name)) return false;
   return isProjectsTool(e);
 }
 
@@ -420,6 +436,10 @@ export function forPeople(result: string): string {
     .map((l) =>
       l
         .replace(/^Projects (?:GET|POST|PATCH|PUT|DELETE) \S+: /, "")
+        // Ids the model carries forward and a member cannot use (UX review
+        // 2026-09-23): "· project_id <uuid>", "(activity id a1)".
+        .replace(/\s*·\s*[a-z_]+_id:? [0-9a-f-]{8,}/gi, "")
+        .replace(/\s*\(activity id [^)]*\)/g, "")
         .replace(/[«»]/g, "")
         .replace(/^- /, ""),
     )
@@ -574,7 +594,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
                 size="none"
                 icon="ExternalLink"
                 onClick={() => openTask(rowId)}
-                className="text-[10px]"
+                className="gap-1 text-[10px]"
               >
                 Open in Projects
               </Button>

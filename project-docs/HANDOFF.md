@@ -96,6 +96,20 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-172 · The shared scratch DB cannot replay the migration ladder any more · [AGENT]
+- **Check:** on the scratch DB, `SELECT max(attnum) FROM pg_attribute WHERE
+  attrelid = 'email_assistant_settings'::regclass` → 1600 means this is open.
+- **Why:** `42_email_model_roles.sql` drops columns that earlier migrations
+  add back. Each `apply_ladder` replay uses up attribute numbers, and dropped
+  columns keep theirs. The table hit Postgres's 1600-column limit, so every
+  R8 suite that replays the ladder on `metorite-scratch-tenant` now fails
+  with `TooManyColumns`. Found by the S7a build, 2026-09-23.
+- **Do:** Make migration 42 replay-safe, so a replay adds and drops nothing.
+  Then rebuild the shared DB with `bash scripts/dev_db.sh --down` and
+  `bash scripts/dev_db.sh`, at a time when no other checkout uses it.
+- **Authority:** R6 · R8 · `engineering_practice.md` §1.1
+- **Added:** 2026-09-23 · the S7a build
+
 ### H-170 · A Console migration runs with NO backup of the Console database · [AGENT]
 - **Check:** on the box, run
   `for d in $(ls -1t /opt/acb/backups | head -14); do ls /opt/acb/backups/$d; done | grep -ci console`.
