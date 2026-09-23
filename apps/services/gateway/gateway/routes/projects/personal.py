@@ -2142,6 +2142,18 @@ async def nudge_task(
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
 
+        # D76 — a finished task has nobody left to chase. The lane decides
+        # completion, so a closed lane refuses whatever the overlay says.
+        lane = (await db.execute(
+            text("SELECT category FROM pm_task_statuses WHERE id = CAST(:sid AS uuid)"),
+            {"sid": str(task.status_id)},
+        )).fetchone()
+        if lane is not None and getattr(lane, "category", None) in CLOSING_CATEGORIES:
+            raise HTTPException(
+                status_code=409,
+                detail="This task is done. There is nobody to chase.",
+            )
+
         stored = (await db.execute(
             text(
                 "SELECT waiting_on, disposition FROM pm_task_personal "

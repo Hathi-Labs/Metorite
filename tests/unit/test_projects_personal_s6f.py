@@ -479,3 +479,17 @@ async def test_organize_records_the_shared_fields_it_sets(db: FakeProjectsDB) ->
                if str(a.get("task_id")) == str(task.id)
                for c in (a.get("meta") or {}).get("changes", [])}
     assert {"due_at", "estimate_mins"} <= changed, changed
+
+
+async def test_the_nudge_refuses_a_finished_task(db: FakeProjectsDB) -> None:
+    project, _todo, done = _team_project(db)
+    task = db.seed_task(project.id, done.id)
+    _assign(db, task.id, "alice@fracktal.in", "carol@fracktal.in")
+    db.seed("pm_task_personal", task_id=task.id, member_email="alice@fracktal.in",
+            disposition="WAITING",
+            waiting_on={"name": "Carol", "email": "carol@fracktal.in"},
+            delegated_at=SINCE)
+    with pytest.raises(HTTPException) as caught:
+        await pm_personal.nudge_task(str(task.id), user=ALICE)
+    assert caught.value.status_code == 409
+    assert db.rows("pm_notifications") == []
