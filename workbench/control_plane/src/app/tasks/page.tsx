@@ -12,6 +12,7 @@ import { ItemDetail } from "./components/ItemDetail";
 import { AssistantRail } from "./components/AssistantRail";
 import { InboxView } from "./components/InboxView";
 import { EngageView } from "./components/EngageView";
+import { LedProjectView } from "./components/LedProjectView";
 import { QuickCapture } from "./components/QuickCapture";
 // ⚠️ `WorkspacesModal` was deleted 2026-08-25 (D52, WS-39 S1 repair round 1).
 // It was the ClickUp connect flow — paste token → list workspaces → connect —
@@ -57,6 +58,9 @@ export default function TasksPage() {
   const [maximisedFor, setMaximisedFor] = useState<string | null>(null);
   const isInbox = selectedView === "inbox";
   const isEngage = selectedView === "engage";
+  // S6e — a project I lead, opened from the sidebar. Its own surface: my
+  // tasks first, everybody's open count, and the board one link away.
+  const isLed = selectedView === "projects";
 
   // The list/board surface is the only one with a docked detail column: Inbox
   // clarifies in place (its own ClarifyModal), Engage is full-width by design,
@@ -169,6 +173,8 @@ export default function TasksPage() {
           <InboxView />
         ) : isEngage ? (
           <EngageView />
+        ) : isLed ? (
+          <LedProjectView />
         ) : (
           <ItemList />
         )}
@@ -253,6 +259,19 @@ export default function TasksPage() {
           <div className="min-w-0 flex-1 overflow-hidden border-r border-border">
             <EngageView />
           </div>
+        ) : isLed ? (
+          /* S6e — a project I lead. Full width like the Inbox: the surface is
+             a project, and its tasks open the same docked detail below. */
+          <>
+            <div className="min-w-0 flex-1 overflow-hidden border-r border-border">
+              <LedProjectView />
+            </div>
+            {selectedItemId && (
+              <aside className="flex h-full w-[380px] shrink-0 flex-col overflow-hidden bg-card">
+                <ItemDetail onMaximize={openMaximised} onClose={closeDetail} />
+              </aside>
+            )}
+          </>
         ) : (
           /* Task views (Next/Waiting/Someday/…): list/board plus the docked
              detail column — the house layout (DESIGN_SYSTEM §6: content, then

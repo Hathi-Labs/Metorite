@@ -211,10 +211,26 @@ MANIFEST: tuple[Route, ...] = (
         "complete, add_subtasks.",
     ),
     Route("PATCH", "/projects/tasks/{task_id}/personal", "set_my_overlay", "B"),
+    # WS-39 S6e — `?untriaged=true` is a query flag on this same route, so
+    # it needs no row: the manifest keys on the verb and the path, and
+    # `my_work` may pass the flag ("what landed on my plate").
     Route("GET", "/projects/my/inbox", "my_work", "A"),
     Route("GET", "/projects/my/tasks/{task_id}", "my_task", "A"),
+    Route(
+        "GET",
+        "/projects/my/tasks/{task_id}/lanes",
+        "",
+        "X",
+        "The task panel's Status select (WS-39 S6e): the lanes one of my "
+        "tasks can be in, behind the membership check rather than the project "
+        "grant. The chat reads a lane through my_task's workflow_stage and "
+        "the vocabulary of a project through `vocabulary`; a second door onto "
+        "the same lane list is a browser need, not a chat one.",
+    ),
     Route("GET", "/projects/my/calendar", "calendar", "A"),
     Route("GET", "/projects/my/contexts", "my_contexts", "A"),
+    # WS-39 S6e — the projects I lead, with their open work and mine.
+    Route("GET", "/projects/my/led", "my_led_projects", "A"),
     # WS-39 S6b — a member's own categories. The READ is on the surface,
     # because "file this under Home" needs to know Home exists. The three
     # writes are not, and that is a decision rather than an oversight: an
@@ -381,6 +397,8 @@ COMPOSITE: dict[str, frozenset[str]] = {
     "edit_task": frozenset({"update_task"}),
     "edit_project": frozenset({"update_project"}),
     "propose_plan": frozenset({"create_project", "create_task"}),
+    # S6 — navigation reads the row it opens, then dispatches to the page.
+    "open_in_app": frozenset({"task_detail", "project_summary"}),
 }
 
 #: POST routes that WRITE NOTHING. A preview computes what an act would do

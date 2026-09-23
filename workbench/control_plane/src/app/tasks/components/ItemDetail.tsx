@@ -4,7 +4,10 @@ import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon } from "@/components/Icon";
 import type { ThemedIcon } from "@/components/Icon";
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useViewMode } from "@/components/ViewModeProvider";
 import { useTaskStore } from "../lib/taskStore";
+import { lensEnabled } from "../lib/lens";
 import {
   originEmailHref,
   DISPOSITION_LABEL,
@@ -17,12 +20,19 @@ import {
 import { Disposition, Energy, GtdItem, Person } from "../lib/types";
 import { syncBadge } from "../lib/syncState";
 import { TaskMeta } from "@/components/TaskMeta";
+// S6e — the ONE task body, hosted here under the lens (my_tasks_cutover.md
+// §4.8 point 3). Every shared field block comes from Projects' components;
+// this file defines none of its own. `itemDetail.test.ts` is the fence.
+import { TaskBody } from "@/app/projects/components/TaskBody";
 import {
-  apiItemDetail,
-  type ProviderTaskDetail,
-  type TaskComment,
-  type TaskSubtask,
-} from "../lib/api";
+  type FieldRow,
+  type StatusRow,
+  type TagRow,
+  type TaskRow,
+  projectsApi,
+} from "@/app/projects/lib/api";
+import { taskDeepLink } from "@/app/projects/lib/card";
+import { fetchMyTaskLanes } from "../lib/api";
 import { SourceBadge } from "./SourceBadge";
 import { AttachmentChips } from "./AttachmentComposer";
 import { ClarifyPanel } from "./ClarifyPanel";
@@ -34,6 +44,22 @@ import { isWaitingOverdue } from "../lib/waiting";
 import { useCardActions } from "../lib/useCardActions";
 import { ProjectLabel } from "./ProjectLabel";
 import { PromoteDialog } from "./PromoteDialog";
+
+// ── Two compositions, one under the lens (WS-39 S6e) ───────────────────────
+//
+// Under `NEXT_PUBLIC_TASKS_LENS` this panel is a HOST of the shared
+// `TaskBody` (`app/projects/components/TaskBody.tsx`): its own header, then
+// the overlay STRIP — next action, context, energy, estimate, defer, the
+// founder matrix, waiting-on, notes: the member's own facts on
+// `pm_task_personal` — and then the body Projects draws, in the same order
+// Projects draws it. A member opening one task in each app meets the same
+// fields. Nothing below the strip is written here.
+//
+// With the lens off the legacy composition stays, thinner: the ClickUp-era
+// provider sections (comments, attachments, subtasks read off the old
+// `/items/{id}/detail`) are GONE, because the shared body reads those off
+// `/projects/tasks/{id}` now and a second reader would be a second field
+// list. The legacy branch is what S7 retires.
 
 // Ages/overdue on this panel are read against the REAL clock — `isOverdue` and
 // `relativeTime` both default their `nowMs` to Date.now(). They used to be
@@ -144,6 +170,119 @@ function ItemDetailEmpty() {
   );
 }
 
+// ── The lens host (S6e) ─────────────────────────────────────────────────────
+
+/**
+ * The shared body under My Tasks' strip.
+ *
+ * Reads the task AS THE PROJECT SEES IT (`/projects/tasks/{id}`) for the
+ * body — that route carries the shared facts the body edits — and its
+ * project's lanes, fields and tags, the way `projects/page.tsx` resolves them
+ * for `TaskPanel`. The strip above reads the STORE's row, which is the
+ * overlay-bearing one (`/my/tasks/{id}`); the two are one `pm_tasks` row.
+ *
+ * A write in the body answers with the project's row; the store's row is
+ * re-read through the lens so the card and the strip agree with the board
+ * (`refreshItem`).
+ */
+function LensBody({
+  item,
+  focused,
+  strip,
+}: {
+  item: GtdItem;
+  focused?: boolean;
+  strip: React.ReactNode;
+}) {
+  const router = useRouter();
+  const items = useTaskStore((s) => s.items);
+  const selectItem = useTaskStore((s) => s.selectItem);
+  const refreshItem = useTaskStore((s) => s.refreshItem);
+  // The overlay is `full` on a desktop and the whole screen on a phone; two
+  // columns at 390px is two unreadable columns (measured by the S6e rig).
+  const { isMobile } = useViewMode();
+  const [task, setTask] = useState<TaskRow | null>(null);
+  const [statuses, setStatuses] = useState<StatusRow[]>([]);
+  const [fields, setFields] = useState<FieldRow[]>([]);
+  const [tags, setTags] = useState<TagRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    // The task as the project sees it, and its lanes off the LENS read
+    // (`/my/tasks/{id}` carries `statuses`, S6e repair): the lane route
+    // under `/nodes` is behind a grant a member reached by assignment alone
+    // may not hold, and a 404 there was a dead Status select. Fields and
+    // tags are behind that same grant and are best effort: a body with no
+    // tag suggestions beats no body.
+    Promise.all([projectsApi.task(item.id), fetchMyTaskLanes(item.id)])
+      .then(async ([row, lanes]) => {
+        if (!live) return;
+        setTask(row);
+        setStatuses(lanes as StatusRow[]);
+        const root = row.root_project_id ?? row.project_id;
+        const [defs, registry] = await Promise.all([
+          projectsApi.fields(root).catch(() => ({ rows: [] as FieldRow[] })),
+          projectsApi.tags(root).catch(() => ({ rows: [] as TagRow[] })),
+        ]);
+        if (!live) return;
+        setFields(defs.rows);
+        setTags(registry.rows);
+      })
+      .catch((err: Error) => {
+        if (live) setError(String(err.message ?? err));
+      });
+    return () => {
+      live = false;
+    };
+  }, [item.id]);
+
+  if (!task) {
+    // The strip is the store's row and needs no read — draw it at once, and
+    // say what the body is waiting on beneath it.
+    return (
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {strip}
+        <p className="px-5 pb-4 text-xs text-muted-foreground">
+          {error ?? "Loading the project's view of this task…"}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {/* The read that failed, said where the body would have been. */}
+      {error ? (
+        <p className="shrink-0 border-b border-border bg-muted px-3 py-2 text-xs text-foreground">
+          {error}
+        </p>
+      ) : null}
+    <TaskBody
+      task={task}
+      statuses={statuses}
+      fields={fields}
+      tags={tags}
+      twoColumn={!!focused && !isMobile}
+      above={strip}
+      // The strip's Notes editor IS the description. Drawn once.
+      showDescription={false}
+      onChanged={(fresh) => {
+        setTask(fresh);
+        void refreshItem(item.id);
+      }}
+      onTaskAdded={() => void refreshItem(item.id)}
+      onOpenTask={(id) => {
+        // A linked task of mine opens here; anybody else's opens on the
+        // board, which is the one place it is readable.
+        if (items.some((i) => i.id === id)) selectItem(id);
+        else router.push(taskDeepLink({ id }));
+      }}
+    />
+    </>
+  );
+}
+
 // ── The editable task view ──────────────────────────────────────────────────
 
 export function TaskDetail({
@@ -175,7 +314,12 @@ export function TaskDetail({
   const archiveItem = useTaskStore((s) => s.archiveItem);
   const openFocus = useTaskStore((s) => s.openFocus);
   const enterFocusSession = useTaskStore((s) => s.enterFocusSession);
+  const deferItem = useTaskStore((s) => s.deferItem);
+  const undeferItem = useTaskStore((s) => s.undeferItem);
   const isArchived = !!item.archivedAt;
+  // S6e — the shared body needs the one store's routes, which the demo
+  // backend does not serve. The strip draws in both modes.
+  const lens = lensEnabled() && backend === "live";
 
   const [pushState, setPushState] = useState<"idle" | "busy" | string>("idle");
   // Delegating a LOCAL task opens the "create in ClickUp under a project" flow
@@ -226,10 +370,468 @@ export function TaskDetail({
   const promisedValue = item.expectedBy ? item.expectedBy.slice(0, 10) : "";
   const promiseLate = !!item.expectedBy && isWaitingOverdue(item);
 
+  // S6e — the overlay strip: the member's own facts, drawn in both modes.
+  // Under the lens it is what the shared body draws ABOVE its blocks.
+  const strip = (
+        <div className="flex flex-col gap-5 px-5 py-4">
+          {/* Next action — the cardinal GTD field, prominent + editable */}
+          <section>
+            <SectionLabel icon={themedIcon("ArrowRight")}>Next action</SectionLabel>
+            <EditableText
+              value={item.nextAction ?? ""}
+              placeholder="The next physical, visible step…"
+              emptyHint="Add the next action"
+              onSave={(v) => updateItem(item.id, { nextAction: v })}
+            />
+          </section>
+
+          {/* Metadata grid — every cell is click-to-edit.
+              ⚠️ Column count follows the SURFACE, not the viewport. This detail
+              was built for the `max-w-3xl` modal, where two columns are
+              comfortable; docking it into DESIGN_SYSTEM §6's 380px pane left each
+              cell ~170px and its label and value collided (owner-reported after
+              the S2 deploy, with a screenshot). A media query cannot fix it —
+              the pane is 380px on a 4K monitor too — so the switch is `focused`,
+              the prop that already distinguishes the two lives. */}
+          <section>
+            {/* Under the lens the shared body draws its own "Details" (the
+              task's facts) right below, so this strip names what it holds:
+              the member's own planning. */}
+          <SectionLabel icon={themedIcon("Tag")}>{lens ? "My planning" : "Details"}</SectionLabel>
+            <div className={`grid gap-2 ${focused ? "grid-cols-2" : "grid-cols-1"}`}>
+              {/* Context */}
+              <MetaEdit label="Context" icon={themedIcon("Tag")}
+                display={item.context
+                  ? <span className="font-mono text-primary/90">{item.context}</span>
+                  : null}
+              >
+                {(close) => (
+                  <ChipMenu
+                    options={contexts.map((c) => c.name)}
+                    active={item.context}
+                    mono
+                    allowClear
+                    onPick={(v) => { updateItem(item.id, { context: v ?? "" }); close(); }}
+                  />
+                )}
+              </MetaEdit>
+
+              {/* Energy */}
+              <MetaEdit label="Energy" icon={themedIcon("Gauge")}
+                display={item.energy
+                  ? <span className="inline-flex items-center gap-1.5 capitalize">
+                      <span className={`h-2 w-2 rounded-full ${ENERGY_DOT[item.energy]}`} />
+                      {item.energy}
+                    </span>
+                  : null}
+              >
+                {(close) => (
+                  <ChipMenu
+                    options={["low", "medium", "high"]}
+                    active={item.energy}
+                    capitalize
+                    allowClear
+                    onPick={(v) => { updateItem(item.id, { energy: (v as Energy) ?? undefined }); close(); }}
+                  />
+                )}
+              </MetaEdit>
+
+              {/* Estimate */}
+              <MetaEdit label="Estimate" icon={themedIcon("Zap")}
+                display={item.timeEstimateMins
+                  ? <span>{durationLabel(item.timeEstimateMins)}</span>
+                  : null}
+              >
+                {(close) => (
+                  <ChipMenu
+                    options={ESTIMATES.map((m) => durationLabel(m))}
+                    active={item.timeEstimateMins ? durationLabel(item.timeEstimateMins) : undefined}
+                    allowClear
+                    onPick={(label) => {
+                      const mins = label ? ESTIMATES[ESTIMATES.map((m) => durationLabel(m)).indexOf(label)] : 0;
+                      updateItem(item.id, { timeEstimateMins: mins });
+                      close();
+                    }}
+                  />
+                )}
+              </MetaEdit>
+
+              {/* Defer — the tickler (my_tasks_cutover.md §4.8 point 3 names
+                  it in the strip). Hidden from the active lists until the
+                  date. The overlay's fact, so it is here in both modes. */}
+              <MetaEdit label="Defer until" icon={themedIcon("CalendarClock")}
+                display={item.deferUntil
+                  ? <span>{relativeTime(item.deferUntil)}</span>
+                  : null}
+              >
+                {(close) => (
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="date"
+                      defaultValue={item.deferUntil ? item.deferUntil.slice(0, 10) : ""}
+                      autoFocus
+                      onChange={(e) => {
+                        if (e.target.value) deferItem(item.id, new Date(e.target.value).toISOString());
+                        else undeferItem(item.id);
+                        close();
+                      }}
+                      className="rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground focus:border-primary/50 focus:outline-none"
+                    />
+                    {item.deferUntil && (
+                      <button type="button" onClick={() => { undeferItem(item.id); close(); }}
+                        className="tech-transition rounded p-1 text-muted-foreground hover:text-destructive" title="Clear">
+                        <AppIcon name="X" className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </MetaEdit>
+
+              {/* Due, Stage and Assignee are the TASK's facts, shared with the
+                  board. Under the lens the shared body draws and edits them
+                  (status, priority, assignees, due), so they leave the strip. */}
+              {!lens && (<>
+              {/* Due */}
+              <MetaEdit label="Due" icon={themedIcon("CalendarClock")}
+                display={item.dueAt
+                  ? <span className={`inline-flex items-center gap-1 ${overdue ? "font-medium text-destructive" : ""}`}>
+                      {overdue ? <AppIcon name="AlertTriangle" className="h-3 w-3" /> : <AppIcon name="Clock" className="h-3 w-3" />}
+                      {relativeTime(item.dueAt)}
+                    </span>
+                  : null}
+              >
+                {(close) => (
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="date"
+                      defaultValue={dueValue}
+                      autoFocus
+                      onChange={(e) => {
+                        updateItem(item.id, {
+                          dueAt: e.target.value ? new Date(e.target.value).toISOString() : "",
+                        });
+                        close();
+                      }}
+                      className="rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground focus:border-primary/50 focus:outline-none"
+                    />
+                    {item.dueAt && (
+                      <button type="button" onClick={() => { updateItem(item.id, { dueAt: "" }); close(); }}
+                        className="tech-transition rounded p-1 text-muted-foreground hover:text-destructive" title="Clear">
+                        <AppIcon name="X" className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </MetaEdit>
+
+              {/* Stage — for a SYNCED task the raw ClickUp status (back-syncs on
+                  change); for a LOCAL task the workflow stage (the My Next Actions
+                  column). Local tasks always show one now, so their stage is
+                  visible/changeable here too, not just on the board. */}
+              {isSynced ? (
+                /* A frozen mirror keeps its last known status, READ-ONLY: the
+                   picker's options came from the workspace and there is no
+                   workspace (D52), so offering a change would write a value
+                   nothing can honour. */
+                item.providerStatus ? (
+                  <MetaEdit label="Stage" icon={themedIcon("CircleDot")}
+                    display={<span>{formatStatus(item.providerStatus)}</span>}
+                  >
+                    {() => null}
+                  </MetaEdit>
+                ) : null
+              ) : (
+                stageActions.stages.length > 0 && (
+                  <MetaEdit label="Stage" icon={themedIcon("CircleDot")}
+                    display={<span>{stageActions.currentStage}</span>}
+                  >
+                    {(close) => (
+                      <ChipMenu
+                        options={stageActions.stages}
+                        active={stageActions.currentStage}
+                        onPick={(v) => { if (v) stageActions.setStage(v); close(); }}
+                      />
+                    )}
+                  </MetaEdit>
+                )
+              )}
+
+              {/* Assignee(s). A SYNCED task supports MULTIPLE owners (ClickUp
+                  allows several) — a multi-select toggle list. A LOCAL task keeps
+                  the single-owner flow: assigning a teammate must first create a
+                  ClickUp task (they can't see a private local one), so it routes
+                  through the destination picker. */}
+              {isSynced ? (
+                <MetaEdit label="Assignees" icon={themedIcon("UserRound")}
+                  display={assigneeList.length
+                    ? <AssigneeStack people={assigneeList} />
+                    : null}
+                >
+                  {() => (
+                    <MultiPersonMenu
+                      people={memberPeople}
+                      active={assigneeList}
+                      onToggle={(p) => {
+                        const on = assigneeList.some((a) => samePerson(a, p));
+                        const next = on
+                          ? assigneeList.filter((a) => !samePerson(a, p))
+                          : [...assigneeList, p];
+                        updateItem(item.id, { assignees: next });
+                      }}
+                      onClear={() => updateItem(item.id, { assignees: [] })}
+                    />
+                  )}
+                </MetaEdit>
+              ) : (
+                <MetaEdit label="Assignee" icon={themedIcon("UserRound")}
+                  display={item.assignee
+                    ? <span className="inline-flex items-center gap-1.5">
+                        <Avatar name={item.assignee.name} />
+                        {item.assignee.name}
+                      </span>
+                    : null}
+                >
+                  {(close) => (
+                    <PersonMenu
+                      people={memberPeople}
+                      active={item.assignee ?? null}
+                      onPick={(p) => {
+                        // A LOCAL task assigned to a teammate must become a ClickUp
+                        // task (they can't see a private local one) → open the
+                        // destination picker. Un-assigning (p=null) just patches.
+                        if (p) {
+                          setDelegateTo(p);
+                        } else {
+                          updateItem(item.id, { assignee: p });
+                          if (item.disposition === "NEXT" && item.isMine) {
+                            setOfferDropFromNext(true);
+                          }
+                        }
+                        close();
+                      }}
+                    />
+                  )}
+                </MetaEdit>
+              )}
+              </>)}
+
+              {/* Project — the way back to the board (S6c, §4.8 point 4).
+                  Re-filing happens through Clarify or "Move to project…". */}
+              {project && (
+                <div className="min-w-0 rounded-md border border-border bg-card px-3 py-2">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    Project
+                  </div>
+                  <ProjectLabel
+                    item={item}
+                    name={project.outcome}
+                    className="mt-0.5 flex min-w-0 items-center gap-1.5 text-sm text-foreground"
+                    nameClass="truncate"
+                  />
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* Focus matrix — the member's OWN Eisenhower inputs (Important /
+              Leveraged manual, Urgent derived) + the computed cell. ⚠️ Not
+              "Priority": the shared body draws the task's Priority integer
+              (`pm_tasks.importance`) under that name, and D53.8 keeps the two
+              apart. Not shown for unprocessed inbox items (they get judged in
+              the clarify card). */}
+          {item.disposition !== "INBOX" && (
+            <section className="rounded-lg border border-border bg-card px-3 py-2.5">
+              {/* Top-right of the sub-card: the priority cell pill and — right
+                  beside it — the competing action nudge (delegate / schedule /
+                  eliminate). Same suggestion the card carries, here in full: a
+                  suggestion, not a status; dismiss with its × ("keep mine"), and
+                  "Schedule?"/"Eliminate?" open their popups. */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Focus matrix
+                </span>
+                <div className="flex flex-wrap items-center justify-end gap-1.5">
+                  <PriorityBadge
+                    item={item}
+                    urgentWindowHours={urgentWindowHours}
+                  />
+                  <SuggestionBadge
+                    item={item}
+                    urgentWindowHours={urgentWindowHours}
+                  />
+                </div>
+              </div>
+              <div className="mt-2">
+                <WeightToggles
+                  item={item}
+                  urgentWindowHours={urgentWindowHours}
+                  onChange={(w) => updateItem(item.id, w)}
+                />
+              </div>
+              {isUntagged(item) && (
+                <p className="mt-1.5 text-[11px] text-muted-foreground/70">
+                  Not yet judged — flag it important or leveraged, or leave it to
+                  default low priority.
+                </p>
+              )}
+            </section>
+          )}
+
+          {/* Offer to drop a just-reassigned/unassigned task from My Next Actions.
+              It stays on ClickUp — only the personal list changes. The regular
+              delete/two-way sync is untouched. */}
+          {offerDropFromNext && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
+              <AppIcon name="AlertTriangle" className="h-4 w-4 shrink-0 text-warning" />
+              <span className="min-w-0 flex-1 text-[12.5px] text-foreground">
+                No longer your action? Remove it from My Next Actions — it stays on ClickUp.
+              </span>
+              <Button size="none" radius="keep" layout="inline-flex items-center" type="button" onClick={() => { updateItem(item.id, { isMine: false }); setOfferDropFromNext(false); }} className="gap-1.5 rounded-md px-2.5 py-1.5 text-xs">
+                <AppIcon name="UserMinus" className="h-3.5 w-3.5" />
+                Remove from My Next Actions
+              </Button>
+              <Button variant="ghost" size="none" radius="keep" layout="" type="button" onClick={() => setOfferDropFromNext(false)} className="rounded-md px-2.5 py-1.5 text-xs">
+                Keep
+              </Button>
+            </div>
+          )}
+
+          {/* Waiting-on (delegated) */}
+          {item.waitingOn && (
+            <section>
+              <SectionLabel icon={themedIcon("Clock")}>Waiting on</SectionLabel>
+              <span className="inline-flex items-center gap-2 text-sm text-foreground">
+                <Avatar name={item.waitingOn.name} lg />
+                {item.waitingOn.name}
+                {item.delegatedAt && (
+                  <span className="text-xs text-muted-foreground">
+                    · since {relativeTime(item.delegatedAt)}
+                  </span>
+                )}
+              </span>
+              {/* The one place a real promise is stated. Empty is the normal
+                  state — nobody promised anything, and the Waiting-For overdue
+                  line reads this task's own due date live (lib/waiting.ts). Set
+                  it only when they actually committed to a date; clearing it
+                  takes the promise back rather than writing a second deadline. */}
+              <div className="mt-2 max-w-xs">
+                <MetaEdit label="Promised by" icon={themedIcon("CalendarClock")}
+                  display={item.expectedBy
+                    ? <span className={`inline-flex items-center gap-1 ${promiseLate ? "font-medium text-destructive" : ""}`}>
+                        {promiseLate ? <AppIcon name="AlertTriangle" className="h-3 w-3" /> : <AppIcon name="Clock" className="h-3 w-3" />}
+                        {relativeTime(item.expectedBy)}
+                      </span>
+                    : <span className="text-sm text-muted-foreground/70">
+                        {item.dueAt
+                          ? `not promised — judged on due ${relativeTime(item.dueAt)}`
+                          : "not promised"}
+                      </span>}
+                >
+                  {(close) => (
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="date"
+                        defaultValue={promisedValue}
+                        autoFocus
+                        onChange={(e) => {
+                          updateItem(item.id, {
+                            expectedBy: e.target.value
+                              ? new Date(e.target.value).toISOString() : "",
+                          });
+                          close();
+                        }}
+                        className="rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground focus:border-primary/50 focus:outline-none"
+                      />
+                      {item.expectedBy && (
+                        <button type="button" onClick={() => { updateItem(item.id, { expectedBy: "" }); close(); }}
+                          className="tech-transition rounded p-1 text-muted-foreground hover:text-destructive" title="Clear the promise">
+                          <AppIcon name="X" className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </MetaEdit>
+              </div>
+            </section>
+          )}
+
+          {/* Notes — editable */}
+          <section>
+            <SectionLabel>Notes</SectionLabel>
+            <EditableText
+              value={item.notes ?? ""}
+              placeholder="Add notes, links, context…"
+              emptyHint="Add notes"
+              multiline
+              onSave={(v) => updateItem(item.id, { notes: v })}
+            />
+          </section>
+
+          {/* The legacy tail — lens off only. Under the lens the shared body
+              draws subtasks, files, comments and the timeline. */}
+          {!lens && (<>
+          {/* Subtasks — editable local children (add / complete). A SYNCED
+              parent's subtasks push to ClickUp on the next push. Keyed by id so
+              it remounts (and re-fetches) cleanly when switching tasks. */}
+          <LocalSubtasksSection key={item.id} item={item} />
+
+          {/* Attachments captured with the item (local) */}
+          {item.attachments && item.attachments.length > 0 && (
+            <section>
+              <SectionLabel>Attachments</SectionLabel>
+              <AttachmentChips attachments={item.attachments} />
+            </section>
+          )}
+
+          {/* Captured-from linkage */}
+          {item.origin?.kind === "email" && (
+            <section>
+              <SectionLabel icon={themedIcon("Mail")}>Captured from</SectionLabel>
+              <p className="text-sm text-muted-foreground">
+                Email from {item.origin.fromName || item.origin.fromEmail || "someone"}
+                {item.origin.subject ? ` — “${item.origin.subject}”` : ""}{"  "}
+                <a
+                  href={originEmailHref(item.origin) ?? "/email"}
+                  className="tech-transition font-medium text-primary hover:underline"
+                >
+                  Open email
+                </a>
+              </p>
+            </section>
+          )}
+
+          {/* The sync badge a row imported before the retirement still carries.
+              ⚠️ The `!pushable` guard is gone with the push path (D52, WS-39
+              S3a-client slice 4) — nothing is queued at the Action Broker for a
+              connector that no longer exists, so the wording below no longer
+              promises a write that will never happen. */}
+          {sync && backend === "live" && (
+            <section className="rounded-lg border border-border bg-muted/30 px-3 py-2.5">
+              <TaskMeta chips={[sync]} className="text-xs" />
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                Imported from {item.provider ?? "a connected tool"} before
+                workspace sync was retired. Edits stay here.
+              </p>
+            </section>
+          )}
+
+          </>)}
+
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Updated {relativeTime(item.updatedAt)}
+            {item.completedAt ? ` · completed ${relativeTime(item.completedAt)}` : ""}
+          </p>
+        </div>
+  );
+
   return (
-    <div className="flex h-full flex-col overflow-y-auto bg-background">
+    // Under the lens the body owns the ONE scroll region and pins the
+    // composer, so the root stops scrolling; the legacy panel scrolls whole.
+    <div
+      className={`flex h-full flex-col bg-background ${lens ? "overflow-hidden" : "overflow-y-auto"}`}
+    >
       {/* Header — status chip, source, deep link, editable title */}
-      <div className="border-b border-border bg-card px-5 py-4">
+      <div className="shrink-0 border-b border-border bg-card px-5 py-4">
         {/* focused → the modal's × occupies the top-right corner; keep the
             archive/delete actions clear of it */}
         <div className={`mb-2 flex flex-wrap items-center gap-2 ${focused ? "pr-9" : ""}`}>
@@ -352,413 +954,11 @@ export function TaskDetail({
         )}
       </div>
 
-      <div className="flex flex-col gap-5 px-5 py-4">
-        {/* Next action — the cardinal GTD field, prominent + editable */}
-        <section>
-          <SectionLabel icon={themedIcon("ArrowRight")}>Next action</SectionLabel>
-          <EditableText
-            value={item.nextAction ?? ""}
-            placeholder="The next physical, visible step…"
-            emptyHint="Add the next action"
-            onSave={(v) => updateItem(item.id, { nextAction: v })}
-          />
-        </section>
-
-        {/* Metadata grid — every cell is click-to-edit.
-            ⚠️ Column count follows the SURFACE, not the viewport. This detail
-            was built for the `max-w-3xl` modal, where two columns are
-            comfortable; docking it into DESIGN_SYSTEM §6's 380px pane left each
-            cell ~170px and its label and value collided (owner-reported after
-            the S2 deploy, with a screenshot). A media query cannot fix it —
-            the pane is 380px on a 4K monitor too — so the switch is `focused`,
-            the prop that already distinguishes the two lives. */}
-        <section>
-          <SectionLabel icon={themedIcon("Tag")}>Details</SectionLabel>
-          <div className={`grid gap-2 ${focused ? "grid-cols-2" : "grid-cols-1"}`}>
-            {/* Context */}
-            <MetaEdit label="Context" icon={themedIcon("Tag")}
-              display={item.context
-                ? <span className="font-mono text-primary/90">{item.context}</span>
-                : null}
-            >
-              {(close) => (
-                <ChipMenu
-                  options={contexts.map((c) => c.name)}
-                  active={item.context}
-                  mono
-                  allowClear
-                  onPick={(v) => { updateItem(item.id, { context: v ?? "" }); close(); }}
-                />
-              )}
-            </MetaEdit>
-
-            {/* Energy */}
-            <MetaEdit label="Energy" icon={themedIcon("Gauge")}
-              display={item.energy
-                ? <span className="inline-flex items-center gap-1.5 capitalize">
-                    <span className={`h-2 w-2 rounded-full ${ENERGY_DOT[item.energy]}`} />
-                    {item.energy}
-                  </span>
-                : null}
-            >
-              {(close) => (
-                <ChipMenu
-                  options={["low", "medium", "high"]}
-                  active={item.energy}
-                  capitalize
-                  allowClear
-                  onPick={(v) => { updateItem(item.id, { energy: (v as Energy) ?? undefined }); close(); }}
-                />
-              )}
-            </MetaEdit>
-
-            {/* Estimate */}
-            <MetaEdit label="Estimate" icon={themedIcon("Zap")}
-              display={item.timeEstimateMins
-                ? <span>{durationLabel(item.timeEstimateMins)}</span>
-                : null}
-            >
-              {(close) => (
-                <ChipMenu
-                  options={ESTIMATES.map((m) => durationLabel(m))}
-                  active={item.timeEstimateMins ? durationLabel(item.timeEstimateMins) : undefined}
-                  allowClear
-                  onPick={(label) => {
-                    const mins = label ? ESTIMATES[ESTIMATES.map((m) => durationLabel(m)).indexOf(label)] : 0;
-                    updateItem(item.id, { timeEstimateMins: mins });
-                    close();
-                  }}
-                />
-              )}
-            </MetaEdit>
-
-            {/* Due */}
-            <MetaEdit label="Due" icon={themedIcon("CalendarClock")}
-              display={item.dueAt
-                ? <span className={`inline-flex items-center gap-1 ${overdue ? "font-medium text-destructive" : ""}`}>
-                    {overdue ? <AppIcon name="AlertTriangle" className="h-3 w-3" /> : <AppIcon name="Clock" className="h-3 w-3" />}
-                    {relativeTime(item.dueAt)}
-                  </span>
-                : null}
-            >
-              {(close) => (
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="date"
-                    defaultValue={dueValue}
-                    autoFocus
-                    onChange={(e) => {
-                      updateItem(item.id, {
-                        dueAt: e.target.value ? new Date(e.target.value).toISOString() : "",
-                      });
-                      close();
-                    }}
-                    className="rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground focus:border-primary/50 focus:outline-none"
-                  />
-                  {item.dueAt && (
-                    <button type="button" onClick={() => { updateItem(item.id, { dueAt: "" }); close(); }}
-                      className="tech-transition rounded p-1 text-muted-foreground hover:text-destructive" title="Clear">
-                      <AppIcon name="X" className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                </div>
-              )}
-            </MetaEdit>
-
-            {/* Stage — for a SYNCED task the raw ClickUp status (back-syncs on
-                change); for a LOCAL task the workflow stage (the My Next Actions
-                column). Local tasks always show one now, so their stage is
-                visible/changeable here too, not just on the board. */}
-            {isSynced ? (
-              /* A frozen mirror keeps its last known status, READ-ONLY: the
-                 picker's options came from the workspace and there is no
-                 workspace (D52), so offering a change would write a value
-                 nothing can honour. */
-              item.providerStatus ? (
-                <MetaEdit label="Stage" icon={themedIcon("CircleDot")}
-                  display={<span>{formatStatus(item.providerStatus)}</span>}
-                >
-                  {() => null}
-                </MetaEdit>
-              ) : null
-            ) : (
-              stageActions.stages.length > 0 && (
-                <MetaEdit label="Stage" icon={themedIcon("CircleDot")}
-                  display={<span>{stageActions.currentStage}</span>}
-                >
-                  {(close) => (
-                    <ChipMenu
-                      options={stageActions.stages}
-                      active={stageActions.currentStage}
-                      onPick={(v) => { if (v) stageActions.setStage(v); close(); }}
-                    />
-                  )}
-                </MetaEdit>
-              )
-            )}
-
-            {/* Assignee(s). A SYNCED task supports MULTIPLE owners (ClickUp
-                allows several) — a multi-select toggle list. A LOCAL task keeps
-                the single-owner flow: assigning a teammate must first create a
-                ClickUp task (they can't see a private local one), so it routes
-                through the destination picker. */}
-            {isSynced ? (
-              <MetaEdit label="Assignees" icon={themedIcon("UserRound")}
-                display={assigneeList.length
-                  ? <AssigneeStack people={assigneeList} />
-                  : null}
-              >
-                {() => (
-                  <MultiPersonMenu
-                    people={memberPeople}
-                    active={assigneeList}
-                    onToggle={(p) => {
-                      const on = assigneeList.some((a) => samePerson(a, p));
-                      const next = on
-                        ? assigneeList.filter((a) => !samePerson(a, p))
-                        : [...assigneeList, p];
-                      updateItem(item.id, { assignees: next });
-                    }}
-                    onClear={() => updateItem(item.id, { assignees: [] })}
-                  />
-                )}
-              </MetaEdit>
-            ) : (
-              <MetaEdit label="Assignee" icon={themedIcon("UserRound")}
-                display={item.assignee
-                  ? <span className="inline-flex items-center gap-1.5">
-                      <Avatar name={item.assignee.name} />
-                      {item.assignee.name}
-                    </span>
-                  : null}
-              >
-                {(close) => (
-                  <PersonMenu
-                    people={memberPeople}
-                    active={item.assignee ?? null}
-                    onPick={(p) => {
-                      // A LOCAL task assigned to a teammate must become a ClickUp
-                      // task (they can't see a private local one) → open the
-                      // destination picker. Un-assigning (p=null) just patches.
-                      if (p) {
-                        setDelegateTo(p);
-                      } else {
-                        updateItem(item.id, { assignee: p });
-                        if (item.disposition === "NEXT" && item.isMine) {
-                          setOfferDropFromNext(true);
-                        }
-                      }
-                      close();
-                    }}
-                  />
-                )}
-              </MetaEdit>
-            )}
-
-            {/* Project — the way back to the board (S6c, §4.8 point 4).
-                Re-filing happens through Clarify or "Move to project…". */}
-            {project && (
-              <div className="min-w-0 rounded-md border border-border bg-card px-3 py-2">
-                <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Project
-                </div>
-                <ProjectLabel
-                  item={item}
-                  name={project.outcome}
-                  className="mt-0.5 flex min-w-0 items-center gap-1.5 text-sm text-foreground"
-                  nameClass="truncate"
-                />
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* Priority — the matrix inputs (Important/Leveraged manual, Urgent
-            derived) + the computed cell. Not shown for unprocessed inbox items
-            (they get prioritized in the clarify card). */}
-        {item.disposition !== "INBOX" && (
-          <section className="rounded-lg border border-border bg-card px-3 py-2.5">
-            {/* Top-right of the sub-card: the priority cell pill and — right
-                beside it — the competing action nudge (delegate / schedule /
-                eliminate). Same suggestion the card carries, here in full: a
-                suggestion, not a status; dismiss with its × ("keep mine"), and
-                "Schedule?"/"Eliminate?" open their popups. */}
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Priority
-              </span>
-              <div className="flex flex-wrap items-center justify-end gap-1.5">
-                <PriorityBadge
-                  item={item}
-                  urgentWindowHours={urgentWindowHours}
-                />
-                <SuggestionBadge
-                  item={item}
-                  urgentWindowHours={urgentWindowHours}
-                />
-              </div>
-            </div>
-            <div className="mt-2">
-              <WeightToggles
-                item={item}
-                urgentWindowHours={urgentWindowHours}
-                onChange={(w) => updateItem(item.id, w)}
-              />
-            </div>
-            {isUntagged(item) && (
-              <p className="mt-1.5 text-[11px] text-muted-foreground/70">
-                Not yet judged — flag it important or leveraged, or leave it to
-                default low priority.
-              </p>
-            )}
-          </section>
-        )}
-
-        {/* Offer to drop a just-reassigned/unassigned task from My Next Actions.
-            It stays on ClickUp — only the personal list changes. The regular
-            delete/two-way sync is untouched. */}
-        {offerDropFromNext && (
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
-            <AppIcon name="AlertTriangle" className="h-4 w-4 shrink-0 text-warning" />
-            <span className="min-w-0 flex-1 text-[12.5px] text-foreground">
-              No longer your action? Remove it from My Next Actions — it stays on ClickUp.
-            </span>
-            <Button size="none" radius="keep" layout="inline-flex items-center" type="button" onClick={() => { updateItem(item.id, { isMine: false }); setOfferDropFromNext(false); }} className="gap-1.5 rounded-md px-2.5 py-1.5 text-xs">
-              <AppIcon name="UserMinus" className="h-3.5 w-3.5" />
-              Remove from My Next Actions
-            </Button>
-            <Button variant="ghost" size="none" radius="keep" layout="" type="button" onClick={() => setOfferDropFromNext(false)} className="rounded-md px-2.5 py-1.5 text-xs">
-              Keep
-            </Button>
-          </div>
-        )}
-
-        {/* Waiting-on (delegated) */}
-        {item.waitingOn && (
-          <section>
-            <SectionLabel icon={themedIcon("Clock")}>Waiting on</SectionLabel>
-            <span className="inline-flex items-center gap-2 text-sm text-foreground">
-              <Avatar name={item.waitingOn.name} lg />
-              {item.waitingOn.name}
-              {item.delegatedAt && (
-                <span className="text-xs text-muted-foreground">
-                  · since {relativeTime(item.delegatedAt)}
-                </span>
-              )}
-            </span>
-            {/* The one place a real promise is stated. Empty is the normal
-                state — nobody promised anything, and the Waiting-For overdue
-                line reads this task's own due date live (lib/waiting.ts). Set
-                it only when they actually committed to a date; clearing it
-                takes the promise back rather than writing a second deadline. */}
-            <div className="mt-2 max-w-xs">
-              <MetaEdit label="Promised by" icon={themedIcon("CalendarClock")}
-                display={item.expectedBy
-                  ? <span className={`inline-flex items-center gap-1 ${promiseLate ? "font-medium text-destructive" : ""}`}>
-                      {promiseLate ? <AppIcon name="AlertTriangle" className="h-3 w-3" /> : <AppIcon name="Clock" className="h-3 w-3" />}
-                      {relativeTime(item.expectedBy)}
-                    </span>
-                  : <span className="text-sm text-muted-foreground/70">
-                      {item.dueAt
-                        ? `not promised — judged on due ${relativeTime(item.dueAt)}`
-                        : "not promised"}
-                    </span>}
-              >
-                {(close) => (
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      type="date"
-                      defaultValue={promisedValue}
-                      autoFocus
-                      onChange={(e) => {
-                        updateItem(item.id, {
-                          expectedBy: e.target.value
-                            ? new Date(e.target.value).toISOString() : "",
-                        });
-                        close();
-                      }}
-                      className="rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground focus:border-primary/50 focus:outline-none"
-                    />
-                    {item.expectedBy && (
-                      <button type="button" onClick={() => { updateItem(item.id, { expectedBy: "" }); close(); }}
-                        className="tech-transition rounded p-1 text-muted-foreground hover:text-destructive" title="Clear the promise">
-                        <AppIcon name="X" className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </div>
-                )}
-              </MetaEdit>
-            </div>
-          </section>
-        )}
-
-        {/* Notes — editable */}
-        <section>
-          <SectionLabel>Notes</SectionLabel>
-          <EditableText
-            value={item.notes ?? ""}
-            placeholder="Add notes, links, context…"
-            emptyHint="Add notes"
-            multiline
-            onSave={(v) => updateItem(item.id, { notes: v })}
-          />
-        </section>
-
-        {/* Subtasks — editable local children (add / complete). A SYNCED
-            parent's subtasks push to ClickUp on the next push. Keyed by id so
-            it remounts (and re-fetches) cleanly when switching tasks. */}
-        <LocalSubtasksSection key={item.id} item={item} />
-
-        {/* Attachments captured with the item (local) */}
-        {item.attachments && item.attachments.length > 0 && (
-          <section>
-            <SectionLabel>Attachments</SectionLabel>
-            <AttachmentChips attachments={item.attachments} />
-          </section>
-        )}
-
-        {/* Live ClickUp detail: subtasks · comments · attachments */}
-        {isSynced && item.providerUrl && (
-          <ProviderDetailSections itemId={item.id} provider={item.provider} />
-        )}
-
-        {/* Captured-from linkage */}
-        {item.origin?.kind === "email" && (
-          <section>
-            <SectionLabel icon={themedIcon("Mail")}>Captured from</SectionLabel>
-            <p className="text-sm text-muted-foreground">
-              Email from {item.origin.fromName || item.origin.fromEmail || "someone"}
-              {item.origin.subject ? ` — “${item.origin.subject}”` : ""}{"  "}
-              <a
-                href={originEmailHref(item.origin) ?? "/email"}
-                className="tech-transition font-medium text-primary hover:underline"
-              >
-                Open email
-              </a>
-            </p>
-          </section>
-        )}
-
-        {/* The sync badge a row imported before the retirement still carries.
-            ⚠️ The `!pushable` guard is gone with the push path (D52, WS-39
-            S3a-client slice 4) — nothing is queued at the Action Broker for a
-            connector that no longer exists, so the wording below no longer
-            promises a write that will never happen. */}
-        {sync && backend === "live" && (
-          <section className="rounded-lg border border-border bg-muted/30 px-3 py-2.5">
-            <TaskMeta chips={[sync]} className="text-xs" />
-            <p className="mt-1 text-[10px] text-muted-foreground">
-              Imported from {item.provider ?? "a connected tool"} before
-              workspace sync was retired. Edits stay here.
-            </p>
-          </section>
-        )}
-
-        <p className="mt-1 text-[11px] text-muted-foreground">
-          Updated {relativeTime(item.updatedAt)}
-          {item.completedAt ? ` · completed ${relativeTime(item.completedAt)}` : ""}
-        </p>
-      </div>
+      {lens ? (
+        <LensBody key={item.id} item={item} focused={focused} strip={strip} />
+      ) : (
+        strip
+      )}
 
       {delegateTo && (
         <DelegateDialog
@@ -897,144 +1097,6 @@ function LocalSubtasksSection({ item }: { item: GtdItem }) {
         </div>
       )}
     </section>
-  );
-}
-
-// ── Live provider detail (comments / attachments / subtasks) ────────────────
-
-function ProviderDetailSections({
-  itemId,
-  provider,
-}: {
-  itemId: string;
-  provider?: string;
-}) {
-  const [detail, setDetail] = useState<ProviderTaskDetail | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  // Keyed by item.id upstream, so this component remounts per task and the
-  // initial loading=true already covers the reset — the effect only kicks off
-  // the fetch and flips state from its async callbacks (no sync setState here).
-  useEffect(() => {
-    let cancelled = false;
-    apiItemDetail(itemId)
-      .then((d) => { if (!cancelled) setDetail(d); })
-      .catch(() => { if (!cancelled) setDetail(null); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [itemId]);
-
-  if (loading) {
-    return (
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <AppIcon name="Loader2" className="h-3.5 w-3.5 animate-spin" />
-        Loading {provider === "clickup" ? "ClickUp" : provider} detail…
-      </div>
-    );
-  }
-  if (!detail) return null;
-
-  const { comments, subtasks, attachments, error } = detail;
-  const nothing =
-    !comments.length && !subtasks.length && !attachments.length;
-
-  return (
-    <>
-      {subtasks.length > 0 && (
-        <section>
-          <SectionLabel icon={themedIcon("ListTree")}>Subtasks · {subtasks.length}</SectionLabel>
-          <div className="flex flex-col gap-1">
-            {subtasks.map((s) => <SubtaskRow key={s.providerTaskId} s={s} />)}
-          </div>
-        </section>
-      )}
-
-      {attachments.length > 0 && (
-        <section>
-          <SectionLabel icon={themedIcon("Paperclip")}>
-            Attachments · {attachments.length}
-          </SectionLabel>
-          <AttachmentChips attachments={attachments} />
-        </section>
-      )}
-
-      {comments.length > 0 && (
-        <section>
-          <SectionLabel icon={themedIcon("MessageSquare")}>
-            Comments · {comments.length}
-          </SectionLabel>
-          <div className="flex flex-col gap-2.5">
-            {comments.map((c) => <CommentRow key={c.id} c={c} />)}
-          </div>
-        </section>
-      )}
-
-      {error ? (
-        <p className="text-[11px] text-muted-foreground">
-          {error}. <a
-            className="text-primary hover:underline"
-            href="#"
-            onClick={(e) => { e.preventDefault(); setLoading(true); apiItemDetail(itemId).then(setDetail).finally(() => setLoading(false)); }}
-          >Retry</a>
-        </p>
-      ) : nothing ? (
-        <p className="text-[11px] text-muted-foreground">
-          No subtasks, comments, or attachments in {provider === "clickup" ? "ClickUp" : "the tool"}.
-        </p>
-      ) : null}
-    </>
-  );
-}
-
-function SubtaskRow({ s }: { s: TaskSubtask }) {
-  const done = s.statusType === "closed" || s.statusType === "done";
-  const inner = (
-    <div className="flex items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm">
-      <span
-        className={[
-          "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
-          done ? "border-success bg-success/15 text-success" : "border-border",
-        ].join(" ")}
-      >
-        {done && <AppIcon name="Check" className="h-2.5 w-2.5" />}
-      </span>
-      <span className={`min-w-0 flex-1 truncate ${done ? "text-muted-foreground line-through" : "text-foreground"}`}>
-        {s.title}
-      </span>
-      {s.status && (
-        <span className="shrink-0 rounded-full bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
-          {formatStatus(s.status)}
-        </span>
-      )}
-      {s.assignees[0] && <Avatar name={s.assignees[0].name} />}
-      {s.providerUrl && <AppIcon name="ExternalLink" className="h-3 w-3 shrink-0 text-muted-foreground/60" />}
-    </div>
-  );
-  return s.providerUrl ? (
-    <a href={s.providerUrl} target="_blank" rel="noreferrer" className="tech-transition hover:opacity-80">
-      {inner}
-    </a>
-  ) : inner;
-}
-
-function CommentRow({ c }: { c: TaskComment }) {
-  return (
-    <div className="flex gap-2">
-      <Avatar name={c.author} lg />
-      <div className="min-w-0 flex-1 rounded-lg rounded-tl-sm border border-border bg-card px-3 py-2">
-        <div className="mb-0.5 flex items-center gap-2">
-          <span className="text-xs font-semibold text-foreground">{c.author}</span>
-          {c.createdAtMs && (
-            <span className="text-[10px] text-muted-foreground">
-              {relativeTime(new Date(c.createdAtMs).toISOString())}
-            </span>
-          )}
-        </div>
-        <p className="whitespace-pre-wrap break-words text-sm text-muted-foreground">
-          {c.text}
-        </p>
-      </div>
-    </div>
   );
 }
 

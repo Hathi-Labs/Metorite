@@ -99,6 +99,8 @@ const PANEL_HIDDEN_EVENTS = new Set([
   "user_input_requested",
   "confirmation_requested",
   "generative_ui",
+  // A dispatched browser action (H-164): a side effect with nothing to show.
+  "frontend_tool",
 ]);
 
 /** A typed renderer for a specific custom-event `name`, returning the card body

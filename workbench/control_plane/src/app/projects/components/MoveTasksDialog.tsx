@@ -31,17 +31,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
-import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Modal from "@/components/ui/Modal";
 import SelectButton from "@/components/ui/SelectButton";
 
 import { type MovePlan, projectsApi } from "../lib/api";
-import {
-  classify,
-  withAssignee,
-  withoutAssignee,
-} from "../lib/assignees";
+import { withAssignee, withoutAssignee } from "../lib/assignees";
 import {
   type FieldDef,
   missingSentence,
@@ -51,6 +46,7 @@ import {
 } from "../lib/customFields";
 import { askedFields, readPlan } from "../lib/movePlan";
 import { LEVEL_ICONS, type ProjectNode, nodeKind, nodeLevel } from "../lib/tree";
+import { AssigneeChips } from "./AssigneeChips";
 import { AssigneePicker } from "./AssigneePicker";
 import { FieldControl } from "./CustomFieldValues";
 
@@ -516,35 +512,15 @@ export function MoveTasksDialog({
             {promote ? (
               <div className="space-y-1">
                 <p className="font-medium text-foreground">Assignees</p>
-                <div className="flex flex-wrap items-center gap-1">
-                  {assignees.map((who) => {
-                    const kind = classify(who);
-                    return (
-                      <Badge
-                        key={who}
-                        tone={kind === "unknown" ? "warning" : "neutral"}
-                        icon={kind === "agent" ? "Bot" : undefined}
-                        title={kind === "unknown" ? "Not an email or agent:<name>" : who}
-                      >
-                        {who}
-                        <button
-                          type="button"
-                          disabled={busy}
-                          aria-label={`Unassign ${who}`}
-                          onClick={() =>
-                            setAssignees((current) => withoutAssignee(current, who))
-                          }
-                          className="opacity-70 hover:opacity-100"
-                        >
-                          <Icon name="X" className="h-3 w-3" />
-                        </button>
-                      </Badge>
-                    );
-                  })}
-                  {assignees.length === 0 ? (
-                    <span className="text-muted-foreground">Nobody yet</span>
-                  ) : null}
-                </div>
+                {/* S6e — the ONE chips component the task panel's body draws. */}
+                <AssigneeChips
+                  assignees={assignees}
+                  disabled={busy}
+                  emptyClass="text-muted-foreground"
+                  onRemove={(who) =>
+                    setAssignees((current) => withoutAssignee(current, who))
+                  }
+                />
                 <AssigneePicker
                   value={assigneeText}
                   onChange={setAssigneeText}

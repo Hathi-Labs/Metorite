@@ -656,11 +656,6 @@ describe("checkboxes go through the Checkbox primitive", () => {
     "app/notes/components/NotesSettingsModal.tsx": 2,
     "app/settings/groups/page.tsx": 1,
     "app/settings/organization/OrganizationAdmin.tsx": 1,
-    "app/tasks/components/FlatList.tsx": 1,
-    "app/tasks/components/ItemList.tsx": 1,
-    "app/tasks/components/TaskCard.tsx": 1,
-    "app/tasks/components/TaskListGrouped.tsx": 1,
-    "app/tasks/components/WaitingForView.tsx": 1,
     "app/workflows/components/TriggerPanel.tsx": 3,
   };
 
@@ -1177,7 +1172,9 @@ describe("the headless substrate is wrapped, not imported", () => {
    * satisfies an import scan forever while the behaviour is gone.
    */
   const TOAST_CALLERS = [
-    "app/projects/components/TaskPanel.tsx",
+    // S6e — the status change moved into the shared body with the rest of
+    // the blocks; `TaskPanel.tsx` is a host now and calls no mutation.
+    "app/projects/components/TaskBody.tsx",
     "app/projects/components/TableView.tsx",
     "app/projects/components/NotificationBell.tsx",
   ];

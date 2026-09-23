@@ -1,6 +1,7 @@
 "use client";
 
 import Icon from "@/components/Icon";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { useFlash } from "@/components/useFlash";
 import { clampCursor, stepCursor } from "@/lib/cursor";
 import { useMemo, useState } from "react";
@@ -154,8 +155,7 @@ export function WaitingForView({ items }: { items: GtdItem[] }) {
               <div className="min-w-0 flex-1">
               {selectMode ? (
                 <label className="flex cursor-pointer items-center gap-2 pl-3 hover:bg-secondary/40">
-                  <input
-                    type="checkbox"
+                  <Checkbox
                     checked={selectedIds.has(item.id)}
                     onChange={(e) =>
                       toggleSelected(
@@ -164,7 +164,7 @@ export function WaitingForView({ items }: { items: GtdItem[] }) {
                         rows,
                       )
                     }
-                    className="h-4 w-4 shrink-0 accent-primary"
+                    aria-label={selectedIds.has(item.id) ? "Deselect task" : "Select task"}
                   />
                   <div className="pointer-events-none min-w-0 flex-1">
                     <WaitingRow item={item} who={g.label} nowMs={now} />

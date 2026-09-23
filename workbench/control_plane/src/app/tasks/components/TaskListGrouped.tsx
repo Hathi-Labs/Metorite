@@ -1,6 +1,7 @@
 "use client";
 
 import Icon from "@/components/Icon";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { QuickAdd } from "@/components/QuickAdd";
 import { useFlash } from "@/components/useFlash";
 import { clampCursor, stepCursor } from "@/lib/cursor";
@@ -531,13 +532,11 @@ function DraggableRow({
           draggable={false}
           className="flex w-6 shrink-0 cursor-pointer items-center justify-center"
         >
-          <input
-            type="checkbox"
+          <Checkbox
             checked={selected}
             onChange={(e) =>
               onToggleSelected((e.nativeEvent as MouseEvent).shiftKey)
             }
-            className="h-4 w-4 accent-primary"
             aria-label={selected ? "Deselect task" : "Select task"}
           />
         </label>
