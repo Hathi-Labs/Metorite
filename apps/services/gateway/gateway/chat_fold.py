@@ -248,6 +248,11 @@ def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
                 **sub_fields,
             })
 
+        elif t == "CUSTOM" and ev.get("name") == "frontend_tool":
+            # A dispatched browser action (H-164): a side effect, not part of
+            # the answer. The page ran it live; the message never keeps it.
+            pass
+
         elif t == "CUSTOM":
             custom_events.append({
                 "name": str(ev.get("name") or ""),

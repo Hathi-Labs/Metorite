@@ -3,8 +3,8 @@
 **Status: ACTIVE. S1 (the reads) and S2 (the daily writes) built
 2026-09-22. S2b (the rest of class B), S3 (the guarded acts) and S4 (the
 workflows, the views and the forms) and S5 (the rest of the manifest)
-built 2026-09-23. Left: the visual review, and the frontend-tool
-dispatcher (H-164).** §10 says which slice each part
+built 2026-09-23. S6 (navigation and the frontend-tool dispatcher) built
+2026-09-23. Left: the visual review (H-157).** §10 says which slice each part
 belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already

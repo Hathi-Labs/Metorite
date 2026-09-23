@@ -383,7 +383,9 @@ async function translateAndPersistStream(
           out = { type: "state_delta", delta: ev.delta ?? [] };
         } else if (t === "CUSTOM") {
           const cev = { name: String(ev.name ?? ""), value: ev.value ?? null };
-          customEvents.push(cev);
+          // A dispatched browser action (H-164) is a side effect, not part
+          // of the answer: forwarded to the page, never saved on the message.
+          if (cev.name !== "frontend_tool") customEvents.push(cev);
           out = { type: "custom", name: cev.name, value: cev.value };
         } else if (t === "SUB_AGENT_TEXT_DELTA") {
           const agent = String(ev.agentName ?? "");
