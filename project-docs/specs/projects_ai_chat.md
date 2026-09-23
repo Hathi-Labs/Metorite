@@ -3,8 +3,8 @@
 **Status: ACTIVE. S1 (the reads) and S2 (the daily writes) built
 2026-09-22. S2b (the rest of class B), S3 (the guarded acts) and S4 (the
 workflows, the views and the forms) and S5 (the rest of the manifest)
-built 2026-09-23. Left: the visual review, and the frontend-tool
-dispatcher (H-164).** §10 says which slice each part
+built 2026-09-23. S6 (navigation and the frontend-tool dispatcher) built
+2026-09-23. Left: the visual review (H-157).** §10 says which slice each part
 belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
@@ -395,9 +395,17 @@ raw text, and it never needs a card file change to ship. §7.3 depends on this.
 **Frontend tools, navigation only.** Through `useFrontendTool`
 (`src/hooks/useFrontendTool.ts`): `open_task(id)`, `open_project(id)`,
 `open_app("analytics" | "reports")`, `set_filter(...)`. None writes data.
-⚠️ Not built. `executeFrontendTool` has no dispatcher in the platform yet
-(S4 finding, H-164), so navigation is served by the cards' own links
-(`?task=`, `?app=`) until the platform wires one.
+**Built in S6 (2026-09-23).** The platform had the registry and no way
+to reach it: the model's tools are server-side. `acb_skills.frontend_tools`
+is the dispatcher. A skill tool pushes one CUSTOM `frontend_tool` event onto
+the run's stream, and `AgentChat` runs the registered handler once per event
+id. The Projects page registers `projects.open_task`, `projects.open_project`
+and `projects.open_app`. The model reaches them through `open_in_app`, which
+reads the row first and always returns the link as well. The result says
+"asked", not "opened": the run cannot see whether a Projects page consumed
+the event. A dispatch is kept off the stored message and runs once per event
+id, across a reload. `set_filter` is not
+built. The page's filter state has no stable shape to hand a model yet.
 
 **The board follows the chat.** A receipt card that reports a done write
 fires `cc-projects-changed` once, and the Projects page reloads the selected
@@ -620,7 +628,8 @@ Each slice is one pull request. Each one is useful alone.
 | **S3 · Guarded** — ✅ **BUILT 2026-09-23** | The seventeen class C tools in `guarded.py` with impact-first cards · the one-act-one-card rule and its test · the agent instructions name the guarded acts | AGENT-SAFE |
 | **S4 · Workflows** — ✅ **BUILT 2026-09-23** | W1 plan (`propose_plan` over a `planCard`), W2 status report (`status_report`), W3 weekly (`render_report`), W4 stuck and W5 triage (instructions over the tools) · five templates in the shared catalog (`timeline`, `taskBoard`, `dataGrid`, `reportCard`, `planCard`) with a lockstep fence · `edit_task` and `edit_project` over a `formCard` · the board reloads after a chat write (`cc-projects-changed`) · the chat model setting reused | AGENT-SAFE |
 | **S5 · The rest** — ✅ **BUILT 2026-09-23** | The eleven reads and writes that were still in `PLANNED` (`inbox.py`: views, calendar, contexts, watchers, intake, notifications, grants). `PLANNED` is empty of WS-27bm names: every `/projects` route is built or excluded by name | AGENT-SAFE |
-| **Left** | The visual review in light mode, compact density and a changed accent (H-157, after the flag flip) · frontend navigation tools once the platform has a dispatcher (H-164) | AGENT-SAFE |
+| **S6 · Navigation** — ✅ **BUILT 2026-09-23** | The frontend-tool dispatcher (`acb_skills.frontend_tools`, `runFrontendToolEvent`) · `open_in_app` and the page's three handlers · the two S2 follow-ups (an unknown address named on the card, the subtasks receipt opens the parent) | AGENT-SAFE |
+| **Left** | The visual review in light mode, compact density and a changed accent (H-157) | AGENT-SAFE |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-09-30 |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 

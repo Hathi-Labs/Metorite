@@ -96,23 +96,6 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-164 · `useFrontendTool` describes tools the run can never call · [AGENT]
-- **Check:** `grep -rn "executeFrontendTool(" workbench/control_plane/src --include=*.ts --include=*.tsx | grep -v "hooks/useFrontendTool.ts"`
-  → no hit outside the hook's own file means no dispatcher exists.
-- **Why:** `src/hooks/useFrontendTool.ts` registers browser-side tools and
-  `AgentChat` adds their description to the persona, so the model believes
-  it can call `open_task(id)`. Nothing maps a TOOL_CALL event for such a
-  name back to the registered handler, so the call lands nowhere. The
-  Projects chat spec §4.2 lists four navigation tools on this seam. S4
-  (2026-09-23) served navigation through card links instead (`?task=`,
-  `?app=`) and left the seam alone, because a second half-mechanism in one
-  app is the drift CLAUDE.md §4 forbids. The repair is one dispatcher in
-  `AgentChat`: on a TOOL_CALL whose name is registered, run the handler and
-  answer the run through `/agent/respond-input`. Then the four tools cost
-  one registration each.
-- **Authority:** `specs/projects_ai_chat.md` §4.2 · `src/hooks/useFrontendTool.ts` · `generative_ui_2.md` §2
-- **Added:** 2026-09-23 · the Projects chat S4 build
-
 ### H-163 · The My Tasks cutover is in flight. The spec owns the order · [AGENT]
 - **Check:** `rg -c "lensEnabled\(\)" workbench/control_plane/src/app/tasks/lib/api.ts`
   → below 25 means S6a has not landed. `\dt gtd_*` on the box → any row means
