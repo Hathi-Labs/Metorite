@@ -120,8 +120,8 @@ line — never reclaim a number by deleting the other entry.
   → a hit means S5 has not landed.
 - **Why:** owner directive 2026-09-23 (D73). `specs/my_tasks_cutover.md` §5
   holds nine slices in a load-bearing order, and §6 the corrected runbook.
-  H-33, H-59, H-62, H-29 and H-151 stay open until the slice that closes each
-  one lands. §8 of the spec says which.
+  H-29 and H-151 stay open until the slice that closes each one lands (S6e
+  closed H-33, H-59 and H-62). §8 of the spec says which.
 - ⚠️ **Migration 190 is in the production ledger as applied.** The drop needs
   a new migration that calls `gtd_retirement_drop()` again. Do not wait for
   "the next deploy" to run it.

@@ -32,6 +32,7 @@ import {
   projectsApi,
 } from "@/app/projects/lib/api";
 import { taskDeepLink } from "@/app/projects/lib/card";
+import { fetchMyTaskLanes } from "../lib/api";
 import { SourceBadge } from "./SourceBadge";
 import { AttachmentChips } from "./AttachmentComposer";
 import { ClarifyPanel } from "./ClarifyPanel";
@@ -208,22 +209,23 @@ function LensBody({
 
   useEffect(() => {
     let live = true;
-    projectsApi
-      .task(item.id)
-      .then(async (row) => {
+    // The task as the project sees it, and its lanes off the LENS read
+    // (`/my/tasks/{id}` carries `statuses`, S6e repair): the lane route
+    // under `/nodes` is behind a grant a member reached by assignment alone
+    // may not hold, and a 404 there was a dead Status select. Fields and
+    // tags are behind that same grant and are best effort: a body with no
+    // tag suggestions beats no body.
+    Promise.all([projectsApi.task(item.id), fetchMyTaskLanes(item.id)])
+      .then(async ([row, lanes]) => {
         if (!live) return;
         setTask(row);
-        // Lanes are per ROOT (`load_default_status`); the statuses route
-        // resolves the owner from any node, so the task's own project is
-        // the right key. Fields and tags are best effort: a body with no
-        // tag suggestions beats no body.
-        const [lanes, defs, registry] = await Promise.all([
-          projectsApi.statuses(row.project_id),
-          projectsApi.fields(row.root_project_id ?? row.project_id).catch(() => ({ rows: [] })),
-          projectsApi.tags(row.root_project_id ?? row.project_id).catch(() => ({ rows: [] })),
+        setStatuses(lanes as StatusRow[]);
+        const root = row.root_project_id ?? row.project_id;
+        const [defs, registry] = await Promise.all([
+          projectsApi.fields(root).catch(() => ({ rows: [] as FieldRow[] })),
+          projectsApi.tags(root).catch(() => ({ rows: [] as TagRow[] })),
         ]);
         if (!live) return;
-        setStatuses(lanes.rows);
         setFields(defs.rows);
         setTags(registry.rows);
       })
@@ -249,6 +251,13 @@ function LensBody({
   }
 
   return (
+    <>
+      {/* The read that failed, said where the body would have been. */}
+      {error ? (
+        <p className="shrink-0 border-b border-border bg-muted px-3 py-2 text-xs text-foreground">
+          {error}
+        </p>
+      ) : null}
     <TaskBody
       task={task}
       statuses={statuses}
@@ -270,6 +279,7 @@ function LensBody({
         else router.push(taskDeepLink({ id }));
       }}
     />
+    </>
   );
 }
 
@@ -623,9 +633,12 @@ export function TaskDetail({
             </div>
           </section>
 
-          {/* Priority — the matrix inputs (Important/Leveraged manual, Urgent
-              derived) + the computed cell. Not shown for unprocessed inbox items
-              (they get prioritized in the clarify card). */}
+          {/* Focus matrix — the member's OWN Eisenhower inputs (Important /
+              Leveraged manual, Urgent derived) + the computed cell. ⚠️ Not
+              "Priority": the shared body draws the task's Priority integer
+              (`pm_tasks.importance`) under that name, and D53.8 keeps the two
+              apart. Not shown for unprocessed inbox items (they get judged in
+              the clarify card). */}
           {item.disposition !== "INBOX" && (
             <section className="rounded-lg border border-border bg-card px-3 py-2.5">
               {/* Top-right of the sub-card: the priority cell pill and — right
@@ -635,7 +648,7 @@ export function TaskDetail({
                   "Schedule?"/"Eliminate?" open their popups. */}
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Priority
+                  Focus matrix
                 </span>
                 <div className="flex flex-wrap items-center justify-end gap-1.5">
                   <PriorityBadge

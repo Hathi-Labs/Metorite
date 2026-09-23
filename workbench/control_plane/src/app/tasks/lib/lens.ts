@@ -364,8 +364,10 @@ const MY_ROUTES: Readonly<Record<string, string>> = {
   // S6b — a member's own categories (`routes/projects/personal.py`, PR #391).
   areas: "my/areas",
   area: "my/areas/{area_id}",
-  // S6e — the projects I lead (`routes/projects/personal.py`).
+  // S6e — the projects I lead, and the lanes one of my tasks can be in
+  // (`routes/projects/personal.py`).
   led: "my/led",
+  lanes: "my/tasks/{task_id}/lanes",
 };
 
 const at = (template: string, id: string): string =>
@@ -468,6 +470,41 @@ export async function lensFetchLed(): Promise<LensLedProject[]> {
     myTasks: (Array.isArray(r.my_tasks) ? (r.my_tasks as Raw[]) : []).map(
       mapLensItem,
     ),
+  }));
+}
+
+/** A lane as `/my/tasks/{id}` carries it — the shape `StatusRow` reads. */
+export interface LensLane {
+  id: string;
+  project_id: string;
+  name: string;
+  color: string;
+  position: number;
+  category: string;
+  is_default?: boolean;
+}
+
+/**
+ * The lanes one of my tasks can be in (S6e repair) — `my/tasks/{id}/lanes`,
+ * behind the same membership check as the single read.
+ *
+ * ⚠️ Not `nodes/{project_id}/statuses`: that route is behind the project
+ * grant, and a member who reaches a task by assignment alone holds none, so
+ * it 404s and the shared body's Status select is dead. The membership
+ * fragment IS this member's grant. A sibling read rather than a field on
+ * `/my/tasks/{id}`, because the gateway holds its three personal readers
+ * to one key set for this mapper's sake.
+ */
+export async function lensMyTaskLanes(id: string): Promise<LensLane[]> {
+  const res = await projectsCall<ListResponse>(at(MY_ROUTES.lanes, id));
+  return rowsOf(res).map((r) => ({
+    id: String(r.id ?? ""),
+    project_id: String(r.project_id ?? ""),
+    name: String(r.name ?? ""),
+    color: String(r.color ?? ""),
+    position: num(r.position) ?? 0,
+    category: String(r.category ?? ""),
+    is_default: Boolean(r.is_default),
   }));
 }
 

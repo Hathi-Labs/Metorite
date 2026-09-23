@@ -6,9 +6,10 @@ Spec `my_tasks_cutover.md` §4.8 · §5 S6e · D73.8 · board WS-39.
 
 S6e's two reads make claims a hermetic fake cannot judge:
 
-  * `?untriaged=true` is the LEFT JOIN's NULL (`p.task_id IS NULL`) on the
-    real `pm_task_personal` join, and an overlay row holding ONLY a context
-    (no disposition) must still take the row out of the group;
+  * `?untriaged=true` is "no STATED disposition" on the real
+    `pm_task_personal` join: no row, or a row whose `disposition` is NULL. A
+    context alone and a planner block alone must LEAVE the row in the
+    group; a disposition write must take it out;
   * `/my/led` is `lower(lead) = :who` on `pm_projects` with the tenant arm,
     the personal tree excluded, and `open_tasks` counted through the closed
     vocabulary on real status rows;
@@ -119,7 +120,7 @@ async def main() -> None:
                 {"e": who, "org": org})
 
         # ── 1. assign a task to Bob → Bob's untriaged, not Alice's ─────────
-        sales, todo, done = await _project(db, org, "Sales", None, PM)
+        sales, todo, _ = await _project(db, org, "Sales", None, PM)
         quote = await _task(db, org, sales, todo, "Draft the quote", 1, created_by=PM)
         await db.execute(text(
             "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by) "
@@ -130,19 +131,34 @@ async def main() -> None:
               bobs == {"Draft the quote"} and alices == set(),
               f"bob={sorted(bobs)} alice={sorted(alices)}")
 
-        # ── 2. Bob writes a context → the row leaves the group ─────────────
-        #     Through the ONE upsert `set_personal` uses. A context and
-        #     nothing else: the overlay row exists, the disposition is still
-        #     unstated, and the LEFT JOIN is no longer NULL.
+        # ── 2a. a context alone keeps it in the group ──────────────────────
+        #     Through the ONE upsert `set_personal` and the planner use. The
+        #     overlay row now exists with `disposition` NULL: the LEFT JOIN
+        #     is no longer NULL, and the clause's second arm still admits it.
         await _upsert_personal(db, str(quote), BOB, {"context": "@calls"})
         after = await _untriaged_titles(db, org, BOB)
+        check("2a a context alone keeps the row in the group",
+              after == {"Draft the quote"}, f"untriaged={sorted(after)}")
+
+        # ── 2b. a planner block alone keeps it too ─────────────────────────
+        #     `apply_blocks` writes exactly these two columns.
+        await _upsert_personal(db, str(quote), BOB, {
+            "scheduled_start": "2026-09-24T09:00:00+00:00",
+            "scheduled_end": "2026-09-24T10:00:00+00:00"})
+        after = await _untriaged_titles(db, org, BOB)
+        check("2b a planner block alone keeps the row in the group",
+              after == {"Draft the quote"}, f"untriaged={sorted(after)}")
+
+        # ── 2c. a stated disposition is the triage ─────────────────────────
+        await _upsert_personal(db, str(quote), BOB, {"disposition": "NEXT"})
+        after = await _untriaged_titles(db, org, BOB)
         stated = (await db.execute(text(
-            "SELECT disposition, context FROM pm_task_personal "
+            "SELECT disposition, context, scheduled_start FROM pm_task_personal "
             "WHERE task_id = :t AND member_email = :who"),
             {"t": quote, "who": BOB})).fetchone()
-        check("2 Bob writes a context and the row leaves the group",
+        check("2c a disposition write takes the row out of the group",
               after == set() and stated is not None
-              and stated.disposition is None and stated.context == "@calls",
+              and stated.disposition == "NEXT" and stated.context == "@calls",
               f"untriaged={sorted(after)} row={stated}")
 
         # ── 3. a second untriaged task stays: the clause is per row ────────
@@ -192,6 +208,17 @@ async def main() -> None:
         names = [r["name"] for r in await led_projects_for(db, BOB, org)]
         check("6 the personal root is excluded even when its lead is its owner",
               names == ["Launch"], f"got {names}")
+
+        # ── 6b. a member the directory does not know leads nothing ─────────
+        #     `org=None` binds through as NULL, the way `my_tasks_binds` does.
+        #     An empty list, not a 500 on `CAST('None' AS uuid)`.
+        try:
+            nobody = await led_projects_for(db, f"ghost-{TAG}@fracktal.in")
+            check("6b a member with no directory row gets an empty led list",
+                  nobody == [], f"got {nobody}")
+        except Exception as exc:  # noqa: BLE001 — the failure IS the finding
+            check("6b a member with no directory row gets an empty led list",
+                  False, f"{type(exc).__name__}: {exc}")
 
         # ── 7. another tenant sees none of it ──────────────────────────────
         other = (await db.execute(text(

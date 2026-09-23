@@ -43,6 +43,7 @@ import {
   lensFetchProjects,
   lensFetchUntriaged,
   lensMyOverlay,
+  lensMyTaskLanes,
   lensFileUnder,
   lensItemDetail,
   lensMergeInto,
@@ -1119,6 +1120,23 @@ describe("continuity with Projects (S6e)", () => {
     expect(led).toHaveLength(1);
     expect(led[0]).toMatchObject({ id: "p1", name: "Launch", taskPrefix: "LN", openTasks: 4 });
     expect(led[0].myTasks[0]).toMatchObject({ id: "task-1", projectId: "p1", context: "@computer" });
+  });
+
+  it("reads a task's lanes through the membership door, not the grant one", async () => {
+    const { calls, restore } = stub([
+      { rows: [{ id: "s1", name: "To do", category: "todo", position: 10 }], total: 1 },
+    ]);
+    let lanes;
+    try {
+      lanes = await lensMyTaskLanes("task-1");
+    } finally {
+      restore();
+    }
+    expect(calls[0].url).toBe("/api/projects/my/tasks/task-1/lanes");
+    expect(calls[0].url).not.toContain("/nodes/");
+    expect(lanes).toEqual([
+      { id: "s1", project_id: "", name: "To do", color: "", position: 10, category: "todo", is_default: false },
+    ]);
   });
 
   it("answers the viewer's own overlay for the Projects chip, or null", async () => {

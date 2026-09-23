@@ -487,16 +487,19 @@ card landed in S6c (`ProjectLabel.tsx`), so S6e does not build it again.
 **Built.** Branch `my-tasks-s6e`. The record below holds the decisions the
 scope did not settle.
 
-1. **`untriaged=true` means a company board.** The clause is
-   `p.task_id IS NULL AND proj.personal_owner IS NULL`. A capture in my own
-   tree writes no overlay row either, and it is not "from Projects". The
-   constant is `UNTRIAGED_CLAUSE` in `personal.py`, and the live check reads
-   it.
+1. **`untriaged=true` means "no stated disposition", on a company board.**
+   The clause is `(p.task_id IS NULL OR p.disposition IS NULL) AND
+   proj.personal_owner IS NULL`. Triage is a disposition write, which
+   Clarify and a quick dispose always make. A context, an estimate or a
+   planner block is not a triage (`apply_blocks` upserts the same row).
+   The member may never have seen who assigned the task. A capture
+   in my own tree is not "from Projects". The constant is
+   `UNTRIAGED_CLAUSE` in `personal.py`, and the live check reads it.
 2. **`is_triaged` did not change meaning.** It is the disposition fact, and
-   the Weekly Review reads it. A context alone leaves it false and still
-   takes the row out of the group. The client keeps a set of ids
-   (`fromProjectIds`). It drops one on any overlay write. Then it re-reads
-   the server's set behind the gesture.
+   the Weekly Review reads it. The client keeps a set of ids
+   (`fromProjectIds`). A dispose or a clarify drops the id at once. The
+   re-read of the server's set runs after the write resolves. A refused
+   write puts the id back first. Fence: `fromProjects.test.ts`.
 3. **Every inbox row now carries `project_name`.** A member reached by
    assignment alone may hold no grant on the project, so the row names
    itself.
@@ -523,6 +526,17 @@ scope did not settle.
 9. **The way back is one `Badge`** in the Projects panel header, read
    through `lensMyOverlay` under the lens. It says "Untriaged" when the
    viewer holds a row with a context and no disposition.
+9a. **The strip's matrix section is "Focus matrix", never "Priority".**
+   The body's Priority cell is `pm_tasks.importance`, the task's shared
+   integer. The strip's chips are `GtdItem.important` and its pair (D53.8).
+   Fence: `itemDetail.test.ts` refuses two equal labels in the lens host.
+9b. **`GET /my/tasks/{id}/lanes` is the lane list** of the node that owns
+   the set. It sits behind the same membership check as the single read.
+   `/nodes/{id}/statuses` is behind the project grant, and a member reached
+   by assignment alone holds none. A sibling read, not a field on
+   `/my/tasks/{id}`: the three personal readers keep one key set. The
+   shared body reads its lanes through `fetchMyTaskLanes`, and draws a read
+   error where the body would have been.
 10. **The five raw checkboxes are `Checkbox`.** `conformance.test.ts`'s
     baseline lost the five rows. `selectionParity.test.ts` now reads for
     `<Checkbox`.
@@ -530,10 +544,10 @@ scope did not settle.
     `untriaged` flag needs no manifest row, because the manifest keys on the
     verb and the path.
 
-**Verified.** `tests/live/live_ws39_s6e.py` on the dev database, 7/7 PASS.
-`test_projects_personal_s6e.py`, 9 tests. The vitest fences:
-`itemDetail.test.ts` (7), `lens.test.ts` (56), `selectionParity.test.ts`
-(13).
+**Verified.** `tests/live/live_ws39_s6e.py` on the dev database, 10/10
+PASS. `test_projects_personal_s6e.py`, 12 tests. The vitest fences:
+`itemDetail.test.ts` (10), `fromProjects.test.ts` (4), `lens.test.ts` (56),
+`selectionParity.test.ts` (13).
 
 ### S7 — the cutover · dev-phase window, reported by evidence · RUN 2026-09-23
 

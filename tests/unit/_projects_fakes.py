@@ -1681,11 +1681,14 @@ class FakeProjectsDB:
                 wanted = str(args.get("context") or "").lower()
                 if str(mine.get("context") or "").lower() != wanted:
                     continue
-            # WS-39 S6e — `?untriaged=true`: no overlay row of mine at all.
-            # The LEFT JOIN's `p.task_id IS NULL`, mirrored as "no row", not
-            # as "no disposition" — a row holding only a context is triaged.
+            # WS-39 S6e — `?untriaged=true`: no STATED disposition of mine.
+            # Keyed off the statement: `p.task_id IS NULL` alone means "no
+            # row", and with `p.disposition IS NULL` beside it a row that
+            # holds only a context or a planner block still counts.
             if "p.task_id IS NULL" in statement and mine:
-                continue
+                stated = mine.get("disposition") is not None
+                if "p.disposition IS NULL" not in statement or stated:
+                    continue
             # …and never from my own tree (`proj.personal_owner IS NULL`).
             if "proj.personal_owner IS NULL" in statement and str(
                 task.get("project_id"),

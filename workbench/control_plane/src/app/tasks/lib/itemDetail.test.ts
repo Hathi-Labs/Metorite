@@ -112,3 +112,73 @@ describe("one task panel composition (S6e)", () => {
     expect(src).toContain("above={strip}");
   });
 });
+
+// ── No two labels alike in one host (S6e repair) ────────────────────────────
+//
+// D53.8: `GtdItem.important` (the member's Eisenhower pair) is NOT
+// `pm_tasks.importance` (the task's shared Priority integer). The first S6e
+// draw put "Priority" on both — the strip's matrix section and the body's
+// cell — with two different values a hand's width apart. Every label a
+// member reads in the lens host has to be unique, case-insensitive, across
+// the strip and the body together.
+
+/** The labels the lens host draws: the strip's, minus its lens-off blocks. */
+function lensHostLabels(): string[] {
+  let strip = HOSTS["tasks/components/ItemDetail.tsx"];
+  // The legacy-only blocks (`{!lens && (<> … </>)}`) never draw under the
+  // lens; their Due, Stage and Assignee cells are the body's job there.
+  strip = strip.replace(/\{!lens && \(<>[\s\S]*?<\/>\)\}/g, "");
+  const found: string[] = [];
+  for (const m of strip.matchAll(/<MetaEdit label="([^"]+)"/g)) found.push(m[1]);
+  for (const m of strip.matchAll(/<SectionLabel[^>]*>\s*([A-Za-z][^<{]*?)\s*<\/SectionLabel>/g)) {
+    found.push(m[1]);
+  }
+  // The uppercase span labels the strip draws by hand (the matrix card, the
+  // project cell): a `text-[10px] font-semibold uppercase` span's text.
+  for (const m of strip.matchAll(
+    /<(?:span|div) className="text-\[10px\] font-semibold uppercase[^"]*">\s*([A-Za-z][^<{]*?)\s*<\//g,
+  )) {
+    found.push(m[1]);
+  }
+  // The strip's section heading under the lens.
+  found.push("My planning");
+  for (const m of BODY.matchAll(/(?:<FieldCell|<CollapsibleSection)[^>]*?\blabel="([^"]+)"/g)) {
+    found.push(m[1]);
+  }
+  return found.map((l) => l.trim()).filter(Boolean);
+}
+
+describe("no two labels alike in the lens host (D53.8)", () => {
+  const labels = lensHostLabels();
+
+  it("reads both halves", () => {
+    expect(labels).toContain("Focus matrix");
+    expect(labels).toContain("Priority");
+    expect(labels).toContain("Context");
+    expect(labels).toContain("Due");
+  });
+
+  it("refuses two section or cell labels that are equal, case-insensitive", () => {
+    const seen = new Map<string, string>();
+    const clashes: string[] = [];
+    for (const label of labels) {
+      const key = label.toLowerCase();
+      const prior = seen.get(key);
+      if (prior !== undefined) clashes.push(`${prior} / ${label}`);
+      else seen.set(key, label);
+    }
+    expect(
+      clashes,
+      "Two controls with one name and two values on one panel. The body's " +
+        "'Priority' is pm_tasks.importance; the strip's matrix is 'Focus matrix'.",
+    ).toEqual([]);
+  });
+
+  it("never calls the member's matrix 'Priority'", () => {
+    const strip = HOSTS["tasks/components/ItemDetail.tsx"].replace(
+      /\{!lens && \(<>[\s\S]*?<\/>\)\}/g,
+      "",
+    );
+    expect(strip).not.toMatch(/uppercase[^"]*">\s*Priority\s*</);
+  });
+});

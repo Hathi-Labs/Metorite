@@ -17,7 +17,10 @@ Hermetic: no Postgres, no network.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
+from fastapi import HTTPException
 from gateway.routes.projects import bulk as pm_bulk
 from gateway.routes.projects import core as pm_core
 from gateway.routes.projects import personal as pm_personal
@@ -91,11 +94,12 @@ async def test_a_task_assigned_to_bob_is_in_bobs_untriaged_group_not_alices(
     assert await _untriaged(ALICE) == []
 
 
-async def test_writing_a_context_is_the_triage_and_the_row_leaves_the_group(
+async def test_a_disposition_write_is_the_triage_and_the_row_leaves_the_group(
     db: FakeProjectsDB,
 ) -> None:
-    """Any overlay write is the triage. A context alone — no disposition —
-    still means Bob has looked at it, because the row now exists."""
+    """Triage is a STATED disposition, which Clarify always writes. A context
+    alone is not: the row exists, the disposition is still NULL, and the
+    member may never have seen who put the task there."""
     project, todo, _ = _team_project(db)
     task = db.seed_task(project.id, todo.id, title="Draft the quote")
     _assign(db, task.id, "bob@fracktal.in")
@@ -104,16 +108,35 @@ async def test_writing_a_context_is_the_triage_and_the_row_leaves_the_group(
     await pm_personal.set_personal(
         str(task.id), pm_personal.PersonalIn(context="@calls"), user=BOB,
     )
+    still = await _untriaged(BOB)
+    assert [r["id"] for r in still] == [str(task.id)], "a context alone is not a triage"
+    assert still[0]["context"] == "@calls"
+    assert still[0]["is_triaged"] is False
 
+    await pm_personal.set_personal(
+        str(task.id), pm_personal.PersonalIn(disposition="NEXT"), user=BOB,
+    )
     assert await _untriaged(BOB) == []
     # …and it is still in the plain inbox: triage files it, never hides it.
     inbox = await pm_personal.my_inbox(user=BOB, page=page())
     assert [r["id"] for r in inbox.rows] == [str(task.id)]
-    assert inbox.rows[0]["context"] == "@calls"
-    assert inbox.rows[0]["is_triaged"] is False, (
-        "is_triaged is the DISPOSITION fact (the Weekly Review's), and a "
-        "context alone does not state one — the two flags mean two things"
+    assert inbox.rows[0]["is_triaged"] is True
+
+
+async def test_a_planner_block_alone_does_not_triage(db: FakeProjectsDB) -> None:
+    """`apply_blocks` upserts the scheduled block onto the overlay row. A
+    task the day planner packed is still one the member has not filed."""
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id, title="Draft the quote")
+    _assign(db, task.id, "bob@fracktal.in")
+    db.seed(
+        "pm_task_personal", task_id=task.id, member_email="bob@fracktal.in",
+        scheduled_start=datetime(2026, 9, 24, 9, tzinfo=UTC),
+        scheduled_end=datetime(2026, 9, 24, 10, tzinfo=UTC),
     )
+    rows = await _untriaged(BOB)
+    assert [r["id"] for r in rows] == [str(task.id)]
+    assert rows[0]["scheduled_start"] is not None
 
 
 async def test_the_untriaged_group_is_composed_on_the_one_fragment(
@@ -212,6 +235,44 @@ async def test_led_excludes_the_personal_tree_and_archived_projects(
 
     rows = (await pm_personal.my_led_projects(user=BOB))["rows"]
     assert [r["id"] for r in rows] == [str(live.id)]
+
+
+async def test_led_answers_empty_for_a_member_the_directory_does_not_know(
+    db: FakeProjectsDB,
+) -> None:
+    """No directory row means no tenant. The route binds NULL through, the
+    way `my_tasks_binds` does, and answers an empty list — never a 500 on
+    `CAST('None' AS uuid)`."""
+    _team_project(db, name="Ours", lead="bob@fracktal.in")
+    db.organization_id = None
+    assert await pm_personal.my_led_projects(user=BOB) == {"rows": [], "total": 0}
+    read = next(s for s in db.statements if "lower(lead) = :who" in s)
+    bound = next(a for st, a in db.calls if st == read)
+    assert bound["vis_org"] is None
+
+
+async def test_my_task_lanes_answer_behind_the_membership_check(
+    db: FakeProjectsDB,
+) -> None:
+    """The lanes a task of mine can be in, so the shared task body can draw
+    its Status select for a task the member reaches by assignment alone —
+    `/nodes/{id}/statuses` is behind a grant they may not hold. 404 for a
+    task that is not mine, exactly as the single read answers."""
+    project, todo, done = _team_project(db)
+    task = db.seed_task(project.id, todo.id, title="Draft the quote")
+    _assign(db, task.id, "bob@fracktal.in")
+    out = await pm_personal.my_task_lanes(str(task.id), user=BOB)
+    assert [(s["id"], s["name"], s["category"]) for s in out["rows"]] == [
+        (str(todo.id), "To do", "todo"),
+        (str(done.id), "Done", "done"),
+    ]
+    assert out["total"] == 2
+    with pytest.raises(HTTPException) as caught:
+        await pm_personal.my_task_lanes(str(task.id), user=ALICE)
+    assert caught.value.status_code == 404
+    # …and the single read's key set did not grow: the three personal
+    # readers stay one shape (`test_projects_personal.py`'s fence).
+    assert "statuses" not in await pm_personal.my_task(str(task.id), user=BOB)
 
 
 async def test_led_is_tenant_bound(db: FakeProjectsDB) -> None:

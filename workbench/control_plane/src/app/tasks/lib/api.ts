@@ -23,6 +23,7 @@ import {
   lensFetchMyRoot,
   lensFetchLed,
   lensFetchUntriaged,
+  lensMyTaskLanes,
   lensFetchProjects,
   lensFileUnder,
   lensItemDetail,
@@ -40,7 +41,7 @@ import {
   lensStatusCatalog,
   lensTrashItem,
 } from "./lens";
-import type { LensArea, LensAreaRemoval, LensLedProject, LensMoveRequest } from "./lens";
+import type { LensArea, LensAreaRemoval, LensLane, LensLedProject, LensMoveRequest } from "./lens";
 export type { LensArea, LensAreaRemoval } from "./lens";
 
 // ── The cutover seam (WS-39 S3a-client) ────────────────────────────────
@@ -952,6 +953,12 @@ export async function fetchUntriaged(): Promise<GtdItem[]> {
 export async function fetchLedProjects(): Promise<LensLedProject[]> {
   if (!lensEnabled()) return [];
   return lensFetchLed();
+}
+
+/** One task's lanes, through the door the assignee arm can pass. */
+export async function fetchMyTaskLanes(id: string): Promise<LensLane[]> {
+  if (!lensEnabled()) return [];
+  return lensMyTaskLanes(id);
 }
 
 /** Why the three Area WRITES refuse with the flag off, rather than no-op. */

@@ -93,28 +93,6 @@ import {
   type LensAreaRemoval,
 } from "./api";
 
-/** The `ItemMetaPatch` keys that land on MY overlay row (`pm_task_personal`)
- *  rather than on the shared task — writing one is the triage that takes a
- *  task out of "From Projects" (S6e). Mirrors `OVERLAY_KEYS` in `lens.ts`,
- *  spelled in the store's camelCase. */
-const OVERLAY_TRIAGE_KEYS: ReadonlyArray<keyof ItemMetaPatch> = [
-  "nextAction",
-  "context",
-  "energy",
-  "timeEstimateMins",
-  "important",
-  "leveraged",
-  "deepWork",
-  "keptMine",
-  "expectedBy",
-  "scheduledStart",
-  "scheduledEnd",
-  "flexible",
-  "actualStart",
-  "actualEnd",
-  "isMine",
-];
-
 /** Fire-and-forget a live-backend sync; the optimistic local update already
  *  happened, so a transient failure only means the next hydrate reconciles. */
 function sync(promise: Promise<unknown>): void {
@@ -147,8 +125,8 @@ function disposeLive(
   get: Getter,
   ids: string[],
   disposition: Disposition,
-): void {
-  void apiBulkDispose(ids, disposition).then(
+): Promise<void> {
+  return apiBulkDispose(ids, disposition).then(
     (rows) => {
       if (!rows.length) return;
       const byId = new Map(rows.map((r) => [r.id, r]));
@@ -824,14 +802,17 @@ interface TaskState {
    * `/my/inbox?untriaged=true`, rows with no overlay row of mine. The Inbox
    * draws them in a group at the top until I triage one.
    *
-   * ANY overlay write is the triage — a context, a disposition, a defer —
-   * because the row then exists. `markTriaged` drops the id at once so the
-   * group answers the gesture, and re-reads the server so the set stays
-   * the server's answer and never a client-side guess.
+   * A STATED disposition is the triage — what Clarify and a quick dispose
+   * write. A context, a defer or a planner block is not (the gateway's
+   * `UNTRIAGED_CLAUSE` says why). `markTriaged` drops the ids at once so
+   * the group answers the gesture, then re-reads the server's set AFTER the
+   * write resolves — a re-read fired before the PATCH lands sees the
+   * pre-write state and puts the id straight back. A refused write restores
+   * the ids before that re-read.
    */
   fromProjectIds: ReadonlySet<string>;
   loadFromProjects: () => Promise<void>;
-  markTriaged: (ids: readonly string[]) => void;
+  markTriaged: (ids: readonly string[], write: Promise<unknown>) => void;
   /** S6e — the projects I lead (`/my/led`), with their open counts and my
    *  own open tasks in each. Empty with the flag off. */
   ledProjects: LensLedProject[];
@@ -1373,7 +1354,6 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   clarify: (id, decision, weight) => {
     flushPendingPurge(get().undoSnapshot, get().backend);
-    get().markTriaged([id]);
     // The confirmed matrix flags overlay the decision. Applied locally to the
     // clarified row and (live) patched after organize, independent of the GTD
     // disposition so the golden-eval organize path stays untouched.
@@ -1464,6 +1444,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     });
     if (get().backend === "live") {
       const apply = apiOrganize(id, decisionToOrganizeBody(decision));
+      // A clarify decision states a disposition: it is the triage (S6e).
+      get().markTriaged([id], apply);
       // ⚠️ A refused decision is NOT swallowed (S6a repair). The row moved
       // optimistically above; a 4xx from organize (the assign guard, a
       // privacy refusal, a missing project) used to vanish into `sync`, and
@@ -1552,7 +1534,6 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   quickDispose: (id, disposition) => {
     flushPendingPurge(get().undoSnapshot, get().backend);
-    get().markTriaged([id]);
     set((s) => ({
       items: s.items.map((i) => (i.id === id ? disposeOne(i, disposition) : i)),
       processedThisSession: s.processedThisSession + 1,
@@ -1565,12 +1546,13 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         changedIds: [id],
       },
     }));
-    if (get().backend === "live") disposeLive(set, get, [id], disposition);
+    if (get().backend === "live") {
+      get().markTriaged([id], disposeLive(set, get, [id], disposition));
+    }
   },
 
   bulkDispose: (ids, disposition) => {
     flushPendingPurge(get().undoSnapshot, get().backend);
-    get().markTriaged(ids);
     set((s) => {
       const set_ = new Set(ids);
       const affected = s.items.filter(
@@ -1591,7 +1573,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         },
       };
     });
-    if (get().backend === "live") disposeLive(set, get, ids, disposition);
+    if (get().backend === "live") {
+      get().markTriaged(ids, disposeLive(set, get, ids, disposition));
+    }
   },
 
   archiveItem: (id, archived) => {
@@ -1817,15 +1801,23 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 
-  markTriaged: (ids) => {
+  markTriaged: (ids, write) => {
     const current = get().fromProjectIds;
-    if (!ids.some((id) => current.has(id))) return;
+    const dropped = ids.filter((id) => current.has(id));
+    if (dropped.length === 0) return;
     const next = new Set(current);
-    for (const id of ids) next.delete(id);
+    for (const id of dropped) next.delete(id);
     set({ fromProjectIds: next });
-    // The server's answer, after the write lands. A title edit is not a
-    // triage; the re-read puts such an id back.
-    void get().loadFromProjects();
+    const restore = () =>
+      set((s) => ({ fromProjectIds: new Set([...s.fromProjectIds, ...dropped]) }));
+    // The server's answer, AFTER the write lands — never before it.
+    void write.then(
+      () => get().loadFromProjects(),
+      () => {
+        restore();
+        return get().loadFromProjects();
+      },
+    );
   },
 
   loadLedProjects: async () => {
@@ -2081,7 +2073,6 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   deferItem: (id, dateIso) => {
-    get().markTriaged([id]);
     set((s) => ({
       items: s.items.map((i) =>
         i.id === id
@@ -2104,11 +2095,6 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   updateItem: (id, patch) => {
-    // An overlay field in the patch is a triage (S6e). A title or a note
-    // is the task's, shared with the board, and is not.
-    if (OVERLAY_TRIAGE_KEYS.some((k) => patch[k] !== undefined)) {
-      get().markTriaged([id]);
-    }
     set((s) => ({
       items: s.items.map((i) => {
         if (i.id !== id) return i;

@@ -6,6 +6,7 @@ Spec: ``project-docs/specs/project_management_app.md`` §3.11-§3.12, §6.1 ·
     GET   /projects/my/inbox                     → my work, with my overlay
     GET   /projects/my/inbox?untriaged=true      → …the rows I have not looked at (S6e)
     GET   /projects/my/led                       → the projects I lead (S6e)
+    GET   /projects/my/tasks/{task_id}/lanes     → the lanes one of mine can be in (S6e)
     GET   /projects/my/tasks/{task_id}           → one of them, same shape
     GET   /projects/my/project                   → my personal project
     POST  /projects/my/project                   → …creating it if absent
@@ -1102,12 +1103,17 @@ def _project_task(row: Any) -> tuple[dict[str, Any], str]:
     return task, effective
 
 
-#: "I have never looked at this" — no overlay row of mine at all, off the
-#: LEFT JOIN in ``MY_TASKS_FROM`` — AND it came from a company board. A
-#: capture in my own tree writes no overlay row either, and it is not
-#: "from Projects": I put it there. One spelling, shared by the route and
-#: the live check (`tests/live/live_ws39_s6e.py`), so the two cannot drift.
-UNTRIAGED_CLAUSE = "p.task_id IS NULL AND proj.personal_owner IS NULL"
+#: "I have never looked at this" — no STATED disposition of mine (no overlay
+#: row, or a row with ``disposition`` NULL) — AND it came from a company
+#: board. Triage is a disposition write, which Clarify always makes. A
+#: context, an estimate or a planner block (``apply_blocks`` upserts the
+#: scheduled block onto the same row) is not a triage: the member may never
+#: have seen who put the task there. A capture in my own tree is not "from
+#: Projects" either. One spelling, shared by the route and the live check
+#: (`tests/live/live_ws39_s6e.py`), so the two cannot drift.
+UNTRIAGED_CLAUSE = (
+    "(p.task_id IS NULL OR p.disposition IS NULL) AND proj.personal_owner IS NULL"
+)
 
 
 @router.get("/my/inbox")
@@ -1128,10 +1134,9 @@ async def my_inbox(
     is the "From Projects" group at the top of My Tasks' inbox — a task a
     colleague assigned to me on a board, which the derivation rule of D53
     would otherwise file straight into Next Actions as if I had chosen it.
-    Any overlay write (a context, a disposition, a defer) is the triage, and
-    the row leaves the group because the row now exists. Composed on the one
-    membership fragment: the LEFT JOIN's ``p.task_id IS NULL`` is the whole
-    predicate. Each row also carries ``assigned_by`` — who put it there.
+    A DISPOSITION write is the triage (``UNTRIAGED_CLAUSE`` says why a
+    context or a planner block is not). Composed on the one membership
+    fragment. Each row also carries ``assigned_by`` — who put it there.
 
     **No visibility clause**, deliberately, and for the same reason
     ``/assigned-to-me`` has none: assignment is itself the strongest claim to a
@@ -1274,6 +1279,10 @@ async def led_projects_for(
     ``live_ws39_s6a.py`` overrides ``vis_org``."""
     who = (email or "").strip().lower()
     org = org if org is not None else await resolve_organization_id(db, who)
+    # A member the directory does not know has no tenant. Bound through as
+    # NULL, the way `my_tasks_binds` binds it: `= CAST(NULL AS uuid)` matches
+    # nothing and the answer is an empty list, not a 500 on `CAST('None')`.
+    org_bind = str(org) if org is not None else None
     rows = (await db.execute(
         text(
             "SELECT * FROM pm_projects "
@@ -1283,7 +1292,7 @@ async def led_projects_for(
             "   AND archived_at IS NULL "
             " ORDER BY lower(name)"
         ),
-        {"vis_org": str(org), "who": who},
+        {"vis_org": org_bind, "who": who},
     )).fetchall()
     if not rows:
         return []
@@ -1301,7 +1310,7 @@ async def led_projects_for(
     mine: list[dict[str, Any]] = []
     params = {
         **await my_tasks_binds(db, who, archived=False, led_ids=list(led)),
-        "vis_org": str(org),
+        "vis_org": org_bind,
     }
     for task_row in (await db.execute(text(sql), params)).fetchall():
         task, effective = _project_task(task_row)
@@ -1346,6 +1355,48 @@ async def my_task(
     email = actor(user).lower()
     async with _tenant_session() as db:
         return await _read_my_task(db, email, task_id)
+
+
+@router.get("/my/tasks/{task_id}/lanes")
+async def my_task_lanes(
+    task_id: str, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The lanes one of MY tasks can be in — id, name, category, position
+    — behind the same membership check as the single read (WS-39 S6e repair).
+
+    The shared task body draws a Status select. ``/nodes/{id}/statuses`` is
+    behind the project grant, and a member who reaches a task by assignment
+    alone holds none, so that read 404s and the select is dead. Here the
+    membership fragment is the grant: ``_read_my_task`` answers 404 for a
+    task that is not mine, exactly as ``/my/tasks/{id}`` does.
+
+    A sibling read rather than a field on ``/my/tasks/{id}``, on purpose.
+    ``test_the_inbox_and_the_calendar_project_the_same_task_shape`` holds the
+    three personal readers to one key set, so the client's one mapper never
+    reads ``undefined`` off the short one — and a lane list on every inbox
+    row would be a query per root on every page. ``status_owner_id`` walks to
+    the node that owns the set (migration 196), the board's own resolution.
+    """
+    email = actor(user).lower()
+    async with _tenant_session() as db:
+        task = await _read_my_task(db, email, task_id)
+        owner = await status_owner_id(db, str(task["project_id"]))
+        rows = (await db.execute(
+            text(
+                "SELECT id, name, category, position, is_default "
+                "  FROM pm_task_statuses WHERE project_id = CAST(:root AS uuid) "
+                " ORDER BY position, name"
+            ),
+            {"root": owner},
+        )).fetchall()
+    lanes = [
+        {
+            "id": str(r.id), "name": r.name, "category": r.category,
+            "position": r.position, "is_default": bool(getattr(r, "is_default", False)),
+        }
+        for r in rows
+    ]
+    return {"rows": lanes, "total": len(lanes)}
 
 
 async def _read_my_task(db: Any, email: str, task_id: str) -> dict[str, Any]:
