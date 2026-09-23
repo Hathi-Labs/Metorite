@@ -484,7 +484,7 @@ card landed in S6c (`ProjectLabel.tsx`), so S6e does not build it again.
 4. The visual pass of CLAUDE.md §4. Light mode, compact density and a changed
    accent. My Tasks beside Projects at four widths. Screenshots in the PR.
 
-### S7 — the cutover · dev-phase window, reported by evidence
+### S7 — the cutover · dev-phase window, reported by evidence · RUN 2026-09-23
 
 **Scope.** Run `docs/TASKS_LENS.md`'s runbook in the corrected order (§6).
 
@@ -536,6 +536,25 @@ card landed in S6c (`ProjectLabel.tsx`), so S6e does not build it again.
 1. `rg -il "gtd" workbench/control_plane/src apps/skills apps/agents tests`
    returns only files that describe the method.
 2. `npx tsc --noEmit && npx vitest run` green. The named pytest files green.
+
+### S7 run record (2026-09-23, UTC)
+
+- Backup: `/opt/acb/backups/2026-09-22T235052Z/postgres.dump`, 2.4 MB, taken by
+  `acb-backup.service` with a verified restore, before the move.
+- Step 5 failed once. Migration 196's CHECK refused the root insert. Migration
+  212 re-defined the function. It reached the ledger at 00:19 UTC.
+- The move applied at 00:21 UTC: 1 owner, 1 personal root, 0 sub-projects,
+  2 tasks. Both dispositions survived (INBOX, SOMEDAY). `gtd_backfill_plan`
+  returned zero rows afterwards.
+- The flags: `TASKS_LENS=1` in `/opt/acb/app/.env`, and `NEXT_PUBLIC_TASKS_LENS=1`
+  in `workbench/control_plane/.env.local`. ⚠️ The apply script reconciles only
+  the internal token into `.env.local`, so the browser flag must be written
+  there by hand. `docs/TASKS_LENS.md` now says so.
+- Deploy run 35801944712 (workflow_dispatch) rebuilt and restarted at 00:29 UTC.
+  `/version` reports `tasks_lens: true`. The served bundle carries the inlined
+  literal `NEXT_PUBLIC_TASKS_LENS:"1"`.
+- The sweep ran after the flip for both organizations.
+- Owed: the same-page-load check of step 9 by a signed-in member.
 
 ## 6. The cutover runbook, corrected
 
