@@ -55,7 +55,7 @@ from sqlalchemy import text
 #:
 #: ⚠️ **This tuple and the CHECK are ONE rule in two places.** A kind added here
 #: alone raises `IntegrityError` on the insert, which reads as a 500 rather than
-#: as a missing migration. The CHECK started in 152 and migration 213 widened it
+#: as a missing migration. The CHECK started in 152 and migration 214 widened it
 #: for `nudge`. `test_projects_nudge.py` reads BOTH files and fails when they
 #: disagree, so the pair cannot drift again.
 #:

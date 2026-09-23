@@ -12,7 +12,7 @@ Action-Broker work and owner-gated (CLAUDE.md §3a rule 3).
 
 🔴 **The rule most likely to rot is the one at the bottom of this file**: the
 Python kind vocabulary and the database CHECK are one rule in two places, and
-a kind in one alone is a 500 rather than a refusal. Migration 213 widened the
+a kind in one alone is a 500 rather than a refusal. Migration 214 widened the
 CHECK, and `test_projects_notifications.py` reads the whole ladder for the
 EFFECTIVE definition rather than the migration that first created it.
 """
@@ -235,17 +235,17 @@ def test_nudge_is_a_kind_the_notifier_accepts():
     assert "nudge" in pm_notify.NOTIFICATION_KINDS
 
 
-def test_migration_213_widens_the_check_for_it():
+def test_migration_214_widens_the_check_for_it():
     """The database half of the same rule.
 
     ⚠️ `test_projects_notifications.py::test_the_kind_vocabulary_matches_the_module`
-    is the general fence and reads the whole ladder. This one names 213, so a
+    is the general fence and reads the whole ladder. This one names 214, so a
     revert of that single file fails HERE with the reason, rather than as a set
     comparison somewhere else.
     """
     from pathlib import Path
 
     sql = (Path(__file__).resolve().parents[2] / "infra" / "postgres"
-           / "213_projects_nudge_notification.sql").read_text(encoding="utf-8")
+           / "214_projects_nudge_notification.sql").read_text(encoding="utf-8")
     assert "pm_notifications_kind_check" in sql
     assert "'nudge'" in sql
