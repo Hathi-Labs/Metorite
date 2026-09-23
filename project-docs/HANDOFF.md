@@ -881,25 +881,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/project_management_app.md` §9.13 · D-PM-29 · CLAUDE.md §5
 - **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
 
-### H-130 · A two-key ORDER BY in the fake honours only the first key · [AGENT]
-- **Check:** `grep -n "_ordered" tests/unit/_projects_fakes.py` → it sorts on
-  the first key of `ORDER BY created_at DESC, id DESC` and drops the tiebreak.
-- **How it shows.** `test_projects_hardening.py::test_an_intervening_activity_breaks_the_run`
-  fails 3 of 3 runs under Python 3.12 and passes 6 of 6 under 3.13. It is not
-  the code. `time.get_clock_info('time').resolution` is `0.015625` on 3.12 and
-  `1e-07` on 3.13 — a verifier measured 19995 of 20000 consecutive
-  `datetime.now(UTC)` calls returning the SAME value on 3.12. Every
-  `created_at` ties, the stable sort returns insertion order,
-  `_coalescible_prior` picks the OLDEST row, and the assertion is `1 == 2`.
-- **⚠️ CI cannot see it.** CI pins 3.12, but the Linux clock is fine, so it
-  stays green. This bites on a Windows checkout and reads as the branch under
-  test being broken.
-- **Proved pre-existing** by running the merge-base tree under the same
-  interpreter: 4 of 6 runs fail there too.
-- **The fix.** Teach `_ordered` the remaining keys.
-- **Authority:** `tests/unit/_projects_fakes.py` · R8
-- **Added:** 2026-09-20 · found by the round-2 verifier on PR #301.
-
 ### H-127 · The move has no end-to-end test, and that is where its P0s live · [AGENT]
 - **Check:** `grep -rn "move_tasks" tests/unit/test_projects_move_routes.py`
   → only the refusals. No test drives a cross-status-set move to completion.
@@ -2976,36 +2957,20 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `people_center_app.md` §5.6 · `work_plan.md` §6 (d)
 - **Added:** 2026-09-22 · the seats-and-roles session
 
-### H-159 · A timeline tie-break is decided by a random UUID, and one test flakes on it · [AGENT]
-- **Check:** `for i in 1 2 3 4 5 6; do uv run pytest tests/unit/test_projects_hardening.py -q -k test_an_intervening_activity_breaks_the_run 2>&1 | tail -1; done`
-  → any `failed` line means this is still open.
-- **Why:** `core.py` orders the activity spine by `created_at DESC, id DESC`.
-  Two rows written inside one clock tick tie on `created_at`, and the tie is
-  then decided by a random UUID. The S1 verifier measured
-  `test_an_intervening_activity_breaks_the_run` failing 3 times in 6 on
-  Python 3.12 in a worktree, and 16 of 16 passing on `main`'s 3.13 venv. The
-  code under test is byte-identical. The coalescing rule in
-  `record_field_change` reads "the latest row", so the flake is a real
-  ordering fragility, not a test artefact. H-88 records a sibling.
-- **Authority:** `routes/projects/core.py` (`ORDER BY created_at DESC, id DESC`) ·
-  `tests/unit/test_projects_hardening.py` · H-88
-- **Added:** 2026-09-22 · the Projects chat S1 verification
-
-### H-160 · A key-mint audit test splits the token on the wrong underscore, and flakes red · [AGENT]
-- **Check:** `grep -n 'token.split("_")\[-1\]' tests/unit/test_provision_mints_the_key.py`
-  → a hit means this is still open.
-- **Why:** `test_the_mint_is_AUDITED_by_prefix_and_never_by_token` takes the
-  secret as `token.split("_")[-1]`. A base64url secret can carry an
-  underscore, so the tail is sometimes one character. On 2026-09-22 CI run
-  35697285473 the tail was `c`, `'c' in <the audit row>` was true, and the
-  test failed with "the audit trail recorded the SECRET" on a branch that
-  does not touch keys. The same commit's merge run passed. Use
-  `split_key(token)` for both halves, the way the test already does for the
-  prefix, and assert on the whole secret. Landed with #370 on main.
-- **What it costs:** a deploy gated on `tests/unit/` goes red at random.
-- **Authority:** `tests/unit/test_provision_mints_the_key.py` · `apps/services/customer_console/customer_console/keys.py::split_key`
-- **Added:** 2026-09-22 · the Projects chat S1 merge
-
+### H-162 · Two Projects chat follow-ups from the S2 review · [AGENT]
+- **Check:** `grep -n 'if "@" in raw' apps/skills/skill-projects/skill_projects/writes.py`
+  → a hit means the first item is still open.
+- **Why:** (1) `_resolve_assignee` passes any address-shaped string
+  through to `PUT /tasks/{id}/assignees`, which accepts any string
+  (D-PM-4). The card shows the address, so consent holds. The chat is still
+  wider than the picker. One directory read before the card would let the
+  card say "the directory does not know this address". (2)
+  `ActionResultCard` jumps to the FIRST `full_id` in a result. So the
+  receipt for `add_subtasks` opens the first subtask, under a heading that
+  names the parent. Print the parent's id first, or jump to it. Both are
+  small. Neither loses data.
+- **Authority:** `specs/projects_ai_chat.md` §3.2 · the S2 review, 2026-09-22
+- **Added:** 2026-09-22 · the Projects chat S2 session. Minted as H-161, renumbered to H-162 because main took H-161 first
 
 # DONE — deleted, not archived
 

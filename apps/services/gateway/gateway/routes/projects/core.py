@@ -2877,7 +2877,12 @@ async def _coalescible_prior(
         text(
             f"SELECT * FROM pm_activities WHERE {clause} "
             "AND deleted_at IS NULL "
-            "ORDER BY created_at DESC, id DESC LIMIT 1"
+            # `seq`, not `id`. Every row written in one transaction shares
+            # `created_at` (now() is the TRANSACTION timestamp), and `id`
+            # is a random UUID — so "the latest row" was a coin toss, and
+            # half the time the intervening event that should BREAK the run
+            # was the row that lost. Migration 213 carries the argument.
+            "ORDER BY created_at DESC, seq DESC LIMIT 1"
         ),
         {"target": str(target)},
     )).fetchone()
