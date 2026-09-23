@@ -2119,11 +2119,14 @@ async def defer_task(
 ) -> dict:
     """Hide a task from my inbox until a date. Mine only — the team's board is
     unaffected, because deferring is a statement about my attention, not about
-    the work."""
+    the work. The one exception is D76's: SOMEDAY is an open disposition, so
+    deferring a FINISHED task reopens it through `reopen_if_closed`, as every
+    other overlay door does."""
     email = actor(user).lower()
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        await load_visible_task(db, vis, task_id)
+        task = await load_visible_task(db, vis, task_id)
+        await reopen_if_closed(db, task, email, "SOMEDAY")
         row = await _upsert_personal(db, task_id, email, {
             "defer_until": payload.until, "disposition": "SOMEDAY",
         })

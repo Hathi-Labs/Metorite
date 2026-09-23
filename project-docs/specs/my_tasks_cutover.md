@@ -385,7 +385,7 @@ actuals (`actual_end - actual_start`), bound to the task the caller can see.
 3. **An open disposition on a closed task reopens it for the board.** Without
    this the lane wins, and "mark not done" snaps back to DONE. The gateway
    does it once, in `reopen_if_closed`. Every overlay door calls it: the
-   PATCH, the bulk `personal` action and organize. The checkbox, Focus mode
+   PATCH, the bulk `personal` action, organize and defer. The checkbox, Focus mode
    and Undo reach the bulk action. The task moves to the first `todo` lane
    of its own set. The move goes through `apply_status_transition`, so the
    timeline records the reopen.

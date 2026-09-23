@@ -526,3 +526,16 @@ def test_insight_counts_ages_the_inbox_by_the_one_rule() -> None:
     body = src[src.index("async def insight_counts"):]
     body = body[:body.index("async def items_by_origin")]
     assert "not_yet(it.defer_until, it.start_date, at)" in body
+
+
+async def test_deferring_a_finished_task_reopens_it(db: FakeProjectsDB) -> None:
+    """Defer writes SOMEDAY, an open disposition, so it takes the one reopen."""
+    project, todo, done = _team_project(db)
+    task = db.seed_task(project.id, done.id)
+    _assign(db, task.id, "alice@fracktal.in")
+    await pm_personal.defer_task(
+        str(task.id), pm_personal.DeferIn(until="2099-01-01T09:00:00+00:00"),
+        user=ALICE,
+    )
+    shared = next(t for t in db.rows("pm_tasks") if str(t["id"]) == str(task.id))
+    assert str(shared["status_id"]) == str(todo.id)
