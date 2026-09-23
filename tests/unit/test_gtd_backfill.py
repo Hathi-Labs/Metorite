@@ -387,6 +387,26 @@ def test_216_arms_then_lets_190s_guard_decide() -> None:
     assert "TRUNCATE" not in body.upper()
 
 
+#: gtd_items columns the backfill (212) never copies. A value in any of them
+#: would be lost, so 216 refuses. `flexible` is exempt: NULL reads as flexible.
+UNCOPIED = (
+    "origin", "attachments", "sort_key", "leveraged", "kept_mine", "deep_work",
+    "scheduled_start", "scheduled_end", "actual_start", "actual_end",
+    "parent_item_id", "archived_at", "workflow_stage", "assignees", "horizon_id",
+)
+
+
+def test_216_refuses_a_value_the_backfill_never_copied() -> None:
+    body = sql(S8)
+    block = body[body.index("$s8_uncopied$"):body.rindex("$s8_uncopied$")]
+    for column in UNCOPIED:
+        assert f"('{column}'," in block, f"216 does not check gtd_items.{column}"
+    assert "'flexible'" not in block
+    assert "RAISE EXCEPTION" in block
+    # It runs before anything changes, so a refusal leaves the box as it was.
+    assert body.index("$s8_uncopied$") < body.index("$s8_commitments$")
+
+
 def test_216_moves_the_commitment_before_the_drop() -> None:
     """`task_id` is filled from `gtd_items.migrated_task_id`, so the copy must
     run while `gtd_items` exists, and only onto a pm_tasks row that exists."""

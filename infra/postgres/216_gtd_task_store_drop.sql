@@ -14,6 +14,8 @@
 --
 -- Steps, in order:
 --
+--   (0) Refuse when a `gtd_items` row holds a value in a column the backfill
+--       never copied. The RAISE names the column and the row count.
 --   (c) `wa_commitments.gtd_item_id` -> `task_id`. The copy goes FIRST,
 --       because it reads `gtd_items.migrated_task_id`. Migration 211 was the
 --       expand half. This is the contract half, and it drops the old column.
@@ -52,6 +54,70 @@
 -- ============================================================================
 
 BEGIN;
+
+-- ── (0) Refuse to drop a value the backfill never copied ────────────────────
+--
+-- The backfill (212, the last definition) copies the title, the notes, the
+-- disposition, context, energy, the estimate, the dates and `deleted_at`. It
+-- copies nothing else. A row that holds a value in another column would lose
+-- it here, and we cannot roll back (R6). So each column below must hold its
+-- default, or this file RAISES and names the column and the row count.
+--
+-- `archived_at` is on the list. 212 maps `deleted_at` to the new store's
+-- `archived_at`, and it never reads the old `archived_at` column.
+-- `flexible` is exempt: the new store reads NULL as flexible.
+-- Production passed this check by hand on 2026-09-23 (my_tasks_cutover.md
+-- §5 S8). This block makes the check hold on every other box too.
+--
+-- Read through dynamic SQL, because a lone re-run of migration 48 builds a
+-- `gtd_items` that lacks most of these columns.
+
+DO $s8_uncopied$
+DECLARE
+    v_check record;
+    v_rows  bigint;
+BEGIN
+    IF to_regclass('public.gtd_items') IS NULL THEN
+        RETURN;
+    END IF;
+
+    FOR v_check IN
+        SELECT * FROM (VALUES
+            ('origin',          'origin IS NOT NULL AND origin NOT IN (''{}''::jsonb, ''null''::jsonb)'),
+            ('attachments',     'attachments IS NOT NULL AND attachments NOT IN (''[]''::jsonb, ''null''::jsonb)'),
+            ('sort_key',        'sort_key IS NOT NULL'),
+            ('leveraged',       'leveraged'),
+            ('kept_mine',       'kept_mine'),
+            ('deep_work',       'deep_work'),
+            ('scheduled_start', 'scheduled_start IS NOT NULL'),
+            ('scheduled_end',   'scheduled_end IS NOT NULL'),
+            ('actual_start',    'actual_start IS NOT NULL'),
+            ('actual_end',      'actual_end IS NOT NULL'),
+            ('parent_item_id',  'parent_item_id IS NOT NULL'),
+            ('archived_at',     'archived_at IS NOT NULL'),
+            ('workflow_stage',  'workflow_stage IS NOT NULL'),
+            ('assignees',       'assignees IS NOT NULL AND assignees NOT IN (''[]''::jsonb, ''null''::jsonb)'),
+            ('horizon_id',      'horizon_id IS NOT NULL')
+        ) AS c(col, predicate)
+    LOOP
+        CONTINUE WHEN NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name = 'gtd_items' AND column_name = v_check.col);
+        EXECUTE format('SELECT count(*) FROM gtd_items WHERE %s', v_check.predicate)
+           INTO v_rows;
+        IF v_rows > 0 THEN
+            RAISE EXCEPTION
+                'S8 REFUSED: % gtd_items rows hold a value in %, and the backfill '
+                'never copied that column. Dropping the table would lose it, and '
+                'we cannot roll back (R6). Nothing was changed. Move or clear '
+                'those values by hand, then deploy again.',
+                v_rows, v_check.col;
+        END IF;
+    END LOOP;
+END
+$s8_uncopied$;
+
 
 -- ── (c) The contract half of `wa_commitments.gtd_item_id` ───────────────────
 --

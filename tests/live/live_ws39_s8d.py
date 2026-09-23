@@ -126,11 +126,18 @@ def build_template(admin: psycopg.Connection, name: str) -> None:
             conn.execute(f"ALTER TABLE {new} RENAME TO {old}")
 
 
-def seed(conn: psycopg.Connection, *, unmigrated: bool) -> dict[str, str]:
-    """A member with a moved store. `unmigrated` adds one row nobody moved."""
+
+def seed(conn: psycopg.Connection, *, unmigrated: bool = False,
+         uncopied: bool = False, tree: bool = False) -> dict[str, str]:
+    """A member with a moved store, in the shape production has.
+
+    Each flag adds one thing 216 must refuse: `unmigrated` a row nobody moved,
+    `uncopied` a moved row with `leveraged = true` (a column the backfill
+    never copied), and `tree` a row in `gtd_projects`.
+    """
     ids = {k: str(uuid.uuid4()) for k in (
-        "org", "space", "folder", "horizon", "project", "item", "waiting_item",
-        "stray", "wa", "chat", "msg", "msg2", "k1", "k2")}
+        "org", "horizon", "item", "waiting_item", "stray", "project", "wa",
+        "chat", "msg", "msg2", "k1", "k2", "meeting", "a1", "a2")}
     conn.execute("INSERT INTO organization (id, slug, display_name) "
                  "VALUES (%s, %s, 'S8d Ltd')", (ids["org"], f"s8dtest-{TAG}"))
     conn.execute("INSERT INTO app_user (email, display_name, organization_id) "
@@ -142,20 +149,9 @@ def seed(conn: psycopg.Connection, *, unmigrated: bool) -> dict[str, str]:
     conn.execute("INSERT INTO gtd_attachments (user_id, name, path) "
                  "VALUES (%s, 'whiteboard.png', 'data/gtd_attachments/w.png')",
                  (WHO,))
-    conn.execute("INSERT INTO gtd_contexts (user_id, name) VALUES (%s, '@calls')",
-                 (WHO,))
-    conn.execute("INSERT INTO gtd_spaces (id, user_id, name) VALUES (%s, %s, 'Home')",
-                 (ids["space"], WHO))
-    conn.execute("INSERT INTO gtd_folders (id, user_id, space_id, name) "
-                 "VALUES (%s, %s, %s, 'Kitchen')", (ids["folder"], WHO, ids["space"]))
     conn.execute(
-        "INSERT INTO gtd_projects (id, user_id, source, outcome, space_id, "
-        "folder_id, horizon_id) VALUES (%s, %s, 'LOCAL', 'Kitchen Reno', %s, %s, %s)",
-        (ids["project"], WHO, ids["space"], ids["folder"], ids["horizon"]))
-    conn.execute(
-        "INSERT INTO gtd_items (id, user_id, title, disposition, project_id, "
-        "horizon_id) VALUES (%s, %s, 'Call the plumber', 'NEXT', %s, %s)",
-        (ids["item"], WHO, ids["project"], ids["horizon"]))
+        "INSERT INTO gtd_items (id, user_id, title, disposition, context) "
+        "VALUES (%s, %s, 'Call the plumber', 'NEXT', '@calls')", (ids["item"], WHO))
     conn.execute(
         "INSERT INTO gtd_items (id, user_id, title, disposition) "
         "VALUES (%s, %s, 'Quote from Priya', 'WAITING')", (ids["waiting_item"], WHO))
@@ -170,6 +166,12 @@ def seed(conn: psycopg.Connection, *, unmigrated: bool) -> dict[str, str]:
         conn.execute(
             "INSERT INTO gtd_items (id, user_id, title, disposition) "
             "VALUES (%s, %s, 'Captured after the move', 'INBOX')", (ids["stray"], WHO))
+    if uncopied:
+        conn.execute("UPDATE gtd_items SET leveraged = true WHERE id = %s",
+                     (ids["item"],))
+    if tree:
+        conn.execute("INSERT INTO gtd_projects (id, user_id, source, outcome) "
+                     "VALUES (%s, %s, 'LOCAL', 'Kitchen Reno')", (ids["project"], WHO))
 
     conn.execute(
         "INSERT INTO wa_accounts (id, user_id, phone_number, phone_number_id, "
@@ -191,6 +193,20 @@ def seed(conn: psycopg.Connection, *, unmigrated: bool) -> dict[str, str]:
         "direction, text, gtd_item_id) VALUES (%s, %s, %s, %s, 'ours', "
         "'call back', %s)",
         (ids["k2"], ids["wa"], ids["chat"], ids["msg2"], str(uuid.uuid4())))
+
+    # A meeting action approved into the old store (migration 129's
+    # convention: kind = 'task' puts the gtd id in dispatch_ref), and an email
+    # action whose ref is not a task id at all.
+    conn.execute("INSERT INTO meeting (id, title, platform, start_at) "
+                 "VALUES (%s, 'Site visit', 'meet', now())", (ids["meeting"],))
+    conn.execute(
+        "INSERT INTO action_item (id, meeting_id, description, kind, dispatch_ref) "
+        "VALUES (%s, %s, 'Call the plumber', 'task', %s)",
+        (ids["a1"], ids["meeting"], ids["item"]))
+    conn.execute(
+        "INSERT INTO action_item (id, meeting_id, description, kind, dispatch_ref) "
+        "VALUES (%s, %s, 'Send the notes', 'email', %s)",
+        (ids["a2"], ids["meeting"], f"sent:{ids['item']}"))
     return ids
 
 
@@ -198,7 +214,7 @@ def scenario_upgrade(admin: psycopg.Connection, template: str) -> None:
     name = f"ws39_s8d_up_{TAG}"
     admin.execute(f'CREATE DATABASE "{name}" TEMPLATE "{template}"')
     with psycopg.connect(_db_url(name), autocommit=True) as conn:
-        ids = seed(conn, unmigrated=False)
+        ids = seed(conn)
         task = _one(conn, "SELECT migrated_task_id FROM gtd_items WHERE id = %s",
                     ids["item"])
         check("A0 the backfill moved both seeded rows",
@@ -265,11 +281,13 @@ def scenario_upgrade(admin: psycopg.Connection, template: str) -> None:
               detail)
 
 
-def scenario_refusal(admin: psycopg.Connection, template: str) -> None:
-    name = f"ws39_s8d_no_{TAG}"
+def scenario_refusal(admin: psycopg.Connection, template: str, *, tag: str,
+                     label: str, expect: str, **flags: bool) -> None:
+    """216 must RAISE with `expect` in the message and change nothing."""
+    name = f"ws39_s8d_{tag}_{TAG}"
     admin.execute(f'CREATE DATABASE "{name}" TEMPLATE "{template}"')
     with psycopg.connect(_db_url(name), autocommit=True) as conn:
-        ids = seed(conn, unmigrated=True)
+        ids = seed(conn, **flags)
         before = {t: _one(conn, f"SELECT count(*) FROM {t}")
                   for t in DROPPED if t != "gtd_retirement_arm"}
         for filename in RERUN[:-1]:
@@ -281,40 +299,51 @@ def scenario_refusal(admin: psycopg.Connection, template: str) -> None:
         except psycopg.Error as exc:
             raised, message = True, str(exc).splitlines()[0]
             conn.execute("ROLLBACK")
-        check("B1 216 RAISES on an unmigrated row",
-              raised and "S3c REFUSED" in message, f"message={message!r}")
+        p = tag.upper()
+        check(f"{p}1 216 RAISES: {label}",
+              raised and expect in message, f"message={message!r}")
 
         after = {t: (_one(conn, f"SELECT count(*) FROM {t}")
                      if _exists(conn, t) else None) for t in before}
-        check("B2 every gtd_ table is still there, with every row",
+        check(f"{p}2 every gtd_ table is still there, with every row",
               after == before, f"before={before} after={after}")
-        check("B3 the arm row was taken back with the rest",
+        check(f"{p}3 the arm row was taken back with the rest",
               _exists(conn, "gtd_retirement_arm")
               and _one(conn, "SELECT count(*) FROM gtd_retirement_arm") == 0)
-        check("B4 wa_commitments.gtd_item_id is still there, value unchanged",
+        check(f"{p}4 wa_commitments.gtd_item_id is still there, value unchanged",
               _has_column(conn, "wa_commitments", "gtd_item_id")
               and _one(conn, "SELECT gtd_item_id::text FROM wa_commitments "
                              "WHERE id = %s", ids["k1"]) == ids["item"]
               and _one(conn, "SELECT task_id FROM wa_commitments WHERE id = %s",
                        ids["k1"]) is None)
-        check("B5 the guard, the backfill and its preview are still there",
+        check(f"{p}5 the task action still names the gtd row",
+              _one(conn, "SELECT dispatch_ref FROM action_item WHERE id = %s",
+                   ids["a1"]) == ids["item"])
+        check(f"{p}6 the guard, the backfill and its preview are still there",
               _one(conn, "SELECT count(*) FROM pg_proc WHERE proname IN "
                          "('gtd_retirement_drop', 'gtd_backfill_to_pm')") == 2
               and _exists(conn, "gtd_backfill_plan"))
-        check("B6 the unmigrated row is still readable",
-              _one(conn, "SELECT title FROM gtd_items WHERE id = %s", ids["stray"])
-              == "Captured after the move")
+
+
+REFUSALS = [
+    dict(tag="b", label="one gtd_items row was never migrated",
+         expect="S3c REFUSED", unmigrated=True),
+    dict(tag="c", label="a migrated row holds leveraged = true",
+         expect="gtd_items rows hold a value in leveraged", uncopied=True),
+]
 
 
 def main() -> None:
     template = f"ws39_s8d_tpl_{TAG}"
-    made = [template, f"ws39_s8d_up_{TAG}", f"ws39_s8d_no_{TAG}"]
+    made = [template, f"ws39_s8d_up_{TAG}",
+            *(f"ws39_s8d_{r['tag']}_{TAG}" for r in REFUSALS)]
     admin = psycopg.connect(make_url(_server_url()).set(database="postgres")
                             .render_as_string(hide_password=False), autocommit=True)
     try:
         build_template(admin, template)
         scenario_upgrade(admin, template)
-        scenario_refusal(admin, template)
+        for refusal in REFUSALS:
+            scenario_refusal(admin, template, **refusal)
     finally:
         for name in reversed(made):
             admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
