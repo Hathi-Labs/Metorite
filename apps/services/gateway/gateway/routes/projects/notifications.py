@@ -49,10 +49,20 @@ from gateway.routes.projects.watchers import project_chain_watchers
 from pydantic import BaseModel
 from sqlalchemy import text
 
-#: The kinds a row may carry, mirrored from migration 152's CHECK and pinned by
-#: `test_projects_notifications`. `assigned` is the one that matters most —
-#: §11.2's complaint is literally "assignment is silent".
-NOTIFICATION_KINDS: tuple[str, ...] = ("assigned", "mention", "comment")
+#: The kinds a row may carry, mirrored from the CHECK on `pm_notifications.kind`
+#: and pinned by `test_projects_notifications`. `assigned` is the one that
+#: matters most — §11.2's complaint is literally "assignment is silent".
+#:
+#: ⚠️ **This tuple and the CHECK are ONE rule in two places.** A kind added here
+#: alone raises `IntegrityError` on the insert, which reads as a 500 rather than
+#: as a missing migration. The CHECK started in 152 and migration 214 widened it
+#: for `nudge`. `test_projects_nudge.py` reads BOTH files and fails when they
+#: disagree, so the pair cannot drift again.
+#:
+#: `nudge` is the in-app half of the follow-up (§9.12.9, WS-27bk wave 6): I am
+#: waiting on you, and I am telling you so, once, on purpose. An OUTWARD nudge —
+#: mail or WhatsApp — is Action-Broker work and owner-gated, and is not this.
+NOTIFICATION_KINDS: tuple[str, ...] = ("assigned", "mention", "comment", "nudge")
 
 #: How much of a comment a notification quotes. Long enough to know whether it
 #: needs you, short enough that the bell is a list rather than a reading task.

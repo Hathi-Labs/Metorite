@@ -1,17 +1,22 @@
-"""Action-item HITL — approve a draft item into a GTD task, or reject it.
+"""Action-item HITL — approve a draft item into a task, or reject it.
 
 The Meeting→Task counterpart of tasks/capture_email.py's Email→Task flow
 (spec §3.9). A meeting's draft ``action_item`` rows only become real tasks when
-a human approves them; on approval we insert a LOCAL ``gtd_items`` row (the same
-store the task manager owns) with an ``origin`` provenance link back to the
-meeting, and record ``action_item.resulting_task_id`` so the link is two-way.
-Idempotent: approving an already-created item returns its existing task.
+a human approves them. On approval the task is captured through the ONE task
+seam, ``item_source()`` (WS-39 S8c), into the member's personal root as an
+INBOX capture, with an ``origin`` provenance link back to the meeting.
+
+The link back is ``action_item.dispatch_ref``, the column every other dispatch
+kind already writes (migration 129). ``resulting_task_id`` stays NULL: it
+carries a foreign key to the legacy ``task`` table (01_schema.sql), which
+refuses a ``pm_tasks`` id. Idempotent twice over: an item that already has a
+ref returns it, and a capture already made for the item (``origin
+action_item_id``) is found before a second one is written.
 """
 
 from __future__ import annotations
 
 import json
-from uuid import uuid4
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
@@ -32,14 +37,38 @@ class ApproveResponse(BaseModel):
     resulting_task_id: str | None = None
 
 
-async def _create_task_from_action(db, user_email: str, action) -> str:
-    """Insert a LOCAL gtd_items task from an action_item row; return task id.
+def task_ref(action) -> str | None:
+    """The task an action item already became, or None.
 
-    Direct insert mirrors capture_email.py (there is no task service layer —
-    the platform writes gtd_items via SQL). The free-text ``due_hint`` is kept
-    in the notes body rather than force-parsed into a date.
+    ``dispatch_ref`` for a task captured since WS-39 S8c, and
+    ``resulting_task_id`` for one written before it. Only a TASK's ref is a
+    task id: an email's ref is ``sent:…`` and a document's is ``artifact:…``.
     """
-    task_id = str(uuid4())
+    if getattr(action, "resulting_task_id", None):
+        return str(action.resulting_task_id)
+    kind = getattr(action, "kind", None) or "task"
+    ref = getattr(action, "dispatch_ref", None)
+    return str(ref) if kind == "task" and ref else None
+
+
+async def _create_task_from_action(db, user_email: str, action) -> str:
+    """Capture a task from an action_item row through the one seam; return its id.
+
+    The task lands in the member's personal root as a stated INBOX capture
+    (``insert_capture``, S8a's rule in ``create_personal_task``). The free-text
+    ``due_hint`` is kept in the notes body rather than force-parsed into a date.
+
+    ⚠️ Idempotent by ORIGIN, not only by the action row. ``_dispatch`` commits
+    the task in one session and marks the row in a second, so a failure between
+    the two used to leave a draft whose next dispatch wrote a second task.
+    """
+    from gateway.routes.tasks.item_source import item_source
+
+    src = item_source()
+    existing = await src.find_by_origin(
+        db, user_email, "action_item_id", str(action.id))
+    if existing is not None:
+        return str(existing.id)
     notes = f"From meeting notes. Confidence {action.confidence:.0%}."
     if action.due_hint:
         notes += f" Due (as stated): {action.due_hint}."
@@ -49,20 +78,11 @@ async def _create_task_from_action(db, user_email: str, action) -> str:
         "action_item_id": str(action.id),
         "segment_ids": [str(s) for s in (action.segment_ids or [])],
     }
-    await db.execute(
-        text(
-            "INSERT INTO gtd_items (id, user_id, title, description, origin) "
-            "VALUES (:id, :uid, :title, :notes, CAST(:origin AS JSONB))"
-        ),
-        {
-            "id": task_id,
-            "uid": user_email,
-            "title": action.description[:500],
-            "notes": notes,
-            "origin": json.dumps(origin),
-        },
-    )
-    return task_id
+    return await src.insert_capture(db, user_email, {
+        "title": action.description[:500],
+        "description": notes,
+        "disposition": "INBOX",
+    }, origin)
 
 
 async def _load_action(db, action_id: str, owner_email: str | None):
@@ -81,7 +101,8 @@ async def _load_action(db, action_id: str, owner_email: str | None):
         await db.execute(
             text(
                 "SELECT a.id, a.meeting_id, a.description, a.confidence, "
-                "a.status, a.due_hint, a.segment_ids, a.resulting_task_id "
+                "a.status, a.due_hint, a.segment_ids, a.resulting_task_id, "
+                "a.kind, a.dispatch_ref "
                 "FROM action_item a JOIN meeting m ON m.id = a.meeting_id "
                 f"WHERE a.id = :id AND {OWNED_MEETING_PREDICATE}"
             ),
@@ -108,16 +129,19 @@ async def approve_action(
     """
     async with _tenant_session() as db:
         action = await _load_action(db, action_id, user.email)
-        if action.resulting_task_id:  # idempotent
+        done = task_ref(action)
+        if done:  # idempotent
             return ApproveResponse(
                 action_id=action_id, status=action.status,
-                resulting_task_id=str(action.resulting_task_id),
+                resulting_task_id=done,
             )
         task_id = await _create_task_from_action(db, user.email or "anonymous", action)
+        # `dispatch_ref`, never `resulting_task_id`: that column's foreign key
+        # names the legacy `task` table and refuses a `pm_tasks` id.
         await db.execute(
             text(
-                "UPDATE action_item SET status='created', resulting_task_id=:tid "
-                "WHERE id=:id"
+                "UPDATE action_item SET status='created', dispatch_ref=:tid, "
+                "dispatched_at=now(), dispatch_error=NULL WHERE id=:id"
             ),
             {"tid": task_id, "id": action_id},
         )
@@ -145,7 +169,7 @@ async def reject_action(
     triage queue, and a rejection is not reversible through this API."""
     async with _tenant_session() as db:
         action = await _load_action(db, action_id, user.email)
-        if action.resulting_task_id:
+        if task_ref(action):
             raise HTTPException(
                 status_code=409, detail="already created as a task; cannot reject"
             )

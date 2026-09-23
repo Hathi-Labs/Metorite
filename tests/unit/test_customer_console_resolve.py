@@ -168,6 +168,12 @@ _CAPABILITY_GATED_ROUTES: dict[str, str] = {
     # property — a `{resolve}` key reaches resolve and nothing else — is
     # unchanged, because `serve` is a capability nothing grants by default.
     "/v1/chat/completions": "serve",
+    # 2026-09-23 — the other three serving doors, same capability.
+    # H-152 asked for all four, and four doors answering differently to
+    # one credential is the drift H-86 exists to stop.
+    "/v1/audio/transcriptions": "serve",
+    "/v1/images/generations": "serve",
+    "/v1/audio/speech": "serve",
 }
 
 

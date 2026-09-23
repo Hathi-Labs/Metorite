@@ -6,6 +6,7 @@ import { useFlash } from "@/components/useFlash";
 import { clampCursor, stepCursor } from "@/lib/cursor";
 import { useMemo, useState } from "react";
 import { GtdItem } from "../lib/types";
+import { lensNudge } from "../lib/lens";
 import { useTaskStore } from "../lib/taskStore";
 import { initials, relativeTime } from "../lib/utils";
 import {
@@ -14,6 +15,7 @@ import {
   groupByWaitingOn,
   isStaleWaiting,
   isWaitingOverdue,
+  nudgeOutcome,
   waitingLine,
 } from "../lib/waiting";
 
@@ -32,8 +34,18 @@ import {
 //   stale   — nothing heard for STALE_WAITING_DAYS since `delegatedAt`
 //
 // The predicates live in lib/waiting.ts (pure, unit-tested, and the same
-// 5-day rule the gateway's /tasks/insights uses). Drafting and sending the
-// nudge itself is NOT here — that write is Action-Broker/owner-gated.
+// 5-day rule the gateway's /tasks/insights uses).
+//
+// ⚠️ **Two different acts were both called "the nudge", and this comment used
+// to say only the second one.** It read "that write is
+// Action-Broker/owner-gated", which left the in-app half looking forbidden and
+// kept `lastNudgedAt` a column nothing ever wrote.
+//
+//   IN-APP  — one `pm_notifications` row, the same path a mention takes.
+//             §9.12.9's own shape, AGENT-SAFE, and it ships here as
+//             `NudgeControl` → `lensNudge` → `POST /tasks/{id}/nudge`.
+//   OUTWARD — drafting and sending a MESSAGE (mail, WhatsApp). Action-Broker
+//             work, owner-gated, and still unbuilt.
 //
 // WS-27ad: this view now walks with the shared keyboard cursor
 // (`@/lib/cursor`) like every other /tasks and /projects surface — arrows move,
@@ -134,10 +146,15 @@ export function WaitingForView({ items }: { items: GtdItem[] }) {
             <div
               key={item.id}
               ref={attach(item.id)}
-              className={atCursor(item.id) ? "bg-muted/60 ring-2 ring-inset ring-ring" : ""}
+              // `flex` so the nudge sits BESIDE the opening button rather than
+              // inside it. See the note at the foot of `WaitingRow`.
+              className={`flex items-start border-b border-border/60 ${
+                atCursor(item.id) ? "bg-muted/60 ring-2 ring-inset ring-ring" : ""
+              }`}
             >
+              <div className="min-w-0 flex-1">
               {selectMode ? (
-                <label className="flex cursor-pointer items-center gap-2 border-b border-border/60 pl-3 hover:bg-secondary/40">
+                <label className="flex cursor-pointer items-center gap-2 pl-3 hover:bg-secondary/40">
                   <Checkbox
                     checked={selectedIds.has(item.id)}
                     onChange={(e) =>
@@ -157,11 +174,15 @@ export function WaitingForView({ items }: { items: GtdItem[] }) {
                 <button
                   type="button"
                   onClick={() => openFocus(item.id)}
-                  className="tech-transition block w-full border-b border-border/60 text-left hover:bg-secondary/40"
+                  className="tech-transition block w-full text-left hover:bg-secondary/40"
                 >
                   <WaitingRow item={item} who={g.label} nowMs={now} />
                 </button>
               )}
+              </div>
+              <div className="flex shrink-0 flex-col items-end gap-1 px-3 py-2">
+                <NudgeControl item={item} nowMs={now} />
+              </div>
             </div>
           ))}
         </section>
@@ -262,16 +283,78 @@ function WaitingRow({
             Stale
           </span>
         )}
-        {/* Whether a nudge already went out — so the answer to an overdue row
-            isn't "chase them again today". Written by the follow-up path,
-            which is owner-gated and not built; NULL until then. */}
-        {item.lastNudgedAt && (
-          <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
-            <Icon name="Send" className="h-3 w-3" />
-            nudged {relativeTime(item.lastNudgedAt, nowMs)}
-          </span>
-        )}
+        {/* ⚠️ The nudge button and "nudged 3d ago" are NOT here, and the reason
+            is structural rather than aesthetic: this row renders INSIDE the
+            `<button>` that opens the task, so a second button here would be a
+            button inside a button — invalid HTML, and dead under the select
+            mode's `pointer-events-none`. `NudgeControl` is a sibling of that
+            button, in the row container above. */}
       </div>
     </div>
+  );
+}
+
+/** "Nudge", and afterwards what it actually achieved.
+ *
+ * ⚠️ The outcome sentence comes from `nudgeOutcome` rather than being written
+ * here, because `vitest` never collects a `.tsx` (D-PM-21). The rule that
+ * matters — an empty `notified` on a 200 is NOT a success — is fenced in
+ * `lib/waiting.test.ts`. */
+function NudgeControl({ item, nowMs }: { item: GtdItem; nowMs: number }) {
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState<{ ok: boolean; message: string } | null>(null);
+  const [sentAt, setSentAt] = useState<string | null>(null);
+
+  // The server's answer wins once there is one, so the row updates without the
+  // whole view refetching.
+  const nudgedAt = sentAt ?? item.lastNudgedAt ?? null;
+
+  async function send() {
+    setBusy(true);
+    setOutcome(null);
+    try {
+      const result = await lensNudge(item.id);
+      const read = nudgeOutcome(result);
+      setOutcome(read);
+      // ⚠️ Only when somebody was told. The server stamps on the same
+      // condition, and a row that drew "nudged just now" over a chase that
+      // reached nobody is exactly the lie this pair exists to prevent.
+      if (read.ok) setSentAt(result.last_nudged_at);
+    } catch (err) {
+      setOutcome({ ok: false, message: String((err as Error).message) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={(e) => {
+          // The row opens the task on click. The nudge is its own act.
+          e.stopPropagation();
+          void send();
+        }}
+        className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted disabled:opacity-50"
+      >
+        <Icon name="Send" className="h-3 w-3" />
+        {busy ? "Nudging…" : "Nudge"}
+      </button>
+      {outcome && (
+        <span
+          className={`text-[10px] ${outcome.ok ? "text-muted-foreground" : "text-destructive"}`}
+        >
+          {outcome.message}
+        </span>
+      )}
+      {nudgedAt && (
+        <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+          <Icon name="Send" className="h-3 w-3" />
+          nudged {relativeTime(nudgedAt, nowMs)}
+        </span>
+      )}
+    </>
   );
 }

@@ -250,6 +250,27 @@ class Settings(BaseSettings):
     # per-organization before the flag can go on anywhere else.
     customer_console_org_key: str = ""
 
+    # ── The SHARED-BOX arm of the Router (H-152, 2026-09-23) ────────────────
+    #
+    # 🔴 **`customer_console_org_key` above names ONE tenant.** A box serving
+    # several therefore had one slot and N tenants: it served the first and was
+    # dark for the rest, without ever failing. The DEPLOYMENT key is per-box,
+    # so it works for every tenant placed here, and the Console derives the
+    # organization from the acting member (the D-SEAT-4 move).
+    #
+    # ⚠️ **An explicit opt-in, and NOT "a deployment key is present".**
+    # Every box already holds that key — resolve, provision and the seat doors
+    # have needed it since CP-2b. Arming the Router on its mere presence would
+    # break the property `test_the_deployment_key_alone_does_not_arm_the_router`
+    # exists to hold: *a box wired for SIGN-IN is not thereby wired for AI*.
+    # One predicate for both arms the Router the moment somebody configures the
+    # thing that lets people log in.
+    #
+    # ⚠️ Meaningless while `customer_console_org_key` is set. One box has one
+    # answer, and the org key wins that tie for compatibility — see
+    # `console_resolve.router_credential`.
+    customer_console_router_uses_deployment_key: bool = False
+
     # ── The serving hop (CP-11 slice 3, D57) ────────────────────────────────
     #
     # OFF sends `/v1/chat/completions` to the local litellm SDK, exactly as

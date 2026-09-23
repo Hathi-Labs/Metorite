@@ -96,11 +96,73 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-165 · Build CP-13a to CP-13d: the `decide` task, its door, the Console pages and the chat tool · [AGENT]
+- **Check:** `rg -n "native_typesafe" apps/services/customer_console/` → no hit
+  means CP-13a has not landed. `rg -n 'decide' workbench/operator_console/src/lib/`
+  → no hit means CP-13b has not landed.
+- **Why:** owner decision 2026-09-23 (D75). The owner chose TypeSafe's Jev for
+  fast typed decisions, and asked for the Operator Console first.
+- **Do this in order:** CP-13a, then CP-13b, then CP-13c, then CP-13d. Build
+  against a test key and made-up data. Ship `DECIDE_ENABLED` OFF.
+- ⚠️ **Do not seed a binding or a price in the migration.** An operator makes
+  the binding on `/tiers`. The owner sets the price (H-42).
+- ⚠️ **Three fences break by design.** Update them in the same PR. §6A.14
+  CP-13a names them, and CP-13d names two more.
+- ⚠️ **CP-13c needs H-152's tenant slice.** The client presents the per-box
+  deployment key, and never the one organization key.
+- 🔴 **Do not set `DECIDE_ENABLED` on a live box.** It is owner-only, and
+  the §3a window does not open it (H-166).
+- ⚠️ **Take the migration number at build time.** It is 033 at `ddd2d6ad`
+  (R1).
+- **Authority:** `specs/customer_console.md` §6A.14 · `work_plan.md` §3 D75 ·
+  board WS-31
+- **Added:** 2026-09-23 · the Jev planning session
+
+### H-166 · Open the TypeSafe account, install the key, and answer residency · [OWNER]
+- **Check:** on `/providers`, look for a live `typesafe` credential. None
+  means this is open. Then read `work_plan.md` D19.6. If it still says
+  India-only with no AI sub-processor clause, the residency answer is open.
+- **Why:** three acts gate CP-13 on a real tenant (§6.1 WS-31 (i)).
+  1. **Open the account and accept the terms.** An external commercial
+     account is an owner act. Ask TypeSafe for its DPA, its region, and
+     zero retention. The vendor gives zero retention to enterprise customers
+     on request.
+  2. **Install the key** on `/providers`, with provider `typesafe` (§6.0 B1).
+  3. **Answer residency.** D19.6 promises India-only data at launch, and the
+     vendor states no region. Choose one: amend D19.6 for AI sub-processors,
+     get a region in writing, or keep `decide` off real tenant content.
+  4. **Acknowledge the D61.1 amendment**, or reject it. D61.1 says every
+     Router door copies an OpenAI shape, and no such shape exists for a
+     decision. `work_plan.md` D75 clause 3 holds the proposal.
+  5. **Set `DECIDE_ENABLED`** on the box, after answer 3. No agent sets it.
+- ⚠️ **Shadow mode sends tenant content too.** Without answer 3, nothing
+  runs on Fracktal's data: not the chat tool, not an app slice, and not
+  shadow mode.
+- ⚠️ **Add TypeSafe to the sub-processor list** when WS-37 writes one (H-36).
+- **Authority:** `specs/customer_console.md` §8 gate 9 and §9 item 8 ·
+  `work_plan.md` §6.1 WS-31 (i)
+- **Added:** 2026-09-23 · the Jev planning session
+
 ### H-163 · The My Tasks cutover is in flight. The spec owns the order · [AGENT]
-- **Check:** `rg -c "lensEnabled\(\)" workbench/control_plane/src/app/tasks/lib/api.ts`
-  → below 25 means S6a has not landed. `\dt gtd_*` on the box → any row means
-  S8 has not landed. `rg -n '"Tasks"' workbench/control_plane/src/lib/nav.ts`
-  → a hit means S5 has not landed.
+- **Check:** `gh pr view 411 --json state` → `OPEN` means S8 PR 1 has not
+  merged. `\dt gtd_*` on the box → any row means S8 PR 2 has not landed.
+  `rg -l "GtdItem" workbench/control_plane/src` → any hit means S9 has not
+  landed.
+- **Next, in this order (2026-09-23 state).**
+  1. Merge PR #411 (S8 PR 1) NO EARLIER than 2026-09-24 00:30 UTC. All 19
+     checks were green at `9c45063c`. Merge `origin/main` first if it moved.
+     Watch the deploy and read `/version`.
+  2. Build S8 PR 2: arm `gtd_retirement_arm`, then a new migration (next free
+     number, R1) calls `gtd_retirement_drop()` and drops the tree tables,
+     `gtd_contexts` and `gtd_retirement_arm`. It renames `gtd_attachments`,
+     `gtd_horizons` and `gtd_reviews` through the guarded prologue. Spec §5 S8
+     and §6 steps 11 to 13 hold the order. The pre-migration backup must exist.
+  3. Build S9, the code-name sweep (§5 S9).
+- **Owed to the owner.** The Focus matrix badge still says "Low Priority".
+  The task panel's Priority field below it means `pm_tasks.importance`. The
+  word needs an owner call before anyone renames the matrix vocabulary.
+- **Owed by a person.** A signed-in member captures in My Tasks and sees the
+  task in Projects in the same page load (§6 step 9).
 - **Why:** owner directive 2026-09-23 (D73). `specs/my_tasks_cutover.md` §5
   holds nine slices in a load-bearing order, and §6 the corrected runbook.
   H-29 and H-151 stay open until the slice that closes each one lands (S6e
@@ -306,9 +368,16 @@ line — never reclaim a number by deleting the other entry.
           and not memory and not calendar"         run 2: pass
                                                    run 3: FAIL (another test)
 
-  So the suite that leaks the state is one the narrow filter EXCLUDES. That is
-  the most useful thing anybody has learned about this defect. Look at what
-  `tree`, `task` and `personal` pull in and `projects` does not.
+  So the suite that leaks the state is one the narrow filter EXCLUDES. Look at
+  what `tree`, `task` and `personal` pull in and `projects` does not.
+- **⚠️ 2026-09-23 — `-k "projects"` FAILED once, so yesterday's line above is
+  too strong.** It read as though the narrow selection had stopped failing.
+  Six green runs is not "stopped" — it is intermittent under that selection
+  too, and one run out of 2151 tests reproduced it the next day. The wider
+  selection remains the reliable reproduction. **Neither selection is a
+  clean bill of health**, which is the real hazard: a branch that touches
+  nothing near this can go red, and a branch that breaks something can go
+  green. It still passes alone, every time.
 - **🔴 A THIRD test fails the same way, and it is not a Projects test.** Run 3
   above failed
   `test_customer_console_catalog.py::TestRemovingAModelFromTheCatalog::test_removing_one_task_is_not_blocked_by_a_binding_on_ANOTHER`
@@ -1085,6 +1154,44 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-27→H-32 on 2026-08-25:
   `main` took H-27 for the e2e entry via PR #47; ids are never reused)*
 
+### H-164 · The deploy restarts the workbench while npm is still installing · [AGENT]
+- **Check:** on the box, grep the workbench journal for `next: not found`.
+  Any hit means this is still real:
+
+      journalctl -u acb-workbench --since "7 days ago" | grep -c "next: not found"
+- 🔴 **MEASURED 2026-09-23, and it turned a deploy RED across all three
+  rounds.** PR #406's run 35855523275 ended `WORKBENCH FAILED TO START`. The
+  box was healthy the whole time and the next deploy started it fine.
+- **The line that names it**, at 11:51:54 UTC:
+
+      npm[2736540]: > next start -p 3001
+      npm[2736540]: sh: 1: next: not found
+
+  The unit started while `node_modules` was being replaced, so the `next`
+  binary was absent for that moment. It is a RACE, not a broken build — the
+  build had already printed its route table and swapped in.
+- **What it costs.** A deploy goes red at random, on a branch that may have
+  nothing to do with the workbench. #406 touched two Python files and the
+  Console, and none of them is imported by a Next app. The next merge then
+  deploys the same code green, which teaches people that a red deploy means
+  nothing. That is the belief this repo can least afford.
+- ⚠️ **NOT H-60.** That entry is the ~3 minute 502 WINDOW while the workbench
+  restarts, and it assumes the process comes back. This is the process failing
+  to come back at all. Same file, different fault.
+- ⚠️ **NOT the EACCES fault either.** H-89 and the `reclaim_build_tree` work
+  cover `npm ci` refused by root-owned paths. Here `npm ci` was working. The
+  unit started in the middle of it.
+- **What to build.** Order the two: finish the dependency install, THEN swap
+  the build, THEN restart. Or gate the restart on the `next` binary existing.
+  `scripts/vps_apply.sh` owns both halves.
+- 📌 **A second fault was in the same window and has since stopped.** The OLD
+  workbench process logged `TypeError: o is not a function` every ~60 seconds
+  from a minified server chunk. Zero occurrences since the 11:52:36 restart,
+  so it is not currently live. Worth a look if it returns — a repeating
+  handler error on the customer app is its own entry.
+- **Authority:** run 35855523275 · `journalctl -u acb-workbench`
+- **Added:** 2026-09-23 · the H-152 gateway slice.
+
 ### H-60 · Every deploy gives live users a ~3 minute 502 · [AGENT]
 - 🔴 **MET AGAIN 2026-09-19, on the PR #297 deploy.** A probe of the
   workbench on :3001 returned **500** while the old process was still
@@ -1430,7 +1537,11 @@ line — never reclaim a number by deleting the other entry.
   Router unpriced so a month of real per-org burn lands in `usage_event` first
   (`002_seed_catalog.sql`'s own header). CP-11 is what finally produces that traffic, so
   this entry becomes actionable only after CP-11 has been serving for a while.
-  🔴 Pricing live is an owner act (D19.2, §6) and **must not be done via migration**.
+  🔴 Pricing live is an owner act (D19.2, §6) and **must not be done through a migration**.
+- 📌 **Added 2026-09-23 (D75): one more tier, `tier-decide`, and one more
+  question.** One decision costs about USD 0.000042. So choose one: exempt
+  `decide` from `MIN_CHARGE`, as `embed` is, or absorb it.
+  `credit_pricing.md` §5.4 clause 6 holds the question.
 - **Authority:** `work_plan.md` §6 · §2.0 M2.9c · D19.2 · **D57.4** clause 5 ·
   `specs/customer_console.md` CP-6
 - **Added:** 2026-08-26 · AI credits + keys session
@@ -1615,6 +1726,9 @@ line — never reclaim a number by deleting the other entry.
   📌 **Home: `customer_console/handlers.py`**, and `packages/acb_stt` stays the
   tenant package. §6A.10b clause 1 holds the plane-boundary argument and the
   rejected `acb_provider` alternative.
+  📌 **2026-09-23: the first caller exists. It is TypeSafe's Jev** (D75).
+  H-165 builds this seam in CP-13a, with `native_typesafe` as its first value.
+  When H-165 merges, delete this entry.
 - **Authority:** `customer_console.md` **§6A.10b** (the done-when) ·
   `work_plan.md` §3 **D60.11(a)** · `specs/customer_console.md` **§6A.10
   G-2 / G-5** · CLAUDE.md §5 · `work_plan.md` §4 (the seam's owner row)
@@ -2360,23 +2474,6 @@ line — never reclaim a number by deleting the other entry.
   lint there would fail correct code and grow an allowlist. The asyncpg
   suites are the answer for that half.
 
-### H-113 · Wave 6 needs only its NUDGE. The columns shipped in 188 · [AGENT]
-- **⚠️ This entry was wrong, and the correction is the point.** It said
-  §9.12.9 needs two new columns, and its Check looked for `follow_up_at`. That
-  name never existed. Migration **188** already shipped `waiting_on`,
-  `delegated_at`, `expected_by` and `last_nudged_at` on `pm_task_personal`,
-  with a partial index built for the "what is due back" read.
-- **Check:** `grep -n "last_nudged_at" apps/services/gateway/gateway/routes/projects/personal.py`
-  → the field is accepted and **nothing writes it**. That is the open half.
-- **What is already built.** The Tasks app sets and draws all of it —
-  `DelegateDialog`, `WaitingForView` and `ItemDetail` carry the date, the
-  person and the overdue badge.
-- **What is open.** The optional nudge. One notification to the person you
-  wait on, through `routes/projects/notifications.py` `notify()`, which
-  exists. It is off by default, and it stamps `last_nudged_at` once.
-  ⚠️ In-app only. A mail to a real person is owner-gated (CLAUDE.md §3a).
-- **Corrected:** 2026-09-19 · found while auditing wave 6 for dispatch.
-
 ### H-110 · Operator OTP sends now. Two dashboard acts are still unverified · [OWNER]
 - **Check:** ask Supabase project `uttxlicdccfkramtjfpi` for an OTP at an address
   that is NOT a project member. `POST /auth/v1/otp {"email":"…","create_user":true}`.
@@ -2744,40 +2841,45 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-21 · the People rename session. **Updated:** 2026-09-22.
 
 ### H-152 · A SELF-SERVE customer can never be served AI · [AGENT]
-- **Check:** `rg -n "customer_console_org_key" packages/acb_auth/acb_auth/console_resolve.py`
-  → a hit inside `router_is_wired` means this is open.
-- 🔴 **The gateway reads ONE `CUSTOMER_CONSOLE_ORG_KEY` from its
-  environment.** That names one tenant. A shared box has one slot and N
-  tenants, so every tenant after the first can never reach the Router. The
-  box does not fail. It serves tenant one and is dark for the rest.
-- **This is not a missing flag flip.** `gateway/routes/seats.py` states the
-  same shape in its own words — *"On a shared multi-tenant deployment no
-  single org key is correct ... a STRUCTURAL dark"*.
-- **The answer is already proved out, one plane over.** The Seats tab had
-  this exact defect, and D-SEAT-4 fixed it. `GET /seats/overview` presents
-  the **deployment** key, which is per-box. The Console then derives the
-  organization from `deployment_visible_orgs(deployment_id, actor_email)`.
-  The caller makes no tenant claim (R11).
-- **What to build.** A second arm on the four Router doors, with a capability
-  of its own. Put it on the same `deployment_or_operator` dispatcher the seat
-  doors use. The four are `/v1/chat/completions`,
-  `/v1/audio/transcriptions`, `/v1/images/generations` and
-  `/v1/audio/speech`. The member already arrives:
-  `_attribution_headers` sends `X-CC-Member` on every call.
-- ⚠️ **Do this beside H-86**, which asks for one serving prelude across those
-  same four doors. Two agents editing four doors twice is how the doors
-  drift apart.
-- ⚠️ **What this un-blocks.** `POST /orgs/provision` mints the organization
-  key on its OPERATOR arm as of 2026-09-22. The deployment-key arm mints
-  nothing on purpose, because a key for tenant N+1 has nowhere to live. So
-  self-serve signup stays dark until this lands, and no amount of minting
-  changes that.
-- ⚠️ **Retire `CUSTOMER_CONSOLE_ORG_KEY` only after** the per-org billing
-  pages move too. `seats.py` records that they stay on the org-key path.
+- **Check:** `rg -n "CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY" /opt/acb/app/.env`
+  on the box. No hit means the shared-box arm is built and not turned on.
+- 🔴 **Why this exists.** `CUSTOMER_CONSOLE_ORG_KEY` is ONE value naming ONE
+  tenant. A box serving several had one slot and N tenants. It served the
+  first and was dark for the rest, and it never failed while doing so.
+  Minting more organization keys does not help, because the second has
+  nowhere to live.
+- **The answer was already proved out one plane over.** D-SEAT-4 moved the
+  Seats tab onto the per-box DEPLOYMENT key and derived the organization
+  Console-side. This is the same move for the Router.
+- 📌 **BUILT, in two slices, 2026-09-23.** Slice 1: the Console door.
+  `auth.organization_from_key_or_deployment` and the `ServingCaller` alias,
+  gated on a new `serve` capability, deriving the tenant from `X-CC-Member`
+  through `deployment_visible_orgs`. Slice 2: all FOUR serving doors take it,
+  and the gateway can present the key —
+  `console_resolve.router_credential()` picks and `router_is_wired()` asks it.
+- 🔴 **The arm is behind `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY`, and
+  that flag is not optional design.** A first try armed on the key being
+  PRESENT, and `test_the_deployment_key_alone_does_not_arm_the_router` caught
+  it. Every box holds a deployment key already, because resolve, provision and
+  the seat doors have needed one since CP-2b. Arming on presence would turn
+  the Router on everywhere the day somebody configured sign-in. That fence
+  holds a real property. Do not relax it.
+- ⚠️ **The ORG key wins a tie, for compatibility and not preference.** A box
+  already serving one tenant must not change behaviour the day somebody sets
+  the flag. So the shared arm arms only where the single-tenant answer is
+  absent, and the whole change ships dark.
+- ⚠️ **What is LEFT is three acts on the BOX, and none of them is code.**
+  Widen the deployment key to hold `serve`, which is a hand edit under §8
+  gate 7 because no route grants a capability. Unset
+  `CUSTOMER_CONSOLE_ORG_KEY`. Set the new flag. The third alone changes
+  nothing, by design.
+- ⚠️ **The per-org billing pages still read the org key**, so retiring that
+  variable entirely is a separate move. `seats.py` records which reads stay.
+- **Fences:** `tests/unit/test_router_deployment_arm.py` (12) ·
+  `tests/unit/test_console_router_client.py` (5 new).
 - **Authority:** owner directive, 2026-09-22 — *"you are automatically
-  creating the connections for when they sign up for the organization and
-  when the organization is created"*
-- **Added:** 2026-09-22 · the auto-mint session.
+  creating the connections for when they sign up"*
+- **Added:** 2026-09-22 · the auto-mint session. **Updated:** 2026-09-23.
 
 ### H-144 · `GET /people/{id}/editable` has no caller · [AGENT]
 - **Check:** `rg -n "editable" workbench/control_plane/src/app/people/lib/api.ts`
@@ -2869,6 +2971,22 @@ line — never reclaim a number by deleting the other entry.
   manifest row and the spec, in one PR.
 - **Authority:** `specs/projects_ai_chat.md` §5.4, §12 · `org_access_control.md` §8d
 - **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
+
+### H-165 · The gateway refuses the LLM key on `/v1/embeddings` · [AGENT]
+- **Check:** `grep -n '"/v1/embeddings"' apps/services/gateway/gateway/main.py`
+  → one hit, on the route only, and not in `PUBLIC_ROUTES`, means this is open.
+- **Why:** PR #407 let the LLM key reach `/v1/chat/completions`. The app-wide
+  gate still refuses that key on `/v1/embeddings`, because the key is not an
+  identity. Four callers send it there: `acb_memory/mem0_client.py`,
+  `whatsapp_ingestion/wa_embeddings.py`, `email_ingestion/email_embeddings.py`
+  and `routes/tasks/capability.py`. Each one gets 401 today. The gateway log shows no call in seven days, so
+  nothing is broken in use yet.
+- **Do:** Put `Depends(require_llm_api_auth)` on the route. Then add the
+  template to `PUBLIC_ROUTES`. Extend `tests/unit/test_v1_llm_key_gate.py`,
+  including `test_only_the_completion_routes_are_listed`. Do not list the
+  route without its own lock, because it spends a stored provider key.
+- **Authority:** BO-2 residual #4 · `packages/acb_auth/acb_auth/deps.py` `require_llm_api_auth`
+- **Added:** 2026-09-23 · the review of PR #407
 
 ### H-161 · The seats matrix cannot PROPOSE, because the queue is the wrong shape · [OWNER]
 - **Check:** `rg -n "CREATE TABLE IF NOT EXISTS access_request" -A 12

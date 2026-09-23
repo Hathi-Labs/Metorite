@@ -3,8 +3,11 @@
 The summariser classifies every extracted action item by kind; this module
 routes each one to the system that actually does that kind of work:
 
-- ``task``     → a LOCAL ``gtd_items`` row (the task manager owns it) — the
-                 same insert the approve endpoint has always done.
+- ``task``     → a task in the member's personal root, captured through the
+                 one task seam (``item_source()``, WS-39 S8c) — the same
+                 capture the approve endpoint makes. Its id goes in
+                 ``dispatch_ref``. ``resulting_task_id`` FKs the legacy
+                 ``task`` table and refuses a ``pm_tasks`` id.
 - ``email``    → the owner's default live email account. The commitment is
                  drafted by an LLM grounded in the transcript, then SENT —
                  but only when the recipient resolves to a known attendee
@@ -501,7 +504,9 @@ async def _dispatch(action, meeting, actor: str) -> tuple[str | None, str | None
             async with await _get_db() as db:
                 task_id = await _create_task_from_action(db, owner, action)
                 await db.commit()
-            await _mark(str(action.id), ref=task_id, task_id=task_id, error=None)
+            # task_id=None: `resulting_task_id` FKs the legacy `task` table,
+            # so a `pm_tasks` id lives in `dispatch_ref` alone (WS-39 S8c).
+            await _mark(str(action.id), ref=task_id, task_id=None, error=None)
             ref = task_id
         elif kind == "email":
             ref = await _dispatch_email(action, meeting, owner, actor)

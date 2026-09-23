@@ -98,7 +98,40 @@ guidance (#105); whole-mailbox cleaner (#78/#91/#93).
 - Drafts are **never auto-sent**; backfills **never draft** (user directive); live Reply-rule drafting stays ON.
 - The sweep **never classifies** — it only projects existing evidence; internal domains are never blanket-labelled; Sent is skipped.
 - Chat send tools **fail closed** when non-interactive.
-- Local-commit-authoritative for *user* actions, but **provider-first for automation writes** (`apply_label` order; Phase 1 extends this to all rule actions).
+- Local-commit-authoritative for *user* actions, but **provider-first for automation writes** (`apply_label` order. Phase 1 extends this to all rule actions).
+
+### 2.1 Triage moves to the `decide` task — CP-13e (added 2026-09-23, D75)
+
+The owner chose TypeSafe's Jev for fast typed decisions. Triage is its first
+app adopter. `customer_console.md` §6A.14 is the contract, and this section
+records only what the email app must keep true.
+
+1. **`decide` replaces the AI step INSIDE the rules pipeline.** The doctrine
+   above holds: one classification, and no parallel classifier. The pattern
+   steps still run first, and the Uncategorized fallback still runs last.
+2. **The order of adoption**, cleanest first:
+
+   | Order | Call | Now | Shape |
+   |---|---|---|---|
+   | 1 | Cold-email check, `senders.py:1196` `_llm_is_cold` | `tier-fast` | boolean |
+   | 2 | Auto-learn sender pin, `learning.py:47` | `tier-balanced` | boolean, with a 0.9 threshold |
+   | 3 | Thread status, `replyzero.py:288` | `tier-balanced`, then `tier-powerful` | choice of 3 or 4 |
+   | 4 | Rule classifier, `engine.py:284` `_llm_pick_rule` | the account's `rule_model` | choice of the enabled rules, plus none |
+
+3. **Each one runs in shadow first.** It logs both answers and acts on the old
+   one, until the agreement on this mailbox is measured.
+4. **A low confidence escalates to the current LLM path.** The thread-status
+   call already carries a `confident` flag (`replyzero.py:302`). The calibrated
+   confidence replaces that flag, and the "· auto" re-check tag stays.
+5. ⚠️ **The rule count has no cap.** A user can write more than 20 rules, and
+   accuracy falls as options grow. Measure accuracy against the count, and keep
+   the LLM above the measured limit.
+6. **Multi-rule execution stays on the LLM.** `_llm_pick_rules` (`engine.py:341`)
+   is multi-label, and it is off by default.
+7. **Tier 1 item 3's semaphore covers `decide` calls too.** A decision is cheap,
+   but a second mailbox still doubles the traffic.
+8. 🔴 **Real mail waits for the owner's residency answer.** Shadow mode sends
+   the message body too (`work_plan.md` §6.1 WS-31 (i)).
 
 ---
 

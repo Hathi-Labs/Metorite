@@ -308,3 +308,98 @@ def test_the_module_stays_the_one_console_http_client():
         "console_resolve must build exactly one httpx client; a second "
         "constructor is a second Console client by another name"
     )
+
+
+# ── The SHARED-BOX arm (H-152, 2026-09-23) ──────────────────────────────────
+#
+# 🔴 `customer_console_org_key` names ONE tenant, so a box serving several had
+# one slot and N tenants — it served the first and was dark for the rest,
+# without failing. The deployment key is per-BOX, and the Console derives the
+# organization from the acting member.
+#
+# ⚠️ Every test below keeps the property the fence above holds: a box wired for
+# SIGN-IN is not thereby wired for AI. The arm needs its own affirmative flag.
+
+
+def _shared_box(monkeypatch, *, org: str = "", flag: str = "true") -> None:
+    monkeypatch.setenv("CUSTOMER_CONSOLE_URL", CONSOLE_URL)
+    monkeypatch.setenv("CUSTOMER_CONSOLE_DEPLOYMENT_KEY", DEPLOYMENT_KEY)
+    monkeypatch.setenv("CUSTOMER_CONSOLE_ORG_KEY", org)
+    monkeypatch.setenv("CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY", flag)
+    get_settings.cache_clear()
+
+
+def test_the_flag_arms_the_deployment_arm_and_the_key_alone_still_does_not(
+    monkeypatch,
+):
+    """⚠️ The opt-in is the FLAG, never the key's presence.
+
+    Every box already holds a deployment key — resolve, provision and the seat
+    doors have needed one since CP-2b. Arming on presence would turn the
+    Router on for every box the day somebody configured sign-in.
+    """
+    _shared_box(monkeypatch, flag="false")
+    assert console_resolve.router_is_wired() is False
+
+    _shared_box(monkeypatch, flag="true")
+    assert console_resolve.router_is_wired() is True
+    assert console_resolve.router_credential() == ("deployment", DEPLOYMENT_KEY)
+    get_settings.cache_clear()
+
+
+def test_the_ORG_key_still_wins_a_tie(monkeypatch):
+    """⚠️ Compatibility, not preference. A box already serving one tenant on an
+    org key must not change behaviour the day somebody sets the flag."""
+    _shared_box(monkeypatch, org=ORG_KEY, flag="true")
+    assert console_resolve.router_credential() == ("org", ORG_KEY)
+    get_settings.cache_clear()
+
+
+async def test_the_deployment_arm_presents_the_DEPLOYMENT_key(monkeypatch):
+    """The whole point: a per-box credential reaches the Router."""
+    fake = FakeRouter()
+    _shared_box(monkeypatch)
+    monkeypatch.setattr(console_resolve, "_new_http_client", fake.client)
+
+    await console_resolve.chat_completion_on_console(
+        PAYLOAD, member="someone@example.com"
+    )
+    assert fake.requests, "the deployment arm made no request"
+    sent = fake.requests[0].headers["authorization"]
+    assert sent == f"Bearer {DEPLOYMENT_KEY}"
+    # The member is what the Console resolves the tenant FROM, so it must go.
+    assert fake.requests[0].headers["x-cc-member"] == "someone@example.com"
+    get_settings.cache_clear()
+
+
+async def test_the_deployment_arm_refuses_LOCALLY_with_no_member(monkeypatch):
+    """🔴 A deployment key cannot resolve a tenant without one, and the Console
+    answers 400 to say so.
+
+    Refusing here turns a remote 400 that reads as "the Router is broken" into
+    a local message naming the one missing input — and it costs no request.
+    """
+    fake = FakeRouter()
+    _shared_box(monkeypatch)
+    monkeypatch.setattr(console_resolve, "_new_http_client", fake.client)
+
+    with pytest.raises(console_resolve.ConsoleRouterUnavailable, match="member"):
+        await console_resolve.chat_completion_on_console(PAYLOAD, member=None)
+    assert fake.requests == [], "it asked the Console a question it had to refuse"
+    get_settings.cache_clear()
+
+
+async def test_the_ORG_arm_still_needs_NO_member(monkeypatch):
+    """⚠️ The org arm's organization is a property of its credential, so the
+    new requirement must not leak onto it."""
+    fake = FakeRouter()
+    monkeypatch.setenv("CUSTOMER_CONSOLE_URL", CONSOLE_URL)
+    monkeypatch.setenv("CUSTOMER_CONSOLE_ORG_KEY", ORG_KEY)
+    monkeypatch.setenv("CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY", "false")
+    get_settings.cache_clear()
+    monkeypatch.setattr(console_resolve, "_new_http_client", fake.client)
+
+    await console_resolve.chat_completion_on_console(PAYLOAD, member=None)
+    assert fake.requests, "the organization arm stopped working"
+    assert fake.requests[0].headers["authorization"] == f"Bearer {ORG_KEY}"
+    get_settings.cache_clear()

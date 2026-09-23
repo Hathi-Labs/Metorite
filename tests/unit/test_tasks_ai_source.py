@@ -63,6 +63,11 @@ SCOPED = [
     ROUTES / "whatsapp" / "automation" / "commitments.py",
     ROUTES / "whatsapp" / "digest.py",
     ROUTES / "projects" / "item_lens.py",
+    # WS-39 S8c: the last three readers and writers of the retiring store.
+    # Every module in both packages is fenced, not only the three files, so
+    # a new one cannot reopen the hole.
+    *sorted((ROUTES / "notes").rglob("*.py")),
+    *sorted((ROUTES / "email").rglob("*.py")),
 ]
 
 
@@ -363,6 +368,67 @@ async def test_pm_find_by_origin_rules_in_python_then_limits(monkeypatch) -> Non
     ])
     found = await PM_ITEMS.find_by_origin(db, "a@x", "email_id", "m-1")
     assert found is not None and found.id == "open"
+
+
+def test_the_s8c_packages_are_in_the_fence() -> None:
+    """The notes and email packages are globbed. An empty glob is a fence
+    with a hole, so the three S8c modules must each be named."""
+    names = {p.relative_to(ROUTES).as_posix() for p in SCOPED}
+    assert {"notes/actions.py", "notes/dispatch.py", "email/digest.py",
+            "email/automation/drafting.py"} <= names
+
+
+def test_the_s8c_origin_keys_are_allowed() -> None:
+    assert origin_key_sql("action_item_id") == "origin->>'action_item_id'"
+    assert origin_key_sql("account_id") == "origin->>'account_id'"
+
+
+async def test_pm_find_by_action_item_composes_the_membership_clause(
+    monkeypatch,
+) -> None:
+    """S8c: approving a meeting action looks for its earlier capture first."""
+    _patch_pm_helpers(monkeypatch)
+    db = _FakeDB()
+    assert await PM_ITEMS.find_by_origin(
+        db, "Alice@x", "action_item_id", "a-1") is None
+    (sql, params), = db.calls
+    assert sql.startswith(_MY_TASKS_SQL)
+    assert "t.origin->>'action_item_id' = :val" in sql
+    assert params["val"] == "a-1" and params["who"] == "alice@x"
+
+
+async def test_pm_hard_dated_items_read_the_overlay_in_my_list(
+    monkeypatch,
+) -> None:
+    """S8c: the email drafter's calendar is my open hard-date tasks. The hard
+    date is MY overlay, and a closed task is ruled out in Python."""
+    _patch_pm_helpers(monkeypatch)
+    soon = datetime.now(UTC) + timedelta(days=1)
+    db = _FakeDB(lambda sql, p: [
+        _full_row(id="closed", status_category="done", due_at=soon),
+        _full_row(id="open", p_disposition="NEXT", due_at=soon),
+        _full_row(id="later", p_disposition="NEXT", due_at=soon),
+    ])
+    items = await PM_ITEMS.hard_dated_items(db, "Alice@x", days=10, limit=1)
+    assert [i.id for i in items] == ["open"]
+    (sql, params), = db.calls
+    assert sql.startswith(_MY_TASKS_SQL)
+    assert "p.is_hard_date = true" in sql
+    assert "t.due_at >= now()" in sql
+    assert "make_interval(days => :days)" in sql
+    assert "ORDER BY t.due_at ASC" in sql
+    assert "LIMIT" not in sql, "the limit applies after the Python rule"
+    assert params["days"] == 10 and params["who"] == "alice@x"
+
+
+async def test_gtd_hard_dated_items_keep_the_old_predicate() -> None:
+    db = _FakeDB()
+    await GTD_ITEMS.hard_dated_items(db, "a@x", days=10, limit=15)
+    (sql, params), = db.calls
+    assert hits(sql, "FROM gtd_items")
+    assert "is_hard_date = true" in sql
+    assert "disposition NOT IN ('DONE', 'TRASH')" in sql
+    assert params == {"uid": "a@x", "days": 10, "lim": 15}
 
 
 async def test_pm_fetch_item_is_a_404_by_absence(monkeypatch) -> None:
