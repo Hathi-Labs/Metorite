@@ -97,10 +97,25 @@ line — never reclaim a number by deleting the other entry.
 
 
 ### H-163 · The My Tasks cutover is in flight. The spec owns the order · [AGENT]
-- **Check:** `rg -c "lensEnabled\(\)" workbench/control_plane/src/app/tasks/lib/api.ts`
-  → below 25 means S6a has not landed. `\dt gtd_*` on the box → any row means
-  S8 has not landed. `rg -n '"Tasks"' workbench/control_plane/src/lib/nav.ts`
-  → a hit means S5 has not landed.
+- **Check:** `gh pr view 411 --json state` → `OPEN` means S8 PR 1 has not
+  merged. `\dt gtd_*` on the box → any row means S8 PR 2 has not landed.
+  `rg -l "GtdItem" workbench/control_plane/src` → any hit means S9 has not
+  landed.
+- **Next, in this order (2026-09-23 state).**
+  1. Merge PR #411 (S8 PR 1) NO EARLIER than 2026-09-24 00:30 UTC. All 19
+     checks were green at `9c45063c`. Merge `origin/main` first if it moved.
+     Watch the deploy and read `/version`.
+  2. Build S8 PR 2: arm `gtd_retirement_arm`, then a new migration (next free
+     number, R1) calls `gtd_retirement_drop()` and drops the tree tables,
+     `gtd_contexts` and `gtd_retirement_arm`. It renames `gtd_attachments`,
+     `gtd_horizons` and `gtd_reviews` through the guarded prologue. Spec §5 S8
+     and §6 steps 11 to 13 hold the order. The pre-migration backup must exist.
+  3. Build S9, the code-name sweep (§5 S9).
+- **Owed to the owner.** The Focus matrix badge still says "Low Priority".
+  The task panel's Priority field below it means `pm_tasks.importance`. The
+  word needs an owner call before anyone renames the matrix vocabulary.
+- **Owed by a person.** A signed-in member captures in My Tasks and sees the
+  task in Projects in the same page load (§6 step 9).
 - **Why:** owner directive 2026-09-23 (D73). `specs/my_tasks_cutover.md` §5
   holds nine slices in a load-bearing order, and §6 the corrected runbook.
   H-29 and H-151 stay open until the slice that closes each one lands (S6e
