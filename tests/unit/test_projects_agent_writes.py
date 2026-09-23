@@ -1782,3 +1782,20 @@ async def test_the_subtasks_receipt_opens_the_parent_first(monkeypatch) -> None:
     fake_gateway(monkeypatch, responder)
     out = await skill_projects.add_subtasks(UUID, "a\nb")
     assert out.split("\n")[1] == f"  full_id: {UUID}"
+
+
+def test_the_cards_know_every_guarded_tool() -> None:
+    """A class C receipt wears the warning tone (`ProjectToolCards.tsx`
+    `GUARDED_TOOLS`). The set is a literal in TypeScript, so a guarded tool
+    added here without a line there would paint green. Hold the two equal."""
+    import re
+
+    from tests.unit._projects_agent_fakes import REPO_ROOT
+
+    src = (
+        REPO_ROOT / "workbench/control_plane/src/components/projects/ProjectToolCards.tsx"
+    ).read_text(encoding="utf-8")
+    block = re.search(r"GUARDED_TOOLS[^=]*=\s*new Set\(\[(.*?)\]\)", src, re.S)
+    assert block, "GUARDED_TOOLS literal not found in ProjectToolCards.tsx"
+    in_cards = set(re.findall(r'"([a-z_]+)"', block.group(1)))
+    assert in_cards == m.tools_by_class("C")

@@ -654,11 +654,51 @@ def test_the_badge_index_is_partial(sql: str):
     )
 
 
-def test_the_kind_vocabulary_matches_the_module(sql: str):
-    match = re.search(r"kind\s+TEXT\s+NOT\s+NULL\s+CHECK\s*\(kind\s+IN\s*\((.*?)\)\)",
-                      sql, re.S)
-    assert match
-    assert set(re.findall(r"'([a-z_]+)'", match.group(1))) == set(NOTIFICATION_KINDS)
+def _effective_kind_vocabulary() -> set[str]:
+    """The kinds the CHECK allows after the WHOLE ladder has run.
+
+    🔴 **This used to read migration 152 alone, and that stopped being the
+    answer the moment a later migration widened the constraint.** 213 adds
+    `nudge` for the follow-up, and against 152 the assertion below failed while
+    both files were correct — the test was measuring a superseded statement.
+
+    A CHECK is not owned by the migration that created it. It is owned by the
+    LAST migration that defines it, exactly as the served schema is. So this
+    walks the ladder in apply order and keeps the final definition, which is
+    what `apply_migrations.sh` leaves in the database.
+    """
+    ladder = sorted(
+        (p for p in (REPO / "infra" / "postgres").glob("*.sql")
+         if re.match(r"^\d+_", p.name)),
+        key=lambda p: int(p.name.split("_", 1)[0]),
+    )
+    # Either shape counts: 152's inline column CHECK, or a later
+    # `ADD CONSTRAINT pm_notifications_kind_check CHECK (...)`.
+    patterns = (
+        r"kind\s+TEXT\s+NOT\s+NULL\s+CHECK\s*\(kind\s+IN\s*\((.*?)\)\)",
+        r"ADD\s+CONSTRAINT\s+pm_notifications_kind_check\s+"
+        r"CHECK\s*\(\s*kind\s+IN\s*\((.*?)\)\s*\)",
+    )
+    found: set[str] | None = None
+    for path in ladder:
+        body = bare(path.read_text(encoding="utf-8"))
+        if "pm_notifications" not in body:
+            continue
+        for pattern in patterns:
+            for match in re.finditer(pattern, body, re.S | re.I):
+                found = set(re.findall(r"'([a-z_]+)'", match.group(1)))
+    assert found is not None, "no migration defines pm_notifications.kind"
+    return found
+
+
+def test_the_kind_vocabulary_matches_the_module():
+    """The Python tuple and the database CHECK are ONE rule in two places.
+
+    A kind in the tuple but not the CHECK raises `IntegrityError` on insert,
+    which surfaces as a 500 rather than as a missing migration. A kind in the
+    CHECK but not the tuple is dead vocabulary `notify()` refuses by name.
+    """
+    assert _effective_kind_vocabulary() == set(NOTIFICATION_KINDS)
 
 
 # ── Rule 3 uses the SAME clause the read path uses (found by WS-27n) ────────

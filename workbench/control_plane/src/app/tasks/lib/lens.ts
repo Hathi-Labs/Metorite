@@ -866,6 +866,35 @@ export async function lensMoveTask(
   });
 }
 
+/** What `POST /projects/tasks/{id}/nudge` answers. */
+export interface LensNudgeResult {
+  /** People who got a notification. Empty means nobody was told. */
+  notified: string[];
+  /** Named, but cannot open the task — so they heard nothing. */
+  skipped: string[];
+  /** Null until somebody was actually told. */
+  last_nudged_at: string | null;
+}
+
+/**
+ * Tell the person I am waiting on that I am waiting on them.
+ *
+ * WS-27bk wave 6, spec §9.12.9. Migration 188 shipped the Waiting-For columns
+ * and this view has drawn "nudged 3d ago" ever since — from a column nothing
+ * wrote, because the act did not exist.
+ *
+ * ⚠️ **IN-APP.** One notification row, the same path a mention takes. An
+ * outward message — mail, WhatsApp — is Action-Broker work and owner-gated.
+ *
+ * ⚠️ **`notified` can be empty on a 200.** The person you delegated to may not
+ * be able to open the task, and the server reports that rather than pretending.
+ * The caller must read it — a button that says "sent" either way is the defect
+ * this shape exists to prevent.
+ */
+export async function lensNudge(taskId: string): Promise<LensNudgeResult> {
+  return post(`tasks/${taskId}/nudge`) as unknown as Promise<LensNudgeResult>;
+}
+
 export async function lensPlan(
   kind: "plan" | "replan" | "rollover",
   req: unknown,
