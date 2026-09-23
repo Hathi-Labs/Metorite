@@ -358,9 +358,26 @@ else.
 **Where it mounts.** Two places, one component. The `ai-chat` sidebar slot
 (`page.tsx:3024-3029`) shows it full-width. **S1 builds this one.**
 
-A rail toggle beside the triage rail (`page.tsx:3218`) shows it docked, so a
-member can talk while the board is open. On a phone the chat is a full scene,
-like the email assistant. **Those two are S5.**
+An "Assistant" toggle in the board's action row shows it docked, so a member
+can talk while the board is open. On a phone the chat is a full scene, like
+the email assistant. **BUILT, 2026-09-23.** `lib/chatDock.ts` owns the rules,
+and `chatDock.test.ts` is their fence:
+
+- The dock is a 26rem column while `DOCK_QUERY` (`80rem`, Tailwind's `xl`)
+  matches. Below that width the page mounts no rail, and the toggle opens the
+  full slot. On a phone, the sidebar's AI chat entry opens the slot as a full
+  scene.
+- The dock and the docked task panel share one right-hand column. While a task
+  holds it, the chat hides and stays mounted, so a streaming reply keeps
+  streaming. A full-width task panel is an overlay and hides nothing.
+- The toggle is pressed only while the column is on screen. While a task holds
+  the column, a press closes the task and shows the chat.
+- A space, a folder, Analytics and Reports keep the dock, because the chat's
+  own navigation goes there in the middle of a reply. Only the `ai-chat` slot
+  removes it, so the member never sees two chats.
+- Each browser remembers the choice in `localStorage`, as `panelMode.ts` does.
+- A write receipt reloads the board only if it finished in the last minute
+  (`isFreshReceipt`). A receipt replayed from history does not reload it.
 
 While the slot is open the tree highlights no node. So the rail header names
 the scope itself, and the persona says "current scope", not "looking at".

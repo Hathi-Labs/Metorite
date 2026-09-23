@@ -169,6 +169,24 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
 export const PROJECTS_CHANGED_EVENT = "cc-projects-changed";
 const announced = new Set<string>();
 
+/**
+ * How recent a receipt must be to announce. A write the member just made
+ * reloads the board. A receipt replayed from history must not: with the chat
+ * docked on the board, every past receipt in the conversation mounted on each
+ * page load and reloaded the board once per receipt (review of PR #415).
+ */
+export const FRESH_RECEIPT_MS = 60_000;
+
+/** Did this tool finish just now, in this page's life? Stored events keep the
+ *  `endedAt` they finished with, so a replay is old; one with no time at all
+ *  predates the field and is old too. */
+export function isFreshReceipt(e: { endedAt?: number }, now: number = Date.now()): boolean {
+  if (typeof e.endedAt !== "number") return false;
+  // A negative age is a server stamp ahead of this machine's clock: not fresh.
+  const age = now - e.endedAt;
+  return age >= 0 && age < FRESH_RECEIPT_MS;
+}
+
 function announceChange(eventId: string): void {
   if (announced.has(eventId)) return;
   announced.add(eventId);
@@ -469,7 +487,8 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const result = (e.result || "").trim();
   const outcome = classifyActionResult(result, e.status, e.name);
   useEffect(() => {
-    if (outcome === "done") announceChange(e.id);
+    if (outcome === "done" && isFreshReceipt(e)) announceChange(e.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
   }, [outcome, e.id]);
   const rowId = rowIdOf(result);
   const openTask = useOpenTask();
