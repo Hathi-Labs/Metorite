@@ -149,3 +149,44 @@ export function groupByWaitingOn(
       a.label.localeCompare(b.label),
   );
 }
+
+/**
+ * What a nudge actually achieved, in the one sentence the row shows.
+ *
+ * 🔴 **`notified` can be empty on a 200, and that is the whole reason this
+ * exists.** `POST /tasks/{id}/nudge` delivers only to people who can open the
+ * task, and it reports the rest in `skipped` rather than pretending. A button
+ * that said "Nudged" either way would leave a member waiting on somebody who
+ * was never told — the same shape as a board that claims to hold every task
+ * and holds one page.
+ *
+ * It lives here rather than in `WaitingForView` because `vitest.config.ts` is
+ * `environment: "node"` and never collects a `.tsx` (D-PM-21), so a rule
+ * written in the component would carry no fence.
+ */
+export function nudgeOutcome(result: {
+  notified: readonly string[];
+  skipped: readonly string[];
+}): { ok: boolean; message: string } {
+  const notified = result.notified ?? [];
+  const skipped = result.skipped ?? [];
+  if (notified.length === 1) {
+    return { ok: true, message: `Nudged ${notified[0]}.` };
+  }
+  if (notified.length > 1) {
+    return { ok: true, message: `Nudged ${notified.length} people.` };
+  }
+  if (skipped.length === 1) {
+    return {
+      ok: false,
+      message: `${skipped[0]} cannot open this task, so nothing was sent.`,
+    };
+  }
+  if (skipped.length > 1) {
+    return {
+      ok: false,
+      message: `${skipped.length} people cannot open this task, so nothing was sent.`,
+    };
+  }
+  return { ok: false, message: "Nobody was nudged." };
+}

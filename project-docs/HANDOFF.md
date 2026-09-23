@@ -368,9 +368,16 @@ line — never reclaim a number by deleting the other entry.
           and not memory and not calendar"         run 2: pass
                                                    run 3: FAIL (another test)
 
-  So the suite that leaks the state is one the narrow filter EXCLUDES. That is
-  the most useful thing anybody has learned about this defect. Look at what
-  `tree`, `task` and `personal` pull in and `projects` does not.
+  So the suite that leaks the state is one the narrow filter EXCLUDES. Look at
+  what `tree`, `task` and `personal` pull in and `projects` does not.
+- **⚠️ 2026-09-23 — `-k "projects"` FAILED once, so yesterday's line above is
+  too strong.** It read as though the narrow selection had stopped failing.
+  Six green runs is not "stopped" — it is intermittent under that selection
+  too, and one run out of 2151 tests reproduced it the next day. The wider
+  selection remains the reliable reproduction. **Neither selection is a
+  clean bill of health**, which is the real hazard: a branch that touches
+  nothing near this can go red, and a branch that breaks something can go
+  green. It still passes alone, every time.
 - **🔴 A THIRD test fails the same way, and it is not a Projects test.** Run 3
   above failed
   `test_customer_console_catalog.py::TestRemovingAModelFromTheCatalog::test_removing_one_task_is_not_blocked_by_a_binding_on_ANOTHER`
@@ -2466,23 +2473,6 @@ line — never reclaim a number by deleting the other entry.
   through it is correct, and `email/automation/followups.py` does that. A
   lint there would fail correct code and grow an allowlist. The asyncpg
   suites are the answer for that half.
-
-### H-113 · Wave 6 needs only its NUDGE. The columns shipped in 188 · [AGENT]
-- **⚠️ This entry was wrong, and the correction is the point.** It said
-  §9.12.9 needs two new columns, and its Check looked for `follow_up_at`. That
-  name never existed. Migration **188** already shipped `waiting_on`,
-  `delegated_at`, `expected_by` and `last_nudged_at` on `pm_task_personal`,
-  with a partial index built for the "what is due back" read.
-- **Check:** `grep -n "last_nudged_at" apps/services/gateway/gateway/routes/projects/personal.py`
-  → the field is accepted and **nothing writes it**. That is the open half.
-- **What is already built.** The Tasks app sets and draws all of it —
-  `DelegateDialog`, `WaitingForView` and `ItemDetail` carry the date, the
-  person and the overdue badge.
-- **What is open.** The optional nudge. One notification to the person you
-  wait on, through `routes/projects/notifications.py` `notify()`, which
-  exists. It is off by default, and it stamps `last_nudged_at` once.
-  ⚠️ In-app only. A mail to a real person is owner-gated (CLAUDE.md §3a).
-- **Corrected:** 2026-09-19 · found while auditing wave 6 for dispatch.
 
 ### H-110 · Operator OTP sends now. Two dashboard acts are still unverified · [OWNER]
 - **Check:** ask Supabase project `uttxlicdccfkramtjfpi` for an OTP at an address
