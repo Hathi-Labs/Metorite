@@ -98,6 +98,8 @@ describe("no Focus cell borrows the word Priority (D76)", () => {
     expect(byKey.tags).toBe("Tags");
     expect(DEFAULT_VISIBLE.priority).toBe(true);
     expect(DEFAULT_VISIBLE.tags).toBe(false);
+    // The Priority track is paid for by Energy, or Due date falls off at 1440.
+    expect(DEFAULT_VISIBLE.energy).toBe(false);
   });
 });
 

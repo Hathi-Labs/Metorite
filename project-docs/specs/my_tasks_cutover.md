@@ -9,7 +9,8 @@ this spec and `work_plan.md` §2 disagree, the board wins.
 
 ---
 
-**Built so far.** S5, S6a to S6e and S8a are built and serving. S7 ran on
+**Built so far.** S5, S6a to S6e and S8a are built and serving. S6f is built
+on 2026-09-23 (D76, §4.10). S7 ran on
 2026-09-23. S8 PR 1 is built on 2026-09-23 and waits for its merge window.
 
 ## 0. One paragraph
@@ -306,6 +307,88 @@ Fences: `app/tasks/lib/statusCategory.test.ts` (the grouping, the lane
 resolution and the settings modal source) and `naming.test.ts` (no member
 string says ClickUp).
 
+### 4.10 One set of fields across My Tasks and Projects (D76)
+
+Owner directive, verbatim, 2026-09-23, in six fragments:
+
+> "I don't want to unnecessarily duplicate fields or have related fields in the
+> Projects app and My Tasks app."
+
+> "The My Tasks app might have specific fields for related context, from a
+> more task-management perspective (personal and individual)"
+
+> "but it should derive all the data or reuse all the field data from the
+> Projects app itself."
+
+> "For example, deadlines, priority" … "should be derived from the Projects
+> app."
+
+> "If you think that the Projects app fields are actually lacking and the My
+> Tasks app has certain fields that are richer in nature,"
+
+> "they should be included in the Projects app itself."
+
+**The rule.** A fact about the WORK has one home: `pm_tasks`, or a side table
+of it. Both apps read and write that home. My Tasks keeps an overlay only for
+how one member holds the work. It never keeps a second copy of a work fact.
+
+⚠️ **This AMENDS D53.8 for two fields, by owner directive.** D53.8 kept the
+matrix's `important` apart from `pm_tasks.importance`. The overlay also held
+its own `time_estimate_mins`. Both now read the shared column. `work_plan.md`
+§3 D76 records the decision.
+
+**The audit, measured on `main` at `74653868`.** Six pairs held one fact
+twice, and each pair could disagree.
+
+| # | Pair | What went wrong |
+|---|---|---|
+| 1 | `importance` vs the matrix cell | A task Projects called Urgent read `Low Priority · Eliminate?`. The detail showed both |
+| 2 | `estimate_mins` vs the overlay's `time_estimate_mins` | A My Tasks estimate never reached People capacity or analytics |
+| 3 | the status vs the stated `disposition` | A teammate reopened a task, and it stayed DONE in my list. Projects closed it, and my NEXT stayed |
+| 4 | the assignees vs the stored `waiting_on` | Projects reassigned it, and my Waiting-For and the Nudge named the old person |
+| 5 | `start_date` vs `defer_until` | The start date was shared and My Tasks did not show it |
+| 6 | `tags` vs `context` | The tags were shared and My Tasks lists did not show them |
+
+Projects also lacked four editors that My Tasks had. The description was
+read-only in the Projects body. The estimate had no editor. The start date was
+not in the detail body. The watch toggle was in the Projects header only.
+
+**Each field, decided.**
+
+| Field | Decision | How |
+|---|---|---|
+| Priority | **Shared** | `pm_tasks.importance`, labelled as `projects/lib/table.ts` does. The My Tasks list column, the card chip and the body show and edit it |
+| Focus matrix | **Derived, not stored** | Important is `importance >= 2`. Urgent comes from the due date. `leveraged` and `deep_work` stay mine. The seven cells and the Suggestion are unchanged. No cell says "Priority": the old "Low Priority" cell is "Low value" |
+| Estimate | **Shared** | `pm_tasks.estimate_mins`. My Tasks' Estimate writes it. The planner reads it. Migration 215 copies the overlay values once |
+| Deadline | **Shared**, already `due_at` | A delegation never replaces a deadline the task has. The promised date is `expected_by` |
+| Start date | **Shared** | `start_date`, in the body of both apps. My inbox hides the task until the later of it and my own `defer_until` |
+| Completion | **Derived** | `effective_disposition`: a closed lane reads DONE. A stated DONE on an open lane reads NEXT, and `is_triaged` stays true. Nothing is written |
+| Waiting on | **Derived from the assignees** | The task's assignees minus me, first by `assigned_at`. The Nudge goes to the same people |
+| Tags vs context | **Both kept** | Tags are the team's labels for the work. A context is how I batch MY time, and no work fact holds it |
+| Description vs next action | **Both kept** | The body edits the description in both apps. The next action stays mine |
+| Watchers | **Shared** | The watch toggle is in the shared body |
+| Energy, two-minute, defer, block, flexible, hard date, actuals, rank, clarified, kept mine | **Mine**, unchanged | Each keeps its D53.5, D53.7 or D53.8 reason |
+
+**Promoted into Projects.** The Estimate editor, the description editor, the
+start date and the watch toggle, all in the shared `TaskBody`. Also **Time
+spent**, a read-only cell beside Estimate. It is the sum of every member's
+actuals (`actual_end - actual_start`), bound to the task the caller can see.
+
+**Four choices the directive did not settle, each an agent default:**
+
+1. **The stored `waiting_on` is not ignored.** It is the label when it names
+   the same address. It is the whole answer when no other person holds the
+   task. A task in my own tree cannot carry a colleague (D62). So a chase
+   there is an outside person, and the overlay is the only place that fact is.
+2. **A stated TRASH stays TRASH on a closed lane.** Trash is my removal from
+   my list, and a closed lane does not undo it.
+3. **Saying Next on a closed task reopens it for the board.** Without this the
+   lane wins and "mark not done" does nothing visible. The client moves the
+   task to its first `todo` lane before the overlay write.
+4. **The Important switch writes Priority.** On raises a lower task to High.
+   Off lowers High or Urgent to Normal. A switch that already agrees writes
+   nothing, so Important never demotes Urgent.
+
 ## 5. The slices
 
 Each slice is one PR, merged and watched to a serving SHA (CLAUDE.md §4).
@@ -596,6 +679,66 @@ scope did not settle.
 PASS. `test_projects_personal_s6e.py`, 12 tests. The vitest fences:
 `itemDetail.test.ts` (10), `fromProjects.test.ts` (4), `lens.test.ts` (56),
 `selectionParity.test.ts` (13).
+
+### S6f — one set of fields across My Tasks and Projects · AGENT-SAFE · BUILT 2026-09-23
+
+**Scope.** §4.10, decision D76. Branch `my-tasks-fields`, stacked on
+`my-tasks-s8b` (#411). It merged `origin/main` once, for D75 and the Nudge.
+
+**Gateway.**
+
+1. `effective_disposition` in `personal.py` is the one rule. The inbox, the
+   planner (`planning._pm_row`) and the AI seam (`item_lens._pm_item`) call it.
+   `_PM_ALIVE` now prunes TRASH only, because a stated DONE can be reopened.
+2. `_MY_TASKS_SQL` selects `other_assignees`. `waiting_on_for` turns it into
+   the waiting-on person, and the Nudge uses the same rule.
+3. `DEFERRED_CLAUSE` adds `start_date <= current_date` to the defer clause.
+4. `validate_overlay` refuses `important` and `time_estimate_mins` with a 422.
+   `_upsert_personal` refuses them with a ValueError. Organize and email
+   capture write `pm_tasks.estimate_mins`.
+5. A delegation keeps a deadline the task already has.
+6. `GET /projects/tasks/{id}` carries `time_spent_mins`. It is a field on a
+   route that exists, so the D-PM-37 manifest does not change.
+7. **Migration 215** copies each overlay estimate into an empty
+   `estimate_mins`. The assignee's value wins, then the first assignee, then
+   the earliest `updated_at`. The ledger guard makes a replay a no-op.
+8. `skill-task-gtd` and `skill-projects` follow the split.
+
+**Client.**
+
+1. `lens.ts` maps `importance`, `estimate_mins`, `start_date` and `tags`.
+   `important` derives from `importance`. `TASK_KEYS` gains the estimate,
+   Priority and start date. `OVERLAY_KEYS` loses the two retired keys.
+2. Saying Next, Waiting or Someday on a closed task moves it to the first
+   `todo` lane (`lensReopenIfClosed`).
+3. The Important switch writes Priority (`importanceForImportant`).
+4. The Focus matrix, its column, group, filter, sort and view say "Focus".
+   The list's Priority column and the card draw the shared Priority and the
+   tags with the Projects chips (`importanceChip`, `taskMeta`).
+5. `TaskBody` gains Start, Estimate, Time spent, Watch and a Description
+   editor. The My Tasks strip loses Estimate and Notes under the lens. The
+   Projects header loses its watch toggle.
+6. The inbox tickles a task until its start date (`isTickled`, `resurfacesAt`).
+7. **Energy is off by default in the list.** The rig measured the new Priority
+   track at 1440 with both rails open. It pushed Due date off the edge.
+
+**Verified.**
+
+- `tests/live/live_ws39_s6f.py` on the dev database: **12/12 PASS**. It
+  checks reopen, close, reassign, the estimate and Priority in the planner,
+  and the estimate in capacity. It also checks the start date, the retired
+  columns, the backfill run twice, the ledger replay, time spent and tenancy.
+- `test_projects_personal_s6f.py`: 29 tests. The pytest run over every file
+  that imports a changed module: 2383 pass. One fails, and it fails at the
+  base too: `test_h3_rls_promotion_rehearsal.py`, order-dependent.
+- `npx tsc --noEmit` clean. `npx vitest run`: 3381 pass in 178 files. The new
+  fence is `sharedFields.test.ts`. `lens.test.ts` and `itemDetail.test.ts`
+  gained the D76 cases.
+- The live scripts for S6a, S6c, S6d, S6e, S8a and S8c pass. S6d reads the
+  capture's estimate off `pm_tasks` now.
+- The visual pass: one task in My Tasks and in Projects, light, compact and
+  dark at 1440, and 390. The captures are in
+  `workbench/control_plane/ux-shots/s6f/`.
 
 ### S7 — the cutover · dev-phase window, reported by evidence · RUN 2026-09-23
 
@@ -913,6 +1056,9 @@ the owner.
 | My Tasks and Projects share one task panel composition | the S6e source fence |
 | the rename prologues are guarded and not swept | `test_gtd_rename_upgrade.py` |
 | the drop is inert until armed and accounted for | `test_gtd_backfill.py` |
+| a work fact has one home, and My Tasks reads it (D76) | `test_projects_personal_s6f.py`, `live_ws39_s6f.py`, `sharedFields.test.ts` |
+| the strip draws no work fact, and the body draws them all (D76) | `itemDetail.test.ts` |
+| the lens never writes `important` or `time_estimate_mins` (D76) | `lens.test.ts`, `test_projects_personal_s6f.py` |
 | the ladder replays clean | `pr-check.yml` migrations job |
 
 ## 8. What this spec closes, and where

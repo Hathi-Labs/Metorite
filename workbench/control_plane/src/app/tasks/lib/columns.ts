@@ -67,7 +67,11 @@ export const DEFAULT_VISIBLE: Record<ColumnKey, boolean> = {
   focus: true,
   mode: true,
   context: true,
-  energy: true,
+  // D76 (S6f): off by default, to pay for the shared Priority track. The
+  // Priority column took 76px + a gap, and at 1440 with both rails open
+  // that pushed Due date off the right edge (measured by the S6f rig). Energy
+  // is one toggle away in Settings, and the card still draws it.
+  energy: false,
   estimate: true,
   due: true,
   // D76 — the team's tags, off by default: the card already draws them, and
