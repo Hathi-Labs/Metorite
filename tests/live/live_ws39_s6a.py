@@ -33,7 +33,7 @@ The script imports the module's own helpers — it does not restate their SQL.
 tenant database) is used with its driver swapped for asyncpg, which is the
 driver production runs.
 
-── Result, 2026-09-23, PostgreSQL 16 (metorite-scratch-tenant), asyncpg: 13/13 ─
+── Result, 2026-09-23 (re-run after S8a), PostgreSQL 16, asyncpg: 13/13 ─
 
      1 three captures land, in my inbox's own query ......................... PASS
      2 a failing 4th capture rolls the first 3 back ......................... PASS
@@ -215,8 +215,12 @@ async def main() -> None:
             kids = (await db.execute(text(
                 "SELECT count(*) FROM pm_tasks WHERE parent_task_id = :p"),
                 {"p": victim.id})).scalar()
+            # S8a: a capture states INBOX, so the capture's own overlay row
+            # exists BEFORE the savepoint. The rollback must leave exactly
+            # that row: still INBOX, and none of organize's writes.
             check("4 a failed subtask insert rolls the overlay back",
-                  overlay is None and kids == 0,
+                  overlay is not None and overlay[0] == "INBOX"
+                  and overlay[1] is None and kids == 0,
                   f"{type(exc).__name__}; overlay={overlay} children={kids}")
         await db.execute(text("DROP TRIGGER s6a_boom ON pm_tasks"))
 

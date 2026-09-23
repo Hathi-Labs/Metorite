@@ -1707,22 +1707,19 @@ def test_agent_item_format_shows_email_origin():
 
 def test_agent_item_format_distinguishes_the_two_waiting_states():
     """BO-1b repair: `awaiting_approval` was an unswept consumer of the widened
-    vocabulary — `_fmt_item` only tested for `'pending'`, so a queued item
-    rendered to the agent with NO marker at all and no provider link, and the
-    agent could not tell it from a normal task. The two states are not synonyms
-    and the rendered line must say which one it is."""
+    vocabulary. S8a (2026-09-23) retired both markers with the connector
+    (D52): no row the lens answers carries `sync_state`. What the row DOES
+    carry is `defer_until` and the project's lane name, and both are printed,
+    so a snoozed task reads as snoozed rather than missing and the agent can
+    name the lane the task is in."""
     from skill_task_gtd.core import _fmt_item
 
-    staged = _fmt_item({"id": "a" * 12, "title": "t", "disposition": "NEXT",
-                        "source": "SYNCED", "sync_state": "pending"})
-    queued = _fmt_item({"id": "b" * 12, "title": "t", "disposition": "NEXT",
-                        "source": "SYNCED", "sync_state": "awaiting_approval"})
-    normal = _fmt_item({"id": "c" * 12, "title": "t", "disposition": "NEXT",
-                        "source": "SYNCED", "sync_state": "synced"})
-
-    assert "PENDING PUSH" in staged and "AWAITING APPROVAL" not in staged
-    assert "AWAITING APPROVAL" in queued and "PENDING PUSH" not in queued
-    assert "PENDING PUSH" not in normal and "AWAITING APPROVAL" not in normal
+    line = _fmt_item({"id": "a" * 12, "title": "t", "disposition": "SOMEDAY",
+                      "defer_until": "2026-10-03T00:00:00+00:00",
+                      "workflow_stage": "Backlog"})
+    assert "deferred until 2026-10-03" in line
+    assert "stage Backlog" in line
+    assert "PENDING PUSH" not in line and "AWAITING APPROVAL" not in line
 
 
 # ---------------------------------------------------------------------------
