@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import { PROJECT_STATES, PROJECT_STATE_ORDER } from "@/lib/statusAccent";
@@ -235,5 +238,66 @@ describe("wheelLabel", () => {
     expect(
       wheelLabel("project", "Rocket", { tasks: 10, done: 4 }),
     ).not.toContain("cancelled");
+  });
+});
+
+/* ── Where the label is allowed to live ──────────────────────────────────── */
+
+/**
+ * 🔴 **The label is an ATTRIBUTE. It must never be TEXT.**
+ *
+ * `ProgressWheel` first carried its label in an SVG `<title>` child. An SVG
+ * `<title>` is text content, so every project name gained a second, invisible
+ * copy in its row — and that copy sits BEFORE the visible name in DOM order.
+ *
+ * What that cost: `page.getByText("<project>").first()` resolved to a node
+ * that can never be clicked. Four `projects-timeline-autoscroll` tests each
+ * waited the full two-minute timeout, twice over with retries, and the browser
+ * job hit its twenty-minute limit and was cancelled. The gate reported neither
+ * pass nor fail — it simply ran out, which is the least readable way for a
+ * suite to break.
+ *
+ * It is not only a test problem. Browser find, a screen reader's text search
+ * and any future selector all hit the hidden duplicate first.
+ *
+ * ⚠️ This reads the SOURCE because `vitest.config.ts` is `environment: "node"`
+ * and never collects a `.tsx` (D-PM-21), so the component itself cannot be
+ * rendered here. `conformance.test.ts` fences the same class of rule the same
+ * way. It is a coarse instrument and it is the one that exists.
+ */
+describe("the wheel's accessible name never becomes page text", () => {
+  const source = readFileSync(
+    fileURLToPath(new URL("../components/ProjectTree.tsx", import.meta.url)),
+    "utf8",
+  );
+
+  // ⚠️ Comments are stripped first. The docstring explaining this rule SAYS
+  // the forbidden tag, and a fence that cannot tell code from prose fails on
+  // its own explanation — which teaches the next person to delete the fence
+  // rather than the defect.
+  const code = source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+
+  it("renders no <title> element", () => {
+    expect(code).not.toMatch(/<title[\s>]/);
+  });
+
+  it("the comment-stripping did not gut the check", () => {
+    // If the strip ever swallowed the JSX too, every assertion here would
+    // pass over an empty string and prove nothing.
+    expect(code).toContain("<svg");
+    expect(code.length).toBeGreaterThan(1000);
+  });
+
+  it("still carries the name for assistive tech", () => {
+    // Removing the <title> must not have taken the accessible name with it.
+    expect(code).toMatch(/aria-label=\{label\}/);
+    expect(code).toMatch(/role="img"/);
+  });
+
+  it("keeps a hover tooltip, as an attribute", () => {
+    // `title` on a span is an attribute, not text content.
+    expect(code).toMatch(/title=\{label\}/);
   });
 });

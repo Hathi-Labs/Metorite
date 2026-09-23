@@ -139,6 +139,19 @@ function StateDot({
  * ⚠️ Rotated -90° so the arc starts at twelve o'clock. SVG strokes a circle
  * from three o'clock, and a wheel that fills from the right reads as a
  * different quantity than the one the number says.
+ *
+ * 🔴 **NO `<title>` CHILD. The label is an attribute, never text.** An SVG
+ * `<title>` is TEXT CONTENT, so the project name inside it became a second,
+ * INVISIBLE match for that name in the row — and it sits before the visible
+ * one in DOM order. `page.getByText("Bootloader").first()` then resolved to a
+ * node that can never be clicked, and four timeline tests hung for two
+ * minutes each until the whole browser job ran out its twenty minutes.
+ *
+ * The cost of getting this wrong is not only a test. Any reader searching the
+ * page for a project name — browser find, a screen reader's text search, a
+ * future test — hits a hidden duplicate first. `aria-label` on a `role="img"`
+ * carries the accessible name on its own, and the wrapper's `title` attribute
+ * gives the hover tooltip that the `<title>` child used to.
  */
 function ProgressWheel({
   progress,
@@ -153,35 +166,38 @@ function ProgressWheel({
   // clipping its own edge at the smallest size the tree draws.
   const R = 6;
   return (
-    <svg
-      viewBox="0 0 16 16"
-      className={className}
-      role="img"
-      aria-label={label}
-    >
-      <title>{label}</title>
-      <g transform="rotate(-90 8 8)">
-        <circle
-          cx="8"
-          cy="8"
-          r={R}
-          fill="none"
-          stroke="currentColor"
-          strokeOpacity={0.25}
-          strokeWidth={2.5}
-        />
-        <circle
-          cx="8"
-          cy="8"
-          r={R}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={2.5}
-          strokeLinecap="round"
-          strokeDasharray={ringDash(progress, R)}
-        />
-      </g>
-    </svg>
+    // The tooltip rides on the WRAPPER as an attribute. `title` on a span is
+    // not text content, so it adds no second match for the project name.
+    <span className={`inline-flex ${className ?? ""}`} title={label}>
+      <svg
+        viewBox="0 0 16 16"
+        className="h-full w-full"
+        role="img"
+        aria-label={label}
+      >
+        <g transform="rotate(-90 8 8)">
+          <circle
+            cx="8"
+            cy="8"
+            r={R}
+            fill="none"
+            stroke="currentColor"
+            strokeOpacity={0.25}
+            strokeWidth={2.5}
+          />
+          <circle
+            cx="8"
+            cy="8"
+            r={R}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2.5}
+            strokeLinecap="round"
+            strokeDasharray={ringDash(progress, R)}
+          />
+        </g>
+      </svg>
+    </span>
   );
 }
 
