@@ -330,6 +330,8 @@ REFUSALS = [
          expect="S3c REFUSED", unmigrated=True),
     dict(tag="c", label="a migrated row holds leveraged = true",
          expect="gtd_items rows hold a value in leveraged", uncopied=True),
+    dict(tag="d", label="gtd_projects still holds a row",
+         expect="S8 REFUSED: gtd_projects holds 1 rows", tree=True),
 ]
 
 

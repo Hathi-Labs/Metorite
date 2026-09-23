@@ -239,8 +239,35 @@ $s8_drop$;
 --   gtd_spaces    referenced by the two above only.
 --   gtd_contexts  no foreign keys either way (§4.5: contexts are derived).
 --
+-- ⚠️ These four tables must be EMPTY. The backfill turned a member's LOCAL
+-- projects into Areas, but it never deleted the old rows, and it copied
+-- nothing from spaces, folders or contexts. A row here is data 216 would
+-- lose, so it RAISES and names the table. Production held 0 rows in all
+-- four on 2026-09-23 (my_tasks_cutover.md §5 S8).
+--
 -- 190's function already drops the view and the backfill when it fires. The
 -- two lines below cover a database where it never fired, such as a replay.
+
+DO $s8_tree_empty$
+DECLARE
+    v_table text;
+    v_rows  bigint;
+BEGIN
+    FOREACH v_table IN ARRAY ARRAY['gtd_projects', 'gtd_spaces', 'gtd_folders',
+                                   'gtd_contexts']
+    LOOP
+        CONTINUE WHEN to_regclass('public.' || v_table) IS NULL;
+        EXECUTE format('SELECT count(*) FROM %I', v_table) INTO v_rows;
+        IF v_rows > 0 THEN
+            RAISE EXCEPTION
+                'S8 REFUSED: % holds % rows, and dropping it would lose them. '
+                'We cannot roll back (R6). Nothing was changed. Confirm each '
+                'row reached the one store, delete it by hand, then deploy again.',
+                v_table, v_rows;
+        END IF;
+    END LOOP;
+END
+$s8_tree_empty$;
 
 DROP VIEW     IF EXISTS gtd_backfill_plan;
 DROP FUNCTION IF EXISTS gtd_backfill_to_pm(boolean);

@@ -407,6 +407,16 @@ def test_216_refuses_a_value_the_backfill_never_copied() -> None:
     assert body.index("$s8_uncopied$") < body.index("$s8_commitments$")
 
 
+def test_216_refuses_a_tree_table_that_holds_rows() -> None:
+    body = sql(S8)
+    block = body[body.index("$s8_tree_empty$"):body.rindex("$s8_tree_empty$")]
+    for table in ("gtd_projects", "gtd_spaces", "gtd_folders", "gtd_contexts"):
+        assert f"'{table}'" in block, table
+    assert "RAISE EXCEPTION" in block
+    assert body.rindex("$s8_tree_empty$") < body.index(
+        "DROP TABLE IF EXISTS gtd_projects;"), "the check must run before the drop"
+
+
 def test_216_moves_the_commitment_before_the_drop() -> None:
     """`task_id` is filled from `gtd_items.migrated_task_id`, so the copy must
     run while `gtd_items` exists, and only onto a pm_tasks row that exists."""
