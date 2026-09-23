@@ -145,6 +145,18 @@ export interface GtdItem {
   /** the user dismissed the delegate/schedule suggestion ("this one's mine") */
   keptMine?: boolean;
   projectId?: string;
+  /** S6e — the project's NAME, off the gateway's join. A member reached by
+   *  assignment alone may hold no grant on the project, so the company list
+   *  cannot be relied on to name it; the row names itself. */
+  projectName?: string;
+  /** S6e — I have STATED a disposition (an overlay row with one). The
+   *  Weekly Review's fact. Not "an overlay row exists": a context alone
+   *  leaves this false and still takes the task out of "From Projects". */
+  isTriaged?: boolean;
+  /** S6e — who put this on my plate, when the row came from a board
+   *  (`pm_task_assignees.assigned_by` for my own row). Only on the
+   *  untriaged read. */
+  assignedBy?: string;
 
   // people / delegation
   isMine: boolean;
@@ -250,6 +262,14 @@ export type ViewKey =
   | "next"
   | "priority"
   | "waiting"
+  /**
+   * S6e — a project I LEAD, opened from the sidebar (`LedProjectsSection`)
+   * and drawn by `LedProjectView`: my tasks in it first, everybody's open
+   * count, the board one link away. Not the browsing surface 2026-08-06
+   * removed (the ClickUp Space → Folder → List tree) — that stays in
+   * `/projects`. This is the personal lens on one project I answer for.
+   */
+  | "projects"
   /**
    * ⚠️ **No longer selectable from the Tasks sidebar** — D54 (2026-08-24, board
    * WS-39 S2) moved the calendar to its own app at `/calendar`.

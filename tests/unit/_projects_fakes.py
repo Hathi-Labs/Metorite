@@ -1681,10 +1681,37 @@ class FakeProjectsDB:
                 wanted = str(args.get("context") or "").lower()
                 if str(mine.get("context") or "").lower() != wanted:
                     continue
+            # WS-39 S6e — `?untriaged=true`: no STATED disposition of mine.
+            # Keyed off the statement: `p.task_id IS NULL` alone means "no
+            # row", and with `p.disposition IS NULL` beside it a row that
+            # holds only a context or a planner block still counts.
+            if "p.task_id IS NULL" in statement and mine:
+                stated = mine.get("disposition") is not None
+                if "p.disposition IS NULL" not in statement or stated:
+                    continue
+            # …and never from my own tree (`proj.personal_owner IS NULL`).
+            if "proj.personal_owner IS NULL" in statement and str(
+                task.get("project_id"),
+            ) in personal_projects:
+                continue
+            # WS-39 S6e — `/my/led` narrows the fragment to the led projects.
+            if "t.project_id = ANY(CAST(:led_ids AS uuid[]))" in statement:
+                led_ids = {str(v) for v in (args.get("led_ids") or [])}
+                if str(task.get("project_id")) not in led_ids:
+                    continue
 
             status = statuses.get(str(task.get("status_id")), {})
+            project = next(
+                (
+                    p for p in self.rows("pm_projects")
+                    if str(p.get("id")) == str(task.get("project_id"))
+                ),
+                {},
+            )
             out.append(SimpleNamespace(
                 **task,
+                # S6e — `proj.name AS project_name`, off the LEFT JOIN.
+                project_name=project.get("name"),
                 status_category=status.get("category", ""),
                 p_disposition=mine.get("disposition"),
                 p_next_action=mine.get("next_action"),

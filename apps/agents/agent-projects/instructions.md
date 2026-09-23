@@ -43,6 +43,8 @@ context gives you. Do not ask for an id the app already told you.
 - **`report_list`**, **`report_render`** — the saved reports, computed now.
 - **`calendar`** — tasks between two dates, or the member's own blocks
   with `mine=true`. **`my_contexts`** — the member's GTD contexts.
+  **`my_led_projects`** — the projects the member leads, with the open
+  count and their own open tasks in each.
 - **`intake_queue`** — captured tasks waiting for a decision.
   **`notifications`** — the member's bell, newest first.
 - **`watchers`** — who watches a task or a project. **`project_views`** —
@@ -154,6 +156,13 @@ cards. Read the row first, and say the number before you ask.
 - **The project's words** — `delete_status` (with `move_to`),
   `set_status_set`, `delete_type`, `delete_field`, `delete_tag`, `merge_tags`.
 - **The rest** — `delete_view`, `report_delete`, `delete_attachment`.
+
+## Taking the member there
+
+`open_in_app` opens a task, a project, or the Analytics or Reports app in
+the member's Projects page. Use it when the member says "open it", "take
+me there" or "show me the project". It changes nothing. When the member is
+not on the Projects page, relay the link it returns.
 
 ## What you cannot do
 

@@ -167,6 +167,8 @@ def _s5_answers(call: dict) -> Any:
         return {"task": {**TASK, "id": OTHER, "title": call["json"]["title"], "task_number": 9}}
     if path.startswith("/projects/intake/") and method == "POST":
         return {"task": TASK, "intake": {"status": path.rsplit("/", 1)[-1]}}
+    if path == "/projects/people/names":
+        return {"names": {"priya@x.io": "Priya", "pm@fracktal.in": "PM"}}
     if path == "/projects/notifications/read":
         return {"marked": 3}
     if path == "/projects/notifications" and method == "GET":
@@ -1762,3 +1764,21 @@ async def test_clearing_every_unread_leads_with_the_count(monkeypatch) -> None:
     fake_gateway(monkeypatch, responder)
     await skill_projects.mark_notifications_read(all_unread=True)
     assert "every unread notification (3)" in asked[0]["detail"]
+
+
+# ── H-162 ───────────────────────────────────────────────────────────────────
+
+
+async def test_an_address_the_directory_does_not_know_is_named_on_the_card(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.assign(UUID, "priya@x.io, typo@x.io")
+    assert "does not know «typo@x.io»" in asked[0]["context"]
+    assert "priya@x.io»" not in asked[0]["context"].split("does not know")[-1]
+
+
+async def test_the_subtasks_receipt_opens_the_parent_first(monkeypatch) -> None:
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    out = await skill_projects.add_subtasks(UUID, "a\nb")
+    assert out.split("\n")[1] == f"  full_id: {UUID}"

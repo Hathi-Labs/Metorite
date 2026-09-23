@@ -21,6 +21,9 @@ import {
   lensFetchAreas,
   lensFetchItems,
   lensFetchMyRoot,
+  lensFetchLed,
+  lensFetchUntriaged,
+  lensMyTaskLanes,
   lensFetchProjects,
   lensFileUnder,
   lensItemDetail,
@@ -38,7 +41,7 @@ import {
   lensStatusCatalog,
   lensTrashItem,
 } from "./lens";
-import type { LensArea, LensAreaRemoval, LensMoveRequest } from "./lens";
+import type { LensArea, LensAreaRemoval, LensLane, LensLedProject, LensMoveRequest } from "./lens";
 export type { LensArea, LensAreaRemoval } from "./lens";
 
 // ── The cutover seam (WS-39 S3a-client) ────────────────────────────────
@@ -931,6 +934,31 @@ export async function fetchAreas(): Promise<LensArea[]> {
 export async function fetchMyRoot(): Promise<{ id: string; name: string } | null> {
   if (!lensEnabled()) return null;
   return lensFetchMyRoot();
+}
+
+// ── Continuity with Projects (S6e) ──────────────────────────────────────────
+//
+// Two reads the legacy store cannot answer: the old `gtd_items` had no board
+// to be assigned from and no `lead` column. Both answer `[]` with the flag
+// off, and nothing renders them then (the sidebar section and the inbox
+// group are lens-only).
+
+/** Tasks assigned to me on a board that I have not looked at yet. */
+export async function fetchUntriaged(): Promise<GtdItem[]> {
+  if (!lensEnabled()) return [];
+  return lensFetchUntriaged();
+}
+
+/** The projects I lead, with their open counts and my own open tasks. */
+export async function fetchLedProjects(): Promise<LensLedProject[]> {
+  if (!lensEnabled()) return [];
+  return lensFetchLed();
+}
+
+/** One task's lanes, through the door the assignee arm can pass. */
+export async function fetchMyTaskLanes(id: string): Promise<LensLane[]> {
+  if (!lensEnabled()) return [];
+  return lensMyTaskLanes(id);
 }
 
 /** Why the three Area WRITES refuse with the flag off, rather than no-op. */
