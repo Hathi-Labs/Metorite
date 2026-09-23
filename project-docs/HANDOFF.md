@@ -2928,6 +2928,22 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_ai_chat.md` §5.4, §12 · `org_access_control.md` §8d
 - **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
 
+### H-165 · The gateway refuses the LLM key on `/v1/embeddings` · [AGENT]
+- **Check:** `grep -n '"/v1/embeddings"' apps/services/gateway/gateway/main.py`
+  → one hit, on the route only, and not in `PUBLIC_ROUTES`, means this is open.
+- **Why:** PR #407 let the LLM key reach `/v1/chat/completions`. The app-wide
+  gate still refuses that key on `/v1/embeddings`, because the key is not an
+  identity. Three callers send it there: `acb_memory/mem0_client.py`,
+  `whatsapp_ingestion/wa_embeddings.py` and `routes/tasks/capability.py`.
+  Each one gets 401 today. The gateway log shows no call in seven days, so
+  nothing is broken in use yet.
+- **Do:** Put `Depends(require_llm_api_auth)` on the route. Then add the
+  template to `PUBLIC_ROUTES`. Extend `tests/unit/test_v1_llm_key_gate.py`,
+  including `test_only_the_completion_routes_are_listed`. Do not list the
+  route without its own lock, because it spends a stored provider key.
+- **Authority:** BO-2 residual #4 · `packages/acb_auth/acb_auth/deps.py` `require_llm_api_auth`
+- **Added:** 2026-09-23 · the review of PR #407
+
 ### H-161 · The seats matrix cannot PROPOSE, because the queue is the wrong shape · [OWNER]
 - **Check:** `rg -n "CREATE TABLE IF NOT EXISTS access_request" -A 12
   infra/postgres/143_access_request.sql` → a unique index on `lower(email)`
