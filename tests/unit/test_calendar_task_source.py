@@ -2,11 +2,11 @@
 
 Board WS-39 · spec `calendar_focus_os.md` §10 · **D53**.
 
-The planner now reads through a `TaskSource`: `GTD_SOURCE` for the retiring
-store, `LENS_SOURCE` for `pm_tasks` + `pm_task_personal`. Everything downstream
-of those reads — the packer, the LLM ranker, the horizon parser, the capacity
-arithmetic, the eviction rules — is shared, unchanged, and completely unaware of
-which store it is working on.
+The planner reads through a `TaskSource`, and since S8 PR 1 there is one:
+`LENS_SOURCE`, over `pm_tasks` + `pm_task_personal`. The retired store's source
+and the `TASKS_LENS` flag are deleted. Everything downstream of those reads —
+the packer, the LLM ranker, the horizon parser, the capacity arithmetic, the
+eviction rules — is unaware of the store.
 
 **That is what makes the design worth having and it is also its one failure
 mode.** The shared code reads attributes off rows by name. A source that returns
@@ -49,12 +49,12 @@ def _reads() -> list[str]:
     ]
 
 
-def test_both_sources_implement_every_read() -> None:
+def test_the_source_implements_every_read() -> None:
     """The base class raises `NotImplementedError`; a source that forgot one
     would fail at request time, on whichever planner button nobody clicked
     during review."""
     missing: dict[str, list[str]] = {}
-    for src in (cal.GTD_SOURCE, LENS_SOURCE):
+    for src in (LENS_SOURCE,):
         gaps = [
             name for name in _reads()
             if getattr(type(src), name, None) is getattr(cal.TaskSource, name)
@@ -68,11 +68,12 @@ def test_both_sources_implement_every_read() -> None:
     )
 
 
-def test_the_two_sources_are_distinguishable() -> None:
-    """A guard against the laziest possible regression — aliasing one source to
-    the other, which makes every test above pass and plans the wrong store."""
-    assert cal.GTD_SOURCE.name != LENS_SOURCE.name
-    assert type(cal.GTD_SOURCE) is not type(LENS_SOURCE)
+def test_the_retired_source_is_gone() -> None:
+    """S8 PR 1 deleted the `gtd_items` source and its flag. A revival would
+    be a second store behind the planner again."""
+    for name in ("GTD_SOURCE", "_GtdSource", "TASKS_LENS_FLAG",
+                 "tasks_lens_enabled", "_GTD_RATIO_SQL"):
+        assert not hasattr(cal, name), name
 
 
 # ── The rows carry the names the shared code reads ──────────────────────────
@@ -206,42 +207,12 @@ def test_the_lens_composes_the_shared_membership_clause() -> None:
     )
 
 
-# ── The second flag, and why it is allowed to exist ──────────────────────
+# ── The seam answers the one store ──────────────────────────────────────
 
-def test_the_flag_is_off_unless_a_deployment_says_otherwise(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Default OFF is load-bearing, not caution.
-
-    `gtd_items` still holds every task anybody has captured and the S3b backfill
-    is owner-gated and unrun, so turning this on early does not degrade the
-    assistant — it makes every answer empty, on a 200.
-    """
-    monkeypatch.delenv(cal.TASKS_LENS_FLAG, raising=False)
-    assert cal.tasks_lens_enabled() is False
-    for off in ("", "0", "false", "no", "off"):
-        monkeypatch.setenv(cal.TASKS_LENS_FLAG, off)
-        assert cal.tasks_lens_enabled() is False, off
-    for on in ("1", "true", "yes", "on", " ON "):
-        monkeypatch.setenv(cal.TASKS_LENS_FLAG, on)
-        assert cal.tasks_lens_enabled() is True, on
-
-
-def test_the_flag_is_read_at_call_time(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A flip is a RESTART, never a release — and never a re-import.
-
-    Read at import time this would be frozen at whatever the environment said
-    when the first module touched it, which in a test process is "whatever ran
-    first" and on a box is "before the operator edited `.env`".
-    """
-    monkeypatch.delenv(cal.TASKS_LENS_FLAG, raising=False)
-    assert cal.agent_source() is cal.GTD_SOURCE
-    monkeypatch.setenv(cal.TASKS_LENS_FLAG, "1")
+def test_agent_source_is_the_one_store() -> None:
+    """No flag since S8 PR 1: `agent_source()` answers the lens source."""
     assert cal.agent_source() is LENS_SOURCE
-    monkeypatch.setenv(cal.TASKS_LENS_FLAG, "0")
-    assert cal.agent_source() is cal.GTD_SOURCE
+    assert "environ" not in inspect.getsource(cal.agent_source)
 
 
 def test_every_browserless_surface_asks_which_store(
@@ -288,7 +259,7 @@ def test_every_browserless_surface_asks_which_store(
         # place — so the fence saw a source variable and approved. A fence that
         # holds a bug still is worse than none.
         asks = "agent_source()" in body
-        names_a_store = "GTD_SOURCE" in body or "LENS_SOURCE" in body
+        names_a_store = "LENS_SOURCE" in body
         if not asks or names_a_store:
             pinned.append(name)
     assert not pinned, (
@@ -300,20 +271,11 @@ def test_every_browserless_surface_asks_which_store(
     )
 
 
-def test_the_mismatch_is_reportable(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The whole justification for allowing a SECOND flag.
-
-    The browser's flag is read by the Next.js build; the gateway's by this
-    process. They cannot be one variable, so they must at least be one
-    QUESTION — and `/version` is where it is answered, unauthenticated, from a
-    laptop, mid-incident. Without this the two disagreeing is silent: the UI
-    reads one store while the assistant and the roll-over write the other.
-    """
+def test_version_reports_the_one_store_for_one_more_release() -> None:
+    """`/version` keeps `tasks_lens` as a constant true for one release, so
+    the monitoring that reads it does not break (S8 PR 1). S9 may drop it."""
     from gateway.main import Version, version
 
     src = inspect.getsource(version)
-    assert "tasks_lens_enabled()" in src, (
-        "/version no longer reports the store flag; a mismatch between the "
-        "browser build and the gateway becomes unobservable again"
-    )
-    assert "tasks_lens" in Version.model_fields
+    assert "tasks_lens=True" in src
+    assert Version.model_fields["tasks_lens"].default is True

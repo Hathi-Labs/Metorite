@@ -8,7 +8,8 @@ degrades GTD behaviour fails CI instead of reaching the user.
 Covers:
   1. The clarify proposal (gateway ai.propose) over a labeled golden set —
      disposition, capability-matched owner, project auto-match, stage default.
-  2. The sync pull's GTD lens (map_pulled_task) over provider-shaped tasks.
+  2. (Retired 2026-09-23, S8 PR 1: the sync pull's lens went with
+     `routes/tasks/sync.py`. There is no provider to pull from, D52.)
   3. Safety invariants (Tier-1 harness pass, 2026-07-03):
      - every task-manager tool carries risk annotations;
      - NONE of them is destructive (constraint C-04: the agent can never
@@ -27,7 +28,6 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "apps" / "skills" / "skill-clickup-sync"))
 
 from gateway.routes.tasks import ai as tasks_ai  # noqa: E402
-from gateway.routes.tasks.sync import map_pulled_task  # noqa: E402
 
 
 def _item(title: str, description: str = "") -> SimpleNamespace:
@@ -221,28 +221,6 @@ def test_llm_propose_rejects_unknown_disposition_and_empty_action():
     finally:
         if orig is not None:
             ctx.acompletion_with_fallback = orig
-
-
-# ── 2. Sync-pull GTD lens golden set ─────────────────────────────────────
-
-def test_sync_lens_golden_set():
-    me = "42"
-    cases = [
-        # (task, expected disposition, expected is_mine)
-        ({"assignees": [{"name": "v", "provider_user_id": "42"}],
-          "status": "in progress", "status_type": "custom"}, "NEXT", True),
-        ({"assignees": [{"name": "j", "provider_user_id": "7"}],
-          "status": "to do", "status_type": "custom"}, "WAITING", False),
-        ({"assignees": [], "status": "Backlog", "status_type": "open"},
-         "SOMEDAY", False),
-        ({"assignees": [], "status": "Complete", "status_type": "closed",
-          "closed_at_ms": 1}, "DONE", False),
-        ({"assignees": [], "status": "to do", "status_type": "custom"},
-         "NEXT", False),  # team pool: visible, but not on MY list
-    ]
-    for task, disp, mine in cases:
-        m = map_pulled_task(task, me)
-        assert (m["disposition"], m["is_mine"]) == (disp, mine), task
 
 
 # ── 3. Safety invariants (annotations + trifecta delimiting) ─────────────

@@ -1,22 +1,22 @@
-"""WS-39 S6d — the AI and intake routes read ONE seam, and its two arms agree.
+"""WS-39 S6d and S8 — the AI and intake routes read ONE seam, and one store.
 
-Spec `my_tasks_cutover.md` §5 S6d · **D73** · board WS-39.
+Spec `my_tasks_cutover.md` §5 S6d and §5 S8 · **D73** · board WS-39.
 
 Three fences, and the first is the one the spec names:
 
-1. **No route in the scope names a `gtd_` table.** An AST walk over the
-   scoped modules refuses any string constant containing `gtd_`, so the only
-   place that SQL can live is the gtd arm in `routes/tasks/item_source.py`,
-   which S8 deletes as one block. Docstrings are exempt: a docstring cannot
-   reach a database. The one column name `gtd_item_id` is exempt too, and
-   only inside `coalesce(task_id, gtd_item_id)`: it is the EXPAND half of a
-   rename (211), and migration 212 (S8) drops it.
-2. **Both arms answer every read**, and `item_source()` picks one at CALL
-   time, default off.
+1. **No module in `routes/tasks/`, `routes/projects/` or `apps/skills/` names
+   a retired `gtd_` table.** S8 PR 1 widened this from the modules S6d
+   re-pointed to the WHOLE of those three trees, plus the WhatsApp intake
+   modules S6d scoped. An AST walk refuses every `gtd_` token in a string
+   constant, except the tokens in `ALLOWED`, each with a reason. Docstrings
+   are exempt: a docstring cannot reach a database. Migrations live outside
+   these trees, so the rename prologues are never walked.
+2. **The seam answers the one store.** `item_source()` returns the pm arm with
+   no flag, and the retired modules stay deleted.
 3. **A pm row wears every name the consumers read**, asserted against the
    consumers' own source rather than a list somebody remembered to keep.
 
-The rest checks each arm's SQL shape with a recording fake. The SQL itself is
+The rest checks the arm's SQL shape with a recording fake. The SQL itself is
 proven against a real Postgres in `tests/live/live_ws39_s6d.py` (R8).
 """
 from __future__ import annotations
@@ -36,11 +36,9 @@ from gateway.routes.projects import item_lens, personal
 from gateway.routes.projects.item_lens import PM_ITEMS, _pm_item, pm_disposition
 from gateway.routes.projects.personal import _MY_TASKS_SQL
 from gateway.routes.tasks import ai as tasks_ai
-from gateway.routes.tasks import calendar as cal
 from gateway.routes.tasks import capture_email, planning
 from gateway.routes.tasks.core import _row_to_item
 from gateway.routes.tasks.item_source import (
-    GTD_ITEMS,
     ItemSource,
     item_source,
     origin_key_sql,
@@ -49,24 +47,64 @@ from gateway.routes.tasks.item_source import (
 from tests.unit._sql_match import hits
 
 ROUTES = Path(tasks_ai.__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[2]
+SKILLS = REPO / "apps" / "skills"
 
-#: The modules S6d re-points. `item_source.py` is deliberately absent: it
-#: HOLDS the gtd arm.
-SCOPED = [
-    ROUTES / "tasks" / "ai.py",
-    ROUTES / "tasks" / "capture_email.py",
-    ROUTES / "tasks" / "email_link.py",
-    ROUTES / "tasks" / "planning.py",
-    ROUTES / "tasks" / "scheduler.py",
+#: The trees the fence walks whole (S8 PR 1).
+TREES = [ROUTES / "tasks", ROUTES / "projects", SKILLS]
+
+#: The WhatsApp intake modules S6d re-pointed. They sit outside the trees and
+#: stay fenced one by one.
+WHATSAPP = [
     ROUTES / "whatsapp" / "transport" / "capture.py",
     ROUTES / "whatsapp" / "transport" / "context.py",
     ROUTES / "whatsapp" / "automation" / "commitments.py",
     ROUTES / "whatsapp" / "digest.py",
-    ROUTES / "projects" / "item_lens.py",
 ]
 
+#: Modules S8 PR 1 deleted. Each served only the retired store, and none had a
+#: caller left in the client, the skill, the agents, the operator console or
+#: the tests.
+RETIRED = ["items", "hierarchy", "accounts", "sync", "providers",
+           "broker_handlers", "scheduler"]
 
-# ── 1. The fence: no `gtd_` string outside the gtd arm ──────────────────────
+
+def _skill_tool_names() -> frozenset[str]:
+    """The 29 chat tool names. S9 renames them all at once, and
+    `TaskToolCards.tsx` keys on the names, so they stay until then."""
+    init = SKILLS / "skill-task-gtd" / "skill_task_gtd" / "__init__.py"
+    tree = ast.parse(init.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", None) == "__all__" for t in node.targets):
+            return frozenset(ast.literal_eval(node.value))
+    raise AssertionError("skill_task_gtd.__all__ not found")
+
+
+#: The `gtd_` tokens a string constant may still carry, each with its reason.
+#: A table here must be one that S8 PR 2's migration renames or drops.
+ALLOWED: dict[str, str] = {
+    "gtd_attachments": (
+        "the file registry both apps write. It survives, and S8 PR 2 renames "
+        "it to `attachments` in the guarded prologue of migration 52"),
+    "gtd_item_id": (
+        "the EXPAND half of `wa_commitments.gtd_item_id` -> `task_id` (211). "
+        "The digest reads `coalesce(task_id, gtd_item_id)` until S8 PR 2 "
+        "drops the column"),
+    **{name: "a chat tool name. S9 renames all 29 at once"
+       for name in _skill_tool_names()},
+}
+
+
+def _fenced_files() -> list[Path]:
+    out: list[Path] = []
+    for tree in TREES:
+        out += [p for p in sorted(tree.rglob("*.py"))
+                if "__pycache__" not in p.parts and "tests" not in p.parts]
+    return out + WHATSAPP
+
+
+# ── 1. The fence: no retired `gtd_` table in the three trees ────────────────
 
 def _docstring_nodes(tree: ast.AST) -> set[int]:
     """The ids of every Constant node that is a docstring."""
@@ -91,88 +129,92 @@ def _gtd_strings(path: Path) -> list[tuple[int, str]]:
             continue
         if id(node) in docs:
             continue
-        # The EXPAND half of `gtd_item_id` → `task_id` (211). Readers take
-        # `coalesce(task_id, gtd_item_id)` until 212 drops the column.
-        value = node.value.replace("gtd_item_id", "")
-        if "gtd_" in value:
-            found.append((node.lineno, node.value.strip()[:80]))
+        bad = sorted(t for t in set(re.findall(r"gtd_\w+", node.value))
+                     if t not in ALLOWED)
+        if bad:
+            found.append((node.lineno, ", ".join(bad)))
     return found
 
 
-@pytest.mark.parametrize("path", SCOPED, ids=lambda p: p.name)
-def test_no_scoped_module_names_a_gtd_table(path: Path) -> None:
-    assert path.exists(), f"{path} moved. Update SCOPED."
+def test_the_walk_covers_the_three_trees() -> None:
+    files = _fenced_files()
+    assert len(files) > 40, len(files)
+    assert ROUTES / "tasks" / "ai.py" in files
+    assert ROUTES / "projects" / "item_lens.py" in files
+    assert SKILLS / "skill-task-gtd" / "skill_task_gtd" / "core.py" in files
+    assert all(p.exists() for p in WHATSAPP), "a WhatsApp module moved"
+
+
+@pytest.mark.parametrize(
+    "path", _fenced_files(), ids=lambda p: p.relative_to(REPO).as_posix())
+def test_no_module_names_a_retired_gtd_table(path: Path) -> None:
     found = _gtd_strings(path)
     assert not found, (
-        f"{path.name} names a gtd_ table outside the seam: {found}. Route the "
-        "read or write through `item_source()`. The only gtd SQL lives in "
-        "`routes/tasks/item_source.py::_GtdItems`, which S8 deletes."
+        f"{path.name} names a retired gtd_ table: {found}. The one task store "
+        "is pm_tasks + pm_task_personal (D53). Read it through `item_source()` "
+        "or `agent_source()`. A survivor goes in ALLOWED with its reason."
     )
 
 
-def test_the_fence_can_see() -> None:
-    """A fence that matches nothing is a fence with a hole. The gtd arm must
-    trip it, or the walk has stopped reading strings."""
-    arm = ROUTES / "tasks" / "item_source.py"
-    assert _gtd_strings(arm), "the walk found no gtd_ string in the gtd arm"
+def test_the_fence_can_see(tmp_path: Path) -> None:
+    """A fence that matches nothing is a fence with a hole."""
+    bad = tmp_path / "bad.py"
+    bad.write_text(
+        '"""A docstring may say gtd_items."""\n'
+        'SQL = "SELECT * FROM gtd_items"\n'
+        'OK = "SELECT * FROM gtd_attachments"\n', encoding="utf-8")
+    assert _gtd_strings(bad) == [(2, "gtd_items")]
 
 
-def test_the_coalesce_exception_is_only_the_column() -> None:
-    """`gtd_item_id` may appear. `gtd_items` may not, even beside it."""
-    tree = ast.parse("x = 'coalesce(task_id, gtd_item_id) FROM gtd_items'")
-    node = next(n for n in ast.walk(tree) if isinstance(n, ast.Constant))
-    assert "gtd_" in node.value.replace("gtd_item_id", "")
+def test_the_allowed_tables_are_still_used() -> None:
+    """An ALLOWED table nothing uses is a stale exemption. Drop it."""
+    used: set[str] = set()
+    for path in _fenced_files():
+        used |= set(re.findall(r"gtd_\w+", path.read_text(encoding="utf-8")))
+    tables = {k for k, v in ALLOWED.items() if not v.startswith("a chat tool")}
+    assert tables <= used, sorted(tables - used)
 
 
-# ── 2. Two arms, one switch ─────────────────────────────────────────────────
+# ── 2. One store, no switch ─────────────────────────────────────────────────
 
 def _reads() -> list[str]:
     return [
         name for name, member in inspect.getmembers(ItemSource)
         if not name.startswith("_") and callable(member)
         # `find_by_origin` is concrete in the base: the first of
-        # `items_by_origin`. Neither arm needs its own.
+        # `items_by_origin`. The arm does not need its own.
         and name != "find_by_origin"
     ]
 
 
-def test_both_arms_implement_every_read() -> None:
-    missing: dict[str, list[str]] = {}
-    for src in (GTD_ITEMS, PM_ITEMS):
-        gaps = [
-            name for name in _reads()
-            if getattr(type(src), name, None) is getattr(ItemSource, name)
-        ]
-        if gaps:
-            missing[src.name] = gaps
-    assert not missing, (
-        f"an ItemSource does not override every read: {missing}. The base "
-        "raises, so this is a 500 on one route rather than a failure at import."
+def test_the_arm_implements_every_read() -> None:
+    gaps = [
+        name for name in _reads()
+        if getattr(type(PM_ITEMS), name, None) is getattr(ItemSource, name)
+    ]
+    assert not gaps, (
+        f"the pm arm does not override {gaps}. The base raises, so this is a "
+        "500 on one route rather than a failure at import."
     )
     assert {"fetch_item", "insert_capture", "mark_done_by_thread"} <= set(_reads())
 
 
-def test_the_two_arms_are_distinguishable() -> None:
-    assert GTD_ITEMS.name != PM_ITEMS.name
-    assert type(GTD_ITEMS) is not type(PM_ITEMS)
-
-
-def test_item_source_reads_the_flag_at_call_time(monkeypatch) -> None:
-    """Default OFF, and a flip needs no re-import."""
-    monkeypatch.delenv(cal.TASKS_LENS_FLAG, raising=False)
-    assert item_source() is GTD_ITEMS
-    monkeypatch.setenv(cal.TASKS_LENS_FLAG, "1")
+def test_item_source_is_the_one_store(monkeypatch) -> None:
+    """No flag since S8 PR 1. The retired variable changes nothing."""
     assert item_source() is PM_ITEMS
-    monkeypatch.setenv(cal.TASKS_LENS_FLAG, "off")
-    assert item_source() is GTD_ITEMS
+    monkeypatch.setenv("TASKS_LENS", "0")
+    assert item_source() is PM_ITEMS
+    assert "environ" not in inspect.getsource(item_source)
 
 
-def test_item_source_shares_the_planners_flag_read() -> None:
-    """One env read for the whole cutover. A second `os.environ.get` here
-    would let the planner and the intake disagree about which store is live."""
-    src = inspect.getsource(item_source)
-    assert "tasks_lens_enabled" in src
-    assert "environ" not in src
+def test_the_retired_arm_and_modules_stay_deleted() -> None:
+    from gateway.routes.tasks import item_source as seam
+
+    for name in ("GTD_ITEMS", "_GtdItems"):
+        assert not hasattr(seam, name), name
+    for mod in RETIRED:
+        assert not (ROUTES / "tasks" / f"{mod}.py").exists(), (
+            f"routes/tasks/{mod}.py is back. It served only the retired store.")
 
 
 def test_origin_key_is_a_closed_set() -> None:
@@ -638,55 +680,6 @@ async def test_pm_link_commitment_writes_task_id(monkeypatch) -> None:
     (sql, params), = db.sql("UPDATE wa_commitments")
     assert "SET task_id = CAST(:iid AS uuid)" in sql
     assert "a.user_id = :uid" in sql and params["uid"] == "a@x"
-
-
-# ── The gtd arm's SQL shape: moved, not rewritten ───────────────────────────
-
-async def test_gtd_capture_is_the_old_insert() -> None:
-    db = _FakeDB()
-    origin = {"kind": "email", "email_id": "m-1"}
-    item_id = await GTD_ITEMS.insert_capture(db, "a@x", {
-        "title": "T", "disposition": "WAITING",
-        "waiting_on": {"name": "Ravi"}, "delegated_at": datetime.now(UTC),
-    }, origin)
-    (_sql, params), = db.sql("INSERT INTO gtd_items")
-    assert params["id"] == item_id and params["uid"] == "a@x"
-    assert params["origin"] == '{"kind": "email", "email_id": "m-1"}'
-    assert params["is_mine"] is True and params["source"] == "LOCAL"
-    (_w_sql, w), = db.sql("INSERT INTO gtd_waiting")
-    assert w["iid"] == item_id and w["who"] == '{"name": "Ravi"}'
-    assert not db.sql("INSERT INTO pm_tasks")
-
-
-async def test_gtd_link_commitment_writes_gtd_item_id() -> None:
-    db = _FakeDB()
-    await GTD_ITEMS.link_commitment(db, "a@x", "k-1", "i-1")
-    (sql, _p), = db.sql("UPDATE wa_commitments")
-    assert "SET gtd_item_id = :iid" in sql
-
-
-async def test_gtd_reads_keep_their_shape() -> None:
-    db = _FakeDB()
-    await GTD_ITEMS.items_by_origin(db, "a@x", "thread_id", "th-1",
-                                    commitment=True, exclude_email_id="m-2",
-                                    limit=4)
-    (sql, params), = db.calls
-    assert hits(sql, "FROM gtd_items")
-    assert "i.origin->>'thread_id' = :val" in sql
-    assert "i.origin->>'commitment' = 'true'" in sql
-    assert "coalesce(i.origin->>'email_id', '') <> :eid" in sql
-    assert params == {"uid": "a@x", "val": "th-1", "eid": "m-2", "lim": 4}
-
-    db = _FakeDB()
-    await GTD_ITEMS.open_items(db, "a@x", 400, top_level=True)
-    (sql, params), = db.calls
-    assert "parent_item_id IS NULL AND archived_at IS NULL" in sql
-    assert params == {"uid": "a@x", "lim": 400}
-
-    db = _FakeDB(lambda sql, p: [SimpleNamespace(id="i-1")]
-                 if "RETURNING id" in sql else [])
-    assert await GTD_ITEMS.mark_done_by_thread(db, "a@x", "th-1") == ["i-1"]
-    assert db.sql("UPDATE gtd_items") and db.sql("UPDATE gtd_waiting")
 
 
 # ── The consumers go through the seam ───────────────────────────────────────

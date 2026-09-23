@@ -408,14 +408,16 @@ def test_the_store_neutral_list_names_only_doors_the_skill_calls():
         assert path in called, f"{path} is listed but no tool calls it"
 
 
-def test_the_retired_estimate_stats_door_answers_from_the_dead_store():
-    """The route the verifier caught. It stays served (the browser with the
-    flag off may read it); the skill must not."""
+def test_the_retired_estimate_stats_door_is_gone():
+    """The route the verifier caught answered from the retired store. S8
+    PR 1 deleted it with the other three legacy planner routes."""
     from gateway.routes.tasks import calendar as cal
 
-    src = inspect.getsource(cal.estimate_stats)
-    assert "GTD_SOURCE" in src and not any(seam in src for seam in SEAMS)
-    assert ("GET", "/tasks/calendar/estimate-stats") not in _all_calls()
+    assert not hasattr(cal, "estimate_stats")
+    served = {r.path for _, _, r in _routes()}
+    for path in ("/tasks/calendar/estimate-stats", "/tasks/calendar/plan",
+                 "/tasks/calendar/replan", "/tasks/calendar/rollover"):
+        assert path not in served, path
 
 
 # ── The behaviours worth a fence of their own ───────────────────────────────
