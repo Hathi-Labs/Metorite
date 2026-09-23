@@ -663,7 +663,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S6 · Navigation** — ✅ **BUILT 2026-09-23** | The frontend-tool dispatcher (`acb_skills.frontend_tools`, `runFrontendToolEvent`) · `open_in_app` and the page's three handlers · the two S2 follow-ups (an unknown address named on the card, the subtasks receipt opens the parent) | AGENT-SAFE |
 | **Visual review** — ✅ **DONE 2026-09-23** | The rail and the cards seen in eight contexts. The defects it found are fixed (§4.2) | AGENT-SAFE |
 | **S7a · Capacity** — ✅ **BUILT 2026-09-23** | `GET /projects/analytics/capacity` · the Analytics app's Capacity panel · the report section `capacity` · the chat tool `team_capacity` (§13.3) | AGENT-SAFE |
-| **S7b · Fit** | `GET /projects/tasks/{id}/candidates` and its draft form · `GET /projects/analytics/rebalance` · "Suggested" in the assignee picker · the chat tools `suggest_assignees` and `rebalance` (§13.4) | AGENT-SAFE |
+| **S7b · Fit** | `GET /projects/tasks/{id}/candidates` and its draft form · `GET /projects/analytics/rebalance` · "Suggested" in the assignee picker · the chat tools `fit_for_task` and `rebalance` (§13.4) | AGENT-SAFE |
 | **S7c · Conflicts** | `GET /projects/analytics/conflicts` with seven kinds · the Conflicts panel · the report section `conflicts` · the chat tool `find_conflicts` · the dependency rule moved to the server (§13.5) | AGENT-SAFE |
 | **S7d · Plan with capacity** | `propose_plan` gains start dates, phases and dependencies, and shows each owner's fit on the plan card (§13.6) | AGENT-SAFE |
 | **S7e · On-the-fly analysis** | The read tool `task_dataset` and the rule for numbers the chat computes itself (§13.7) | AGENT-SAFE |
@@ -741,19 +741,21 @@ Each slice is one pull request. Each one is useful alone.
 3. The pool follows §13.4 rule 4. A test shows a person with no open task as a
    candidate, and no assignee or agent in the list.
 4. The window follows §13.4 rule 4, and the response prints it.
-5. With no estimate, the rank follows §13.4 rule 2. A test proves that
-   `spare_hours` is absent, not zero, and `test_people_suggestions.py` passes
-   unchanged.
+5. With no estimate for any candidate, every rank follows §13.4 rule 2. A
+   test with a mixed list proves that `spare_hours` is absent on EVERY
+   candidate, not zero, and `test_people_suggestions.py` passes unchanged.
 6. Each of the three warnings in §13.4 rule 5 has its own test.
 7. A caller without `admin:members:read` gets 200 with `hr_visible: false` and
    no `candidates` key. A test proves that the key is absent.
 8. `GET /projects/candidates?title=&tags=&due=` returns the same body as the
-   task route for the same text and due date. A title shorter than 2
+   task route for the same text and due date. The test uses a task with no
+   assignees, because the task route leaves its assignees out. A title shorter than 2
    characters gets 422.
 9. `GET /projects/analytics/rebalance?project_id=&include_subtree=&horizon_days=`
    lists the at-risk tasks in scope with their helpers, and the idle people
-   with the unassigned tasks in scope. Both suggester routes call the one
-   leaf join. An R8 test proves that no task outside the viewer's grant
+   with the unassigned tasks in scope. The helpers and the idle people come
+   from the rule 4 pool, so an idle person with no work in scope appears.
+   Both suggester routes call the one leaf join. An R8 test proves that no task outside the viewer's grant
    appears. A caller without the grant gets no `at_risk` and no `pickups` key.
 10. "Suggested" renders above the name search in `TaskBody` only, and hides
     when `hr_visible` is false. A pick goes through the existing `onPick`,
@@ -971,10 +973,13 @@ the text above does not make. These are the decisions.
    still says who holds which skill, so names alone are an oracle
    (`people_center_app.md` §4.2). The picker then hides "Suggested". The
    rebalance route leaves out `at_risk` and `pickups` in the same way.
-2. **No estimate, rank by skill and availability.** If `hours_basis` is false,
-   the route calls `rank_candidates` with a neutral spare figure of 1 for each
-   person. So the rank is skill × away. The response leaves out `spare_hours`
-   and carries `hours_note`. `rank_candidates` itself does not change, and
+2. **No estimate, rank by skill and availability — for the whole list.** If
+   `hours_basis` is false for ANY candidate, the route calls
+   `rank_candidates` with a neutral spare figure of 1 for EVERY candidate. So
+   every rank is skill × away, and the ranks stay comparable. A mixed list
+   would put a person with no basis 30 times below a person with 30 spare
+   hours, from a figure the reader cannot see. The response then leaves out
+   `spare_hours` for every candidate and carries one `hours_note`. `rank_candidates` itself does not change, and
    `test_people_suggestions.py` passes unchanged.
 3. **The match text.** It is the title, the tag names, and the first 500
    characters of the description. A tag often names the skill that the title
@@ -993,7 +998,9 @@ the text above does not make. These are the decisions.
    `gateway/capacity.py`. `/people/dashboard/suggestions` and
    `/projects/analytics/rebalance` both call it. The rebalance route filters
    the at-risk tasks to its scope, and takes the unassigned tasks from the
-   Load `scope_clause`.
+   Load `scope_clause`. The helpers and the idle people come from the rule 4
+   pool. A person is idle when `person_capacity` gives the pill `idle`, over
+   all the work the caller can see.
 
 **Names.** The chat tool is `fit_for_task`, because `suggest_assignees` is
 already the name of the picker's route function in `assignees.py`. "Suggested"
