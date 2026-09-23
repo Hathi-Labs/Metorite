@@ -1009,8 +1009,17 @@ WHERE lower(au.email) = :email AND au.status = 'active'
 
 #: Every project in the caller's organization, ignoring grants. This is what
 #: ``data:org:read`` means AFTER WS-29b: unrestricted **within a tenant**.
+#:
+#: ⚠️ **`sealed_at IS NULL` binds the ADMIN too, and that is the whole point of
+#: D63.** A sealed tree is a departed member's private workspace. The decision
+#: says an admin reading it "must never be an invisible act", and the door it
+#: allows is owner-only and LOGGED. An unrestricted clause that skipped this
+#: filter would be exactly the invisible act — `data:org:read` is the widest
+#: grant in the product, and the People Center holds it.
 _TENANT_PROJECTS_SQL = """
-SELECT id FROM pm_projects WHERE organization_id = CAST(:vis_org AS uuid)
+SELECT id FROM pm_projects
+WHERE organization_id = CAST(:vis_org AS uuid)
+  AND sealed_at IS NULL
 """
 
 #: Projects the caller may see: those carrying a matching grant, plus everything
@@ -1035,11 +1044,23 @@ SELECT id FROM pm_projects WHERE organization_id = CAST(:vis_org AS uuid)
 #: already makes a cross-tenant parent impossible, so this is defence in depth:
 #: the closure must not be the thing that would leak if that trigger were ever
 #: dropped.
+#: ⚠️ **The seal is filtered on BOTH arms, and the seed arm needs a JOIN for
+#: it** (D63, migration 215). The grant row carries no `sealed_at`, so the seed
+#: has to reach `pm_projects` to read it. Filtering only the recursive step
+#: would leave a sealed ROOT visible while hiding its children, which is the
+#: worst of the three outcomes: the departed member's workspace still appears,
+#: and it appears empty.
+#:
+#: Filtering the recursive step as well is not redundant. It stops the closure
+#: descending THROUGH a sealed Area into anything beneath it, and it means a
+#: subtree can be sealed without sealing its parent.
 _VISIBLE_PROJECTS_SQL = """
 WITH RECURSIVE granted AS (
     SELECT DISTINCT g.project_id AS id
     FROM pm_project_grants g
+    JOIN pm_projects gp ON gp.id = g.project_id
     WHERE g.organization_id = CAST(:vis_org AS uuid)
+      AND gp.sealed_at IS NULL
       AND (g.subject = 'org'
            OR lower(g.subject) = :vis_email
            OR g.subject = ANY(:vis_groups))
@@ -1048,6 +1069,7 @@ WITH RECURSIVE granted AS (
     FROM pm_projects p
     JOIN granted a ON p.parent_project_id = a.id
     WHERE p.organization_id = CAST(:vis_org AS uuid)
+      AND p.sealed_at IS NULL
 )
 SELECT id FROM granted
 """
