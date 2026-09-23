@@ -84,8 +84,8 @@ class ToolExecutionError(RuntimeError):
     into a 502. On the destructive/broker path it can also surface by
     propagating out of ``action_broker.execute()`` — the route's ``submit()``
     call is wrapped defensively to catch that too (the broker itself does not
-    guard a handler's exceptions; see ``gateway.routes.tasks.broker_handlers``
-    for the same precedent).
+    guard a handler's exceptions; ``gateway.routes.crm.broker_handlers``
+    follows the same precedent).
     """
 
 

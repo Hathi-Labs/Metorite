@@ -10,7 +10,6 @@ import {
 import {
   type NextCategory,
   laneForCategory,
-  nextCategoryOf,
   noLaneMessage,
 } from "./statusCategory";
 import { ProjectsApiError } from "@/app/projects/lib/api";
@@ -1849,7 +1848,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   setCategory: async (id, category) => {
     const item = get().items.find((i) => i.id === id);
-    if (!item || nextCategoryOf(item) === category) return;
+    if (!item) return;
+    // Compare the LANE's category, not the group: a task in a `backlog` or
+    // `triage` lane sits under To do (§4.9 point 5), and moving it to To do
+    // still has a lane to change.
+    const isDone = item.disposition === "DONE";
+    if (category === "done" ? isDone : !isDone && item.statusCategory === category) return;
     if (category === "done") {
       // Completion is SHARED: the lens completes through `/complete`, so the
       // board moves too. `quickDispose` keeps the undo snapshot.

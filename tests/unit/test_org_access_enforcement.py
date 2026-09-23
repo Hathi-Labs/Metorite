@@ -288,7 +288,8 @@ def test_no_unexempted_machine_entrypoint(module: str, exempt: set[str]) -> None
     If a new one is added without an exemption, this fails loudly instead of
     silently breaking ingestion in production.
     """
-    known_userless_ui_reads = {"/tasks/providers"}
+    # `/tasks/providers` was the one entry until S8 PR 1 deleted the route.
+    known_userless_ui_reads: set[str] = set()
     for route in _routes(module):
         endpoint = getattr(route, "endpoint", None)
         if endpoint is None:

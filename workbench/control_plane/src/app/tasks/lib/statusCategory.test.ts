@@ -24,7 +24,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api")>();
-  return { ...actual, fetchMyTaskLanes: vi.fn() };
+  return {
+    ...actual,
+    fetchMyTaskLanes: vi.fn(),
+    apiCapture: vi.fn(),
+    apiPatchItem: vi.fn(),
+  };
 });
 vi.mock("./lens", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./lens")>();
@@ -35,14 +40,14 @@ vi.mock("./lens", async (importOriginal) => {
   };
 });
 
-import { fetchMyTaskLanes } from "./api";
+import { apiCapture, apiPatchItem, fetchMyTaskLanes } from "./api";
 import { type LensLane, lensGetItem, lensSetStatusId } from "./lens";
 import {
   laneForCategory,
   nextCategoryOf,
   noLaneMessage,
 } from "./statusCategory";
-import { useTaskStore } from "./taskStore";
+import { itemsForView, useTaskStore, viewCounts } from "./taskStore";
 import type { GtdItem } from "./types";
 
 const lane = (
@@ -81,10 +86,16 @@ describe("nextCategoryOf — the group is the category, not the lane name", () =
     );
   });
 
-  it("keeps backlog, triage and cancelled out of Next", () => {
-    for (const c of ["backlog", "triage", "cancelled"]) {
-      expect(nextCategoryOf({ statusCategory: c, disposition: "NEXT" }), c).toBeNull();
+  it("puts a stated NEXT in a backlog or triage lane under To do (§4.9 point 5)", () => {
+    // "backlog is Someday" is the derivation for an UNSTATED disposition.
+    // Once the member states NEXT, the lane must not hide the row.
+    for (const c of ["backlog", "triage"]) {
+      expect(nextCategoryOf({ statusCategory: c, disposition: "NEXT" }), c).toBe("todo");
     }
+  });
+
+  it("keeps only a cancelled lane out of Next", () => {
+    expect(nextCategoryOf({ statusCategory: "cancelled", disposition: "NEXT" })).toBeNull();
   });
 
   it("says Done for a task I completed, whatever its lane says", () => {
@@ -172,6 +183,100 @@ describe("setCategory — resolve, then PATCH the lane id", () => {
     expect(quickDispose).toHaveBeenCalledWith("t1", "DONE");
     expect(fetchMyTaskLanes).not.toHaveBeenCalled();
     expect(lensSetStatusId).not.toHaveBeenCalled();
+  });
+});
+
+// ── The backfilled rows (§4.9 point 5) ─────────────────────────────────────
+
+describe("a backfilled NEXT task in the Inbox lane", () => {
+  // Migration 189 moved every task into its root's Inbox lane, whose
+  // category is `backlog`. The overlay kept the member's NEXT.
+  const backfilled = task({
+    id: "b1", statusCategory: "backlog", workflowStage: "Inbox",
+    projectId: "root-1", projectName: "My Tasks",
+  });
+  const rows = [
+    backfilled,
+    task({ id: "b2", statusCategory: "in_progress", workflowStage: "Building" }),
+    task({ id: "b3", statusCategory: "triage", workflowStage: "Triage" }),
+  ];
+
+  it("is drawn under To do", () => {
+    expect(nextCategoryOf(backfilled)).toBe("todo");
+  });
+
+  it("is counted by the sidebar exactly as often as it is drawn", () => {
+    const drawn = itemsForView(rows, "next", null).filter(
+      (i) => nextCategoryOf(i) !== null,
+    );
+    expect(drawn.map((i) => i.id).sort()).toEqual(["b1", "b2", "b3"]);
+    expect(viewCounts(rows).next).toBe(drawn.length);
+  });
+});
+
+describe("moving a backlog-lane task", () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    useTaskStore.setState({ items: [], syncFailure: null });
+  });
+
+  it("to To do resolves the first todo lane, though it already sits under To do", async () => {
+    const t = task({ statusCategory: "backlog", workflowStage: "Backlog" });
+    vi.mocked(fetchMyTaskLanes).mockResolvedValue([
+      ...WORKSHOP, lane("w-back", "workshop", "Backlog", "backlog", 5),
+    ]);
+    vi.mocked(lensGetItem).mockResolvedValue({
+      ...t, statusCategory: "todo", workflowStage: "Queued",
+    });
+    useTaskStore.setState({ backend: "live", items: [t], syncFailure: null });
+    await useTaskStore.getState().setCategory("t1", "todo");
+    expect(lensSetStatusId).toHaveBeenCalledWith("t1", "w-queue");
+  });
+
+  it("to In progress resolves the lane as for any other task", async () => {
+    const t = task({ statusCategory: "backlog", workflowStage: "Backlog" });
+    vi.mocked(fetchMyTaskLanes).mockResolvedValue(WORKSHOP);
+    vi.mocked(lensGetItem).mockResolvedValue({ ...t, statusCategory: "in_progress" });
+    useTaskStore.setState({ backend: "live", items: [t], syncFailure: null });
+    await useTaskStore.getState().setCategory("t1", "in_progress");
+    expect(lensSetStatusId).toHaveBeenCalledWith("t1", "w-build");
+  });
+
+  it("does nothing for a task already in a todo lane", async () => {
+    const t = task({});
+    useTaskStore.setState({ backend: "live", items: [t], syncFailure: null });
+    await useTaskStore.getState().setCategory("t1", "todo");
+    expect(fetchMyTaskLanes).not.toHaveBeenCalled();
+  });
+});
+
+describe("a quick-add in the To do group", () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    useTaskStore.setState({ items: [], syncFailure: null });
+  });
+
+  it("stays visible after the server row replaces the optimistic one", async () => {
+    // The capture lands in my root's default lane, category `backlog`. The
+    // clarify PATCH states NEXT. The row must stay under To do.
+    const server = task({
+      id: "srv-1", title: "Order the bearings", statusCategory: "backlog",
+      workflowStage: "Inbox", projectId: "root-1", projectName: "My Tasks",
+    });
+    vi.mocked(apiCapture).mockResolvedValue({ ...server, disposition: "INBOX" });
+    vi.mocked(apiPatchItem).mockResolvedValue(server);
+    useTaskStore.setState({ backend: "live", items: [], syncFailure: null });
+    const tmp = useTaskStore.getState().quickAddNext("Order the bearings", {
+      statusCategory: "todo",
+    });
+    expect(tmp).toBeTruthy();
+    for (let i = 0; i < 6; i += 1) await new Promise((r) => setTimeout(r, 0));
+    const items = useTaskStore.getState().items;
+    expect(items.map((i) => i.id)).toEqual(["srv-1"]);
+    const drawn = itemsForView(items, "next", null).filter(
+      (i) => nextCategoryOf(i) === "todo",
+    );
+    expect(drawn.map((i) => i.id)).toEqual(["srv-1"]);
   });
 });
 

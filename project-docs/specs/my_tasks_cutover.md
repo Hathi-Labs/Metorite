@@ -271,8 +271,9 @@ Owner request, verbatim, 2026-09-23:
    settings. One read-only note says where stages come from.
 2. Next Actions groups a task by its lane CATEGORY
    (`pm_task_statuses.category`). The groups are To do (`todo`), In progress
-   (`in_progress`) and Done (`done`), in that order. A `backlog` task is
-   Someday by derivation. A `triage` or `cancelled` task is not a next action.
+   (`in_progress`) and Done (`done`), in that order. A task in a `backlog`
+   or `triage` lane sits under To do, and a `cancelled` lane hides it
+   (point 5).
 3. A card keeps its own lane NAME as its pill. So "Building" in one project
    and "In progress" in another both sit under In progress.
 4. A drag into a group resolves the category to one lane. It is the first
@@ -280,9 +281,24 @@ Owner request, verbatim, 2026-09-23:
    (`GET /projects/my/tasks/{id}/lanes`). Then the client PATCHes
    `/projects/tasks/{id}` with that `status_id`. A drag into Done goes
    through `POST /projects/tasks/{id}/complete` (§13.5a decision 1).
-5. A project with no lane of the category moves nothing. A toast names the
+5. **A stated NEXT is never hidden by its lane.** Next Actions shows every
+   task whose effective disposition is NEXT. A task in a `backlog` or
+   `triage` lane sits under To do. Only a `cancelled` lane hides a task. The
+   rule "backlog is Someday" is the derivation for a task with NO stated
+   disposition, and `itemsForView("next")` already applies it. Without this
+   rule, three kinds of task vanished from the list while the sidebar still
+   counted them:
+   * every task the S3b backfill moved, because migration 189 put each one in
+     its root's Inbox lane (category `backlog`);
+   * every capture clarified to Next, because an organize writes only the
+     overlay;
+   * every quick-add in the To do group.
+
+   A drag to In progress resolves the lane as in point 4. A drag to To do on
+   a task in a `backlog` lane moves it to the first `todo` lane.
+6. A project with no lane of the category moves nothing. A toast names the
    project.
-6. The client and `routes/tasks/settings.py` stop reading and writing
+7. The client and `routes/tasks/settings.py` stop reading and writing
    `workflow_stages` and `status_stage_map`. The `user_settings` columns stay
    until a later contract (R6).
 
@@ -727,7 +743,9 @@ flip (§6 step 10).**
    fenced trees still read or write `gtd_items`:
    `routes/notes/actions.py` (an INSERT), `routes/email/digest.py` and
    `routes/email/automation/drafting.py` (reads). They must move to the one
-   store before PR 2 drops the table, or they fail.
+   store before PR 2 drops the table, or they fail. `scripts/restore_db.sh`
+   also names `gtd_task` in its examples and in its row-count check. PR 2
+   updates it in the same change.
 
 **Done when.**
 1. `rg -l "gtd_" apps packages --glob '!infra/postgres/generated'` returns

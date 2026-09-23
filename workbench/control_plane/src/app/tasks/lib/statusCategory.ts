@@ -35,20 +35,27 @@ export function isNextCategory(v: string | undefined | null): v is NextCategory 
  * The Next Actions group one task sits in, or null for a task that does not
  * belong in Next.
  *
+ * `itemsForView("next")` already chose the rows: a task I stated or derived as
+ * NEXT. This only says which header it sits under.
+ *
  * * A task I marked done is Done, whatever its lane says.
- * * `todo`, `in_progress` and `done` are the three groups.
- * * `backlog` is Someday (the derived disposition), and `triage` and
- *   `cancelled` are not next actions, so all three answer null.
- * * A row with no category (the demo backend's mock rows) is To do. It is the
- *   first group, the one a fresh next action lands in.
+ * * `in_progress` and `done` are their own groups.
+ * * `todo`, `backlog` and `triage` sit under To do. "backlog is Someday" is
+ *   the derivation for a task with NO stated disposition. Once I state NEXT,
+ *   the lane does not hide it. The S3b backfill put every moved task in its
+ *   root's Inbox lane (category `backlog`), and an organize to Next writes
+ *   only the overlay, so both land here (§4.9 point 5).
+ * * `cancelled` is not a next action, and answers null.
+ * * A row with no category (the demo backend's mock rows) is To do.
  */
 export function nextCategoryOf(
   item: Pick<GtdItem, "statusCategory" | "disposition">,
 ): NextCategory | null {
   if (item.disposition === "DONE") return "done";
   const c = item.statusCategory;
-  if (!c) return "todo";
-  return isNextCategory(c) ? c : null;
+  if (c === "cancelled") return null;
+  if (c === "in_progress" || c === "done") return c;
+  return "todo";
 }
 
 /**
