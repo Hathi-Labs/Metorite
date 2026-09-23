@@ -296,7 +296,7 @@ export function ItemList() {
               ) : (
                 <AppIcon name="Cloud" className="h-3 w-3" />
               )}
-              {sourceFilter === "local" ? "Mine" : "ClickUp"}
+              {sourceFilter === "local" ? "Mine" : "Team"}
             </span>
           )}
           {hasSynced && contextlessCount > 0 && (

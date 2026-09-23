@@ -72,6 +72,9 @@ const BANNED: Array<[RegExp, string]> = [
   // toolbar title, the settings header and the sidebar subtitle.
   [/\bTask Manager\b/, '"Task Manager" — the app is My Tasks'],
   [/\bGetting Things Done\b/, 'the method name "Getting Things Done"'],
+  // D73.9 (2026-09-23): there is no ClickUp connection (D52), so no string a
+  // member reads may offer one. The status mapping went first.
+  [/\bClickUp\b/, '"ClickUp" — there is no connected tool (D52, D73.9)'],
 ];
 
 describe("My Tasks — the name a member reads (D73)", () => {

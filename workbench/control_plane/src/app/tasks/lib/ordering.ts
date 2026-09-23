@@ -221,107 +221,11 @@ export function overdueCount(items: GtdItem[], now: number): number {
   return items.filter((i) => isOverdue(i, now)).length;
 }
 
-// ── Status axis (the 4 fixed Next-Actions stages) ────────────────────────────
+// ── Status axis ──────────────────────────────────────────────────────────────
 //
-// The Next-Actions board and grouped list slice tasks into the user's 4 FIXED
-// workflow stages (settings.workflowStages) — NOT the raw union of every ClickUp
-// status (that was cluttered). A LOCAL task's stage is its `workflowStage`; a
-// SYNCED ClickUp task's stage is derived from its `providerStatus` through the
-// user's status→stage MAP (settings.statusStageMap), so many upstream statuses
-// collapse into one clean stage. Dragging a card between these stages writes the
-// mapped status back to ClickUp (backend), per task's own project.
-//
-// (The per-PROJECT detail view is separate — it shows that project's real
-// ClickUp statuses via an explicit `stages` prop and doesn't use this axis.)
-
-/** Case/space-insensitive key for matching a status name ("To Do" ≡ "to do";
- *  "to do" and "todo" stay distinct — ClickUp treats them as different). */
-function normStatus(s: string): string {
-  return s.trim().toLowerCase();
-}
-
-/** The status→stage map for a synced task. Keyed by normalized status name. */
-export type StatusStageMap = Record<string, string>;
-
-/** The stage a SYNCED task's ClickUp status maps to, or "" when unmapped. */
-export function stageForProviderStatus(
-  providerStatus: string | undefined,
-  map: StatusStageMap,
-): string {
-  if (!providerStatus) return "";
-  return map[normStatus(providerStatus)] ?? "";
-}
-
-// Name heuristics for guessing which stage a raw ClickUp status belongs to —
-// a mirror of the gateway's `guess_stage_for_status` (settings.py) so an
-// UNMAPPED ClickUp status still lands in the right column here, identically to
-// the guess the settings mapping table shows. First match wins in this order
-// (so "in review" hits IN PROCESS, not WAITING). Each entry is a canonical
-// stage name + the substrings that imply it; a heuristic for a stage the user
-// doesn't have is skipped, and anything unmatched falls back to the first stage.
-const STAGE_HEURISTICS: [string, string[]][] = [
-  ["DONE", ["done", "complete", "closed", "resolved", "shipped", "cancel"]],
-  ["WAITING FOR", ["waiting", "blocked", "on hold", "hold", "paused", "pending", "stuck"]],
-  ["IN PROCESS", ["progress", "process", "doing", "review", "testing", "qa", "active", "wip", "started"]],
-  ["TODO", ["todo", "to do", "to-do", "backlog", "open", "new", "icebox", "later", "someday", "planned", "queue"]],
-];
-
-/** Guess which of the user's `stages` a raw ClickUp status name belongs to, by
- *  substring heuristics — the client twin of the gateway's guess so an unmapped
- *  ClickUp status resolves to a sensible column instead of dumping into the
- *  first one. Only guesses stages the user actually has (matched by upper-cased
- *  name); falls back to the first stage when nothing matches, so a task is
- *  never lost. */
-export function guessStageForStatus(
-  status: string | undefined,
-  stages: string[],
-): string {
-  const low = (status ?? "").trim().toLowerCase();
-  const have = new Map(stages.map((s) => [s.trim().toUpperCase(), s]));
-  for (const [canonical, needles] of STAGE_HEURISTICS) {
-    if (have.has(canonical) && needles.some((n) => low.includes(n))) {
-      return have.get(canonical)!;
-    }
-  }
-  return stages[0] ?? "";
-}
-
-/** The stage column a task belongs in on the Next-Actions board. A LOCAL task
- *  keys off its `workflowStage`; a SYNCED task off its ClickUp `providerStatus`
- *  translated through `statusStageMap`. A synced task that also has a local
- *  `workflowStage` override (set by a drag that couldn't back-sync) uses that.
- *  Falls back to `firstStage` when nothing resolves — so a task is never lost. */
-export function statusColumnForItem(
-  item: GtdItem,
-  stages: string[],
-  firstStage: string,
-  statusStageMap: StatusStageMap = {},
-): string {
-  const known = (s: string | undefined): string =>
-    s && stages.some((st) => normStatus(st) === normStatus(s))
-      ? stages.find((st) => normStatus(st) === normStatus(s))!
-      : "";
-  // A completed task always rests in the LAST stage (the "Done" column) — that's
-  // the terminal column it stays in until archived, regardless of whatever stage
-  // or ClickUp status it carried when it was completed.
-  if (item.disposition === "DONE" && stages.length) {
-    return stages[stages.length - 1];
-  }
-  if (item.source === "LOCAL") {
-    return known(item.workflowStage) || firstStage;
-  }
-  // Synced: a local stage override wins (a drag that stayed local); then the
-  // user's explicit status→stage map; then the status matched directly against
-  // the axis (the per-project view, whose axis IS the raw ClickUp statuses);
-  // and finally the name heuristic, so an UNMAPPED status still lands in a
-  // sensible stage on the global board instead of dumping into the first one.
-  return (
-    known(item.workflowStage) ||
-    known(stageForProviderStatus(item.providerStatus, statusStageMap)) ||
-    known(item.providerStatus) ||
-    guessStageForStatus(item.providerStatus, stages)
-  );
-}
+// D73.9: Next Actions groups by the Projects status CATEGORY. The rule lives in
+// `statusCategory.ts`. The configured stages and the ClickUp status map that
+// used to live here are deleted, with their settings.
 
 // ── Group-by (the toolbar "lens" that slices a list into labelled sections) ──
 

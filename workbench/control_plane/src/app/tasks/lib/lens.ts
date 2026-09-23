@@ -12,15 +12,12 @@
  * existing Tasks UI, which speaks `GtdItem` from end to end, read and write
  * that store without being rewritten: the 95 KB store above it is untouched.
  *
- * ── Why it is a separate module and not an edit to `api.ts` ────────────────
+ * ── It is the only path (S8 PR 1) ──────────────────────────────────────────
  *
- * Because both paths have to exist at once. `gtd_items` still holds every
- * task anybody has captured, and the backfill that moves them (S3b) is
- * OWNER-GATED and has not run. Re-pointing the UI today without the flag would
- * not degrade the app — it would empty it, silently and on a 200, because the
- * new store answers correctly that it holds nothing of theirs yet. So the
- * lens ships DARK (`lensEnabled()` is false unless the env says otherwise),
- * which is the expand half of R6: new readers, old tables untouched.
+ * The lens shipped dark behind `NEXT_PUBLIC_TASKS_LENS` while `gtd_items`
+ * still held every task. Production flipped it on 2026-09-23, after the S3b
+ * backfill moved every row. S8 PR 1 deleted the flag and the retired arms, so
+ * every task read and write in `api.ts` answers through this module.
  *
  * ── The two traps this module is written against ───────────────────────────
  *
@@ -63,7 +60,7 @@
 
 import { projectsCall } from "@/app/projects/lib/api";
 
-import type { OrganizeBody, ProviderTaskDetail, StatusCatalog } from "./api";
+import type { OrganizeBody, ProviderTaskDetail } from "./api";
 import type {
   Disposition,
   GtdItem,
@@ -77,40 +74,6 @@ type Raw = Record<string, unknown>;
 interface ListResponse {
   rows: Raw[];
   total: number;
-}
-
-// ── The flag ────────────────────────────────────────────────────────────────
-
-/**
- * Is the Tasks app reading the one store yet?
- *
- * Default **off**, and deliberately an env var rather than a feature grant:
- * `preview`/`feature:` slugs say who may reach an app, and this says which
- * store an app reads. Revoking a grant to hide an unfinished cutover would
- * conflate the two (`launch_surface.md` §2 — "`preview` is not a permission").
- *
- * Flipping it is the owner's act, and it is not independent: it must happen
- * with or after the S3b backfill, or the first thing every member sees is an
- * empty list. Board WS-39 records the sequencing.
- */
-export function lensEnabled(
-  env?: Record<string, string | undefined>,
-): boolean {
-  // ⚠️ The LITERAL member expression is the only form Next inlines into the
-  // browser bundle. `env.NEXT_PUBLIC_X` off a defaulted `env = process.env`
-  // is NOT inlined: in a browser `process.env` is the `{}` polyfill, so the
-  // flag reads undefined and the lens stays off whatever the box is set to.
-  //
-  // This one is the D53 cutover switch, so the failure is worse than a
-  // hidden pane. Flip it on the box, watch nothing happen, and the obvious
-  // reading is "the S3b backfill did not work" rather than "the flag was
-  // never readable". Measured 2026-09-23: neither flag was set on the box,
-  // so nothing was broken yet — which is why this is fixed BEFORE the flip.
-  //
-  // Tests pass an env object; the app passes nothing and hits the literal.
-  // `src/lib/publicFlags.test.ts` holds every flag reader to this shape.
-  const raw = env ? env.NEXT_PUBLIC_TASKS_LENS : process.env.NEXT_PUBLIC_TASKS_LENS;
-  return raw === "1" || raw === "true" || raw === "on";
 }
 
 // ── Mapping: the wire → GtdItem ─────────────────────────────────────────────
@@ -231,6 +194,7 @@ export function mapLensItem(raw: Raw): GtdItem {
     assignees,
 
     workflowStage: text(raw.workflow_stage),
+    statusCategory: text(raw.status_category),
     sortKey: num(raw.sort_key),
     parentItemId: text(raw.parent_task_id),
     subtaskCount: raw.subtask_count == null ? 0 : Number(raw.subtask_count),
@@ -752,22 +716,12 @@ export async function lensDelegateItem(
 
 // ── The day planner ──────────────────────────────────────────────────
 //
-// `/calendar` reads its tasks from the shared task store, so the grid, the
-// unscheduled rail and every schedule edit followed the lens the moment slice 1
-// landed — with one exception, and it was the dangerous one. "Plan my day" is a
-// SERVER-side computation over whichever store the endpoint reads, and it read
-// the retiring one. Under the flag the UI would have shown `pm_*` tasks while
-// the planner ranked and packed `gtd_items`, and the plan would have come back
-// empty. A 200, no error, nothing in a log.
+// "Plan my day" is a SERVER-side computation over the one store. The four
+// below are all PROPOSALS, and none writes. The client applies an accepted
+// plan through `apiPatchItem`, so there is no `apply` here.
 //
-// The four below are the fix, and they are all PROPOSALS — none writes. The
-// client applies an accepted plan through `apiPatchItem`, which slice 1 already
-// routed, which is why there is no `apply` here to port.
-//
-// ⚠️ `apiAgentPlanToday` is deliberately NOT in this list. The agent surface
-// has no browser and so no flag to read, and giving it a server-side one would
-// mean two flags that must agree. Slice 3 (H-33). Until then an agent asked to
-// plan a day on a lens deployment plans the wrong store.
+// `apiAgentPlanToday` is not in this list. The agent planner's routes
+// (`/tasks/calendar/*-today`) read the one store through `agent_source()`.
 
 /** The planner proposals, one store. Same request shape, different route. */
 const PLANNER: Readonly<Record<string, string>> = {
@@ -890,6 +844,14 @@ export interface LensMoveRequest {
  *   * the D62 guards refuse a move into somebody's personal tree, and an
  *     assignment to a colleague while the task is still in your own.
  */
+/** Put a task in one lane, by id (D73.9: the category drag resolves the lane). */
+export async function lensSetStatusId(taskId: string, statusId: string): Promise<void> {
+  await projectsCall<Raw>(`tasks/${taskId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status_id: statusId }),
+  });
+}
+
 export async function lensMoveTask(
   taskId: string,
   req: LensMoveRequest,
@@ -1219,25 +1181,6 @@ export async function lensFetchMyRoot(): Promise<{ id: string; name: string } | 
     if ((err as { status?: number }).status === 404) return null;
     throw err;
   }
-}
-
-/**
- * The settings modal's status catalogue: the lanes of my personal root.
- *
- * Under one store there is no upstream vocabulary to map — a lane IS the
- * stage — so every entry maps to itself and nothing is unmapped. A member
- * who has never captured has no root yet, and that is an empty catalogue,
- * not an error.
- */
-export async function lensStatusCatalog(): Promise<StatusCatalog> {
-  const root = await lensFetchMyRoot();
-  if (!root) return { stages: [], entries: [], unmapped: 0 };
-  const names = (await lensStatuses(root.id)).map((r) => r.name);
-  return {
-    stages: names,
-    entries: names.map((name) => ({ status: name, stage: name, mapped: true })),
-    unmapped: 0,
-  };
 }
 
 // ── Areas (S6b) ─────────────────────────────────────────────────────────────

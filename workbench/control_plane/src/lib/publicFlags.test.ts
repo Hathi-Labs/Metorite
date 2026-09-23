@@ -21,11 +21,8 @@
  * it: `previewAppsVisible` in `nav.ts`, and `lensEnabled` in
  * `tasks/lib/lens.ts`. Both were fixed on 2026-09-23.
  *
- * ⚠️ **`lensEnabled` is the D53 cutover switch** — it decides whether the
- * Tasks app reads `pm_tasks` or the retired `gtd_items`. Measured on
- * 2026-09-23, neither flag was set on the box, so nothing was broken yet.
- * That is the point. Flip it after the S3b backfill, watch nothing change,
- * and the obvious reading is "the backfill did not work".
+ * `lensEnabled` was the D53 cutover switch. S8 PR 1 deleted it with its
+ * flag, once production had served the one store for a day.
  *
  * ## Why this sweeps the tree instead of living beside each reader
  *
@@ -100,13 +97,13 @@ describe("every NEXT_PUBLIC flag reaches the browser", () => {
   });
 
   it("each flag the app branches on is read through its literal somewhere", () => {
-    // The three that turn a feature on or off. `GATEWAY_URL`, `WORKBENCH_URL`
+    // The two that turn a feature on or off. `NEXT_PUBLIC_TASKS_LENS` was
+    // the third until S8 PR 1 retired it. `GATEWAY_URL`, `WORKBENCH_URL`
     // and `EMAIL_DEMO` are read at module scope as literals already and need
     // no entry here; the point of this list is the flags a REVIEWER would
     // flip and then wonder about.
     const BRANCHING_FLAGS = [
       "NEXT_PUBLIC_PROJECTS_CHAT",
-      "NEXT_PUBLIC_TASKS_LENS",
       "NEXT_PUBLIC_SHOW_PREVIEW_APPS",
     ];
     const all = sourcesNamingAFlag()

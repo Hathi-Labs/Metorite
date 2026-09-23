@@ -54,7 +54,7 @@ import Button from "@/components/ui/Button";
 import { StatusChip } from "@/components/StatusChip";
 import { useEffect, useState } from "react";
 
-import { lensEnabled, lensMyOverlay } from "@/app/tasks/lib/lens";
+import { lensMyOverlay } from "@/app/tasks/lib/lens";
 import {
   type FieldRow,
   type StatusRow,
@@ -192,11 +192,9 @@ export function TaskPanel({
       })
       // No toggle beats a blank panel.
       .catch(() => undefined);
-    if (lensEnabled()) {
-      void lensMyOverlay(task.id).then((got) => {
-        if (live) setMine(got);
-      });
-    }
+    void lensMyOverlay(task.id).then((got) => {
+      if (live) setMine(got);
+    });
     return () => {
       live = false;
     };

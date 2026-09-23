@@ -110,9 +110,8 @@ describe("promoteItem", () => {
 
 describe("promoteAllowed — the one rule for the door", () => {
   it("is lens-only, and never on an archived row", () => {
-    expect(promoteAllowed({ archivedAt: undefined }, true)).toBe(true);
-    expect(promoteAllowed({ archivedAt: undefined }, false)).toBe(false);
-    expect(promoteAllowed({ archivedAt: "2026-09-01T00:00:00Z" }, true)).toBe(false);
+    expect(promoteAllowed({ archivedAt: undefined })).toBe(true);
+    expect(promoteAllowed({ archivedAt: "2026-09-01T00:00:00Z" })).toBe(false);
   });
 });
 

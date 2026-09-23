@@ -24,16 +24,10 @@ import type { GtdItem } from "./types";
 
 /**
  * Whether "Move to project…" is offered on a card — ONE rule, one spelling.
- *
- * Lens only: `apiMoveTask` throws when the flag is off (the old store has no
- * board to move onto), and a door that opens onto an error is worse than no
- * door. An archived row stays where it is until it is restored.
+ * An archived row stays where it is until it is restored.
  */
-export function promoteAllowed(
-  item: Pick<GtdItem, "archivedAt">,
-  lens: boolean,
-): boolean {
-  return lens && !item.archivedAt;
+export function promoteAllowed(item: Pick<GtdItem, "archivedAt">): boolean {
+  return !item.archivedAt;
 }
 
 /**

@@ -116,13 +116,13 @@ export function TaskCard({
         ]
       : []),
     { kind: "sep" },
-    { kind: "label", label: "Change stage" },
-    ...actions.stages.map(
-      (st): CtxItem => ({
+    { kind: "label", label: "Change status" },
+    ...actions.categories.map(
+      (c): CtxItem => ({
         kind: "item",
-        label: st,
-        checked: st === actions.currentStage,
-        onSelect: () => actions.setStage(st),
+        label: actions.categoryLabel(c),
+        checked: c === actions.currentCategory,
+        onSelect: () => actions.setCategory(c),
       }),
     ),
     { kind: "sep" },

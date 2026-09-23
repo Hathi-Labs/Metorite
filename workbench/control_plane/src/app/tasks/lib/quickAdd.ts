@@ -22,10 +22,12 @@
 import type { GroupBy } from "./ordering";
 import { NO_CONTEXT_GROUP } from "./priority";
 import type { Disposition, Energy, ViewKey } from "./types";
+import { type NextCategory, isNextCategory } from "./statusCategory";
 
 /** What a quick-added task must carry to belong to its group. */
 export interface QuickAddPrefill {
-  workflowStage?: string;
+  /** The Next Actions group (D73.9): a status category, never a lane name. */
+  statusCategory?: NextCategory;
   context?: string;
   energy?: Energy;
   deepWork?: boolean;
@@ -53,9 +55,9 @@ export function quickAddPrefill(
 ): QuickAddPrefill | null {
   switch (axis) {
     case "":
-      // The status axis: the board's columns and the grouped list's stage
-      // sections. The key IS the stage.
-      return { workflowStage: key };
+      // The status axis: the board's columns and the grouped list's
+      // category sections. The key IS the category (D73.9).
+      return isNextCategory(key) ? { statusCategory: key } : {};
     case "context":
       return key === NO_CONTEXT_GROUP ? {} : { context: key };
     case "energy":

@@ -10,7 +10,7 @@
  *   3. The refused-write path in the store: a rejected `apiOrganize` refetches
  *      the list and sets `syncFailure`, which `SyncFailureToast` reports.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { lensDelegateBlock } from "./clarify";
 
@@ -74,17 +74,9 @@ describe("lensDelegateBlock", () => {
   });
 });
 
-// ── 2. mapProject reads a node under the lens ───────────────────────────────
+// ── 2. mapProject reads a node ───────────────────────────────
 
-describe("mapProject under the lens", () => {
-  const flag = process.env.NEXT_PUBLIC_TASKS_LENS;
-  beforeEach(() => {
-    process.env.NEXT_PUBLIC_TASKS_LENS = "1";
-  });
-  afterEach(() => {
-    if (flag === undefined) delete process.env.NEXT_PUBLIC_TASKS_LENS;
-    else process.env.NEXT_PUBLIC_TASKS_LENS = flag;
-  });
+describe("mapProject reads a node", () => {
 
   it("reads name → outcome, lowercase status → ACTIVE, and says LOCAL", () => {
     const p = mapProject({
@@ -99,13 +91,6 @@ describe("mapProject under the lens", () => {
   it("reads any other node status as DONE, so the ACTIVE filter drops it", () => {
     expect(mapProject({ id: "p2", name: "Old", status: "archived" }).status).toBe("DONE");
     expect(mapProject({ id: "p3", name: "Closed", status: "closed" }).status).toBe("DONE");
-  });
-
-  it("is the legacy shape with the flag off", () => {
-    delete process.env.NEXT_PUBLIC_TASKS_LENS;
-    const p = mapProject({ id: "g1", outcome: "Legacy", status: "ACTIVE" });
-    expect(p.outcome).toBe("Legacy");
-    expect(p.status).toBe("ACTIVE");
   });
 });
 

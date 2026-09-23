@@ -14,7 +14,6 @@ import {
   type ClarifyProposal,
 } from "../lib/clarify";
 import { apiClarifyPropose, apiSuggestTitle } from "../lib/api";
-import { lensEnabled } from "../lib/lens";
 import type { ConnectedProvider } from "../lib/mockData";
 import { Energy, GtdItem, GtdProject, Person, Target } from "../lib/types";
 import { durationLabel, formatStatus, initials, originEmailHref, snoozeOptions } from "../lib/utils";
@@ -118,8 +117,6 @@ export function ClarifyPanel({
   const createArea = useTaskStore((s) => s.createArea);
   const loadPeople = useTaskStore((s) => s.loadPeople);
   const loadLocalHierarchy = useTaskStore((s) => s.loadLocalHierarchy);
-  const createLocalSpace = useTaskStore((s) => s.createLocalSpace);
-  const createLocalFolder = useTaskStore((s) => s.createLocalFolder);
   const createLocalProject = useTaskStore((s) => s.createLocalProject);
   const renameItem = useTaskStore((s) => s.renameItem);
   const mergeIntoExisting = useTaskStore((s) => s.mergeIntoExisting);
@@ -341,19 +338,6 @@ export function ClarifyPanel({
     ? projects.find((p) => p.id === projectId)
     : undefined;
   const statusesForDest = useMemo(() => providerStatuses(dest, providers), [dest, providers]);
-  // ⚠️ `destAccount` is GONE (D52, WS-39 S3a-client slice 4). Every branch
-  // below used to fork on it: a SYNCED destination created a real provider
-  // folder and list, offered the workspace's members as delegates, and cleared
-  // an assignee who had been removed in the tool. There is no tool, so all
-  // three arms were unreachable — and each one carried a `createWorkspace*`
-  // call whose only possible outcome was a 400.
-  const createFolderForDest = useCallback(
-    async (spaceId: string, name: string) => {
-      await createLocalFolder(spaceId, name);
-    },
-    [createLocalFolder],
-  );
-
   // The delegate roster is the DIRECTORY, full stop. It used to be the
   // destination workspace's member list when there was one, reconciled
   // against the directory by provider id / email / name — forty lines of
@@ -380,14 +364,6 @@ export function ClarifyPanel({
   // destination (workspace + project) can't move, only the local cognition and
   // the break-down can change. The server flags this; lock the picker.
   const destLocked = reclarify && !!proposal.lockedDestination;
-
-  const chooseDest = (t: Target) => {
-    setDest(t);
-    setProjectId(undefined);
-    setTargetSpaceId(undefined);
-    setTargetFolderId(undefined);
-    setStatus(defaultStatus(sort === "actionable" ? "NEXT" : proposal.disposition, providerStatuses(t, providers)));
-  };
 
   const chooseSize = (s: Size) => {
     setSize(s);
@@ -513,7 +489,7 @@ export function ClarifyPanel({
   // The rule itself is `lib/clarify.ts::lensDelegateBlock`, pure and fenced
   // by `lensRepair.test.ts`; this is only the wiring.
   const lensBlock = lensDelegateBlock({
-    lens: lensEnabled(),
+    lens: true,
     delegating: sort === "actionable" && owner === "delegate" && !!assignee,
     size,
     projectId,
@@ -523,22 +499,18 @@ export function ClarifyPanel({
   // S6b repair. A task on a company board cannot be filed into an Area, nor
   // become one (D62 refuses both moves into a personal tree). The rule is
   // `lib/clarify.ts::isPersonalTask`, fenced by `areas.test.ts`; this hides
-  // the two controls that would otherwise offer a 422. Off-flag, every task
-  // is "personal" for this purpose — the legacy store has no team boards.
+  // the two controls that would otherwise offer a 422.
   const personalTask =
-    !lensEnabled() ||
     isPersonalTask(item, personalRootId, areas.map((a) => a.id));
   const delegateIntoPrivateProject = lensBlock === "private-project";
   const needsProjectForDelegate =
     (delegatingToSynced && !projectId && !targetSpaceId) || lensBlock !== null;
 
-  // Under the lens a Size=project decision IS "make this an Area" (S6b): the
+  // A Size=project decision IS "make this an Area" (S6b): the
   // gateway's `organize` kind=project mints a child of my root named for the
   // outcome, so there is no space or folder to choose first and the decision
   // is complete the moment the outcome and the first action are.
-  const projectDecisionReady = lensEnabled()
-    ? !!buildDecision()
-    : !!(projectId || targetSpaceId) && !!buildDecision();
+  const projectDecisionReady = !!buildDecision();
   const canApply =
     sort !== "actionable"
       ? true
@@ -1192,39 +1164,7 @@ export function ClarifyPanel({
                       statuses={statusesForDest} status={status} setStatus={setStatus} />
                   ) : (
                     <div className="flex flex-col gap-2.5">
-                      {/* The destination row is a choice between STORES, and
-                          under the lens there is one (D52, D53). Drawing
-                          "ClickUp" and "Jira" chips there offers a move onto a
-                          board that does not exist. S6b hides the row. */}
-                      {!lensEnabled() && (
-                      <div className="flex flex-wrap gap-1.5">
-                        {providers.map((cp) => {
-                          const active = destEntry(dest, providers)?.id === cp.id;
-                          return (
-                            <button
-                              key={cp.id}
-                              type="button"
-                              onClick={() =>
-                                chooseDest({
-                                  source: cp.source,
-                                  provider: cp.provider,
-                                  accountId: cp.source === "SYNCED" ? cp.id : undefined,
-                                })
-                              }
-                              className={[
-                                "tech-transition inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs",
-                                active ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-secondary",
-                              ].join(" ")}
-                            >
-                              {cp.source === "LOCAL" ? <AppIcon name="HardDrive" className="h-3.5 w-3.5" /> : <AppIcon name="Cloud" className="h-3.5 w-3.5" />}
-                              {cp.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                      )}
-
-                      {lensEnabled() && size === "project" ? (
+                      {size === "project" ? (
                         /* S6b. Under one store a private project is an AREA —
                            a flat child of my root, named for the outcome, and
                            the gateway mints it from this decision. There is
@@ -1239,7 +1179,7 @@ export function ClarifyPanel({
                             , with the first action inside it.
                           </span>
                         </div>
-                      ) : lensEnabled() ? (
+                      ) : (
                         /* S6b. My Areas, then the company's projects — and
                            never `/tasks/hierarchy` (spec S6b done-when 3). */
                         <WherePicker
@@ -1250,32 +1190,6 @@ export function ClarifyPanel({
                           suggestedId={proposal.projectInferred ? proposal.projectId : undefined}
                           onChange={setProjectId}
                           onCreateArea={createArea}
-                        />
-                      ) : size === "project" ? (
-                        <ProjectTargetTree
-                          dest={dest}
-                          localHierarchy={localHierarchy}
-                          value={{ spaceId: targetSpaceId, folderId: targetFolderId }}
-                          onChange={(v) => { setTargetSpaceId(v.spaceId); setTargetFolderId(v.folderId); }}
-                          /* Creating a provider SPACE isn't a supported write —
-                             the "New space…" row is local-only. Folders work in
-                             both homes (dest-aware). */
-                          canCreateSpace={dest.source === "LOCAL"}
-                          onCreateSpace={createLocalSpace}
-                          onCreateFolder={createFolderForDest}
-                        />
-                      ) : (
-                        <ProjectListTree
-                          dest={dest}
-                          localHierarchy={localHierarchy}
-                          projectsForDest={projectsForDest}
-                          suggestedId={proposal.projectInferred ? proposal.projectId : undefined}
-                          value={projectId}
-                          onChange={setProjectId}
-                          onCreate={async (spaceId, folderId, name) => {
-                            await createLocalProject({ outcome: name, spaceId, folderId });
-                          }}
-                          onCreateFolder={createFolderForDest}
                         />
                       )}
 
@@ -1305,9 +1219,7 @@ export function ClarifyPanel({
                       )}
                       {!isSynced && (
                         <p className="text-[10px] text-muted-foreground">
-                          {lensEnabled()
-                            ? "Private to you until it joins a company project. File it in an Area, or leave it loose."
-                            : "Private to you. File it in a local space/list, or leave it loose."}
+                          Private to you until it joins a company project. File it in an Area, or leave it loose.
                         </p>
                       )}
                     </div>
@@ -1386,14 +1298,14 @@ function ProjectSuggestBanner({
           <span className="min-w-0 flex-1 truncate" title={project.outcome}>{project.outcome}</span>
         </div>
         <div className="mt-0.5 pl-5 text-[10.5px] text-muted-foreground">
-          {synced ? (providerLabel ?? "ClickUp") : "Local project"}
+          {synced ? (providerLabel ?? "Project board") : "Local project"}
         </div>
       </div>
       <p className="flex items-start gap-1.5 text-[11.5px] text-muted-foreground">
         <AppIcon name="ArrowRight" className="mt-0.5 h-3 w-3 shrink-0 text-primary/70" />
         {assignee
-          ? `Assigned to ${assignee.name} — it'll show under them in Projects${synced ? ", and stays on ClickUp" : ""}.`
-          : `Assigned to you — it'll show up in My Next Actions${synced ? ", and on ClickUp" : ""}.`}
+          ? `Assigned to ${assignee.name} — it'll show under them in Projects${synced ? ", and stays on its board" : ""}.`
+          : `Assigned to you — it'll show up in My Next Actions${synced ? ", and on its board" : ""}.`}
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <Button size="none" radius="keep" layout="inline-flex items-center" type="button" disabled={busy} onClick={() => { setBusy(true); onFile(); }} className="gap-1.5 rounded-md px-2.5 py-1.5 text-xs">
@@ -1491,8 +1403,8 @@ function DuplicateBanner({
         <AppIcon name="AlertTriangle" className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
         <span>
           {dup.verdict === "duplicate"
-            ? "This looks like a task that's already on ClickUp"
-            : "A similar task may already be on ClickUp"}
+            ? "This looks like a task that's already on a project board"
+            : "A similar task may already be on a project board"}
         </span>
       </div>
       <div className="rounded-md border border-border bg-background/50 px-3 py-2">
@@ -1531,7 +1443,7 @@ function DuplicateBanner({
             className="w-full rounded-md border border-border bg-background/60 px-3 py-2 text-base text-foreground focus:border-primary/50 focus:outline-none sm:text-sm"
           />
           <p className="text-[10.5px] text-muted-foreground">
-            Updates the task everywhere it lives (including ClickUp) and drops this inbox item.
+            Updates the task everywhere it lives and drops this inbox item.
           </p>
           <div className="flex items-center gap-2">
             <Button size="none" radius="keep" layout="inline-flex items-center" type="button" disabled={busy !== null || !canRename} onClick={() => void run("rename", () => onRename(renameTitle))} className="gap-1.5 rounded-md px-2.5 py-1.5 text-xs">
@@ -1592,7 +1504,7 @@ function LockedWhere({
         <AppIcon name="Lock" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs text-foreground">
           <AppIcon name="Cloud" className="h-3.5 w-3.5 text-primary/70" />
-          {destEntry(dest, providers)?.label ?? "ClickUp"}
+          {destEntry(dest, providers)?.label ?? "Project board"}
           {selectedProject && (
             <>
               <span className="text-border">·</span>
@@ -1616,7 +1528,7 @@ function LockedWhere({
         </div>
       )}
       <p className="mt-1.5 text-[10px] text-muted-foreground">
-        Two-way synced with ClickUp — the workspace and list stay put. You can
+        Bound to its project board — the project stays put. You can
         still change size, owner, timing, stage, and break it into steps.
       </p>
     </div>
@@ -1723,585 +1635,6 @@ function PeoplePicker({
       {!people.length && (
         <p className="text-[11px] text-muted-foreground">No teammates available yet.</p>
       )}
-    </div>
-  );
-}
-
-// ── Where: a normalized Space→Folder→List tree, shared by both picker modes ──
-
-interface TNode {
-  id: string;
-  type: "space" | "folder" | "list";
-  name: string;
-  children?: TNode[];
-  /** the mirrored gtd project id, for LIST nodes only. */
-  projectId?: string;
-}
-
-/** Build one normalized tree from either a ClickUp account's hierarchy or the
- *  LOCAL space/folder/project tables — so both picker modes share one render. */
-// The Where picker's tree.
-//
-// ⚠️ The SYNCED arm was DELETED here (D52, WS-39 S3a-client slice 4). It
-// built the tree out of `destAccount.hierarchy` — the workspace's own
-// space/folder/list shape, cached on `task_accounts.schema_cache` — and
-// reconciled it against local projects by `providerRef`. With no accounts
-// it returned `[]` on every call, so the picker rendered an empty tree for
-// a destination that could not be chosen in the first place.
-function buildTree(
-  localHierarchy: import("../lib/api").LocalHierarchy | null,
-  projectsForDest: GtdProject[],
-): TNode[] {
-  if (!localHierarchy) return [];
-  const foldersBySpace = new Map<string, typeof localHierarchy.folders>();
-  for (const f of localHierarchy.folders) {
-    foldersBySpace.set(f.spaceId, [...(foldersBySpace.get(f.spaceId) ?? []), f]);
-  }
-  const projByFolder = new Map<string, GtdProject[]>();
-  const projBySpaceOnly = new Map<string, GtdProject[]>();
-  for (const p of projectsForDest) {
-    if (p.folderId) projByFolder.set(p.folderId, [...(projByFolder.get(p.folderId) ?? []), p]);
-    else if (p.spaceId) projBySpaceOnly.set(p.spaceId, [...(projBySpaceOnly.get(p.spaceId) ?? []), p]);
-  }
-  return localHierarchy.spaces.map((sp) => ({
-    id: sp.id, type: "space" as const, name: sp.name,
-    children: [
-      ...(projBySpaceOnly.get(sp.id) ?? []).map((p) => ({
-        id: p.id, type: "list" as const, name: p.outcome, projectId: p.id,
-      })),
-      ...(foldersBySpace.get(sp.id) ?? []).map((f) => ({
-        id: f.id, type: "folder" as const, name: f.name,
-        children: (projByFolder.get(f.id) ?? []).map((p) => ({
-          id: p.id, type: "list" as const, name: p.outcome, projectId: p.id,
-        })),
-      })),
-    ],
-  }));
-}
-
-/** The value-space id of a node. A LIST leaf is selected by its MIRRORED gtd
- *  project id (what the card stores + sends to organize), not its own id — for
- *  a SYNCED list `id` is the ClickUp list id while `projectId` is the local
- *  mirror. (For LOCAL lists projectId === id, so this is a no-op there.) Every
- *  other node is selected by its own id. Comparing against this — instead of
- *  raw `n.id` — is what makes a picked/suggested ClickUp list actually light
- *  up and the tree auto-expand to it. */
-const selId = (n: TNode): string | undefined => (n.type === "list" ? n.projectId : n.id);
-
-/** Where picker for Size=single/subtasks: navigate the tree, select a LIST
- *  (leaf) — the task is created INTO it. Mirrors ClickUp's own navigation. */
-function ProjectListTree({
-  dest,
-  localHierarchy,
-  projectsForDest,
-  suggestedId,
-  value,
-  onChange,
-  onCreate,
-  onCreateFolder,
-}: {
-  dest: Target;
-  localHierarchy: import("../lib/api").LocalHierarchy | null;
-  projectsForDest: GtdProject[];
-  suggestedId?: string;
-  value?: string;
-  onChange: (id: string | undefined) => void;
-  onCreate: (spaceId: string, folderId: string | undefined, name: string) => Promise<void>;
-  onCreateFolder: (spaceId: string, name: string) => Promise<void>;
-}) {
-  const tree = useMemo(
-    () =>
-      // Under the lens the projects are the COMPANY's (`GET /projects/nodes`)
-      // and carry no Space/Folder placement, so the tree is flat: one list
-      // node per project. `buildTree` would drop every one of them for
-      // having no folder (S6a repair). The local tree retires in S6b.
-      lensEnabled()
-        ? projectsForDest.map((p) => ({
-            id: p.id, type: "list" as const, name: p.outcome, projectId: p.id,
-          }))
-        : buildTree(localHierarchy, projectsForDest),
-    [localHierarchy, projectsForDest],
-  );
-  return (
-    <TreePicker
-      tree={tree}
-      pickTypes={["list"]}
-      value={value}
-      suggestedId={suggestedId}
-      newLabel={dest.source === "SYNCED" ? "New list here…" : "New project here…"}
-      emptyLabel="No project"
-      onSelectLeaf={(node) => onChange(node?.projectId)}
-      onCreate={onCreate}
-      onCreateFolder={onCreateFolder}
-    />
-  );
-}
-
-/** Where picker for Size=project: navigate the tree, select a SPACE **or**
- *  FOLDER (either is valid) — the new list/local project is created under it. */
-function ProjectTargetTree({
-  dest,
-  localHierarchy,
-  value,
-  onChange,
-  canCreateSpace,
-  onCreateSpace,
-  onCreateFolder,
-}: {
-  dest: Target;
-  localHierarchy: import("../lib/api").LocalHierarchy | null;
-  value: { spaceId?: string; folderId?: string };
-  onChange: (v: { spaceId?: string; folderId?: string }) => void;
-  /** Provider spaces can't be created (no such write) — local-only row. */
-  canCreateSpace: boolean;
-  onCreateSpace: (name: string) => Promise<void>;
-  onCreateFolder: (spaceId: string, name: string) => Promise<void>;
-}) {
-  const tree = useMemo(
-    () => buildTree(localHierarchy, []),
-    [localHierarchy],
-  );
-  const selectedId = value.folderId ?? value.spaceId;
-  return (
-    <div className="flex flex-col gap-1.5">
-      <TreePicker
-        tree={tree}
-        pickTypes={["space", "folder"]}
-        value={selectedId}
-        newLabel="New space…"
-        emptyLabel="Choose a space or folder"
-        allowCreateTop={canCreateSpace}
-        onSelectTarget={(node) => {
-          if (!node) return onChange({});
-          if (node.type === "space") onChange({ spaceId: node.id });
-          else onChange({ spaceId: findParentSpace(tree, node.id), folderId: node.id });
-        }}
-        onCreate={async (spaceId, folderId, name) => {
-          if (folderId) return; // folders are created inline below, not via row-create
-          if (!spaceId) {
-            // top-level "new space" row.
-            await onCreateSpace(name);
-            return;
-          }
-          await onCreateFolder(spaceId, name);
-        }}
-      />
-      {value.spaceId && !value.folderId && (
-        <InlineCreateFolder spaceId={value.spaceId} onCreate={onCreateFolder} />
-      )}
-    </div>
-  );
-}
-
-function findParentSpace(tree: TNode[], folderId: string): string | undefined {
-  for (const sp of tree) {
-    if (sp.children?.some((c) => c.id === folderId && c.type === "folder")) return sp.id;
-  }
-  return undefined;
-}
-
-function InlineCreateFolder({
-  spaceId,
-  onCreate,
-}: {
-  spaceId: string;
-  onCreate: (spaceId: string, name: string) => Promise<void>;
-}) {
-  const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false);
-  if (!open) {
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="tech-transition ml-4 flex items-center gap-1.5 text-left text-xs text-primary hover:underline"
-      >
-        <AppIcon name="Plus" className="h-3 w-3" /> New folder here
-      </button>
-    );
-  }
-  return (
-    <div className="ml-4 flex items-center gap-1.5">
-      <input
-        autoFocus
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="Folder name…"
-        className="flex-1 rounded-md border border-border bg-background/60 px-2.5 py-1.5 text-base text-foreground focus:border-primary/50 focus:outline-none sm:text-sm"
-      />
-      <button
-        type="button"
-        disabled={!name.trim() || busy}
-        onClick={async () => {
-          setBusy(true);
-          try {
-            await onCreate(spaceId, name.trim());
-            setOpen(false);
-            setName("");
-          } finally {
-            setBusy(false);
-          }
-        }}
-        className="tech-transition inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
-      >
-        {busy ? <AppIcon name="Loader2" className="h-3 w-3 animate-spin" /> : <AppIcon name="Plus" className="h-3 w-3" />}
-        Create
-      </button>
-    </div>
-  );
-}
-
-/** Generic tree renderer shared by both picker modes. In "leaf" mode only LIST
- *  nodes are selectable; in "target" mode SPACE and FOLDER nodes are (lists
- *  are shown but disabled — navigation only). */
-function TreePicker({
-  tree,
-  pickTypes,
-  value,
-  suggestedId,
-  newLabel,
-  emptyLabel,
-  onSelectLeaf,
-  onSelectTarget,
-  onCreate,
-  onCreateFolder,
-  allowCreateTop = true,
-}: {
-  tree: TNode[];
-  pickTypes: ("space" | "folder" | "list")[];
-  value?: string;
-  suggestedId?: string;
-  newLabel: string;
-  emptyLabel: string;
-  onSelectLeaf?: (node: TNode | undefined) => void;
-  onSelectTarget?: (node: TNode | undefined) => void;
-  onCreate: (spaceId: string, folderId: string | undefined, name: string) => Promise<void>;
-  /** When given, expanded SPACE rows offer "New folder here…" (leaf mode). */
-  onCreateFolder?: (spaceId: string, name: string) => Promise<void>;
-  /** Whether the top-level create row (new space) is offered (target mode). */
-  allowCreateTop?: boolean;
-}) {
-  const [q, setQ] = useState("");
-  const [openIds, setOpenIds] = useState<Set<string>>(() => {
-    const open = new Set<string>();
-    if (tree.length === 1) open.add(tree[0].id);
-    // Auto-expand the ancestor of the current/suggested selection.
-    const target = value ?? suggestedId;
-    if (target) {
-      for (const sp of tree) {
-        const hasIt = (n: TNode): boolean =>
-          selId(n) === target || (n.children?.some(hasIt) ?? false);
-        if (hasIt(sp)) open.add(sp.id);
-        for (const c of sp.children ?? []) {
-          if (c.type === "folder" && (c.children?.some((l) => selId(l) === target) ?? false)) {
-            open.add(c.id);
-          }
-        }
-      }
-    }
-    return open;
-  });
-  const [creatingAt, setCreatingAt] = useState<string | "top" | null>(null);
-  const [newName, setNewName] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
-
-  const toggle = (id: string) =>
-    setOpenIds((cur) => {
-      const next = new Set(cur);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-
-  const select = (n: TNode) => {
-    if (!pickTypes.includes(n.type)) return;
-    // A LIST with no mirrored gtd project id can't be a target yet (its schema
-    // refresh hasn't landed) — don't bind the task to nothing.
-    if (n.type === "list" && selId(n) === undefined) return;
-    if (onSelectLeaf) onSelectLeaf(n);
-    if (onSelectTarget) onSelectTarget(n);
-  };
-
-  const submitCreate = async (spaceId: string | undefined, folderId: string | undefined) => {
-    const name = newName.trim();
-    if (!name || creating) return;
-    setCreating(true);
-    setCreateError(null);
-    try {
-      await onCreate(spaceId ?? "", folderId, name);
-      setCreatingAt(null);
-      setNewName("");
-    } catch (err) {
-      setCreateError(err instanceof Error ? err.message : "Could not create it");
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const submitCreateFolder = async (spaceId: string) => {
-    const name = newName.trim();
-    if (!name || creating || !onCreateFolder) return;
-    setCreating(true);
-    setCreateError(null);
-    try {
-      await onCreateFolder(spaceId, name);
-      setCreatingAt(null);
-      setNewName("");
-    } catch (err) {
-      setCreateError(err instanceof Error ? err.message : "Could not create it");
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const row = (n: TNode, depth: number, ancestorSpaceId?: string) => {
-    const selectable = pickTypes.includes(n.type);
-    const sid = selId(n);
-    // A LIST whose mirrored gtd project hasn't loaded yet (schema still
-    // syncing) is shown but disabled — picking it would bind to nothing.
-    const unmirrored = n.type === "list" && sid === undefined;
-    const canSelect = selectable && !unmirrored;
-    const active = canSelect && sid === value;
-    const isSuggested = canSelect && sid === suggestedId;
-    // In leaf mode a space/folder is a navigation container even when EMPTY —
-    // it must still open, so the "New list here…" / "New folder here…" rows
-    // are reachable inside it. (Previously an empty folder was a dead end:
-    // lists could only ever be created at the space level.)
-    const expandable =
-      !!n.children?.length || (!!onSelectLeaf && n.type !== "list");
-    const isOpen = openIds.has(n.id);
-    const Icon = n.type === "space" ? themedIcon("HardDrive") : n.type === "folder" ? themedIcon("FolderKanban") : themedIcon("ListChecks");
-    return (
-      <div key={n.id}>
-        <button
-          type="button"
-          onClick={() => (expandable && !canSelect ? toggle(n.id) : select(n))}
-          disabled={!canSelect && !expandable}
-          title={unmirrored ? "Still syncing from ClickUp — available in a moment" : undefined}
-          className={[
-            "tech-transition flex w-full items-center gap-2 rounded-md border px-3 py-1.5 text-left text-sm",
-            depth === 3 ? "ml-8 w-[calc(100%-2rem)]" : depth === 2 ? "ml-4 w-[calc(100%-1rem)]" : "",
-            active
-              ? "border-primary bg-primary/10 text-primary"
-              : unmirrored
-                ? "cursor-not-allowed border-transparent text-muted-foreground/50"
-                : selectable
-                  ? "border-transparent text-foreground hover:bg-secondary"
-                  : "border-transparent text-foreground/80 hover:bg-secondary",
-          ].join(" ")}
-        >
-          {expandable ? (
-            <AppIcon name="ChevronRight"
-              onClick={(e) => { e.stopPropagation(); toggle(n.id); }}
-              className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${isOpen ? "rotate-90" : ""}`}
-            />
-          ) : (
-            <span className="w-3.5 shrink-0" />
-          )}
-          <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <span className="min-w-0 flex-1 truncate">{n.name}</span>
-          {unmirrored && (
-            <span className="inline-flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground/70">
-              <AppIcon name="Loader2" className="h-3 w-3 animate-spin" /> syncing…
-            </span>
-          )}
-          {isSuggested && <AppIcon name="Sparkles" className="h-3 w-3 shrink-0 text-primary" />}
-          {active && <AppIcon name="Check" className="h-3.5 w-3.5 shrink-0" />}
-        </button>
-        {expandable && isOpen && (
-          <div className="flex flex-col gap-0.5 pb-1 pt-0.5">
-            {(n.children ?? []).map((c) => row(c, depth + 1, n.type === "space" ? n.id : ancestorSpaceId))}
-            {/* "New X here" only where it's meaningful: a new list inside a
-                space/folder (leaf mode), handled by the caller's onCreate. */}
-            {onSelectLeaf && (creatingAt === n.id ? (
-              <div className={depth === 2 ? "ml-8" : "ml-4"}>
-                <div className="flex items-center gap-1.5">
-                  <input
-                    autoFocus
-                    value={newName}
-                    onChange={(e) => setNewName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") void submitCreate(n.type === "space" ? n.id : ancestorSpaceId, n.type === "folder" ? n.id : undefined);
-                      if (e.key === "Escape") setCreatingAt(null);
-                    }}
-                    placeholder="New list name…"
-                    className="flex-1 rounded-md border border-border bg-background/60 px-2.5 py-1.5 text-base text-foreground focus:border-primary/50 focus:outline-none sm:text-sm"
-                  />
-                  <button
-                    type="button"
-                    disabled={!newName.trim() || creating}
-                    onClick={() => void submitCreate(n.type === "space" ? n.id : ancestorSpaceId, n.type === "folder" ? n.id : undefined)}
-                    className="tech-transition inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
-                  >
-                    {creating ? <AppIcon name="Loader2" className="h-3 w-3 animate-spin" /> : <AppIcon name="Plus" className="h-3 w-3" />}
-                    Create
-                  </button>
-                </div>
-                {createError && <p className="mt-1 text-[11px] text-destructive">{createError}</p>}
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => { setCreatingAt(n.id); setNewName(""); setCreateError(null); }}
-                className={`tech-transition flex items-center gap-1.5 text-left text-xs text-primary hover:underline ${depth === 2 ? "ml-8" : "ml-4"}`}
-              >
-                {/* Say WHICH level the new list lands on — a space with folders
-                    offers both "directly in this space" (folderless, the level
-                    above) and per-folder creation, and "here" hid that. */}
-                <AppIcon name="Plus" className="h-3 w-3" />{" "}
-                {newLabel.replace(
-                  "here…",
-                  n.type === "folder" ? "in this folder…" : "directly in this space…",
-                )}
-              </button>
-            ))}
-            {/* A space can also grow a new FOLDER (space → folder → list) so a
-                list can then be created inside it — the full ClickUp shape,
-                right from the picker. */}
-            {onSelectLeaf && onCreateFolder && n.type === "space" &&
-              (creatingAt === `folder:${n.id}` ? (
-                <div className="ml-4">
-                  <div className="flex items-center gap-1.5">
-                    <input
-                      autoFocus
-                      value={newName}
-                      onChange={(e) => setNewName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") void submitCreateFolder(n.id);
-                        if (e.key === "Escape") setCreatingAt(null);
-                      }}
-                      placeholder="New folder name…"
-                      className="flex-1 rounded-md border border-border bg-background/60 px-2.5 py-1.5 text-base text-foreground focus:border-primary/50 focus:outline-none sm:text-sm"
-                    />
-                    <button
-                      type="button"
-                      disabled={!newName.trim() || creating}
-                      onClick={() => void submitCreateFolder(n.id)}
-                      className="tech-transition inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
-                    >
-                      {creating ? <AppIcon name="Loader2" className="h-3 w-3 animate-spin" /> : <AppIcon name="Plus" className="h-3 w-3" />}
-                      Create
-                    </button>
-                  </div>
-                  {createError && <p className="mt-1 text-[11px] text-destructive">{createError}</p>}
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => { setCreatingAt(`folder:${n.id}`); setNewName(""); setCreateError(null); }}
-                  className="tech-transition ml-4 flex items-center gap-1.5 text-left text-xs text-primary hover:underline"
-                >
-                  <AppIcon name="Plus" className="h-3 w-3" /> New folder here…
-                </button>
-              ))}
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  // Search mode: flat filtered list across every node.
-  const ql = q.trim().toLowerCase();
-  if (ql) {
-    const hits: { node: TNode; path: string }[] = [];
-    const walk = (nodes: TNode[], path: string) => {
-      for (const n of nodes) {
-        if (n.name.toLowerCase().includes(ql)) hits.push({ node: n, path });
-        if (n.children) walk(n.children, path ? `${path} / ${n.name}` : n.name);
-      }
-    };
-    walk(tree, "");
-    return (
-      <div className="flex flex-col gap-1.5">
-        <SearchBox q={q} setQ={setQ} />
-        {hits.slice(0, 12).map(({ node, path }) => (
-          <div key={node.id}>
-            <p className="ml-4 text-[10px] uppercase tracking-wide text-muted-foreground/70">{path}</p>
-            {row(node, 1)}
-          </div>
-        ))}
-        {!hits.length && (
-          <p className="px-1 py-1 text-[11px] text-muted-foreground">No matches.</p>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-1">
-      <SearchBox q={q} setQ={setQ} />
-      {onSelectLeaf && (
-        <button
-          type="button"
-          onClick={() => onSelectLeaf(undefined)}
-          className={[
-            "tech-transition flex w-full items-center gap-2 rounded-md border px-3 py-1.5 text-left text-sm",
-            value === undefined
-              ? "border-primary bg-primary/10 text-primary"
-              : "border-transparent text-foreground hover:bg-secondary",
-          ].join(" ")}
-        >
-          <AppIcon name="FolderKanban" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          <span className="flex-1">{emptyLabel}</span>
-          {value === undefined && <AppIcon name="Check" className="h-3.5 w-3.5 shrink-0" />}
-        </button>
-      )}
-      <div className="max-h-56 overflow-y-auto pr-0.5">
-        {tree.map((sp) => row(sp, 1))}
-        {onSelectTarget && allowCreateTop && (
-          creatingAt === "top" ? (
-            <div className="flex items-center gap-1.5">
-              <input
-                autoFocus
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") void submitCreate(undefined, undefined);
-                  if (e.key === "Escape") setCreatingAt(null);
-                }}
-                placeholder="New space name…"
-                className="flex-1 rounded-md border border-border bg-background/60 px-2.5 py-1.5 text-base text-foreground focus:border-primary/50 focus:outline-none sm:text-sm"
-              />
-              <button
-                type="button"
-                disabled={!newName.trim() || creating}
-                onClick={() => void submitCreate(undefined, undefined)}
-                className="tech-transition inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
-              >
-                {creating ? <AppIcon name="Loader2" className="h-3 w-3 animate-spin" /> : <AppIcon name="Plus" className="h-3 w-3" />}
-                Create
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => { setCreatingAt("top"); setNewName(""); setCreateError(null); }}
-              className="tech-transition flex items-center gap-1.5 text-left text-xs text-primary hover:underline"
-            >
-              <AppIcon name="Plus" className="h-3 w-3" /> {newLabel}
-            </button>
-          )
-        )}
-        {createError && creatingAt === "top" && (
-          <p className="mt-1 text-[11px] text-destructive">{createError}</p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function SearchBox({ q, setQ }: { q: string; setQ: (v: string) => void }) {
-  return (
-    <div className="relative">
-      <AppIcon name="Search" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-      <input
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        placeholder="Search…"
-        className="w-full rounded-md border border-border bg-background/60 py-1.5 pl-8 pr-3 text-base text-foreground focus:border-primary/50 focus:outline-none sm:text-sm"
-      />
     </div>
   );
 }

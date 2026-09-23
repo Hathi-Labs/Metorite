@@ -35,7 +35,6 @@ import {
   lensCreateArea,
   lensDelegateItem,
   lensDeleteArea,
-  lensEnabled,
   lensEstimateStats,
   lensFetchAreas,
   lensFetchItems,
@@ -55,7 +54,6 @@ import {
   lensSetStage,
   lensStageAttachment,
   lensStageOptions,
-  lensStatusCatalog,
   mapLensItem,
   splitPatch,
 } from "./lens";
@@ -424,142 +422,81 @@ describe("the lens talks to /api/projects, never /api/tasks", () => {
   });
 });
 
-// ── 5. No spine function is left behind ─────────────────────────────────────
+// ── 5. The client names no retired door (S8 PR 1) ─────────────────────────
 
-describe("the cutover seam is complete for this slice", () => {
+describe("api.ts reaches the one store only", () => {
   const apiSrc = readFileSync(
     fileURLToPath(new URL("./api.ts", import.meta.url)),
     "utf-8",
   );
+  const lensSrc = readFileSync(
+    fileURLToPath(new URL("./lens.ts", import.meta.url)),
+    "utf-8",
+  );
+
+  /** Every literal path `gatewayFetch` is handed, as `/tasks` sees it. */
+  const gatewayPaths = [
+    ...apiSrc.matchAll(/gatewayFetch\s*(?:<[^>]*>)?\s*\(\s*([`'"])(.*?)\1/g),
+  ].map((m) => m[2]);
 
   /**
-   * The spine S3a-client slice 1 moves. §13.5's own fence — grep the whole
-   * `/tasks` tree for `/api/tasks/items` — belongs to slice 2, when the AI,
-   * subtask, plan and bulk routes follow; asserting it now would fail against
-   * work that is deliberately still to come, and a fence that is red on
-   * purpose is a fence people learn to ignore.
-   *
-   * This is the same shape narrowed to what HAS moved: the failure mode of
-   * slice 1 is not a missing endpoint, it is one of these eight functions
-   * losing its branch and quietly writing to the retired store while its
-   * seven neighbours read the new one.
+   * The `/tasks` routes S8 PR 1 deleted, or that only ever read `gtd_items`.
+   * The prefixes are matched on the literal part of each path, so an id or a
+   * query string cannot hide one.
    */
-  const SPINE = [
-    "fetchItems",
-    "apiCapture",
-    "apiPatchItem",
-    "apiArchiveItem",
-    "apiDeleteItem",
-    "apiRestoreItem",
-    "apiPurgeItem",
-    "apiDelegateItem",
-    // slice 2 — the day planner. `/calendar` gets its TASKS from the shared
-    // store and so followed the lens for free, but "Plan my day" is computed
-    // SERVER-side over whichever store the endpoint reads. Left behind, the UI
-    // would show `pm_*` tasks while the planner packed `gtd_items`, and the
-    // plan would come back empty on a 200.
-    "apiPlanDay",
-    "apiRollover",
-    "apiReplan",
-    "apiEstimateStats",
-    // slice 5a — promotion. The Tasks app's one door onto `move`, and the two
-    // reads a destination picker needs.
-    "apiMoveTask",
-    "fetchProjects",
-    "apiItemStageOptions",
-    // S6a — the CRUD tail (my_tasks_cutover.md §3.1 group C, plus the status
-    // catalogue from group F). Each is a door onto a route the Projects app
-    // serves; three of the routes were grown for this slice.
-    "apiItemDetail",
-    "apiCaptureBatch",
-    "apiBulkDispose",
-    "apiBulkArchive",
-    "apiOrganize",
-    "apiListSubtasks",
-    "apiAddSubtasks",
-    "apiMergeInto",
-    "apiFileUnder",
-    "apiUploadAttachment",
-    "fetchStatusCatalog",
-    // S6b — group D, the local Space→Folder→Project tree, retires under the
-    // flag. Left behind, the Clarify picker would draw `/tasks/hierarchy`
-    // (the old store's tree) beside `/projects/nodes` (the new store's
-    // projects) and file a task into a `gtd_projects` id that `pm_tasks`
-    // cannot hold — spec S6b done-when 3 says the picker never shows it.
-    "fetchLocalHierarchy",
-    "apiCreateSpace",
-    "apiCreateFolder",
-    "apiCreateLocalProject",
-    // S6e — continuity with Projects. Two reads the legacy store cannot
-    // answer (no board to be assigned from, no `lead` column); both answer
-    // `[]` off the flag so the inbox group and the sidebar section render
-    // nothing rather than a wrong thing.
-    "fetchUntriaged",
-    "fetchLedProjects",
+  const RETIRED = [
+    /^\/items(?:\?|$|\/batch|\/bulk|\/\$\{[^}]+\}(?:$|\/(?:detail|stage-options|organize|subtasks|merge-into|file-under|archive|restore|purge|delegate|push)))/,
+    /^\/hierarchy/,
+    /^\/spaces/,
+    /^\/folders/,
+    /^\/local-projects/,
+    /^\/accounts/,
+    /^\/providers/,
+    /^\/sync/,
+    /^\/status-catalog/,
+    /^\/projects/,
+    /^\/contexts/,
+    /^\/calendar(?:\?|$|\/plan$|\/replan$|\/rollover$|\/estimate-stats)/,
   ];
 
-  it("branches to the lens in every function this slice moved", () => {
-    const missing = SPINE.filter((name) => {
-      const start = apiSrc.indexOf(`export async function ${name}(`);
-      if (start < 0) return true;
-      // The function's own text, bounded by the next top-level `export` —
-      // never a fixed character window. `apiPatchItem` declares a 35-line
-      // inline patch type before its body, so a window wide enough for it
-      // would reach past three of its shorter neighbours and let each of them
-      // pass on somebody else's branch.
-      const after = apiSrc.indexOf("\nexport ", start + 1);
-      const body = apiSrc.slice(start, after < 0 ? undefined : after);
-      return !body.includes("lensEnabled()");
-    });
-    expect(
-      missing,
-      `${missing.join(", ")} do not consult lensEnabled(). Under the flag ` +
-        "these would keep writing gtd_items while their neighbours read " +
-        "pm_tasks — two stores, one UI, and no error to say so.",
-    ).toEqual([]);
+  it("reads every gatewayFetch path (a blind regex passes everything)", () => {
+    expect(gatewayPaths.length).toBeGreaterThan(8);
+    expect(gatewayPaths).toContain("/settings");
+    expect(gatewayPaths).toContain("/items/${id}/clarify${q}");
   });
 
-  it("leaves the AGENT planner on the old store, knowingly", () => {
-    // Not an oversight and not a TODO nobody wrote down. The agent surface has
-    // no browser, so it cannot read the client flag; giving it a server-side
-    // one would mean two flags that must agree, and two flags that must agree
-    // are a mismatch waiting to be found by a user whose day planned itself
-    // out of the wrong table. Slice 3 (H-33) settles it.
-    //
-    // The test exists so that the day somebody DOES route it, this line fails
-    // and they have to come and read the paragraph above.
-    const start = apiSrc.indexOf("export async function apiAgentPlanToday(");
-    expect(start).toBeGreaterThan(-1);
-    const after = apiSrc.indexOf("\nexport ", start + 1);
-    expect(apiSrc.slice(start, after)).not.toContain("lensEnabled()");
+  it("names none of the retired paths", () => {
+    const hits = gatewayPaths.filter((p) => RETIRED.some((re) => re.test(p)));
+    expect(hits, `retired /tasks paths still called: ${hits.join(", ")}`).toEqual([]);
+  });
+
+  it("the fence can see: each retired shape trips it", () => {
+    for (const p of [
+      "/items", "/items?view=all", "/items/batch", "/items/${id}",
+      "/items/${id}/organize", "/hierarchy", "/status-catalog", "/projects",
+      "/calendar/plan", "/calendar/estimate-stats", "/sync",
+    ]) {
+      expect(RETIRED.some((re) => re.test(p)), p).toBe(true);
+    }
+    for (const p of [
+      "/items/${id}/clarify${q}", "/items/${id}/enrich",
+      "/items/${id}/suggest-title${q}", "/calendar/day-state",
+      "/calendar/${kind}", "/settings", "/people", "/ai/atomize", "/plan",
+    ]) {
+      expect(RETIRED.some((re) => re.test(p)), p).toBe(false);
+    }
+  });
+
+  it("has no flag left to consult", () => {
+    expect(apiSrc).not.toContain("lensEnabled");
+    expect(apiSrc).not.toContain("NEXT_PUBLIC_TASKS_LENS");
+    expect(lensSrc).not.toMatch(/export function lensEnabled/);
+    expect(apiSrc).not.toContain("/api/tasks/attachments");
   });
 
   it("keeps the lens off /api/tasks entirely", () => {
-    const lensSrc = readFileSync(
-      fileURLToPath(new URL("./lens.ts", import.meta.url)),
-      "utf-8",
-    );
     expect(lensSrc).not.toContain("/api/tasks");
     expect(lensSrc).not.toContain("gatewayFetch");
-  });
-
-  it("leaves the AI tail on the gateway's own flag (S6d), knowingly", () => {
-    // Group E (the AI routes) moved server-side in S6d: the gateway reads
-    // the one store behind ITS flag, so a client branch here would be a
-    // second switch that has to agree with the first. Group D used to be
-    // pinned here too, until S6b lensed it (see SPINE).
-    for (const name of [
-      "apiAtomize",
-      "apiClarifyPropose",
-      "apiSuggestTitle",
-      "apiEnrichItem",
-      "apiBackfillContext",
-    ]) {
-      const start = apiSrc.indexOf(`export async function ${name}(`);
-      expect(start, name).toBeGreaterThan(-1);
-      const after = apiSrc.indexOf("\nexport ", start + 1);
-      expect(apiSrc.slice(start, after), name).not.toContain("lensEnabled()");
-    }
   });
 });
 
@@ -801,38 +738,6 @@ describe("the CRUD tail (S6a)", () => {
     expect(calls[1].body).toBe("multipart"); // a FormData, not JSON
   });
 
-  it("answers an empty catalogue for a member with no personal root yet", async () => {
-    const original = globalThis.fetch;
-    globalThis.fetch = (async () =>
-      ({ ok: false, status: 404, text: async () => JSON.stringify({ detail: "No personal project yet" }), json: async () => ({}) }) as Response
-    ) as typeof globalThis.fetch;
-    try {
-      expect(await lensStatusCatalog()).toEqual({ stages: [], entries: [], unmapped: 0 });
-    } finally {
-      globalThis.fetch = original;
-    }
-  });
-
-  it("builds the catalogue from the root's lanes, each mapped to itself", async () => {
-    const { calls, restore } = stub([
-      { id: "root-1", name: "My tasks" },
-      { rows: [{ id: "s1", name: "Inbox" }, { id: "s2", name: "Next" }], total: 2 },
-    ]);
-    let catalog;
-    try {
-      catalog = await lensStatusCatalog();
-    } finally {
-      restore();
-    }
-    expect(calls[0].url).toBe("/api/projects/my/project");
-    expect(calls[1].url).toContain("nodes/root-1/statuses");
-    expect(catalog.stages).toEqual(["Inbox", "Next"]);
-    expect(catalog.entries).toEqual([
-      { status: "Inbox", stage: "Inbox", mapped: true },
-      { status: "Next", stage: "Next", mapped: true },
-    ]);
-    expect(catalog.unmapped).toBe(0);
-  });
 });
 
 // ── S6b: Areas ──────────────────────────────────────────────────────────────
@@ -925,23 +830,6 @@ describe("the planner proposals", () => {
   });
 });
 
-// ── 7. The flag ─────────────────────────────────────────────────────────────
-
-describe("lensEnabled", () => {
-  it("is off unless explicitly turned on", () => {
-    // Default OFF is load-bearing, not caution: the S3b backfill has not run,
-    // so the new store answers correctly that it holds none of the old rows.
-    // An early flip empties the app on a 200.
-    expect(lensEnabled({})).toBe(false);
-    expect(lensEnabled({ NEXT_PUBLIC_TASKS_LENS: "" })).toBe(false);
-    expect(lensEnabled({ NEXT_PUBLIC_TASKS_LENS: "0" })).toBe(false);
-    expect(lensEnabled({ NEXT_PUBLIC_TASKS_LENS: "false" })).toBe(false);
-    expect(lensEnabled({ NEXT_PUBLIC_TASKS_LENS: "1" })).toBe(true);
-    expect(lensEnabled({ NEXT_PUBLIC_TASKS_LENS: "true" })).toBe(true);
-    expect(lensEnabled({ NEXT_PUBLIC_TASKS_LENS: "on" })).toBe(true);
-  });
-});
-
 // ── Promotion (slice 5a) ────────────────────────────────────────────────────
 //
 // Everything migration 192 and the D62 guards built is unreachable until the
@@ -1030,34 +918,6 @@ describe("promotion — the lens reaching into the company board", () => {
       restore();
     }
     expect(calls[0].body).toEqual({ project_id: "p" });
-  });
-});
-
-describe("apiMoveTask has no legacy path, and says so", () => {
-  const api = readFileSync(
-    fileURLToPath(new URL("./api.ts", import.meta.url)),
-    "utf-8",
-  );
-  const body = api.slice(
-    api.indexOf("export async function apiMoveTask"),
-    api.indexOf("export async function fetchProjects"),
-  );
-
-  it("throws when the flag is off instead of degrading", () => {
-    // ⚠️ Every OTHER function in api.ts falls back to the legacy store when the
-    // flag is off. This one must not, and the asymmetry is the point: `gtd_items`
-    // had no company board to be promoted ONTO — that absence is the whole reason
-    // D53 exists. A silent no-op would let a Promote button render, do nothing,
-    // and report success, which is worse than the button being missing.
-    expect(body).toContain("throw new Error");
-    expect(body).not.toContain("gatewayFetch");
-  });
-
-  it("names the flag and the doc in the error", () => {
-    // Somebody hitting this is a developer with the flag off, not a user. Tell
-    // them which variable and where the order is written down.
-    expect(body).toContain("NEXT_PUBLIC_TASKS_LENS");
-    expect(body).toContain("docs/TASKS_LENS.md");
   });
 });
 

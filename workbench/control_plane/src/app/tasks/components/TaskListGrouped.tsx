@@ -18,12 +18,17 @@ import { TaskCard } from "./TaskCard";
 import {
   applySort,
   byManualOrder,
-  statusColumnForItem,
   groupItems,
   type GroupBy,
   type TaskGroup,
 } from "../lib/ordering";
-import { stageAccent } from "../lib/stageColors";
+import { categoryAccent, stageAccent } from "../lib/stageColors";
+import {
+  CATEGORY_LABEL,
+  NEXT_CATEGORIES,
+  isNextCategory,
+  nextCategoryOf,
+} from "../lib/statusCategory";
 import { groupIcon } from "../lib/priorityIcons";
 import {
   readColumnVisibility,
@@ -38,13 +43,14 @@ import { ColumnHeader, ColumnCell } from "./ListColumns";
 import { StatusPill } from "./StatusPill";
 
 // A status-segmented list (Jira backlog style): rows grouped under collapsible
-// stage headers with counts. In Manual sort the rows are drag-reorderable —
-// within a group (reposition) and across groups (re-file to that stage). A
-// field sort disables dragging (the sort would override the manual position),
+// headers with counts. In Manual sort the rows are drag-reorderable — within a
+// group (reposition) and across groups (move to that status category). A field
+// sort disables dragging (the sort would override the manual position),
 // matching the board and how Jira/Linear behave.
 //
-// Grouping axis, matching the board's columnKindFor:
-//   next    → the configured workflow stages
+// Grouping axis (D73.9):
+//   next    → the Projects status CATEGORY: To do, In progress, Done. Each row
+//             keeps its own lane name as its pill.
 //   else → a single flat group (no status headers)
 //
 // Grouping is STATUS-ONLY and applies to Next Actions alone. @context is not a
@@ -56,22 +62,17 @@ const UNSET = "—";
 export function TaskListGrouped({
   items,
   view,
-  stages,
   groupBy = "",
 }: {
   items: GtdItem[];
   view: ViewKey;
-  /** Explicit ordered stage set (a project's ClickUp statuses). When omitted on
-   *  Next Actions, the groups are the user's 4 fixed workflow stages. */
-  stages?: string[];
   /** The grouping axis. "" (default) groups by STATUS (drag-reorderable stages).
    *  A lens ("priority" | "mode" | "energy" | "context") groups by that signal —
    *  read-only (you can't drag to change a computed attribute), but columns and
    *  multi-select still work. */
   groupBy?: GroupBy | "";
 }) {
-  const workflowSettingStages = useTaskStore((s) => s.settings.workflowStages);
-  const statusStageMap = useTaskStore((s) => s.settings.statusStageMap);
+  const setCategory = useTaskStore((s) => s.setCategory);
   const urgentWindowHours = useTaskStore((s) => s.settings.urgentWindowHours);
   const sort = useTaskStore((s) => s.sort);
   const reorderItem = useTaskStore((s) => s.reorderItem);
@@ -101,26 +102,17 @@ export function TaskListGrouped({
     readColumnVisibility,
     () => DEFAULT_VISIBLE,
   );
-  const columnar = view === "next" && !stages;
+  const columnar = view === "next";
   const cols = useMemo(
     () => (columnar ? visibleColumns(columnVis) : []),
     [columnar, columnVis],
   );
   const grid = useMemo(() => gridTemplate(cols), [cols]);
-  const stageKeys = useMemo(
-    () => stages ?? workflowSettingStages,
-    [stages, workflowSettingStages],
-  );
-  const effectiveMap = useMemo(
-    () => (stages ? {} : statusStageMap),
-    [stages, statusStageMap],
-  );
   // Drag-reorder is a manual-sort affordance on the STATUS axis only, and off
   // for a lens grouping (you can't drag to change a computed attribute). It is
   // no longer switched off while something is selected: the checkbox has its
   // own gutter, so the two gestures no longer compete for one.
   const manual = sort.field === "manual" && statusGrouped;
-  const firstStage = stageKeys[0];
 
   const [dragId, setDragId] = useState<string | null>(null);
   // The drop target as "<groupKey>:<index>" so a highlight can mark the exact
@@ -138,12 +130,12 @@ export function TaskListGrouped({
     [isLens, view, items, groupBy, urgentWindowHours],
   );
 
+  // A task whose category is not a Next group (backlog, triage, cancelled)
+  // answers null and is not drawn under any header.
   const groupOf = useCallback(
-    (i: GtdItem): string =>
-      statusGrouped
-        ? statusColumnForItem(i, stageKeys, firstStage, effectiveMap)
-        : UNSET,
-    [statusGrouped, stageKeys, firstStage, effectiveMap],
+    (i: GtdItem): string | null =>
+      statusGrouped ? nextCategoryOf(i) : UNSET,
+    [statusGrouped],
   );
 
   const groups = useMemo(() => {
@@ -151,8 +143,8 @@ export function TaskListGrouped({
       return lensGroups.map((g) => ({ key: g.key, label: g.label, emoji: g.emoji }));
     }
     if (!statusGrouped) return [{ key: UNSET, label: "" }];
-    return stageKeys.map((s) => ({ key: s, label: s }));
-  }, [isLens, view, lensGroups, statusGrouped, stageKeys]);
+    return NEXT_CATEGORIES.map((c) => ({ key: c as string, label: CATEGORY_LABEL[c] }));
+  }, [isLens, view, lensGroups, statusGrouped]);
 
   const byGroup = useMemo(() => {
     const m = new Map<string, GtdItem[]>();
@@ -164,6 +156,7 @@ export function TaskListGrouped({
     }
     for (const i of items) {
       const k = groupOf(i);
+      if (k === null) continue;
       (m.get(k) ?? m.set(k, []).get(k)!).push(i);
     }
     // Order each group by the active sort (manual → sortKey; else the field).
@@ -248,23 +241,17 @@ export function TaskListGrouped({
     setDragId(null);
     if (!id || !manual) return;
     const dest = byManualOrder(byGroup.get(groupKey) ?? []);
-    // Re-file into the group's stage. Global board (local stage axis): set
-    // `workflowStage` for all — the backend maps a synced task's stage to its
-    // ClickUp status. Project view (raw-status axis, `stages` given): a SYNCED
-    // row sets `providerStatus` directly; a LOCAL row its `workflowStage`. The
-    // flat (non-grouped) view just reorders.
+    // A drop across groups moves the task to that status CATEGORY: the first
+    // lane of it in the task's own project (`setCategory`, D73.9). The rank
+    // lands first, so the row sits where it was dropped.
     const dragged = items.find((i) => i.id === id);
-    const refile = !grouped
-      ? undefined
-      : stages
-        ? dragged?.source === "LOCAL"
-          ? { workflowStage: groupKey }
-          : { providerStatus: groupKey }
-        : { workflowStage: groupKey };
+    const from = dragged ? nextCategoryOf(dragged) : null;
     // The landed row scrolls into view and flashes (shared useFlash), so the
     // gesture visibly ends where the row now lives.
     flash(id);
-    reorderItem(id, dest, index, refile);
+    reorderItem(id, dest, index);
+    if (grouped && isNextCategory(groupKey) && groupKey !== from)
+      void setCategory(id, groupKey);
   };
 
   const total = groups.length;
@@ -303,9 +290,11 @@ export function TaskListGrouped({
         const groupRows = byGroup.get(g.key) ?? [];
         const isCollapsed = collapsed.has(g.key);
         const showHeader = grouped;
-        // Status swimlanes get the per-stage accent; a lens grouping uses a plain
-        // neutral header + its own emoji (the accent is a stage concept).
-        const accent = stageAccent(g.label || g.key, gi, total);
+        // Status groups take their category's accent; a lens grouping uses a
+        // plain neutral header + its own emoji.
+        const accent = statusGrouped
+          ? categoryAccent(g.key)
+          : stageAccent(g.label || g.key, gi, total);
         const emoji = (g as { emoji?: string }).emoji;
         // A lens grouping by priority/mode gets the matching lucide icon; other
         // lenses (energy/context) fall back to their emoji marker if any.

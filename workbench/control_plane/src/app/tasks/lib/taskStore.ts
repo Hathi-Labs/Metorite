@@ -4,9 +4,15 @@ import {
   LensPartialFailure,
   type LensLedProject,
   type LensMoveRequest,
-  lensEnabled,
   lensGetItem,
+  lensSetStatusId,
 } from "./lens";
+import {
+  type NextCategory,
+  laneForCategory,
+  nextCategoryOf,
+  noLaneMessage,
+} from "./statusCategory";
 import { ProjectsApiError } from "@/app/projects/lib/api";
 import type { PromoteOutcome } from "./promote";
 import {
@@ -78,9 +84,7 @@ import {
   updatePerson,
   uploadResume,
   fetchProjects,
-  fetchLocalHierarchy,
-  apiCreateSpace,
-  apiCreateFolder,
+  fetchMyTaskLanes,
   apiCreateLocalProject,
   fetchAreas,
   fetchMyRoot,
@@ -773,7 +777,7 @@ interface TaskState {
   loadLocalHierarchy: () => Promise<void>;
   /**
    * My Areas (WS-39 S6b) — a member's own categories under one store, flat
-   * by D65. Empty with the flag off, and nothing renders them then.
+   * by D65. Empty on the demo backend.
    *
    * Every write is optimistic and lands through the S6a failure path: on a
    * refusal the list is re-read and `syncFailure` carries the reason, so the
@@ -782,7 +786,7 @@ interface TaskState {
   areas: LensArea[];
   loadAreas: () => Promise<void>;
   /** My personal root's id under the lens (S6b repair), read once on
-   *  hydrate through `fetchMyRoot`. Null off-flag or before a first capture.
+   *  hydrate through `fetchMyRoot`. Null before a first capture.
    *  `isPersonalTask` reads it to keep Areas off a team task's Where picker. */
   personalRootId: string | null;
   /** Mint one. Resolves with the row, or `undefined` when refused (the
@@ -814,7 +818,7 @@ interface TaskState {
   loadFromProjects: () => Promise<void>;
   markTriaged: (ids: readonly string[], write: Promise<unknown>) => void;
   /** S6e — the projects I lead (`/my/led`), with their open counts and my
-   *  own open tasks in each. Empty with the flag off. */
+   *  own open tasks in each. Empty on the demo backend. */
   ledProjects: LensLedProject[];
   loadLedProjects: () => Promise<void>;
   /** The led project the `projects` view is showing, or null. */
@@ -822,8 +826,16 @@ interface TaskState {
   selectLedProject: (id: string) => void;
   /** S6e — re-read ONE task through the lens after the shared body wrote
    *  to it on the board's routes, so the card and the strip agree with the
-   *  board. A no-op off the lens. */
+   *  board. A no-op on the demo backend. */
   refreshItem: (id: string) => Promise<void>;
+  /**
+   * D73.9 — move a Next Action into a status CATEGORY group. Done completes
+   * the task (`/complete`, §13.5a decision 1). Any other category resolves
+   * to the first lane by position with that category in the task's OWN
+   * project (`my/tasks/{id}/lanes`) and PATCHes its `status_id`. A project
+   * with no such lane moves nothing and says so through the toast seam.
+   */
+  setCategory: (id: string, category: NextCategory) => Promise<void>;
   /** People view: lazy roster load + create/edit + résumé ingestion. */
   loadPeople: (opts?: { q?: string; includeInactive?: boolean }) => Promise<void>;
   savePerson: (id: string | null, body: OrgPersonWrite) => Promise<OrgPerson>;
@@ -831,9 +843,7 @@ interface TaskState {
     id: string,
     file: File
   ) => Promise<{ addedSkills: string[] }>;
-  /** Create a local space / folder / project; refreshes the tree + projects. */
-  createLocalSpace: (name: string) => Promise<void>;
-  createLocalFolder: (spaceId: string, name: string) => Promise<void>;
+  /** Create a local project (an Area); refreshes the tree + projects. */
   createLocalProject: (req: {
     outcome: string;
     spaceId?: string;
@@ -1227,14 +1237,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const t = title.trim();
     if (!t) return null;
     const now = new Date().toISOString();
-    // The board's own rule (see updateItem): filing into the LAST configured
-    // stage means the task is DONE — a quick-add into the Done column is a
-    // log entry, not a to-do.
-    const stages = get().settings.workflowStages;
-    const lastStage =
-      prefill.workflowStage !== undefined &&
-      stages.length > 0 &&
-      prefill.workflowStage === stages[stages.length - 1];
+    // A quick-add into the Done group is a log entry, not a to-do (D73.9:
+    // the groups are status categories).
+    const lastStage = prefill.statusCategory === "done";
     // WS-27ad — a flat view's box says which bucket outright (`viewQuickAdd`:
     // Someday incubates, Done logs). The board's last-stage rule stands where
     // nothing was said.
@@ -1265,8 +1270,6 @@ export const useTaskStore = create<TaskState>((set, get) => ({
             disposition: item.disposition,
             next_action: t,
           };
-          if (prefill.workflowStage !== undefined)
-            body.workflow_stage = prefill.workflowStage;
           if (prefill.context !== undefined) body.context = prefill.context;
           if (prefill.energy !== undefined) body.energy = prefill.energy;
           if (prefill.deepWork !== undefined) body.deep_work = prefill.deepWork;
@@ -1277,6 +1280,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           set((s) => ({
             items: s.items.map((i) => (i.id === item.id ? final : i)),
           }));
+          // D73.9: a quick-add in the In progress group lands in that
+          // category's first lane of my root, the way a drag does.
+          const want = prefill.statusCategory;
+          if (want === "in_progress" && final.statusCategory !== want)
+            await get().setCategory(final.id, want);
         }),
       );
     }
@@ -1661,14 +1669,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   loadLocalHierarchy: async () => {
     if (get().backend !== "live") return;
-    // Under the lens the tree IS my Areas (S6b). One read fills both, so a
-    // panel that still asks for the tree does not fetch `/my/areas` twice.
-    if (lensEnabled()) return get().loadAreas();
-    try {
-      set({ localHierarchy: await fetchLocalHierarchy() });
-    } catch {
-      /* keep current */
-    }
+    // The tree IS my Areas (S6b). One read fills both, so a panel that
+    // still asks for the tree does not fetch `/my/areas` twice.
+    return get().loadAreas();
   },
 
   // ── Areas (S6b) ───────────────────────────────────────────────────────────
@@ -1681,7 +1684,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   // round closed for tasks, and would otherwise reopen for Areas.
 
   loadAreas: async () => {
-    if (get().backend !== "live" || !lensEnabled()) return;
+    if (get().backend !== "live") return;
     try {
       const areas = await fetchAreas();
       set({
@@ -1792,7 +1795,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   // ── Continuity with Projects (S6e) ────────────────────────────────────────
 
   loadFromProjects: async () => {
-    if (get().backend !== "live" || !lensEnabled()) return;
+    if (get().backend !== "live") return;
     try {
       const rows = await fetchUntriaged();
       set({ fromProjectIds: new Set(rows.map((r) => r.id)) });
@@ -1821,7 +1824,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   loadLedProjects: async () => {
-    if (get().backend !== "live" || !lensEnabled()) return;
+    if (get().backend !== "live") return;
     try {
       set({ ledProjects: await fetchLedProjects() });
     } catch {
@@ -1835,13 +1838,56 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   refreshItem: async (id) => {
-    if (get().backend !== "live" || !lensEnabled()) return;
+    if (get().backend !== "live") return;
     try {
       const fresh = await lensGetItem(id);
       set((s) => ({ items: s.items.map((i) => (i.id === id ? fresh : i)) }));
     } catch {
       /* keep current */
     }
+  },
+
+  setCategory: async (id, category) => {
+    const item = get().items.find((i) => i.id === id);
+    if (!item || nextCategoryOf(item) === category) return;
+    if (category === "done") {
+      // Completion is SHARED: the lens completes through `/complete`, so the
+      // board moves too. `quickDispose` keeps the undo snapshot.
+      get().quickDispose(id, "DONE");
+      return;
+    }
+    const wasDone = item.disposition === "DONE";
+    if (get().backend !== "live") {
+      // The demo backend has no lanes. Move the card between groups only.
+      set((s) => ({
+        items: s.items.map((i) =>
+          i.id === id
+            ? { ...i, statusCategory: category, disposition: wasDone ? "NEXT" : i.disposition }
+            : i,
+        ),
+      }));
+      return;
+    }
+    let lane;
+    try {
+      lane = laneForCategory(await fetchMyTaskLanes(id), category);
+    } catch (err) {
+      get().reportSyncFailure(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    if (!lane) {
+      get().reportSyncFailure(noLaneMessage(category, item.projectName));
+      return;
+    }
+    try {
+      await lensSetStatusId(id, lane.id);
+    } catch (err) {
+      get().reportSyncFailure(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    // A done task reopens: the lane moved, and my overlay says NEXT again.
+    if (wasDone) get().quickDispose(id, "NEXT");
+    await get().refreshItem(id);
   },
 
   loadPeople: async (opts) => {
@@ -1873,18 +1919,6 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       orgPeople: s.orgPeople.map((p) => (p.id === id ? res.person : p)),
     }));
     return { addedSkills: res.addedSkills };
-  },
-
-  createLocalSpace: async (name) => {
-    if (!name.trim() || get().backend !== "live") return;
-    await apiCreateSpace(name.trim());
-    await get().loadLocalHierarchy();
-  },
-
-  createLocalFolder: async (spaceId, name) => {
-    if (!name.trim() || get().backend !== "live") return;
-    await apiCreateFolder(spaceId, name.trim());
-    await get().loadLocalHierarchy();
   },
 
   createLocalProject: async (req) => {
@@ -2144,16 +2178,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
               : i.workflowStage,
           sortKey:
             patch.sortKey !== undefined ? patch.sortKey : i.sortKey,
-          // Dropping on the last configured stage marks the task DONE — mirror
-          // the backend optimistically so the card leaves the active board.
-          disposition:
-            patch.workflowStage !== undefined &&
-            patch.workflowStage ===
-              get().settings.workflowStages[
-                get().settings.workflowStages.length - 1
-              ]
-              ? "DONE"
-              : i.disposition,
+          disposition: i.disposition,
           // The full owner set takes precedence and keeps the primary in step;
           // else the single-assignee patch; else unchanged.
           assignees:
@@ -2417,7 +2442,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         fetchProjects(),
         fetchPeople().catch(() => [] as Person[]),
         // S6b repair. The personal root's id, so Clarify can tell a task
-        // in MY tree from one on a company board. Null off-flag, and null
+        // in MY tree from one on a company board. Null
         // for a member who has never captured (no root yet).
         fetchMyRoot().catch(() => null),
       ]);
@@ -2438,7 +2463,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         personalRootId: myRoot?.id ?? null,
       });
       // My Areas (S6b) — the sidebar draws them on first paint under the
-      // lens. A no-op with the flag off, and never a reason to stay loading.
+      // lens. Never a reason to stay loading.
       void get().loadAreas();
       // S6e — the two Projects facts: what landed on my plate unlooked-at,
       // and the projects I answer for. Same posture as the Areas.
@@ -2482,9 +2507,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     clarifyUseLlm: true,
     backgroundSync: true,
     mirrorDoneTasks: false,
-    workflowStages: ["TODO", "IN PROCESS", "WAITING FOR", "DONE"],
     urgentWindowHours: 48,
-    statusStageMap: {},
     dayStartHour: 7,
     dayEndHour: 22,
     dailyCapacityMins: 360,
