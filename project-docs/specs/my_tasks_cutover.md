@@ -9,8 +9,8 @@ this spec and `work_plan.md` §2 disagree, the board wins.
 
 ---
 
-**Built so far.** S6a built 2026-09-23 on branch `my-tasks-s6a`. S6d built
-2026-09-23 in PR #390.
+**Built so far.** S5, S6a, S6b, S6c and S6d are built and serving. S7 ran on
+2026-09-23. S8a is in PR #398.
 
 ## 0. One paragraph
 
