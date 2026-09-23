@@ -1020,6 +1020,34 @@ async def test_the_overlay_refuses_done_and_points_at_complete(monkeypatch) -> N
     assert asked == [] and writes(calls) == []
 
 
+async def test_the_overlay_card_says_when_it_reopens_the_board(monkeypatch) -> None:
+    """D76: an open disposition on a FINISHED task reopens it for everybody
+    (`personal.reopen_if_closed`). The card must not say "your overlay only"."""
+    def finished(call: dict) -> Any:
+        if call["path"] == f"/projects/tasks/{UUID}":
+            return {**TASK, "completed_at": "2026-09-20T09:00:00+00:00"}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, finished)
+    await skill_projects.set_my_overlay(UUID, disposition="next")
+    assert "reopens the task on the board, then sets your overlay" in asked[0]["context"]
+    assert "your overlay only" not in asked[0]["context"]
+
+    # A context alone on the same finished task reopens nothing.
+    asked.clear()
+    await skill_projects.set_my_overlay(UUID, context="@home")
+    assert "scope: «your overlay only»" in asked[0]["context"]
+
+
+async def test_the_overlay_card_on_an_open_task_is_overlay_only(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.set_my_overlay(UUID, disposition="next")
+    assert "scope: «your overlay only»" in asked[0]["context"]
+    assert "reopens" not in asked[0]["context"]
+
+
 async def test_the_overlay_refuses_an_estimate_and_points_at_update_task(monkeypatch) -> None:
     asked = approve(monkeypatch)
     calls = fake_gateway(monkeypatch, responder)

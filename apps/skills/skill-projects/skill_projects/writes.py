@@ -1588,6 +1588,54 @@ async def create_personal_task(
     return "\n".join(["Captured (private, yours):", *_task_line(row)])
 
 
+#: The dispositions that reopen a finished task on the board when stated
+#: (D76, `personal.OPEN_DISPOSITIONS`): every one but DONE and TRASH.
+_REOPENING = frozenset(d for d in DISPOSITIONS if d not in ("DONE", "TRASH"))
+
+#: DONE is refused by `set_my_overlay`, not routed. Its card is about the
+#: member's own triage (manifest class B on /personal); a shared completion
+#: behind that card would move the board without asking about the board.
+#: `complete` has its own card and asks.
+_DONE_REFUSAL = (
+    "DONE is not your own triage any more: a task is done when its shared "
+    "lane is done (D76). Use complete to finish it for everyone."
+)
+
+
+def _overlay_disposition(disposition: str) -> tuple[str | None, str | None]:
+    """``(state, refusal)`` for the disposition argument. Both None when the
+    caller passed none."""
+    if not disposition.strip():
+        return None, None
+    state = disposition.strip().upper()
+    if state not in DISPOSITIONS:
+        return None, f"disposition is one of {', '.join(DISPOSITIONS)}."
+    if state == "DONE":
+        return None, _DONE_REFUSAL
+    return state, None
+
+
+def _overlay_card(
+    payload: dict[str, Any], task: dict[str, Any], unread: str,
+) -> dict[str, Any]:
+    """What the confirmation card says the write will do.
+
+    ⚠️ D76: an open disposition on a FINISHED task reopens it for everybody
+    (`personal.reopen_if_closed`), so "your overlay only" would be false.
+    The task read this tool already made carries `completed_at`, which
+    `apply_status_transition` keeps equal to "the lane is closed".
+    """
+    reopens = bool(task.get("completed_at")) and payload.get("disposition") in _REOPENING
+    scope = (
+        "reopens the task on the board, then sets your overlay"
+        if reopens else "your overlay only"
+    )
+    card: dict[str, Any] = {**payload, "scope": scope}
+    if unread:
+        card["current triage"] = unread
+    return card
+
+
 @_annotate(read_only=False, destructive=False, idempotent=True)
 async def set_my_overlay(
     task_id: str,
@@ -1620,18 +1668,10 @@ async def set_my_overlay(
         unread = "not readable here — the task is not in your lens, so the card cannot show it"
     payload: dict[str, Any] = {}
     before: dict[str, Any] = {}
-    if disposition.strip():
-        state = disposition.strip().upper()
-        if state not in DISPOSITIONS:
-            return f"disposition is one of {', '.join(DISPOSITIONS)}."
-        if state == "DONE":
-            # D76 — refused, not routed. This tool's confirmation card says
-            # "your overlay only" (manifest class B on /personal); a shared
-            # completion behind that card would move the board without the
-            # member being asked about the board. `complete` asks.
-            return ("DONE is not your own triage any more: a task is done when "
-                    "its shared lane is done (D76). Use complete to finish it "
-                    "for everyone.")
+    state, refusal = _overlay_disposition(disposition)
+    if refusal:
+        return refusal
+    if state:
         payload["disposition"] = state
         before["disposition"] = mine.get("disposition")
     if context.strip():
@@ -1666,9 +1706,7 @@ async def set_my_overlay(
     payload = {**cleared, **payload}
     if not payload:
         return "Nothing to change. Pass at least one field."
-    card: dict[str, Any] = {**payload, "scope": "your overlay only"}
-    if unread:
-        card["current triage"] = unread
+    card = _overlay_card(payload, task, unread)
     if not await _confirm(
         title="Update your triage of this task?",
         detail=_ref(task),
