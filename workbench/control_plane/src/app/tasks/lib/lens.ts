@@ -215,6 +215,11 @@ export function mapLensItem(raw: Raw): GtdItem {
     // edits (D53.8). Reading one as the other publishes private triage.
     important: tri(raw.important),
     leveraged: tri(raw.leveraged),
+    // The shared Priority, carried BESIDE `important` and never into it. It
+    // was on this wire all along (`TaskModel.importance`) and nothing read it,
+    // so the org's word never reached the member's matrix. Measured on a live
+    // row 2026-09-23: `importance: 0`, `important: null`.
+    orgPriority: num(raw.importance),
     deepWork: tri(raw.deep_work),
     keptMine: tri(raw.kept_mine),
 
@@ -515,16 +520,79 @@ export async function lensMyTaskLanes(id: string): Promise<LensLane[]> {
  * fragment. Nothing about anybody else's overlay: the route resolves the
  * caller from the session and has no `?member=`.
  */
-export async function lensMyOverlay(
-  id: string,
-): Promise<Pick<GtdItem, "disposition" | "context" | "isTriaged"> | null> {
+export async function lensMyOverlay(id: string): Promise<MyOverlay | null> {
   try {
-    const item = await lensGetItem(id);
-    if (!item.isTriaged && !item.context) return null;
-    return { disposition: item.disposition, context: item.context, isTriaged: item.isTriaged };
+    return overlayOf(await lensGetItem(id));
   } catch {
+    // `/my/tasks/{id}` answers only for a task in the caller's own lens. A
+    // task that is not mine is a 404, and "no overlay" is the right answer.
     return null;
   }
+}
+
+/**
+ * What the Projects panel may show of MY view of a task: how I filed it, and
+ * my own focus flags. Only the caller's own — `/my/tasks/{id}` answers for
+ * the session's caller and nobody else.
+ *
+ * ⚠️ Widened 2026-09-23, and the contract changed with it. This returned
+ * `null` for any task I had not triaged, which was right for the old "how you
+ * filed it" chip and wrong for the focus row: an untriaged task is the one
+ * whose focus most needs setting. It now answers for every task in my lens,
+ * and `filedByMe` carries the chip's old rule.
+ *
+ * The SHARED facts the matrix also reads — the due date and the project's
+ * priority — are deliberately NOT here. The panel reads them off its own live
+ * task row, so editing Priority in the same panel re-seeds the focus at once
+ * instead of waiting for a re-fetch.
+ */
+export type MyOverlay = Pick<
+  GtdItem,
+  "disposition" | "context" | "isTriaged" | "important" | "leveraged" | "deepWork"
+>;
+
+/**
+ * The focus controls' patch, in the overlay's own keys.
+ *
+ * 🔴 `WeightToggles` speaks `GtdItem` (`deepWork`), and `splitPatch` speaks the
+ * wire (`deep_work`) and throws on anything else. My Tasks never met this,
+ * because its store renames `deepWork` before calling the lens
+ * (`taskStore.ts`). The Projects focus row called the lens directly, so its
+ * Deep work toggle drew on, threw, re-read, and drew off — a control that
+ * visibly did nothing. `important` and `leveraged` only worked because both
+ * spellings happen to match. Caught in review, 2026-09-23.
+ */
+export function focusPatch(patch: {
+  important?: boolean;
+  leveraged?: boolean;
+  deepWork?: boolean;
+}): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  if (patch.important !== undefined) out.important = patch.important;
+  if (patch.leveraged !== undefined) out.leveraged = patch.leveraged;
+  if (patch.deepWork !== undefined) out.deep_work = patch.deepWork;
+  return out;
+}
+
+export function overlayOf(item: GtdItem): MyOverlay {
+  return {
+    disposition: item.disposition,
+    context: item.context,
+    isTriaged: item.isTriaged,
+    important: item.important,
+    leveraged: item.leveraged,
+    deepWork: item.deepWork,
+  };
+}
+
+/**
+ * Has the member actually filed this task? The derived disposition of an
+ * untriaged task is the server's guess, not "how I filed it", so the chip
+ * that says "how you filed this" stays hidden until there is something of
+ * theirs to show.
+ */
+export function filedByMe(overlay: MyOverlay | null): boolean {
+  return !!overlay && (!!overlay.isTriaged || !!overlay.context);
 }
 
 // ── Writes ──────────────────────────────────────────────────────────────────

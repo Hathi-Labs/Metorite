@@ -95,6 +95,43 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-172 · `--warning` is the same bright yellow in both colour modes, so warning TEXT is unreadable on white · [AGENT]
+- **Check:** `grep -n "\-\-warning:" workbench/control_plane/src/app/globals.css`.
+  Two lines with the same value, one in `:root` and one in `.light`, means
+  this is open.
+- **What happens.** `--warning` is `hsl(47 96% 53%)` in both modes. As a fill
+  or a border on a dark ground it reads well. As TEXT on white it measured
+  **1.57 : 1** on 2026-09-23. WCAG AA asks for 4.5. The dark-mode value
+  measured 11.28 : 1, so only light mode is broken.
+- **Where it bites.** Every `text-warning`. `statusAccent.ts` draws the amber
+  hue's text slot with it, so an amber status reads pale yellow on white. The
+  D76 "suggested" chip met it first and moved its words to
+  `muted-foreground`.
+- **The fix.** Give `.light` a darker `--warning` that passes 4.5 : 1 as text,
+  and keep the bright value for dark mode. Then look at every amber status in
+  light mode, because this is the one look (`globals.css`). Mirror the value
+  in `lib/theme/themes.ts`, which `themes.test.ts` holds to it.
+- **Fence to add:** `src/lib/theme/contrast.ts` should measure `--warning` as
+  text on `--background` in both modes.
+- Added: 2026-09-23, found while building D76.
+
+### H-173 · The chat tools let the model write Priority 4, and the scale stops at 3 · [AGENT]
+- **Check:** `grep -rn "importance is 0 to 4" apps/skills/skill-projects/`.
+  Any hit means this is open.
+- **What happens.** The Projects scale is 0 Low to 3 Highest
+  (`IMPORTANCE_OPTIONS`, D76). Four places in `skill_projects`
+  (`guarded.py`, `inbox.py`, `forms.py` twice) tell the model the range is
+  0 to 4 and accept a 4. Nothing else refuses it: `pm_tasks.importance` is a
+  bare `SMALLINT` with no CHECK, and `TaskModel.importance` is `int | None`.
+  A 4 then prints as a bare "4" in the table and draws no chip on a card.
+- **The D76 seed is safe.** `>= 2` counts a 4 as important. Only the display
+  breaks.
+- **Why an agent did not fix it here.** The owner is building the Projects
+  chat in a separate stream. Change the four messages and the four bounds to
+  0 to 3 there, or add a CHECK (0 to 3) in an expand/contract migration after
+  a count of rows above 3 on production.
+- Added: 2026-09-23, found while building D76.
+
 
 ### H-172 · The shared scratch DB cannot replay the migration ladder any more · [AGENT]
 - **Check:** on the scratch DB, `SELECT max(attnum) FROM pg_attribute WHERE

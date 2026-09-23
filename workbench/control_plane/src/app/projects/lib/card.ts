@@ -98,7 +98,7 @@ export function taskFacts(
  * distinction `importanceLabel` was written for, reused here so the card and
  * the cell cannot disagree about what a 2 is called.
  *
- * Only `Urgent` gets the danger tone. A scale where three of four levels are
+ * Only `Highest` gets the danger tone. A scale where three of four levels are
  * loud is a scale nobody reads; `warning` is the step below, and Normal/Low
  * stay quiet while still saying which they are. The four glyphs differ so the
  * level survives a reader who cannot see the tones apart.

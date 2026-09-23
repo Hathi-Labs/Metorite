@@ -55,6 +55,8 @@ import { StatusChip } from "@/components/StatusChip";
 import { useEffect, useState } from "react";
 
 import { lensEnabled, lensMyOverlay } from "@/app/tasks/lib/lens";
+import { filedByMe, focusPatch, lensPatchItem, overlayOf } from "@/app/tasks/lib/lens";
+import { MyFocusRow } from "./MyFocusRow";
 import {
   type FieldRow,
   type StatusRow,
@@ -340,7 +342,7 @@ export function TaskPanel({
           {/* S6e — the viewer's OWN disposition in My Tasks, when they hold
               one. Never anybody else's: `/my/tasks/{id}` answers for the
               session's caller only. */}
-          {mine ? (
+          {mine && filedByMe(mine) ? (
             <Badge
               tone="neutral"
               icon="UserRound"
@@ -351,6 +353,30 @@ export function TaskPanel({
             </Badge>
           ) : null}
         </div>
+        {/* My own focus on this task, private to me (owner decision
+            2026-09-23). Only when the task is in MY lens — `mine` is null for
+            anybody else's task, so a colleague's card carries no row of mine.
+            The shared facts come off `task`, not the overlay, so editing
+            Priority below re-seeds this at once. */}
+        {mine ? (
+          <MyFocusRow
+            overlay={mine}
+            dueAt={task.due_at}
+            orgPriority={task.importance}
+            onChange={(patch) => {
+              // Optimistic, then the server's answer. A failed write re-reads
+              // rather than leaving a flag drawn that was never saved.
+              setMine((m) => (m ? { ...m, ...patch } : m));
+              // `focusPatch`, not `patch`: the controls say `deepWork` and
+              // the lens takes `deep_work`, and throws on the other spelling.
+              void lensPatchItem(task.id, focusPatch(patch))
+                .then((next) => setMine(overlayOf(next)))
+                .catch(() => {
+                  void lensMyOverlay(task.id).then(setMine);
+                });
+            }}
+          />
+        ) : null}
       </header>
 
       <TaskBody

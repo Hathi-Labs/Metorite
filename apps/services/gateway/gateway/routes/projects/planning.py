@@ -77,6 +77,10 @@ SELECT t.id::text                AS id,
        p.scheduled_start, p.scheduled_end, p.flexible, p.is_hard_date,
        p.actual_start, p.actual_end,
        p.important, p.leveraged, p.deep_work, p.kept_mine, p.sort_key,
+       -- The SHARED priority, for the D76 seed. The planner ranked on
+       -- `p.important` alone, so a High task the member had not judged was
+       -- important in the Calendar list and not important to "Plan my day".
+       t.importance              AS org_priority,
        (SELECT count(*) FROM pm_task_assignees a2 WHERE a2.task_id = t.id)
                                  AS assignee_count,
        EXISTS (SELECT 1 FROM pm_task_assignees a3
@@ -173,6 +177,7 @@ _PM_PASSTHROUGH = (
     "scheduled_start", "scheduled_end", "flexible", "is_hard_date",
     "actual_start", "actual_end",
     "important", "leveraged", "deep_work", "kept_mine", "sort_key", "is_mine",
+    "org_priority",
 )
 
 

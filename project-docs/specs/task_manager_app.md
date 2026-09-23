@@ -1165,6 +1165,33 @@ confusable names, and mapping one onto the other publishes a member's private tr
 to the whole task. `urgent` has no column at all by design — it is derived from
 `dueAt` via `isUrgent()`, and always was.
 
+### 13.4b The shared Priority seeds `important` (D76, 2026-09-23)
+
+The rule above still holds. `important` is never `importance`, and no code
+maps one onto the other. D76 adds one read, and it writes nothing.
+
+- **The seed.** While `important` is unstated, a shared `importance` of 2
+  (High) or 3 (Highest) counts as important. `seededImportant()` in
+  `tasks/lib/priority.ts` owns the rule. `priorityInputs()` reads it, so the
+  cell, the action mode and the rank all agree.
+- **The server applies it too.** The day planner ranks on the server, and it
+  read `important` alone. So a seeded task was important in the Calendar list
+  and not important to "Plan my day". Now `seeded_important()` in
+  `routes/tasks/priority.py` applies the same rule, and the planner selects
+  `t.importance` as `org_priority`. `test_priority_seed.py` holds the two
+  thresholds equal.
+- **The member's answer wins.** Confirm writes `important: true`. Dismiss
+  writes `false`. After either act, the seed no longer applies, whatever the
+  shared Priority does next.
+- **It looks like a suggestion.** The chip is dashed and says "suggested". A
+  seeded task stays untagged, so the triage prompt still asks for the
+  member's answer.
+- **The wire.** `importance` was already on every `/projects/my/*` row, and
+  nothing read it. `mapLensItem` now carries it as `orgPriority`.
+
+Fences: `tasks/lib/priority.test.ts`,
+`projects/lib/priorityVocabulary.test.ts` and `tests/unit/test_priority_seed.py`.
+
 ⚠️ **The explicit-promise rule of §13.4 survives this unchanged.** `expected_by IS
 NULL` still means nobody promised, still falls back to the task's own `due_at`, and is
 still read live. 188 moved where the column lives; it did not touch what a null means.

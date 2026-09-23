@@ -43,6 +43,9 @@ import {
   lensFetchProjects,
   lensFetchUntriaged,
   lensMyOverlay,
+  filedByMe,
+  focusPatch,
+  overlayOf,
   lensMyTaskLanes,
   lensFileUnder,
   lensItemDetail,
@@ -1139,24 +1142,69 @@ describe("continuity with Projects (S6e)", () => {
     ]);
   });
 
-  it("answers the viewer's own overlay for the Projects chip, or null", async () => {
-    const a = stub([{ ...ROW, is_triaged: true, disposition: "WAITING", context: "@calls" }]);
+  it("answers the viewer's own overlay for the Projects panel", async () => {
+    const a = stub([
+      { ...ROW, is_triaged: true, disposition: "WAITING", context: "@calls", important: true, leveraged: null, deep_work: null },
+    ]);
     try {
       expect(await lensMyOverlay("task-1")).toEqual({
         disposition: "WAITING",
         context: "@calls",
         isTriaged: true,
+        important: true,
+        leveraged: undefined,
+        deepWork: undefined,
       });
       expect(a.calls[0].url).toBe("/api/projects/my/tasks/task-1");
     } finally {
       a.restore();
     }
-    // No overlay row: the derived disposition is not "how I filed it".
+  });
+
+  it("answers for an UNTRIAGED task too, and the chip rule moved to filedByMe", async () => {
+    // ⚠️ Changed 2026-09-23. This used to answer null here, which hid the
+    // focus row on exactly the task whose focus most needs setting. The old
+    // rule survives as `filedByMe`: the derived disposition of an untriaged
+    // task is not "how I filed it", so the chip stays hidden.
     const b = stub([{ ...ROW, is_triaged: false, context: null }]);
+    let overlay;
     try {
-      expect(await lensMyOverlay("task-1")).toBeNull();
+      overlay = await lensMyOverlay("task-1");
     } finally {
       b.restore();
     }
+    expect(overlay).not.toBeNull();
+    expect(filedByMe(overlay!)).toBe(false);
+    expect(filedByMe({ ...overlay!, isTriaged: true })).toBe(true);
+    expect(filedByMe({ ...overlay!, context: "@calls" })).toBe(true);
+    expect(filedByMe(null)).toBe(false);
+  });
+
+  it("sends every focus flag in the overlay's own keys", () => {
+    // 🔴 The Projects focus row shipped a dead Deep work toggle. The controls
+    // say `deepWork`, `splitPatch` takes `deep_work` and throws on the other
+    // spelling, so the toggle drew on, threw, re-read and drew off. Each
+    // flag goes through the REAL splitter here, not a copy of its key list.
+    for (const [flag, key] of [
+      ["important", "important"],
+      ["leveraged", "leveraged"],
+      ["deepWork", "deep_work"],
+    ] as const) {
+      for (const value of [true, false]) {
+        const split = splitPatch(focusPatch({ [flag]: value }));
+        expect(split.personal, `${flag}=${value}`).toEqual({ [key]: value });
+        expect(split.task).toEqual({});
+      }
+    }
+    // The raw control patch is exactly what used to throw.
+    expect(() => splitPatch({ deepWork: true })).toThrow();
+  });
+
+  it("carries only MY flags, never the shared facts the panel already holds", () => {
+    // The due date and the project priority come off the panel's live task
+    // row. A copy here would go stale the moment Priority is edited beside it.
+    const keys = Object.keys(overlayOf({ ...mapLensItem({ ...ROW, importance: 3 }) }));
+    expect(keys).not.toContain("orgPriority");
+    expect(keys).not.toContain("dueAt");
   });
 });
