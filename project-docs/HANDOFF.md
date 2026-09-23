@@ -96,44 +96,6 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-167 · D49 orphaned the People landing page. Nothing links to it · [OWNER]
-- **Check:** `rg -n "people/overview" workbench/control_plane/src` → if every
-  hit is in `lib/centers.ts`, `app/people/overview/` or a test, then nothing a
-  member can reach links to it, and this is open.
-- **What is built:** `/people/overview` (§5.9, WS-28l) — headcount by
-  department and status, who is away this week, the load spread, the health of
-  the record itself, and the org's unmanaged roots. Each section links to the
-  surface that owns the full answer instead of re-answering. Rendered in all
-  five contexts on 2026-09-23: it works, it is clean, and it is the best
-  summary screen in the app.
-- **Why nobody can reach it.** Its one entry point is the People Center
-  landing card at `lib/centers.ts:305`, and **D49 withdrew Centers from the
-  surface** on 2026-08-24. The card is still in the registry. Nothing
-  navigates to a Center any more. The People tab bar gives this route no tab
-  on purpose (`app/people/layout.tsx`), and `layout.test.ts:62` pins that.
-- ⚠️ **This is the same defect the owner directed fixed on 2026-09-20** —
-  *"Every surface in §5 was built and none of them could be reached… A feature
-  nobody can navigate to is a feature nobody has."* That pass built the tab bar
-  and reached six surfaces. It missed this one, because this one's door was a
-  withdrawn Center and not a missing tab.
-- **The decision, and it sets the app's front door.** It is not a bug fix.
-  Three ways, and they say different things about the product:
-  1. **An eighth tab, first in the bar.** Overview becomes where People opens,
-     and Directory moves one along. Closest to the 2026-09-20 directive. Costs
-     a tab in a bar that already carries seven, and invites the question
-     "Overview versus Workload".
-  2. **Fold it into Workload.** Workload already carries the org and
-     department rollups and already links out to Data quality. What Overview
-     adds is the headcount matrix and the unmanaged roots. One destination
-     fewer, and §5.9 stops being a surface of its own.
-  3. **Delete it.** Honest, if the answer is that Workload is the landing
-     page. ⚠️ Then say so in §5.9, so nobody builds it a third time.
-- 📌 Costs nothing while it sits there, so this is not urgent. It is also a
-  built, tested, working surface that no customer can see.
-- **Authority:** D49 · `specs/people_center_app.md` §5.9 · owner directive
-  2026-09-20 (recorded in `app/people/layout.tsx`'s header)
-- **Added:** 2026-09-23 · the People and Profile UI review
-
 ### H-165 · Build CP-13a to CP-13d: the `decide` task, its door, the Console pages and the chat tool · [AGENT]
 - **Check:** CP-13a is BUILT (2026-09-23, branch `cp13a-decide`).
   `rg -n 'native_typesafe' apps/services/customer_console/customer_console/handlers.py`
@@ -2936,20 +2898,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner directive, 2026-09-22 — *"you are automatically
   creating the connections for when they sign up"*
 - **Added:** 2026-09-22 · the auto-mint session. **Updated:** 2026-09-23.
-
-### H-144 · `GET /people/{id}/editable` has no caller · [AGENT]
-- **Check:** `rg -n "editable" workbench/control_plane/src/app/people/lib/api.ts`
-  → no hit means nothing calls it, and this is open.
-- **Why:** the endpoint answers "what may this caller write on that row"
-  (D-PC-4). The UI gets the same answer from `editable_fields`, which rides
-  on the person payload, so the standalone route is dead.
-- **The decision:** delete it, or keep it as the door a second client would
-  use. Same question as H-140 and worth answering the same way at the same
-  time.
-- 📌 Harmless while it sits there. Filed so it becomes a decision
-  instead of residue.
-- **Authority:** owner review 2026-09-21
-- **Added:** 2026-09-21 · the People end-to-end review
 
 ### H-126 · `build_sha()` returns None in EVERY git worktree · [AGENT]
 - **Check:** from a worktree, `uv run pytest tests/unit/test_build_info.py -q`
