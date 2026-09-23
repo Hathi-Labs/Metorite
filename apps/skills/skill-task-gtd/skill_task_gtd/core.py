@@ -25,9 +25,9 @@ at call time, or reads a table that survives: the AI doors (``/tasks/ai/*``,
 through ``item_source()``; four calendar doors (``plan-today``,
 ``replan-today``, ``rollover-today``, ``day-summary``) go through
 ``agent_source()``; ``/tasks/calendar/day-state`` and ``/tasks/people`` read
-``calendar_day_state`` and ``people``. ``estimate-stats`` is NOT one of them —
-``/tasks/calendar/estimate-stats`` answers from the retired store, so the tool
-calls ``/projects/my/calendar/estimate-stats``, as ``lensEstimateStats`` does.
+``calendar_day_state`` and ``people``. ``estimate-stats`` is NOT one of them.
+The tool calls ``/projects/my/calendar/estimate-stats``, as
+``lensEstimateStats`` does. S8 PR 1 deleted ``/tasks/calendar/estimate-stats``.
 ``tests/unit/test_skill_task_lens.py`` reads each kept handler's source and
 refuses one that names neither seam.
 
@@ -1405,8 +1405,8 @@ async def gtd_day_digest() -> str:
 async def gtd_estimate_stats() -> str:
     """How accurate the user's time estimates are (planned vs actual over recent
     timed blocks) — answers "am I good at estimating?" (read-only)."""
-    # `lens.ts::lensEstimateStats`. NOT `/tasks/calendar/estimate-stats`, which
-    # answers from the retired store (`GTD_SOURCE`) whatever the flag says.
+    # `lens.ts::lensEstimateStats`. The old `/tasks/calendar/estimate-stats`
+    # answered from the retired store, and S8 PR 1 deleted it.
     d = await _request("GET", _MY_ESTIMATE_STATS)
     if not d or not d.get("samples"):
         return ("Not enough timed tasks yet to judge estimate accuracy — use "

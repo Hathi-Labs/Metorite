@@ -1,5 +1,10 @@
 # The Tasks lens flags — `NEXT_PUBLIC_TASKS_LENS` and `TASKS_LENS`
 
+> **The flags are retired as of this PR. The store is `pm_*` unconditionally.**
+> S8 PR 1 (`my_tasks_cutover.md` §5 S8) deleted both flag reads. The text
+> below is the history of the cutover. `/version` keeps `tasks_lens: true`
+> for one release.
+
 **Two variables, one decision, one `.env` file. Set them together or not at all.**
 
 Board **WS-39** · decisions **D52 / D53 / D54** · specs `task_manager_app.md`

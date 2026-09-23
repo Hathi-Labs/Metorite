@@ -552,10 +552,14 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     #
     # `account_id IS NOT NULL` is the SYNCED half by construction: every
     # writer stamps `account_id` from an account the same person owns
-    # (`tasks/sync.py` binds `uid` to `account.user_id`; the account routes
-    # are owner-scoped), so "their rows with an account" and "the rows this
+    # (the retired `tasks/sync.py` bound `uid` to `account.user_id`; the
+    # account routes were owner-scoped), so "their rows with an account" and "the rows this
     # person's accounts cascade" are the same set. The complement below keeps
     # the LOCAL rows and is asserted to be exactly that — a complement.
+    # ⚠️ S8 PR 1 (2026-09-23) keeps these two rows ON PURPOSE. The tables
+    # still exist until S8 PR 2's migration drops them, and a purge must not
+    # leave a person's rows behind in the meantime. PR 2 removes them here,
+    # in the same PR as the drop (`my_tasks_cutover.md` §5 S8).
     _PersonRows("synced_tasks", "gtd_items",
                 "lower(user_id) = :email AND account_id IS NOT NULL"),
     _PersonRows("synced_projects", "gtd_projects",
@@ -604,6 +608,7 @@ _PURGE_KEEPS: tuple[_PersonRows, ...] = (
                 "lower(user_id) = :email AND visibility <> 'private'"),
     _PersonRows("apps", "apps", "lower(owner_email) = :email"),
     _PersonRows("workflows", "workflows", "lower(owner_email) = :email"),
+    # ⚠️ Kept until S8 PR 2 drops the tables (see the note above).
     # LOCAL only — the SYNCED rows go with `task_accounts` and are counted on
     # the delete side. Without `account_id IS NULL` this number is a lie in
     # the reassuring direction.

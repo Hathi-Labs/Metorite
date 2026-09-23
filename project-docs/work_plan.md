@@ -402,7 +402,7 @@ promote an app by granting its feature.**
 
 | Section | App | Owning WS | What is still owed on it |
 |---|---|---|---|
-| Personal Center | **My Tasks** | WS-18 · **WS-39** | Renamed from Tasks on 2026-09-23 (D73). The personal lens over Projects (D53). Flags `NEXT_PUBLIC_TASKS_LENS` + `TASKS_LENS` default **OFF**. Slices 1–4 landed. **The tail is `specs/my_tasks_cutover.md` S6a to S9** |
+| Personal Center | **My Tasks** | WS-18 · **WS-39** | Renamed from Tasks on 2026-09-23 (D73). The personal lens over Projects (D53). The lens flags were flipped on 2026-09-23 and are retired in S8 PR 1. Slices 1–4 landed. **The tail is `specs/my_tasks_cutover.md` S6a to S9** |
 | Personal Center | **Calendar** | WS-21 · **WS-39** | Its own pane since D54. Behaviour (F2/F3, Focus Shield, timeboxing) stays WS-21. ⚠️ `gtd_time_blocks` and `calendar_accounts` **do not exist** — two specs cite them as built |
 | Personal Center | My Profile | WS-28 | — |
 | Personal Center | My Access | — | — |
@@ -3918,6 +3918,16 @@ closes the question H-132 asked, and it closes it the other way.
    S6e adds three things. A project where I am the lead shows in My Tasks. An
    assigned task I have not triaged sits in a "From Projects" group. Both apps
    draw one task panel composition. `specs/my_tasks_cutover.md` §4.8.
+9. **Stages come from Projects, grouped by category** *(added 2026-09-23,
+   third directive)*. The owner: *"if we do not have any ClickUp connection,
+   then the status mapping also needs to be removed from the settings of My
+   Tasks. Make sure we are properly mapping stages with the Projects app."*
+   The ClickUp status mapping and the Kanban stages editor leave the settings.
+   Next Actions groups a task by its lane CATEGORY: To do, In progress, Done.
+   A card keeps its own lane name. A drag into a group moves the task to the
+   first lane of that category in its own project. Done completes the task.
+   The `user_settings` columns stay until a later contract (R6).
+   `specs/my_tasks_cutover.md` §4.9.
 
 **The mechanism does not change.** The guarded rename prologue in the creating
 migration (`people_center_app.md` §7.0), registered in
