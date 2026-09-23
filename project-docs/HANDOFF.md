@@ -1615,6 +1615,46 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `work_plan.md` §3 **D58** · §6 (f) · `specs/customer_console.md` §4
 - **Added:** 2026-08-26 · AI architecture session
 
+### H-171 · The product's OWN AI is never metered, so it is free forever · [AGENT+OWNER]
+- **Check:** `rg -c "console_resolve|customer_console" packages/acb_llm/` → a
+  zero means `acb_llm` still reaches no meter, and this is open.
+- 🔴 **MEASURED 2026-09-23.** `acb_llm.acompletion_with_fallback` imports
+  litellm and calls `acompletion` directly. `acb_llm` holds **zero**
+  references to the Console. The only litellm callback registered anywhere is
+  `"otel"`, which is a trace and not a bill.
+- **So there are TWO AI paths and only one is metered.**
+  `POST /v1/chat/completions` reaches the Console Router behind
+  `ROUTER_SERVING_ENABLED`. Every in-product feature — the apps runtime, the
+  email automation, the assistants, the agents, **29 files** — takes the other
+  path and is billed to nobody.
+- 🔴 **What it costs.** A customer uses the AI inside the product for free, on
+  our vendor account, for ever. Turning the Router on does not change that,
+  because the Router is not on that path. It is a larger hole than the blank
+  cached-input box, and it does not close itself.
+- **The spec reads against it.** `launch_surface.md` §4.1: *"AI usage is
+  metered separately in credits"*. Not API usage. AI usage.
+- ⚠️ **It also empties the feature the owner asked for.** Per-app, per-agent
+  and per-person credit reporting all read `usage_event`. The apps and agents
+  people use write no row there, so those screens would be honest and
+  blank.
+- **Two shapes, and the choice is the owner's because it trades money against
+  latency and failure.**
+  1. **Proxy.** Send `acompletion_with_fallback` through the Console Router.
+     One path, one meter, the balance gate applies BEFORE spending. Costs a
+     Console round trip on every internal call, and D57.7 says a routed call
+     that fails, fails.
+  2. **Report.** Keep litellm serving and POST the result to
+     `/usage/record`, which exists, takes the internal token and is idempotent
+     on `(organization_id, request_id)`. No latency change and no new failure
+     mode. The balance gate cannot refuse before the spend, so a customer can
+     overrun by one call.
+- ⚠️ **Attribution is the real work in either shape.** The meter needs the
+  member, the agent and the module at 29 call sites. H-73 landed the identity
+  seam. H-44 records the same 80+ sites for tier selection, so sweep the two
+  together and not twice.
+- **Authority:** `launch_surface.md` §4.1 · D19.2 · D57.7 · CP-6 · H-73 · H-44
+- **Added:** 2026-09-23 · the H-73 session. **Renumbered from H-170 to H-171** the same day (R1): another branch minted the same next free id against a different base and merged first. An id is never reused.
+
 ### H-44 · Feature→tier binding is hardcoded at 80+ call sites · [AGENT]
 - **Check:** `rg -c '"tier-(fast|balanced|powerful|stt)"' --glob '*.py' --glob '*.ts' apps/ packages/ workbench/`
   → any file with a count means that feature's tier is still a literal, not a
