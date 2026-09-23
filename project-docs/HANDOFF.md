@@ -96,7 +96,7 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-165 · Build CP-13a to CP-13d: the `decide` task, its door, the Console pages and the chat tool · [AGENT]
+### H-167 · Build CP-13a to CP-13d: the `decide` task, its door, the Console pages and the chat tool · [AGENT]
 - **Check:** `rg -n "native_typesafe" apps/services/customer_console/` → no hit
   means CP-13a has not landed. `rg -n 'decide' workbench/operator_console/src/lib/`
   → no hit means CP-13b has not landed.
@@ -116,7 +116,7 @@ line — never reclaim a number by deleting the other entry.
   (R1).
 - **Authority:** `specs/customer_console.md` §6A.14 · `work_plan.md` §3 D75 ·
   board WS-31
-- **Added:** 2026-09-23 · the Jev planning session
+- **Added:** 2026-09-23 · the Jev planning session. Minted as H-165, renumbered the same day because #414 took H-165 first
 
 ### H-166 · Open the TypeSafe account, install the key, and answer residency · [OWNER]
 - **Check:** on `/providers`, look for a live `typesafe` credential. None
