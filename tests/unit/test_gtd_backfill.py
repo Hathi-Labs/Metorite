@@ -24,10 +24,16 @@ edited 189 would re-run on checksum and still not be what production serves).
 So every claim about *what the body says* is made against the last definition,
 found by scanning the ladder rather than by naming a file — a 213 that
 redefined the function again would move the claims, and this suite says so.
+
+**WS-39 S8 PR 2 (2026-09-23) ends the story.** Migration 216 arms the guard
+from reviewed code, lets 190 drop `gtd_items` and `gtd_waiting`, and drops
+the rest of the store. The last section fences exactly what it drops and
+what must survive, and proves the replayed ladder against a real Postgres.
 """
 from __future__ import annotations
 
 import io
+import os
 import re
 from pathlib import Path
 
@@ -273,13 +279,29 @@ def test_190_drops_without_cascade() -> None:
         )
 
 
-# ── D53.6 and its neighbours — what a sweep must not take ───────────────────
+# ── WS-39 S8 PR 2: migration 216 drops the planned set and nothing else ─────
+#
+# 190 dropped only `gtd_items` and `gtd_waiting`, and only when armed. 216 arms
+# it from reviewed code, lets 190's guard decide, and then drops the rest of
+# the store. These fences read 216 as text. `tests/live/live_ws39_s8d.py`
+# proves the same against a seeded Postgres, including the refusal, and the
+# live test at the end of this module proves the replayed ladder.
 
-#: Every table sharing the `gtd_` prefix that is NOT part of this retirement,
-#: with the authority that keeps it. The prefix is the only thing four unrelated
-#: subsystems have in common, which is exactly why this list is written out.
+S8 = MIGRATIONS / "216_gtd_task_store_drop.sql"
+
+#: Exactly what S8 drops (my_tasks_cutover.md §4.3). `gtd_items` and
+#: `gtd_waiting` go through 190's guard, so they are listed apart.
+S8_GUARDED = frozenset({"gtd_items", "gtd_waiting"})
+S8_DROPS = frozenset({
+    "gtd_projects", "gtd_spaces", "gtd_folders", "gtd_contexts",
+    "gtd_retirement_arm",
+})
+
+#: What must survive the drop, with the authority that keeps it. The first
+#: eight carried the `gtd_` prefix and were renamed in slices 1 and 2. The
+#: last three were renamed in this same PR, in migrations 52 and 48.
 KEEP = {
-    "user_settings": "D53.6 — Calendar state, not a task row",
+    "user_settings": "D53.6 — member settings, not a task row",
     "calendar_day_state": "D53.6 — Calendar state",
     "calendar_rollover_log": "D53.6 — Calendar state",
     "people": "the People directory (fetchPeople/createPerson)",
@@ -287,52 +309,187 @@ KEEP = {
     "people_credentials": "the People directory",
     "people_resumes": "the People directory",
     "people_skills": "the People directory",
-    "gtd_horizons": "WS-21 owns Horizons — DO-NOT-DISPATCH (work_plan.md section 4)",
-    "gtd_reviews": "WS-18 owns Weekly Review; dead is not retired",
-    "gtd_projects": "the LOCAL project tree — waits on S3a-client slice 5",
-    "gtd_spaces": "the LOCAL project tree — waits on slice 5",
-    "gtd_folders": "the LOCAL project tree — waits on slice 5",
-    "gtd_contexts": "waits on slice 5",
-    "gtd_attachments": "waits on slice 5",
+    "attachments": "the file registry My Tasks and Projects both write (§4.3)",
+    "my_tasks_horizons": "D65 keeps the Horizons store (§4.3)",
+    "my_tasks_reviews": "WS-18 keeps the Weekly Review store (§4.3)",
 }
 
 
-@pytest.mark.parametrize("table,why", sorted(KEEP.items()))
-def test_190_does_not_drop_the_tables_that_survive(table: str, why: str) -> None:
-    dropped = re.findall(r"DROP TABLE\s+(?:IF EXISTS\s+)?(\w+)", sql(S3C), re.I)
-    assert table not in dropped, (
-        f"190 drops `{table}`, which must survive: {why}.\n"
-        "D53.6 exists because a sweep of everything named `gtd_*` takes four "
-        "unrelated subsystems with it."
-    )
-
-
-def test_190_drops_exactly_the_two_tables_s3b_replaced() -> None:
-    dropped = {
+def _drops(path: Path) -> set[str]:
+    return {
         t.lower()
-        for t in re.findall(r"DROP TABLE\s+(?:IF EXISTS\s+)?(\w+)", sql(S3C), re.I)
+        for t in re.findall(r"DROP TABLE\s+(?:IF EXISTS\s+)?(\w+)", sql(path), re.I)
     }
-    assert dropped == {"gtd_items", "gtd_waiting"}, (
-        f"190 drops {sorted(dropped)}. S3b replaced exactly `gtd_items` "
-        "(-> pm_tasks) and `gtd_waiting` (-> the pm_task_personal quartet, "
-        "migration 188). Anything else is a different decision needing its own."
+
+
+def test_216_is_on_the_ladder_as_the_one_s8_drop() -> None:
+    assert S8.is_file(), f"missing {S8}"
+    droppers = sorted(
+        p.name for p in MIGRATIONS.glob("[0-9][0-9]*_*.sql")
+        if re.search(r"DROP TABLE", sql(p), re.I)
+    )
+    assert droppers == [S3C.name, S8.name], (
+        f"these ladder files drop tables: {droppers}. A third one is a new "
+        "one-way act and needs its own fence."
     )
 
 
-def test_190_drops_s3b_scaffolding_before_the_table() -> None:
-    """Measured, not predicted — this ordering failed once for real.
+def test_216_drops_exactly_the_planned_set() -> None:
+    dropped = _drops(S8)
+    assert dropped == set(S8_DROPS | S8_GUARDED), (
+        f"216 drops {sorted(dropped)}. The §4.3 map drops exactly "
+        f"{sorted(S8_DROPS | S8_GUARDED)}. Anything else is a new decision."
+    )
 
-    ``gtd_backfill_plan`` selects from ``gtd_items``, so Postgres refuses to
-    drop the table underneath it. The first S3c run died on exactly that, and it
-    would otherwise have surfaced while ARMED and mid-cutover.
+
+@pytest.mark.parametrize("table,why", sorted(KEEP.items()))
+def test_no_migration_drops_a_table_that_survives(table: str, why: str) -> None:
+    for path in (S3C, S8):
+        assert table not in _drops(path), (
+            f"{path.name} drops `{table}`, which must survive: {why}.\n"
+            "D53.6 exists because a sweep of everything named `gtd_*` takes "
+            "unrelated subsystems with it."
+        )
+
+
+def test_216_drops_without_cascade() -> None:
+    for match in re.finditer(r"DROP (?:TABLE|VIEW|FUNCTION)[^;]*;", sql(S8), re.I):
+        assert "CASCADE" not in match.group(0).upper(), (
+            f"216 uses CASCADE: {match.group(0)!r}. A retirement should fail "
+            "loudly on an unexpected dependent, not consume it."
+        )
+
+
+def test_216_is_one_transaction() -> None:
+    """The column drop in (c) must not survive a refusal in (a). psql -f
+    commits each statement unless the file says BEGIN, and the runner feeds
+    the file to psql."""
+    body = sql(S8).strip()
+    assert body.startswith("BEGIN;") and body.endswith("COMMIT;")
+    assert body.count("BEGIN;") == 1 and body.count("COMMIT;") == 1
+
+
+def test_216_arms_then_lets_190s_guard_decide() -> None:
+    """The arm moved from a hand INSERT into reviewed code. The data check
+    did not move: 190's guard still refuses on an unmigrated row."""
+    body = sql(S8)
+    arm = body.index("INSERT INTO gtd_retirement_arm")
+    call = body.index("PERFORM gtd_retirement_drop()")
+    assert arm < call, "216 must arm BEFORE it calls the guard"
+    assert "'migration 216 (WS-39 S8, D73)'" in body, (
+        "the arm row must name the migration, so the audit says who armed it"
+    )
+    assert "RAISE EXCEPTION" in body[call:], (
+        "216 must refuse when the guard returns and the store is still there"
+    )
+    # The guard is the only path that drops a table with rows in it.
+    assert "DELETE FROM gtd_items" not in body
+    assert "TRUNCATE" not in body.upper()
+
+
+def test_216_moves_the_commitment_before_the_drop() -> None:
+    """`task_id` is filled from `gtd_items.migrated_task_id`, so the copy must
+    run while `gtd_items` exists, and only onto a pm_tasks row that exists."""
+    body = sql(S8)
+    copy = body.index("SET task_id = i.migrated_task_id")
+    assert copy < body.index("PERFORM gtd_retirement_drop()")
+    assert "JOIN pm_tasks t ON t.id = i.migrated_task_id" in body
+    assert body.index("SET task_id = i.migrated_task_id") < body.index(
+        "ALTER TABLE wa_commitments DROP COLUMN gtd_item_id")
+
+
+def test_216_drops_in_foreign_key_order() -> None:
+    """No CASCADE, so a child must go before the table it references."""
+    body = sql(S8)
+    order = [body.index(f"DROP TABLE IF EXISTS {t};")
+             for t in ("gtd_projects", "gtd_folders", "gtd_spaces")]
+    assert order == sorted(order), "gtd_projects -> gtd_folders -> gtd_spaces"
+    assert body.index("DROP VIEW     IF EXISTS gtd_backfill_plan") < body.index(
+        "DROP TABLE IF EXISTS gtd_projects;"), (
+        "the S3b preview reads gtd_projects, so it goes first")
+    assert body.index("DROP TABLE    IF EXISTS gtd_retirement_arm") < body.index(
+        "DROP FUNCTION IF EXISTS gtd_retirement_drop()")
+
+
+#: Migration 48's text, line endings folded, as this PR leaves it.
+_48_SHA256 = "03e923cd611a7255d4bd237f2345d2462c93e5740d60213b96f866f551b642e7"
+
+
+def test_an_edit_to_48_is_a_decision_about_216() -> None:
+    """48 still CREATEs the dropped store, because a fresh ladder needs it
+    before 216 drops it. The runner re-runs a file whose checksum changed.
+    So an edit to 48 alone rebuilds `gtd_items`, `gtd_waiting`,
+    `gtd_projects` and `gtd_contexts` on production, EMPTY, and 216 does not
+    run again to drop them. Nothing fails. The tables are simply back.
+
+    The fix is to touch 216 in the same PR, so it re-runs too. It drops an
+    empty rebuilt store and refuses one that holds rows. Then update the hash.
     """
-    body = sql(S3C)
-    assert "DROP VIEW" in body and "gtd_backfill_plan" in body, (
-        "190 must drop the S3b preview view before dropping gtd_items"
+    import hashlib
+
+    text = (MIGRATIONS / "48_task_manager_gtd.sql").read_text(encoding="utf-8")
+    digest = hashlib.sha256(text.replace("\r\n", "\n").encode()).hexdigest()
+    assert digest == _48_SHA256, (
+        "migration 48 changed. Read this test's docstring: touch 216 in the "
+        "same PR, or the dropped gtd_ tables come back empty on production."
     )
-    assert body.index("gtd_backfill_plan") < body.index(
-        "DROP TABLE IF EXISTS gtd_items"
-    ), "the view must be dropped BEFORE the table it reads"
+
+
+def test_the_survivors_are_created_under_their_new_names() -> None:
+    """The three renames live in their creating migrations. The mechanism and
+    its fence are `test_gtd_rename_upgrade.py`, and this only cross-checks."""
+    from tests.unit.test_gtd_rename_upgrade import RENAMED
+
+    for new in ("attachments", "my_tasks_horizons", "my_tasks_reviews"):
+        assert new in RENAMED, f"{new} is not registered in RENAMED"
+
+
+# ── R8: the replayed ladder has no gtd_ table ───────────────────────────────
+
+_URL = os.environ.get("TENANT_LADDER_DATABASE_URL", "").strip()
+
+
+@pytest.mark.skipif(
+    not _URL,
+    reason=(
+        "TENANT_LADDER_DATABASE_URL unset — R8 requires a REAL Postgres. "
+        "A skip here is not a pass; CI must set it."
+    ),
+)
+def test_the_replayed_ladder_has_no_gtd_table_and_keeps_the_survivors() -> None:
+    """`\\dt gtd_*` after a full ladder replay returns nothing (§5 S8, done
+    when 2). The ladder here is replayed WITHOUT a ledger, so migration 48
+    builds the old store again and 216 must drop it again."""
+    from sqlalchemy import create_engine, text
+
+    from tests.unit._tenant_ladder import apply_ladder
+
+    engine = create_engine(_URL, future=True)
+    try:
+        with engine.begin() as conn:
+            apply_ladder(conn)
+        with engine.connect() as conn:
+            left = conn.execute(text(
+                "SELECT c.relname FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'v') "
+                "AND c.relname LIKE 'gtd%'")).scalars().all()
+            assert left == [], f"the ladder still builds {left}"
+            funcs = conn.execute(text(
+                "SELECT proname FROM pg_proc WHERE proname IN "
+                "('gtd_backfill_to_pm', 'gtd_retirement_drop')")).scalars().all()
+            assert funcs == [], f"the ladder still defines {funcs}"
+            column = conn.execute(text(
+                "SELECT count(*) FROM information_schema.columns "
+                "WHERE table_schema = current_schema() "
+                "AND table_name = 'wa_commitments' "
+                "AND column_name = 'gtd_item_id'")).scalar()
+            assert column == 0, "wa_commitments.gtd_item_id survived the ladder"
+            for table in sorted(KEEP):
+                assert conn.execute(text("SELECT to_regclass(:t) IS NOT NULL"),
+                                    {"t": f"public.{table}"}).scalar(), table
+    finally:
+        engine.dispose()
 
 
 # ── Tenancy: a migration has no RLS to fall back on ─────────────────────────

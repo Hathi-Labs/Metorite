@@ -3,8 +3,10 @@
 GTD capture keeps context WITH the item: a whiteboard photo, a spec PDF, a
 URL. Files are stored server-side (``GTD_ATTACHMENTS_DIR``, default
 ``data/gtd_attachments`` under the gateway CWD) with an owner-checked row in
-``attachments``; items reference them in ``gtd_items.attachments`` JSONB
-({kind: 'file'|'image'|'link', name, url, attachment_id?, mime?, size?}).
+``attachments`` (renamed from its old name by migration 52, WS-39 S8). A
+task references a file through ``pm_task_attachments`` (migration 150). The
+descriptor is {kind: 'file'|'image'|'link', name, url, attachment_id?,
+mime?, size?}.
 Links are JSONB-only — no upload involved.
 
   POST /tasks/attachments                  multipart upload → descriptor

@@ -86,7 +86,7 @@ from gateway.routes.projects.tasks import (
 from pydantic import BaseModel
 from sqlalchemy import text
 
-#: Migration 48's vocabulary, unchanged — WS-27h has to move every gtd_items row
+#: Migration 48's vocabulary, unchanged — WS-27h had to move every old task row
 #: onto these and a renamed disposition would make that a translation.
 DISPOSITIONS: tuple[str, ...] = (
     "INBOX", "NEXT", "WAITING", "SOMEDAY", "PROJECT", "REFERENCE", "DONE", "TRASH",
@@ -225,7 +225,7 @@ class OrganizeIn(BaseModel):
 
 #: A clarify `kind` → the overlay disposition it states. The vocabulary
 #: `routes/tasks/items.py::_KIND_TO_DISPOSITION` carried, moved here because
-#: that module retires with `gtd_items` and this one does not. One change from
+#: that module retired with the old task store and this one does not. One change from
 #: it, and it is the point: ``do-now`` is DONE there and is NOT a disposition
 #: here — under one store a task is completed through the project's done
 #: lane (`_complete`), never by writing DONE onto my view of it
@@ -2270,8 +2270,8 @@ async def nudge_task(
 # *private to this person at any depth*.
 #
 # **Why this slice exists**, and it is not symmetry with the Projects app.
-# H-29 says it in as many words: the `gtd_*` backfill CREATES Areas from a
-# member's old `gtd_projects`, and the owner may not arm it until the app can
+# H-29 says it in as many words: the S3b backfill CREATES Areas from a
+# member's old local projects, and the owner may not arm it until the app can
 # rename or delete one. Otherwise a member wakes to categories they did not
 # make and cannot remove. These four routes are the precondition on the
 # cutover, not a convenience beside it.

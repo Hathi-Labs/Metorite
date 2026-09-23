@@ -259,8 +259,8 @@ export interface ItemMetaPatch {
   keptMine?: boolean;
   /** the date the person we're waiting on actually PROMISED — ISO; "" clears
    *  it back to null ("no promise was made", and the Waiting-For overdue line
-   *  then reads dueAt live). Lands on the item's open gtd_waiting record, not
-   *  on gtd_items; local only, never back-synced. See lib/waiting.ts. */
+   *  then reads dueAt live). Lands on the item's open waiting-for record, not
+   *  on the task; local only, never back-synced. See lib/waiting.ts. */
   expectedBy?: string;
 }
 

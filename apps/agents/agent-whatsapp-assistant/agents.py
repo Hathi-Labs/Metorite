@@ -332,7 +332,7 @@ async def whatsapp_my_commitments(account_id: str | None = None) -> str:
     lines = ["Your open promises:"]
     for r in rows:
         due = f" (due {r['due_hint']})" if r.get("due_hint") else ""
-        task = " — task captured" if r.get("gtd_item_id") else " — not yet a task"
+        task = " — task captured" if r.get("task_id") else " — not yet a task"
         lines.append(f"• {r.get('text', '')[:110]}{due}{task}")
     return "\n".join(lines)
 

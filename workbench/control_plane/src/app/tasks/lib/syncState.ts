@@ -26,7 +26,7 @@
 import type { MetaChip } from "@/lib/taskCard";
 
 /**
- * Every value the gateway may put in `gtd_items.sync_state`.
+ * Every value the old task store's `sync_state` column could hold.
  *
  * `pending` and `awaiting_approval` are NOT synonyms and the difference is who
  * is being waited on: `pending` is staged for the MEMBER's own push (nothing

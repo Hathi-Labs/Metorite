@@ -120,7 +120,7 @@ describe("the connector surface is gone from the client (D52)", () => {
     // here, and that is the correction this slice made to its own handoff
     // note. They are the LOCAL Space→Folder→Project tree
     // (`routes/tasks/hierarchy.py`), not a connector surface — they write
-    // `gtd_projects` and their destination under D53 is `pm_projects`. Banning
+    // the old local projects and their destination under D53 is `pm_projects`. Banning
     // them would have deleted the Tasks app's ability to organise projects at
     // all, on the strength of a list that grouped them by the wrong thing.
     const hits: string[] = [];

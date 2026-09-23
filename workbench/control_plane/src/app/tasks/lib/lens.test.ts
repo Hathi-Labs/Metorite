@@ -515,7 +515,7 @@ describe("api.ts reaches the one store only", () => {
   ].map((m) => m[2]);
 
   /**
-   * The `/tasks` routes S8 PR 1 deleted, or that only ever read `gtd_items`.
+   * The `/tasks` routes S8 PR 1 deleted, or that only ever read the old store.
    * The prefixes are matched on the literal part of each path, so an id or a
    * query string cannot hide one.
    */
@@ -919,7 +919,7 @@ describe("promotion — the lens reaching into the company board", () => {
       restore();
     }
     expect(calls[0].url).toContain("nodes");
-    // ⚠️ NOT `/projects` — under the old store that listed `gtd_projects`, one
+    // ⚠️ NOT `/projects` — under the old store that listed the local projects, one
     // member's private list. A promote destination can only be a real project.
     expect(calls[0].url).not.toMatch(/\/projects(\?|$)/);
   });

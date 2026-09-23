@@ -38,6 +38,8 @@ _REFERENCES = re.compile(
     r"REFERENCES\s+([\w.]+)\s*(?:\([^)]*\))?\s*(ON\s+DELETE\s+(?:NO\s+ACTION|\w+))?",
     re.I,
 )
+#: ``DROP TABLE [IF EXISTS] <name>``
+_DROP = re.compile(r"DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([\w.]+)", re.I)
 _ADD_COLUMN = re.compile(r"ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)", re.I)
 #: Table-level constraint clauses — not column definitions.
 _NOT_A_COLUMN = {
@@ -112,9 +114,19 @@ def _parse() -> tuple[dict[str, frozenset[str]], dict[str, frozenset[str]]]:
                     parent = ref.group(1).rsplit(".", 1)[-1]
                     children.setdefault(parent, set()).add(table)
 
+    # A table a later migration drops is not in the graph. Migration 216
+    # (WS-39 S8) dropped the `gtd_*` task store, which `task_accounts` used
+    # to cascade. Read from comment-stripped text, like everything above.
+    dropped: set[str] = set()
+    for path in sorted(MIGRATIONS.glob("*.sql")):
+        if path.name == "schema.generated.sql":
+            continue
+        sql = _strip_comments(path.read_text(encoding="utf-8", errors="replace"))
+        dropped |= {m.group(1).rsplit(".", 1)[-1] for m in _DROP.finditer(sql)}
+
     return (
-        {k: frozenset(v) for k, v in children.items()},
-        {k: frozenset(v) for k, v in columns.items()},
+        {k: frozenset(v - dropped) for k, v in children.items() if k not in dropped},
+        {k: frozenset(v) for k, v in columns.items() if k not in dropped},
     )
 
 
