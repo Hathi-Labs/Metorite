@@ -346,7 +346,10 @@ _TASK_KEYS: dict[str, str] = {"title": "title", "notes": "description",
                               "start_date": "start_date"}
 
 #: Priority → "important" in the Focus matrix: High (2) or Urgent (3). The
-#: gateway's `personal.IMPORTANT_AT` and the client's `priority.ts` agree.
+#: gateway's `personal.IMPORTANT_AT` and the client's `priority.ts` agree, and
+#: `test_projects_personal_s6f.py::test_important_at_is_one_number_in_all_three_places`
+#: fails if any of the three moves. No skill imports the gateway, so this is
+#: a pinned copy rather than an import.
 _IMPORTANT_AT = 2
 
 #: My practice → `PATCH /projects/tasks/{id}/personal`.

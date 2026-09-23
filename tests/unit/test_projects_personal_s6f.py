@@ -295,12 +295,17 @@ def test_the_planner_reads_the_shared_estimate_and_priority() -> None:
     assert "tk.estimate_mins" in pm_planning._PM_RATIO_SQL
 
 
-def test_important_at_is_one_number_in_both_apps() -> None:
+def test_important_at_is_one_number_in_all_three_places() -> None:
     ts = (ROOT / "workbench/control_plane/src/app/tasks/lib/priority.ts").read_text(
         encoding="utf-8")
     found = re.search(r"export const IMPORTANT_AT = (\d+);", ts)
     assert found, "priority.ts must export IMPORTANT_AT"
     assert int(found.group(1)) == pm_personal.IMPORTANT_AT == 2
+    # F3 — the chat skill's copy. It runs in the agent process and may not
+    # import the gateway, so it keeps its own constant, pinned here.
+    from skill_task_gtd import core as skill_core
+
+    assert skill_core._IMPORTANT_AT == pm_personal.IMPORTANT_AT
 
 
 # ── Organize ────────────────────────────────────────────────────────────────
