@@ -693,7 +693,8 @@ Tool names and signatures do not change. S9 renames them, and
    `test_client_route_contract.py` keeps the paths that survive.
 2. **Schema.** A new migration calls `gtd_retirement_drop()`. It takes the
    next free number at build time (R1). Number 212 went to the backfill fix
-   on 2026-09-23, so this one is 213 or later. Then it drops
+   on 2026-09-23 and 213 to `pm_activities.seq` (#402). So this one is 214
+   or later. Then it drops
    the tree tables, `gtd_contexts`, `gtd_retirement_arm` and the two guard
    functions. It renames `gtd_attachments`, `gtd_horizons` and `gtd_reviews`
    through the guarded prologue in their creating migrations (52 and 48).
@@ -801,7 +802,7 @@ flip (§6 step 10).**
       |
 11. INSERT INTO gtd_retirement_arm (armed_by, note) VALUES (...)
       |
-12. S8 PR 2 merges. Its migration (213 or later) calls the guard, drops, renames.
+12. S8 PR 2 merges. Its migration (214 or later) calls the guard, drops, renames.
       |
 13. \dt gtd_*  ->  nothing
 ```
