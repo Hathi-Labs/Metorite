@@ -2,11 +2,14 @@
  * Projects · how much room the task panel takes, and how it gives focus back
  * (WS-27ab item 1, from Plane research item P-15).
  *
- * **Peek → side → full is one axis with three stops, not three panels.** The
- * same `TaskPanel` renders at all three; only its width class and where the
- * page mounts it change. A second "expanded task" component would be a second
- * detail surface to keep in step, which is the drift §11.22 spent a slice
- * undoing on this very file.
+ * **Side → full is one axis with two stops, not two panels.** The same
+ * `TaskPanel` renders at both; only its width class and where the page mounts
+ * it change. A second "expanded task" component would be a second detail
+ * surface to keep in step, which is the drift §11.22 spent a slice undoing on
+ * this very file.
+ *
+ * ⚠️ It was THREE stops until 2026-09-23, and the owner cut `peek`. See
+ * `PANEL_MODES` for the ask and the reason.
  *
  * The choice persists per user because it is a *reading* preference, not a
  * property of the task: somebody who wants a wide panel wants it for the next
@@ -22,8 +25,29 @@
  * in `panelMode.test.ts` rather than clicks.
  */
 
-/** The three stops, narrowest first. Order is the escalation order. */
-export const PANEL_MODES = ["peek", "side", "full"] as const;
+/**
+ * The two stops, narrowest first. Order is the escalation order.
+ *
+ * ⚠️ **This was `peek → side → full` until 2026-09-23. The owner cut it to
+ * two.** In their words: *"Keep it the same as my tasks, where we have a
+ * sidebar which can also open as a full card. The switcher where we change
+ * the width of the sidebar is not needed."*
+ *
+ * So this is no longer a WIDTH SWITCHER with three stops. It is the affordance
+ * `/tasks` already has — a docked panel, and a full card over the page —
+ * reached by ONE expand toggle. `ItemDetail` calls the second stop `focused`,
+ * and `taskStore` keeps `selectedItemId` for the first and `focusedItemId` for
+ * the second. Two surfaces, one idea.
+ *
+ * `peek` (320px) went because it could not pay for itself: too narrow for the
+ * paired fields, and a third button on a header `/tasks` answers with none.
+ *
+ * ⚠️ A member who last chose `peek` still has it in `localStorage`.
+ * `isPanelMode` rejects that string now, so `readPanelMode` falls back to the
+ * default — the retired stop degrades to the docked panel, never to a blank
+ * one. `panelMode.test.ts` asserts that by name.
+ */
+export const PANEL_MODES = ["side", "full"] as const;
 
 export type PanelMode = (typeof PANEL_MODES)[number];
 
@@ -54,27 +78,26 @@ export function narrowerPanel(mode: PanelMode): PanelMode {
 
 /** The label and glyph each stop wears on the panel's own switch. */
 export const PANEL_MODE_LABELS: Record<PanelMode, string> = {
-  peek: "Peek",
-  side: "Side",
-  full: "Full",
+  side: "Side panel",
+  full: "Full card",
 };
 
 /**
- * All three are `icon-registry.ts` entries. An unmapped name falls back to
- * Lucide on every theme, which in a row of three glyphs is the one that reads
- * as a bug — `PanelRightClose`, the obvious name for `peek`, is NOT in the
- * registry, which is why peek wears the eye.
+ * Both are `icon-registry.ts` entries. An unmapped name falls back to Lucide
+ * on every theme, which beside a mapped glyph reads as a bug.
+ *
+ * These are the glyphs of the TARGET stop, because the header now draws one
+ * toggle rather than one button per stop: docked shows `Maximize2` ("open it
+ * as a full card"), and full shows `Minimize2` ("put it back").
  */
 export const PANEL_MODE_ICONS: Record<PanelMode, string> = {
-  peek: "Eye",
   side: "PanelRight",
   full: "Maximize2",
 };
 
 export const PANEL_MODE_HINTS: Record<PanelMode, string> = {
-  peek: "Peek — a narrow column beside the board",
-  side: "Side — the docked panel",
-  full: "Full — a wide overlay over the board",
+  side: "Open as a full card",
+  full: "Back to the side panel",
 };
 
 /**
@@ -91,7 +114,6 @@ export const PANEL_MODE_HINTS: Record<PanelMode, string> = {
  * track back to its start.
  */
 export const PANEL_WIDTH_CLASS: Record<PanelMode, string> = {
-  peek: "max-w-xs",
   side: "max-w-md",
   full: "max-w-3xl",
 };
@@ -122,9 +144,9 @@ function browserStore(): PanelModeStore | null {
 /**
  * The stored choice, or the default.
  *
- * Anything that is not one of the three stops reads as the default rather than
- * as an error: a value written by a newer client, or hand-edited in devtools,
- * must not leave the panel with no width class at all.
+ * Anything that is not one of the two stops reads as the default rather than
+ * as an error: a value written by a newer client, hand-edited in devtools, or
+ * the retired `peek`, must not leave the panel with no width class at all.
  */
 export function readPanelMode(store?: PanelModeStore | null): PanelMode {
   const target = store === undefined ? browserStore() : store;
