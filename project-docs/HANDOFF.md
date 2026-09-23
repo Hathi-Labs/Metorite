@@ -2933,9 +2933,9 @@ line — never reclaim a number by deleting the other entry.
   → one hit, on the route only, and not in `PUBLIC_ROUTES`, means this is open.
 - **Why:** PR #407 let the LLM key reach `/v1/chat/completions`. The app-wide
   gate still refuses that key on `/v1/embeddings`, because the key is not an
-  identity. Three callers send it there: `acb_memory/mem0_client.py`,
-  `whatsapp_ingestion/wa_embeddings.py` and `routes/tasks/capability.py`.
-  Each one gets 401 today. The gateway log shows no call in seven days, so
+  identity. Four callers send it there: `acb_memory/mem0_client.py`,
+  `whatsapp_ingestion/wa_embeddings.py`, `email_ingestion/email_embeddings.py`
+  and `routes/tasks/capability.py`. Each one gets 401 today. The gateway log shows no call in seven days, so
   nothing is broken in use yet.
 - **Do:** Put `Depends(require_llm_api_auth)` on the route. Then add the
   template to `PUBLIC_ROUTES`. Extend `tests/unit/test_v1_llm_key_gate.py`,
