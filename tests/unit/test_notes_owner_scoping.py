@@ -1086,10 +1086,42 @@ def test_the_two_bot_token_routes_stay_machine_authed() -> None:
 
 # ── N2. Approve / reject a single action item ────────────────────────────────
 
+class _RecordingSource:
+    """The one task seam, as the approve route sees it (WS-39 S8c).
+
+    The route captures through ``item_source()``. What these tests pin is WHO
+    the capture is filed under and WHAT text reaches it, not which table the
+    seam writes, so the seam is a recorder here. Its SQL is proven in
+    ``test_tasks_ai_source.py`` and against Postgres in ``live_ws39_s8c.py``.
+    """
+
+    name = "recording"
+
+    def __init__(self) -> None:
+        self.captures: list[SimpleNamespace] = []
+
+    async def find_by_origin(self, db, uid, key, value, *, commitment=False):
+        return next((
+            c for c in self.captures
+            if c.uid == uid and str(c.origin.get(key)) == str(value)
+        ), None)
+
+    async def insert_capture(self, db, uid, fields, origin):
+        cap = SimpleNamespace(
+            id=f"task-{len(self.captures) + 1}", uid=uid,
+            fields=dict(fields), origin=dict(origin or {}))
+        self.captures.append(cap)
+        return cap.id
+
+
 @pytest.fixture
 def actions_rig(monkeypatch):
     """One draft action item on each of Alice's and Bob's meetings."""
     from gateway.routes.notes import actions
+    from gateway.routes.tasks import item_source as seam
+
+    source = _RecordingSource()
+    monkeypatch.setattr(seam, "item_source", lambda: source)
 
     db = _install_db(monkeypatch, actions, _FakeDb(
         [
@@ -1108,6 +1140,7 @@ def actions_rig(monkeypatch):
             _draft_action("a-legacy", "m-legacy", "legacy item"),
         ],
     ))
+    db.source = source
     return actions, db
 
 
@@ -1125,7 +1158,7 @@ async def test_approving_a_colleagues_action_creates_no_task_in_your_list(
 ) -> None:
     """THE N2 HARM, stated as itself.
 
-    ``_create_task_from_action`` binds ``user_id`` to **the caller** and
+    ``_create_task_from_action`` files the capture under **the caller** and
     copies ``action.description`` into the task title. So the route was not
     only a way to flip somebody else's triage state — it was a way to lift
     the text of their action item into a durable row in your own GTD list.
@@ -1136,7 +1169,7 @@ async def test_approving_a_colleagues_action_creates_no_task_in_your_list(
     with pytest.raises(HTTPException):
         await actions.approve_action("a-bob", user=_user(ALICE))
 
-    assert not db.wrote("INSERT INTO gtd_items")
+    assert not db.source.captures, "a capture was written for the caller"
     assert not db.wrote("UPDATE action_item")
     assert not any(
         "40% off" in str(params) for _sql, params in db.statements
@@ -1150,11 +1183,10 @@ async def test_approving_your_own_action_item_still_creates_the_task(
 
     out = await actions.approve_action("a-alice", user=_user(ALICE))
     assert out.status == "created"
-    assert out.resulting_task_id
-    assert db.wrote("INSERT INTO gtd_items")
-    inserted = [p for sql, p in db.statements if "INSERT INTO gtd_items" in sql]
-    assert inserted[0]["uid"] == ALICE
-    assert inserted[0]["title"] == "send Alice's quote"
+    assert out.resulting_task_id == "task-1"
+    (cap,) = db.source.captures
+    assert cap.uid == ALICE
+    assert cap.fields["title"] == "send Alice's quote"
 
 
 async def test_rejecting_a_colleagues_action_item_is_404(actions_rig) -> None:

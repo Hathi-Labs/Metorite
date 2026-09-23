@@ -7,7 +7,7 @@ import asyncio
 import json
 import re
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -253,30 +253,37 @@ async def _fetch_calendar_context(
 ) -> str:
     """The owner's upcoming hard-date commitments (next ``days``), so a reply
     about timing can offer slots that don't clash and never double-books. Reads
-    the internal calendar — gtd_items with a due_at + is_hard_date, the same
+    the internal calendar — open tasks with a due_at + is_hard_date, the same
     "shows on the Calendar" predicate the tasks app uses — for the account's
-    user. Best-effort: the tasks feature may be absent; a draft must not fail on
-    it. Empty string when nothing is scheduled in the window."""
+    user, through the ONE task seam (``item_source().hard_dated_items``, WS-39
+    S8c). Best-effort: the tasks feature may be absent; a draft must not fail
+    on it. Empty string when nothing is scheduled in the window."""
+    from gateway.routes.tasks.item_source import item_source
+
     try:
-        rows = (await db.execute(text(
-            """SELECT to_char(gi.due_at, 'Dy Mon DD, HH24:MI') AS whn,
-                      gi.title
-               FROM gtd_items gi
-               JOIN email_accounts ea ON ea.id = :aid
-               WHERE gi.user_id = ea.user_id
-                 AND gi.is_hard_date = true AND gi.due_at IS NOT NULL
-                 AND gi.disposition NOT IN ('DONE', 'TRASH')
-                 AND gi.due_at >= now()
-                 AND gi.due_at <= now() + make_interval(days => :days)
-               ORDER BY gi.due_at ASC
-               LIMIT :lim"""
-        ), {"aid": account_id, "days": days, "lim": limit})).fetchall()
+        owner = (await db.execute(text(
+            "SELECT user_id FROM email_accounts WHERE id = :aid"
+        ), {"aid": account_id})).fetchone()
+        uid = str(getattr(owner, "user_id", "") or "") if owner else ""
+        if not uid:
+            return ""
+        items = await item_source().hard_dated_items(
+            db, uid, days=days, limit=limit)
     except Exception as exc:  # noqa: BLE001
         _log.warning("email.calendar_context_failed", error=str(exc)[:160])
         return ""
-    if not rows:
-        return ""
-    return "\n".join(f"- {r.whn} — {(r.title or '(untitled)')}" for r in rows)
+    lines = []
+    for it in items:
+        due = it.due_at
+        if isinstance(due, datetime):
+            if due.tzinfo is not None:
+                due = due.astimezone(UTC)
+            # 'Dy Mon DD, HH24:MI', as Postgres `to_char` wrote it.
+            whn = due.strftime("%a %b %d, %H:%M")
+        else:
+            whn = str(due or "")
+        lines.append(f"- {whn} — {(it.title or '(untitled)')}")
+    return "\n".join(lines)
 
 
 async def _fetch_reply_memories(

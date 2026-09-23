@@ -348,6 +348,20 @@ class _PmLens(ItemSource):
         items = _alive(await self._items(db, uid, where, **params))
         return items[:limit] if limit is not None else items
 
+    async def hard_dated_items(self, db, uid, *, days, limit):
+        # `is_hard_date` is the member's overlay: the Calendar shows a task as
+        # a fixed appointment for the member who marked it so (§4.4). The
+        # limit applies after the Python rule, as in `items_by_origin`.
+        items = _alive(await self._items(
+            db, uid,
+            _PM_ALIVE
+            + " AND p.is_hard_date = true AND t.due_at IS NOT NULL"
+            " AND t.due_at >= now()"
+            " AND t.due_at <= now() + make_interval(days => :days)"
+            " ORDER BY t.due_at ASC",
+            days=days))
+        return items[:limit]
+
     # ── writes ───────────────────────────────────────────────────────────
 
     async def _new_task(

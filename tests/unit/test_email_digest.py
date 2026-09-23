@@ -7,6 +7,7 @@ filter normalises the user's selections to canonical cleanup categories.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -288,9 +289,10 @@ async def test_awaiting_reads_the_other_side_of_the_ledger() -> None:
 
 
 async def test_commitments_are_best_effort_when_tasks_absent() -> None:
-    # gtd_items may not exist in a given deploy; a digest must never fail on it.
+    # The tasks feature may be absent in a deploy; a digest must never fail
+    # on it.
     db = AsyncMock()
-    db.execute.side_effect = RuntimeError("relation gtd_items does not exist")
+    db.execute.side_effect = RuntimeError("relation pm_tasks does not exist")
     assert await m.digest._digest_commitments(db, "acc-1") == []
     # …and best-effort means the SESSION survives: a failed query aborts the
     # transaction, so without a rollback every later query in the request dies
@@ -299,42 +301,123 @@ async def test_commitments_are_best_effort_when_tasks_absent() -> None:
     db.rollback.assert_awaited_once()
 
 
-async def test_commitments_query_scopes_to_open_due_tasks_on_this_account() -> None:
-    rows = [SimpleNamespace(title="Send quote", due_label="Jul 25", overdue=True,
-                            task_id="task-1", thread_id="t9", message_id="m9")]
-    db = _one_shot_db(rows)
+class _Seam:
+    """The one task seam (WS-39 S8c), answering `items_by_origin`."""
+
+    name = "recording"
+
+    def __init__(self, items):
+        self.items = items
+        self.calls = []
+
+    async def items_by_origin(self, db, uid, key, value, **kw):
+        self.calls.append((uid, key, value, kw))
+        return list(self.items)
+
+
+def _seam(monkeypatch, items):
+    from gateway.routes.tasks import item_source as seam
+
+    src = _Seam(items)
+    monkeypatch.setattr(seam, "item_source", lambda: src)
+    return src
+
+
+def _commitments_db(latest=()):
+    """The owner lookup, then the latest-message lookup per thread."""
+    calls = []
+
+    async def execute(stmt, params=None):
+        sql = str(stmt)
+        calls.append((sql, params or {}))
+        r = MagicMock()
+        if "FROM email_accounts" in sql:
+            r.fetchone.return_value = SimpleNamespace(user_id="me@fracktal.in")
+        else:
+            r.fetchall.return_value = [
+                SimpleNamespace(thread_id=t, message_id=mid)
+                for t, mid in latest]
+        return r
+
+    db = AsyncMock()
+    db.execute.side_effect = execute
+    db.calls = calls
+    return db
+
+
+def _task(tid, title, due=None, thread=None):
+    origin = {"kind": "email", "account_id": "acc-1"}
+    if thread:
+        origin["thread_id"] = thread
+    return SimpleNamespace(id=tid, title=title, due_at=due, origin=origin)
+
+
+async def test_commitments_read_the_one_seam_for_the_accounts_owner(
+    monkeypatch,
+) -> None:
+    """WS-39 S8c: the tasks are the account OWNER'S, keyed on
+    `origin.account_id`, and read through `item_source()`. Which tasks are
+    open is the seam's rule, not a query here."""
+    now = datetime.now(UTC)
+    overdue = now - timedelta(days=2)
+    src = _seam(monkeypatch, [
+        _task("task-1", "Send quote", due=overdue, thread="t9"),
+        _task("task-2", "Far away", due=now + timedelta(days=30)),
+        _task("task-3", "Call back"),
+    ])
+    db = _commitments_db(latest=[("t9", "m9")])
     out = await m.digest._digest_commitments(db, "acc-1")
-    sql = str(db.execute.call_args[0][0])
-    assert "disposition NOT IN ('DONE', 'TRASH')" in sql
-    # The json-text side compares to ea.id::text, NOT to :aid — binding the
-    # same parameter against both a uuid column and json text makes Postgres
-    # deduce uuid for it and fail ("operator does not exist: text = uuid").
-    assert "origin->>'account_id' = ea.id::text" in sql
-    assert sql.count(":aid") == 1
-    # message_id (latest message of the linked thread, via the LATERAL join)
-    # lets the dashboard open the email the commitment came from.
-    assert "LEFT JOIN LATERAL" in sql
-    assert out == [{"title": "Send quote", "due": "Jul 25", "overdue": True,
-                    "task_id": "task-1", "thread_id": "t9",
+    assert src.calls == [("me@fracktal.in", "account_id", "acc-1", {})]
+    # Horizon 3 days: the far task and the undated one are left out.
+    assert out == [{"title": "Send quote", "due": overdue.strftime("%b %d"),
+                    "overdue": True, "task_id": "task-1", "thread_id": "t9",
                     "message_id": "m9"}]
+    # message_id (the latest message of the linked thread) lets the dashboard
+    # open the email the commitment came from. One query for all threads.
+    (sql, params), = [c for c in db.calls if "email_messages" in c[0]]
+    assert "DISTINCT ON (em.thread_id)" in sql
+    assert params == {"aid": "acc-1", "tids": ["t9"]}
+    assert not any("gtd_" in c[0] for c in db.calls)
 
 
-async def test_dashboard_mode_includes_undated_commitments() -> None:
+async def test_dashboard_mode_includes_undated_commitments(monkeypatch) -> None:
     """3 of the 4 live commitments had no due date and were invisible to the
     horizon filter. The dashboard (full) projection includes them; the emailed
     brief keeps the due-soon horizon."""
-    db = _one_shot_db([SimpleNamespace(
-        title="Call back", due_label=None, overdue=None,
-        task_id="task-2", thread_id=None, message_id=None)])
+    soon = datetime.now(UTC) + timedelta(days=1)
+    _seam(monkeypatch, [_task("task-2", "Call back"),
+                        _task("task-1", "Soon", due=soon)])
+    db = _commitments_db()
     out = await m.digest._digest_commitments(
         db, "acc-1", include_undated=True)
-    _, params = db.execute.call_args[0][0], db.execute.call_args[0][1]
-    assert params["undated"] is True
-    assert out[0]["due"] is None and out[0]["overdue"] is False
-    # No mirrored mail in the linked thread → message_id null, row not openable.
-    assert out[0]["message_id"] is None
+    # Dated first, undated last: the order the SQL gave with NULLS LAST.
+    assert [c["task_id"] for c in out] == ["task-1", "task-2"]
+    assert out[1]["due"] is None and out[1]["overdue"] is False
+    # No linked thread → message_id null, row not openable, and no lookup.
+    assert out[1]["message_id"] is None
+    assert not [c for c in db.calls if "email_messages" in c[0]]
     # …and the renderers say "no due date" instead of crashing on None.
-    assert "no due date" in m.digest._due_phrase(out[0])
+    assert "no due date" in m.digest._due_phrase(out[1])
+
+
+async def test_commitments_limit_applies_after_the_order(monkeypatch) -> None:
+    now = datetime.now(UTC)
+    _seam(monkeypatch, [
+        _task(f"task-{i}", f"T{i}", due=now + timedelta(hours=10 - i))
+        for i in range(5)])
+    out = await m.digest._digest_commitments(
+        _commitments_db(), "acc-1", limit=2)
+    assert [c["task_id"] for c in out] == ["task-4", "task-3"]
+
+
+async def test_commitments_for_an_unknown_account_are_empty(
+    monkeypatch,
+) -> None:
+    src = _seam(monkeypatch, [_task("task-1", "x")])
+    db = AsyncMock()
+    db.execute.return_value = MagicMock(fetchone=MagicMock(return_value=None))
+    assert await m.digest._digest_commitments(db, "acc-x") == []
+    assert not src.calls
 
 
 def test_a_quiet_inbox_with_commitments_still_sends() -> None:
