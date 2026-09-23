@@ -204,7 +204,11 @@ async def get_timeline(
                 "SELECT * FROM pm_activities "
                 "WHERE task_id = CAST(:tid AS uuid) AND deleted_at IS NULL "
                 + clause +
-                " ORDER BY created_at DESC, id DESC LIMIT :limit OFFSET :offset"
+                # `seq`, not `id` — see migration 213. This one pages, and
+                # an unstable sort under LIMIT/OFFSET is the classic
+                # duplicate-or-skip bug: two pages are two queries, and
+                # nothing made them agree about a tied group.
+                " ORDER BY created_at DESC, seq DESC LIMIT :limit OFFSET :offset"
             ),
             params,
         )).fetchall()
