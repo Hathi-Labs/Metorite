@@ -160,10 +160,22 @@ export function listColumns(
  * The priority vocabulary, as the importance cell offers and reads it.
  * `""` is the unset row — the PATCH sends `importance: null`, and a select
  * can otherwise never be emptied once somebody has chosen something.
+ *
+ * ⚠️ **The ONE copy.** The bulk bar and the group-by lanes each spelt their
+ * own until 2026-09-23. They read this now, so a label cannot change in one
+ * place and linger in two. Fence: `priorityVocabulary.test.ts`.
+ *
+ * ⚠️ **Level 3 is "Highest", not "Urgent".** Owner decision 2026-09-23. My
+ * Tasks has its own `urgent`, DERIVED from the due date (`isUrgent` in
+ * tasks/lib/priority.ts), and one task sits in both apps (D53). So a manager
+ * could mark a task "Urgent" with a due date weeks out, and the assignee's
+ * matrix would correctly call it not urgent. Both apps behaved as designed
+ * and the product misled both people. This priority is how much the task
+ * matters to the COMPANY. When it is due is the due date's job.
  */
 export const IMPORTANCE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: "", label: "No priority" },
-  { value: "3", label: "Urgent" },
+  { value: "3", label: "Highest" },
   { value: "2", label: "High" },
   { value: "1", label: "Normal" },
   { value: "0", label: "Low" },

@@ -160,7 +160,7 @@ describe("importance vocabulary", () => {
   it("treats 0 as Low, never as unset — it is falsy", () => {
     expect(importanceLabel(0)).toBe("Low");
     expect(importanceLabel(null)).toBe("");
-    expect(importanceLabel(3)).toBe("Urgent");
+    expect(importanceLabel(3)).toBe("Highest");
   });
 
   it("offers an explicit unset row so the select can be emptied", () => {

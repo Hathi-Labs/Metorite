@@ -131,7 +131,7 @@ describe("groupTasks by project and importance", () => {
       "importance",
       ctx,
     );
-    expect(groups.map((g) => g.label)).toEqual(["Urgent", "No priority"]);
+    expect(groups.map((g) => g.label)).toEqual(["Highest", "No priority"]);
   });
 
   it("treats importance 0 as a real value, not as absent", () => {

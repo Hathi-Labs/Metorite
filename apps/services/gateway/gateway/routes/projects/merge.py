@@ -219,7 +219,7 @@ def _fold_scalars(target: Any, sources: list[Any]) -> dict[str, Any]:
     if tags != list(getattr(target, "tags", None) or []):
         values["tags"] = tags
 
-    # Higher is more important: 3 Urgent, 0 Low (`table.ts::IMPORTANCE_OPTIONS`).
+    # Higher is more important: 3 Highest, 0 Low (`table.ts::IMPORTANCE_OPTIONS`).
     # `None` is "no priority" and loses to any set value.
     priorities = [
         p for p in (getattr(t, "importance", None) for t in every) if p is not None
