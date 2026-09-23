@@ -1681,10 +1681,34 @@ class FakeProjectsDB:
                 wanted = str(args.get("context") or "").lower()
                 if str(mine.get("context") or "").lower() != wanted:
                     continue
+            # WS-39 S6e — `?untriaged=true`: no overlay row of mine at all.
+            # The LEFT JOIN's `p.task_id IS NULL`, mirrored as "no row", not
+            # as "no disposition" — a row holding only a context is triaged.
+            if "p.task_id IS NULL" in statement and mine:
+                continue
+            # …and never from my own tree (`proj.personal_owner IS NULL`).
+            if "proj.personal_owner IS NULL" in statement and str(
+                task.get("project_id"),
+            ) in personal_projects:
+                continue
+            # WS-39 S6e — `/my/led` narrows the fragment to the led projects.
+            if "t.project_id = ANY(CAST(:led_ids AS uuid[]))" in statement:
+                led_ids = {str(v) for v in (args.get("led_ids") or [])}
+                if str(task.get("project_id")) not in led_ids:
+                    continue
 
             status = statuses.get(str(task.get("status_id")), {})
+            project = next(
+                (
+                    p for p in self.rows("pm_projects")
+                    if str(p.get("id")) == str(task.get("project_id"))
+                ),
+                {},
+            )
             out.append(SimpleNamespace(
                 **task,
+                # S6e — `proj.name AS project_name`, off the LEFT JOIN.
+                project_name=project.get("name"),
                 status_category=status.get("category", ""),
                 p_disposition=mine.get("disposition"),
                 p_next_action=mine.get("next_action"),

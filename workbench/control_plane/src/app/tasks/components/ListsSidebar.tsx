@@ -83,11 +83,17 @@ export function ListsSidebar({
   // it, so their badges narrow with them. ⚠️ NOT the Inbox: a capture lands
   // in the personal ROOT, before any Area, so an Area scope would empty the
   // Inbox and hide the badge. The Inbox is pre-organisation and never scoped.
+  const fromProjectIds = useTaskStore((s) => s.fromProjectIds);
   const counts = useMemo(() => {
     const scoped = viewCounts(itemsInArea(items, selectedAreaId), sourceFilter);
     if (selectedAreaId) scoped.inbox = viewCounts(items, sourceFilter).inbox;
+    // S6e — the "From Projects" group is in the Inbox, so the badge counts
+    // it: a task somebody put on my plate is something to process.
+    scoped.inbox += [...fromProjectIds].filter((id) =>
+      items.some((i) => i.id === id && !i.archivedAt),
+    ).length;
     return scoped;
-  }, [items, sourceFilter, selectedAreaId]);
+  }, [items, sourceFilter, selectedAreaId, fromProjectIds]);
 
   return (
     <nav className="flex h-full flex-col gap-1 overflow-y-auto p-3 text-sm">
@@ -122,6 +128,11 @@ export function ListsSidebar({
       {/* S6b — my Areas. Only under the lens: the legacy store has no such
           rows, and a section that can only render empty is a dead branch. */}
       {lensEnabled() && <AreasSection items={items} onNavigate={onNavigate} />}
+
+      {/* S6e — the projects I lead (my_tasks_cutover.md §4.8 point 1). A
+          project I am answerable for lists here even when no task in it is
+          assigned to me. Lens-only for the same reason as the Areas. */}
+      {lensEnabled() && <LedProjectsSection onNavigate={onNavigate} />}
 
       {/* AI assistant — opens as a scene (mirrors the email app's left-rail
           Chat entry) instead of an always-on right rail. */}
@@ -514,3 +525,63 @@ function AreasSection({
   );
 }
 
+// ── The projects I lead (WS-39 S6e) ──────────────────────────────────────────
+//
+// `pm_projects.lead` is one address. A project I lead with nothing assigned
+// to me is invisible through the membership fragment, and it is the project
+// I am answerable for — so it lists here, from `/my/led`, with its open
+// count. A row opens the `projects` view scoped to it (`LedProjectView`),
+// where my own tasks come first and the board is one link away.
+
+function LedProjectsSection({ onNavigate }: { onNavigate?: () => void }) {
+  const ledProjects = useTaskStore((s) => s.ledProjects);
+  const selectedView = useTaskStore((s) => s.selectedView);
+  const selectedLedProjectId = useTaskStore((s) => s.selectedLedProjectId);
+  const selectLedProject = useTaskStore((s) => s.selectLedProject);
+  if (ledProjects.length === 0) return null;
+
+  return (
+    <div className="mt-3 border-t border-border pt-3">
+      <div className="flex items-center justify-between px-2 pb-1">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Projects I lead
+        </p>
+      </div>
+      {ledProjects.map((project) => {
+        const active =
+          selectedView === "projects" && selectedLedProjectId === project.id;
+        return (
+          <button
+            key={project.id}
+            type="button"
+            aria-pressed={active}
+            onClick={() => {
+              selectLedProject(project.id);
+              onNavigate?.();
+            }}
+            className={[
+              "tech-transition flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left",
+              active
+                ? "bg-primary/10 text-primary"
+                : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+            ].join(" ")}
+          >
+            <Icon name="FolderKanban" className="h-4 w-4 shrink-0" />
+            <span className="flex-1 truncate">{project.name}</span>
+            {project.openTasks > 0 && (
+              <span
+                title={`${project.openTasks} open · ${project.myTasks.length} assigned to you`}
+                className={[
+                  "min-w-[18px] rounded-full px-1.5 py-0.5 text-center text-[10px] font-semibold",
+                  active ? "bg-primary/20 text-primary" : "bg-muted text-muted-foreground",
+                ].join(" ")}
+              >
+                {project.openTasks}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}

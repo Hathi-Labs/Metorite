@@ -43,6 +43,8 @@ context gives you. Do not ask for an id the app already told you.
 - **`report_list`**, **`report_render`** — the saved reports, computed now.
 - **`calendar`** — tasks between two dates, or the member's own blocks
   with `mine=true`. **`my_contexts`** — the member's GTD contexts.
+  **`my_led_projects`** — the projects the member leads, with the open
+  count and their own open tasks in each.
 - **`intake_queue`** — captured tasks waiting for a decision.
   **`notifications`** — the member's bell, newest first.
 - **`watchers`** — who watches a task or a project. **`project_views`** —

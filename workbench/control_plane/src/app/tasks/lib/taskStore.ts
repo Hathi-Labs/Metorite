@@ -1,6 +1,12 @@
 import { create } from "zustand";
 import { dropIndexFor } from "@/lib/boardDrop";
-import { LensPartialFailure, type LensMoveRequest, lensEnabled, lensGetItem } from "./lens";
+import {
+  LensPartialFailure,
+  type LensLedProject,
+  type LensMoveRequest,
+  lensEnabled,
+  lensGetItem,
+} from "./lens";
 import { ProjectsApiError } from "@/app/projects/lib/api";
 import type { PromoteOutcome } from "./promote";
 import {
@@ -64,7 +70,9 @@ import {
   updateTaskSettings,
   type TaskSettings,
   fetchItems,
+  fetchLedProjects,
   fetchPeople,
+  fetchUntriaged,
   fetchOrgPeople,
   createPerson,
   updatePerson,
@@ -84,6 +92,28 @@ import {
   type LensArea,
   type LensAreaRemoval,
 } from "./api";
+
+/** The `ItemMetaPatch` keys that land on MY overlay row (`pm_task_personal`)
+ *  rather than on the shared task — writing one is the triage that takes a
+ *  task out of "From Projects" (S6e). Mirrors `OVERLAY_KEYS` in `lens.ts`,
+ *  spelled in the store's camelCase. */
+const OVERLAY_TRIAGE_KEYS: ReadonlyArray<keyof ItemMetaPatch> = [
+  "nextAction",
+  "context",
+  "energy",
+  "timeEstimateMins",
+  "important",
+  "leveraged",
+  "deepWork",
+  "keptMine",
+  "expectedBy",
+  "scheduledStart",
+  "scheduledEnd",
+  "flexible",
+  "actualStart",
+  "actualEnd",
+  "isMine",
+];
 
 /** Fire-and-forget a live-backend sync; the optimistic local update already
  *  happened, so a transient failure only means the next hydrate reconciles. */
@@ -788,6 +818,31 @@ interface TaskState {
    *  views like `sourceFilter` — it is a scope, not a per-view filter. */
   selectedAreaId: string | null;
   selectArea: (id: string | null) => void;
+  /**
+   * S6e — "From Projects" (my_tasks_cutover.md §4.8 point 2). The ids of
+   * tasks a colleague assigned to me on a board that I have not looked at:
+   * `/my/inbox?untriaged=true`, rows with no overlay row of mine. The Inbox
+   * draws them in a group at the top until I triage one.
+   *
+   * ANY overlay write is the triage — a context, a disposition, a defer —
+   * because the row then exists. `markTriaged` drops the id at once so the
+   * group answers the gesture, and re-reads the server so the set stays
+   * the server's answer and never a client-side guess.
+   */
+  fromProjectIds: ReadonlySet<string>;
+  loadFromProjects: () => Promise<void>;
+  markTriaged: (ids: readonly string[]) => void;
+  /** S6e — the projects I lead (`/my/led`), with their open counts and my
+   *  own open tasks in each. Empty with the flag off. */
+  ledProjects: LensLedProject[];
+  loadLedProjects: () => Promise<void>;
+  /** The led project the `projects` view is showing, or null. */
+  selectedLedProjectId: string | null;
+  selectLedProject: (id: string) => void;
+  /** S6e — re-read ONE task through the lens after the shared body wrote
+   *  to it on the board's routes, so the card and the strip agree with the
+   *  board. A no-op off the lens. */
+  refreshItem: (id: string) => Promise<void>;
   /** People view: lazy roster load + create/edit + résumé ingestion. */
   loadPeople: (opts?: { q?: string; includeInactive?: boolean }) => Promise<void>;
   savePerson: (id: string | null, body: OrgPersonWrite) => Promise<OrgPerson>;
@@ -916,6 +971,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   areas: [],
   personalRootId: null,
   selectedAreaId: null,
+  fromProjectIds: new Set(),
+  ledProjects: [],
+  selectedLedProjectId: null,
 
   selectedView: "inbox",
   selectedContext: null,
@@ -1315,6 +1373,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   clarify: (id, decision, weight) => {
     flushPendingPurge(get().undoSnapshot, get().backend);
+    get().markTriaged([id]);
     // The confirmed matrix flags overlay the decision. Applied locally to the
     // clarified row and (live) patched after organize, independent of the GTD
     // disposition so the golden-eval organize path stays untouched.
@@ -1493,6 +1552,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   quickDispose: (id, disposition) => {
     flushPendingPurge(get().undoSnapshot, get().backend);
+    get().markTriaged([id]);
     set((s) => ({
       items: s.items.map((i) => (i.id === id ? disposeOne(i, disposition) : i)),
       processedThisSession: s.processedThisSession + 1,
@@ -1510,6 +1570,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   bulkDispose: (ids, disposition) => {
     flushPendingPurge(get().undoSnapshot, get().backend);
+    get().markTriaged(ids);
     set((s) => {
       const set_ = new Set(ids);
       const affected = s.items.filter(
@@ -1744,6 +1805,53 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       selectedItemId: null,
     })),
 
+  // ── Continuity with Projects (S6e) ────────────────────────────────────────
+
+  loadFromProjects: async () => {
+    if (get().backend !== "live" || !lensEnabled()) return;
+    try {
+      const rows = await fetchUntriaged();
+      set({ fromProjectIds: new Set(rows.map((r) => r.id)) });
+    } catch {
+      /* keep current */
+    }
+  },
+
+  markTriaged: (ids) => {
+    const current = get().fromProjectIds;
+    if (!ids.some((id) => current.has(id))) return;
+    const next = new Set(current);
+    for (const id of ids) next.delete(id);
+    set({ fromProjectIds: next });
+    // The server's answer, after the write lands. A title edit is not a
+    // triage; the re-read puts such an id back.
+    void get().loadFromProjects();
+  },
+
+  loadLedProjects: async () => {
+    if (get().backend !== "live" || !lensEnabled()) return;
+    try {
+      set({ ledProjects: await fetchLedProjects() });
+    } catch {
+      /* keep current */
+    }
+  },
+
+  selectLedProject: (id) => {
+    get().selectView("projects");
+    set({ selectedLedProjectId: id });
+  },
+
+  refreshItem: async (id) => {
+    if (get().backend !== "live" || !lensEnabled()) return;
+    try {
+      const fresh = await lensGetItem(id);
+      set((s) => ({ items: s.items.map((i) => (i.id === id ? fresh : i)) }));
+    } catch {
+      /* keep current */
+    }
+  },
+
   loadPeople: async (opts) => {
     if (get().backend !== "live") return;
     try {
@@ -1973,6 +2081,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   deferItem: (id, dateIso) => {
+    get().markTriaged([id]);
     set((s) => ({
       items: s.items.map((i) =>
         i.id === id
@@ -1995,6 +2104,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   updateItem: (id, patch) => {
+    // An overlay field in the patch is a triage (S6e). A title or a note
+    // is the task's, shared with the board, and is not.
+    if (OVERLAY_TRIAGE_KEYS.some((k) => patch[k] !== undefined)) {
+      get().markTriaged([id]);
+    }
     set((s) => ({
       items: s.items.map((i) => {
         if (i.id !== id) return i;
@@ -2340,6 +2454,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       // My Areas (S6b) — the sidebar draws them on first paint under the
       // lens. A no-op with the flag off, and never a reason to stay loading.
       void get().loadAreas();
+      // S6e — the two Projects facts: what landed on my plate unlooked-at,
+      // and the projects I answer for. Same posture as the Areas.
+      void get().loadFromProjects();
+      void get().loadLedProjects();
       // Settings load in parallel — defaults already render, so the panes are
       // usable before they arrive.
       const settings = await fetchTaskSettings().catch(() => get().settings);

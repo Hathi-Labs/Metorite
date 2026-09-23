@@ -39,7 +39,10 @@ import {
   lensEstimateStats,
   lensFetchAreas,
   lensFetchItems,
+  lensFetchLed,
   lensFetchProjects,
+  lensFetchUntriaged,
+  lensMyOverlay,
   lensFileUnder,
   lensItemDetail,
   lensMergeInto,
@@ -486,6 +489,12 @@ describe("the cutover seam is complete for this slice", () => {
     "apiCreateSpace",
     "apiCreateFolder",
     "apiCreateLocalProject",
+    // S6e — continuity with Projects. Two reads the legacy store cannot
+    // answer (no board to be assigned from, no `lead` column); both answer
+    // `[]` off the flag so the inbox group and the sidebar section render
+    // nothing rather than a wrong thing.
+    "fetchUntriaged",
+    "fetchLedProjects",
   ];
 
   it("branches to the lens in every function this slice moved", () => {
@@ -1048,5 +1057,88 @@ describe("apiMoveTask has no legacy path, and says so", () => {
     // them which variable and where the order is written down.
     expect(body).toContain("NEXT_PUBLIC_TASKS_LENS");
     expect(body).toContain("docs/TASKS_LENS.md");
+  });
+});
+
+// ── S6e: continuity with Projects ───────────────────────────────────────────
+
+describe("continuity with Projects (S6e)", () => {
+  it("reads the untriaged group off the ONE inbox door, with the flag", async () => {
+    const { calls, restore } = stub([
+      {
+        rows: [{ ...ROW, is_triaged: false, assigned_by: "pm@fracktal.in", project_name: "Sales" }],
+        total: 1,
+      },
+    ]);
+    let rows;
+    try {
+      rows = await lensFetchUntriaged();
+    } finally {
+      restore();
+    }
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toContain("/api/projects/my/inbox?untriaged=true");
+    expect(rows[0]).toMatchObject({
+      id: "task-1",
+      isTriaged: false,
+      assignedBy: "pm@fracktal.in",
+      projectName: "Sales",
+    });
+  });
+
+  it("maps the three continuity facts on every row", () => {
+    const item = mapLensItem({ ...ROW, is_triaged: true, project_name: "Sales" });
+    expect(item.isTriaged).toBe(true);
+    expect(item.projectName).toBe("Sales");
+    expect(item.assignedBy).toBeUndefined();
+  });
+
+  it("lists the projects I lead from /my/led, my tasks in the inbox shape", async () => {
+    const { calls, restore } = stub([
+      {
+        rows: [
+          {
+            id: "p1",
+            name: "Launch",
+            task_prefix: "LN",
+            open_tasks: 4,
+            my_tasks: [{ ...ROW, project_id: "p1" }],
+          },
+        ],
+        total: 1,
+      },
+    ]);
+    let led;
+    try {
+      led = await lensFetchLed();
+    } finally {
+      restore();
+    }
+    expect(calls[0].url).toBe("/api/projects/my/led");
+    expect(calls[0].method).toBe("GET");
+    expect(led).toHaveLength(1);
+    expect(led[0]).toMatchObject({ id: "p1", name: "Launch", taskPrefix: "LN", openTasks: 4 });
+    expect(led[0].myTasks[0]).toMatchObject({ id: "task-1", projectId: "p1", context: "@computer" });
+  });
+
+  it("answers the viewer's own overlay for the Projects chip, or null", async () => {
+    const a = stub([{ ...ROW, is_triaged: true, disposition: "WAITING", context: "@calls" }]);
+    try {
+      expect(await lensMyOverlay("task-1")).toEqual({
+        disposition: "WAITING",
+        context: "@calls",
+        isTriaged: true,
+      });
+      expect(a.calls[0].url).toBe("/api/projects/my/tasks/task-1");
+    } finally {
+      a.restore();
+    }
+    // No overlay row: the derived disposition is not "how I filed it".
+    const b = stub([{ ...ROW, is_triaged: false, context: null }]);
+    try {
+      expect(await lensMyOverlay("task-1")).toBeNull();
+    } finally {
+      b.restore();
+    }
   });
 });

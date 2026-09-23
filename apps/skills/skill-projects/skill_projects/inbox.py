@@ -130,6 +130,26 @@ async def my_contexts() -> str:
 
 
 @_annotate(read_only=True, idempotent=True)
+async def my_led_projects() -> str:
+    """The projects the member LEADS, with how much open work each holds and
+    the member's own open tasks in it first (WS-39 S6e). A project with no
+    task assigned to the member still lists — leading it is the fact."""
+    rows = ((await get("/projects/my/led")) or {}).get("rows") or []
+    out = [DATA_LEGEND, f"Projects you lead ({len(rows)}):"]
+    for row in rows:
+        mine = row.get("my_tasks") or []
+        out.append(
+            f"- {data(row.get('name'))} · {row.get('open_tasks', 0)} open"
+            f" · {len(mine)} assigned to you",
+        )
+        for task in mine:
+            out.extend("  " + line for line in _task_line(task))
+    if not rows:
+        out.append("(none — nobody has named you lead of a project)")
+    return "\n".join(out)
+
+
+@_annotate(read_only=True, idempotent=True)
 async def watchers(target_id: str, kind: str = "task") -> str:
     """Who watches a task or a project, and whether the member does. For a
     project, `inherited` means an ancestor's watch already covers it."""
@@ -403,6 +423,7 @@ __all__ = [  # noqa: RUF022 — reads first, then the writes
     "calendar",
     "intake_queue",
     "my_contexts",
+    "my_led_projects",
     "notifications",
     "project_access",
     "project_views",

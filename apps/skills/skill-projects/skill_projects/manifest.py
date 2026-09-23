@@ -199,10 +199,15 @@ MANIFEST: tuple[Route, ...] = (
         "complete, add_subtasks.",
     ),
     Route("PATCH", "/projects/tasks/{task_id}/personal", "set_my_overlay", "B"),
+    # WS-39 S6e — `?untriaged=true` is a query flag on this same route, so
+    # it needs no row: the manifest keys on the verb and the path, and
+    # `my_work` may pass the flag ("what landed on my plate").
     Route("GET", "/projects/my/inbox", "my_work", "A"),
     Route("GET", "/projects/my/tasks/{task_id}", "my_task", "A"),
     Route("GET", "/projects/my/calendar", "calendar", "A"),
     Route("GET", "/projects/my/contexts", "my_contexts", "A"),
+    # WS-39 S6e — the projects I lead, with their open work and mine.
+    Route("GET", "/projects/my/led", "my_led_projects", "A"),
     # WS-39 S6b — a member's own categories. The READ is on the surface,
     # because "file this under Home" needs to know Home exists. The three
     # writes are not, and that is a decision rather than an oversight: an

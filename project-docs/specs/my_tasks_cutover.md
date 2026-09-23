@@ -458,7 +458,7 @@ change signature. Migration **211** adds `pm_tasks.origin` (§4.4) and
 2. `_annotate_workload` matches a person by email before it matches by name.
    The one store assigns by email.
 
-### S6e — continuity with Projects · AGENT-SAFE
+### S6e — continuity with Projects · AGENT-SAFE · BUILT 2026-09-23
 
 **Scope.** §4.8's five points.
 
@@ -483,6 +483,57 @@ card landed in S6c (`ProjectLabel.tsx`), so S6e does not build it again.
    source test that refuses a second field list.
 4. The visual pass of CLAUDE.md §4. Light mode, compact density and a changed
    accent. My Tasks beside Projects at four widths. Screenshots in the PR.
+
+**Built.** Branch `my-tasks-s6e`. The record below holds the decisions the
+scope did not settle.
+
+1. **`untriaged=true` means a company board.** The clause is
+   `p.task_id IS NULL AND proj.personal_owner IS NULL`. A capture in my own
+   tree writes no overlay row either, and it is not "from Projects". The
+   constant is `UNTRIAGED_CLAUSE` in `personal.py`, and the live check reads
+   it.
+2. **`is_triaged` did not change meaning.** It is the disposition fact, and
+   the Weekly Review reads it. A context alone leaves it false and still
+   takes the row out of the group. The client keeps a set of ids
+   (`fromProjectIds`). It drops one on any overlay write. Then it re-reads
+   the server's set behind the gesture.
+3. **Every inbox row now carries `project_name`.** A member reached by
+   assignment alone may hold no grant on the project, so the row names
+   itself.
+4. **`/my/led` counts direct children only**, through the closed vocabulary
+   (`done`, `cancelled`), the way the Areas count does. `my_tasks` is the
+   member's open assigned tasks in the inbox shape, so the store holds one
+   shape.
+5. **The field blocks are one component**, `TaskBody.tsx` in
+   `app/projects/components/`. `TaskPanel` and `ItemDetail` host it. The
+   body gained a Priority cell and a Due cell. The field list names them,
+   and neither panel drew them. My Tasks passes its overlay strip as
+   `above` and keeps its Notes editor, so the body draws no Description.
+6. **The order stays Projects' order.** Status, priority, assignees, due,
+   description, tags, custom fields, links and subtasks, files, discussion.
+   Both hosts draw it by construction.
+7. **The legacy panel is thinner, not gone.** With the flag off the
+   ClickUp-era provider sections are deleted, and the rest stays. S7
+   retires the branch.
+8. **The Projects view of My Tasks is `LedProjectView`.** The sidebar lists
+   the projects I lead under the Areas. A row opens the view: my tasks
+   first, the open count, and a link to `/projects`. There is no project
+   deep link to copy (`projectMenu.ts` records that), so the link opens the
+   board.
+9. **The way back is one `Badge`** in the Projects panel header, read
+   through `lensMyOverlay` under the lens. It says "Untriaged" when the
+   viewer holds a row with a context and no disposition.
+10. **The five raw checkboxes are `Checkbox`.** `conformance.test.ts`'s
+    baseline lost the five rows. `selectionParity.test.ts` now reads for
+    `<Checkbox`.
+11. **The chat gains one tool**, `my_led_projects`, class A. The
+    `untriaged` flag needs no manifest row, because the manifest keys on the
+    verb and the path.
+
+**Verified.** `tests/live/live_ws39_s6e.py` on the dev database, 7/7 PASS.
+`test_projects_personal_s6e.py`, 9 tests. The vitest fences:
+`itemDetail.test.ts` (7), `lens.test.ts` (56), `selectionParity.test.ts`
+(13).
 
 ### S7 — the cutover · dev-phase window, reported by evidence
 

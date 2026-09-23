@@ -219,6 +219,9 @@ export function mapLensItem(raw: Raw): GtdItem {
     keptMine: tri(raw.kept_mine),
 
     projectId: text(raw.project_id),
+    projectName: text(raw.project_name),
+    isTriaged: tri(raw.is_triaged),
+    assignedBy: text(raw.assigned_by),
     isMine: Boolean(raw.is_mine),
     waitingOn: waitingPerson(raw.waiting_on),
     delegatedAt: text(raw.delegated_at),
@@ -361,6 +364,8 @@ const MY_ROUTES: Readonly<Record<string, string>> = {
   // S6b — a member's own categories (`routes/projects/personal.py`, PR #391).
   areas: "my/areas",
   area: "my/areas/{area_id}",
+  // S6e — the projects I lead (`routes/projects/personal.py`).
+  led: "my/led",
 };
 
 const at = (template: string, id: string): string =>
@@ -423,6 +428,66 @@ export async function lensFetchItems(view = "all"): Promise<GtdItem[]> {
  */
 export async function lensGetItem(id: string): Promise<GtdItem> {
   return mapLensItem(await projectsCall<Raw>(at(MY_ROUTES.task, id)));
+}
+
+// ── Continuity with Projects (S6e, my_tasks_cutover.md §4.8) ────────────────
+
+/**
+ * The rows I have never looked at — assigned to me on a board, with no
+ * overlay row of mine. `GET /projects/my/inbox?untriaged=true`, the same
+ * door as the list with one flag, so there is no second membership query.
+ * Each row carries `assignedBy`.
+ */
+export async function lensFetchUntriaged(): Promise<GtdItem[]> {
+  return (await fetchAll(MY_ROUTES.inbox, "untriaged=true")).map(mapLensItem);
+}
+
+/** A project I lead, as `/projects/my/led` answers it. */
+export interface LensLedProject {
+  id: string;
+  name: string;
+  taskPrefix?: string;
+  /** Everybody's open work on it — not archived, not in a closed lane. */
+  openTasks: number;
+  /** MY open tasks in it, in the inbox's shape (overlay included). */
+  myTasks: GtdItem[];
+}
+
+/**
+ * The projects where I am the lead. A project with no task assigned to me
+ * is invisible through the membership fragment and lists here anyway —
+ * leading it is the fact (§4.8 point 1).
+ */
+export async function lensFetchLed(): Promise<LensLedProject[]> {
+  const res = await projectsCall<ListResponse>(MY_ROUTES.led);
+  return rowsOf(res).map((r) => ({
+    id: String(r.id ?? ""),
+    name: String(r.name ?? ""),
+    taskPrefix: text(r.task_prefix),
+    openTasks: num(r.open_tasks) ?? 0,
+    myTasks: (Array.isArray(r.my_tasks) ? (r.my_tasks as Raw[]) : []).map(
+      mapLensItem,
+    ),
+  }));
+}
+
+/**
+ * The VIEWER's own overlay on one task, for the Projects task panel's
+ * disposition chip (§4.8 point 4) — or null when they hold none, which the
+ * gateway answers as a 404 because the task is not "theirs" through the
+ * fragment. Nothing about anybody else's overlay: the route resolves the
+ * caller from the session and has no `?member=`.
+ */
+export async function lensMyOverlay(
+  id: string,
+): Promise<Pick<GtdItem, "disposition" | "context" | "isTriaged"> | null> {
+  try {
+    const item = await lensGetItem(id);
+    if (!item.isTriaged && !item.context) return null;
+    return { disposition: item.disposition, context: item.context, isTriaged: item.isTriaged };
+  } catch {
+    return null;
+  }
 }
 
 // ── Writes ──────────────────────────────────────────────────────────────────
