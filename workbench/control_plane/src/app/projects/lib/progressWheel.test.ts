@@ -23,16 +23,20 @@ describe("which rows get a wheel at all", () => {
     }
   });
 
-  it("a live project with NO work anywhere keeps its dot", () => {
-    // Two different nothings. "There is no work here" and "none of this work
-    // is done" must not look identical — an empty ring claims the second.
-    expect(showsWheel("active", { tasks: 0, done: 0 })).toBe(false);
+  it("a live project with NO work anywhere STILL gets one", () => {
+    // 🔴 The owner looked at a real sidebar and said "the icons still look
+    // the same". An earlier rule kept the dot here, and a conditional the
+    // reader cannot see is indistinguishable from a feature that did not
+    // ship. Every live project wears the ring. Owner call, 2026-09-23.
+    expect(showsWheel("active", { tasks: 0, done: 0 })).toBe(true);
   });
 
-  it("treats missing counts as no work, never as zero percent", () => {
-    // `/projects/nodes` returns the same rows flat and rolls nothing up.
-    expect(showsWheel("active", {})).toBe(false);
-    expect(showsWheel("active", { tasks: null, done: null })).toBe(false);
+  it("gets one even before the counts have loaded", () => {
+    // `/projects/nodes` returns the same rows flat and rolls nothing up, so
+    // the counts can be absent. The ring still draws, empty, rather than the
+    // row flipping shape once a number arrives.
+    expect(showsWheel("active", {})).toBe(true);
+    expect(showsWheel("active", { tasks: null, done: null })).toBe(true);
   });
 
   it("a live project with work and none done DOES get a ring", () => {

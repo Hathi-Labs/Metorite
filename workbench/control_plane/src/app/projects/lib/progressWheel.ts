@@ -33,15 +33,20 @@ export interface NodeProgress {
 /**
  * Should this row draw a wheel at all?
  *
- * ⚠️ **Two different "nothing"s, and they must not look alike.** A project with
- * no tasks anywhere under it draws its ordinary dot — there is no progress to
- * report, and an empty ring at 0% would claim "none of this is done" about work
- * that does not exist. A project with tasks and none finished DOES draw the
- * ring, empty, because 0 of 12 is a real and useful fact.
+ * **Every live project, without exception.** The owner's instruction was to
+ * replace the green dot for a live project, full stop.
+ *
+ * ⚠️ **An earlier version of this carried a rule the owner did not ask for**:
+ * a live project with no tasks kept its plain dot, on the argument that an
+ * empty ring claims "none of this is done" about work that does not exist.
+ * The owner looked at a real sidebar afterwards and said *"the icons still
+ * look the same. I don't see any completion ring next to the projects."* A
+ * conditional the reader cannot see is indistinguishable from a feature that
+ * did not ship — and 0 of 0 drawing as an empty ring is a fair reading of
+ * "nothing done here yet" anyway. Owner call, 2026-09-23.
  */
-export function showsWheel(state: string, progress: NodeProgress): boolean {
-  if (!isLive(state)) return false;
-  return (progress.tasks ?? 0) > 0;
+export function showsWheel(state: string, _progress: NodeProgress): boolean {
+  return isLive(state);
 }
 
 /**

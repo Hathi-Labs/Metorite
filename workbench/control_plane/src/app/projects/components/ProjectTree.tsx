@@ -90,8 +90,9 @@ function StateDot({
   // is also what keeps D-PM-27 true — a paused row still reads as paused at a
   // glance, because its marker did not become a ring like everything else.
   //
-  // A live project with NO tasks under it keeps the dot too. An empty ring
-  // would claim "none of this is done" about work that does not exist.
+  // ⚠️ EVERY live project, including one with no tasks — it draws an empty
+  // ring. A first version kept the dot in that case and the owner, looking at
+  // a real sidebar, reported the icons unchanged. See `showsWheel`.
   if (showsWheel(state, progress)) {
     return (
       <ProgressWheel
