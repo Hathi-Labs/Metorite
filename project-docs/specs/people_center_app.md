@@ -1063,16 +1063,26 @@ Absences are self-writable (a person records their own) and admin-writable. They
 the capacity bar, the capability search's availability line, the assignee picker's warning,
 and the AI's "do not chase someone who is on holiday" rule (§6.7).
 
-### 5.9 People dashboard — the Center landing rollup ✅ BUILT (WS-28l, 2026-08-15) · 🔴 UNREACHABLE
+### 5.9 People dashboard — the Center landing rollup ✅ BUILT (WS-28l, 2026-08-15) · reachable since 2026-09-23
 
-> ⚠️ **BUILT AND ORPHANED, measured 2026-09-23.** The page works, and it
-> renders correctly in all five review contexts. No member can open it. Its
-> one entry point was the People Center landing card (`lib/centers.ts:305`),
-> and **D49 withdrew Centers from the surface** on 2026-08-24. The People tab
-> bar gives this route no tab on purpose. The 2026-09-20 directive that
-> reached the other six surfaces missed this one, because its door was a
-> withdrawn Center and not a missing tab. **H-167 carries the decision.** That
-> decision sets where the People app opens. It is not a bug fix.
+> ⚠️ **IT WAS ORPHANED FOR A MONTH, and the reason is worth keeping.** The
+> page has worked since 2026-08-15. Between 2026-08-24 and 2026-09-23 no
+> member could open it. Its one entry point was the People Center landing
+> card (`lib/centers.ts:305`), and **D49 withdrew Centers from the surface**
+> on 2026-08-24. Nobody decided to hide this page. Its door simply left with
+> the Centers, and `layout.test.ts` then pinned the absence as though somebody
+> had chosen it.
+>
+> The 2026-09-20 directive — *"a feature nobody can navigate to is a feature
+> nobody has"* — built the tab bar and reached six surfaces. It missed this
+> one, because this one's door was a withdrawn Center and not a missing tab.
+>
+> **Fixed as the Overview tab** (H-167, closed 2026-09-23), beside Workload
+> and on the same `admin:members:read` gate, which `overview.py:70` enforces.
+> 📌 A fold into Workload was considered first and rejected: Workload reads
+> `GET /people/dashboard`, the headcount matrix comes from `GET
+> /people/overview`, so folding buys one destination at the price of a second
+> fetch and an org-shape table on a weekly operational screen.
 
 > **Build record.** `routes/people/overview.py` → `GET /people/overview` +
 > `/people/overview` page; the `centers.ts` "People dashboard" entry flipped

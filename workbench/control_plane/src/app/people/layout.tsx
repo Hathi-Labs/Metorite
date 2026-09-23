@@ -59,6 +59,21 @@ const TABS: ReadonlyArray<TabDef & { hr?: boolean; exact?: boolean }> = [
   { id: "workload", label: "Workload", icon: "Activity",
     href: "/people/dashboard", hr: true,
     note: "Who is behind, overloaded or idle — and who could help whom" },
+  // ⚠️ Added 2026-09-23 (H-167). This surface was BUILT in 2026-08-15 and
+  // unreachable ever since D49 withdrew Centers on 2026-08-24 — its one door
+  // was the People Center landing card, which nothing navigates to any more.
+  // The 2026-09-20 pass that built this bar reached the other six surfaces and
+  // missed this one, because its door was a withdrawn Center and not a missing
+  // tab.
+  //
+  // `hr`, measured and not assumed: `overview.py:70` refuses without
+  // `can_read_hr_fields`, which IS `admin:members:read` — the same gate
+  // Workload carries. It sits beside Workload because both answer about the
+  // organisation rather than about one person, and Overview is the wider of
+  // the two questions.
+  { id: "overview", label: "Overview", icon: "LayoutDashboard",
+    href: "/people/overview", hr: true,
+    note: "Headcount, who is away, the load spread and the health of the record" },
   { id: "seats", label: "Seats", icon: "LayoutGrid",
     href: "/people/seats", hr: true,
     note: "Which teams and Centers each person is in" },

@@ -48,7 +48,7 @@ from gateway.routes.people.core import (
     router,
     store_avatar,
 )
-from gateway.routes.people.fields import authorize_write, editable_fields
+from gateway.routes.people.fields import authorize_write
 from gateway.routes.tasks import people as tasks_people
 from sqlalchemy import text
 
@@ -151,30 +151,22 @@ async def upload_resume(
         }
 
 
-@router.get("/{person_id}/editable")
-async def get_editable(
-    person_id: str, user: UserContext = Depends(get_current_user),
-) -> dict:
-    """Which fields this caller may write on this row, and nothing else.
-
-    A narrow read for the editor to call before it draws, so a form does not
-    have to fetch the whole person to learn what it may offer. The same answer
-    ``person_payload`` embeds — from the same function, never recomputed.
-    """
-    async with _tenant_session() as db:
-        row = (await db.execute(
-            text("SELECT email FROM people WHERE id = CAST(:id AS uuid)"),
-            {"id": person_id},
-        )).fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="No such person")
-    admin = can_manage_people(user)
-    mine = is_self(user, getattr(row, "email", None))
-    return {
-        "is_self": mine,
-        "can_manage": admin,
-        "editable_fields": editable_fields(is_admin=admin, is_self=mine),
-    }
+# ⚠️ ``GET /{person_id}/editable`` WAS HERE. It is gone (H-144, 2026-09-23).
+#
+# It answered "which fields may this caller write on this row" — the same
+# answer, from the same ``editable_fields`` call, that ``person_payload``
+# already embeds on every person read. Nothing called it. `rg -n "editable"` in
+# the People client returned only the type of the embedded field, and no test
+# exercised the route.
+#
+# Its docstring argued that a form could ask this "before it draws, so it does
+# not have to fetch the whole person". A form that did so then needs a SECOND
+# round trip for the values it draws, so the saving was never real.
+#
+# Deleted, and not deprecated. CLAUDE.md §5 refuses a second way to do an
+# existing thing: two routes that answer one question drift, and the one that
+# drifts is the one nobody calls. A client that wants the answer reads
+# ``editable_fields`` off the person payload, which is where the UI reads it.
 
 
 @router.post("/{person_id}/avatar")
