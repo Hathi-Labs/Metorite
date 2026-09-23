@@ -65,6 +65,7 @@ import {
 import { taskDeepLink, taskRef } from "../lib/card";
 import {
   PANEL_MODE_HINTS,
+  PANEL_MODE_ICONS,
   PANEL_WIDTH_CLASS,
   type PanelMode,
   panelEscape,
@@ -273,17 +274,22 @@ export function TaskPanel({
                 the sidebar is not needed."* `/tasks` answers the same need
                 with the same one control, and now so does this.
                 Hidden entirely where the page did not pass `onMode` (the
-                phone, where the panel is always the whole screen). */}
+                phone, where the panel is always the whole screen).
+                ⚠️ Glyph and label both come from the constants now — they
+                were hardcoded here, which left `PANEL_MODE_ICONS` with no
+                reader and free to drift, and it had.
+                ⚠️ NO `aria-pressed`. The label already names the ACTION
+                ("Open as a full card"), so a pressed state made a screen
+                reader announce the same fact twice, once as a verb and once
+                as a state. This is a button that does a thing, not a switch
+                that holds one. */}
             {onMode ? (
               <Button
                 variant="ghost"
                 size="icon-xs"
                 className="mr-1"
-                icon={mode === "full" ? "Minimize2" : "Maximize2"}
-                aria-label={
-                  mode === "full" ? "Back to the side panel" : "Open as a full card"
-                }
-                aria-pressed={mode === "full"}
+                icon={PANEL_MODE_ICONS[mode]}
+                aria-label={PANEL_MODE_HINTS[mode]}
                 title={PANEL_MODE_HINTS[mode]}
                 onClick={() => onMode(mode === "full" ? "side" : "full")}
               />

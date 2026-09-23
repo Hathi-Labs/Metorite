@@ -949,31 +949,45 @@ class FakeProjectsDB:
         }
 
     def _tree_progress_counts(self, args: dict) -> list[SimpleNamespace]:
-        """Per project: live tasks, and how many sit in a closing category.
+        """Per project: live tasks, delivered ones, and abandoned ones.
 
         ⚠️ **This mirrors the SHAPE the handler reads, not the counting rule.**
-        `project_id`, `total`, `done` - the three names `_open_and_done` takes
-        off each row. Whether the SQL itself is right is fenced against a real
-        Postgres in `test_projects_tree_progress.py`, because a hermetic fake
-        agrees with whatever SQL it is handed (R8), and asserting the rule here
-        would be asserting it against its own mirror.
+        `project_id`, `total`, `done`, `cancelled` - the four names
+        `_open_and_done` takes off each row. Whether the SQL itself is right is
+        fenced against a real Postgres in `test_projects_tree_progress.py`,
+        because a hermetic fake agrees with whatever SQL it is handed (R8), and
+        asserting the rule here would be asserting it against its own mirror.
+
+        ⚠️ **`done` and `cancelled` read SEPARATE binds.** They were one bind
+        (`closed`) until 2026-09-23, which is how the ring came to count an
+        abandoned task as a delivered one. A fake still reading one bind would
+        answer the new SQL with the old rule and report nothing wrong.
         """
-        closed = set(args.get("closed") or ())
-        closed_ids = {
-            str(s["id"]) for s in self.rows("pm_task_statuses")
-            if s.get("category") in closed
-        }
+        def ids_for(bind: str) -> set[str]:
+            wanted = set(args.get(bind) or ())
+            return {
+                str(s["id"]) for s in self.rows("pm_task_statuses")
+                if s.get("category") in wanted
+            }
+
+        done_ids = ids_for("done")
+        abandoned_ids = ids_for("abandoned")
         per: dict[str, list[int]] = {}
         for task in self.rows("pm_tasks"):
             if task.get("archived_at"):
                 continue
-            entry = per.setdefault(str(task.get("project_id")), [0, 0])
+            entry = per.setdefault(str(task.get("project_id")), [0, 0, 0])
             entry[0] += 1
-            if str(task.get("status_id")) in closed_ids:
+            status_id = str(task.get("status_id"))
+            if status_id in done_ids:
                 entry[1] += 1
+            elif status_id in abandoned_ids:
+                entry[2] += 1
         return [
-            SimpleNamespace(project_id=pid, total=total, done=done)
-            for pid, (total, done) in per.items()
+            SimpleNamespace(
+                project_id=pid, total=total, done=done, cancelled=cancelled,
+            )
+            for pid, (total, done, cancelled) in per.items()
         ]
 
     def _attachment_counts(self, args: dict) -> list[Any]:

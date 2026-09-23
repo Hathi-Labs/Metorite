@@ -28,6 +28,7 @@ from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
+    COMPLETED_CATEGORY,
     LIFECYCLE_FIELDS,
     NODE_KINDS,
     PROJECT_SOURCES,
@@ -225,8 +226,14 @@ class DeleteResponse(BaseModel):
 
 # ── Reads ───────────────────────────────────────────────────────────────────
 
-async def _visible_projects(db: Any, user: UserContext) -> list[Any]:
-    vis = await resolve_visibility(db, user)
+async def _visible_projects(
+    db: Any, user: UserContext, vis: Any = None,
+) -> list[Any]:
+    # ⚠️ `vis` is passed in by a caller that already resolved it. Resolving it
+    # a second time costs two more round trips for a caller without
+    # `data:org:read`, on the read every Projects page opens with.
+    if vis is None:
+        vis = await resolve_visibility(db, user)
     # Personal projects are excluded from every TEAM read (147/§3.11). They are
     # ordinary projects the grant model already scopes to one person, so this is
     # not a security filter — it is that "My tasks" does not belong in a
@@ -254,7 +261,7 @@ async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        rows = await _visible_projects(db, user)
+        rows = await _visible_projects(db, user, vis)
         counts = await _open_and_done(db, vis)
 
     nodes = {str(r.id): {**row_to_dict(r, ProjectModel), "children": []} for r in rows}
@@ -267,36 +274,81 @@ async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
     return {"rows": roots, "total": len(nodes)}
 
 
-#: One row per project that holds tasks: how many, and how many are finished.
+#: The categories that close a task WITHOUT delivering it.
+#:
+#: Derived from the two constants in `core.py` rather than spelled out, so a
+#: category added to `CLOSING_CATEGORIES` later lands here by itself. Writing
+#: `{"cancelled"}` here would be the second status vocabulary that
+#: `test_projects_analytics`'s shape fence exists to refuse.
+ABANDONED_CATEGORIES: frozenset[str] = CLOSING_CATEGORIES - {COMPLETED_CATEGORY}
+
+
+#: One row per project that holds tasks: how many, how many were DELIVERED,
+#: and how many were abandoned.
 #:
 #: The SAME shape the summary reads — tasks joined to their status, archived
 #: rows excluded, the caller's own visibility clause applied — because a tree
 #: that counted differently from the dashboard beside it would be two answers
-#: to one question. `CLOSING_CATEGORIES` is the vocabulary of "finished", and
-#: it is imported rather than restated.
-async def _open_and_done(db: Any, vis: Any) -> dict[str, tuple[int, int]]:
-    rows = (await db.execute(
-        text(
-            f"SELECT t.project_id,"
-            f"       count(*) AS total,"
-            f"       count(*) FILTER ("
-            f"         WHERE s.category = ANY(CAST(:closed AS text[]))"
-            f"       ) AS done"
-            f"  FROM pm_tasks t"
-            f"  JOIN pm_task_statuses s ON s.id = t.status_id"
-            f" WHERE t.archived_at IS NULL"
-            f"   AND ({task_visibility_clause(vis, 't')})"
-            f" GROUP BY t.project_id"
-        ),
-        {**vis.params, "closed": sorted(CLOSING_CATEGORIES)},
-    )).fetchall()
-    return {str(r.project_id): (int(r.total), int(r.done or 0)) for r in rows}
+#: to one question.
+#:
+#: ⚠️ **THREE counts, not two, and the third one is the point.** A first
+#: version counted all of `CLOSING_CATEGORIES` as "done", which folded
+#: `cancelled` into the finished half. `core.py` names that error before it
+#: happens: *"a metric that adds them makes cancellation the cheapest way to
+#: improve itself"*. It also disagreed with the screen. `NodeDashboard` prints
+#: `done / (tasks - cancelled)` and sits BESIDE this tree, so a project with
+#: four done, four cancelled and two open drew a ring at 80% next to a figure
+#: reading 67% — and a project whose every open task was cancelled drew a FULL
+#: ring beside a dashboard reading 0%. The client owns the arithmetic. This
+#: hands it the three numbers that one rule needs.
+def progress_statement(vis: Any) -> tuple[str, dict[str, Any]]:
+    """The roll-up's SQL and its binds, for this caller.
+
+    ⚠️ **Split out so the R8 fence can run the REAL statement.**
+    `test_projects_tree_progress.py` used to hand asyncpg a hand-copied
+    version, which had quietly dropped `AND (<visibility clause>)` and every
+    `vis_*` bind. It proved that a simplified query runs, while the query
+    production sends reached no database in any suite — and the visibility
+    clause is the half most likely to refuse on asyncpg (H-114), because it is
+    the half with the subquery and the array binds.
+    """
+    return (
+        f"SELECT t.project_id,"
+        f"       count(*) AS total,"
+        f"       count(*) FILTER ("
+        f"         WHERE s.category = ANY(CAST(:done AS text[]))"
+        f"       ) AS done,"
+        f"       count(*) FILTER ("
+        f"         WHERE s.category = ANY(CAST(:abandoned AS text[]))"
+        f"       ) AS cancelled"
+        f"  FROM pm_tasks t"
+        f"  JOIN pm_task_statuses s ON s.id = t.status_id"
+        f" WHERE t.archived_at IS NULL"
+        f"   AND ({task_visibility_clause(vis, 't')})"
+        f" GROUP BY t.project_id",
+        {
+            **vis.params,
+            "done": [COMPLETED_CATEGORY],
+            "abandoned": sorted(ABANDONED_CATEGORIES),
+        },
+    )
+
+
+async def _open_and_done(db: Any, vis: Any) -> dict[str, tuple[int, int, int]]:
+    sql, params = progress_statement(vis)
+    rows = (await db.execute(text(sql), params)).fetchall()
+    return {
+        str(r.project_id): (
+            int(r.total), int(r.done or 0), int(r.cancelled or 0),
+        )
+        for r in rows
+    }
 
 
 def _attach_progress(
-    nodes: list[dict], counts: dict[str, tuple[int, int]],
-) -> tuple[int, int]:
-    """Stamp `tasks` and `done` on every node, counting its whole subtree.
+    nodes: list[dict], counts: dict[str, tuple[int, int, int]],
+) -> tuple[int, int, int]:
+    """Stamp `tasks`, `done` and `cancelled` on every node, for its subtree.
 
     ⚠️ **The SUBTREE, not the node's own rows.** A project's wheel has to mean
     "how much of this project is finished", and for a project with subprojects
@@ -306,20 +358,30 @@ def _attach_progress(
     returns the pair so a parent adds its children in one pass rather than
     walking the tree once per node.
 
-    A node with no tasks anywhere under it gets `0` and `0`. The client draws
-    nothing for that case rather than an empty ring at 0%, because "no work
-    here" and "none of this work is done" are different facts.
+    A node with no tasks anywhere under it gets `0`, `0` and `0`. A live
+    project still draws a ring in that case — an empty one. Owner call,
+    2026-09-23.
+
+    ⚠️ `cancelled` rides along because the client subtracts it from the
+    DENOMINATOR. It is not a third slice of the ring.
     """
     subtotal = 0
     subdone = 0
+    subcancelled = 0
     for node in nodes:
-        own_total, own_done = counts.get(str(node["id"]), (0, 0))
-        kid_total, kid_done = _attach_progress(node.get("children") or [], counts)
+        own_total, own_done, own_cancelled = counts.get(
+            str(node["id"]), (0, 0, 0),
+        )
+        kid_total, kid_done, kid_cancelled = _attach_progress(
+            node.get("children") or [], counts,
+        )
         node["tasks"] = own_total + kid_total
         node["done"] = own_done + kid_done
+        node["cancelled"] = own_cancelled + kid_cancelled
         subtotal += node["tasks"]
         subdone += node["done"]
-    return subtotal, subdone
+        subcancelled += node["cancelled"]
+    return subtotal, subdone, subcancelled
 
 
 @router.get("/nodes")

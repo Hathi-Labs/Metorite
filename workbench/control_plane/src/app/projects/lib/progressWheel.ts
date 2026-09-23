@@ -26,8 +26,10 @@
 export interface NodeProgress {
   /** Tasks in this node's whole subtree. `0` means there is no work here. */
   tasks?: number | null;
-  /** How many of those are in a closing category. */
+  /** How many of those were DELIVERED — the `done` category only. */
   done?: number | null;
+  /** How many were abandoned. Subtracted from the denominator, never added. */
+  cancelled?: number | null;
 }
 
 /**
@@ -61,18 +63,41 @@ export function isLive(state: string): boolean {
 }
 
 /**
- * Finished fraction, 0 to 1.
+ * How much of the CLOSABLE work is delivered, 0 to 1.
  *
- * Clamped at both ends. `done > tasks` should be impossible, and if a roll-up
- * ever disagrees with itself the ring must not sweep past a full circle and
- * start again — a wheel that reads 110% as 10% is worse than one that reads it
- * as full.
+ * ⚠️ **Cancelled work leaves the denominator, and never joins the numerator.**
+ * `core.py` puts it plainly: a team that cancelled forty tasks did not finish
+ * forty tasks, and *"a metric that adds them makes cancellation the cheapest
+ * way to improve itself"*.
+ *
+ * ⚠️ **This is also the rule `NodeDashboard` already prints**, in
+ * `CompletionFigure` and in `ProgressCard`, and the tree sits BESIDE that
+ * dashboard on one screen. A first version of this ring counted every closing
+ * category as done, so a project with four done, four cancelled and two open
+ * drew a ring at 80% next to a figure reading 67% — and a project whose every
+ * open task was cancelled drew a FULL ring beside a dashboard reading 0%. Two
+ * answers to one question, a thumb apart. Both dashboard sites now call this,
+ * so there is one rule rather than three copies of it.
+ *
+ * Clamped at both ends. If a roll-up ever disagrees with itself the ring must
+ * not sweep past a full circle and start again — a wheel that reads 110% as
+ * 10% is worse than one that reads it as full.
  */
 export function completion(progress: NodeProgress): number {
-  const tasks = progress.tasks ?? 0;
+  const closable = (progress.tasks ?? 0) - (progress.cancelled ?? 0);
   const done = progress.done ?? 0;
-  if (tasks <= 0) return 0;
-  return Math.max(0, Math.min(1, done / tasks));
+  if (closable <= 0) return 0;
+  return Math.max(0, Math.min(1, done / closable));
+}
+
+/**
+ * The denominator — the work that can still be delivered.
+ *
+ * Exported because every caller that prints the percent also wants to print
+ * "N of M", and M is the surprising half. Never negative.
+ */
+export function closableCount(progress: NodeProgress): number {
+  return Math.max(0, (progress.tasks ?? 0) - (progress.cancelled ?? 0));
 }
 
 /** Whole percent, for the label a reader hovers to see. */
@@ -99,14 +124,21 @@ export function ringDash(progress: NodeProgress, radius: number): string {
  * Names the counts as well as the percent. "60%" alone is the number people
  * misremember — 3 of 5 and 600 of 1000 are the same percent and not the same
  * situation.
+ *
+ * ⚠️ Says so when cancelled work was excluded. `CompletionFigure`'s tooltip
+ * reaches the same conclusion: the denominator is the surprising half, and
+ * cancelling the last open task jumping the ring to 100% is correct and
+ * baffling unless the label says why.
  */
 export function wheelLabel(
   level: string, name: string, progress: NodeProgress,
 ): string {
-  const tasks = progress.tasks ?? 0;
   const done = progress.done ?? 0;
+  const closable = closableCount(progress);
+  const cancelled = progress.cancelled ?? 0;
+  const note = cancelled > 0 ? ` ${cancelled} cancelled, not counted.` : "";
   return (
     `${level}, active — ${name}. ` +
-    `${completionPercent(progress)}% done, ${done} of ${tasks} tasks.`
+    `${completionPercent(progress)}% done, ${done} of ${closable} tasks.${note}`
   );
 }

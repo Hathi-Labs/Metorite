@@ -89,10 +89,18 @@ export const PANEL_MODE_LABELS: Record<PanelMode, string> = {
  * These are the glyphs of the TARGET stop, because the header now draws one
  * toggle rather than one button per stop: docked shows `Maximize2` ("open it
  * as a full card"), and full shows `Minimize2` ("put it back").
+ *
+ * ⚠️ **The map and the note above it disagreed, and nothing read either.**
+ * `TaskPanel` hardcoded the pair, so the constant had no production reader
+ * and drifted unnoticed — the note described `Maximize2`/`Minimize2` while
+ * the map held `PanelRight`/`Maximize2`. Both halves say one thing now, and
+ * the header reads the map. A comment describing a map nobody uses is the
+ * cheapest way to mislead the next reader, because keeping it wrong costs
+ * nothing.
  */
 export const PANEL_MODE_ICONS: Record<PanelMode, string> = {
-  side: "PanelRight",
-  full: "Maximize2",
+  side: "Maximize2",
+  full: "Minimize2",
 };
 
 export const PANEL_MODE_HINTS: Record<PanelMode, string> = {

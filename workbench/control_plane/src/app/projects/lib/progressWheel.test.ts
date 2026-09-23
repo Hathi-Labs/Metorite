@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
+import { PROJECT_STATES, PROJECT_STATE_ORDER } from "@/lib/statusAccent";
+
 import {
+  closableCount,
   completion,
   completionPercent,
   isLive,
@@ -18,9 +21,25 @@ describe("which rows get a wheel at all", () => {
     // The owner's "all other icons remain unchanged". A paused row that
     // became a ring like everything else would stop reading as paused at a
     // glance, which is the whole point of D-PM-27's glyph-and-hue rule.
-    for (const state of ["paused", "stopped", "planned", "archived", "wat"]) {
-      expect(showsWheel(state, { tasks: 8, done: 1 })).toBe(false);
+    //
+    // ⚠️ Iterates the REAL vocabulary. A first version of this loop listed
+    // "paused", "planned", "archived" and "wat" — of which only one existed.
+    // It passed on four strings the product never produces, and it never
+    // reached `done`, which is the state most likely to be confused with a
+    // full ring. A hand-written list of another module's keys is not a fence.
+    const others = PROJECT_STATE_ORDER.filter((s) => s !== "active");
+    expect(others).toHaveLength(4);
+    for (const state of others) {
+      expect(showsWheel(state, { tasks: 8, done: 1 }), state).toBe(false);
     }
+  });
+
+  it("a DONE project keeps its check, and does not draw a full ring", () => {
+    // The nastiest confusion in the set: "done" and "100%" are different
+    // claims. A completed project wears `CircleCheck`; a live project that
+    // happens to have finished all its work wears a filled ring.
+    expect(showsWheel("done", { tasks: 8, done: 8 })).toBe(false);
+    expect(PROJECT_STATES.done.icon).toBe("CircleCheck");
   });
 
   it("a live project with NO work anywhere STILL gets one", () => {
@@ -48,7 +67,29 @@ describe("which rows get a wheel at all", () => {
 describe("isLive", () => {
   it("is exactly the green state", () => {
     expect(isLive("active")).toBe(true);
-    expect(isLive("paused")).toBe(false);
+    expect(isLive("on_hold")).toBe(false);
+  });
+
+  /**
+   * ⚠️ **R7 — this is the fence `isLive`'s own docstring asks for.**
+   *
+   * It calls itself "the single fact this whole feature turns on, and the one
+   * a later state rename would silently break", and then nothing held it to
+   * the vocabulary. Rename the `active` key in `statusAccent.ts` and every
+   * wheel in the sidebar disappears with no test failing and no error logged
+   * — the sidebar simply goes back to dots, which is exactly what the owner
+   * reported seeing on 2026-09-23.
+   *
+   * So: the token must still BE a state, and it must be the green one.
+   */
+  it("names a state that still exists, and it is the green one", () => {
+    const live = PROJECT_STATE_ORDER.find((s) => isLive(s));
+    expect(live, "isLive matches no state in PROJECT_STATE_ORDER").toBeDefined();
+    expect(PROJECT_STATES[live!].hue).toBe("green");
+  });
+
+  it("matches exactly one state, never two", () => {
+    expect(PROJECT_STATE_ORDER.filter((s) => isLive(s))).toHaveLength(1);
   });
 });
 
@@ -56,6 +97,60 @@ describe("completion", () => {
   it("is the finished fraction", () => {
     expect(completion({ tasks: 8, done: 2 })).toBe(0.25);
     expect(completionPercent({ tasks: 8, done: 2 })).toBe(25);
+  });
+
+  /**
+   * 🔴 **The P1 this file shipped with, and the one the reviewer caught.**
+   *
+   * The first version counted every CLOSING category as finished, so
+   * `cancelled` landed in the numerator. Two consequences, both visible on
+   * one screen, because `NodeDashboard` sits beside the tree:
+   *
+   *   - 4 done, 4 cancelled, 2 open → the ring said 80%, the dashboard 67%.
+   *   - every open task cancelled → the ring said 100% and filled green,
+   *     the dashboard said 0% and drew nothing.
+   *
+   * `core.py` names the rule these pin: *"a metric that adds them makes
+   * cancellation the cheapest way to improve itself"*.
+   */
+  it("subtracts cancelled work, never adds it", () => {
+    expect(completionPercent({ tasks: 10, done: 4, cancelled: 4 })).toBe(67);
+    // The old arithmetic — (4 + 4) / 10 — would read 80.
+    expect(completionPercent({ tasks: 10, done: 4, cancelled: 4 })).not.toBe(80);
+  });
+
+  it("does not call an abandoned project finished", () => {
+    // Six tasks, none delivered, every one cancelled. The old rule filled the
+    // ring completely and labelled it "100% done".
+    expect(completion({ tasks: 6, done: 0, cancelled: 6 })).toBe(0);
+    expect(completionPercent({ tasks: 6, done: 0, cancelled: 6 })).toBe(0);
+  });
+
+  it("agrees with NodeDashboard's rule on the same numbers", () => {
+    // `CompletionFigure` and `ProgressCard` both call this now. The assertion
+    // is the arithmetic they used to write out for themselves.
+    for (const [tasks, done, cancelled] of [
+      [10, 4, 4], [7, 7, 0], [12, 0, 0], [9, 3, 3], [5, 1, 4],
+    ] as const) {
+      const closable = tasks - cancelled;
+      const expected = closable > 0 ? Math.round((done / closable) * 100) : 0;
+      expect(
+        completionPercent({ tasks, done, cancelled }),
+        `${done}/${tasks} with ${cancelled} cancelled`,
+      ).toBe(expected);
+    }
+  });
+
+  it("reads a missing cancelled count as none, not as a gap", () => {
+    // `/nodes` rolls nothing up, so the field can be absent. Absent must mean
+    // "none cancelled", which leaves the denominator whole.
+    expect(completion({ tasks: 4, done: 1 })).toBe(0.25);
+    expect(completion({ tasks: 4, done: 1, cancelled: null })).toBe(0.25);
+  });
+
+  it("closableCount never goes negative", () => {
+    expect(closableCount({ tasks: 3, done: 0, cancelled: 9 })).toBe(0);
+    expect(closableCount({})).toBe(0);
   });
 
   it("is 0 rather than NaN on an empty subtree", () => {
@@ -119,5 +214,26 @@ describe("wheelLabel", () => {
   it("says the row is active, because the wheel only ever means that", () => {
     expect(wheelLabel("subproject", "Hardware", { tasks: 3, done: 3 }))
       .toContain("active");
+  });
+
+  it("counts against the closable total, not the raw one", () => {
+    // 10 tasks, 4 cancelled — the reader is told "4 of 6", matching the ring.
+    // "4 of 10" beside a ring at 67% is the mismatch this whole fix is about.
+    const label = wheelLabel("project", "Rocket", {
+      tasks: 10, done: 4, cancelled: 4,
+    });
+    expect(label).toContain("4 of 6");
+    expect(label).not.toContain("4 of 10");
+  });
+
+  it("says why the total shrank, but only when something was cancelled", () => {
+    // Cancelling the last open task jumps the ring to 100%. That is correct
+    // and baffling unless the label says what left the denominator.
+    expect(
+      wheelLabel("project", "Rocket", { tasks: 10, done: 4, cancelled: 4 }),
+    ).toContain("4 cancelled, not counted");
+    expect(
+      wheelLabel("project", "Rocket", { tasks: 10, done: 4 }),
+    ).not.toContain("cancelled");
   });
 });

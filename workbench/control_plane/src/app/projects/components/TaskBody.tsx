@@ -901,7 +901,12 @@ export function TaskBody({
             label="Discussion"
             icon="MessageSquare"
             count={comments.total}
-            className={twoColumn ? "col-span-2 min-w-0" : undefined}
+            // ⚠️ `min-w-0` only. `col-span-2` was left over from when the
+            // SECTIONS were the grid cells. The parent is a flex column now
+            // and a column span means nothing there — a dead class that reads
+            // like live layout. `min-w-0` still earns its place: it is what
+            // stops a long unbroken comment forcing the panel wider.
+            className={twoColumn ? "min-w-0" : undefined}
             {...fold("activity")}
           >
             <Tabs

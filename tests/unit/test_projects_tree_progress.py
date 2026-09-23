@@ -27,7 +27,11 @@ import pytest
 from gateway.routes.projects import core as pm_core
 from gateway.routes.projects import tasks as pm_tasks
 from gateway.routes.projects import tree as pm_tree
-from gateway.routes.projects.core import CLOSING_CATEGORIES
+from gateway.routes.projects.core import (
+    CLOSING_CATEGORIES,
+    COMPLETED_CATEGORY,
+    Visibility,
+)
 from sqlalchemy import text
 
 from tests.unit._projects_fakes import (
@@ -72,7 +76,7 @@ def test_a_parent_counts_its_whole_subtree():
             ]},
         ],
     }]
-    counts = {"proj": (4, 1), "sub": (6, 5)}
+    counts = {"proj": (4, 1, 0), "sub": (6, 5, 0)}
 
     pm_tree._attach_progress(tree, counts)
 
@@ -86,12 +90,32 @@ def test_a_parent_counts_its_whole_subtree():
     assert (space["tasks"], space["done"]) == (10, 6)
 
 
+def test_cancelled_work_rolls_up_too_and_stays_out_of_done():
+    """🔴 The P1: an abandoned task is not a delivered one.
+
+    The client subtracts `cancelled` from the DENOMINATOR, so the roll-up has
+    to carry it up the tree beside the other two. Folding it into `done` — the
+    first version of this — filled the ring for a project whose work was all
+    abandoned, beside a dashboard reading 0%.
+    """
+    tree = [{"id": "space", "children": [{"id": "proj", "children": []}]}]
+    counts = {"proj": (10, 4, 4), "space": (2, 0, 2)}
+
+    pm_tree._attach_progress(tree, counts)
+
+    proj = tree[0]["children"][0]
+    assert (proj["tasks"], proj["done"], proj["cancelled"]) == (10, 4, 4)
+    # The space adds its own two abandoned rows to the child's four.
+    assert (tree[0]["tasks"], tree[0]["done"], tree[0]["cancelled"]) == (12, 4, 6)
+
+
 def test_a_node_with_nothing_under_it_reports_zero_not_none():
-    """`0` and `0`, so the client can tell "no work" from "no answer"."""
+    """`0`, `0` and `0`, so the client tells "no work" from "no answer"."""
     tree = [{"id": "empty", "children": []}]
     pm_tree._attach_progress(tree, {})
     assert tree[0]["tasks"] == 0
     assert tree[0]["done"] == 0
+    assert tree[0]["cancelled"] == 0
 
 
 def test_a_count_for_a_node_outside_the_tree_is_ignored():
@@ -99,7 +123,9 @@ def test_a_count_for_a_node_outside_the_tree_is_ignored():
     project, say - belongs to no row here. The alternative is a total that
     no line on screen adds up to."""
     tree = [{"id": "visible", "children": []}]
-    pm_tree._attach_progress(tree, {"visible": (2, 1), "somewhere-else": (99, 99)})
+    pm_tree._attach_progress(
+        tree, {"visible": (2, 1, 0), "somewhere-else": (99, 99, 9)},
+    )
     assert (tree[0]["tasks"], tree[0]["done"]) == (2, 1)
 
 
@@ -112,44 +138,98 @@ def test_a_count_for_a_node_outside_the_tree_is_ignored():
 # fenced here, against a real Postgres on asyncpg.
 
 
+#: The two callers the clause has arms for. A restricted caller is the one
+#: whose clause carries the grant-closure subquery, so it is the one that can
+#: refuse on asyncpg — and it was the one the old literal never exercised.
+_VIS_SHAPES = [
+    pytest.param(True, id="unrestricted"),
+    pytest.param(False, id="restricted"),
+]
+
+
 @pytest.mark.skipif(
     not os.environ.get("TENANT_LADDER_DATABASE_URL"),
     reason="TENANT_LADDER_DATABASE_URL unset - R8 needs a real Postgres",
 )
+@pytest.mark.parametrize("unrestricted", _VIS_SHAPES)
 @ASYNC
-async def test_the_count_query_runs_on_asyncpg():
+async def test_the_count_query_runs_on_asyncpg(unrestricted: bool):
     """Either the driver accepts the statement and its binds, or it raises.
 
     Asserts nothing about the answer: the tenant database this runs against is
     whatever the ladder left. What is under test is the shape - a `FILTER` over
     a text[] bind is exactly the fragment that passes on psycopg and can refuse
     on asyncpg (H-114).
+
+    ⚠️ **Runs the statement production BUILDS, not a copy of it.** This test
+    used to carry its own hand-written SQL, and that copy had lost
+    `AND (<visibility clause>)` along with every `vis_*` bind. It proved a
+    simplified query runs while the real one reached no database in any suite
+    - and the visibility clause is the half with the subquery and the array
+    binds, so it is the half most likely to refuse. `progress_statement()`
+    exists to close that gap.
     """
     from sqlalchemy.ext.asyncio import create_async_engine
     from sqlalchemy.pool import NullPool
+
+    vis = Visibility(
+        unrestricted=unrestricted,
+        email="rollup-fence@example.com",
+        groups=("engineering",),
+        organization_id="00000000-0000-0000-0000-000000000001",
+    )
+    sql, params = pm_tree.progress_statement(vis)
+    # The fence is worth nothing if the clause silently dropped out again.
+    assert "vis_org" in sql
+    assert params["done"] == [COMPLETED_CATEGORY]
+    assert "cancelled" not in params["done"]
 
     url = os.environ["TENANT_LADDER_DATABASE_URL"].replace("+psycopg", "+asyncpg")
     engine = create_async_engine(url, future=True, poolclass=NullPool)
     try:
         async with engine.begin() as conn:
-            rows = (await conn.execute(
-                text(
-                    "SELECT t.project_id,"
-                    "       count(*) AS total,"
-                    "       count(*) FILTER ("
-                    "         WHERE s.category = ANY(CAST(:closed AS text[]))"
-                    "       ) AS done"
-                    "  FROM pm_tasks t"
-                    "  JOIN pm_task_statuses s ON s.id = t.status_id"
-                    " WHERE t.archived_at IS NULL"
-                    " GROUP BY t.project_id"
-                ),
-                {"closed": sorted(CLOSING_CATEGORIES)},
-            )).fetchall()
+            rows = (await conn.execute(text(sql), params)).fetchall()
         # The column NAMES are what `_open_and_done` reads off each row. A
         # rename here reads as an AttributeError three layers away.
         for row in rows:
             assert row.total is not None
             assert row.done is not None
+            assert row.cancelled is not None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("TENANT_LADDER_DATABASE_URL"),
+    reason="TENANT_LADDER_DATABASE_URL unset - R8 needs a real Postgres",
+)
+@ASYNC
+async def test_a_cancelled_task_is_counted_apart_from_a_done_one():
+    """🔴 The P1, against a real database rather than against the fake.
+
+    The ring counted every CLOSING category as delivered, so an abandoned task
+    filled it. `NodeDashboard` prints `done / (tasks - cancelled)` on the same
+    screen, so the two disagreed by a thumb's width. This asserts the two
+    filters cannot both match one row.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    vis = Visibility(
+        unrestricted=True,
+        email="rollup-fence@example.com",
+        groups=(),
+        organization_id="00000000-0000-0000-0000-000000000001",
+    )
+    sql, params = pm_tree.progress_statement(vis)
+    url = os.environ["TENANT_LADDER_DATABASE_URL"].replace("+psycopg", "+asyncpg")
+    engine = create_async_engine(url, future=True, poolclass=NullPool)
+    try:
+        async with engine.begin() as conn:
+            rows = (await conn.execute(text(sql), params)).fetchall()
+        for row in rows:
+            # Disjoint by construction: `done` and `abandoned` partition the
+            # closing categories, so their sum can never exceed the total.
+            assert row.done + row.cancelled <= row.total
     finally:
         await engine.dispose()
