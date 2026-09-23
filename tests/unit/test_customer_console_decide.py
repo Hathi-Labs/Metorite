@@ -46,6 +46,9 @@ from customer_console import catalog, handlers  # noqa: E402
 from customer_console import router as router_mod  # noqa: E402
 from customer_console.decide import (  # noqa: E402
     MAX_CHOICE_OPTIONS,
+    MAX_CRITERION_CHARS,
+    MAX_CRITERION_KEY_CHARS,
+    MAX_INSTRUCTIONS_CHARS,
     MAX_QUESTIONS,
     MAX_STATE_TOKENS,
 )
@@ -479,6 +482,53 @@ def vendor(monkeypatch):
     return recorded
 
 
+def _bind_decide(db, models: list[str]):
+    """Declare, profile and bind ``models`` as ranks 1..n of `tier-decide`.
+
+    ⚠️ **The binding carries its OWN ``effective_from``**, a random instant on
+    2026-01-01, and the teardown deletes exactly those rows. The scratch
+    database is shared across sessions, so a teardown by tier alone could
+    delete another session's binding.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    since = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(
+        microseconds=uuid.uuid4().int % 86_400_000_000)
+    with db.begin() as c:
+        for rank, model in enumerate(models, start=1):
+            c.execute(text(
+                "INSERT INTO model_capability (model, task, invocation, streams) "
+                "VALUES (:m, 'decide', 'native_typesafe', FALSE)"), {"m": model})
+            c.execute(text(
+                "INSERT INTO model_profile (model, vendor_input_per_1m_usd, "
+                " vendor_output_per_1m_usd, context_window) "
+                "VALUES (:m, :i, :o, 64000)"),
+                {"m": model, "i": INPUT_PER_1M, "o": OUTPUT_PER_1M})
+            c.execute(text(
+                "INSERT INTO tier_binding (tier, model, task, rank, effective_from) "
+                "VALUES ('tier-decide', :m, 'decide', :r, :f)"),
+                {"m": model, "r": rank, "f": since})
+        c.execute(text(
+            "INSERT INTO provider_credential (provider, secret_enc, label) "
+            "VALUES ('typesafe', :s, :l) ON CONFLICT DO NOTHING"),
+            {"s": router_mod.encrypt_secret("sk-typesafe-fence"), "l": _FENCE_LABEL})
+    return since
+
+
+def _unbind_decide(db, models: list[str], since) -> None:
+    with db.begin() as c:
+        for model in models:
+            c.execute(text(
+                "DELETE FROM tier_binding WHERE tier = 'tier-decide' "
+                "AND task = 'decide' AND model = :m AND effective_from = :f"),
+                {"m": model, "f": since})
+            c.execute(text("DELETE FROM model_capability WHERE model = :m"), {"m": model})
+            c.execute(text("DELETE FROM model_profile WHERE model = :m"), {"m": model})
+        c.execute(text(
+            "DELETE FROM provider_credential WHERE provider = 'typesafe' AND label = :l"),
+            {"l": _FENCE_LABEL})
+
+
 @pytest.fixture
 def bound(db, vendor):
     """What CP-13b's operator does by hand, for ONE test: declare Jev, fill
@@ -487,31 +537,21 @@ def bound(db, vendor):
     🔴 **The migration seeds none of this, on purpose.** So every row here is
     removed again, and the "ships dark" fence below stays true.
     """
-    with db.begin() as c:
-        c.execute(text(
-            "INSERT INTO model_capability (model, task, invocation, streams) "
-            "VALUES (:m, 'decide', 'native_typesafe', FALSE)"), {"m": JEV})
-        c.execute(text(
-            "INSERT INTO model_profile (model, vendor_input_per_1m_usd, "
-            " vendor_output_per_1m_usd, context_window) "
-            "VALUES (:m, :i, :o, 64000)"),
-            {"m": JEV, "i": INPUT_PER_1M, "o": OUTPUT_PER_1M})
-        c.execute(text(
-            "INSERT INTO tier_binding (tier, model, task, effective_from) "
-            "VALUES ('tier-decide', :m, 'decide', '2026-01-01T00:00:00Z')"),
-            {"m": JEV})
-        c.execute(text(
-            "INSERT INTO provider_credential (provider, secret_enc, label) "
-            "VALUES ('typesafe', :s, :l) ON CONFLICT DO NOTHING"),
-            {"s": router_mod.encrypt_secret("sk-typesafe-fence"), "l": _FENCE_LABEL})
+    since = _bind_decide(db, [JEV])
     yield vendor
-    with db.begin() as c:
-        c.execute(text("DELETE FROM tier_binding WHERE tier = 'tier-decide'"))
-        c.execute(text("DELETE FROM model_capability WHERE model = :m"), {"m": JEV})
-        c.execute(text("DELETE FROM model_profile WHERE model = :m"), {"m": JEV})
-        c.execute(text(
-            "DELETE FROM provider_credential WHERE provider = 'typesafe' AND label = :l"),
-            {"l": _FENCE_LABEL})
+    _unbind_decide(db, [JEV], since)
+
+
+#: A second step on the same vendor, for the failover fence.
+JEV_2 = "typesafe/jev-preview"
+
+
+@pytest.fixture
+def bound_two(db, vendor):
+    """`tier-decide` bound to a TWO-step chain, both steps on one vendor."""
+    since = _bind_decide(db, [JEV, JEV_2])
+    yield vendor
+    _unbind_decide(db, [JEV, JEV_2], since)
 
 
 @pytest.fixture
@@ -607,6 +647,33 @@ class TestTheCapabilityWrite:
             "model": JEV, "task": "decide", "invocation": "native_typesafo"})
         assert r.status_code == 400, r.text
         assert "native_typesafo" in r.json()["detail"]
+
+    @pytest.mark.parametrize("task, verb, words", [
+        # A decision handed to a chat verb would answer 502 on the first call.
+        ("decide", "acompletion", "takes only a native invocation"),
+        # A chat request sent to a decision vendor.
+        ("chat", "native_typesafe", "serves only decide"),
+        ("transcribe", "native_typesafe", "serves only decide"),
+    ])
+    def test_the_verb_must_fit_the_task(self, client, task, verb, words):
+        """Fix after review: `check_invocation_for_task` refuses the pair at
+        declare time, in both directions, and names the rule."""
+        model = f"typesafe/pair-{uuid.uuid4().hex[:6]}"
+        r = client.post("/catalog/capabilities", headers=OP, json={
+            "model": model, "task": task, "invocation": verb})
+        assert r.status_code == 400, r.text
+        assert words in r.json()["detail"]
+
+    def test_the_legal_pair_is_accepted(self, client, db):
+        model = f"typesafe/pair-{uuid.uuid4().hex[:6]}"
+        try:
+            r = client.post("/catalog/capabilities", headers=OP, json={
+                "model": model, "task": "decide", "invocation": "native_typesafe"})
+            assert r.status_code == 200, r.text
+        finally:
+            with db.begin() as c:
+                c.execute(text("DELETE FROM model_capability WHERE model = :m"),
+                          {"m": model})
 
     def test_a_decide_capability_may_not_stream(self, client):
         r = client.post("/catalog/capabilities", headers=OP, json={
@@ -730,19 +797,59 @@ class TestClause13RefusesBeforeTheVendor:
         assert recording_fake["calls"] == []
         assert _rows(db, org["id"]) == []
 
+    def test_a_state_under_the_limit_plus_a_long_question_is_refused(
+        self, client, db, org, recording_fake
+    ):
+        """Fix after review. The vendor window is 32k for `state` PLUS the
+        longest question. A state of about 31k tokens passes alone, and one
+        long question takes the pair over."""
+        state = "x" * (31_000 * 4)
+        questions = {
+            "q": {"type": "choice", "instructions": "i" * MAX_INSTRUCTIONS_CHARS,
+                  "criteria": {f"o{i}": "d" * 100 for i in range(10)}},
+        }
+        r = _decide(client, org["key"], state=state, questions=questions)
+        assert r.status_code == 400, r.text
+        assert "state plus the longest question" in r.json()["detail"]
+        assert recording_fake["calls"] == []
+        assert _rows(db, org["id"]) == []
+
+    @pytest.mark.parametrize("question, words", [
+        ({"type": "boolean", "instructions": "i" * (MAX_INSTRUCTIONS_CHARS + 1)},
+         f"instructions take at most {MAX_INSTRUCTIONS_CHARS} characters"),
+        ({"type": "boolean", "instructions": "x",
+          "criteria": {"true": "d" * (MAX_CRITERION_CHARS + 1), "false": "no"}},
+         f"takes at most {MAX_CRITERION_CHARS} characters"),
+        ({"type": "choice", "instructions": "x",
+          "criteria": {"k" * (MAX_CRITERION_KEY_CHARS + 1): "d", "b": "d"}},
+         f"a criterion key takes at most {MAX_CRITERION_KEY_CHARS} characters"),
+    ])
+    def test_a_long_field_is_a_400_and_not_a_422(
+        self, client, db, org, recording_fake, question, words
+    ):
+        r = _decide(client, org["key"], questions={"q": question})
+        assert r.status_code == 400, r.text
+        assert words in r.json()["detail"]
+        assert recording_fake["calls"] == []
+        assert _rows(db, org["id"]) == []
+
     def test_the_limits_are_at_the_edge_and_not_inside_it(
         self, client, org, bound
     ):
-        """The mutation guard: a limit off by one would refuse this."""
+        """The mutation guard: a limit off by one would refuse this. The
+        state fills the window exactly, once the question is counted."""
+        from customer_console.decide import DecideQuestion, question_chars
+
         questions = {
-            "q": {"type": "choice", "instructions": "x",
+            "q": {"type": "choice", "instructions": "i" * MAX_INSTRUCTIONS_CHARS,
                   "criteria": {f"o{i}": "o" for i in range(MAX_CHOICE_OPTIONS)}},
         }
+        used = question_chars(DecideQuestion(**questions["q"]))
         bound.body = {"answers": {"q": {"choice": "o1", "probabilities": {},
                                         "confidence": 0.5}},
                       "usage": {"input_tokens": 9, "output_tokens": 1}}
         r = _decide(client, org["key"], questions=questions,
-                    state="x" * (MAX_STATE_TOKENS * 4))
+                    state="x" * (MAX_STATE_TOKENS * 4 - used))
         assert r.status_code == 200, r.text
 
 
@@ -762,6 +869,91 @@ class TestAVendorFailureGoesThroughTheOneMapping:
         assert "quotes the request" not in r.text
         # A broken vendor is not a customer wall, so no row (§8.1).
         assert _rows(db, org["id"]) == []
+
+
+@_DB
+class TestAnUnreadable200IsTerminal:
+    """Fix after review. A 200 we cannot read has been PAID for, so the
+    chain stops, the caller reads 502, and one alarm names the call."""
+
+    def test_the_second_step_is_never_called(
+        self, client, db, org, bound_two, caplog
+    ):
+        bound_two.body = {"answers": "not a map", "usage": {"input_tokens": 5}}
+        with caplog.at_level("ERROR", logger="customer_console.handlers"):
+            r = _decide(client, org["key"])
+        assert r.status_code == 502, r.text
+        assert r.json()["detail"] == "upstream provider error"
+        # Both steps share one recorded vendor, so the request count is the
+        # count of steps the walk tried.
+        assert len(bound_two.requests) == 1
+        assert bound_two.sent()["model"] == "jev-1.13.0"
+        alarms = [rec for rec in caplog.records
+                  if rec.getMessage() == "handlers.vendor_unreadable"]
+        assert len(alarms) == 1
+        alarm = alarms[0]
+        assert alarm.upstream_status == 200
+        assert alarm.router_org == org["id"]
+        assert alarm.router_request.startswith("rtr-")
+        # The body and the key never reach the log.
+        assert "not a map" not in str(alarm.__dict__)
+        assert "sk-typesafe" not in str(alarm.__dict__)
+        assert _rows(db, org["id"]) == []
+
+
+class TestTheTerminalRule:
+    """The database-free half of the unreadable-200 fix."""
+
+    def test_a_body_that_is_not_json_is_terminal_too(self):
+        def _html(request):
+            return httpx.Response(200, text="<html>oops</html>")
+
+        handler = TypeSafeHandler(transport=httpx.MockTransport(_html))
+        payload = DecidePayload(model=JEV, state=STATE, questions=_questions(),
+                                api_key="k")
+        with pytest.raises(NativeProviderError) as exc:
+            asyncio.run(handler.call("decide", payload))
+        assert exc.value.terminal is True
+        assert exc.value.status_code is None
+
+    def test_a_refusal_is_NOT_terminal(self):
+        """A 529 must still fail over. Only the unreadable 200 stops the walk."""
+        with pytest.raises(NativeProviderError) as exc:
+            _run_handler(_Vendor(status=529, body={}))
+        assert exc.value.terminal is False
+
+    def test_walk_chain_stops_on_a_terminal_error(self):
+        steps = [router_mod.ResolvedTier(tier="tier-decide", model=m, task="decide")
+                 for m in (JEV, JEV_2)]
+        tried: list[str] = []
+
+        async def _attempt(step):
+            tried.append(step.model)
+            raise NativeProviderError(None, "unreadable", terminal=True)
+
+        with pytest.raises(router_mod.UpstreamFailed):
+            asyncio.run(router_mod.walk_chain(steps, _attempt))
+        assert tried == [JEV]
+
+    def test_walk_chain_still_fails_over_on_a_retryable_error(self):
+        steps = [router_mod.ResolvedTier(tier="tier-decide", model=m, task="decide")
+                 for m in (JEV, JEV_2)]
+        tried: list[str] = []
+
+        async def _attempt(step):
+            tried.append(step.model)
+            if step.model == JEV:
+                raise NativeProviderError(529, "overloaded")
+            return "ok"
+
+        answer, served = asyncio.run(router_mod.walk_chain(steps, _attempt))
+        assert (answer, served.model, tried) == ("ok", JEV_2, [JEV, JEV_2])
+
+
+def test_the_payload_repr_never_prints_the_key():
+    payload = DecidePayload(model=JEV, state=STATE, questions=_questions(),
+                            api_key="sk-secret-never-printed")
+    assert "sk-secret-never-printed" not in repr(payload)
 
 
 @_DB

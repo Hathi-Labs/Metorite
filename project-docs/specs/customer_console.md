@@ -9532,8 +9532,14 @@ caller.
 13. **The Router validates the request before it spends.** At most 255
     options in a `choice`. From 2 to 10 levels in a `score`. At most 16
     questions in one request *(agent default. The vendor states no limit)*.
-    `state` at most 32k tokens, estimated as characters divided by 4.
+    `state` PLUS the longest question at most 32k tokens, estimated as
+    characters divided by 4. A question counts its instructions, its
+    criterion keys and its criterion descriptions. One `instructions` field
+    takes at most 4000 characters, one criterion description at most 4000,
+    and one criterion key at most 200 *(agent defaults)*.
     A breach is a 400 that names the rule. The vendor never sees it.
+    *(Widened 2026-09-23 after review. The first build counted `state`
+    alone, and the vendor's window counts both.)*
 14. **Streaming is FALSE on the capability row** (D60.9). The door returns
     one JSON body.
 
@@ -9614,7 +9620,7 @@ time and check it again at merge (R1). The next free number on
 | 7 | Request validation from clause 13 | `main.py` or a `decide.py` beside it |
 
 📌 **As built, 2026-09-23.** Each artefact landed where the table says.
-Validation and the request body live in `customer_console/decide.py`. Four
+Validation and the request body live in `customer_console/decide.py`. Six
 facts the table did not state:
 
 - **The request needs one or more questions.** An empty map is a 400 that
@@ -9630,6 +9636,22 @@ facts the table did not state:
 - **A fourth fence changed.** `_CAPABILITY_GATED_ROUTES` in
   `test_customer_console_resolve.py` gains `/v1/decide` on `serve`, as the
   other four serving doors carry it.
+- **The capability write pairs the verb with the task.**
+  `catalog.check_invocation_for_task` refuses a `native_*` verb on any task
+  but `decide`. It also refuses `decide` with any verb that is not
+  `native_*`. `POST /catalog/capabilities` answers 400 and names the rule.
+  Without it, `(model, decide, acompletion)` would answer 502 on the first
+  customer call.
+- **A 200 that the handler cannot read STOPS the chain.** The vendor has
+  already charged for it, so a second step would pay a second vendor for the
+  same request. The handler raises `NativeProviderError` with
+  `terminal=True`, and `walk_chain` stops on it. The caller reads 502, and
+  the door writes no usage row. So the handler logs
+  `handlers.vendor_unreadable` at ERROR, with the upstream status, the
+  organization id and the request id. The log never holds the body or the
+  key. The door mints the request id before the call, so the alarm and any
+  usage row name the same request. `DecidePayload.api_key` carries
+  `repr=False`.
 
 ⚠️ **The migration seeds NO `model_capability`, `model_profile`,
 `tier_binding` or rate row.** Those are operator writes, and the operator
@@ -9929,6 +9951,7 @@ uv run pytest tests/unit/test_customer_console_decide.py \
   tests/unit/test_customer_console_sql.py \
   tests/unit/test_customer_console_payments.py \
   tests/unit/test_customer_console_router.py \
+  tests/unit/test_customer_console_resolve.py \
   tests/unit/test_handoff_queue.py -q -rs
 ```
 

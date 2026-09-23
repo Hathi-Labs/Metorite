@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -95,16 +95,22 @@ class NativeProviderError(Exception):
     read as None and reach the caller as a 502.
 
     ⚠️ **``status_code`` is None when the vendor gave no status** — a
-    timeout, a dropped connection, or a body we cannot read. ``walk_chain``
-    treats None as retryable, and ``_upstream_refusal`` answers 502.
+    timeout or a dropped connection. ``walk_chain`` treats None as
+    retryable, and ``_upstream_refusal`` answers 502.
+
+    🔴 **``terminal`` stops the chain.** A 200 whose body we cannot read has
+    already been PAID for at the vendor. ``walk_chain`` reads ``terminal``
+    and raises at once, so a second step never pays a second vendor for the
+    same request. The caller still reads a 502.
 
     The message never quotes the vendor's body. That body can quote the
     request, and the request carries customer content.
     """
 
-    def __init__(self, status_code: int | None, reason: str) -> None:
+    def __init__(self, status_code: int | None, reason: str, *, terminal: bool = False) -> None:
         super().__init__(f"native provider failed with {status_code}: {reason}")
         self.status_code = status_code
+        self.terminal = terminal
 
 
 @dataclass(frozen=True)
@@ -129,9 +135,15 @@ class DecidePayload:
     model: str
     state: Any
     questions: Mapping[str, Question]
-    api_key: str
+    #: ⚠️ ``repr=False``: a payload in a log line or a traceback must never
+    #: print our vendor key.
+    api_key: str = field(repr=False)
     api_base: str | None = None
     timeout: float = DEFAULT_TIMEOUT_SECONDS
+    #: Log context only. They let the unreadable-body alarm join to the
+    #: organization and the usage row. The vendor never sees either.
+    organization_id: str | None = None
+    request_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -341,11 +353,26 @@ class TypeSafeHandler:
             )
             raise NativeProviderError(response.status_code, "vendor refused")
 
+        # 🔴 **A 200 we cannot read is TERMINAL.** The vendor has answered,
+        # so it has charged us. Another step would pay a second vendor for
+        # the same request. The caller reads a 502 and no usage row is
+        # written, so this line is the only record of the call. It names
+        # the status, the organization and the request, and never the body
+        # or the key.
         try:
-            data = response.json()
-        except ValueError as exc:
-            raise NativeProviderError(None, "body is not JSON") from exc
-        return _from_typesafe(data, payload.questions)
+            return _from_typesafe(response.json(), payload.questions)
+        except (ValueError, NativeProviderError) as exc:
+            reason = str(exc) if isinstance(exc, NativeProviderError) else "body is not JSON"
+            _log.error(
+                "handlers.vendor_unreadable",
+                extra={
+                    "vendor": TYPESAFE_PROVIDER,
+                    "upstream_status": response.status_code,
+                    "router_org": payload.organization_id,
+                    "router_request": payload.request_id,
+                },
+            )
+            raise NativeProviderError(None, reason, terminal=True) from exc
 
 
 #: The handler table (§6A.10b clause 1). The key is the value an operator

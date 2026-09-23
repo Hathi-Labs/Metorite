@@ -23,6 +23,9 @@ from customer_console.handlers import QUESTION_TYPES, Question
 
 __all__ = [
     "MAX_CHOICE_OPTIONS",
+    "MAX_CRITERION_CHARS",
+    "MAX_CRITERION_KEY_CHARS",
+    "MAX_INSTRUCTIONS_CHARS",
     "MAX_QUESTIONS",
     "MAX_SCORE_LEVELS",
     "MAX_STATE_TOKENS",
@@ -31,6 +34,8 @@ __all__ = [
     "DecideRequest",
     "decide_refusal",
     "estimated_state_tokens",
+    "estimated_window_tokens",
+    "question_chars",
     "questions_of",
 ]
 
@@ -46,9 +51,25 @@ MAX_SCORE_LEVELS = 10
 #: exists for the same reason ``n`` is clamped on the image door.
 MAX_QUESTIONS = 16
 
-#: The vendor's window for ``state``, in tokens. The request window is 64k,
-#: and 32k of it is for ``state`` plus the longest question.
+#: The vendor's window for ``state`` PLUS the longest question, in tokens.
+#: The request window is 64k, and 32k of it is for those two together. So
+#: the check adds the longest question to the state, and a state just under
+#: 32k with one long question is refused too.
 MAX_STATE_TOKENS = 32_000
+
+#: How long one question's ``instructions`` may be. *Agent default.* One
+#: instruction is a sentence or a paragraph, and 4000 characters is about
+#: 1000 tokens. The window check still binds the total.
+MAX_INSTRUCTIONS_CHARS = 4_000
+
+#: How long one criterion description may be. *Agent default*, the same
+#: bound as the instructions.
+MAX_CRITERION_CHARS = 4_000
+
+#: How long one criterion KEY may be. *Agent default.* The key comes back as
+#: the ``choice`` or the ``score`` in the answer, so it is a label and not
+#: prose.
+MAX_CRITERION_KEY_CHARS = 200
 
 #: Characters per token for the estimate clause 13 names. The estimate is
 #: ours and deliberately crude. The vendor's own count still decides the bill.
@@ -100,6 +121,26 @@ def estimated_state_tokens(state: Any) -> int:
     return math.ceil(len(text) / _CHARS_PER_TOKEN)
 
 
+def question_chars(question: DecideQuestion) -> int:
+    """One question's size in characters: its instructions plus every
+    criterion key and description."""
+    return len(question.instructions) + sum(
+        len(key) + len(value) for key, value in question.criteria.items()
+    )
+
+
+def estimated_window_tokens(req: DecideRequest) -> int:
+    """``state`` plus the longest question, in tokens (clause 13).
+
+    Characters divided by four, the same crude estimate as
+    :func:`estimated_state_tokens`. The vendor's count still decides the
+    bill.
+    """
+    state = req.state if isinstance(req.state, str) else json.dumps(req.state, ensure_ascii=False)
+    longest = max((question_chars(q) for q in req.questions.values()), default=0)
+    return math.ceil((len(state) + longest) / _CHARS_PER_TOKEN)
+
+
 def decide_refusal(req: DecideRequest) -> str | None:
     """The first clause-13 rule this request breaks, in words, or None.
 
@@ -129,12 +170,32 @@ def decide_refusal(req: DecideRequest) -> str | None:
                 f"question {qid!r}: a score takes from {MIN_SCORE_LEVELS} to "
                 f"{MAX_SCORE_LEVELS} levels, and this one has {options}"
             )
+        # ⚠️ Checked HERE, and not as pydantic `max_length`. A pydantic
+        # breach answers 422 and names a schema path. Clause 13 asks for a
+        # 400 that names the rule.
+        if len(question.instructions) > MAX_INSTRUCTIONS_CHARS:
+            return (
+                f"question {qid!r}: instructions take at most "
+                f"{MAX_INSTRUCTIONS_CHARS} characters"
+            )
+        for key, value in question.criteria.items():
+            if len(key) > MAX_CRITERION_KEY_CHARS:
+                return (
+                    f"question {qid!r}: a criterion key takes at most "
+                    f"{MAX_CRITERION_KEY_CHARS} characters"
+                )
+            if len(value) > MAX_CRITERION_CHARS:
+                return (
+                    f"question {qid!r}: criterion {key[:40]!r} takes at most "
+                    f"{MAX_CRITERION_CHARS} characters"
+                )
 
-    tokens = estimated_state_tokens(req.state)
+    tokens = estimated_window_tokens(req)
     if tokens > MAX_STATE_TOKENS:
         return (
-            f"state is about {tokens} tokens (characters divided by "
-            f"{_CHARS_PER_TOKEN}), and the limit is {MAX_STATE_TOKENS}"
+            f"state plus the longest question is about {tokens} tokens "
+            f"(characters divided by {_CHARS_PER_TOKEN}), and the limit is "
+            f"{MAX_STATE_TOKENS}"
         )
     return None
 

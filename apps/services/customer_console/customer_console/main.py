@@ -2467,7 +2467,7 @@ def declare_capability(req: CapabilityRequest, staff: Operator) -> dict[str, Any
     Nobody is billed against it, so correcting it destroys no audit trail.
     """
     try:
-        invocation = catalog.check_invocation(req.invocation)
+        invocation = catalog.check_invocation_for_task(req.invocation, req.task)
         streams = catalog.check_streams(req.task, req.streams)
     except catalog.CatalogRefused as exc:
         raise _catalog_refusal(exc) from exc
@@ -7978,6 +7978,9 @@ def decide(req: DecideRequest, caller: ServingCaller) -> dict[str, Any]:
         client_ref=req.client_ref,
     )
     questions = questions_of(req)
+    # H-85: minted BEFORE the call, so the handler's unreadable-body alarm
+    # and the usage row name the same request.
+    request_id = _new_request_id()
 
     def _kwargs_for(step: ResolvedTier) -> dict[str, Any]:
         """Build the outgoing call for one step of the chain. ALLOWLIST.
@@ -8000,6 +8003,9 @@ def decide(req: DecideRequest, caller: ServingCaller) -> dict[str, Any]:
                 questions=questions,
                 api_key=cred.secret,
                 api_base=cred.api_base or None,
+                # Log context for the unreadable-body alarm. Never sent.
+                organization_id=org_id,
+                request_id=request_id,
             ),
         }
 
@@ -8032,15 +8038,15 @@ def decide(req: DecideRequest, caller: ServingCaller) -> dict[str, Any]:
 
     if not isinstance(response, ProviderResult):
         # A capability row that pairs `decide` with a litellm verb lands
-        # here. It is our configuration fault, so the caller gets the 502 a
+        # here. `catalog.check_invocation_for_task` refuses that row at
+        # declare time, so only a row written before that rule can reach
+        # this. It is our configuration fault, so the caller gets the 502 a
         # broken vendor gets, and the log names the model.
         _log.error(
             "router.decide_unreadable",
             extra={"router_model": resolved.model, "router_org": org_id},
         )
         raise HTTPException(status_code=502, detail="upstream provider error")
-
-    request_id = _new_request_id()
 
     # Metering is best-effort and NEVER fails the call.
     _record_completion(

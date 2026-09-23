@@ -1281,7 +1281,12 @@ async def walk_chain(
             remaining = [
                 s for s in attempts[position + 1 :] if s.model.split("/", 1)[0] not in dead_vendors
             ]
-            if not is_retryable(status) or not remaining:
+            # 🔴 **An error may declare itself TERMINAL** (§6A.14 CP-13a). A
+            # native vendor that answered 200 with a body we cannot read has
+            # already been PAID. A second step would pay a second vendor for
+            # the same request, so the walk stops here. The flag is read in
+            # this function and in no other, like every other failover rule.
+            if not is_retryable(status) or not remaining or getattr(exc, "terminal", False) is True:
                 raise UpstreamFailed(status) from exc
             if on_failover is not None:
                 on_failover(step, remaining[0], status)
