@@ -92,8 +92,17 @@ export function AbsencePanel({
           </span>
         )}
       </div>
+      {/*
+        ⚠️ Second person ONLY on the self door. `target` already carries the
+        answer — the literal `"me"` for your own row, a person id for somebody
+        else's — so the voice needs no new prop. Before this, a colleague's
+        page told the reader the suggester would not hand THEM work while THEY
+        were away, about somebody else entirely.
+      */}
       <p className="mt-0.5 text-[11px] text-muted-foreground">
-        So the assignment suggester does not hand you work while you are away.
+        {target === "me"
+          ? "So the assignment suggester does not hand you work while you are away."
+          : "So the assignment suggester does not hand them work while they are away."}{" "}
         No approval — this is a note, not a request.
       </p>
 
