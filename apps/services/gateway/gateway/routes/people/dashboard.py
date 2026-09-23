@@ -31,7 +31,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
-from gateway.capacity import absences_for, person_capacity
+from gateway.capacity import absences_for, dated_until, person_capacity
 from gateway.routes.people.core import (
     _tenant_session,
     can_manage_people,
@@ -377,7 +377,9 @@ async def _dated_tasks(db: Any, vis: Any, today: date) -> dict[str, list[dict]]:
     limit: a LIMIT here would silently drop the deadline that mattered, and a
     dashboard that under-reports risk is worse than one that reports none.
     """
-    params: dict[str, Any] = {"until": today + timedelta(days=HORIZON_DAYS + 1)}
+    # The bound the capacity route reads too (`gateway.capacity.dated_until`),
+    # so the two agree about the horizon's last day.
+    params: dict[str, Any] = {"until": dated_until(today, HORIZON_DAYS)}
     scope = _scope(vis, params)
     rows = (await db.execute(text(
         "SELECT lower(a.assignee) AS who, t.id, t.title, t.due_at, "

@@ -1077,3 +1077,37 @@ async def test_team_capacity_clamps_the_horizon_before_the_call(monkeypatch) -> 
     await skill_projects.team_capacity(horizon_days=400)
     await skill_projects.team_capacity(horizon_days=-3)
     assert [c["params"]["horizon_days"] for c in calls] == [90, 1]
+
+
+async def test_a_capacity_report_row_with_no_name_prints_its_address(monkeypatch) -> None:
+    """Review round 1 (P2). A person with no directory row (a former colleague,
+    an unknown address) has no `name`. The row must print the ADDRESS, never
+    "unassigned", or the model tells the member the work has no owner."""
+
+    def responder(call: dict) -> Any:
+        if call["path"].endswith("/render"):
+            return {
+                "report": {"name": "Weekly"},
+                "period_start": "2026-09-15",
+                "period_end": "2026-09-21",
+                "sections": {
+                    "capacity": {
+                        "people": [
+                            {"assignee": "gone@x.io", "name": None, "kind": "person",
+                             "open_tasks": 4},
+                            {"assignee": None, "name": None, "kind": "unassigned",
+                             "open_tasks": 2},
+                        ],
+                        "people_total": 1, "total_tasks": 6, "hr_visible": False,
+                        "horizon_days": 14,
+                    }
+                },
+            }
+        return {"id": UUID, "name": "Weekly", "scope": "portfolio"}
+
+    fake_gateway(monkeypatch, responder)
+    out = await skill_projects.report_render(report_id=UUID)
+    rows = [line for line in out.splitlines() if line.startswith("- ")]
+    assert any("«gone@x.io»" in line and "open_tasks 4" in line for line in rows), rows
+    unassigned = [line for line in rows if line.startswith("- «unassigned»")]
+    assert len(unassigned) == 1 and "open_tasks 2" in unassigned[0], rows

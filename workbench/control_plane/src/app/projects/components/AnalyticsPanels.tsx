@@ -458,7 +458,7 @@ export function CapacityPanel({ data }: { data: CapacityReport }) {
         <ul className="space-y-2">
           {rows.map((row) => {
             const line = hoursLine(row, horizonDays);
-            const warnings = rowWarnings(row);
+            const warnings = rowWarnings(row, data?.windows?.horizon?.starts_on);
             const skills = skillLine(row);
             const pill = row.pill;
             const accent = pill ? accentForHue(PILL_HUE[pill]) : null;

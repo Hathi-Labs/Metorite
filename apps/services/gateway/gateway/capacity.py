@@ -92,6 +92,27 @@ def horizon_window(today: date, horizon_days: int = HORIZON_DAYS) -> tuple[date,
     return today, today + timedelta(days=int(horizon_days))
 
 
+def dated_until(today: date, horizon_days: int = HORIZON_DAYS) -> date:
+    """The EXCLUSIVE upper bound for a dated-task fetch: ``due_at < this``.
+
+    ⚠️ **One bound for both callers** (the dashboard and the capacity route),
+    and it must cover two windows at once:
+
+    * **this Sunday**, because the pill (:func:`gateway.workload.classify`)
+      reads every estimate due in the Monday-to-Sunday week. A fetch bounded
+      at a one-day horizon dropped Friday's work, and a full week read idle.
+    * **the horizon's LAST day**, because :func:`person_capacity` and
+      :func:`gateway.workload.at_risk_tasks` treat ``due <= horizon_end`` as
+      inside. A bound of ``today + horizon_days`` dropped a task due on
+      exactly that day, which the dashboard counted.
+
+    So it is the later of the two ends, plus one day.
+    """
+    _, sunday = week_window(today)
+    _, horizon_end = horizon_window(today, horizon_days)
+    return max(sunday, horizon_end) + timedelta(days=1)
+
+
 def _field(source: Any, name: str) -> Any:
     """One aggregate, read from a result row or from a plain dict."""
     if source is None:

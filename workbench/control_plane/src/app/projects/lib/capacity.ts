@@ -73,8 +73,14 @@ export function hoursLine(
   };
 }
 
-/** The extra facts a row earns: away, leaving, over its ceiling. */
-export function rowWarnings(row: CapacityRow): string[] {
+/**
+ * The extra facts a row earns: away, leaving, over its ceiling.
+ *
+ * `today` is the horizon's first day as the SERVER sent it, never the
+ * browser's clock. An end date before it has already passed, so the row
+ * says "Left", not "Leaves". ISO dates compare as strings.
+ */
+export function rowWarnings(row: CapacityRow, today?: string): string[] {
   const out: string[] = [];
   const away = asList<{ kind: string; starts_on: string; ends_on: string }>(
     row.absences
@@ -84,7 +90,8 @@ export function rowWarnings(row: CapacityRow): string[] {
     out.push(`Away ${first.starts_on} to ${first.ends_on}`);
   }
   if (row.leaving_in_window && row.end_date) {
-    out.push(`Leaves ${row.end_date}`);
+    const past = !!today && row.end_date < today;
+    out.push(`${past ? "Left" : "Leaves"} ${row.end_date}`);
   }
   if (row.over_concurrency && typeof row.max_concurrent_tasks === "number") {
     out.push(`Over a ceiling of ${row.max_concurrent_tasks} in progress`);

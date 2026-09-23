@@ -124,6 +124,15 @@ describe("the HR half", () => {
     ]);
     expect(skillLine(withHours)).toBe("CAD (expert), Python");
   });
+
+  it("says Left, not Leaves, for an end date already past", () => {
+    // Review round 1: an engagement that ended last week has not "left"
+    // in the future. The horizon's first day is today, from the server.
+    expect(rowWarnings(withHours, "2026-10-05")).toContain("Left 2026-10-01");
+    expect(rowWarnings(withHours, "2026-09-23")).toContain("Leaves 2026-10-01");
+    // No date to compare with keeps the future tense.
+    expect(rowWarnings(withHours)).toContain("Leaves 2026-10-01");
+  });
 });
 
 describe("the windows", () => {

@@ -1019,7 +1019,10 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
     for row in rows[:25]:
         if not isinstance(row, dict):
             continue
-        label = row.get(label_key)
+        # A capacity row with no directory name still HAS an owner: its
+        # address. "unassigned" is only the row whose assignee is empty,
+        # or the model reads a former colleague's work as nobody's.
+        label = row.get(label_key) or row.get("assignee")
         facts = ", ".join(
             f"{k} {v}"
             for k, v in row.items()

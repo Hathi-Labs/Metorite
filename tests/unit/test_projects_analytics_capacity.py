@@ -369,8 +369,29 @@ def _async_url() -> str:
     return url
 
 
+@pytest.fixture(scope="module")
+def _ladder():
+    """Apply the tenant ladder ONCE for this module, never once per test.
+
+    ⚠️ A replay is not free. Migration 42 drops columns that earlier rungs add
+    back, so every replay spends attribute numbers on
+    `email_assistant_settings`, and Postgres stops at 1600. Per-test replays
+    reached that limit on the shared scratch database on 2026-09-23.
+    """
+    if not _TENANT_URL:
+        pytest.skip("TENANT_LADDER_DATABASE_URL unset")
+    from sqlalchemy import create_engine
+
+    from tests.unit._tenant_ladder import apply_ladder
+
+    eng = create_engine(_TENANT_URL, future=True)
+    with eng.begin() as conn:
+        apply_ladder(conn)
+    eng.dispose()
+
+
 @pytest.fixture
-def seeded():
+def seeded(_ladder):
     """Two projects in one org, three people, and open work across both.
 
     ``ana`` holds two open tasks in HERE (one estimated) and one in ELSEWHERE.
@@ -379,11 +400,7 @@ def seeded():
     """
     from sqlalchemy import create_engine
 
-    from tests.unit._tenant_ladder import apply_ladder
-
     eng = create_engine(_TENANT_URL, future=True)
-    with eng.begin() as conn:
-        apply_ladder(conn)
     tag = uuid.uuid4().hex[:8]
     ana, bo = f"ana-{tag}@example.test", f"bo-{tag}@example.test"
     made: dict[str, Any] = {"ana": ana, "bo": bo}
@@ -643,3 +660,167 @@ async def test_a_report_that_asks_for_capacity_renders_the_routes_body(
     else:
         for row in section["people"]:
             assert not set(row) & set(route.HR_KEYS)
+
+
+# ── Review round 1: the dated window (P1 x2) ─────────────────────────────────
+
+
+def test_dated_until_covers_sunday_and_the_whole_horizon() -> None:
+    """ONE exclusive upper bound for the dated fetch, shared by the dashboard
+    and the capacity route. It must cover this Sunday (the pill's week) AND
+    the horizon's last day, which `due <= horizon_end` treats as inside."""
+    # Monday, horizon 1: the week still runs to Sunday.
+    assert cap.dated_until(MONDAY, 1) == MONDAY + timedelta(days=7)
+    # Monday, horizon 14: the horizon's last day is inside, so +15.
+    assert cap.dated_until(MONDAY, 14) == MONDAY + timedelta(days=15)
+    # The dashboard's own bound, unchanged by the move.
+    assert cap.dated_until(WEDNESDAY, workload.HORIZON_DAYS) == (
+        WEDNESDAY + timedelta(days=workload.HORIZON_DAYS + 1)
+    )
+
+
+def test_the_dashboard_and_the_route_read_one_bound() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "apps/services/gateway/gateway"
+    for rel in ("routes/people/dashboard.py", "routes/projects/analytics_capacity.py"):
+        source = (root / rel).read_text(encoding="utf-8")
+        assert "dated_until(" in source, f"{rel} builds its own dated bound"
+
+
+@pytest.fixture
+def boundary(_ladder):
+    """One person with a directory row (the default 40h week) and two tasks.
+
+    * ``week`` — 50 estimated hours due FRIDAY of this week.
+    * ``edge`` — 1 estimated hour due EXACTLY on Monday + 14, the last day of
+      a 14-day horizon counted from Monday.
+
+    Dates are fixed at noon UTC so the day a task falls on does not move with
+    the session time zone.
+    """
+    from sqlalchemy import create_engine
+
+    today = date.today()
+    monday = today - timedelta(days=today.isoweekday() - 1)
+    eng = create_engine(_TENANT_URL, future=True)
+    tag = uuid.uuid4().hex[:8]
+    who = f"cy-{tag}@example.test"
+    made: dict[str, Any] = {"who": who, "monday": monday}
+    with eng.begin() as c:
+        org = str(c.execute(
+            text("SELECT id FROM organization ORDER BY created_at LIMIT 1")
+        ).scalar_one())
+        made["org"] = org
+        made["project"] = pid = str(c.execute(
+            text(
+                "INSERT INTO pm_projects (name, status, source, created_by,"
+                " organization_id, timezone, parent_project_id, owns_statuses)"
+                " VALUES (:n,'active','manual','cap@example.test',"
+                " CAST(:o AS uuid),'UTC',NULL,true) RETURNING id"
+            ),
+            {"n": f"cap-edge-{tag}", "o": org},
+        ).scalar_one())
+        sid = str(c.execute(
+            text(
+                "INSERT INTO pm_task_statuses (project_id,name,color,position,"
+                " category) VALUES (CAST(:p AS uuid),'To do','gray',0,'todo')"
+                " RETURNING id"
+            ),
+            {"p": pid},
+        ).scalar_one())
+        for n, (title, due, est) in enumerate((
+            ("week", monday + timedelta(days=4), 3000),
+            ("edge", monday + timedelta(days=14), 60),
+        ), start=1):
+            tid = str(c.execute(
+                text(
+                    "INSERT INTO pm_tasks (title, project_id, root_project_id,"
+                    " status_id, created_by, organization_id, task_number,"
+                    " estimate_mins, due_at) VALUES (:t, CAST(:p AS uuid),"
+                    " CAST(:p AS uuid), CAST(:s AS uuid), 'cap@example.test',"
+                    " CAST(:o AS uuid), :n, :est,"
+                    " CAST(:due AS timestamptz)) RETURNING id"
+                ),
+                {"t": title, "p": pid, "s": sid, "o": org, "n": n, "est": est,
+                 "due": f"{due.isoformat()}T12:00:00+00:00"},
+            ).scalar_one())
+            c.execute(
+                text(
+                    "INSERT INTO pm_task_assignees (task_id, assignee,"
+                    " assigned_by) VALUES (CAST(:t AS uuid), :a,"
+                    " 'cap@example.test')"
+                ),
+                {"t": tid, "a": who},
+            )
+        made["person"] = str(c.execute(
+            text(
+                "INSERT INTO people (id, name, email, status, skills, source,"
+                " source_key, organization_id, updated_by, updated_at)"
+                " VALUES (gen_random_uuid(), :n, :e, 'active', ARRAY[]::text[],"
+                " 'manual', :k, CAST(:o AS uuid), 'test', now()) RETURNING id"
+            ),
+            {"n": f"Cy {tag}", "e": who, "k": f"manual:edge-{tag}", "o": org},
+        ).scalar_one())
+    yield made
+    with eng.begin() as c:
+        c.execute(text("DELETE FROM pm_tasks WHERE project_id = CAST(:p AS uuid)"),
+                  {"p": made["project"]})
+        c.execute(text("DELETE FROM pm_task_statuses WHERE project_id = CAST(:p AS uuid)"),
+                  {"p": made["project"]})
+        c.execute(text("DELETE FROM pm_projects WHERE id = CAST(:p AS uuid)"),
+                  {"p": made["project"]})
+        c.execute(text("DELETE FROM people WHERE id = CAST(:i AS uuid)"),
+                  {"i": made["person"]})
+    eng.dispose()
+
+
+async def _edge_row(made: dict[str, Any], horizon: int) -> dict[str, Any]:
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    eng = create_async_engine(_async_url(), future=True, poolclass=NullPool)
+    try:
+        async with eng.connect() as db:
+            body = await route.capacity_body(
+                db, _vis(made["org"]), hr_visible=True,
+                project_id=made["project"], include_subtree=True,
+                horizon_days=horizon, today=made["monday"],
+            )
+    finally:
+        await eng.dispose()
+    return next(r for r in body["rows"] if r["assignee"] == made["who"])
+
+
+@_needs_db
+async def test_a_short_horizon_still_sees_the_whole_week_for_the_pill(boundary) -> None:
+    """P1. Monday, horizon 1, 50h due Friday against a 40h week. The pill
+    reads the Monday-to-Sunday week, so the fetch must reach Sunday even when
+    the horizon ends on Tuesday. Bounded at the horizon, the row read `idle`."""
+    row = await _edge_row(boundary, horizon=1)
+    assert row["committed_hours_this_week"] == 50.0
+    assert "overloaded" in row["flags"]
+    assert "idle" not in row["flags"]
+
+
+@_needs_db
+async def test_the_horizons_last_day_is_inside_and_the_dashboard_agrees(boundary) -> None:
+    """P1. A task due exactly on today + horizon is inside the horizon, for
+    capacity AND for the People dashboard, on a real database."""
+    from gateway.routes.people import dashboard
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    row = await _edge_row(boundary, horizon=14)
+    assert row["committed_hours_horizon"] == 51.0, "the boundary day was dropped"
+
+    eng = create_async_engine(_async_url(), future=True, poolclass=NullPool)
+    try:
+        async with eng.connect() as db:
+            dated = await dashboard._dated_tasks(
+                db, _vis(boundary["org"]), boundary["monday"],
+            )
+    finally:
+        await eng.dispose()
+    titles = {t["title"] for t in dated.get(boundary["who"], [])}
+    assert titles == {"week", "edge"}

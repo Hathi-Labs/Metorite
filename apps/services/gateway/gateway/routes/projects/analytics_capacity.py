@@ -48,6 +48,7 @@ from gateway.capacity import (
     MIN_HORIZON_DAYS,
     absences_for,
     absences_in_window,
+    dated_until,
     horizon_window,
     person_capacity,
     skills_for,
@@ -140,7 +141,10 @@ def capacity_totals_sql(open_where: str) -> str:
 
 
 def capacity_dated_sql(open_where: str) -> str:
-    """Each holder's dated open work, due inside the horizon or already late.
+    """Each holder's dated open work, due before ``:until`` or already late.
+
+    ``:until`` is :func:`gateway.capacity.dated_until`, which covers this
+    Sunday for the pill and the horizon's last day for the spare hours.
 
     The rows the at-risk walk reads. Bounded by the horizon, never by a
     ``LIMIT``: a limit would drop the deadline that mattered, and a read that
@@ -287,7 +291,9 @@ async def capacity_body(
                 await db.execute(text(capacity_totals_sql(all_where)), all_params)
             ).fetchall()
         }
-        dated_params = {**all_params, "until": horizon_end}
+        # One bound, shared with the dashboard: it reaches this Sunday for
+        # the pill and includes the horizon's last day (`dated_until`).
+        dated_params = {**all_params, "until": dated_until(today, days)}
         dated_params.pop("started_cat")
         for row in (
             await db.execute(text(capacity_dated_sql(all_where)), dated_params)
