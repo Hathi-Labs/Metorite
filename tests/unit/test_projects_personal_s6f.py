@@ -370,9 +370,9 @@ def test_time_spent_is_every_members_actuals_bound_to_the_task() -> None:
 # ── Un-checking a closed task reopens it, on every overlay door ─────────────
 
 def test_every_open_disposition_reopens_and_only_those() -> None:
-    assert pm_personal.OPEN_DISPOSITIONS == {
+    assert {
         "INBOX", "NEXT", "WAITING", "SOMEDAY", "PROJECT", "REFERENCE",
-    }
+    } == pm_personal.OPEN_DISPOSITIONS
 
 
 async def test_bulk_next_on_a_completed_task_reopens_it(db: FakeProjectsDB) -> None:

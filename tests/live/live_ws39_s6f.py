@@ -47,6 +47,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from gateway.routes.people.core import compute_load
+from gateway.routes.projects.bulk import _act_on_one
 from gateway.routes.projects.core import update_row
 from gateway.routes.projects.personal import (
     _MY_TASKS_SQL,
@@ -58,7 +59,6 @@ from gateway.routes.projects.personal import (
     my_tasks_binds,
 )
 from gateway.routes.projects.planning import _PM_SELECT
-from gateway.routes.projects.bulk import _act_on_one
 from gateway.routes.projects.tasks import time_spent_mins
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine

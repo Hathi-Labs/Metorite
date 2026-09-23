@@ -365,9 +365,10 @@ class _PmLens(ItemSource):
             where += " AND coalesce(t.origin->>'email_id', '') <> :eid"
             params["eid"] = str(exclude_email_id)
         where += " ORDER BY t.created_at DESC"
-        # The limit is applied AFTER the Python rule, on purpose: a derived
-        # DONE row (closed status, no overlay) survives the SQL prune, and a
-        # LIMIT in SQL could let it crowd out the open row the caller wants.
+        # The limit is applied AFTER the Python rule. Since D76 the SQL prune
+        # drops a closed lane (`_CLOSED_LANE`), so no DONE row reaches here.
+        # A stated TRASH is pruned too. The Python rule still runs, and the
+        # limit after it is the safe place should the prune ever narrow.
         items = _alive(await self._items(db, uid, where, **params))
         return items[:limit] if limit is not None else items
 
