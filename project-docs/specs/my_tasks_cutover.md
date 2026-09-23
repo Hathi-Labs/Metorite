@@ -384,10 +384,11 @@ actuals (`actual_end - actual_start`), bound to the task the caller can see.
    my list, and a closed lane does not undo it.
 3. **An open disposition on a closed task reopens it for the board.** Without
    this the lane wins, and "mark not done" snaps back to DONE. The gateway
-   does it once, in `reopen_if_closed`, for every overlay door: the PATCH,
-   the bulk `personal` action (the checkbox, Focus mode and Undo) and
-   organize. It moves the task to the first `todo` lane of its own set
-   through `apply_status_transition`, so the timeline records the reopen.
+   does it once, in `reopen_if_closed`. Every overlay door calls it: the
+   PATCH, the bulk `personal` action and organize. The checkbox, Focus mode
+   and Undo reach the bulk action. The task moves to the first `todo` lane
+   of its own set. The move goes through `apply_status_transition`, so the
+   timeline records the reopen.
    Every stored disposition except DONE and TRASH counts
    (`OPEN_DISPOSITIONS`). An Undo of a delete restores a closed task as
    DONE, so it never reopens it.
