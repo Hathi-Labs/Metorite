@@ -2925,28 +2925,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_ai_chat.md` §5.4, §12 · `org_access_control.md` §8d
 - **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
 
-### H-157 · Flip `NEXT_PUBLIC_PROJECTS_CHAT` on the box, then look at the rail · [AGENT]
-- **Check:** `ssh metorite 'grep -rc NEXT_PUBLIC_PROJECTS_CHAT /opt/acb/app/.env
-  /opt/acb/app/workbench/control_plane/.env.local 2>/dev/null'`
-  → `0` on both means the flag is off and the slot still says "not built".
-  ⚠️ **Corrected 2026-09-23.** This named
-  `/opt/metorite/workbench/control_plane/.env.local`. That path does not exist
-  on the box, because the app lives at `/opt/acb/app`. The old command printed
-  `0` because the FILE was absent. So it read "flag off" for the wrong reason,
-  and it would have kept printing `0` after a successful flip.
-- **Why:** S1 shipped dark. The flag is a build-time `NEXT_PUBLIC_*` value,
-  so a flip needs a frontend rebuild, not a restart. **Set on the box on
-  2026-09-23** (S5, under the `enforcement-flip` grant): line 19 of
-  `.env.local` reads `NEXT_PUBLIC_PROJECTS_CHAT=1`, with a `.bak-` copy
-  beside it. `vps_apply.sh` preserves every key there but the internal
-  token, and the next deploy after the flip (the S5 merge) rebuilds the
-  frontend. What is left is the check no test makes.
-  Open the rail in light mode, at compact density, under a changed accent,
-  and beside the board. Ask it "what is stuck here?" on a real space. Then
-  confirm the numbers match the Analytics app.
-- **Authority:** `specs/projects_ai_chat.md` §4.3, §11 · CLAUDE.md §3a
-- **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
-
 ### H-161 · The seats matrix cannot PROPOSE, because the queue is the wrong shape · [OWNER]
 - **Check:** `rg -n "CREATE TABLE IF NOT EXISTS access_request" -A 12
   infra/postgres/143_access_request.sql` → a unique index on `lower(email)`

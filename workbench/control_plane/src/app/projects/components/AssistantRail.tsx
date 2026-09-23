@@ -22,7 +22,6 @@
  * which.
  */
 
-import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useSession } from "next-auth/react";
@@ -48,8 +47,11 @@ export const PROJECTS_AGENT = "projects-assistant";
 const SETTINGS_WRITE = "projects:settings:write";
 
 /**
- * The four composer suggestions, scoped to the selected node by the persona.
- * Shown only while the conversation is empty, as the Tasks rail does.
+ * The four prompts the empty chat suggests. They render as the shared chat's
+ * own "Try asking" pills (`AgentChat`'s `AGENT_SUGGESTIONS`), the pattern the
+ * main chat and the email assistant use. A second set of full-width buttons
+ * above the chat doubled them (visual review, 2026-09-23). Kept here as the
+ * record of intent; `AgentChat` carries the strings.
  */
 export const QUICK_ACTIONS: ReadonlyArray<{ label: string; prompt: string }> = [
   { label: "What is stuck here?", prompt: "What is stuck in this space? Lead with what needs attention." },
@@ -197,25 +199,23 @@ export function AssistantRail({
   }, [node, view, filters, openTask, selectedTaskIds, access]);
 
   const activeSession = mySessions.find((s) => s.id === activeId);
-  const showQuickActions = !activeSession?.messageCount;
 
   return (
     <div className="flex flex-col h-full bg-sidebar text-sidebar-foreground overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-4 h-9 border-b border-sidebar-border flex-shrink-0">
-        <div className="flex items-center gap-2">
-          <div className="w-5 h-5 rounded-full bg-primary/20 text-primary flex items-center justify-center">
-            <Icon name="Sparkles" size={11} />
-          </div>
-          <span className="text-xs font-semibold text-sidebar-foreground">
-            AI chat
-          </span>
+        {/* The page's title row already says "AI chat". This row says what
+            the chat answers ABOUT, which is the one thing the member cannot
+            see elsewhere once the tree scrolls. */}
+        <p className="min-w-0 truncate text-xs text-muted-foreground" title={node?.name ?? undefined}>
           {node ? (
-            <span className="text-[11px] text-muted-foreground truncate max-w-[14rem]" title={node.name}>
-              · {node.name}
-            </span>
-          ) : null}
-        </div>
+            <>
+              Asking about <span className="text-sidebar-foreground">{node.name}</span>
+            </>
+          ) : (
+            "Asking about every space you can see"
+          )}
+        </p>
         <div className="flex items-center gap-0.5">
           {/* DESIGN_SYSTEM §3: a control is a <Button>. `selected` carries
               the history toggle's state and its aria-pressed together. */}
@@ -310,25 +310,6 @@ export function AssistantRail({
               </div>
             ))
           )}
-        </div>
-      )}
-
-      {/* Quick actions — drop the prompt into the composer; the member
-          reviews and sends. Shown only while the conversation is empty. */}
-      {showQuickActions && (
-        <div className="flex flex-col gap-1.5 border-b border-sidebar-border p-3 flex-shrink-0">
-          {QUICK_ACTIONS.map((qa) => (
-            <Button
-              key={qa.label}
-              variant="secondary"
-              size="md"
-              layout="flex items-center justify-start w-full"
-              className="text-left"
-              onClick={() => setPendingInput(qa.prompt)}
-            >
-              {qa.label}
-            </Button>
-          ))}
         </div>
       )}
 

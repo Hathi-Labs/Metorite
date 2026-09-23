@@ -273,7 +273,7 @@ function TaskRowView({ row }: { row: ProjectTaskRow }) {
         </span>
         {row.meta && (
           <span className="block text-[10px] text-muted-foreground truncate">
-            {row.meta}
+            {row.meta.replace(/[«»]/g, "")}
           </span>
         )}
       </button>
@@ -337,6 +337,29 @@ function withoutLegend(result: string): string {
     .trim();
 }
 
+/**
+ * A tool's result as a PERSON reads it. The skill writes for the model: member
+ * text inside «guillemets» (a fence against prompt injection), and machine
+ * lines (`full_id:`, `link:`, `<kind>_id:`, `done:`) the cards parse. None of
+ * that is for the member; the other chat apps' cards show plain text
+ * (visual review, 2026-09-23). Exported for its test; pure.
+ */
+export function forPeople(result: string): string {
+  return withoutLegend(result)
+    .split("\n")
+    .filter((l) => !/^\s*(?:[a-z_]+_id|link|done):/.test(l))
+    // A gateway refusal leads with the route (`Projects PUT /projects/...: `).
+    // The member needs the reason, not the address it came from.
+    .map((l) =>
+      l
+        .replace(/^Projects (?:GET|POST|PATCH|PUT|DELETE) \S+: /, "")
+        .replace(/[«»]/g, "")
+        .replace(/^- /, ""),
+    )
+    .join("\n")
+    .trim();
+}
+
 function InfoCard({
   event: e,
   icon,
@@ -348,6 +371,7 @@ function InfoCard({
 }) {
   const router = useRouter();
   const body = withoutLegend(e.result || "");
+  const shown = forPeople(e.result || "");
   const failed = e.status === "error";
   const opens = failed ? undefined : OPENS_APP[e.name];
   // `open_in_app` prints `link: /projects?...`. Only an in-app link becomes
@@ -364,7 +388,7 @@ function InfoCard({
           failed ? "text-destructive" : "text-muted-foreground"
         }`}
       >
-        {body || "(no result)"}
+        {shown || "(no result)"}
       </div>
       {link && !opens && (
         <div className="mt-2">
@@ -449,11 +473,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   }, [outcome, e.id]);
   const rowId = rowIdOf(result);
   const openTask = useOpenTask();
-  const detail = withoutLegend(result)
-    .split("\n")
-    .filter((l) => !/^\s*(?:full_id|done):/.test(l))
-    .join("\n")
-    .trim();
+  const detail = forPeople(result);
   const tone =
     outcome === "failed"
       ? "border-destructive/40 text-destructive"
