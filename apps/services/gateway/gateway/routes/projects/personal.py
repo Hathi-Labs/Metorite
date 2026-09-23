@@ -502,7 +502,22 @@ async def create_personal_task(
 
     `values` carries the task columns beside the ones this helper owns:
     `title`, `description`, `due_at`, `source`, `parent_task_id`, `origin`.
+
+    **A capture states INBOX** (S8a, `task_manager_app.md` §13.5a decision 4).
+    A row with no overlay DERIVES its disposition off the lane, and the
+    personal root's first lane is `backlog`, so a fresh capture read as
+    SOMEDAY: `/my/inbox?disposition=INBOX`, the browser's Inbox and
+    `insight_counts` never showed it. The old store defaulted the column to
+    INBOX. So when the caller states no disposition, the overlay row is
+    written with `disposition = 'INBOX'` and `clarified_at` NULL — a stated
+    inbox item until clarified. A SUBTASK (`parent_task_id` set) is a step,
+    not a capture, and gets no default: `POST /projects/tasks` writes none
+    either, and the two ways of adding a step must agree.
     """
+    stated = dict(overlay or {})
+    if stated.get("disposition") is None and not values.get("parent_task_id"):
+        stated["disposition"] = "INBOX"
+    overlay = stated or None
     task = await insert_row(db, "pm_tasks", {
         "project_id": project_id,
         "root_project_id": root_id,
@@ -1047,6 +1062,14 @@ SELECT t.*,
                             AS is_mine
 """ + MY_TASKS_FROM
 
+#: The inbox's order, and it is not cosmetic. `my_inbox` pages in Python over
+#: the rows this query returns, and an unordered SELECT may answer two
+#: consecutive page requests in two orders — a row twice, another never, and
+#: no error anywhere. The rule is the one `tasks/lib/ordering.ts` applies:
+#: hand-ranked rows first, newest next, and the id so two rows created in
+#: the same instant still have one order (S8a).
+_INBOX_ORDER = " ORDER BY p.sort_key ASC NULLS LAST, t.created_at DESC, t.id"
+
 
 def _project_task(row: Any) -> tuple[dict[str, Any], str]:
     """One ``_MY_TASKS_SQL`` row → the wire task, plus its EFFECTIVE disposition.
@@ -1099,6 +1122,11 @@ def _project_task(row: Any) -> tuple[dict[str, Any], str]:
     # alone may hold no grant on the project, so `/projects/nodes` cannot be
     # relied on to name it for them. The join is already here.
     task["project_name"] = getattr(row, "project_name", None)
+    # Where the task came from (`pm_tasks.origin`, migration 211): an email
+    # capture names its sender. `TaskModel` has no such field, so the column
+    # rode in `t.*` and fell on the floor. One projection here serves the
+    # inbox, the calendar and the single read alike (S8a).
+    task["origin"] = from_jsonb(getattr(row, "origin", None))
     _apply_overlay(task, row)
     return task, effective
 
@@ -1167,7 +1195,7 @@ async def my_inbox(
     if untriaged:
         clauses.append(UNTRIAGED_CLAUSE)
 
-    sql = _MY_TASKS_SQL + ("".join(f" AND {c}" for c in clauses))
+    sql = _MY_TASKS_SQL + ("".join(f" AND {c}" for c in clauses)) + _INBOX_ORDER
     items: list[dict[str, Any]] = []
     async with _tenant_session() as db:
         params = await my_tasks_binds(

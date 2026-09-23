@@ -90,6 +90,18 @@ def _overlay(db: FakeProjectsDB, task_id: str, email: str) -> dict | None:
     )
 
 
+def _assert_capture_overlay_untouched(db: FakeProjectsDB, task_id: str) -> None:
+    """A refused decision wrote nothing: the overlay is still the row the
+    capture STATED (S8a, §13.5a decision 4 — `disposition = 'INBOX'`,
+    nothing clarified), not the decision's."""
+    row = _overlay(db, task_id, "alice@fracktal.in")
+    assert row is not None
+    assert row["disposition"] == "INBOX"
+    assert row.get("next_action") is None
+    assert row.get("clarified_at") is None
+    assert row.get("waiting_on") is None
+
+
 # ── Batch capture ───────────────────────────────────────────────────────────
 
 async def test_batch_captures_in_order_through_the_one_capture_path(
@@ -286,7 +298,7 @@ async def test_delegating_inside_my_personal_root_is_refused_by_the_assign_guard
         )
     assert caught.value.status_code == 422
     assert "personal project" in str(caught.value.detail)
-    assert _overlay(db, task["id"], "alice@fracktal.in") is None
+    _assert_capture_overlay_untouched(db, task["id"])
 
 
 async def test_do_now_completes_for_the_project_not_only_for_me(
@@ -417,7 +429,7 @@ async def test_the_decision_rules_are_400s_with_the_old_messages(
         )
     assert caught.value.status_code == 400
     assert message in str(caught.value.detail)
-    assert _overlay(db, task["id"], "alice@fracktal.in") is None
+    _assert_capture_overlay_untouched(db, task["id"])
 
 
 async def test_somebody_elses_task_is_a_404(db: FakeProjectsDB) -> None:

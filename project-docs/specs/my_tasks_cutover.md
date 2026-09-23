@@ -9,8 +9,8 @@ this spec and `work_plan.md` §2 disagree, the board wins.
 
 ---
 
-**Built so far.** S6a built 2026-09-23 on branch `my-tasks-s6a`. S6d built
-2026-09-23 in PR #390.
+**Built so far.** S5, S6a, S6b, S6c and S6d are built and serving. S7 ran on
+2026-09-23. S8a is in PR #398.
 
 ## 0. One paragraph
 
@@ -560,6 +560,95 @@ PASS. `test_projects_personal_s6e.py`, 12 tests. The vitest fences:
    personal project in the same page load.
 4. The pre-migration backup for the day is on disk before step 4 of §6.
 
+### S8a — the assistant's task tools move onto the lens · AGENT-SAFE · BUILT 2026-09-23
+
+**Scope.** `apps/skills/skill-task-gtd/skill_task_gtd/core.py`, the 29 tools
+the `task-manager` chat agent calls. After S7 the browser read `pm_tasks`
+through `/projects/my/*`. The skill still called `/tasks/items*`,
+`/tasks/projects`, `/tasks/hierarchy`, `/tasks/settings`, `/tasks/accounts`
+and `/tasks/sync`. Those routes read and write `gtd_items` only. So a chat
+capture landed in the dead store and answered 200.
+
+Every tool that reads or writes a task, a project or the tree now calls the
+route the browser calls. `lens.ts` is the contract of record. The map:
+
+| Tool | Lens route |
+|---|---|
+| `gtd_capture`, `gtd_capture_many` | `POST /projects/my/tasks`, `POST /projects/my/tasks/batch` |
+| `gtd_list` | `GET /projects/my/inbox`, paged to the end, with the flags `VIEW_FLAGS` uses |
+| `gtd_detail` | `GET /projects/my/tasks/{id}`, `GET /projects/tasks/{id}/timeline`, `.../attachments` |
+| `gtd_subtasks`, `gtd_add_subtasks` | `GET /projects/tasks?parent_task_id=`, `POST /projects/tasks` |
+| `gtd_update`, `gtd_schedule`, `gtd_unschedule`, `gtd_move` | Split the way `splitPatch` does. `PATCH /projects/tasks/{id}` and `PATCH .../personal` |
+| `gtd_complete` | `POST /projects/tasks/{id}/complete`. Undo puts the task in the project's default lane, then NEXT |
+| `gtd_set_stage` | `GET /projects/nodes/{project}/statuses`, then `PATCH /projects/tasks/{id}` with `status_id` (§4.6) |
+| `gtd_organize` | `POST /projects/my/tasks/{id}/organize`. A `status` name is resolved after the move |
+| `gtd_delegate` | `PUT /projects/tasks/{id}/assignees` and the WAITING overlay, as `lensDelegateItem` does. With `project_id`, the organize delegate path, one transaction |
+| `gtd_archive` | `POST /projects/tasks/{id}/archive` or `/unarchive` |
+| `gtd_list_projects` | `GET /projects/my/areas` and `GET /projects/nodes`, labelled `[AREA]` and `[PROJECT]` |
+| `gtd_list_schedule` | `GET /projects/my/calendar` |
+| `gtd_accounts`, `gtd_sync` | No call. They answer that no tool is connected (D52) |
+
+Nine tools keep a `/tasks/*` route, because the handler picks its store at
+call time or reads a table that survives. `gtd_clarify`, `gtd_inbox_insights`
+and `gtd_plan_project` read through `item_source()` (S6d). `gtd_plan_day`,
+`gtd_replan_day`, `gtd_rollover` and `gtd_day_digest` read through
+`agent_source()`. `gtd_set_one_thing` writes `calendar_day_state`, and
+`gtd_people` reads `people`.
+
+`gtd_estimate_stats` is NOT one of them. `/tasks/calendar/estimate-stats`
+answers from the retired store. So the tool calls
+`GET /projects/my/calendar/estimate-stats`, as `lensEstimateStats` does.
+Tool names and signatures do not change. S9 renames them, and
+`TaskToolCards.tsx` keys on the names.
+
+**Done when.**
+1. Every tool calls the exact routes in the map. Fence:
+   `tests/unit/test_skill_task_lens.py`, a recording transport.
+2. No string in the skill names a retired door. The one `/tasks/items/...`
+   path left is the clarify door. Same fence, an AST walk.
+3. Every path the skill calls is a path the gateway serves, with that
+   method. Same fence, with the routers imported the way
+   `test_client_route_contract.py` imports them.
+4. Every kept `/tasks/*` handler names `item_source()` or `agent_source()`
+   in its source, or sits on the store-neutral list with a reason. Same
+   fence, `inspect` over the mounted endpoint.
+5. A capture answers `/my/inbox?disposition=INBOX`. Fences:
+   `tests/unit/test_projects_personal_s8a.py` and
+   `tests/live/live_ws39_s8a.py` (R8).
+6. `SKILL.md` and `instructions.md` describe no connected tool.
+
+**Decisions taken at build, 2026-09-23.**
+1. A `[TEAM]` marker replaces `[SYNCED]`. A row carries the data fence when
+   another member wrote it (`created_by`). It also carries the fence when
+   its project is outside the caller's personal tree. The tree is the root
+   from `GET /projects/my/project` plus the Areas. Comments carry the fence
+   always. The two `sync_state` markers are gone.
+2. Reopen is the reverse of `/complete`, and SHARED for the same reason
+   (`task_manager_app.md` §13.5a decision 1). The task goes to the first
+   lane by position whose category is neither closing nor triage, the rule
+   `load_default_status` applies. Then the overlay says NEXT. The browser
+   has no reopen yet. Chat is the one place it exists.
+3. `gtd_sync` is read-only. It calls nothing.
+4. **A capture states INBOX.** `create_personal_task` writes the overlay
+   row with `disposition = 'INBOX'` and `clarified_at` NULL when the
+   caller states no disposition. Without it the row derived SOMEDAY from
+   the root's `backlog` lane, and no Inbox showed a fresh capture. A
+   subtask gets no default. Recorded in `task_manager_app.md` §13.5a as
+   decision 4.
+5. `GET /projects/my/inbox` orders by `p.sort_key ASC NULLS LAST,
+   t.created_at DESC, t.id`, the rule `tasks/lib/ordering.ts` applies. The
+   route pages in Python, and an unordered set can repeat or skip a row
+   across pages. `gtd_list` applies the same order before it cuts to 30.
+6. `/my/inbox` and `/my/tasks/{id}` project `origin`, through `from_jsonb`,
+   on the one seam (`_project_task`). The email marker in the skill was
+   dead without it.
+7. After a committed organize or delegate, the tool reports a lane-name
+   miss with the valid names. It never raises over the committed writes.
+8. `gtd_list_schedule` asks for done blocks (`include_done=true`) and marks
+   them. A done block still occupies its hour.
+9. `gtd_capture_many` sends batches of `MAX_BATCH` (100) and reports the
+   total captured.
+
 ### S8 — the contract: code first, then schema · AGENT-SAFE
 
 **Scope.** Two PRs, in order.
@@ -567,8 +656,9 @@ PASS. `test_projects_personal_s6e.py`, 12 tests. The vitest fences:
 1. **Code.** Delete the `gtd_items` arms behind `lensEnabled()` and
    `agent_source()`. Delete both flags. `lens.ts` becomes the only path.
    `routes/tasks/hierarchy.py`, `sync.py`, `accounts.py`, `providers.py` and
-   `broker_handlers.py` go. `test_client_route_contract.py` keeps the paths
-   that survive.
+   `broker_handlers.py` go. `items.py`, `hierarchy.py`, the status catalog in
+   `settings.py`, `accounts.py` and `sync.py` lost their last caller in S8a.
+   `test_client_route_contract.py` keeps the paths that survive.
 2. **Schema.** A new migration calls `gtd_retirement_drop()`. It takes the
    next free number at build time (R1). Number 212 went to the backfill fix
    on 2026-09-23, so this one is 213 or later. Then it drops
