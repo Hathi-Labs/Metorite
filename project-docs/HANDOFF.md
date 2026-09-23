@@ -3010,6 +3010,20 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_ai_chat.md` §5.4, §12 · `org_access_control.md` §8d
 - **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
 
+### H-169 · The outlook's capacity reads only the typed hours, and ignores absences · [AGENT]
+- **Check:** `grep -n "hours_per_week=float(cap.stated_hours)" apps/services/gateway/gateway/routes/projects/analytics.py`
+  → a hit means this is open.
+- **Why:** `/projects/analytics/outlook` forecasts a finish date from
+  `people.capacity_hours_per_week` only. The docstring names `working_hours`
+  as the fallback, but the code only counts it. Absences are not subtracted.
+  The People dashboard and S7a's capacity route use `work_schedule.py`, so the
+  two surfaces can disagree about one person's hours.
+- **Do:** Compute the outlook's hours through `person_schedule` and
+  `working_hours_between`, as `routes/people/dashboard.py` does. Keep the typed
+  figure as the override that `capacity_disagreement` already reports.
+- **Authority:** `specs/projects_ai_chat.md` §13.8 · `people_center_app.md` §5.7
+- **Added:** 2026-09-23 · the Projects chat team-intelligence design
+
 ### H-168 · The gateway refuses the LLM key on `/v1/embeddings` · [AGENT]
 - **Check:** `grep -n '"/v1/embeddings"' apps/services/gateway/gateway/main.py`
   → one hit, on the route only, and not in `PUBLIC_ROUTES`, means this is open.
