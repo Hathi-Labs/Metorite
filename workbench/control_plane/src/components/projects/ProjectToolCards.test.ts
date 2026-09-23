@@ -16,6 +16,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  VIEW_TOOLS,
   CANCELLED,
   GUARDED_TOOLS,
   toneFor,
@@ -198,5 +199,22 @@ describe("a guarded act's receipt wears the warning tone", () => {
     expect(toneFor("done", "archive_project")).toContain("bg-warning");
     expect(toneFor("done", "update_task")).not.toContain("bg-warning");
     expect(GUARDED_TOOLS.has("archive_project")).toBe(true);
+  });
+});
+
+describe("the UX review (2026-09-23)", () => {
+  it("strips the ids a member cannot use from an info card", () => {
+    const shown = forPeople(
+      "- «Ops» · 2 overdue · project_id 0f8fad5b-d9cb-469f-a165-70867728950e\n" +
+        "2026-09-22 comment by a@x.io: Waiting. (activity id a1)",
+    );
+    expect(shown).toBe("Ops · 2 overdue\n2026-09-22 comment by a@x.io: Waiting.");
+  });
+
+  it("a view tool draws its template, so it is not ALSO a text card", () => {
+    for (const t of ["render_timeline", "render_board", "render_tasks", "render_report", "status_report"]) {
+      expect(VIEW_TOOLS.has(t)).toBe(true);
+    }
+    expect(VIEW_TOOLS.has("list_tasks")).toBe(false);
   });
 });

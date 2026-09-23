@@ -69,6 +69,7 @@ import { TaskPanel } from "./components/TaskPanel";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { TriageRail } from "./components/TriageRail";
 import { AssistantRail } from "./components/AssistantRail";
+import SidePanelEditor from "@/components/SidePanelEditor";
 import { PROJECTS_CHANGED_EVENT } from "@/components/projects/ProjectToolCards";
 import { invalidate } from "@/lib/dataCache";
 import { useFrontendTool } from "@/hooks/useFrontendTool";
@@ -2170,6 +2171,21 @@ function ProjectsWorkspace() {
   // member can reach, so it is fetched.
   const openWithStatuses = useCallback(
     async (task: TaskRow) => {
+      // Opened from one of the app's own destinations — the AI chat slot, most
+      // often, where a card's "Open task" landed the panel beside a full-width
+      // chat and never showed the project (owner report, 2026-09-23). Leave
+      // the destination, select the task's project so its board shows, and
+      // carry the conversation into the dock, where it comes back beside the
+      // board when the task closes.
+      if (app !== null) {
+        const home = flatten(visibleRoots).find((e) => e.node.id === task.project_id);
+        if (home) setSelected(home.node as ProjectRow);
+        if (app === "ai-chat" && CHAT_LIVE) {
+          setChatDocked(true);
+          writeChatDocked(true);
+        }
+        setApp(null);
+      }
       setOpenTask(task);
       if (selected && task.root_project_id === selected.id) {
         setPanelStatuses(statuses);
@@ -2184,7 +2200,7 @@ function ProjectsWorkspace() {
         setPanelStatuses([]);
       }
     },
-    [selected, statuses]
+    [selected, statuses, app, visibleRoots]
   );
 
   /**
@@ -3057,6 +3073,19 @@ function ProjectsWorkspace() {
     }
   }
 
+  /** Every visible node, for the chat's focus picker (`lib/chatScope.ts`). */
+  const chatScopes = useMemo(
+    () =>
+      flatten(visibleRoots).map((e) => ({
+        id: e.node.id,
+        name: e.node.name,
+        level: levelOf(visibleRoots, e.node.id),
+        depth: e.depth,
+        archived: Boolean((e.node as ProjectRow).archived_at),
+      })),
+    [visibleRoots],
+  );
+
   if (loading) return renderState("loading", LOADING_COPY, "page");
 
   // ── The parts both layouts render ────────────────────────────────────────
@@ -3285,6 +3314,7 @@ function ProjectsWorkspace() {
       ? { id: openTask.id, title: openTask.title, number: openTask.task_number ?? null }
       : null,
     selectedTaskIds: Array.from(picked),
+    scopes: chatScopes,
   };
 
   const workArea = app === "ai-chat" ? (
@@ -4114,6 +4144,13 @@ function ProjectsWorkspace() {
             />
           </aside>
         )}
+
+        {/* The shared side panel — where a chat's "Open in side panel" on a
+            Markdown or HTML file, and a panel-surface generated view, draw.
+            The main chat page mounts it; this page did not, so those clicks
+            wrote to a store nothing rendered (owner report, 2026-09-23). It
+            draws nothing until something is opened. */}
+        {CHAT_LIVE ? <SidePanelEditor hideWhenEmpty /> : null}
       </div>
 
       {/* WS-27ab — the `full` stop. A scrim plus the same panel, at the same

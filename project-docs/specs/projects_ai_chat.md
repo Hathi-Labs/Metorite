@@ -439,6 +439,31 @@ showed the model's «guillemet» fence, the `full_id:` lines and raw routes,
 so they now show plain words. The timeline coloured a comment with the
 member's accent, so its dots now use the categorical ramp.
 
+**The second UX review (2026-09-23, owner report).** A browser rig replayed
+the events the real view tools emit, with a Markdown answer, a file, and a
+class B and a class C receipt. It found five defects, and all are fixed.
+
+- **The chat was bound to one project.** It now reaches everything the member
+  can see. The header's "Chat about" picker (`lib/chatScope.ts`) sets a focus,
+  which is a hint and never a boundary. The focus follows the tree until the
+  member picks, and then it holds. The persona tells the model to find any
+  other project the member names, and to answer a general question across
+  everything.
+- **"Open task" stayed in the chat.** A card's link opened the task panel
+  beside a full-width chat, and the project never showed. Now the page leaves
+  the chat slot, selects the task's project, opens the task, and docks the
+  conversation.
+- **Each view showed twice.** The template drew, and then a text card showed
+  the same facts. For the status report that text was raw Markdown source. A
+  view tool's text is for the model, so `VIEW_TOOLS` hides its card once the
+  tool is done.
+- **A file had no side panel.** "Open in side panel" on a Markdown file
+  wrote to a store that only the chat page drew. The Projects page now mounts
+  `SidePanelEditor`, which draws nothing until a file is open.
+- **Raw data leaked.** The "Interactive view" fold repeated the file event as
+  JSON, and the cards showed `project_id` values and activity ids. The fold
+  now hides file events, and the cards strip both kinds of id.
+
 **The board follows the chat.** A receipt card that reports a done write
 fires `cc-projects-changed` once, and the Projects page reloads the selected
 project. The chat never reaches the page's state. That event is the one

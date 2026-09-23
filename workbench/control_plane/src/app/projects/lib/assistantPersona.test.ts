@@ -98,3 +98,13 @@ describe("buildProjectsAssistantPersona", () => {
     expect(out).not.toMatch(/you can (create|archive|delete)/i);
   });
 });
+
+describe("the focus is a hint, never a boundary (2026-09-23)", () => {
+  it("says the chat reaches everything, with and without a focus", () => {
+    const none = buildProjectsAssistantPersona({ node: null });
+    expect(none).toContain("focused on everything the member can see");
+    const some = buildProjectsAssistantPersona({ node: { id: "p1", name: "Ops", level: "project" } });
+    expect(some).toContain("focused on the project");
+    expect(some).toContain("You can reach every space and project the member can see");
+  });
+});

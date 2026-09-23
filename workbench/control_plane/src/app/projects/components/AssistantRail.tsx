@@ -40,6 +40,15 @@ import {
   describeFilters,
   type PersonaInput,
 } from "../lib/assistantPersona";
+import { SelectButton } from "@/components/ui/SelectButton";
+import {
+  EVERYTHING,
+  focusedEntry,
+  initialFocus,
+  nextFocus,
+  scopeOptions,
+  type ScopeEntry,
+} from "../lib/chatScope";
 
 export const PROJECTS_AGENT = "projects-assistant";
 
@@ -66,6 +75,11 @@ export interface AssistantRailProps {
   filters?: Parameters<typeof describeFilters>[0];
   openTask?: PersonaInput["openTask"];
   selectedTaskIds?: readonly string[];
+  /**
+   * Every node the member can see, for the header's focus picker
+   * (`lib/chatScope.ts`). Absent, the header names `node` and offers no pick.
+   */
+  scopes?: readonly ScopeEntry[];
   onClose?: () => void;
 }
 
@@ -75,6 +89,7 @@ export function AssistantRail({
   filters,
   openTask,
   selectedTaskIds,
+  scopes,
   onClose,
 }: AssistantRailProps) {
   const { data: nextAuthSession } = useSession();
@@ -174,6 +189,21 @@ export function AssistantRail({
     [activeId],
   );
 
+  // The focus: a hint, never a boundary (`lib/chatScope.ts`). It follows the
+  // tree until the member picks in the header, then it holds.
+  const [focus, setFocus] = useState(() => initialFocus(node?.id));
+  const treeId = node?.id ?? null;
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setFocus((f) => nextFocus(f, { type: "tree", id: treeId }));
+  }, [treeId]);
+  const focusNode: PersonaInput["node"] = useMemo(() => {
+    if (!scopes) return node ?? null;
+    const e = focusedEntry(focus, scopes);
+    return e ? { id: e.id, name: e.name, level: e.level, archived: e.archived } : null;
+  }, [scopes, focus, node]);
+  const options = useMemo(() => (scopes ? scopeOptions(scopes) : []), [scopes]);
+
   // The member's place, refreshed whenever the page's selection moves.
   const persona = useMemo(() => {
     const today = new Date();
@@ -187,7 +217,7 @@ export function AssistantRail({
       timezone = undefined;
     }
     return buildProjectsAssistantPersona({
-      node: node ?? null,
+      node: focusNode,
       view,
       filterSummary: filters ? describeFilters(filters) : "",
       openTask: openTask ?? null,
@@ -196,7 +226,7 @@ export function AssistantRail({
       today: `${yyyy}-${mm}-${dd}`,
       timezone,
     });
-  }, [node, view, filters, openTask, selectedTaskIds, access]);
+  }, [focusNode, view, filters, openTask, selectedTaskIds, access]);
 
   const activeSession = mySessions.find((s) => s.id === activeId);
 
@@ -207,15 +237,29 @@ export function AssistantRail({
         {/* The page's title row already says "AI chat". This row says what
             the chat answers ABOUT, which is the one thing the member cannot
             see elsewhere once the tree scrolls. */}
-        <p className="min-w-0 truncate text-xs text-muted-foreground" title={node?.name ?? undefined}>
-          {node ? (
-            <>
-              Asking about <span className="text-sidebar-foreground">{node.name}</span>
-            </>
-          ) : (
-            "Asking about every space you can see"
-          )}
-        </p>
+        {scopes ? (
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="shrink-0 text-xs text-muted-foreground">Chat about</span>
+            <SelectButton
+              label="What the chat is focused on"
+              value={focusNode ? focus.focusId : EVERYTHING}
+              defaultValue={EVERYTHING}
+              options={options}
+              widthClass="max-w-[14rem]"
+              onChange={(id) => setFocus((f) => nextFocus(f, { type: "pick", id }))}
+            />
+          </div>
+        ) : (
+          <p className="min-w-0 truncate text-xs text-muted-foreground" title={node?.name ?? undefined}>
+            {node ? (
+              <>
+                Asking about <span className="text-sidebar-foreground">{node.name}</span>
+              </>
+            ) : (
+              "Asking about every space you can see"
+            )}
+          </p>
+        )}
         <div className="flex items-center gap-0.5">
           {/* DESIGN_SYSTEM §3: a control is a <Button>. `selected` carries
               the history toggle's state and its aria-pressed together. */}

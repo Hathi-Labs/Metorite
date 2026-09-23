@@ -687,7 +687,7 @@ def _scope_title(payload: dict[str, Any]) -> str:
     return (
         "the portfolio"
         if payload.get("scope") == "portfolio"
-        else f"node {payload.get('project_id')}"
+        else "this project"
     )
 
 
