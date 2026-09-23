@@ -525,6 +525,20 @@ PUBLIC_ROUTES: frozenset[str] = frozenset({
     # Liveness. Deliberately says nothing beyond status + env name.
     "/health",
 
+    # The OpenAI-compatible completion door. It is NOT anonymous: every route
+    # here carries `require_llm_api_auth`, which accepts the LLM API key or
+    # the service token and refuses anything else (and refuses an unconfigured
+    # box outside dev). It is listed because the app-wide gate cannot see that
+    # key. BO-2 residual #4 decided that agent code holds ONLY the LLM key,
+    # never the identity token (`Settings.llm_api_key`), and the default-deny
+    # gate of 57ec82d9 then refused that key before `/v1`'s own check could
+    # accept it. Every in-process MAF agent (the main chat, CRM, email,
+    # WhatsApp, Projects) got 401 from its model on any box with
+    # GATEWAY_INTERNAL_TOKEN set. Found by the Projects chat's live trial,
+    # 2026-09-23. Fence: tests/unit/test_v1_llm_key_gate.py.
+    "/v1/chat/completions",
+    "/chat/completions",
+
     # Build identity — the commit this box is running. Public for the same
     # reason /health is, and the reason is the use case rather than the payload:
     # the moment you need this answer is mid-deploy or mid-incident, often from

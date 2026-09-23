@@ -870,9 +870,10 @@ async def _handle_chat_completions(request: Request) -> StreamingResponse | dict
 
 # Register on both /v1/chat/completions and /chat/completions
 # response_model=None because we return either StreamingResponse or dict.
-# require_internal_auth 401s any caller without the internal Bearer token —
-# this endpoint bills the server's stored provider keys, so it must not be
-# world-reachable. Every internal caller already forwards the token.
+# require_llm_api_auth 401s any caller without the LLM API key or the service
+# token. This endpoint bills the server's stored provider keys, so it must not
+# be world-reachable. It is the ONLY lock: both templates are in the gateway's
+# PUBLIC_ROUTES. Fence: tests/unit/test_v1_llm_key_gate.py.
 _auth = [Depends(require_llm_api_auth)]
 router_v1.post(
     "/chat/completions", response_model=None, dependencies=_auth,

@@ -42,11 +42,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-#: The origin keys a capture may look a task up by. Each of the four has a
-#: partial expression index on `pm_tasks` (211). A key outside this set is
+#: The origin keys a capture may look a task up by. A key outside this set is
 #: refused, because it would be spliced into SQL as a literal.
+#:
+#: The first four have a partial expression index on `pm_tasks` (211).
+#: `action_item_id` (a meeting action, WS-39 S8c) and `account_id` (the email
+#: digest, S8c) have none on purpose. Each lookup runs inside one member's own
+#: list (`MY_TASKS_FROM`), so the key is a residual filter on a few rows.
 ORIGIN_KEYS: frozenset[str] = frozenset({
     "email_id", "thread_id", "wa_message_id", "wa_chat_id",
+    "action_item_id", "account_id",
 })
 
 
@@ -137,6 +142,14 @@ class ItemSource:
         rows = await self.items_by_origin(
             db, uid, key, value, commitment=commitment, limit=1)
         return rows[0] if rows else None
+
+    async def hard_dated_items(
+        self, db: Any, uid: str, *, days: int, limit: int,
+    ) -> list[Any]:
+        """My OPEN hard-date items due from now to ``days`` ahead, soonest
+        first. The Calendar's "fixed appointment" predicate. The email drafter
+        reads it to offer slots that do not clash (WS-39 S8c)."""
+        raise NotImplementedError
 
     # ── writes ───────────────────────────────────────────────────────────
 

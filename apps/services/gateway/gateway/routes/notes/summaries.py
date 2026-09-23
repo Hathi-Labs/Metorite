@@ -16,6 +16,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.routes.notes.actions import task_ref
 from gateway.routes.notes.core import _get_db, _log, _tenant_session, load_owned_meeting, router
 from gateway.routes.notes.templates import (
     build_system_prompt,
@@ -575,7 +576,10 @@ async def list_actions(
             status=r.status,
             due_hint=r.due_hint,
             segment_ids=[str(s) for s in (r.segment_ids or [])],
-            resulting_task_id=str(r.resulting_task_id) if r.resulting_task_id else None,
+            # A task captured since WS-39 S8c carries its id in `dispatch_ref`
+            # (the FK on `resulting_task_id` names the legacy `task` table).
+            # The page links "In My Tasks" off this field, so it reads both.
+            resulting_task_id=task_ref(r),
             kind=(r.kind if r.kind in ("task", "email", "document") else "task"),
             payload=(r.payload if isinstance(r.payload, dict) else {}),
             dispatch_ref=r.dispatch_ref,

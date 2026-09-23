@@ -506,6 +506,16 @@ async def require_internal_auth(
     raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+def _acb_env() -> str:
+    """The deployment's environment name. Absent means ``prod`` (H-90)."""
+    try:
+        from acb_common import get_settings  # noqa: PLC0415
+
+        return str(get_settings().acb_env)
+    except Exception:  # noqa: BLE001
+        return "prod"
+
+
 async def require_llm_api_auth(
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> None:
@@ -527,7 +537,13 @@ async def require_llm_api_auth(
 
     accepted = [t for t in (_get_llm_api_token(), _get_internal_token()) if t]
     if not accepted:
-        return  # Unconfigured deployment — same fail-open contract as below.
+        # Unconfigured. Open in dev, where a laptop has no keys to spend.
+        # Closed anywhere else: `/v1` is in PUBLIC_ROUTES (the app-wide gate
+        # cannot see the LLM key), so this check is its ONLY lock, and it
+        # spends the server's stored provider keys.
+        if _acb_env() == "dev":
+            return
+        raise HTTPException(status_code=401, detail="Unauthorized")
     if submitted and any(secrets.compare_digest(submitted, t) for t in accepted):
         return
     raise HTTPException(status_code=401, detail="Unauthorized")
