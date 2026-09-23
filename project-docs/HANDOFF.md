@@ -2119,17 +2119,33 @@ line — never reclaim a number by deleting the other entry.
   and `/my/usage/members` (CP-7 slice 1) report the same attribution and are
   safe, because a cost report is not an authorisation decision. **Attribution
   is good enough to REPORT and not good enough to ENFORCE.**
-- **Two questions, and the second is the owner's:**
-  1. Where does a trustworthy member identity come from? A session-scoped
-     door beside the org key is the obvious shape, but it is a new auth
-     scheme and §4's registry says who owns that.
-  2. ⚠️ **Is a per-member cap worth a fifth auth scheme at all?** The org
-     pool, the balance gate and the run ceiling already stop runaway spend.
-     A cap is a *management* feature, not a *safety* one. Answering "not yet"
-     is a legitimate answer and it costs nothing to defer.
+- **Both questions are ANSWERED, 2026-09-23.**
+  1. **Where a trustworthy identity comes from: a signed claim, not a new
+     door.** `acb_auth/member_proof.py` mints and verifies an HMAC over
+     `member:nonce:exp` under `gateway_session_secret`, with a 300s TTL.
+     `v1_compat._member_for` prefers a verified proof over the header and
+     returns `(member, proven)`. `console_resolve` carries `proven` to the
+     Console as `X-CC-Member-Proven`. **No fifth auth scheme**, so §4's
+     registry is not engaged — the credential set is unchanged and one header
+     gained a signature.
+  2. The owner answered yes on 2026-09-23, asking for per-member budgets,
+     redistribution and per-person usage.
+- ⚠️ **What is CLOSED: a member can no longer choose which cap applies.** Only
+  a holder of `gateway_session_secret` can mint, and that secret never reaches
+  a browser. A forged `X-CC-Member` loses to a proof, and a test asserts it.
+- 🔴 **What is NOT closed, and it is the remaining half.**
+  (a) **Nothing MINTS a proof yet.** Measured: no code in this tree sends
+  `X-CC-Member` to the gateway's `/v1` at all, which is consistent with
+  `usage_event` holding zero rows. The minter belongs wherever the workbench
+  originates an AI call with a session in hand.
+  (b) **"No cap row means unlimited" still stands.** A cap keyed on `proven`
+  is unforgeable, but an UNPROVEN caller still matches no row. The policy for
+  that case — refuse, fall back to an org-wide default, or allow — is a
+  decision, not an implementation, and it is the owner's.
 - **Authority:** **D32.8** · `specs/customer_console.md` §4.5 · §6 CP-7 ·
   `work_plan.md` §6 (f) · migration `005_metering_identity.sql`
-- **Added:** 2026-08-28 · WS-31 CP-7 slice 1
+- **Fences:** `tests/unit/test_member_proof.py` (24) · the three attribution clauses in `test_v1_router_serving.py`.
+- **Added:** 2026-08-28 · WS-31 CP-7 slice 1. **Updated:** 2026-09-23.
 
 ### H-74 · mypy is strict over a tree nobody has swept — 1508 errors · [AGENT]
 - **Check:** `uv run mypy apps packages --exclude '^apps/agents/' 2>&1 | tail -1`

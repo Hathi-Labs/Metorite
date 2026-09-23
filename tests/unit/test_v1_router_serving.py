@@ -293,6 +293,11 @@ async def test_the_attribution_headers_are_forwarded(monkeypatch, spy):
         "agent": "planner",
         "module_slug": "crm",
         "run_id": "run-7",
+        # 🔴 **FALSE, and that is the point of H-73.** The address arrived in a
+        # header the caller wrote, so it may NAME the spender and may not
+        # DECIDE their cap. Attribution keeps working — the four fields above
+        # are unchanged — and only enforcement waits for a signed proof.
+        "member_proven": False,
     }
 
 
@@ -300,7 +305,45 @@ async def test_absent_attribution_headers_become_none(monkeypatch, spy):
     _configure(monkeypatch, flag="1")
     await v1_compat._handle_chat_completions(FakeRequest(TIER_BODY))
     _, kw = spy.router_calls[0]
+    # ⚠️ `member_proven` is a BOOL and the four attribution fields are not, so
+    # they are asserted apart. Folding it into the set would make the clause
+    # pass on `True`, which is the one value that must never appear without a
+    # verified proof.
+    assert kw.pop("member_proven") is False
     assert set(kw.values()) == {None}
+
+
+async def test_a_SIGNED_proof_marks_the_member_proven(monkeypatch, spy):
+    """🔴 The other half of H-73, end to end through the handler.
+
+    An unsigned header names the spender. A signed one is the only thing that
+    may decide their cap, because the capped party cannot mint it.
+    """
+    from acb_auth.member_proof import MEMBER_PROOF_HEADER, sign_member
+
+    _configure(monkeypatch, flag="1")
+    monkeypatch.setenv("GATEWAY_SESSION_SECRET", "rig-signing-secret")
+    from acb_common.settings import get_settings
+
+    get_settings.cache_clear()
+    try:
+        await v1_compat._handle_chat_completions(
+            FakeRequest(
+                TIER_BODY,
+                {
+                    MEMBER_PROOF_HEADER: sign_member(
+                        "real@x.test", "rig-signing-secret"
+                    ),
+                    # The forged claim, which must lose.
+                    "X-CC-Member": "victim@x.test",
+                },
+            )
+        )
+    finally:
+        get_settings.cache_clear()
+    _, kw = spy.router_calls[0]
+    assert kw["member"] == "real@x.test"
+    assert kw["member_proven"] is True
 
 
 async def test_spec_violating_messages_are_repaired_before_routing(monkeypatch, spy):
