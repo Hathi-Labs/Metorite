@@ -1615,7 +1615,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `work_plan.md` §3 **D58** · §6 (f) · `specs/customer_console.md` §4
 - **Added:** 2026-08-26 · AI architecture session
 
-### H-170 · The product's OWN AI is never metered, so it is free forever · [AGENT+OWNER]
+### H-171 · The product's OWN AI is never metered, so it is free forever · [AGENT+OWNER]
 - **Check:** `rg -c "console_resolve|customer_console" packages/acb_llm/` → a
   zero means `acb_llm` still reaches no meter, and this is open.
 - 🔴 **MEASURED 2026-09-23.** `acb_llm.acompletion_with_fallback` imports
@@ -1653,7 +1653,7 @@ line — never reclaim a number by deleting the other entry.
   seam. H-44 records the same 80+ sites for tier selection, so sweep the two
   together and not twice.
 - **Authority:** `launch_surface.md` §4.1 · D19.2 · D57.7 · CP-6 · H-73 · H-44
-- **Added:** 2026-09-23 · the H-73 session.
+- **Added:** 2026-09-23 · the H-73 session. **Renumbered from H-170 to H-171** the same day (R1): another branch minted the same next free id against a different base and merged first. An id is never reused.
 
 ### H-44 · Feature→tier binding is hardcoded at 80+ call sites · [AGENT]
 - **Check:** `rg -c '"tier-(fast|balanced|powerful|stt)"' --glob '*.py' --glob '*.ts' apps/ packages/ workbench/`
