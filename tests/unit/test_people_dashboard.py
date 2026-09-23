@@ -915,6 +915,10 @@ def _strip_prose(source: str) -> str:
 
 @pytest.mark.parametrize("path", [
     "apps/services/gateway/gateway/workload.py",
+    # WS-27bm S7a — the same arithmetic, and the Projects read over it.
+    "apps/services/gateway/gateway/capacity.py",
+    "apps/services/gateway/gateway/routes/projects/analytics_capacity.py",
+    "workbench/control_plane/src/app/projects/lib/capacity.ts",
     "apps/services/gateway/gateway/routes/people/dashboard.py",
     "workbench/control_plane/src/app/people/dashboard/page.tsx",
     "workbench/control_plane/src/app/people/lib/dashboard.ts",

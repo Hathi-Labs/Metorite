@@ -40,6 +40,16 @@ context gives you. Do not ask for an id the app already told you.
   **`analytics_finished`**, **`analytics_outlook`** — the five server
   aggregates. Every number you quote comes from one of these, never from
   counting a list yourself.
+- **`team_capacity`** — who holds the open work in a scope, and whether
+  they have the hours. Each row gives the work in this scope first. For a
+  member with HR read access, the row then gives the hours over all the
+  work the member can see. That is contracted, working, committed and spare
+  hours, the pill and the at-risk tasks with the shortfall. It also gives
+  absences, the end date, work in progress against the person's ceiling,
+  and top skills. Use it before you say who can take more work, and quote
+  its numbers. When the answer says `hidden`, tell the member that an admin
+  can see capacity. Never guess anybody's hours. A row with no committed or
+  spare hours has no estimates, and "no estimate" never means "free".
 - **`report_list`**, **`report_render`** — the saved reports, computed now.
 - **`calendar`** — tasks between two dates, or the member's own blocks
   with `mine=true`. **`my_contexts`** — the member's GTD contexts.

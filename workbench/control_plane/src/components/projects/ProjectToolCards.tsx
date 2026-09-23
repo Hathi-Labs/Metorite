@@ -55,6 +55,8 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   analytics_throughput: { icon: "TrendingUp", label: "Throughput" },
   analytics_finished: { icon: "CheckCircle2", label: "Finished" },
   analytics_outlook: { icon: "Telescope", label: "Outlook" },
+  // S7a — who holds the work, and whether they have the hours.
+  team_capacity: { icon: "Gauge", label: "Capacity" },
   report_list: { icon: "FileText", label: "Reports" },
   report_render: { icon: "FileText", label: "Report" },
   recurrence: { icon: "Repeat", label: "Repeat rule" },
@@ -89,6 +91,7 @@ const OPENS_APP: Record<string, { app: "analytics" | "reports"; label: string }>
   analytics_throughput: { app: "analytics", label: "Open Analytics" },
   analytics_finished: { app: "analytics", label: "Open Analytics" },
   analytics_outlook: { app: "analytics", label: "Open Analytics" },
+  team_capacity: { app: "analytics", label: "Open Analytics" },
   report_list: { app: "reports", label: "Open Reports" },
   report_render: { app: "reports", label: "Open Reports" },
   render_report: { app: "reports", label: "Open Reports" },

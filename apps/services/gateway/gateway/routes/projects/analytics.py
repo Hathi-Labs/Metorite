@@ -478,6 +478,41 @@ def effort_sql(where: str) -> str:
     )
 
 
+def load_open_where(scope_sql: str, vis: Any) -> str:
+    """Load's open-work predicate: the scope, the caller's grants, open only.
+
+    ⚠️ **Named since WS-27bm S7a, because a second panel reads it.** The
+    Capacity panel sits beside Load, and its per-person `open_tasks` must equal
+    Load's for the same scope (`projects_ai_chat.md` §10.3 item 1). A copy of
+    this string in the capacity module would be a second spelling of "open",
+    and the two panels would drift apart the first time one was edited.
+
+    ``scope_sql`` is :func:`scope_clause`'s answer. ``"TRUE"`` is every open
+    task the caller can see — the portfolio.
+    """
+    return (
+        f"{scope_sql}"
+        f" AND t.archived_at IS NULL"
+        f" AND ({task_visibility_clause(vis, 't')})"
+        f" AND ({triage_exclusion_clause('t')})"
+        # D-PM-32(b), the same clause and the same reason as `stuck`.
+        # Counting a stopped project's work as somebody's load is how a
+        # person reads as overloaded by work nobody expects them to do.
+        f" AND ({reportable_with_ancestors_clause('t')})"
+        f" AND s.category <> ALL(CAST(:closed AS text[]))"
+    )
+
+
+def load_params(vis: Any, project_id: str | None) -> dict[str, Any]:
+    """The binds :func:`load_open_where` names, and ONLY those."""
+    return {
+        **vis.params,
+        **scope_params(project_id),
+        "closed": sorted(CLOSING_CATEGORIES),
+        "reportable_states": sorted(REPORTABLE_STATUSES),
+    }
+
+
 @router.get("/analytics/load")
 async def load(
     project_id: str | None = None,
@@ -515,24 +550,10 @@ async def load(
         scope_sql = await scope_clause(db, vis, project_id, include_subtree)
 
         # The same predicate `stuck` uses, for the same reason: two panels on
-        # one dashboard must not disagree about what "open" means.
-        open_where = (
-            f"{scope_sql}"
-            f" AND t.archived_at IS NULL"
-            f" AND ({task_visibility_clause(vis, 't')})"
-            f" AND ({triage_exclusion_clause('t')})"
-            # D-PM-32(b), the same clause and the same reason as `stuck`.
-            # Counting a stopped project's work as somebody's load is how a
-            # person reads as overloaded by work nobody expects them to do.
-            f" AND ({reportable_with_ancestors_clause('t')})"
-            f" AND s.category <> ALL(CAST(:closed AS text[]))"
-        )
-        params: dict[str, Any] = {
-            **vis.params,
-            **scope_params(project_id),
-            "closed": sorted(CLOSING_CATEGORIES),
-            "reportable_states": sorted(REPORTABLE_STATUSES),
-        }
+        # one dashboard must not disagree about what "open" means. Named, so
+        # the Capacity panel beside this one reads the SAME predicate.
+        open_where = load_open_where(scope_sql, vis)
+        params = load_params(vis, project_id)
 
         # ── Per person, bucketed by when it is due — see `load_sql`. ──────
         rows = (

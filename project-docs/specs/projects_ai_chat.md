@@ -5,8 +5,9 @@
 workflows, the views and the forms) and S5 (the rest of the manifest)
 built 2026-09-23. S6 (navigation and the frontend-tool dispatcher) built
 2026-09-23. The visual review ran 2026-09-23 (§4.2). S7, the team
-intelligence slices, was designed 2026-09-23 (§13) and is not built.** §10 says
-which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+intelligence slices, was designed 2026-09-23 (§13). S7a (capacity) was built
+2026-09-23. S7b to S7e are not built.** §10 says which slice each part belongs
+to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -107,6 +108,7 @@ tool class in §5.2, so the ceremony a member sees follows from this table.
 | "Are we getting faster?" | `analytics_throughput` | `GET /projects/analytics/throughput` |
 | "What did we finish last week?" | `analytics_finished` | `GET /projects/analytics/finished` |
 | "What is due?" | `analytics_outlook` | `GET /projects/analytics/outlook` |
+| "Who has the hours for this?" (S7a) | `team_capacity` | `GET /projects/analytics/capacity` |
 | "Render the weekly report" | `report_render` | `GET /projects/reports/{id}/render` |
 | "Does this repeat?" | `recurrence` | `GET /projects/tasks/{id}/recurrence` |
 | "Show me my view of #142" | `my_task` | `GET /projects/my/tasks/{id}` |
@@ -660,7 +662,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S5 · The rest** — ✅ **BUILT 2026-09-23** | The eleven reads and writes that were still in `PLANNED` (`inbox.py`: views, calendar, contexts, watchers, intake, notifications, grants). `PLANNED` is empty of WS-27bm names: every `/projects` route is built or excluded by name | AGENT-SAFE |
 | **S6 · Navigation** — ✅ **BUILT 2026-09-23** | The frontend-tool dispatcher (`acb_skills.frontend_tools`, `runFrontendToolEvent`) · `open_in_app` and the page's three handlers · the two S2 follow-ups (an unknown address named on the card, the subtasks receipt opens the parent) | AGENT-SAFE |
 | **Visual review** — ✅ **DONE 2026-09-23** | The rail and the cards seen in eight contexts. The defects it found are fixed (§4.2) | AGENT-SAFE |
-| **S7a · Capacity** | `GET /projects/analytics/capacity` · the Analytics app's Capacity panel · the report section `capacity` · the chat tool `team_capacity` (§13.3) | AGENT-SAFE |
+| **S7a · Capacity** — ✅ **BUILT 2026-09-23** | `GET /projects/analytics/capacity` · the Analytics app's Capacity panel · the report section `capacity` · the chat tool `team_capacity` (§13.3) | AGENT-SAFE |
 | **S7b · Fit** | `GET /projects/tasks/{id}/candidates` and its draft form · `GET /projects/analytics/rebalance` · "Suggested" in the assignee picker · the chat tools `suggest_assignees` and `rebalance` (§13.4) | AGENT-SAFE |
 | **S7c · Conflicts** | `GET /projects/analytics/conflicts` with seven kinds · the Conflicts panel · the report section `conflicts` · the chat tool `find_conflicts` · the dependency rule moved to the server (§13.5) | AGENT-SAFE |
 | **S7d · Plan with capacity** | `propose_plan` gains start dates, phases and dependencies, and shows each owner's fit on the plan card (§13.6) | AGENT-SAFE |
@@ -747,15 +749,24 @@ For S7a, with `TENANT_LADDER_DATABASE_URL` set, because the R8 tests skip
 without it and the run still reads green:
 
 ```
-uv run pytest tests/unit/test_projects_analytics_capacity.py tests/unit/test_people_dashboard.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_agent.py
+uv run pytest tests/unit/test_projects_analytics_capacity.py tests/unit/test_people_dashboard.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_agent.py tests/unit/test_projects_reports.py tests/unit/test_projects_report_sections_lockstep.py tests/unit/test_projects_reportable_reports.py
 ```
+
+`test_projects_report_sections_lockstep.py` is the lockstep test of §10.3
+item 6. It is a pytest that reads the two TypeScript files as text, so one test
+covers the Python and the TypeScript halves.
 
 In `workbench/control_plane`:
 
 ```
 npx tsc --noEmit
 npx vitest run src/app/projects/lib/projectApps.test.ts src/app/projects/lib/assistantPersona.test.ts
+npx vitest run src/app/projects/lib/capacity.test.ts src/lib/reportEmail.test.ts src/app/projects/lib/analyticsRead.test.ts
 ```
+
+`capacity.test.ts` is the Capacity panel's own test. The panel cannot render
+in this node-env suite, so its decisions live in `lib/capacity.ts`. The test
+also scans the panel and that module for arithmetic (§10.3 item 8).
 
 Then the check no test makes (`DESIGN_SYSTEM.md` §8). Look at the rail in
 light mode, at compact density, under a changed accent, and beside the board.
@@ -865,6 +876,23 @@ one row for unassigned work. A row carries these figures:
 the section kind `capacity`, in `reports.py` `SECTIONS`, `RenderedBody`,
 `reportEmail.ts` and the chat's `_REPORT_SECTIONS`. The chat gets
 `team_capacity`, class A.
+
+**As built, 2026-09-23.** Five facts that the rules above do not say.
+- **Two scopes on one row.** The row's task half is this scope, and it is
+  Load's count. The hours read every open task the caller can see, in any
+  project, so a person busy elsewhere shows no spare hours here. Owner
+  direction. `all_work` carries the counts that the hours measure.
+- **The People dashboard keeps its output.** It calls `person_capacity`, and
+  it still reports spare hours when no task has an estimate, with
+  `hours_basis` beside them. Only the capacity route drops those keys (§13.2 rule 4).
+- **The HR half also carries the top skills** from `people_skills`, strongest
+  level first. Owner direction.
+- **`skill_projects/writes.py` `REPORT_SECTIONS` is a fifth list.** The chat
+  saves a report through it, so the lockstep test holds it too.
+- **Load leads the Analytics panel grid**, so Capacity sits beside it. The
+  node dashboards already lead with Load. The route lives in
+  `routes/projects/analytics_capacity.py`, and Load's predicate is the named
+  `analytics.load_open_where`, which both routes call.
 
 ### 13.4 S7b — Fit and rebalancing
 
