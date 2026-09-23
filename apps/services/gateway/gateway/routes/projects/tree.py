@@ -38,8 +38,8 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     assert_no_project_cycle,
-    assert_project_move_keeps_privacy,
     assert_node_grammar,
+    assert_project_move_keeps_privacy,
     assert_run_state_allowed,
     clean_payload,
     count_where,
@@ -253,14 +253,73 @@ async def get_tree(user: UserContext = Depends(get_current_user)) -> dict:
     subtree granted to a Center without its parent department.
     """
     async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
         rows = await _visible_projects(db, user)
+        counts = await _open_and_done(db, vis)
 
     nodes = {str(r.id): {**row_to_dict(r, ProjectModel), "children": []} for r in rows}
     roots: list[dict] = []
     for node in nodes.values():
         parent = nodes.get(str(node.get("parent_project_id") or ""))
         (parent["children"] if parent else roots).append(node)
+
+    _attach_progress(roots, counts)
     return {"rows": roots, "total": len(nodes)}
+
+
+#: One row per project that holds tasks: how many, and how many are finished.
+#:
+#: The SAME shape the summary reads — tasks joined to their status, archived
+#: rows excluded, the caller's own visibility clause applied — because a tree
+#: that counted differently from the dashboard beside it would be two answers
+#: to one question. `CLOSING_CATEGORIES` is the vocabulary of "finished", and
+#: it is imported rather than restated.
+async def _open_and_done(db: Any, vis: Any) -> dict[str, tuple[int, int]]:
+    rows = (await db.execute(
+        text(
+            f"SELECT t.project_id,"
+            f"       count(*) AS total,"
+            f"       count(*) FILTER ("
+            f"         WHERE s.category = ANY(CAST(:closed AS text[]))"
+            f"       ) AS done"
+            f"  FROM pm_tasks t"
+            f"  JOIN pm_task_statuses s ON s.id = t.status_id"
+            f" WHERE t.archived_at IS NULL"
+            f"   AND ({task_visibility_clause(vis, 't')})"
+            f" GROUP BY t.project_id"
+        ),
+        {**vis.params, "closed": sorted(CLOSING_CATEGORIES)},
+    )).fetchall()
+    return {str(r.project_id): (int(r.total), int(r.done or 0)) for r in rows}
+
+
+def _attach_progress(
+    nodes: list[dict], counts: dict[str, tuple[int, int]],
+) -> tuple[int, int]:
+    """Stamp `tasks` and `done` on every node, counting its whole subtree.
+
+    ⚠️ **The SUBTREE, not the node's own rows.** A project's wheel has to mean
+    "how much of this project is finished", and for a project with subprojects
+    the work lives in the children. A wheel reading its own row only would sit
+    at 0% on a parent whose every child is complete — which is the one reading
+    nobody would expect. `nodes/{id}/summary` rolls up the same way, and this
+    returns the pair so a parent adds its children in one pass rather than
+    walking the tree once per node.
+
+    A node with no tasks anywhere under it gets `0` and `0`. The client draws
+    nothing for that case rather than an empty ring at 0%, because "no work
+    here" and "none of this work is done" are different facts.
+    """
+    subtotal = 0
+    subdone = 0
+    for node in nodes:
+        own_total, own_done = counts.get(str(node["id"]), (0, 0))
+        kid_total, kid_done = _attach_progress(node.get("children") or [], counts)
+        node["tasks"] = own_total + kid_total
+        node["done"] = own_done + kid_done
+        subtotal += node["tasks"]
+        subdone += node["done"]
+    return subtotal, subdone
 
 
 @router.get("/nodes")

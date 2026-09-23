@@ -14,6 +14,12 @@
  */
 import { ContextMenu } from "@/components/ContextMenu";
 import Icon, { themedIcon } from "@/components/Icon";
+import {
+  type NodeProgress,
+  ringDash,
+  showsWheel,
+  wheelLabel,
+} from "../lib/progressWheel";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import { PROJECT_STATES, projectStateAccent } from "@/lib/statusAccent";
@@ -58,12 +64,15 @@ function StateDot({
   inherited,
   projectName,
   level,
+  progress,
 }: {
   state: string;
   inherited: boolean;
   projectName: string;
   /** 'project' or 'subproject' — the two levels that own a run state. */
   level: NodeLevel;
+  /** The subtree roll-up `GET /projects/tree` now carries. */
+  progress: NodeProgress;
 }) {
   const visual = PROJECT_STATES[state];
   const accent = projectStateAccent(state);
@@ -73,6 +82,32 @@ function StateDot({
   // directive 2026-08-31), and the STATE must stay the information — so the
   // level changes the size, never the hue.
   const size = level === "subproject" ? "h-3 w-3" : "h-3.5 w-3.5";
+
+  // ⚠️ **A LIVE project trades its dot for a completion wheel, and nothing
+  // else does.** Owner directive 2026-09-23: *"Change colors only when a
+  // project or subproject's status is green... all other icons remain
+  // unchanged."* Paused and stopped keep the glyph and hue they have, which
+  // is also what keeps D-PM-27 true — a paused row still reads as paused at a
+  // glance, because its marker did not become a ring like everything else.
+  //
+  // A live project with NO tasks under it keeps the dot too. An empty ring
+  // would claim "none of this is done" about work that does not exist.
+  if (showsWheel(state, progress)) {
+    return (
+      <ProgressWheel
+        progress={progress}
+        className={`${size} shrink-0 ${accent.text} ${
+          inherited ? "opacity-50" : ""
+        }`}
+        label={
+          inherited
+            ? `${wheelLabel(level, projectName, progress)} Inherited from a parent project.`
+            : wheelLabel(level, projectName, progress)
+        }
+      />
+    );
+  }
+
   return (
     <Icon
       name={visual?.icon ?? "Circle"}
@@ -85,6 +120,67 @@ function StateDot({
           : `${level}, ${label} — ${projectName}`
       }
     />
+  );
+}
+
+/**
+ * The completion wheel: a ring that fills as a project's subtree closes.
+ *
+ * Drawn as an SVG rather than an `Icon`, because the icon registry serves
+ * fixed glyphs and this one's geometry is data. It still takes its colour from
+ * `className`, so it inherits the run-state accent exactly as the dot did and
+ * adds no second colour vocabulary (CLAUDE.md §4).
+ *
+ * ⚠️ `currentColor` for BOTH the track and the arc, with the track at low
+ * opacity. A hardcoded track colour is the value that reads fine in dark mode
+ * and wrong in light — the trap `DESIGN_SYSTEM.md` §0 opens with.
+ *
+ * ⚠️ Rotated -90° so the arc starts at twelve o'clock. SVG strokes a circle
+ * from three o'clock, and a wheel that fills from the right reads as a
+ * different quantity than the one the number says.
+ */
+function ProgressWheel({
+  progress,
+  className,
+  label,
+}: {
+  progress: NodeProgress;
+  className?: string;
+  label: string;
+}) {
+  // A 16-unit box with r=6 leaves room for a 2.5-wide stroke without the ring
+  // clipping its own edge at the smallest size the tree draws.
+  const R = 6;
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      className={className}
+      role="img"
+      aria-label={label}
+    >
+      <title>{label}</title>
+      <g transform="rotate(-90 8 8)">
+        <circle
+          cx="8"
+          cy="8"
+          r={R}
+          fill="none"
+          stroke="currentColor"
+          strokeOpacity={0.25}
+          strokeWidth={2.5}
+        />
+        <circle
+          cx="8"
+          cy="8"
+          r={R}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2.5}
+          strokeLinecap="round"
+          strokeDasharray={ringDash(progress, R)}
+        />
+      </g>
+    </svg>
   );
 }
 
@@ -553,6 +649,7 @@ function Node({
                 inherited={run.inherited}
                 projectName={node.name}
                 level={level}
+                progress={node}
               />
             ) : (
               <LevelGlyph level={level} node={node} />
@@ -593,6 +690,7 @@ function Node({
                 inherited={run.inherited}
                 projectName={node.name}
                 level={level}
+                progress={node}
               />
             ) : (
               <LevelGlyph level={level} node={node} />

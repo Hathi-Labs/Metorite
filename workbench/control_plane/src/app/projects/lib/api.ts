@@ -113,6 +113,21 @@ export interface ProjectRow {
   description?: string | null;
   parent_project_id?: string | null;
   /**
+   * The SUBTREE roll-up `GET /projects/tree` stamps on every node: how many
+   * tasks live at or under it, and how many sit in a closing category.
+   *
+   * ⚠️ Optional because only `/tree` carries them. `/nodes` returns the same
+   * rows FLAT and rolls nothing up, so a consumer of that list reads
+   * `undefined` rather than a confident zero. `NodeProgress` therefore treats
+   * absent and zero alike — "draw no wheel" — and never as "0% done".
+   *
+   * They agree with `nodes/{id}/summary` by construction: the same join, the
+   * same `CLOSING_CATEGORIES`, the same visibility clause. Measured
+   * 2026-09-23 against a real gateway, space and child alike.
+   */
+  tasks?: number | null;
+  done?: number | null;
+  /**
    * 'project' | 'folder' (migration 193). Absent/null reads as 'project' —
    * resolve through `nodeKind()` in lib/tree.ts, never directly.
    */
