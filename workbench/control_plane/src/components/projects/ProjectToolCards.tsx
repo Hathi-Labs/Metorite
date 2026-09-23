@@ -72,6 +72,9 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   project_views: { icon: "LayoutList", label: "Views" },
   my_contexts: { icon: "AtSign", label: "Contexts" },
   watchers: { icon: "Eye", label: "Watchers" },
+  // S6 — navigation. The page usually opens the row itself; this card keeps
+  // the link for a member who is not on the Projects page.
+  open_in_app: { icon: "ExternalLink", label: "Open in Projects" },
 };
 
 /**

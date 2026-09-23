@@ -42,6 +42,7 @@ from skill_projects.inbox import (
     triage_intake,
     watchers,
 )
+from skill_projects.nav import open_in_app
 from skill_projects.reads import (
     analytics_finished,
     analytics_load,
@@ -132,6 +133,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "project_access",
     "project_views",
     "watchers",
+    # Class A — navigation (S6)
+    "open_in_app",
     # Class B — reversible writes, one card each (S2)
     "add_subtasks",
     "assign",

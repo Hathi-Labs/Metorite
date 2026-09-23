@@ -555,8 +555,9 @@ _AGENT_REGISTRY: list[dict] = [
             "chat, plans a project from a goal as an editable plan, and "
             "writes a status report. Reads the calendar, the intake queue, "
             "notifications, watchers, saved views and who may see a project; "
-            "captures and triages intake, saves a view and clears the bell. It "
-            "never deletes a project or a task."
+            "captures and triages intake, saves a view and clears the bell. "
+            "Opens a task, a project or an app in the member's page. It never "
+            "deletes a project or a task."
         ),
         "tags": ["projects", "tasks", "project-management", "analytics", "reports"],
         "status": "live",

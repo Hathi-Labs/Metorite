@@ -96,23 +96,6 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-164 · `useFrontendTool` describes tools the run can never call · [AGENT]
-- **Check:** `grep -rn "executeFrontendTool(" workbench/control_plane/src --include=*.ts --include=*.tsx | grep -v "hooks/useFrontendTool.ts"`
-  → no hit outside the hook's own file means no dispatcher exists.
-- **Why:** `src/hooks/useFrontendTool.ts` registers browser-side tools and
-  `AgentChat` adds their description to the persona, so the model believes
-  it can call `open_task(id)`. Nothing maps a TOOL_CALL event for such a
-  name back to the registered handler, so the call lands nowhere. The
-  Projects chat spec §4.2 lists four navigation tools on this seam. S4
-  (2026-09-23) served navigation through card links instead (`?task=`,
-  `?app=`) and left the seam alone, because a second half-mechanism in one
-  app is the drift CLAUDE.md §4 forbids. The repair is one dispatcher in
-  `AgentChat`: on a TOOL_CALL whose name is registered, run the handler and
-  answer the run through `/agent/respond-input`. Then the four tools cost
-  one registration each.
-- **Authority:** `specs/projects_ai_chat.md` §4.2 · `src/hooks/useFrontendTool.ts` · `generative_ui_2.md` §2
-- **Added:** 2026-09-23 · the Projects chat S4 build
-
 ### H-163 · The My Tasks cutover is in flight. The spec owns the order · [AGENT]
 - **Check:** `rg -c "lensEnabled\(\)" workbench/control_plane/src/app/tasks/lib/api.ts`
   → below 25 means S6a has not landed. `\dt gtd_*` on the box → any row means
@@ -3187,21 +3170,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `tests/unit/test_provision_mints_the_key.py` · `apps/services/customer_console/customer_console/keys.py::split_key`
 - **Added:** 2026-09-22 · the Projects chat S1 merge
 
-
-### H-162 · Two Projects chat follow-ups from the S2 review · [AGENT]
-- **Check:** `grep -n 'if "@" in raw' apps/skills/skill-projects/skill_projects/writes.py`
-  → a hit means the first item is still open.
-- **Why:** (1) `_resolve_assignee` passes any address-shaped string
-  through to `PUT /tasks/{id}/assignees`, which accepts any string
-  (D-PM-4). The card shows the address, so consent holds. The chat is still
-  wider than the picker. One directory read before the card would let the
-  card say "the directory does not know this address". (2)
-  `ActionResultCard` jumps to the FIRST `full_id` in a result. So the
-  receipt for `add_subtasks` opens the first subtask, under a heading that
-  names the parent. Print the parent's id first, or jump to it. Both are
-  small. Neither loses data.
-- **Authority:** `specs/projects_ai_chat.md` §3.2 · the S2 review, 2026-09-22
-- **Added:** 2026-09-22 · the Projects chat S2 session. Minted as H-161, renumbered to H-162 because main took H-161 first
 
 # DONE — deleted, not archived
 

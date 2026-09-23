@@ -38,7 +38,7 @@ import { getMessages, saveMessages, fetchMessagesFromDb, getQueue, saveQueue, ty
 import { computeContextUsage, activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { serializeReasoning } from "@/lib/chatStream";
 import { useAgentEvents } from "@/lib/agentEvents";
-import { buildFrontendToolsAddendum } from "@/hooks/useFrontendTool";
+import { buildFrontendToolsAddendum, runFrontendToolEvent } from "@/hooks/useFrontendTool";
 
 // Unified model fallback — shown while /api/models/all is loading.
 // Always includes the tiers (always accessible) and Gemini models (default provider).
@@ -792,6 +792,12 @@ export default function AgentChat({
             spec: value,
           });
         }
+      }
+      // A skill tool asked the open page to act (`acb_skills.frontend_tools`,
+      // H-164). The page registered the handler through `useFrontendTool`;
+      // an unregistered name is a page that is not open, and is ignored.
+      if (name === "frontend_tool") {
+        void runFrontendToolEvent(value);
       }
       // Interaction from a panel-surface generative UI (SidePanelEditor emits
       // through the global bus — it has no direct line to this component's

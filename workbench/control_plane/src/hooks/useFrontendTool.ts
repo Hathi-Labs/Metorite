@@ -28,6 +28,13 @@ export interface FrontendToolDefinition {
   parameters?: Record<string, string>;
   /** The handler that executes in the browser. Returns a result string. */
   handler: (args: Record<string, unknown>) => Promise<string> | string;
+  /**
+   * Reached through a SKILL tool that dispatches it (a CUSTOM `frontend_tool`
+   * event, `acb_skills.frontend_tools`), never called by name. Left out of
+   * the prompt addendum: the model cannot call a browser tool directly, so
+   * listing it there would tell the model to call a tool it does not have.
+   */
+  dispatched?: boolean;
 }
 
 // ── Global registry ────────────────────────────────────────────────────────
@@ -59,7 +66,7 @@ export async function executeFrontendTool(
 
 /** Build a tool descriptions block for injection into the agent's system prompt. */
 export function buildFrontendToolsAddendum(): string {
-  const tools = getRegisteredFrontendTools();
+  const tools = getRegisteredFrontendTools().filter((t) => !t.dispatched);
   if (!tools.length) return "";
 
   const lines = tools.map(
@@ -87,6 +94,44 @@ export function useFrontendTool(tool: FrontendToolDefinition): void {
   toolRef.current = tool;
 
   useEffect(() => {
-    return registerFrontendTool(toolRef.current);
+    // The registry holds a WRAPPER that calls the latest handler. Registering
+    // the first render's object froze its closure: a handler that reads page
+    // state (the selected project, the open task) saw the state at mount.
+    const current = toolRef.current;
+    return registerFrontendTool({
+      ...current,
+      handler: (args) => toolRef.current.handler(args),
+    });
   }, []);
+}
+
+// ── The dispatcher ─────────────────────────────────────────────────────────
+
+/** Event ids already run, so a stream replay never runs a handler twice. */
+const _ran = new Set<string>();
+
+/**
+ * Run one CUSTOM `frontend_tool` event (`{id, name, args}`) against the
+ * registry. Returns what happened, for the caller's log and its test. An
+ * unregistered name is ignored: the page that owns it is not open, and the
+ * skill tool that sent it returned a link for exactly that case.
+ */
+export async function runFrontendToolEvent(
+  value: unknown,
+): Promise<"ran" | "duplicate" | "unregistered" | "invalid" | "failed"> {
+  if (!value || typeof value !== "object") return "invalid";
+  const v = value as Record<string, unknown>;
+  const id = typeof v.id === "string" ? v.id : "";
+  const name = typeof v.name === "string" ? v.name : "";
+  if (!id || !name) return "invalid";
+  if (_ran.has(id)) return "duplicate";
+  _ran.add(id);
+  if (!_toolRegistry.has(name)) return "unregistered";
+  const args = v.args && typeof v.args === "object" ? (v.args as Record<string, unknown>) : {};
+  try {
+    await executeFrontendTool(name, args);
+    return "ran";
+  } catch {
+    return "failed";
+  }
 }
