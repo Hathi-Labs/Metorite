@@ -14,8 +14,7 @@ Idempotent per email: capturing the same message twice returns the existing
 open item instead of duplicating it (``origin->>'email_id'``).
 
 Which store the capture lands in is the seam's call: ``item_source()``
-(WS-39 S6d) answers ``gtd_items`` with ``TASKS_LENS`` off and the one task
-store with it on. Nothing here names a table.
+(WS-39 S6d) answers the one task store. Nothing here names a table.
 
 Untrusted-content posture (task_manager_harness_2026-07.md T1-2): the email
 body/subject/thread are other-people-authored. The LLM prompt pins them as

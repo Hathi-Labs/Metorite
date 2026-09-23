@@ -1,13 +1,12 @@
 """Task-manager routes — shared kernel.
 
-The shared ``router``, Pydantic models, DB infrastructure, row→model mappers
-and ownership helpers used by the accounts/items/ai layers. Mirrors the email
+The shared ``router``, Pydantic models, DB infrastructure and row→model
+mappers used by the ai, capture, calendar and people layers. Mirrors the email
 package's ``core.py`` (the leaf module: it imports nothing from siblings).
 
-Canonical store: the ``task_accounts`` / ``gtd_*`` tables from
-``infra/postgres/48_task_manager_gtd.sql`` (spec: project-docs/specs/
-task_manager_app.md §4). Dual-source model (§5.1): LOCAL rows are ours;
-SYNCED rows mirror a connected PM tool through the provider layer.
+Canonical store: ``pm_tasks`` + ``pm_task_personal``, the one task store
+(D53). The routes reach it through ``item_source()`` and ``agent_source()``.
+S8 PR 1 (``my_tasks_cutover.md`` §5) deleted the retired store's routes.
 """
 
 from __future__ import annotations
@@ -36,7 +35,6 @@ from gateway.db import get_session_factory as _get_session_factory  # noqa: F401
 # which are H4's to convert — a job must not inherit an ambient tenant.
 from gateway.db import tenant_session as _tenant_session  # noqa: F401
 from pydantic import BaseModel
-from sqlalchemy import text
 
 _log = get_logger("gateway.tasks")
 
@@ -115,7 +113,7 @@ def require_people_write() -> Any:
 
 
 #: The statuses a `people` row may carry — mirrored from migration 148's
-#: `gtd_people_status_check`.
+#: status CHECK on `people`.
 #:
 #: Defined HERE, next to the write gate, and re-exported by
 #: ``routes/people/core.py`` as ``STATUSES``, for the reason that file already
@@ -205,24 +203,6 @@ class PersonModel(BaseModel):
     provider_user_id: str | None = None
 
 
-class TaskAccountModel(BaseModel):
-    id: str
-    provider: str
-    connector_kind: str = "api"
-    workspace_id: str
-    label: str = ""
-    sync_enabled: bool = True
-    sync_status: str = "idle"
-    sync_error: str | None = None
-    last_synced_at: str | None = None
-    statuses: list[str] = []
-    members: list[PersonModel] = []
-    project_count: int = 0
-    # ClickUp-shaped navigation tree for the project picker accordion:
-    # [{id, name, folders: [{id, name, lists: [{id, name}]}], lists: [...]}]
-    hierarchy: list[dict] = []
-
-
 class GtdItemModel(BaseModel):
     id: str
     source: str = "LOCAL"
@@ -262,7 +242,7 @@ class GtdItemModel(BaseModel):
     parent_item_id: str | None = None   # set → this item is a subtask of another
     subtask_count: int = 0              # number of child subtasks (roll-up badge)
     archived_at: str | None = None      # set → archived (hidden from active views)
-    # Waiting-For record (gtd_waiting, mig 48) — the OPEN one for this item.
+    # Waiting-For record — the OPEN one for this item.
     # `expected_by` is the deterministic overdue line (spec §6: "flags rows past
     # expected_by"); `last_nudged_at` is when a follow-up last went out (written
     # by the nudge path, which is not built yet — it reads NULL today).
@@ -291,21 +271,6 @@ class GtdItemModel(BaseModel):
     updated_at: str
 
 
-class GtdProjectModel(BaseModel):
-    id: str
-    source: str = "LOCAL"
-    provider: str | None = None
-    account_id: str | None = None
-    provider_ref: str | None = None
-    outcome: str
-    purpose: str | None = None
-    status: str = "ACTIVE"
-    has_next_action: bool = False
-    space_id: str | None = None      # LOCAL tree placement (see gtd_spaces)
-    folder_id: str | None = None     # LOCAL tree placement (see gtd_folders)
-    created_at: str | None = None
-
-
 # ── DB (the shared gateway engine — BO-10 / D-CRM-4) ─────────────────────────
 #
 # This package used to own a module-level engine of its own; the block that
@@ -330,17 +295,6 @@ def _key_store():
 
 def _uid(user: Any) -> str:
     return getattr(user, "email", None) or "anonymous"
-
-
-async def _assert_account_owner(db: Any, account_id: str, user_id: str) -> Any:
-    """Return the account row or raise 404 if it isn't the user's."""
-    row = (await db.execute(
-        text("SELECT * FROM task_accounts WHERE id = :id AND user_id = :uid"),
-        {"id": account_id, "uid": user_id},
-    )).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Account not found")
-    return row
 
 
 def _parse_jsonb(val: Any) -> Any:
@@ -386,7 +340,7 @@ def _iso(val: Any) -> str | None:
 
 
 def _row_to_item(row: Any) -> GtdItemModel:
-    """DB row (gtd_items ⟕ gtd_waiting ⟕ task_accounts.provider) → model."""
+    """A task row, as a seam arm shapes it (``item_lens._pm_item``) → model."""
     return GtdItemModel(
         id=str(row.id),
         source=row.source,
@@ -444,47 +398,6 @@ def _row_to_item(row: Any) -> GtdItemModel:
         updated_at=_iso(row.updated_at) or "",
     )
 
-
-def _row_to_project(row: Any) -> GtdProjectModel:
-    return GtdProjectModel(
-        id=str(row.id),
-        source=row.source,
-        provider=getattr(row, "account_provider", None)
-        or ("local" if row.source == "LOCAL" else None),
-        account_id=str(row.account_id) if row.account_id else None,
-        provider_ref=row.provider_ref,
-        outcome=row.outcome,
-        purpose=row.purpose,
-        status=row.status,
-        has_next_action=bool(row.has_next_action),
-        space_id=(str(row.space_id)
-                  if getattr(row, "space_id", None) else None),
-        folder_id=(str(row.folder_id)
-                   if getattr(row, "folder_id", None) else None),
-        created_at=_iso(row.created_at),
-    )
-
-
-# The SELECT used by every item read: joins the open waiting-for record (for
-# waiting_on/delegated_at/expected_by/last_nudged_at) and the account's provider
-# name (for the badge). The waiting columns are what the Waiting-For view reads:
-# `expected_by` IS the overdue line (spec §6) and `last_nudged_at` says whether
-# a follow-up already went out — both were written-only until this read landed.
-ITEM_SELECT = """
-    SELECT i.*, w.waiting_on, w.delegated_at, w.expected_by, w.last_nudged_at,
-           a.provider AS account_provider,
-           (SELECT count(*) FROM gtd_items c
-             WHERE c.parent_item_id = i.id) AS subtask_count
-      FROM gtd_items i
- LEFT JOIN gtd_waiting w ON w.item_id = i.id AND w.resolved = false
- LEFT JOIN task_accounts a ON a.id = i.account_id
-"""
-
-PROJECT_SELECT = """
-    SELECT p.*, a.provider AS account_provider
-      FROM gtd_projects p
- LEFT JOIN task_accounts a ON a.id = p.account_id
-"""
 
 # Default GTD context list, seeded lazily per user on first read.
 DEFAULT_CONTEXTS: list[tuple[str, str]] = [

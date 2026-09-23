@@ -1,61 +1,23 @@
 """Unit tests for the /tasks GTD backend (offline — no DB, no HTTP).
 
-Covers the pure logic layers:
-  - provider registry: `build_provider` refuses a name it cannot resolve
+Covers the pure logic layers that survive the retired store:
   - ai.propose: the clarify heuristic (disposition branches, project
     auto-match, GTD→stage default mapping)
-  - items: view map completeness + timestamp parsing
-  - the push path's contract with the broker gate (BO-1b)
+  - the priority matrix, settings models and the email-capture helpers
 
-🔧 **RE-CUT 2026-08-25 (D52 repair round 1, board WS-39 S1).** Sixteen cases
-here instantiated `ClickUpProvider` — payload shaping, pagination, schema
-hierarchy, live membership, folder/list creation, the delete gate. D52 deleted
-that class, so this module raised `ImportError` at COLLECTION and, with
-`pytest -x`, took the entire `tests/unit` run with it. They are deleted, not
-skipped (§12.6 criterion 7): they asserted the wire shape of one vendor's API,
-which is not a contract that outlives the vendor.
-
-What survives is everything that was never ClickUp's — the clarify heuristic,
-the view map, soft delete/restore/purge, the stage mapping, and the BO-1b push
-rules. `_queueing_provider` was re-cut onto a local `BaseTaskProvider` stub
-(the same move `test_provider_broker_gate.py` made), because the rule it locks
-— *a queued write reports `awaiting_approval`, never `synced`* — belongs to the
-gate, not to a connector.
+🔧 **RE-CUT 2026-09-23 (S8 PR 1, `my_tasks_cutover.md` §5 S8).** The item
+CRUD, the local tree, the ClickUp pull mapping, the provider registry and the
+BO-1b push rules tested `routes/tasks/items.py`, `hierarchy.py`, `sync.py`,
+`accounts.py` and `providers.py`. S8 PR 1 deleted those modules, so their
+cases are deleted with them, not skipped. The one store's CRUD is fenced by
+the `test_projects_personal*.py` suites.
 """
 from __future__ import annotations
 
 import json
 from types import SimpleNamespace
 
-import pytest
-from fastapi import HTTPException
 from gateway.routes.tasks import ai as tasks_ai
-from gateway.routes.tasks.items import (
-    DISPOSITIONS,
-    VIEW_WHERE,
-    ItemPatch,
-    _build_item_update,
-    _parse_ts,
-)
-from gateway.routes.tasks.providers import build_provider
-
-# ---------------------------------------------------------------------------
-# Provider registry
-# ---------------------------------------------------------------------------
-
-def test_build_provider_unknown_provider_raises_400():
-    """An unresolvable name is a 400, never a None the caller then dereferences.
-
-    ⚠️ Since D52 the registry is EMPTY, so this is true of every name — the
-    whole-registry claim lives in `tests/unit/test_no_task_provider_connectors.py`
-    (the D52 fence). What is asserted HERE is the factory's own behaviour on a
-    miss, which is the same before and after the retirement.
-    """
-    with pytest.raises(HTTPException) as exc:
-        build_provider("asana", {"api_token": "x"})
-    assert exc.value.status_code == 400
-
-
 
 # ---------------------------------------------------------------------------
 # Clarify heuristic (ai.propose)
@@ -302,152 +264,10 @@ def test_default_status_gtd_mapping():
 # Items — small pure helpers
 # ---------------------------------------------------------------------------
 
-def test_view_map_covers_the_gtd_views():
-    for view in ("inbox", "next", "waiting", "someday", "reference",
-                 "calendar", "done", "all"):
-        assert view in VIEW_WHERE
-
-
-def test_all_view_excludes_done_and_trash():
-    # The default working board must not surface a connected workspace's
-    # completed backlog — DONE has its own view. Trash is always hidden.
-    clause = VIEW_WHERE["all"]
-    assert "DONE" in clause and "TRASH" in clause
-    assert "NOT IN" in clause
-    # 'done' view is the ONLY one that shows DONE.
-    assert VIEW_WHERE["done"] == "i.disposition = 'DONE'"
-
-
-def test_archive_view_shows_only_archived():
-    # The archive view is the only place archived rows appear.
-    assert VIEW_WHERE["archive"] == "i.archived_at IS NOT NULL"
-
-
-def test_list_items_excludes_subtasks_and_selects_subtask_count():
-    # Subtasks are nested under their parent, never standalone rows; and every
-    # item read carries a subtask_count roll-up.
-    import inspect
-
-    from gateway.routes.tasks import core as core_mod
-    from gateway.routes.tasks import items as items_mod
-
-    src = inspect.getsource(items_mod.list_items)
-    assert "i.parent_item_id IS NULL" in src
-    assert "subtask_count" in core_mod.ITEM_SELECT
-    assert "c.parent_item_id = i.id" in core_mod.ITEM_SELECT
-
 
 # ---------------------------------------------------------------------------
 # Delete (soft-delete + undo/restore + purge propagation) & bulk archive
 # ---------------------------------------------------------------------------
-
-
-def test_delete_is_soft_and_hidden_from_every_view():
-    """DELETE must set a tombstone (deleted_at), not remove the row — so Undo
-    can restore it losslessly. And every list read must hide tombstoned rows."""
-    import inspect
-
-    from gateway.routes.tasks import items as items_mod
-
-    src = inspect.getsource(items_mod.delete_item)
-    assert "deleted_at = now()" in src          # soft delete
-    assert "DELETE FROM gtd_items" not in src   # not a hard delete anymore
-    # Reads exclude tombstones.
-    assert items_mod._DELETED_EXCLUDE == "i.deleted_at IS NULL"
-    assert "_DELETED_EXCLUDE" in inspect.getsource(items_mod.list_items)
-    assert "include_deleted" in inspect.getsource(items_mod._fetch_item)
-
-
-def test_restore_clears_the_tombstone_only_for_deleted_rows():
-    import inspect
-
-    from gateway.routes.tasks import items as items_mod
-
-    src = inspect.getsource(items_mod.restore_item)
-    assert "deleted_at = NULL" in src
-    assert "deleted_at IS NOT NULL" in src   # only a deleted row can be restored
-
-
-def test_purge_removes_row_and_archives_clickup_counterpart():
-    """Purge finalizes a soft delete: it removes the LOCAL row AND, for a pushed
-    SYNCED task, ARCHIVES the upstream ClickUp task (recoverable there — we never
-    hard-delete upstream) — best-effort, before the local removal so the provider
-    linkage is still available."""
-    import inspect
-
-    from gateway.routes.tasks import items as items_mod
-
-    src = inspect.getsource(items_mod.purge_item)
-    assert "DELETE FROM gtd_items" in src        # local row IS hard-removed
-    assert "_delete_upstream" in src
-    # Upstream propagation is gated on a pushed synced task.
-    assert 'row.source != "LOCAL"' in src
-    assert "provider_task_id" in src
-
-    up = inspect.getsource(items_mod._delete_upstream)
-    # Upstream is ARCHIVED, not deleted — recoverable in the connected tool.
-    assert "provider.archive_task" in up
-    assert "provider.delete_task" not in up
-    # Best-effort: an upstream failure must not block the local purge.
-    assert "except Exception" in up
-
-
-
-
-def test_base_provider_delete_task_defaults_to_unsupported():
-    """A connector that hasn't implemented delete must fail loudly, not
-    silently leave the upstream task behind."""
-    import inspect
-
-    from gateway.routes.tasks import providers
-
-    src = inspect.getsource(providers.BaseTaskProvider.delete_task)
-    assert "not supported" in src and "501" in src
-
-
-def test_archive_endpoints_mirror_upstream_for_synced_tasks():
-    """Single archive and bulk archive both back-propagate to the connected tool
-    via _archive_upstream (so the app and ClickUp stay consistent), while a
-    LOCAL-only task never triggers an outward write."""
-    import inspect
-
-    from gateway.routes.tasks import items as items_mod
-
-    single = inspect.getsource(items_mod.archive_item)
-    assert "_archive_upstream" in single
-    bulk = inspect.getsource(items_mod.bulk_archive)
-    assert "_archive_upstream" in bulk
-
-    helper = inspect.getsource(items_mod._archive_upstream)
-    # SYNCED-only: local rows (no provider linkage) are skipped.
-    assert 'row.source == "LOCAL"' in helper
-    assert "provider.archive_task" in helper
-    # Best-effort per row — one failure doesn't abort the batch.
-    assert "except Exception" in helper
-
-
-def test_base_provider_archive_task_defaults_to_unsupported():
-    import inspect
-
-    from gateway.routes.tasks import providers
-
-    src = inspect.getsource(providers.BaseTaskProvider.archive_task)
-    assert "not supported" in src and "501" in src
-
-
-def test_bulk_archive_is_a_local_overlay():
-    """Bulk archive flips archived_at for many rows and never touches the
-    connected tool (safe for ClickUp tasks) — mirrors single archive."""
-    import inspect
-
-    from gateway.routes.tasks import items as items_mod
-
-    src = inspect.getsource(items_mod.bulk_archive)
-    assert "archived_at = CASE WHEN :on THEN now() ELSE NULL END" in src
-    assert "id::text = ANY(:ids)" in src
-    # No provider call in the archive path.
-    assert "build_provider" not in src
-    assert "delete_task" not in src
 
 
 # ---------------------------------------------------------------------------
@@ -565,23 +385,6 @@ def test_priority_cell_end_to_end_uses_derived_urgency():
                          due_at=None, now=now) == "high-leverage"  # no date → not urgent
 
 
-def test_priority_flags_are_patchable_and_local_only():
-    """important/leveraged/kept_mine are editable via PATCH and live in the
-    local overlay (never back-synced — not in the ClickUp-writable set)."""
-    import inspect
-
-    from gateway.routes.tasks import items as items_mod
-
-    build = inspect.getsource(items_mod._build_item_update)
-    assert "important = :important" in build
-    assert "leveraged = :leveraged" in build
-    assert "kept_mine = :kept_mine" in build
-    # Back-sync must NOT push these (they're personal prioritization).
-    backsync = inspect.getsource(items_mod._push_patch_upstream)
-    assert "important" not in backsync
-    assert "leveraged" not in backsync
-
-
 def test_llm_clarify_proposes_matrix_flags_and_they_propagate():
     """The LLM clarify prompt asks for important/leveraged, and propose_with_llm
     carries them into the merged proposal (so the card can pre-fill them)."""
@@ -606,26 +409,6 @@ def test_urgent_window_setting_defaults_to_48h():
 # ---------------------------------------------------------------------------
 # ClickUp status → Next-Actions stage mapping
 # ---------------------------------------------------------------------------
-
-def test_status_stage_heuristic_guesses_by_name():
-    """The auto-guess maps raw ClickUp status names to the 4 stages by keyword,
-    and only guesses stages the user actually has."""
-    from gateway.routes.tasks.settings import (
-        DEFAULT_WORKFLOW_STAGES,
-        guess_stage_for_status,
-    )
-
-    st = list(DEFAULT_WORKFLOW_STAGES)  # TODO / IN PROCESS / WAITING FOR / DONE
-    assert guess_stage_for_status("backlog", st) == "TODO"
-    assert guess_stage_for_status("to do", st) == "TODO"
-    assert guess_stage_for_status("in progress", st) == "IN PROCESS"
-    assert guess_stage_for_status("Review", st) == "IN PROCESS"
-    assert guess_stage_for_status("blocked", st) == "WAITING FOR"
-    assert guess_stage_for_status("Complete", st) == "DONE"
-    # Unknown → the first stage (never lost).
-    assert guess_stage_for_status("frobnicate", st) == "TODO"
-    # A heuristic for a stage the user removed is skipped → falls to first.
-    assert guess_stage_for_status("done", ["TODO", "IN PROCESS"]) == "TODO"
 
 
 # ---------------------------------------------------------------------------
@@ -801,210 +584,9 @@ def test_llm_propose_parses_where_match(monkeypatch):
     assert core2 is not None and "llm_place" not in core2
 
 
-def test_seed_status_stage_map_keeps_user_choices():
-    """Seeding auto-guesses unmapped statuses but never overrides an explicit
-    user mapping; keys are normalized (lower/trim)."""
-    from gateway.routes.tasks.settings import seed_status_stage_map
-
-    stages = ["TODO", "IN PROCESS", "WAITING FOR", "DONE"]
-    existing = {"in progress": "DONE"}  # a deliberate (odd) user choice
-    out = seed_status_stage_map(
-        ["In Progress", "backlog", "  "], stages, existing)
-    assert out["in progress"] == "DONE"      # user choice preserved
-    assert out["backlog"] == "TODO"          # auto-guessed
-    assert "" not in out                     # blank dropped
-
-
-def test_status_map_normalizes_and_ignores_blanks():
-    from gateway.routes.tasks.settings import _status_map
-
-    out = _status_map({"To Do ": "TODO", "": "X", "review": "  "})
-    assert out == {"to do": "TODO"}          # trimmed key, blanks dropped
-
-
-@pytest.mark.asyncio
-async def test_status_for_stage_reverses_the_map_per_project():
-    """On a board drag, _status_for_stage finds a status in THIS task's own
-    project that maps to the target stage; returns None (→ local-only move) when
-    the project has no status mapped to that stage."""
-    from gateway.routes.tasks.items import _status_for_stage
-
-    class _Provider:
-        def __init__(self, statuses):
-            self._statuses = statuses
-
-        async def list_statuses_for_task(self, _tid):
-            return self._statuses
-
-    smap = {"to do": "TODO", "in progress": "IN PROCESS", "done": "DONE"}
-    # Project HAS a status mapped to IN PROCESS → writes it.
-    p = _Provider(["To Do", "In Progress", "Done"])
-    assert await _status_for_stage(p, "t1", "IN PROCESS", smap) == "In Progress"
-    # Project has NO status mapped to WAITING FOR → None (move stays local).
-    assert await _status_for_stage(p, "t1", "WAITING FOR", smap) is None
-    # Provider hiccup → None, never raises.
-    class _Boom:
-        async def list_statuses_for_task(self, _tid):
-            raise RuntimeError("boom")
-    assert await _status_for_stage(_Boom(), "t1", "TODO", smap) is None
-
-
-def test_status_catalog_route_is_registered():
-    from gateway.routes.tasks import router
-
-    paths = {getattr(r, "path", "") for r in router.routes}
-    assert "/tasks/status-catalog" in paths
-
-
-def test_workflow_stage_is_a_backsync_trigger():
-    """A workflow_stage move on a synced task must reach the upstream back-sync
-    (it translates to a ClickUp status), so it counts as 'writable' and the
-    payload builder resolves the stage → status."""
-    import inspect
-
-    from gateway.routes.tasks import items as tasks_items
-
-    push_src = inspect.getsource(tasks_items._push_patch_upstream)
-    assert "patch.workflow_stage" in push_src  # part of the 'writable' gate
-    payload_src = inspect.getsource(tasks_items._build_upstream_payload)
-    assert "_status_for_stage" in payload_src
-
-
 # ---------------------------------------------------------------------------
 # Done column: completed tasks stay on the board until archived
 # ---------------------------------------------------------------------------
-
-def test_done_disposition_stamps_completed_at():
-    from gateway.routes.tasks.items import _build_item_update
-
-    sets, params = _build_item_update("i1", "u", ItemPatch(disposition="DONE"))
-    assert "disposition = :disp" in sets
-    assert params["disp"] == "DONE"
-    assert "completed_at = now()" in sets
-    assert "completed_at = NULL" not in sets
-
-
-def test_reopen_clears_completed_at():
-    """Moving a task OFF done (e.g. dragging a card out of the Done column back
-    to NEXT) clears completed_at so it reads as active again — the invariant is
-    completed_at is non-null iff DONE."""
-    from gateway.routes.tasks.items import _build_item_update
-
-    sets, _ = _build_item_update("i1", "u", ItemPatch(disposition="NEXT"))
-    assert "completed_at = NULL" in sets
-    assert "completed_at = now()" not in sets
-
-
-def test_stage_boundary_flips_disposition_both_ways():
-    """patch_item translates a board drag across the DONE boundary into a
-    disposition flip: drop on the LAST stage → DONE; drag a DONE card to an
-    EARLIER stage → reopen to NEXT."""
-    import inspect
-
-    from gateway.routes.tasks import items as tasks_items
-
-    src = inspect.getsource(tasks_items.patch_item)
-    # Last stage → DONE.
-    assert 'patch.workflow_stage == stages[-1]' in src
-    assert 'patch.disposition = "DONE"' in src
-    # Earlier stage while currently DONE → reopen to NEXT.
-    assert 'patch.workflow_stage != stages[-1]' in src
-    assert 'current.disposition == "DONE"' in src
-    assert 'patch.disposition = "NEXT"' in src
-
-
-def test_organize_request_accepts_subtasks():
-    from gateway.routes.tasks.items import OrganizeRequest
-
-    req = OrganizeRequest(kind="next", next_action="Ship it",
-                          subtasks=["step one", "step two"])
-    assert req.subtasks == ["step one", "step two"]
-
-
-def test_organize_owner_axis_independent_of_size():
-    """Sort→Shape: OWNER (assignee) must combine with ANY size (next/project),
-    not just the legacy kind="delegate" — a task can be a project, delegated,
-    with a deadline, and broken into steps, all in one commit."""
-    import inspect
-
-    from gateway.routes.tasks import items as tasks_items
-
-    src = inspect.getsource(tasks_items.organize_item)
-    # A next/project/calendar kind delegates too when it carries an assignee.
-    assert 'req.kind in ("next", "project", "calendar") and req.assignee is not None' in src
-    assert 'disposition = "WAITING"' in src
-    # is_mine now derives from the independent `delegated` flag, not kind=="delegate".
-    assert '"is_mine": not delegated' in src
-
-
-def test_organize_synced_delegate_requires_a_project():
-    """A clarify-delegate to a connected tool must carry a destination project —
-    the teammate has to SEE the task there, which needs a list to create it in.
-    organize_item refuses (before any write) a synced delegation with no project,
-    so it can't commit a WAITING row that strands invisibly (the Veena bug)."""
-    import inspect
-
-    from gateway.routes.tasks import items as tasks_items
-
-    src = inspect.getsource(tasks_items.organize_item)
-    # The guard keys off delegated + SYNCED + missing project, and it lives
-    # BEFORE the UPDATE (fail-closed, no partial write).
-    assert 'delegated and source == "SYNCED"' in src
-    assert "req.kind == \"project\" or not req.project_id" in src
-    guard = src.index("delegate into")
-    write = src.index("UPDATE gtd_items")
-    assert guard < write, "the project guard must precede the row write"
-
-
-def test_organize_synced_delegate_auto_pushes_to_the_tool():
-    """Parity with POST /items/{id}/delegate: a clarify-delegate to a connected
-    workspace pushes upstream in the same request (so the teammate sees it),
-    rather than leaving it 'pending' and invisible. A push hiccup is caught and
-    the delegation is still saved (WAITING) with the manual Push affordance."""
-    import inspect
-
-    from gateway.routes.tasks import items as tasks_items
-
-    organize_src = inspect.getsource(tasks_items.organize_item)
-    push_src = inspect.getsource(tasks_items._maybe_push_delegated)
-    # organize commits the local clarify first, THEN runs the auto-push helper.
-    # H2 shape: the local write happens in the FIRST `_tenant_session` block
-    # (committed on its clean exit) and the push runs in a SECOND block — so
-    # the helper call must come after a later `async with _tenant_session()`.
-    assert "_maybe_push_delegated(" in organize_src
-    first_block = organize_src.index("async with _tenant_session()")
-    second_block = organize_src.index(
-        "async with _tenant_session()", first_block + 1)
-    assert second_block < organize_src.index("_maybe_push_delegated(")
-    # The helper only pushes a SYNCED delegation with a chosen project, and a
-    # push failure is tolerated (deferred), not fatal to the clarify.
-    assert 'delegated and source == "SYNCED" and project_id' in push_src
-    assert "_push_pending_item(db, item_id, uid)" in push_src
-    assert "delegate_push_deferred" in push_src
-
-
-def test_item_patch_is_mine_is_local_overlay_never_pushed_upstream():
-    """Removing a handed-off/unassigned task from "My Next Actions" is a purely
-    LOCAL overlay: is_mine patches the row, but is NEVER a ClickUp-writable
-    field — the task stays put upstream. (My Next Actions = NEXT & is_mine.)"""
-    import inspect
-
-    from gateway.routes.tasks.items import (
-        ItemPatch,
-        _build_item_update,
-        _push_patch_upstream,
-    )
-
-    sets, params = _build_item_update("item1", "u1", ItemPatch(is_mine=False))
-    assert "is_mine = :is_mine" in sets
-    assert params["is_mine"] is False
-
-    # An unset is_mine leaves the column untouched (no accidental writes).
-    sets2, _ = _build_item_update("item1", "u1", ItemPatch(context="@calls"))
-    assert not any("is_mine" in s for s in sets2)
-
-    # is_mine must not be in the set of fields back-synced to the tool.
-    assert "is_mine" not in inspect.getsource(_push_patch_upstream)
 
 
 # ---------------------------------------------------------------------------
@@ -1083,113 +665,13 @@ def test_clarify_route_accepts_reclarify_flag():
     assert "reclarify" in sig.parameters
 
 
-def test_delegate_request_shape():
-    from gateway.routes.tasks.core import PersonModel
-    from gateway.routes.tasks.items import DelegateRequest
-
-    req = DelegateRequest(
-        assignee=PersonModel(name="Priya Sharma", provider_user_id="7"),
-        account_id="acct-1", project_id="proj-1")
-    assert req.assignee.name == "Priya Sharma"
-    assert req.next_action is None  # optional re-phrase
-
-
 def test_enrich_and_delegate_routes_are_registered():
     from gateway.routes.tasks import router
 
     paths = {getattr(r, "path", "") for r in router.routes}
     for p in ("/tasks/items/{item_id}/enrich",
-              "/tasks/ai/backfill-context",
-              "/tasks/items/{item_id}/delegate"):
+              "/tasks/ai/backfill-context"):
         assert p in paths, f"missing route {p}"
-
-
-def test_local_hierarchy_routes_are_registered():
-    # The Projects-view tree depends on these local hierarchy endpoints.
-    from gateway.routes.tasks import router
-
-    paths = {getattr(r, "path", "") for r in router.routes}
-    for p in ("/tasks/hierarchy", "/tasks/spaces", "/tasks/folders",
-              "/tasks/local-projects"):
-        assert p in paths, f"missing hierarchy route {p}"
-
-
-def test_create_local_project_request_defaults():
-    from gateway.routes.tasks.hierarchy import CreateLocalProjectRequest
-
-    # A project can be created ungrouped (no space/folder) — both default None.
-    req = CreateLocalProjectRequest(outcome="Ship v2")
-    assert req.space_id is None and req.folder_id is None
-    # Or placed in a folder (which pins the space server-side).
-    req2 = CreateLocalProjectRequest(outcome="Ship v2", folder_id="f1")
-    assert req2.folder_id == "f1"
-
-
-def test_project_model_carries_hierarchy_placement():
-    from gateway.routes.tasks.core import GtdProjectModel
-
-    p = GtdProjectModel(id="p1", outcome="Do the thing",
-                        space_id="s1", folder_id="f1")
-    assert p.space_id == "s1" and p.folder_id == "f1"
-
-
-def test_workflow_stages_normalizes_and_defaults():
-    from gateway.routes.tasks.settings import (
-        DEFAULT_WORKFLOW_STAGES,
-        _stages,
-    )
-    # A stored JSON string, a real list, junk, and empties all normalize.
-    assert _stages('["A", "B"]') == ["A", "B"]
-    assert _stages([" A ", "", "B", None]) == ["A", "B"]
-    assert _stages(None) == DEFAULT_WORKFLOW_STAGES
-    assert _stages([]) == DEFAULT_WORKFLOW_STAGES
-    assert _stages("not json") == DEFAULT_WORKFLOW_STAGES
-    assert DEFAULT_WORKFLOW_STAGES[-1] == "DONE"  # last stage = the done stage
-
-
-def test_patch_sets_sort_key_including_zero():
-    # A drag writes a fractional rank; 0.0 is a legitimate rank (top of a
-    # group), so the builder must emit the clause for it — a truthiness check
-    # would silently drop sort_key=0.
-    sets, params = _build_item_update("id1", "u", ItemPatch(sort_key=0.0))
-    assert "sort_key = :sortkey" in sets
-    assert params["sortkey"] == 0.0
-
-    sets, params = _build_item_update("id1", "u", ItemPatch(sort_key=1500.5))
-    assert params["sortkey"] == 1500.5
-
-
-def test_patch_omits_sort_key_when_absent():
-    # An unrelated patch (e.g. a note edit) must not touch sort_key.
-    sets, params = _build_item_update("id1", "u", ItemPatch(notes="hi"))
-    assert not any("sort_key" in s for s in sets)
-    assert "sortkey" not in params
-
-
-def test_list_items_orders_by_sort_key_before_created_at():
-    # The board/list manual order must sort ranked rows first (NULLS LAST) and
-    # keep LOCAL-first; a code read guards the ORDER BY contract.
-    import inspect
-
-    from gateway.routes.tasks import items as items_mod
-
-    src = inspect.getsource(items_mod.list_items)
-    assert "sort_key ASC NULLS LAST" in src
-    # LOCAL rows still win over the synced mirror regardless of rank.
-    assert "(i.source = 'LOCAL') DESC" in src
-
-
-def test_dispositions_are_the_canonical_set():
-    assert {"INBOX", "NEXT", "WAITING", "SOMEDAY", "PROJECT",
-                            "REFERENCE", "DONE", "TRASH"} == DISPOSITIONS
-
-
-def test_parse_ts_accepts_iso_and_z_suffix():
-    assert _parse_ts("2026-07-08T00:00:00Z") is not None
-    assert _parse_ts("") is None
-    assert _parse_ts(None) is None
-    with pytest.raises(HTTPException):
-        _parse_ts("not-a-date")
 
 
 # ---------------------------------------------------------------------------
@@ -1257,8 +739,6 @@ def test_propose_attaches_capability_owner_without_forcing_delegate():
 # Sync pull (§9.3 #1): provider list_tasks + the GTD lens on pulled tasks
 # ---------------------------------------------------------------------------
 
-from gateway.routes.tasks.sync import map_pulled_task  # noqa: E402
-
 
 def _pulled(**over):
     base = {
@@ -1273,55 +753,6 @@ def _pulled(**over):
     return base
 
 
-def test_pull_mapping_mine_open_is_next():
-    m = map_pulled_task(_pulled(
-        assignees=[{"name": "v", "provider_user_id": "42"}]), "42")
-    assert m["disposition"] == "NEXT"
-    assert m["is_mine"] is True
-    assert m["waiting_on"] is None
-
-
-def test_pull_mapping_others_task_is_waiting_with_monitor_record():
-    m = map_pulled_task(_pulled(
-        assignees=[{"name": "j", "provider_user_id": "7"}],
-        status="in progress"), "42")
-    assert m["disposition"] == "WAITING"
-    assert m["is_mine"] is False
-    assert m["waiting_on"]["provider_user_id"] == "7"
-
-
-def test_pull_mapping_backlog_stage_is_someday_even_when_mine():
-    m = map_pulled_task(_pulled(
-        assignees=[{"name": "v", "provider_user_id": "42"}],
-        status="Backlog"), "42")
-    assert m["disposition"] == "SOMEDAY"
-
-
-def test_pull_mapping_closed_wins_over_everything():
-    m = map_pulled_task(_pulled(
-        assignees=[{"name": "j", "provider_user_id": "7"}],
-        status="Backlog", status_type="closed", closed_at_ms=1719000000000), "42")
-    assert m["disposition"] == "DONE"
-    assert m["completed_at_ms"] == 1719000000000
-    assert m["waiting_on"] is None  # nothing to wait on once it's done
-
-
-def test_pull_mapping_unassigned_open_is_team_pool_next():
-    m = map_pulled_task(_pulled(), "42")
-    assert m["disposition"] == "NEXT"
-    assert m["is_mine"] is False  # team pool, not my list
-    assert m["assignee"] is None
-
-
-def test_pull_mapping_prefers_me_as_display_assignee():
-    m = map_pulled_task(_pulled(assignees=[
-        {"name": "j", "provider_user_id": "7"},
-        {"name": "v", "provider_user_id": "42"},
-    ]), "42")
-    assert m["is_mine"] is True
-    assert m["assignee"]["provider_user_id"] == "42"
-
-
 # ── "assigned to me" soundness ──────────────────────────────────────────────
 #
 # is_mine is THE signal Priority/Engage filter on ("only tasks assigned to me on
@@ -1329,53 +760,6 @@ def test_pull_mapping_prefers_me_as_display_assignee():
 # task's assignee ids — so the comparison must be type-robust (ClickUp ids come
 # back as ints in some payloads, strings in others) and must never match on a
 # missing/blank id.
-
-def test_is_mine_matches_across_int_and_str_id_types():
-    """A numeric assignee id must still match my string id (and vice-versa) —
-    the mapping stringifies both sides, so 42 == '42'. A type mismatch here would
-    silently drop every one of my tasks out of Priority/Engage."""
-    # assignee id as an int, my id as a str
-    m = map_pulled_task(
-        _pulled(assignees=[{"name": "v", "provider_user_id": 42}]), "42")
-    assert m["is_mine"] is True
-    # assignee id as a str, my id passed as an int-ish str
-    m2 = map_pulled_task(
-        _pulled(assignees=[{"name": "v", "provider_user_id": "42"}]), 42)  # type: ignore[arg-type]
-    assert m2["is_mine"] is True
-
-
-def test_is_mine_never_matches_on_blank_or_missing_id():
-    """A blank/absent id must NOT spuriously match — otherwise unassigned or
-    malformed tasks would all look 'mine'."""
-    # My id is empty → nothing is mine, even an assignee with a blank id.
-    m = map_pulled_task(
-        _pulled(assignees=[{"name": "x", "provider_user_id": ""}]), "")
-    assert m["is_mine"] is False
-    # I have an id, but the assignee's id is missing entirely.
-    m2 = map_pulled_task(_pulled(assignees=[{"name": "x"}]), "42")
-    assert m2["is_mine"] is False
-
-
-
-
-
-
-def test_sync_upsert_preserves_user_overlay_and_owns_completion():
-    """The upsert must only refresh MIRRORED fields on re-sync: the user's
-    GTD overlay survives, except completion where the provider wins."""
-    from gateway.routes.tasks import sync as tasks_sync
-
-    sql = str(tasks_sync._UPSERT_SQL)
-    # provider owns completion state…
-    assert "WHEN EXCLUDED.completed_at IS NOT NULL THEN 'DONE'" in sql
-    # …and an upstream reopen un-DONEs the row
-    assert "gtd_items.disposition = 'DONE'" in sql
-    # …but an open row keeps the disposition the user chose
-    assert "ELSE gtd_items.disposition" in sql
-    # user's project refile is never clobbered
-    assert "coalesce(gtd_items.project_id, EXCLUDED.project_id)" in sql
-    # conflict target matches the partial unique index
-    assert "ON CONFLICT (account_id, provider_task_id) WHERE source <> 'LOCAL'" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -1401,16 +785,13 @@ def test_email_capture_is_owner_checked_and_idempotent():
     import inspect
 
     from gateway.routes.tasks import capture_email
-    from gateway.routes.tasks.item_source import GTD_ITEMS
 
     src = inspect.getsource(capture_email.capture_from_email)
     assert "a.user_id = :uid" in src            # ownership through the mailbox
     assert "_find_existing_capture" in src      # idempotency per source email
-    # The read moved into the seam (WS-39 S6d). The gtd arm keeps the shape.
+    # The read lives in the seam (WS-39 S6d).
     finder = inspect.getsource(capture_email._find_existing_capture)
     assert '"email_id"' in finder
-    arm = inspect.getsource(GTD_ITEMS.items_by_origin)
-    assert "NOT IN ('DONE', 'TRASH')" in arm    # only OPEN items block re-capture
 
 
 def test_email_capture_finds_pm_account_for_a_delegate():
@@ -1471,33 +852,9 @@ def test_email_capture_routes_delegations_to_the_pm_tool():
     assert '"source": source, "account_id": account_id' in src
 
 
-def test_calendar_decision_requires_a_date():
-    """GTD hard landscape: kind=calendar without due_at used to create a
-    hard-date item with no date — invisible on the Calendar view."""
-    import inspect
-
-    from gateway.routes.tasks import items as tasks_items
-
-    src = inspect.getsource(tasks_items.organize_item)
-    assert 'req.kind == "calendar" and not (req.due_at' in src
-
-
 def test_item_model_carries_origin():
     from gateway.routes.tasks.core import GtdItemModel
     assert "origin" in GtdItemModel.model_fields
-
-
-def test_push_carries_email_origin_reference_into_provider():
-    """Lifecycle-long linkage: pushing an email-origin item to the PM tool
-    appends the source-email reference to the description."""
-    import inspect
-
-    from gateway.routes.tasks import items as tasks_items
-
-    # The push machinery lives in the shared helper (reused by push + delegate).
-    src = inspect.getsource(tasks_items._push_pending_item)
-    assert 'origin.get("kind") == "email"' in src
-    assert "Captured from email" in src
 
 
 # ── BO-1b: a broker-QUEUED push never reports as synced ──────────────────────
@@ -1536,147 +893,6 @@ def _push_row(**kw):
     )
     base.update(kw)
     return SimpleNamespace(**base)
-
-
-def _patch_push_harness(monkeypatch, provider, row=None):
-    """Stub the item fetch, account ownership, credential decrypt and provider
-    construction so `_push_pending_item` reaches `provider` with no DB."""
-    from gateway.routes.tasks import items as tasks_items
-
-    item_row = row if row is not None else _push_row()
-
-    async def _fetch(db, item_id, uid):
-        return item_row
-
-    async def _owner(db, account_id, uid):
-        return SimpleNamespace(id=account_id, provider="stub",
-                               workspace_id="ws1", credentials_encrypted=b"x")
-
-    monkeypatch.setattr(tasks_items, "_fetch_item", _fetch)
-    monkeypatch.setattr(tasks_items, "_assert_account_owner", _owner)
-    monkeypatch.setattr(
-        tasks_items, "_key_store",
-        lambda: SimpleNamespace(decrypt=lambda _b: '{"token": "t"}'))
-    monkeypatch.setattr(tasks_items, "build_provider", lambda *a, **k: provider)
-    monkeypatch.setattr(tasks_items, "_row_to_item", lambda r: r)
-    return item_row
-
-
-def _queueing_provider(monkeypatch):
-    """A provider whose `create_task` goes through the REAL `_broker_gate`, with
-    enforcement on and the broker's enqueue stubbed — so it returns the genuine
-    pending marker and the underlying write is proven never to run.
-
-    ⚠️ **Re-cut 2026-08-25 (D52 repair round 1).** This used to build a real
-    `ClickUpProvider` and booby-trap its `httpx` client. That class is deleted,
-    and the contract under test was never its: it is
-    `BaseTaskProvider._broker_gate`'s, which survives. So the concrete class is
-    a local stub — the same move `tests/unit/test_provider_broker_gate.py` made
-    — and the booby trap moved INTO `do_write`, where it is stricter than the
-    HTTP one ever was: it fires on any attempt to perform the write at all,
-    with no transport to route around.
-    """
-    import acb_graph
-    import action_broker
-    from gateway.routes.tasks.providers import BaseTaskProvider
-
-    monkeypatch.setenv("ACTION_BROKER_ENFORCE", "all")
-
-    def _no_session():
-        raise ConnectionError("no db in test")
-
-    monkeypatch.setattr(acb_graph, "get_session", _no_session)
-    monkeypatch.setattr(action_broker, "enqueue", lambda p: "act-9")
-
-    class _GatedStub(BaseTaskProvider):
-        provider = "stub"
-
-        async def create_task(self, project_ref, payload):
-            async def _do_write():
-                raise AssertionError(
-                    "a queued write must never perform the provider write")
-
-            return await self._broker_gate(
-                "stub.create_task", f"list:{project_ref}",
-                {"title": payload.get("title")}, _do_write,
-            )
-
-    _GatedStub.__abstractmethods__ = frozenset()
-    return _GatedStub()
-
-
-def test_a_queued_push_writes_awaiting_approval_and_no_provider_task_id(monkeypatch):
-    """BO-1b: under `ACTION_BROKER_ENFORCE=all` the write is QUEUED, so nothing
-    exists upstream. The row must land `sync_state='awaiting_approval'` and must
-    NOT claim a `provider_task_id` — the marker's empty string is otherwise
-    indistinguishable from a real id downstream."""
-    import asyncio
-
-    from gateway.routes.tasks import items as tasks_items
-
-    provider = _queueing_provider(monkeypatch)
-    _patch_push_harness(monkeypatch, provider)
-    db = _PushFakeDb()
-
-    asyncio.run(tasks_items._push_pending_item(db, "item-1", "u1"))
-
-    assert len(db.updates) == 1
-    sql, params = db.updates[0]
-    assert "sync_state = 'awaiting_approval'" in sql
-    assert "'synced'" not in sql
-    assert "provider_task_id" not in sql
-    assert set(params) == {"id"} and params["id"] == "item-1"
-
-
-def test_an_auto_applied_push_still_writes_synced(monkeypatch):
-    """The control: with enforcement OFF the same path is unchanged — the guard
-    is conditional on the marker, not a blanket refusal to sync."""
-    import asyncio
-
-    from gateway.routes.tasks import items as tasks_items
-
-    class _Applying:
-        async def create_task(self, project_ref, payload):
-            return {"provider_task_id": "T7", "provider_url": "u",
-                    "provider_status": "open"}
-
-    monkeypatch.delenv("ACTION_BROKER_ENFORCE", raising=False)
-    _patch_push_harness(monkeypatch, _Applying())
-    db = _PushFakeDb(children=[])
-
-    asyncio.run(tasks_items._push_pending_item(db, "item-1", "u1"))
-
-    sql, params = db.updates[0]
-    assert "sync_state = 'synced'" in sql
-    assert params["tid"] == "T7"
-
-
-def test_a_queued_subtask_write_also_never_reports_synced(monkeypatch):
-    """Defence in depth, and DELIBERATELY exercised by calling
-    `_push_child_subtasks` directly: **this branch is unreachable through
-    `POST /tasks/items/{id}/push`**. Parent and child share one action name
-    (`clickup.create_task`), so enforcement can never queue the child without
-    also queueing the parent, and a queued parent returns from
-    `_push_pending_item` before this function is called (and the `if parent_tid:`
-    guard sits behind that). Do not "fix" that guard to make this fire — a queued
-    parent has no upstream id, so its children would be created top-level."""
-    import asyncio
-
-    from gateway.routes.tasks import items as tasks_items
-
-    provider = _queueing_provider(monkeypatch)
-    child = SimpleNamespace(id="child-1", title="Sub", next_action=None,
-                            description=None, provider_status=None)
-    db = _PushFakeDb(children=[child])
-
-    asyncio.run(tasks_items._push_child_subtasks(
-        db, "item-1", "u1", provider, "list-5", "T1"))
-
-    assert len(db.updates) == 1
-    sql, params = db.updates[0]
-    assert "sync_state = 'awaiting_approval'" in sql
-    assert "provider_task_id" not in sql
-    assert params == {"id": "child-1"}
 
 
 def test_gtd_item_model_projects_awaiting_approval_unchanged():
@@ -1750,11 +966,10 @@ def test_route_and_persist_is_the_shared_write_used_by_popup_create():
     """The popup's /create endpoint must write through the SAME routing/persist
     helper (delegate destination rules, a Waiting-For for follow-ups) rather
     than a divergent second code path. Since WS-39 S6d the write itself is the
-    seam's (`insert_capture`), and the gtd arm keeps the two inserts."""
+    seam's (`insert_capture`)."""
     import inspect
 
     from gateway.routes.tasks import capture_email as ce
-    from gateway.routes.tasks.item_source import GTD_ITEMS
 
     persist = inspect.getsource(ce._route_and_persist)
     # Same destination rule as the one-click endpoint.
@@ -1762,9 +977,6 @@ def test_route_and_persist_is_the_shared_write_used_by_popup_create():
     assert 'assignee, disposition = None, "INBOX"' in persist
     assert "insert_capture" in persist
     assert 'fields["waiting_on"]' in persist
-    arm = inspect.getsource(GTD_ITEMS.insert_capture)
-    assert "INSERT INTO gtd_items" in arm
-    assert "INSERT INTO gtd_waiting" in inspect.getsource(GTD_ITEMS.record_waiting)
 
     create = inspect.getsource(ce.create_capture_from_email)
     assert "_route_and_persist" in create
@@ -1841,26 +1053,6 @@ def test_settings_update_is_partial():
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
-
-
-def test_sync_refreshes_members_and_create_project_is_owner_checked():
-    import inspect
-
-    from gateway.routes.tasks import accounts as tasks_accounts
-    from gateway.routes.tasks import sync as tasks_sync
-
-    # Sync keeps the delegate list honest every pull.
-    assert "list_members" in inspect.getsource(tasks_sync._sync_account)
-    # Create-project + member refresh go through the ownership guard.
-    for fn in (tasks_accounts.create_account_project,
-               tasks_accounts.refresh_account_members):
-        assert "_assert_account_owner" in inspect.getsource(fn)
-
-
 def test_attachment_names_are_sanitized_and_executables_blocked():
     from gateway.routes.tasks.attachments import _BLOCKED_EXT, _safe_name
 
@@ -1879,31 +1071,10 @@ def test_attachment_serving_is_owner_checked():
     assert "user_id = :uid" in src
 
 
-def test_capture_accepts_attachments_and_item_model_carries_them():
-    from gateway.routes.tasks.core import GtdItemModel
-    from gateway.routes.tasks.items import CaptureRequest
-
-    assert "attachments" in CaptureRequest.model_fields
-    assert "attachments" in GtdItemModel.model_fields
-
-
 # ---------------------------------------------------------------------------
 # Waiting-For surfacing (spec §6 / §12) — the gtd_waiting columns that five
 # INSERT sites wrote and nothing ever read back.
 # ---------------------------------------------------------------------------
-
-
-def test_item_select_reads_the_waiting_record_columns():
-    """`expected_by` is the deterministic overdue line (spec §6 line 540) and
-    `last_nudged_at` says whether a follow-up already went out. Both are
-    mig-48 columns on gtd_waiting; if ITEM_SELECT does not project them the
-    Waiting-For view cannot flag anything."""
-    from gateway.routes.tasks.core import ITEM_SELECT
-
-    assert "w.expected_by" in ITEM_SELECT
-    assert "w.last_nudged_at" in ITEM_SELECT
-    # Still the OPEN record only — a resolved waiting-for must not resurface.
-    assert "w.resolved = false" in ITEM_SELECT
 
 
 def test_expected_by_round_trips_from_row_to_item_model():
@@ -1944,19 +1115,14 @@ def test_expected_by_round_trips_from_row_to_item_model():
 
 def test_stale_waiting_rule_is_five_days_since_delegation():
     """The client's isStaleWaiting (tasks/lib/waiting.ts) and the server are
-    the same rule stated three times: the gtd arm's SQL, the pm arm's Python
-    and the client's constant. If one moves, the view and /tasks/insights
-    disagree about the same list. Pin all three here (WS-39 S6d)."""
+    the same rule stated twice: the seam's Python and the client's constant.
+    If one moves, the view and /tasks/insights disagree about the same list.
+    Pin both here (WS-39 S6d)."""
     import inspect
     import re
     from pathlib import Path
 
     from gateway.routes.projects import item_lens
-    from gateway.routes.tasks.item_source import GTD_ITEMS
-
-    # The SQL moved into the seam's gtd arm (WS-39 S6d), unchanged.
-    src = inspect.getsource(GTD_ITEMS.insight_counts)
-    assert "w.delegated_at < now() - interval '5 days'" in src
 
     # The pm arm: strictly more than STALE_WAITING_DAYS since delegated_at,
     # and NOTHING else. A nudge does not reset it, a promised date does not
@@ -1991,45 +1157,11 @@ def test_no_insert_site_derives_expected_by_from_a_due_date():
     import inspect
 
     from gateway.routes.tasks import capture_email as capture_mod
-    from gateway.routes.tasks import items as items_mod
-    from gateway.routes.tasks import sync as sync_mod
-    from gateway.routes.tasks.item_source import GTD_ITEMS
 
     # The two email captures write through the seam since WS-39 S6d. Their
-    # `fields` carry no `expected_by` either, checked below.
+    # `fields` carry no `expected_by`. The seam's own Waiting-For write is
+    # the overlay, pinned in `test_tasks_ai_source.py`.
     for fn in (capture_mod.capture_from_email, capture_mod._route_and_persist):
         assert '"expected_by"' not in inspect.getsource(fn), fn.__name__
-    sites = [
-        items_mod.delegate_item,          # POST /items/{id}/delegate
-        items_mod.organize_item,          # clarify → delegate
-        GTD_ITEMS.record_waiting,         # both email captures, the gtd arm
-        sync_mod._sync_account,           # provider pull (monitored task)
-    ]
-    for fn in sites:
-        src = inspect.getsource(fn)
-        insert_at = src.index("INSERT INTO gtd_waiting")
-        insert = src[insert_at:insert_at + 400]
-        assert "expected_by" not in insert, (
-            f"{fn.__name__} writes expected_by at insert time — if the value is "
-            "the item's own due date, leave it NULL and let the read-time "
-            "fallback judge it live")
 
 
-def test_patch_item_can_state_and_clear_an_explicit_promised_by_date():
-    """The other half of the rule: a promise nobody can record is not a fact
-    the system holds. `PATCH /tasks/items/{id}` carries `expected_by` onto the
-    item's OPEN gtd_waiting row (same auth, same shape as the due-date edit),
-    and "" clears it back to NULL — taking the promise back, not writing a
-    second deadline."""
-    import inspect
-
-    from gateway.routes.tasks.items import ItemPatch, patch_item
-
-    assert "expected_by" in ItemPatch.model_fields
-
-    src = inspect.getsource(patch_item)
-    assert "UPDATE gtd_waiting" in src
-    # The OPEN record only — a resolved waiting-for is history.
-    assert "resolved = false" in src
-    # Ownership: the patch is scoped to the caller's own item.
-    assert "user_id = :uid" in src
