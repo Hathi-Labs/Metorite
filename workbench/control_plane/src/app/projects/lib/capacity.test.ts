@@ -191,10 +191,13 @@ describe("the browser counts nothing", () => {
   });
 
   it("holds no arithmetic in the panel itself", () => {
+    // CRLF-normalised: on a Windows checkout the `"\n}\n"` end marker below
+    // never matched, the slice ran to the end of the file, and the scan
+    // failed on chart code that is not the panel's.
     const source = readFileSync(
       join(__dirname, "..", "components", "AnalyticsPanels.tsx"),
       "utf-8"
-    );
+    ).replace(/\r\n/g, "\n");
     const start = source.indexOf("export function CapacityPanel");
     const end = source.indexOf("\n}\n", start);
     expect(start).toBeGreaterThan(-1);
