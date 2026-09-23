@@ -40,6 +40,7 @@ driver production runs.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
 from datetime import UTC, datetime
@@ -69,6 +70,7 @@ MIGRATION = (
     Path(__file__).resolve().parents[2]
     / "infra/postgres/215_pm_tasks_estimate_backfill.sql"
 )
+PARITY = Path(__file__).resolve().parents[2] / "tests/fixtures/deferred_parity.json"
 TAG = uuid.uuid4().hex[:8]
 ALICE = f"alice-{TAG}@fracktal.in"
 BOB = f"bob-{TAG}@fracktal.in"
@@ -235,6 +237,21 @@ async def main() -> None:
         shown = "Board deck" in await _mine(db, org, ALICE, deferred_hidden=True)
         check("6 a start date in the future hides it; today shows it",
               hidden and shown, f"hidden={hidden} shown={shown}")
+
+        # ── 6b. the clause itself, against the shared fixture (F4) ─────────
+        parity = json.loads(PARITY.read_text(encoding="utf-8"))["cases"]
+        wrong = []
+        for case in parity:
+            hidden = (await db.execute(text(
+                "SELECT NOT (" + DEFERRED_CLAUSE + ") FROM "
+                "(SELECT now() + make_interval(days => CAST(:d AS int)) "
+                "   AS defer_until) p, "
+                "(SELECT current_date + CAST(:s AS int) AS start_date) t"),
+                {"d": case["defer_days"], "s": case["start_days"]})).scalar_one()
+            if bool(hidden) is not case["hidden"]:
+                wrong.append(case["name"])
+        check("6b DEFERRED_CLAUSE on Postgres agrees with the shared fixture",
+              not wrong and len(parity) >= 10, f"wrong={wrong}")
 
         # ── 7. the retired overlay columns are refused before any SQL ─────
         refused = []

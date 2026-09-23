@@ -1347,6 +1347,27 @@ DEFERRED_CLAUSE = (
 )
 
 
+def not_yet(defer_until: Any, start_date: Any, at: datetime) -> bool:
+    """:data:`DEFERRED_CLAUSE`, negated, for a caller already holding the row.
+
+    True while the task waits: my own ``defer_until`` is still ahead, or the
+    shared ``start_date`` is after ``at``'s date. The SQL and this function
+    are one rule in two forms, held together by
+    ``tests/fixtures/deferred_parity.json`` — the unit test drives this, the
+    live check drives the clause on Postgres, and `sharedFields.test.ts`
+    drives the client's ``isTickled``.
+    """
+    defer = _as_utc(defer_until)
+    if defer is not None and defer > at:
+        return True
+    if start_date is None:
+        return False
+    starts = start_date if not isinstance(start_date, datetime) else start_date.date()
+    if isinstance(starts, str):
+        starts = datetime.fromisoformat(starts[:10]).date()
+    return starts > at.date()
+
+
 @router.get("/my/inbox")
 async def my_inbox(
     user: UserContext = Depends(get_current_user),

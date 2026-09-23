@@ -498,3 +498,31 @@ async def test_the_nudge_refuses_a_finished_task(db: FakeProjectsDB) -> None:
         await pm_personal.nudge_task(str(task.id), user=ALICE)
     assert caught.value.status_code == 409
     assert db.rows("pm_notifications") == []
+
+
+# ── F4: one "not yet" rule, held by a shared fixture ────────────────────────
+
+_PARITY = __import__("json").loads(
+    (ROOT / "tests/fixtures/deferred_parity.json").read_text(encoding="utf-8")
+)
+
+
+@pytest.mark.parametrize("case", _PARITY["cases"], ids=lambda c: c["name"])
+def test_not_yet_matches_the_shared_table(case) -> None:
+    from datetime import timedelta
+
+    at = datetime(2026, 9, 23, 12, 0, tzinfo=UTC)
+    defer = (at + timedelta(days=case["defer_days"])
+             if case["defer_days"] is not None else None)
+    start = ((at + timedelta(days=case["start_days"])).date()
+             if case["start_days"] is not None else None)
+    assert pm_personal.not_yet(defer, start, at) is case["hidden"]
+
+
+def test_insight_counts_ages_the_inbox_by_the_one_rule() -> None:
+    from gateway.routes.projects import item_lens as pm_item_lens
+
+    src = Path(pm_item_lens.__file__).read_text(encoding="utf-8")
+    body = src[src.index("async def insight_counts"):]
+    body = body[:body.index("async def items_by_origin")]
+    assert "not_yet(it.defer_until, it.start_date, at)" in body

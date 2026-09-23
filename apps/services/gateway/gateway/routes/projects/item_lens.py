@@ -68,6 +68,7 @@ from gateway.routes.projects.personal import (
     ensure_personal_project,
     member_contexts,
     my_tasks_binds,
+    not_yet,
     waiting_on_for,
 )
 from gateway.routes.projects.planning import _CLOSED_LANE, _PM_ALIVE
@@ -155,6 +156,8 @@ def _pm_item(row: Any) -> SimpleNamespace:
         time_estimate_mins=getattr(row, "estimate_mins", None),
         important=(getattr(row, "importance", None) or 0) >= IMPORTANT_AT,
         due_at=getattr(row, "due_at", None),
+        # D76 — the shared start date, for the inbox's "not yet" rule.
+        start_date=getattr(row, "start_date", None),
         assignee=None,
         assignees=None,
         is_mine=bool(getattr(row, "is_mine", False)),
@@ -326,10 +329,13 @@ class _PmLens(ItemSource):
         for it in items:
             counts[it.disposition] = counts.get(it.disposition, 0) + 1
             if it.disposition == "INBOX":
-                defer = _as_utc(it.defer_until)
+                # D76 — the inbox's own "not yet" rule: the later of my defer
+                # and the shared start date (`DEFERRED_CLAUSE`), one place.
                 created = _as_utc(it.created_at)
-                if (defer is None or defer <= at) and created is not None \
-                        and (oldest is None or created < oldest):
+                waiting = not_yet(it.defer_until, it.start_date, at)
+                if not waiting and created is not None and (
+                    oldest is None or created < oldest
+                ):
                     oldest = created
             elif it.disposition == "WAITING":
                 delegated = _as_utc(it.delegated_at)

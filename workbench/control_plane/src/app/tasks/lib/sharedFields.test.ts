@@ -18,6 +18,9 @@
  * and the one-label-per-panel rule in `itemDetail.test.ts`.
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import { gtdMetaChips } from "./cardMeta";
@@ -120,6 +123,54 @@ describe("the shared start date tickles a task (D76)", () => {
       new Date(2026, 9, 5).toISOString(),
     );
     expect(resurfacesAt({})).toBeUndefined();
+  });
+});
+
+/**
+ * F4 — the client's "not yet" rule against the gateway's, through ONE table.
+ * `tests/fixtures/deferred_parity.json` is also read by the pytest side
+ * (`personal.not_yet`) and the live check (`DEFERRED_CLAUSE` on Postgres).
+ */
+interface ParityCase {
+  name: string;
+  defer_days: number | null;
+  start_days: number | null;
+  hidden: boolean;
+}
+const PARITY = JSON.parse(
+  readFileSync(
+    fileURLToPath(new URL("../../../../../../tests/fixtures/deferred_parity.json", import.meta.url)),
+    "utf8",
+  ),
+) as { cases: ParityCase[] };
+
+describe("isTickled holds the gateway's rule (the shared fixture)", () => {
+  const now = new Date(2026, 8, 23, 12);
+  const day = 24 * 60 * 60 * 1000;
+  const localDate = (offset: number) => {
+    const d = new Date(now.getTime() + offset * day);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+
+  it("reads every case", () => {
+    expect(PARITY.cases.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it.each(PARITY.cases.map((c) => [c.name, c] as const))("%s", (_name, c) => {
+    const item = {
+      deferUntil:
+        c.defer_days === null
+          ? undefined
+          : new Date(now.getTime() + c.defer_days * day).toISOString(),
+      startDate: c.start_days === null ? undefined : localDate(c.start_days),
+    };
+    expect(isTickled(item, now.getTime())).toBe(c.hidden);
+    // When it is hidden, it says when it comes back; when it is not, the
+    // date it names is not in the future.
+    const back = resurfacesAt(item);
+    if (c.hidden) expect(new Date(back!).getTime()).toBeGreaterThan(now.getTime());
+    else if (back) expect(new Date(back).getTime()).toBeLessThanOrEqual(now.getTime());
   });
 });
 
