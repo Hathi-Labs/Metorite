@@ -1063,7 +1063,16 @@ Absences are self-writable (a person records their own) and admin-writable. They
 the capacity bar, the capability search's availability line, the assignee picker's warning,
 and the AI's "do not chase someone who is on holiday" rule (§6.7).
 
-### 5.9 People dashboard — the Center landing rollup ✅ BUILT (WS-28l, 2026-08-15)
+### 5.9 People dashboard — the Center landing rollup ✅ BUILT (WS-28l, 2026-08-15) · 🔴 UNREACHABLE
+
+> ⚠️ **BUILT AND ORPHANED, measured 2026-09-23.** The page works, and it
+> renders correctly in all five review contexts. No member can open it. Its
+> one entry point was the People Center landing card (`lib/centers.ts:305`),
+> and **D49 withdrew Centers from the surface** on 2026-08-24. The People tab
+> bar gives this route no tab on purpose. The 2026-09-20 directive that
+> reached the other six surfaces missed this one, because its door was a
+> withdrawn Center and not a missing tab. **H-167 carries the decision.** That
+> decision sets where the People app opens. It is not a bug fix.
 
 > **Build record.** `routes/people/overview.py` → `GET /people/overview` +
 > `/people/overview` page; the `centers.ts` "People dashboard" entry flipped
