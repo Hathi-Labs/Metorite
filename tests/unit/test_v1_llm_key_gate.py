@@ -93,3 +93,53 @@ def test_only_the_completion_routes_are_listed() -> None:
     """Only the chat completion door. Embeddings and the rest stay gated."""
     listed = {p for p in _main().PUBLIC_ROUTES if "completions" in p or p.startswith("/v1")}
     assert listed == {"/v1/chat/completions", "/chat/completions"}
+
+
+def test_every_listed_real_route_carries_its_own_lock(monkeypatch, keys) -> None:
+    """A listed template is anonymous at the app gate, so its route must lock.
+
+    This loads the REAL `v1_compat` routers behind the real gate. If someone
+    drops `require_llm_api_auth` from one of them, or adds a second handler at
+    a listed template without it, the no-key call gets 200 here.
+    """
+    import litellm
+    from acb_llm import client as llm_client
+    from acb_llm import prompt_cache as _pc
+    from gateway.routes import v1_compat
+    from litellm import ModelResponse
+
+    async def _no_keys() -> None:
+        return None
+
+    async def _fake_acompletion(**kw):
+        return ModelResponse(
+            model="gpt-4o-mini",
+            choices=[{"index": 0, "message": {"role": "assistant", "content": "hi"},
+                      "finish_reason": "stop"}],
+            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        )
+
+    monkeypatch.setattr(v1_compat, "_ensure_keys_loaded", _no_keys)
+    monkeypatch.setattr(litellm, "acompletion", _fake_acompletion)
+    monkeypatch.setattr(llm_client, "ensure_model_registered", lambda m: "openai")
+    monkeypatch.setattr(
+        _pc, "apply_prompt_caching", lambda **kw: (kw["messages"], kw.get("tools"), {})
+    )
+
+    public = _main().PUBLIC_ROUTES
+    app = FastAPI(dependencies=[require_authenticated(public=public)])
+    for r in v1_compat.routers:
+        app.include_router(r)
+    listed = [r for r in app.routes if getattr(r, "path", None) in public]
+    assert {r.path for r in listed} == {"/v1/chat/completions", "/chat/completions"}
+
+    client = TestClient(app)
+    body = {"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}],
+            "stream": False}
+    for route in listed:
+        assert client.post(route.path, json=body).status_code == 401, route.path
+        wrong = {"Authorization": "Bearer nope"}
+        assert client.post(route.path, json=body, headers=wrong).status_code == 401
+        good = {"Authorization": f"Bearer {LLM_KEY}"}
+        r = client.post(route.path, json=body, headers=good)
+        assert r.status_code == 200, (route.path, r.text)
