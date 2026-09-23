@@ -333,9 +333,9 @@ export function TaskBoard({
                     atCursor={cursorAt >= 0 && rows[cursorAt] === i.id}
                     draggable={!selectMode}
                     selected={selectedIds.has(i.id)}
-                    // The column IS the stage here — a per-card status pill
-                    // would just repeat it, so it's off on the board.
-                    showStage={false}
+                    // The column is the CATEGORY; the pill is the card's own
+                    // lane name (D73.9), so it stays on the board.
+                    showStage
                     onToggleSelected={(shift) => toggleSelected(i.id, shift, rows)}
                     onDragStart={() => setDragId(i.id)}
                     onDragEnd={() => { setDragId(null); setOverCol(null); setDropAt(null); }}

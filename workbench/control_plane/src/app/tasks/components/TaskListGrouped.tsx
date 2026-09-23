@@ -368,10 +368,10 @@ export function TaskListGrouped({
                     onToggleSelected={(shift) => toggleSelected(item.id, shift, rows)}
                     columns={cols}
                     grid={grid}
-                    // The status pill on the card is redundant when the list is
-                    // grouped by status (the section header IS the stage); it's
-                    // useful only on a lens grouping, where status isn't shown.
-                    showStage={isLens}
+                    // The pill shows the task's own LANE name (D73.9). The group
+                    // header is only its category, so the pill always carries
+                    // news: "Building" and "In progress" share a header.
+                    showStage
                     attachRef={attach(item.id)}
                     atCursor={cursorAt >= 0 && rows[cursorAt] === item.id}
                     isDropTarget={dropAt === `${g.key}:${idx}`}
