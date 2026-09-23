@@ -2282,6 +2282,26 @@ function ProjectsWorkspace() {
     return () => window.removeEventListener(PROJECTS_CHANGED_EVENT, onChanged);
   }, [selected, loadProject]);
 
+  // `?project=<id>` selects a node (WS-27bm S6): the link `open_in_app`
+  // returns for a member who is not on this page. Consumed after the select,
+  // like `?app=` and `?task=`, so the same link works twice.
+  const projectLink = searchParams.get("project");
+  useEffect(() => {
+    if (!projectLink) return;
+    const row = flatten(visibleRoots).find((e) => e.node.id === projectLink);
+    if (!row) return; // the tree is still loading; the effect runs again when it lands
+    // A deep link is consumed by setting state once, as `?app=` above does.
+    /* eslint-disable react-hooks/set-state-in-effect */
+    setApp(null);
+    setSelected(row.node as ProjectRow);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    const rest = new URLSearchParams(searchParams.toString());
+    rest.delete("project");
+    const qs = rest.toString();
+    router.replace(qs ? `/projects?${qs}` : "/projects");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectLink, visibleRoots]);
+
   const deepLink = searchParams.get("task");
   useEffect(() => {
     // Keyed on the id alone, deliberately: `openTaskById` closes over the

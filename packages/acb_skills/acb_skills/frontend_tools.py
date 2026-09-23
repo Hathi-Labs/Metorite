@@ -35,7 +35,7 @@ async def emit_frontend_tool(name: str, args: dict[str, Any] | None = None) -> d
     ``{"ok": False, "error": ...}`` when there is no run stream to carry it.
     Never raises.
     """
-    if not NAME.match(str(name or "")):
+    if not NAME.fullmatch(str(name or "")):
         return {"ok": False, "error": f"not a frontend tool name: {name!r}"}
     payload = args if isinstance(args, dict) else {}
     try:

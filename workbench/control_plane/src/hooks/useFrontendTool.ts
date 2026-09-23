@@ -107,8 +107,34 @@ export function useFrontendTool(tool: FrontendToolDefinition): void {
 
 // ── The dispatcher ─────────────────────────────────────────────────────────
 
-/** Event ids already run, so a stream replay never runs a handler twice. */
+/**
+ * Event ids already run, so a stream replay never runs a handler twice. Also
+ * kept in sessionStorage: the reconnect after a reload replays the whole run
+ * from the stream, and a navigation the member has since moved away from
+ * must not run again (S6 review).
+ */
 const _ran = new Set<string>();
+const RAN_KEY = "cc-frontend-tool-ran";
+
+function hasRun(id: string): boolean {
+  if (_ran.has(id)) return true;
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(RAN_KEY) || "[]") as string[];
+    return stored.includes(id);
+  } catch {
+    return false;
+  }
+}
+
+function markRun(id: string): void {
+  _ran.add(id);
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(RAN_KEY) || "[]") as string[];
+    sessionStorage.setItem(RAN_KEY, JSON.stringify([...stored, id].slice(-200)));
+  } catch {
+    /* storage unavailable: the in-memory set still holds this page load */
+  }
+}
 
 /**
  * Run one CUSTOM `frontend_tool` event (`{id, name, args}`) against the
@@ -124,8 +150,8 @@ export async function runFrontendToolEvent(
   const id = typeof v.id === "string" ? v.id : "";
   const name = typeof v.name === "string" ? v.name : "";
   if (!id || !name) return "invalid";
-  if (_ran.has(id)) return "duplicate";
-  _ran.add(id);
+  if (hasRun(id)) return "duplicate";
+  markRun(id);
   if (!_toolRegistry.has(name)) return "unregistered";
   const args = v.args && typeof v.args === "object" ? (v.args as Record<string, unknown>) : {};
   try {

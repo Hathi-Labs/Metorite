@@ -24,6 +24,22 @@ describe("runFrontendToolEvent", () => {
     off();
   });
 
+  it("does not run an event again after a reload replays the stream", async () => {
+    const handler = vi.fn(() => "opened");
+    const off = registerFrontendTool({ name: "t.again", description: "x", handler });
+    // The unit environment has no browser storage: a stand-in holds what a
+    // reload would find.
+    const store = new Map<string, string>([["cc-frontend-tool-ran", JSON.stringify(["e-old"])]]);
+    vi.stubGlobal("sessionStorage", {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+    });
+    expect(await runFrontendToolEvent({ id: "e-old", name: "t.again" })).toBe("duplicate");
+    expect(handler).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+    off();
+  });
+
   it("ignores a name no open page registered", async () => {
     expect(await runFrontendToolEvent({ id: "e2", name: "nobody.here", args: {} })).toBe("unregistered");
   });

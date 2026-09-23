@@ -223,18 +223,14 @@ async def _unknown_addresses(who: list[str]) -> list[str]:
     names the ones the picker cannot find, so a typo is seen before it is
     signed (H-162). Agents are not addresses and are skipped.
     """
-    unknown: list[str] = []
-    for address in who:
-        if "@" not in address:
-            continue
-        payload = (await get("/projects/assignees", {"q": address})) or {}
-        known = {
-            str(p.get("assignee") or "").lower()
-            for p in (payload.get("people") or []) + (payload.get("agents") or [])
-        }
-        if address.lower() not in known:
-            unknown.append(address)
-    return unknown
+    addresses = [a for a in who if "@" in a]
+    if not addresses:
+        return []
+    # One exact lookup (`/people/names`), not the picker: the picker matches
+    # by substring and only among active people (S6 review).
+    payload = (await get("/projects/people/names", {"emails": ",".join(addresses)})) or {}
+    known = {str(k).lower() for k in (payload.get("names") or {})}
+    return [a for a in addresses if a.lower() not in known]
 
 
 def _split(csv: str) -> list[str]:

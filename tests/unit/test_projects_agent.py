@@ -911,14 +911,24 @@ async def test_open_in_app_reads_the_row_then_dispatches_to_the_page(monkeypatch
     out = await skill_projects.open_in_app("task", UUID)
     assert [c["path"] for c in calls] == [f"/projects/tasks/{UUID}"]
     assert sent == [("projects.open_task", {"task_id": UUID})]
-    assert out.startswith("Opening #7") and f"link: /projects?task={UUID}" in out
+    assert out.startswith("Asked the Projects page to open #7")
+    assert f"link: /projects?task={UUID}" in out
 
 
 async def test_open_in_app_still_links_when_no_page_is_open(monkeypatch) -> None:
     dispatched(monkeypatch, ok=False)
     fake_gateway(monkeypatch, _detail_responder)
     out = await skill_projects.open_in_app("app", "reports")
-    assert out.startswith("Open reports here:") and "link: /projects?app=reports" in out
+    assert out.startswith("Open the reports app with the link.")
+    assert "link: /projects?app=reports" in out
+
+
+async def test_every_open_in_app_result_carries_a_link(monkeypatch) -> None:
+    dispatched(monkeypatch)
+    fake_gateway(monkeypatch, _detail_responder)
+    for kwargs in _INVOCATIONS["open_in_app"]:
+        out = await skill_projects.open_in_app(**kwargs)
+        assert "\n  link: /projects?" in out, out
 
 
 async def test_open_in_app_refuses_an_app_that_is_not_one(monkeypatch) -> None:

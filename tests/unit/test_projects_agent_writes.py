@@ -167,6 +167,8 @@ def _s5_answers(call: dict) -> Any:
         return {"task": {**TASK, "id": OTHER, "title": call["json"]["title"], "task_number": 9}}
     if path.startswith("/projects/intake/") and method == "POST":
         return {"task": TASK, "intake": {"status": path.rsplit("/", 1)[-1]}}
+    if path == "/projects/people/names":
+        return {"names": {"priya@x.io": "Priya", "pm@fracktal.in": "PM"}}
     if path == "/projects/notifications/read":
         return {"marked": 3}
     if path == "/projects/notifications" and method == "GET":

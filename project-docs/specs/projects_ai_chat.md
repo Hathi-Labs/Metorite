@@ -401,7 +401,10 @@ is the dispatcher. A skill tool pushes one CUSTOM `frontend_tool` event onto
 the run's stream, and `AgentChat` runs the registered handler once per event
 id. The Projects page registers `projects.open_task`, `projects.open_project`
 and `projects.open_app`. The model reaches them through `open_in_app`, which
-reads the row first and always returns the link as well. `set_filter` is not
+reads the row first and always returns the link as well. The result says
+"asked", not "opened": the run cannot see whether a Projects page consumed
+the event. A dispatch is kept off the stored message and runs once per event
+id, across a reload. `set_filter` is not
 built. The page's filter state has no stable shape to hand a model yet.
 
 **The board follows the chat.** A receipt card that reports a done write

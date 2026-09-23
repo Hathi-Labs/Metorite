@@ -66,22 +66,32 @@ async def open_in_app(target: str, target_id: str = "") -> str:
         if app not in APPS:
             return f"app is one of {', '.join(APPS)}."
         sent = await _dispatch("projects.open_app", {"app": app})
-        link = f"/projects?app={app}"
-        head = f"Opening {app} in the Projects app." if sent else f"Open {app} here:"
-        return f"{head}\n  link: {link}"
+        return _result(f"the {app} app", f"/projects?app={app}", sent)
     if which == "task":
         tid = uuid_of(target_id, "task_id")
         task = await get(f"/projects/tasks/{tid}")
         sent = await _dispatch("projects.open_task", {"task_id": tid})
         label = f"#{task.get('task_number')} {data(task.get('title'))}"
-        head = f"Opening {label}." if sent else f"Open {label} here:"
-        return f"{head}\n  link: /projects?task={tid}\n  full_id: {tid}"
+        return _result(label, f"/projects?task={tid}", sent) + f"\n  full_id: {tid}"
     pid = uuid_of(target_id, "project_id")
     node = await get(f"/projects/nodes/{pid}")
     sent = await _dispatch("projects.open_project", {"project_id": pid})
-    label = data(node.get("name"))
-    head = f"Opening {label}." if sent else f"Open {label} from the Projects tree."
-    return f"{head}\n  project_id: {pid}"
+    return _result(data(node.get("name")), f"/projects?project={pid}", sent) + (
+        f"\n  project_id: {pid}"
+    )
+
+
+def _result(label: str, link: str, sent: bool) -> str:
+    """What happened, honestly. A queued event is a REQUEST to an open page:
+    the run cannot know whether a Projects page consumed it (a member on the
+    main chat app has none). So the text says "asked", and the link comes on
+    every path (S6 review)."""
+    head = (
+        f"Asked the Projects page to open {label}. If it is not open, use the link."
+        if sent
+        else f"Open {label} with the link."
+    )
+    return f"{head}\n  link: {link}"
 
 
 __all__ = ["open_in_app"]
