@@ -96,6 +96,38 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
+### H-170 · A Console migration runs with NO backup of the Console database · [AGENT]
+- **Check:** on the box, run
+  `for d in $(ls -1t /opt/acb/backups | head -14); do ls /opt/acb/backups/$d; done | grep -ci console`.
+  A zero means no backup on the box holds the Console database, and this is
+  open.
+- **What happens.** Measured 2026-09-23 on the deploy of `13988178`. The
+  pre-migration step calls `scripts/backup_db.sh` from
+  `scripts/apply_migrations.sh:91`. That environment has no
+  `CUSTOMER_CONSOLE_DATABASE_URL`, so the script prints "the Console database
+  is NOT in this backup" (`backup_db.sh:322`). Then
+  `apply_customer_console_migrations.sh` applies the Console ladder with no
+  backup of its own. It applied `033_decide_task.sql` that way.
+- 🔴 **The nightly dump does not save it.** `KEEP_DAILY` is 14
+  (`backup_db.sh:44`), and every deploy adds one dump. Fourteen deploys on
+  2026-09-23 pushed the 02:33 UTC nightly dump out. At 16:40 UTC, all 14
+  dumps on the box held `postgres.dump` and `globals.sql` only.
+- **The warning text points at a closed entry.** It says "that is H-98".
+  H-98 closed on 2026-09-19 for the TIMER's unit, which loads the Console
+  env file. The deploy path does not load it, and nothing tracked that.
+- **Fix, in order.** Make the deploy's backup call load
+  `/opt/acb/app/apps/services/customer_console/.env`, as `acb-backup.service`
+  does. Then refuse the Console ladder when that dump failed, as
+  `apply_migrations.sh:100` refuses the tenant ladder. Then keep the newest
+  nightly dump out of the retention count, so deploys cannot evict it.
+- ⚠️ **Supabase may hold its own backups of this project.** Nobody has checked
+  what the plan keeps. Check it before you call the risk closed.
+- 📌 **033 carried no real risk.** It is two `INSERT ... ON CONFLICT DO
+  NOTHING` rows. The next Console migration may not be so small.
+- **Authority:** `CLAUDE.md` §3a "A production migration is still one-way"
+  · R6
+- **Added:** 2026-09-23 · the CP-13a deploy check
+
 ### H-165 · Build CP-13a to CP-13d: the `decide` task, its door, the Console pages and the chat tool · [AGENT]
 - **Check:** CP-13a is BUILT (2026-09-23, branch `cp13a-decide`).
   `rg -n 'native_typesafe' apps/services/customer_console/customer_console/handlers.py`
@@ -1595,6 +1627,46 @@ line — never reclaim a number by deleting the other entry.
   the credential-scope redesign for `require_llm_api_auth` is the other half.
 - **Authority:** `work_plan.md` §3 **D58** · §6 (f) · `specs/customer_console.md` §4
 - **Added:** 2026-08-26 · AI architecture session
+
+### H-171 · The product's OWN AI is never metered, so it is free forever · [AGENT+OWNER]
+- **Check:** `rg -c "console_resolve|customer_console" packages/acb_llm/` → a
+  zero means `acb_llm` still reaches no meter, and this is open.
+- 🔴 **MEASURED 2026-09-23.** `acb_llm.acompletion_with_fallback` imports
+  litellm and calls `acompletion` directly. `acb_llm` holds **zero**
+  references to the Console. The only litellm callback registered anywhere is
+  `"otel"`, which is a trace and not a bill.
+- **So there are TWO AI paths and only one is metered.**
+  `POST /v1/chat/completions` reaches the Console Router behind
+  `ROUTER_SERVING_ENABLED`. Every in-product feature — the apps runtime, the
+  email automation, the assistants, the agents, **29 files** — takes the other
+  path and is billed to nobody.
+- 🔴 **What it costs.** A customer uses the AI inside the product for free, on
+  our vendor account, for ever. Turning the Router on does not change that,
+  because the Router is not on that path. It is a larger hole than the blank
+  cached-input box, and it does not close itself.
+- **The spec reads against it.** `launch_surface.md` §4.1: *"AI usage is
+  metered separately in credits"*. Not API usage. AI usage.
+- ⚠️ **It also empties the feature the owner asked for.** Per-app, per-agent
+  and per-person credit reporting all read `usage_event`. The apps and agents
+  people use write no row there, so those screens would be honest and
+  blank.
+- **Two shapes, and the choice is the owner's because it trades money against
+  latency and failure.**
+  1. **Proxy.** Send `acompletion_with_fallback` through the Console Router.
+     One path, one meter, the balance gate applies BEFORE spending. Costs a
+     Console round trip on every internal call, and D57.7 says a routed call
+     that fails, fails.
+  2. **Report.** Keep litellm serving and POST the result to
+     `/usage/record`, which exists, takes the internal token and is idempotent
+     on `(organization_id, request_id)`. No latency change and no new failure
+     mode. The balance gate cannot refuse before the spend, so a customer can
+     overrun by one call.
+- ⚠️ **Attribution is the real work in either shape.** The meter needs the
+  member, the agent and the module at 29 call sites. H-73 landed the identity
+  seam. H-44 records the same 80+ sites for tier selection, so sweep the two
+  together and not twice.
+- **Authority:** `launch_surface.md` §4.1 · D19.2 · D57.7 · CP-6 · H-73 · H-44
+- **Added:** 2026-09-23 · the H-73 session. **Renumbered from H-170 to H-171** the same day (R1): another branch minted the same next free id against a different base and merged first. An id is never reused.
 
 ### H-44 · Feature→tier binding is hardcoded at 80+ call sites · [AGENT]
 - **Check:** `rg -c '"tier-(fast|balanced|powerful|stt)"' --glob '*.py' --glob '*.ts' apps/ packages/ workbench/`
