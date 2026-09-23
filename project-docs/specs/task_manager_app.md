@@ -1233,6 +1233,14 @@ by somebody who reads only the code:
    before, because `gtd_items.archived_at` was a personal row. It is not
    personal any more — archiving now hides the task from the company board too —
    so the guard that protects the board applies to this surface as well.
+4. **A capture states INBOX** (S8a, 2026-09-23). A row with no overlay derives
+   its disposition off the lane. The personal root's first lane is `backlog`,
+   so a fresh capture derived SOMEDAY, and no Inbox showed it. The old store
+   defaulted the column to INBOX. `create_personal_task` now writes the
+   overlay row with `disposition = 'INBOX'` and `clarified_at` NULL when the
+   caller states no disposition. A capture is a stated inbox item until the
+   member clarifies it. A subtask is a step, not a capture, and gets no
+   default. Fences: `test_projects_personal_s8a.py`, `live_ws39_s8a.py`.
 
 **Server addendum, in the same slice.** Four things `/projects/my/*` did not
 answer and the lens cannot derive: `assignees` (via the existing

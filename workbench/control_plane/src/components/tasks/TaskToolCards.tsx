@@ -50,7 +50,7 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   gtd_inbox_insights: { icon: "Inbox", label: "Inbox health" },
   gtd_day_digest: { icon: "CalendarDays", label: "Day summary" },
   gtd_estimate_stats: { icon: "Timer", label: "Estimate accuracy" },
-  gtd_accounts: { icon: "Milestone", label: "Connected workspaces" },
+  gtd_accounts: { icon: "Milestone", label: "No connected tool" },
   gtd_people: { icon: "Users", label: "People" },
   gtd_list_projects: { icon: "FolderKanban", label: "Projects" },
   gtd_subtasks: { icon: "ListTree", label: "Subtasks" },
@@ -74,7 +74,7 @@ const ACTION_META: Record<string, { icon: string; label: string; danger?: boolea
   gtd_schedule: { icon: "CalendarClock", label: "Scheduled" },
   gtd_unschedule: { icon: "CalendarClock", label: "Unscheduled" },
   gtd_set_one_thing: { icon: "Star", label: "One Thing set" },
-  gtd_sync: { icon: "RefreshCw", label: "Workspaces synced" },
+  gtd_sync: { icon: "RefreshCw", label: "No connected tool" },
   gtd_plan_project: { icon: "FolderKanban", label: "Project plan" },
 };
 
