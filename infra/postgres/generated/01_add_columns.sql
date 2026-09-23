@@ -6,7 +6,7 @@
 --
 -- Nullable ADD COLUMN. No table scan, no lock of consequence. Safe to apply on a live system.
 --
--- Tables in this phase: 143
+-- Tables in this phase: 137
 --
 -- ⚠️ NOT COVERED BY THIS FILE — `organization_id` already means something
 -- else on these tables, so scoping them by that name would corrupt a
@@ -259,23 +259,11 @@ ALTER TABLE attachments
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE gtd_contexts
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
 ALTER TABLE calendar_day_state
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE gtd_folders
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
 ALTER TABLE my_tasks_horizons
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE gtd_items
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
@@ -299,10 +287,6 @@ ALTER TABLE people_skills
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE gtd_projects
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
 ALTER TABLE my_tasks_reviews
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
@@ -312,14 +296,6 @@ ALTER TABLE calendar_rollover_log
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
 ALTER TABLE user_settings
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE gtd_spaces
-    ADD COLUMN IF NOT EXISTS organization_id UUID
-    DEFAULT current_setting('app.tenant_id', true)::uuid;
-
-ALTER TABLE gtd_waiting
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 

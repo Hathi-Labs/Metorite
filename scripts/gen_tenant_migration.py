@@ -87,16 +87,6 @@ EXEMPT: dict[str, str] = {
     # ── Catalogs: identical for every tenant, no customer data ─────────────
     "feature_catalog":         "a catalog of product surfaces, not tenant data",
     "schema_migrations":       "migration bookkeeping",
-    # WS-39 S3b/S3c (migration 189). Sits beside `schema_migrations` because it
-    # is the same kind of thing: bookkeeping ABOUT the schema, not data IN it.
-    # One row means "a human authorised the gtd_* retirement on this database".
-    # `DROP TABLE` is database-wide and has no per-tenant form, so scoping this
-    # would create a column that can only ever be wrong — and worse, it would
-    # invite a per-tenant arming that the drop it guards cannot honour. It is
-    # read by migration 190's guard, which runs as the database owner outside
-    # RLS, so a policy here would not even be consulted. Holds an email, a
-    # timestamp and a note; no tenant data. See work_plan.md §6 (f), D53.5.
-    "gtd_retirement_arm":      "arms a database-wide DDL drop; no per-tenant form exists",
     # ── Already tenant-keyed by an earlier migration ───────────────────────
     "provider_keys":           "keyed (organization_id, provider) by MT-0d / 158",
     "model_config":            "keyed (organization_id, key) by MT-0d / 158",
@@ -209,19 +199,44 @@ def discover_homonyms() -> dict[str, str]:
 _NEVER_A_TABLE = frozenset({"above", "below", "if", "not", "exists", "this", "the"})
 
 
+#: ``DROP TABLE [IF EXISTS] <name>``. A table the ladder drops is not a table,
+#: and a phase file that names it fails in the maintenance window. WS-39 S8
+#: (migration 216) is the first file to drop tables for good.
+_DROP_RE = re.compile(
+    r"DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:public\.)?[\"']?([a-z_][a-z0-9_]*)[\"']?",
+    re.IGNORECASE,
+)
+
+
+def _ladder_order(path: Path) -> int:
+    """The numeric prefix. ``sorted()`` on names puts ``216_`` before ``48_``,
+    and that order would read a drop before the CREATE it undoes."""
+    return int(path.name.split("_", 1)[0])
+
+
 def discover_tables() -> list[str]:
-    """Every table the numbered migrations create, in name order.
+    """Every table the numbered migrations create and do not later drop, in
+    name order.
 
     ``--`` comments are stripped first: these migrations explain themselves in
     prose *about SQL*, and reading that prose as schema put a table named
     ``above`` into a production maintenance-window script (see
     :data:`_LINE_COMMENT_RE`).
+
+    Files are read in LADDER order, and each file's CREATE and DROP statements
+    in text order, so a table dropped by a later file leaves the set. The
+    WS-39 S8 drop (216) removed the `gtd_*` task store this way.
     """
     names: set[str] = set()
-    for path in sorted(_MIGRATIONS.glob("[0-9]*_*.sql")):
+    for path in sorted(_MIGRATIONS.glob("[0-9]*_*.sql"), key=_ladder_order):
         sql = _LINE_COMMENT_RE.sub("", path.read_text(encoding="utf-8"))
-        for match in _CREATE_RE.finditer(sql):
+        events = [(m.start(), "create", m) for m in _CREATE_RE.finditer(sql)]
+        events += [(m.start(), "drop", m) for m in _DROP_RE.finditer(sql)]
+        for _pos, kind, match in sorted(events, key=lambda e: e[0]):
             name = match.group(1).lower()
+            if kind == "drop":
+                names.discard(name)
+                continue
             if name in _NEVER_A_TABLE:
                 raise AssertionError(
                     f"{path.name}: discovered a table named {name!r}, which is "

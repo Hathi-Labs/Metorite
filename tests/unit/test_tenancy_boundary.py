@@ -180,14 +180,16 @@ BASELINE_UNSCOPED = {
     "email_rule_patterns", "email_rules", "email_senders", "email_sync_log",
     "email_thread_status", "email_voice_profiles",
 # gtd_*
-    "attachments", "gtd_contexts", "calendar_day_state", "gtd_folders",
+    "attachments", "calendar_day_state",
     # ⚠️ `people` LEFT this list on 2026-09-21. Migration 209 put
     # `organization_id` on the NUMBERED ladder for that one table, because
     # H-125 needed a per-tenant unique index and could not wait for the
     # whole generated phase (H-104). The other 142 tables still wait.
-    "my_tasks_horizons", "gtd_items", "people_resumes",
-    "gtd_projects", "my_tasks_reviews", "calendar_rollover_log", "user_settings",
-    "gtd_spaces", "gtd_waiting",
+    # ⚠️ Six more LEFT on 2026-09-23. Migration 216 (WS-39 S8) dropped the
+    # `gtd_*` task store: gtd_items, gtd_waiting, gtd_projects, gtd_spaces,
+    # gtd_folders and gtd_contexts. The three survivors carry their new names.
+    "my_tasks_horizons", "people_resumes",
+    "my_tasks_reviews", "calendar_rollover_log", "user_settings",
 # live_*
     "live_session",
 # meeting_*
@@ -271,6 +273,7 @@ def _scan() -> tuple[set[str], set[str]]:
     """
     tables: set[str] = set()
     scoped: set[str] = set()
+    dropped: set[str] = set()
     for path in sorted(glob.glob("infra/postgres/*.sql")):
         if os.path.basename(path) == "schema.generated.sql":
             continue
@@ -290,7 +293,12 @@ def _scan() -> tuple[set[str], set[str]]:
                 _references_the_tenant(body)
             ):
                 scoped.add(match.group(1))
-    return tables, scoped
+        # A table a later migration drops is not a table. `--` comments are
+        # stripped first, because these files describe their drops in prose.
+        code = re.sub(r"--[^\n]*", "", src)
+        dropped |= set(re.findall(
+            r"DROP TABLE\s+(?:IF EXISTS\s+)?([a-z_][a-z0-9_]*)", code, re.I))
+    return tables - dropped, scoped - dropped
 
 
 def test_the_scan_finds_the_migrations_at_all() -> None:
@@ -424,4 +432,4 @@ def test_the_frozen_count_matches_the_baseline() -> None:
     Putting it here as well was the first attempt, and
     `test_every_table_lands_in_exactly_one_bucket` rejected it — correctly.
     """
-    assert len(BASELINE_UNSCOPED) == 113
+    assert len(BASELINE_UNSCOPED) == 107
