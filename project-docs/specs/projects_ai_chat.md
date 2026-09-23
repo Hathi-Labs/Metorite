@@ -877,7 +877,7 @@ the section kind `capacity`, in `reports.py` `SECTIONS`, `RenderedBody`,
 `reportEmail.ts` and the chat's `_REPORT_SECTIONS`. The chat gets
 `team_capacity`, class A.
 
-**As built, 2026-09-23.** Five facts that the rules above do not say.
+**As built, 2026-09-23.** Six facts that the rules above do not say.
 - **Two scopes on one row.** The row's task half is this scope, and it is
   Load's count. The hours read every open task the caller can see, in any
   project, so a person busy elsewhere shows no spare hours here. Owner
