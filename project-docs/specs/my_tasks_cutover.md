@@ -649,6 +649,65 @@ Tool names and signatures do not change. S9 renames them, and
 9. `gtd_capture_many` sends batches of `MAX_BATCH` (100) and reports the
    total captured.
 
+### S8c — meeting actions and the email brief move to the one store · AGENT-SAFE · BUILT 2026-09-23
+
+**Scope.** Three modules still used `gtd_items` after S7. Production has
+served `pm_tasks` since 2026-09-23 00:29 UTC, so all three failed.
+
+1. `routes/notes/actions.py::_create_task_from_action` wrote an approved
+   meeting action into `gtd_items`. No screen showed the task.
+2. `routes/email/digest.py::_digest_commitments` read the open reply
+   commitments from `gtd_items`. The brief listed none.
+3. `routes/email/automation/drafting.py::_fetch_calendar_context` read
+   the hard dates from `gtd_items`. The drafter saw an empty calendar.
+
+All three now call the one seam, `item_source()` (S6d). They name no task
+table. The map:
+
+| Module | Seam call |
+|---|---|
+| Notes approve and `task` dispatch | `find_by_origin(key="action_item_id")`, then `insert_capture` |
+| Email digest | `items_by_origin(key="account_id")` for the account's owner |
+| Email drafter | `hard_dated_items(days, limit)`, a new seam read |
+
+The capture lands in the member's personal root as a stated INBOX
+capture, the S8a rule. Its origin is `{kind: "meeting", meeting_id,
+action_item_id, segment_ids}`. The notes text is the description.
+
+**Done when.**
+1. An approved action answers `_MY_TASKS_SQL` for the member under INBOX,
+   with the meeting origin. Fences: `tests/unit/test_notes_action_capture.py`
+   and `tests/live/live_ws39_s8c.py` (R8).
+2. Approving twice writes one task. A row that lost its ref also writes
+   one task. Same fences.
+3. The digest returns a reply-commitment capture with its latest message.
+   A closed commitment leaves the brief. Fences:
+   `tests/unit/test_email_digest.py` and the live script.
+4. The drafter lists an open hard-date task and no soft date. Fences:
+   `tests/unit/test_email_calendar_context.py` and the live script.
+5. No string in `routes/notes/` or `routes/email/` names a `gtd_` table.
+   Docstrings are exempt. Fence: the globbed `SCOPED` list in
+   `tests/unit/test_tasks_ai_source.py`.
+
+**Decisions taken at build, 2026-09-23.**
+1. **The task id goes in `action_item.dispatch_ref`.** `resulting_task_id`
+   stays NULL. Its foreign key names the legacy `task` table
+   (`01_schema.sql`), and that key refuses a `pm_tasks` id. The live script
+   proves the refusal. Migration 129 already put a task's id in
+   `dispatch_ref`, so this follows the existing convention.
+2. `notes/actions.py::task_ref` reads both columns. The meeting page links
+   "In My Tasks" off the API field `resulting_task_id`. So the list reader
+   fills that field from `dispatch_ref` for a `task` item.
+3. The capture is idempotent by origin, not only by the action row.
+   `_dispatch` commits the task and marks the row in two sessions. A
+   failure between the two left a draft, and the retry wrote a second task.
+4. **No migration.** `action_item_id` and `account_id` join `ORIGIN_KEYS`
+   without an index. Each lookup runs inside one member's list, so the key
+   filters few rows. The last migration on the base was 213.
+5. The seam still reads `TASKS_LENS` on this base. Production sets it, so
+   production takes the pm arm. S8 PR 1 deletes the gtd arm. The three
+   callers need no change then.
+
 ### S8 — the contract: code first, then schema · AGENT-SAFE
 
 **Scope.** Two PRs, in order.
@@ -667,6 +726,8 @@ Tool names and signatures do not change. S9 renames them, and
    through the guarded prologue in their creating migrations (52 and 48).
    Each rename is registered in `test_gtd_rename_upgrade.py::RENAMED`. The
    contract half of `wa_commitments.task_id` drops `gtd_item_id`.
+   The PR 1 build record named three blockers: notes approve, the email
+   digest and the email drafter. S8c moved all three to the seam.
 
 **Done when.**
 1. `rg -l "gtd_" apps packages --glob '!infra/postgres/generated'` returns

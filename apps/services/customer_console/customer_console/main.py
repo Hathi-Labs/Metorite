@@ -7224,7 +7224,11 @@ def _transcript_of(response: Any) -> str:
 
 @app.post("/v1/audio/transcriptions")
 def audio_transcriptions(
-    caller: KeyCaller,
+    # 📌 `ServingCaller` since 2026-09-23 (H-152). An organization key
+    # still opens this, unchanged. A per-box DEPLOYMENT key carrying
+    # `serve` now opens it too, and the Console derives the tenant from
+    # the acting member — the four serving doors answer alike.
+    caller: ServingCaller,
     file: Annotated[UploadFile, File()],
     model: Annotated[str, Form()],
     stream: Annotated[str | None, Form()] = None,
@@ -7662,7 +7666,7 @@ def _unmeasured(
 
 
 @app.post("/v1/images/generations")
-def images_generations(req: ImageRequest, caller: KeyCaller) -> Any:
+def images_generations(req: ImageRequest, caller: ServingCaller) -> Any:
     """Generate pictures, gate the call, and charge it per PICTURE.
 
     The same shape as ``audio_transcriptions`` and deliberately so: the
@@ -7778,7 +7782,7 @@ def images_generations(req: ImageRequest, caller: KeyCaller) -> Any:
 
 
 @app.post("/v1/audio/speech")
-def audio_speech(req: SpeechRequest, caller: KeyCaller) -> Response:
+def audio_speech(req: SpeechRequest, caller: ServingCaller) -> Response:
     """Read text aloud, gate the call, and charge it per CHARACTER.
 
     🔴 **The answer is AUDIO BYTES, and not JSON** (clause 2). The route

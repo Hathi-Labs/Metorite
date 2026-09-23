@@ -1071,7 +1071,7 @@ and the AI's "do not chase someone who is on holiday" rule (§6.7).
 > and **D49 withdrew Centers from the surface** on 2026-08-24. The People tab
 > bar gives this route no tab on purpose. The 2026-09-20 directive that
 > reached the other six surfaces missed this one, because its door was a
-> withdrawn Center and not a missing tab. **H-164 carries the decision.** That
+> withdrawn Center and not a missing tab. **H-167 carries the decision.** That
 > decision sets where the People app opens. It is not a bug fix.
 
 > **Build record.** `routes/people/overview.py` → `GET /people/overview` +

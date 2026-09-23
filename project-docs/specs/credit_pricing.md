@@ -396,6 +396,7 @@ two calls can each pass a balance check, and the organization goes negative.
 | Deterministic | transcribe. Duration is a property of the file | No hold. Charge exactly. |
 | Deterministic input | vision. Image tokens follow the dimensions | Hold the output side only |
 | Variable | chat | Hold the worst case on both sides |
+| Input only | `decide` (D75, planned). The vendor charges input tokens, and output is free | No hold. The caller sends the whole input, so the charge is known before the call |
 
 Audio is easier than text here, not harder. Do not push it through the hold
 path.
@@ -471,6 +472,12 @@ charge at settle time.
    silently lose the exemption if the check read a tier slug.
 5. A zero stays zero. An absorbed task (D19.2) and an unpriced card both rate
    to nothing on purpose. Lifting either to the floor invents a charge.
+6. 🔴 **`decide` meets clause 3's problem, and the owner decides the answer**
+   *(added 2026-09-23, D75)*. One decision on 1000 input tokens costs USD
+   0.000042. A floor of any size is then nearly the whole charge, and email
+   triage makes one call for each message. Choose one: exempt `decide` from the
+   floor as clause 3 exempts `embed`, keyed on the task by clause 4, or absorb
+   it (G-4). This is part of H-42. `customer_console.md` §9 item 8 lists it.
 
 ### 5.5 The fence (R7)
 

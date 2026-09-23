@@ -169,6 +169,24 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
 export const PROJECTS_CHANGED_EVENT = "cc-projects-changed";
 const announced = new Set<string>();
 
+/**
+ * How recent a receipt must be to announce. A write the member just made
+ * reloads the board. A receipt replayed from history must not: with the chat
+ * docked on the board, every past receipt in the conversation mounted on each
+ * page load and reloaded the board once per receipt (review of PR #415).
+ */
+export const FRESH_RECEIPT_MS = 60_000;
+
+/** Did this tool finish just now, in this page's life? Stored events keep the
+ *  `endedAt` they finished with, so a replay is old; one with no time at all
+ *  predates the field and is old too. */
+export function isFreshReceipt(e: { endedAt?: number }, now: number = Date.now()): boolean {
+  if (typeof e.endedAt !== "number") return false;
+  // A negative age is a server stamp ahead of this machine's clock: not fresh.
+  const age = now - e.endedAt;
+  return age >= 0 && age < FRESH_RECEIPT_MS;
+}
+
 function announceChange(eventId: string): void {
   if (announced.has(eventId)) return;
   announced.add(eventId);
@@ -185,6 +203,52 @@ function announceChange(eventId: string): void {
  * edit on either side fails a test instead of painting a decline green.
  */
 export const CANCELLED = "Cancelled — nothing was changed.";
+
+/**
+ * The class C tools: the guarded acts (archive, merge, bulk edit, delete a
+ * status, revert...). Their confirmation card carried an impact line, so a
+ * done receipt wears the warning tone rather than success: the member did a
+ * thing that is hard to undo, and the receipt says so at a glance.
+ *
+ * ⚠️ Held equal to `manifest.tools_by_class("C")` by
+ * `tests/unit/test_projects_agent_writes.py`, which reads this literal. A
+ * guarded tool added on the Python side without a line here fails that test.
+ */
+export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
+  "archive_project",
+  "unarchive_project",
+  "move_project",
+  "archive_task",
+  "merge_tasks",
+  "bulk_update",
+  "delete_comment",
+  "revert_activity",
+  "delete_status",
+  "set_status_set",
+  "delete_type",
+  "delete_field",
+  "delete_tag",
+  "merge_tags",
+  "delete_view",
+  "report_delete",
+  "delete_attachment",
+]);
+
+/**
+ * The receipt's fill, border and icon colour. Text keeps its own tokens.
+ *
+ * A guarded act also gets a warning FILL. `--warning` on a white card is
+ * 1.57:1 (`contrast.test.ts`), so an icon and a border alone barely read in
+ * light mode, and colour would be the only signal. The tint makes the card
+ * itself read differently.
+ */
+export function toneFor(outcome: string, tool: string): string {
+  if (outcome === "failed") return "bg-card/40 border-destructive/40 text-destructive";
+  if (outcome !== "done") return "bg-card/40 border-border text-muted-foreground";
+  return GUARDED_TOOLS.has(tool)
+    ? "bg-warning/10 border-warning/60 text-warning"
+    : "bg-card/40 border-success/40 text-success";
+}
 
 /**
  * Is this a Projects tool at all? The manifest's tool names are the
@@ -458,9 +522,10 @@ export function receiptIdOf(result: string): string {
 }
 
 /**
- * The receipt for a class B write. Four states, each with its own tone from
- * the theme's tokens: done (success), refused by the tool in prose (muted),
- * cancelled at the card (muted), failed (destructive). The confirmation
+ * The receipt for a class B or class C write. Four states, each with its own
+ * tone from the theme's tokens (`toneFor`): done (success, or warning for a
+ * guarded act), refused by the tool in prose (muted), cancelled at the card
+ * (muted), failed (destructive). The confirmation
  * card BEFORE the write is the shared `ConfirmationCard`; this is the
  * receipt after it.
  */
@@ -469,17 +534,13 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const result = (e.result || "").trim();
   const outcome = classifyActionResult(result, e.status, e.name);
   useEffect(() => {
-    if (outcome === "done") announceChange(e.id);
+    if (outcome === "done" && isFreshReceipt(e)) announceChange(e.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
   }, [outcome, e.id]);
   const rowId = rowIdOf(result);
   const openTask = useOpenTask();
   const detail = forPeople(result);
-  const tone =
-    outcome === "failed"
-      ? "border-destructive/40 text-destructive"
-      : outcome === "done"
-        ? "border-success/40 text-success"
-        : "border-border text-muted-foreground";
+  const tone = toneFor(outcome, e.name);
   const icon =
     outcome === "failed" ? "X" : outcome === "cancelled" ? "Ban" : outcome === "refused" ? "Info" : meta.icon;
   const heading =
@@ -491,7 +552,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
           ? "Not done"
           : meta.label;
   return (
-    <div className={`rounded-lg border bg-card/40 px-2.5 py-2 ${tone}`}>
+    <div className={`rounded-lg border px-2.5 py-2 ${tone}`}>
       <div className="flex items-start gap-2">
         <span className="mt-0.5 flex-shrink-0">
           <AppIcon name={icon} size={13} />

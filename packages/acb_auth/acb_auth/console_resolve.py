@@ -2093,21 +2093,69 @@ class ConsoleRouterUnavailable(Exception):
     """
 
 
+def router_credential() -> tuple[str, str] | None:
+    """Which credential this box presents to the Router, and of which kind.
+
+    Returns ``(kind, token)`` where kind is ``"org"`` or ``"deployment"``, or
+    ``None`` when the box is not wired for AI at all.
+
+    🔴 **Why there are two (H-152).** ``customer_console_org_key`` is ONE
+    value naming ONE tenant. A box serving several therefore had one slot and
+    N tenants: it served the first and was dark for the rest, without failing.
+    The DEPLOYMENT key is per-box, so it works for every tenant placed here,
+    and the Console derives the organization from the acting member.
+
+    ⚠️ **The ORG key wins when both are set, and that is for compatibility,
+    not preference.** A box already serving one tenant on an org key must not
+    change behaviour the day somebody adds a deployment key for an unrelated
+    reason — resolve and provision have wanted that key since CP-2b. So the
+    shared-box arm arms only when the single-tenant answer is absent, which
+    makes this change ship dark by construction.
+
+    ⚠️ **Both set is a MISCONFIGURATION and says so.** One box has one answer:
+    the org key for a single tenant, the deployment key for several. Holding
+    both means somebody believes two different things about this box.
+    """
+    settings = get_settings()
+    if not settings.customer_console_url.strip():
+        return None
+
+    org = settings.customer_console_org_key.strip()
+    depl = settings.customer_console_deployment_key.strip()
+
+    if org and depl and settings.customer_console_router_uses_deployment_key:
+        _log.warning(
+            "router.two_credentials",
+            extra={"router_kind": "org", "router_note": "deployment key ignored"},
+        )
+    if org:
+        return ("org", org)
+    # ⚠️ **The FLAG, not the key's presence.** Every box holds a deployment
+    # key already — resolve, provision and the seat doors have needed one
+    # since CP-2b. Arming here on presence alone would break the property
+    # `test_the_deployment_key_alone_does_not_arm_the_router` holds: a box
+    # wired for SIGN-IN is not thereby wired for AI.
+    if depl and settings.customer_console_router_uses_deployment_key:
+        return ("deployment", depl)
+    return None
+
+
 def router_is_wired() -> bool:
     """Whether this box can reach the Console's AI Router.
 
-    BOTH the address and the ORG key, for :func:`is_wired`'s reason: either one
+    The address AND a credential, for :func:`is_wired`'s reason: either one
     alone is a misconfiguration rather than a partial capability.
+
+    📌 **Either credential now counts** (H-152, 2026-09-23). It used to demand
+    the ORG key by name, which is what made a shared box structurally unable
+    to serve its second tenant. :func:`router_credential` picks, and states
+    why the org key still wins a tie.
 
     ⚠️ Deliberately SEPARATE from :func:`is_wired`. A box can be wired for
     sign-in resolution and not for AI, and one predicate for both would arm one
     capability the moment somebody configured the other.
     """
-    settings = get_settings()
-    return bool(
-        settings.customer_console_url.strip()
-        and settings.customer_console_org_key.strip()
-    )
+    return router_credential() is not None
 
 
 def _attribution_headers(
@@ -2166,7 +2214,23 @@ async def chat_completion_on_console(
 
     settings = get_settings()
     base = settings.customer_console_url.strip().rstrip("/")
-    key = settings.customer_console_org_key.strip()
+    # 🔴 **The credential is CHOSEN, never assumed to be the org key** (H-152).
+    # `router_credential` states why the org key still wins a tie.
+    chosen = router_credential()
+    if chosen is None:  # pragma: no cover - `router_is_wired` guards above
+        raise ConsoleRouterUnavailable("unwired")
+    kind, key = chosen
+
+    # ⚠️ **A deployment key CANNOT resolve a tenant without the member**, and
+    # the Console answers 400 to say so. Refusing here instead turns a remote
+    # 400 that reads as "the Router is broken" into a local message naming the
+    # one missing input. The org arm needs no member — its organization is a
+    # property of the credential — so this is asked of one arm only.
+    if kind == "deployment" and not (member or "").strip():
+        raise ConsoleRouterUnavailable(
+            "this box presents a deployment key, which needs the acting "
+            "member to resolve a tenant, and none was supplied"
+        )
 
     headers = {"Authorization": f"Bearer {key}"}
     headers.update(
@@ -2257,7 +2321,23 @@ async def stream_completion_on_console(
 
     settings = get_settings()
     base = settings.customer_console_url.strip().rstrip("/")
-    key = settings.customer_console_org_key.strip()
+    # 🔴 **The credential is CHOSEN, never assumed to be the org key** (H-152).
+    # `router_credential` states why the org key still wins a tie.
+    chosen = router_credential()
+    if chosen is None:  # pragma: no cover - `router_is_wired` guards above
+        raise ConsoleRouterUnavailable("unwired")
+    kind, key = chosen
+
+    # ⚠️ **A deployment key CANNOT resolve a tenant without the member**, and
+    # the Console answers 400 to say so. Refusing here instead turns a remote
+    # 400 that reads as "the Router is broken" into a local message naming the
+    # one missing input. The org arm needs no member — its organization is a
+    # property of the credential — so this is asked of one arm only.
+    if kind == "deployment" and not (member or "").strip():
+        raise ConsoleRouterUnavailable(
+            "this box presents a deployment key, which needs the acting "
+            "member to resolve a tenant, and none was supplied"
+        )
     headers = {"Authorization": f"Bearer {key}"}
     headers.update(
         _attribution_headers(

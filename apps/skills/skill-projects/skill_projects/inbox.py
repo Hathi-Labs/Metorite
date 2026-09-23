@@ -18,7 +18,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from skill_projects.client import GatewayRefusal, data, get, patch, post, uuid_of
-from skill_projects.reads import DATA_LEGEND, _day, _task_line
+from skill_projects.reads import _day, _task_line, legend
 from skill_projects.writes import (
     CANCELLED,
     MAX_BATCH,
@@ -55,7 +55,7 @@ async def project_access(project_id: str) -> str:
     (spec §12, question 2)."""
     pid, node = await _node(project_id)
     rows = ((await get(f"/projects/nodes/{pid}/grants")) or {}).get("rows") or []
-    out = [DATA_LEGEND, f"Access to {data(node.get('name'))} ({len(rows)} grants):"]
+    out = [legend(), f"Access to {data(node.get('name'))} ({len(rows)} grants):"]
     for row in rows:
         out.append(
             f"- {data(row.get('subject'))} · granted by {data(row.get('created_by') or '?')}"
@@ -71,7 +71,7 @@ async def project_views(project_id: str) -> str:
     adds or renames one; delete_view removes one."""
     pid, node = await _node(project_id)
     rows = ((await get(f"/projects/nodes/{pid}/views")) or {}).get("rows") or []
-    out = [DATA_LEGEND, f"Views of {data(node.get('name'))} ({len(rows)}):"]
+    out = [legend(), f"Views of {data(node.get('name'))} ({len(rows)}):"]
     for row in rows:
         out.append(f"- {data(row.get('name'))} [{row.get('view_type')}] · view_id {row.get('id')}")
     return "\n".join(out)
@@ -105,7 +105,7 @@ async def calendar(start: str, end: str, project_id: str = "", mine: bool = Fals
     # `/projects/calendar` returns no `total`: a window is capped
     # (`truncated`), and the cap is what the member must hear about.
     capped = " · the window is capped; narrow the dates" if (payload or {}).get("truncated") else ""
-    out = [DATA_LEGEND, f"{title} ({len(rows)} tasks{capped}):"]
+    out = [legend(), f"{title} ({len(rows)} tasks{capped}):"]
     for row in rows:
         out.extend(_task_line(row))
         if not row.get("due_at") and row.get("start_date"):
@@ -123,7 +123,7 @@ async def my_contexts() -> str:
     """The GTD contexts the member uses on their own overlay (@office,
     @calls), with how many open tasks carry each."""
     rows = ((await get("/projects/my/contexts")) or {}).get("rows") or []
-    out = [DATA_LEGEND, f"Your contexts ({len(rows)}):"]
+    out = [legend(), f"Your contexts ({len(rows)}):"]
     for row in rows:
         out.append(f"- {data(row.get('context'))} · {row.get('total', 0)} tasks")
     return "\n".join(out)
@@ -135,7 +135,7 @@ async def my_led_projects() -> str:
     the member's own open tasks in it first (WS-39 S6e). A project with no
     task assigned to the member still lists — leading it is the fact."""
     rows = ((await get("/projects/my/led")) or {}).get("rows") or []
-    out = [DATA_LEGEND, f"Projects you lead ({len(rows)}):"]
+    out = [legend(), f"Projects you lead ({len(rows)}):"]
     for row in rows:
         mine = row.get("my_tasks") or []
         out.append(
@@ -165,7 +165,7 @@ async def watchers(target_id: str, kind: str = "task") -> str:
         payload = await get(f"/projects/nodes/{pid}/watchers")
         head = f"Watchers of {data(node.get('name'))}"
     names = [data(w) for w in (payload or {}).get("watchers") or []]
-    out = [DATA_LEGEND, f"{head} ({len(names)}): " + (", ".join(names) or "nobody")]
+    out = [legend(), f"{head} ({len(names)}): " + (", ".join(names) or "nobody")]
     out.append("You watch it." if (payload or {}).get("watching") else "You do not watch it.")
     if (payload or {}).get("inherited"):
         out.append("An ancestor's watch already covers it.")
@@ -194,7 +194,7 @@ async def intake_queue(project_id: str = "") -> str:
         params["project_id"] = uuid_of(project_id, "project_id")
     payload = await get("/projects/intake", params)
     rows = (payload or {}).get("rows") or []
-    out = [DATA_LEGEND, f"Intake ({(payload or {}).get('total', len(rows))} waiting):"]
+    out = [legend(), f"Intake ({(payload or {}).get('total', len(rows))} waiting):"]
     for row in rows:
         lines = _task_line(row)
         lines[0] += " · " + _intake_facts(row)
@@ -214,7 +214,7 @@ async def notifications(unread_only: bool = True) -> str:
     rows = (payload or {}).get("rows") or []
     unread = (payload or {}).get("unread") or {}
     out = [
-        DATA_LEGEND,
+        legend(),
         f"Notifications ({len(rows)} shown · unread {unread.get('total', 0)}, "
         f"mentions {unread.get('mentions', 0)}):",
     ]
