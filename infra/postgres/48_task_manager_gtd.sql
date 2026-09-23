@@ -18,6 +18,63 @@
 -- Idempotent: every statement is IF NOT EXISTS / ON CONFLICT-safe — apply_migrations.sh
 --             re-runs all 02+ migrations on every deploy.
 
+-- == The `gtd_` name is retired (WS-39 S8 PR 2, D73.3, 2026-09-23) ===========
+--
+-- Two tables in this file survive the task-store drop, so they take the names
+-- of the D73.3 table map. Horizons becomes my_tasks_horizons (D65 keeps the
+-- store). Weekly reviews becomes my_tasks_reviews (WS-18 keeps the store).
+-- Every other table in this file is dropped by migration 216.
+--
+-- THE RENAME LIVES IN THE FILE THAT CREATES THE TABLE. One file then answers
+-- all three states:
+--
+--   * Fresh install -- nothing to rename. The CREATE below makes the new name.
+--   * A database that predates this -- the old table is renamed WITH ITS
+--     ROWS, and the CREATE below finds the name taken and skips.
+--   * Replay -- already renamed, so the guard matches nothing.
+--
+-- A rename migration at the END of the ladder was measured and abandoned on
+-- 2026-09-21. `tests/unit/test_gtd_rename_upgrade.py` carries the argument,
+-- and it fences both blocks below.
+--
+-- relkind = 'r' leaves a view that wears the old name alone. Index, constraint
+-- and policy names keep their old spelling (D73.3). A rename does not touch
+-- them, and no query names one.
+--
+-- WARNING: each block spells its OLD name once, as a quoted literal. A later
+-- rename sweep must not rewrite that literal, or the block renames the new
+-- name onto itself and does nothing. Sweep FIRST, add the prologue SECOND.
+
+DO $rename_my_tasks_horizons$
+DECLARE
+    old_name CONSTANT text := 'gtd_horizons';
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.relname = old_name AND c.relkind = 'r'
+           AND n.nspname = current_schema()
+    ) AND to_regclass('public.my_tasks_horizons') IS NULL THEN
+        EXECUTE format('ALTER TABLE %I RENAME TO %I', old_name, 'my_tasks_horizons');
+        RAISE NOTICE 'renamed % -> my_tasks_horizons', old_name;
+    END IF;
+END
+$rename_my_tasks_horizons$;
+
+DO $rename_my_tasks_reviews$
+DECLARE
+    old_name CONSTANT text := 'gtd_reviews';
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.relname = old_name AND c.relkind = 'r'
+           AND n.nspname = current_schema()
+    ) AND to_regclass('public.my_tasks_reviews') IS NULL THEN
+        EXECUTE format('ALTER TABLE %I RENAME TO %I', old_name, 'my_tasks_reviews');
+        RAISE NOTICE 'renamed % -> my_tasks_reviews', old_name;
+    END IF;
+END
+$rename_my_tasks_reviews$;
+
 -- ── Connected PM-tool workspaces ────────────────────────────────────────────
 -- One row per (user, provider, workspace): several ClickUp workspaces/companies
 -- coexist as separate rows, each with its own encrypted credentials.

@@ -9,6 +9,41 @@
 --       later") — a photo of a whiteboard, a spec PDF, a URL.
 -- Depends on: 48_task_manager_gtd.sql. Idempotent.
 
+-- == The `gtd_` name is retired (WS-39 S8 PR 2, D73.3, 2026-09-23) ===========
+--
+-- The file registry survives the task-store drop, because My Tasks and
+-- Projects both write it (migration 150 joins it to pm_tasks). A shared
+-- registry takes a bare name, so it is now `attachments`.
+--
+-- THE RENAME LIVES IN THE FILE THAT CREATES THE TABLE. A fresh install makes
+-- the new name directly. An older database is renamed with its rows, and the
+-- CREATE below then skips. A replay finds the work done. The argument and the
+-- fence are in `tests/unit/test_gtd_rename_upgrade.py`.
+--
+-- relkind = 'r' leaves a view that wears the old name alone. Index, constraint
+-- and policy names keep their old spelling (D73.3).
+--
+-- The files on disk do not move. Each row stores its own path, and the upload
+-- directory keeps its name (`GTD_ATTACHMENTS_DIR`).
+--
+-- WARNING: the block spells its OLD name once, as a quoted literal. A later
+-- rename sweep must not rewrite it. Sweep FIRST, add the prologue SECOND.
+
+DO $rename_attachments$
+DECLARE
+    old_name CONSTANT text := 'gtd_attachments';
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.relname = old_name AND c.relkind = 'r'
+           AND n.nspname = current_schema()
+    ) AND to_regclass('public.attachments') IS NULL THEN
+        EXECUTE format('ALTER TABLE %I RENAME TO %I', old_name, 'attachments');
+        RAISE NOTICE 'renamed % -> attachments', old_name;
+    END IF;
+END
+$rename_attachments$;
+
 CREATE TABLE IF NOT EXISTS attachments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id TEXT NOT NULL,

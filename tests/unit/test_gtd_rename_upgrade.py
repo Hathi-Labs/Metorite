@@ -27,6 +27,22 @@ old                         new
 ``gtd_settings``            ``user_settings``
 ==========================  =========================
 
+**Slice 3, the three task-store survivors** (WS-39 S8 PR 2, 2026-09-23):
+
+==========================  =========================
+old                         new
+==========================  =========================
+``gtd_attachments``         ``attachments``
+``gtd_horizons``            ``my_tasks_horizons``
+``gtd_reviews``             ``my_tasks_reviews``
+==========================  =========================
+
+The rest of the task store is not renamed. Migration 216 drops it, and
+``test_gtd_backfill.py`` fences that drop. ⚠️ ``attachments`` is a short,
+generic name. No table, view or column in the ladder held it before, and
+``pm_task_attachments`` contains it as a suffix, so a test fake must match it
+through ``tests/unit/_sql_match.py``.
+
 ⚠️ **`gtd_settings` did NOT become `calendar_settings`, and that was a
 decision.** The board groups it with the Calendar (D53.6) because it survives
 the S3c drop. Its contents disagree: it carries ``chat_model``,
@@ -85,6 +101,10 @@ RENAMED: dict[str, tuple[str, str]] = {
     "user_settings": ("gtd_settings", "51_gtd_settings.sql"),
     "calendar_rollover_log": ("gtd_rollover_log", "78_gtd_calendar_rollover.sql"),
     "calendar_day_state": ("gtd_day_state", "92_gtd_day_state.sql"),
+    # slice 3 — the task-store tables that survive migration 216's drop
+    "attachments": ("gtd_attachments", "52_gtd_attachments.sql"),
+    "my_tasks_horizons": ("gtd_horizons", "48_task_manager_gtd.sql"),
+    "my_tasks_reviews": ("gtd_reviews", "48_task_manager_gtd.sql"),
 }
 
 #: A row this table accepts with no foreign key to satisfy, so the rename can
@@ -107,6 +127,20 @@ SEED: dict[str, tuple[str, str]] = {
     "calendar_rollover_log": (
         "INSERT INTO {t} (user_id, item_id) "
         "VALUES ('keep@rename.example', gen_random_uuid())",
+        "SELECT user_id FROM {t} WHERE user_id = 'keep@rename.example'",
+    ),
+    "attachments": (
+        "INSERT INTO {t} (user_id, name, path) "
+        "VALUES ('keep@rename.example', 'keep.pdf', 'data/keep.pdf')",
+        "SELECT name FROM {t} WHERE user_id = 'keep@rename.example'",
+    ),
+    "my_tasks_horizons": (
+        "INSERT INTO {t} (user_id, level, title) "
+        "VALUES ('keep@rename.example', 3, 'Ship My Tasks')",
+        "SELECT title FROM {t} WHERE user_id = 'keep@rename.example'",
+    ),
+    "my_tasks_reviews": (
+        "INSERT INTO {t} (user_id) VALUES ('keep@rename.example')",
         "SELECT user_id FROM {t} WHERE user_id = 'keep@rename.example'",
     ),
 }
