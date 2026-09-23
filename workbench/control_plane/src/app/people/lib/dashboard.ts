@@ -374,12 +374,38 @@ export function describeRollup(group: Rollup): string {
  * bare percentage gap is a score with two names attached. `null` where the
  * spread means nothing rather than a reassuring "0h".
  */
+/**
+ * "a" or "an", decided by how the number is SAID, not how it is spelt.
+ *
+ * ⚠️ The article was hardcoded `a`, so the sentence read "a 18h gap" whenever
+ * the gap was 8, 11, 18, or in the eighties — which is a large share of real
+ * gaps, not an edge case. Measured on `/people/dashboard` and
+ * `/people/overview`, both of which render this one helper.
+ *
+ * The rule is the leading SOUND: 8 ("eight"), 11 ("eleven"), 18 ("eighteen")
+ * and 80-89 ("eighty…") all begin with a vowel sound. Every other leading
+ * digit does not, and the digits after the first never change the opening
+ * sound — 118 is "one hundred and eighteen", so it takes "a".
+ */
+export function article(value: number): "a" | "an" {
+  const n = Math.floor(Math.abs(value));
+  if (n === 8 || n === 11 || n === 18) return "an";
+  if (n >= 80 && n <= 89) return "an";
+  // A longer number is read from its FIRST group, so only the leading digits
+  // matter: 800 is "eight hundred", 1800 is "one thousand eight hundred".
+  const lead = String(n);
+  if (lead.length === 3 && lead[0] === "8") return "an";
+  return "a";
+}
+
 export function describeSpread(group: Rollup): string | null {
   if (!group.spread) return null;
   const { most, least, gap_hours } = group.spread;
   return `${most.name} has ${hours(most.committed_hours)} due this week, ${
     least.name
-  } has ${hours(least.committed_hours)} — a ${hours(gap_hours)} gap`;
+  } has ${hours(least.committed_hours)} — ${article(gap_hours)} ${hours(
+    gap_hours,
+  )} gap`;
 }
 
 /**

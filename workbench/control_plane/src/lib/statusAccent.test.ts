@@ -277,7 +277,41 @@ describe("the accent shape", () => {
     // was not blue, it was whatever colour the viewer had chosen. The port
     // this test guards was faithful; the thing it was faithful to was wrong.
     expect(statusAccent({ color: "blue" }).chip).toBe("bg-info/10 text-info");
-    expect(statusAccent({ color: "violet" }).chip).toBe("bg-accent text-accent-foreground");
+    // ⚠️ CHANGED ON PURPOSE, 2026-09-23, and for the same reason as `blue`
+    // one line up. This read `bg-accent text-accent-foreground`, and
+    // `--accent` is hsl(27 96% 61%) — ORANGE. So the hue named violet drew a
+    // violet dot and an orange chip. This assertion PINNED that: the 2026-09-03
+    // pass fixed the four slots that read `--primary` and left the fifth,
+    // because `--accent` is a different token and the fence only looked for
+    // `primary`. A test can hold a defect still as easily as a fix.
+    expect(statusAccent({ color: "violet" }).chip).toBe("bg-violet/10 text-violet");
+  });
+
+  /**
+   * ⚠️ The fence the 2026-09-23 defect walked through.
+   *
+   * Every slot of a hue must draw in THAT hue. The old `violet` satisfied
+   * "does not read `--primary`" and still painted its chip orange, because
+   * nothing asked whether the five slots agreed with each other.
+   *
+   * `gray` is the one deliberate exception and is named here rather than
+   * skipped silently: `bg-muted/40` is too faint to read as a chip on a card,
+   * so its chip is `bg-secondary`. Both are the grey family.
+   */
+  it("draws every slot of a hue in that hue", () => {
+    const token: Record<Exclude<AccentHue, "gray">, string> = {
+      red: "destructive",
+      amber: "warning",
+      green: "success",
+      blue: "info",
+      violet: "violet",
+    };
+    for (const [hue, name] of Object.entries(token)) {
+      const accent = accentForHue(hue as AccentHue);
+      for (const slot of ["dot", "soft", "text", "bar", "chip"] as const) {
+        expect(accent[slot], `${hue}.${slot} must use --${name}`).toContain(name);
+      }
+    }
   });
 });
 

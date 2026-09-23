@@ -35,23 +35,50 @@ export interface Section {
   title: string;
   /** One line on what this panel is FOR — shown under the heading. */
   note: string;
+  /** The heading for somebody ELSE's page. Unset means the same either way. */
+  titleOther?: string;
+  /** The note for somebody ELSE's page. Unset means the same either way. */
+  noteOther?: string;
 }
 
+/**
+ * The panels, in both voices.
+ *
+ * ⚠️ **One component renders two doors, and the copy has to know which.**
+ * `ProfilePanels` serves `/people/me` AND `/people/{id}` — deliberately, so a
+ * field cannot be present on one door and missing from the other. The FIELDS
+ * were shared correctly. The WORDS were not: every heading and note below was
+ * written for the self door and then rendered unchanged on a colleague's page,
+ * so opening somebody else's profile said "About you", and said the scheduler
+ * reads "your week" about them. Measured by rendering `/people/p-1` on
+ * 2026-09-23.
+ *
+ * `is_self` is already on every payload — the shared serializer sets it
+ * (`routes/people/core.py:248`) — so this needs no new endpoint and no new
+ * field. `titleOther` and `noteOther` carry the third-person spelling and
+ * {@link sectionVoice} picks. A section that reads the same either way
+ * (Employment describes the organisation, not the reader) leaves them unset
+ * and keeps one string.
+ */
 export const SECTIONS: readonly Section[] = [
   {
     key: "about",
     title: "About you",
     note: "What the directory shows every colleague.",
+    titleOther: "About them",
   },
   {
     key: "work",
     title: "When and where you work",
     note: "How the scheduler and the assignment suggester read your week.",
+    titleOther: "When and where they work",
+    noteOther: "How the scheduler and the assignment suggester read their week.",
   },
   {
     key: "capability",
     title: "What you can do",
     note: "What the assignment suggester matches a task against.",
+    titleOther: "What they can do",
   },
   {
     key: "employment",
@@ -62,8 +89,28 @@ export const SECTIONS: readonly Section[] = [
     key: "private",
     title: "Private",
     note: "Visible only to you and to an HR administrator.",
+    noteOther: "Visible only to them and to an HR administrator.",
   },
 ] as const;
+
+/**
+ * One section's words, for the reader in front of it.
+ *
+ * Falls back to the self spelling, so a section that sets no third-person pair
+ * keeps exactly the string it has today. That is the safe direction: an
+ * un-translated section reads as it always did, rather than as an empty
+ * heading.
+ */
+export function sectionVoice(
+  section: Section,
+  isSelf: boolean,
+): { title: string; note: string } {
+  if (isSelf) return { title: section.title, note: section.note };
+  return {
+    title: section.titleOther ?? section.title,
+    note: section.noteOther ?? section.note,
+  };
+}
 
 export interface FieldSpec {
   name: string;
