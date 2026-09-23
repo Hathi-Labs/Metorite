@@ -1085,6 +1085,44 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-27→H-32 on 2026-08-25:
   `main` took H-27 for the e2e entry via PR #47; ids are never reused)*
 
+### H-164 · The deploy restarts the workbench while npm is still installing · [AGENT]
+- **Check:** on the box, grep the workbench journal for `next: not found`.
+  Any hit means this is still real:
+
+      journalctl -u acb-workbench --since "7 days ago" | grep -c "next: not found"
+- 🔴 **MEASURED 2026-09-23, and it turned a deploy RED across all three
+  rounds.** PR #406's run 35855523275 ended `WORKBENCH FAILED TO START`. The
+  box was healthy the whole time and the next deploy started it fine.
+- **The line that names it**, at 11:51:54 UTC:
+
+      npm[2736540]: > next start -p 3001
+      npm[2736540]: sh: 1: next: not found
+
+  The unit started while `node_modules` was being replaced, so the `next`
+  binary was absent for that moment. It is a RACE, not a broken build — the
+  build had already printed its route table and swapped in.
+- **What it costs.** A deploy goes red at random, on a branch that may have
+  nothing to do with the workbench. #406 touched two Python files and the
+  Console, and none of them is imported by a Next app. The next merge then
+  deploys the same code green, which teaches people that a red deploy means
+  nothing. That is the belief this repo can least afford.
+- ⚠️ **NOT H-60.** That entry is the ~3 minute 502 WINDOW while the workbench
+  restarts, and it assumes the process comes back. This is the process failing
+  to come back at all. Same file, different fault.
+- ⚠️ **NOT the EACCES fault either.** H-89 and the `reclaim_build_tree` work
+  cover `npm ci` refused by root-owned paths. Here `npm ci` was working. The
+  unit started in the middle of it.
+- **What to build.** Order the two: finish the dependency install, THEN swap
+  the build, THEN restart. Or gate the restart on the `next` binary existing.
+  `scripts/vps_apply.sh` owns both halves.
+- 📌 **A second fault was in the same window and has since stopped.** The OLD
+  workbench process logged `TypeError: o is not a function` every ~60 seconds
+  from a minified server chunk. Zero occurrences since the 11:52:36 restart,
+  so it is not currently live. Worth a look if it returns — a repeating
+  handler error on the customer app is its own entry.
+- **Authority:** run 35855523275 · `journalctl -u acb-workbench`
+- **Added:** 2026-09-23 · the H-152 gateway slice.
+
 ### H-60 · Every deploy gives live users a ~3 minute 502 · [AGENT]
 - 🔴 **MET AGAIN 2026-09-19, on the PR #297 deploy.** A probe of the
   workbench on :3001 returned **500** while the old process was still
