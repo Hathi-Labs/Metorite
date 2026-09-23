@@ -6,7 +6,10 @@
 // Design (agreed with the user):
 //   • urgent is DERIVED from dueAt (overdue or due within a window), never
 //     stored — so it can't go stale. Overridable only by editing the due date.
-//   • important = downside (something stalls/breaks if skipped) — manual.
+//   • important = downside (something stalls/breaks if skipped). D76
+//     (2026-09-23): DERIVED from the task's shared Priority,
+//     `pm_tasks.importance >= IMPORTANT_AT` — High or Urgent. One answer for
+//     everybody assigned, the same one the Projects board shows.
 //   • leveraged = upside (asymmetric 100x outcome) — manual, the scarce flag.
 //   • The 8 cells are a projection of the three booleans (the user's Notion
 //     formula, verbatim). Never persisted.
@@ -15,6 +18,42 @@
 //     forced move — dismissible via keptMine.
 
 import { GtdItem } from "./types";
+
+/** D76 — Priority at or above this is "important" in the Focus matrix: 2 is
+ *  High, 3 is Urgent (`projects/lib/table.ts::IMPORTANCE_OPTIONS`). The
+ *  gateway's `personal.IMPORTANT_AT` is the same number, and
+ *  `tests/unit/test_projects_personal_s6f.py` reads this line to prove it. */
+export const IMPORTANT_AT = 2;
+
+/** Is this task important? D76: read off the shared Priority when the task
+ *  carries one; the stored boolean only for a row with no Priority field at
+ *  all (the demo backend's mock rows). */
+export function isImportant(
+  item: Pick<GtdItem, "important" | "importance">,
+): boolean {
+  if (item.importance !== undefined && item.importance !== null) {
+    return item.importance >= IMPORTANT_AT;
+  }
+  return Boolean(item.important);
+}
+
+/**
+ * The Priority an "important" toggle means (D76). The Focus matrix's
+ * Important switch is a view of the shared Priority, so flipping it writes
+ * Priority: ON raises a task below High to High, OFF lowers a High or Urgent
+ * task to Normal. A toggle that already agrees changes nothing (`undefined`),
+ * so switching Important on for an Urgent task never demotes it to High.
+ */
+export function importanceForImportant(
+  current: number | undefined | null,
+  important: boolean,
+): number | undefined {
+  const level = current ?? undefined;
+  if (important) {
+    return level === undefined || level < IMPORTANT_AT ? IMPORTANT_AT : undefined;
+  }
+  return level !== undefined && level >= IMPORTANT_AT ? IMPORTANT_AT - 1 : undefined;
+}
 
 /** Default urgency window (hours). A due task is urgent when overdue or due
  *  within this many hours. Overridable per-user (user_settings). */
@@ -58,8 +97,10 @@ export function isNewlyUrgent(
 // urgent it is). The action to take about it — delegate / schedule / eliminate —
 // is NOT in the label; it surfaces separately as the competing card badge (see
 // SUGGESTION_BADGE). Removing the action-words collapses the two "eliminate"
-// cases (urgent-but-not-important AND neither) into a single "Low Priority"
-// level, so there are 7 levels, not 8.
+// cases (urgent-but-not-important AND neither) into a single "Low value"
+// level, so there are 7 levels, not 8. ⚠️ D76: no cell is called "…Priority".
+// Priority is the task's shared field; a matrix cell named after it put two
+// answers under one word ("Urgent" in Projects, "Low Priority" here).
 
 export type PriorityCell =
   | "critical" // 1. ❗⏰⚖️  Important + Urgent + Leveraged
@@ -93,7 +134,7 @@ export type ActionMode = "do" | "delegate" | "schedule" | "drop";
 // 1→7; `mode` is the badge the level nudges toward.
 //   1 Critical (do) · 2 Urgent (delegate) · 3 High-Leverage (do) ·
 //   4 Important (schedule) · 5 Quick Leverage Win (do) ·
-//   6 Speculative Bet (do) · 7 Low Priority (eliminate/delegate)
+//   6 Speculative Bet (do) · 7 Low value (eliminate/delegate)
 export const CELL_META: Record<PriorityCell, CellMeta> = {
   critical: { cell: "critical", order: 1, emoji: "🔥", label: "Critical", mode: "do" },
   urgent: { cell: "urgent", order: 2, emoji: "🚨", label: "Urgent", mode: "delegate" },
@@ -101,7 +142,7 @@ export const CELL_META: Record<PriorityCell, CellMeta> = {
   important: { cell: "important", order: 4, emoji: "❗", label: "Important", mode: "schedule" },
   "quick-leverage": { cell: "quick-leverage", order: 5, emoji: "📤", label: "Quick Leverage Win", mode: "do" },
   "speculative-bet": { cell: "speculative-bet", order: 6, emoji: "🧪", label: "Speculative Bet", mode: "do" },
-  "low-priority": { cell: "low-priority", order: 7, emoji: "🗑", label: "Low Priority", mode: "drop" },
+  "low-priority": { cell: "low-priority", order: 7, emoji: "🗑", label: "Low value", mode: "drop" },
 };
 
 /** The 7 levels in rank order (1 → 7). */
@@ -121,12 +162,12 @@ export interface PriorityInputs {
 
 /** Resolve a task's three matrix inputs (urgent derived from dueAt). */
 export function priorityInputs(
-  item: Pick<GtdItem, "dueAt" | "important" | "leveraged">,
+  item: Pick<GtdItem, "dueAt" | "important" | "leveraged"> & Pick<Partial<GtdItem>, "importance">,
   windowHours = DEFAULT_URGENT_WINDOW_HOURS,
   now: number = Date.now(),
 ): PriorityInputs {
   return {
-    important: Boolean(item.important),
+    important: isImportant(item),
     leveraged: Boolean(item.leveraged),
     urgent: isUrgent(item, windowHours, now),
   };
@@ -144,7 +185,7 @@ export function cellForInputs({ important, urgent, leveraged }: PriorityInputs):
   }
   if (important && urgent) return "urgent"; // 2
   if (important && !urgent) return "important"; // 4
-  // Not important to you — urgent-only OR neither → one Low Priority level.
+  // Not important to you — urgent-only OR neither → one Low value level.
   return "low-priority"; // 7
 }
 
@@ -193,9 +234,9 @@ export function priorityRank(
  *  *guessing* (via urgency) about it. Drives the "needs triage" affordance so
  *  the user can tell judged tasks from defaulted ones. */
 export function isUntagged(
-  item: Pick<GtdItem, "important" | "leveraged">,
+  item: Pick<GtdItem, "important" | "leveraged"> & Pick<Partial<GtdItem>, "importance">,
 ): boolean {
-  return !item.important && !item.leveraged;
+  return !isImportant(item) && !item.leveraged;
 }
 
 // ── Action-mode suggestion (the competing badge on a task card) ──────────────
@@ -230,7 +271,7 @@ export const SUGGESTION_BADGE: Record<
     label: "Schedule?",
     prompt: "Important but not urgent — put it on the calendar or delegate it.",
   },
-  // Low Priority (urgent-only OR neither): not important to you — kill it, or
+  // Low value (urgent-only OR neither): not important to you — kill it, or
   // hand it off if it genuinely has to happen.
   drop: {
     emoji: "🗑",

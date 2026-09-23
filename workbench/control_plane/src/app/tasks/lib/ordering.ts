@@ -82,7 +82,8 @@ export type SortDir = "asc" | "desc";
  *  drop-refusal overlay name sorts from this one map, so they cannot drift. */
 export const SORT_LABEL: Record<SortField, string> = {
   manual: "Manual",
-  priority: "Priority",
+  // D76: the matrix rank, so "Focus" — Priority is the task's shared field.
+  priority: "Focus",
   due: "Due date",
   created: "Created",
   title: "Title",

@@ -4,7 +4,7 @@
 // The old board refused silently: under a field sort a card dropped back into
 // its own column just snapped home (no rank to write, no stage to change),
 // and in select mode dragging was switched off. A card that snaps back
-// wordlessly teaches people the board is broken, not that Priority sort owns
+// wordlessly teaches people the board is broken, not that the Focus sort owns
 // the order. So the refusal becomes a sentence, rendered as an overlay on the
 // hovered target while the card is in the air — same grammar as Projects.
 //

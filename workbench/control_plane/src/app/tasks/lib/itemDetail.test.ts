@@ -106,7 +106,9 @@ describe("one task panel composition (S6e)", () => {
 
   it("My Tasks' strip keeps the member's own facts above the body", () => {
     const src = HOSTS["tasks/components/ItemDetail.tsx"];
-    for (const label of ['label="Context"', 'label="Energy"', 'label="Estimate"', 'label="Defer until"']) {
+    // D76: Estimate left this list — it is the task's ONE estimate, and the
+    // body draws it. Context, energy and defer are how I hold the work.
+    for (const label of ['label="Context"', 'label="Energy"', 'label="Defer until"']) {
       expect(src, label).toContain(label);
     }
     expect(src).toContain("above={strip}");
@@ -172,6 +174,33 @@ describe("no two labels alike in the lens host (D53.8)", () => {
       "Two controls with one name and two values on one panel. The body's " +
         "'Priority' is pm_tasks.importance; the strip's matrix is 'Focus matrix'.",
     ).toEqual([]);
+  });
+
+  it("draws every WORK fact in the body and none of them in the strip (D76)", () => {
+    // The owner directive: one set of fields. Each of these is a fact about
+    // the task, so it has one control, in the body both apps host. A label
+    // in both halves is two editors for one fact, a hand's width apart.
+    const strip = HOSTS["tasks/components/ItemDetail.tsx"].replace(
+      /\{!lens && \(<>[\s\S]*?<\/>\)\}/g,
+      "",
+    );
+    const stripLabels = new Set(
+      [
+        ...strip.matchAll(/<MetaEdit label="([^"]+)"/g),
+        ...strip.matchAll(/<SectionLabel[^>]*>\s*([A-Za-z][^<{]*?)\s*<\/SectionLabel>/g),
+      ].map((m) => m[1].trim().toLowerCase()),
+    );
+    for (const label of ["Priority", "Due", "Start", "Estimate", "Description", "Watch", "Time spent"]) {
+      expect(BODY, `the body draws ${label}`).toMatch(
+        new RegExp(`(?:<FieldCell|<CollapsibleSection)[^>]*?\\blabel="${label}"`),
+      );
+      expect(stripLabels.has(label.toLowerCase()), `the strip draws ${label}`).toBe(false);
+    }
+    // The strip's Notes editor was the description's only writer. Under the
+    // lens it is gone; the body's Description is the one editor.
+    expect(stripLabels.has("notes")).toBe(false);
+    // The Projects header lost its watch toggle to the body.
+    expect(HOSTS["projects/components/TaskPanel.tsx"]).not.toContain("watchersApi");
   });
 
   it("never calls the member's matrix 'Priority'", () => {

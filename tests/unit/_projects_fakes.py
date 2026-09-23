@@ -1730,6 +1730,12 @@ class FakeProjectsDB:
                 deferred = mine.get("defer_until")
                 if deferred is not None and _as_datetime(deferred) > _now():
                     continue
+            # D76 — the work's shared start date hides it too, beside my
+            # own defer (`DEFERRED_CLAUSE`). A DATE, compared with today.
+            if "t.start_date IS NULL OR t.start_date <= current_date" in statement:
+                starts = task.get("start_date")
+                if starts is not None and str(starts)[:10] > _now().date().isoformat():
+                    continue
             if "lower(p.context) = :context" in statement:
                 wanted = str(args.get("context") or "").lower()
                 if str(mine.get("context") or "").lower() != wanted:
@@ -1770,7 +1776,9 @@ class FakeProjectsDB:
                 p_next_action=mine.get("next_action"),
                 p_context=mine.get("context"),
                 p_energy=mine.get("energy"),
-                p_time_estimate_mins=mine.get("time_estimate_mins"),
+                # D76: no `p_time_estimate_mins` and no `p_important` — the
+                # SQL stopped selecting them, and a mirror that kept them
+                # would answer a retired column as if it were read.
                 p_is_two_minute=bool(mine.get("is_two_minute", False)),
                 p_defer_until=mine.get("defer_until"),
                 # The scheduled block (187, WS-39 S3a). ⚠️ Projected here
@@ -1790,7 +1798,6 @@ class FakeProjectsDB:
                 # missing test, it is a PASSING one — `getattr(row, "p_x", None)`
                 # answers None just as happily for "the member never set it" as
                 # for "this fake has never heard of it".
-                p_important=mine.get("important"),
                 p_leveraged=mine.get("leveraged"),
                 p_deep_work=mine.get("deep_work"),
                 p_kept_mine=mine.get("kept_mine"),
@@ -1815,6 +1822,17 @@ class FakeProjectsDB:
                 ),
                 assignee_count=len(assignees),
                 is_mine=who in assignees,
+                # D76 — the ARRAY subquery: everybody else on the task, in
+                # assignment order (`assigned_at`, then the address).
+                other_assignees=[
+                    str(a.get("assignee")) for a in sorted(
+                        (a for a in self.rows("pm_task_assignees")
+                         if str(a.get("task_id")) == str(task["id"])
+                         and str(a.get("assignee") or "").lower() != who),
+                        key=lambda a: (str(a.get("assigned_at") or ""),
+                                       str(a.get("assignee") or "")),
+                    )
+                ] if "other_assignees" in statement else None,
             ))
         return out
 

@@ -60,6 +60,8 @@
 
 import { projectsCall } from "@/app/projects/lib/api";
 
+import { IMPORTANT_AT } from "./priority";
+
 import type { OrganizeBody, ProviderTaskDetail } from "./api";
 import type {
   Disposition,
@@ -167,16 +169,21 @@ export function mapLensItem(raw: Raw): GtdItem {
     nextAction: text(raw.next_action),
     context: text(raw.context),
     energy: (raw.energy ?? undefined) as GtdItem["energy"],
-    // ⚠️ The overlay's `time_estimate_mins`, NOT `pm_tasks.estimate_mins`.
-    // The task's estimate is the team's; this is mine, and they disagree
-    // exactly when somebody privately thinks a job is bigger than billed.
-    timeEstimateMins: num(raw.time_estimate_mins),
+    // D76 (amends D53.8): the task's ONE estimate, `pm_tasks.estimate_mins`
+    // — the number the board, People capacity and analytics read. The
+    // overlay's `time_estimate_mins` is retired and no longer on the wire.
+    timeEstimateMins: num(raw.estimate_mins),
     isTwoMinute: Boolean(raw.is_two_minute),
 
-    // ⚠️ `important` is the overlay's Eisenhower boolean. It is NOT
-    // `pm_tasks.importance`, the shared Priority integer the Projects table
-    // edits (D53.8). Reading one as the other publishes private triage.
-    important: tri(raw.important),
+    // D76: Priority is the task's shared `importance`, and the Focus
+    // matrix's IMPORTANT axis is DERIVED from it (High or Urgent). One
+    // answer: a task Projects calls Urgent can no longer read "Low value"
+    // here. `undefined` for an unset Priority, which is not important.
+    importance: num(raw.importance),
+    important:
+      raw.importance === null || raw.importance === undefined
+        ? undefined
+        : Number(raw.importance) >= IMPORTANT_AT,
     leveraged: tri(raw.leveraged),
     deepWork: tri(raw.deep_work),
     keptMine: tri(raw.kept_mine),
@@ -215,25 +222,43 @@ export function mapLensItem(raw: Raw): GtdItem {
     completedAt: text(raw.completed_at),
     clarifiedAt: text(raw.clarified_at),
     deferUntil: text(raw.defer_until),
+    // D76 — two shared facts My Tasks did not show: when the work starts,
+    // and the team's tags.
+    startDate: text(raw.start_date)?.slice(0, 10),
+    tags: Array.isArray(raw.tags) ? (raw.tags as unknown[]).map(String) : [],
   };
 }
 
 // ── Splitting a write ───────────────────────────────────────────────────────
 
-/** Shared facts about the WORK. `PATCH /projects/tasks/{id}`. */
-const TASK_KEYS: Readonly<Record<string, string>> = {
+/**
+ * Shared facts about the WORK. `PATCH /projects/tasks/{id}`.
+ *
+ * D76 (2026-09-23) moved three here: the estimate (My Tasks' Estimate writes
+ * `estimate_mins`, the column People capacity reads), the Priority and the
+ * start date. Exported for `lens.test.ts`, which pins the split.
+ */
+export const TASK_KEYS: Readonly<Record<string, string>> = {
   title: "title",
   notes: "description",
   due_at: "due_at",
+  time_estimate_mins: "estimate_mins",
+  estimate_mins: "estimate_mins",
+  importance: "importance",
+  start_date: "start_date",
 };
 
-/** My practice. `PATCH /projects/tasks/{id}/personal`. */
-const OVERLAY_KEYS: readonly string[] = [
-  "disposition", "next_action", "context", "energy", "time_estimate_mins",
+/**
+ * My practice. `PATCH /projects/tasks/{id}/personal`. D76 took
+ * `time_estimate_mins` and `important` off this list: both were a second
+ * copy of a work fact, and the gateway now refuses them by name.
+ */
+export const OVERLAY_KEYS: readonly string[] = [
+  "disposition", "next_action", "context", "energy",
   "is_two_minute", "defer_until",
   "scheduled_start", "scheduled_end", "flexible", "is_hard_date",
   "actual_start", "actual_end",
-  "important", "leveraged", "deep_work", "kept_mine", "sort_key",
+  "leveraged", "deep_work", "kept_mine", "sort_key",
   "waiting_on", "delegated_at", "expected_by", "last_nudged_at",
 ];
 
@@ -248,6 +273,9 @@ const OVERLAY_KEYS: readonly string[] = [
 const NOT_YET: Readonly<Record<string, string>> = {
   provider_status: "retired with the connector (D52) — nothing writes it",
   is_mine: "derived from `pm_task_assignees`; set assignees instead",
+  important:
+    "derived from the shared Priority since D76; send `importance` " +
+    "(`priority.ts::importanceForImportant` turns a toggle into one)",
 };
 
 export interface SplitPatch {
@@ -571,6 +599,13 @@ export async function lensPatchItem(
   // consequence. The rest of the patch still applies.
   const completes = split.personal.disposition === "DONE";
   if (completes) delete split.personal.disposition;
+  // D76 — the reverse. Completion is the shared lane, so my stating an OPEN
+  // disposition on a closed task ("mark not done", "back to Next") must
+  // reopen it for the board too, or the lane wins and nothing visibly
+  // happens. Before the overlay write, so the list reads the reopened task.
+  if (REOPENS.has(String(split.personal.disposition ?? ""))) {
+    await lensReopenIfClosed(id);
+  }
   if (Object.keys(split.task).length) {
     await projectsCall<Raw>(`tasks/${id}`, {
       method: "PATCH",
@@ -602,6 +637,28 @@ export async function lensPatchItem(
   // accompanied it unsaved.
   if (completes) await post(`tasks/${id}/complete`);
   return lensGetItem(id);
+}
+
+/** The open dispositions that reopen a closed task when I state one. */
+const REOPENS: ReadonlySet<string> = new Set(["NEXT", "WAITING", "SOMEDAY"]);
+
+/** The lane categories that close a task (`CLOSING_CATEGORIES`, gateway). */
+const CLOSED: ReadonlySet<string> = new Set(["done", "cancelled"]);
+
+/**
+ * Move a closed task back into its project's first `todo` lane (D76), or do
+ * nothing when it is open. The lanes come off `my/tasks/{id}/lanes` — the
+ * membership read, so a member reached by assignment alone can reopen it.
+ * A project with no open lane leaves the task where it is: the lane decides.
+ */
+export async function lensReopenIfClosed(id: string): Promise<void> {
+  const current = await lensGetItem(id);
+  if (!CLOSED.has(current.statusCategory ?? "")) return;
+  const lanes = (await lensMyTaskLanes(id)).slice().sort((a, b) => a.position - b.position);
+  const lane =
+    lanes.find((l) => l.category === "todo") ??
+    lanes.find((l) => !CLOSED.has(l.category));
+  if (lane) await lensSetStatusId(id, lane.id);
 }
 
 /**
@@ -691,6 +748,9 @@ export async function lensDelegateItem(
     method: "PUT",
     body: JSON.stringify({ assignees: [who] }),
   });
+  // ⚠️ D76: only an EXPLICIT date the member typed. No caller passes one
+  // today (the Delegate dialog collects none), and none may default it to
+  // the delegator's own date — the deadline is the team's.
   if (body.due_at) {
     await projectsCall<Raw>(`tasks/${id}`, {
       method: "PATCH",

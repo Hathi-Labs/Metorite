@@ -110,7 +110,7 @@ const IMPORTANCE_CHIP: Record<number, { icon: string; tone: MetaChip["tone"] }> 
   0: { icon: "ChevronDown", tone: "muted" },
 };
 
-function importanceChip(task: TaskRow): MetaChip | null {
+export function importanceChip(task: Pick<TaskRow, "importance">): MetaChip | null {
   const value = task.importance;
   if (value === null || value === undefined) return null;
   const style = IMPORTANCE_CHIP[value];

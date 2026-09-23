@@ -16,13 +16,20 @@
 // `taskCard.ts`'s own header says what is shared is the vocabulary for the
 // facts both apps have, not a flattening of the two apps into one.
 
+import { importanceChip } from "@/app/projects/lib/card";
 import { type MetaChip, taskMeta } from "@/lib/taskCard";
 
 import type { GtdItem } from "./types";
 
 /**
  * The shared-fact chips for a GTD item, in the shared reading order:
- * due (with the overdue escalation), subtask count, attachments, estimate.
+ * Priority, due (with the overdue escalation), subtask count, tags,
+ * attachments, estimate.
+ *
+ * D76 — Priority and tags are the TASK's shared facts, so the card draws
+ * them with the Projects card's own chips (`importanceChip`, `taskMeta`'s
+ * tag pills). One vocabulary: a task Projects shows as "Urgent" shows
+ * "Urgent" here too, in the same place.
  */
 export function gtdMetaChips(item: GtdItem, nowMs = Date.now()): MetaChip[] {
   const chips = taskMeta(
@@ -31,9 +38,18 @@ export function gtdMetaChips(item: GtdItem, nowMs = Date.now()): MetaChip[] {
       completedAt: item.completedAt,
       attachmentCount: item.attachments?.length ?? 0,
       estimateMins: item.timeEstimateMins,
+      tags: (item.tags ?? []).map((name) => ({ name })),
     },
     nowMs,
   );
+
+  // The slot the Projects card gives it: right after `blocked`, which a
+  // GTD item never earns, so first.
+  const priority = importanceChip({ importance: item.importance ?? null });
+  if (priority) {
+    const at = chips.findIndex((c) => c.key === "blocked") + 1;
+    chips.splice(at, 0, priority);
+  }
 
   const count = item.subtaskCount ?? 0;
   if (count > 0) {

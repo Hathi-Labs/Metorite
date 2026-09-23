@@ -6,6 +6,7 @@ import { useTaskStore } from "../lib/taskStore";
 import {
   CELL_META,
   SUGGESTION_BADGE,
+  isImportant,
   isUrgent,
   modeSuggestion,
   priorityCell,
@@ -37,7 +38,8 @@ export function WeightToggles({
   onChange,
   size = "md",
 }: {
-  item: Pick<GtdItem, "important" | "leveraged" | "deepWork" | "dueAt">;
+  item: Pick<GtdItem, "important" | "leveraged" | "deepWork" | "dueAt"> &
+    Pick<Partial<GtdItem>, "importance">;
   urgentWindowHours?: number;
   onChange: (patch: {
     important?: boolean;
@@ -50,12 +52,15 @@ export function WeightToggles({
   const pad = size === "sm" ? "px-2 py-0.5 text-[11px]" : "px-2.5 py-1 text-xs";
   return (
     <div className="flex flex-wrap items-center gap-1.5">
+      {/* D76 — Important is a view of the task's SHARED Priority (High or
+          Urgent), so the switch writes Priority for everybody. The store
+          resolves the level (`importanceForImportant`). */}
       <FlagToggle
-        active={!!item.important}
-        onClick={() => onChange({ important: !item.important })}
+        active={isImportant(item)}
+        onClick={() => onChange({ important: !isImportant(item) })}
         icon={themedIcon("AlertTriangle")}
         label="Important"
-        title="Something stalls or breaks if this is skipped (downside)."
+        title="Something stalls or breaks if this is skipped. Sets the task's shared Priority: on is High, off is Normal."
         tone="important"
         pad={pad}
       />

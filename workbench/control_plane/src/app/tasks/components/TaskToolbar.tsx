@@ -47,7 +47,8 @@ const GROUP_LABEL: Record<GroupBy | "", string> = {
   "": "Status", // the default grouping for Next Actions IS by status
   none: "No grouping",
   context: "Context",
-  priority: "Priority",
+  // D76: the matrix cell is "Focus". "Priority" is the task's shared field.
+  priority: "Focus",
   mode: "Suggestion",
   energy: "Energy",
   depth: "Work mode",
@@ -176,7 +177,7 @@ export function TaskToolbar({ items }: { items: GtdItem[] }) {
         count={filters.contexts.length + filters.priorities.length + filters.energies.length}
         sections={[
           { key: "contexts", label: "Context", options: contextOpts, selected: filters.contexts },
-          { key: "priorities", label: "Priority", options: priorityOpts, selected: filters.priorities },
+          { key: "priorities", label: "Focus", options: priorityOpts, selected: filters.priorities },
           { key: "energies", label: "Energy", options: energyOpts, selected: filters.energies },
         ]}
         onToggle={toggle}

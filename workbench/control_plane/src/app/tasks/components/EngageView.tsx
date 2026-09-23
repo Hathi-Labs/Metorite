@@ -75,7 +75,7 @@ export function EngageView() {
     });
   }, [base, energy, maxMins, context, urgentWindowHours]);
 
-  // Grouped by priority level (Critical → Low Priority) so the pickable set
+  // Grouped by priority level (Critical → Low value) so the pickable set
   // reads as ranked buckets, matching the Priority view. Sections come back in
   // rank order; the header carries the level, so cards don't repeat it.
   const groups = useMemo(

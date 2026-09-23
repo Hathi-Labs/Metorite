@@ -23,6 +23,7 @@ import {
   DateBucketKey,
   dateBucket,
   isTickled,
+  resurfacesAt,
   matchWhere,
   msSince,
   relativeTime,
@@ -108,7 +109,7 @@ export function InboxView() {
     () =>
       sourced
         .filter((i) => i.disposition === "INBOX" && isTickled(i))
-        .sort((a, b) => (a.deferUntil ?? "").localeCompare(b.deferUntil ?? "")),
+        .sort((a, b) => (resurfacesAt(a) ?? "").localeCompare(resurfacesAt(b) ?? "")),
     [sourced],
   );
 
@@ -775,7 +776,7 @@ function TicklerList({
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm text-foreground">{item.title}</p>
               <p className="text-[11px] text-muted-foreground">
-                resurfaces {relativeTime(item.deferUntil)}
+                resurfaces {relativeTime(resurfacesAt(item))}
               </p>
             </div>
             <button

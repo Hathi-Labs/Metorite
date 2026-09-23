@@ -133,10 +133,18 @@ export interface GtdItem {
   /** "@computer" | "@calls" | … (matches a GtdContext.name) */
   context?: string;
   energy?: Energy;
+  /** D76 — the task's ONE estimate, `pm_tasks.estimate_mins`: the number the
+   *  Projects board, People capacity and analytics read. Shared, not mine. */
   timeEstimateMins?: number;
   isTwoMinute?: boolean;
-  /** Prioritization matrix inputs. `urgent` is NOT stored — derive it from
-   *  dueAt via isUrgent(); the 8-cell label comes from priorityCell(). */
+  /** D76 — the task's shared Priority, `pm_tasks.importance`: 0 Low, 1
+   *  Normal, 2 High, 3 Urgent (`projects/lib/table.ts`). Unset is undefined,
+   *  never 0 — 0 is Low. */
+  importance?: number;
+  /** Focus matrix inputs. `urgent` is NOT stored — derive it from dueAt via
+   *  isUrgent(). ⚠️ D76: `important` is NOT stored either — the lens derives
+   *  it from `importance` (High or Urgent, `priority.ts::IMPORTANT_AT`).
+   *  Kept on the type because the matrix code reads it; nothing writes it. */
   important?: boolean;
   leveraged?: boolean;
   /** needs an unbroken FLOW state (deep/creative/builder work) — the planner
@@ -237,6 +245,14 @@ export interface GtdItem {
   clarifiedAt?: string;
   /** GTD tickler — hidden from the active inbox until this date, then resurfaces */
   deferUntil?: string;
+  /** D76 — the work's shared START date, `pm_tasks.start_date` (a DATE,
+   *  "YYYY-MM-DD"). The inbox hides the task until the later of this and my
+   *  own `deferUntil`. */
+  startDate?: string;
+  /** D76 — the task's shared tags, `pm_tasks.tags`. The team's labels, beside
+   *  my own `context`: tags say what the work IS, a context says how I batch
+   *  my time. */
+  tags?: string[];
 }
 
 /** Where a clarified item should be stored (dual-source model, §5.1). */

@@ -27,6 +27,17 @@
  * no second copy to drift (the note in `TaskPanel.tsx`'s header records the
  * attempt that had one).
  *
+ * ## One home per work fact (D76, WS-39 S6f, 2026-09-23)
+ *
+ * Everything a task IS lives in this body, so both apps read and write it
+ * here: Priority, the estimate, the start and due dates, the description,
+ * tags, and whether I watch it. S6f moved four of those in — the estimate
+ * (Projects had no editor), the start date, the description editor (it was
+ * read-only here, and My Tasks' Notes was the only writer) and the watch
+ * toggle (it was Projects-header only). Time spent is the one read-only
+ * cell: every member's timed blocks, summed, beside the estimate.
+ * `itemDetail.test.ts` refuses the strip above drawing any of these again.
+ *
  * The two-stream Discussion (comments apart from activity), the one reused
  * composer, the roll-up of old events, the Button-not-file-input picker and
  * the viewer mounted at the root all keep the reasons `TaskPanel.tsx` gave
@@ -53,6 +64,7 @@ import {
   type TaskRow,
   attachmentsApi,
   projectsApi,
+  watchersApi,
 } from "../lib/api";
 import {
   type FoldableSection,
@@ -72,6 +84,7 @@ import { TagPicker } from "./TagPicker";
 import { RepeatEditor } from "./RepeatEditor";
 import { RelationsBlock } from "./RelationsBlock";
 import { AttachmentViewer } from "./AttachmentViewer";
+import { durationLabel } from "@/lib/taskCard";
 import {
   ROLLUP_AT,
   describeActivity,
@@ -108,12 +121,24 @@ export interface TaskBodyProps {
    * region. My Tasks' overlay strip. Projects passes nothing.
    */
   above?: React.ReactNode;
-  /**
-   * Whether the read-only Description section draws. My Tasks edits the
-   * notes in its strip and passes `false`, so the text is not on the panel
-   * twice.
-   */
-  showDescription?: boolean;
+}
+
+/**
+ * The estimate presets, in minutes (D76). The same steps My Tasks' Estimate
+ * offered, plus a working day, so neither app loses a value it could set.
+ * A stored value off the list is kept as its own option, never snapped.
+ */
+export const ESTIMATE_PRESETS: readonly number[] = [5, 15, 30, 60, 120, 240, 480];
+
+/** The Estimate select's options for one stored value. */
+export function estimateOptions(current: number | null | undefined) {
+  const steps = [...ESTIMATE_PRESETS];
+  if (current && !steps.includes(current)) steps.push(current);
+  steps.sort((a, b) => a - b);
+  return [
+    { value: "", label: "No estimate" },
+    ...steps.map((m) => ({ value: String(m), label: durationLabel(m) })),
+  ];
 }
 
 /**
@@ -237,7 +262,6 @@ export function TaskBody({
   onPeopleSeen,
   twoColumn = false,
   above,
-  showDescription = true,
 }: TaskBodyProps) {
   const toast = useToast();
 
@@ -297,6 +321,15 @@ export function TaskBody({
   // The names of the files currently going up (S5) — what is IN FLIGHT.
   const [uploading, setUploading] = useState<string[]>([]);
   const filePicker = useRef<HTMLInputElement | null>(null);
+  // D76 — the description is edited HERE, in both apps. A draft, so typing
+  // does not PATCH per keystroke; saved on blur when it changed.
+  const [description, setDescription] = useState(task.description ?? "");
+  // D76 — whether I watch this task. Null until the read lands, so the
+  // control never renders a state it is only guessing at.
+  const [watching, setWatching] = useState<boolean | null>(null);
+  // D76 — every member's timed work on the task, summed by the gateway
+  // (`GET /projects/tasks/{id}` → `time_spent_mins`). Null until read.
+  const [spent, setSpent] = useState<number | null>(null);
   const assignees = task.assignees ?? [];
   // Agents are excluded: an agent cannot receive a notification (migration
   // 152's CHECK), so offering to mention one would promise nothing.
@@ -330,12 +363,51 @@ export function TaskBody({
       // Attachments failing must not blank the body: the status control and
       // the assignees are the reason somebody opened it.
       .catch(() => undefined);
+    setWatching(null);
+    setSpent(null);
+    watchersApi
+      .get(task.id)
+      .then((res) => {
+        if (live) setWatching(res.watching);
+      })
+      // No toggle beats a blank body.
+      .catch(() => undefined);
+    projectsApi
+      .task(task.id)
+      .then((row) => {
+        if (live) setSpent(row.time_spent_mins ?? 0);
+      })
+      .catch(() => undefined);
     return () => {
       live = false;
     };
     // `onPeopleSeen` is `useCallback`'d with no dependencies on the page, so
     // listing it here costs nothing.
   }, [task.id, onPeopleSeen]);
+
+  // A different task, or a save that came back: the draft follows the row.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setDescription(task.description ?? "");
+  }, [task.id, task.description]);
+
+  async function toggleWatch() {
+    if (watching === null) return;
+    // Optimistic — both writes are idempotent, so a failure just reverts.
+    const next = !watching;
+    setWatching(next);
+    try {
+      await (next ? watchersApi.watch(task.id) : watchersApi.unwatch(task.id));
+    } catch {
+      setWatching(!next);
+    }
+  }
+
+  function saveDescription() {
+    const next = description.trim();
+    if (next === (task.description ?? "").trim()) return;
+    void patch({ description: next || null });
+  }
 
   async function uploadFiles(picked: FileList | null) {
     if (!picked || picked.length === 0) return;
@@ -681,23 +753,93 @@ export function TaskBody({
                   }
                 />
               </FieldCell>
+
+              {/* D76 — when the work starts, shared. A DATE, so the value is
+                  the day itself, never routed through `new Date()` (the
+                  `start_date` note on `TaskRow`). My Tasks hides the task
+                  until this day. */}
+              <FieldCell label="Start" icon="CalendarDays">
+                <Input
+                  type="date"
+                  inputSize="sm"
+                  aria-label="Start date"
+                  value={task.start_date ? task.start_date.slice(0, 10) : ""}
+                  disabled={busy}
+                  onChange={(e) => void patch({ start_date: e.target.value || null })}
+                />
+              </FieldCell>
+
+              {/* D76 — the ONE estimate: the number People capacity and the
+                  analytics read, and the one My Tasks plans a day with. */}
+              <FieldCell label="Estimate" icon="Timer">
+                <SelectButton
+                  label="Estimate"
+                  widthClass="w-full"
+                  value={task.estimate_mins == null ? "" : String(task.estimate_mins)}
+                  disabled={busy}
+                  onChange={(next) =>
+                    void patch({ estimate_mins: next === "" ? null : Number(next) })
+                  }
+                  options={estimateOptions(task.estimate_mins)}
+                />
+              </FieldCell>
+
+              {/* D76 — read-only: every member's timed blocks, summed. One
+                  member's actuals are theirs; the total is the work's. */}
+              <FieldCell label="Time spent" icon="Hourglass">
+                <span className="text-sm text-foreground">
+                  {spent === null
+                    ? "…"
+                    : spent > 0
+                      ? durationLabel(spent)
+                      : "Nothing timed yet"}
+                </span>
+              </FieldCell>
+
+              {/* D76 — watching is the member's own notification choice on
+                  the SHARED task, so it lives in the body both apps host.
+                  Hidden until the state is known. */}
+              {watching !== null ? (
+                <FieldCell label="Watch" icon={watching ? "BellRing" : "Bell"}>
+                  <Button
+                    variant={watching ? "secondary" : "ghost"}
+                    size="sm"
+                    icon={watching ? "BellOff" : "Bell"}
+                    aria-pressed={watching}
+                    title={
+                      watching
+                        ? "Watching — click to stop being notified about this task"
+                        : "Watch — get notified about this task"
+                    }
+                    onClick={() => void toggleWatch()}
+                  >
+                    {watching ? "Watching" : "Watch"}
+                  </Button>
+                </FieldCell>
+              ) : null}
             </div>
           </CollapsibleSection>
 
-          {showDescription && task.description ? (
-            // Prose spans both columns. `order-last` re-places it for
-            // auto-flow without touching the reading order Peek and Side use.
-            <CollapsibleSection
-              label="Description"
-              icon="AlignLeft"
-              className={twoColumn ? "order-last col-span-2 min-w-0" : undefined}
-              {...fold("description")}
-            >
-              <p className="whitespace-pre-wrap text-sm text-foreground">
-                {task.description}
-              </p>
-            </CollapsibleSection>
-          ) : null}
+          {/* D76 — the description is EDITED here, in both apps. It was
+              read-only in Projects, and My Tasks' Notes was the only writer.
+              Prose spans both columns. `order-last` re-places it for
+              auto-flow without touching the reading order Peek and Side use. */}
+          <CollapsibleSection
+            label="Description"
+            icon="AlignLeft"
+            className={twoColumn ? "order-last col-span-2 min-w-0" : undefined}
+            {...fold("description")}
+          >
+            <Textarea
+              value={description}
+              disabled={busy}
+              rows={4}
+              placeholder="What this task is about — notes, links, context…"
+              aria-label="Description"
+              onChange={(e) => setDescription(e.target.value)}
+              onBlur={saveDescription}
+            />
+          </CollapsibleSection>
 
           {/* Tags and recurrence draw their own small labels, so they are
               sub-fields of one section rather than two sections whose

@@ -26,6 +26,8 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  OVERLAY_KEYS,
+  TASK_KEYS,
   UNMAPPED,
   lensAddSubtasks,
   lensBulkArchive,
@@ -111,9 +113,11 @@ const ROW = {
   created_at: "2026-09-01T08:00:00+00:00",
   updated_at: "2026-09-01T09:00:00+00:00",
   archived_at: null,
-  // ⚠️ the shared Priority integer — must NOT become `important`
+  // D76 — the shared Priority (Urgent) and the ONE estimate.
   importance: 3,
   estimate_mins: 480,
+  start_date: "2026-09-05",
+  tags: ["ops", "quote"],
   disposition: "NEXT",
   is_triaged: true,
   is_mine: true,
@@ -123,7 +127,6 @@ const ROW = {
   next_action: "Open the editor",
   context: "@computer",
   energy: "high",
-  time_estimate_mins: 45,
   is_two_minute: false,
   defer_until: null,
   scheduled_start: "2026-09-02T09:00:00+00:00",
@@ -132,7 +135,6 @@ const ROW = {
   is_hard_date: true,
   actual_start: null,
   actual_end: null,
-  important: true,
   leveraged: null,
   deep_work: true,
   kept_mine: null,
@@ -220,13 +222,34 @@ describe("mapLensItem", () => {
     expect(item.notes).toBe("with the notes intact");
   });
 
-  it("does NOT read `important` from the shared Priority integer", () => {
-    // D53.8's confusable pair. `pm_tasks.importance` is the team's Priority;
-    // `important` is my private Eisenhower flag. Mapping one to the other
-    // publishes triage nobody asked to share.
+  it("reads Priority and derives Important from it (D76)", () => {
+    // D76 amends D53.8: one Priority, the team's. Important is High or
+    // Urgent, so a task Projects calls Urgent can never read "Low value".
+    expect(item.importance).toBe(3);
     expect(item.important).toBe(true);
-    expect(ROW.importance).toBe(3);
-    expect(item.important).not.toBe(ROW.importance);
+    expect(mapLensItem({ ...ROW, importance: 2 }).important).toBe(true);
+    expect(mapLensItem({ ...ROW, importance: 1 }).important).toBe(false);
+    expect(mapLensItem({ ...ROW, importance: 0 }).importance).toBe(0);
+    // Unset is not Low: no Priority, no Important, and no invented 0.
+    const unset = mapLensItem({ ...ROW, importance: null });
+    expect(unset.importance).toBeUndefined();
+    expect(unset.important).toBeUndefined();
+    // A stale overlay `important` on the wire is ignored, not read.
+    expect(mapLensItem({ ...ROW, importance: 0, important: true }).important).toBe(false);
+  });
+
+  it("reads the ONE estimate off the task, never the overlay (D76)", () => {
+    expect(item.timeEstimateMins).toBe(480);
+    expect(
+      mapLensItem({ ...ROW, estimate_mins: null, time_estimate_mins: 45 })
+        .timeEstimateMins,
+    ).toBeUndefined();
+  });
+
+  it("carries the shared start date and tags (D76)", () => {
+    expect(item.startDate).toBe("2026-09-05");
+    expect(item.tags).toEqual(["ops", "quote"]);
+    expect(mapLensItem({ ...ROW, tags: undefined }).tags).toEqual([]);
   });
 
   it("keeps `never stated` distinct from `false`", () => {
@@ -318,6 +341,31 @@ describe("splitPatch", () => {
     expect(splitPatch({ clear_assignee: true }).assignees).toEqual([]);
   });
 
+  it("sends the estimate, Priority and start date to the TASK (D76)", () => {
+    const split = splitPatch({
+      time_estimate_mins: 30,
+      importance: 2,
+      start_date: "2026-10-01",
+      leveraged: true,
+    });
+    expect(split.task).toEqual({
+      estimate_mins: 30,
+      importance: 2,
+      start_date: "2026-10-01",
+    });
+    expect(split.personal).toEqual({ leveraged: true });
+  });
+
+  it("never writes the two retired overlay columns (D76)", () => {
+    // The fence the gateway's 422 mirrors: neither key is an overlay key,
+    // and `important` is refused by name rather than dropped.
+    expect(OVERLAY_KEYS).not.toContain("important");
+    expect(OVERLAY_KEYS).not.toContain("time_estimate_mins");
+    expect(Object.values(TASK_KEYS)).toContain("estimate_mins");
+    expect(splitPatch({ time_estimate_mins: 45 }).personal).toEqual({});
+    expect(() => splitPatch({ important: true })).toThrow(/derived from the shared Priority/);
+  });
+
   it("ignores undefined, so a spread patch does not clear fields", () => {
     expect(splitPatch({ title: undefined, context: "@home" })).toEqual({
       task: {},
@@ -363,6 +411,48 @@ describe("the lens talks to /api/projects, never /api/tasks", () => {
         restore();
       }
     }
+  });
+
+  it("reopens a closed task for the board when I say Next (D76)", async () => {
+    // The lane wins over my disposition, so "back to Next" on a closed task
+    // must move the lane, or nothing visibly happens. First todo lane.
+    const closed = { ...ROW, status_category: "done" };
+    const lanes = {
+      rows: [
+        { id: "l-done", name: "Done", category: "done", position: 40 },
+        { id: "l-doing", name: "Doing", category: "in_progress", position: 20 },
+        { id: "l-todo", name: "To do", category: "todo", position: 10 },
+      ],
+      total: 3,
+    };
+    const { calls, restore } = stub([closed, lanes, {}, {}, ROW]);
+    try {
+      await lensPatchItem("task-1", { disposition: "NEXT" });
+    } finally {
+      restore();
+    }
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      "GET /api/projects/my/tasks/task-1",
+      "GET /api/projects/my/tasks/task-1/lanes",
+      "PATCH /api/projects/tasks/task-1",
+      "PATCH /api/projects/tasks/task-1/personal",
+      "GET /api/projects/my/tasks/task-1",
+    ]);
+    expect(calls[2].body).toEqual({ status_id: "l-todo" });
+  });
+
+  it("leaves an open task's lane alone when I say Next", async () => {
+    const { calls, restore } = stub([{ ...ROW, status_category: "todo" }, {}, ROW]);
+    try {
+      await lensPatchItem("task-1", { disposition: "NEXT" });
+    } finally {
+      restore();
+    }
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      "GET /api/projects/my/tasks/task-1",
+      "PATCH /api/projects/tasks/task-1/personal",
+      "GET /api/projects/my/tasks/task-1",
+    ]);
   });
 
   it("completes through /complete so the board moves too (§13.5 #4)", async () => {

@@ -109,9 +109,36 @@ export function snoozeOptions(nowMs = Date.now()): { label: string; iso: string 
   ];
 }
 
-/** True if a deferred item is still tickled (resurface date in the future). */
-export function isTickled(item: { deferUntil?: string }, nowMs = Date.now()): boolean {
-  return !!item.deferUntil && new Date(item.deferUntil).getTime() > nowMs;
+/** True if a deferred item is still tickled (resurface date in the future).
+ *
+ *  D76 — the work's shared START date tickles it too, the same way the
+ *  gateway's `DEFERRED_CLAUSE` does: the task waits for the later of my own
+ *  `deferUntil` and the team's `startDate`. `startDate` is a DATE, so it
+ *  opens at the start of that LOCAL day — a task starting today is in
+ *  today's list. */
+export function isTickled(
+  item: { deferUntil?: string; startDate?: string },
+  nowMs = Date.now(),
+): boolean {
+  if (item.deferUntil && new Date(item.deferUntil).getTime() > nowMs) return true;
+  if (item.startDate) {
+    const [y, m, d] = item.startDate.slice(0, 10).split("-").map(Number);
+    if (y && m && d && new Date(y, m - 1, d).getTime() > nowMs) return true;
+  }
+  return false;
+}
+
+/** When a tickled item comes back: the LATER of my defer and the shared
+ *  start date (D76), as an ISO instant. `undefined` when neither is set. */
+export function resurfacesAt(item: { deferUntil?: string; startDate?: string }): string | undefined {
+  const times: number[] = [];
+  if (item.deferUntil) times.push(new Date(item.deferUntil).getTime());
+  if (item.startDate) {
+    const [y, m, d] = item.startDate.slice(0, 10).split("-").map(Number);
+    if (y && m && d) times.push(new Date(y, m - 1, d).getTime());
+  }
+  const valid = times.filter((t) => !Number.isNaN(t));
+  return valid.length ? new Date(Math.max(...valid)).toISOString() : undefined;
 }
 
 /** A short "where it already lives" label for a duplicate/similar match — the

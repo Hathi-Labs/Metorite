@@ -321,7 +321,12 @@ export async function apiPatchItem(
     next_action?: string;
     context?: string;
     energy?: string;
-    time_estimate_mins?: number;
+    /** D76 — the task's ONE estimate (`pm_tasks.estimate_mins`); null clears. */
+    time_estimate_mins?: number | null;
+    /** D76 — the task's shared Priority (`pm_tasks.importance`); null unsets. */
+    importance?: number | null;
+    /** D76 — the work's shared start date, "YYYY-MM-DD"; null clears. */
+    start_date?: string | null;
     due_at?: string;
     scheduled_start?: string;
     scheduled_end?: string;
@@ -336,7 +341,6 @@ export async function apiPatchItem(
     /** the full owner set — [] clears everyone; takes precedence over assignee */
     assignees?: { name: string; email?: string; provider_user_id?: string }[];
     is_mine?: boolean;
-    important?: boolean;
     leveraged?: boolean;
     deep_work?: boolean;
     kept_mine?: boolean;
