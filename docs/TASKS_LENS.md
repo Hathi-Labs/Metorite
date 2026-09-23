@@ -73,6 +73,15 @@ which is the standard CLAUDE.md §3.8 sets for everything else about a deploy.
 
 ## ⚠️ When they may be turned on
 
+**They are ON since 2026-09-23.** The S3b backfill ran that day. `/version`
+reports `tasks_lens: true`. The paragraphs below record the rule that held
+before that date.
+
+⚠️ **Two files, not one.** The gateway reads `/opt/acb/app/.env`. The workbench
+build reads `workbench/control_plane/.env.local`. The apply script copies only
+the internal token between them. Write `NEXT_PUBLIC_TASKS_LENS` in `.env.local`
+by hand, then rebuild.
+
 **Not yet, and not on their own.**
 
 `gtd_items` still holds every existing task. The backfill that moves those rows
