@@ -73,6 +73,15 @@ which is the standard CLAUDE.md §3.8 sets for everything else about a deploy.
 
 ## ⚠️ When they may be turned on
 
+**They are ON since 2026-09-23.** The S3b backfill ran that day. `/version`
+reports `tasks_lens: true`. The paragraphs below record the rule that held
+before that date.
+
+⚠️ **Two files, not one.** The gateway reads `/opt/acb/app/.env`. The workbench
+build reads `workbench/control_plane/.env.local`. The apply script copies only
+the internal token between them. Write `NEXT_PUBLIC_TASKS_LENS` in `.env.local`
+by hand, then rebuild.
+
 **Not yet, and not on their own.**
 
 `gtd_items` still holds every existing task. The backfill that moves those rows
@@ -136,6 +145,10 @@ does not happen by itself. The drop needs a new migration that calls
 `gtd_retirement_drop()` again. `project-docs/specs/my_tasks_cutover.md` §6
 carries the full corrected order, and it wins over the diagram below.
 
+Migration 212 re-defined `gtd_backfill_to_pm()` on 2026-09-23, because the
+CHECK from migration 196 refused the root insert. Run step 4 only after 212
+is in the production ledger.
+
 **Added 2026-08-26 with migrations 189 and 190.** Everything below is the
 owner's act: `work_plan.md` §6 (f) gates *running* the move against a real
 database, and building it — which is what landed — is the half that was
@@ -147,7 +160,7 @@ table, a view and two functions, and moves nothing.
 ```
    slice 5 lands            (the CRUD + AI tail stops writing gtd_items)
       ↓
-1. deploy 189 + 190         inert — nothing moves, nothing drops
+1. deploy 189 + 190 + 212   inert — nothing moves, nothing drops
       ↓
 2. SELECT * FROM gtd_backfill_plan;          ← read this before anything
       ↓
@@ -203,9 +216,13 @@ these wait on slice 5's port to `pm_projects`). Pinned by
 
 | Claim | Test |
 |---|---|
-| 189 defines the backfill and never calls it (the gate stays intact) | `test_gtd_backfill.py::test_189_defines_the_backfill_but_never_calls_it` |
-| tenant comes from `app_user`, explicitly — a migration has no RLS | `::test_189_resolves_the_tenant_from_the_directory` |
-| an unresolvable owner is refused, not guessed | `::test_189_refuses_rather_than_guesses_an_owner` |
+| 189 and 212 each define the backfill and never call it (the gate stays intact) | `test_gtd_backfill.py::test_each_definer_defines_the_backfill_but_never_calls_it` |
+| 212 is the last definition on the ladder, and a third one must register itself | `::test_the_ladder_defines_the_backfill_exactly_where_this_suite_says`, `::test_212_is_the_last_word_on_the_ladder` |
+| the root insert sets `owns_statuses` (197's CHECK) and the child inherits the root's lanes | `::test_the_last_definition_inserts_the_root_with_owns_statuses_true`, `::test_the_last_definition_inserts_the_child_inheriting_the_roots_lanes` |
+| a re-run looks the root up AS a root (191) | `::test_the_last_definition_looks_the_root_up_as_a_root`, and `live_ws39_s3b.sql` checks 9c–9d |
+| tenant comes from `app_user`, explicitly — a migration has no RLS | `::test_each_definer_resolves_the_tenant_from_the_directory` |
+| an unresolvable owner is refused, not guessed | `::test_189_refuses_rather_than_guesses_an_owner` (the view), `::test_each_definer_leads_with_what_the_plan_refuses` (each function body) |
+| the root path and the child path both satisfy the current ladder | `live_ws39_s3b.sql` checks 4k–4l and 7e–7g (**real Postgres**, R8) |
 | 190 is inert until armed **and** every row is accounted for | `::test_190_is_inert_until_two_independent_conditions_hold` |
 | 190 drops exactly the two tables S3b replaced, without CASCADE | `::test_190_drops_exactly_the_two_tables_s3b_replaced`, `::test_190_drops_without_cascade` |
 | two orgs: one member's private task never enters another's lens | `tests/live/live_ws39_s3b.sql` checks 4a–4g (**real Postgres**, R8) |
@@ -216,11 +233,13 @@ these wait on slice 5's port to `pm_projects`). Pinned by
 Run the live pair against scratch Postgres, never against a real database:
 
 ```bash
-docker exec -i tenant-scratch psql -U acb -d acb_tenant \
+docker exec -i metorite-scratch-tenant psql -U acb -d acb_tenant \
   -v ON_ERROR_STOP=1 < tests/live/live_ws39_s3b.sql
-docker exec -i tenant-scratch psql -U acb -d acb_tenant \
+docker exec -i metorite-scratch-tenant psql -U acb -d acb_tenant \
   -v ON_ERROR_STOP=1 < tests/live/live_ws39_s3c.sql
 ```
+
+`metorite-scratch-tenant` is the container `scripts/dev_db.sh` starts.
 
 `live_ws39_s3c.sql` exercises a real `DROP TABLE` inside a transaction it then
 rolls back — Postgres DDL is transactional, so the scratch database is left as

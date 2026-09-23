@@ -630,7 +630,12 @@ through the lens, on branch `my-tasks-s6a`. S6d landed in PR #390. The
 row above still reads slice 5 next. That text carries semicolons the
 lint refuses, so this paragraph records the state instead.
 
-🆕 **WS-39 S6b, S6c, S6d, S6e BUILT 2026-09-23.** PRs #390 (S6d), #391 + #394 (S6b), #395 (S6c), and this one (S6e). S7, the cutover, is next.
+🆕 **WS-39 S6b, S6c, S6d, S6e BUILT 2026-09-23.** PRs #390 (S6d), #391 + #394 (S6b), #395 (S6c), and this one (S6e). S7, the cutover, ran the same day (below).
+
+🆕 **WS-39 S7 RUN 2026-09-23.** The S3b backfill moved 2 rows into one
+personal root after migration 212. Both flags are on. `/version` reports
+`tasks_lens: true`. `specs/my_tasks_cutover.md` §6 holds the run record. S8
+is next: the code stops naming `gtd_*`, then the drop and the rename.
 
 🆕 **WS-39 PHASE 2 MINTED 2026-09-23 (D73).** `specs/my_tasks_cutover.md` owns
 the tail, in five steps.

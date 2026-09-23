@@ -535,7 +535,7 @@ scope did not settle.
 `itemDetail.test.ts` (7), `lens.test.ts` (56), `selectionParity.test.ts`
 (13).
 
-### S7 — the cutover · dev-phase window, reported by evidence
+### S7 — the cutover · dev-phase window, reported by evidence · RUN 2026-09-23
 
 **Scope.** Run `docs/TASKS_LENS.md`'s runbook in the corrected order (§6).
 
@@ -555,7 +555,9 @@ scope did not settle.
    `routes/tasks/hierarchy.py`, `sync.py`, `accounts.py`, `providers.py` and
    `broker_handlers.py` go. `test_client_route_contract.py` keeps the paths
    that survive.
-2. **Schema.** Migration **212** calls `gtd_retirement_drop()`. Then it drops
+2. **Schema.** A new migration calls `gtd_retirement_drop()`. It takes the
+   next free number at build time (R1). Number 212 went to the backfill fix
+   on 2026-09-23, so this one is 213 or later. Then it drops
    the tree tables, `gtd_contexts`, `gtd_retirement_arm` and the two guard
    functions. It renames `gtd_attachments`, `gtd_horizons` and `gtd_reviews`
    through the guarded prologue in their creating migrations (52 and 48).
@@ -586,6 +588,25 @@ scope did not settle.
    returns only files that describe the method.
 2. `npx tsc --noEmit && npx vitest run` green. The named pytest files green.
 
+### S7 run record (2026-09-23, UTC)
+
+- Backup: `/opt/acb/backups/2026-09-22T235052Z/postgres.dump`, 2.4 MB, taken by
+  `acb-backup.service` with a verified restore, before the move.
+- Step 5 failed once. Migration 196's CHECK refused the root insert. Migration
+  212 re-defined the function. It reached the ledger at 00:19 UTC.
+- The move applied at 00:21 UTC: 1 owner, 1 personal root, 0 sub-projects,
+  2 tasks. Both dispositions survived (INBOX, SOMEDAY). `gtd_backfill_plan`
+  returned zero rows afterwards.
+- The flags: `TASKS_LENS=1` in `/opt/acb/app/.env`, and `NEXT_PUBLIC_TASKS_LENS=1`
+  in `workbench/control_plane/.env.local`. ⚠️ The apply script reconciles only
+  the internal token into `.env.local`, so the browser flag must be written
+  there by hand. `docs/TASKS_LENS.md` now says so.
+- Deploy run 35801944712 (workflow_dispatch) rebuilt and restarted at 00:29 UTC.
+  `/version` reports `tasks_lens: true`. The served bundle carries the inlined
+  literal `NEXT_PUBLIC_TASKS_LENS:"1"`.
+- The sweep ran after the flip for both organizations.
+- Owed: the same-page-load check of step 9 by a signed-in member.
+
 ## 6. The cutover runbook, corrected
 
 ```
@@ -600,6 +621,7 @@ scope did not settle.
 4. SELECT * FROM gtd_backfill_to_pm(false);     -- dry run
       |
 5. SELECT * FROM gtd_backfill_to_pm(true);      -- the move (2 rows today)
+   (needs migration 212 in the production ledger first -- see the note below)
       |
 6. .env: NEXT_PUBLIC_TASKS_LENS=1 and TASKS_LENS=1, restart, rebuild
       |
@@ -615,10 +637,18 @@ scope did not settle.
       |
 11. INSERT INTO gtd_retirement_arm (armed_by, note) VALUES (...)
       |
-12. S8 PR 2 merges. Migration 212 calls the guard, drops, renames.
+12. S8 PR 2 merges. Its migration (213 or later) calls the guard, drops, renames.
       |
 13. \dt gtd_*  ->  nothing
 ```
+
+**Step 5 needs migration 212 in the production ledger.** On 2026-09-23 step 5
+failed on production and wrote nothing. Migration 196 added a CHECK that a
+root project owns its statuses. The root insert in migration 189 did not set
+`owns_statuses`, so the CHECK refused it. Migration 212 re-defines
+`gtd_backfill_to_pm()` with the flag on the root and on each child. Run step 5
+only after `SELECT filename FROM schema_migrations WHERE filename LIKE '212_%'`
+returns one row.
 
 Step 11 is a human act. During the dev-phase window (CLAUDE.md §3a) an agent
 does it and reports the row in the same message. On 2026-10-01 it returns to
