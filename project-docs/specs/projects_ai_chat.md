@@ -730,6 +730,41 @@ Each slice is one pull request. Each one is useful alone.
    Somebody looks at it in light mode, at compact density, under a changed
    accent, and beside Load.
 
+### 10.4 Acceptance — S7b
+
+**Done when:**
+1. `GET /projects/tasks/{id}/candidates` returns at most 3 candidates, ranked
+   by `rank_candidates` and by no second ranker. A source test asserts that
+   the new modules import `rank_candidates` and do not call `score_skills`.
+2. The match text is the title, the tag names and the capped description. A
+   test shows that a skill named only in a tag ranks a person.
+3. The pool follows §13.4 rule 4. A test shows a person with no open task as a
+   candidate, and no assignee or agent in the list.
+4. The window follows §13.4 rule 4, and the response prints it.
+5. With no estimate, the rank follows §13.4 rule 2. A test proves that
+   `spare_hours` is absent, not zero, and `test_people_suggestions.py` passes
+   unchanged.
+6. Each of the three warnings in §13.4 rule 5 has its own test.
+7. A caller without `admin:members:read` gets 200 with `hr_visible: false` and
+   no `candidates` key. A test proves that the key is absent.
+8. `GET /projects/candidates?title=&tags=&due=` returns the same body as the
+   task route for the same text and due date. A title shorter than 2
+   characters gets 422.
+9. `GET /projects/analytics/rebalance?project_id=&include_subtree=&horizon_days=`
+   lists the at-risk tasks in scope with their helpers, and the idle people
+   with the unassigned tasks in scope. Both suggester routes call the one
+   leaf join. An R8 test proves that no task outside the viewer's grant
+   appears. A caller without the grant gets no `at_risk` and no `pickups` key.
+10. "Suggested" renders above the name search in `TaskBody` only, and hides
+    when `hr_visible` is false. A pick goes through the existing `onPick`,
+    which writes `PUT /projects/tasks/{id}/assignees`. A pure lib function
+    holds the decisions, and a vitest covers it.
+11. `fit_for_task` and `rebalance` are class A, and `manifest.py` maps the
+    three routes. The coverage fence passes. A run with no user makes zero
+    HTTP calls, and no tool sends a request that is not a GET.
+12. The status header, the §10 row, the board row and the INDEX line say that
+    S7b is built (R4).
+
 ---
 
 ## 11. Verification
@@ -751,6 +786,18 @@ without it and the run still reads green:
 ```
 uv run pytest tests/unit/test_projects_analytics_capacity.py tests/unit/test_people_dashboard.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_agent.py tests/unit/test_projects_reports.py tests/unit/test_projects_report_sections_lockstep.py tests/unit/test_projects_reportable_reports.py
 ```
+
+For S7b, with the same database settings:
+
+```
+uv run pytest tests/unit/test_projects_candidates.py tests/unit/test_projects_analytics_rebalance.py tests/unit/test_people_suggestions.py tests/unit/test_people_dashboard.py tests/unit/test_projects_assignees.py tests/unit/test_projects_analytics_capacity.py tests/unit/test_projects_routes.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_agent.py
+```
+
+In `workbench/control_plane`, run `npx tsc --noEmit` and
+`npx vitest run src/app/projects/lib/assignees.test.ts src/app/projects/lib/candidates.test.ts`.
+Then look at the task panel's picker in light mode, at compact density, under
+a changed accent, and beside the bulk bar's picker. The slice creates the two
+new pytest files and `candidates.test.ts`.
 
 `test_projects_report_sections_lockstep.py` is the lockstep test of §10.3
 item 6. It is a pytest that reads the two TypeScript files as text, so one test
@@ -901,7 +948,8 @@ the section kind `capacity`, in `reports.py` `SECTIONS`, `RenderedBody`,
 ### 13.4 S7b — Fit and rebalancing
 
 `GET /projects/tasks/{id}/candidates` ranks people for one task by
-`rank_candidates`. The draft form is `GET /projects/candidates?title=&due=`.
+`rank_candidates`. The draft form is
+`GET /projects/candidates?title=&tags=&due=`.
 It ranks people for a task that does not exist yet, which planning needs. Each
 candidate carries the skills that matched and the spare hours before the due
 date. It also carries the warnings: away on the due date, leaving before it,
@@ -912,8 +960,45 @@ project subtree. It lists the at-risk tasks with the helpers who fit them, and
 the idle people with the unassigned work that fits them.
 
 **Surfaces.** The assignee picker in the task panel shows "Suggested" above the
-name search. The chat gets `suggest_assignees` and `rebalance`, both class A.
+name search. The chat gets `fit_for_task` and `rebalance`, both class A.
 Assigning stays the class B `assign` with its card.
+
+**Rules for the build.** The S7b audit (2026-09-23) found six decisions that
+the text above does not make. These are the decisions.
+
+1. **No HR grant, no candidates.** A caller without `admin:members:read` gets
+   200, `hr_visible: false`, and no `candidates` key. A ranked list of names
+   still says who holds which skill, so names alone are an oracle
+   (`people_center_app.md` §4.2). The picker then hides "Suggested". The
+   rebalance route leaves out `at_risk` and `pickups` in the same way.
+2. **No estimate, rank by skill and availability.** If `hours_basis` is false,
+   the route calls `rank_candidates` with a neutral spare figure of 1 for each
+   person. So the rank is skill × away. The response leaves out `spare_hours`
+   and carries `hours_note`. `rank_candidates` itself does not change, and
+   `test_people_suggestions.py` passes unchanged.
+3. **The match text.** It is the title, the tag names, and the first 500
+   characters of the description. A tag often names the skill that the title
+   does not. A long description mentions skills in passing, so it is capped.
+4. **The pool and the window.** The pool is every active person in `people`
+   with an email. The task's assignees and agents are left out. Spare hours
+   come from `person_capacity` over all the work the caller can see. The
+   horizon is the days from today to the due date, clamped to 1 to 90, or 14
+   days if the task has no due date. The response prints the window.
+5. **Warnings wrap the candidate.** The route wraps each `Candidate` with a
+   `warnings` list: away on the due date, an end date before the due date,
+   and more tasks in progress than `max_concurrent_tasks`. The `Candidate`
+   model in `suggestions.py` does not change.
+6. **One join for the suggester.** The join of at-risk tasks to helpers, and
+   of idle people to unassigned work, moves into a leaf function in
+   `gateway/capacity.py`. `/people/dashboard/suggestions` and
+   `/projects/analytics/rebalance` both call it. The rebalance route filters
+   the at-risk tasks to its scope, and takes the unassigned tasks from the
+   Load `scope_clause`.
+
+**Names.** The chat tool is `fit_for_task`, because `suggest_assignees` is
+already the name of the picker's route function in `assignees.py`. "Suggested"
+renders in `TaskBody` only, never in `BulkBar` or `MoveTasksDialog`, because
+it needs one task.
 
 ### 13.5 S7c — Conflicts
 
