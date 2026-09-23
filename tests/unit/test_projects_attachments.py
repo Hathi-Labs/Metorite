@@ -3,7 +3,7 @@
 The interesting claims here are all about **who may read the bytes**, because
 this feature deliberately does *not* inherit the file store's own answer:
 
-* `gtd_attachments` is owner-scoped — `/tasks/attachments/{id}/{name}` serves
+* `attachments` is owner-scoped — `/tasks/attachments/{id}/{name}` serves
   only to the uploader. Right for a private capture, useless for a shared task.
 * So the JOIN carries the decision: a file is readable by anyone who can see a
   task it hangs off. Two properties follow, and both are security properties
@@ -67,7 +67,7 @@ class FakeDB:
             return _Result([], rowcount=self.deleted)
         if "FROM pm_task_attachments ta JOIN pm_tasks t" in statement:
             return _Result([self.serve_row] if self.serve_row else [])
-        if "FROM pm_task_attachments ta JOIN gtd_attachments" in statement:
+        if "FROM pm_task_attachments ta JOIN attachments" in statement:
             return _Result(self.listed)
         return _Result([])
 
@@ -250,7 +250,7 @@ def test_an_upload_writes_the_file_row_and_the_join(db, wiring):
     assert result["kind"] == "image"
     assert result["name"] == "photo.png"
     assert result["url"].startswith("/api/projects/attachments/")
-    assert db.sql_touching("INSERT INTO gtd_attachments")
+    assert db.sql_touching("INSERT INTO attachments")
     assert db.sql_touching("INSERT INTO pm_task_attachments")
     assert db.committed == 1
     # …and the bytes actually landed.
@@ -262,7 +262,7 @@ def test_an_upload_writes_the_file_row_and_the_join(db, wiring):
 def test_the_uploader_is_recorded_as_the_file_owner_and_the_adder(db):
     run(pm_attachments.attach_file("t1", UploadStub("a.png", b"z"), user=user("her@x.in")))
     file_params = db.params[db.statements.index(
-        db.sql_touching("INSERT INTO gtd_attachments")[0]
+        db.sql_touching("INSERT INTO attachments")[0]
     )]
     assert file_params["uid"] == "her@x.in"
     join_params = db.params[db.statements.index(
@@ -276,7 +276,7 @@ def test_an_executable_is_refused(db):
     with pytest.raises(HTTPException) as err:
         run(pm_attachments.attach_file("t1", UploadStub("evil.exe", b"MZ"), user=user()))
     assert err.value.status_code == 400
-    assert db.sql_touching("INSERT INTO gtd_attachments") == []
+    assert db.sql_touching("INSERT INTO attachments") == []
 
 
 def test_an_empty_file_is_refused(db):
@@ -290,7 +290,7 @@ def test_an_oversized_file_is_refused_with_413(db):
     with pytest.raises(HTTPException) as err:
         run(pm_attachments.attach_file("t1", UploadStub("a.png", big), user=user()))
     assert err.value.status_code == 413
-    assert db.sql_touching("INSERT INTO gtd_attachments") == []
+    assert db.sql_touching("INSERT INTO attachments") == []
 
 
 def test_the_disk_path_cannot_be_steered_by_the_filename(db, wiring):
@@ -323,7 +323,7 @@ def test_a_hostile_filename_is_sanitised_in_the_STORED_name(db):
     assert "\n" not in result["name"]
     # …and the same sanitised name is what went into the file row and the URL.
     stored = db.params[db.statements.index(
-        db.sql_touching("INSERT INTO gtd_attachments")[0]
+        db.sql_touching("INSERT INTO attachments")[0]
     )]
     assert stored["name"] == result["name"]
     assert result["url"].endswith(result["name"])
@@ -361,7 +361,7 @@ def test_detaching_keeps_the_bytes(db):
     db.deleted = 1
     run(pm_attachments.detach_file("t1", "a1", user=user()))
     assert db.sql_touching("DELETE FROM pm_task_attachments")
-    assert db.sql_touching("DELETE FROM gtd_attachments") == []
+    assert db.sql_touching("DELETE FROM attachments") == []
     assert db.sql_touching("DELETE FROM pm_tasks") == []
 
 
@@ -435,7 +435,7 @@ def test_the_attachment_id_does_NOT_cascade(sql: str):
     was there — the API detaches explicitly."""
     join = sql.split("CREATE TABLE IF NOT EXISTS pm_task_attachments")[1].split(";")[0]
     assert "attachment_id" in join
-    assert "REFERENCES gtd_attachments" not in join
+    assert "REFERENCES attachments" not in join
 
 
 def test_the_activity_vocabulary_gains_attachment(sql: str):

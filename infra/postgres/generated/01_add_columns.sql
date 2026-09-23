@@ -255,7 +255,7 @@ ALTER TABLE email_voice_profiles
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE gtd_attachments
+ALTER TABLE attachments
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
@@ -271,7 +271,7 @@ ALTER TABLE gtd_folders
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE gtd_horizons
+ALTER TABLE my_tasks_horizons
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
@@ -303,7 +303,7 @@ ALTER TABLE gtd_projects
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 
-ALTER TABLE gtd_reviews
+ALTER TABLE my_tasks_reviews
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
 

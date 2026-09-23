@@ -3,7 +3,7 @@
 GTD capture keeps context WITH the item: a whiteboard photo, a spec PDF, a
 URL. Files are stored server-side (``GTD_ATTACHMENTS_DIR``, default
 ``data/gtd_attachments`` under the gateway CWD) with an owner-checked row in
-``gtd_attachments``; items reference them in ``gtd_items.attachments`` JSONB
+``attachments``; items reference them in ``gtd_items.attachments`` JSONB
 ({kind: 'file'|'image'|'link', name, url, attachment_id?, mime?, size?}).
 Links are JSONB-only — no upload involved.
 
@@ -68,7 +68,7 @@ async def upload_attachment(
 
     async with _tenant_session() as db:
         await db.execute(text(
-            """INSERT INTO gtd_attachments
+            """INSERT INTO attachments
                (id, user_id, name, mime, size_bytes, path)
                VALUES (:id, :uid, :name, :mime, :size, :path)"""),
             {"id": att_id, "uid": _uid(user), "name": name, "mime": mime,
@@ -92,7 +92,7 @@ async def serve_attachment(
 ):
     async with _tenant_session() as db:
         row = (await db.execute(text(
-            """SELECT name, mime, path FROM gtd_attachments
+            """SELECT name, mime, path FROM attachments
                WHERE id = :id AND user_id = :uid"""),
             {"id": attachment_id, "uid": _uid(user)})).fetchone()
     if row is None or not Path(row.path).is_file():

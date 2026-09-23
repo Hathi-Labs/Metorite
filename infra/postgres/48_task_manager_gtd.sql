@@ -2,8 +2,8 @@
 --
 -- What: the seven task-manager tables from project-docs/specs/task_manager_app.md §4 —
 --       task_accounts (connected PM-tool workspaces, multi-account/multi-provider, like
---       email_accounts), gtd_contexts, gtd_horizons, gtd_projects, gtd_items, gtd_waiting,
---       gtd_reviews.
+--       email_accounts), gtd_contexts, my_tasks_horizons, gtd_projects, gtd_items, gtd_waiting,
+--       my_tasks_reviews.
 -- Why:  the /tasks gateway API + agent-task-manager operate on a canonical Postgres store
 --       with a GTD-semantic overlay (dual-source: LOCAL rows we own; SYNCED rows mirror a
 --       connected provider — ClickUp first).
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS gtd_contexts (
 );
 
 -- ── Horizons of Focus (H2 Areas · H3 Goals · H4 Vision · H5 Purpose) ────────
-CREATE TABLE IF NOT EXISTS gtd_horizons (
+CREATE TABLE IF NOT EXISTS my_tasks_horizons (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id TEXT NOT NULL,
     level INT NOT NULL,                  -- 2=Areas · 3=Goals · 4=Vision · 5=Purpose
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS gtd_horizons (
     notes TEXT,
     created_at TIMESTAMPTZ DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_gtd_horizons_user ON gtd_horizons(user_id, level);
+CREATE INDEX IF NOT EXISTS idx_gtd_horizons_user ON my_tasks_horizons(user_id, level);
 
 -- ── GTD projects (first-class outcomes needing >1 action, dual-source §5.1) ─
 CREATE TABLE IF NOT EXISTS gtd_projects (
@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS gtd_projects (
     outcome TEXT NOT NULL,               -- the "wild success" statement
     purpose TEXT,                        -- natural-planning: why
     status TEXT DEFAULT 'ACTIVE',        -- ACTIVE | SOMEDAY | DONE | DROPPED
-    horizon_id UUID REFERENCES gtd_horizons(id) ON DELETE SET NULL,
+    horizon_id UUID REFERENCES my_tasks_horizons(id) ON DELETE SET NULL,
     has_next_action BOOLEAN DEFAULT false, -- the cardinal GTD health check
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS gtd_items (
     time_estimate_mins INT,
     is_two_minute BOOLEAN DEFAULT false,
     project_id UUID REFERENCES gtd_projects(id) ON DELETE SET NULL,
-    horizon_id UUID REFERENCES gtd_horizons(id) ON DELETE SET NULL,
+    horizon_id UUID REFERENCES my_tasks_horizons(id) ON DELETE SET NULL,
     defer_until TIMESTAMPTZ,             -- tickler: hidden from the active inbox until this date
     sync_state TEXT DEFAULT 'local',     -- 'local' | 'pending' (queued push, Action-Broker-gated) | 'synced'
     -- Mirrored from provider (provider is source of truth for SYNCED)
@@ -142,11 +142,11 @@ CREATE INDEX IF NOT EXISTS idx_gtd_waiting_open ON gtd_waiting(resolved, expecte
 CREATE INDEX IF NOT EXISTS idx_gtd_waiting_item ON gtd_waiting(item_id);
 
 -- ── Weekly reviews ──────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS gtd_reviews (
+CREATE TABLE IF NOT EXISTS my_tasks_reviews (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id TEXT NOT NULL,
     ran_at TIMESTAMPTZ DEFAULT now(),
     summary JSONB,                       -- counts cleared, projects w/o next action, stale waiting-fors
     created_at TIMESTAMPTZ DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_gtd_reviews_user ON gtd_reviews(user_id, ran_at DESC);
+CREATE INDEX IF NOT EXISTS idx_gtd_reviews_user ON my_tasks_reviews(user_id, ran_at DESC);

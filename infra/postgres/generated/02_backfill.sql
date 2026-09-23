@@ -200,7 +200,7 @@ UPDATE email_thread_status SET organization_id = (SELECT id FROM organization WH
 UPDATE email_voice_profiles SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
-UPDATE gtd_attachments SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+UPDATE attachments SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE gtd_contexts SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
@@ -212,7 +212,7 @@ UPDATE calendar_day_state SET organization_id = (SELECT id FROM organization WHE
 UPDATE gtd_folders SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
-UPDATE gtd_horizons SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+UPDATE my_tasks_horizons SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE gtd_items SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
@@ -236,7 +236,7 @@ UPDATE people_skills SET organization_id = (SELECT id FROM organization WHERE sl
 UPDATE gtd_projects SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
-UPDATE gtd_reviews SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+UPDATE my_tasks_reviews SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE calendar_rollover_log SET organization_id = (SELECT id FROM organization WHERE slug = 'default')

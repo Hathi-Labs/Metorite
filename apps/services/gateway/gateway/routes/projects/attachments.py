@@ -6,12 +6,12 @@
     DELETE /projects/tasks/{task_id}/attachments/{id}   → detach
 
 **One file store.** The bytes and their metadata go into the existing
-``gtd_attachments`` registry through the same validation the personal capture
+``attachments`` registry through the same validation the personal capture
 flow uses — imported, not copied, so "is this extension allowed" and "how big
 is too big" have one answer. ``pm_task_attachments`` is a thin join.
 
 **The access model is the point, and it is deliberately not the file's.**
-``gtd_attachments`` is owner-scoped: ``/tasks/attachments/{id}/{name}`` serves
+``attachments`` is owner-scoped: ``/tasks/attachments/{id}/{name}`` serves
 only to the uploader. Correct for a private capture, useless for a shared task.
 Here the **join** carries the decision — a file is readable by anyone who can
 see a task it is attached to — and the personal route is untouched.
@@ -219,7 +219,7 @@ async def attach_file(
             text(
                 "SELECT COALESCE(SUM(a.size_bytes), 0) AS used "
                 "  FROM pm_task_attachments ta "
-                "  JOIN gtd_attachments a ON a.id = ta.attachment_id "
+                "  JOIN attachments a ON a.id = ta.attachment_id "
                 " WHERE ta.task_id = CAST(:tid AS uuid)"
             ),
             {"tid": task_id},
@@ -263,7 +263,7 @@ async def attach_file(
 
         await db.execute(
             text(
-                "INSERT INTO gtd_attachments "
+                "INSERT INTO attachments "
                 "(id, user_id, name, mime, size_bytes, path) "
                 "VALUES (CAST(:id AS uuid), :uid, :name, :mime, :size, :path)"
             ),
@@ -309,7 +309,7 @@ async def list_attachments(
                 "SELECT a.id, a.name, a.mime, a.size_bytes, "
                 "       ta.added_by, ta.created_at "
                 "  FROM pm_task_attachments ta "
-                "  JOIN gtd_attachments a ON a.id = ta.attachment_id "
+                "  JOIN attachments a ON a.id = ta.attachment_id "
                 " WHERE ta.task_id = CAST(:tid AS uuid) "
                 " ORDER BY ta.created_at"
             ),
@@ -350,7 +350,7 @@ async def serve_attachment(
                 "SELECT a.name, a.mime, a.path "
                 "  FROM pm_task_attachments ta "
                 "  JOIN pm_tasks t ON t.id = ta.task_id "
-                "  JOIN gtd_attachments a ON a.id = ta.attachment_id "
+                "  JOIN attachments a ON a.id = ta.attachment_id "
                 " WHERE " + " AND ".join(clauses) + " LIMIT 1"
             ),
             params,

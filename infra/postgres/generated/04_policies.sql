@@ -440,10 +440,10 @@ CREATE POLICY email_voice_profiles_tenant_isolation ON email_voice_profiles
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
-ALTER TABLE gtd_attachments ENABLE ROW LEVEL SECURITY;
-ALTER TABLE gtd_attachments FORCE  ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS gtd_attachments_tenant_isolation ON gtd_attachments;
-CREATE POLICY gtd_attachments_tenant_isolation ON gtd_attachments
+ALTER TABLE attachments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE attachments FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS gtd_attachments_tenant_isolation ON attachments;
+CREATE POLICY gtd_attachments_tenant_isolation ON attachments
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
@@ -468,10 +468,10 @@ CREATE POLICY gtd_folders_tenant_isolation ON gtd_folders
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
-ALTER TABLE gtd_horizons ENABLE ROW LEVEL SECURITY;
-ALTER TABLE gtd_horizons FORCE  ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS gtd_horizons_tenant_isolation ON gtd_horizons;
-CREATE POLICY gtd_horizons_tenant_isolation ON gtd_horizons
+ALTER TABLE my_tasks_horizons ENABLE ROW LEVEL SECURITY;
+ALTER TABLE my_tasks_horizons FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS gtd_horizons_tenant_isolation ON my_tasks_horizons;
+CREATE POLICY gtd_horizons_tenant_isolation ON my_tasks_horizons
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
@@ -524,10 +524,10 @@ CREATE POLICY gtd_projects_tenant_isolation ON gtd_projects
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
-ALTER TABLE gtd_reviews ENABLE ROW LEVEL SECURITY;
-ALTER TABLE gtd_reviews FORCE  ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS gtd_reviews_tenant_isolation ON gtd_reviews;
-CREATE POLICY gtd_reviews_tenant_isolation ON gtd_reviews
+ALTER TABLE my_tasks_reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE my_tasks_reviews FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS gtd_reviews_tenant_isolation ON my_tasks_reviews;
+CREATE POLICY gtd_reviews_tenant_isolation ON my_tasks_reviews
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
