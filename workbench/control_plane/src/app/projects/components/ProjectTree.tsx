@@ -16,10 +16,10 @@ import { ContextMenu } from "@/components/ContextMenu";
 import Icon, { themedIcon } from "@/components/Icon";
 import {
   type NodeProgress,
-  ringDash,
   showsWheel,
   wheelLabel,
 } from "../lib/progressWheel";
+import { StateMark, stateMarkIcon } from "./StateMark";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import { PROJECT_STATES, projectStateAccent } from "@/lib/statusAccent";
@@ -74,130 +74,46 @@ function StateDot({
   /** The subtree roll-up `GET /projects/tree` now carries. */
   progress: NodeProgress;
 }) {
-  const visual = PROJECT_STATES[state];
   const accent = projectStateAccent(state);
-  const label = visual?.label ?? state;
+  const label = PROJECT_STATES[state]?.label ?? state;
   // A subproject draws the same glyph one step smaller. Indentation alone
   // stops being readable once a folder sits between the two (owner
   // directive 2026-08-31), and the STATE must stay the information — so the
   // level changes the size, never the hue.
-  const size = level === "subproject" ? "h-3 w-3" : "h-3.5 w-3.5";
-
-  // ⚠️ **A LIVE project trades its dot for a completion wheel, and nothing
-  // else does.** Owner directive 2026-09-23: *"Change colors only when a
-  // project or subproject's status is green... all other icons remain
-  // unchanged."* Paused and stopped keep the glyph and hue they have, which
-  // is also what keeps D-PM-27 true — a paused row still reads as paused at a
-  // glance, because its marker did not become a ring like everything else.
+  // A subproject draws the same mark one step smaller. Indentation alone
+  // stops being readable once a folder sits between the two (owner
+  // directive 2026-08-31), and the STATE must stay the information — so the
+  // level changes the size, never the hue.
   //
-  // ⚠️ EVERY live project, including one with no tasks — it draws an empty
-  // ring. A first version kept the dot in that case and the owner, looking at
-  // a real sidebar, reported the icons unchanged. See `showsWheel`.
-  if (showsWheel(state, progress)) {
-    return (
-      <ProgressWheel
-        progress={progress}
-        className={`${size} shrink-0 ${accent.text} ${
-          inherited ? "opacity-50" : ""
-        }`}
-        label={
-          inherited
-            ? `${wheelLabel(level, projectName, progress)} Inherited from a parent project.`
-            : wheelLabel(level, projectName, progress)
-        }
-      />
-    );
-  }
+  // ⚠️ One step up from 14/12 px, 2026-09-23. The mark family draws every
+  // state on one heavy ring, and at 14px a pause or a stop left too small a
+  // hole to read. 16px is also what the space marker beside these already
+  // uses, so the column now lines up.
+  const size = level === "subproject" ? "h-3.5 w-3.5" : "h-4 w-4";
 
+  // ⚠️ **A LIVE project draws a completion wheel.** Owner directive
+  // 2026-09-23. Every live project, including one with no tasks — it draws an
+  // empty ring. See `showsWheel`.
+  //
+  // ⚠️ **Every other state draws the SAME ring with a different inside**
+  // (owner directive 2026-09-23: *"continuity of iconography and everything
+  // looks like it has the same weight"*). They used to be Lucide glyphs at a
+  // thin stroke beside a heavy wheel. Shape still differs per state, so
+  // D-PM-27 holds: hue AND glyph, never hue alone. `lib/stateMark.ts` owns
+  // the shapes.
+  const live = showsWheel(state, progress);
+  const name = live
+    ? wheelLabel(level, projectName, progress)
+    : `${level}, ${label} — ${projectName}.`;
   return (
-    <Icon
-      name={visual?.icon ?? "Circle"}
+    <StateMark
+      state={state}
+      progress={live ? progress : undefined}
       className={`${size} shrink-0 ${accent.text} ${
         inherited ? "opacity-50" : ""
       }`}
-      aria-label={
-        inherited
-          ? `${level}, ${label} — inherited from a parent project`
-          : `${level}, ${label} — ${projectName}`
-      }
+      label={inherited ? `${name} Inherited from a parent project.` : name}
     />
-  );
-}
-
-/**
- * The completion wheel: a ring that fills as a project's subtree closes.
- *
- * Drawn as an SVG rather than an `Icon`, because the icon registry serves
- * fixed glyphs and this one's geometry is data. It still takes its colour from
- * `className`, so it inherits the run-state accent exactly as the dot did and
- * adds no second colour vocabulary (CLAUDE.md §4).
- *
- * ⚠️ `currentColor` for BOTH the track and the arc, with the track at low
- * opacity. A hardcoded track colour is the value that reads fine in dark mode
- * and wrong in light — the trap `DESIGN_SYSTEM.md` §0 opens with.
- *
- * ⚠️ Rotated -90° so the arc starts at twelve o'clock. SVG strokes a circle
- * from three o'clock, and a wheel that fills from the right reads as a
- * different quantity than the one the number says.
- *
- * 🔴 **NO `<title>` CHILD. The label is an attribute, never text.** An SVG
- * `<title>` is TEXT CONTENT, so the project name inside it became a second,
- * INVISIBLE match for that name in the row — and it sits before the visible
- * one in DOM order. `page.getByText("Bootloader").first()` then resolved to a
- * node that can never be clicked, and four timeline tests hung for two
- * minutes each until the whole browser job ran out its twenty minutes.
- *
- * The cost of getting this wrong is not only a test. Any reader searching the
- * page for a project name — browser find, a screen reader's text search, a
- * future test — hits a hidden duplicate first. `aria-label` on a `role="img"`
- * carries the accessible name on its own, and the wrapper's `title` attribute
- * gives the hover tooltip that the `<title>` child used to.
- */
-function ProgressWheel({
-  progress,
-  className,
-  label,
-}: {
-  progress: NodeProgress;
-  className?: string;
-  label: string;
-}) {
-  // A 16-unit box with r=6 leaves room for a 2.5-wide stroke without the ring
-  // clipping its own edge at the smallest size the tree draws.
-  const R = 6;
-  return (
-    // The tooltip rides on the WRAPPER as an attribute. `title` on a span is
-    // not text content, so it adds no second match for the project name.
-    <span className={`inline-flex ${className ?? ""}`} title={label}>
-      <svg
-        viewBox="0 0 16 16"
-        className="h-full w-full"
-        role="img"
-        aria-label={label}
-      >
-        <g transform="rotate(-90 8 8)">
-          <circle
-            cx="8"
-            cy="8"
-            r={R}
-            fill="none"
-            stroke="currentColor"
-            strokeOpacity={0.25}
-            strokeWidth={2.5}
-          />
-          <circle
-            cx="8"
-            cy="8"
-            r={R}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2.5}
-            strokeLinecap="round"
-            strokeDasharray={ringDash(progress, R)}
-          />
-        </g>
-      </svg>
-    </span>
   );
 }
 
@@ -831,7 +747,15 @@ function Node({
             entry.kind === "item"
               ? {
                   ...entry,
-                  icon: entry.icon ? themedIcon(entry.icon) : undefined,
+                  // A run-state row draws the SAME mark the tree does: the
+                  // picker is where the state is changed, and a picker in one
+                  // icon set beside a tree in another is the discontinuity
+                  // the mark family removes.
+                  icon: entry.runState
+                    ? stateMarkIcon(entry.runState)
+                    : entry.icon
+                      ? themedIcon(entry.icon)
+                      : undefined,
                 }
               : entry
           )}

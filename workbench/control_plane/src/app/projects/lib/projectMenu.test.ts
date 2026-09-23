@@ -213,6 +213,18 @@ describe("projectMenuItems", () => {
     expect(new Set(icons).size).toBe(icons.length);
   });
 
+  it("names the run state on every state row, so the menu draws the tree's marks", () => {
+    // Owner directive 2026-09-23: one mark family, the same weight
+    // everywhere. The picker is where a state is CHANGED. A picker drawing
+    // Lucide glyphs beside a tree drawing the heavy ring family is the
+    // discontinuity that directive removed. `runState` is what the surface
+    // reads to draw the mark instead of `icon`.
+    const states = projectMenuItems(project(), handlers())
+      .filter((i) => i.kind === "item" && "runState" in i && i.runState)
+      .map((i) => (i as { runState: string }).runState);
+    expect(states).toEqual([...PROJECT_STATE_ORDER]);
+  });
+
   // ── Rename (WS-27bg slice 2 remainder) ────────────────────────────────────
 
   it("offers Rename only when the surface can raise a rename field", () => {
