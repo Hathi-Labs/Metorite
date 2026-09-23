@@ -394,7 +394,8 @@ async def test_pm_reads_compose_the_shared_membership_clause(monkeypatch) -> Non
     assert sql.startswith(_MY_TASKS_SQL)
     assert "t.organization_id = CAST(:vis_org AS uuid)" in sql
     assert "t.origin->>'email_id' = :val" in sql
-    assert "p.disposition NOT IN ('DONE','TRASH')" in sql
+    # D76: only TRASH prunes. A stated DONE may have been reopened.
+    assert "p.disposition <> 'TRASH'" in sql
     assert params == {"who": "alice@fracktal.in", "vis_org": "org-1",
                       "vis_email": "alice@fracktal.in", "vis_groups": [],
                       "archived": False, "val": "m-9"}

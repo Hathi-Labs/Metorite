@@ -19,9 +19,10 @@ mine is ``_MY_TASKS_SQL``, called. Where a capture lands is
 called. A copy of any of them here would be a mirror, and mirrors go stale and
 then lie.
 
-**Disposition is STATED where triaged and DERIVED otherwise.** Every query
-prunes in SQL on the stated column (``_PM_ALIVE``) and rules in Python with
-``derive_disposition``, exactly as the planner does. A SQL copy of the rule
+**Disposition is STATED where triaged and DERIVED otherwise**, and the
+task's lane wins over both (D76). Every query prunes in SQL on the stated
+column (``_PM_ALIVE``) and rules in Python with ``effective_disposition``,
+exactly as the planner does. A SQL copy of the rule
 would be the mirror the paragraph above refuses.
 
 **Where a capture goes.** Into the caller's personal root, self-assigned,
@@ -58,14 +59,16 @@ from gateway.routes.projects.core import (
 from gateway.routes.projects.personal import (
     _MY_TASKS_SQL,
     DISPOSITIONS,
+    IMPORTANT_AT,
     _as_utc,
     _upsert_personal,
     complete_for_member,
     create_personal_task,
-    derive_disposition,
+    effective_disposition,
     ensure_personal_project,
     member_contexts,
     my_tasks_binds,
+    waiting_on_for,
 )
 from gateway.routes.projects.planning import _PM_ALIVE
 from gateway.routes.tasks.core import DEFAULT_CONTEXTS
@@ -75,11 +78,13 @@ from sqlalchemy import text
 # ── Row shape ────────────────────────────────────────────────────────────────
 
 #: Overlay columns copied straight off a `_MY_TASKS_SQL` row (`p_<name>`).
+#: D76 took two names off this list: `time_estimate_mins` and `important`
+#: are read off the SHARED task in `_pm_item`, under the same names.
 _OVERLAY = (
-    "next_action", "context", "energy", "time_estimate_mins", "defer_until",
+    "next_action", "context", "energy", "defer_until",
     "clarified_at", "delegated_at", "expected_by", "last_nudged_at",
     "scheduled_start", "scheduled_end", "actual_start", "actual_end",
-    "important", "leveraged", "deep_work", "kept_mine", "sort_key",
+    "leveraged", "deep_work", "kept_mine", "sort_key",
 )
 
 #: The stored vocabulary is migration 147's. Two values the email router may
@@ -132,15 +137,23 @@ def _pm_item(row: Any) -> SimpleNamespace:
         status_id=str(getattr(row, "status_id", "") or "") or None,
         status_category=getattr(row, "status_category", None),
         stated_disposition=stated,
-        disposition=stated or derive_disposition(
-            status_category=str(getattr(row, "status_category", "") or ""),
+        disposition=effective_disposition(
+            stated,
+            status_category=getattr(row, "status_category", None),
             is_mine=bool(getattr(row, "is_mine", False)),
             has_assignee=int(getattr(row, "assignee_count", 0) or 0) > 0,
         ),
         is_two_minute=bool(getattr(row, "p_is_two_minute", False)),
         is_hard_date=bool(getattr(row, "p_is_hard_date", False)),
         flexible=True if flexible is None else bool(flexible),
-        waiting_on=from_jsonb(getattr(row, "p_waiting_on", None)),
+        # D76 — the task's assignees minus me, the rule the inbox applies.
+        waiting_on=waiting_on_for(
+            getattr(row, "other_assignees", None),
+            from_jsonb(getattr(row, "p_waiting_on", None)),
+        ),
+        # D76 — the two matrix and planning inputs that are shared facts.
+        time_estimate_mins=getattr(row, "estimate_mins", None),
+        important=(getattr(row, "importance", None) or 0) >= IMPORTANT_AT,
         due_at=getattr(row, "due_at", None),
         assignee=None,
         assignees=None,
@@ -292,7 +305,10 @@ class _PmLens(ItemSource):
     async def context_less_actionables(self, db, uid, limit):
         items = await self._items(
             db, uid,
-            " AND (p.disposition IS NULL OR p.disposition IN ('NEXT', 'WAITING'))"
+            # D76: a stated DONE on a reopened task reads NEXT, so it stays
+            # in the prune and Python rules on the effective value.
+            " AND (p.disposition IS NULL"
+            "      OR p.disposition IN ('NEXT', 'WAITING', 'DONE'))"
             " AND (p.context IS NULL OR p.context = '')"
             " AND t.parent_task_id IS NULL"
             " ORDER BY t.updated_at DESC LIMIT :lim",
@@ -391,6 +407,8 @@ class _PmLens(ItemSource):
             "title": fields["title"],
             "description": fields.get("description") or None,
             "due_at": fields.get("due_at"),
+            # D76: the drafter's estimate is the task's one estimate.
+            "estimate_mins": fields.get("time_estimate_mins"),
             "source": source,
             "origin": origin,
         }, {
@@ -398,7 +416,6 @@ class _PmLens(ItemSource):
             "next_action": fields.get("next_action") or None,
             "context": fields.get("context") or None,
             "energy": fields.get("energy") or None,
-            "time_estimate_mins": fields.get("time_estimate_mins"),
             "defer_until": fields.get("defer_until"),
             "is_hard_date": bool(fields.get("is_hard_date", False)),
             "clarified_at": fields.get("clarified_at"),

@@ -336,17 +336,26 @@ def _lane_miss(name: str, lanes: list[dict[str, Any]]) -> str:
             f"{', '.join(s['name'] for s in lanes) or '(none)'}")
 
 
-#: Shared facts about the WORK → `PATCH /projects/tasks/{id}`.
+#: Shared facts about the WORK → `PATCH /projects/tasks/{id}`. D76 moved
+#: the estimate here (`pm_tasks.estimate_mins`, the one People capacity
+#: reads) and added the shared Priority and start date.
 _TASK_KEYS: dict[str, str] = {"title": "title", "notes": "description",
-                              "due_at": "due_at"}
+                              "due_at": "due_at",
+                              "time_estimate_mins": "estimate_mins",
+                              "importance": "importance",
+                              "start_date": "start_date"}
+
+#: Priority → "important" in the Focus matrix: High (2) or Urgent (3). The
+#: gateway's `personal.IMPORTANT_AT` and the client's `priority.ts` agree.
+_IMPORTANT_AT = 2
 
 #: My practice → `PATCH /projects/tasks/{id}/personal`.
 _OVERLAY_KEYS: frozenset[str] = frozenset({
-    "disposition", "next_action", "context", "energy", "time_estimate_mins",
+    "disposition", "next_action", "context", "energy",
     "is_two_minute", "defer_until",
     "scheduled_start", "scheduled_end", "flexible", "is_hard_date",
     "actual_start", "actual_end",
-    "important", "leveraged", "deep_work", "kept_mine", "sort_key",
+    "leveraged", "deep_work", "kept_mine", "sort_key",
     "waiting_on", "delegated_at", "expected_by", "last_nudged_at",
 })
 
@@ -851,10 +860,12 @@ async def gtd_update(item_id: str, title: str = "", notes: str = "",
         defer_until: ISO date to hide it until (tickler); "clear" un-snoozes.
         context: "@computer" | "@calls" | … (empty = unchanged).
         energy: low | medium | high (empty = unchanged).
-        time_estimate_mins: Estimated minutes (0 = unchanged).
+        time_estimate_mins: Estimated minutes (0 = unchanged). The task's
+            ONE estimate, shared with the board (D76).
         due_at: ISO date/datetime deadline; "clear" removes it.
         important: "true"/"false" — significant downside if it slips
-            (empty = unchanged).
+            (empty = unchanged). Sets the SHARED Priority (D76): true
+            raises it to High, false lowers it to Normal.
         leveraged: "true"/"false" — outsized upside / 100x bet
             (empty = unchanged).
         deep_work: "true"/"false" — needs an unbroken FLOW state (creative,
@@ -877,8 +888,16 @@ async def gtd_update(item_id: str, title: str = "", notes: str = "",
         patch["time_estimate_mins"] = time_estimate_mins
     if due_at:
         patch["due_at"] = None if due_at == "clear" else due_at
-    for key, raw in (("important", important), ("leveraged", leveraged),
-                     ("deep_work", deep_work)):
+    wants = _flag(important)
+    if wants is not None:
+        # D76: "important" is the shared Priority read at High or above.
+        current = (await _my_task(item_id)).get("importance")
+        level = current if isinstance(current, int) else None
+        if wants and (level is None or level < _IMPORTANT_AT):
+            patch["importance"] = _IMPORTANT_AT
+        elif not wants and level is not None and level >= _IMPORTANT_AT:
+            patch["importance"] = _IMPORTANT_AT - 1
+    for key, raw in (("leveraged", leveraged), ("deep_work", deep_work)):
         val = _flag(raw)
         if val is not None:
             patch[key] = val
@@ -954,14 +973,18 @@ async def gtd_detail(item_id: str) -> str:
     i = await _my_task(item_id)
     mine = await _my_project_ids()
     lines = [_fmt_item(i, mine)]
-    flags = [name for name, key in (("important", "important"),
-                                    ("leveraged", "leveraged"),
+    flags = [name for name, key in (("leveraged", "leveraged"),
                                     ("deep work (flow)", "deep_work"))
              if i.get(key)]
+    # D76: important is read off the shared Priority, never the overlay.
+    if isinstance(i.get("importance"), int) and i["importance"] >= _IMPORTANT_AT:
+        flags.insert(0, "important")
     if flags:
         lines.append("  flags: " + ", ".join(flags))
     for label, key in (("energy", "energy"),
-                       ("estimate mins", "time_estimate_mins"),
+                       ("priority", "importance"),
+                       ("estimate mins", "estimate_mins"),
+                       ("starts", "start_date"),
                        ("stage", "workflow_stage"),
                        ("scheduled", "scheduled_start"),
                        ("notes", "description")):

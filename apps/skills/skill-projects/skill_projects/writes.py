@@ -1602,9 +1602,10 @@ async def set_my_overlay(
     """Set the member's OWN triage of a task, which the team's board never
     sees: disposition (INBOX, NEXT, WAITING, SOMEDAY, PROJECT, REFERENCE,
     DONE, TRASH), context (@office), energy (low, medium, high),
-    next_action, estimate_mins, two_minute (yes or no). clear empties
-    fields: context, energy, next_action, estimate. A DONE disposition does
-    not complete the shared task; complete does. defer sets a date."""
+    two_minute (yes or no). clear empties fields: context, energy,
+    next_action. A DONE disposition does not complete the shared task;
+    complete does. defer sets a date. The estimate is the TASK's, shared
+    with the board since D76: set it with update_task, not here."""
     tid, task = await _task(task_id)
     unread = ""
     try:
@@ -1636,19 +1637,21 @@ async def set_my_overlay(
     if next_action.strip():
         payload["next_action"] = next_action.strip()
         before["next_action"] = mine.get("next_action")
-    est = _int_or_none(estimate_mins)
-    if est is not None:
-        payload["time_estimate_mins"] = est
-        before["time_estimate_mins"] = mine.get("time_estimate_mins")
+    if _int_or_none(estimate_mins) is not None:
+        # D76: one estimate, on the task. Refused by name rather than
+        # dropped, so the model learns where it goes.
+        return ("The estimate is the task's own since D76, shared with the "
+                "board and People capacity. Set it with update_task "
+                "(estimate_mins).")
     flag = _yes_no(two_minute, "two_minute")
     if flag is not None:
         payload["is_two_minute"] = flag
         before["is_two_minute"] = mine.get("is_two_minute")
     cleared: dict[str, Any] = {}
     for field in _split(clear):
-        key = {"estimate": "time_estimate_mins"}.get(field.lower(), field.lower())
-        if key not in ("context", "energy", "next_action", "time_estimate_mins"):
-            return f"clear takes context, energy, next_action or estimate, not {data(field)}."
+        key = field.lower()
+        if key not in ("context", "energy", "next_action"):
+            return f"clear takes context, energy or next_action, not {data(field)}."
         cleared[key] = None
         before[key] = mine.get(key)
     payload = {**cleared, **payload}

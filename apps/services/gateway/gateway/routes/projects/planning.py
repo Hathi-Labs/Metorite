@@ -39,9 +39,10 @@ from acb_auth import UserContext, get_current_user
 from fastapi import Depends
 from gateway.routes.projects.core import router
 from gateway.routes.projects.personal import (
+    IMPORTANT_AT,
     MY_TASKS_FROM,
     _upsert_personal,
-    derive_disposition,
+    effective_disposition,
     my_tasks_binds,
 )
 from gateway.routes.tasks.calendar import (
@@ -64,6 +65,12 @@ from sqlalchemy import text
 #: BARE (`scheduled_start`, not `p_scheduled_start`) because the packer reads
 #: these names off the row directly; there is no collision, since none of the
 #: overlay's columns exists on `pm_tasks`.
+#:
+#: ⚠️ D76: two of the names the packer reads are now SHARED facts, aliased to
+#: the names it already knows. `time_estimate_mins` is `pm_tasks.estimate_mins`
+#: (the one estimate, the one People capacity reads), and `important` is the
+#: shared Priority read through `IMPORTANT_AT`. The overlay columns of those
+#: names are no longer read.
 _PM_SELECT = """
 SELECT t.id::text                AS id,
        t.title,
@@ -73,10 +80,13 @@ SELECT t.id::text                AS id,
        t.parent_task_id,
        s.category                AS status_category,
        p.disposition             AS stated_disposition,
-       p.next_action, p.context, p.energy, p.time_estimate_mins,
+       p.next_action, p.context, p.energy,
+       t.estimate_mins           AS time_estimate_mins,
        p.scheduled_start, p.scheduled_end, p.flexible, p.is_hard_date,
        p.actual_start, p.actual_end,
-       p.important, p.leveraged, p.deep_work, p.kept_mine, p.sort_key,
+       (coalesce(t.importance, 0) >= """ + str(IMPORTANT_AT) + """)
+                                 AS important,
+       p.leveraged, p.deep_work, p.kept_mine, p.sort_key,
        (SELECT count(*) FROM pm_task_assignees a2 WHERE a2.task_id = t.id)
                                  AS assignee_count,
        EXISTS (SELECT 1 FROM pm_task_assignees a3
@@ -86,12 +96,17 @@ SELECT t.id::text                AS id,
 
 #: ⚠️ Every predicate below prunes with the STATED disposition and never decides
 #: with it. `(p.disposition IS NULL OR …)` keeps untriaged rows in the result so
-#: `derive_disposition` can rule on them in Python; the `NOT IN` half throws away
+#: `effective_disposition` can rule on them in Python; the TRASH half throws away
 #: rows whose stated value already settles it. That is a cheap index-friendly
 #: filter over a question SQL cannot answer, NOT a second copy of the rule — and
 #: the difference matters, because a SQL copy of `derive_disposition` is a mirror
 #: and mirrors go stale and then lie.
-_PM_ALIVE = " AND (p.disposition IS NULL OR p.disposition NOT IN ('DONE','TRASH'))"
+#:
+#: ⚠️ D76 narrowed the prune to TRASH alone. A stated DONE is no longer
+#: final: a teammate can reopen the task, and `effective_disposition` then
+#: reads it as NEXT. Only the lane can settle DONE, and SQL cannot see the
+#: rule, so the stated DONE row is kept and ruled on in Python.
+_PM_ALIVE = " AND (p.disposition IS NULL OR p.disposition <> 'TRASH')"
 _PM_MINE = (
     " AND EXISTS (SELECT 1 FROM pm_task_assignees a4"
     "             WHERE a4.task_id = t.id AND lower(a4.assignee) = :who)"
@@ -109,7 +124,7 @@ _PM_CARRY_WHERE = (
 )
 _PM_CANDIDATE_WHERE = (
     " AND t.parent_task_id IS NULL" + _PM_MINE
-    + " AND (p.disposition IS NULL OR p.disposition = 'NEXT')"
+    + " AND (p.disposition IS NULL OR p.disposition IN ('NEXT', 'DONE'))"
     " AND p.scheduled_start IS NULL"
 )
 _PM_OVERDUE_WHERE = (
@@ -124,7 +139,9 @@ _PM_BUSY_WHERE = (
 )
 
 #: The learned-estimate signal, over the overlay. Same shape as the `gtd_items`
-#: query it mirrors, against the columns migration 187 moved.
+#: query it mirrors, against the columns migration 187 moved. D76: the plan
+#: falls back to the SHARED estimate, `pm_tasks.estimate_mins`, when no block
+#: was drawn — the overlay's `time_estimate_mins` is no longer read.
 _PM_RATIO_SQL = """
 SELECT count(*) AS n,
        percentile_cont(0.5) WITHIN GROUP (ORDER BY r) AS median_ratio
@@ -132,15 +149,16 @@ SELECT count(*) AS n,
     SELECT EXTRACT(EPOCH FROM (actual_end - actual_start)) / 60.0
              / NULLIF(planned, 0) AS r
       FROM (
-        SELECT actual_start, actual_end,
+        SELECT p.actual_start, p.actual_end,
                COALESCE(
-                 EXTRACT(EPOCH FROM (scheduled_end - scheduled_start)) / 60.0,
-                 time_estimate_mins) AS planned
-          FROM pm_task_personal
-         WHERE lower(member_email) = :who
-           AND actual_start IS NOT NULL AND actual_end IS NOT NULL
-           AND actual_end > actual_start
-           AND actual_end > now() - interval '90 days'
+                 EXTRACT(EPOCH FROM (p.scheduled_end - p.scheduled_start)) / 60.0,
+                 tk.estimate_mins) AS planned
+          FROM pm_task_personal p
+          JOIN pm_tasks tk ON tk.id = p.task_id
+         WHERE lower(p.member_email) = :who
+           AND p.actual_start IS NOT NULL AND p.actual_end IS NOT NULL
+           AND p.actual_end > p.actual_start
+           AND p.actual_end > now() - interval '90 days'
       ) s
      WHERE planned > 0
   ) t
@@ -150,17 +168,18 @@ SELECT count(*) AS n,
 def _pm_row(row: Any) -> SimpleNamespace:
     """A `pm_*` row, wearing the names the planner already reads.
 
-    The one substantive translation is `disposition`: STATED where the member
-    has triaged, DERIVED otherwise — the same rule `/projects/my/inbox` applies,
-    called rather than restated. Everything else is a passthrough, so the packer
-    below cannot tell which store it is working on, which is exactly the property
-    that keeps the two from drifting.
+    The one substantive translation is `disposition`: the EFFECTIVE one
+    (`effective_disposition`, D76) — the same rule `/projects/my/inbox`
+    applies, called rather than restated. Everything else is a passthrough,
+    so the packer below cannot tell which store it is working on, which is
+    exactly the property that keeps the two from drifting.
     """
     stated = getattr(row, "stated_disposition", None)
     return SimpleNamespace(
         **{k: getattr(row, k) for k in _PM_PASSTHROUGH},
-        disposition=stated or derive_disposition(
-            status_category=str(getattr(row, "status_category", "") or ""),
+        disposition=effective_disposition(
+            stated,
+            status_category=getattr(row, "status_category", None),
             is_mine=bool(getattr(row, "is_mine", False)),
             has_assignee=int(getattr(row, "assignee_count", 0) or 0) > 0,
         ),

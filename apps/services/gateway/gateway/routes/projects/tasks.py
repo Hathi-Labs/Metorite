@@ -321,7 +321,33 @@ async def get_task(
             {"tid": task_id},
         )).fetchall()
         result["assignees"] = [r.assignee for r in assignees]
+        result["time_spent_mins"] = await time_spent_mins(db, task_id)
         return result
+
+
+#: D76 — the work actually done on a task, summed over EVERY member's timed
+#: block (`pm_task_personal.actual_start` → `actual_end`). One member's
+#: actuals are theirs (the overlay), but the SUM is a fact about the work,
+#: which is why Projects shows it beside the shared estimate. Bound to the
+#: task the caller already loaded through `load_visible_task`: the overlay
+#: rows hang off that task by foreign key, and the tenant clause is on the
+#: read as well as on RLS (R5), the way `MY_TASKS_FROM` carries one.
+_TIME_SPENT_SQL = (
+    "SELECT COALESCE(round(sum(EXTRACT(EPOCH FROM (p.actual_end - p.actual_start)))"
+    " / 60.0), 0) AS mins"
+    "  FROM pm_task_personal p"
+    "  JOIN pm_tasks t ON t.id = p.task_id"
+    "   AND t.organization_id = p.organization_id"
+    " WHERE p.task_id = CAST(:tid AS uuid)"
+    "   AND p.actual_start IS NOT NULL AND p.actual_end IS NOT NULL"
+    "   AND p.actual_end > p.actual_start"
+)
+
+
+async def time_spent_mins(db: Any, task_id: str) -> int:
+    """Minutes every member has timed on one task. ``0`` when nobody has."""
+    row = (await db.execute(text(_TIME_SPENT_SQL), {"tid": task_id})).first()
+    return int(getattr(row, "mins", 0) or 0) if row is not None else 0
 
 
 # ── Writes ──────────────────────────────────────────────────────────────────
