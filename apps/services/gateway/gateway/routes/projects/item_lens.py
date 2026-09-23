@@ -70,7 +70,7 @@ from gateway.routes.projects.personal import (
     my_tasks_binds,
     waiting_on_for,
 )
-from gateway.routes.projects.planning import _PM_ALIVE
+from gateway.routes.projects.planning import _CLOSED_LANE, _PM_ALIVE
 from gateway.routes.tasks.core import DEFAULT_CONTEXTS
 from gateway.routes.tasks.item_source import ItemSource, origin_key_sql
 from sqlalchemy import text
@@ -309,6 +309,7 @@ class _PmLens(ItemSource):
             # in the prune and Python rules on the effective value.
             " AND (p.disposition IS NULL"
             "      OR p.disposition IN ('NEXT', 'WAITING', 'DONE'))"
+            + _CLOSED_LANE +
             " AND (p.context IS NULL OR p.context = '')"
             " AND t.parent_task_id IS NULL"
             " ORDER BY t.updated_at DESC LIMIT :lim",

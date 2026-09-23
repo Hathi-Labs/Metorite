@@ -446,3 +446,19 @@ def test_the_ledger_guard_names_this_very_file() -> None:
     assert guard.group(1) == path.name
     header = sql.splitlines()[0]
     assert header.startswith(f"-- {path.name} ")
+
+
+def test_closed_lanes_are_pruned_in_sql_for_every_caller_that_drops_done() -> None:
+    """Completed rows must not crowd a LIMIT out of the open rows (D76)."""
+    from gateway.routes.projects import item_lens as pm_item_lens
+
+    closed = "s.category NOT IN ('cancelled', 'done')"
+    assert closed in pm_planning._PM_ALIVE
+    assert closed in pm_planning._PM_CANDIDATE_WHERE
+    for where in (pm_planning._PM_CARRY_WHERE, pm_planning._PM_OVERDUE_WHERE,
+                  pm_planning._PM_BUSY_WHERE):
+        assert closed in where
+    src = Path(pm_item_lens.__file__).read_text(encoding="utf-8")
+    body = src[src.index("async def context_less_actionables"):]
+    body = body[:body.index("async def insight_counts")]
+    assert "_CLOSED_LANE" in body

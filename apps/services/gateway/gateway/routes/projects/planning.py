@@ -37,7 +37,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends
-from gateway.routes.projects.core import router
+from gateway.routes.projects.core import CLOSING_CATEGORIES, router
 from gateway.routes.projects.personal import (
     IMPORTANT_AT,
     MY_TASKS_FROM,
@@ -106,7 +106,19 @@ SELECT t.id::text                AS id,
 #: final: a teammate can reopen the task, and `effective_disposition` then
 #: reads it as NEXT. Only the lane can settle DONE, and SQL cannot see the
 #: rule, so the stated DONE row is kept and ruled on in Python.
-_PM_ALIVE = " AND (p.disposition IS NULL OR p.disposition <> 'TRASH')"
+#:
+#: The lane half IS decidable in SQL, and it is decided there: a closed lane
+#: reads DONE whatever was stated (`effective_disposition`), and every caller
+#: of this prune drops DONE. Left to Python, completed rows would crowd the
+#: `LIMIT` of `open_items` and `siblings` out of the open rows they want.
+_CLOSED_LANE = (
+    " AND s.category NOT IN ("
+    + ", ".join(f"'{c}'" for c in sorted(CLOSING_CATEGORIES))
+    + ")"
+)
+_PM_ALIVE = (
+    " AND (p.disposition IS NULL OR p.disposition <> 'TRASH')" + _CLOSED_LANE
+)
 _PM_MINE = (
     " AND EXISTS (SELECT 1 FROM pm_task_assignees a4"
     "             WHERE a4.task_id = t.id AND lower(a4.assignee) = :who)"
@@ -125,7 +137,8 @@ _PM_CARRY_WHERE = (
 _PM_CANDIDATE_WHERE = (
     " AND t.parent_task_id IS NULL" + _PM_MINE
     + " AND (p.disposition IS NULL OR p.disposition IN ('NEXT', 'DONE'))"
-    " AND p.scheduled_start IS NULL"
+    + _CLOSED_LANE
+    + " AND p.scheduled_start IS NULL"
 )
 _PM_OVERDUE_WHERE = (
     " AND t.parent_task_id IS NULL" + _PM_ALIVE
