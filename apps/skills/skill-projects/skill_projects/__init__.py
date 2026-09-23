@@ -61,6 +61,7 @@ from skill_projects.reads import (
     report_list,
     report_render,
     task_detail,
+    team_capacity,
     vocabulary,
 )
 from skill_projects.views import (
@@ -138,6 +139,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "watchers",
     # Class A — navigation (S6)
     "open_in_app",
+    # Class A — team intelligence (S7a)
+    "team_capacity",
     # Class B — reversible writes, one card each (S2)
     "add_subtasks",
     "assign",

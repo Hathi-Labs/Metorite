@@ -174,6 +174,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "watchers": [{"target_id": UUID, "kind": "task"}, {"target_id": UUID, "kind": "project"}],
     "intake_queue": [{"project_id": UUID}],
     "notifications": [{}],
+    # S7a — team intelligence
+    "team_capacity": [{"project_id": UUID, "horizon_days": 21}, {}],
     # S6 — navigation
     "open_in_app": [
         {"target": "task", "target_id": UUID},
@@ -264,9 +266,55 @@ def _s4_detail(call: dict) -> Any:
         }
     if path.startswith("/projects/analytics/load"):
         return {"people": [{"assignee": "a@x.io", "open_tasks": 4, "overdue": 1}]}
+    if path.startswith("/projects/analytics/capacity"):
+        return _capacity_payload(hr=True)
     if path.startswith("/projects/analytics/outlook"):
         return {"plan": {"planned_finish": "2026-11-01", "dated": 3, "tasks": 5, "slip_days": 2}}
     return None
+
+
+def _capacity_payload(*, hr: bool) -> dict:
+    """The capacity route's real shape (`analytics_capacity.capacity_body`)."""
+    ana: dict[str, Any] = {
+        "assignee": "ana@x.io", "name": "Ana", "kind": "person",
+        "in_directory": True, "open_tasks": 3, "overdue": 1, "due_next_7d": 1,
+        "later": 1, "estimated_hours_left": 2.0, "estimated": 1,
+    }
+    if hr:
+        ana.update({
+            "all_work": {"open_tasks": 5, "overdue": 1, "unestimated": 2, "in_progress": 2},
+            "contracted_hours_per_week": 40.0,
+            "working_hours_this_week": 32.0, "working_hours_horizon": 80.0,
+            "committed_hours_this_week": 10.0, "committed_hours_horizon": 22.5,
+            "spare_hours_this_week": 22.0, "spare_hours_horizon": 57.5,
+            "hours_basis": True, "hours_note": None,
+            "absences": [{"kind": "leave", "starts_on": "2026-09-28", "ends_on": "2026-09-29"}],
+            "end_date": None, "leaving_in_window": False,
+            "at_risk": [{"task_id": UUID, "title": "Ship «it»\nnow", "due_on": "2026-09-25",
+                         "own_hours": 8.0, "needed_hours": 20.0, "available_hours": 16.0,
+                         "shortfall_hours": 4.0}],
+            "pill": "at_risk", "pill_reason": "Ship it is due 2026-09-25.",
+            "flags": ["behind", "at_risk"],
+            "max_concurrent_tasks": 1, "over_concurrency": True,
+            "skills": [{"skill": "CAD", "level": "expert"}, {"skill": "Python", "level": None}],
+        })
+    return {
+        "project_id": UUID, "scope": "node", "include_subtree": True,
+        "horizon_days": 14, "hr_visible": hr,
+        "windows": {
+            "week": {"starts_on": "2026-09-21", "ends_on": "2026-09-27", "used_for": "pill"},
+            "horizon": {"starts_on": "2026-09-23", "ends_on": "2026-10-07", "days": 14,
+                        "used_for": "spare_hours_and_at_risk"},
+        },
+        "task_scope": "this_scope", "hours_scope": "all_visible_work", "partial": False,
+        "total_tasks": 4, "people_total": 1,
+        "rows": [
+            ana,
+            {"assignee": None, "name": None, "kind": "unassigned", "in_directory": False,
+             "open_tasks": 1, "overdue": 0, "due_next_7d": 0, "later": 1,
+             "estimated_hours_left": 0.0, "estimated": 0},
+        ],
+    }
 
 
 def _s5_detail(call: dict) -> Any:
@@ -986,3 +1034,80 @@ async def test_an_inbox_with_no_personal_project_is_empty_not_failed(monkeypatch
     out = await skill_projects.my_work(view="inbox")
     assert "No personal project yet" in out
     assert "My inbox: nothing." in out
+
+
+# ── S7a — team_capacity ──────────────────────────────────────────────────────
+
+
+async def test_team_capacity_prints_both_windows_and_the_hours(monkeypatch) -> None:
+    calls = fake_gateway(monkeypatch, lambda _c: _capacity_payload(hr=True))
+    out = await skill_projects.team_capacity(project_id=UUID, horizon_days=21)
+    assert calls[0]["path"] == "/projects/analytics/capacity"
+    assert calls[0]["params"]["horizon_days"] == 21
+    assert "2026-09-21 to 2026-09-27" in out
+    assert "2026-09-23 to 2026-10-07" in out
+    assert "spare 57.5h" in out
+    assert "in progress 2 of max 1" in out and "over the ceiling" in out
+    assert "«CAD» (expert)" in out
+    assert "short 4h" in out
+
+
+async def test_team_capacity_fences_member_text(monkeypatch) -> None:
+    """A task title is member text. A newline in it must not forge a row."""
+    fake_gateway(monkeypatch, lambda _c: _capacity_payload(hr=True))
+    out = await skill_projects.team_capacity(project_id=UUID)
+    risk = next(line for line in out.splitlines() if "at risk:" in line)
+    assert "«" in risk
+    assert not any(line.startswith("now") for line in out.splitlines())
+
+
+async def test_team_capacity_says_who_can_see_hours_and_never_guesses(monkeypatch) -> None:
+    """§13.2 rule 3. Without the grant the tool says an admin can see
+    capacity, and prints no hours of its own."""
+    fake_gateway(monkeypatch, lambda _c: _capacity_payload(hr=False))
+    out = await skill_projects.team_capacity()
+    assert "An admin can see capacity" in out
+    assert "Do not estimate" in out
+    assert "spare" not in out.replace("spare hours and at-risk", "")
+    assert "contracted" not in out
+
+
+async def test_team_capacity_clamps_the_horizon_before_the_call(monkeypatch) -> None:
+    calls = fake_gateway(monkeypatch, lambda _c: _capacity_payload(hr=True))
+    await skill_projects.team_capacity(horizon_days=400)
+    await skill_projects.team_capacity(horizon_days=-3)
+    assert [c["params"]["horizon_days"] for c in calls] == [90, 1]
+
+
+async def test_a_capacity_report_row_with_no_name_prints_its_address(monkeypatch) -> None:
+    """Review round 1 (P2). A person with no directory row (a former colleague,
+    an unknown address) has no `name`. The row must print the ADDRESS, never
+    "unassigned", or the model tells the member the work has no owner."""
+
+    def responder(call: dict) -> Any:
+        if call["path"].endswith("/render"):
+            return {
+                "report": {"name": "Weekly"},
+                "period_start": "2026-09-15",
+                "period_end": "2026-09-21",
+                "sections": {
+                    "capacity": {
+                        "people": [
+                            {"assignee": "gone@x.io", "name": None, "kind": "person",
+                             "open_tasks": 4},
+                            {"assignee": None, "name": None, "kind": "unassigned",
+                             "open_tasks": 2},
+                        ],
+                        "people_total": 1, "total_tasks": 6, "hr_visible": False,
+                        "horizon_days": 14,
+                    }
+                },
+            }
+        return {"id": UUID, "name": "Weekly", "scope": "portfolio"}
+
+    fake_gateway(monkeypatch, responder)
+    out = await skill_projects.report_render(report_id=UUID)
+    rows = [line for line in out.splitlines() if line.startswith("- ")]
+    assert any("«gone@x.io»" in line and "open_tasks 4" in line for line in rows), rows
+    unassigned = [line for line in rows if line.startswith("- «unassigned»")]
+    assert len(unassigned) == 1 and "open_tasks 2" in unassigned[0], rows

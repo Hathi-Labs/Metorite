@@ -298,6 +298,91 @@ export interface OutlookReport {
   };
 }
 
+/**
+ * WS-27bm S7a — who holds the open work, and whether they have the hours.
+ *
+ * ⚠️ **The HR half is ABSENT for a caller without `admin:members:read`, not
+ * null.** Every HR key is optional here for that reason, and `hr_visible`
+ * says which answer arrived. A reader must test for the key, never compare a
+ * missing figure with zero: zero would read as "free".
+ *
+ * ⚠️ **Two scopes.** `open_tasks`, `overdue` and the estimate left are THIS
+ * scope, and equal Load's figures for it. The hours are measured over all the
+ * work the caller can see, and `all_work` carries those counts.
+ */
+export interface CapacityRow {
+  /** `null` is the unassigned row, which the server always sends, last. */
+  assignee: string | null;
+  name: string | null;
+  kind: "person" | "agent" | "unassigned";
+  in_directory: boolean;
+  open_tasks: number;
+  overdue: number;
+  due_next_7d: number;
+  later: number;
+  estimated_hours_left: number;
+  estimated: number;
+  // ── The HR half. Absent without the grant. ─────────────────────────────
+  all_work?: {
+    open_tasks: number;
+    overdue: number;
+    unestimated: number;
+    in_progress: number;
+  };
+  contracted_hours_per_week?: number;
+  working_hours_this_week?: number | null;
+  working_hours_horizon?: number | null;
+  /** The four below are ALSO absent when `hours_basis` is false. */
+  committed_hours_this_week?: number;
+  committed_hours_horizon?: number;
+  spare_hours_this_week?: number | null;
+  spare_hours_horizon?: number | null;
+  hours_basis?: boolean;
+  /** Why the hours are missing, when they are. */
+  hours_note?: string | null;
+  absences?: { kind: string; starts_on: string; ends_on: string }[];
+  end_date?: string | null;
+  leaving_in_window?: boolean;
+  at_risk?: {
+    task_id: string;
+    title: string;
+    due_on: string;
+    needed_hours: number;
+    available_hours: number;
+    shortfall_hours: number;
+  }[];
+  pill?: "behind" | "at_risk" | "overloaded" | "idle" | "on_track";
+  pill_reason?: string;
+  flags?: string[];
+  max_concurrent_tasks?: number | null;
+  over_concurrency?: boolean;
+  skills?: { skill: string; level: string | null }[];
+}
+
+export interface CapacityWindow {
+  starts_on: string;
+  ends_on: string;
+}
+
+export interface CapacityReport {
+  project_id: string | null;
+  scope: "portfolio" | "node";
+  horizon_days: number;
+  hr_visible: boolean;
+  /** The pill's Monday-to-Sunday week, and the spare-hours horizon. */
+  windows: {
+    week: CapacityWindow & { used_for: string };
+    horizon: CapacityWindow & { days: number; used_for: string };
+  };
+  task_scope: string;
+  hours_scope: string;
+  partial: boolean;
+  /** Counted over TASKS, as Load counts it. The rows sum past it. */
+  total_tasks: number;
+  people_total: number;
+  rows: CapacityRow[];
+}
+
 export interface StuckReport {
   project_id: string | null;
   scope: "portfolio" | "node";
@@ -510,6 +595,15 @@ export interface RenderedReportBody {
     load?: {
       people: { assignee: string | null; open_tasks: number; overdue: number }[];
       total_tasks: number;
+    };
+    /** WS-27bm S7a. Opt-in: present only when the report asked for it. */
+    capacity?: {
+      people: CapacityRow[];
+      people_total: number;
+      total_tasks: number;
+      hr_visible: boolean;
+      horizon_days: number;
+      windows: CapacityReport["windows"];
     };
     stuck?: {
       overdue: { project_id: string; name: string; overdue: number }[];
@@ -969,6 +1063,13 @@ export const projectsApi = {
     call<FinishedReport>(`analytics/finished${scopeQuery(nodeId, weeks)}`),
   outlook: (nodeId?: string) =>
     call<OutlookReport>(`analytics/outlook${scopeQuery(nodeId)}`),
+  /** WS-27bm S7a. The server's default horizon (14 days) unless one is named. */
+  capacity: (nodeId?: string, horizonDays?: number) => {
+    const scope = scopeQuery(nodeId);
+    const horizon = horizonDays ? `horizon_days=${horizonDays}` : "";
+    const query = horizon ? (scope ? `${scope}&${horizon}` : `?${horizon}`) : scope;
+    return call<CapacityReport>(`analytics/capacity${query}`);
+  },
 
   /** §9.12.8 — saved report definitions, and the render of one. */
   reports: () => call<{ reports: ReportRow[] }>("reports"),

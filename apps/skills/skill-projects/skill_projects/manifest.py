@@ -300,6 +300,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/analytics/throughput", "analytics_throughput", "A"),
     Route("GET", "/projects/analytics/finished", "analytics_finished", "A"),
     Route("GET", "/projects/analytics/outlook", "analytics_outlook", "A"),
+    # S7a — capacity (analytics_capacity.py). The HR tier is the route's.
+    Route("GET", "/projects/analytics/capacity", "team_capacity", "A"),
     Route("GET", "/projects/reports", "report_list", "A"),
     Route("POST", "/projects/reports", "report_save", "B"),
     Route("GET", "/projects/reports/{report_id}", "report_render", "A"),

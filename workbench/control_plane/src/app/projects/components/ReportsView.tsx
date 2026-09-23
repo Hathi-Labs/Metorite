@@ -32,6 +32,7 @@ import {
   type RenderedReportBody,
   projectsApi,
 } from "../lib/api";
+import { capacityReportRows } from "../lib/capacity";
 
 /** Hours as a person reads them. Mirrors `AnalyticsPanels`, deliberately. */
 function duration(hours: number | null | undefined): string {
@@ -233,6 +234,36 @@ export function RenderedBody({ body }: { body: RenderedReportBody }) {
               />
             ))}
           </ul>
+        </Section>
+      )}
+
+      {/* WS-27bm S7a. Opt-in: only a report that asked for `capacity` has it.
+          The rows and the hours are the capacity route's, verbatim. */}
+      {sections.capacity && (
+        <Section title="Who has the hours">
+          <p
+            className="mb-1 text-[11px] text-muted-foreground"
+            title={`Spare hours cover the next ${sections.capacity.horizon_days} days, across all the work the reader can see.`}
+          >
+            {sections.capacity.total_tasks} open · next{" "}
+            {sections.capacity.horizon_days} days
+          </p>
+          <ul className="space-y-0.5">
+            {capacityReportRows(sections.capacity.people).map((p) => (
+              <Row
+                key={p.key}
+                name={p.name}
+                value={p.open}
+                aside={p.aside}
+                title={p.title}
+              />
+            ))}
+          </ul>
+          {!sections.capacity.hr_visible && (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Hours need HR read access. An admin can see them.
+            </p>
+          )}
         </Section>
       )}
     </div>

@@ -34,6 +34,7 @@ import {
   type StuckReport,
   type LoadReport,
   type OutlookReport,
+  type CapacityReport,
   type ThroughputReport,
   type FinishedReport,
   type ViewRow,
@@ -717,6 +718,9 @@ function ProjectsWorkspace() {
   const [stuck, setStuck] = useState<StuckReport | null>(null);
   const [load, setLoad] = useState<LoadReport | null>(null);
   const [outlook, setOutlook] = useState<OutlookReport | null>(null);
+  // WS-27bm S7a. The Analytics app's own read — the node dashboards do not
+  // draw it, so it is not fetched for them.
+  const [capacity, setCapacity] = useState<CapacityReport | null>(null);
   const [throughput, setThroughput] = useState<ThroughputReport | null>(null);
   const [finished, setFinished] = useState<FinishedReport | null>(null);
   const toast = useToast();
@@ -1362,6 +1366,26 @@ function ProjectsWorkspace() {
       cancelled = true;
     };
   }, [wantsAnalytics, analyticsNode, treeKey]);
+
+  /**
+   * WS-27bm S7a — the Capacity panel, for the Analytics app only.
+   *
+   * A separate effect rather than a sixth read in the one above: that one
+   * also feeds every node dashboard, and those do not draw this panel. A
+   * rejected read stays null and renders nothing, as the others do.
+   */
+  useEffect(() => {
+    if (app !== "analytics") return;
+    let cancelled = false;
+    setCapacity(null);
+    projectsApi.capacity().then(
+      (r) => !cancelled && setCapacity(r),
+      () => !cancelled && setCapacity(null)
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [app, treeKey]);
 
   // Selecting nothing is a real state (an empty portfolio), so the default is
   // applied only when the current selection has fallen out of the filtered set.
@@ -3291,6 +3315,7 @@ function ProjectsWorkspace() {
           throughput={throughput}
           finished={finished}
           outlook={outlook}
+          capacity={capacity}
           onOpen={(id) => {
             const row = flatten(visibleRoots).find((e) => e.node.id === id);
             if (row) {

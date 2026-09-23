@@ -39,8 +39,9 @@ describe("which rows get a wheel at all", () => {
 
   it("a DONE project keeps its check, and does not draw a full ring", () => {
     // The nastiest confusion in the set: "done" and "100%" are different
-    // claims. A completed project wears `CircleCheck`; a live project that
-    // happens to have finished all its work wears a filled ring.
+    // claims. A completed project wears the check mark (`stateMark.ts`), and
+    // a live project that has closed all its work wears a filled ring.
+    // `icon` stays the Lucide fallback for a surface that cannot draw a mark.
     expect(showsWheel("done", { tasks: 8, done: 8 })).toBe(false);
     expect(PROJECT_STATES.done.icon).toBe("CircleCheck");
   });
@@ -265,39 +266,44 @@ describe("wheelLabel", () => {
  * rendered here. `conformance.test.ts` fences the same class of rule the same
  * way. It is a coarse instrument and it is the one that exists.
  */
-describe("the wheel's accessible name never becomes page text", () => {
-  const source = readFileSync(
-    fileURLToPath(new URL("../components/ProjectTree.tsx", import.meta.url)),
-    "utf8",
-  );
+describe("the mark's accessible name never becomes page text", () => {
+  // ⚠️ The drawing moved into `StateMark.tsx` when every run state joined the
+  // ring family (2026-09-23). The fence follows it, and still reads the tree:
+  // a `<title>` reintroduced in EITHER file re-creates the hidden duplicate.
+  const read = (rel: string) =>
+    readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+  const mark = read("../components/StateMark.tsx");
+  const tree = read("../components/ProjectTree.tsx");
 
   // ⚠️ Comments are stripped first. The docstring explaining this rule SAYS
   // the forbidden tag, and a fence that cannot tell code from prose fails on
   // its own explanation — which teaches the next person to delete the fence
   // rather than the defect.
-  const code = source
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^\s*\/\/.*$/gm, "");
+  const strip = (src: string) =>
+    src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  const markCode = strip(mark);
+  const treeCode = strip(tree);
 
-  it("renders no <title> element", () => {
-    expect(code).not.toMatch(/<title[\s>]/);
+  it("renders no <title> element, in the mark or in the tree", () => {
+    expect(markCode).not.toMatch(/<title[\s>]/);
+    expect(treeCode).not.toMatch(/<title[\s>]/);
   });
 
   it("the comment-stripping did not gut the check", () => {
     // If the strip ever swallowed the JSX too, every assertion here would
     // pass over an empty string and prove nothing.
-    expect(code).toContain("<svg");
-    expect(code.length).toBeGreaterThan(1000);
+    expect(markCode).toContain("<svg");
+    expect(treeCode).toContain("<StateMark");
   });
 
   it("still carries the name for assistive tech", () => {
     // Removing the <title> must not have taken the accessible name with it.
-    expect(code).toMatch(/aria-label=\{label\}/);
-    expect(code).toMatch(/role="img"/);
+    expect(markCode).toMatch(/aria-label=\{label\}/);
+    expect(markCode).toMatch(/role=\{label \? "img"/);
   });
 
   it("keeps a hover tooltip, as an attribute", () => {
     // `title` on a span is an attribute, not text content.
-    expect(code).toMatch(/title=\{label\}/);
+    expect(markCode).toMatch(/title=\{label\}/);
   });
 });

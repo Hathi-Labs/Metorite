@@ -817,6 +817,134 @@ async def analytics_outlook(project_id: str = "") -> str:
     return "\n".join(out)
 
 
+# ── Team intelligence — S7a ──────────────────────────────────────────────────
+
+#: What the chat says when the route withheld the HR tier (§13.2 rule 3).
+#: The instructions tell the model to relay this and never to guess.
+HR_HIDDEN = (
+    "Hours, absences, end dates, skills and at-risk tasks are hidden: this "
+    "member does not hold admin:members:read. An admin can see capacity. "
+    "Do not estimate anybody's hours."
+)
+
+
+def _hours(value: Any) -> str:
+    """``12.0`` → ``12h``. The route rounds, so this only drops a ``.0``."""
+    if value is None:
+        return "—"
+    number = float(value)
+    return f"{int(number)}h" if number == int(number) else f"{number}h"
+
+
+def _capacity_lines(row: dict[str, Any]) -> list[str]:
+    """One capacity row: the scope's task half, then the HR half if present."""
+    kind = row.get("kind")
+    if kind == "unassigned":
+        head = "- unassigned"
+    else:
+        who = data(row.get("name")) if row.get("name") else data(row.get("assignee"))
+        head = f"- {who} · assignee {data(row.get('assignee'))}"
+        if kind == "agent":
+            head += " · agent"
+        elif row.get("in_directory") is False:
+            head += " · not in the directory"
+    head += (
+        f" · in this scope: open {row.get('open_tasks', 0)}"
+        f" · overdue {row.get('overdue', 0)}"
+        f" · estimated {_hours(row.get('estimated_hours_left'))} left over"
+        f" {row.get('estimated', 0)} of {row.get('open_tasks', 0)} tasks"
+    )
+    out = [head]
+    if "all_work" not in row:
+        return out
+
+    work = row.get("all_work") or {}
+    ceiling = row.get("max_concurrent_tasks")
+    busy = f"  all visible work: open {work.get('open_tasks', 0)} · in progress {work.get('in_progress', 0)}"
+    if ceiling is not None:
+        busy += f" of max {ceiling}"
+        if row.get("over_concurrency"):
+            busy += " ⚠ over the ceiling"
+    out.append(busy)
+
+    hours = (
+        f"  hours: contracted {_hours(row.get('contracted_hours_per_week'))} a week"
+        f" · working {_hours(row.get('working_hours_horizon'))} in the horizon"
+    )
+    if row.get("hours_basis"):
+        hours += (
+            f" · committed {_hours(row.get('committed_hours_horizon'))}"
+            f" · spare {_hours(row.get('spare_hours_horizon'))}"
+            f" · this week committed {_hours(row.get('committed_hours_this_week'))}"
+            f", spare {_hours(row.get('spare_hours_this_week'))}"
+        )
+    else:
+        hours += f" · no committed or spare hours: {data(row.get('hours_note'))}"
+    out.append(hours)
+
+    if row.get("pill"):
+        out.append(f"  pill {row['pill']}: {data(row.get('pill_reason'))}")
+    skills = row.get("skills") or []
+    if skills:
+        out.append(
+            "  skills: "
+            + ", ".join(
+                data(s.get("skill")) + (f" ({s['level']})" if s.get("level") else "")
+                for s in skills
+            )
+        )
+    for span in row.get("absences") or []:
+        out.append(f"  away ({span.get('kind')}) {span.get('starts_on')} to {span.get('ends_on')}")
+    if row.get("end_date"):
+        leaving = " · inside the horizon" if row.get("leaving_in_window") else ""
+        out.append(f"  engagement ends {row['end_date']}{leaving}")
+    for task in row.get("at_risk") or []:
+        out.append(
+            f"  ⚠ at risk: {data(task.get('title'))} due {task.get('due_on')}"
+            f" · needs {_hours(task.get('needed_hours'))}"
+            f" · has {_hours(task.get('available_hours'))}"
+            f" · short {_hours(task.get('shortfall_hours'))}"
+        )
+    return out
+
+
+@_annotate(read_only=True, idempotent=True)
+async def team_capacity(project_id: str = "", horizon_days: int = 14) -> str:
+    """Who holds the open work in a scope, and whether they have the hours.
+    One row per person with open work here, plus Unassigned. For a member
+    with HR read access each row also carries contracted and working hours,
+    committed and spare hours over the horizon (default 14 days, 1 to 90),
+    the at-risk tasks with the shortfall, the pill, absences, the end date,
+    in-progress work against the person's ceiling and their top skills.
+    Hours are measured over ALL the work the member can see, so a person
+    busy elsewhere shows no spare hours here. Leave project_id empty for the
+    portfolio. Without HR access the hours are hidden: say an admin can see
+    them, and never guess."""
+    days = max(1, min(90, int(horizon_days or 14)))
+    payload = await get(
+        "/projects/analytics/capacity", _scope_params(project_id, horizon_days=days)
+    )
+    windows = payload.get("windows") or {}
+    week = windows.get("week") or {}
+    horizon = windows.get("horizon") or {}
+    out = [
+        legend(),
+        f"Capacity in {_scope_title(payload)}: {payload.get('total_tasks', 0)} open tasks"
+        f" held by {payload.get('people_total', 0)} assignees",
+        f"  pill window: {week.get('starts_on')} to {week.get('ends_on')} (this Monday to Sunday)",
+        f"  horizon: {horizon.get('starts_on')} to {horizon.get('ends_on')}"
+        f" ({horizon.get('days', days)} days, for spare hours and at-risk)",
+    ]
+    if payload.get("hr_visible") is False:
+        out.append(f"  {HR_HIDDEN}")
+    elif payload.get("partial"):
+        out.append("  (hours count only the work this member may open)")
+    for row in payload.get("rows") or []:
+        if isinstance(row, dict):
+            out.extend(_capacity_lines(row))
+    return "\n".join(out)
+
+
 # ── Reports ──────────────────────────────────────────────────────────────────
 
 
@@ -869,7 +997,10 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "finished": ("projects", "name", ("total_completed", "total_cancelled", "median_hours")),
     "throughput": ("series", "week_start", ("completed", "cancelled", "median_hours", "measured")),
     "load": ("people", "assignee", ("total_tasks",)),
-    "stuck": ("overdue", "name", ("overdue_total", "blocked_total")),
+    # S7a. The row label is the directory name; the unassigned row has none
+    # and prints as "unassigned". Nested HR blocks are skipped per row.
+    "capacity": ("people", "name", ("total_tasks", "people_total", "hr_visible", "horizon_days")),
+    "stuck":("overdue", "name", ("overdue_total", "blocked_total")),
 }
 
 
@@ -887,7 +1018,10 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
     for row in rows[:25]:
         if not isinstance(row, dict):
             continue
-        label = row.get(label_key)
+        # A capacity row with no directory name still HAS an owner: its
+        # address. "unassigned" is only the row whose assignee is empty,
+        # or the model reads a former colleague's work as nobody's.
+        label = row.get(label_key) or row.get("assignee")
         facts = ", ".join(
             f"{k} {v}"
             for k, v in row.items()

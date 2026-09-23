@@ -50,6 +50,7 @@ from gateway.routes.projects.analytics import (
     total_open_sql,
     weekly_sql,
 )
+from gateway.routes.projects.analytics_capacity import capacity_body
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -68,6 +69,7 @@ from gateway.routes.projects.core import (
     triage_exclusion_clause,
     update_row,
 )
+from gateway.routes.tasks.core import can_read_hr_fields
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -79,7 +81,19 @@ from sqlalchemy import text
 #: week's copy to this week's would find the difference in the layout rather
 #: than in the numbers. What we finished leads, because that is the answer the
 #: reader came for.
-SECTIONS: tuple[str, ...] = ("finished", "throughput", "load", "stuck")
+#:
+#: `capacity` (WS-27bm S7a) sits beside `load`, because it reads the same open
+#: work and names who has the hours for it.
+SECTIONS: tuple[str, ...] = ("finished", "throughput", "load", "capacity", "stuck")
+
+#: The sections a definition with no `sections` key renders.
+#:
+#: ⚠️ **An explicit list, never `list(SECTIONS)`.** `capacity` is OPT-IN
+#: (`projects_ai_chat.md` §13.3 rule 4). While this was `list(SECTIONS)`,
+#: adding a section to the vocabulary added it to every saved report that
+#: never asked for it — and capacity carries hours, which is not what a
+#: weekly delivery report was saved to say.
+DEFAULT_SECTIONS: tuple[str, ...] = ("finished", "throughput", "load", "stuck")
 
 #: What a definition means when it does not say.
 #:
@@ -89,7 +103,7 @@ _DEFAULTS: dict[str, Any] = {
     "weeks": 1,
     "skip_current_week": True,
     "include_subtree": True,
-    "sections": list(SECTIONS),
+    "sections": list(DEFAULT_SECTIONS),
 }
 
 #: A name long enough to be useful and short enough for a subject line.
@@ -511,6 +525,28 @@ async def render_report(
                         for p in people[:MAX_PEOPLE]
                     ],
                     "total_tasks": total,
+                }
+            elif name == "capacity":
+                # WS-27bm S7a. The capacity route's OWN body, imported: the
+                # panel and the report are one computation. The HR tier is the
+                # READER's grant, as every other number here is the reader's.
+                cap = await capacity_body(
+                    db, vis,
+                    hr_visible=can_read_hr_fields(user),
+                    project_id=project_id,
+                    include_subtree=bool(config["include_subtree"]),
+                )
+                named = [r for r in cap["rows"] if r["kind"] != "unassigned"]
+                nobody = [r for r in cap["rows"] if r["kind"] == "unassigned"]
+                sections[name] = {
+                    # Capped like `load`, and the unassigned row survives the
+                    # cap: it is the one row a reader can act on today.
+                    "people": named[:MAX_PEOPLE] + nobody,
+                    "people_total": cap["people_total"],
+                    "total_tasks": cap["total_tasks"],
+                    "hr_visible": cap["hr_visible"],
+                    "horizon_days": cap["horizon_days"],
+                    "windows": cap["windows"],
                 }
             elif name == "stuck":
                 # The one number a report needs from (a): what is overdue, by
