@@ -316,3 +316,67 @@ class TestTheORGANIZATION_ARM_IS_UNCHANGED:
         out = _chat(client, org_token, member=None)
         assert out.status_code not in (400, 401, 403, 409), (
             f"the organization arm changed behaviour: {out.status_code} {out.text}")
+
+
+class TestAllFourServingDoorsAnswerAlike:
+    """⚠️ Four doors, one credential, one answer.
+
+    H-152 asked for all four. Doors that answer differently to the same key is
+    the drift H-86 exists to stop, and it is worst on the three that are only
+    reached once somebody is already using the product.
+    """
+
+    #: Each door with a body good enough to pass validation and reach auth.
+    #: ⚠️ The point is the DOOR, never the completion — there is no vendor
+    #: credential here, so every one of these fails downstream. What is
+    #: asserted is the status the AUTH layer produces.
+    DOORS = (
+        ("/v1/chat/completions",
+         {"tier": "tier-fast", "messages": [{"role": "user", "content": "hi"}]}),
+        ("/v1/images/generations", {"tier": "tier-image", "prompt": "a cat"}),
+        ("/v1/audio/speech", {"tier": "tier-tts", "input": "hello"}),
+    )
+
+    def test_a_key_without_serve_is_403_at_EVERY_door(self, client, db):
+        """The column default is `{resolve}`. A key that may resolve a sign-in
+        must not spend a tenant's credits at any of them."""
+        token = _mint_deployment_key(db, capabilities=["resolve"])
+        for path, body in self.DOORS:
+            r = client.post(
+                path,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "X-CC-Member": "someone@example.com",
+                },
+                json=body,
+            )
+            assert r.status_code == 403, f"{path} -> {r.status_code} {r.text}"
+            assert "serve" in r.json()["detail"], path
+
+    def test_no_member_is_400_at_EVERY_door(self, client, db):
+        """⚠️ Not a guess, at any of them. `count(*) = 1` is the inference
+        D46.6 item 3 forbids by name."""
+        token = _mint_deployment_key(db, capabilities=["serve"])
+        for path, body in self.DOORS:
+            r = client.post(
+                path, headers={"Authorization": f"Bearer {token}"}, json=body
+            )
+            assert r.status_code == 400, f"{path} -> {r.status_code} {r.text}"
+            assert "X-CC-Member" in r.json()["detail"], path
+
+    def test_the_transcription_door_moved_too(self, client, db):
+        """⚠️ Its own test, because it is the one door taking multipart form
+        data rather than JSON — a signature change there is the easiest of the
+        four to get wrong and the least likely to be noticed."""
+        token = _mint_deployment_key(db, capabilities=["resolve"])
+        r = client.post(
+            "/v1/audio/transcriptions",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-CC-Member": "someone@example.com",
+            },
+            files={"file": ("a.wav", b"RIFF0000WAVE", "audio/wav")},
+            data={"model": "tier-stt"},
+        )
+        assert r.status_code == 403, r.text
+        assert "serve" in r.json()["detail"]
