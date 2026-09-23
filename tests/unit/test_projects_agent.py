@@ -169,6 +169,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
         {"start": "2026-09-22", "end": "2026-09-29", "mine": True},
     ],
     "my_contexts": [{}],
+    # WS-39 S6e — the projects I lead.
+    "my_led_projects": [{}],
     "watchers": [{"target_id": UUID, "kind": "task"}, {"target_id": UUID, "kind": "project"}],
     "intake_queue": [{"project_id": UUID}],
     "notifications": [{}],

@@ -1,6 +1,7 @@
 "use client";
 
 import Badge from "@/components/ui/Badge";
+import { Checkbox } from "@/components/ui/Checkbox";
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
 import { categoricalAccent } from "@/lib/categorical";
@@ -319,12 +320,11 @@ export function ItemList() {
                   : "ml-auto",
               ].join(" ")}
             >
-              <input
-                type="checkbox"
+              <Checkbox
+                size="sm"
                 checked={allChecked}
                 onChange={() => selectAllVisible(visibleIds)}
                 aria-label="Select every task this view is showing"
-                className="h-3.5 w-3.5 accent-primary"
               />
               Select all
             </label>

@@ -144,9 +144,13 @@ describe("no list surface consults selectMode", () => {
       const source = SURFACES[file as keyof typeof SURFACES];
       // The checkbox is a plain sibling of the row content, so the JSX around
       // it is a label — not a ternary picking between a box and a grip.
-      expect(source, `${file} lost its row checkbox`).toContain('type="checkbox"');
+      // S6e: the box is the house `<Checkbox>` (`components/ui/Checkbox.tsx`),
+      // not a raw `<input type="checkbox">` — the raw one paints as a solid
+      // black square in light mode.
+      expect(source, `${file} lost its row checkbox`).toContain("<Checkbox");
+      expect(source, `${file} draws a raw checkbox`).not.toContain('type="checkbox"');
       expect(
-        /\{\s*select\w*\s*\?[\s\S]{0,200}type="checkbox"/.test(source),
+        /\{\s*select\w*\s*\?[\s\S]{0,200}<Checkbox/.test(source),
         `${file} draws its checkbox behind a condition again`,
       ).toBe(false);
     }

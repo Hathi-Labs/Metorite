@@ -1,6 +1,7 @@
 "use client";
 
 import Icon, { themedIcon } from "@/components/Icon";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { TaskCardShell, TaskCardTitle } from "@/components/TaskCardShell";
 import { AvatarStack, TaskMeta } from "@/components/TaskMeta";
 import { useState } from "react";
@@ -298,8 +299,7 @@ export function TaskCard({
           open affordance. */}
       <div className="flex items-start gap-1.5">
         {onToggleSelected ? (
-          <input
-            type="checkbox"
+          <Checkbox
             checked={selected}
             onChange={(e) =>
               onToggleSelected((e.nativeEvent as MouseEvent).shiftKey)
@@ -307,7 +307,7 @@ export function TaskCard({
             // The click must not also open the task.
             onClick={(e) => e.stopPropagation()}
             aria-label={selected ? "Deselect task" : "Select task"}
-            className="mt-3 h-4 w-4 shrink-0 accent-primary"
+            className="mt-3"
           />
         ) : null}
         <TaskCardShell
