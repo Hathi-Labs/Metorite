@@ -1361,10 +1361,10 @@ line — never reclaim a number by deleting the other entry.
   zero rows. Migration 216 arms the guard in reviewed code and drops the
   store. The arm is no longer a hand INSERT.
 - **What is left:** the merge, the deploy and the check above. First run the
-  pre-flight in `my_tasks_cutover.md` §5 S8. It needs today's backup, zero
-  unmigrated rows and migration 215 in the ledger.
-- ⚠️ **Migration 216 fails closed.** One unmigrated row makes it RAISE, and
-  the deploy stops. Do not widen the guard. Read `gtd_backfill_plan` and
+  pre-flight in `my_tasks_cutover.md` §5 S8. It needs today's backup and
+  migration 215 in the ledger. Migration 216 checks the data by itself.
+- ⚠️ **Migration 216 fails closed.** An unmigrated row, an uncopied value or
+  a row in a tree table makes it RAISE, and the deploy stops. Do not widen the guard. Read `gtd_backfill_plan` and
   decide each row.
 - ⚠️ **The survivors are NOT part of the drop.** `user_settings`, the two
   Calendar tables and the five `people*` tables stay (D53.6).

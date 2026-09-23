@@ -968,62 +968,85 @@ flip (§6 step 10).**
 
 1. **Migration 216.** Main ended at 214 and #427 holds 215, so this one is
    216. The file is one transaction, and its steps run in this order:
+   - (0) refuses when a `gtd_items` row holds a value in a column that the
+     backfill never copied. There are 15 such columns, from `origin` to
+     `horizon_id`. `flexible` is exempt. The RAISE names the column and the
+     row count.
    - (c) copies `wa_commitments.gtd_item_id` into `task_id` through
      `gtd_items.migrated_task_id`, then drops the old column. A value moves
      only when its `pm_tasks` row exists.
+   - (c2) rewrites `action_item.dispatch_ref` for `kind = 'task'` rows the
+     same way. Migration 129 stored the gtd id there.
    - (a) arms the guard and calls `gtd_retirement_drop()`. The guard drops
      `gtd_items` and `gtd_waiting`, or it refuses.
-   - (b) drops `gtd_projects`, `gtd_folders`, `gtd_spaces` and
-     `gtd_contexts` in foreign-key order. Then it drops the arm table, the
-     view and both functions. No step uses CASCADE.
+   - (b) refuses when `gtd_projects`, `gtd_spaces`, `gtd_folders` or
+     `gtd_contexts` holds a row, and names the table. Then it drops the four
+     in foreign-key order, and then the arm table, the view and both
+     functions. No step uses CASCADE.
 2. **The arm moved into the migration.** §6 step 11 made the arm a hand
    INSERT on the box. Migration 216 now writes the arm row, so the act is
    reviewed code. The data check did not move. The guard from migration 190
    still counts the rows that have no `migrated_task_id`.
-3. ⚠️ **Migration 216 fails closed.** One unmigrated `gtd_items` row on
-   production makes it RAISE. The deploy then stops, and 216 changes
-   nothing. This is the intended behaviour. Do not widen the guard.
-   ⚠️ Migrations 48 and 52 run before 216 and stay applied. The gateway then
-   keeps the old code, which names `gtd_attachments`, so file uploads fail
-   until a fix ships. The pre-flight below prevents this case.
-4. **Three renames**, each in the migration that creates the table.
+3. ⚠️ **Migration 216 fails closed.** It RAISES in three cases: an
+   unmigrated row, an uncopied value, or a row in a tree table. The deploy then stops, and 216 changes nothing. This is the
+   intended behaviour. Do not widen a guard.
+   ⚠️ **The wider failure case, from the review.** `vps_apply.sh` applies the
+   migrations and then restarts the gateway. Any failure between those two
+   steps leaves the old code on the new schema. A refusal by 216 is one such
+   failure, and any later step of `vps_apply.sh` is another. Migrations 48
+   and 52 stay applied, so the old code names `gtd_attachments`, a table that
+   is gone. File uploads then fail until a deploy completes. The old WhatsApp
+   list also names the dropped `gtd_item_id` column.
+4. **Production passed all three checks by hand on 2026-09-23**, at about
+   19:00 UTC. The coordinator ran them read-only.
+   - Both `gtd_items` rows are migrated. Every column that the backfill
+     never copied holds its default. The one exception is `flexible = true`,
+     and the new store reads that as its default.
+   - `gtd_projects`, `gtd_spaces`, `gtd_folders`, `gtd_contexts` and
+     `gtd_waiting` hold 0 rows. `gtd_attachments` holds 2 rows, and they
+     survive as `attachments`.
+   - No `action_item.dispatch_ref` names a gtd id, and no
+     `wa_commitments.gtd_item_id` is set.
+   So production loses nothing. Migration 216 now makes the same checks on
+   every other box.
+5. **Three renames**, each in the migration that creates the table.
    `gtd_attachments` is `attachments` (52). `gtd_horizons` and
    `gtd_reviews` are `my_tasks_horizons` and `my_tasks_reviews` (48). The
    sweep came first and the prologues second. No later migration alters or
    indexes these tables by name. Migration 150 names the old name in
    comments only.
-5. **Two guards for a lone re-run.** Migration 52 now guards its
+6. **Two guards for a lone re-run.** Migration 52 now guards its
    `ALTER TABLE gtd_items`, because it re-runs after 216 drops that table.
    Migration 216 drops an empty store that a lone re-run of 48 builds again.
    `test_gtd_backfill.py` pins the text of 48, so an edit to 48 must also
    touch 216.
-6. **Code.** Both `attachments.py` modules write and read `attachments`.
+7. **Code.** Both `attachments.py` modules write and read `attachments`.
    The WhatsApp list, the digest and the WhatsApp agent read `task_id`, and
    the API field is `task_id`. The member purge names no task table, and it
    still deletes no `pm_tasks` row (D63). `backup_db.sh` anchors on
    `pm_tasks`. `restore_db.sh` lists the real anchors.
-7. **The generated tenancy files (H-104).** The ladder does not apply them,
+8. **The generated tenancy files (H-104).** The ladder does not apply them,
    but an operator applies them by hand. So the six dropped tables leave all
    four files, and the three renamed tables take their new names.
    Constraint, index and policy names keep the old spelling.
    `gen_tenant_migration.discover_tables()` now reads the ladder in number
    order and honours `DROP TABLE`.
-8. **Fences.** `test_no_gtd_table_names.py` reads the four code trees.
+9. **Fences.** `test_no_gtd_table_names.py` reads the four code trees.
    These are `apps`, `packages`, `scripts` and `workbench`. It refuses a
    `gtd_` token that is not on its list. The list holds the 29 chat tool
    names, three settings helpers and one example tool name. S9 owns all of
    them. `test_gtd_backfill.py` fences the exact drop set of 216 and the
    survivors. It also replays the ladder against a real Postgres.
 
-**Pre-flight for production.** Do all three before the merge.
+**Pre-flight for production.** Do both before the merge.
 1. Confirm that today's backup is on disk:
    `ls -la /opt/acb/backups | tail -1`.
-2. On the box, run
-   `SELECT count(*) FROM gtd_items WHERE migrated_task_id IS NULL;`.
-   The result must be 0.
-3. Confirm that the ledger holds 215 from #427:
+2. Confirm that the ledger holds 215 from #427:
    `SELECT filename FROM schema_migrations WHERE filename LIKE '215_%';`.
    PR 1 (#411) added no migration.
+
+The data checks are not a hand step. Migration 216 refuses by itself when a
+row would be lost.
 
 After the deploy, `\dt gtd_*` must return nothing, and the ledger must hold
 `216_gtd_task_store_drop.sql`.

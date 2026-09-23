@@ -1,7 +1,8 @@
 -- ============================================================================
 -- ⚠️ HISTORICAL since WS-39 S8 PR 2 (2026-09-23). Migration 216 drops the
--- gtd_ store and both functions, so this script runs only on a ladder cut
--- before 216. tests/live/live_ws39_s8d.py proves the drop that replaced it.
+-- gtd_ store and both functions, so this script runs only on a ladder built
+-- from a tree BEFORE S8 PR 2 (d16079b5 or earlier). A ladder from a later
+-- tree has the renamed tables and, after 216, no gtd_ store at all. tests/live/live_ws39_s8d.py proves the drop that replaced it.
 -- live_ws39_s3b.sql — WS-39 S3b proven against REAL Postgres (R8).
 --
 -- §12.8 states the acceptance in one sentence: S3b must be proven **two-org**,

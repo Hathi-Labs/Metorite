@@ -1,7 +1,9 @@
 -- ============================================================================
 -- ⚠️ HISTORICAL since WS-39 S8 PR 2 (2026-09-23). Migration 216 drops the
--- gtd_ store and both functions, so this script runs only on a ladder cut
--- before 216. tests/live/live_ws39_s8d.py proves the drop that replaced it.
+-- gtd_ store and both functions, so this script runs only on a ladder built
+-- from a tree BEFORE S8 PR 2 (d16079b5 or earlier). A ladder from a later
+-- tree has `attachments`, not `gtd_attachments`, so check 5l would fail
+-- there too. tests/live/live_ws39_s8d.py proves the drop that replaced it.
 -- live_ws39_s3c.sql — WS-39 S3c proven against REAL Postgres (R8).
 --
 -- S3c is a DESTRUCTIVE migration on a ladder that cannot roll back (R6), so
