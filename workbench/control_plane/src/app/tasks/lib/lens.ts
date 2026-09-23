@@ -599,13 +599,10 @@ export async function lensPatchItem(
   // consequence. The rest of the patch still applies.
   const completes = split.personal.disposition === "DONE";
   if (completes) delete split.personal.disposition;
-  // D76 — the reverse. Completion is the shared lane, so my stating an OPEN
-  // disposition on a closed task ("mark not done", "back to Next") must
-  // reopen it for the board too, or the lane wins and nothing visibly
-  // happens. Before the overlay write, so the list reads the reopened task.
-  if (REOPENS.has(String(split.personal.disposition ?? ""))) {
-    await lensReopenIfClosed(id);
-  }
+  // D76 — the reverse ("mark not done", "back to Next" on a closed task) is
+  // the GATEWAY's: every overlay door reopens a closed task when it is given
+  // an open disposition (`personal.reopen_if_closed`), so the bulk path the
+  // checkbox takes gets it too. One rule, one place — nothing here.
   if (Object.keys(split.task).length) {
     await projectsCall<Raw>(`tasks/${id}`, {
       method: "PATCH",
@@ -637,28 +634,6 @@ export async function lensPatchItem(
   // accompanied it unsaved.
   if (completes) await post(`tasks/${id}/complete`);
   return lensGetItem(id);
-}
-
-/** The open dispositions that reopen a closed task when I state one. */
-const REOPENS: ReadonlySet<string> = new Set(["NEXT", "WAITING", "SOMEDAY"]);
-
-/** The lane categories that close a task (`CLOSING_CATEGORIES`, gateway). */
-const CLOSED: ReadonlySet<string> = new Set(["done", "cancelled"]);
-
-/**
- * Move a closed task back into its project's first `todo` lane (D76), or do
- * nothing when it is open. The lanes come off `my/tasks/{id}/lanes` — the
- * membership read, so a member reached by assignment alone can reopen it.
- * A project with no open lane leaves the task where it is: the lane decides.
- */
-export async function lensReopenIfClosed(id: string): Promise<void> {
-  const current = await lensGetItem(id);
-  if (!CLOSED.has(current.statusCategory ?? "")) return;
-  const lanes = (await lensMyTaskLanes(id)).slice().sort((a, b) => a.position - b.position);
-  const lane =
-    lanes.find((l) => l.category === "todo") ??
-    lanes.find((l) => !CLOSED.has(l.category));
-  if (lane) await lensSetStatusId(id, lane.id);
 }
 
 /**
@@ -696,9 +671,14 @@ export async function lensTrashItem(id: string): Promise<void> {
 
 /** Undo the soft delete — back to the inbox to be triaged again. */
 export async function lensRestoreItem(id: string): Promise<GtdItem> {
+  // D76 — an open disposition on a closed task REOPENS it for the board
+  // (`personal.reopen_if_closed`). Undoing a delete must not do that, so a
+  // task whose lane is closed comes back as DONE, which is what it was.
+  const current = await lensGetItem(id);
+  const closed = ["done", "cancelled"].includes(current.statusCategory ?? "");
   await projectsCall<Raw>(`tasks/${id}/personal`, {
     method: "PATCH",
-    body: JSON.stringify({ disposition: "INBOX" }),
+    body: JSON.stringify({ disposition: closed ? "DONE" : "INBOX" }),
   });
   return lensGetItem(id);
 }

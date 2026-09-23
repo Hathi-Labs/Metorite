@@ -382,9 +382,15 @@ actuals (`actual_end - actual_start`), bound to the task the caller can see.
    there is an outside person, and the overlay is the only place that fact is.
 2. **A stated TRASH stays TRASH on a closed lane.** Trash is my removal from
    my list, and a closed lane does not undo it.
-3. **Saying Next on a closed task reopens it for the board.** Without this the
-   lane wins and "mark not done" does nothing visible. The client moves the
-   task to its first `todo` lane before the overlay write.
+3. **An open disposition on a closed task reopens it for the board.** Without
+   this the lane wins, and "mark not done" snaps back to DONE. The gateway
+   does it once, in `reopen_if_closed`, for every overlay door: the PATCH,
+   the bulk `personal` action (the checkbox, Focus mode and Undo) and
+   organize. It moves the task to the first `todo` lane of its own set
+   through `apply_status_transition`, so the timeline records the reopen.
+   Every stored disposition except DONE and TRASH counts
+   (`OPEN_DISPOSITIONS`). An Undo of a delete restores a closed task as
+   DONE, so it never reopens it.
 4. **The Important switch writes Priority.** On raises a lower task to High.
    Off lowers High or Urgent to Normal. A switch that already agrees writes
    nothing, so Important never demotes Urgent.
@@ -709,8 +715,8 @@ PASS. `test_projects_personal_s6e.py`, 12 tests. The vitest fences:
 1. `lens.ts` maps `importance`, `estimate_mins`, `start_date` and `tags`.
    `important` derives from `importance`. `TASK_KEYS` gains the estimate,
    Priority and start date. `OVERLAY_KEYS` loses the two retired keys.
-2. Saying Next, Waiting or Someday on a closed task moves it to the first
-   `todo` lane (`lensReopenIfClosed`).
+2. The client writes no lane for a reopen. The gateway's
+   `reopen_if_closed` covers every door (§4.10 choice 3).
 3. The Important switch writes Priority (`importanceForImportant`).
 4. The Focus matrix, its column, group, filter, sort and view say "Focus".
    The list's Priority column and the card draw the shared Priority and the

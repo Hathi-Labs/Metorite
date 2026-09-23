@@ -360,3 +360,61 @@ def test_time_spent_is_every_members_actuals_bound_to_the_task() -> None:
     assert "p.task_id = CAST(:tid AS uuid)" in sql
     assert "t.organization_id = p.organization_id" in sql
     assert "member_email" not in sql, "everybody's actuals, not only mine"
+
+
+# ── Un-checking a closed task reopens it, on every overlay door ─────────────
+
+def test_every_open_disposition_reopens_and_only_those() -> None:
+    assert pm_personal.OPEN_DISPOSITIONS == {
+        "INBOX", "NEXT", "WAITING", "SOMEDAY", "PROJECT", "REFERENCE",
+    }
+
+
+async def test_bulk_next_on_a_completed_task_reopens_it(db: FakeProjectsDB) -> None:
+    """The card checkbox, Focus mode and Undo all arrive as bulk `personal`."""
+    project, todo, done = _team_project(db)
+    task = db.seed_task(project.id, done.id, title="Ship the quote",
+                        completed_at="2026-09-20T09:00:00+00:00")
+    _assign(db, task.id, "alice@fracktal.in")
+    db.seed("pm_task_personal", task_id=task.id,
+            member_email="alice@fracktal.in", disposition="DONE")
+
+    await pm_bulk.bulk_edit(
+        pm_bulk.BulkIn(task_ids=[str(task.id)], action="personal",
+                       personal=pm_personal.PersonalIn(disposition="NEXT")),
+        user=ALICE,
+    )
+
+    shared = next(t for t in db.rows("pm_tasks") if str(t["id"]) == str(task.id))
+    assert str(shared["status_id"]) == str(todo.id), "open, in the first to-do lane"
+    assert shared.get("completed_at") is None
+    assert (await _mine(ALICE))[str(task.id)]["disposition"] == "NEXT"
+    moves = [a for a in db.activities("status_change")
+             if str(a.get("task_id")) == str(task.id)]
+    assert len(moves) == 1, "the timeline records the reopen"
+    assert moves[0]["meta"]["to_category"] == "todo"
+
+
+async def test_the_personal_patch_reopens_a_closed_task(db: FakeProjectsDB) -> None:
+    project, todo, done = _team_project(db)
+    task = db.seed_task(project.id, done.id)
+    _assign(db, task.id, "alice@fracktal.in")
+    await pm_personal.set_personal(
+        str(task.id), pm_personal.PersonalIn(disposition="SOMEDAY"), user=ALICE,
+    )
+    shared = next(t for t in db.rows("pm_tasks") if str(t["id"]) == str(task.id))
+    assert str(shared["status_id"]) == str(todo.id)
+
+
+async def test_trash_and_a_context_leave_a_closed_task_closed(db: FakeProjectsDB) -> None:
+    project, _todo, done = _team_project(db)
+    task = db.seed_task(project.id, done.id)
+    _assign(db, task.id, "alice@fracktal.in")
+    await pm_personal.set_personal(
+        str(task.id), pm_personal.PersonalIn(context="@home"), user=ALICE,
+    )
+    await pm_personal.set_personal(
+        str(task.id), pm_personal.PersonalIn(disposition="TRASH"), user=ALICE,
+    )
+    shared = next(t for t in db.rows("pm_tasks") if str(t["id"]) == str(task.id))
+    assert str(shared["status_id"]) == str(done.id)

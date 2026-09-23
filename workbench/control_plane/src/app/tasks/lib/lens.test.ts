@@ -53,6 +53,7 @@ import {
   lensPatchItem,
   lensPlan,
   lensRenameArea,
+  lensRestoreItem,
   lensSetStage,
   lensStageAttachment,
   lensStageOptions,
@@ -413,46 +414,30 @@ describe("the lens talks to /api/projects, never /api/tasks", () => {
     }
   });
 
-  it("reopens a closed task for the board when I say Next (D76)", async () => {
-    // The lane wins over my disposition, so "back to Next" on a closed task
-    // must move the lane, or nothing visibly happens. First todo lane.
-    const closed = { ...ROW, status_category: "done" };
-    const lanes = {
-      rows: [
-        { id: "l-done", name: "Done", category: "done", position: 40 },
-        { id: "l-doing", name: "Doing", category: "in_progress", position: 20 },
-        { id: "l-todo", name: "To do", category: "todo", position: 10 },
-      ],
-      total: 3,
-    };
-    const { calls, restore } = stub([closed, lanes, {}, {}, ROW]);
+  it("leaves the reopen to the gateway: one overlay write, no lane write (D76)", async () => {
+    // `personal.reopen_if_closed` reopens a closed task on every overlay
+    // door, the bulk one the checkbox takes included. A second, client-side
+    // reopen would be a second rule.
+    const { calls, restore } = stub([{}, ROW]);
     try {
       await lensPatchItem("task-1", { disposition: "NEXT" });
     } finally {
       restore();
     }
     expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
-      "GET /api/projects/my/tasks/task-1",
-      "GET /api/projects/my/tasks/task-1/lanes",
-      "PATCH /api/projects/tasks/task-1",
       "PATCH /api/projects/tasks/task-1/personal",
       "GET /api/projects/my/tasks/task-1",
     ]);
-    expect(calls[2].body).toEqual({ status_id: "l-todo" });
   });
 
-  it("leaves an open task's lane alone when I say Next", async () => {
-    const { calls, restore } = stub([{ ...ROW, status_category: "todo" }, {}, ROW]);
+  it("restores a deleted closed task as DONE, so Undo never reopens it (D76)", async () => {
+    const { calls, restore } = stub([{ ...ROW, status_category: "done" }, {}, ROW]);
     try {
-      await lensPatchItem("task-1", { disposition: "NEXT" });
+      await lensRestoreItem("task-1");
     } finally {
       restore();
     }
-    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
-      "GET /api/projects/my/tasks/task-1",
-      "PATCH /api/projects/tasks/task-1/personal",
-      "GET /api/projects/my/tasks/task-1",
-    ]);
+    expect(calls[1]).toMatchObject({ method: "PATCH", body: { disposition: "DONE" } });
   });
 
   it("completes through /complete so the board moves too (§13.5 #4)", async () => {

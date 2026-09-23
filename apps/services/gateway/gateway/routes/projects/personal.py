@@ -307,6 +307,57 @@ def effective_disposition(
     )
 
 
+#: The dispositions that say "this work is still open for me" (D76). Stating
+#: one on a task whose lane is closed REOPENS the task for everybody, because
+#: completion is the lane — otherwise the lane wins in `effective_disposition`
+#: and the member's "not done after all" snaps straight back to DONE. Every
+#: stored disposition except DONE (the completion itself) and TRASH (my
+#: removal). CALENDAR is not stored — organize maps it to NEXT.
+OPEN_DISPOSITIONS: frozenset[str] = frozenset(
+    d for d in DISPOSITIONS if d not in ("DONE", "TRASH")
+)
+
+
+async def reopen_if_closed(
+    db: Any, task: Any, email: str, disposition: str | None,
+) -> dict[str, Any] | None:
+    """Move a CLOSED task back to its project's first to-do lane when a member
+    states an open disposition on it (D76). ``None`` when nothing moved.
+
+    The one reopen, called by every overlay door: ``PATCH /tasks/{id}/personal``,
+    the bulk ``personal`` action and organize. It goes through
+    `apply_status_transition`, so the timeline records the move and
+    `completed_at` is cleared, exactly as a board drag would.
+
+    The lane is the first ``todo`` lane of the task's OWN status set. A set
+    with no ``todo`` lane falls back to the first lane by position, and when
+    that lane closes too the task stays where it is: the lane decides.
+    """
+    if disposition not in OPEN_DISPOSITIONS:
+        return None
+    current = (await db.execute(
+        text("SELECT category FROM pm_task_statuses WHERE id = CAST(:sid AS uuid)"),
+        {"sid": str(task.status_id)},
+    )).fetchone()
+    if current is None or getattr(current, "category", None) not in CLOSING_CATEGORIES:
+        return None
+    from gateway.routes.projects.core import apply_status_transition
+
+    owner = await status_owner_id(db, str(task.project_id))
+    try:
+        lane = await load_default_status(db, owner, "todo")
+    except HTTPException:
+        lane = await load_default_status(db, owner)
+    if getattr(lane, "category", None) in CLOSING_CATEGORIES:
+        return None
+    moved = await apply_status_transition(db, task, str(lane.id), created_by=email)
+    await emit("pm.task.status_changed", {
+        "task_id": str(task.id), "from": moved["from"].name,
+        "to": moved["to"].name, "to_category": moved["to"].category,
+    })
+    return moved
+
+
 #: Priority → the Focus matrix's IMPORTANT axis (D76). `pm_tasks.importance`
 #: is 0 Low, 1 Normal, 2 High, 3 Urgent (`projects/lib/table.ts`), and High or
 #: Urgent is important. The client's `priority.ts::IMPORTANT_AT` is the same
@@ -879,7 +930,7 @@ async def set_personal(
         # (`load_visible_task`), so a task delegated across a Center boundary is
         # triageable by the person asked to do it — which is the case that would
         # otherwise be unusable.
-        await load_visible_task(db, vis, task_id)
+        task = await load_visible_task(db, vis, task_id)
 
         # ── The block must still be a block AFTER the merge ─────────────────
         #
@@ -900,6 +951,8 @@ async def set_personal(
         # this" is the Weekly Review's question, and a no-op PATCH is still a
         # member looking at it.
         values["clarified_at"] = now()
+        # D76 — an open disposition on a closed task reopens it for the board.
+        await reopen_if_closed(db, task, email, values.get("disposition"))
         row = await _upsert_personal(db, task_id, email, values)
         return _personal_to_dict(row)
 
@@ -1965,6 +2018,8 @@ async def _organize(
         # somehow survived cannot roll into tomorrow either.
         values["scheduled_start"] = None
         values["scheduled_end"] = None
+    # D76 — an open decision on a closed task reopens it for the board.
+    await reopen_if_closed(db, task, email, disposition)
     await _upsert_personal(db, task_id, email, values)
 
     # ── 4. The steps — children of the task where it now lives ─────────────
