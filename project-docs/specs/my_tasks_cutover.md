@@ -495,6 +495,58 @@ card landed in S6c (`ProjectLabel.tsx`), so S6e does not build it again.
    personal project in the same page load.
 4. The pre-migration backup for the day is on disk before step 4 of §6.
 
+### S8a — the assistant's task tools move onto the lens · AGENT-SAFE · BUILT 2026-09-23
+
+**Scope.** `apps/skills/skill-task-gtd/skill_task_gtd/core.py`, the 29 tools
+the `task-manager` chat agent calls. After S7 the browser read `pm_tasks`
+through `/projects/my/*`. The skill still called `/tasks/items*`,
+`/tasks/projects`, `/tasks/hierarchy`, `/tasks/settings`, `/tasks/accounts`
+and `/tasks/sync`. Those routes read and write `gtd_items` only. So a chat
+capture landed in the dead store and answered 200.
+
+Every tool that reads or writes a task, a project or the tree now calls the
+route the browser calls. `lens.ts` is the contract of record. The map:
+
+| Tool | Lens route |
+|---|---|
+| `gtd_capture`, `gtd_capture_many` | `POST /projects/my/tasks`, `POST /projects/my/tasks/batch` |
+| `gtd_list` | `GET /projects/my/inbox`, paged to the end, with the flags `VIEW_FLAGS` uses |
+| `gtd_detail` | `GET /projects/my/tasks/{id}`, `GET /projects/tasks/{id}/timeline`, `.../attachments` |
+| `gtd_subtasks`, `gtd_add_subtasks` | `GET /projects/tasks?parent_task_id=`, `POST /projects/tasks` |
+| `gtd_update`, `gtd_schedule`, `gtd_unschedule`, `gtd_move` | Split the way `splitPatch` does. `PATCH /projects/tasks/{id}` and `PATCH .../personal` |
+| `gtd_complete` | `POST /projects/tasks/{id}/complete`. Undo puts the task in the project's default lane, then NEXT |
+| `gtd_set_stage` | `GET /projects/nodes/{project}/statuses`, then `PATCH /projects/tasks/{id}` with `status_id` (§4.6) |
+| `gtd_organize` | `POST /projects/my/tasks/{id}/organize`. A `status` name is resolved after the move |
+| `gtd_delegate` | `PUT /projects/tasks/{id}/assignees` and the WAITING overlay, as `lensDelegateItem` does. With `project_id`, the organize delegate path, one transaction |
+| `gtd_archive` | `POST /projects/tasks/{id}/archive` or `/unarchive` |
+| `gtd_list_projects` | `GET /projects/my/areas` and `GET /projects/nodes`, labelled `[AREA]` and `[PROJECT]` |
+| `gtd_list_schedule` | `GET /projects/my/calendar` |
+| `gtd_accounts`, `gtd_sync` | No call. They answer that no tool is connected (D52) |
+
+Ten tools keep their routes, because those routes pick the store at call
+time. `gtd_clarify`, `gtd_inbox_insights` and `gtd_plan_project` read through
+`item_source()` (S6d). The six calendar tools read through `agent_source()`.
+`gtd_people` reads the `people` table. Tool names and signatures do not
+change. S9 renames them, and `TaskToolCards.tsx` keys on the names.
+
+**Done when.**
+1. Every tool calls the exact routes in the map. Fence:
+   `tests/unit/test_skill_task_lens.py`, a recording transport.
+2. No string in the skill names a retired door. The one `/tasks/items/...`
+   path left is the clarify door. Same fence, an AST walk.
+3. Every path the skill calls is a path the gateway serves, with that
+   method. Same fence, with the routers imported the way
+   `test_client_route_contract.py` imports them.
+4. `SKILL.md` and `instructions.md` describe no connected tool.
+
+**Decisions taken at build, 2026-09-23.**
+1. A `[TEAM]` marker replaces `[SYNCED]`. A row another member wrote
+   (`created_by`) carries the data fence. The two `sync_state` markers are
+   gone.
+2. Reopen is the reverse of `/complete`. The task goes to the project's
+   default lane, or its first open lane. Then the overlay says NEXT.
+3. `gtd_sync` is read-only. It calls nothing.
+
 ### S8 — the contract: code first, then schema · AGENT-SAFE
 
 **Scope.** Two PRs, in order.
@@ -502,8 +554,9 @@ card landed in S6c (`ProjectLabel.tsx`), so S6e does not build it again.
 1. **Code.** Delete the `gtd_items` arms behind `lensEnabled()` and
    `agent_source()`. Delete both flags. `lens.ts` becomes the only path.
    `routes/tasks/hierarchy.py`, `sync.py`, `accounts.py`, `providers.py` and
-   `broker_handlers.py` go. `test_client_route_contract.py` keeps the paths
-   that survive.
+   `broker_handlers.py` go. `items.py`, `hierarchy.py`, the status catalog in
+   `settings.py`, `accounts.py` and `sync.py` lost their last caller in S8a.
+   `test_client_route_contract.py` keeps the paths that survive.
 2. **Schema.** A new migration calls `gtd_retirement_drop()`. It takes the
    next free number at build time (R1). Number 212 went to the backfill fix
    on 2026-09-23, so this one is 213 or later. Then it drops

@@ -6,7 +6,10 @@ the GTD decision tree, organizes them, and answers status/progress/workload
 questions.
 
 Tool surface:
-  skill-task-gtd     — the GTD engine over the gateway /tasks API.
+  skill-task-gtd     — the task tools over the gateway's lens routes
+                       (``/projects/my/*``, ``/projects/tasks/*``) and the
+                       store-neutral ``/tasks/ai``, ``/tasks/calendar``,
+                       ``/tasks/people`` and ``/tasks/plan`` doors.
 
 ⚠️ **There is no external PM system, and there is no connector.** **D52**
 (2026-08-24, board WS-39 S1) retired ClickUp outright: Metorite is the
@@ -14,11 +17,10 @@ project-management system of record. ``skill-clickup-sync`` is deleted and the
 gateway's connector registry is empty by decision. Status and progress questions
 are answered from Metorite's own store.
 
-⚠️ **This agent is scheduled to be re-pointed, not retired.** **D53** makes
-``pm_tasks``/``pm_task_personal`` the one task store and the ``gtd_*`` tables its
-predecessor; WS-39 **S3a** moves the surface. Until then this agent still reads
-the GTD store, which is correct-but-temporary — do not build new behaviour on
-``gtd_*`` here.
+**Re-pointed in S8a (2026-09-23, my_tasks_cutover.md §5).** **D53** makes
+``pm_tasks``/``pm_task_personal`` the one task store. The skill reads and
+writes it through the same routes the browser uses. Nothing here touches
+``gtd_*`` any more.
 
 Exports:
     build_agents() -> list[GitHubCopilotAgent]   (Dynamic Agent Loader entry point)
@@ -41,9 +43,10 @@ INSTRUCTIONS = _INSTRUCTIONS_FILE.read_text(encoding="utf-8") if _INSTRUCTIONS_F
 
 # ---------------------------------------------------------------------------
 # Tools
-#   skill-task-gtd — capture/clarify/organize/list over the gateway /tasks
-#                    API. The connector registry is empty (D52), so there is no
-#                    outward path at all — every read is Metorite's own store.
+#   skill-task-gtd — capture/clarify/organize/list over the gateway's lens
+#                    routes (S8a). The connector registry is empty (D52), so
+#                    there is no outward path at all — every read is
+#                    Metorite's one task store.
 # ---------------------------------------------------------------------------
 
 _TOOLS: list = []
