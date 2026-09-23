@@ -358,9 +358,21 @@ else.
 **Where it mounts.** Two places, one component. The `ai-chat` sidebar slot
 (`page.tsx:3024-3029`) shows it full-width. **S1 builds this one.**
 
-A rail toggle beside the triage rail (`page.tsx:3218`) shows it docked, so a
-member can talk while the board is open. On a phone the chat is a full scene,
-like the email assistant. **Those two are S5.**
+An "Assistant" toggle in the board's action row shows it docked, so a member
+can talk while the board is open. On a phone the chat is a full scene, like
+the email assistant. **BUILT, 2026-09-23.** `lib/chatDock.ts` owns the rules,
+and `chatDock.test.ts` is their fence:
+
+- The dock is a 26rem column at `xl` (1280px) and wider. Below that width, the
+  toggle opens the full slot. On a phone, the sidebar's AI chat entry opens
+  the slot as a full scene.
+- The dock and the docked task panel share one right-hand column. While a task
+  holds it, the chat hides and stays mounted, so a streaming reply keeps
+  streaming. A full-width task panel is an overlay and hides nothing.
+- The page shows no dock where it shows no project chrome. That includes the
+  `ai-chat` slot, so the page never shows two chats.
+- Each browser remembers the choice in `localStorage`, as `panelMode.ts` does.
+- The dock persona gets the real `view`. The slot passes none.
 
 While the slot is open the tree highlights no node. So the rail header names
 the scope itself, and the persona says "current scope", not "looking at".
