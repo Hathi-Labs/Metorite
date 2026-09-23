@@ -373,7 +373,7 @@ async def generate_notes(meeting_id: str, run_id: str, triggered_by: str) -> Non
             await db.commit()
         _log.info("notes.summary_done", meeting_id=meeting_id, run_id=run_id)
 
-        # Auto-dispatch: confident action items become real work (a GTD task,
+        # Auto-dispatch: confident action items become real work (a task,
         # a sent email, a draft document) without another click, per the
         # user's per-kind settings. After the summary commit, and never able
         # to fail it — notes exist even if dispatch has a bad day.
@@ -444,7 +444,7 @@ class ActionItemModel(BaseModel):
     kind: str = "task"
     #: Extraction hints (owner_hint, email_to) used at dispatch time.
     payload: dict = {}
-    #: Where a dispatch landed: gtd id, 'sent:<id>', 'draft:<id>',
+    #: Where a dispatch landed: task id, 'sent:<id>', 'draft:<id>',
     #: 'artifact:<agent>/<path>' — and why it failed, if it did.
     dispatch_ref: str | None = None
     dispatch_error: str | None = None

@@ -256,7 +256,7 @@ export function toneFor(outcome: string, tool: string): string {
 /**
  * Is this a Projects tool at all? The manifest's tool names are the
  * `skill-projects` exports; anything else belongs to another card file.
- * Kept as a prefix-free explicit set so a `gtd_*` or email tool never lands
+ * Kept as a prefix-free explicit set so a `my_tasks_*` or email tool never lands
  * here — a name-based guess would collide the day two skills share a verb.
  */
 const PROJECT_TOOLS = new Set([

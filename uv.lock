@@ -36,8 +36,8 @@ members = [
     "orchestrator",
     "project-docs",
     "reconciler",
+    "skill-my-tasks",
     "skill-projects",
-    "skill-task-gtd",
     "whatsapp-ingestion",
 ]
 
@@ -2426,8 +2426,8 @@ dependencies = [
     { name = "orchestrator" },
     { name = "python-multipart" },
     { name = "reconciler" },
+    { name = "skill-my-tasks" },
     { name = "skill-projects" },
-    { name = "skill-task-gtd" },
 ]
 
 [package.dev-dependencies]
@@ -2462,8 +2462,8 @@ requires-dist = [
     { name = "orchestrator", editable = "apps/services/orchestrator" },
     { name = "python-multipart", specifier = ">=0.0.32" },
     { name = "reconciler", editable = "apps/services/reconciler" },
+    { name = "skill-my-tasks", editable = "apps/skills/skill-my-tasks" },
     { name = "skill-projects", editable = "apps/skills/skill-projects" },
-    { name = "skill-task-gtd", editable = "apps/skills/skill-task-gtd" },
 ]
 
 [package.metadata.requires-dev]
@@ -3250,9 +3250,9 @@ wheels = [
 ]
 
 [[package]]
-name = "skill-projects"
+name = "skill-my-tasks"
 version = "0.1.0"
-source = { editable = "apps/skills/skill-projects" }
+source = { editable = "apps/skills/skill-my-tasks" }
 dependencies = [
     { name = "acb-common" },
     { name = "httpx" },
@@ -3274,9 +3274,9 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [[package]]
-name = "skill-task-gtd"
+name = "skill-projects"
 version = "0.1.0"
-source = { editable = "apps/skills/skill-task-gtd" }
+source = { editable = "apps/skills/skill-projects" }
 dependencies = [
     { name = "acb-common" },
     { name = "httpx" },

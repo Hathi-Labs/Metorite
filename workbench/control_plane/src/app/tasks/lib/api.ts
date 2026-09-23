@@ -6,7 +6,7 @@
 // The store hydrates from here when the gateway is reachable and silently
 // falls back to the bundled mock data when it isn't (UI-first demo mode).
 
-import { GtdItem, GtdProject, Person, OrgPerson, OrgPersonWrite, ResumeIngestResult, Disposition, TaskAttachment } from "./types";
+import { MyTask, MyTasksProject, Person, OrgPerson, OrgPersonWrite, ResumeIngestResult, Disposition, TaskAttachment } from "./types";
 import type { ClarifyProposal, ClarifyDisposition, Confidence } from "./clarify";
 import {
   lensAddSubtasks,
@@ -99,7 +99,7 @@ function asAssigneeLoad(
  * A `pm_projects` NODE as the promote picker reads it. The title is `name`,
  * and the status is lowercase (`146_projects.sql`). Exported for its test.
  */
-export function mapProject(raw: Raw): GtdProject {
+export function mapProject(raw: Raw): MyTasksProject {
   const status = String(raw.status ?? "active").toUpperCase();
   return {
     id: String(raw.id ?? ""),
@@ -115,7 +115,7 @@ export function mapProject(raw: Raw): GtdProject {
 
 // ── Calls ────────────────────────────────────────────────────────────────────
 
-export async function fetchItems(view = "all"): Promise<GtdItem[]> {
+export async function fetchItems(view = "all"): Promise<MyTask[]> {
   return lensFetchItems(view);
 }
 
@@ -156,7 +156,7 @@ export async function apiMoveTask(
   return lensMoveTask(taskId, req);
 }
 
-export async function fetchProjects(): Promise<GtdProject[]> {
+export async function fetchProjects(): Promise<MyTasksProject[]> {
   // ⚠️ These are the COMPANY's projects, not a per-user tree. A member's own
   // structure is their Areas (migration 191), reached through `my/*`. This
   // list exists to choose a promote destination, and only a real project can
@@ -303,11 +303,11 @@ export async function apiCapture(
   notes?: string,
   attachments?: TaskAttachment[],
   dates?: CaptureDates
-): Promise<GtdItem> {
+): Promise<MyTask> {
   return lensCapture(title, notes, attachments, dates);
 }
 
-export async function apiCaptureBatch(titles: string[]): Promise<GtdItem[]> {
+export async function apiCaptureBatch(titles: string[]): Promise<MyTask[]> {
   return lensCaptureBatch(titles);
 }
 
@@ -348,7 +348,7 @@ export async function apiPatchItem(
      *  it (no promise ⇒ the overdue line reads due_at live). */
     expected_by?: string;
   }
-): Promise<GtdItem> {
+): Promise<MyTask> {
   return lensPatchItem(id, patch as Record<string, unknown>);
 }
 
@@ -521,14 +521,14 @@ export async function apiSetDayState(
 export async function apiArchiveItem(
   id: string,
   archived: boolean,
-): Promise<GtdItem> {
+): Promise<MyTask> {
   return lensArchiveItem(id, archived);
 }
 
 export async function apiBulkDispose(
   ids: string[],
   disposition: Disposition
-): Promise<GtdItem[]> {
+): Promise<MyTask[]> {
   // DONE completes each task for the project; anything else is my overlay.
   return lensBulkDispose(ids, disposition);
 }
@@ -538,7 +538,7 @@ export async function apiBulkDispose(
 export async function apiBulkArchive(
   ids: string[],
   archived: boolean
-): Promise<GtdItem[]> {
+): Promise<MyTask[]> {
   return lensBulkArchive(ids, archived);
 }
 
@@ -557,13 +557,13 @@ export interface OrganizeBody {
   subtasks?: string[];
 }
 
-export async function apiOrganize(id: string, body: OrganizeBody): Promise<GtdItem> {
+export async function apiOrganize(id: string, body: OrganizeBody): Promise<MyTask> {
   // One request, one transaction, on the gateway (S6a done-when 4).
   return lensOrganize(id, body);
 }
 
 /** The child subtasks of a task (local rows), in manual order. */
-export async function apiListSubtasks(id: string): Promise<GtdItem[]> {
+export async function apiListSubtasks(id: string): Promise<MyTask[]> {
   return lensListSubtasks(id);
 }
 
@@ -571,7 +571,7 @@ export async function apiListSubtasks(id: string): Promise<GtdItem[]> {
 export async function apiAddSubtasks(
   id: string,
   titles: string[],
-): Promise<GtdItem[]> {
+): Promise<MyTask[]> {
   return lensAddSubtasks(id, titles);
 }
 
@@ -582,7 +582,7 @@ export async function apiDeleteItem(id: string): Promise<void> {
 }
 
 /** Undo a soft delete — returns the restored task, exactly as it was. */
-export async function apiRestoreItem(id: string): Promise<GtdItem> {
+export async function apiRestoreItem(id: string): Promise<MyTask> {
   return lensRestoreItem(id);
 }
 
@@ -642,7 +642,7 @@ export async function fetchMyRoot(): Promise<{ id: string; name: string } | null
 // to me, and the projects I lead.
 
 /** Tasks assigned to me on a board that I have not looked at yet. */
-export async function fetchUntriaged(): Promise<GtdItem[]> {
+export async function fetchUntriaged(): Promise<MyTask[]> {
   return lensFetchUntriaged();
 }
 
@@ -984,13 +984,13 @@ export async function apiClarifyPropose(
 
 /** Fold an inbox capture into an existing synced task (dedup "add to existing")
  *  instead of creating a duplicate. Returns the enriched target task. */
-export async function apiMergeInto(id: string, targetId: string): Promise<GtdItem> {
+export async function apiMergeInto(id: string, targetId: string): Promise<MyTask> {
   return lensMergeInto(id, targetId);
 }
 
 /** File an inbox capture as a SUB-STEP of an existing task (clarify "this is a
  *  step of X"). Returns the parent task (now with the new child). */
-export async function apiFileUnder(id: string, parentId: string): Promise<GtdItem> {
+export async function apiFileUnder(id: string, parentId: string): Promise<MyTask> {
   return lensFileUnder(id, parentId);
 }
 
@@ -1194,6 +1194,6 @@ export async function apiDelegateItem(
     due_at?: string;
     expected_by?: string;
   },
-): Promise<GtdItem> {
+): Promise<MyTask> {
   return lensDelegateItem(id, body);
 }

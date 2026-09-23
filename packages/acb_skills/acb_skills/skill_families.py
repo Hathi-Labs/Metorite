@@ -11,12 +11,12 @@ families, or is registered here but no longer injectable.
 
 Family-set reality check (S1 acceptance says follow the CODE, not the spec's
 provisional list): the spec named files-artifacts / email / whatsapp /
-tasks-gtd / calendar / notes / web-research / diagrams families, but
+my-tasks / calendar / notes / web-research / diagrams families, but
 
 * files-artifacts, notes, web-research and most of coding are inside the
   guaranteed ``_CORE_STANDARD_TOOL_NAMES`` floor (which grew after the spec's
   list was drafted) — they are the non-toggleable ``core`` family;
-* email / whatsapp / tasks-gtd / calendar tools are agents' OWN repo-baked
+* email / whatsapp / my-tasks / calendar tools are agents' OWN repo-baked
   tools (governed by ``own_tool_scope``), never injected by
   ``_tool_injection.py`` — so they have no place in an *injected*-skills
   registry until the WS-8 manifest work lands;

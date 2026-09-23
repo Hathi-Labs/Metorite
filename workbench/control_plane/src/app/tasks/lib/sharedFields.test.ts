@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { gtdMetaChips } from "./cardMeta";
+import { taskMetaChips } from "./cardMeta";
 import { COLUMNS, DEFAULT_VISIBLE } from "./columns";
 import {
   CELL_META,
@@ -33,10 +33,10 @@ import {
   isUntagged,
   priorityCell,
 } from "./priority";
-import type { GtdItem } from "./types";
+import type { MyTask } from "./types";
 import { isTickled, resurfacesAt } from "./utils";
 
-const BASE: GtdItem = {
+const BASE: MyTask = {
   id: "t",
   source: "LOCAL",
   title: "A task",
@@ -176,14 +176,14 @@ describe("isTickled holds the gateway's rule (the shared fixture)", () => {
 
 describe("the card draws the shared facts with the Projects chips (D76)", () => {
   it("adds the Priority chip first, and the tags", () => {
-    const chips = gtdMetaChips({ ...BASE, importance: 3, tags: ["ops"] });
+    const chips = taskMetaChips({ ...BASE, importance: 3, tags: ["ops"] });
     expect(chips[0]).toMatchObject({ key: "importance", label: "Urgent" });
     expect(chips.some((c) => c.key === "tags:ops")).toBe(true);
   });
 
   it("draws no Priority chip for an unset Priority, but does for Low", () => {
-    expect(gtdMetaChips(BASE).some((c) => c.key === "importance")).toBe(false);
-    expect(gtdMetaChips({ ...BASE, importance: 0 })[0]).toMatchObject({
+    expect(taskMetaChips(BASE).some((c) => c.key === "importance")).toBe(false);
+    expect(taskMetaChips({ ...BASE, importance: 0 })[0]).toMatchObject({
       key: "importance",
       label: "Low",
     });

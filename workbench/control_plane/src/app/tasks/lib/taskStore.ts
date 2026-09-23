@@ -23,9 +23,9 @@ import {
 import {
   Disposition,
   Energy,
-  GtdContext,
-  GtdItem,
-  GtdProject,
+  TaskContext,
+  MyTask,
+  MyTasksProject,
   Person,
   OrgPerson,
   OrgPersonWrite,
@@ -320,11 +320,11 @@ function decisionToOrganizeBody(d: ClarifyDecision): OrganizeBody {
 }
 
 function applyDecision(
-  item: GtdItem,
+  item: MyTask,
   d: Exclude<ClarifyDecision, { kind: "project" }>,
-): GtdItem {
+): MyTask {
   const now = new Date().toISOString();
-  const base: GtdItem = { ...item, updatedAt: now, clarifiedAt: now };
+  const base: MyTask = { ...item, updatedAt: now, clarifiedAt: now };
   switch (d.kind) {
     case "trash":
       return { ...base, disposition: "TRASH" };
@@ -407,7 +407,7 @@ const nextId = () => `local-${idCounter++}`;
 function makeCaptureItem(
   title: string,
   dates?: import("./api").CaptureDates,
-): GtdItem {
+): MyTask {
   const ts = new Date().toISOString();
   return {
     id: nextId(),
@@ -426,8 +426,8 @@ function makeCaptureItem(
 
 /** A restorable snapshot taken *before* a dispose/clarify, for one-level undo. */
 interface UndoSnapshot {
-  items: GtdItem[];
-  projects: GtdProject[];
+  items: MyTask[];
+  projects: MyTasksProject[];
   processed: number;
   selectedItemId: string | null;
   /** human label for the toast, e.g. "Trashed" / "Filed under Someday". */
@@ -437,7 +437,7 @@ interface UndoSnapshot {
   /** Items HARD-DELETED by this change. Undo re-creates them server-side
    *  (a new row/id) via capture, since delete is permanent — unlike a
    *  disposition change, which undo reverts in place via changedIds. */
-  deletedItems?: GtdItem[];
+  deletedItems?: MyTask[];
   /** Ids SOFT-DELETED by this change (the current delete path). While the undo
    *  toast is up the rows are only tombstoned server-side, so Undo restores
    *  them LOSSLESSLY (apiRestoreItem) — provider linkage/history intact. When
@@ -482,7 +482,7 @@ function clarifyLabel(d: ClarifyDecision): string {
 }
 
 /** Apply a one-tap disposition (shared by quick + bulk dispose). */
-function disposeOne(item: GtdItem, disposition: Disposition): GtdItem {
+function disposeOne(item: MyTask, disposition: Disposition): MyTask {
   const now = new Date().toISOString();
   return {
     ...item,
@@ -494,9 +494,9 @@ function disposeOne(item: GtdItem, disposition: Disposition): GtdItem {
 }
 
 interface TaskState {
-  items: GtdItem[];
-  projects: GtdProject[];
-  contexts: GtdContext[];
+  items: MyTask[];
+  projects: MyTasksProject[];
+  contexts: TaskContext[];
   people: Person[];
   /** Full HR roster behind the People view (lazy-loaded on open). */
   orgPeople: OrgPerson[];
@@ -740,16 +740,16 @@ interface TaskState {
    *  the neighbours and patches sortKey (+ the stage change) in one write. */
   reorderItem: (
     id: string,
-    groupItems: GtdItem[],
+    groupItems: MyTask[],
     toIndex: number,
     refile?: { workflowStage?: string; providerStatus?: string },
   ) => void;
   /** Fetch a task's child subtasks (local rows) — the detail panel calls this
    *  on open. Not held in the main items list (subtasks are nested). */
-  loadSubtasks: (id: string) => Promise<GtdItem[]>;
+  loadSubtasks: (id: string) => Promise<MyTask[]>;
   /** Add child subtasks to a task; returns the full ordered child list and
    *  bumps the parent's subtaskCount optimistically. */
-  addSubtasks: (id: string, titles: string[]) => Promise<GtdItem[]>;
+  addSubtasks: (id: string, titles: string[]) => Promise<MyTask[]>;
   /** Inline-rename a captured item (fix a typo without clarifying). */
   renameItem: (id: string, title: string) => void;
   /** Fold an inbox capture INTO an existing synced task (dedup "add to the
@@ -1141,7 +1141,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     // gateway's refusals throw with their own sentence. Neither touches the
     // list: the card only changes once `my/tasks/{id}` says where it is.
     await apiMoveTask(id, req);
-    let moved: GtdItem;
+    let moved: MyTask;
     try {
       moved = await lensGetItem(id);
     } catch (err) {
@@ -1249,7 +1249,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     // nothing was said.
     const disposition: Disposition =
       prefill.disposition ?? (lastStage ? "DONE" : "NEXT");
-    const item: GtdItem = {
+    const item: MyTask = {
       ...makeCaptureItem(t),
       // Born clarified: the group the add sits in already answered "what is
       // this?" — it is a next action ON that stage/context/energy, and the
@@ -1344,7 +1344,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   delegateToPerson: async (id, req) => {
     if (get().backend !== "live") return;
-    let server: GtdItem;
+    let server: MyTask;
     try {
       server = await apiDelegateItem(id, {
         assignee: { name: req.assignee.name, email: req.assignee.email },
@@ -1376,7 +1376,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const level = weight
       ? importanceForImportant(current?.importance, weight.important)
       : undefined;
-    const applyWeight = (i: GtdItem): GtdItem =>
+    const applyWeight = (i: MyTask): MyTask =>
       weight
         ? {
             ...i,
@@ -1396,7 +1396,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         changedIds: [id],
       };
       let projects = s.projects;
-      let items: GtdItem[];
+      let items: MyTask[];
       if (decision.kind === "project") {
         // Create a project and make this item its first next action. OWNER is
         // independent of SIZE (Sort→Shape): a project can ALSO be delegated —
@@ -1406,7 +1406,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         const tf =
           targetFields(decision.dest) ??
           { source: "LOCAL" as const, provider: "local" as ProviderKind, syncState: "local" as const };
-        const project: GtdProject = {
+        const project: MyTasksProject = {
           id: pid,
           source: tf.source,
           provider: tf.provider,
@@ -1959,7 +1959,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const items = get().items;
     const targets = ids
       .map((id) => items.find((i) => i.id === id))
-      .filter((t): t is GtdItem => !!t);
+      .filter((t): t is MyTask => !!t);
     if (!targets.length) return;
     // Confirm before deleting anything with real consequences: a ClickUp-synced
     // task (its upstream counterpart gets deleted too) or an already-clarified
@@ -2593,10 +2593,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
  * created in its parent's project (`lensAddSubtasks` sends the parent's
  * `project_id`), so it carries the Area's id itself and needs no walk. A row
  * that only names `parentItemId` and no `projectId` is not in any Area here:
- * `GtdItem` carries no root-project fact to resolve it by, and inventing one
+ * `MyTask` carries no root-project fact to resolve it by, and inventing one
  * from the loaded list would answer wrong the moment the parent is not loaded.
  */
-export function itemsInArea(items: GtdItem[], areaId: string | null): GtdItem[] {
+export function itemsInArea(items: MyTask[], areaId: string | null): MyTask[] {
   if (!areaId) return items;
   return items.filter((i) => i.projectId === areaId);
 }
@@ -2605,11 +2605,11 @@ export function itemsInArea(items: GtdItem[], areaId: string | null): GtdItem[] 
  *  filter). ``source`` hides the connected-workspace mirror ("local") or shows
  *  only it ("synced"); "all" (default) shows both. */
 export function itemsForView(
-  items: GtdItem[],
+  items: MyTask[],
   view: ViewKey,
   context: string | null,
   source: "all" | "local" | "synced" = "all",
-): GtdItem[] {
+): MyTask[] {
   if (source === "local") items = items.filter((i) => i.source === "LOCAL");
   else if (source === "synced") items = items.filter((i) => i.source !== "LOCAL");
   // Archived tasks are hidden everywhere except the Archive view.
@@ -2684,7 +2684,7 @@ export function itemsForView(
  *  source filter so the badges track the All / Mine / ClickUp toggle instead of
  *  always reporting the "All" totals. */
 export function viewCounts(
-  items: GtdItem[],
+  items: MyTask[],
   source: "all" | "local" | "synced" = "all",
 ): Record<ViewKey, number> {
   if (source === "local") items = items.filter((i) => i.source === "LOCAL");
@@ -2715,7 +2715,7 @@ export function viewCounts(
 /** Count of MY NEXT items per context (for the expandable @context sub-list).
  *  Mirrors the "My Next Actions" filter — only tasks assigned to me count, so
  *  the subfolder badges match what the view actually shows. */
-export function contextCounts(items: GtdItem[]): Record<string, number> {
+export function contextCounts(items: MyTask[]): Record<string, number> {
   const out: Record<string, number> = {};
   for (const i of items) {
     if (i.disposition !== "NEXT" || !i.isMine) continue;

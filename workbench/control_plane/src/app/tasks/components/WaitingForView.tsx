@@ -5,7 +5,7 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { useFlash } from "@/components/useFlash";
 import { clampCursor, stepCursor } from "@/lib/cursor";
 import { useMemo, useState } from "react";
-import { GtdItem } from "../lib/types";
+import { MyTask } from "../lib/types";
 import { lensNudge } from "../lib/lens";
 import { useTaskStore } from "../lib/taskStore";
 import { initials, relativeTime } from "../lib/utils";
@@ -60,7 +60,7 @@ import {
 
 const NOBODY: ReadonlySet<string> = new Set();
 
-export function WaitingForView({ items }: { items: GtdItem[] }) {
+export function WaitingForView({ items }: { items: MyTask[] }) {
   const openFocus = useTaskStore((s) => s.openFocus);
   const selectMode = useTaskStore((s) => s.selectMode);
   const selectedIds = useTaskStore((s) => s.selectedIds);
@@ -199,7 +199,7 @@ function WaitingRow({
   who,
   nowMs,
 }: {
-  item: GtdItem;
+  item: MyTask;
   who: string;
   nowMs: number;
 }) {
@@ -300,7 +300,7 @@ function WaitingRow({
  * here, because `vitest` never collects a `.tsx` (D-PM-21). The rule that
  * matters — an empty `notified` on a 200 is NOT a success — is fenced in
  * `lib/waiting.test.ts`. */
-function NudgeControl({ item, nowMs }: { item: GtdItem; nowMs: number }) {
+function NudgeControl({ item, nowMs }: { item: MyTask; nowMs: number }) {
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<{ ok: boolean; message: string } | null>(null);
   const [sentAt, setSentAt] = useState<string | null>(null);

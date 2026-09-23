@@ -121,7 +121,7 @@ const TOOL_TTL_MS = 12_000; // a tool badge lingers this long after its last eve
 // Realistic tool names used only by sim mode to demo the per-tool agent badges.
 const SIM_TOOLS = [
   "read_email", "send_email", "draft_reply", "query_inbox", "web_search",
-  "run_diagnostics", "git_push", "gtd_add_task", "create_diagram",
+  "run_diagnostics", "git_push", "my_tasks_capture", "create_diagram",
   "share_artifact", "ask_questions", "run_command", "schedule_meeting",
 ];
 

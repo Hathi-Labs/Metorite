@@ -20,13 +20,13 @@ import {
 } from "@/app/projects/lib/customFields";
 
 import type { LensMoveRequest } from "./lens";
-import type { GtdItem } from "./types";
+import type { MyTask } from "./types";
 
 /**
  * Whether "Move to project…" is offered on a card — ONE rule, one spelling.
  * An archived row stays where it is until it is restored.
  */
-export function promoteAllowed(item: Pick<GtdItem, "archivedAt">): boolean {
+export function promoteAllowed(item: Pick<MyTask, "archivedAt">): boolean {
   return !item.archivedAt;
 }
 
@@ -40,7 +40,7 @@ export function promoteAllowed(item: Pick<GtdItem, "archivedAt">): boolean {
  * store must not report as a failure.
  */
 export type PromoteOutcome =
-  | { left: false; item: GtdItem }
+  | { left: false; item: MyTask }
   | { left: true; projectId?: string; assignees: string[] };
 
 /** The success toast, in one place so the two outcomes cannot drift. */

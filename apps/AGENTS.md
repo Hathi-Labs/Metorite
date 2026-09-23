@@ -38,7 +38,7 @@ Identity + system prompt + tool set + integrations. Loaded via `build_agents()`
 and a `local_path` entry in `agent_registry.json` / the gateway `_AGENT_REGISTRY`.
 Run *inside* the orchestrator/gateway process — no server of their own.
 - agent-orchestrator/ -- Wraps the built-in orchestrator Agent so it goes through the same `/agent/run/stream` path as all other agents. Eliminates the separate `/copilot/chat` code path in the frontend.
-- agent-task-manager/ -- Task management (GTD)
+- agent-task-manager/ -- My Tasks, the personal task agent
 - agent-apis-config/ -- API discovery and configuration assistant
 - agent-email-assistant/ -- Email AI assistant: read, search, summarize, draft replies across Gmail and Microsoft accounts
 - agent-whatsapp-assistant/ -- WhatsApp inbox briefing, triage, and reply drafting (drafts only)
@@ -50,7 +50,7 @@ Run *inside* the orchestrator/gateway process — no server of their own.
 Capabilities (tools) an agent picks up. No identity, no server. Python packages
 imported as tool providers. (Distinct from the repo-root `skills/` folder, which
 holds SKILL.md + subprocess-script skills for the DOE-v2 registry agents.)
-- skill-task-gtd/ -- GTD task tools (capture/clarify/organize/engage) over the gateway `/tasks` API
+- skill-my-tasks/ -- the My Tasks tools (capture/clarify/organize/engage) over the gateway lens routes
 - skill-projects/ -- the Projects tool family for `projects-assistant` over the gateway `/projects` API. `manifest.py` is the route allowlist and the coverage record (see `agent-projects/` above)
 
 ## Conventions

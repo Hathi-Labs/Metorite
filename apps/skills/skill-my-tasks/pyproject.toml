@@ -1,7 +1,7 @@
 [project]
-name = "skill-task-gtd"
+name = "skill-my-tasks"
 version = "0.1.0"
-description = "Provider-agnostic GTD tools for agent-task-manager (capture/clarify/organize over the gateway /tasks API)"
+description = "The My Tasks tools for agent-task-manager (capture/clarify/organize over the gateway lens routes)"
 requires-python = ">=3.12"
 dependencies = ["httpx>=0.27", "acb-common"]
 
@@ -13,7 +13,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["skill_task_gtd"]
+packages = ["skill_my_tasks"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -56,7 +56,7 @@ DEFAULT_INSTRUCTIONS = (
 
 
 def skill_module_name(repo: str) -> str:
-    """``"skill-task-gtd"`` → ``"skill_task_gtd"``.
+    """``"skill-my-tasks"`` → ``"skill_my_tasks"``.
 
     ``config.json`` names skills by *repo* (hyphenated); they import by *module*
     (underscored).  The loader already relies on this correspondence when it puts
@@ -73,7 +73,7 @@ def resolve_skill_tools(
     """Collect the callables a declarative agent's declared skills export.
 
     A skill package publishes its tool surface through ``__all__`` — verified
-    against ``skill-task-gtd``, whose 29 exported callables are exactly the 29
+    against ``skill-my-tasks``, whose 29 exported callables are exactly the 29
     tools ``agent-task-manager/agents.py`` assembles by hand.  That equivalence is
     asserted in ``tests/unit/test_declarative_builder.py``.
 

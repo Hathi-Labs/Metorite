@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Icon from "@/components/Icon";
 import { useTaskStore } from "../lib/taskStore";
-import type { GtdItem, Person } from "../lib/types";
+import type { MyTask, Person } from "../lib/types";
 import { initials } from "../lib/utils";
 import { DelegateDialog } from "./DelegateDialog";
 
@@ -41,7 +41,7 @@ function DelegateBody({
   item,
   onClose,
 }: {
-  item: GtdItem;
+  item: MyTask;
   onClose: () => void;
 }) {
   const people = useTaskStore((s) => s.people);

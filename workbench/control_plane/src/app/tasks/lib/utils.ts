@@ -1,8 +1,8 @@
-// Small presentation helpers for the GTD task UI.
+// Small presentation helpers for the My Tasks UI.
 
 import { isOverdue as overdue } from "@/lib/taskCard";
 
-import { Disposition, Energy, GtdItem, ProviderKind, Source } from "./types";
+import { Disposition, Energy, MyTask, ProviderKind, Source } from "./types";
 
 // `relativeTime`, `durationLabel` and `initials` now live in `@/lib/taskCard`,
 // which /projects draws its cards from too (WS-27s) — one definition of "2d
@@ -14,7 +14,7 @@ import { Disposition, Energy, GtdItem, ProviderKind, Source } from "./types";
 export { durationLabel, initials, relativeTime } from "@/lib/taskCard";
 
 /** True if a hard-date item is overdue. */
-export function isOverdue(item: GtdItem, nowMs = Date.now()): boolean {
+export function isOverdue(item: MyTask, nowMs = Date.now()): boolean {
   return overdue(item.dueAt, item.completedAt, nowMs);
 }
 
@@ -46,7 +46,7 @@ export function dateBucket(
 }
 
 /** True if an item belongs in the Calendar view (date-specific actions). */
-export function isCalendarItem(item: GtdItem): boolean {
+export function isCalendarItem(item: MyTask): boolean {
   return !!item.isHardDate && !!item.dueAt;
 }
 

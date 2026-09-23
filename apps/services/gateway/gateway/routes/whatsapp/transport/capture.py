@@ -1,4 +1,4 @@
-"""Transport · capture — turn a WhatsApp message into a GTD task.
+"""Transport · capture — turn a WhatsApp message into a task.
 
 The WhatsApp inbox as a capture channel, mirroring the email → task hand-off.
 W1 keeps it deterministic (no LLM): a message becomes a plain INBOX item with an
@@ -48,7 +48,7 @@ async def capture_task(
     req: CaptureTaskRequest,
     user: UserContext = Depends(get_current_user),
 ):
-    """Capture a WhatsApp message as a GTD inbox item (idempotent per message)."""
+    """Capture a WhatsApp message as a My Tasks inbox item (idempotent per message)."""
     uid = user.email or "anonymous"
     async with _tenant_session() as db:
         # Owner check THROUGH the account, and pull the fields we tag the origin

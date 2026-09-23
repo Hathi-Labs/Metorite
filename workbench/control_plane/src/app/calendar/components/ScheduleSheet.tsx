@@ -3,7 +3,7 @@
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useMemo, useState } from "react";
-import { GtdItem } from "@/app/tasks/lib/types";
+import { MyTask } from "@/app/tasks/lib/types";
 import { durationLabel } from "@/app/tasks/lib/utils";
 import { priorityRank } from "@/app/tasks/lib/priority";
 import {
@@ -39,15 +39,15 @@ export function ScheduleSheet({
 }: {
   day: Date;
   at?: Date;
-  tasks: GtdItem[];
+  tasks: MyTask[];
   /** full store rows — for measuring the gap against the day's blocks. */
-  items: GtdItem[];
-  dueSoon: { item: GtdItem; days: number }[];
+  items: MyTask[];
+  dueSoon: { item: MyTask; days: number }[];
   urgentWindowHours: number;
   dayEndHour: number;
-  onSchedule: (t: GtdItem, at?: Date) => void;
+  onSchedule: (t: MyTask, at?: Date) => void;
   /** the 2-minute rule: just do it — mark done without ever scheduling. */
-  onDoNow: (t: GtdItem) => void;
+  onDoNow: (t: MyTask) => void;
   onPlan: () => void;
   onClose: () => void;
 }) {

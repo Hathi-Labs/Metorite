@@ -20,7 +20,7 @@ Metorite is the operating system for Fracktal Works. It coordinates a fleet of s
 
 ```
 Hathi-Labs/Metorite          ← This repo: Core engine + infra
-FracktalWorks/agent-task-manager     ← Agent: task management (GTD)
+FracktalWorks/agent-task-manager     ← Agent: task management (My Tasks)
 FracktalWorks/agent-sales            ← Agent: Zoho CRM sales workflows
 FracktalWorks/agent-delivery         ← Agent: project delivery + push
 FracktalWorks/agent-triage           ← Agent: email/WhatsApp/meeting triage

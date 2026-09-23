@@ -1,6 +1,6 @@
-"""No code names a `gtd_` TABLE any more (WS-39 S8 PR 2, H-151).
+"""No code names a `gtd_` table or a `gtd_` tool any more (WS-39 S8 PR 2, S9).
 
-Spec `my_tasks_cutover.md` §4.3 and §5 S8 · decision D73 · board WS-39.
+Spec `my_tasks_cutover.md` §4.3, §5 S8 and §5 S9 · decision D73 · board WS-39.
 
 After migration 216 no `gtd_*` table exists. Three slices renamed eleven of
 them (People, Calendar and settings, then the three task-store survivors), and
@@ -8,10 +8,27 @@ them (People, Calendar and settings, then the three task-store survivors), and
 defects. Either it is a query that fails on the first request, or it is a
 comment that describes a schema that is gone.
 
+S9 then renamed the 29 chat tools from `gtd_*` to `my_tasks_*`, and the three
+settings helpers to `task_models`, `task_toggles` and `calendar_prefs`. So no
+bare `gtd_` token is allowed any more.
+
 This fence walks `apps`, `packages`, `scripts` and `workbench` and reads EVERY
-`gtd_` token, in code, comments and docs alike. A token passes only when
-:data:`ALLOWED` names it with a reason. The survivors are S9's (the chat tool
-names and three helper names), and each one is listed.
+`gtd_` token, in code, comments and docs alike. Two survivors are left, and
+each one is listed with its reason:
+
+- :data:`ALLOWED_LITERALS` — the upload folder `data/gtd_attachments` on the
+  box. Moving the folder is a separate deploy act, not a code change.
+- :data:`ALLOWED_FILES` — the one client file that maps each old tool name to
+  its new name, so a chat saved before S9 still renders its cards.
+
+Two more survivors sit outside the four trees, so the walk never reads them.
+These are the migrations in `infra/postgres/`, and the three migration-history
+tests (`test_gtd_backfill.py`, `test_gtd_rename_upgrade.py` and
+`test_gtd_retirement_plan.py`). Those tests are ABOUT the `gtd_*` tables.
+
+:func:`test_the_client_carries_no_gtd_identifier` is the client fence. It
+refuses `GtdItem`, any `Gtd<Capital>` identifier and any `gtd_` token under
+`workbench/control_plane/src`, outside the alias map.
 
 The table names are DISCOVERED from the ladder, never transcribed: every
 `CREATE TABLE gtd_*` in `infra/postgres/`, and every OLD name a rename
@@ -44,33 +61,24 @@ TEXT_SUFFIXES = frozenset({
 #: Generated or vendored files that are large and carry no table names.
 SKIP_FILES = frozenset({"package-lock.json"})
 
-_SKILL_INIT = (REPO / "apps" / "skills" / "skill-task-gtd" / "skill_task_gtd"
+_SKILL_INIT = (REPO / "apps" / "skills" / "skill-my-tasks" / "skill_my_tasks"
                / "__init__.py")
 
-#: The 29 chat tool names. S9 renames all of them at once (my_tasks_cutover.md
-#: §5 S9). Listed here, and pinned to the skill's `__all__` below, so the list
-#: cannot drift from the tools that exist.
-TOOL_NAMES = (
-    "gtd_accounts", "gtd_add_subtasks", "gtd_archive", "gtd_capture",
-    "gtd_capture_many", "gtd_clarify", "gtd_complete", "gtd_day_digest",
-    "gtd_delegate", "gtd_detail", "gtd_estimate_stats", "gtd_inbox_insights",
-    "gtd_list", "gtd_list_projects", "gtd_list_schedule", "gtd_move",
-    "gtd_organize", "gtd_people", "gtd_plan_day", "gtd_plan_project",
-    "gtd_replan_day", "gtd_rollover", "gtd_schedule", "gtd_set_one_thing",
-    "gtd_set_stage", "gtd_subtasks", "gtd_sync", "gtd_unschedule",
-    "gtd_update",
-)
+#: The client file that may spell the old tool names. It maps each stored
+#: `gtd_*` name to its `my_tasks_*` name, so a chat saved before S9 still
+#: renders its task cards. `TaskToolCards.test.ts` pins the map to the skill.
+LEGACY_ALIAS_FILE = (REPO / "workbench" / "control_plane" / "src" / "components"
+                     / "tasks" / "TaskToolCards.tsx")
 
-#: Every `gtd_` token the four trees may still carry, each with its reason.
-ALLOWED: dict[str, str] = {
-    **{name: "a chat tool name. S9 renames all 29 at once" for name in TOOL_NAMES},
-    "gtd_models": "a helper in routes/tasks/settings.py. S9 renames it",
-    "gtd_toggles": "a helper in routes/tasks/settings.py. S9 renames it",
-    "gtd_calendar_prefs": "a helper in routes/tasks/settings.py. S9 renames it",
-    "gtd_add_task": (
-        "an example tool name in the observability office's tool list. It "
-        "names no table and no live tool"),
+#: Files the token scan skips, each with its reason.
+ALLOWED_FILES: dict[Path, str] = {
+    LEGACY_ALIAS_FILE: (
+        "the legacy tool-name alias map. Stored chat history carries the old "
+        "`gtd_*` names, and each one must still render its card"),
 }
+
+#: Every bare `gtd_` token the four trees may still carry. S9 emptied it.
+ALLOWED: dict[str, str] = {}
 
 #: Literal strings removed before the scan, each with its reason.
 ALLOWED_LITERALS: dict[str, str] = {
@@ -92,6 +100,9 @@ _CREATE = re.compile(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(gtd_\w+)", re.
 _OLD_NAME = re.compile(r"old_name\s+CONSTANT\s+text\s*:=\s*'(gtd_\w+)'", re.I)
 _SQL_USE = re.compile(
     r"\b(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+(gtd_\w+)", re.I)
+
+_CLIENT = REPO / "workbench" / "control_plane" / "src"
+_CLIENT_NAME = re.compile(r"GtdItem|Gtd[A-Z]|gtd_")
 
 
 def table_names() -> frozenset[str]:
@@ -116,6 +127,11 @@ def fenced_files() -> list[Path]:
     return sorted(out)
 
 
+def scanned_files() -> list[Path]:
+    """The fenced files, less the files :data:`ALLOWED_FILES` names."""
+    return [p for p in fenced_files() if p not in ALLOWED_FILES]
+
+
 def _scan_text(text: str) -> list[tuple[int, str]]:
     for literal in ALLOWED_LITERALS:
         text = text.replace(literal, "")
@@ -131,6 +147,15 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def _skill_tools() -> frozenset[str]:
+    tree = ast.parse(_SKILL_INIT.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", None) == "__all__" for t in node.targets):
+            return frozenset(ast.literal_eval(node.value))
+    raise AssertionError("skill_my_tasks.__all__ not found")
+
+
 # ── The fence ───────────────────────────────────────────────────────────────
 
 def test_the_walk_reaches_all_four_trees() -> None:
@@ -143,18 +168,19 @@ def test_the_walk_reaches_all_four_trees() -> None:
 def test_no_gtd_token_outside_the_allowed_list() -> None:
     bad = [
         f"{p.relative_to(REPO).as_posix()}:{line}: {token}"
-        for p in fenced_files() for line, token in _scan_text(_read(p))
+        for p in scanned_files() for line, token in _scan_text(_read(p))
     ]
     assert not bad, (
-        "These `gtd_` tokens are not in ALLOWED. After migration 216 no gtd_ "
-        "table exists. Use the new name (my_tasks_cutover.md §4.3), or, for a "
-        "survivor, add it to ALLOWED with its reason:\n  " + "\n  ".join(bad)
+        "These `gtd_` tokens are not allowed. After migration 216 no gtd_ "
+        "table exists, and after S9 no gtd_ tool exists. Use the new name "
+        "(my_tasks_cutover.md §4.3 and §5 S9):\n  " + "\n  ".join(bad)
     )
 
 
 def test_no_code_uses_a_gtd_name_as_a_table() -> None:
-    """`gtd_people` is a tool name AND the People table's old name. The token
-    fence must allow the tool, so this catches the table use it would miss."""
+    """A second net under the token scan. It reads the files the token scan
+    skips as well, so not even the alias map may use an old table name in
+    SQL."""
     retired = table_names() | NON_TABLE_NAMES
     bad = [
         f"{p.relative_to(REPO).as_posix()}: {' '.join(m.group(0).split())}"
@@ -164,7 +190,16 @@ def test_no_code_uses_a_gtd_name_as_a_table() -> None:
     assert not bad, "SQL that names a gtd_ table:\n  " + "\n  ".join(bad)
 
 
-# ── The list is honest ──────────────────────────────────────────────────────
+def test_the_client_carries_no_gtd_identifier() -> None:
+    """`rg -l "GtdItem|Gtd[A-Z]|gtd_" workbench/control_plane/src` returns
+    only the alias map (my_tasks_cutover.md §5 S9)."""
+    hits = sorted(
+        p.relative_to(REPO).as_posix() for p in fenced_files()
+        if _CLIENT in p.parents and _CLIENT_NAME.search(_read(p)))
+    assert hits == [LEGACY_ALIAS_FILE.relative_to(REPO).as_posix()], hits
+
+
+# ── The lists are honest ────────────────────────────────────────────────────
 
 def test_the_table_list_is_discovered_not_empty() -> None:
     names = table_names()
@@ -174,34 +209,28 @@ def test_the_table_list_is_discovered_not_empty() -> None:
         assert expected in names, expected
 
 
-def test_the_only_allowed_table_name_is_the_people_tool() -> None:
-    clash = sorted(set(ALLOWED) & (table_names() | NON_TABLE_NAMES))
-    assert clash == ["gtd_people"], (
-        f"ALLOWED lets these table names through: {clash}. Only the chat tool "
-        "`gtd_people` may share a retired table's name, and "
-        "test_no_code_uses_a_gtd_name_as_a_table covers its SQL use."
-    )
+def test_the_skill_tools_are_all_renamed() -> None:
+    """S9 moved the 29 tools all at once (H-151). None keeps the old prefix."""
+    tools = _skill_tools()
+    assert len(tools) == 29, sorted(tools)
+    assert all(name.startswith("my_tasks_") for name in tools), sorted(tools)
 
 
-def test_the_tool_names_are_the_skills_tools() -> None:
-    tree = ast.parse(_SKILL_INIT.read_text(encoding="utf-8"))
-    exported: frozenset[str] = frozenset()
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and any(
-                getattr(t, "id", None) == "__all__" for t in node.targets):
-            exported = frozenset(ast.literal_eval(node.value))
-    assert exported == frozenset(TOOL_NAMES)
+def test_the_alias_map_names_only_old_tool_names() -> None:
+    """The alias file may spell `gtd_<tool>` only for the 29 old tool names,
+    so it cannot become a place where a table name hides."""
+    old_names = {"gtd_" + n.removeprefix("my_tasks_") for n in _skill_tools()}
+    used = set(_TOKEN.findall(_read(LEGACY_ALIAS_FILE)))
+    assert used == old_names, sorted(used ^ old_names)
 
 
-def test_every_allowed_token_is_still_used() -> None:
-    """An exemption nothing uses is stale. S9 deletes these as it renames."""
-    used: set[str] = set()
-    for path in fenced_files():
-        used |= set(_TOKEN.findall(_read(path)))
-    stale = sorted(set(ALLOWED) - used)
-    assert not stale, f"ALLOWED names tokens nothing uses: {stale}"
+def test_every_exemption_is_still_used() -> None:
+    """An exemption nothing uses is stale."""
     for literal in ALLOWED_LITERALS:
         assert any(literal in _read(p) for p in fenced_files()), literal
+    for path in ALLOWED_FILES:
+        assert path.exists(), path
+    assert not ALLOWED, f"S9 emptied ALLOWED, and it holds {sorted(ALLOWED)}"
 
 
 def test_the_fence_can_see() -> None:
@@ -212,5 +241,9 @@ def test_the_fence_can_see() -> None:
         'TOOL = "gtd_capture"\n'
         'DIR = "data/gtd_attachments"\n'
     )
-    assert _scan_text(text) == [(1, "gtd_items"), (2, "gtd_reviews")]
+    assert _scan_text(text) == [
+        (1, "gtd_items"), (2, "gtd_reviews"), (3, "gtd_capture")]
     assert _SQL_USE.search("JOIN gtd_people p ON")
+    assert _CLIENT_NAME.search("const x: GtdItem = y")
+    assert _CLIENT_NAME.search("GtdProject")
+    assert not _CLIENT_NAME.search("MyTask")

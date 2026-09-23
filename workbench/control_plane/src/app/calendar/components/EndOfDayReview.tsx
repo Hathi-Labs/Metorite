@@ -8,7 +8,7 @@ import {
   apiSetDayState,
   type EstimateStats,
 } from "@/app/tasks/lib/api";
-import { GtdItem } from "@/app/tasks/lib/types";
+import { MyTask } from "@/app/tasks/lib/types";
 import { priorityRank } from "@/app/tasks/lib/priority";
 import {
   startOfDay,
@@ -42,7 +42,7 @@ export function EndOfDayReview({
   onClose,
 }: {
   now: Date;
-  items: GtdItem[];
+  items: MyTask[];
   oneThingId: string | null;
   urgentWindowHours: number;
   onOpen: (id: string) => void;
@@ -95,9 +95,9 @@ export function EndOfDayReview({
   const oneThingDone = oneThing?.disposition === "DONE";
   // Seed-tomorrow candidates: today's unfinished blocks first, then the
   // highest-ranked unscheduled next actions. Up to 6 choices, ≤3 picks.
-  const seedCandidates: GtdItem[] = (() => {
+  const seedCandidates: MyTask[] = (() => {
     const seen = new Set<string>();
-    const out: GtdItem[] = [];
+    const out: MyTask[] = [];
     for (const b of unfinished) {
       if (!seen.has(b.item.id)) {
         seen.add(b.item.id);

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { GtdItem } from "./types";
+import type { MyTask } from "./types";
 import { blocksForDay, firstFreeSlot, startOfDay, type Block } from "./scheduling";
 
-// Minimal GtdItem factory — only the fields the geometry reads matter.
-const item = (over: Partial<GtdItem>): GtdItem =>
-  ({ id: "x", title: "t", disposition: "NEXT", ...over }) as GtdItem;
+// Minimal MyTask factory — only the fields the geometry reads matter.
+const item = (over: Partial<MyTask>): MyTask =>
+  ({ id: "x", title: "t", disposition: "NEXT", ...over }) as MyTask;
 
 // A fixed future day so "today" logic (firstFreeSlot's now-clamp) never fires.
 const DAY = new Date(2099, 5, 15); // 15 Jun 2099, local

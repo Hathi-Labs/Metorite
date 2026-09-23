@@ -23,7 +23,7 @@ Spec: ``project-docs/specs/people_center_app.md`` §3, §6 · ticket WS-28b.
 (WS-24 N4) with the HR projection this app needs — but it is gated on
 ``feature:tasks``, and the People Center is a different audience: a manager who
 needs the org chart and the assignee picker should not have to be handed the
-personal GTD task manager to get them. So the *gate* is new and the
+personal task app (My Tasks) to get them. So the *gate* is new and the
 *projection* is imported, never re-implemented (§6: "a restriction that already
 exists and must not be re-implemented here").
 """

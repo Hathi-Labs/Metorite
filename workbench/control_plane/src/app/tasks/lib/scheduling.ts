@@ -3,7 +3,7 @@
 // "when is the next free slot" is computed one way everywhere. No React, no
 // store — just Date math over the already-loaded items.
 
-import { GtdItem } from "./types";
+import { MyTask } from "./types";
 
 /** Default block length (min) when a task has no time estimate. */
 export const DEFAULT_BLOCK_MINS = 30;
@@ -26,10 +26,10 @@ export const sameDay = (a: Date, b: Date) =>
   a.getDate() === b.getDate();
 
 /** A scheduled task resolved to a concrete start/end block. */
-export type Block = { item: GtdItem; start: Date; end: Date };
+export type Block = { item: MyTask; start: Date; end: Date };
 
 /** Timeboxed blocks that fall on `day` (end defaults to start + estimate). */
-export function blocksForDay(items: GtdItem[], day: Date): Block[] {
+export function blocksForDay(items: MyTask[], day: Date): Block[] {
   const out: Block[] = [];
   for (const item of items) {
     if (!item.scheduledStart) continue;

@@ -245,8 +245,8 @@ async def plan_project(
         raise HTTPException(status_code=400, detail="A project name is required.")
     uid = _uid(user)
     async with _tenant_session() as db:
-        from gateway.routes.tasks.settings import gtd_models
-        model = (await gtd_models(db, uid))["clarify"]
+        from gateway.routes.tasks.settings import task_models
+        model = (await task_models(db, uid))["clarify"]
         people, projects_brief = await _plan_context(
             db, uid, f"{name} {req.description or ''}")
         plan = await _llm_plan(

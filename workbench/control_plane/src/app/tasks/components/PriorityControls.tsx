@@ -1,7 +1,7 @@
 "use client";
 
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
-import { GtdItem } from "../lib/types";
+import { MyTask } from "../lib/types";
 import { useTaskStore } from "../lib/taskStore";
 import {
   CELL_META,
@@ -38,8 +38,8 @@ export function WeightToggles({
   onChange,
   size = "md",
 }: {
-  item: Pick<GtdItem, "important" | "leveraged" | "deepWork" | "dueAt"> &
-    Pick<Partial<GtdItem>, "importance">;
+  item: Pick<MyTask, "important" | "leveraged" | "deepWork" | "dueAt"> &
+    Pick<Partial<MyTask>, "importance">;
   urgentWindowHours?: number;
   onChange: (patch: {
     important?: boolean;
@@ -167,7 +167,7 @@ export function PriorityBadge({
   showLabel = true,
   hideLowPriority = false,
 }: {
-  item: Pick<GtdItem, "important" | "leveraged" | "dueAt">;
+  item: Pick<MyTask, "important" | "leveraged" | "dueAt">;
   urgentWindowHours?: number;
   showLabel?: boolean;
   /** On the card face, don't badge the default "low-priority" cell — a colored
@@ -210,7 +210,7 @@ export function SuggestionBadge({
   urgentWindowHours,
   compact = false,
 }: {
-  item: GtdItem;
+  item: MyTask;
   urgentWindowHours?: number;
   compact?: boolean;
 }) {

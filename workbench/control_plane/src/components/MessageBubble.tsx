@@ -522,7 +522,7 @@ function MessageBubble({
         emailId={emailContext?.emailId}
       />
       {/* Inline task-manager cards (clickable task lists, plan Apply, action
-          confirmations). Inert unless the message contains gtd_* tool calls,
+          confirmations). Inert unless the message contains my_tasks_* tool calls,
           so this renders in both the chat app and the Tasks assistant rail. */}
       <TaskToolCards toolEvents={dedupedToolEvents} />
       {/* Inline projects-assistant cards (task lists that open in Projects,

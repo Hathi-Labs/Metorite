@@ -39,7 +39,7 @@ CLIENTS = [
     ("whatsapp", REPO / "apps/agents/agent-whatsapp-assistant/agents.py"),
     ("email", REPO / "apps/agents/agent-email-assistant/agents.py"),
     ("crm", REPO / "apps/agents/agent-crm/agents.py"),
-    ("task-gtd", REPO / "apps/skills/skill-task-gtd/skill_task_gtd/core.py"),
+    ("task-gtd", REPO / "apps/skills/skill-my-tasks/skill_my_tasks/core.py"),
 ]
 
 

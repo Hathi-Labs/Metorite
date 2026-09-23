@@ -1812,7 +1812,7 @@ export const projectWatchersApi = {
  * ⚠️ `importApi` was REMOVED 2026-08-24 (D52, board WS-39 S1) along with both
  * gateway endpoints. Metorite is the project-management system of record, so
  * there is nothing to import from. Do not re-add a client here — the
- * `gtd_*` → `pm_*` move D53 still needs is a backfill migration, not an API.
+ * old task store's move into `pm_*` (D53) was a backfill migration, not an API.
  */
 /**
  * Intake — the front door (WS-27u).

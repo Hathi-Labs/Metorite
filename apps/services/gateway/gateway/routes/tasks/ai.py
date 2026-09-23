@@ -100,7 +100,7 @@ def _has(t: str, hints: list[str]) -> bool:
     captures ("profile…" tripped the "file" reference hint). Trailing-space
     hints (e.g. "learn ") are stripped first: the boundary check itself
     prevents prefix matches like "learning". Locked by the GTD golden evals
-    (evals/trajectories/test_gtd_quality_trajectory.py)."""
+    (evals/trajectories/test_my_tasks_quality_trajectory.py)."""
     for h in hints:
         hint = h.strip()
         if hint and re.search(
@@ -1215,12 +1215,12 @@ async def clarify_item(
         # the schema authority + guaranteed fallback. Gated by the user's
         # `clarify_use_llm` toggle (off → instant heuristic, no LLM round-trip);
         # any LLM failure also falls back (propose_with_llm(..., None)).
-        from gateway.routes.tasks.settings import gtd_models, gtd_toggles
-        toggles = await gtd_toggles(db, uid)
+        from gateway.routes.tasks.settings import task_models, task_toggles
+        toggles = await task_toggles(db, uid)
         note = (body.note if body else None)
         llm_core = None
         if toggles["clarify_use_llm"]:
-            models = await gtd_models(db, uid)
+            models = await task_models(db, uid)
             # The task-manager's own clarification memory (§9, Phase 4): recall
             # how similar tasks were filed before + feed it as continuity to the
             # proposal. Best-effort — "" when Mem0 is off / nothing matches.
@@ -1417,9 +1417,9 @@ async def _enrich_people(db: Any, uid: str) -> list[dict]:
 async def _enrich_llm_config(db: Any, uid: str) -> tuple[bool, str]:
     """The user's clarify LLM toggle + model (per-USER; loaded once by batch
     callers). Returns (use_llm, model); model is "" when the LLM is off."""
-    from gateway.routes.tasks.settings import gtd_models, gtd_toggles
-    use_llm = (await gtd_toggles(db, uid))["clarify_use_llm"]
-    model = (await gtd_models(db, uid))["clarify"] if use_llm else ""
+    from gateway.routes.tasks.settings import task_models, task_toggles
+    use_llm = (await task_toggles(db, uid))["clarify_use_llm"]
+    model = (await task_models(db, uid))["clarify"] if use_llm else ""
     return use_llm, model
 
 
@@ -1533,10 +1533,10 @@ async def suggest_title(
     uid = _uid(user)
     async with _tenant_session() as db:
         item = await item_source().fetch_item(db, uid, item_id)
-        from gateway.routes.tasks.settings import gtd_models, gtd_toggles
-        if not (await gtd_toggles(db, uid))["clarify_use_llm"]:
+        from gateway.routes.tasks.settings import task_models, task_toggles
+        if not (await task_toggles(db, uid))["clarify_use_llm"]:
             return {"is_vague": False, "suggested_title": None}
-        models = await gtd_models(db, uid)
+        models = await task_models(db, uid)
         use_title = (title or item.title or "").strip()
         return await _llm_suggest_title(
             use_title, getattr(item, "description", None), models["clarify"])
@@ -1768,9 +1768,9 @@ async def atomize_dump(
 
     uid = _uid(user)
     # Per-user model choice (user_settings) — cheap read, defaults on failure.
-    from gateway.routes.tasks.settings import gtd_models
+    from gateway.routes.tasks.settings import task_models
     async with _tenant_session() as _mdb:
-        models = await gtd_models(_mdb, uid)
+        models = await task_models(_mdb, uid)
     existing: list[dict[str, Any]] = []
     if req.dedup:
         async with _tenant_session() as db:

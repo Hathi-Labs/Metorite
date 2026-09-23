@@ -3,7 +3,7 @@
 // on both surfaces (a card dropped in a list group and on a board column go
 // through the same rank computation).
 
-import { GtdItem } from "./types";
+import { MyTask } from "./types";
 import { isOverdue } from "./utils";
 import { priorityRank } from "./priority";
 
@@ -14,14 +14,14 @@ const RANK_STEP = 1000;
  *  sortKey; they sort AFTER ranked ones (matching the backend's NULLS LAST),
  *  ordered by creation like today. We fold that into a single comparable number
  *  so a mixed group orders deterministically. */
-export function effectiveRank(i: GtdItem): number {
+export function effectiveRank(i: MyTask): number {
   return i.sortKey ?? Number.POSITIVE_INFINITY;
 }
 
 /** Order a group of items by (sortKey NULLS LAST, createdAt DESC) — the same
  *  order the gateway returns, so the client re-sort is a no-op on fresh data
  *  and only matters mid-drag (optimistic) or after a filter. */
-export function byManualOrder(items: GtdItem[]): GtdItem[] {
+export function byManualOrder(items: MyTask[]): MyTask[] {
   return [...items].sort((a, b) => {
     const ra = effectiveRank(a);
     const rb = effectiveRank(b);
@@ -36,9 +36,9 @@ export function byManualOrder(items: GtdItem[]): GtdItem[] {
  *  card). Returns the midpoint between the neighbours' ranks. When a neighbour
  *  is unranked (infinite), we fall back to a finite anchor so the result is a
  *  real number. */
-export function rankForDrop(ordered: GtdItem[], toIndex: number): number {
+export function rankForDrop(ordered: MyTask[], toIndex: number): number {
   const clamp = Math.max(0, Math.min(toIndex, ordered.length));
-  const finiteRank = (i: GtdItem | undefined, fallback: number): number => {
+  const finiteRank = (i: MyTask | undefined, fallback: number): number => {
     const r = i ? i.sortKey : undefined;
     return r == null || !Number.isFinite(r) ? fallback : r;
   };
@@ -154,7 +154,7 @@ export function activeFilterCount(f: TaskFilters): number {
 const ENERGY_RANK: Record<string, number> = { low: 0, medium: 1, high: 2 };
 
 /** Apply the search + facet filters. Each facet is OR-within, AND-across. */
-export function applyFilters(items: GtdItem[], f: TaskFilters): GtdItem[] {
+export function applyFilters(items: MyTask[], f: TaskFilters): MyTask[] {
   const q = f.query.trim().toLowerCase();
   const ctxSet = new Set(f.contexts);
   const priSet = new Set(f.priorities);
@@ -181,7 +181,7 @@ export function applyFilters(items: GtdItem[], f: TaskFilters): GtdItem[] {
 /** Apply a sort. "manual" defers to byManualOrder; the field sorts compare the
  *  chosen key and respect the direction. Unset keys sort last regardless of
  *  direction (so blanks don't jump to the top on desc). */
-export function applySort(items: GtdItem[], s: TaskSort): GtdItem[] {
+export function applySort(items: MyTask[], s: TaskSort): MyTask[] {
   if (s.field === "manual") return byManualOrder(items);
   const dir = s.dir === "asc" ? 1 : -1;
   const keyed = items.map((i) => ({ i, k: sortKeyFor(i, s.field) }));
@@ -198,7 +198,7 @@ export function applySort(items: GtdItem[], s: TaskSort): GtdItem[] {
   return keyed.map((x) => x.i);
 }
 
-function sortKeyFor(i: GtdItem, field: SortField): string | number | null {
+function sortKeyFor(i: MyTask, field: SortField): string | number | null {
   switch (field) {
     case "priority":
       // Matrix rank 1..7 (1 = highest). Asc puts Critical first.
@@ -218,7 +218,7 @@ function sortKeyFor(i: GtdItem, field: SortField): string | number | null {
 
 /** Overdue-first helper used by group headers (kept here so list + board share
  *  the same "needs attention" signal). */
-export function overdueCount(items: GtdItem[], now: number): number {
+export function overdueCount(items: MyTask[], now: number): number {
   return items.filter((i) => isOverdue(i, now)).length;
 }
 
@@ -248,7 +248,7 @@ export interface TaskGroup {
   label: string;
   /** emoji/icon token for the header (optional). */
   emoji?: string;
-  items: GtdItem[];
+  items: MyTask[];
 }
 
 const ENERGY_LABEL: Record<string, string> = {
@@ -265,14 +265,14 @@ const MODE_LABEL = ACTION_MODE_META;
  *  energy → high→low). Items within a group keep their incoming order (already
  *  sorted by the caller). Returns a single unlabelled group for "none". */
 export function groupItems(
-  items: GtdItem[],
+  items: MyTask[],
   by: GroupBy,
   urgentWindowHours?: number,
 ): TaskGroup[] {
   if (by === "none") return [{ key: "all", label: "", items }];
 
   if (by === "priority") {
-    const buckets = new Map<string, GtdItem[]>();
+    const buckets = new Map<string, MyTask[]>();
     for (const i of items) {
       const cell = priorityCell(i, urgentWindowHours);
       (buckets.get(cell) ?? buckets.set(cell, []).get(cell)!).push(i);
@@ -287,7 +287,7 @@ export function groupItems(
 
   if (by === "mode") {
     const order: ActionMode[] = ["do", "delegate", "schedule", "drop"];
-    const buckets = new Map<ActionMode, GtdItem[]>();
+    const buckets = new Map<ActionMode, MyTask[]>();
     for (const i of items) {
       const m = actionMode(i, urgentWindowHours);
       (buckets.get(m) ?? buckets.set(m, []).get(m)!).push(i);
@@ -319,7 +319,7 @@ export function groupItems(
 
   if (by === "energy") {
     const order = ["high", "medium", "low", "none"];
-    const buckets = new Map<string, GtdItem[]>();
+    const buckets = new Map<string, MyTask[]>();
     for (const i of items) {
       const e = i.energy ?? "none";
       (buckets.get(e) ?? buckets.set(e, []).get(e)!).push(i);
@@ -334,7 +334,7 @@ export function groupItems(
   }
 
   // context
-  const buckets = new Map<string, GtdItem[]>();
+  const buckets = new Map<string, MyTask[]>();
   for (const i of items) {
     const c = i.context || NO_CONTEXT_GROUP;
     (buckets.get(c) ?? buckets.set(c, []).get(c)!).push(i);

@@ -960,7 +960,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
             </div>
           </div>
           {/* Card-level capture: turn this email (with its thread + who's on it)
-              into a routed GTD task — always visible with the message. */}
+              into a routed task in My Tasks — always visible with the message. */}
           <button
             type="button"
             onClick={() => captureEmailToTasks(email.id)}

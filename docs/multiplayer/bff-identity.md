@@ -183,7 +183,7 @@ with the next route:
 Enumerating who else holds the internal token — the step §1b's justification names but
 nobody had done — turned up the identical omission in the tool clients agents call the
 gateway through: `agent-whatsapp-assistant`, `agent-email-assistant`, and
-`skill-task-gtd`. All three had:
+`skill-my-tasks`. All three had:
 
 ```python
 user = _current_user_email()

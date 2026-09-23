@@ -303,7 +303,7 @@ def test_important_at_is_one_number_in_all_three_places() -> None:
     assert int(found.group(1)) == pm_personal.IMPORTANT_AT == 2
     # F3 — the chat skill's copy. It runs in the agent process and may not
     # import the gateway, so it keeps its own constant, pinned here.
-    from skill_task_gtd import core as skill_core
+    from skill_my_tasks import core as skill_core
 
     assert skill_core._IMPORTANT_AT == pm_personal.IMPORTANT_AT
 

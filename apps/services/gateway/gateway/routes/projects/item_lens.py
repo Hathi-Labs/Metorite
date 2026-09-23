@@ -97,7 +97,7 @@ _DISPOSITION_MAP = {"CALENDAR": "NEXT", "DO_NOW": "NEXT"}
 #: SAME rule as the client's `tasks/lib/waiting.ts::isStaleWaiting`
 #: (`STALE_WAITING_DAYS`) and the gtd arm's `interval '5 days'`: strictly
 #: more than five days since delegation, and nothing else. A nudge does not
-#: reset it and a promised date does not enter it. `test_tasks_gtd.py` pins
+#: reset it and a promised date does not enter it. `test_my_tasks.py` pins
 #: all three together.
 STALE_WAITING_DAYS = 5
 

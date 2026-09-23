@@ -14,7 +14,7 @@ import Link from "next/link";
 import Icon from "@/components/Icon";
 import { taskDeepLink } from "@/app/projects/lib/card";
 
-import type { GtdItem } from "../lib/types";
+import type { MyTask } from "../lib/types";
 
 export function ProjectLabel({
   item,
@@ -22,7 +22,7 @@ export function ProjectLabel({
   className,
   nameClass,
 }: {
-  item: Pick<GtdItem, "id">;
+  item: Pick<MyTask, "id">;
   name: string;
   className: string;
   nameClass: string;

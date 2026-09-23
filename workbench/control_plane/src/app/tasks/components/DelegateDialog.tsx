@@ -4,7 +4,7 @@ import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useState } from "react";
 import { useTaskStore } from "../lib/taskStore";
-import type { GtdItem, Person } from "../lib/types";
+import type { MyTask, Person } from "../lib/types";
 import { initials } from "../lib/utils";
 
 // Hand a task to a teammate and start the clock on it.
@@ -36,7 +36,7 @@ export function DelegateDialog({
   assignee,
   onClose,
 }: {
-  item: GtdItem;
+  item: MyTask;
   assignee: Person;
   onClose: () => void;
 }) {

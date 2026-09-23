@@ -4,21 +4,21 @@
  * TaskToolCards — interactive AG-UI cards for the task-manager agent's tools.
  *
  * The task-app twin of EmailToolCards: rendered by the shared <AgentChat> for
- * any assistant message whose tool events include `gtd_*` tools, and a no-op
+ * any assistant message whose tool events include `my_tasks_*` tools, and a no-op
  * otherwise — so the rich task cards appear in BOTH the main chat app and the
  * Tasks app's Assistant rail.
  *
  * Card types:
- *   • TaskListCard    — clickable task rows (gtd_list / gtd_list_schedule):
+ *   • TaskListCard    — clickable task rows (my_tasks_list / my_tasks_list_schedule):
  *                       open the task in the Tasks app, or check it off inline
- *   • PlanResultCard  — a proposed/applied day plan (gtd_plan_day / replan /
+ *   • PlanResultCard  — a proposed/applied day plan (my_tasks_plan_day / replan /
  *                       rollover) with a one-click Apply for proposals
  *   • InfoResultCard  — titled scrollable text (insights, digest, people,
  *                       accounts, projects, detail, clarify proposal…)
- *   • ActionResultCard— confirmation for every mutating gtd_* tool, with an
+ *   • ActionResultCard— confirmation for every mutating my_tasks_* tool, with an
  *                       "open in Tasks" jump when the result names an item
  *
- * Rows self-source item ids from the tool result text — every gtd_* tool prints
+ * Rows self-source item ids from the tool result text — every my_tasks_* tool prints
  * `full_id: <uuid>` (lists) or `(id: <uuid>)` (schedules) for exactly this.
  */
 
@@ -34,76 +34,130 @@ import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
-const LIST_TOOL = "gtd_list";
-const SCHEDULE_TOOL = "gtd_list_schedule";
+/**
+ * LEGACY TOOL NAMES — for stored chat history only (my_tasks_cutover.md S9).
+ *
+ * S9 renamed the 29 chat tools from `gtd_*` to `my_tasks_*`. A chat message
+ * saved before that still carries the old name in its tool events, and it must
+ * still render its card. So this map turns each old name into its new name
+ * before the router below reads it. The router knows only the new names.
+ *
+ * Do not add a name here, and do not use one anywhere else. This is the one
+ * file in `src/` that may spell the old name, and
+ * `tests/unit/test_no_gtd_table_names.py` fails on any other.
+ */
+export const LEGACY_TOOL_NAMES: Readonly<Record<string, string>> = {
+  gtd_accounts: "my_tasks_accounts",
+  gtd_add_subtasks: "my_tasks_add_subtasks",
+  gtd_archive: "my_tasks_archive",
+  gtd_capture: "my_tasks_capture",
+  gtd_capture_many: "my_tasks_capture_many",
+  gtd_clarify: "my_tasks_clarify",
+  gtd_complete: "my_tasks_complete",
+  gtd_day_digest: "my_tasks_day_digest",
+  gtd_delegate: "my_tasks_delegate",
+  gtd_detail: "my_tasks_detail",
+  gtd_estimate_stats: "my_tasks_estimate_stats",
+  gtd_inbox_insights: "my_tasks_inbox_insights",
+  gtd_list: "my_tasks_list",
+  gtd_list_projects: "my_tasks_list_projects",
+  gtd_list_schedule: "my_tasks_list_schedule",
+  gtd_move: "my_tasks_move",
+  gtd_organize: "my_tasks_organize",
+  gtd_people: "my_tasks_people",
+  gtd_plan_day: "my_tasks_plan_day",
+  gtd_plan_project: "my_tasks_plan_project",
+  gtd_replan_day: "my_tasks_replan_day",
+  gtd_rollover: "my_tasks_rollover",
+  gtd_schedule: "my_tasks_schedule",
+  gtd_set_one_thing: "my_tasks_set_one_thing",
+  gtd_set_stage: "my_tasks_set_stage",
+  gtd_subtasks: "my_tasks_subtasks",
+  gtd_sync: "my_tasks_sync",
+  gtd_unschedule: "my_tasks_unschedule",
+  gtd_update: "my_tasks_update",
+};
+
+/** The current name of a tool. A stored old name maps to its new name. */
+export function currentToolName(name: string): string {
+  return Object.hasOwn(LEGACY_TOOL_NAMES, name) ? LEGACY_TOOL_NAMES[name] : name;
+}
+
+const LIST_TOOL = "my_tasks_list";
+const SCHEDULE_TOOL = "my_tasks_list_schedule";
 
 /** The AI day-planner tools — result is a block timeline; a proposal gets an
  *  Apply button that commits it via the same endpoint the agent would use. */
 const PLAN_META: Record<string, { label: string; kind: "plan-today" | "replan-today" | "rollover-today" }> = {
-  gtd_plan_day: { label: "Day plan", kind: "plan-today" },
-  gtd_replan_day: { label: "Replanned day", kind: "replan-today" },
-  gtd_rollover: { label: "Rollover", kind: "rollover-today" },
+  my_tasks_plan_day: { label: "Day plan", kind: "plan-today" },
+  my_tasks_replan_day: { label: "Replanned day", kind: "replan-today" },
+  my_tasks_rollover: { label: "Rollover", kind: "rollover-today" },
 };
 
 /** Read-only tools that return a titled text blob. */
 const INFO_META: Record<string, { icon: string; label: string }> = {
-  gtd_inbox_insights: { icon: "Inbox", label: "Inbox health" },
-  gtd_day_digest: { icon: "CalendarDays", label: "Day summary" },
-  gtd_estimate_stats: { icon: "Timer", label: "Estimate accuracy" },
-  gtd_accounts: { icon: "Milestone", label: "No connected tool" },
-  gtd_people: { icon: "Users", label: "People" },
-  gtd_list_projects: { icon: "FolderKanban", label: "Projects" },
-  gtd_subtasks: { icon: "ListTree", label: "Subtasks" },
-  gtd_detail: { icon: "ClipboardList", label: "Task detail" },
-  gtd_clarify: { icon: "Sparkles", label: "Clarify proposal" },
+  my_tasks_inbox_insights: { icon: "Inbox", label: "Inbox health" },
+  my_tasks_day_digest: { icon: "CalendarDays", label: "Day summary" },
+  my_tasks_estimate_stats: { icon: "Timer", label: "Estimate accuracy" },
+  my_tasks_accounts: { icon: "Milestone", label: "No connected tool" },
+  my_tasks_people: { icon: "Users", label: "People" },
+  my_tasks_list_projects: { icon: "FolderKanban", label: "Projects" },
+  my_tasks_subtasks: { icon: "ListTree", label: "Subtasks" },
+  my_tasks_detail: { icon: "ClipboardList", label: "Task detail" },
+  my_tasks_clarify: { icon: "Sparkles", label: "Clarify proposal" },
 };
 const INFO_TOOLS = new Set(Object.keys(INFO_META));
 
 /** Friendly label + icon for the generic confirmation card (mutating tools). */
 const ACTION_META: Record<string, { icon: string; label: string; danger?: boolean }> = {
-  gtd_capture: { icon: "Inbox", label: "Captured to inbox" },
-  gtd_capture_many: { icon: "Inbox", label: "Captured to inbox" },
-  gtd_organize: { icon: "ListChecks", label: "Organized" },
-  gtd_update: { icon: "PenLine", label: "Task updated" },
-  gtd_complete: { icon: "CheckCircle2", label: "Task completed" },
-  gtd_move: { icon: "Milestone", label: "Task moved" },
-  gtd_set_stage: { icon: "Milestone", label: "Stage changed" },
-  gtd_delegate: { icon: "Send", label: "Delegated" },
-  gtd_add_subtasks: { icon: "ListTree", label: "Subtasks added" },
-  gtd_archive: { icon: "Trash2", label: "Archived", danger: true },
-  gtd_schedule: { icon: "CalendarClock", label: "Scheduled" },
-  gtd_unschedule: { icon: "CalendarClock", label: "Unscheduled" },
-  gtd_set_one_thing: { icon: "Star", label: "One Thing set" },
-  gtd_sync: { icon: "RefreshCw", label: "No connected tool" },
-  gtd_plan_project: { icon: "FolderKanban", label: "Project plan" },
+  my_tasks_capture: { icon: "Inbox", label: "Captured to inbox" },
+  my_tasks_capture_many: { icon: "Inbox", label: "Captured to inbox" },
+  my_tasks_organize: { icon: "ListChecks", label: "Organized" },
+  my_tasks_update: { icon: "PenLine", label: "Task updated" },
+  my_tasks_complete: { icon: "CheckCircle2", label: "Task completed" },
+  my_tasks_move: { icon: "Milestone", label: "Task moved" },
+  my_tasks_set_stage: { icon: "Milestone", label: "Stage changed" },
+  my_tasks_delegate: { icon: "Send", label: "Delegated" },
+  my_tasks_add_subtasks: { icon: "ListTree", label: "Subtasks added" },
+  my_tasks_archive: { icon: "Trash2", label: "Archived", danger: true },
+  my_tasks_schedule: { icon: "CalendarClock", label: "Scheduled" },
+  my_tasks_unschedule: { icon: "CalendarClock", label: "Unscheduled" },
+  my_tasks_set_one_thing: { icon: "Star", label: "One Thing set" },
+  my_tasks_sync: { icon: "RefreshCw", label: "No connected tool" },
+  my_tasks_plan_project: { icon: "FolderKanban", label: "Project plan" },
 };
 
 /** Context-sensitive relabels driven by the call's args. */
 function actionMeta(e: ToolEvent): { icon: string; label: string; danger?: boolean } {
   const args = (e.args ?? {}) as Record<string, unknown>;
-  if (e.name === "gtd_complete" && args.undo)
+  if (e.name === "my_tasks_complete" && args.undo)
     return { icon: "RefreshCw", label: "Task reopened" };
-  if (e.name === "gtd_archive" && args.restore)
+  if (e.name === "my_tasks_archive" && args.restore)
     return { icon: "RefreshCw", label: "Task restored" };
-  if (e.name === "gtd_set_one_thing" && !String(args.item_id ?? "").trim())
+  if (e.name === "my_tasks_set_one_thing" && !String(args.item_id ?? "").trim())
     return { icon: "Star", label: "One Thing cleared" };
   return ACTION_META[e.name] ?? { icon: "Wrench", label: e.name.replace(/_/g, " ") };
 }
 
-function hasTaskCard(e: ToolEvent): boolean {
-  if (e.status !== "done" && e.status !== "error") return false;
+/** True when a tool of this (current) name draws a task card. */
+export function isTaskCardTool(name: string): boolean {
   return (
-    e.name === LIST_TOOL ||
-    e.name === SCHEDULE_TOOL ||
-    e.name in PLAN_META ||
-    INFO_TOOLS.has(e.name) ||
-    e.name in ACTION_META
+    name === LIST_TOOL ||
+    name === SCHEDULE_TOOL ||
+    name in PLAN_META ||
+    INFO_TOOLS.has(name) ||
+    name in ACTION_META
   );
 }
 
+function hasTaskCard(e: ToolEvent): boolean {
+  if (e.status !== "done" && e.status !== "error") return false;
+  return isTaskCardTool(e.name);
+}
+
 // ── Result-text parsers ───────────────────────────────────────────────────────
-// gtd_list prints each item as `[DISP·SRC] "Title" · meta · id=…` followed by
-// an indented `full_id: <uuid>` line; gtd_list_schedule prints
+// my_tasks_list prints each item as `[DISP·SRC] "Title" · meta · id=…` followed by
+// an indented `full_id: <uuid>` line; my_tasks_list_schedule prints
 // `• <when> <title> (id: <uuid>)`. Both exist precisely so cards (and the
 // agent) can address items — parse, don't guess.
 
@@ -368,7 +422,7 @@ function InfoResultCard({ event: e }: { event: ToolEvent }) {
 
 // ── Generic action card ───────────────────────────────────────────────────────
 
-/** Confirmation card for a mutating gtd_* tool — icon + label + result summary,
+/** Confirmation card for a mutating my_tasks_* tool — icon + label + result summary,
  *  with a jump to the task when the result names one. */
 function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const meta = actionMeta(e);
@@ -439,9 +493,12 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
  */
 export default function TaskToolCards({ toolEvents }: { toolEvents?: ToolEvent[] }) {
   const dismissed = useDismissedToolCards();
-  const all = (toolEvents ?? []).filter(
-    (e) => !dismissed.has(e.id) && hasTaskCard(e),
-  );
+  const all = (toolEvents ?? [])
+    .map((e) => {
+      const name = currentToolName(e.name);
+      return name === e.name ? e : { ...e, name };
+    })
+    .filter((e) => !dismissed.has(e.id) && hasTaskCard(e));
   if (all.length === 0) return null;
 
   const items: React.ReactNode[] = [];
