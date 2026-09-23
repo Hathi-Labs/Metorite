@@ -35,6 +35,7 @@ from skill_projects.inbox import (
     intake_queue,
     mark_notifications_read,
     my_contexts,
+    my_led_projects,
     notifications,
     project_access,
     project_views,
@@ -128,6 +129,8 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "calendar",
     "intake_queue",
     "my_contexts",
+    # Class A — WS-39 S6e, the projects I lead
+    "my_led_projects",
     "notifications",
     "project_access",
     "project_views",

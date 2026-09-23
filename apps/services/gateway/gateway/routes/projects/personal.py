@@ -4,6 +4,9 @@ Spec: ``project-docs/specs/project_management_app.md`` §3.11-§3.12, §6.1 ·
 **D-PM-6 (revised 2026-08-06)** · ticket WS-27e.
 
     GET   /projects/my/inbox                     → my work, with my overlay
+    GET   /projects/my/inbox?untriaged=true      → …the rows I have not looked at (S6e)
+    GET   /projects/my/led                       → the projects I lead (S6e)
+    GET   /projects/my/tasks/{task_id}/lanes     → the lanes one of mine can be in (S6e)
     GET   /projects/my/tasks/{task_id}           → one of them, same shape
     GET   /projects/my/project                   → my personal project
     POST  /projects/my/project                   → …creating it if absent
@@ -1048,6 +1051,7 @@ SELECT t.*,
        p.last_nudged_at     AS p_last_nudged_at,
        p.clarified_at       AS p_clarified_at,
        s.name               AS workflow_stage,
+       proj.name            AS project_name,
        (SELECT count(*) FROM pm_tasks c
          WHERE c.parent_task_id = t.id AND c.archived_at IS NULL)
                             AS subtask_count,
@@ -1114,6 +1118,10 @@ def _project_task(row: Any) -> tuple[dict[str, Any], str]:
     # such field. Owner directive 2026-09-03 — Tasks sees the mapped status.
     task["status_category"] = getattr(row, "status_category", None)
     task["subtask_count"] = int(getattr(row, "subtask_count", 0) or 0)
+    # S6e — the project's NAME beside its id. A member reached by assignment
+    # alone may hold no grant on the project, so `/projects/nodes` cannot be
+    # relied on to name it for them. The join is already here.
+    task["project_name"] = getattr(row, "project_name", None)
     # Where the task came from (`pm_tasks.origin`, migration 211): an email
     # capture names its sender. `TaskModel` has no such field, so the column
     # rode in `t.*` and fell on the floor. One projection here serves the
@@ -1121,6 +1129,19 @@ def _project_task(row: Any) -> tuple[dict[str, Any], str]:
     task["origin"] = from_jsonb(getattr(row, "origin", None))
     _apply_overlay(task, row)
     return task, effective
+
+
+#: "I have never looked at this" — no STATED disposition of mine (no overlay
+#: row, or a row with ``disposition`` NULL) — AND it came from a company
+#: board. Triage is a disposition write, which Clarify always makes. A
+#: context, an estimate or a planner block (``apply_blocks`` upserts the
+#: scheduled block onto the same row) is not a triage: the member may never
+#: have seen who put the task there. A capture in my own tree is not "from
+#: Projects" either. One spelling, shared by the route and the live check
+#: (`tests/live/live_ws39_s6e.py`), so the two cannot drift.
+UNTRIAGED_CLAUSE = (
+    "(p.task_id IS NULL OR p.disposition IS NULL) AND proj.personal_owner IS NULL"
+)
 
 
 @router.get("/my/inbox")
@@ -1131,9 +1152,19 @@ async def my_inbox(
     include_deferred: bool = False,
     include_done: bool = False,
     include_archived: bool = False,
+    untriaged: bool = False,
     page: Page = Depends(),
 ) -> ListResponse:
     """My work — the org's tasks and my own, as one list, with my overlay.
+
+    ``untriaged=true`` (WS-39 S6e, §4.8 point 2) narrows to the rows I have
+    NEVER looked at: no ``pm_task_personal`` row of mine exists for them. It
+    is the "From Projects" group at the top of My Tasks' inbox — a task a
+    colleague assigned to me on a board, which the derivation rule of D53
+    would otherwise file straight into Next Actions as if I had chosen it.
+    A DISPOSITION write is the triage (``UNTRIAGED_CLAUSE`` says why a
+    context or a planner block is not). Composed on the one membership
+    fragment. Each row also carries ``assigned_by`` — who put it there.
 
     **No visibility clause**, deliberately, and for the same reason
     ``/assigned-to-me`` has none: assignment is itself the strongest claim to a
@@ -1161,6 +1192,8 @@ async def my_inbox(
     if context:
         clauses.append("lower(p.context) = :context")
         extra["context"] = context.strip().lower()
+    if untriaged:
+        clauses.append(UNTRIAGED_CLAUSE)
 
     sql = _MY_TASKS_SQL + ("".join(f" AND {c}" for c in clauses)) + _INBOX_ORDER
     items: list[dict[str, Any]] = []
@@ -1180,10 +1213,142 @@ async def my_inbox(
         # so this is one extra query for the page rather than N for the rows —
         # and paying it for rows the filters just dropped is waste.
         await attach_assignees(db, items)
+        if untriaged:
+            await _attach_assigned_by(db, email, items)
 
     total = len(items)
     window = items[page.offset : page.offset + page.limit]
     return ListResponse(rows=window, total=total)
+
+
+async def _attach_assigned_by(
+    db: Any, email: str, items: list[dict[str, Any]],
+) -> None:
+    """Who assigned each row to ME — ``pm_task_assignees.assigned_by`` for my
+    own assignee row. One query for the page. A row I hold by another arm
+    (my personal project) has no such row and reads ``None``."""
+    for row in items:
+        row["assigned_by"] = None
+    ids = [str(r["id"]) for r in items if r.get("id")]
+    if not ids:
+        return
+    found = (await db.execute(
+        text(
+            "SELECT task_id, assigned_by FROM pm_task_assignees "
+            " WHERE lower(assignee) = :who "
+            "   AND task_id = ANY(CAST(:ids AS uuid[]))"
+        ),
+        {"who": email, "ids": ids},
+    )).fetchall()
+    by_task = {str(r.task_id): getattr(r, "assigned_by", None) for r in found}
+    for row in items:
+        row["assigned_by"] = by_task.get(str(row["id"]))
+
+
+# ── The projects I lead (WS-39 S6e, §4.8 point 1) ───────────────────────────
+#
+# `pm_projects.lead` is one address, indexed (`idx_pm_projects_lead`). A
+# project I lead with no task assigned to me is invisible through the one
+# membership fragment — nothing in it is MINE — yet it is the project I am
+# answerable for. This route is the Projects view of My Tasks: the project,
+# how much open work it holds, and the part of that work that is on my own
+# plate, first.
+
+#: Open work on one project, direct children only. The same question the
+#: Areas count answers (`list_my_areas`), spelled through the closed
+#: vocabulary rather than a category equality so `cancelled` closes too.
+_OPEN_ON_PROJECT_SQL = """
+SELECT count(*) FROM pm_tasks t
+ WHERE t.project_id = CAST(:pid AS uuid)
+   AND t.archived_at IS NULL
+   AND NOT EXISTS (SELECT 1 FROM pm_task_statuses s
+                    WHERE s.id = t.status_id
+                      AND s.category IN ('done', 'cancelled'))
+"""
+
+
+def _led_project_to_dict(row: Any, open_tasks: int) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "name": row.name,
+        "task_prefix": getattr(row, "task_prefix", None),
+        "open_tasks": int(open_tasks),
+        "my_tasks": [],
+    }
+
+
+@router.get("/my/led")
+async def my_led_projects(
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The projects where I am the lead, with their open work and mine.
+
+    Tenant-bound on ``organization_id``, like every read here. The
+    personal tree (``personal_owner IS NOT NULL``) is excluded: a member is
+    never "lead" of their own inbox, and the column is NULL there anyway.
+    Archived projects are excluded — leading a closed project is history.
+
+    ``my_tasks`` is the member's OPEN tasks assigned to them in that project,
+    read through ``_MY_TASKS_SQL`` so each carries the overlay and the same
+    shape as ``/my/inbox`` — it is the same row, and the client's store
+    holds one shape. ``open_tasks`` counts everybody's.
+    """
+    email = actor(user).lower()
+    async with _tenant_session() as db:
+        rows = await led_projects_for(db, email)
+    return {"rows": rows, "total": len(rows)}
+
+
+async def led_projects_for(
+    db: Any, email: str, org: Any | None = None,
+) -> list[dict[str, Any]]:
+    """The route's body, on a session — so the live check (R8) can ask the
+    question from another tenant's side by overriding ``org``, the way
+    ``live_ws39_s6a.py`` overrides ``vis_org``."""
+    who = (email or "").strip().lower()
+    org = org if org is not None else await resolve_organization_id(db, who)
+    # A member the directory does not know has no tenant. Bound through as
+    # NULL, the way `my_tasks_binds` binds it: `= CAST(NULL AS uuid)` matches
+    # nothing and the answer is an empty list, not a 500 on `CAST('None')`.
+    org_bind = str(org) if org is not None else None
+    rows = (await db.execute(
+        text(
+            "SELECT * FROM pm_projects "
+            " WHERE organization_id = CAST(:vis_org AS uuid) "
+            "   AND lower(lead) = :who "
+            "   AND personal_owner IS NULL "
+            "   AND archived_at IS NULL "
+            " ORDER BY lower(name)"
+        ),
+        {"vis_org": org_bind, "who": who},
+    )).fetchall()
+    if not rows:
+        return []
+    led: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        count = (await db.execute(
+            text(_OPEN_ON_PROJECT_SQL), {"pid": str(row.id)},
+        )).scalar() or 0
+        led[str(row.id)] = _led_project_to_dict(row, count)
+
+    # My own open work on those projects, in the inbox's shape. One query
+    # over the one fragment, narrowed to the led ids so Postgres does the
+    # narrowing rather than the loop below.
+    sql = _MY_TASKS_SQL + " AND t.project_id = ANY(CAST(:led_ids AS uuid[]))"
+    mine: list[dict[str, Any]] = []
+    params = {
+        **await my_tasks_binds(db, who, archived=False, led_ids=list(led)),
+        "vis_org": org_bind,
+    }
+    for task_row in (await db.execute(text(sql), params)).fetchall():
+        task, effective = _project_task(task_row)
+        if effective in ("DONE", "TRASH") or not task["is_mine"]:
+            continue
+        mine.append(task)
+    await attach_assignees(db, mine)
+    for task in mine:
+        led[str(task["project_id"])]["my_tasks"].append(task)
+    return list(led.values())
 
 
 @router.get("/my/tasks/{task_id}")
@@ -1218,6 +1383,48 @@ async def my_task(
     email = actor(user).lower()
     async with _tenant_session() as db:
         return await _read_my_task(db, email, task_id)
+
+
+@router.get("/my/tasks/{task_id}/lanes")
+async def my_task_lanes(
+    task_id: str, user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The lanes one of MY tasks can be in — id, name, category, position
+    — behind the same membership check as the single read (WS-39 S6e repair).
+
+    The shared task body draws a Status select. ``/nodes/{id}/statuses`` is
+    behind the project grant, and a member who reaches a task by assignment
+    alone holds none, so that read 404s and the select is dead. Here the
+    membership fragment is the grant: ``_read_my_task`` answers 404 for a
+    task that is not mine, exactly as ``/my/tasks/{id}`` does.
+
+    A sibling read rather than a field on ``/my/tasks/{id}``, on purpose.
+    ``test_the_inbox_and_the_calendar_project_the_same_task_shape`` holds the
+    three personal readers to one key set, so the client's one mapper never
+    reads ``undefined`` off the short one — and a lane list on every inbox
+    row would be a query per root on every page. ``status_owner_id`` walks to
+    the node that owns the set (migration 196), the board's own resolution.
+    """
+    email = actor(user).lower()
+    async with _tenant_session() as db:
+        task = await _read_my_task(db, email, task_id)
+        owner = await status_owner_id(db, str(task["project_id"]))
+        rows = (await db.execute(
+            text(
+                "SELECT id, name, category, position, is_default "
+                "  FROM pm_task_statuses WHERE project_id = CAST(:root AS uuid) "
+                " ORDER BY position, name"
+            ),
+            {"root": owner},
+        )).fetchall()
+    lanes = [
+        {
+            "id": str(r.id), "name": r.name, "category": r.category,
+            "position": r.position, "is_default": bool(getattr(r, "is_default", False)),
+        }
+        for r in rows
+    ]
+    return {"rows": lanes, "total": len(lanes)}
 
 
 async def _read_my_task(db: Any, email: str, task_id: str) -> dict[str, Any]:

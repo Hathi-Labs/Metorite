@@ -17,6 +17,7 @@
  */
 
 import { QuickAdd } from "@/components/QuickAdd";
+import { Checkbox } from "@/components/ui/Checkbox";
 import { useFlash } from "@/components/useFlash";
 import { clampCursor, stepCursor } from "@/lib/cursor";
 import { useMemo, useState } from "react";
@@ -114,8 +115,7 @@ export function FlatList({
               ].join(" ")}
             >
               <label className="flex w-6 shrink-0 cursor-pointer items-center justify-center border-b border-border">
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={selected}
                   onChange={(e) =>
                     toggleSelected(
@@ -125,7 +125,6 @@ export function FlatList({
                     )
                   }
                   aria-label={selected ? "Deselect task" : "Select task"}
-                  className="h-4 w-4 shrink-0 accent-primary"
                 />
               </label>
               <div className="min-w-0 flex-1">

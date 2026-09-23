@@ -32,6 +32,7 @@ import { InboxTable } from "./InboxTable";
 import { AttachmentComposer } from "./AttachmentComposer";
 import type { TaskAttachment } from "../lib/types";
 import { ClarifyModal } from "./ClarifyModal";
+import { ProjectLabel } from "./ProjectLabel";
 
 const AGING_MS = 3 * 24 * 3600 * 1000; // GTD: empty regularly — flag stale items
 
@@ -670,6 +671,11 @@ export function InboxView() {
       {/* List — full width, like Next Actions, so long captures read whole. */}
       <div className="flex-1 overflow-y-auto">
         <div className="w-full px-4 py-4 sm:py-3">
+          {/* S6e — "From Projects": what a colleague put on my plate on a
+              board, before I have looked at it. Above the captures, because
+              it is the one group somebody else filled. Lens-only by
+              construction: the store's set is empty with the flag off. */}
+          {!loading && !showTickler ? <FromProjectsGroup /> : null}
           {loading ? (
             <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
               <AppIcon name="Loader2" className="h-6 w-6 animate-spin text-muted-foreground/60" />
@@ -823,5 +829,86 @@ function Sc({ k, children }: { k: string; children: React.ReactNode }) {
       </kbd>
       {children}
     </span>
+  );
+}
+
+// ── From Projects (WS-39 S6e, my_tasks_cutover.md §4.8 point 2) ─────────────
+//
+// A task a colleague assigned to me on a board lands in my lists as NEXT by
+// D53's derivation, as if I had chosen it. Until I have LOOKED at it — any
+// overlay write: a context, a disposition, a defer — it sits here, above the
+// captures, naming its project and who put it there. Triage is the existing
+// Clarify path; the store drops the id the moment a write lands and re-reads
+// the server's set behind it (`markTriaged`).
+
+function FromProjectsGroup() {
+  const items = useTaskStore((s) => s.items);
+  const fromProjectIds = useTaskStore((s) => s.fromProjectIds);
+  const openClarify = useTaskStore((s) => s.openClarify);
+  const openFocus = useTaskStore((s) => s.openFocus);
+
+  const rows = useMemo(
+    () => items.filter((i) => fromProjectIds.has(i.id) && !i.archivedAt),
+    [items, fromProjectIds],
+  );
+  if (rows.length === 0) return null;
+
+  return (
+    <section className="mb-4" aria-label="From Projects">
+      <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+        <AppIcon name="FolderKanban" className="h-4 w-4 text-primary" />
+        <h2 className="whitespace-nowrap text-sm font-semibold text-foreground">From Projects</h2>
+        <span className="min-w-[18px] rounded-full bg-primary/15 px-1.5 py-0.5 text-center text-[10px] font-semibold text-primary">
+          {rows.length}
+        </span>
+        {/* The hint drops under the title on a phone rather than breaking
+            the title in two beside it (measured at 390). */}
+        <span className="basis-full text-[11px] text-muted-foreground sm:basis-auto">
+          Assigned to you on a board. Clarify each one to file it.
+        </span>
+      </div>
+      <ul className="flex flex-col gap-1.5">
+        {rows.map((item) => {
+          const who = item.assignedBy ? item.assignedBy.split("@")[0] : null;
+          return (
+            <li
+              key={item.id}
+              className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2"
+            >
+              <button
+                type="button"
+                onClick={() => openFocus(item.id)}
+                className="min-w-0 flex-1 text-left"
+              >
+                <span className="block truncate text-sm text-foreground">{item.title}</span>
+                <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+                  {item.projectName ? (
+                    <ProjectLabel
+                      item={item}
+                      name={item.projectName}
+                      className="inline-flex min-w-0 items-center gap-1"
+                      nameClass="truncate"
+                    />
+                  ) : null}
+                  {who ? <span>assigned by {who}</span> : null}
+                  {item.dueAt ? <span>due {relativeTime(item.dueAt)}</span> : null}
+                </span>
+              </button>
+              <Button
+                size="none"
+                radius="keep"
+                layout="inline-flex items-center"
+                type="button"
+                onClick={() => openClarify(item.id)}
+                className="shrink-0 gap-1 rounded-md px-2 py-1 text-xs"
+              >
+                Clarify
+                <AppIcon name="ArrowRight" className="h-3 w-3" />
+              </Button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
