@@ -28,13 +28,21 @@ what the People dashboard's pill means. Spare hours and the at-risk walk use
 the ``horizon_days`` window that starts today. :func:`week_window` and
 :func:`horizon_window` name both, so a caller can print what it measured.
 
-Everything here except the two readers at the end is pure. The readers take
+**The rebalancing join lives here too** (WS-27bm S7b, §13.4 rule 6).
+:func:`rebalance_join` pairs at-risk tasks with the helpers who fit them, and
+idle people with the unassigned work that fits them. The People suggester
+(``/people/dashboard/suggestions``) and the Projects rebalance read
+(``/projects/analytics/rebalance``) both call it, so "who could help whom"
+has one answer. Each caller fetches its own rows and chooses its own ranker.
+
+Everything here except the readers at the end is pure. The readers take
 the session they are handed and never acquire one, so this module adds no
 connection site (R5).
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date, timedelta
 from typing import Any
 
@@ -229,6 +237,100 @@ def person_capacity(
     }
 
 
+#: A ranker for :func:`rebalance_join`: ``(match_text, helpers, exclude_email)``
+#: to ``(candidates, hours_note)``. ``hours_note`` is ``None`` when the ranks
+#: used spare hours, and a sentence when they did not (§13.4 rule 2).
+Ranker = Callable[[str, list[dict[str, Any]], str], tuple[list[Any], str | None]]
+
+
+def rebalance_join(
+    *,
+    at_risk: list[dict[str, Any]],
+    helpers: list[dict[str, Any]],
+    idle: list[dict[str, Any]],
+    unassigned: list[dict[str, Any]],
+    this_year: int,
+    rank: Ranker,
+    max_at_risk: int,
+    max_pickups: int,
+) -> dict[str, Any]:
+    """Who could help whom: at-risk tasks to helpers, idle people to work.
+
+    Pure. Each caller fetches its own rows, so the People suggester keeps its
+    dashboard rows and the Projects rebalance read keeps its own scope.
+
+    * ``at_risk`` rows carry ``task_id``, ``title``, ``project_name``,
+      ``due_on``, ``shortfall_hours`` and ``holder`` (``person_id``, ``name``,
+      ``email``). ``match_text`` is optional and defaults to the title.
+    * ``helpers`` are the rows ``rank`` reads, in the shape of
+      :func:`gateway.routes.people.suggestions.rank_candidates`.
+    * ``idle`` rows carry ``person_id``, ``name``, ``email`` and
+      ``skill_rows``.
+    * ``unassigned`` rows carry ``task_id``, ``title``, ``project_name`` and an
+      optional ``match_text``.
+
+    The holder is never their own helper. An idle person's options are the
+    unassigned tasks their skills match, then the at-risk tasks where they are
+    a listed helper. Both lists keep the input order, and the sort is stable.
+
+    ⚠️ **The pickup match is §5.5's ``score_skills``, imported here and not at
+    the top.** The People package imports the Projects package, so a
+    module-level import of a route package from this leaf would close the
+    cycle this module exists to avoid. The ranking of helpers is ``rank``,
+    which each caller builds on ``rank_candidates``.
+    """
+    from gateway.routes.people.search import score_skills
+
+    suggestions: list[dict[str, Any]] = []
+    for item in at_risk[:max_at_risk]:
+        holder = item.get("holder") or {}
+        text = str(item.get("match_text") or item.get("title") or "")
+        candidates, note = rank(text, helpers, (holder.get("email") or "").lower())
+        suggestions.append({"task": item, "candidates": candidates, "hours_note": note})
+
+    pickups: list[dict[str, Any]] = []
+    for person in idle:
+        email = (person.get("email") or "").lower()
+        options: list[dict[str, Any]] = []
+        for task in unassigned:
+            text = str(task.get("match_text") or task.get("title") or "")
+            points, matched = score_skills(text, person.get("skill_rows") or [], this_year)
+            if points <= 0:
+                continue
+            options.append({
+                "task_id": task.get("task_id"), "title": task.get("title"),
+                "project_name": task.get("project_name"),
+                "kind": "unassigned", "skill_points": points,
+                "matched_skills": [m["skill"] for m in matched],
+            })
+        # The idle-to-behind join: at-risk tasks where THEY are a listed helper.
+        for suggestion in suggestions:
+            task = suggestion["task"]
+            for candidate in suggestion["candidates"]:
+                if candidate.email == email:
+                    options.append({
+                        "task_id": task.get("task_id"),
+                        "title": task.get("title"),
+                        "project_name": task.get("project_name"),
+                        "kind": "at_risk_help",
+                        "skill_points": candidate.skill_points,
+                        "matched_skills": candidate.matched_skills,
+                        "holder": (task.get("holder") or {}).get("name"),
+                    })
+        if options:
+            options.sort(key=lambda o: -float(o["skill_points"]))
+            pickups.append({
+                "person_id": person.get("person_id"), "name": person.get("name"),
+                "email": email, "tasks": options[:max_pickups],
+            })
+
+    return {
+        "at_risk": suggestions,
+        "pickups": pickups,
+        "total_at_risk": len(at_risk),
+    }
+
+
 def absences_in_window(
     spans: list[dict[str, Any]] | None, start: date, end: date,
 ) -> list[dict[str, Any]]:
@@ -315,4 +417,35 @@ async def skills_for(
             {"skill": r.skill, "level": r.level}
             for r in found[:limit] if (r.skill or "").strip()
         ]
+    return out
+
+
+async def skill_rows_for(
+    db: Any, person_ids: list[str],
+) -> dict[str, list[dict[str, Any]]]:
+    """Every skill row for these people, in the ranker's shape (WS-27bm S7b).
+
+    ``skill``, ``level`` and ``last_used_year``, because §5.5's
+    ``score_skills`` weighs the level and the recency. :func:`skills_for` is
+    the display read: it caps the list and drops the year, so it cannot feed
+    a ranker. Ordered by skill name, so the matched skills on a candidate come
+    out in the same order on every call. Best-effort for the same reason as
+    :func:`absences_for`.
+    """
+    if not person_ids:
+        return {}
+    try:
+        rows = (await db.execute(text(
+            "SELECT person_id, skill, level, last_used_year "
+            "  FROM people_skills "
+            " WHERE person_id = ANY(CAST(:ids AS uuid[])) "
+            " ORDER BY person_id, lower(skill)"),
+            {"ids": person_ids})).fetchall()
+    except Exception:
+        return {}
+    out: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        out.setdefault(str(row.person_id), []).append({
+            "skill": row.skill, "level": row.level,
+            "last_used_year": row.last_used_year})
     return out

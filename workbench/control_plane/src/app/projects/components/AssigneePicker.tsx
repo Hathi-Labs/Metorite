@@ -26,6 +26,11 @@ import {
   describePickerRow,
   pickerGroups,
 } from "../lib/assignees";
+import {
+  type CandidatesResponse,
+  describeCandidate,
+  suggestedRows,
+} from "../lib/candidates";
 
 const DEBOUNCE_MS = 200;
 
@@ -62,6 +67,17 @@ interface Props {
    * intentions. Enter still commits free text on both.
    */
   commitOnBlur?: boolean;
+  /**
+   * The ONE task the picker assigns to (WS-27bm S7b). When set, the list opens
+   * with "Suggested": up to three people the server ranked for this task by
+   * skill, spare hours and availability (`projects_ai_chat.md` §13.4).
+   *
+   * ⚠️ Only the task panel passes it. The bulk bar and the move dialog hold
+   * many tasks or none, and a list ranked for one task says nothing there.
+   */
+  taskId?: string;
+  /** Who already holds the task, so "Suggested" never offers them again. */
+  assigned?: readonly string[];
 }
 
 export function AssigneePicker({
@@ -75,6 +91,8 @@ export function AssigneePicker({
   ariaLabel = "Add an assignee",
   className = "mt-1.5",
   commitOnBlur = true,
+  taskId,
+  assigned,
 }: Props) {
   const [open, setOpen] = useState(false);
   /** The field the portalled list measures from. State, not a ref, so the
@@ -122,8 +140,37 @@ export function AssigneePicker({
     };
   }, [value, open, due]);
 
+  /**
+   * "Suggested", fetched once per open. It does not depend on the typed text:
+   * the server ranks for the task, and `suggestedRows` narrows to what is
+   * typed. A failure hides the heading, because the name search below still
+   * answers and the member loses nothing they had before S7b.
+   */
+  // Keyed by the task it was ranked for, so a panel that switches tasks
+  // never shows the previous task's people while the next answer loads.
+  const [fit, setFit] = useState<{ taskId: string; res: CandidatesResponse } | null>(null);
+  useEffect(() => {
+    if (!open || !taskId) return;
+    let live = true;
+    void (async () => {
+      try {
+        const next = await projectsApi.taskCandidates(taskId);
+        if (live) setFit({ taskId, res: next });
+      } catch {
+        if (live) setFit(null);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [open, taskId, due]);
+
   // One rule, tested without a DOM — see `pickerGroups`.
   const groups = pickerGroups(res);
+  // And one more — see `suggestedRows`. Empty without the HR grant.
+  const suggested = taskId
+    ? suggestedRows(fit?.taskId === taskId ? fit.res : null, { assigned, query: value })
+    : [];
 
   return (
     <div className="relative">
@@ -188,6 +235,38 @@ export function AssigneePicker({
                 : "Nobody in the directory yet. Add people in the People app, or type an email."}
             </p>
           ) : null}
+          {suggested.length > 0 && (
+            <div>
+              <p className="px-2 pb-0.5 pt-1.5 text-[10px] font-medium uppercase text-muted-foreground">
+                Suggested
+              </p>
+              {suggested.map((c) => (
+                <button
+                  key={c.email}
+                  type="button"
+                  // onMouseDown for the reason the rows below give.
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    setOpen(false);
+                    onPick(c.email);
+                  }}
+                  className="cc-control flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left hover:bg-muted/40"
+                >
+                  <span className="flex items-center gap-1.5 text-xs text-foreground">
+                    <Icon name="Sparkles" className="size-3 shrink-0 text-muted-foreground" />
+                    {c.name}
+                  </span>
+                  <span
+                    className={`text-[10px] ${
+                      c.warnings.length ? "text-foreground" : "text-muted-foreground"
+                    }`}
+                  >
+                    {describeCandidate(c)}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
           {groups.map((group) => (
             <div key={group.heading}>
               <p className="px-2 pb-0.5 pt-1.5 text-[10px] font-medium uppercase text-muted-foreground">

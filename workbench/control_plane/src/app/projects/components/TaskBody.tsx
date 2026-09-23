@@ -667,10 +667,14 @@ export function TaskBody({
                 {/* WS-28e: directory-backed suggestions. Free text still
                     commits: the server accepts any non-empty string, and the
                     picker must not invent a rule the API does not enforce. */}
+                {/* WS-27bm S7b: `taskId` turns on "Suggested", ranked for
+                    THIS task. Only this panel passes it. */}
                 <AssigneePicker
                   value={assignee}
                   disabled={busy}
                   due={task.due_at ?? null}
+                  taskId={task.id}
+                  assigned={assignees}
                   onChange={setAssignee}
                   onCommitText={() => void addAssignees()}
                   onPick={(who) => {

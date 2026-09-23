@@ -66,6 +66,8 @@
     "watchers",
     "open_in_app",
     "team_capacity",
+    "fit_for_task",
+    "rebalance",
     "add_subtasks",
     "assign",
     "comment",

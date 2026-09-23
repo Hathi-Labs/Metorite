@@ -6,8 +6,8 @@ workflows, the views and the forms) and S5 (the rest of the manifest)
 built 2026-09-23. S6 (navigation and the frontend-tool dispatcher) built
 2026-09-23. The visual review ran 2026-09-23 (§4.2). S7, the team
 intelligence slices, was designed 2026-09-23 (§13). S7a (capacity) was built
-2026-09-23. S7b to S7e are not built.** §10 says which slice each part belongs
-to. §4.4 lists what the chat reuses, file by file.
+2026-09-23. S7b (fit and rebalancing) was built 2026-09-24. S7c to S7e are not
+built.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -688,7 +688,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S6 · Navigation** — ✅ **BUILT 2026-09-23** | The frontend-tool dispatcher (`acb_skills.frontend_tools`, `runFrontendToolEvent`) · `open_in_app` and the page's three handlers · the two S2 follow-ups (an unknown address named on the card, the subtasks receipt opens the parent) | AGENT-SAFE |
 | **Visual review** — ✅ **DONE 2026-09-23** | The rail and the cards seen in eight contexts. The defects it found are fixed (§4.2) | AGENT-SAFE |
 | **S7a · Capacity** — ✅ **BUILT 2026-09-23** | `GET /projects/analytics/capacity` · the Analytics app's Capacity panel · the report section `capacity` · the chat tool `team_capacity` (§13.3) | AGENT-SAFE |
-| **S7b · Fit** | `GET /projects/tasks/{id}/candidates` and its draft form · `GET /projects/analytics/rebalance` · "Suggested" in the assignee picker · the chat tools `fit_for_task` and `rebalance` (§13.4) | AGENT-SAFE |
+| **S7b · Fit** — ✅ **BUILT 2026-09-24** | `GET /projects/tasks/{id}/candidates` and its draft form · `GET /projects/analytics/rebalance` · "Suggested" in the assignee picker · the chat tools `fit_for_task` and `rebalance` (§13.4) | AGENT-SAFE |
 | **S7c · Conflicts** | `GET /projects/analytics/conflicts` with seven kinds · the Conflicts panel · the report section `conflicts` · the chat tool `find_conflicts` · the dependency rule moved to the server (§13.5) | AGENT-SAFE |
 | **S7d · Plan with capacity** | `propose_plan` gains start dates, phases and dependencies, and shows each owner's fit on the plan card (§13.6) | AGENT-SAFE |
 | **S7e · On-the-fly analysis** | The read tool `task_dataset` and the rule for numbers the chat computes itself (§13.7) | AGENT-SAFE |
@@ -1031,6 +1031,31 @@ the text above does not make. These are the decisions.
 already the name of the picker's route function in `assignees.py`. "Suggested"
 renders in `TaskBody` only, never in `BulkBar` or `MoveTasksDialog`, because
 it needs one task.
+
+**As built, 2026-09-24.** Seven facts that the rules above do not say.
+- **Where each part lives.** The two candidates routes are in
+  `routes/projects/candidates.py`, and the rebalance route is in
+  `routes/projects/analytics_rebalance.py`. `pool_capacity` reads the rule 4
+  pool with the S7a capacity SQL. `rank_for_text` applies rule 2 over
+  `rank_candidates`, and both routes rank through it.
+- **Who "any candidate" is (rule 2).** It is a pool person whose skills match
+  the text. `rank_for_text` finds them with `rank_candidates` itself, one
+  person at a time with the neutral figure, so no module scores a skill.
+- **The pool excludes alumni and keeps active people.** A contractor or an
+  invited person is not in the pool. The rebalance route still reads the
+  at-risk work of every directory person who is not alumni.
+- **Availability.** For one task, `away` is an absence on the due date, or
+  today if there is no due date. For the rebalance route it is today, as on
+  the People dashboard. The picker prints one absence once.
+- **The rebalance route follows rules 2 and 3 too.** Each at-risk task ranks
+  its helpers through `rank_for_text` over the rule 3 match text. A task whose
+  helpers lack an hours basis shows no `spare_hours` and one `hours_note`.
+- **The People suggester keeps its output.** It calls `rebalance_join` with
+  plain `rank_candidates` over the title. A comparison of 400 random boards
+  gave the same JSON before and after the move, and
+  `test_projects_analytics_rebalance.py` pins one board by hand.
+- **The first two warnings need a due date.** With no due date there is no day
+  to be away on or to leave before. The concurrency warning needs none.
 
 ### 13.5 S7c — Conflicts
 
