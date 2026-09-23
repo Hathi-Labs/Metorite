@@ -64,10 +64,8 @@ import {
 } from "../lib/api";
 import { taskDeepLink, taskRef } from "../lib/card";
 import {
-  PANEL_MODES,
   PANEL_MODE_HINTS,
   PANEL_MODE_ICONS,
-  PANEL_MODE_LABELS,
   PANEL_WIDTH_CLASS,
   type PanelMode,
   panelEscape,
@@ -269,28 +267,32 @@ export function TaskPanel({
             />
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
-            {/* WS-27ab — peek · side · full. A three-stop segmented control
-                rather than one cycling button. Hidden entirely where the page
-                did not pass `onMode` (the phone). */}
+            {/* ONE toggle: the side panel, or the same panel as a full card.
+                ⚠️ This was a three-stop segmented control (peek · side · full)
+                until 2026-09-23. The owner cut it: *"a sidebar which can also
+                open as a full card. The switcher where we change the width of
+                the sidebar is not needed."* `/tasks` answers the same need
+                with the same one control, and now so does this.
+                Hidden entirely where the page did not pass `onMode` (the
+                phone, where the panel is always the whole screen).
+                ⚠️ Glyph and label both come from the constants now — they
+                were hardcoded here, which left `PANEL_MODE_ICONS` with no
+                reader and free to drift, and it had.
+                ⚠️ NO `aria-pressed`. The label already names the ACTION
+                ("Open as a full card"), so a pressed state made a screen
+                reader announce the same fact twice, once as a verb and once
+                as a state. This is a button that does a thing, not a switch
+                that holds one. */}
             {onMode ? (
-              <div
-                className="mr-1 flex items-center gap-0.5 rounded-md border border-border p-0.5"
-                role="group"
-                aria-label="Panel width"
-              >
-                {PANEL_MODES.map((option) => (
-                  <Button
-                    key={option}
-                    variant={mode === option ? "primary" : "ghost"}
-                    size="icon-xs"
-                    icon={PANEL_MODE_ICONS[option]}
-                    aria-label={PANEL_MODE_LABELS[option]}
-                    aria-pressed={mode === option}
-                    title={PANEL_MODE_HINTS[option]}
-                    onClick={() => onMode(option)}
-                  />
-                ))}
-              </div>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                className="mr-1"
+                icon={PANEL_MODE_ICONS[mode]}
+                aria-label={PANEL_MODE_HINTS[mode]}
+                title={PANEL_MODE_HINTS[mode]}
+                onClick={() => onMode(mode === "full" ? "side" : "full")}
+              />
             ) : null}
             {/* WS-27v — watch/unwatch. Hidden (not disabled) until the state
                 is known. */}
