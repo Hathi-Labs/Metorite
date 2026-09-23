@@ -85,6 +85,16 @@ external chatbot identity + rate limiting (an unauthenticated, internet-facing
 LLM surface is a new threat class — MT-0-grade review required before any tenant
 exposure).
 
+📌 **AI ticket assignment has its building block** *(added 2026-09-23,
+D75)*. The `decide` task returns a pick from a set of queues or people, with a
+calibrated confidence (`customer_console.md` §6A.14). Two facts bind the
+future spec. First, Jev accepts 255 options, but nobody has measured its
+accuracy at that count. A similar model scored 0.43 on 77 labels. So route by
+team first and then by person, and measure both steps. Second, a low confidence goes to a person, not
+to a guess. This is still roadmap, and nothing here dispatches. The nearest
+live surface is the Projects intake queue (`routes/projects/intake.py`), where
+triage is manual today.
+
 ## 4. Department Dashboards — ⚠️ mostly EXISTS as planned work (WS-15)
 
 **Owner's intent:** each department configures its own dashboard; leadership
