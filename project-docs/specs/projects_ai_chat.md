@@ -1040,20 +1040,25 @@ it needs one task.
   `rank_candidates`, and both routes rank through it.
 - **Who "any candidate" is (rule 2).** It is a pool person whose skills match
   the text. `rank_for_text` finds them with `rank_candidates` itself, one
-  person at a time with the neutral figure, so no module scores a skill.
+  person at a time with the neutral figure. So neither new route module
+  scores a skill. The pickup match inside `rebalance_join` still calls
+  `score_skills`, because it is the People suggester's own loop, moved.
 - **The pool excludes alumni and keeps active people.** A contractor or an
   invited person is not in the pool. The rebalance route still reads the
   at-risk work of every directory person who is not alumni.
-- **Availability.** For one task, `away` is an absence on the due date, or
-  today if there is no due date. For the rebalance route it is today, as on
+- **Availability.** For one task, `away` is an absence on the due date. For
+  an overdue task, or a task with no due date, it is an absence today. For the rebalance route it is today, as on
   the People dashboard. The picker prints one absence once.
 - **The rebalance route follows rules 2 and 3 too.** Each at-risk task ranks
   its helpers through `rank_for_text` over the rule 3 match text. A task whose
   helpers lack an hours basis shows no `spare_hours` and one `hours_note`.
-- **The People suggester keeps its output.** It calls `rebalance_join` with
-  plain `rank_candidates` over the title. A comparison of 400 random boards
-  gave the same JSON before and after the move, and
-  `test_projects_analytics_rebalance.py` pins one board by hand.
+- **The People suggester keeps its output, except for a shared task.** It
+  calls `rebalance_join` with plain `rank_candidates` over the title. A
+  comparison of 400 random boards gave the same JSON before and after the
+  move, and `test_projects_analytics_rebalance.py` pins one board by hand.
+  One change is on purpose (review round 1). The join lists a task with two
+  holders ONCE, and no holder helps on it, as rule 4 says. Before, the task
+  appeared once for each holder, and each holder helped the other.
 - **The first two warnings need a due date.** With no due date there is no day
   to be away on or to leave before. The concurrency warning needs none.
 

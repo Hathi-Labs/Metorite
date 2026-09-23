@@ -256,22 +256,43 @@ def rank_for_text(
     return rank_candidates(text_, matched, this_year=this_year, exclude_email=exclude), None
 
 
-def candidate_warnings(helper: dict[str, Any], due_on: date | None) -> list[str]:
+def availability_day(due_on: date | None, today: date) -> date:
+    """The day availability is checked on: the due date, never a past one.
+
+    ⚠️ An overdue task is needed NOW. Checking its past due date found no
+    absence for a person on leave from today, and in note mode (rule 2, the
+    neutral spare figure) nothing else held them back, so they ranked first
+    (S7b review round 1, P1). So the day is the later of the two.
+    """
+    if due_on is None:
+        return today
+    return max(due_on, today)
+
+
+def candidate_warnings(
+    helper: dict[str, Any], due_on: date | None, *, today: date | None = None,
+) -> list[str]:
     """The three warnings of §13.4 rule 5. Shown, never enforced.
 
     Away on the due date, an end date before the due date, and more tasks in
     progress than ``max_concurrent_tasks``. The first two need a due date;
-    without one there is no date to be away on or to leave before.
+    without one there is no date to be away on or to leave before. For an
+    overdue task, "away" is checked TODAY (:func:`availability_day`).
     """
     from gateway.work_schedule import absent_on
 
+    today = today or date.today()
     out: list[str] = []
     if due_on is not None:
-        span = absent_on(due_on, helper.get("spans") or [])
+        day = availability_day(due_on, today)
+        span = absent_on(day, helper.get("spans") or [])
         if span is not None:
+            when = (
+                f"on the due date {due_on.isoformat()}" if day == due_on
+                else "today, and the task is already overdue"
+            )
             out.append(
-                f"Away ({span['kind']}) on the due date {due_on.isoformat()},"
-                f" until {span['ends_on'].isoformat()}"
+                f"Away ({span['kind']}) {when}, until {span['ends_on'].isoformat()}"
             )
         end = helper.get("end_date")
         if end is not None and end < due_on:
@@ -339,8 +360,9 @@ async def candidates_body(
         if h["in_pool"] and h["email"] not in exclude
     ]
     # Availability is the due date's, because that is the day the task needs
-    # somebody. Absences inside the window already reduced the spare hours.
-    day = due_on or today
+    # somebody, and today's for an overdue task (review round 1, P1).
+    # Absences inside the window already reduced the spare hours.
+    day = availability_day(due_on, today)
     for helper in pool:
         helper["away"] = _away_on(day, helper["spans"])
 
@@ -354,7 +376,7 @@ async def candidates_body(
         if note:
             # §13.4 rule 2: absent on EVERY candidate, never zero and never 1.
             row.pop("spare_hours", None)
-        row["warnings"] = candidate_warnings(by_email.get(c.email, {}), due_on)
+        row["warnings"] = candidate_warnings(by_email.get(c.email, {}), due_on, today=today)
         candidates.append(row)
 
     body.update({

@@ -503,3 +503,91 @@ async def test_the_at_risk_list_keeps_to_the_scope(seeded) -> None:
     risky = {t["task_id"] for t in body["at_risk"]}
     assert seeded["open_risk"] in risky
     assert seeded["shut_risk"] not in risky
+
+
+# ── Review round 1 ───────────────────────────────────────────────────────────
+
+
+def test_a_task_with_two_holders_is_one_entry_and_neither_holder_helps() -> None:
+    """P2, rule 4. Ana and Bo both hold t1 and both are at risk on it. The
+    join used to make two entries, one per holder, and offer Bo as Ana's
+    helper and Ana as Bo's. Now t1 is one entry, and every holder is left out
+    of its helpers and of the pickups."""
+    idle_bo = [{"person_id": "id-bo", "name": "bo", "email": "bo@x.in",
+                "skill_rows": [{"skill": "firmware", "level": None, "last_used_year": None}]}]
+    joined = cap.rebalance_join(
+        at_risk=[_risk("t1", "firmware fix", "ana"), _risk("t1", "firmware fix", "bo")],
+        helpers=[_helper("ana", "firmware"), _helper("bo", "firmware"),
+                 _helper("cy", "firmware")],
+        idle=idle_bo, unassigned=[], this_year=YEAR, rank=_plain_rank,
+        max_at_risk=8, max_pickups=4,
+    )
+    [only] = joined["at_risk"]
+    assert [c.email for c in only["candidates"]] == ["cy@x.in"]
+    assert [h["email"] for h in only["task"]["holders"]] == ["ana@x.in", "bo@x.in"]
+    assert joined["total_at_risk"] == 1
+    assert joined["pickups"] == [], "a holder was told to help on their own task"
+
+
+def test_the_people_suggester_lists_a_shared_task_once(monkeypatch) -> None:
+    """P2 through the People route. This CHANGES its output for a task with
+    two holders, on purpose: before S7b review round 1 the task appeared once
+    per holder, with each holder offered as the other's helper."""
+    from gateway.routes.people import dashboard
+    from gateway.routes.people import suggestions as sug
+
+    task = {"task_id": "t1", "title": "Extruder firmware", "project_name": "R&D",
+            "due_on": "2026-09-30", "shortfall_hours": 6.0}
+
+    def row(name: str, **over: Any) -> SimpleNamespace:
+        base = dict(kind="person", email=f"{name}@x.in", person_id=f"id-{name}",
+                    name=name.title(), spare_hours_horizon=10.0, away=None,
+                    at_risk=[], pill="on_track")
+        base.update(over)
+        return SimpleNamespace(**base)
+
+    board = SimpleNamespace(
+        rows=[row("ana", at_risk=[task]), row("bo", at_risk=[task]), row("cy")],
+        work_visible=False, partial=False,
+    )
+    skills = [SimpleNamespace(person_id=f"id-{n}", skill="firmware", level=None,
+                              last_used_year=None) for n in ("ana", "bo", "cy")]
+
+    class _DB:
+        async def execute(self, sql, params=None):
+            return SimpleNamespace(fetchall=lambda: list(skills))
+
+    @asynccontextmanager
+    async def _session():
+        yield _DB()
+
+    async def _board(_user):
+        return board
+
+    monkeypatch.setattr(sug, "_tenant_session", _session)
+    monkeypatch.setattr(dashboard, "get_dashboard", _board)
+    out = asyncio.run(sug.get_suggestions(SimpleNamespace())).model_dump()
+    [only] = out["at_risk"]
+    assert only["holder"]["email"] == "ana@x.in"
+    assert [c["email"] for c in only["candidates"]] == ["cy@x.in"]
+
+
+def test_the_rebalance_route_without_the_grant_carries_no_lists(monkeypatch) -> None:
+    """R7 fence. Through the ROUTE function with a real UserContext that
+    lacks admin:members:read, so a hard-coded `hr_visible=True` fails."""
+    from acb_auth import UserContext, UserRole, build_access
+
+    @asynccontextmanager
+    async def _session(*_a, **_k):
+        yield _RefusingDB()
+
+    async def _vis(_db, _user):
+        return SimpleNamespace(unrestricted=True)
+
+    monkeypatch.setattr(route, "_tenant_session", _session)
+    monkeypatch.setattr(route, "resolve_visibility", _vis)
+    user = UserContext(email="x@example.test", role=UserRole.EMPLOYEE,
+                       access=build_access(["feature:projects"]))
+    body = asyncio.run(route.rebalance(user=user))
+    assert body["hr_visible"] is False
+    assert "at_risk" not in body and "pickups" not in body

@@ -369,6 +369,8 @@ def _rebalance_payload(*, hr: bool) -> dict:
             "task_id": UUID, "title": "Ship the gantry", "project_name": "Ops",
             "due_on": "2026-09-25", "shortfall_hours": 34.0,
             "holder": {"person_id": OTHER, "name": "Hal", "email": "hal@x.io"},
+            "holders": [{"person_id": OTHER, "name": "Hal", "email": "hal@x.io"},
+                        {"person_id": UUID, "name": "Jo", "email": "jo@x.io"}],
             "candidates": [{"person_id": UUID, "name": "Ivy", "email": "ivy@x.io",
                             "skill_points": 2.0, "matched_skills": ["weld"],
                             "spare_hours": 80.0, "away": None, "rank": 160.0}],
@@ -1236,7 +1238,7 @@ async def test_rebalance_prints_helpers_and_pickups(monkeypatch) -> None:
     out = await skill_projects.rebalance(project_id=UUID, horizon_days=21)
     assert calls[0]["path"] == "/projects/analytics/rebalance"
     assert calls[0]["params"]["horizon_days"] == 21
-    assert "«Ship the gantry» · due 2026-09-25 · short 34h · held by «Hal»" in out
+    assert "«Ship the gantry» · due 2026-09-25 · short 34h · held by «Hal» («hal@x.io»), «Jo»" in out
     assert "«Ivy» · assignee «ivy@x.io» · rank 160.0" in out
     assert "unassigned: «Weld a jig» · matched «weld»" in out
     assert f"full_id: {UUID}" in out and f"full_id: {OTHER}" in out

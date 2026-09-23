@@ -1078,11 +1078,13 @@ async def rebalance(project_id: str = "", horizon_days: int = 14) -> str:
     at_risk = payload.get("at_risk") or []
     out.append(f"At risk ({len(at_risk)} of {payload.get('at_risk_total', len(at_risk))}):")
     for task in at_risk:
-        holder = task.get("holder") or {}
+        holders = task.get("holders") or [task.get("holder") or {}]
+        held = ", ".join(
+            f"{data(h.get('name'))} ({data(h.get('email'))})" for h in holders if isinstance(h, dict)
+        )
         out.append(
             f"- {data(task.get('title'))} · due {task.get('due_on')}"
-            f" · short {_hours(task.get('shortfall_hours'))}"
-            f" · held by {data(holder.get('name'))} ({data(holder.get('email'))})"
+            f" · short {_hours(task.get('shortfall_hours'))} · held by {held}"
         )
         out.append(f"  full_id: {task.get('task_id')}")
         if task.get("hours_note"):

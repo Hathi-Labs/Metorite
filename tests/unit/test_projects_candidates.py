@@ -170,16 +170,16 @@ def test_away_on_the_due_date_is_a_warning() -> None:
     due = TODAY + timedelta(days=5)
     helper = _helper("ana", spans=[{"starts_on": due, "ends_on": due + timedelta(days=2),
                                     "kind": "leave", "hours_per_day": None}])
-    [warning] = route.candidate_warnings(helper, due)
+    [warning] = route.candidate_warnings(helper, due, today=TODAY)
     assert warning.startswith("Away (leave) on the due date")
 
 
 def test_an_end_date_before_the_due_date_is_a_warning() -> None:
     due = TODAY + timedelta(days=10)
     helper = _helper("ana", end_date=TODAY + timedelta(days=4))
-    [warning] = route.candidate_warnings(helper, due)
+    [warning] = route.candidate_warnings(helper, due, today=TODAY)
     assert warning.startswith("Engagement ends")
-    assert route.candidate_warnings(_helper("bo", end_date=due), due) == []
+    assert route.candidate_warnings(_helper("bo", end_date=due), due, today=TODAY) == []
 
 
 def test_more_work_in_progress_than_the_ceiling_is_a_warning() -> None:
@@ -543,3 +543,70 @@ async def test_without_the_grant_the_real_route_carries_no_candidates(
     for answer in (body, draft):
         assert answer["hr_visible"] is False
         assert "candidates" not in answer
+
+
+# ── Review round 1 ───────────────────────────────────────────────────────────
+
+
+def test_an_overdue_task_checks_availability_today_not_on_the_past_due_date(
+    monkeypatch,
+) -> None:
+    """P1. The task was due three days ago. Ana is on leave from today, so she
+    cannot take it now. The old code checked the PAST due date, found no
+    absence, and in note mode (neutral spare 1) ranked her first."""
+    overdue = TODAY - timedelta(days=3)
+    leave = [{"starts_on": TODAY, "ends_on": TODAY + timedelta(days=5),
+              "kind": "leave", "hours_per_day": None}]
+    helpers = [
+        {**_helper("ana", basis=False, spans=leave), "email": "ana@x.in",
+         "skill_rows": [{"skill": "cad", "level": "expert", "last_used_year": None}],
+         "in_pool": True},
+        {**_helper("bo", basis=False), "in_pool": True},
+    ]
+
+    async def _pool(*_a, **_k):
+        return [dict(h) for h in helpers]
+
+    monkeypatch.setattr(route, "pool_capacity", _pool)
+    body = asyncio.run(route.candidates_body(
+        object(), SimpleNamespace(unrestricted=True), hr_visible=True,
+        title="cad work", tags=[], description=None, due_on=overdue,
+        exclude=set(), today=TODAY,
+    ))
+    assert body["hours_note"] == route.HOURS_NOTE
+    ana = next(c for c in body["candidates"] if c["email"] == "ana@x.in")
+    bo = next(c for c in body["candidates"] if c["email"] == "bo@x.in")
+    assert ana["away"] is not None, "the away factor was not applied"
+    assert ana["rank"] < bo["rank"], "a person on leave today ranked first"
+    assert any(w.startswith("Away (leave)") for w in ana["warnings"]), ana["warnings"]
+
+
+def test_the_warning_for_an_overdue_task_checks_today() -> None:
+    leave = [{"starts_on": TODAY, "ends_on": TODAY + timedelta(days=2),
+              "kind": "leave", "hours_per_day": None}]
+    [warning] = route.candidate_warnings(_helper("ana", spans=leave),
+                                         TODAY - timedelta(days=3), today=TODAY)
+    assert warning.startswith("Away (leave) today")
+
+
+def test_the_draft_route_without_the_grant_carries_no_candidates(monkeypatch) -> None:
+    """R7 fence. A caller without admin:members:read, through the ROUTE
+    function, so a hard-coded `hr_visible=True` fails here."""
+    from contextlib import asynccontextmanager
+
+    from acb_auth import UserContext, UserRole, build_access
+
+    @asynccontextmanager
+    async def _session(*_a, **_k):
+        yield _RecordingDB()
+
+    async def _vis(_db, _user):
+        return SimpleNamespace(unrestricted=True)
+
+    monkeypatch.setattr(route, "_tenant_session", _session)
+    monkeypatch.setattr(route, "resolve_visibility", _vis)
+    user = UserContext(email="x@example.test", role=UserRole.EMPLOYEE,
+                       access=build_access(["feature:projects"]))
+    body = asyncio.run(route.draft_candidates(title="cad work", user=user))
+    assert body["hr_visible"] is False
+    assert "candidates" not in body

@@ -3,12 +3,31 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { NO_ACCESS } from "@/lib/access";
+
 import {
   type CandidatesResponse,
   type FitCandidate,
   describeCandidate,
+  shouldAskForFit,
   suggestedRows,
 } from "./candidates";
+
+describe("shouldAskForFit", () => {
+  const hr = { ...NO_ACCESS, capabilities: ["admin:members:read"] };
+  it("asks for a task when the member holds the grant", () => {
+    expect(shouldAskForFit("t1", hr, false)).toBe(true);
+  });
+  it("skips the request once access says the member lacks the grant", () => {
+    expect(shouldAskForFit("t1", NO_ACCESS, false)).toBe(false);
+  });
+  it("asks while access is still loading, and the server decides", () => {
+    expect(shouldAskForFit("t1", NO_ACCESS, true)).toBe(true);
+  });
+  it("never asks without a task", () => {
+    expect(shouldAskForFit(undefined, hr, false)).toBe(false);
+  });
+});
 
 function person(over: Partial<FitCandidate> = {}): FitCandidate {
   return {

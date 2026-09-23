@@ -269,7 +269,15 @@ def rebalance_join(
     * ``unassigned`` rows carry ``task_id``, ``title``, ``project_name`` and an
       optional ``match_text``.
 
-    The holder is never their own helper. An idle person's options are the
+    ⚠️ **One entry per TASK, and no holder of it helps on it** (§13.4 rule 4,
+    S7b review round 1). The callers pass one row per holder, so a task two
+    people hold arrived twice, and each holder was offered as the other's
+    helper. The rows are merged here by ``task_id``, in first-seen order. The
+    entry keeps the first ``holder`` and adds ``holders``, and every holder is
+    left out of the pool the ranker sees. This changed the People suggester's
+    output for a task with two holders, on purpose.
+
+    An idle person's options are the
     unassigned tasks their skills match, then the at-risk tasks where they are
     a listed helper. Both lists keep the input order, and the sort is stable.
 
@@ -281,11 +289,21 @@ def rebalance_join(
     """
     from gateway.routes.people.search import score_skills
 
-    suggestions: list[dict[str, Any]] = []
-    for item in at_risk[:max_at_risk]:
+    tasks: dict[str, dict[str, Any]] = {}
+    for item in at_risk:
+        key = str(item.get("task_id"))
         holder = item.get("holder") or {}
+        if key not in tasks:
+            tasks[key] = {**item, "holders": []}
+        tasks[key]["holders"].append(holder)
+
+    suggestions: list[dict[str, Any]] = []
+    for item in list(tasks.values())[:max_at_risk]:
+        held_by = {(h.get("email") or "").lower() for h in item["holders"]}
+        pool = [h for h in helpers if (h.get("email") or "").lower() not in held_by]
+        holder = (item.get("holder") or {}).get("email") or ""
         text = str(item.get("match_text") or item.get("title") or "")
-        candidates, note = rank(text, helpers, (holder.get("email") or "").lower())
+        candidates, note = rank(text, pool, holder.lower())
         suggestions.append({"task": item, "candidates": candidates, "hours_note": note})
 
     pickups: list[dict[str, Any]] = []
@@ -327,7 +345,7 @@ def rebalance_join(
     return {
         "at_risk": suggestions,
         "pickups": pickups,
-        "total_at_risk": len(at_risk),
+        "total_at_risk": len(tasks),
     }
 
 

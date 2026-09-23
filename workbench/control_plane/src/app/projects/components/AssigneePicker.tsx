@@ -29,8 +29,10 @@ import {
 import {
   type CandidatesResponse,
   describeCandidate,
+  shouldAskForFit,
   suggestedRows,
 } from "../lib/candidates";
+import { useAccess } from "@/components/AccessProvider";
 
 const DEBOUNCE_MS = 200;
 
@@ -149,8 +151,10 @@ export function AssigneePicker({
   // Keyed by the task it was ranked for, so a panel that switches tasks
   // never shows the previous task's people while the next answer loads.
   const [fit, setFit] = useState<{ taskId: string; res: CandidatesResponse } | null>(null);
+  const { access, loading: accessLoading } = useAccess();
+  const askForFit = shouldAskForFit(taskId, access, accessLoading);
   useEffect(() => {
-    if (!open || !taskId) return;
+    if (!open || !taskId || !askForFit) return;
     let live = true;
     void (async () => {
       try {
@@ -163,12 +167,12 @@ export function AssigneePicker({
     return () => {
       live = false;
     };
-  }, [open, taskId, due]);
+  }, [open, taskId, due, askForFit]);
 
   // One rule, tested without a DOM — see `pickerGroups`.
   const groups = pickerGroups(res);
   // And one more — see `suggestedRows`. Empty without the HR grant.
-  const suggested = taskId
+  const suggested = taskId && askForFit
     ? suggestedRows(fit?.taskId === taskId ? fit.res : null, { assigned, query: value })
     : [];
 

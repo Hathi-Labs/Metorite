@@ -19,7 +19,31 @@
  * has nothing to say there.
  */
 
+import { type Access, hasCapability } from "@/lib/access";
+
 import { normalize } from "./assignees";
+
+/** The grant the candidates routes read (`can_read_hr_fields`). */
+export const FIT_PERMISSION = "admin:members:read";
+
+/**
+ * Whether the picker should ask the server for "Suggested" at all.
+ *
+ * No task, no ask. Once access has resolved and the member lacks
+ * {@link FIT_PERMISSION}, no ask either: the answer would be
+ * `hr_visible: false`, so the request is wasted. While access is still
+ * loading the picker asks, and the server's answer decides. The route is
+ * the boundary, and this only saves a round trip.
+ */
+export function shouldAskForFit(
+  taskId: string | undefined,
+  access: Access,
+  accessLoading: boolean,
+): boolean {
+  if (!taskId) return false;
+  if (accessLoading) return true;
+  return hasCapability(access, FIT_PERMISSION);
+}
 
 /** One ranked person, as the candidates route returns it. */
 export interface FitCandidate {
