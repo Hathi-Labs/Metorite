@@ -2180,7 +2180,11 @@ function ProjectsWorkspace() {
       if (app !== null) {
         const home = flatten(visibleRoots).find((e) => e.node.id === task.project_id);
         if (home) setSelected(home.node as ProjectRow);
-        if (app === "ai-chat" && CHAT_LIVE) {
+        // Only where a dock can draw. Below 80rem, or on a phone, the dock is
+        // `absent`, so docking would hide the chat and store a choice the
+        // member never made (review of PR #431). There the conversation stays
+        // one tap away under "AI chat".
+        if (app === "ai-chat" && CHAT_LIVE && dockWide && !isMobile) {
           setChatDocked(true);
           writeChatDocked(true);
         }
@@ -2200,7 +2204,7 @@ function ProjectsWorkspace() {
         setPanelStatuses([]);
       }
     },
-    [selected, statuses, app, visibleRoots]
+    [selected, statuses, app, visibleRoots, dockWide, isMobile]
   );
 
   /**
@@ -4051,6 +4055,14 @@ function ProjectsWorkspace() {
           </nav>
         ) : null}
 
+        {/* The shared side panel — where a chat's "Open in side panel" on a
+            Markdown or HTML file, and a panel-surface generated view, draw.
+            The main chat page mounts it; this page did not, so those clicks
+            wrote to a store nothing rendered (owner report, 2026-09-23). It
+            draws nothing until something is opened, and it is a LEFT column,
+            as on the chat page: its resize handle and border assume that. */}
+        {CHAT_LIVE ? <SidePanelEditor hideWhenEmpty /> : null}
+
         <main className="flex min-w-0 flex-1 flex-col">
           <header className="shrink-0 border-b border-border">
             {/* Title row — what you are looking at, and nothing else. */}
@@ -4145,12 +4157,6 @@ function ProjectsWorkspace() {
           </aside>
         )}
 
-        {/* The shared side panel — where a chat's "Open in side panel" on a
-            Markdown or HTML file, and a panel-surface generated view, draw.
-            The main chat page mounts it; this page did not, so those clicks
-            wrote to a store nothing rendered (owner report, 2026-09-23). It
-            draws nothing until something is opened. */}
-        {CHAT_LIVE ? <SidePanelEditor hideWhenEmpty /> : null}
       </div>
 
       {/* WS-27ab — the `full` stop. A scrim plus the same panel, at the same

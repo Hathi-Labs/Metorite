@@ -121,7 +121,7 @@ export default function SidePanelEditor({
   // Collapsed rail — a thin strip that reopens the panel and shows a doc
   // count. The WHOLE rail is the click target (a thin strip is fiddly to hit
   // an icon inside).
-  if (!open && hideWhenEmpty && docs.length === 0) return null;
+  if (hideWhenEmpty && docs.length === 0) return null;
   if (!open) {
     return (
       <aside className="flex w-10 shrink-0 flex-col border-r border-border bg-card/40">
