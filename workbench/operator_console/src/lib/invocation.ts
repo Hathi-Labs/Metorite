@@ -6,6 +6,10 @@
 // `native_*` verb only. The Console refuses a wrong pair with a 400. This
 // module stops the form from offering one, so the operator never meets it.
 //
+// 🔴 **Three constants here are copies:** `VERBS`, `NATIVE_PREFIX` and
+// `NATIVE_TASKS`. `tests/unit/test_operator_console_invocations.py` fails
+// when they differ from `catalog.py`.
+//
 // ⚠️ The Console stays the authority. A pair this module allowed and the
 // Console refused is relayed word for word (DESIGN.md §7 rule 4).
 

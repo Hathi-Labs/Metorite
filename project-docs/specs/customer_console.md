@@ -9765,13 +9765,19 @@ The streaming default in `src/lib/feed.ts:247` is an inline expression,
   resolves. An unbound tier is a 400 that names `tier_unknown`.
 - **The platform key only.** The route reads the credential with no
   organization, so a BYOK key is never spent. No key is a 503 that names the
-  vendor and nothing secret.
+  vendor and nothing secret. `TestTryADecision` fences both cases.
 - **The call goes through `router.call_provider`**, inside `call_chain`. A
   test fake set by `set_provider_call` sees it. A vendor failure maps through
   `_upstream_refusal`.
-- **One `control_audit` row, action `catalog.decide_try`.** The row has no
-  organization, and it names the operator, the model, both token counts,
-  the vendor cost and the latency. The route writes no `usage_event` row.
+- **One `control_audit` row, action `catalog.decide_try`, for each call
+  that reached the vendor.** The row has no organization. It names the
+  operator, the model, both token counts, the vendor cost, the latency and
+  the outcome: `served`, `upstream_failed` or `unreadable`. A failed call
+  gets its row too, because the vendor may have charged for it. The write
+  never raises, so a database error cannot turn a served answer into a 500.
+  The route writes no `usage_event` row.
+- **A failover during a try logs `router.failover`**, the same line the
+  doors write.
 - **The `MATRIX` row is `("POST", "/catalog/decide/try")` at `admin`, with
   no elevation window.** The call spends our key, and it changes nothing a
   customer runs on or pays.
@@ -9780,6 +9786,9 @@ The streaming default in `src/lib/feed.ts:247` is an inline expression,
   gained it, because it writes no catalog row.
   `test_operator_console_vendor_slugs.py` exempts `typesafe` by name, because
   litellm has no provider id for it. A second test fails if litellm learns it.
+- **The verb list on the page is a mirror.** `src/lib/invocation.ts` copies
+  three constants from `catalog.py`. `test_operator_console_invocations.py`
+  fails when the copies differ.
 - **The declare form follows the pairing rule.** `src/lib/invocation.ts`
   mirrors `check_invocation_for_task`, so `/models` offers only
   `native_typesafe` for `decide`, and never offers it for another job.

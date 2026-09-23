@@ -101,4 +101,11 @@ describe("the TypeSafe guide", () => {
     const note = SECTIONS.find((s) => s.key === "decide")?.note ?? "";
     expect(note).toContain("not through litellm");
   });
+
+  it("says plainly why the Console calls TypeSafe natively", () => {
+    expect(g.description).toContain(
+      "litellm reaches TypeSafe only through its Proxy, which we do not run, " +
+        "so the Console calls it natively.",
+    );
+  });
 });

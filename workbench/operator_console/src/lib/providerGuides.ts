@@ -279,7 +279,9 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
     label: "TypeSafe",
     description:
       "Jev answers typed questions about a state — yes or no, one of a list, " +
-      "or a score — in well under a second. The tier-decide chain runs on it.",
+      "or a score — in well under a second. The tier-decide chain runs on it. " +
+      "litellm reaches TypeSafe only through its Proxy, which we do not run, " +
+      "so the Console calls it natively.",
     setupUrl: "https://typesafe.ai",
     docsUrl: "https://typesafe.ai",
     steps: [

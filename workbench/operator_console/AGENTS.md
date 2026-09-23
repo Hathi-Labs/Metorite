@@ -101,7 +101,8 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
   "Try a decision" panel on `/tiers`, and it never calls the customer door.
 - The invocation verbs and their pairing rule live in `src/lib/invocation.ts`.
   It mirrors the Console's `check_invocation_for_task`. Do not write a second
-  verb list.
+  verb list. `tests/unit/test_operator_console_invocations.py` fails when its
+  three constants differ from `catalog.py`.
 - Everything server-shaped or rule-shaped is a pure `src/lib/*` module,
   unit-tested; `src/app` is composition.
 

@@ -8094,6 +8094,24 @@ class TryDecisionRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+def _audit_decide_try(actor: str, detail: dict[str, Any]) -> None:
+    """Write the ONE audit row for a try that reached the vendor.
+
+    🔴 **Every attempt, served or failed.** A failed call may still be paid
+    for at the vendor, so ``outcome`` records ``served``, ``upstream_failed``
+    or ``unreadable``, and ``upstream_status`` records what the vendor said.
+
+    ⚠️ **Its own transaction, and it never raises.** It runs after the vendor
+    call. A database error here must not turn a served answer into a 500, so
+    the error is logged at ERROR with the detail, which holds no secret.
+    """
+    try:
+        with get_engine().begin() as conn:
+            _audit(conn, None, "catalog.decide_try", detail, actor=actor)
+    except Exception:
+        _log.exception("catalog.decide_try_audit_failed", extra={"try_detail": detail})
+
+
 @app.post("/catalog/decide/try")
 def try_decision(req: TryDecisionRequest, staff: Operator) -> dict[str, Any]:
     """Send one operator-typed decision through the bound `tier-decide` chain.
@@ -8107,7 +8125,9 @@ def try_decision(req: TryDecisionRequest, staff: Operator) -> dict[str, Any]:
 
     🔴 **One ``control_audit`` row, and no ``usage_event`` row.** The audit
     row names the operator, the tokens and the vendor cost, so the spend is
-    on record without landing in any customer's usage.
+    on record without landing in any customer's usage. A call that reached
+    the vendor and failed writes its one row too, with the outcome, because
+    the vendor may have charged for it (:func:`_audit_decide_try`).
 
     ⚠️ **The provider call goes through ``router.call_provider``**, inside
     ``call_chain``. So a test fake set by ``set_provider_call`` sees it, and
@@ -8173,47 +8193,92 @@ def try_decision(req: TryDecisionRequest, staff: Operator) -> dict[str, Any]:
             ),
         }
 
+    def _note_failover(frm: ResolvedTier, to: ResolvedTier, status: int | None) -> None:
+        # The door's failover line, word for word, so a try that fell over
+        # reads the same as a customer call that did.
+        _log.warning(
+            "router.failover",
+            extra={
+                "fo_from": frm.model,
+                "fo_to": to.model,
+                "fo_status": status,
+                "fo_tier": frm.tier,
+                "fo_task": DECIDE_TASK,
+            },
+        )
+
     started_at = datetime.now(UTC)
     clock = time.perf_counter()
     try:
-        response, resolved = asyncio.run(router_mod.call_chain(attempts, _kwargs_for))
+        response, resolved = asyncio.run(
+            router_mod.call_chain(attempts, _kwargs_for, _note_failover)
+        )
     except router_mod.UpstreamFailed as failed:
+        # 🔴 The vendor was reached, and it may have charged us. So the
+        # attempt is on record even though it failed.
+        terminal = getattr(failed.__cause__, "terminal", False) is True
+        _audit_decide_try(
+            staff.actor,
+            {
+                "tier": DECIDE_TIER,
+                "model": None,
+                "outcome": "unreadable" if terminal else "upstream_failed",
+                "upstream_status": failed.status,
+                "latency_ms": round((time.perf_counter() - clock) * 1000),
+            },
+        )
         raise _upstream_refusal(failed) from failed
     latency_ms = round((time.perf_counter() - clock) * 1000)
 
     if not isinstance(response, ProviderResult):
         # A capability row written before `check_invocation_for_task` existed.
         _log.error("router.decide_unreadable", extra={"router_model": resolved.model})
-        raise HTTPException(status_code=502, detail="upstream provider error")
-
-    usage = response.usage
-    with get_engine().begin() as conn:
-        prices = _vendor_prices(
-            conn,
-            resolved.model,
-            prompt_tokens=usage.prompt_tokens,
-            started_at=started_at,
-        )
-        cost = router_mod.vendor_cost_usd(
-            usage,
-            input_per_1m=prices["input"],
-            output_per_1m=prices["output"],
-            cached_per_1m=prices["cached"],
-        )
-        _audit(
-            conn,
-            None,
-            "catalog.decide_try",
+        _audit_decide_try(
+            staff.actor,
             {
                 "tier": resolved.tier,
                 "model": resolved.model,
-                "input_tokens": usage.prompt_tokens,
-                "output_tokens": usage.completion_tokens,
-                "vendor_cost_usd": None if cost is None else str(cost),
+                "outcome": "unreadable",
+                "upstream_status": None,
                 "latency_ms": latency_ms,
             },
-            actor=staff.actor,
         )
+        raise HTTPException(status_code=502, detail="upstream provider error")
+
+    usage = response.usage
+    cost: Decimal | None = None
+    try:
+        with get_engine().begin() as conn:
+            prices = _vendor_prices(
+                conn,
+                resolved.model,
+                prompt_tokens=usage.prompt_tokens,
+                started_at=started_at,
+            )
+            cost = router_mod.vendor_cost_usd(
+                usage,
+                input_per_1m=prices["input"],
+                output_per_1m=prices["output"],
+                cached_per_1m=prices["cached"],
+            )
+    except Exception:
+        # The answer is paid for and in hand. A price read that fails must
+        # not turn it into a 500, so the cost reads "not priced" instead.
+        _log.exception("catalog.decide_try_price_failed")
+        cost = None
+    _audit_decide_try(
+        staff.actor,
+        {
+            "tier": resolved.tier,
+            "model": resolved.model,
+            "outcome": "served",
+            "upstream_status": 200,
+            "input_tokens": usage.prompt_tokens,
+            "output_tokens": usage.completion_tokens,
+            "vendor_cost_usd": None if cost is None else str(cost),
+            "latency_ms": latency_ms,
+        },
+    )
 
     return {
         "tier": resolved.tier,

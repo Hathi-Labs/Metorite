@@ -1117,17 +1117,76 @@ class TestTryADecision:
         assert recording_fake["calls"] == []
         assert _try_audits(db, email) == []
 
-    def test_a_vendor_failure_goes_through_the_one_mapping(
+    def test_a_vendor_failure_goes_through_the_one_mapping_and_is_audited(
         self, client, db, bound
     ):
+        """Review fix. A failed call may still be paid for, so it leaves ONE
+        audit row with its outcome, and still no usage row."""
         headers, email = _operator(db, "admin")
+        before = _usage_count(db)
         bound.status = 429
         bound.body = {"error": "the vendor quotes the request here"}
         r = _try(client, headers)
         assert r.status_code == 429, r.text
         assert r.json()["detail"] == "upstream provider error"
         assert "quotes the request" not in r.text
+        assert _usage_count(db) == before
+        audits = _try_audits(db, email)
+        assert len(audits) == 1
+        org_id, detail = audits[0]
+        assert org_id is None
+        assert detail["outcome"] == "upstream_failed"
+        assert detail["upstream_status"] == 429
+        assert "quotes the request" not in json.dumps(detail)
+
+    def test_an_unreadable_200_is_audited_as_unreadable(self, client, db, bound):
+        headers, email = _operator(db, "admin")
+        bound.body = {"answers": "not a map", "usage": {"input_tokens": 5}}
+        r = _try(client, headers)
+        assert r.status_code == 502, r.text
+        [(_, detail)] = _try_audits(db, email)
+        assert detail["outcome"] == "unreadable"
+
+    def test_a_served_call_is_audited_as_served(self, client, db, bound):
+        headers, email = _operator(db, "admin")
+        assert _try(client, headers).status_code == 200
+        [(_, detail)] = _try_audits(db, email)
+        assert (detail["outcome"], detail["upstream_status"]) == ("served", 200)
+
+    def test_a_byok_key_alone_is_never_spent(
+        self, client, db, org, bound, recording_fake
+    ):
+        """Platform credential ONLY. The one `typesafe` row belongs to a
+        customer, so the route answers 503 and no vendor sees the call."""
+        with db.begin() as c:
+            c.execute(text(
+                "UPDATE provider_credential SET organization_id = CAST(:o AS uuid) "
+                "WHERE provider = 'typesafe' AND label = :l"),
+                {"o": org["id"], "l": _FENCE_LABEL})
+            platform = c.execute(text(
+                "SELECT count(*) FROM provider_credential WHERE provider = 'typesafe' "
+                "AND organization_id IS NULL AND revoked_at IS NULL")).scalar_one()
+        assert platform == 0
+        headers, email = _operator(db, "admin")
+        r = _try(client, headers)
+        assert r.status_code == 503, r.text
+        assert "typesafe" in r.json()["detail"]
+        assert recording_fake["calls"] == []
+        assert bound.requests == []
         assert _try_audits(db, email) == []
+
+    def test_no_key_at_all_is_a_503_that_names_the_vendor(
+        self, client, db, bound, recording_fake
+    ):
+        with db.begin() as c:
+            c.execute(text(
+                "DELETE FROM provider_credential WHERE provider = 'typesafe' AND label = :l"),
+                {"l": _FENCE_LABEL})
+        headers, _ = _operator(db, "admin")
+        r = _try(client, headers)
+        assert r.status_code == 503, r.text
+        assert r.json()["detail"] == "no provider credential configured for 'typesafe'"
+        assert recording_fake["calls"] == []
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard():
