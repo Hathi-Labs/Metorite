@@ -1130,7 +1130,8 @@ The screens a member sees are the same, with one exception in item 4.
    and accepts only the alias map. `naming.test.ts` stays green.
 7. **Not renamed.** The agent's `config.json` description, its `gtd` tag and
    the description in `routes/agent.py` stay. A member can read them in the
-   agent list, and they name the method.
+   agent list, and they name the method. The `tasks_lens` key of `/version`
+   stays too. S8 PR 1 said S9 may drop it, but S9 moves no JSON field.
 
 ### S7 run record (2026-09-23, UTC)
 
