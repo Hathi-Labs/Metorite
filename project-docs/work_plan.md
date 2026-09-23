@@ -4080,6 +4080,7 @@ and each pair could disagree:
 | Priority | shared `importance` | Both apps show and edit it |
 | Focus matrix | derived | Important is `importance >= 2`. Urgent comes from the due date. `leveraged` and `deep_work` stay mine. No cell says "Priority" |
 | Estimate | shared `estimate_mins` | Migration 215 copies the overlay values once |
+| Important flags | carried into `importance` | Migration 215 raises an unset, Low or Normal Priority to High where the chosen flag is true. It never lowers a Priority |
 | Deadline | shared `due_at` | A delegation never replaces a deadline the task has |
 | Start date | shared `start_date` | My inbox hides the task until the later of it and my defer |
 | Completion | derived from the lane | A closed lane reads DONE. A stated DONE on an open lane reads NEXT |

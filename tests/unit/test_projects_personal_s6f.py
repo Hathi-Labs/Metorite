@@ -418,3 +418,31 @@ async def test_trash_and_a_context_leave_a_closed_task_closed(db: FakeProjectsDB
     )
     shared = next(t for t in db.rows("pm_tasks") if str(t["id"]) == str(task.id))
     assert str(shared["status_id"]) == str(done.id)
+
+
+def test_the_backfill_carries_important_up_and_never_down() -> None:
+    sql = (ROOT / "infra/postgres/215_pm_tasks_estimate_backfill.sql").read_text(
+        encoding="utf-8")
+    body = "\n".join(
+        line for line in sql.splitlines() if not line.lstrip().startswith("--")
+    )
+    promote = body[body.index("WITH flag AS"):]
+    assert "SET importance = 2" in promote
+    assert promote.count("(t.importance IS NULL OR t.importance < 2)") == 2, (
+        "raises only an unset or lower Priority, in the pick and the UPDATE"
+    )
+    assert "AND flag.important" in promote, "a false flag changes nothing"
+    assert "(a.task_id IS NULL)" in promote, "the assignee's flag first"
+    assert "t.organization_id = p.organization_id" in promote
+
+
+def test_the_ledger_guard_names_this_very_file() -> None:
+    """R1 can renumber a migration at merge. The guard must follow it, or a
+    renamed file never skips and a replay refills cleared estimates."""
+    (path,) = (ROOT / "infra/postgres").glob("*_pm_tasks_estimate_backfill.sql")
+    sql = path.read_text(encoding="utf-8")
+    guard = re.search(r"WHERE filename = '([^']+)'", sql)
+    assert guard, "the ledger guard is missing"
+    assert guard.group(1) == path.name
+    header = sql.splitlines()[0]
+    assert header.startswith(f"-- {path.name} ")

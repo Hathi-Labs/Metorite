@@ -53,9 +53,11 @@ from gateway.routes.projects.personal import (
     MY_TASKS_FROM,
     _project_task,
     _upsert_personal,
+    complete_for_member,
     my_tasks_binds,
 )
 from gateway.routes.projects.planning import _PM_SELECT
+from gateway.routes.projects.bulk import _act_on_one
 from gateway.routes.projects.tasks import time_spent_mins
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -258,10 +260,39 @@ async def main() -> None:
             "(:m, :bob, 45, now()), "
             "(:k, :bob, 99, now())"),
             {"m": memo, "k": kept, "carol": CAROL, "bob": BOB})
+        # The Important flags. `flagged` has no Priority and Bob (assigned)
+        # flagged it. `urgent` is already Urgent. `vetoed` is Normal: Carol
+        # (not assigned) says important, Bob (assigned) says not, and his wins.
+        flagged = await _task(db, org, sales, todo, "Flagged", 6)
+        urgent = await _task(db, org, sales, todo, "Already urgent", 7)
+        vetoed = await _task(db, org, sales, todo, "Vetoed", 8)
+        for tid in (flagged, urgent, vetoed):
+            await _assign(db, tid, BOB, "2026-09-01T09:00:00+00:00")
+        await db.execute(text("UPDATE pm_tasks SET importance = 3 WHERE id = :u"),
+                         {"u": urgent})
+        await db.execute(text("UPDATE pm_tasks SET importance = 1 WHERE id = :v"),
+                         {"v": vetoed})
+        await db.execute(text(
+            "INSERT INTO pm_task_personal (task_id, member_email, important) VALUES "
+            "(:f, :bob, true), (:u, :bob, true), (:v, :bob, false), (:v, :carol, true)"),
+            {"f": flagged, "u": urgent, "v": vetoed, "bob": BOB, "carol": CAROL})
+        # The file's own two statements, run on this transaction.
         sql = MIGRATION.read_text(encoding="utf-8")
-        copy = sql[sql.index("WITH pick AS"):sql.index("END\n$$;")].rstrip().rstrip(";")
+        body = sql[sql.index("WITH pick AS"):sql.rindex("END")]
+        cut = body.index("WITH flag AS")
+        copy = body[:cut].strip().rstrip(";")
+        promote = body[cut:].strip().rstrip(";")
         first_run = (await db.execute(text(copy))).rowcount
         second_run = (await db.execute(text(copy))).rowcount
+        await db.execute(text(promote))
+        promote_again = (await db.execute(text(promote))).rowcount
+        levels = {r.title: r.importance for r in (await db.execute(text(
+            "SELECT title, importance FROM pm_tasks WHERE id IN (:f, :u, :v)"),
+            {"f": flagged, "u": urgent, "v": vetoed})).fetchall()}
+        check("8b a flagged task becomes High, Urgent stays, the assignee's no wins",
+              levels == {"Flagged": 2, "Already urgent": 3, "Vetoed": 1}
+              and promote_again == 0,
+              f"levels={levels} second={promote_again}")
         memo_est, kept_est = (await db.execute(text(
             "SELECT (SELECT estimate_mins FROM pm_tasks WHERE id = :m), "
             "       (SELECT estimate_mins FROM pm_tasks WHERE id = :k)"),
@@ -296,6 +327,35 @@ async def main() -> None:
         spent = await time_spent_mins(db, str(deck))
         check("11 time spent is every member's actuals, summed", spent == 75,
               f"spent={spent}")
+
+        # ── 11b. complete it, then un-check it: the board reopens ──────────
+        #     The card checkbox, Focus mode and Undo all reach the bulk
+        #     `personal` action. `complete_for_member` is the real completion.
+        box = await _task(db, org, sales, todo, "Checkbox task", 9)
+        await _assign(db, box, ALICE, "2026-09-01T09:00:00+00:00")
+        row = (await db.execute(text("SELECT * FROM pm_tasks WHERE id = :t"),
+                                {"t": box})).fetchone()
+        await complete_for_member(db, row, ALICE)
+        closed_first = (await _mine(db, org, ALICE))["Checkbox task"]["disposition"]
+        row = (await db.execute(text("SELECT * FROM pm_tasks WHERE id = :t"),
+                                {"t": box})).fetchone()
+        outcome, _ = await _act_on_one(db, row, "personal", by=ALICE,
+                                       personal={"disposition": "NEXT"})
+        after = (await _mine(db, org, ALICE))["Checkbox task"]
+        state = (await db.execute(text(
+            "SELECT s.category, t.completed_at FROM pm_tasks t "
+            "JOIN pm_task_statuses s ON s.id = t.status_id WHERE t.id = :t"),
+            {"t": box})).one()
+        moves = (await db.execute(text(
+            "SELECT meta->>'to_category' FROM pm_activities "
+            "WHERE task_id = :t AND type = 'status_change' "
+            "ORDER BY created_at, seq"), {"t": box})).scalars().all()
+        check("11b complete it, then bulk NEXT: open, in my Next, and on the timeline",
+              closed_first == "DONE" and outcome == "applied"
+              and after["disposition"] == "NEXT" and state.category == "todo"
+              and state.completed_at is None and moves[-1:] == ["todo"],
+              f"first={closed_first} now={after['disposition']} "
+              f"lane={state.category} completed={state.completed_at} moves={moves}")
 
         # ── 12. another tenant sees none of it ─────────────────────────────
         other = (await db.execute(text(

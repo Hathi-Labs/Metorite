@@ -358,7 +358,7 @@ not in the detail body. The watch toggle was in the Projects header only.
 | Field | Decision | How |
 |---|---|---|
 | Priority | **Shared** | `pm_tasks.importance`, labelled as `projects/lib/table.ts` does. The My Tasks list column, the card chip and the body show and edit it |
-| Focus matrix | **Derived, not stored** | Important is `importance >= 2`. Urgent comes from the due date. `leveraged` and `deep_work` stay mine. The seven cells and the Suggestion are unchanged. No cell says "Priority": the old "Low Priority" cell is "Low value" |
+| Focus matrix | **Derived, not stored** | Migration 215 carries each `important = true` flag into `importance = 2` where the Priority is unset or lower. The assignee's flag wins, and it never lowers a Priority. Important is `importance >= 2`. Urgent comes from the due date. `leveraged` and `deep_work` stay mine. The seven cells and the Suggestion are unchanged. No cell says "Priority": the old "Low Priority" cell is "Low value" |
 | Estimate | **Shared** | `pm_tasks.estimate_mins`. My Tasks' Estimate writes it. The planner reads it. Migration 215 copies the overlay values once |
 | Deadline | **Shared**, already `due_at` | A delegation never replaces a deadline the task has. The promised date is `expected_by` |
 | Start date | **Shared** | `start_date`, in the body of both apps. My inbox hides the task until the later of it and my own `defer_until` |
@@ -708,7 +708,9 @@ PASS. `test_projects_personal_s6e.py`, 12 tests. The vitest fences:
    route that exists, so the D-PM-37 manifest does not change.
 7. **Migration 215** copies each overlay estimate into an empty
    `estimate_mins`. The assignee's value wins, then the first assignee, then
-   the earliest `updated_at`. The ledger guard makes a replay a no-op.
+   the earliest `updated_at`. It also carries the `important` flags. Where
+   the chosen flag is true, an unset, Low or Normal Priority becomes High.
+   It never lowers a Priority. The ledger guard makes a replay a no-op.
 8. `skill-task-gtd` and `skill-projects` follow the split.
 
 **Client.**
