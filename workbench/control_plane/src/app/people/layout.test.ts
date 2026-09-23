@@ -55,11 +55,25 @@ describe("which tab a People route lights", () => {
   });
 
   it("lights NOTHING on a People route with no tab", () => {
-    // `/people/quality` is linked from the workload page and `/people/overview`
-    // is a D49 Center landing — kept routable and unlinked. Neither has a tab,
-    // and claiming "you are here" about the directory would be a lie.
+    // `/people/quality` is linked from the workload page, and has no tab of
+    // its own. Claiming "you are here" about the directory would be a lie.
     expect(activeTabFor("/people/quality")).toBe("");
-    expect(activeTabFor("/people/overview")).toBe("");
+  });
+
+  /**
+   * ⚠️ CHANGED 2026-09-23 (H-167). This read `activeTabFor("/people/overview")`
+   * is `""`, and called the route "a D49 Center landing — kept routable and
+   * unlinked".
+   *
+   * "Unlinked" was accurate. Nobody decided it. D49 withdrew Centers on
+   * 2026-08-24 and this page's only door went with them, so a built, tested,
+   * working surface sat unreachable for a month while this assertion held it
+   * there. The 2026-09-20 pass that built this bar reached six surfaces and
+   * missed this one, because its door was a withdrawn Center and not a
+   * missing tab.
+   */
+  it("puts Overview on a tab of its own", () => {
+    expect(activeTabFor("/people/overview")).toBe("overview");
   });
 
   it("lights nothing outside the app", () => {

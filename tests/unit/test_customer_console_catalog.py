@@ -336,7 +336,9 @@ class TestTheCatalogRead:
 
         assert {t["slug"] for t in body["tasks"]} == {
             "chat", "embed", "vision", "transcribe", "speak", "image",
-            "video", "music"}  # video and music joined in 015 (D67's slate)
+            # video and music joined in 015 (D67's slate), and decide in
+            # 033 (D75, CP-13a).
+            "video", "music", "decide"}
         assert any(c["task"] == "transcribe" for c in body["capabilities"])
         assert any(b["tier"] == "tier-stt" for b in body["bindings"])
         # The registry (015): the whole slate reaches the console, so an

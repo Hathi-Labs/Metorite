@@ -4,8 +4,9 @@
 2026-09-22. S2b (the rest of class B), S3 (the guarded acts) and S4 (the
 workflows, the views and the forms) and S5 (the rest of the manifest)
 built 2026-09-23. S6 (navigation and the frontend-tool dispatcher) built
-2026-09-23. The visual review ran 2026-09-23 (§4.2).** §10 says which slice each part
-belongs to. §4.4 lists what the chat reuses, file by file.
+2026-09-23. The visual review ran 2026-09-23 (§4.2). S7, the team
+intelligence slices, was designed 2026-09-23 (§13) and is not built.** §10 says
+which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -659,6 +660,11 @@ Each slice is one pull request. Each one is useful alone.
 | **S5 · The rest** — ✅ **BUILT 2026-09-23** | The eleven reads and writes that were still in `PLANNED` (`inbox.py`: views, calendar, contexts, watchers, intake, notifications, grants). `PLANNED` is empty of WS-27bm names: every `/projects` route is built or excluded by name | AGENT-SAFE |
 | **S6 · Navigation** — ✅ **BUILT 2026-09-23** | The frontend-tool dispatcher (`acb_skills.frontend_tools`, `runFrontendToolEvent`) · `open_in_app` and the page's three handlers · the two S2 follow-ups (an unknown address named on the card, the subtasks receipt opens the parent) | AGENT-SAFE |
 | **Visual review** — ✅ **DONE 2026-09-23** | The rail and the cards seen in eight contexts. The defects it found are fixed (§4.2) | AGENT-SAFE |
+| **S7a · Capacity** | `GET /projects/analytics/capacity` · the Analytics app's Capacity panel · the report section `capacity` · the chat tool `team_capacity` (§13.3) | AGENT-SAFE |
+| **S7b · Fit** | `GET /projects/tasks/{id}/candidates` and its draft form · `GET /projects/analytics/rebalance` · "Suggested" in the assignee picker · the chat tools `suggest_assignees` and `rebalance` (§13.4) | AGENT-SAFE |
+| **S7c · Conflicts** | `GET /projects/analytics/conflicts` with seven kinds · the Conflicts panel · the report section `conflicts` · the chat tool `find_conflicts` · the dependency rule moved to the server (§13.5) | AGENT-SAFE |
+| **S7d · Plan with capacity** | `propose_plan` gains start dates, phases and dependencies, and shows each owner's fit on the plan card (§13.6) | AGENT-SAFE |
+| **S7e · On-the-fly analysis** | The read tool `task_dataset` and the rule for numbers the chat computes itself (§13.7) | AGENT-SAFE |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-09-30 |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 
@@ -695,6 +701,33 @@ Each slice is one pull request. Each one is useful alone.
 5. A write with `X-Actor-Via` lands `meta.via` on its activity row, against a
    real database (R8).
 
+### 10.3 Acceptance — S7a
+
+**Done when:**
+1. The route returns one row for each assignee of open work in scope, and one
+   Unassigned row. For the same scope, `open_tasks` on each row equals the
+   Load route's count for that person. An R8 test proves this on a real
+   database.
+2. For a caller without `admin:members:read`, the response says
+   `hr_visible: false`. It has no hours, absence, `end_date`,
+   `max_concurrent_tasks` or at-risk keys. A test proves the keys are absent,
+   not null.
+3. If no open task on a row has an estimate, the row has no spare or committed
+   hours, and it says why.
+4. `horizon_days` changes the window. The default is 14, and the route
+   refuses a value outside 1 to 90. The response prints both windows.
+5. The at-risk list and the pill equal `workload.at_risk_tasks` and
+   `workload.classify` for the same inputs. The People dashboard reads the
+   same leaf module, and its tests still pass.
+6. `capacity` is in `SECTIONS`, `_REPORT_SECTIONS`, `RenderedBody` and
+   `reportEmail.ts`. One lockstep test fails when one of the four lacks it.
+   `capacity` is not in `_DEFAULTS`.
+7. `team_capacity` is class A and in `manifest.py`, and the coverage fence
+   passes. A run with no user makes zero HTTP calls.
+8. The panel draws from the route only, and counts nothing in the browser.
+   Somebody looks at it in light mode, at compact density, under a changed
+   accent, and beside Load.
+
 ---
 
 ## 11. Verification
@@ -708,6 +741,13 @@ eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_agent.py
 uv run pytest tests/unit/test_tenant_coverage.py
 uv run python tests/live/live_actor_via.py   # D-PM-36 on a real row
+```
+
+For S7a, with `TENANT_LADDER_DATABASE_URL` set, because the R8 tests skip
+without it and the run still reads green:
+
+```
+uv run pytest tests/unit/test_projects_analytics_capacity.py tests/unit/test_people_dashboard.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_agent.py
 ```
 
 In `workbench/control_plane`:
@@ -732,3 +772,172 @@ light mode, at compact density, under a changed accent, and beside the board.
    until the owner says otherwise.
 3. **The tier.** `tier-balanced` by default, or `tier-powerful` as the Tasks
    rail chose. The cost difference is real once H-42 prices the card.
+
+---
+
+## 13. Team intelligence — plan, assign, capacity, conflicts (S7)
+
+**Owner directive, 2026-09-23.** The chat must plan projects and work out who
+should take a task. It must know what each person on the team can do. It must
+find where work overlaps and interferes.
+
+Every reusable insight must also appear in the
+Analytics and Reports apps. The server computes what is common. The agent
+computes only what is uncommon, on the fly.
+
+### 13.1 The answer
+
+**Most of the arithmetic exists, and the chat reaches almost none of it.**
+The People app owns it. The chat's manifest allows only `/projects/*`. One
+route already crosses: `people_for` reads `GET /projects/assignees`, which
+gives an HR-tier caller contracted hours, load, top skills and end-date
+warnings (`assignees.py:22-26`). But it matches people by name, it ranks
+nobody, it has no window, and it sees no conflicts. S7 follows its precedent:
+the HR gate, and a function-local import of the People helpers.
+
+| Question | The seam that already answers it | Where it lives today |
+|---|---|---|
+| How many hours does a person have? | `person_schedule`, `contracted_hours_per_week`, `working_hours_between` (absences subtracted) | `gateway/work_schedule.py` |
+| Does their dated work fit before each due date? | `at_risk_tasks` (cumulative), `classify` (the five pills) | `gateway/workload.py` |
+| Who fits this task? | `score_skills` (level × recency), `rank_candidates` (skill × spare hours × away) | `routes/people/search.py`, `routes/people/suggestions.py` |
+| Who should help whom? | The rebalancing suggester | `routes/people/suggestions.py` |
+| Does a task start before its blocker ends? | `conflicts()` | `src/app/projects/lib/timeline.ts:670`, the browser only |
+
+**S7 exposes these seams under `/projects/*` and adds no second arithmetic.**
+Each new route calls the functions above. The Analytics panel, the report
+section and the chat tool all read the same route, so the three cannot
+disagree.
+
+### 13.2 Rules that bind every S7 route
+
+1. **One arithmetic.** Hours come from `work_schedule.py`. Fit comes from
+   `score_skills` and `rank_candidates`. Pills come from `workload.classify`.
+   A route that computes any of these again is a defect.
+2. **The viewer's scope.** Task counts use `task_visibility_clause` and
+   `reportable_with_ancestors_clause`, as `analytics.py` does. A rollup is not
+   a licence to see work the viewer cannot open.
+3. **The HR tier is gated.** Skills, contracted hours, spare hours, absences,
+   end dates and `max_concurrent_tasks` need `admin:members:read`
+   (`can_read_hr_fields`, `people_center_app.md` §4.2). Without it, a route
+   returns the task half only and says `hr_visible: false`. Then the chat
+   says that an admin can see capacity. It does not guess.
+4. **No estimate, no hours.** If no open task carries an estimate, the
+   route omits the hours-based figures and says so. `classify` already does
+   this. A zero is never shown as "free".
+5. **The window is explicit.** Each route takes `horizon_days` (default 14,
+   the People dashboard's `HORIZON_DAYS`) and prints the dates it covered.
+
+### 13.3 S7a — Capacity
+
+`GET /projects/analytics/capacity?project_id=&include_subtree=&horizon_days=`
+
+The route returns one row for each person who holds open work in scope, and
+one row for unassigned work. A row carries these figures:
+- Open tasks, overdue tasks, and estimated hours left.
+- Contracted hours in a week, and working hours in the window with absences
+  subtracted.
+- Committed hours in the window, and spare hours.
+- Absences in the window, and an end date before the window closes.
+- The at-risk tasks, with the shortfall on each.
+- The pill and its reason, from `classify`.
+- Tasks in progress against `max_concurrent_tasks`.
+
+**Four rules for the build.**
+1. **Counts use the Load predicate.** The route builds its task counts from
+   `analytics.py`'s `scope_clause` and the `open_where` of `load`. It does not
+   use the People dashboard's `_OPEN` and `project_clause`. Otherwise the
+   Capacity panel and the Load panel beside it disagree about open work.
+2. **The row arithmetic moves to a leaf module.** `dashboard.py::_row` fixes
+   its window and reports spare hours when nothing is estimated. Its
+   arithmetic moves to `gateway/capacity.py`, outside both route packages,
+   with a `horizon_days` input. The People dashboard and this route both call
+   it. A `/projects` route imports People helpers inside the function, as
+   `assignees.py` does, to avoid the import cycle.
+3. **Two windows, named.** The pill is the People dashboard's pill:
+   `classify` compares this Monday-to-Sunday week with contracted hours.
+   Spare hours and at-risk tasks use the `horizon_days` window. The response
+   carries both windows.
+4. **`capacity` is an opt-in report section.** It goes into `SECTIONS` and
+   not into `_DEFAULTS`. Otherwise every saved report with no `sections` key
+   starts to show capacity.
+
+**Surfaces.** The Analytics app gets a Capacity panel beside Load. Reports get
+the section kind `capacity`, in `reports.py` `SECTIONS`, `RenderedBody`,
+`reportEmail.ts` and the chat's `_REPORT_SECTIONS`. The chat gets
+`team_capacity`, class A.
+
+### 13.4 S7b — Fit and rebalancing
+
+`GET /projects/tasks/{id}/candidates` ranks people for one task by
+`rank_candidates`. The draft form is `GET /projects/candidates?title=&due=`.
+It ranks people for a task that does not exist yet, which planning needs. Each
+candidate carries the skills that matched and the spare hours before the due
+date. It also carries the warnings: away on the due date, leaving before it,
+or over `max_concurrent_tasks`.
+
+`GET /projects/analytics/rebalance` is the People suggester scoped to a
+project subtree. It lists the at-risk tasks with the helpers who fit them, and
+the idle people with the unassigned work that fits them.
+
+**Surfaces.** The assignee picker in the task panel shows "Suggested" above the
+name search. The chat gets `suggest_assignees` and `rebalance`, both class A.
+Assigning stays the class B `assign` with its card.
+
+### 13.5 S7c — Conflicts
+
+`GET /projects/analytics/conflicts?project_id=&horizon_days=` returns one list.
+Each row carries its kind, the tasks and people it names, and one sentence
+that says why.
+
+| Kind | Rule | HR tier |
+|---|---|---|
+| `dependency_order` | A task starts or is due before a task that blocks it is due | no |
+| `blocker_late` | A blocker is overdue, and the work it blocks is still open | no |
+| `parallel_person` | One person holds tasks in different projects whose start-to-due spans overlap | no |
+| `overcommitted` | A person's dated work does not fit before a due date (`at_risk_tasks`) | yes |
+| `absent_on_due` | A task is due on a day its assignee is away (`absent_on`) | yes |
+| `over_concurrency` | A person has more tasks in progress than `max_concurrent_tasks` | yes |
+| `leaving` | An assignee's end date is before the task's due date | yes |
+
+**The dependency rule moves to the server.** Today it exists only in
+`timeline.ts`. The route owns it, and the timeline keeps its copy for live
+feedback while the member drags. One fixture file of cases runs against both,
+so the two cannot drift.
+
+**Surfaces.** A Conflicts panel in the Analytics app. The report section kind
+`conflicts`. The chat tool `find_conflicts`, class A.
+
+### 13.6 S7d — Plan with capacity
+
+`propose_plan` gains three inputs and one check:
+- A start date on each task.
+- Phases, created as parent tasks with the phase's tasks as their subtasks.
+- Dependencies, written as `blocks` links after the tasks exist, under the
+  same one card.
+- For each owner, the fit from §13.4 and the hours from §13.3, printed on the
+  plan card row. The card marks a row whose owner lacks the hours, and the
+  member edits it before confirming.
+
+The plan still creates everything under one card, in one batch.
+
+### 13.7 S7e — On-the-fly analysis
+
+`task_dataset(project_id, filters, columns)` returns a compact table of up to
+500 tasks in the viewer's scope. The columns are number, title, project, status
+category, assignees, estimate, start, due, completed, created and blockers. The
+agent computes an uncommon figure from it, for example cycle time by tag or
+the share of work each phase holds.
+
+**The rule for a number the chat computes.** The answer says that the chat
+computed it, and from how many rows. If the table was truncated, the chat does
+not compute a total from it. A figure that people ask for twice is a
+candidate for a server read and a report section, and the chat says so.
+
+### 13.8 What S7 does not do
+
+- It does not write a person's skills, hours or absences. The People app owns
+  those writes.
+- It does not auto-assign. Every assignment is the class B `assign` with its
+  card.
+- It does not fix the outlook's capacity figure, which reads only the typed
+  `capacity_hours_per_week`. That is H-169.

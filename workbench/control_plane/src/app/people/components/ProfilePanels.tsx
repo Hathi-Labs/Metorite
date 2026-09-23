@@ -41,6 +41,7 @@ import {
   isFilled,
   parseChips,
   renderSections,
+  sectionVoice,
 } from "../lib/profile";
 
 interface Props {
@@ -237,6 +238,11 @@ export function ProfilePanels({
 
   const original = person as unknown as Record<string, unknown>;
   const editableFields = person.editable_fields ?? [];
+  // Which voice the copy speaks in. The server decides — `is_self` rides on
+  // every payload (D-PC-1) — and an ABSENT flag reads as "not me", so a
+  // gateway that has not answered yet says "About them" rather than telling a
+  // colleague their own name is theirs.
+  const self = person.is_self === true;
   const sections = useMemo(
     () => renderSections(person, { includePrivate }),
     [person, includePrivate]
@@ -316,7 +322,7 @@ export function ProfilePanels({
         <section className="rounded-xl border border-border p-3">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h3 className="text-xs font-medium text-foreground">
-              Your working week
+              {self ? "Your working week" : "Their working week"}
             </h3>
             {person.contracted_hours_per_week !== null &&
               person.contracted_hours_per_week !== undefined && (
@@ -338,7 +344,7 @@ export function ProfilePanels({
                 . Change any of it below.
               </>
             ) : (
-              `You override: ${overriddenFields(person.schedule).join(", ")}. Everything else follows the company default.`
+              `${self ? "You override" : "They override"}: ${overriddenFields(person.schedule).join(", ")}. Everything else follows the company default.`
             )}
           </p>
           {/*
@@ -358,10 +364,12 @@ export function ProfilePanels({
         </section>
       )}
 
-      {sections.map(({ section, fields }) => (
+      {sections.map(({ section, fields }) => {
+        const voice = sectionVoice(section, self);
+        return (
         <section key={section.key} className="rounded-xl border border-border p-3">
-          <h3 className="text-xs font-medium text-foreground">{section.title}</h3>
-          <p className="mt-0.5 text-[11px] text-muted-foreground">{section.note}</p>
+          <h3 className="text-xs font-medium text-foreground">{voice.title}</h3>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">{voice.note}</p>
           <dl className="mt-3 grid gap-2.5 sm:grid-cols-2">
             {fields.map((field) => (
               <div
@@ -395,7 +403,8 @@ export function ProfilePanels({
             ))}
           </dl>
         </section>
-      ))}
+        );
+      })}
 
       {/* WS-28h — structured skills & credentials. Its own saves, its own
           endpoint: a skills row is a child record, not a field on the person,

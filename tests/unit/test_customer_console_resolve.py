@@ -174,6 +174,9 @@ _CAPABILITY_GATED_ROUTES: dict[str, str] = {
     "/v1/audio/transcriptions": "serve",
     "/v1/images/generations": "serve",
     "/v1/audio/speech": "serve",
+    # 2026-09-23, CP-13a — the fifth serving door (§6A.14). It takes
+    # `ServingCaller`, so a `{resolve}` key meets the same 403.
+    "/v1/decide": "serve",
 }
 
 

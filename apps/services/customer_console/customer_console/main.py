@@ -125,6 +125,8 @@ from customer_console.credits import (
     rate_call,
 )
 from customer_console.db import get_engine
+from customer_console.decide import DecideRequest, decide_refusal, questions_of
+from customer_console.handlers import DECIDE_TASK, DecidePayload, ProviderResult
 from customer_console.keys import (
     ENV_DISCOUNT,
     is_discount_code,
@@ -2465,7 +2467,7 @@ def declare_capability(req: CapabilityRequest, staff: Operator) -> dict[str, Any
     Nobody is billed against it, so correcting it destroys no audit trail.
     """
     try:
-        invocation = catalog.check_invocation(req.invocation)
+        invocation = catalog.check_invocation_for_task(req.invocation, req.task)
         streams = catalog.check_streams(req.task, req.streams)
     except catalog.CatalogRefused as exc:
         raise _catalog_refusal(exc) from exc
@@ -6331,10 +6333,12 @@ def _upstream_refusal(failed: router_mod.UpstreamFailed) -> HTTPException:
     every SDK tells the customer to rotate THEIR key, and a vendor 402
     collides with this API's own top-up 402.
 
-    🔴 **ONE mapping for every serving route.** All four raise from here —
+    🔴 **ONE mapping for every serving route.** All five raise from here —
     `/v1/chat/completions`, `/v1/audio/transcriptions`,
-    `/v1/images/generations` and `/v1/audio/speech` — so a second endpoint
-    cannot grow a second opinion about what a vendor 500 means.
+    `/v1/images/generations`, `/v1/audio/speech` and `/v1/decide` — so a
+    second endpoint cannot grow a second opinion about what a vendor 500
+    means. A native handler raises an error that carries `status_code`, so
+    a TypeSafe 429 stays a 429 and its 529 becomes a 502 (§6A.14 clause 12).
     """
     status = failed.status
     _log.warning("router.provider_error", extra={"upstream_status": status})
@@ -7557,7 +7561,7 @@ def _serving_prelude(
 ) -> tuple[list[ResolvedTier], dict[str, router_mod.Credential | None], dict[str, str]]:
     """Resolve the chain, load its keys and verbs, and stand the three walls.
 
-    🔴 **ONE prelude for the image door and the speak door.** The transcribe
+    🔴 **ONE prelude for the image, speak and decide doors.** The transcribe
     route wrote this shape first and the chat route wrote it before that. A
     third and a fourth copy is root ``CLAUDE.md`` §5's defect by name, so the
     two new routes share this function and the older two keep their own
@@ -7914,6 +7918,149 @@ def audio_speech(req: SpeechRequest, caller: ServingCaller) -> Response:
     )
 
     return Response(content=audio, media_type=media_type)
+
+
+# ── CP-13a: the decide door (§6A.14, D75) ──────────────────────────────────
+#
+# 🔴 **The first door no litellm verb can serve.** TypeSafe's Jev answers a
+# typed decision, and litellm reaches it only through the Proxy that D58
+# rejects. So the capability row names `native_typesafe`, and
+# `router._default_provider_call` sends that verb to `handlers.py`.
+#
+# ⚠️ **Nothing binds `tier-decide`, and no key is installed.** So the door
+# answers 400 `tier_unknown` until an operator declares the model, binds the
+# tier and installs the key (CP-13b). The key is the owner's act (§6.0 B1).
+
+
+@app.post("/v1/decide")
+def decide(req: DecideRequest, caller: ServingCaller) -> dict[str, Any]:
+    """Answer typed questions about a state, gate the call, and meter tokens.
+
+    The same shape as the image and speak doors, and deliberately so. The
+    organization comes from the credential, the model comes from the tier
+    binding, the three customer walls stand BEFORE the provider call in
+    ``_serving_prelude``, and ``_record_completion`` writes the one row.
+
+    🔴 **``ServingCaller``, never ``KeyCaller``** (the wire contract). A shared
+    box presents its per-box deployment key plus ``X-CC-Member``, and the
+    Console derives the tenant. A door on the organization key alone would
+    copy H-152's defect.
+
+    🔴 **Clause 13's limits refuse FIRST.** A breach is a 400 that names the
+    rule. It runs before the chain resolves, so it writes no usage row and no
+    vendor sees the request.
+
+    🔴 **The response names the TIER and never the model** (D32.7, D66). The
+    model goes into ``usage_event.model`` for the operator.
+
+    🔴 **Metering is by TOKEN, with no quantity** (clause 8). The handler
+    writes the vendor's input count into ``prompt_tokens``. A quantity would
+    send ``_record_completion`` down the per-unit branch, where ``tokens``
+    has no column.
+
+    ⚠️ **No hold, and no second spend check** (clause 11). The prelude already
+    runs ``_spend_refusal`` behind the spend gate, as it does for the image
+    and speak doors.
+
+    Declared ``def`` for the reason the module docstring gives.
+    """
+    rule = decide_refusal(req)
+    if rule is not None:
+        # Refused BEFORE anything is resolved or spent (clause 13).
+        raise HTTPException(status_code=400, detail=rule)
+
+    org_id = caller.organization_id
+    attempts, credentials, invocations = _serving_prelude(
+        tier=req.tier,
+        task=DECIDE_TASK,
+        org_id=org_id,
+        caller=caller,
+        client_ref=req.client_ref,
+    )
+    questions = questions_of(req)
+    # H-85: minted BEFORE the call, so the handler's unreadable-body alarm
+    # and the usage row name the same request.
+    request_id = _new_request_id()
+
+    def _kwargs_for(step: ResolvedTier) -> dict[str, Any]:
+        """Build the outgoing call for one step of the chain. ALLOWLIST.
+
+        ⚠️ The typed ``payload`` carries the credential. ``api_base`` is ours
+        alone, and nothing the caller sent reaches the vendor except the
+        state and the questions. ``model`` rides beside the payload so a
+        test fake and the failover log can read which step ran.
+        """
+        cred = credentials[step.model.split("/", 1)[0]]
+        assert cred is not None  # the attempts filter removed keyless steps
+        return {
+            "model": step.model,
+            "task": DECIDE_TASK,
+            # D60 step two: the verb `model_capability` named for this pair.
+            "invocation": invocations[step.model],
+            "payload": DecidePayload(
+                model=step.model,
+                state=req.state,
+                questions=questions,
+                api_key=cred.secret,
+                api_base=cred.api_base or None,
+                # Log context for the unreadable-body alarm. Never sent.
+                organization_id=org_id,
+                request_id=request_id,
+            ),
+        }
+
+    def _byok_served(step: ResolvedTier) -> bool:
+        cred = credentials[step.model.split("/", 1)[0]]
+        return bool(cred and cred.byok)
+
+    def _note_failover(frm: ResolvedTier, to: ResolvedTier, status: int | None) -> None:
+        _log.warning(
+            "router.failover",
+            extra={
+                "fo_from": frm.model,
+                "fo_to": to.model,
+                "fo_status": status,
+                "fo_tier": frm.tier,
+                "fo_task": DECIDE_TASK,
+            },
+        )
+
+    started_at = datetime.now(UTC)
+    try:
+        response, resolved = asyncio.run(
+            router_mod.call_chain(attempts, _kwargs_for, _note_failover)
+        )
+    except HTTPException:
+        raise
+    except router_mod.UpstreamFailed as failed:
+        # ONE mapping, shared with every serving route (clause 12).
+        raise _upstream_refusal(failed) from failed
+
+    if not isinstance(response, ProviderResult):
+        # A capability row that pairs `decide` with a litellm verb lands
+        # here. `catalog.check_invocation_for_task` refuses that row at
+        # declare time, so only a row written before that rule can reach
+        # this. It is our configuration fault, so the caller gets the 502 a
+        # broken vendor gets, and the log names the model.
+        _log.error(
+            "router.decide_unreadable",
+            extra={"router_model": resolved.model, "router_org": org_id},
+        )
+        raise HTTPException(status_code=502, detail="upstream provider error")
+
+    # Metering is best-effort and NEVER fails the call.
+    _record_completion(
+        response.usage,
+        org_id=org_id,
+        caller=caller,
+        resolved=resolved,
+        client_ref=req.client_ref,
+        byok=_byok_served(resolved),
+        started_at=started_at,
+        request_id=request_id,
+    )
+
+    return {"tier": resolved.tier, **response.body, "request_id": request_id}
 
 
 @app.get("/me/billing")

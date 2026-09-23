@@ -139,9 +139,27 @@ const ACCENTS: Record<AccentHue, StatusAccent> = {
     soft: "bg-violet/10",
     text: "text-violet",
     bar: "border-l-violet",
-    // The tag palette's violet, kept as it was: `accent` is the one token pair
-    // that gives a distinct chip without competing with `primary`.
-    chip: "bg-accent text-accent-foreground",
+    // ⚠️ This was `bg-accent text-accent-foreground` — the tag palette's
+    // violet, carried over when `--violet` was minted and never revisited.
+    // `--accent` is hsl(27 96% 61%): ORANGE. So the hue named violet drew a
+    // violet dot, a violet bar, violet text — and an ORANGE chip. One hue,
+    // five slots, and one slot a different colour.
+    //
+    // Two things it broke. On People → Workload, `PILL_HUE` maps `overloaded`
+    // to violet and `at_risk` to amber, so the legend showed a violet dot for
+    // Overloaded while the row pill beside it drew orange, indistinguishable
+    // from At risk: two of five signals, one colour. And a member who picked
+    // "violet" for a tag in Projects got an orange chip.
+    //
+    // Measured 2026-09-23 by rendering `/people/dashboard` under two accents.
+    // It is NOT the member's accent leaking (the pill held still when
+    // `--primary` moved) — `--accent` is its own token, which is why the
+    // `primary` fence below never saw this.
+    //
+    // Now the same shape as every other hue, on the token already minted for
+    // it. `gray` stays the deliberate exception: `bg-muted/40` is too faint to
+    // read as a chip on a card.
+    chip: "bg-violet/10 text-violet",
   },
 };
 

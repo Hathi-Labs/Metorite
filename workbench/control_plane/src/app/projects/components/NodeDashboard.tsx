@@ -56,6 +56,11 @@ import {
   emptyCopy,
   rowsReconcile,
 } from "../lib/dashboardRows";
+import {
+  closableCount,
+  completion,
+  completionPercent,
+} from "../lib/progressWheel";
 import { nodeKind } from "../lib/tree";
 
 /** The order lanes read in — the same left-to-right a board uses. */
@@ -178,10 +183,19 @@ function CompletionFigure({
   tasks: number;
   by_category: Record<string, number>;
 }) {
-  const closable = tasks - (by_category.cancelled ?? 0);
+  // ⚠️ The arithmetic lives in `progressWheel.ts` now, because the tree's
+  // completion ring draws on the SAME screen from the SAME rule. It was
+  // written out here and again in `ProgressCard`, and the ring then arrived
+  // with a third copy that disagreed with both. One rule, three readers.
+  const progress = {
+    tasks,
+    done: by_category.done ?? 0,
+    cancelled: by_category.cancelled ?? 0,
+  };
+  const closable = closableCount(progress);
   if (closable <= 0) return null;
-  const doneCount = by_category.done ?? 0;
-  const pct = Math.round((doneCount / closable) * 100);
+  const doneCount = progress.done;
+  const pct = completionPercent(progress);
   return (
     <span
       className={`shrink-0 text-xs ${
@@ -318,8 +332,12 @@ function ProgressCard({ summary }: { summary: NodeSummary }) {
   const counts = summary.by_category ?? {};
   const done = counts.done ?? 0;
   const cancelled = counts.cancelled ?? 0;
-  const closable = (summary.tasks ?? 0) - cancelled;
-  const pct = closable > 0 ? (done / closable) * 100 : 0;
+  // One rule, shared with the tree's completion ring — see `completion`.
+  // ⚠️ NOT rounded here: this drives a bar WIDTH, and rounding a width to a
+  // whole percent is a visible step on a long bar.
+  const progress = { tasks: summary.tasks ?? 0, done, cancelled };
+  const closable = closableCount(progress);
+  const pct = completion(progress) * 100;
 
   return (
     <div className="rounded-lg border border-border bg-card p-3">

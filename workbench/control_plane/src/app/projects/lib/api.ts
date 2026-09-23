@@ -113,6 +113,30 @@ export interface ProjectRow {
   description?: string | null;
   parent_project_id?: string | null;
   /**
+   * The SUBTREE roll-up `GET /projects/tree` stamps on every node: how many
+   * tasks live at or under it, how many were delivered, and how many were
+   * abandoned.
+   *
+   * ⚠️ Optional because only `/tree` carries them. `/nodes` returns the same
+   * rows FLAT and rolls nothing up, so a consumer of that list reads
+   * `undefined` rather than a confident zero. The ring still draws, empty,
+   * rather than the row changing shape once a number arrives.
+   *
+   * ⚠️ **`done` is the DELIVERED count — the `done` category alone.**
+   * `cancelled` is reported separately because the completion rule subtracts
+   * it from the DENOMINATOR rather than adding it to the numerator. That is
+   * the rule `NodeDashboard` beside this tree has always printed. An earlier
+   * version folded the two together, and drew a full ring for a project whose
+   * work had all been abandoned.
+   *
+   * They agree with `nodes/{id}/summary` by construction: the same join, the
+   * same visibility clause. Measured 2026-09-23 against a real gateway, space
+   * and child alike.
+   */
+  tasks?: number | null;
+  done?: number | null;
+  cancelled?: number | null;
+  /**
    * 'project' | 'folder' (migration 193). Absent/null reads as 'project' —
    * resolve through `nodeKind()` in lib/tree.ts, never directly.
    */

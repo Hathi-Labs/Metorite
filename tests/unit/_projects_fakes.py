@@ -803,6 +803,24 @@ class FakeProjectsDB:
         # `pm_task_attachments`, which several statements name.
         if "count(*) AS files" in statement:
             return _Result(self._attachment_counts(args))
+        # The tree's subtree roll-up (2026-09-23): per project, how many tasks
+        # and how many are finished, for the sidebar's completion wheel.
+        # `GROUP BY` is not a shape the generic WHERE reader can parse, so it
+        # is taught here like the aggregates around it.
+        #
+        # ⚠️ Fingerprinted on `AS done` AND `GROUP BY t.project_id` together.
+        # `count(*) AS total` alone looked specific and was not: the task
+        # list pages on a count of the same name, so that fingerprint hijacked
+        # every paginated read and 57 tests died at once. Exactly the
+        # "merely *present* in the target" collision this file warns about
+        # three aggregates above.
+        #
+        # 🔴 It is taught because `get_tree` is on the hot path of a dozen
+        # hermetic tests that care nothing about counts. Without it every one
+        # of them dies on `AttributeError: 'SimpleNamespace' has no attribute
+        # 'total'` - a failure that names the wrong thing entirely.
+        if "AS done" in statement and "GROUP BY t.project_id" in statement:
+            return _Result(self._tree_progress_counts(args))
         # The two card-badge roll-ups, taught for the same reason as the
         # assignee one above: `GROUP BY` is not a shape the generic WHERE
         # reader can parse. Both fingerprints name a statement-specific ALIAS
@@ -929,6 +947,48 @@ class FakeProjectsDB:
             str(s["id"]): str(s.get("category") or "")
             for s in self.rows("pm_task_statuses")
         }
+
+    def _tree_progress_counts(self, args: dict) -> list[SimpleNamespace]:
+        """Per project: live tasks, delivered ones, and abandoned ones.
+
+        ⚠️ **This mirrors the SHAPE the handler reads, not the counting rule.**
+        `project_id`, `total`, `done`, `cancelled` - the four names
+        `_open_and_done` takes off each row. Whether the SQL itself is right is
+        fenced against a real Postgres in `test_projects_tree_progress.py`,
+        because a hermetic fake agrees with whatever SQL it is handed (R8), and
+        asserting the rule here would be asserting it against its own mirror.
+
+        ⚠️ **`done` and `cancelled` read SEPARATE binds.** They were one bind
+        (`closed`) until 2026-09-23, which is how the ring came to count an
+        abandoned task as a delivered one. A fake still reading one bind would
+        answer the new SQL with the old rule and report nothing wrong.
+        """
+        def ids_for(bind: str) -> set[str]:
+            wanted = set(args.get(bind) or ())
+            return {
+                str(s["id"]) for s in self.rows("pm_task_statuses")
+                if s.get("category") in wanted
+            }
+
+        done_ids = ids_for("done")
+        abandoned_ids = ids_for("abandoned")
+        per: dict[str, list[int]] = {}
+        for task in self.rows("pm_tasks"):
+            if task.get("archived_at"):
+                continue
+            entry = per.setdefault(str(task.get("project_id")), [0, 0, 0])
+            entry[0] += 1
+            status_id = str(task.get("status_id"))
+            if status_id in done_ids:
+                entry[1] += 1
+            elif status_id in abandoned_ids:
+                entry[2] += 1
+        return [
+            SimpleNamespace(
+                project_id=pid, total=total, done=done, cancelled=cancelled,
+            )
+            for pid, (total, done, cancelled) in per.items()
+        ]
 
     def _attachment_counts(self, args: dict) -> list[Any]:
         """WS-27ae — ``{task_id, files}`` per task, over the exported ids.

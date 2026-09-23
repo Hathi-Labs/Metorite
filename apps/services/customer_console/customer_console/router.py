@@ -602,14 +602,23 @@ ProviderCall = Callable[..., Awaitable[Any]]
 #: clause 9). Each one has a door now, so the Router may call it. The set
 #: stays a STRICT subset of ``KNOWN_INVOCATIONS``: ``aembedding`` has no
 #: serving route, and an operator may still declare it.
+#:
+#: 🔴 **``native_typesafe`` joined on 2026-09-23** (§6A.14 clause 5, CP-13a).
+#: It is the first NATIVE value. ``POST /v1/decide`` serves it, and
+#: :func:`_default_provider_call` sends it to ``handlers.NATIVE_HANDLERS``
+#: and never to litellm.
 SERVING_INVOCATIONS = frozenset(
     {
         "acompletion",
         "atranscription",
         "aimage_generation",
         "aspeech",
+        "native_typesafe",
     }
 )
+
+#: Every native handler name starts with this. A litellm verb never does.
+NATIVE_PREFIX = "native_"
 
 #: The verb a caller that names none gets. Every chat call made this exact
 #: request before ``invocation`` existed, so the default keeps that path byte
@@ -642,7 +651,10 @@ async def _litellm_call(**kwargs: Any) -> Any:
     import litellm
 
     invocation = kwargs.pop("invocation", DEFAULT_INVOCATION)
-    if invocation not in SERVING_INVOCATIONS:
+    # ⚠️ A native name is in SERVING_INVOCATIONS, and litellm holds no such
+    # attribute. :func:`_default_provider_call` sends it elsewhere first, so
+    # reaching here with one is a wiring bug. Refuse it by name.
+    if invocation not in SERVING_INVOCATIONS or invocation.startswith(NATIVE_PREFIX):
         raise UnservableInvocation(
             f"no serving route calls {invocation!r}; this Router serves "
             f"{', '.join(sorted(SERVING_INVOCATIONS))}"
@@ -650,7 +662,30 @@ async def _litellm_call(**kwargs: Any) -> Any:
     return await getattr(litellm, invocation)(**kwargs)
 
 
-_PROVIDER_CALL: list[ProviderCall] = [_litellm_call]
+async def _default_provider_call(**kwargs: Any) -> Any:
+    """The provider call production makes. It picks the family by the verb.
+
+    🔴 **The native dispatch lives HERE, inside ``_PROVIDER_CALL[0]``, and
+    never in front of :func:`call_provider`** (§6A.14 CP-13a artefact 5). A
+    test fake set by :func:`set_provider_call` replaces this whole function,
+    so the fake still sees every call — the native ones included. A dispatch
+    in front of the seam would send a native call past the fake and on to a
+    real vendor.
+
+    A ``native_*`` verb goes to its handler in ``handlers.NATIVE_HANDLERS``.
+    Every other verb goes to :func:`_litellm_call`, exactly as before.
+    """
+    invocation = kwargs.get("invocation", DEFAULT_INVOCATION)
+    if isinstance(invocation, str) and invocation.startswith(NATIVE_PREFIX):
+        # Imported here, because `handlers` imports `ExtractedUsage` from
+        # this module.
+        from customer_console import handlers
+
+        return await handlers.call_native(**kwargs)
+    return await _litellm_call(**kwargs)
+
+
+_PROVIDER_CALL: list[ProviderCall] = [_default_provider_call]
 
 
 def set_provider_call(fn: ProviderCall) -> None:
@@ -1246,7 +1281,12 @@ async def walk_chain(
             remaining = [
                 s for s in attempts[position + 1 :] if s.model.split("/", 1)[0] not in dead_vendors
             ]
-            if not is_retryable(status) or not remaining:
+            # 🔴 **An error may declare itself TERMINAL** (§6A.14 CP-13a). A
+            # native vendor that answered 200 with a body we cannot read has
+            # already been PAID. A second step would pay a second vendor for
+            # the same request, so the walk stops here. The flag is read in
+            # this function and in no other, like every other failover rule.
+            if not is_retryable(status) or not remaining or getattr(exc, "terminal", False) is True:
                 raise UpstreamFailed(status) from exc
             if on_failover is not None:
                 on_failover(step, remaining[0], status)

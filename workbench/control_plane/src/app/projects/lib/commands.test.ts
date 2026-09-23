@@ -177,7 +177,7 @@ describe("the registry itself", () => {
     expect(actions.calls).toContain("navigate:/tasks");
     expect(actions.calls).toContain("setMode:table");
     expect(actions.calls).toContain("setPanelMode:full");
-    expect(actions.calls).toContain("setPanelMode:peek");
+    expect(actions.calls).toContain("setPanelMode:side");
     expect(actions.calls).toContain("clearFilters");
     expect(actions.calls).toContain("manage:lifecycle");
     expect(actions.calls).toContain("showShortcuts");
@@ -219,18 +219,25 @@ describe("what is offered where", () => {
     );
   });
 
-  it("offers the panel widths only while a panel is open, and only where they move", () => {
-    expect(availableCommands(ctx()).map((c) => c.id)).not.toContain("panel.wider");
-    const atPeek = availableCommands(
-      ctx({ panelOpen: true, panelMode: "peek" }),
+  it("offers the width toggle only while a panel is open, and only the direction that moves", () => {
+    // Two stops since 2026-09-23, so exactly ONE of the pair is ever
+    // offered. A palette that listed both would ask the reader to work out
+    // which one does anything from a binary state they cannot see.
+    const closed = availableCommands(ctx()).map((c) => c.id);
+    expect(closed).not.toContain("panel.toggleWidth");
+    expect(closed).not.toContain("panel.backToSide");
+
+    const atSide = availableCommands(
+      ctx({ panelOpen: true, panelMode: "side" }),
     ).map((c) => c.id);
-    expect(atPeek).toContain("panel.wider");
-    expect(atPeek).not.toContain("panel.narrower");
+    expect(atSide).toContain("panel.toggleWidth");
+    expect(atSide).not.toContain("panel.backToSide");
+
     const atFull = availableCommands(
       ctx({ panelOpen: true, panelMode: "full" }),
     ).map((c) => c.id);
-    expect(atFull).toContain("panel.narrower");
-    expect(atFull).not.toContain("panel.wider");
+    expect(atFull).toContain("panel.backToSide");
+    expect(atFull).not.toContain("panel.toggleWidth");
   });
 
   it("hides the rail toggle where there is no rail", () => {
@@ -261,7 +268,7 @@ describe("matching a typed query", () => {
       matchCommands(availableCommands(ctx({ panelOpen: true })), "panel").map(
         (c) => c.id,
       ),
-    ).toContain("panel.wider");
+    ).toContain("panel.toggleWidth");
     expect(matchCommands(all, "g p").map((c) => c.id)).toContain("go.p");
   });
 
