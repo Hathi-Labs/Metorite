@@ -911,7 +911,7 @@ action_item_id, segment_ids}`. The notes text is the description.
    production takes the pm arm. S8 PR 1 deletes the gtd arm. The three
    callers need no change then.
 
-### S8 — the contract: code first, then schema · AGENT-SAFE · PR 1 BUILT 2026-09-23
+### S8 — the contract: code first, then schema · AGENT-SAFE · PR 1 BUILT 2026-09-23 · PR 2 BUILT 2026-09-23
 
 **Scope.** Two PRs, in order.
 
@@ -962,6 +962,71 @@ flip (§6 step 10).**
    `scripts/restore_db.sh`
    also names `gtd_task` in its examples and in its row-count check. PR 2
    updates it in the same change.
+
+**PR 2 build record (2026-09-23).** Branch `my-tasks-s8d`, stacked on
+`my-tasks-fields` (#427).
+
+1. **Migration 216.** Main ended at 214 and #427 holds 215, so this one is
+   216. The file is one transaction, and its steps run in this order:
+   - (c) copies `wa_commitments.gtd_item_id` into `task_id` through
+     `gtd_items.migrated_task_id`, then drops the old column. A value moves
+     only when its `pm_tasks` row exists.
+   - (a) arms the guard and calls `gtd_retirement_drop()`. The guard drops
+     `gtd_items` and `gtd_waiting`, or it refuses.
+   - (b) drops `gtd_projects`, `gtd_folders`, `gtd_spaces` and
+     `gtd_contexts` in foreign-key order. Then it drops the arm table, the
+     view and both functions. No step uses CASCADE.
+2. **The arm moved into the migration.** §6 step 11 made the arm a hand
+   INSERT on the box. Migration 216 now writes the arm row, so the act is
+   reviewed code. The data check did not move. The guard from migration 190
+   still counts the rows that have no `migrated_task_id`.
+3. ⚠️ **Migration 216 fails closed.** One unmigrated `gtd_items` row on
+   production makes it RAISE. The deploy then stops, and 216 changes
+   nothing. This is the intended behaviour. Do not widen the guard.
+   ⚠️ Migrations 48 and 52 run before 216 and stay applied. The gateway then
+   keeps the old code, which names `gtd_attachments`, so file uploads fail
+   until a fix ships. The pre-flight below prevents this case.
+4. **Three renames**, each in the migration that creates the table.
+   `gtd_attachments` is `attachments` (52). `gtd_horizons` and
+   `gtd_reviews` are `my_tasks_horizons` and `my_tasks_reviews` (48). The
+   sweep came first and the prologues second. No later migration alters or
+   indexes these tables by name. Migration 150 names the old name in
+   comments only.
+5. **Two guards for a lone re-run.** Migration 52 now guards its
+   `ALTER TABLE gtd_items`, because it re-runs after 216 drops that table.
+   Migration 216 drops an empty store that a lone re-run of 48 builds again.
+   `test_gtd_backfill.py` pins the text of 48, so an edit to 48 must also
+   touch 216.
+6. **Code.** Both `attachments.py` modules write and read `attachments`.
+   The WhatsApp list, the digest and the WhatsApp agent read `task_id`, and
+   the API field is `task_id`. The member purge names no task table, and it
+   still deletes no `pm_tasks` row (D63). `backup_db.sh` anchors on
+   `pm_tasks`. `restore_db.sh` lists the real anchors.
+7. **The generated tenancy files (H-104).** The ladder does not apply them,
+   but an operator applies them by hand. So the six dropped tables leave all
+   four files, and the three renamed tables take their new names.
+   Constraint, index and policy names keep the old spelling.
+   `gen_tenant_migration.discover_tables()` now reads the ladder in number
+   order and honours `DROP TABLE`.
+8. **Fences.** `test_no_gtd_table_names.py` reads the four code trees.
+   These are `apps`, `packages`, `scripts` and `workbench`. It refuses a
+   `gtd_` token that is not on its list. The list holds the 29 chat tool
+   names, three settings helpers and one example tool name. S9 owns all of
+   them. `test_gtd_backfill.py` fences the exact drop set of 216 and the
+   survivors. It also replays the ladder against a real Postgres.
+
+**Pre-flight for production.** Do all three before the merge.
+1. Confirm that today's backup is on disk:
+   `ls -la /opt/acb/backups | tail -1`.
+2. On the box, run
+   `SELECT count(*) FROM gtd_items WHERE migrated_task_id IS NULL;`.
+   The result must be 0.
+3. Confirm that the ledger holds 215 from #427:
+   `SELECT filename FROM schema_migrations WHERE filename LIKE '215_%';`.
+   PR 1 (#411) added no migration.
+
+After the deploy, `\dt gtd_*` must return nothing, and the ledger must hold
+`216_gtd_task_store_drop.sql`.
 
 **Done when.**
 1. `rg -l "gtd_" apps packages --glob '!infra/postgres/generated'` returns
@@ -1034,9 +1099,9 @@ flip (§6 step 10).**
       |
 10. S8 PR 1 merges (the code stops naming gtd_*)
       |
-11. INSERT INTO gtd_retirement_arm (armed_by, note) VALUES (...)
+11. the S8 PR 2 pre-flight (§5 S8): backup, zero unmigrated rows, 215 in the ledger
       |
-12. S8 PR 2 merges. Its migration (214 or later) calls the guard, drops, renames.
+12. S8 PR 2 merges. Migration 216 arms, calls the guard, drops. 48 and 52 rename.
       |
 13. \dt gtd_*  ->  nothing
 ```
@@ -1049,9 +1114,11 @@ root project owns its statuses. The root insert in migration 189 did not set
 only after `SELECT filename FROM schema_migrations WHERE filename LIKE '212_%'`
 returns one row.
 
-Step 11 is a human act. During the dev-phase window (CLAUDE.md §3a) an agent
-does it and reports the row in the same message. On 2026-10-01 it returns to
-the owner.
+**Step 11 changed on 2026-09-23.** It was a hand INSERT into the arm table.
+Migration 216 now writes the arm row, so the arm is reviewed code. Step 11 is
+the pre-flight that S8 PR 2 lists. During the dev-phase window (CLAUDE.md
+§3a) an agent runs it and reports the three results in the same message. On
+2026-10-01 the pre-flight returns to the owner.
 
 ## 7. Fences, in one table
 
@@ -1068,6 +1135,8 @@ the owner.
 | My Tasks and Projects share one task panel composition | the S6e source fence |
 | the rename prologues are guarded and not swept | `test_gtd_rename_upgrade.py` |
 | the drop is inert until armed and accounted for | `test_gtd_backfill.py` |
+| 216 drops exactly the planned set, and refuses an unmigrated row | `test_gtd_backfill.py`, `live_ws39_s8d.py` |
+| no code names a `gtd_` table | `test_no_gtd_table_names.py` |
 | a work fact has one home, and My Tasks reads it (D76) | `test_projects_personal_s6f.py`, `live_ws39_s6f.py`, `sharedFields.test.ts` |
 | the strip draws no work fact, and the body draws them all (D76) | `itemDetail.test.ts` |
 | the lens never writes `important` or `time_estimate_mins` (D76) | `lens.test.ts`, `test_projects_personal_s6f.py` |

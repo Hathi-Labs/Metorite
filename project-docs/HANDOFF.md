@@ -1352,43 +1352,26 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `work_plan.md` §3 D63 · §6 (member/role writes) · D53.7/D53.8
 - **Added:** 2026-08-26 · WS-39 personal-tree session *(minted as H-35; renumbered to H-49 the same session — `test_handoff_ids_are_unique` caught the collision with the WS-36 restore-spec entry. Ids are never reused.)*
 
-### H-29 · WS-39 S3b/S3c: RUN the `gtd_*` backfill, then the drop · [OWNER]
-- **Check:** `SELECT count(*) FROM gtd_items WHERE migrated_task_id IS NULL;` on the
-  box → non-zero means S3b has not run (or has stragglers). `\dt gtd_items` → still
-  present means S3c has not run. ⚠️ Both columns exist only once migration **189** has
-  applied; if `migrated_task_id` is missing, the deploy has not carried 189 yet and
-  that is the real finding.
-- **Why:** ✅ **BUILT 2026-08-26 — the code half is DONE.** Migrations **189**
-  (backfill) and **190** (drop) are merged and R8-verified two-org on real Postgres
-  (`tests/live/live_ws39_s3b.sql`, 37 checks; `live_ws39_s3c.sql`, 22). What remains
-  is exactly the part §6 (f) reserves: **running them.**
-  📌 **They ship INERT.** 189 defines `gtd_backfill_to_pm()` and never calls it;
-  190 refuses unless armed AND every row carries `migrated_task_id`. Deploying them
-  moves nothing and drops nothing, so there is no rush and no hazard in them sitting
-  applied.
-  **The order, in full, is `docs/TASKS_LENS.md` → "The cutover runbook".** Short form:
-  slice 5 lands → `SELECT * FROM gtd_backfill_plan;` → `gtd_backfill_to_pm(false)`
-  → `gtd_backfill_to_pm(true)` → flip BOTH flags → **re-run** `gtd_backfill_to_pm(true)`
-  to sweep the window → wait days → `INSERT INTO gtd_retirement_arm` → next deploy drops.
-  ⚠️ **Do not arm until the Tasks UI slice has landed** — stronger than the earlier
-  "after slice 5", and D62/191 are why: the backfill creates **Areas** from a member's
-  old `gtd_projects`, and until the Tasks app can rename or delete one, members have
-  structure in their data they cannot edit. SQL cannot see an env var or an
-  unported route; arming is your assertion that both flags are on and nothing still
-  writes `gtd_items`. `routes/tasks/ai.py` alone names `gtd_*` 33 times today.
-  ⚠️ **Rows reading `unmappable` block the drop, on purpose.** They have no
-  resolvable owner (including the literal `'anonymous'` that `_uid` writes for an
-  unauthenticated capture). Decide each deliberately — give the address an `app_user`,
-  or delete the row — rather than widening the guard. The failure being avoided is
-  not lost data; it is one member's private task published into another's lens.
-  ⚠️ **`user_settings` / `calendar_day_state` / `calendar_rollover_log` are NOT part of this** —
-  Calendar state, they survive (D53.6). Nor are the five `people*` tables, nor
-  `gtd_horizons` (WS-21), nor `gtd_reviews` (WS-18), nor the local project tree
-  (waits on slice 5). All pinned by name in `test_gtd_backfill.py`.
-- **Authority:** `work_plan.md` §6 (f) · D53.5 · `project_management_app.md` §12.8 ·
-  `docs/TASKS_LENS.md`
-- **Added:** 2026-08-24 · WS-39 S1 session *(re-cut 2026-08-26 when 189/190 landed:
-  this is now a RUN entry, not a BUILD one.)*
+### H-29 · WS-39 S3b/S3c/S8: verify the `gtd_*` drop on production · [AGENT]
+- **Check:** On the box, run `\dt gtd_*`. Then look in the ledger for
+  `216_gtd_task_store_drop.sql`. No table and one ledger row mean the drop is
+  done. Delete this entry then, and not before.
+- **S8 PR 2 closes this** (branch `my-tasks-s8d`). The run half is done. The
+  S3b backfill moved every row on 2026-09-23, and `gtd_backfill_plan` returned
+  zero rows. Migration 216 arms the guard in reviewed code and drops the
+  store. The arm is no longer a hand INSERT.
+- **What is left:** the merge, the deploy and the check above. First run the
+  pre-flight in `my_tasks_cutover.md` §5 S8. It needs today's backup, zero
+  unmigrated rows and migration 215 in the ledger.
+- ⚠️ **Migration 216 fails closed.** One unmigrated row makes it RAISE, and
+  the deploy stops. Do not widen the guard. Read `gtd_backfill_plan` and
+  decide each row.
+- ⚠️ **The survivors are NOT part of the drop.** `user_settings`, the two
+  Calendar tables and the five `people*` tables stay (D53.6).
+  `attachments`, `my_tasks_horizons` and `my_tasks_reviews` stay under their
+  new names. `test_gtd_backfill.py` pins each one.
+- **Authority:** `work_plan.md` §6 (f) · D53.5 · D73 · `my_tasks_cutover.md` §5 S8
+- **Added:** 2026-08-24 · WS-39 S1 session. **Re-cut** 2026-09-23 for S8 PR 2.
 
 ### H-27 · 33 browser tests are red, and CI gates only the half that is green · [AGENT]
 - **🟢 2026-09-22 — CI RUNS THE BROWSER SUITE.** `pr-check.yml` has an `e2e`
@@ -2897,20 +2880,21 @@ line — never reclaim a number by deleting the other entry.
   migration 207
 - **Added:** 2026-09-21 · the every-app-by-default session
 
-### H-151 · The `gtd_` name is off eight tables. The task store is left · [AGENT]
-- **Check:** `rg -l "gtd_items|gtd_waiting|gtd_spaces|gtd_folders|gtd_contexts"
-  --glob '!infra/postgres/generated' apps packages` → any hit means this is open.
-- **What is done.** Slice 1, the People family, on 2026-09-21: `gtd_people` is
+### H-151 · The `gtd_` name is off every table. Verify on production, then delete · [AGENT]
+- **Check:** `uv run pytest tests/unit/test_no_gtd_table_names.py` passes on
+  `main`, and `\dt gtd_*` on the box returns nothing. Both mean this is done.
+  Delete this entry then, and not before.
+- **S8 PR 2 closes this** (branch `my-tasks-s8d`). Slice 3 renamed the three
+  survivors in the migrations that create them. `gtd_attachments` is
+  `attachments` (52). `gtd_horizons` and `gtd_reviews` are
+  `my_tasks_horizons` and `my_tasks_reviews` (48). Migration 216 drops the
+  rest of the store, and H-29 tracks that drop.
+- **What is done before it.** Slice 1, the People family, on 2026-09-21: `gtd_people` is
   `people`, and the four `gtd_person_*` tables are `people_*`. Slice 2, on
   2026-09-22: `gtd_day_state` is `calendar_day_state`, `gtd_rollover_log` is
   `calendar_rollover_log`, and `gtd_settings` is `user_settings`.
-  `tests/unit/test_gtd_rename_upgrade.py` is the one fence for all eight, and
+  `tests/unit/test_gtd_rename_upgrade.py` is the one fence for all eleven, and
   `people_center_app.md` §7.0 carries the mechanism.
-- **What is left: the task store** — `gtd_items`, `gtd_waiting`,
-  `gtd_projects`, `gtd_spaces`, `gtd_folders`, `gtd_contexts`,
-  `gtd_attachments`, `gtd_horizons`, `gtd_reviews`. ⚠️ **Do this AFTER H-29**,
-  which drops most of them. Renaming a table we are about to drop is work we
-  throw away, and it makes 190's drop list wrong in the meantime.
 - ⚠️ **Three traps, all measured.** A sweep rewrites the rename prologue
   itself into `ALTER TABLE new RENAME TO new`, a silent no-op — so sweep
   first, and add the prologue after. A short new name can be a PREFIX of its
@@ -2922,13 +2906,14 @@ line — never reclaim a number by deleting the other entry.
   family in `skill_task_gtd` are tools, not tables. The slice 1 sweep renamed
   one and that was reverted. Renaming the tool family is a separate decision,
   and it should move all of them at once or none.
-- **The HTTP surface has not moved once**, across both slices. No route path
-  and no JSON field carries a table name, so no client call had to change.
-  `tests/unit/test_client_route_contract.py` is the fence that keeps it that
-  way, and it was proved to bite by moving a route and watching it fail.
+- **One JSON field moved in slice 3.** The WhatsApp commitment list returned
+  `gtd_item_id`, and it now returns `task_id`. Its one reader, the WhatsApp
+  agent, moved in the same PR. No route path moved.
+  `tests/unit/test_client_route_contract.py` still fences the Tasks and
+  Calendar client paths.
 - **Authority:** owner directive, 2026-09-21 — *"I really don't want GTD
   anymore... update the naming convention for all of the table names"*
-- **Added:** 2026-09-21 · the People rename session. **Updated:** 2026-09-22.
+- **Added:** 2026-09-21 · the People rename session. **Updated:** 2026-09-23.
 
 ### H-152 · A SELF-SERVE customer can never be served AI · [AGENT]
 - **Check:** `rg -n "CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY" /opt/acb/app/.env`
