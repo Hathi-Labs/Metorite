@@ -4,8 +4,9 @@
 2026-09-22. S2b (the rest of class B), S3 (the guarded acts) and S4 (the
 workflows, the views and the forms) and S5 (the rest of the manifest)
 built 2026-09-23. S6 (navigation and the frontend-tool dispatcher) built
-2026-09-23. The visual review ran 2026-09-23 (§4.2).** §10 says which slice each part
-belongs to. §4.4 lists what the chat reuses, file by file.
+2026-09-23. The visual review ran 2026-09-23 (§4.2). S7, the team
+intelligence slices, was designed 2026-09-23 (§13) and is not built.** §10 says
+which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -700,6 +701,33 @@ Each slice is one pull request. Each one is useful alone.
 5. A write with `X-Actor-Via` lands `meta.via` on its activity row, against a
    real database (R8).
 
+### 10.3 Acceptance — S7a
+
+**Done when:**
+1. The route returns one row for each assignee of open work in scope, and one
+   Unassigned row. For the same scope, `open_tasks` on each row equals the
+   Load route's count for that person. An R8 test proves this on a real
+   database.
+2. For a caller without `admin:members:read`, the response says
+   `hr_visible: false`. It has no hours, absence, `end_date`,
+   `max_concurrent_tasks` or at-risk keys. A test proves the keys are absent,
+   not null.
+3. If no open task on a row has an estimate, the row has no spare or committed
+   hours, and it says why.
+4. `horizon_days` changes the window. The default is 14, and the route
+   refuses a value outside 1 to 90. The response prints both windows.
+5. The at-risk list and the pill equal `workload.at_risk_tasks` and
+   `workload.classify` for the same inputs. The People dashboard reads the
+   same leaf module, and its tests still pass.
+6. `capacity` is in `SECTIONS`, `_REPORT_SECTIONS`, `RenderedBody` and
+   `reportEmail.ts`. One lockstep test fails when one of the four lacks it.
+   `capacity` is not in `_DEFAULTS`.
+7. `team_capacity` is class A and in `manifest.py`, and the coverage fence
+   passes. A run with no user makes zero HTTP calls.
+8. The panel draws from the route only, and counts nothing in the browser.
+   Somebody looks at it in light mode, at compact density, under a changed
+   accent, and beside Load.
+
 ---
 
 ## 11. Verification
@@ -713,6 +741,13 @@ eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_agent.py
 uv run pytest tests/unit/test_tenant_coverage.py
 uv run python tests/live/live_actor_via.py   # D-PM-36 on a real row
+```
+
+For S7a, with `TENANT_LADDER_DATABASE_URL` set, because the R8 tests skip
+without it and the run still reads green:
+
+```
+uv run pytest tests/unit/test_projects_analytics_capacity.py tests/unit/test_people_dashboard.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_agent.py
 ```
 
 In `workbench/control_plane`:
@@ -752,9 +787,13 @@ computes only what is uncommon, on the fly.
 
 ### 13.1 The answer
 
-**Most of the arithmetic exists, and none of it is reachable from the chat.**
-The People app owns it. The chat's manifest allows only `/projects/*`, so the
-agent matches people by name and sees no hours, no skills and no conflicts.
+**Most of the arithmetic exists, and the chat reaches almost none of it.**
+The People app owns it. The chat's manifest allows only `/projects/*`. One
+route already crosses: `people_for` reads `GET /projects/assignees`, which
+gives an HR-tier caller contracted hours, load, top skills and end-date
+warnings (`assignees.py:22-26`). But it matches people by name, it ranks
+nobody, it has no window, and it sees no conflicts. S7 follows its precedent:
+the HR gate, and a function-local import of the People helpers.
 
 | Question | The seam that already answers it | Where it lives today |
 |---|---|---|
@@ -802,6 +841,25 @@ one row for unassigned work. A row carries these figures:
 - The at-risk tasks, with the shortfall on each.
 - The pill and its reason, from `classify`.
 - Tasks in progress against `max_concurrent_tasks`.
+
+**Four rules for the build.**
+1. **Counts use the Load predicate.** The route builds its task counts from
+   `analytics.py`'s `scope_clause` and the `open_where` of `load`. It does not
+   use the People dashboard's `_OPEN` and `project_clause`. Otherwise the
+   Capacity panel and the Load panel beside it disagree about open work.
+2. **The row arithmetic moves to a leaf module.** `dashboard.py::_row` fixes
+   its window and reports spare hours when nothing is estimated. Its
+   arithmetic moves to `gateway/capacity.py`, outside both route packages,
+   with a `horizon_days` input. The People dashboard and this route both call
+   it. A `/projects` route imports People helpers inside the function, as
+   `assignees.py` does, to avoid the import cycle.
+3. **Two windows, named.** The pill is the People dashboard's pill:
+   `classify` compares this Monday-to-Sunday week with contracted hours.
+   Spare hours and at-risk tasks use the `horizon_days` window. The response
+   carries both windows.
+4. **`capacity` is an opt-in report section.** It goes into `SECTIONS` and
+   not into `_DEFAULTS`. Otherwise every saved report with no `sections` key
+   starts to show capacity.
 
 **Surfaces.** The Analytics app gets a Capacity panel beside Load. Reports get
 the section kind `capacity`, in `reports.py` `SECTIONS`, `RenderedBody`,
