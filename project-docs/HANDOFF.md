@@ -95,7 +95,7 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-172 · `--warning` is the same bright yellow in both colour modes, so warning TEXT is unreadable on white · [AGENT]
+### H-174 · `--warning` is the same bright yellow in both colour modes, so warning TEXT is unreadable on white · [AGENT]
 - **Check:** `grep -n "\-\-warning:" workbench/control_plane/src/app/globals.css`.
   Two lines with the same value, one in `:root` and one in `.light`, means
   this is open.
@@ -113,7 +113,9 @@ line — never reclaim a number by deleting the other entry.
   in `lib/theme/themes.ts`, which `themes.test.ts` holds to it.
 - **Fence to add:** `src/lib/theme/contrast.ts` should measure `--warning` as
   text on `--background` in both modes.
-- Added: 2026-09-23, found while building D76.
+- Added: 2026-09-23, found while building D76. Minted as H-172 and
+  renumbered the same day: #431 took H-172 three minutes before #429
+  merged, and #429 merged second.
 
 ### H-173 · The chat tools let the model write Priority 4, and the scale stops at 3 · [AGENT]
 - **Check:** `grep -rn "importance is 0 to 4" apps/skills/skill-projects/`.
