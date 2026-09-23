@@ -22,6 +22,7 @@ import {
   isFilled,
   parseChips,
   renderSections,
+  sectionVoice,
 } from "./profile";
 
 function person(overrides: Partial<PersonDetail> = {}): PersonDetail {
@@ -191,5 +192,73 @@ describe("value helpers", () => {
     expect(parseChips("firmware, modbus ,, ")).toEqual(["firmware", "modbus"]);
     expect(formatChips(["a", "b"])).toBe("a, b");
     expect(formatChips(null)).toBe("");
+  });
+});
+
+/* ── The voice (2026-09-23) ──────────────────────────────────────────────── */
+
+/**
+ * ⚠️ **One component, two doors, and the copy has to know which.**
+ *
+ * `ProfilePanels` renders both `/people/me` and `/people/{id}` on purpose, so
+ * a field cannot be present on one and missing from the other. The fields were
+ * shared correctly and the WORDS were not: opening a colleague's page said
+ * "About you" and told the reader the scheduler read "your week" — about
+ * somebody else.
+ *
+ * The rule these pin: **no section speaks in the second person unless the row
+ * is the reader's own.** That is a claim about data, so it is a test rather
+ * than a screenshot.
+ */
+describe("the profile speaks to the right person", () => {
+  it("keeps every self heading exactly as it was", () => {
+    for (const section of SECTIONS) {
+      expect(sectionVoice(section, true)).toEqual({
+        title: section.title,
+        note: section.note,
+      });
+    }
+  });
+
+  it("says no 'you' or 'your' on somebody else's page", () => {
+    // The whole defect, as one assertion over the whole catalogue. A section
+    // added later with second-person copy and no `titleOther` fails here.
+    const secondPerson = /\b(you|your|yours)\b/i;
+    for (const section of SECTIONS) {
+      const voice = sectionVoice(section, false);
+      expect(voice.title, `${section.key}.title`).not.toMatch(secondPerson);
+      expect(voice.note, `${section.key}.note`).not.toMatch(secondPerson);
+    }
+  });
+
+  it("falls back to the self spelling rather than to nothing", () => {
+    // Employment reads the same either way and sets no pair. The safe
+    // direction is the string it already had, never an empty heading.
+    const employment = SECTIONS.find((s) => s.key === "employment")!;
+    expect(employment.titleOther).toBeUndefined();
+    expect(sectionVoice(employment, false).title).toBe("Employment");
+    expect(sectionVoice(employment, false).note).toBe(employment.note);
+  });
+
+  it("translates the three sections that did speak in the second person", () => {
+    // ⚠️ Joined with a SPACE. `title + note` glues "About you" to "What the
+    // directory…", and `\byou\b` then finds no boundary before the "W" — so
+    // the section with the plainest defect in it was the one this missed.
+    const voiced = SECTIONS.filter((s) =>
+      /\byou(r)?\b/i.test(`${s.title} ${s.note}`),
+    );
+    // about · work · capability · private all carried "you" somewhere.
+    expect(voiced.map((s) => s.key)).toEqual([
+      "about",
+      "work",
+      "capability",
+      "private",
+    ]);
+    for (const section of voiced) {
+      expect(
+        section.titleOther ?? section.noteOther,
+        `${section.key} needs a third-person spelling`,
+      ).toBeDefined();
+    }
   });
 });
