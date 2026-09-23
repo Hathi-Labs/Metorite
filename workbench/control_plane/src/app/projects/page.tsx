@@ -1231,8 +1231,11 @@ function ProjectsWorkspace() {
   const dashboardOnly =
     !app && Boolean(selected) && showsDashboard(selectedLevel);
   /** Any surface that is not a project's board — no views, no composer. */
+  // An app pane (Analytics, Reports, the AI chat) is not a view of the
+  // selected project, so the board's view switcher and project actions go.
+  // `ai-chat` was missing here, and the board's tabs sat above the chat.
   const noProjectChrome =
-    dashboardOnly || app === "analytics" || app === "reports";
+    dashboardOnly || app === "analytics" || app === "reports" || app === "ai-chat";
 
   // The roll-up behind the dashboard AND behind a parent project's
   // aggregate header. Fetched for every level: a project with subprojects
@@ -3241,7 +3244,6 @@ function ProjectsWorkspace() {
             : null
         }
         selectedTaskIds={Array.from(picked)}
-        onClose={() => setApp(null)}
       />
     </div>
   ) : app === "reports" ? (

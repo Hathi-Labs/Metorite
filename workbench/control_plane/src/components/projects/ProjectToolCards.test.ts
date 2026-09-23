@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 import {
   CANCELLED,
   classifyActionResult,
+  forPeople,
   parseTaskRows,
   receiptIdOf,
   rowIdOf,
@@ -137,5 +138,25 @@ describe("classifyActionResult", () => {
     );
     const m = source.match(/^CANCELLED = "(.+)"$/m);
     expect(m?.[1]).toBe(CANCELLED);
+  });
+});
+
+describe("forPeople", () => {
+  it("shows a person the words, not the fence or the machine lines", () => {
+    const text = [
+      "Updated:",
+      `- #7 «Fix the extruder» · status «Done» · due 2026-09-30`,
+      `  full_id: ${ID}`,
+      "  link: /projects?task=x",
+      "  done: 3 marked",
+      `  status_id: ${ID}`,
+    ].join("\n");
+    expect(forPeople(text)).toBe("Updated:\n#7 Fix the extruder · status Done · due 2026-09-30");
+  });
+
+  it("gives a refusal's reason without the route it came from", () => {
+    expect(forPeople("Projects PUT /projects/tasks/x/assignees: Not permitted.")).toBe(
+      "Not permitted.",
+    );
   });
 });

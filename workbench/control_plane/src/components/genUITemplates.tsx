@@ -966,9 +966,12 @@ function TitleLink({ href, children }: { href: string | null; children: React.Re
 function Timeline({ data }: { data: Data }) {
   const rows = arr(data.rows).map((r) => (r ?? {}) as Data);
   const tone = (type: string): string =>
-    type === "comment" ? "var(--primary)"
-      : type === "field_change" ? "var(--warning)"
-        : type === "merge" || type === "attachment" ? "var(--accent)"
+    // A category, so the categorical ramp: never `--primary`, which is the
+    // member's accent and means "selected", nor `--warning`, which means
+    // caution (visual review, 2026-09-23).
+    type === "comment" ? "var(--cat-1)"
+      : type === "field_change" ? "var(--cat-3)"
+        : type === "merge" || type === "attachment" ? "var(--cat-5)"
           : "var(--border)";
   return (
     <div style={CARD_BOX}>

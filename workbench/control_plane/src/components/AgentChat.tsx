@@ -80,6 +80,13 @@ const DEFAULT_SUGGESTIONS = [
 ];
 
 const AGENT_SUGGESTIONS: Record<string, string[]> = {
+  // WS-27bm: the Projects chat. Scoped to the selected node by its persona.
+  "projects-assistant": [
+    "What is stuck here?",
+    "Plan a project from a goal",
+    "Write the weekly report for this space",
+    "Show me the board",
+  ],
   orchestrator: [
     "What can you help me with?",
     "Summarize recent activity across the company",
