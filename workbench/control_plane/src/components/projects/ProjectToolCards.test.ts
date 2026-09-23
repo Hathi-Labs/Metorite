@@ -17,6 +17,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   CANCELLED,
+  GUARDED_TOOLS,
+  toneFor,
   FRESH_RECEIPT_MS,
   classifyActionResult,
   isFreshReceipt,
@@ -176,5 +178,23 @@ describe("a receipt reloads the board only when it is fresh", () => {
     expect(isFreshReceipt({}, now)).toBe(false);
     // A server stamp ahead of a slow client clock is not fresh.
     expect(isFreshReceipt({ endedAt: now + 5_000 }, now)).toBe(false);
+  });
+});
+
+describe("a guarded act's receipt wears the warning tone", () => {
+  it("done: warning for class C, success for the rest", () => {
+    expect(toneFor("done", "archive_project")).toContain("warning");
+    expect(toneFor("done", "merge_tags")).toContain("warning");
+    expect(toneFor("done", "update_task")).toContain("success");
+  });
+
+  it("failed and declined are the same for every class", () => {
+    expect(toneFor("failed", "archive_project")).toContain("destructive");
+    expect(toneFor("cancelled", "archive_project")).toContain("muted");
+    expect(toneFor("refused", "delete_status")).toContain("muted");
+  });
+
+  it("names every guarded tool once", () => {
+    expect(GUARDED_TOOLS.size).toBe(17);
   });
 });

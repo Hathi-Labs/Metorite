@@ -205,6 +205,45 @@ function announceChange(eventId: string): void {
 export const CANCELLED = "Cancelled — nothing was changed.";
 
 /**
+ * The class C tools: the guarded acts (archive, merge, bulk edit, delete a
+ * status, revert...). Their confirmation card carried an impact line, so a
+ * done receipt wears the warning tone rather than success: the member did a
+ * thing that is hard to undo, and the receipt says so at a glance.
+ *
+ * ⚠️ Held equal to `manifest.tools_by_class("C")` by
+ * `tests/unit/test_projects_agent_writes.py`, which reads this literal. A
+ * guarded tool added on the Python side without a line here fails that test.
+ */
+export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
+  "archive_project",
+  "unarchive_project",
+  "move_project",
+  "archive_task",
+  "merge_tasks",
+  "bulk_update",
+  "delete_comment",
+  "revert_activity",
+  "delete_status",
+  "set_status_set",
+  "delete_type",
+  "delete_field",
+  "delete_tag",
+  "merge_tags",
+  "delete_view",
+  "report_delete",
+  "delete_attachment",
+]);
+
+/** The receipt's border and icon colour. Text keeps its own tokens. */
+export function toneFor(outcome: string, tool: string): string {
+  if (outcome === "failed") return "border-destructive/40 text-destructive";
+  if (outcome !== "done") return "border-border text-muted-foreground";
+  return GUARDED_TOOLS.has(tool)
+    ? "border-warning/50 text-warning"
+    : "border-success/40 text-success";
+}
+
+/**
  * Is this a Projects tool at all? The manifest's tool names are the
  * `skill-projects` exports; anything else belongs to another card file.
  * Kept as a prefix-free explicit set so a `gtd_*` or email tool never lands
@@ -493,12 +532,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const rowId = rowIdOf(result);
   const openTask = useOpenTask();
   const detail = forPeople(result);
-  const tone =
-    outcome === "failed"
-      ? "border-destructive/40 text-destructive"
-      : outcome === "done"
-        ? "border-success/40 text-success"
-        : "border-border text-muted-foreground";
+  const tone = toneFor(outcome, e.name);
   const icon =
     outcome === "failed" ? "X" : outcome === "cancelled" ? "Ban" : outcome === "refused" ? "Info" : meta.icon;
   const heading =

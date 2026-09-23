@@ -403,7 +403,7 @@ read.** `PlanCard` and `ReportCard` are S4, `ActionResultCard` is S2.
 | `planCard` (template) | W1's proposal, editable, before approval | Submits the edited plan back to `propose_plan` |
 | `timeline`, `taskBoard`, `dataGrid`, `reportCard` (templates) | `render_timeline`, `render_board`, `render_tasks`, `render_report` | The timeline's title opens its task. A board card and a table row open their task. The report's title opens the Reports app |
 | `formCard` (template) | `edit_task`, `edit_project` | Submits the edited fields back to the tool |
-| `ActionResultCard` | Every write | Says what changed, links the row, danger tone for class C |
+| `ActionResultCard` | Every write | Says what changed, links the row. A done class C act wears the warning tone, and every other done write wears success. `GUARDED_TOOLS` names the class C tools, and `test_the_cards_know_every_guarded_tool` holds it equal to the manifest. Built 2026-09-23 |
 
 **The generic card is the default.** A tool the card file does not know
 renders as `ActionResultCard` from its class. A new tool never renders as
