@@ -504,7 +504,9 @@ card landed in S6c (`ProjectLabel.tsx`), so S6e does not build it again.
    `routes/tasks/hierarchy.py`, `sync.py`, `accounts.py`, `providers.py` and
    `broker_handlers.py` go. `test_client_route_contract.py` keeps the paths
    that survive.
-2. **Schema.** Migration **212** calls `gtd_retirement_drop()`. Then it drops
+2. **Schema.** A new migration calls `gtd_retirement_drop()`. It takes the
+   next free number at build time (R1). Number 212 went to the backfill fix
+   on 2026-09-23, so this one is 213 or later. Then it drops
    the tree tables, `gtd_contexts`, `gtd_retirement_arm` and the two guard
    functions. It renames `gtd_attachments`, `gtd_horizons` and `gtd_reviews`
    through the guarded prologue in their creating migrations (52 and 48).
@@ -549,6 +551,7 @@ card landed in S6c (`ProjectLabel.tsx`), so S6e does not build it again.
 4. SELECT * FROM gtd_backfill_to_pm(false);     -- dry run
       |
 5. SELECT * FROM gtd_backfill_to_pm(true);      -- the move (2 rows today)
+   (needs migration 212 in the production ledger first -- see the note below)
       |
 6. .env: NEXT_PUBLIC_TASKS_LENS=1 and TASKS_LENS=1, restart, rebuild
       |
@@ -564,10 +567,18 @@ card landed in S6c (`ProjectLabel.tsx`), so S6e does not build it again.
       |
 11. INSERT INTO gtd_retirement_arm (armed_by, note) VALUES (...)
       |
-12. S8 PR 2 merges. Migration 212 calls the guard, drops, renames.
+12. S8 PR 2 merges. Its migration (213 or later) calls the guard, drops, renames.
       |
 13. \dt gtd_*  ->  nothing
 ```
+
+**Step 5 needs migration 212 in the production ledger.** On 2026-09-23 step 5
+failed on production and wrote nothing. Migration 196 added a CHECK that a
+root project owns its statuses. The root insert in migration 189 did not set
+`owns_statuses`, so the CHECK refused it. Migration 212 re-defines
+`gtd_backfill_to_pm()` with the flag on the root and on each child. Run step 5
+only after `SELECT filename FROM schema_migrations WHERE filename LIKE '212_%'`
+returns one row.
 
 Step 11 is a human act. During the dev-phase window (CLAUDE.md §3a) an agent
 does it and reports the row in the same message. On 2026-10-01 it returns to
