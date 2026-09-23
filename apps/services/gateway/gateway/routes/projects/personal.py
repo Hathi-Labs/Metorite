@@ -53,6 +53,7 @@ from gateway.routes.projects.core import (
     actor,
     clean_payload,
     coerce_write_values,
+    diff_changes,
     emit,
     from_jsonb,
     insert_row,
@@ -61,6 +62,7 @@ from gateway.routes.projects.core import (
     next_task_number,
     now,
     record_activity,
+    record_field_change,
     require_organization_of,
     resolve_organization_id,
     resolve_visibility,
@@ -76,7 +78,11 @@ from gateway.routes.projects.filters import attach_assignees
 # cycle — the same note `notifications` itself carries about `watchers`, and the
 # same import `tasks`, `bulk` and `activities` already take.
 from gateway.routes.projects.notifications import EXCERPT_CHARS, notify
-from gateway.routes.projects.tasks import MoveTask, move_task_in
+from gateway.routes.projects.tasks import (
+    _TRACKED_TASK_FIELDS,
+    MoveTask,
+    move_task_in,
+)
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -1984,7 +1990,16 @@ async def _organize(
         # field People capacity and analytics read.
         shared["estimate_mins"] = payload.time_estimate_mins
     if shared:
-        await update_row(db, "pm_tasks", task_id, shared)
+        # The way `patch_task` writes them: the row, then what actually moved
+        # through the ONE field_change door, so the timeline shows the
+        # deadline and the estimate an organize set (D76 repair).
+        after = await update_row(db, "pm_tasks", task_id, shared)
+        changes = diff_changes(task, after, _TRACKED_TASK_FIELDS)
+        if changes:
+            await record_field_change(
+                db, created_by=email, task_id=task_id, changes=changes,
+            )
+        task = after
 
     # ── 3. My overlay ───────────────────────────────────────────────────────
     if payload.kind == "do-now":

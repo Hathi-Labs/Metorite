@@ -462,3 +462,20 @@ def test_closed_lanes_are_pruned_in_sql_for_every_caller_that_drops_done() -> No
     body = src[src.index("async def context_less_actionables"):]
     body = body[:body.index("async def insight_counts")]
     assert "_CLOSED_LANE" in body
+
+
+async def test_organize_records_the_shared_fields_it_sets(db: FakeProjectsDB) -> None:
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id, title="Board deck")
+    _assign(db, task.id, "alice@fracktal.in")
+    await pm_personal.organize_my_task(
+        str(task.id),
+        pm_personal.OrganizeIn(kind="next", next_action="Draft it",
+                               due_at="2026-10-01T12:00:00+00:00",
+                               time_estimate_mins=45),
+        user=ALICE,
+    )
+    changed = {c["field"] for a in db.activities("field_change")
+               if str(a.get("task_id")) == str(task.id)
+               for c in (a.get("meta") or {}).get("changes", [])}
+    assert {"due_at", "estimate_mins"} <= changed, changed
