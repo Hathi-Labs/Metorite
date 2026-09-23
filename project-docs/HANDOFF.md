@@ -2506,42 +2506,6 @@ line — never reclaim a number by deleting the other entry.
   related: H-95, H-103, H-65
 - **Added:** 2026-09-18 · operator console workspace session
 
-### H-122 · The Operator Console has NO browser rig, and its suite renders nothing · [AGENT]
-- **Check:** `grep -c playwright workbench/operator_console/package.json`. A
-  zero means this is open.
-- **What I measured, 2026-09-18.** `visual-review` renders `control_plane`. The
-  Operator Console is a second Next.js app and carries no Playwright, no `e2e/`
-  and no renderer in `vitest.config.ts`, which is `environment: "node"`. So its
-  719 passing tests say nothing about how any screen draws.
-- **What that cost, on one panel.** I stood the stack up by hand and looked.
-  Five defects that every test passed over. A `banner ok` class that
-  `globals.css` does not define, so a good-news banner drew amber through the
-  base `.banner` rule. A JSX-collapsed space reading *"the last 30days"*. A `.glyph`
-  span outside `.chip`, rendering a naked capital beside each name. Nineteen
-  rows burying the four that carried the money. An empty state that could print
-  *"$0.00 across 0 vendors"* above an empty table.
-- ⚠️ **A hand-built rig can report a FALSE PASS, and mine nearly did.** I
-  toggled a `.light` class, which is `control_plane`'s mechanism. This app
-  themes through `data-theme`. Five identical images came back and I almost
-  read them as a light-mode pass.
-- ⚠️ **Looking proves how a screen DRAWS, never who can reach it.** I drove the
-  console with the shared operator token. `auth.py` states that it carries no
-  role and the matrix cannot judge it. So the panel rendered perfectly through
-  the one door that skips the role check my endpoint was missing, and CI caught
-  the 403 afterwards.
-- **What it needs.** Playwright in `workbench/operator_console`, a harness that
-  stubs `/api/operator/**`, and contexts for `data-theme` and width. Density
-  and accent do not apply here — this app carries one fixed accent token and no
-  `--ui-scale`.
-- 📌 Related: **H-27** says nothing runs `control_plane`'s `e2e/`. That is a rig
-  nobody runs. This is a rig that does not exist.
-- **Authority:** CLAUDE.md §4 (the look-at-it gate) ·
-  `workbench/operator_console/AGENTS.md`
-- **Added:** 2026-09-18 · operator console vendor-spend session
-  *(minted H-117. Renumbered to H-122 on 2026-09-19, because `main`
-  had taken 117 for the no-organization outage and merged first. Ids
-  are never reused, so that entry keeps the number.)*
-
 ### H-133 · The customer's page shows their BALANCE and never their USAGE · [AGENT]
 - **Check:** open `workbench/operator_console/src/app/customers/[slug]/page.tsx`
   and read `loadOrg`. Five reads, none of them a usage read, means this is open.

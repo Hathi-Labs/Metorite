@@ -154,6 +154,20 @@ _CAPABILITY_GATED_ROUTES: dict[str, str] = {
     # lets the key CREATE, so a key that may create an organization here cannot
     # sensibly be refused the list of the ones it created.
     "/registry/orgs": "provision",
+    # 2026-09-23, H-152 — the Router's chat door, on the FIFTH capability.
+    #
+    # 🔴 **It had to gain an arm, because the alternative was structural
+    # darkness.** The gateway holds ONE `CUSTOMER_CONSOLE_ORG_KEY`, naming one
+    # tenant, so a shared box served tenant one and nothing else. The
+    # deployment key is per-BOX, and the Console derives the organization from
+    # the acting member — the same move D-SEAT-4 made for `/seats/overview`.
+    #
+    # ⚠️ This row is why the suite's `{resolve}` key now meets **403** here
+    # rather than 401. That is the point of the change and not a relaxation:
+    # the key is a valid credential that may not do THIS, and clause 1's
+    # property — a `{resolve}` key reaches resolve and nothing else — is
+    # unchanged, because `serve` is a capability nothing grants by default.
+    "/v1/chat/completions": "serve",
 }
 
 
