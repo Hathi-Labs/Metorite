@@ -96,7 +96,7 @@ line — never reclaim a number by deleting the other entry.
 # OPEN
 
 
-### H-165 · Build CP-13a to CP-13d: the `decide` task, its door, the Console pages and the chat tool · [AGENT]
+### H-167 · Build CP-13a to CP-13d: the `decide` task, its door, the Console pages and the chat tool · [AGENT]
 - **Check:** `rg -n "native_typesafe" apps/services/customer_console/` → no hit
   means CP-13a has not landed. `rg -n 'decide' workbench/operator_console/src/lib/`
   → no hit means CP-13b has not landed.
@@ -116,7 +116,8 @@ line — never reclaim a number by deleting the other entry.
   (R1).
 - **Authority:** `specs/customer_console.md` §6A.14 · `work_plan.md` §3 D75 ·
   board WS-31
-- **Added:** 2026-09-23 · the Jev planning session
+- **Added:** 2026-09-23 · the Jev planning session. Minted as H-165, and
+  renumbered to H-167 the same day, because #414 took H-165 first
 
 ### H-166 · Open the TypeSafe account, install the key, and answer residency · [OWNER]
 - **Check:** on `/providers`, look for a live `typesafe` credential. None
@@ -1727,8 +1728,8 @@ line — never reclaim a number by deleting the other entry.
   tenant package. §6A.10b clause 1 holds the plane-boundary argument and the
   rejected `acb_provider` alternative.
   📌 **2026-09-23: the first caller exists. It is TypeSafe's Jev** (D75).
-  H-165 builds this seam in CP-13a, with `native_typesafe` as its first value.
-  When H-165 merges, delete this entry.
+  H-167 builds this seam in CP-13a, with `native_typesafe` as its first value.
+  When CP-13a merges, delete this entry.
 - **Authority:** `customer_console.md` **§6A.10b** (the done-when) ·
   `work_plan.md` §3 **D60.11(a)** · `specs/customer_console.md` **§6A.10
   G-2 / G-5** · CLAUDE.md §5 · `work_plan.md` §4 (the seam's owner row)
