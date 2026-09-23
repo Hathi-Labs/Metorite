@@ -323,9 +323,16 @@ line — never reclaim a number by deleting the other entry.
           and not memory and not calendar"         run 2: pass
                                                    run 3: FAIL (another test)
 
-  So the suite that leaks the state is one the narrow filter EXCLUDES. That is
-  the most useful thing anybody has learned about this defect. Look at what
-  `tree`, `task` and `personal` pull in and `projects` does not.
+  So the suite that leaks the state is one the narrow filter EXCLUDES. Look at
+  what `tree`, `task` and `personal` pull in and `projects` does not.
+- **⚠️ 2026-09-23 — `-k "projects"` FAILED once, so yesterday's line above is
+  too strong.** It read as though the narrow selection had stopped failing.
+  Six green runs is not "stopped" — it is intermittent under that selection
+  too, and one run out of 2151 tests reproduced it the next day. The wider
+  selection remains the reliable reproduction. **Neither selection is a
+  clean bill of health**, which is the real hazard: a branch that touches
+  nothing near this can go red, and a branch that breaks something can go
+  green. It still passes alone, every time.
 - **🔴 A THIRD test fails the same way, and it is not a Projects test.** Run 3
   above failed
   `test_customer_console_catalog.py::TestRemovingAModelFromTheCatalog::test_removing_one_task_is_not_blocked_by_a_binding_on_ANOTHER`
