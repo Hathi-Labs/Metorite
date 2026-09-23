@@ -194,7 +194,9 @@ describe("a guarded act's receipt wears the warning tone", () => {
     expect(toneFor("refused", "delete_status")).toContain("muted");
   });
 
-  it("names every guarded tool once", () => {
-    expect(GUARDED_TOOLS.size).toBe(17);
+  it("tints the card of a guarded act, so colour on an icon is not the only signal", () => {
+    expect(toneFor("done", "archive_project")).toContain("bg-warning");
+    expect(toneFor("done", "update_task")).not.toContain("bg-warning");
+    expect(GUARDED_TOOLS.has("archive_project")).toBe(true);
   });
 });

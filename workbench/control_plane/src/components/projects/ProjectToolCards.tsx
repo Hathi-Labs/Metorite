@@ -234,13 +234,20 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "delete_attachment",
 ]);
 
-/** The receipt's border and icon colour. Text keeps its own tokens. */
+/**
+ * The receipt's fill, border and icon colour. Text keeps its own tokens.
+ *
+ * A guarded act also gets a warning FILL. `--warning` on a white card is
+ * 1.57:1 (`contrast.test.ts`), so an icon and a border alone barely read in
+ * light mode, and colour would be the only signal. The tint makes the card
+ * itself read differently.
+ */
 export function toneFor(outcome: string, tool: string): string {
-  if (outcome === "failed") return "border-destructive/40 text-destructive";
-  if (outcome !== "done") return "border-border text-muted-foreground";
+  if (outcome === "failed") return "bg-card/40 border-destructive/40 text-destructive";
+  if (outcome !== "done") return "bg-card/40 border-border text-muted-foreground";
   return GUARDED_TOOLS.has(tool)
-    ? "border-warning/50 text-warning"
-    : "border-success/40 text-success";
+    ? "bg-warning/10 border-warning/60 text-warning"
+    : "bg-card/40 border-success/40 text-success";
 }
 
 /**
@@ -515,9 +522,10 @@ export function receiptIdOf(result: string): string {
 }
 
 /**
- * The receipt for a class B write. Four states, each with its own tone from
- * the theme's tokens: done (success), refused by the tool in prose (muted),
- * cancelled at the card (muted), failed (destructive). The confirmation
+ * The receipt for a class B or class C write. Four states, each with its own
+ * tone from the theme's tokens (`toneFor`): done (success, or warning for a
+ * guarded act), refused by the tool in prose (muted), cancelled at the card
+ * (muted), failed (destructive). The confirmation
  * card BEFORE the write is the shared `ConfirmationCard`; this is the
  * receipt after it.
  */
@@ -544,7 +552,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
           ? "Not done"
           : meta.label;
   return (
-    <div className={`rounded-lg border bg-card/40 px-2.5 py-2 ${tone}`}>
+    <div className={`rounded-lg border px-2.5 py-2 ${tone}`}>
       <div className="flex items-start gap-2">
         <span className="mt-0.5 flex-shrink-0">
           <AppIcon name={icon} size={13} />
