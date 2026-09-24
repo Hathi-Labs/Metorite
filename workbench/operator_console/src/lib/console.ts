@@ -335,6 +335,16 @@ export const removeCapability = (body: unknown, d?: Deps) =>
 export const bindTier = (body: unknown, d?: Deps) =>
   callConsole("/catalog/bindings", { method: "POST", body }, d ?? {});
 
+// Take a job OFF the air (H-178). An APPEND on the Console, never a delete —
+// `tier_binding` is insert-only because a past invoice was computed against
+// it, so this writes a tombstone the newest-set read then returns nothing for.
+//
+// ⚠️ A SEPARATE verb, and that is the safety of it. Letting `POST` accept an
+// empty `models` list would mean a caller that simply forgot the field takes a
+// tier off the air. A different verb cannot be reached by forgetting.
+export const unbindTier = (body: unknown, d?: Deps) =>
+  callConsole("/catalog/bindings", { method: "DELETE", body }, d ?? {});
+
 export const setModelRate = (body: unknown, d?: Deps) =>
   callConsole("/catalog/rates", { method: "POST", body }, d ?? {});
 

@@ -123,6 +123,13 @@ export const FORM = {
   undo: "Undo",
   /** Leave an editor whose work is already committed. */
   done: "Done",
+  /** Take a job off the air (H-178).
+   *
+   * ⚠️ Not "Remove" and not "Delete". The Console APPENDS a tombstone and
+   * destroys nothing, because a past invoice was computed against the binding
+   * it supersedes. "Off the air" says what changes — it stops serving — and
+   * promises no destruction the code does not perform. */
+  unbind: "Take it off the air",
   /** Present participle for the disabled state. One spelling, everywhere. */
   busy: "Saving…",
 } as const;
