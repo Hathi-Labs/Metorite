@@ -29,6 +29,7 @@ import type { GtdProject } from "../lib/types";
 export function WherePicker({
   areas,
   includeAreas = true,
+  includeNoProject = true,
   projects,
   value,
   suggestedId,
@@ -38,6 +39,8 @@ export function WherePicker({
   areas: LensArea[];
   /** False for a task on a company board — see `isPersonalTask`. */
   includeAreas?: boolean;
+  /** False for a task on a company board — see `whereOffersNoProject`. */
+  includeNoProject?: boolean;
   projects: GtdProject[];
   value?: string;
   suggestedId?: string;
@@ -68,13 +71,15 @@ export function WherePicker({
 
   return (
     <div className="flex flex-col gap-2 rounded-md border border-border bg-background/40 p-2">
-      <Row
-        selected={value === undefined}
-        onClick={() => onChange(undefined)}
-        icon={<Icon name="Inbox" className="h-3.5 w-3.5 text-muted-foreground" />}
-        label="No project"
-        muted
-      />
+      {includeNoProject && (
+        <Row
+          selected={value === undefined}
+          onClick={() => onChange(undefined)}
+          icon={<Icon name="Inbox" className="h-3.5 w-3.5 text-muted-foreground" />}
+          label="No project"
+          muted
+        />
+      )}
       {groups.map((group) => (
         <div key={group.label} className="flex flex-col gap-0.5">
           <p className="px-1.5 pt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -89,7 +94,9 @@ export function WherePicker({
             <Row
               key={row.id}
               selected={value === row.id}
-              suggested={value === undefined && suggestedId === row.id}
+              // A suggestion is only ever a mark. The member clicks it to
+              // pick it (audit 2026-09-24: never a pre-selection).
+              suggested={value !== row.id && suggestedId === row.id}
               onClick={() => onChange(row.id)}
               icon={
                 row.kind === "area" ? (

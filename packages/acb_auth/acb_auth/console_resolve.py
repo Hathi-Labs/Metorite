@@ -179,6 +179,7 @@ __all__ = [
     "ResolveDecision",
     "assign_seat_on_console",
     "chat_completion_on_console",
+    "decide_on_console",
     "invalidate",
     "invite_member_on_console",
     "is_wired",
@@ -2272,6 +2273,98 @@ async def chat_completion_on_console(
     if status != _ROUTER_NOT_IMPLEMENTED and (
         status >= 500 or status in (401, 408, 429)
     ):
+        raise ConsoleRouterUnavailable(f"HTTP {status}")
+
+    try:
+        body = response.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    return status, body
+
+
+#: A decision is not a completion. The vendor states 70 to 500 ms end to end,
+#: and the caller holds a fallback path (§6A.14 adoption rule 3). So a slow
+#: decision should give up soon and let the caller take its old path. The
+#: 120s completion bound would pin a worker for two minutes on a call whose
+#: whole point is speed. ⚠️ The Console may still meter an answer we abandon.
+#: There is no retry, so that is one charge at most.
+_DECIDE_TIMEOUT_SECONDS = 10.0
+
+
+async def decide_on_console(
+    payload: dict[str, Any],
+    *,
+    member: str | None = None,
+    #: Whether the gateway VERIFIED that member (H-73). A cap may key on it.
+    member_proven: bool = False,
+    agent: str | None = None,
+    module_slug: str | None = None,
+    run_id: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Ask the Console's ``POST /v1/decide`` door one set of typed questions.
+
+    WS-31 CP-13c (§6A.14, D75). ``payload`` is OUR wire body:
+    ``{"tier": "tier-decide", "state": ..., "questions": {...}}``.
+
+    Returns the Console's ``(status_code, body)``, and raises
+    :class:`ConsoleRouterUnavailable` when no answer was produced. The line
+    between the two is the one :func:`chat_completion_on_console` draws, with
+    ONE difference: there is no 501 carve-out. That carve-out exists for a
+    refused stream, and a decision never streams, so every 5xx is an outage.
+
+    🔴 **The credential path is the chat client's, exactly.** The same
+    :func:`router_is_wired` gate, the same :func:`router_credential` pick and
+    the same :func:`_attribution_headers`. A second credential picker here
+    would be the second Console client this module forbids.
+
+    ⚠️ **THERE IS NO RETRY**, for the chat client's reason. The Console meters
+    and CHARGES a decision on the way through.
+
+    ⚠️ **The Console is the ONE validator of clause 13's limits.** This
+    function checks none of them, and :mod:`acb_llm.decide` copies none. A
+    breach comes back as a 400 verdict that names the rule.
+    """
+    if not router_is_wired():
+        raise ConsoleRouterUnavailable("unwired")
+
+    settings = get_settings()
+    base = settings.customer_console_url.strip().rstrip("/")
+    # 🔴 **The credential is CHOSEN, never assumed to be the org key** (H-152).
+    chosen = router_credential()
+    if chosen is None:  # pragma: no cover - `router_is_wired` guards above
+        raise ConsoleRouterUnavailable("unwired")
+    kind, key = chosen
+
+    # ⚠️ The same local refusal the chat client makes. A deployment key cannot
+    # resolve a tenant without the member, and the Console answers 400 to say
+    # so. Refusing here costs no request and names the missing input.
+    if kind == "deployment" and not (member or "").strip():
+        raise ConsoleRouterUnavailable(
+            "this box presents a deployment key, which needs the acting "
+            "member to resolve a tenant, and none was supplied"
+        )
+
+    headers = {"Authorization": f"Bearer {key}"}
+    headers.update(
+        _attribution_headers(
+            member=member, agent=agent, module_slug=module_slug, run_id=run_id,
+            member_proven=member_proven,
+        )
+    )
+
+    try:
+        client = _new_http_client(_DECIDE_TIMEOUT_SECONDS)
+        async with client:
+            response = await client.post(
+                f"{base}/v1/decide", headers=headers, json=payload
+            )
+    except Exception as exc:
+        raise ConsoleRouterUnavailable(str(exc)[:200]) from exc
+
+    status = response.status_code
+    if status >= 500 or status in (401, 408, 429):
         raise ConsoleRouterUnavailable(f"HTTP {status}")
 
     try:

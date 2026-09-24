@@ -288,6 +288,19 @@ class Settings(BaseSettings):
     # 🔴 Flipping this on a live box is OWNER-GATE (work_plan.md §6 (d)/(e)).
     router_serving_enabled: bool = False
 
+    # ── The `decide` task (CP-13c, D75) ─────────────────────────────────────
+    #
+    # The master switch for `acb_llm.decide`. OFF means the facade raises
+    # `DecideUnavailable("disabled")` and makes no network call, and every
+    # caller keeps its current LLM path.
+    #
+    # 🔴 OWNER-ONLY. The §3a dev window does NOT open it. It is the one switch
+    # between every tenant's content and a new third-party sub-processor
+    # (TypeSafe), and D19.6 promises India-only residency that the vendor does
+    # not state. Registry: work_plan.md §6.1 WS-31 (i). Spec:
+    # customer_console.md §6A.14 CP-13c. Fence: tests/unit/test_acb_llm_decide.py.
+    decide_enabled: bool = False
+
     # ── BYOK is OFF for the customer (owner directive, 2026-08-27) ──
     #
     # `customer_console.md` §5.1 already names the destination: the provider,

@@ -3,6 +3,7 @@
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useEffect } from "react";
+import { clarifyQueue, isClarifiable } from "../lib/clarify";
 import { useTaskStore } from "../lib/taskStore";
 import { useVisualViewport } from "../lib/useVisualViewport";
 import { ClarifyPanel } from "./ClarifyPanel";
@@ -22,21 +23,33 @@ export function ClarifyModal() {
   const skip = useTaskStore((s) => s.skipToNextInbox);
   const selectedItemId = useTaskStore((s) => s.selectedItemId);
   const items = useTaskStore((s) => s.items);
+  // S6e: an untriaged "From Projects" row is clarifiable too. Its disposition
+  // is derived (NEXT, SOMEDAY or WAITING), never INBOX, so a test on INBOX
+  // alone closed the modal on its first render (audit 2026-09-24).
+  const fromProjectIds = useTaskStore((s) => s.fromProjectIds);
+  const done = useTaskStore((s) => s.clarifiedThisSession);
+  const selectItem = useTaskStore((s) => s.selectItem);
 
   const processed = useTaskStore((s) => s.processedThisSession);
   const vp = useVisualViewport();
   const item = selectedItemId
     ? items.find((i) => i.id === selectedItemId)
     : undefined;
-  const inboxLeft = items.filter((i) => i.disposition === "INBOX").length;
+  const queue = clarifyQueue(items, fromProjectIds, done);
+  const inboxLeft = queue.length;
   const total = processed + inboxLeft;
   const pct = total ? Math.round((processed / total) * 100) : 0;
-  const active = open && !!item && item.disposition === "INBOX";
+  const clarifiable = !!item && isClarifiable(item, fromProjectIds, done);
+  const active = open && clarifiable;
+  const nextId = queue[0]?.id;
 
-  // Close once there's nothing left to clarify.
+  // The current item left the walk (decided, or re-read out of the group).
+  // Advance while the queue still holds items. Close only when it is empty.
   useEffect(() => {
-    if (open && (!item || item.disposition !== "INBOX")) close();
-  }, [open, item, close]);
+    if (!open || clarifiable) return;
+    if (nextId) selectItem(nextId);
+    else close();
+  }, [open, clarifiable, nextId, selectItem, close]);
 
   // Keyboard: Escape closes; t/s/r/2 file the current item and advance.
   useEffect(() => {

@@ -186,8 +186,9 @@ line — never reclaim a number by deleting the other entry.
   `cp13a-decide` and `cp13b-console`).
   `rg -n 'decide/try' apps/services/customer_console/customer_console/operator_roles.py`
   → no hit means CP-13b has not reached `main` yet.
-  `rg -n 'def decide' packages/acb_llm/` → no hit means CP-13c has not
-  landed.
+  CP-13c is BUILT (2026-09-24, branch `cp13c-decide-client`).
+  `rg -n 'async def decide' packages/acb_llm/acb_llm/decide.py` → no hit
+  means CP-13c has not reached `main` yet. CP-13d is the part still open.
 - **Why:** owner decision 2026-09-23 (D75). The owner chose TypeSafe's Jev for
   fast typed decisions, and asked for the Operator Console first.
 - **Do this in order:** CP-13a, then CP-13b, then CP-13c, then CP-13d. Build
@@ -196,8 +197,9 @@ line — never reclaim a number by deleting the other entry.
   the binding on `/tiers`. The owner sets the price (H-42).
 - ⚠️ **Three fences break by design.** Update them in the same PR. §6A.14
   CP-13a names them, and CP-13d names two more.
-- ⚠️ **CP-13c needs H-152's tenant slice.** The client presents the per-box
-  deployment key, and never the one organization key.
+- ✅ **CP-13c reuses H-152's tenant slice (#406).** The client takes its key
+  from `router_credential()`, so a shared box presents the per-box
+  deployment key.
 - 🔴 **Do not set `DECIDE_ENABLED` on a live box.** It is owner-only, and
   the §3a window does not open it (H-166).
 - ⚠️ **CP-13a took migration `033`** (`033_decide_task.sql`). Check it
@@ -1719,6 +1721,31 @@ line — never reclaim a number by deleting the other entry.
   member, the agent and the module at 29 call sites. H-73 landed the identity
   seam. H-44 records the same 80+ sites for tier selection, so sweep the two
   together and not twice.
+- 📌 **THE OWNER CHOSE SHAPE 1 (proxy), 2026-09-24, and it is built.**
+  `acb_llm/routed.py` is the seam. `acompletion_with_fallback`,
+  `client.complete` and `client.complete_with_tools` all route when
+  `routing_is_on()`. The TIER travels, never a resolved model, so the
+  operator's ranked `tier_binding` chain decides. Attribution comes from
+  `get_run_context()`, so none of the call sites changed.
+- 🔴 **Two mistakes worth keeping, because both were caught by a fence and
+  not by me.** The first payload sent `{"tier": ...}` and spread the caller's
+  `**extra`. `CompletionRequest` forbids extras, and its field is called
+  `model`. So EVERY routed call would have been a 422. The suite stayed green,
+  because it stubbed the client. The second left tool-calling on the
+  direct path, on the belief that the Router had no `tools` field. It has,
+  with `tool_choice` beside it. A test that validates against the REAL
+  pydantic model caught both, and it is the fence to keep.
+- ⚠️ **STILL UNROUTED, and each for a reason.**
+  `context.acompletion_stream_text` — the Console streams through a different
+  client (`stream_completion_on_console`) with a different contract, so it is
+  its own slice. `gateway.main._prewarm_prompt_cache` — a startup warm-up with
+  no tenant and no member to bill, so routing it would invent a payer.
+- ⚠️ **It ships DARK.** `routing_is_on()` needs `ROUTER_SERVING_ENABLED` AND a
+  reachable Console. Every box that has not turned billing on behaves exactly
+  as before, and a test pins that for both the completion and the agent paths.
+- **Fences:** `tests/unit/test_internal_ai_is_routed.py` (20) ·
+  `test_console_dependency_boundary.py` gained the seventh allowed caller,
+  which is the same KIND as the `v1_compat` Router hop.
 - **Authority:** `launch_surface.md` §4.1 · D19.2 · D57.7 · CP-6 · H-73 · H-44
 - **Added:** 2026-09-23 · the H-73 session. **Renumbered from H-170 to H-171** the same day (R1): another branch minted the same next free id against a different base and merged first. An id is never reused.
 
@@ -3032,6 +3059,12 @@ line — never reclaim a number by deleting the other entry.
   nothing, by design.
 - ⚠️ **The per-org billing pages still read the org key**, so retiring that
   variable entirely is a separate move. `seats.py` records which reads stay.
+- ⚠️ **Orchestrator agent completions never send `X-CC-Member`.**
+  `orchestrator/agents.py:437` stamps only `X-CC-Agent` and `X-CC-Source`,
+  and nothing calls `member_proof.sign_member`. So on a box with
+  `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY` set and no org key,
+  `chat_completion_on_console` refuses every agent completion. The CP-13c
+  audit found this on 2026-09-24.
 - **Fences:** `tests/unit/test_router_deployment_arm.py` (12) ·
   `tests/unit/test_console_router_client.py` (5 new).
 - **Authority:** owner directive, 2026-09-22 — *"you are automatically

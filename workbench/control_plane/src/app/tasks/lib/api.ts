@@ -316,7 +316,8 @@ export async function apiPatchItem(
   patch: {
     title?: string;
     notes?: string;
-    disposition?: Disposition;
+    /** `null` CLEARS my stated disposition, so the derived one shows again. */
+    disposition?: Disposition | null;
     defer_until?: string;
     next_action?: string;
     context?: string;
