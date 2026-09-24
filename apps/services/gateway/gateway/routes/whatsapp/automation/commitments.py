@@ -125,7 +125,7 @@ class CommitmentModel(BaseModel):
     text: str
     due_hint: str | None = None
     status: str = "open"
-    gtd_item_id: str | None = None
+    task_id: str | None = None
 
 
 @router.get("/commitments", response_model=list[CommitmentModel])
@@ -148,7 +148,7 @@ async def list_commitments(
         rows = (await db.execute(
             text(f"""SELECT k.id, k.chat_id, k.direction, k.text, k.due_hint,
                             k.status,
-                            coalesce(k.task_id, k.gtd_item_id) AS gtd_item_id
+                            k.task_id
                      FROM wa_commitments k
                      JOIN wa_accounts a ON a.id = k.account_id
                      WHERE {' AND '.join(where)}
@@ -159,7 +159,7 @@ async def list_commitments(
             CommitmentModel(
                 id=str(r.id), chat_id=str(r.chat_id), direction=r.direction,
                 text=r.text, due_hint=r.due_hint, status=r.status,
-                gtd_item_id=str(r.gtd_item_id) if r.gtd_item_id else None,
+                task_id=str(r.task_id) if r.task_id else None,
             )
             for r in rows
         ]

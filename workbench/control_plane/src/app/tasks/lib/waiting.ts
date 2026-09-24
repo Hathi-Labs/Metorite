@@ -54,7 +54,7 @@ export function daysWaiting(
 }
 
 /** True iff the date this waiting-for is judged on has passed (spec §6 line
- *  540: "flags `gtd_waiting` rows past `expected_by`").
+ *  540: "flags waiting-for rows past `expected_by`").
  *
  *  The line is `expectedBy ?? dueAt`, and the two are different facts:
  *    • `expectedBy` set — someone actually promised this date. It wins, in

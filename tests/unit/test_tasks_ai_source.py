@@ -87,17 +87,19 @@ def _skill_tool_names() -> frozenset[str]:
 
 
 #: The `gtd_` tokens a string constant may still carry, each with its reason.
-#: A table here must be one that S8 PR 2's migration renames or drops.
+#: S8 PR 2 (migration 217) removed the last two tables: `gtd_attachments` is
+#: `attachments` now, and `wa_commitments.gtd_item_id` is dropped. Only the
+#: tool names are left. `test_no_gtd_table_names.py` is the repo-wide fence.
 ALLOWED: dict[str, str] = {
-    "gtd_attachments": (
-        "the file registry both apps write. It survives, and S8 PR 2 renames "
-        "it to `attachments` in the guarded prologue of migration 52"),
-    "gtd_item_id": (
-        "the EXPAND half of `wa_commitments.gtd_item_id` -> `task_id` (211). "
-        "The digest reads `coalesce(task_id, gtd_item_id)` until S8 PR 2 "
-        "drops the column"),
     **{name: "a chat tool name. S9 renames all 29 at once"
        for name in _skill_tool_names()},
+}
+
+#: Strings that carry a `gtd_` token and name no table, each with its reason.
+ALLOWED_LITERALS: dict[str, str] = {
+    "data/gtd_attachments": (
+        "the upload DIRECTORY on the box (`routes/tasks/attachments.py`). Each "
+        "`attachments` row stores its own path, so the files do not move"),
 }
 
 
@@ -134,7 +136,10 @@ def _gtd_strings(path: Path) -> list[tuple[int, str]]:
             continue
         if id(node) in docs:
             continue
-        bad = sorted(t for t in set(re.findall(r"gtd_\w+", node.value))
+        value = node.value
+        for literal in ALLOWED_LITERALS:
+            value = value.replace(literal, "")
+        bad = sorted(t for t in set(re.findall(r"gtd_\w+", value))
                      if t not in ALLOWED)
         if bad:
             found.append((node.lineno, ", ".join(bad)))
@@ -167,7 +172,7 @@ def test_the_fence_can_see(tmp_path: Path) -> None:
     bad.write_text(
         '"""A docstring may say gtd_items."""\n'
         'SQL = "SELECT * FROM gtd_items"\n'
-        'OK = "SELECT * FROM gtd_attachments"\n', encoding="utf-8")
+        'OK = "call gtd_capture"\n', encoding="utf-8")
     assert _gtd_strings(bad) == [(2, "gtd_items")]
 
 

@@ -1,8 +1,8 @@
 // GTD Task Manager — canonical client types.
 //
 // These mirror the canonical Postgres model in
-// `project-docs/specs/task_manager_app.md` §4 (gtd_items / gtd_projects /
-// gtd_contexts), trimmed to what the UI needs. The app is built UI-first
+// `project-docs/specs/task_manager_app.md` §4 (the item, project and
+// context tables), trimmed to what the UI needs. The app is built UI-first
 // against mock data (see mockData.ts); when the gateway `/tasks` API lands,
 // these types stay and only the data source swaps.
 
@@ -194,7 +194,7 @@ export interface GtdItem {
   statusCategory?: string;
   /** manual (drag) rank within a group/column; unset → created-at ordering */
   sortKey?: number;
-  /** set → this item is a subtask of another gtd_item (its parent). */
+  /** set → this item is a subtask of another item (its parent). */
   parentItemId?: string;
   /** number of child subtasks (roll-up badge on the card/detail). */
   subtaskCount?: number;

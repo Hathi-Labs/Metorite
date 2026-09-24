@@ -14,7 +14,7 @@
  *
  * ── It is the only path (S8 PR 1) ──────────────────────────────────────────
  *
- * The lens shipped dark behind `NEXT_PUBLIC_TASKS_LENS` while `gtd_items`
+ * The lens shipped dark behind `NEXT_PUBLIC_TASKS_LENS` while the old store
  * still held every task. Production flipped it on 2026-09-23, after the S3b
  * backfill moved every row. S8 PR 1 deleted the flag and the retired arms, so
  * every task read and write in `api.ts` answers through this module.
@@ -840,7 +840,7 @@ const PLANNER: Readonly<Record<string, string>> = {
  * The projects a task can be PROMOTED into.
  *
  * `GET /projects/nodes` and not the Tasks app's old `/projects`: the old one
- * listed `gtd_projects`, a per-user local tree. This lists the company's, which
+ * listed the old per-user local tree. This lists the company's, which
  * is what "move it to a project" means.
  *
  * ⚠️ It returns TEAM projects only, and gets that for free rather than by

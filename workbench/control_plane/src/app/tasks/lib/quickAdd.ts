@@ -5,7 +5,7 @@
 // failure while the task sits in some default bucket off-screen. The mapping
 // from "where the input is" to "what the created item must carry" is this
 // module, pure and surface-agnostic, exactly like `app/projects/lib/quickAdd`
-// on the other side of the wall: the payloads differ (`gtd_items` speaks
+// on the other side of the wall: the payloads differ (the Tasks item speaks
 // workflowStage/context/energy, `pm_tasks` speaks status_id/tags), the
 // grammar is the same.
 //

@@ -13,7 +13,7 @@ Production flipped ``TASKS_LENS`` on 2026-09-23. The browser reads
 ``/projects/tasks/*``. These tools used to call ``/tasks/items*``,
 ``/tasks/projects``, ``/tasks/hierarchy``, ``/tasks/settings``,
 ``/tasks/accounts`` and ``/tasks/sync`` — routes that only ever read and
-wrote ``gtd_items``, the retired store. A chat capture landed where nobody
+wrote the retired task store. A chat capture landed where nobody
 looked. S8a re-points every task, project and tree tool onto the routes the
 browser uses. The contract of record is
 ``workbench/control_plane/src/app/tasks/lib/lens.ts``: this module mirrors

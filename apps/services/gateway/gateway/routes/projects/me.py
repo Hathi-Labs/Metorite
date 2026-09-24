@@ -5,7 +5,7 @@ Spec: ``project-docs/specs/project_management_app.md`` §4 (``me.py`` row).
     GET /projects/assigned-to-me
 
 This is the read WS-27e's personal mirror consumes (§6.1): the org store's
-answer to "what is mine", which the Tasks app turns into ``gtd_items`` rows so
+answer to "what is mine", which the Tasks app turned into rows of its own store so
 the whole GTD overlay — clarify, timeboxing, Waiting-For — works on org tasks
 with no changes to its code.
 
@@ -50,7 +50,7 @@ async def assigned_to_me(
     a bare email (D-PM-4) that nothing validates, so anyone in another
     organization can put this caller's address on their task and — without the
     line below — its title, description and dates appear here. Worse than a
-    read: WS-27e's personal mirror SYNCS this endpoint into ``gtd_items``, so
+    read: WS-27e's personal mirror SYNCED this endpoint into the retired task store, so
     the leak would be copied into a second app and outlive the request.
 
     Found by driving this endpoint against a real two-tenant database. The

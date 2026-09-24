@@ -420,7 +420,7 @@ export function ItemList() {
               endpoint, `POST /projects/tasks/bulk`, which resolves each field
               per task and reports per-task refusals. /tasks has no counterpart
               — `/items/bulk` takes a disposition and `/items/bulk-archive` an
-              archive flag, and that is the whole bulk surface; `gtd_items` has
+              archive flag, and that is the whole bulk surface; the old task store had
               no tags column at all (its nearest axis, @context, is single
               valued). So archive/restore/delete is the honest set. Widening it
               is a gateway ticket, not a bar redesign. */}

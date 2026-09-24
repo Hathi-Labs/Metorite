@@ -2,8 +2,8 @@
 --
 -- What: the seven task-manager tables from project-docs/specs/task_manager_app.md §4 —
 --       task_accounts (connected PM-tool workspaces, multi-account/multi-provider, like
---       email_accounts), gtd_contexts, gtd_horizons, gtd_projects, gtd_items, gtd_waiting,
---       gtd_reviews.
+--       email_accounts), gtd_contexts, my_tasks_horizons, gtd_projects, gtd_items, gtd_waiting,
+--       my_tasks_reviews.
 -- Why:  the /tasks gateway API + agent-task-manager operate on a canonical Postgres store
 --       with a GTD-semantic overlay (dual-source: LOCAL rows we own; SYNCED rows mirror a
 --       connected provider — ClickUp first).
@@ -17,6 +17,63 @@
 -- Depends on: nothing outside this file (self-contained; no FKs to earlier tables).
 -- Idempotent: every statement is IF NOT EXISTS / ON CONFLICT-safe — apply_migrations.sh
 --             re-runs all 02+ migrations on every deploy.
+
+-- == The `gtd_` name is retired (WS-39 S8 PR 2, D73.3, 2026-09-23) ===========
+--
+-- Two tables in this file survive the task-store drop, so they take the names
+-- of the D73.3 table map. Horizons becomes my_tasks_horizons (D65 keeps the
+-- store). Weekly reviews becomes my_tasks_reviews (WS-18 keeps the store).
+-- Every other table in this file is dropped by migration 217.
+--
+-- THE RENAME LIVES IN THE FILE THAT CREATES THE TABLE. One file then answers
+-- all three states:
+--
+--   * Fresh install -- nothing to rename. The CREATE below makes the new name.
+--   * A database that predates this -- the old table is renamed WITH ITS
+--     ROWS, and the CREATE below finds the name taken and skips.
+--   * Replay -- already renamed, so the guard matches nothing.
+--
+-- A rename migration at the END of the ladder was measured and abandoned on
+-- 2026-09-21. `tests/unit/test_gtd_rename_upgrade.py` carries the argument,
+-- and it fences both blocks below.
+--
+-- relkind = 'r' leaves a view that wears the old name alone. Index, constraint
+-- and policy names keep their old spelling (D73.3). A rename does not touch
+-- them, and no query names one.
+--
+-- WARNING: each block spells its OLD name once, as a quoted literal. A later
+-- rename sweep must not rewrite that literal, or the block renames the new
+-- name onto itself and does nothing. Sweep FIRST, add the prologue SECOND.
+
+DO $rename_my_tasks_horizons$
+DECLARE
+    old_name CONSTANT text := 'gtd_horizons';
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.relname = old_name AND c.relkind = 'r'
+           AND n.nspname = current_schema()
+    ) AND to_regclass('public.my_tasks_horizons') IS NULL THEN
+        EXECUTE format('ALTER TABLE %I RENAME TO %I', old_name, 'my_tasks_horizons');
+        RAISE NOTICE 'renamed % -> my_tasks_horizons', old_name;
+    END IF;
+END
+$rename_my_tasks_horizons$;
+
+DO $rename_my_tasks_reviews$
+DECLARE
+    old_name CONSTANT text := 'gtd_reviews';
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.relname = old_name AND c.relkind = 'r'
+           AND n.nspname = current_schema()
+    ) AND to_regclass('public.my_tasks_reviews') IS NULL THEN
+        EXECUTE format('ALTER TABLE %I RENAME TO %I', old_name, 'my_tasks_reviews');
+        RAISE NOTICE 'renamed % -> my_tasks_reviews', old_name;
+    END IF;
+END
+$rename_my_tasks_reviews$;
 
 -- ── Connected PM-tool workspaces ────────────────────────────────────────────
 -- One row per (user, provider, workspace): several ClickUp workspaces/companies
@@ -55,7 +112,7 @@ CREATE TABLE IF NOT EXISTS gtd_contexts (
 );
 
 -- ── Horizons of Focus (H2 Areas · H3 Goals · H4 Vision · H5 Purpose) ────────
-CREATE TABLE IF NOT EXISTS gtd_horizons (
+CREATE TABLE IF NOT EXISTS my_tasks_horizons (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id TEXT NOT NULL,
     level INT NOT NULL,                  -- 2=Areas · 3=Goals · 4=Vision · 5=Purpose
@@ -63,7 +120,7 @@ CREATE TABLE IF NOT EXISTS gtd_horizons (
     notes TEXT,
     created_at TIMESTAMPTZ DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_gtd_horizons_user ON gtd_horizons(user_id, level);
+CREATE INDEX IF NOT EXISTS idx_gtd_horizons_user ON my_tasks_horizons(user_id, level);
 
 -- ── GTD projects (first-class outcomes needing >1 action, dual-source §5.1) ─
 CREATE TABLE IF NOT EXISTS gtd_projects (
@@ -75,7 +132,7 @@ CREATE TABLE IF NOT EXISTS gtd_projects (
     outcome TEXT NOT NULL,               -- the "wild success" statement
     purpose TEXT,                        -- natural-planning: why
     status TEXT DEFAULT 'ACTIVE',        -- ACTIVE | SOMEDAY | DONE | DROPPED
-    horizon_id UUID REFERENCES gtd_horizons(id) ON DELETE SET NULL,
+    horizon_id UUID REFERENCES my_tasks_horizons(id) ON DELETE SET NULL,
     has_next_action BOOLEAN DEFAULT false, -- the cardinal GTD health check
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
@@ -104,7 +161,7 @@ CREATE TABLE IF NOT EXISTS gtd_items (
     time_estimate_mins INT,
     is_two_minute BOOLEAN DEFAULT false,
     project_id UUID REFERENCES gtd_projects(id) ON DELETE SET NULL,
-    horizon_id UUID REFERENCES gtd_horizons(id) ON DELETE SET NULL,
+    horizon_id UUID REFERENCES my_tasks_horizons(id) ON DELETE SET NULL,
     defer_until TIMESTAMPTZ,             -- tickler: hidden from the active inbox until this date
     sync_state TEXT DEFAULT 'local',     -- 'local' | 'pending' (queued push, Action-Broker-gated) | 'synced'
     -- Mirrored from provider (provider is source of truth for SYNCED)
@@ -142,11 +199,11 @@ CREATE INDEX IF NOT EXISTS idx_gtd_waiting_open ON gtd_waiting(resolved, expecte
 CREATE INDEX IF NOT EXISTS idx_gtd_waiting_item ON gtd_waiting(item_id);
 
 -- ── Weekly reviews ──────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS gtd_reviews (
+CREATE TABLE IF NOT EXISTS my_tasks_reviews (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id TEXT NOT NULL,
     ran_at TIMESTAMPTZ DEFAULT now(),
     summary JSONB,                       -- counts cleared, projects w/o next action, stale waiting-fors
     created_at TIMESTAMPTZ DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_gtd_reviews_user ON gtd_reviews(user_id, ran_at DESC);
+CREATE INDEX IF NOT EXISTS idx_gtd_reviews_user ON my_tasks_reviews(user_id, ran_at DESC);
