@@ -176,7 +176,7 @@ import {
   DOCK_QUERY,
   chatDockState,
   readChatDocked,
-  toggleAction,
+  assistantButton,
   writeChatDocked,
 } from "./lib/chatDock";
 
@@ -4010,6 +4010,12 @@ function ProjectsWorkspace() {
     slotOpen: app === "ai-chat",
     taskDocked: Boolean(taskPanel) && !isOverlayMode(panelMode),
   });
+  // The top-bar button, whole — pressed, tooltip, and what a press changes.
+  const assistant = assistantButton({
+    state: dockState,
+    wide: dockWide,
+    slotOpen: app === "ai-chat",
+  });
 
   if (isMobile) {
     return (
@@ -4082,26 +4088,15 @@ function ProjectsWorkspace() {
               no button at all. Fence: `components/AssistantToggle.test.ts`. */}
           {CHAT_LIVE ? (
             <AssistantToggle
-              open={dockState === "shown" || app === "ai-chat"}
-              title={
-                app === "ai-chat" || dockState === "shown"
-                  ? "Close the assistant"
-                  : dockState === "hidden"
-                    ? "Show the assistant (closes the task)"
-                    : "Ask the assistant about this project"
-              }
+              open={assistant.pressed}
+              title={assistant.title}
               onToggle={() => {
-                const act = toggleAction(dockState, dockWide, app === "ai-chat");
-                if (act === "close-slot") {
-                  setApp(null);
-                } else if (act === "open-slot") {
-                  setApp("ai-chat");
-                } else if (act === "show") {
-                  setOpenTask(null);
-                } else {
-                  const next = act === "dock";
-                  setChatDocked(next);
-                  writeChatDocked(next);
+                const { press } = assistant;
+                if (press.app !== undefined) setApp(press.app);
+                if (press.closeTask) setOpenTask(null);
+                if (press.docked !== undefined) {
+                  setChatDocked(press.docked);
+                  writeChatDocked(press.docked);
                 }
               }}
             />

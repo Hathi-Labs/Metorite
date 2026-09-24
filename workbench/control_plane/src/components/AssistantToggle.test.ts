@@ -75,4 +75,20 @@ describe("the assistant button lives in the top bar", () => {
     expect(source).toMatch(/import Button from "@\/components\/ui\/Button";/);
     expect(source).not.toMatch(/<button\b/);
   });
+
+  it("Projects wires the button through assistantButton, with the slot, behind the chat flag", () => {
+    const source = read("app/projects/page.tsx");
+    const bar = topBar(source, "<SidePanelFitContext.Provider");
+    // The flag gate: the button exists only where the chat is live.
+    expect(bar).toMatch(/\{CHAT_LIVE \? \(\s*<AssistantToggle\b/);
+    // Every decision comes from the pure function the chatDock tests cover.
+    expect(bar).toMatch(/open=\{assistant\.pressed\}/);
+    expect(bar).toMatch(/title=\{assistant\.title\}/);
+    expect(bar).toMatch(/const \{ press \} = assistant;/);
+    // The slot reaches it, or the button is unpressed over the slot and a
+    // press there changes nothing on screen.
+    expect(source).toMatch(
+      /const assistant = assistantButton\(\{\s*state: dockState,\s*wide: dockWide,\s*slotOpen: app === "ai-chat",\s*\}\);/,
+    );
+  });
 });

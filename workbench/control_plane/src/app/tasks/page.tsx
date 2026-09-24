@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Icon from "@/components/Icon";
 import AssistantToggle from "@/components/AssistantToggle";
+import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
 import { useTaskStore } from "./lib/taskStore";
@@ -210,15 +211,18 @@ export default function TasksPage() {
         <span className="text-xs font-medium text-muted-foreground">
           My Tasks
         </span>
-        <button
-          type="button"
+        {/* The same primitive and size as AssistantToggle beside it, so the
+            two chips in this bar share one height and one radius. */}
+        <Button
+          variant="secondary"
+          size="sm"
+          icon="Plus"
           onClick={() => openQuickCapture("single")}
-          className="tech-transition ml-2 inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground hover:border-primary/40 hover:text-foreground"
+          className="ml-2"
         >
-          <Icon name="Plus" className="h-3.5 w-3.5" />
           Capture
           <kbd className="rounded border border-border px-1 text-[9px]">C</kbd>
-        </button>
+        </Button>
         <AssistantToggle
           open={assistantOpen}
           onToggle={() => setAssistantOpen((v) => !v)}
