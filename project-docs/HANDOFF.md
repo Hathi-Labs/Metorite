@@ -3286,6 +3286,29 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_ai_chat.md` §3.2 · the S2 review, 2026-09-22
 - **Added:** 2026-09-22 · the Projects chat S2 session. Minted as H-161, renumbered to H-162 because main took H-161 first
 
+### H-184 · Five small follow-ups from the R2b review of the report visuals · [AGENT]
+- **Check:** `grep -n "current_week_partial\|so far" workbench/control_plane/src/lib/reportEmail.ts`
+  → no hit means item 1 is still open. Check each other item by hand.
+- **Why:** the R2b review (PR for `ws-27bn-r2b-visuals`) found these. None
+  loses data, and none blocked the merge.
+  1. The email and the download draw the running week as a normal bar. On
+     a Monday the last bar reads 0, and nothing says that the week has only
+     started. The in-app panel dims that bar for this reason. Mark it "so
+     far" in `reportLayout`.
+  2. The throughput list in `reportLayout` ignores `maxRows`. A report of
+     26 weeks prints 26 bar lines in the email.
+  3. `Collapsible.tsx` and `ReportsView.tsx` say that `keepMounted` lets
+     find-in-page reach a folded table. It does not, because Base UI sets
+     `hidden`. Pass `hiddenUntilFound` too, or delete the claim.
+  4. The arithmetic check of fence (c) in `reportVisuals.test.ts` does not
+     catch a binary `+`. It copies `capacity.test.ts:182`, so widen both.
+  5. On a phone, the `/projects` shell has no branch for an app pane. So a
+     member cannot open Reports or Analytics at 390 px. This gap is older
+     than R2b.
+- **Authority:** `specs/projects_reports.md` §8 R2b · the R2b review and
+  verification, 2026-09-24
+- **Added:** 2026-09-24 · the WS-27bn R2b session
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
