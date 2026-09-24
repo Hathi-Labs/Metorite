@@ -555,11 +555,11 @@ export function TableView({
       ref={gridRef}
       tabIndex={0}
       onKeyDown={onKeyDown}
-      className="overflow-x-auto outline-none"
+      className="outline-none"
       aria-label="Task table — arrow keys move the cell cursor, Enter edits, Esc cancels"
     >
       {error ? (
-        <p className="border-b border-border bg-muted px-3 py-2 text-xs text-foreground">
+        <p className="sticky left-0 border-b border-border bg-muted px-3 py-2 text-xs text-foreground">
           {error}
         </p>
       ) : null}

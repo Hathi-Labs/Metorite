@@ -892,7 +892,7 @@ export function TaskBoard({
       aria-label="Task board — arrow keys move, Shift extends the selection, Enter opens"
     >
       {laned ? (
-        <div className="flex items-center gap-2 px-3 pt-2">
+        <div className="sticky left-0 flex w-fit items-center gap-2 px-3 pt-2">
           <Button
             variant={lanes.showEmptyLanes ? "secondary" : "ghost"}
             size="sm"
@@ -910,7 +910,7 @@ export function TaskBoard({
       ) : null}
 
       {!laned ? (
-        <div className="flex gap-3 overflow-x-auto p-3">
+        <div className="flex w-max min-w-full gap-3 p-3">
           {columns.map((column, columnIndex) => {
             const accent = columnAccents[columnIndex];
             return (
@@ -968,7 +968,7 @@ export function TaskBoard({
           })}
         </div>
       ) : (
-        <div className="overflow-x-auto p-3">
+        <div className="w-max min-w-full p-3">
           <div className="min-w-max">
             {/* Column headers once, up top — every lane below shares them, and
                 they carry the same accent the flat board's headers do. */}
