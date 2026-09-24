@@ -425,22 +425,19 @@ line — never reclaim a number by deleting the other entry.
   `work_plan.md` §6.1 WS-31 (i)
 - **Added:** 2026-09-23 · the Jev planning session
 
-### H-163 · My Tasks: only S6g is left of the cutover · [AGENT]
-- **Check:** `gh pr list --head my-tasks-inbox --state merged` → an empty
-  list means S6g has not merged. Delete this entry when it has merged and the
-  deploy serves it.
-- **What is left.** S6g, one inbox and one promote path (branch
-  `my-tasks-inbox`). `specs/my_tasks_cutover.md` §5 S6g holds its build
-  record. Every other slice is merged. S8 PR 2 dropped the old store
-  (migration 217, in the production ledger since 2026-09-24 05:40 UTC). S9
-  moved the code names (#436, `ec979545`).
-- **Owed by a person.** A signed-in member captures in My Tasks and sees the
-  task in Projects in the same page load (§6 step 9).
-- **Why:** owner directive 2026-09-23 (D73), and the inbox directive of
-  2026-09-24. The spec's §5 holds the slices in order.
+### H-163 · My Tasks: a signed-in member checks capture into Projects · [OWNER]
+- **Check:** a signed-in member opens My Tasks on app.metorite.com. The
+  member picks a project with the capture chip, or types `#<project>`, and
+  captures a task. The task shows on that project's board in Projects without
+  a page reload. Delete this entry when the member sees it.
+- **Why a person.** An agent cannot sign in. Every slice of the cutover is
+  merged and served. S6g is the last one (#454, `3c1a8512`, served
+  2026-09-24). `specs/my_tasks_cutover.md` §6 step 9 names this check.
+- **If it fails.** Record what the member saw, and open an [AGENT] entry for
+  the fix.
 - **Authority:** D73 · `specs/my_tasks_cutover.md` · `work_plan.md` §2 WS-39
 - **Added:** 2026-09-23 · the My Tasks planning session. **Re-cut**
-  2026-09-24 when S8 and S9 closed H-29 and H-151.
+  2026-09-24 when S6g merged. Only the signed-in check is left.
 ### H-104 · The generated tenancy files are NOT on the migration ladder · [AGENT]
 - **Check:** `ls infra/postgres/generated/*.sql`, and read the glob in
   `scripts/apply_migrations.sh` (it matches numbered files in `infra/postgres`
