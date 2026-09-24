@@ -184,8 +184,12 @@ export interface GtdItem {
   assignees?: Person[];
   /** the item's stage/status in the connected PM tool (e.g. "Backlog", "To-do") */
   providerStatus?: string;
-  /** the task's stage on the local Kanban board (configured in settings) */
+  /** the NAME of the task's lane in its own project ("Building", "In progress") */
   workflowStage?: string;
+  /** the CATEGORY of that lane (`pm_task_statuses.category`: todo,
+   *  in_progress, done, backlog, triage, cancelled). Next Actions groups by
+   *  it (D73.9); `lib/statusCategory.ts` owns the rule. */
+  statusCategory?: string;
   /** manual (drag) rank within a group/column; unset → created-at ordering */
   sortKey?: number;
   /** set → this item is a subtask of another gtd_item (its parent). */

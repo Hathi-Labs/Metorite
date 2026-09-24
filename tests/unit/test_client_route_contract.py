@@ -118,18 +118,48 @@ def test_every_client_path_is_a_route_the_gateway_serves():
     [
         "/tasks/settings",
         "/tasks/calendar/day-state",
-        "/tasks/calendar/plan",
-        "/tasks/calendar/rollover",
-        "/tasks/calendar/estimate-stats",
+        "/projects/my/calendar/plan",
+        "/projects/my/calendar/rollover",
     ],
 )
-def test_the_calendar_and_settings_doors_did_not_move_in_the_rename(path):
-    """Slice 2 renamed three tables underneath these. No door moved.
-
-    `gtd_settings` became `user_settings`, `gtd_day_state` became
-    `calendar_day_state` and `gtd_rollover_log` became
-    `calendar_rollover_log` on 2026-09-22. The HTTP surface is unchanged on
-    purpose, so no client call had to move with them.
-    """
+def test_the_calendar_and_settings_doors_are_served_and_called(path):
+    """Slice 2 renamed three tables underneath the settings and day-state
+    doors, and no door moved. S8 PR 1 moved the planner doors onto the lens
+    for good: the client calls `/projects/my/calendar/*` and nothing else."""
     assert path in _served_paths()
     assert path in _client_paths()
+
+
+#: The `/tasks` routes S8 PR 1 deleted. None may come back as a served path,
+#: and the client may call none of them.
+RETIRED = [
+    "/tasks/items", "/tasks/items/batch", "/tasks/items/bulk",
+    "/tasks/items/bulk-archive", "/tasks/hierarchy", "/tasks/spaces",
+    "/tasks/folders", "/tasks/local-projects", "/tasks/accounts",
+    "/tasks/providers", "/tasks/sync", "/tasks/sync/status",
+    "/tasks/status-catalog", "/tasks/projects", "/tasks/contexts",
+    "/tasks/calendar", "/tasks/calendar/plan", "/tasks/calendar/replan",
+    "/tasks/calendar/rollover", "/tasks/calendar/estimate-stats",
+]
+
+
+#: Literal prefixes the client still reads in front of a surviving door:
+#: `/items/${id}/clarify` reads as `/tasks/items`, and `/calendar/${kind}`
+#: (the agent planner) as `/tasks/calendar`. They are not calls to the
+#: retired routes, so only the served half is checked for them.
+_PREFIXES_OF_A_LIVE_DOOR = {"/tasks/items", "/tasks/calendar"}
+
+
+@pytest.mark.parametrize("path", RETIRED)
+def test_a_retired_door_is_neither_served_nor_called(path):
+    assert path not in _served_paths()
+    if path not in _PREFIXES_OF_A_LIVE_DOOR:
+        assert path not in _client_paths()
+
+
+def test_the_ai_doors_on_items_survive():
+    """Three `/tasks/items/{id}/*` doors stay: the handler picks the store
+    through `item_source()`, so they answer the one store."""
+    served = _served_paths()
+    for door in ("clarify", "enrich", "suggest-title"):
+        assert f"/tasks/items/{{item_id}}/{door}" in served, door

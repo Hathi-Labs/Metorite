@@ -807,7 +807,7 @@ describe("selects and file pickers go through the primitives", () => {
     // next edit add a third without CI noticing.
     "app/settings/organization/OrganizationAdmin.tsx": 2,
     "app/tasks/components/EngageView.tsx": 2,
-    "app/tasks/components/TaskSettingsModal.tsx": 2,
+    "app/tasks/components/TaskSettingsModal.tsx": 1,
     // 3 raw, plus one `<Select>` the widened regex now sees.
     "app/tasks/components/TaskToolbar.tsx": 4,
     "app/calendar/components/CalendarSettings.tsx": 3,

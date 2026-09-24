@@ -71,8 +71,8 @@ export function DeleteConfirmModal() {
                 <Icon name="AlertTriangle" className="mt-0.5 h-3 w-3 shrink-0" />
                 <span>
                   {syncedCount === count && count === 1
-                    ? "This is a ClickUp task — it will be archived in ClickUp (recoverable there), not permanently deleted."
-                    : `${syncedCount} of these ${syncedCount === 1 ? "is a ClickUp task" : "are ClickUp tasks"} — they'll be archived in ClickUp (recoverable there), not permanently deleted.`}
+                    ? "This task lives on a project board — it will be archived there (recoverable), not permanently deleted."
+                    : `${syncedCount} of these ${syncedCount === 1 ? "lives" : "live"} on a project board — they'll be archived there (recoverable), not permanently deleted.`}
                 </span>
               </div>
             )}

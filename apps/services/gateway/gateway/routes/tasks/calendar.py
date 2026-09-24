@@ -1,8 +1,10 @@
 """Tasks · calendar — the AI day-planner + external-calendar sync seams.
 
-The scheduled-item grid data lives in items.py (GET /tasks/calendar range query).
-This module holds:
-  • POST /tasks/calendar/plan — the AI "Plan my day" planner (below).
+The browser's grid and its planner live under ``/projects/my/calendar/*``
+(``routes/projects/planning.py``), which calls the planner cores below with the
+one store. This module holds:
+  • the planner cores, and the agent planner (``/calendar/*-today``) that the
+    chat assistant calls.
   • the EXTERNAL calendar sync surface (Google + Outlook), scaffolded per
     calendar_timeboxing.md §8; wiring deferred to roadmap P4.
 
@@ -31,14 +33,12 @@ from acb_auth import UserContext, get_current_user
 from acb_common.db import TenantUnbound
 from fastapi import Depends, HTTPException
 from gateway.routes.tasks.core import (
-    ITEM_SELECT,
     # `_get_db` is used ONLY by the auto-rollover sweep's org enumeration at the
     # bottom of this file (H4 — the RLS-EXEMPT `organization` read; see the
     # comment there); every request handler AND per-user rollover uses
     # `_tenant_session`.
     _get_db,
     _log,
-    _row_to_item,
     _tenant_session,
     _uid,
     router,
@@ -509,39 +509,6 @@ async def _llm_rank_day(
     return ordered, notes, None
 
 
-#: The learned-estimate signal over `gtd_items`: the median actual/planned ratio
-#: across the member's recent completed, TIMED blocks — the "you take 1.3x your
-#: estimate" factor behind the end-of-day review and the planner's padding
-#: (`calendar_ux_review` §4). `planned` is the scheduled block length, falling
-#: back to the raw estimate.
-#:
-#: Lifted out of a function into a constant by WS-39 S3a-client slice 2, so that
-#: each `TaskSource` owns its own version rather than the function branching on
-#: which store it is looking at.
-_GTD_RATIO_SQL = """
-        SELECT count(*) AS n,
-               percentile_cont(0.5) WITHIN GROUP (ORDER BY r) AS median_ratio
-          FROM (
-            SELECT EXTRACT(EPOCH FROM (actual_end - actual_start)) / 60.0
-                     / NULLIF(planned, 0) AS r
-              FROM (
-                SELECT actual_start, actual_end,
-                       COALESCE(
-                         EXTRACT(EPOCH FROM (scheduled_end - scheduled_start))
-                             / 60.0,
-                         time_estimate_mins) AS planned
-                  FROM gtd_items
-                 WHERE user_id = :uid
-                   AND actual_start IS NOT NULL AND actual_end IS NOT NULL
-                   AND actual_end > actual_start
-                   AND deleted_at IS NULL
-                   AND actual_end > now() - interval '90 days'
-              ) s
-             WHERE planned > 0
-          ) t
-"""
-
-
 async def _estimate_pad(
     db: Any, uid: str, src: TaskSource,
 ) -> tuple[float, str | None]:
@@ -579,27 +546,6 @@ async def estimate_stats_for(user: Any, src: TaskSource) -> dict:
             "ratio": round(ratio, 2),
             "over_pct": round((ratio - 1) * 100),
         }
-
-
-@router.get("/calendar/estimate-stats")
-async def estimate_stats(user: UserContext = Depends(get_current_user)):
-    """The retiring store's accuracy signal. See `estimate_stats_for`."""
-    return await estimate_stats_for(user, GTD_SOURCE)
-
-
-_CANDIDATE_WHERE = (
-    " WHERE i.user_id = :uid AND i.parent_item_id IS NULL"
-    " AND i.archived_at IS NULL AND i.deleted_at IS NULL"
-    " AND i.disposition = 'NEXT' AND i.is_mine = true"
-    " AND i.scheduled_start IS NULL"
-)
-_BUSY_WHERE = (
-    " WHERE i.user_id = :uid AND i.parent_item_id IS NULL"
-    " AND i.archived_at IS NULL AND i.deleted_at IS NULL"
-    " AND i.disposition NOT IN ('DONE','TRASH')"
-    " AND i.scheduled_start IS NOT NULL"
-    " AND i.scheduled_start < :win_end AND i.scheduled_end > :win_start"
-)
 
 
 def _windows_from_req(
@@ -727,30 +673,6 @@ def _lunch_interval(
     if e <= win_start or s >= win_end:
         return None
     return s, e
-
-
-# Everything the user has on TODAY's grid (the local day of the plan window) —
-# partitioned in Python into movable (reshuffle), obstacles (fixed/done) and the
-# already-done tally (for remaining capacity).
-_TODAY_SCHEDULED_WHERE = (
-    " WHERE i.user_id = :uid AND i.parent_item_id IS NULL"
-    " AND i.archived_at IS NULL AND i.deleted_at IS NULL"
-    " AND i.disposition <> 'TRASH'"
-    " AND i.scheduled_start IS NOT NULL"
-    " AND i.scheduled_start >= :day0 AND i.scheduled_start < :day1"
-)
-# Carry-forward: unfinished, movable tasks left scheduled on a PRIOR day. Rebuild
-# my day sweeps these into today (re-placed, or evicted back to the list if they
-# don't fit) so leftovers never get stranded on a dead day. Fixed meetings stay
-# put (rollover/replan never move a 🔒 block).
-_OVERDUE_CARRY_WHERE = (
-    " WHERE i.user_id = :uid AND i.parent_item_id IS NULL"
-    " AND i.archived_at IS NULL AND i.deleted_at IS NULL"
-    " AND i.disposition NOT IN ('DONE','TRASH')"
-    " AND coalesce(i.flexible, true) = true"
-    " AND i.is_mine = true"
-    " AND i.scheduled_start IS NOT NULL AND i.scheduled_start < :day0"
-)
 
 
 # Spoken durations → hours, so "work for a couple hours" parses like "for 2h".
@@ -1066,46 +988,18 @@ async def plan_day_for(
                               include_new=True)
 
 
-@router.post("/calendar/plan", response_model=DayPlan)
-async def plan_day(
-    req: PlanDayRequest, user: UserContext = Depends(get_current_user),
-):
-    """The retiring store's planner. See `plan_day_for`."""
-    return await plan_day_for(req, user, GTD_SOURCE)
-
-
-# ── Roll-over = RETURN unfinished tasks to the unscheduled list ──────────────
-# Overdue-incomplete FLEXIBLE blocks (a fixed meeting is never touched). The
-# manual action + the nightly job both RELEASE these back to the list so the
-# user re-plans them deliberately, rather than the system auto-cramming a day.
-_OVERDUE_WHERE = (
-    " WHERE i.user_id = :uid AND i.parent_item_id IS NULL"
-    " AND i.archived_at IS NULL AND i.deleted_at IS NULL"
-    " AND i.disposition NOT IN ('DONE','TRASH')"
-    " AND coalesce(i.flexible, true) = true"
-    " AND i.scheduled_start IS NOT NULL AND i.scheduled_end < :now"
-)
-
-
 # ── Where the planner's rows come from (WS-39 S3a-client slice 2) ───────────
 #
-# D53 gives the product ONE task store, and the day planner was the last thing
-# still reading only the old one. Left alone it would have become the worst kind
-# of bug at the flip: the Tasks UI would show `pm_*` tasks, "Plan my day" would
-# read and schedule `gtd_items`, and the blocks would simply never appear — no
-# error, no 500, a 200 with an empty plan.
+# D53 gives the product ONE task store. The planner reads it through a SOURCE:
+# an object that answers the six reads this planner performs. S8 PR 1 deleted
+# the retired store's source, so one source is left. The packer, the LLM
+# ranker, the horizon parser, the capacity arithmetic and the eviction rules are
+# all downstream of those six reads.
 #
-# The two stores are NOT modelled as a flag inside every query. They are modelled
-# as a SOURCE: an object that answers the six reads this planner performs. The
-# packer, the LLM ranker, the horizon parser, the capacity arithmetic and the
-# eviction rules are all downstream of those six reads and do not change at all —
-# which is the point, because that code is where the behaviour lives and
-# re-deriving it against a second store is how the two would drift.
-#
-# ⚠️ `user_settings`, `calendar_day_state` and `calendar_rollover_log` are NOT part of this.
-# They SURVIVE the retirement (D53.6) — they are per-member calendar state, not
-# tasks — so `_planning_prefs`, `_day_templates`, `_one_thing_for` and the
-# rollover log are shared by both sources and are deliberately absent below.
+# ⚠️ `user_settings`, `calendar_day_state` and `calendar_rollover_log` are NOT
+# part of this. They are per-member calendar state, not tasks (D53.6), so
+# `_planning_prefs`, `_day_templates`, `_one_thing_for` and the rollover log are
+# deliberately absent below.
 
 
 @dataclass(frozen=True)
@@ -1119,9 +1013,8 @@ class TaskSource:
     renamed one of those would break the packer silently, so the parity is
     asserted in `test_calendar_task_source.py` rather than trusted.
 
-    ⚠️ **`disposition` is the EFFECTIVE one.** On `gtd_items` it is a stored,
-    NOT NULL column and the two are the same thing. On `pm_*` a member who has
-    never triaged a task has no overlay row at all, and the disposition is
+    ⚠️ **`disposition` is the EFFECTIVE one.** A member who has never
+    triaged a task has no overlay row at all, and the disposition is
     DERIVED from the task's status and assignment (`derive_disposition`). A
     planner that filtered on the stored column would see NOTHING for a member
     whose company board is untriaged — which is every member on day one.
@@ -1170,147 +1063,37 @@ class TaskSource:
         planner's five READS and stopped there, because the browser applies a
         plan through the ordinary overlay PATCH — which slice 1 had already
         routed. But two server-side callers apply plans WITHOUT a browser: the
-        agent's `apply=true` path, and the nightly roll-over sweep. Left on the
-        old store they would have gone on writing `gtd_items` after the cutover:
-        the sweep, unattended and per tenant, every night.
+        agent's `apply=true` path, and the nightly roll-over sweep. Both write
+        through this method, so both write the one store.
         """
         raise NotImplementedError
 
     def to_item(self, row: Any) -> Any:
-        """Row to the object the packer carries. `gtd_items` rows go through
-        `_row_to_item` because they arrive as `i.*` with connector columns
-        attached; `pm_*` rows are already shaped by `_pm_row` and pass straight
-        through, since a `GtdItemModel` built from them would need `source`,
-        `account_id` and `provider_task_id` — three fields D52 retired."""
+        """Row to the object the packer carries. `pm_*` rows are already
+        shaped by `_pm_row` and pass straight through."""
         raise NotImplementedError
 
 
-# ── The retiring store ──────────────────────────────────────────────────────
 
-
-@dataclass(frozen=True)
-class _GtdSource(TaskSource):
-    """`gtd_items` — unchanged behaviour, moved behind the seam verbatim.
-
-    Every WHERE below is the one that was inline before this refactor, character
-    for character. That is deliberate: a slice that re-points a planner should
-    not also be the slice that quietly re-tunes what it selects, and the way to
-    prove it did not is for the strings to be the same strings.
-    """
-
-    async def scheduled_today(self, db, uid, day0, day1):
-        return (await db.execute(
-            text(ITEM_SELECT + _TODAY_SCHEDULED_WHERE),
-            {"uid": uid, "day0": day0, "day1": day1})).fetchall()
-
-    async def carry_forward(self, db, uid, day0):
-        return (await db.execute(
-            text(ITEM_SELECT + _OVERDUE_CARRY_WHERE),
-            {"uid": uid, "day0": day0})).fetchall()
-
-    async def candidates(self, db, uid):
-        return (await db.execute(
-            text(ITEM_SELECT + _CANDIDATE_WHERE), {"uid": uid})).fetchall()
-
-    async def overdue(self, db, uid, now):
-        return (await db.execute(
-            text(ITEM_SELECT + _OVERDUE_WHERE), {"uid": uid, "now": now},
-        )).fetchall()
-
-    async def busy_window(self, db, uid, win_start, win_end):
-        return (await db.execute(
-            text(ITEM_SELECT + _BUSY_WHERE),
-            {"uid": uid, "win_start": win_start, "win_end": win_end},
-        )).fetchall()
-
-    async def apply_blocks(self, db, uid, place, clear):
-        for task_id, start, end in place:
-            await db.execute(
-                text("UPDATE gtd_items SET scheduled_start = :s, "
-                     " scheduled_end = :e, updated_at = now()"
-                     " WHERE id = :id AND user_id = :uid"),
-                {"s": start, "e": end, "id": task_id, "uid": uid})
-        for task_id in clear:
-            await db.execute(
-                text("UPDATE gtd_items SET scheduled_start = NULL,"
-                     " scheduled_end = NULL, updated_at = now()"
-                     " WHERE id = :id AND user_id = :uid"),
-                {"id": task_id, "uid": uid})
-
-    def to_item(self, row):
-        return _row_to_item(row)
-
-    async def estimate_ratio(self, db, uid):
-        row = (await db.execute(text(_GTD_RATIO_SQL), {"uid": uid})).first()
-        n = int(row.n or 0) if row else 0
-        ratio = float(row.median_ratio) if row and row.median_ratio else 1.0
-        return ratio, n
-
-
-_TRUTHY = frozenset({"1", "on", "true", "yes"})
-
-GTD_SOURCE: TaskSource = _GtdSource(name="gtd_items")
-
-
-# ── Which store the SERVER-side surfaces plan (WS-39 S3a-client slice 3) ────
+# ── Which store the SERVER-side surfaces plan ───────────────────────────────
 #
-# Slice 2 gave the browser planner two routes and let the CLIENT pick, which is
-# why the cutover has only one flag. Three surfaces cannot do that, because none
-# of them has a browser:
-#
-#   * the agent planner (`/calendar/{plan,replan,rollover}-today`), called by the
-#     chat assistant;
-#   * `/calendar/day-summary`, which the assistant reads before answering;
-#   * the NIGHTLY ROLL-OVER SWEEP, which runs unattended, per tenant, and WRITES.
-#
-# So this is the second flag, and it is deliberate rather than reluctant. What
-# makes it safe is not that there is one of it — it is that a DISAGREEMENT with
-# the browser's flag is visible: `/version` reports this value, so "is the box on
-# the lens" is answerable with `curl`, from a laptop, without box access. An
-# invisible mismatch is the thing worth avoiding; a second variable in the same
-# `.env` file, checkable by evidence, is not.
-#
-# ⚠️ Both must be set together. `NEXT_PUBLIC_TASKS_LENS` is read by the Next.js
-# BUILD (which the deploy runs on the box, from the same `.env`), and
-# `TASKS_LENS` by this process at CALL time. Set one and not the other and the
-# UI and the assistant disagree about which store the member's day lives in.
-# `docs/TASKS_LENS.md` is the pair's write-up; `H-34` asks the owner to add them.
-
-TASKS_LENS_FLAG = "TASKS_LENS"
-
-
-def tasks_lens_enabled() -> bool:
-    """Is this deployment serving the ONE task store? Default **OFF**.
-
-    Read at CALL time rather than import time — the same idiom as
-    `projects/core.org_vocabularies_enabled` and `ACTION_BROKER_ENFORCE` — so a
-    flip is a restart rather than a release, and a test can set it around one
-    call.
-
-    ⚠️ Default OFF is load-bearing and not caution. `gtd_items` still holds every
-    task anybody has captured, and the S3b backfill is owner-gated and has not
-    run, so turning this on early does not degrade the assistant — it makes every
-    answer empty, on a 200.
-    """
-    import os
-
-    return (os.environ.get(TASKS_LENS_FLAG) or "").strip().lower() in _TRUTHY
+# One store since S8 (my_tasks_cutover.md §5 S8, PR 1). The agent planner, the
+# day summary and the nightly roll-over sweep have no browser, so they cannot
+# pick a store by picking a route. `agent_source()` is the one answer they ask.
+# It returns the lens source unconditionally. The seam function stays so that
+# the call sites do not churn.
 
 
 def agent_source() -> TaskSource:
-    """The store the server-side surfaces read and write.
+    """The store the server-side surfaces read and write: the one store.
 
-    The import is function-local ON PURPOSE, and it is the same reason
-    `_LensSource` does not live in this module: `routes/projects` imports this
-    file, so naming `planning` at module scope closes a cycle that fails only on
-    whichever package a given process happens to load first. At CALL time both
-    modules are fully loaded and the lookup is free.
+    The import is function-local ON PURPOSE: `routes/projects` imports this
+    file, so naming `planning` at module scope closes an import cycle.
     """
-    if not tasks_lens_enabled():
-        return GTD_SOURCE
     from gateway.routes.projects.planning import LENS_SOURCE
 
     return LENS_SOURCE
+
 
 #: ⚠️ The lens source is NOT here, and its absence is structural rather than
 #: tidiness. It needs `MY_TASKS_FROM`, `derive_disposition` and
@@ -1347,14 +1130,6 @@ async def rollover_day_for(
             used_mins=0, capacity_mins=req.capacity_mins)
 
 
-@router.post("/calendar/rollover", response_model=DayPlan)
-async def rollover_day(
-    req: PlanDayRequest, user: UserContext = Depends(get_current_user),
-):
-    """The retiring store's roll-over. See `rollover_day_for`."""
-    return await rollover_day_for(req, user, GTD_SOURCE)
-
-
 async def replan_day_for(
     req: PlanDayRequest, user: Any, src: TaskSource,
 ) -> DayPlan:
@@ -1369,27 +1144,6 @@ async def replan_day_for(
     return await _plan_window(req, user, src, win_start, win_end,
                               include_new=False)
 
-
-@router.post("/calendar/replan", response_model=DayPlan)
-async def replan_day(
-    req: PlanDayRequest, user: UserContext = Depends(get_current_user),
-):
-    """The retiring store's repacker. See `replan_day_for`."""
-    return await replan_day_for(req, user, GTD_SOURCE)
-
-
-# ⚠️ **EVERYTHING BELOW STILL PLANS `gtd_items` ONLY — deliberately, and it is
-# the slice-3 job H-33 names.** The agent surface has no browser and therefore no
-# client flag to read, so choosing a store here needs a SERVER-side answer to
-# "which store is this deployment on" that slice 2 does not introduce: one flag
-# is flippable, two flags that must agree are a mismatch waiting to be
-# discovered by a user. The browser planner needs no such flag because the
-# client picks the ROUTE (`/projects/my/calendar/*` vs `/tasks/calendar/*`), and
-# the route picks the store.
-#
-# Until that lands, an agent asked to plan a day on a lens deployment plans the
-# retiring store and reports an empty day. That is worse than an error and it is
-# why this comment is here rather than in a ticket alone.
 
 # ── Agent-facing planner (no client geometry) ────────────────────────────────
 # The browser endpoints above need the client to send exact day-window + energy
@@ -1725,7 +1479,7 @@ async def rollover_log(
 # §H4). Everything below runs from `asyncio.create_task`, long after any request
 # (and its tenant binding) is gone, so the runbook forbids inheriting an ambient
 # tenant — and the sweep is CROSS-tenant by construction. `user_settings`/
-# `gtd_items`/`calendar_rollover_log` are FORCE-RLS'd, so a single unbound read returns
+# `pm_tasks`/`calendar_rollover_log` are FORCE-RLS'd, so a single unbound read returns
 # ZERO rows under phase 4 (rollover silently stops for every customer). The H4
 # shape (exemplars: `crm/auto_lead` + `projects/run_lifecycle_sweep`): the sweep
 # enumerates organizations from the RLS-EXEMPT `organization` table on an unbound
@@ -1774,12 +1528,8 @@ async def _rollover_one_user(row: Any, org_id: str) -> None:
     if row.last_rollover_date == local_today:
         return  # already handled this local day
 
-    # ⚠️ The store, for a job with NO REQUEST and no browser (WS-39
-    # S3a-client slice 3). This is the surface where getting it wrong is worst:
-    # it runs nightly, per tenant, unattended, and it WRITES. Left pinned to
-    # `gtd_items` it would have gone on releasing blocks in the retiring store
-    # after the cutover — every night, for every customer, with the members'
-    # real leftovers quietly never released at all.
+    # ⚠️ The store, for a job with NO REQUEST and no browser. It runs nightly,
+    # per tenant, unattended, and it WRITES, through `agent_source()`.
     src = agent_source()
     async with _tenant_session(org_id) as db:
         over_rows = await src.overdue(db, uid, now)

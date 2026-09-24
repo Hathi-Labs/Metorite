@@ -45,7 +45,6 @@ Run::
 """
 from __future__ import annotations
 
-import contextlib
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -1324,8 +1323,8 @@ class TestProvisionOrgBindUnderForceRls:
 
 # ==========================================================================
 # WS-29 H4 · BACKGROUND-JOB TENANT BINDING — tasks/calendar (MT-1d).
-# The tasks scheduler + calendar rollover open UNBOUND `get_db()` sessions and
-# touch RLS-FORCED tables (task_accounts, gtd_*), so under phase-4 RLS they read
+# The calendar rollover sweep opens UNBOUND `get_db()` sessions and
+# touches RLS-FORCED tables (user_settings, pm_*), so under phase-4 RLS it reads
 # 0 rows / have writes refused → tasks & calendar automation silently stops for
 # every customer. H4 threads each job's own `organization_id` and opens
 # `tenant_session(org)`; cross-tenant sweeps enumerate orgs from the RLS-EXEMPT
@@ -1339,7 +1338,7 @@ class TestProvisionOrgBindUnderForceRls:
 class TestCalendarRolloverBindUnderForceRls:
     """`_run_rollover_sweep` / `_rollover_one_user` under FORCE RLS (H4, MT-1d).
 
-    R7 name: ``calendar-rollover-bound-under-rls``. `user_settings` / `gtd_items` /
+    R7 name: ``calendar-rollover-bound-under-rls``. `user_settings` / `pm_task_personal` /
     `calendar_rollover_log` are FORCE-RLS'd, so the pre-H4 unbound sweep read 0 rows
     and released nothing post-phase-4. The fix enumerates orgs from the EXEMPT
     `organization` table then binds `tenant_session(org)` per org / per user.
@@ -1352,23 +1351,58 @@ class TestCalendarRolloverBindUnderForceRls:
     @staticmethod
     def _seed_rollover_user(admin_engine, *, org_id: str, user_id: str) -> str:
         """Seed (as the RLS-bypassing admin) an auto_rollover ``user_settings`` row
-        + one OVERDUE flexible block for ``user_id`` in ``org_id``. Every INSERT
-        stamps ``organization_id`` explicitly (the phase-1 DEFAULT reads the unset
-        GUC as NULL for the admin). Returns the item id."""
+        + one OVERDUE flexible block for ``user_id`` in ``org_id``, on the one
+        task store: a directory row, a project, a lane, a task assigned to the
+        member and the member's overlay row holding the block (S8 PR 1 moved
+        this seed off ``gtd_items``). Every INSERT stamps ``organization_id``
+        explicitly (the phase-1 DEFAULT reads the unset GUC as NULL for the
+        admin). Returns the task id."""
         item_id = str(uuid.uuid4())
+        project_id = str(uuid.uuid4())
+        status_id = str(uuid.uuid4())
         with admin_engine.begin() as conn:
+            conn.execute(text(
+                "INSERT INTO app_user (email, organization_id, status) "
+                "VALUES (:u, :o, 'active')"), {"u": user_id, "o": org_id})
             conn.execute(text(
                 "INSERT INTO user_settings (user_id, timezone, auto_rollover, "
                 "last_rollover_date, organization_id) "
                 "VALUES (:u, 'UTC', true, NULL, :o)"),
                 {"u": user_id, "o": org_id})
             conn.execute(text(
-                "INSERT INTO gtd_items (id, user_id, title, disposition, "
-                "flexible, scheduled_start, scheduled_end, organization_id) "
-                "VALUES (:id, :u, 'overdue block', 'NEXT', true, "
-                "now() - interval '2 days', now() - interval '1 day', :o)"),
-                {"id": item_id, "u": user_id, "o": org_id})
+                "INSERT INTO pm_projects (id, organization_id, name, created_by, "
+                "owns_statuses) VALUES (:id, :o, 'rollover', :u, true)"),
+                {"id": project_id, "o": org_id, "u": user_id})
+            conn.execute(text(
+                "INSERT INTO pm_task_statuses (id, organization_id, project_id, "
+                "name, category, position) "
+                "VALUES (:id, :o, :p, 'To do', 'todo', 10)"),
+                {"id": status_id, "o": org_id, "p": project_id})
+            conn.execute(text(
+                "INSERT INTO pm_tasks (id, organization_id, project_id, "
+                "root_project_id, task_number, status_id, title, created_by) "
+                "VALUES (:id, :o, :p, :p, 1, :s, 'overdue block', :u)"),
+                {"id": item_id, "o": org_id, "p": project_id, "s": status_id,
+                 "u": user_id})
+            conn.execute(text(
+                "INSERT INTO pm_task_assignees (task_id, organization_id, "
+                "assignee, assigned_by) VALUES (:t, :o, :u, :u)"),
+                {"t": item_id, "o": org_id, "u": user_id})
+            conn.execute(text(
+                "INSERT INTO pm_task_personal (task_id, organization_id, "
+                "member_email, disposition, flexible, scheduled_start, "
+                "scheduled_end) VALUES (:t, :o, :u, 'NEXT', true, "
+                "now() - interval '2 days', now() - interval '1 day')"),
+                {"t": item_id, "o": org_id, "u": user_id})
         return item_id
+
+    @staticmethod
+    def _block(conn, item_id: str, user_id: str):
+        """The member's scheduled start for one task, off the overlay."""
+        return conn.execute(text(
+            "SELECT scheduled_start FROM pm_task_personal "
+            "WHERE task_id = :id AND member_email = :u"),
+            {"id": item_id, "u": user_id}).scalar_one()
 
     @staticmethod
     def _cleanup(admin_engine, *, user_ids: list[str]) -> None:
@@ -1377,9 +1411,11 @@ class TestCalendarRolloverBindUnderForceRls:
                 conn.execute(text(
                     "DELETE FROM calendar_rollover_log WHERE user_id = :u"), {"u": u})
                 conn.execute(text(
-                    "DELETE FROM gtd_items WHERE user_id = :u"), {"u": u})
+                    "DELETE FROM pm_projects WHERE created_by = :u"), {"u": u})
                 conn.execute(text(
                     "DELETE FROM user_settings WHERE user_id = :u"), {"u": u})
+                conn.execute(text(
+                    "DELETE FROM app_user WHERE email = :u"), {"u": u})
 
     async def test_the_sweep_rolls_over_each_org_green(self, promoted):
         """GREEN + cross-tenant: two orgs, each an auto-rollover user with an
@@ -1400,12 +1436,8 @@ class TestCalendarRolloverBindUnderForceRls:
             try:
                 await _run_rollover_sweep()
                 with promoted.admin_engine.connect() as a:
-                    cleared_a = a.execute(text(
-                        "SELECT scheduled_start FROM gtd_items WHERE id = :id"),
-                        {"id": ia}).scalar_one()
-                    cleared_b = a.execute(text(
-                        "SELECT scheduled_start FROM gtd_items WHERE id = :id"),
-                        {"id": ib}).scalar_one()
+                    cleared_a = self._block(a, ia, ua)
+                    cleared_b = self._block(a, ib, ub)
                     log_a = a.execute(text(
                         "SELECT count(*) FROM calendar_rollover_log WHERE user_id=:u"),
                         {"u": ua}).scalar_one()
@@ -1451,12 +1483,8 @@ class TestCalendarRolloverBindUnderForceRls:
             try:
                 await _rollover_one_user(_Row(), promoted.org_a)
                 with promoted.admin_engine.connect() as a:
-                    a_cleared = a.execute(text(
-                        "SELECT scheduled_start FROM gtd_items WHERE id = :id"),
-                        {"id": ia}).scalar_one()
-                    b_still = a.execute(text(
-                        "SELECT scheduled_start FROM gtd_items WHERE id = :id"),
-                        {"id": ib}).scalar_one()
+                    a_cleared = self._block(a, ia, ua)
+                    b_still = self._block(a, ib, ub)
                 assert a_cleared is None, "the bound org-A rollover did not run"
                 assert b_still is not None, (
                     "org B's block was released by an org-A-bound rollover — the "
@@ -1467,16 +1495,13 @@ class TestCalendarRolloverBindUnderForceRls:
     async def test_the_unbound_rollover_reads_and_writes_nothing_red(self, promoted):
         """RED (the brick): the exact overdue-read and rollover-log INSERT the job
         runs, on an UNBOUND `acb_app` session under phase-4 RLS. The FORCE-RLS'd
-        `gtd_items` read returns 0 rows (nothing would be released) and the
+        `pm_task_personal` read returns 0 rows (nothing would be released) and the
         `calendar_rollover_log` INSERT's DEFAULT org is the unset GUC (NULL) → WITH
         CHECK refuses. This is the silent stop the per-org bind removes.
 
         NullPool + a fresh backend: a SET LOCAL GUC resets to '' (not NULL) on a
         reused pooled connection; a fresh connection is genuinely NULL, the real
         background posture (the bootstrap fence documents this at length)."""
-        from gateway.routes.tasks.calendar import _OVERDUE_WHERE
-        from gateway.routes.tasks.core import ITEM_SELECT
-
         ua = f"rollover.red.{uuid.uuid4().hex[:8]}@h4.test"
         ia = self._seed_rollover_user(
             promoted.admin_engine, org_id=promoted.org_a, user_id=ua)
@@ -1484,11 +1509,13 @@ class TestCalendarRolloverBindUnderForceRls:
         try:
             now = datetime.now(UTC)
             with eng.connect() as c, c.begin():
-                rows = c.execute(text(ITEM_SELECT + _OVERDUE_WHERE),
-                                 {"uid": ua, "now": now}).fetchall()
+                rows = c.execute(text(
+                    "SELECT task_id FROM pm_task_personal "
+                    "WHERE member_email = :uid AND scheduled_end < :now"),
+                    {"uid": ua, "now": now}).fetchall()
             assert rows == [], (
-                f"unbound overdue read saw {len(rows)} rows — gtd_items is not "
-                "FORCE-RLS'd, so the brick would not reproduce")
+                f"unbound overdue read saw {len(rows)} rows — pm_task_personal "
+                "is not FORCE-RLS'd, so the brick would not reproduce")
             with eng.connect() as c, c.begin():  # noqa: SIM117
                 with pytest.raises((DBAPIError, ProgrammingError)) as exc:
                     c.execute(text(
@@ -1518,264 +1545,6 @@ class TestCalendarRolloverBindUnderForceRls:
             await _rollover_one_user(_Row(), "")
 
 
-@_DB_GATE
-class TestSchedulerBindUnderForceRls:
-    """Task-manager scheduler enumeration/read under FORCE RLS (H4, MT-1d).
-
-    R7 name: ``tasks-scheduler-bound-under-rls``. `task_accounts` / `user_settings`
-    are FORCE-RLS'd, so a single unbound read returned 0 rows post-phase-4 and the
-    scheduler launched nothing. The fix enumerates orgs from the EXEMPT
-    `organization` table then binds `tenant_session(org)` per org.
-
-    ⚠️ **The rows outlive the connector (D52), so the green cases register a STUB
-    connector rather than seeding `provider='clickup'`.** Since WS-39 S1 the
-    provider registry is EMPTY, and the scheduler now skips any account whose
-    provider is absent from it — so a clickup-seeded "green" case would assert
-    the opposite of what it was written to assert, and would pass only because
-    the tenant bind and the provider guard cancelled out. The stub keeps the
-    tenancy claim (this class's subject) separable from the D52 claim
-    (`test_a_retired_provider_account_launches_no_loop`, below).
-    """
-
-    #: A provider name that exists ONLY while a test registers it. Never
-    #: "clickup" — the whole point is that the registry, not a literal, decides.
-    _STUB_PROVIDER = "h4stub"
-
-    @staticmethod
-    @contextlib.contextmanager
-    def _registered_connector(name: str):
-        """Put a connector in the REAL registry `build_provider` consults, for
-        the body of a test. Restores the dict exactly, so an aborted test cannot
-        leave a connector behind and turn `test_no_task_provider_connectors` red
-        for the next file in the session."""
-        from gateway.routes.tasks import providers as providers_mod
-
-        class _Stub(providers_mod.BaseTaskProvider):
-            provider = name
-
-            def __init__(self, *args, **kwargs):
-                """Never called — the scheduler guard only reads the NAME."""
-
-            async def verify(self):
-                return {}
-
-            async def list_workspaces(self):
-                return []
-
-            async def get_schema(self, workspace_id):
-                return {}
-
-            async def create_task(self, project_ref, payload):
-                return {}
-
-            async def list_members(self, workspace_id):
-                return []
-
-            async def create_project(self, workspace_id, name,
-                                     space_id, folder_id=None):
-                return {}
-
-            async def list_tasks(self, workspace_id, *, updated_since_ms=None):
-                return []
-
-        providers_mod._CONNECTORS[name] = _Stub
-        try:
-            yield
-        finally:
-            providers_mod._CONNECTORS.pop(name, None)
-
-    @staticmethod
-    def _app_dsn(promoted) -> str:
-        return promoted.app_url.render_as_string(hide_password=False)
-
-    @staticmethod
-    def _seed_account(admin_engine, *, org_id: str, user_id: str,
-                      provider: str = "h4stub") -> str:
-        aid = str(uuid.uuid4())
-        with admin_engine.begin() as conn:
-            conn.execute(text(
-                "INSERT INTO task_accounts (id, user_id, provider, workspace_id, "
-                "credentials_encrypted, sync_enabled, sync_interval_secs, "
-                "organization_id) VALUES (:id, :u, :p, 'ws-1', 'enc', "
-                "true, 300, :o)"),
-                {"id": aid, "u": user_id, "p": provider, "o": org_id})
-        return aid
-
-    @staticmethod
-    def _cleanup(admin_engine, *, account_ids: list[str]) -> None:
-        with admin_engine.begin() as conn:
-            for aid in account_ids:
-                conn.execute(text(
-                    "DELETE FROM task_accounts WHERE id = :id"), {"id": aid})
-
-    async def test_the_enumeration_reads_each_orgs_accounts_green(self, promoted):
-        """GREEN + cross-tenant: two orgs each with a sync-enabled account. The
-        REAL `_enabled_accounts_by_org` — enumerating orgs from the exempt table,
-        binding `tenant_session(org)` per org — returns BOTH accounts, EACH mapped
-        to its OWN org, never leaking one org's account into the other's tenant."""
-        from gateway.routes.tasks.scheduler import _enabled_accounts_by_org
-
-        ua = f"sched.a.{uuid.uuid4().hex[:8]}@h4.test"
-        ub = f"sched.b.{uuid.uuid4().hex[:8]}@h4.test"
-        aa = self._seed_account(
-            promoted.admin_engine, org_id=promoted.org_a, user_id=ua)
-        ab = self._seed_account(
-            promoted.admin_engine, org_id=promoted.org_b, user_id=ub)
-        async with tenant_engine_scope(self._app_dsn(promoted)):
-            try:
-                with self._registered_connector(self._STUB_PROVIDER):
-                    by_org = await _enabled_accounts_by_org()
-                assert aa in by_org, "org A's account was not enumerated"
-                assert ab in by_org, "org B's account was not enumerated"
-                assert by_org[aa][0] == promoted.org_a, (
-                    "org A's account was bound to the wrong tenant")
-                assert by_org[ab][0] == promoted.org_b, (
-                    "org B's account was bound to the wrong tenant")
-            finally:
-                self._cleanup(promoted.admin_engine, account_ids=[aa, ab])
-
-    async def test_read_interval_is_scoped_to_the_bound_org_green(self, promoted):
-        """GREEN: `_read_interval` bound to the account's own org reads its
-        (interval, enabled=True); bound to the OTHER org it sees nothing (USING)
-        → (default, False). A loop can never read another tenant's account row."""
-        from gateway.routes.tasks.scheduler import _read_interval
-
-        ua = f"sched.ri.{uuid.uuid4().hex[:8]}@h4.test"
-        aa = self._seed_account(
-            promoted.admin_engine, org_id=promoted.org_a, user_id=ua)
-        async with tenant_engine_scope(self._app_dsn(promoted)):
-            try:
-                with self._registered_connector(self._STUB_PROVIDER):
-                    interval, enabled = await _read_interval(aa, promoted.org_a)
-                    assert enabled is True, (
-                        "the account's own org could not read it")
-                    assert interval == 300
-                    _, enabled_b = await _read_interval(aa, promoted.org_b)
-                assert enabled_b is False, (
-                    "org B read org A's account row — task_accounts is not "
-                    "FORCE-RLS'd or the bind leaked")
-            finally:
-                self._cleanup(promoted.admin_engine, account_ids=[aa])
-
-    async def test_a_retired_provider_account_launches_no_loop(self, promoted):
-        """D52 FENCE — R7 name: ``tasks-scheduler-skips-retired-providers``.
-
-        A surviving `provider='clickup'`, `sync_enabled = true` row (D52 deleted
-        the connector, **not** the rows) is selected for ZERO loops, and nothing
-        writes its badge state. Without the guard the scheduler launches a loop
-        whose every cycle calls `build_provider('clickup')` → 400 "Unknown
-        provider" → `_sync_account` stamps `sync_status='error'` + `sync_error`,
-        which `/tasks` renders as a permanent "Sync failed" — re-earned every
-        300 s, forever.
-
-        Both halves are asserted because they fail independently: the SELECTION
-        (no loop) and the CONSEQUENCE (`sync_status`/`sync_error` untouched, so
-        the badge cannot appear). The stub-registered sibling row is the control
-        — it proves the enumeration is working in the same call, so "zero loops"
-        cannot be a green produced by a broken sweep.
-        """
-        from gateway.routes.tasks.scheduler import (
-            _enabled_accounts_by_org,
-            _read_interval,
-        )
-
-        ua = f"sched.cu.{uuid.uuid4().hex[:8]}@h4.test"
-        ub = f"sched.ok.{uuid.uuid4().hex[:8]}@h4.test"
-        retired = self._seed_account(
-            promoted.admin_engine, org_id=promoted.org_a, user_id=ua,
-            provider="clickup")
-        control = self._seed_account(
-            promoted.admin_engine, org_id=promoted.org_a, user_id=ub,
-            provider=self._STUB_PROVIDER)
-        async with tenant_engine_scope(self._app_dsn(promoted)):
-            try:
-                with self._registered_connector(self._STUB_PROVIDER):
-                    by_org = await _enabled_accounts_by_org()
-                    # The second launch path (connect / PATCH sync_enabled)
-                    # answers the same way, and a loop started before the guard
-                    # existed reads this each cycle and self-stops.
-                    _, enabled = await _read_interval(retired, promoted.org_a)
-                assert retired not in by_org, (
-                    "the scheduler selected a loop for a retired-provider "
-                    "account — every cycle of it would 400 on build_provider "
-                    "and paint a permanent 'Sync failed' badge (D52)")
-                assert enabled is False, (
-                    "_read_interval reported a retired-provider account as "
-                    "enabled — refresh_account_sync would launch the loop the "
-                    "enumeration refused")
-                assert control in by_org, (
-                    "the control account was not enumerated either — this "
-                    "test's green would then be a broken sweep, not the guard")
-
-                # The consequence: no badge state was written for it.
-                with promoted.admin_engine.connect() as conn:
-                    row = conn.execute(text(
-                        "SELECT sync_status, sync_error, last_synced_at "
-                        "FROM task_accounts WHERE id = :id"),
-                        {"id": retired}).one()
-                assert row.sync_status == "idle", (
-                    f"sync_status is {row.sync_status!r} — something ran a "
-                    "cycle for a retired provider")
-                assert row.sync_error is None, (
-                    f"sync_error was written ({row.sync_error!r}) — this is "
-                    "exactly the 'Sync failed' badge the guard prevents")
-                assert row.last_synced_at is None
-            finally:
-                self._cleanup(
-                    promoted.admin_engine, account_ids=[retired, control])
-
-    async def test_the_known_provider_set_comes_from_the_registry(self, promoted):
-        """One vocabulary: the guard reads `providers.connector_names()`, so it
-        is not a second hardcoded list that can drift from `build_provider`.
-
-        Proven by CHANGING the registry and watching the answer follow — a test
-        comparing two literals would pass against a copied list."""
-        from gateway.routes.tasks.scheduler import _known_providers
-
-        assert _known_providers() == set(), (
-            "the registry is empty by decision (D52) — a name here means a "
-            "connector was registered, or the guard grew its own list")
-        with self._registered_connector(self._STUB_PROVIDER):
-            assert _known_providers() == {self._STUB_PROVIDER}
-        assert _known_providers() == set()
-
-    async def test_the_unbound_account_read_returns_nothing_red(self, promoted):
-        """RED (the brick): the sync-enabled account read the enumeration/loop
-        runs, on an UNBOUND `acb_app` session → 0 rows. Without the per-org bind
-        the scheduler finds no accounts and sync silently stops for everyone."""
-        ua = f"sched.red.{uuid.uuid4().hex[:8]}@h4.test"
-        aa = self._seed_account(
-            promoted.admin_engine, org_id=promoted.org_a, user_id=ua)
-        eng = create_engine(promoted.app_url, future=True, poolclass=NullPool)
-        try:
-            with eng.connect() as c, c.begin():
-                n = c.execute(text(
-                    "SELECT count(*) FROM task_accounts WHERE sync_enabled=true"
-                )).scalar_one()
-            assert n == 0, (
-                f"unbound task_accounts read saw {n} rows — not FORCE-RLS'd, so "
-                "the brick would not reproduce")
-        finally:
-            eng.dispose()
-            self._cleanup(promoted.admin_engine, account_ids=[aa])
-
-    async def test_the_scheduler_jobs_with_no_org_refuse(self, promoted):
-        """A scheduler unit constructed with NO resolvable org RAISES
-        `TenantUnbound` (refuses, never defaults / inherits) — `_read_interval`
-        and `_run_one_cycle` both, proven directly. The org guard is the first
-        statement in each, so neither touches the database."""
-        from gateway.routes.tasks.scheduler import _read_interval, _run_one_cycle
-
-        with pytest.raises(TenantUnbound):
-            await _read_interval("some-account", "")
-        with pytest.raises(TenantUnbound):
-            await _run_one_cycle("some-account", "", refresh_schema=False)
-
-
-# ==========================================================================
-# WS-31 CP-2d slice 2 — the email-OTP token is RLS-EXEMPT, and must be
-# READABLE AND WRITABLE UNBOUND on this very catalog.
-# ==========================================================================
 @_DB_GATE
 class TestTheEmailOtpTokenIsReachableUnbound:
     """``auth_email_otp_token`` (migration 186) must work with NO tenant bound.

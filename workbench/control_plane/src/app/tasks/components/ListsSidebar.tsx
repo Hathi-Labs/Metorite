@@ -8,7 +8,6 @@ import Modal from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import { categoricalAccent } from "@/lib/categorical";
 import type { LensArea } from "../lib/api";
-import { lensEnabled } from "../lib/lens";
 import { itemsInArea, useTaskStore, viewCounts } from "../lib/taskStore";
 import { GtdItem, ViewKey } from "../lib/types";
 
@@ -125,14 +124,13 @@ export function ListsSidebar({
         );
       })}
 
-      {/* S6b — my Areas. Only under the lens: the legacy store has no such
-          rows, and a section that can only render empty is a dead branch. */}
-      {lensEnabled() && <AreasSection items={items} onNavigate={onNavigate} />}
+      {/* S6b — my Areas. */}
+      <AreasSection items={items} onNavigate={onNavigate} />
 
       {/* S6e — the projects I lead (my_tasks_cutover.md §4.8 point 1). A
           project I am answerable for lists here even when no task in it is
-          assigned to me. Lens-only for the same reason as the Areas. */}
-      {lensEnabled() && <LedProjectsSection onNavigate={onNavigate} />}
+          assigned to me. */}
+      <LedProjectsSection onNavigate={onNavigate} />
 
       {/* AI assistant — opens as a scene (mirrors the email app's left-rail
           Chat entry) instead of an always-on right rail. */}

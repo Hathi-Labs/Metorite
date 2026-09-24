@@ -13,8 +13,11 @@ import { NO_CONTEXT_GROUP } from "./priority";
 import { quickAddPrefill, viewQuickAdd } from "./quickAdd";
 
 describe("quickAddPrefill", () => {
-  it("files a status-axis add into its stage — board column or list section", () => {
-    expect(quickAddPrefill("", "IN PROCESS")).toEqual({ workflowStage: "IN PROCESS" });
+  it("files a status-axis add into its category — board column or list section (D73.9)", () => {
+    expect(quickAddPrefill("", "in_progress")).toEqual({ statusCategory: "in_progress" });
+    expect(quickAddPrefill("", "done")).toEqual({ statusCategory: "done" });
+    // A lane NAME is not a group key any more. It files a bare create.
+    expect(quickAddPrefill("", "IN PROCESS")).toEqual({});
   });
 
   it("files a context-group add under that @context", () => {

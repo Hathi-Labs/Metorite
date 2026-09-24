@@ -7,7 +7,6 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useTaskStore } from "../lib/taskStore";
-import { lensEnabled } from "../lib/lens";
 import {
   originEmailHref,
   DISPOSITION_LABEL,
@@ -48,7 +47,7 @@ import { PromoteDialog } from "./PromoteDialog";
 
 // ── Two compositions, one under the lens (WS-39 S6e) ───────────────────────
 //
-// Under `NEXT_PUBLIC_TASKS_LENS` this panel is a HOST of the shared
+// On the live backend this panel is a HOST of the shared
 // `TaskBody` (`app/projects/components/TaskBody.tsx`): its own header, then
 // the overlay STRIP — next action, context, energy, estimate, defer, the
 // founder matrix, waiting-on, notes: the member's own facts on
@@ -56,11 +55,9 @@ import { PromoteDialog } from "./PromoteDialog";
 // Projects draws it. A member opening one task in each app meets the same
 // fields. Nothing below the strip is written here.
 //
-// With the lens off the legacy composition stays, thinner: the ClickUp-era
-// provider sections (comments, attachments, subtasks read off the old
-// `/items/{id}/detail`) are GONE, because the shared body reads those off
-// `/projects/tasks/{id}` now and a second reader would be a second field
-// list. The legacy branch is what S7 retires.
+// S8 PR 1 deleted the flag. The thinner composition below `!lens` serves the
+// demo backend only (`backend !== "live"`, the bundled mock data), which has
+// no Projects API for the shared body to read.
 
 // Ages/overdue on this panel are read against the REAL clock — `isOverdue` and
 // `relativeTime` both default their `nowMs` to Date.now(). They used to be
@@ -320,7 +317,7 @@ export function TaskDetail({
   const isArchived = !!item.archivedAt;
   // S6e — the shared body needs the one store's routes, which the demo
   // backend does not serve. The strip draws in both modes.
-  const lens = lensEnabled() && backend === "live";
+  const lens = backend === "live";
 
   const [pushState, setPushState] = useState<"idle" | "busy" | string>("idle");
   // Delegating a LOCAL task opens the "create in ClickUp under a project" flow
@@ -348,8 +345,7 @@ export function TaskDetail({
   // saying rather than leaving as an unexplained simplification.
   const memberPeople: Person[] = people;
   // The local Kanban stage (the workflow-stage axis of My Next Actions). Used to
-  // show/change a LOCAL task's stage in the detail — synced tasks show their raw
-  // ClickUp status instead (below). setStage handles done/reopen like the card.
+  // show/change the task's status category in the detail, like the card.
   const stageActions = useCardActions(item);
   // The full owner set (falls back to the single assignee for older rows / mock).
   const assigneeList: Person[] =
@@ -542,19 +538,27 @@ export function TaskDetail({
                   </MetaEdit>
                 ) : null
               ) : (
-                stageActions.stages.length > 0 && (
-                  <MetaEdit label="Stage" icon={themedIcon("CircleDot")}
-                    display={<span>{stageActions.currentStage}</span>}
-                  >
-                    {(close) => (
-                      <ChipMenu
-                        options={stageActions.stages}
-                        active={stageActions.currentStage}
-                        onPick={(v) => { if (v) stageActions.setStage(v); close(); }}
-                      />
-                    )}
-                  </MetaEdit>
-                )
+                <MetaEdit label="Stage" icon={themedIcon("CircleDot")}
+                  display={<span>{stageActions.laneName}</span>}
+                >
+                  {(close) => (
+                    <ChipMenu
+                      options={stageActions.categories.map(stageActions.categoryLabel)}
+                      active={
+                        stageActions.currentCategory
+                          ? stageActions.categoryLabel(stageActions.currentCategory)
+                          : undefined
+                      }
+                      onPick={(v) => {
+                        const c = stageActions.categories.find(
+                          (k) => stageActions.categoryLabel(k) === v,
+                        );
+                        if (c) stageActions.setCategory(c);
+                        close();
+                      }}
+                    />
+                  )}
+                </MetaEdit>
               )}
 
               {/* Assignee(s). A SYNCED task supports MULTIPLE owners (ClickUp
@@ -690,7 +694,7 @@ export function TaskDetail({
             <div className="flex flex-wrap items-center gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5">
               <AppIcon name="AlertTriangle" className="h-4 w-4 shrink-0 text-warning" />
               <span className="min-w-0 flex-1 text-[12.5px] text-foreground">
-                No longer your action? Remove it from My Next Actions — it stays on ClickUp.
+                No longer your action? Remove it from My Next Actions — it stays on its project board.
               </span>
               <Button size="none" radius="keep" layout="inline-flex items-center" type="button" onClick={() => { updateItem(item.id, { isMine: false }); setOfferDropFromNext(false); }} className="gap-1.5 rounded-md px-2.5 py-1.5 text-xs">
                 <AppIcon name="UserMinus" className="h-3.5 w-3.5" />
@@ -773,7 +777,7 @@ export function TaskDetail({
             />
           </section>
 
-          {/* The legacy tail — lens off only. Under the lens the shared body
+          {/* The demo tail — demo backend only. On the live backend the shared body
               draws subtasks, files, comments and the timeline. */}
           {!lens && (<>
           {/* Subtasks — editable local children (add / complete). A SYNCED
@@ -871,8 +875,7 @@ export function TaskDetail({
               Focus
             </button>
           )}
-          {/* S6c — the promote door, beside Focus. Lens only: the old store
-              has no board to move onto (`useCardActions.canPromote`). */}
+          {/* S6c — the promote door, beside Focus (`useCardActions.canPromote`). */}
           {stageActions.canPromote && (
             <Button
               variant="ghost"
@@ -955,7 +958,7 @@ export function TaskDetail({
         )}
         {isSynced && (
           <p className="mt-1.5 text-[11px] text-muted-foreground">
-            Edits sync back to {item.provider === "clickup" ? "ClickUp" : item.provider}.
+            Edits sync back to the project board.
           </p>
         )}
       </div>
@@ -1073,7 +1076,7 @@ function LocalSubtasksSection({ item }: { item: GtdItem }) {
                     target="_blank"
                     rel="noreferrer"
                     className="shrink-0 text-muted-foreground/60 hover:text-foreground"
-                    title="Open in ClickUp"
+                    title="Open on the board"
                   >
                     <AppIcon name="ExternalLink" className="h-3 w-3" />
                   </a>

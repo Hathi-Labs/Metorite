@@ -563,7 +563,7 @@ export function InboxView() {
                   ) : (
                     <AppIcon name="Cloud" className="h-3 w-3" />
                   )}
-                  {sourceFilter === "local" ? "Mine" : "ClickUp"}
+                  {sourceFilter === "local" ? "Mine" : "Team"}
                 </span>
               )}
               {processed > 0 && (
@@ -673,8 +673,8 @@ export function InboxView() {
         <div className="w-full px-4 py-4 sm:py-3">
           {/* S6e — "From Projects": what a colleague put on my plate on a
               board, before I have looked at it. Above the captures, because
-              it is the one group somebody else filled. Lens-only by
-              construction: the store's set is empty with the flag off. */}
+              it is the one group somebody else filled. Empty on the
+              demo backend. */}
           {!loading && !showTickler ? <FromProjectsGroup /> : null}
           {loading ? (
             <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">

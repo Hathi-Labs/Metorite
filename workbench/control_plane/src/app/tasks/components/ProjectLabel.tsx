@@ -3,13 +3,10 @@
 /**
  * My Tasks · the way back to the board (my_tasks_cutover.md §4.8 point 4).
  *
- * A card names its project, and under the lens the name is a LINK to that
- * board with the task open — the same `?task=` deep link the Projects bell
- * and the copy-link affordance already emit (`taskDeepLink`), so there is one
+ * A card names its project, and the name is a LINK to that board with the
+ * task open — the same `?task=` deep link the Projects bell and the
+ * copy-link affordance already emit (`taskDeepLink`), so there is one
  * spelling of "open this on the board" and not a third.
- *
- * With the lens off the label stays a label. The old store's `projectId` is a
- * `gtd_projects` row, and `/projects?task=<gtd id>` would open nothing.
  */
 
 import Link from "next/link";
@@ -17,7 +14,6 @@ import Link from "next/link";
 import Icon from "@/components/Icon";
 import { taskDeepLink } from "@/app/projects/lib/card";
 
-import { lensEnabled } from "../lib/lens";
 import type { GtdItem } from "../lib/types";
 
 export function ProjectLabel({
@@ -37,9 +33,6 @@ export function ProjectLabel({
       <span className={nameClass}>{name}</span>
     </>
   );
-  if (!lensEnabled()) {
-    return <span className={className}>{body}</span>;
-  }
   return (
     <Link
       href={taskDeepLink(item)}

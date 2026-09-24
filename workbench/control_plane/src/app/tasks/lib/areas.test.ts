@@ -3,8 +3,8 @@
  *
  *   1. `whereGroups` (lib/clarify.ts) — the Where picker's two groups under
  *      the lens: my Areas, then the company's projects. Pure.
- *   2. Group D of `api.ts` under the flag — the local tree reads Areas and
- *      never `/tasks/hierarchy`; a space or folder cannot be created (D65).
+ *   2. Group D of `api.ts` — the local tree reads Areas and never
+ *      `/tasks/hierarchy`. A space or folder cannot exist (D65).
  *   3. The Areas slice of the store — optimistic, and a refusal re-reads the
  *      list and lands on `syncFailure`, the S6a path `SyncFailureToast` reads.
  *
@@ -30,9 +30,7 @@ vi.mock("./api", async (importOriginal) => {
 
 import {
   apiCreateArea,
-  apiCreateFolder,
   apiCreateLocalProject,
-  apiCreateSpace,
   apiDeleteArea,
   apiRenameArea,
   fetchAreas,
@@ -41,13 +39,7 @@ import {
 import { itemsInArea, useTaskStore } from "./taskStore";
 import type { GtdItem } from "./types";
 
-const FLAG = process.env.NEXT_PUBLIC_TASKS_LENS;
-beforeEach(() => {
-  process.env.NEXT_PUBLIC_TASKS_LENS = "1";
-});
 afterEach(() => {
-  if (FLAG === undefined) delete process.env.NEXT_PUBLIC_TASKS_LENS;
-  else process.env.NEXT_PUBLIC_TASKS_LENS = FLAG;
   vi.restoreAllMocks();
 });
 
@@ -186,17 +178,6 @@ describe("the local tree under the lens", () => {
     expect(node).toMatchObject({ id: "a3", outcome: "Errands", status: "ACTIVE" });
   });
 
-  it("refuses a space or a folder by name — Areas are flat (D65)", async () => {
-    const { calls, restore } = stubFetch({});
-    try {
-      await expect(apiCreateSpace("Work")).rejects.toThrow(/Areas are flat/);
-      await expect(apiCreateFolder("s1", "Q4")).rejects.toThrow(/Areas are flat/);
-    } finally {
-      restore();
-    }
-    // Refused BEFORE any request: nothing reaches the retiring routes.
-    expect(calls).toHaveLength(0);
-  });
 });
 
 // ── 3. The store slice ──────────────────────────────────────────────────────
@@ -289,10 +270,15 @@ describe("the Areas slice", () => {
     expect(useTaskStore.getState().selectedAreaId).toBeNull();
   });
 
-  it("loads nothing with the flag off — the section does not render then", async () => {
-    delete process.env.NEXT_PUBLIC_TASKS_LENS;
-    await useTaskStore.getState().loadAreas();
-    expect(fetchAreas).not.toHaveBeenCalled();
+  it("loads nothing on the demo backend — there is no Projects API there", async () => {
+    const was = useTaskStore.getState().backend;
+    useTaskStore.setState({ backend: "demo" });
+    try {
+      await useTaskStore.getState().loadAreas();
+      expect(fetchAreas).not.toHaveBeenCalled();
+    } finally {
+      useTaskStore.setState({ backend: was });
+    }
   });
 });
 

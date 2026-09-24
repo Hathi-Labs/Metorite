@@ -119,7 +119,7 @@ export function previewAppsVisible(
   env?: Record<string, string | undefined>,
 ): boolean {
   // ⚠️ The LITERAL member expression is the only form Next inlines into the
-  // browser bundle — see `lensEnabled` and `src/lib/publicFlags.test.ts`.
+  // browser bundle — see `src/lib/publicFlags.test.ts`.
   // A defaulted `env = process.env` reads the `{}` polyfill in a browser, so
   // the flag is permanently false and every test still passes, because each
   // test hands the function an env object of its own.

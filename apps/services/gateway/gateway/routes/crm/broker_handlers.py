@@ -4,7 +4,7 @@ Spec: ``project-docs/specs/crm_app.md`` D-CRM-8 · §7.1 · ticket WS-26b
 done-when 1 and 5. Modelled 1:1 on the tasks app's ClickUp path —
 ``routes/tasks/providers.py::_broker_gate`` (the gate) plus
 ``routes/tasks/broker_handlers.py`` (the persistent handlers registered from
-``main.py``) — because that pair is *"the single audited chokepoint for
+``main.py``; S8 PR 1 deleted both on 2026-09-23) — because that pair is *"the single audited chokepoint for
 source-of-truth writes"* and root ``AGENTS.md`` #4 applies to Zoho exactly as
 it applies to ClickUp.
 

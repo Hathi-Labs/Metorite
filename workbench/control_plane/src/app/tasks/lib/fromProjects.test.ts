@@ -22,11 +22,6 @@ vi.mock("./api", async (importOriginal) => {
   };
 });
 
-vi.mock("./lens", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./lens")>();
-  return { ...actual, lensEnabled: () => true };
-});
-
 import { apiBulkDispose, apiOrganize, fetchUntriaged } from "./api";
 import { useTaskStore } from "./taskStore";
 import type { GtdItem } from "./types";

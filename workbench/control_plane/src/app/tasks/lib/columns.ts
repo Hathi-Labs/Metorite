@@ -5,8 +5,8 @@
 //
 // Which columns show is a per-browser DISPLAY preference (like the list/board
 // toggle) — persisted in localStorage, toggled from the Task settings modal.
-// Status is intentionally NOT a column: the list is already grouped by status
-// (the section headers), so a Status column would just repeat the group.
+// Status is intentionally NOT a column: the list is grouped by status category
+// (the section headers), and each row carries its own lane name as a pill.
 
 /** A toggleable list column. `key` is the stable id used in storage + settings. */
 export type ColumnKey =

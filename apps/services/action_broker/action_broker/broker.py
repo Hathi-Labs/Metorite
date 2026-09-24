@@ -26,17 +26,19 @@ Remaining per FOUNDATION_BUILDOUT_CHECKLIST §BO-1 — **corrected 2026-08-11; t
 first two below read as open for a day after they shipped, and this is the
 canonical file for the subsystem, so keep it true:**
 
-* ✅ **BO-1a** (2026-08-11) — every gated action name now has a handler;
-  an ``ast``-derived fence over ``routes/tasks/providers.py`` fails if a seventh
-  arrives without one.
-* ✅ **BO-1b** (2026-08-11) — a broker-QUEUED push writes
-  ``gtd_items.sync_state='awaiting_approval'`` instead of a false ``'synced'``.
-* ☐ **BO-1d** — four callers of a gated write still index the pending
-  marker as if it were a result: ``routes/tasks/accounts.py`` (create project,
-  create folder) and ``routes/tasks/planning.py`` (plan apply) hard-**500**
-  under enforcement, and ``routes/tasks/items.py::_push_patch_upstream``
-  silently swallows a queued update. **This is what still blocks flipping
-  ``ACTION_BROKER_ENFORCE``** — BO-1a + BO-1b did not make the flip safe.
+* ✅ **BO-1a** (2026-08-11) — every gated action name had a handler. The
+  task connector side of it is gone: D52 emptied the connector registry, and
+  S8 PR 1 (2026-09-23) deleted ``routes/tasks/providers.py`` and
+  ``broker_handlers.py``. ``tests/unit/test_no_task_provider_connectors.py``
+  keeps them deleted.
+* ✅ **BO-1b** (2026-08-11) — a broker-QUEUED push wrote
+  ``sync_state='awaiting_approval'`` instead of a false ``'synced'``. The
+  push path went with the retired task store (S8 PR 1).
+* ☐ **BO-1d** — the three task callers that indexed the pending marker as a
+  result (``accounts.py``, ``items.py::_push_patch_upstream``, and the
+  ClickUp arm of ``planning.py``) are deleted. The rule stays: any new caller
+  of a gated write must read the marker before it indexes the result. The
+  ``ACTION_BROKER_ENFORCE`` flip stays owner-gated.
 * ☐ **BO-1c** — email writes do not route through here at all.
 
 ⚠️ **A Zoho write client now exists** (2026-08-05, WS-26b —

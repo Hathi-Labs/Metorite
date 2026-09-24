@@ -10,20 +10,24 @@ import { GtdItem, ViewKey } from "../lib/types";
 import { useTaskStore } from "../lib/taskStore";
 import { TaskCard } from "./TaskCard";
 import { dropRefusal } from "../lib/dropRules";
-import { applySort, byManualOrder, statusColumnForItem } from "../lib/ordering";
+import { applySort, byManualOrder } from "../lib/ordering";
 import { quickAddPrefill } from "../lib/quickAdd";
-import { stageAccent } from "../lib/stageColors";
-import { formatStatus } from "../lib/utils";
+import { categoryAccent } from "../lib/stageColors";
+import {
+  CATEGORY_LABEL,
+  NEXT_CATEGORIES,
+  type NextCategory,
+  isNextCategory,
+  nextCategoryOf,
+} from "../lib/statusCategory";
 
-// A Kanban board over the Next Actions items (Jira/ClickUp-style). Columns are
-// the user's 4 FIXED workflow stages (settings.workflowStages) — not the raw
-// ClickUp statuses. A LOCAL card keys off its `workflowStage`; a SYNCED card off
-// its ClickUp `providerStatus` translated through the status→stage MAP, so many
-// upstream statuses collapse into one clean stage. Dragging a card writes the
-// mapped status back to ClickUp (per task's project). (@context is a card chip,
-// not a column.) Dropping on the LAST stage marks the task DONE (backend). The
-// per-PROJECT view passes explicit `stages` (that project's real ClickUp
-// statuses) and bypasses the map. Fixed columns — empty stages still show.
+// A Kanban board over the Next Actions items. Columns are the three Projects
+// status CATEGORIES (D73.9): To do, In progress, Done. Each card keeps its own
+// lane name as its pill, so "Building" in one project and "In progress" in
+// another share the In progress column. Dragging a card into a column moves it
+// to the first lane of that category in its own project (`setCategory`), and
+// dropping on Done completes it. (@context is a card chip, not a column.)
+// Fixed columns — empty ones still show.
 //
 // Cards render in manual (sortKey) order within a column and are drag-
 // reorderable: a drop computes a fractional rank between its new neighbours
@@ -45,7 +49,7 @@ import { formatStatus } from "../lib/utils";
 //
 // NOT shared: /projects' SWIMLANES (a second grouping axis drawn as rows).
 // Deliberate, and the reason is this app's data rather than effort: /tasks'
-// board axis is the fixed workflow-stage set, and its other axes are COMPUTED
+// board axis is the fixed status-category set, and its other axes are COMPUTED
 // projections — priority and mode come from important × leveraged × urgent-from-
 // dueAt, which no drop can write (`lib/quickAdd` refuses a quick-add on them for
 // the same reason, and `lib/dropRules` refuses the drag). A lane grid here would
@@ -56,21 +60,13 @@ const NOBODY: ReadonlySet<string> = new Set();
 
 export function TaskBoard({
   items,
-  stages,
 }: {
   items: GtdItem[];
   view: ViewKey;
-  /** Explicit ordered column set (e.g. a project's own ClickUp statuses). When
-   *  omitted, the columns are the union of the global local workflow stages and
-   *  the connected tools' statuses (so ClickUp tasks land in their real stage,
-   *  not all in the first column). */
-  stages?: string[];
 }) {
-  const workflowSettingStages = useTaskStore((s) => s.settings.workflowStages);
-  const statusStageMap = useTaskStore((s) => s.settings.statusStageMap);
+  const setCategory = useTaskStore((s) => s.setCategory);
   const sort = useTaskStore((s) => s.sort);
   const reorderItem = useTaskStore((s) => s.reorderItem);
-  const updateItem = useTaskStore((s) => s.updateItem);
   const quickAddNext = useTaskStore((s) => s.quickAddNext);
   const openFocus = useTaskStore((s) => s.openFocus);
   // Multi-select for bulk archive/delete — works right on the board.
@@ -88,20 +84,6 @@ export function TaskBoard({
   const toggleSelected = useTaskStore((s) => s.toggleSelected);
   const extendSelection = useTaskStore((s) => s.extendSelection);
 
-  // Columns: an explicit stage set (the per-project view's real ClickUp
-  // statuses) or the user's 4 fixed workflow stages. A LOCAL task keys off its
-  // `workflowStage`; a SYNCED task off its ClickUp status through the status→
-  // stage map (or the project view's own statuses, where the map is a no-op).
-  const stageKeys = useMemo(
-    () => stages ?? workflowSettingStages,
-    [stages, workflowSettingStages],
-  );
-  // In the project view (explicit `stages`) grouping is by raw status, so the
-  // map is bypassed; on the global board it translates the ClickUp status.
-  const effectiveMap = useMemo(
-    () => (stages ? {} : statusStageMap),
-    [stages, statusStageMap],
-  );
   // Manual drag-reorder is a sort affordance; suppressed while multi-selecting.
   const manual = sort.field === "manual" && !selectMode;
   const [dragId, setDragId] = useState<string | null>(null);
@@ -114,17 +96,16 @@ export function TaskBoard({
   const [anchor, setAnchor] = useState<number | null>(null);
   const { flash, attach, scrollTo } = useFlash();
 
-  // An unstaged task sits in the FIRST column of the axis.
-  const firstStage = stageKeys[0];
+  // A task whose category is not a Next column (backlog, triage, cancelled)
+  // answers null and is not drawn.
   const stageOf = useCallback(
-    (i: GtdItem): string =>
-      statusColumnForItem(i, stageKeys, firstStage, effectiveMap),
-    [stageKeys, firstStage, effectiveMap],
+    (i: GtdItem): NextCategory | null => nextCategoryOf(i),
+    [],
   );
 
   const columns = useMemo(
-    () => stageKeys.map((s) => ({ key: s, label: s })),
-    [stageKeys],
+    () => NEXT_CATEGORIES.map((c) => ({ key: c as string, label: CATEGORY_LABEL[c] })),
+    [],
   );
 
   const byColumn = useMemo(() => {
@@ -132,6 +113,7 @@ export function TaskBoard({
     for (const c of columns) m.set(c.key, []);
     for (const i of items) {
       const k = stageOf(i);
+      if (k === null) continue;
       (m.get(k) ?? m.set(k, []).get(k)!).push(i);
     }
     // Cards within a column follow the active sort (manual → sortKey order).
@@ -196,24 +178,13 @@ export function TaskBoard({
         })
       : null;
 
-  // Refile depends on the axis:
-  //  • Global board (columns = local STAGES): set `workflowStage` for both
-  //    LOCAL and SYNCED. For a synced task the backend translates the stage into
-  //    that task's own ClickUp status via the status→stage map and writes it
-  //    back; if nothing maps, the move stays local (workflowStage override).
-  //  • Project view (columns = the project's raw ClickUp STATUSES): set
-  //    `providerStatus` directly (back-syncs), as before.
-  const refileFor = (colKey: string, id: string | null) => {
-    const it = id ? items.find((i) => i.id === id) : undefined;
-    if (!it) return undefined;
-    if (stages) {
-      // Project view: raw ClickUp status axis.
-      return it.source === "LOCAL"
-        ? { workflowStage: colKey }
-        : { providerStatus: colKey };
-    }
-    // Global board: local stage axis (backend maps synced → ClickUp status).
-    return { workflowStage: colKey };
+  // A drop into another column moves the task to that status CATEGORY
+  // (D73.9): the first lane of it in the task's own project. The rank lands
+  // first, so the card sits where it was dropped.
+  const refile = (colKey: string, id: string) => {
+    const it = items.find((i) => i.id === id);
+    if (!it || !isNextCategory(colKey) || stageOf(it) === colKey) return;
+    void setCategory(id, colKey);
   };
 
   // Drop onto a specific gap (index) within a column — reorder + re-file.
@@ -227,7 +198,8 @@ export function TaskBoard({
     if (!id) return;
     const dest = byManualOrder(byColumn.get(colKey) ?? []);
     flash(id);
-    reorderItem(id, dest, index, refileFor(colKey, id));
+    reorderItem(id, dest, index);
+    refile(colKey, id);
   };
 
   // Drop anywhere in a column (not on a card gap): keep the old semantics —
@@ -246,15 +218,13 @@ export function TaskBoard({
       // append to the end of the column
       const dest = byManualOrder(byColumn.get(colKey) ?? []);
       flash(id);
-      reorderItem(id, dest, dest.length, refileFor(colKey, id));
+      reorderItem(id, dest, dest.length);
+      refile(colKey, id);
       return;
     }
     if (stageOf(item) === colKey) return; // refused — the overlay said why
-    const refile = refileFor(colKey, id);
-    if (refile) {
-      flash(id);
-      updateItem(id, refile);
-    }
+    flash(id);
+    refile(colKey, id);
   };
 
   // Group-context quick-add (shared QuickAdd + this app's prefill): a task
@@ -272,11 +242,11 @@ export function TaskBoard({
       aria-label="Task board — arrow keys move, Enter opens"
       className="flex h-full gap-3 overflow-x-auto p-4 outline-none"
     >
-      {columns.map((col, ci) => {
+      {columns.map((col) => {
         const colItems = byColumn.get(col.key) ?? [];
         const isOver = overCol === col.key;
         const refusal = isOver && dragged ? refusalFor(col.key) : null;
-        const accent = stageAccent(col.label || col.key, ci, columns.length);
+        const accent = categoryAccent(col.key);
         return (
           <div
             key={col.key}
@@ -326,7 +296,7 @@ export function TaskBoard({
                   {/* Per-project columns ARE raw ClickUp statuses — show them
                       title-cased like the tool. The global board's columns are
                       the user's own workflow-stage names, left as typed. */}
-                  {stages ? formatStatus(col.label) : col.label}
+                  {col.label}
                 </span>
               </span>
               <span className="shrink-0 rounded-full bg-background/60 px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
@@ -363,9 +333,9 @@ export function TaskBoard({
                     atCursor={cursorAt >= 0 && rows[cursorAt] === i.id}
                     draggable={!selectMode}
                     selected={selectedIds.has(i.id)}
-                    // The column IS the stage here — a per-card status pill
-                    // would just repeat it, so it's off on the board.
-                    showStage={false}
+                    // The column is the CATEGORY; the pill is the card's own
+                    // lane name (D73.9), so it stays on the board.
+                    showStage
                     onToggleSelected={(shift) => toggleSelected(i.id, shift, rows)}
                     onDragStart={() => setDragId(i.id)}
                     onDragEnd={() => { setDragId(null); setOverCol(null); setDropAt(null); }}
@@ -391,7 +361,7 @@ export function TaskBoard({
                 lib/quickAdd prefill), and flashes where it lands. */}
             <div className="p-2 pt-0">
               <QuickAdd
-                label={`Add to ${stages ? formatStatus(col.label) : col.label}`}
+                label={`Add to ${col.label}`}
                 onAdd={(title) => quickAdd(title, col.key)}
               />
             </div>

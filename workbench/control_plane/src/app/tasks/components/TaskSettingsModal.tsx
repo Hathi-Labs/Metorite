@@ -2,10 +2,9 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTaskStore } from "../lib/taskStore";
-import { fetchStatusCatalog, type TaskSettings, type StatusCatalog } from "../lib/api";
-import { formatStatus } from "../lib/utils";
+import type { TaskSettings } from "../lib/api";
 import {
   COLUMNS,
   DEFAULT_VISIBLE,
@@ -72,7 +71,7 @@ const MODEL_FIELDS: {
     title: "Clarify proposals model",
     description:
       "The model behind AI-powered Clarify — it reasons over your active " +
-      "projects, team skills, and workspace stages to propose a disposition, " +
+      "projects, team skills, and project lanes to propose a disposition, " +
       "next action, and best owner. Applies when “AI-powered clarify” is on.",
     def: "tier-balanced",
   },
@@ -208,7 +207,7 @@ function SettingsPanel() {
             </h3>
             <Toggle
               title="AI-powered clarify"
-              description="Let the assistant reason over your ClickUp projects, team (skills, seniority, free hours), and workspace stages to propose the disposition, next action, and best owner. Off = the instant deterministic heuristic only (no AI round-trip on each clarify)."
+              description="Let the assistant reason over your projects, team (skills, seniority, free hours), and project lanes to propose the disposition, next action, and best owner. Off = the instant deterministic heuristic only (no AI round-trip on each clarify)."
               checked={settings.clarifyUseLlm}
               onChange={(v) => void updateSettings({ clarifyUseLlm: v })}
             />
@@ -227,37 +226,6 @@ function SettingsPanel() {
             />
           </section>
 
-          {/* ── Sync ── */}
-          <section>
-            <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <Icon name="RefreshCw" className="h-3.5 w-3.5" /> Sync
-            </h3>
-            <div className="flex flex-col gap-2">
-              <Toggle
-                title="Keep workspaces synced in the background"
-                description="Refresh your connected PM workspaces (tasks, projects, and team) on a schedule — even when the app is closed — so the assistant always reasons over current data. Off = only manual and on-open sync run."
-                checked={settings.backgroundSync}
-                onChange={(v) => void updateSettings({ backgroundSync: v })}
-              />
-              <Toggle
-                title="Sync workspaces when My Tasks opens"
-                description="Pull the latest tasks from your connected PM workspaces (incremental) each time you open the app. Manual sync stays available per workspace."
-                checked={settings.autoSyncOnOpen}
-                onChange={(v) => void updateSettings({ autoSyncOnOpen: v })}
-              />
-              <Toggle
-                title="Mirror completed tasks from workspaces"
-                description="Import already-completed tasks from your connected PM workspaces into the board. Off (recommended) keeps a large finished backlog from swamping your active views — your own captures stay visible, and tasks you already track still flip to Done when closed upstream."
-                checked={settings.mirrorDoneTasks}
-                onChange={(v) => void updateSettings({ mirrorDoneTasks: v })}
-              />
-            </div>
-            <p className="mt-2 px-1 text-[11px] text-muted-foreground">
-              Per-workspace connections, schema refresh, and disconnect live in
-              the Workspaces dialog.
-            </p>
-          </section>
-
           {/* ── Next Actions list columns ── */}
           <section>
             <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -271,42 +239,18 @@ function SettingsPanel() {
             <ColumnsEditor />
           </section>
 
-          {/* ── Board (Kanban stages for Next Actions) ── */}
+          {/* ── Stages (D73.9) ── */}
           <section>
             <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <Icon name="Columns3" className="h-3.5 w-3.5" /> Kanban stages
+              <Icon name="Columns3" className="h-3.5 w-3.5" /> Stages
             </h3>
-            <p className="mb-2 px-1 text-[11px] text-muted-foreground">
-              One global set of stages for <span className="font-medium">all</span>{" "}
-              Next Actions — the columns of the board and the groups in the list.
-              Add, rename, reorder, or remove them below. Drag a card to move it
-              between stages; the <span className="font-medium">last</span> stage
-              marks a task done (and closes it in ClickUp).
+            <p className="px-1 text-[11px] leading-snug text-muted-foreground">
+              Stages come from each project&rsquo;s lanes in Projects. Next
+              Actions groups them by category: To do, In progress and Done. Each
+              task keeps its own lane name, so &ldquo;Building&rdquo; in one project
+              and &ldquo;In progress&rdquo; in another both sit under In progress.
+              To add or rename a lane, edit the project in Projects.
             </p>
-            <StageEditor
-              stages={settings.workflowStages}
-              onChange={(next) => void updateSettings({ workflowStages: next })}
-            />
-          </section>
-
-          {/* ── ClickUp status → stage mapping ── */}
-          <section>
-            <h3 className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              <Icon name="Columns3" className="h-3.5 w-3.5" /> ClickUp status mapping
-            </h3>
-            <p className="mb-2 px-1 text-[11px] text-muted-foreground">
-              Next Actions shows your{" "}
-              <span className="font-medium">{settings.workflowStages.length}</span>{" "}
-              stages, not every raw ClickUp status. Map each ClickUp status to one
-              of your stages: a synced task shows in the stage its status maps to,
-              and dragging a card writes the mapped status back to ClickUp. Unmapped
-              statuses are auto-guessed — confirm or adjust them below.
-            </p>
-            <StatusMappingEditor
-              stages={settings.workflowStages}
-              map={settings.statusStageMap}
-              onChange={(next) => void updateSettings({ statusStageMap: next })}
-            />
           </section>
         </div>
       </div>
@@ -314,226 +258,6 @@ function SettingsPanel() {
   );
 }
 
-function StageEditor({
-  stages,
-  onChange,
-}: {
-  stages: string[];
-  onChange: (next: string[]) => void;
-}) {
-  const [adding, setAdding] = useState("");
-
-  const rename = (idx: number, name: string) =>
-    onChange(stages.map((s, i) => (i === idx ? name : s)));
-  const remove = (idx: number) =>
-    onChange(stages.filter((_, i) => i !== idx));
-  const move = (idx: number, dir: -1 | 1) => {
-    const j = idx + dir;
-    if (j < 0 || j >= stages.length) return;
-    const next = [...stages];
-    [next[idx], next[j]] = [next[j], next[idx]];
-    onChange(next);
-  };
-  const add = () => {
-    const name = adding.trim();
-    if (!name) return;
-    onChange([...stages, name]);
-    setAdding("");
-  };
-
-  return (
-    <div className="flex flex-col gap-1.5">
-      {stages.map((stage, idx) => {
-        const isLast = idx === stages.length - 1;
-        return (
-          <div
-            key={idx}
-            className="flex items-center gap-1.5 rounded-lg border border-border px-2 py-1.5"
-          >
-            <div className="flex flex-col">
-              <button
-                type="button"
-                aria-label="Move up"
-                disabled={idx === 0}
-                onClick={() => move(idx, -1)}
-                className="tech-transition text-muted-foreground/60 hover:text-foreground disabled:opacity-30"
-              >
-                <Icon name="ChevronUp" className="h-3 w-3" />
-              </button>
-              <button
-                type="button"
-                aria-label="Move down"
-                disabled={isLast}
-                onClick={() => move(idx, 1)}
-                className="tech-transition text-muted-foreground/60 hover:text-foreground disabled:opacity-30"
-              >
-                <Icon name="ChevronDown" className="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              value={stage}
-              onChange={(e) => rename(idx, e.target.value)}
-              onBlur={(e) => {
-                // Never allow an empty stage name — restore a placeholder.
-                if (!e.target.value.trim()) rename(idx, `Stage ${idx + 1}`);
-              }}
-              className="min-w-0 flex-1 rounded-md bg-transparent px-1.5 py-1 text-sm text-foreground focus:bg-background focus:outline-none focus:ring-1 focus:ring-primary/40"
-            />
-            {isLast && (
-              <span className="shrink-0 rounded-full bg-success/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-success">
-                Done
-              </span>
-            )}
-            <button
-              type="button"
-              aria-label={`Remove ${stage}`}
-              disabled={stages.length <= 1}
-              onClick={() => remove(idx)}
-              className="tech-transition shrink-0 rounded p-1 text-muted-foreground/60 hover:bg-destructive/10 hover:text-destructive disabled:opacity-30"
-            >
-              <Icon name="X" className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        );
-      })}
-      <div className="flex items-center gap-1.5 rounded-lg border border-dashed border-border px-2 py-1.5">
-        <Icon name="Plus" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <input
-          value={adding}
-          onChange={(e) => setAdding(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") { e.preventDefault(); add(); }
-          }}
-          placeholder="Add a stage…"
-          className="min-w-0 flex-1 bg-transparent px-0.5 py-1 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none"
-        />
-        {adding.trim() && (
-          <Button size="none" radius="keep" layout="" type="button" onClick={add} className="shrink-0 rounded-md px-2 py-1 text-[11px]">
-            Add
-          </Button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/** Maps each unique ClickUp status (fetched from the connected projects) to one
- *  of the user's Next-Actions stages. Auto-guessed rows show their guess and are
- *  saved on first confirm; changing a dropdown persists the whole map. */
-function StatusMappingEditor({
-  stages,
-  map,
-  onChange,
-}: {
-  stages: string[];
-  map: Record<string, string>;
-  onChange: (next: Record<string, string>) => void;
-}) {
-  const backend = useTaskStore((s) => s.backend);
-  const [catalog, setCatalog] = useState<StatusCatalog | null>(null);
-  // Only "live" fetches; start non-live already-resolved (no fetch, no spinner)
-  // so the effect never has to synchronously flip loading off.
-  const [loading, setLoading] = useState(backend === "live");
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    if (backend !== "live") return;
-    let cancelled = false;
-    void fetchStatusCatalog()
-      .then((c) => !cancelled && setCatalog(c))
-      .catch(() => !cancelled && setError(true))
-      .finally(() => !cancelled && setLoading(false));
-    return () => {
-      cancelled = true;
-    };
-  }, [backend]);
-
-  // The effective stage for a status: an explicit user map wins; else the
-  // catalog's auto-guess. norm() matches the backend's normalized key.
-  const norm = (s: string) => s.trim().toLowerCase();
-  const stageFor = (entry: { status: string; stage: string }): string =>
-    map[norm(entry.status)] ?? entry.stage;
-
-  // Set one status → stage, persisting the FULL map (existing picks + this one,
-  // keyed normalized) so an auto-guess the user touches becomes a real choice.
-  const setStage = (status: string, stage: string) => {
-    onChange({ ...map, [norm(status)]: stage });
-  };
-
-  const unmappedCount = useMemo(
-    () => (catalog?.entries ?? []).filter((e) => !(norm(e.status) in map)).length,
-    [catalog, map],
-  );
-
-  if (loading) {
-    return (
-      <div className="flex items-center gap-2 px-1 py-2 text-[11px] text-muted-foreground">
-        <Icon name="Loader2" className="h-3.5 w-3.5 animate-spin" /> Loading ClickUp statuses…
-      </div>
-    );
-  }
-  if (error || backend !== "live") {
-    return (
-      <p className="px-1 py-2 text-[11px] text-muted-foreground">
-        Connect a ClickUp workspace to map its statuses.
-      </p>
-    );
-  }
-  if (!catalog || catalog.entries.length === 0) {
-    return (
-      <p className="px-1 py-2 text-[11px] text-muted-foreground">
-        No ClickUp statuses found yet — sync a workspace and they&rsquo;ll appear
-        here to map.
-      </p>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-1.5">
-      {unmappedCount > 0 && (
-        <p className="mb-0.5 inline-flex items-center gap-1 px-1 text-[11px] text-warning">
-          <Icon name="AlertTriangle" className="h-3 w-3 shrink-0" />
-          {unmappedCount} status{unmappedCount === 1 ? "" : "es"} auto-guessed —
-          confirm or adjust.
-        </p>
-      )}
-      {catalog.entries.map((entry) => {
-        const isGuess = !(norm(entry.status) in map);
-        return (
-          <div
-            key={entry.status}
-            className="flex items-center gap-2 rounded-lg border border-border px-2.5 py-1.5"
-          >
-            <span className="min-w-0 flex-1 truncate text-[12.5px] text-foreground">
-              {formatStatus(entry.status)}
-              {isGuess && (
-                <span className="ml-1.5 text-[10px] italic text-muted-foreground">
-                  (guessed)
-                </span>
-              )}
-            </span>
-            <span className="shrink-0 text-muted-foreground/50">→</span>
-            <select
-              value={stageFor(entry)}
-              onChange={(e) => setStage(entry.status, e.target.value)}
-              className="tech-transition h-7 shrink-0 rounded-md border border-border bg-background pl-2 pr-6 text-xs text-foreground focus:border-primary focus:outline-none"
-            >
-              {stages.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/** The show/hide toggles for the Next-Actions list columns. Reads the same
- *  localStorage-backed visibility the list uses (via useSyncExternalStore) so a
- *  flip here updates the list live. A per-browser display pref — no server. */
 function ColumnsEditor() {
   const vis = useSyncExternalStore(
     subscribeColumns,

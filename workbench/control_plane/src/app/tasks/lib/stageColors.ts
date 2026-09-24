@@ -24,3 +24,12 @@ export function stageAccent(
 ): StageAccent {
   return statusAccent({ name, index, total, lastIsDone: true });
 }
+
+/**
+ * The accent for a Next Actions group or a card's pill: its status CATEGORY
+ * (D73.9), through the shared `CATEGORY_HUES`, so a lane reads the same colour
+ * here as on its Projects board.
+ */
+export function categoryAccent(category: string | null | undefined): StageAccent {
+  return statusAccent({ category: category ?? "todo" });
+}

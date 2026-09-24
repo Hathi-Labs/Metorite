@@ -408,7 +408,10 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: RLS-EXEMPT `organization` enumeration). routes/tasks' remaining 3 unbound
 #: sites are those two exempt enumerations + broker_handlers.py (a separate PR,
 #: dormant unless ACTION_BROKER_ENFORCE).
-H2_BASELINE_ELSEWHERE = 108
+#: 108 → 106: S8 PR 1 (2026-09-23) deleted `scheduler.py` and
+#: `broker_handlers.py`. routes/tasks keeps ONE unbound site: the rollover
+#: sweep's exempt `organization` enumeration in `calendar.py`.
+H2_BASELINE_ELSEWHERE = 106
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files

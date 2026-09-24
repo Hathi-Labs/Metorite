@@ -27,7 +27,6 @@ from acb_auth import UserContext, get_current_user
 from fastapi import Depends
 from gateway.routes.tasks.core import (
     _log,
-    _parse_jsonb,
     _tenant_session,
     _uid,
     router,
@@ -35,51 +34,10 @@ from gateway.routes.tasks.core import (
 from pydantic import BaseModel
 from sqlalchemy import text
 
-# Default Kanban board stages for Next Actions (last stage = "done").
-DEFAULT_WORKFLOW_STAGES: list[str] = ["TODO", "IN PROCESS", "WAITING FOR", "DONE"]
-
-# Name heuristics for auto-seeding the ClickUp-status → Next-Actions-stage map.
-# Each stage lists substrings that, when found in a (lower-cased) ClickUp status
-# name, guess that stage. First match wins in STAGE order (so "in review" hits
-# IN PROCESS, not WAITING); anything unmatched falls back to the first stage.
-_STAGE_HEURISTICS: list[tuple[str, tuple[str, ...]]] = [
-    ("DONE", ("done", "complete", "closed", "resolved", "shipped", "cancel")),
-    ("WAITING FOR", ("waiting", "blocked", "on hold", "hold", "paused",
-                     "pending", "stuck")),
-    ("IN PROCESS", ("progress", "process", "doing", "review", "testing",
-                    "qa", "active", "wip", "started")),
-    ("TODO", ("todo", "to do", "to-do", "backlog", "open", "new", "icebox",
-              "later", "someday", "planned", "queue")),
-]
-
-
-def guess_stage_for_status(status: str, stages: list[str]) -> str:
-    """Auto-guess which of the user's `stages` a raw ClickUp status name belongs
-    to, by substring heuristics. Falls back to the FIRST stage when nothing
-    matches (so a task is always visible, never lost). Only guesses stages the
-    user actually has — a heuristic for a stage not in `stages` is skipped."""
-    low = (status or "").strip().lower()
-    have = {s.strip().upper(): s for s in stages}
-    for canonical, needles in _STAGE_HEURISTICS:
-        if canonical in have and any(n in low for n in needles):
-            return have[canonical]
-    return stages[0] if stages else "TODO"
-
-
-def seed_status_stage_map(
-    statuses: list[str], stages: list[str],
-    existing: dict[str, str] | None = None,
-) -> dict[str, str]:
-    """Build/extend the status→stage map: keep any EXISTING user choices, and
-    auto-guess a stage for every status not yet mapped. Keyed by the normalized
-    (trimmed, lower-cased) status name. Never overrides a user's explicit map."""
-    out = dict(existing or {})
-    for raw in statuses:
-        key = (raw or "").strip().lower()
-        if not key or key in out:
-            continue
-        out[key] = guess_stage_for_status(raw, stages)
-    return out
+# ⚠️ No stages here since D73.9 (S8 PR 1). Next Actions groups a task by its
+# lane's CATEGORY in Projects, and the lane name is the task's own. The
+# `workflow_stages` and `status_stage_map` columns stay on `user_settings`
+# (R6: a later release drops them), but nothing reads or writes them.
 
 # Per-function default tiers (aliases resolved by acb_llm: tier-fast→tier1 …).
 DEFAULT_TASK_MODELS = {
@@ -106,20 +64,10 @@ class UserSettingsModel(BaseModel):
     # otherwise swamp the working views. Existing mirrored rows still flip to
     # DONE when closed upstream; this only governs importing NEW closed tasks.
     mirror_done_tasks: bool = False
-    # The user's ordered Kanban board stages for Next Actions (Jira/ClickUp
-    # style). The LAST stage is the "done" stage — dropping a card there marks
-    # the task DONE. Configurable in settings.
-    workflow_stages: list[str] = list(DEFAULT_WORKFLOW_STAGES)
     # Prioritization: hours from now within which a due task counts as URGENT
     # (also always urgent once overdue). Drives the matrix's ⏰ axis so urgency
     # never goes stale. Default 48h.
     urgent_window_hours: int = 48
-    # ClickUp status → Next-Actions stage. {normalized_status: stage} — one entry
-    # per unique upstream status name across every connected project. Governs how
-    # a synced task groups on the Next-Actions board and (in reverse) which of a
-    # task's own project statuses is written back on a drag. Empty = fall back to
-    # the name heuristic; seeded by the auto-guess on first status-catalog read.
-    status_stage_map: dict[str, str] = {}
     # Calendar/timeboxing prefs (migration 77). The plannable day window, a soft
     # daily focus budget (overcommit flag), inter-block buffer, and the user's
     # energy windows ([{start_hour,end_hour,energy}]). Grid + AI planner use them.
@@ -157,9 +105,7 @@ class UserSettingsPatch(BaseModel):
     clarify_use_llm: bool | None = None
     background_sync: bool | None = None
     mirror_done_tasks: bool | None = None
-    workflow_stages: list[str] | None = None
     urgent_window_hours: int | None = None
-    status_stage_map: dict[str, str] | None = None
     day_start_hour: int | None = None
     day_end_hour: int | None = None
     daily_capacity_mins: int | None = None
@@ -217,19 +163,6 @@ async def gtd_toggles(db: Any, user_id: str) -> dict[str, bool]:
     return out
 
 
-async def gtd_workflow_stages(db: Any, user_id: str) -> list[str]:
-    """The user's ordered board stages, defaults filled in. Never raises."""
-    try:
-        row = (await db.execute(text(
-            "SELECT workflow_stages FROM user_settings WHERE user_id = :uid"),
-            {"uid": user_id})).fetchone()
-        if row:
-            return _stages(row.workflow_stages)
-    except Exception as exc:
-        _log.warning("tasks.settings.stages_failed", error=str(exc)[:160])
-    return list(DEFAULT_WORKFLOW_STAGES)
-
-
 async def gtd_calendar_prefs(db: Any, user_id: str) -> dict[str, Any]:
     """Calendar/timeboxing prefs with safe defaults (never raises), for the grid
     + the AI day-planner. energy_windows = [{start_hour,end_hour,energy}]."""
@@ -275,7 +208,7 @@ async def _load(db: Any, user_id: str) -> UserSettingsModel:
         # Direction is People → Calendar and only that way: nothing in this
         # package writes `people.working_hours`, and a test asserts it.
         return UserSettingsModel(**await _seed_from_work_schedule(db, user_id))
-    
+
     return UserSettingsModel(
         chat_model=row.chat_model or DEFAULT_TASK_MODELS["chat"],
         clarify_model=row.clarify_model or DEFAULT_TASK_MODELS["clarify"],
@@ -288,9 +221,7 @@ async def _load(db: Any, user_id: str) -> UserSettingsModel:
         clarify_use_llm=bool(getattr(row, "clarify_use_llm", True)),
         background_sync=bool(getattr(row, "background_sync", True)),
         mirror_done_tasks=bool(getattr(row, "mirror_done_tasks", False)),
-        workflow_stages=_stages(getattr(row, "workflow_stages", None)),
         urgent_window_hours=int(getattr(row, "urgent_window_hours", 48) or 48),
-        status_stage_map=_status_map(getattr(row, "status_stage_map", None)),
         day_start_hour=int(getattr(row, "day_start_hour", 7) or 7),
         day_end_hour=int(getattr(row, "day_end_hour", 22) or 22),
         daily_capacity_mins=int(
@@ -331,7 +262,7 @@ async def _seed_from_work_schedule(db: Any, user_id: str) -> dict[str, int]:
         if row is None:
             return {}
         return calendar_seed(person_schedule(await load_policy(db), row))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         _log.warning("tasks.settings.work_schedule_seed_failed",
                      error=str(exc)[:160])
         return {}
@@ -421,122 +352,10 @@ def _energy_windows(val: Any) -> list[dict]:
     return out
 
 
-def _status_map(val: Any) -> dict[str, str]:
-    """Normalize the stored status_stage_map (JSONB object, or JSON string) into
-    a clean {normalized_status: stage} dict; empty dict on anything unparseable
-    (pre-migration row, bad value) so callers fall back to the heuristic."""
-    import json
-    if isinstance(val, str):
-        try:
-            val = json.loads(val)
-        except ValueError:
-            val = None
-    if isinstance(val, dict):
-        return {str(k).strip().lower(): str(v).strip()
-                for k, v in val.items()
-                if str(k).strip() and str(v).strip()}
-    return {}
-
-
-async def gtd_status_stage_map(db: Any, user_id: str) -> dict[str, str]:
-    """The user's ClickUp-status → stage map (normalized keys), defaults to {}.
-    Never raises — a missing row / pre-migration DB returns {}."""
-    try:
-        row = (await db.execute(text(
-            "SELECT status_stage_map FROM user_settings WHERE user_id = :uid"),
-            {"uid": user_id})).fetchone()
-        if row:
-            return _status_map(row.status_stage_map)
-    except Exception as exc:
-        _log.warning("tasks.settings.status_map_failed", error=str(exc)[:160])
-    return {}
-
-
-def _stages(val: Any) -> list[str]:
-    """Normalize the stored workflow_stages (JSONB list, or JSON string) into a
-    clean list of non-empty stage names; fall back to the defaults."""
-    import json
-    if isinstance(val, str):
-        try:
-            val = json.loads(val)
-        except ValueError:
-            val = None
-    if isinstance(val, list):
-        cleaned = [str(s).strip() for s in val
-                   if s is not None and str(s).strip()]
-        if cleaned:
-            return cleaned
-    return list(DEFAULT_WORKFLOW_STAGES)
-
-
 @router.get("/settings", response_model=UserSettingsModel)
 async def get_user_settings(user: UserContext = Depends(get_current_user)):
     async with _tenant_session() as db:
         return await _load(db, _uid(user))
-
-
-class StatusCatalogEntry(BaseModel):
-    status: str          # the ClickUp status name (a representative spelling)
-    stage: str           # the mapped Next-Actions stage (auto-guessed if unset)
-    mapped: bool         # False → this is an auto-guess, not a user choice yet
-
-
-class StatusCatalogResponse(BaseModel):
-    stages: list[str]                    # the user's 4 fixed stages (for the picker)
-    entries: list[StatusCatalogEntry]    # one per unique upstream status
-    unmapped: int                        # how many are still just auto-guesses
-
-
-@router.get("/status-catalog", response_model=StatusCatalogResponse)
-async def status_catalog(user: UserContext = Depends(get_current_user)):
-    """Every UNIQUE ClickUp status across the user's connected projects, paired
-    with the stage it maps to. A status the user hasn't explicitly mapped shows
-    its auto-guessed stage (``mapped=False``) so the settings table is never
-    blank — the user just confirms/adjusts. Powers the status-mapping UI."""
-    uid = _uid(user)
-    async with _tenant_session() as db:
-        settings = await _load(db, uid)
-        rows = (await db.execute(text(
-            "SELECT schema_cache FROM task_accounts WHERE user_id = :uid"),
-            {"uid": uid})).fetchall()
-        # Unique upstream statuses (first spelling wins), normalized for dedup.
-        seen: dict[str, str] = {}
-        for r in rows:
-            cache = _parse_jsonb(r.schema_cache) or {}
-            for s in cache.get("statuses") or []:
-                if not isinstance(s, str) or not s.strip():
-                    continue
-                key = s.strip().lower()
-                seen.setdefault(key, s.strip())
-        # Also fold in every status that a mirrored task actually carries — the
-        # ground truth. A list-level status (e.g. a "Done" distinct from the
-        # space "Closed") shows up here even if the cached schema hasn't caught
-        # it yet, so the user can map it without waiting for a schema refresh.
-        status_rows = (await db.execute(text(
-            """SELECT DISTINCT provider_status FROM gtd_items
-                WHERE user_id = :uid AND source <> 'LOCAL'
-                  AND provider_status IS NOT NULL AND provider_status <> ''"""),
-            {"uid": uid})).fetchall()
-        for r in status_rows:
-            s = (r.provider_status or "").strip()
-            if s:
-                seen.setdefault(s.lower(), s)
-        stages = settings.workflow_stages
-        smap = settings.status_stage_map
-        entries: list[StatusCatalogEntry] = []
-        unmapped = 0
-        for key, display in sorted(seen.items()):
-            if key in smap:
-                entries.append(StatusCatalogEntry(
-                    status=display, stage=smap[key], mapped=True))
-            else:
-                entries.append(StatusCatalogEntry(
-                    status=display,
-                    stage=guess_stage_for_status(display, stages),
-                    mapped=False))
-                unmapped += 1
-        return StatusCatalogResponse(
-            stages=stages, entries=entries, unmapped=unmapped)
 
 
 @router.put("/settings", response_model=UserSettingsModel)
@@ -548,26 +367,10 @@ async def put_user_settings(
     uid = _uid(user)
     fields = {k: v for k, v in patch.model_dump().items() if v is not None}
     import json
-    if "workflow_stages" in fields:
-        # Sanitize (trim, drop empties, cap) and JSON-encode for the JSONB
-        # column. Guarantee a non-empty list with a "done" stage.
-        stages = [str(s).strip() for s in fields["workflow_stages"]
-                  if str(s).strip()][:24]
-        if not stages:
-            stages = list(DEFAULT_WORKFLOW_STAGES)
-        fields["workflow_stages"] = json.dumps(stages)
-    _jsonb_cols = {"workflow_stages", "status_stage_map", "energy_windows",
-                   "day_templates"}
+    _jsonb_cols = {"energy_windows", "day_templates"}
     if "day_templates" in fields:
         fields["day_templates"] = json.dumps(
             _day_templates(fields["day_templates"]))
-    if "status_stage_map" in fields:
-        # Normalize keys (lower/trim) + drop empties; JSON-encode for JSONB.
-        raw = fields["status_stage_map"] or {}
-        clean = {str(k).strip().lower(): str(v).strip()
-                 for k, v in raw.items()
-                 if str(k).strip() and str(v).strip()}
-        fields["status_stage_map"] = json.dumps(clean)
     if "energy_windows" in fields:
         # Validate + JSON-encode for the JSONB column.
         fields["energy_windows"] = json.dumps(
@@ -591,39 +394,5 @@ async def put_user_settings(
                     ON CONFLICT (user_id)
                     DO UPDATE SET {sets}, updated_at = now()"""),
                 {"uid": uid, **fields})
-
-        # A background_sync toggle must (re)start or stop this user's
-        # workspace loops at runtime — otherwise the change only takes
-        # effect on the next gateway restart. Runs AFTER the block above
-        # committed: the scheduler re-reads user_settings on its own session
-        # and must see the new value (H2 restructure).
-        if "background_sync" in fields:
-            async with _tenant_session() as db:
-                await _apply_background_sync_toggle(
-                    db, uid, bool(fields["background_sync"]))
     async with _tenant_session() as db:
         return await _load(db, uid)
-
-
-async def _apply_background_sync_toggle(
-    db: Any, user_id: str, enabled: bool,
-) -> None:
-    """Start (enabled) or stop (disabled) the background loops for every
-    sync-enabled workspace this user owns. Best-effort — a scheduler hiccup
-    never fails the settings save."""
-    try:
-        from gateway.routes.tasks.scheduler import (
-            refresh_account_sync,
-            remove_account_sync,
-        )
-        rows = (await db.execute(text(
-            """SELECT id FROM task_accounts
-               WHERE user_id = :uid AND sync_enabled = true"""),
-            {"uid": user_id})).fetchall()
-        for r in rows:
-            if enabled:
-                await refresh_account_sync(str(r.id))
-            else:
-                await remove_account_sync(str(r.id))
-    except Exception as exc:
-        _log.warning("tasks.settings.bg_toggle_failed", error=str(exc)[:160])

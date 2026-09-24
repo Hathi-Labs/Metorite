@@ -9,8 +9,8 @@ this spec and `work_plan.md` §2 disagree, the board wins.
 
 ---
 
-**Built so far.** S5, S6a, S6b, S6c and S6d are built and serving. S7 ran on
-2026-09-23. S8a is in PR #398.
+**Built so far.** S5, S6a to S6e and S8a are built and serving. S7 ran on
+2026-09-23. S8 PR 1 is built on 2026-09-23 and waits for its merge window.
 
 ## 0. One paragraph
 
@@ -257,6 +257,54 @@ the one store, so continuity is a property to verify, not a sync to build.
    chip when they hold an overlay row. It shows nothing about anybody else's.
 5. **The move dialog is the Projects one.** S6c reuses `move.py`'s preview and
    the Projects move dialog rather than drawing a second one.
+
+### 4.9 Stages come from Projects, grouped by category (D73.9)
+
+Owner request, verbatim, 2026-09-23:
+
+> "if we do not have any ClickUp connection, then the status mapping also
+> needs to be removed from the settings of My Tasks. Make sure we are properly
+> mapping stages with the Projects app."
+
+
+1. The ClickUp status mapping and the Kanban stages editor leave the My Tasks
+   settings. One read-only note says where stages come from.
+2. Next Actions groups a task by its lane CATEGORY
+   (`pm_task_statuses.category`). The groups are To do (`todo`), In progress
+   (`in_progress`) and Done (`done`), in that order. A task in a `backlog`
+   or `triage` lane sits under To do, and a `cancelled` lane hides it
+   (point 5).
+3. A card keeps its own lane NAME as its pill. So "Building" in one project
+   and "In progress" in another both sit under In progress.
+4. A drag into a group resolves the category to one lane. It is the first
+   lane by position with that category in the task's own project
+   (`GET /projects/my/tasks/{id}/lanes`). Then the client PATCHes
+   `/projects/tasks/{id}` with that `status_id`. A drag into Done goes
+   through `POST /projects/tasks/{id}/complete` (§13.5a decision 1).
+5. **A stated NEXT is never hidden by its lane.** Next Actions shows every
+   task whose effective disposition is NEXT. A task in a `backlog` or
+   `triage` lane sits under To do. Only a `cancelled` lane hides a task. The
+   rule "backlog is Someday" is the derivation for a task with NO stated
+   disposition, and `itemsForView("next")` already applies it. Without this
+   rule, three kinds of task vanished from the list while the sidebar still
+   counted them:
+   * every task the S3b backfill moved, because migration 189 put each one in
+     its root's Inbox lane (category `backlog`);
+   * every capture clarified to Next, because an organize writes only the
+     overlay;
+   * every quick-add in the To do group.
+
+   A drag to In progress resolves the lane as in point 4. A drag to To do on
+   a task in a `backlog` lane moves it to the first `todo` lane.
+6. A project with no lane of the category moves nothing. A toast names the
+   project.
+7. The client and `routes/tasks/settings.py` stop reading and writing
+   `workflow_stages` and `status_stage_map`. The `user_settings` columns stay
+   until a later contract (R6).
+
+Fences: `app/tasks/lib/statusCategory.test.ts` (the grouping, the lane
+resolution and the settings modal source) and `naming.test.ts` (no member
+string says ClickUp).
 
 ## 5. The slices
 
@@ -708,7 +756,7 @@ action_item_id, segment_ids}`. The notes text is the description.
    production takes the pm arm. S8 PR 1 deletes the gtd arm. The three
    callers need no change then.
 
-### S8 — the contract: code first, then schema · AGENT-SAFE
+### S8 — the contract: code first, then schema · AGENT-SAFE · PR 1 BUILT 2026-09-23
 
 **Scope.** Two PRs, in order.
 
@@ -720,7 +768,8 @@ action_item_id, segment_ids}`. The notes text is the description.
    `test_client_route_contract.py` keeps the paths that survive.
 2. **Schema.** A new migration calls `gtd_retirement_drop()`. It takes the
    next free number at build time (R1). Number 212 went to the backfill fix
-   on 2026-09-23, so this one is 213 or later. Then it drops
+   on 2026-09-23 and 213 to `pm_activities.seq` (#402). So this one is 214
+   or later. Then it drops
    the tree tables, `gtd_contexts`, `gtd_retirement_arm` and the two guard
    functions. It renames `gtd_attachments`, `gtd_horizons` and `gtd_reviews`
    through the guarded prologue in their creating migrations (52 and 48).
@@ -728,6 +777,36 @@ action_item_id, segment_ids}`. The notes text is the description.
    contract half of `wa_commitments.task_id` drops `gtd_item_id`.
    The PR 1 build record named three blockers: notes approve, the email
    digest and the email drafter. S8c moved all three to the seam.
+
+**PR 1 build record (2026-09-23).** Branch `my-tasks-s8b`.
+
+**PR 1 merges no earlier than 2026-09-24 00:30 UTC, one full day after the
+flip (§6 step 10).**
+
+1. **Gateway.** `item_source()` and `agent_source()` return the one store
+   with no flag. The `gtd_items` arms and `tasks_lens_enabled()` are gone.
+   `/version` keeps `tasks_lens: true` as a constant for one release, so the
+   monitoring that reads it does not break. S9 may drop the key.
+2. **Deleted modules.** `routes/tasks/items.py`, `hierarchy.py`,
+   `accounts.py`, `sync.py`, `providers.py`, `broker_handlers.py` and
+   `scheduler.py`. Also the `/status-catalog` route and the four legacy
+   planner routes (`/calendar/plan`, `replan`, `rollover`,
+   `estimate-stats`). A grep found no caller for any of them. It covered the
+   client, the skill, the agents, the operator console and the tests.
+3. **Client.** `lensEnabled()` and `NEXT_PUBLIC_TASKS_LENS` are gone. Every
+   function in `api.ts` answers through `lens.ts`. `lens.test.ts` refuses
+   any retired `/tasks` path in `api.ts`.
+4. **D73.9** is built in the same PR (§4.9).
+5. **The fence widened.** `test_tasks_ai_source.py` walks the whole of
+   `routes/tasks/`, `routes/projects/` and `apps/skills/`. Each allowed
+   `gtd_` token carries a reason.
+6. **Three modules outside the fenced trees used `gtd_items`:**
+   `routes/notes/actions.py`, `routes/email/digest.py` and
+   `routes/email/automation/drafting.py`. S8c (#410) moved them onto the
+   seam, and the fence now walks `routes/notes/` and `routes/email/` too.
+   `scripts/restore_db.sh`
+   also names `gtd_task` in its examples and in its row-count check. PR 2
+   updates it in the same change.
 
 **Done when.**
 1. `rg -l "gtd_" apps packages --glob '!infra/postgres/generated'` returns
@@ -802,7 +881,7 @@ action_item_id, segment_ids}`. The notes text is the description.
       |
 11. INSERT INTO gtd_retirement_arm (armed_by, note) VALUES (...)
       |
-12. S8 PR 2 merges. Its migration (213 or later) calls the guard, drops, renames.
+12. S8 PR 2 merges. Its migration (214 or later) calls the guard, drops, renames.
       |
 13. \dt gtd_*  ->  nothing
 ```
@@ -825,9 +904,10 @@ the owner.
 |---|---|
 | the label is My Tasks, and the mirror agrees | `nav.test.ts` |
 | no member-visible `gtd` in the app | `app/tasks/lib/naming.test.ts` |
-| every client function consults the flag until S8 | `lens.test.ts` |
+| `api.ts` names no retired `/tasks` path (S8 PR 1) | `lens.test.ts` |
 | every client path is a served path | `test_client_route_contract.py` |
-| the AI modules name no store outside the seam | `test_tasks_ai_source.py` |
+| no module in `routes/tasks`, `routes/projects` or `apps/skills` names a retired table | `test_tasks_ai_source.py` |
+| Next Actions groups by the lane category, and a drag resolves a lane (D73.9) | `statusCategory.test.ts` |
 | a personal child never reaches the company board | `test_personal_tree.py`, `live_ws39_personal_tree.sql` |
 | a task assigned to me in Projects reaches my inbox untriaged | `test_projects_personal_s6e.py`, `live_ws39_s6e.py` |
 | My Tasks and Projects share one task panel composition | the S6e source fence |

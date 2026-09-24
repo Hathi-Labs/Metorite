@@ -1,11 +1,13 @@
-// Gateway client for the /tasks API (proxied via /api/tasks/[...path]).
+// Gateway client for My Tasks. Every task read and write goes through the
+// Projects lens (`lens.ts`, `/api/projects/my/*`), the one task store (D53).
+// `gatewayFetch` reaches the `/tasks` routes that survive S8: the AI doors,
+// intake, settings, people, the agent planner and the day state.
 // Mirrors the email app's lib/api.ts: snake_case backend ↔ camelCase UI types.
 // The store hydrates from here when the gateway is reachable and silently
 // falls back to the bundled mock data when it isn't (UI-first demo mode).
 
-import { GtdItem, GtdProject, Person, OrgPerson, OrgPersonWrite, ResumeIngestResult, Source, ProviderKind, Disposition, TaskAttachment, WorkspaceHierarchySpace } from "./types";
+import { GtdItem, GtdProject, Person, OrgPerson, OrgPersonWrite, ResumeIngestResult, Disposition, TaskAttachment } from "./types";
 import type { ClarifyProposal, ClarifyDisposition, Confidence } from "./clarify";
-import type { ConnectedProvider } from "./mockData";
 import {
   lensAddSubtasks,
   lensArchiveItem,
@@ -16,7 +18,6 @@ import {
   lensCreateArea,
   lensDelegateItem,
   lensDeleteArea,
-  lensEnabled,
   lensEstimateStats,
   lensFetchAreas,
   lensFetchItems,
@@ -37,27 +38,10 @@ import {
   lensRenameArea,
   lensRestoreItem,
   lensStageAttachment,
-  lensStageOptions,
-  lensStatusCatalog,
   lensTrashItem,
 } from "./lens";
 import type { LensArea, LensAreaRemoval, LensLane, LensLedProject, LensMoveRequest } from "./lens";
 export type { LensArea, LensAreaRemoval } from "./lens";
-
-// ── The cutover seam (WS-39 S3a-client) ────────────────────────────────
-//
-// Under D53 there is ONE task store and this app is a lens over it. The
-// functions below keep their names and their signatures and simply answer from
-// `pm_*` instead of `gtd_items` once `NEXT_PUBLIC_TASKS_LENS` is on — so the
-// 95 KB store above this file, and its thirty-odd callers, do not change.
-//
-// The branch lives HERE rather than at each call site on purpose: a call site
-// that forgets the branch is a write to the retired store, which succeeds. One
-// seam is checkable; thirty are a search-and-hope.
-//
-// Default OFF. The flag cannot be flipped before the S3b backfill — the new
-// store answers correctly that it holds none of the old rows, so an early flip
-// empties the app rather than breaking it, which is worse.
 
 async function gatewayFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api/tasks${path}`, {
@@ -94,11 +78,6 @@ function asPerson(v: unknown): Person | undefined {
   };
 }
 
-/** A raw person array → Person[]; drops blanks. */
-function personList(v: unknown): Person[] {
-  return Array.isArray(v) ? (v.map(asPerson).filter(Boolean) as Person[]) : [];
-}
-
 /** Pull the proposed owner's workload flags (server-annotated on the clarify
  *  proposal, §5 Phase 2) off the raw suggested_assignee. Undefined when the
  *  server didn't annotate load (semantic/workload path off or no owner). */
@@ -116,124 +95,28 @@ function asAssigneeLoad(
   };
 }
 
-function mapItem(raw: Raw): GtdItem {
-  return {
-    id: String(raw.id ?? ""),
-    source: (raw.source === "SYNCED" ? "SYNCED" : "LOCAL") as Source,
-    provider: (raw.provider ?? undefined) as ProviderKind | undefined,
-    accountId: raw.account_id ? String(raw.account_id) : undefined,
-    title: String(raw.title ?? ""),
-    notes: raw.notes ? String(raw.notes) : undefined,
-    disposition: String(raw.disposition ?? "INBOX") as Disposition,
-    nextAction: raw.next_action ? String(raw.next_action) : undefined,
-    context: raw.context ? String(raw.context) : undefined,
-    energy: (raw.energy ?? undefined) as GtdItem["energy"],
-    timeEstimateMins: raw.time_estimate_mins
-      ? Number(raw.time_estimate_mins)
-      : undefined,
-    isTwoMinute: Boolean(raw.is_two_minute),
-    important: Boolean(raw.important),
-    leveraged: Boolean(raw.leveraged),
-    deepWork: Boolean(raw.deep_work),
-    keptMine: Boolean(raw.kept_mine),
-    projectId: raw.project_id ? String(raw.project_id) : undefined,
-    isMine: Boolean(raw.is_mine ?? true),
-    waitingOn: asPerson(raw.waiting_on),
-    delegatedAt: raw.delegated_at ? String(raw.delegated_at) : undefined,
-    expectedBy: raw.expected_by ? String(raw.expected_by) : undefined,
-    lastNudgedAt: raw.last_nudged_at ? String(raw.last_nudged_at) : undefined,
-    assignee: asPerson(raw.assignee),
-    // Full owner set; fall back to the single assignee (mock rows / not-yet-
-    // migrated data) so there's always at least the primary owner.
-    assignees: (() => {
-      const list = personList(raw.assignees);
-      if (list.length) return list;
-      const one = asPerson(raw.assignee);
-      return one ? [one] : [];
-    })(),
-    providerStatus: raw.provider_status ? String(raw.provider_status) : undefined,
-    workflowStage: raw.workflow_stage ? String(raw.workflow_stage) : undefined,
-    sortKey: raw.sort_key == null ? undefined : Number(raw.sort_key),
-    parentItemId: raw.parent_item_id ? String(raw.parent_item_id) : undefined,
-    subtaskCount: raw.subtask_count == null ? 0 : Number(raw.subtask_count),
-    archivedAt: raw.archived_at ? String(raw.archived_at) : undefined,
-    providerUrl: raw.provider_url ? String(raw.provider_url) : undefined,
-    syncState: (raw.sync_state ?? "local") as GtdItem["syncState"],
-    dueAt: raw.due_at ? String(raw.due_at) : undefined,
-    isHardDate: Boolean(raw.is_hard_date),
-    scheduledStart: raw.scheduled_start ? String(raw.scheduled_start) : undefined,
-    scheduledEnd: raw.scheduled_end ? String(raw.scheduled_end) : undefined,
-    // Defaults to flexible (movable) — matches the column default (mig 79).
-    flexible: raw.flexible == null ? true : Boolean(raw.flexible),
-    actualStart: raw.actual_start ? String(raw.actual_start) : undefined,
-    actualEnd: raw.actual_end ? String(raw.actual_end) : undefined,
-    createdAt: String(raw.created_at ?? ""),
-    attachments: Array.isArray(raw.attachments)
-      ? (raw.attachments as TaskAttachment[])
-      : undefined,
-    origin: raw.origin && typeof raw.origin === "object"
-      ? {
-          kind: String((raw.origin as Raw).kind ?? ""),
-          accountId: (raw.origin as Raw).account_id ? String((raw.origin as Raw).account_id) : undefined,
-          emailId: (raw.origin as Raw).email_id ? String((raw.origin as Raw).email_id) : undefined,
-          subject: (raw.origin as Raw).subject ? String((raw.origin as Raw).subject) : undefined,
-          fromName: (raw.origin as Raw).from_name ? String((raw.origin as Raw).from_name) : undefined,
-          fromEmail: (raw.origin as Raw).from_email ? String((raw.origin as Raw).from_email) : undefined,
-        }
-      : undefined,
-    updatedAt: String(raw.updated_at ?? ""),
-    completedAt: raw.completed_at ? String(raw.completed_at) : undefined,
-    clarifiedAt: raw.clarified_at ? String(raw.clarified_at) : undefined,
-    deferUntil: raw.defer_until ? String(raw.defer_until) : undefined,
-  };
-}
-
-/** Exported for its lens branch's test; `fetchProjects` is the caller. */
+/**
+ * A `pm_projects` NODE as the promote picker reads it. The title is `name`,
+ * and the status is lowercase (`146_projects.sql`). Exported for its test.
+ */
 export function mapProject(raw: Raw): GtdProject {
-  if (lensEnabled()) {
-    // A `pm_projects` NODE, not a `gtd_projects` row: the title is `name`,
-    // the status is lowercase (`146_projects.sql`), and there is no tree
-    // placement or connector. Read as the old shape, every label was blank
-    // and `status === "ACTIVE"` filtered the whole list away (S6a repair).
-    const status = String(raw.status ?? "active").toUpperCase();
-    return {
-      id: String(raw.id ?? ""),
-      source: "LOCAL",
-      outcome: String(raw.name ?? raw.outcome ?? ""),
-      purpose: raw.description ? String(raw.description) : undefined,
-      // `active` is the only node status a picker offers; anything else
-      // (archived, closed) reads as DONE so the ACTIVE filter drops it.
-      status: status === "ACTIVE" ? "ACTIVE" : "DONE",
-      hasNextAction: false,
-    };
-  }
+  const status = String(raw.status ?? "active").toUpperCase();
   return {
     id: String(raw.id ?? ""),
-    source: (raw.source === "SYNCED" ? "SYNCED" : "LOCAL") as Source,
-    provider: (raw.provider ?? undefined) as ProviderKind | undefined,
-    accountId: raw.account_id ? String(raw.account_id) : undefined,
-    providerRef: raw.provider_ref ? String(raw.provider_ref) : undefined,
-    spaceId: raw.space_id ? String(raw.space_id) : undefined,
-    folderId: raw.folder_id ? String(raw.folder_id) : undefined,
-    outcome: String(raw.outcome ?? ""),
-    purpose: raw.purpose ? String(raw.purpose) : undefined,
-    status: String(raw.status ?? "ACTIVE") as GtdProject["status"],
-    hasNextAction: Boolean(raw.has_next_action),
+    source: "LOCAL",
+    outcome: String(raw.name ?? raw.outcome ?? ""),
+    purpose: raw.description ? String(raw.description) : undefined,
+    // `active` is the only node status a picker offers; anything else
+    // (archived, closed) reads as DONE so the ACTIVE filter drops it.
+    status: status === "ACTIVE" ? "ACTIVE" : "DONE",
+    hasNextAction: false,
   };
 }
 
 // ── Calls ────────────────────────────────────────────────────────────────────
 
-export async function fetchItems(
-  view = "all",
-  source: "" | "local" | "synced" = "",
-): Promise<GtdItem[]> {
-  // `source` is not forwarded to the lens: it split LOCAL from SYNCED rows,
-  // and D52 retired the second kind. Every task is ours.
-  if (lensEnabled()) return lensFetchItems(view);
-  const qs = source ? `?view=${view}&source=${source}` : `?view=${view}`;
-  const rows = await gatewayFetch<Raw[]>(`/items${qs}`);
-  return rows.map(mapItem);
+export async function fetchItems(view = "all"): Promise<GtdItem[]> {
+  return lensFetchItems(view);
 }
 
 // ── Rich provider detail (comments / attachments / subtasks) ────────────────
@@ -259,86 +142,27 @@ export interface ProviderTaskDetail {
   error?: string;
 }
 
-/** Pull the connected tool's comments/attachments/subtasks for one task.
- *  Returns empty sections for a LOCAL / not-yet-pushed item. */
+/** One task's comments, attachments and subtasks. */
 export async function apiItemDetail(id: string): Promise<ProviderTaskDetail> {
-  // Composed from three Projects reads (timeline, attachments, children) —
-  // the same three sections, from the store the task actually lives in.
-  if (lensEnabled()) return lensItemDetail(id);
-  const r = await gatewayFetch<Raw>(`/items/${id}/detail`);
-  const asPersonList = (v: unknown): Person[] =>
-    Array.isArray(v)
-      ? (v.map(asPerson).filter(Boolean) as Person[])
-      : [];
-  return {
-    comments: (Array.isArray(r.comments) ? r.comments : []).map((c) => {
-      const raw = c as Raw;
-      return {
-        id: String(raw.id ?? ""),
-        author: String(raw.author ?? "Someone"),
-        text: String(raw.text ?? ""),
-        createdAtMs: raw.created_at_ms ? Number(raw.created_at_ms) : undefined,
-      };
-    }),
-    attachments: (Array.isArray(r.attachments) ? r.attachments : []).map((a) => {
-      const raw = a as Raw;
-      return {
-        kind: "link" as const,
-        name: String(raw.name ?? "attachment"),
-        url: String(raw.url ?? ""),
-        mime: raw.mime ? String(raw.mime) : undefined,
-        size: raw.size ? Number(raw.size) : undefined,
-      };
-    }),
-    subtasks: (Array.isArray(r.subtasks) ? r.subtasks : []).map((s) => {
-      const raw = s as Raw;
-      return {
-        providerTaskId: String(raw.provider_task_id ?? ""),
-        title: String(raw.title ?? "Untitled"),
-        status: raw.status ? String(raw.status) : undefined,
-        statusType: raw.status_type ? String(raw.status_type) : undefined,
-        providerUrl: raw.provider_url ? String(raw.provider_url) : undefined,
-        assignees: asPersonList(raw.assignees),
-      };
-    }),
-    error: r.error ? String(r.error) : undefined,
-  };
+  // Composed from three Projects reads: timeline, attachments and children.
+  return lensItemDetail(id);
 }
 
-/**
- * Promote a task into a project — the Tasks app's one door to `move`.
- *
- * LENS ONLY, and it throws rather than degrading when the flag is off. The old
- * store has no equivalent: `gtd_items` had no company board to be promoted ONTO,
- * which is the whole reason D53 exists. A silent no-op here would let a promote
- * button appear, do nothing, and report success.
- */
+/** Promote a task into a project: the My Tasks door to `move`. */
 export async function apiMoveTask(
   taskId: string,
   req: LensMoveRequest,
 ): Promise<Raw> {
-  if (!lensEnabled()) {
-    throw new Error(
-      "Moving a task into a project needs the My Tasks lens (NEXT_PUBLIC_TASKS_LENS). " +
-        "The legacy store has no company board to move onto — see docs/TASKS_LENS.md.",
-    );
-  }
   return lensMoveTask(taskId, req);
 }
 
 export async function fetchProjects(): Promise<GtdProject[]> {
-  if (lensEnabled()) {
-    // ⚠️ These are the COMPANY's projects, not a per-user tree. Under the old
-    // store `/projects` listed `gtd_projects` — one member's private list. The
-    // lens has no equivalent and should not grow one: a member's own structure
-    // is their Areas (migration 191), which are reached through `my/*` and are
-    // deliberately absent here. What this list is FOR is choosing a promote
-    // destination, and only a real project can be one.
-    const rows = await lensFetchProjects();
-    return rows.map((r) => mapProject(r as Raw));
-  }
-  const rows = await gatewayFetch<Raw[]>(`/projects`);
-  return rows.map(mapProject);
+  // ⚠️ These are the COMPANY's projects, not a per-user tree. A member's own
+  // structure is their Areas (migration 191), reached through `my/*`. This
+  // list exists to choose a promote destination, and only a real project can
+  // be one.
+  const rows = await lensFetchProjects();
+  return rows.map((r) => mapProject(r as Raw));
 }
 
 export async function fetchPeople(): Promise<Person[]> {
@@ -480,39 +304,11 @@ export async function apiCapture(
   attachments?: TaskAttachment[],
   dates?: CaptureDates
 ): Promise<GtdItem> {
-  if (lensEnabled()) return lensCapture(title, notes, attachments, dates);
-  return mapItem(
-    await gatewayFetch<Raw>(`/items`, {
-      method: "POST",
-      body: JSON.stringify({
-        title,
-        notes: notes ?? null,
-        attachments:
-          attachments && attachments.length > 0
-            ? attachments.map((a) => ({
-                kind: a.kind,
-                name: a.name,
-                url: a.url,
-                attachment_id: a.attachmentId ?? null,
-                mime: a.mime ?? null,
-                size: a.size ?? null,
-              }))
-            : null,
-        defer_until: dates?.deferUntil ?? null,
-        due_at: dates?.dueAt ?? null,
-        is_hard_date: dates?.isHardDate ?? false,
-      }),
-    })
-  );
+  return lensCapture(title, notes, attachments, dates);
 }
 
 export async function apiCaptureBatch(titles: string[]): Promise<GtdItem[]> {
-  if (lensEnabled()) return lensCaptureBatch(titles);
-  const rows = await gatewayFetch<Raw[]>(`/items/batch`, {
-    method: "POST",
-    body: JSON.stringify({ titles }),
-  });
-  return rows.map(mapItem);
+  return lensCaptureBatch(titles);
 }
 
 export async function apiPatchItem(
@@ -549,36 +345,7 @@ export async function apiPatchItem(
     expected_by?: string;
   }
 ): Promise<GtdItem> {
-  if (lensEnabled()) return lensPatchItem(id, patch as Record<string, unknown>);
-  return mapItem(
-    await gatewayFetch<Raw>(`/items/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(patch),
-    })
-  );
-}
-
-/** The ordered ClickUp statuses of a synced task's OWN list — the stage-picker
- *  options for the detail panel, so a task shows just its project's pipeline,
- *  not the whole-workspace union. Empty for a LOCAL / not-yet-pushed task. */
-export async function apiItemStageOptions(
-  id: string,
-  projectId?: string,
-): Promise<string[]> {
-  if (lensEnabled()) {
-    // ⚠️ The lens asks about a PROJECT; the legacy endpoint asked about an ITEM.
-    // Statuses are per-root, so "what stages exist" has no answer until you know
-    // which project — and in a move dialog the answer wanted is about the
-    // DESTINATION, which the item cannot supply. Without a project we would be
-    // guessing, and guessing a lane vocabulary is how a task lands in a lane the
-    // destination board does not render.
-    if (!projectId) return [];
-    return lensStageOptions(projectId);
-  }
-  const r = await gatewayFetch<Raw>(`/items/${id}/stage-options`);
-  return Array.isArray(r.statuses)
-    ? (r.statuses as unknown[]).map(String)
-    : [];
+  return lensPatchItem(id, patch as Record<string, unknown>);
 }
 
 /** Items to render on the calendar grid for the window [fromIso, toIso):
@@ -659,38 +426,20 @@ function mapDayPlan(r: Raw): DayPlanResult {
 /** Ask the AI planner for a timeboxed day (priority/energy/capacity/deadline
  *  aware). Returns a proposal — the caller applies accepted blocks via PATCH. */
 export async function apiPlanDay(req: PlanDayRequest): Promise<DayPlanResult> {
-  if (lensEnabled()) return mapDayPlan(await lensPlan("plan", req));
-  return mapDayPlan(
-    await gatewayFetch<Raw>(`/calendar/plan`, {
-      method: "POST",
-      body: JSON.stringify(req),
-    }),
-  );
+  return mapDayPlan(await lensPlan("plan", req));
 }
 
 /** Roll incomplete PAST time-blocks forward into the target day's open slots
  *  (deadline-aware). Returns a proposal — the caller applies it. */
 export async function apiRollover(req: PlanDayRequest): Promise<DayPlanResult> {
-  if (lensEnabled()) return mapDayPlan(await lensPlan("rollover", req));
-  return mapDayPlan(
-    await gatewayFetch<Raw>(`/calendar/rollover`, {
-      method: "POST",
-      body: JSON.stringify(req),
-    }),
-  );
+  return mapDayPlan(await lensPlan("rollover", req));
 }
 
 /** Re-timebox the REST of today: repack today's not-yet-done FLEXIBLE blocks
  *  from now, around fixed/done blocks. The "I fell behind — fix my day" op.
  *  Returns a proposal — the caller applies it. */
 export async function apiReplan(req: PlanDayRequest): Promise<DayPlanResult> {
-  if (lensEnabled()) return mapDayPlan(await lensPlan("replan", req));
-  return mapDayPlan(
-    await gatewayFetch<Raw>(`/calendar/replan`, {
-      method: "POST",
-      body: JSON.stringify(req),
-    }),
-  );
+  return mapDayPlan(await lensPlan("replan", req));
 }
 
 /** The AGENT-facing day planner (server-side geometry — no client windows).
@@ -719,9 +468,7 @@ export interface EstimateStats {
   overPct: number;
 }
 export async function apiEstimateStats(): Promise<EstimateStats> {
-  const r = lensEnabled()
-    ? await lensEstimateStats()
-    : await gatewayFetch<Raw>(`/calendar/estimate-stats`);
+  const r = await lensEstimateStats();
   return {
     samples: Number(r.samples ?? 0),
     ratio: Number(r.ratio ?? 1),
@@ -771,13 +518,7 @@ export async function apiArchiveItem(
   id: string,
   archived: boolean,
 ): Promise<GtdItem> {
-  if (lensEnabled()) return lensArchiveItem(id, archived);
-  return mapItem(
-    await gatewayFetch<Raw>(`/items/${id}/archive`, {
-      method: "POST",
-      body: JSON.stringify({ archived }),
-    })
-  );
+  return lensArchiveItem(id, archived);
 }
 
 export async function apiBulkDispose(
@@ -785,12 +526,7 @@ export async function apiBulkDispose(
   disposition: Disposition
 ): Promise<GtdItem[]> {
   // DONE completes each task for the project; anything else is my overlay.
-  if (lensEnabled()) return lensBulkDispose(ids, disposition);
-  const rows = await gatewayFetch<Raw[]>(`/items/bulk`, {
-    method: "POST",
-    body: JSON.stringify({ ids, disposition }),
-  });
-  return rows.map(mapItem);
+  return lensBulkDispose(ids, disposition);
 }
 
 /** Archive (or un-archive) many tasks at once — the bulk "Archive selected"
@@ -799,12 +535,7 @@ export async function apiBulkArchive(
   ids: string[],
   archived: boolean
 ): Promise<GtdItem[]> {
-  if (lensEnabled()) return lensBulkArchive(ids, archived);
-  const rows = await gatewayFetch<Raw[]>(`/items/bulk-archive`, {
-    method: "POST",
-    body: JSON.stringify({ ids, archived }),
-  });
-  return rows.map(mapItem);
+  return lensBulkArchive(ids, archived);
 }
 
 export interface OrganizeBody {
@@ -824,20 +555,12 @@ export interface OrganizeBody {
 
 export async function apiOrganize(id: string, body: OrganizeBody): Promise<GtdItem> {
   // One request, one transaction, on the gateway (S6a done-when 4).
-  if (lensEnabled()) return lensOrganize(id, body);
-  return mapItem(
-    await gatewayFetch<Raw>(`/items/${id}/organize`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    })
-  );
+  return lensOrganize(id, body);
 }
 
 /** The child subtasks of a task (local rows), in manual order. */
 export async function apiListSubtasks(id: string): Promise<GtdItem[]> {
-  if (lensEnabled()) return lensListSubtasks(id);
-  const rows = await gatewayFetch<Raw[]>(`/items/${id}/subtasks`);
-  return rows.map(mapItem);
+  return lensListSubtasks(id);
 }
 
 /** Add child subtasks to an existing task; returns the full ordered child list. */
@@ -845,43 +568,24 @@ export async function apiAddSubtasks(
   id: string,
   titles: string[],
 ): Promise<GtdItem[]> {
-  if (lensEnabled()) return lensAddSubtasks(id, titles);
-  const rows = await gatewayFetch<Raw[]>(`/items/${id}/subtasks`, {
-    method: "POST",
-    body: JSON.stringify({ titles }),
-  });
-  return rows.map(mapItem);
+  return lensAddSubtasks(id, titles);
 }
 
 /** Soft-delete: the task vanishes from every view but stays intact server-side
- *  for a lossless undo. Call apiPurgeItem after the undo window to finalize
- *  (and propagate the deletion to ClickUp for synced tasks). */
+ *  for a lossless undo. Call apiPurgeItem after the undo window to finalize. */
 export async function apiDeleteItem(id: string): Promise<void> {
-  if (lensEnabled()) return lensTrashItem(id);
-  await gatewayFetch<void>(`/items/${id}`, { method: "DELETE" });
+  return lensTrashItem(id);
 }
 
 /** Undo a soft delete — returns the restored task, exactly as it was. */
 export async function apiRestoreItem(id: string): Promise<GtdItem> {
-  if (lensEnabled()) return lensRestoreItem(id);
-  return mapItem(
-    await gatewayFetch<Raw>(`/items/${id}/restore`, { method: "POST" })
-  );
+  return lensRestoreItem(id);
 }
 
-/** Finalize a soft delete: remove the row and (for a synced task) propagate the
- *  deletion to ClickUp. Idempotent — a row that's already gone is a no-op. */
+/** Finalize a soft delete. Idempotent — a row that's already gone is a no-op. */
 export async function apiPurgeItem(id: string): Promise<void> {
-  if (lensEnabled()) return lensPurgeItem(id);
-  await gatewayFetch<void>(`/items/${id}/purge`, { method: "POST" });
+  return lensPurgeItem(id);
 }
-
-// ⚠️ `apiListWorkspaces` (POST /providers/{provider}/workspaces) and
-// `apiConnectWorkspace` (POST /accounts) were deleted 2026-08-25 with their one
-// caller, `WorkspacesModal` (D52, WS-39 S1 repair round 1). Both endpoints
-// build a provider before doing anything, and the registry is empty — so each
-// was a request whose only possible answer was 400 "Unknown provider". The
-// gateway routes stay until S3a retires the GTD store that owns them.
 
 // ── Local hierarchy (Spaces → Folders → Projects) ───────────────────────────
 
@@ -908,81 +612,57 @@ export interface LocalHierarchy {
   projects: LocalProjectNode[];
 }
 
-// ── Areas (S6b) — what the local tree becomes under the flag ────────────────
+// ── Areas (S6b) — what the local tree became ────────────────────────────────
 //
-// Under one store a member's own structure is their Areas: children of the
-// personal root, FLAT (D65). The four functions below are the doors, and the
-// four group-D functions after them fold onto the same doors under
-// `lensEnabled()`, so a caller that still speaks Space/Folder/Project gets
-// Areas back without being rewritten. `lens.test.ts` fences all eight.
+// A member's own structure is their Areas: children of the personal root,
+// FLAT (D65). The four functions below are the doors, and the group-D
+// functions after them fold onto the same doors, so a caller that still
+// speaks Space/Folder/Project gets Areas back without being rewritten.
 
-/**
- * My Areas. Answers `[]` with the flag off: the legacy store has no such
- * table, and a sidebar section that does not render needs nothing to render.
- */
+/** My Areas. */
 export async function fetchAreas(): Promise<LensArea[]> {
-  if (!lensEnabled()) return [];
   return lensFetchAreas();
 }
 
 /**
- * My personal root's id and name (S6b repair). Null off-flag — the legacy
- * store has no root node — and null for a member who has never captured.
- * One door, shared with the status catalogue, so "which project is my root"
- * has one answer.
+ * My personal root's id and name (S6b repair), or null for a member who has
+ * never captured. One door, so "which project is my root" has one answer.
  */
 export async function fetchMyRoot(): Promise<{ id: string; name: string } | null> {
-  if (!lensEnabled()) return null;
   return lensFetchMyRoot();
 }
 
 // ── Continuity with Projects (S6e) ──────────────────────────────────────────
 //
-// Two reads the legacy store cannot answer: the old `gtd_items` had no board
-// to be assigned from and no `lead` column. Both answer `[]` with the flag
-// off, and nothing renders them then (the sidebar section and the inbox
-// group are lens-only).
+// Two reads the Projects app answers for My Tasks: the tasks a board assigned
+// to me, and the projects I lead.
 
 /** Tasks assigned to me on a board that I have not looked at yet. */
 export async function fetchUntriaged(): Promise<GtdItem[]> {
-  if (!lensEnabled()) return [];
   return lensFetchUntriaged();
 }
 
 /** The projects I lead, with their open counts and my own open tasks. */
 export async function fetchLedProjects(): Promise<LensLedProject[]> {
-  if (!lensEnabled()) return [];
   return lensFetchLed();
 }
 
 /** One task's lanes, through the door the assignee arm can pass. */
 export async function fetchMyTaskLanes(id: string): Promise<LensLane[]> {
-  if (!lensEnabled()) return [];
   return lensMyTaskLanes(id);
 }
 
-/** Why the three Area WRITES refuse with the flag off, rather than no-op. */
-const AREAS_NEED_LENS =
-  "Areas need the My Tasks lens (NEXT_PUBLIC_TASKS_LENS). The legacy store " +
-  "has no Areas to write — see docs/TASKS_LENS.md.";
-
-/**
- * Mint an Area. LENS ONLY, and it throws with the flag off: a create that
- * resolves and creates nothing is indistinguishable from one that worked.
- */
+/** Mint an Area. */
 export async function apiCreateArea(name: string): Promise<LensArea> {
-  if (!lensEnabled()) throw new Error(AREAS_NEED_LENS);
   return lensCreateArea(name);
 }
 
 export async function apiRenameArea(id: string, name: string): Promise<LensArea> {
-  if (!lensEnabled()) throw new Error(AREAS_NEED_LENS);
   return lensRenameArea(id, name);
 }
 
 /** Remove an Area. The answer says whether it was deleted or archived. */
 export async function apiDeleteArea(id: string): Promise<LensAreaRemoval> {
-  if (!lensEnabled()) throw new Error(AREAS_NEED_LENS);
   return lensDeleteArea(id);
 }
 
@@ -996,77 +676,21 @@ function areaAsLocalProject(a: LensArea): LocalProjectNode {
   };
 }
 
-/** Under the lens: no space or folder can exist (D65), so the tree is one flat level. */
-const AREAS_ARE_FLAT =
-  "Areas are flat (D65): there is no space or folder to create. Make an Area instead.";
-
 /**
- * The LOCAL Space→Folder→Project tree (SYNCED projects live on their account
- * hierarchy, not here).
- *
- * Under the lens the tree is my Areas: one flat level, no spaces and no
- * folders, each Area a project node. `/tasks/hierarchy` is never called.
+ * The local tree is my Areas: one flat level, no spaces and no folders, each
+ * Area a project node.
  */
 export async function fetchLocalHierarchy(): Promise<LocalHierarchy> {
-  if (lensEnabled()) {
-    const areas = await lensFetchAreas();
-    return {
-      spaces: [],
-      folders: [],
-      projects: areas.filter((a) => !a.archived).map(areaAsLocalProject),
-    };
-  }
-  const r = await gatewayFetch<Raw>(`/hierarchy`);
+  const areas = await lensFetchAreas();
   return {
-    spaces: ((r.spaces as Raw[]) ?? []).map((s) => ({
-      id: String(s.id ?? ""),
-      name: String(s.name ?? ""),
-    })),
-    folders: ((r.folders as Raw[]) ?? []).map((f) => ({
-      id: String(f.id ?? ""),
-      spaceId: String(f.space_id ?? ""),
-      name: String(f.name ?? ""),
-    })),
-    projects: ((r.projects as Raw[]) ?? []).map((p) => ({
-      id: String(p.id ?? ""),
-      outcome: String(p.outcome ?? ""),
-      spaceId: p.space_id ? String(p.space_id) : undefined,
-      folderId: p.folder_id ? String(p.folder_id) : undefined,
-      hasNextAction: Boolean(p.has_next_action),
-      status: String(p.status ?? "ACTIVE"),
-    })),
+    spaces: [],
+    folders: [],
+    projects: areas.filter((a) => !a.archived).map(areaAsLocalProject),
   };
 }
 
-/** Create a NEW provider folder (ClickUp: space → folder → list) under a
- *  space — an explicit user-approved provider write from the picker's
- *  "new folder" action. */
-export async function apiCreateSpace(name: string): Promise<LocalSpace> {
-  // Under the lens there is nothing above an Area to create (D65).
-  if (lensEnabled()) throw new Error(AREAS_ARE_FLAT);
-  const r = await gatewayFetch<Raw>(`/spaces`, {
-    method: "POST",
-    body: JSON.stringify({ name }),
-  });
-  return { id: String(r.id ?? ""), name: String(r.name ?? name) };
-}
-
-export async function apiCreateFolder(
-  spaceId: string,
-  name: string,
-): Promise<LocalFolder> {
-  // Under the lens there is nothing inside an Area but tasks (D65).
-  if (lensEnabled()) throw new Error(AREAS_ARE_FLAT);
-  const r = await gatewayFetch<Raw>(`/folders`, {
-    method: "POST",
-    body: JSON.stringify({ space_id: spaceId, name }),
-  });
-  return {
-    id: String(r.id ?? ""),
-    spaceId: String(r.space_id ?? spaceId),
-    name: String(r.name ?? name),
-  };
-}
+// A space or a folder cannot exist (D65), so S8 PR 1 deleted the two doors
+// that created them, with their store actions. An Area is the one level.
 
 export async function apiCreateLocalProject(req: {
   outcome: string;
@@ -1074,55 +698,18 @@ export async function apiCreateLocalProject(req: {
   folderId?: string;
   purpose?: string;
 }): Promise<LocalProjectNode> {
-  // Under the lens a "local project" IS an Area. The placement and the
-  // purpose have no home there (an Area has a name and nothing else), and
-  // they are dropped knowingly: `spaceId`/`folderId` cannot be non-empty
-  // under the flag, because nothing can create a space or folder to name.
-  if (lensEnabled()) return areaAsLocalProject(await lensCreateArea(req.outcome));
-  const r = await gatewayFetch<Raw>(`/local-projects`, {
-    method: "POST",
-    body: JSON.stringify({
-      outcome: req.outcome,
-      space_id: req.spaceId ?? null,
-      folder_id: req.folderId ?? null,
-      purpose: req.purpose ?? null,
-    }),
-  });
-  return {
-    id: String(r.id ?? ""),
-    outcome: String(r.outcome ?? req.outcome),
-    spaceId: r.space_id ? String(r.space_id) : undefined,
-    folderId: r.folder_id ? String(r.folder_id) : undefined,
-    hasNextAction: Boolean(r.has_next_action),
-    status: String(r.status ?? "ACTIVE"),
-  };
+  // A "local project" IS an Area. The placement and the purpose have no home
+  // there (an Area has a name and nothing else), and they are dropped
+  // knowingly: nothing can create a space or folder to name.
+  return areaAsLocalProject(await lensCreateArea(req.outcome));
 }
 
-/** Upload one attachment (multipart through the proxy) → descriptor for the
- *  capture payload. */
+/** Stage one attachment → descriptor for the capture payload. */
 export async function apiUploadAttachment(file: File): Promise<TaskAttachment> {
-  // Under the lens an attachment belongs to a TASK, and at capture time there
-  // is none yet: the descriptor holds the file, and `lensCapture` uploads it
-  // once the task exists (lens.ts header, S6a).
-  if (lensEnabled()) return lensStageAttachment(file);
-  const fd = new FormData();
-  fd.append("file", file, file.name);
-  const res = await fetch(`/api/tasks/attachments`, { method: "POST", body: fd });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(
-      (body as { detail?: string }).detail || `Upload failed (${res.status})`
-    );
-  }
-  const r = (await res.json()) as Raw;
-  return {
-    kind: (r.kind === "image" ? "image" : "file") as TaskAttachment["kind"],
-    name: String(r.name ?? file.name),
-    url: String(r.url ?? ""),
-    attachmentId: r.attachment_id ? String(r.attachment_id) : undefined,
-    mime: r.mime ? String(r.mime) : undefined,
-    size: r.size != null ? Number(r.size) : undefined,
-  };
+  // An attachment belongs to a TASK, and at capture time there is none yet:
+  // the descriptor holds the file, and `lensCapture` uploads it once the
+  // task exists (lens.ts header, S6a).
+  return lensStageAttachment(file);
 }
 
 /** A peak/trough window in the day: the AI planner puts high-energy work in
@@ -1143,14 +730,9 @@ export interface TaskSettings {
   clarifyUseLlm: boolean;
   backgroundSync: boolean;
   mirrorDoneTasks: boolean;
-  workflowStages: string[];
   /** hours from now within which a due task is URGENT (drives the matrix's ⏰
    *  axis). Overdue is always urgent. */
   urgentWindowHours: number;
-  /** ClickUp status → Next-Actions stage. {normalizedStatus: stage}. Governs how
-   *  a synced task groups on the board and (reversed) which upstream status a
-   *  drag writes back. */
-  statusStageMap: Record<string, string>;
   // Calendar/timeboxing prefs (spec §5): the plannable day window, a soft daily
   // focus budget, inter-block buffer, and the user's energy windows.
   dayStartHour: number;
@@ -1201,18 +783,7 @@ function mapSettings(r: Raw): TaskSettings {
     clarifyUseLlm: r.clarify_use_llm !== false,
     backgroundSync: r.background_sync !== false,
     mirrorDoneTasks: r.mirror_done_tasks === true,
-    workflowStages: Array.isArray(r.workflow_stages)
-      ? (r.workflow_stages as unknown[]).map(String).filter(Boolean)
-      : ["TODO", "IN PROCESS", "WAITING FOR", "DONE"],
     urgentWindowHours: Number(r.urgent_window_hours ?? 48) || 48,
-    statusStageMap:
-      r.status_stage_map && typeof r.status_stage_map === "object"
-        ? Object.fromEntries(
-            Object.entries(r.status_stage_map as Record<string, unknown>).map(
-              ([k, v]) => [k, String(v)],
-            ),
-          )
-        : {},
     dayStartHour: Number(r.day_start_hour ?? 7) || 7,
     dayEndHour: Number(r.day_end_hour ?? 22) || 22,
     dailyCapacityMins: Number(r.daily_capacity_mins ?? 360) || 360,
@@ -1257,12 +828,8 @@ export async function updateTaskSettings(
     body.background_sync = patch.backgroundSync;
   if (patch.mirrorDoneTasks !== undefined)
     body.mirror_done_tasks = patch.mirrorDoneTasks;
-  if (patch.workflowStages !== undefined)
-    body.workflow_stages = patch.workflowStages;
   if (patch.urgentWindowHours !== undefined)
     body.urgent_window_hours = patch.urgentWindowHours;
-  if (patch.statusStageMap !== undefined)
-    body.status_stage_map = patch.statusStageMap;
   if (patch.dayStartHour !== undefined) body.day_start_hour = patch.dayStartHour;
   if (patch.dayEndHour !== undefined) body.day_end_hour = patch.dayEndHour;
   if (patch.dailyCapacityMins !== undefined)
@@ -1289,41 +856,6 @@ export async function updateTaskSettings(
       body: JSON.stringify(body),
     })
   );
-}
-
-/** One unique upstream status paired with the stage it maps to (auto-guessed
- *  when the user hasn't set it yet). */
-export interface StatusCatalogEntry {
-  status: string;
-  stage: string;
-  mapped: boolean;
-}
-
-export interface StatusCatalog {
-  stages: string[];
-  entries: StatusCatalogEntry[];
-  unmapped: number;
-}
-
-/** The unique ClickUp statuses across the user's connected projects + their
- *  (mapped or auto-guessed) Next-Actions stage — powers the mapping settings. */
-export async function fetchStatusCatalog(): Promise<StatusCatalog> {
-  // The lanes of my personal root; each maps to itself (a lane IS the stage).
-  if (lensEnabled()) return lensStatusCatalog();
-  const r = await gatewayFetch<Raw>(`/status-catalog`);
-  return {
-    stages: Array.isArray(r.stages)
-      ? (r.stages as unknown[]).map(String)
-      : [],
-    entries: Array.isArray(r.entries)
-      ? (r.entries as Raw[]).map((e) => ({
-          status: String(e.status ?? ""),
-          stage: String(e.stage ?? ""),
-          mapped: Boolean(e.mapped),
-        }))
-      : [],
-    unmapped: Number(r.unmapped ?? 0) || 0,
-  };
 }
 
 export interface AtomizedItem {
@@ -1367,8 +899,7 @@ export async function apiAtomize(
 
 export async function apiClarifyPropose(
   id: string,
-  /** true → re-clarify an already-processed task (preserves a SYNCED task's
-   *  ClickUp destination binding server-side). */
+  /** true → re-clarify an already-processed task. */
   reclarify = false,
   /** Optional freeform guidance the user typed while clarifying — steers the
    *  proposed title / project / steps for this pass. */
@@ -1450,25 +981,13 @@ export async function apiClarifyPropose(
 /** Fold an inbox capture into an existing synced task (dedup "add to existing")
  *  instead of creating a duplicate. Returns the enriched target task. */
 export async function apiMergeInto(id: string, targetId: string): Promise<GtdItem> {
-  if (lensEnabled()) return lensMergeInto(id, targetId);
-  return mapItem(
-    await gatewayFetch<Raw>(`/items/${id}/merge-into`, {
-      method: "POST",
-      body: JSON.stringify({ target_id: targetId }),
-    }),
-  );
+  return lensMergeInto(id, targetId);
 }
 
 /** File an inbox capture as a SUB-STEP of an existing task (clarify "this is a
  *  step of X"). Returns the parent task (now with the new child). */
 export async function apiFileUnder(id: string, parentId: string): Promise<GtdItem> {
-  if (lensEnabled()) return lensFileUnder(id, parentId);
-  return mapItem(
-    await gatewayFetch<Raw>(`/items/${id}/file-under`, {
-      method: "POST",
-      body: JSON.stringify({ parent_id: parentId }),
-    }),
-  );
+  return lensFileUnder(id, parentId);
 }
 
 // ── Project planning (§7, Phase 3): a brief → phases → tasks → subtasks ───────
@@ -1540,7 +1059,7 @@ function mapPlan(r: Raw): ProjectPlan {
 export async function apiPlanProject(
   name: string,
   description?: string,
-  target: "local" | "clickup" = "local",
+  target: "local" = "local",
 ): Promise<ProjectPlan> {
   return mapPlan(
     await gatewayFetch<Raw>(`/plan`, {
@@ -1550,11 +1069,11 @@ export async function apiPlanProject(
   );
 }
 
-/** Materialise a (possibly edited) plan — LOCAL, or push to a ClickUp list. */
+/** Materialise a (possibly edited) plan in the one store. */
 export async function apiApplyPlan(
   plan: ProjectPlan,
   opts: {
-    target: "local" | "clickup";
+    target: "local";
     accountId?: string;
     spaceId?: string;
     folderId?: string;
@@ -1649,8 +1168,8 @@ export async function apiEnrichItem(id: string): Promise<EnrichFields> {
   };
 }
 
-/** Auto-assign @context to actionable tasks that have none (the synced ClickUp
- *  tasks that arrive context-less). Writes directly; returns the count set. */
+/** Auto-assign @context to actionable tasks that have none. Writes directly;
+ *  returns the count set. */
 export async function apiBackfillContext(): Promise<{
   scanned: number;
   updated: number;
@@ -1659,24 +1178,9 @@ export async function apiBackfillContext(): Promise<{
   return { scanned: Number(r.scanned ?? 0), updated: Number(r.updated ?? 0) };
 }
 
-/** Promote a LOCAL task to a ClickUp task delegated to a teammate — re-homes it
- *  onto the chosen workspace/project and pushes it upstream in one call. */
 /**
  * Hand a task to a teammate: they own it, it moves to MY Waiting-For, and the
  * server stamps the since-when.
- *
- * ⚠️ The connector parameters are GONE (D52, WS-39 S3a-client slice 4). They
- * were `account_id`, `project_id`, `status` and the assignee's
- * `provider_user_id` — a delegation used to mean "promote this into ClickUp
- * under a list the teammate can see", and there is no ClickUp.
- *
- * ⚠️ **The OLD-store branch is a PATCH now, not `POST /items/{id}/delegate`.**
- * That endpoint builds a provider before it does anything, so with the registry
- * empty it could only 400 — which nobody had noticed, because the dialog in
- * front of it required an account and could therefore never submit. Fixing the
- * dialog would have turned an unreachable endpoint into a reachable failure.
- * Patching the assignee and disposition does what a delegation actually is on
- * the retiring store, and keeps the flag-off path working until S3c.
  */
 export async function apiDelegateItem(
   id: string,
@@ -1687,12 +1191,5 @@ export async function apiDelegateItem(
     expected_by?: string;
   },
 ): Promise<GtdItem> {
-  if (lensEnabled()) return lensDelegateItem(id, body);
-  return apiPatchItem(id, {
-    assignee: body.assignee,
-    disposition: "WAITING",
-    ...(body.next_action ? { next_action: body.next_action } : {}),
-    ...(body.due_at ? { due_at: body.due_at } : {}),
-    ...(body.expected_by ? { expected_by: body.expected_by } : {}),
-  });
+  return lensDelegateItem(id, body);
 }
