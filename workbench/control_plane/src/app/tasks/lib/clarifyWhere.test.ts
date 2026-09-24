@@ -47,7 +47,8 @@ vi.mock("./api", async (importOriginal) => {
   };
 });
 
-import { apiCapture, fetchMyRoot } from "./api";
+import { apiCapture, apiOrganize, apiPatchItem, fetchMyRoot, fetchUntriaged } from "./api";
+import { UndoToast } from "../components/UndoToast";
 import { ClarifyModal } from "../components/ClarifyModal";
 import { ClarifyPanel } from "../components/ClarifyPanel";
 import { WherePicker } from "../components/WherePicker";
@@ -393,5 +394,68 @@ describe("the walk never revisits a decided row", () => {
     st().clarify("A", { kind: "someday" } as never);
     st().undoLastChange();
     expect(st().clarifiedThisSession.has("A")).toBe(false);
+  });
+});
+
+describe("undo on a board-row clarify", () => {
+  const flush = async () => {
+    for (let i = 0; i < 8; i += 1) await new Promise((r) => setTimeout(r, 0));
+  };
+  beforeEach(() => {
+    vi.mocked(apiOrganize).mockReset();
+    vi.mocked(apiPatchItem).mockReset();
+    vi.mocked(fetchUntriaged).mockReset();
+    seed({ backend: "live" });
+    vi.mocked(fetchUntriaged).mockResolvedValue([]);
+  });
+
+  it("an overlay-only decision: undo puts the row back and CLEARS the triage", async () => {
+    vi.mocked(apiOrganize).mockResolvedValue({ ...FROM_BOARD, disposition: "SOMEDAY", isTriaged: true });
+    vi.mocked(apiPatchItem).mockResolvedValue(FROM_BOARD);
+    const st = () => useTaskStore.getState();
+    st().openClarify(FROM_BOARD.id);
+    st().clarify(FROM_BOARD.id, { kind: "someday" } as never);
+    await flush();
+    expect(st().fromProjectIds.has(FROM_BOARD.id)).toBe(false);
+    // The toast offers Undo.
+    expect(renderToStaticMarkup(createElement(UndoToast))).toContain("Undo");
+
+    vi.mocked(fetchUntriaged).mockResolvedValue([FROM_BOARD]);
+    st().undoLastChange();
+    expect(st().fromProjectIds.has(FROM_BOARD.id)).toBe(true);
+    await flush();
+    // null, never the derived NEXT the row showed before.
+    expect(apiPatchItem).toHaveBeenCalledWith(FROM_BOARD.id, { disposition: null });
+    expect(st().fromProjectIds.has(FROM_BOARD.id)).toBe(true);
+  });
+
+  it("a decision that moved the shared task: no Undo, the toast offers Open task", async () => {
+    vi.mocked(apiOrganize).mockResolvedValue({ ...FROM_BOARD, projectId: "p-other", isTriaged: true });
+    const st = () => useTaskStore.getState();
+    st().openClarify(FROM_BOARD.id);
+    st().clarify(FROM_BOARD.id, {
+      kind: "next",
+      nextAction: "Review it",
+      context: "@computer",
+      projectId: "p-other",
+    } as never);
+    await flush();
+    expect(st().undoSnapshot?.sharedChangeTaskId).toBe(FROM_BOARD.id);
+    const html = renderToStaticMarkup(createElement(UndoToast));
+    expect(html).toContain("Open task");
+    expect(html).not.toContain("Undo");
+    // And the store refuses a keyboard undo too.
+    st().undoLastChange();
+    expect(apiPatchItem).not.toHaveBeenCalled();
+    expect(st().fromProjectIds.has(FROM_BOARD.id)).toBe(false);
+  });
+
+  it("a due date or a delegate is a shared change too", async () => {
+    const { clarifyChangesSharedTask } = await import("./clarify");
+    expect(clarifyChangesSharedTask(FROM_BOARD, { kind: "someday" })).toBe(false);
+    expect(clarifyChangesSharedTask(FROM_BOARD, { kind: "next", projectId: BOARD.id })).toBe(false);
+    expect(clarifyChangesSharedTask(FROM_BOARD, { kind: "next", dueAt: "2026-10-01T00:00:00Z" })).toBe(true);
+    expect(clarifyChangesSharedTask(FROM_BOARD, { kind: "next", assignee: { name: "Dana" } })).toBe(true);
+    expect(clarifyChangesSharedTask(FROM_BOARD, { kind: "delegate", person: { name: "Dana" } })).toBe(true);
   });
 });

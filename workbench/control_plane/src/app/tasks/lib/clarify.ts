@@ -760,3 +760,30 @@ export function delegateAllowed(input: {
   if (!input.delegating || input.personal) return true;
   return input.pickedThisSession;
 }
+
+// ── Undo on a board-row clarify (review of PR #440, P2) ─────────────────────
+
+/**
+ * Whether a clarify decision changed the SHARED task, not only my overlay.
+ *
+ * A move to another project, a delegate (a reassign on the board) and a due
+ * date all write the task the team sees. Undo here restores my overlay and
+ * nothing else, so it cannot take those back. The toast then offers
+ * "Open task" instead of an Undo that would only half-reverse the decision.
+ */
+export function clarifyChangesSharedTask(
+  item: { projectId?: string; dueAt?: string },
+  decision: {
+    kind: string;
+    projectId?: string;
+    assignee?: unknown;
+    person?: unknown;
+    dueAt?: string;
+  },
+): boolean {
+  if (decision.kind === "delegate" || decision.kind === "project") return true;
+  if (decision.assignee) return true;
+  if (decision.projectId && decision.projectId !== item.projectId) return true;
+  if (decision.dueAt && decision.dueAt !== item.dueAt) return true;
+  return false;
+}

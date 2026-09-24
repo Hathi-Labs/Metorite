@@ -42,7 +42,7 @@ import {
   type ConnectedProvider,
 } from "./mockData";
 import { isCalendarItem, isTickled } from "./utils";
-import { clarifyQueue, isClarifiable } from "./clarify";
+import { clarifyChangesSharedTask, clarifyQueue, isClarifiable } from "./clarify";
 import { type SyncState, canPush } from "./syncState";
 import {
   DEFAULT_FILTERS,
@@ -449,6 +449,15 @@ interface UndoSnapshot {
    *  Undo re-patches their scheduled_start/end + flexible from the snapshot
    *  rows, so a mis-drag on the calendar is always one tap from safe. */
   scheduleRevertIds?: string[];
+  /** Board rows ("From Projects") whose triage this change stated. Undo puts
+   *  them back into the group and CLEARS the stated disposition (`null`),
+   *  because the value before it was derived, and writing the derived value
+   *  back would state a triage the member never made. */
+  untriagedIds?: string[];
+  /** Set when the change also wrote the SHARED task (a move, a reassign or a
+   *  due date). Undo cannot reverse that from here, so the toast offers to
+   *  open the task instead, and `undoLastChange` refuses. */
+  sharedChangeTaskId?: string;
 }
 
 /** Friendly past-tense label for a one-tap disposition (undo toast). */
@@ -1400,6 +1409,16 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         label: clarifyLabel(decision),
         changedIds: [id],
       };
+      // A "From Projects" row: undo clears the stated triage and puts it back
+      // in the group — unless the decision also changed the shared task.
+      const before = s.items.find((i) => i.id === id);
+      if (s.fromProjectIds.has(id)) {
+        if (before && clarifyChangesSharedTask(before, decision)) {
+          snapshot.sharedChangeTaskId = id;
+        } else {
+          snapshot.untriagedIds = [id];
+        }
+      }
       let projects = s.projects;
       let items: GtdItem[];
       if (decision.kind === "project") {
@@ -2396,9 +2415,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   undoLastChange: () => {
     const snap = get().undoSnapshot;
     if (!snap) return;
+    // The change wrote the shared task too. Restoring my overlay alone would
+    // show a state the board does not have, so there is no undo here.
+    if (snap.sharedChangeTaskId) return;
     const { items, projects, processed, selectedItemId, changedIds,
       deletedItems, softDeletedIds, archivedIds, archivedTo,
-      scheduleRevertIds } = snap;
+      scheduleRevertIds, untriagedIds } = snap;
     set((s) => {
       // An undone decision is undecided again: it rejoins the walk.
       const clarifiedThisSession = new Set(s.clarifiedThisSession);
@@ -2410,6 +2432,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         selectedItemId,
         undoSnapshot: null,
         clarifiedThisSession,
+        // The board row is untriaged again: back into "From Projects".
+        fromProjectIds: untriagedIds?.length
+          ? new Set([...s.fromProjectIds, ...untriagedIds])
+          : s.fromProjectIds,
       };
     });
     if (get().backend !== "live") return;
@@ -2462,6 +2488,17 @@ export const useTaskStore = create<TaskState>((set, get) => ({
               : Promise.resolve();
           }),
         ),
+      );
+    } else if (untriagedIds?.length) {
+      // CLEAR the stated disposition. The value before the clarify was
+      // derived off the lane, and writing it back would state a triage.
+      // Re-read the group only after the write lands (the S6e order).
+      sync(
+        Promise.all(
+          untriagedIds.map((id) =>
+            apiPatchItem(id, { disposition: null }).catch(() => {}),
+          ),
+        ).then(() => get().loadFromProjects()),
       );
     } else if (changedIds?.length) {
       // Revert the server rows to their pre-change disposition (the local
