@@ -89,7 +89,8 @@ describe("downloadReportFile", () => {
       "text/html; charset=utf-8",
     );
     expect(String(init.body)).toContain("<h2>Weekly delivery</h2>");
-    expect(String(init.body)).toContain("<li>Apollo: 4</li>");
+    // WS-27bn R2b: the row carries its text bar and both figures.
+    expect(String(init.body)).toContain("<li>Apollo: 4 · ██████████ 4 of 4</li>");
     expect(await d.saved[0].body.text()).toBe("%PDF-1.7 bytes");
   });
 

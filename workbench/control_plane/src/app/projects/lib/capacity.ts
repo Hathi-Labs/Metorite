@@ -16,7 +16,8 @@
  * and spare hours when nothing is estimated. Both cases must read as "not
  * known", never as "free", so every reader here tests for the key.
  */
-import { hours } from "@/app/people/lib/dashboard";
+import { PILL_HUE, hours } from "@/app/people/lib/dashboard";
+import type { AccentHue } from "@/lib/statusAccent";
 
 import type { CapacityReport, CapacityRow } from "./api";
 import { asList } from "./analyticsRead";
@@ -71,6 +72,52 @@ export function hoursLine(
       row.hours_note ||
       "No open task carries an estimate, so there are no committed or spare hours.",
   };
+}
+
+/**
+ * WS-27bn R2b — the committed-hours bar under a row, or `null`.
+ *
+ * Committed hours of working hours in the horizon. Both figures are the
+ * server's, verbatim. The bar shows only with the HR half and
+ * `hours_basis`, because without them the hours mean nothing.
+ *
+ * ⚠️ **The text states both figures.** A bar clips above 100 percent, so an
+ * overcommitted person and a full one look the same. "46 of 40 h" does not.
+ *
+ * ⚠️ **The hue is the pill's.** The server's pill already says whether this
+ * person is behind or on track. A second verdict here, taken from the two
+ * figures, would be the browser's own answer to the same question.
+ */
+export function committedBar(
+  row: CapacityRow,
+  horizonDays: number
+): {
+  value: number;
+  of: number;
+  text: string;
+  title: string;
+  hue: AccentHue;
+  emptyTitle: string;
+} | null {
+  if (!hasHrHalf(row) || !row.hours_basis) return null;
+  const committed = row.committed_hours_horizon;
+  const working = row.working_hours_horizon;
+  if (typeof committed !== "number" || typeof working !== "number") return null;
+  return {
+    value: committed,
+    of: working,
+    text: `${bare(committed)} of ${bare(working)} h`,
+    title:
+      `${hours(committed)} committed of ${hours(working)} working time ` +
+      `in the next ${horizonDays} days. Estimated, never logged.`,
+    hue: row.pill ? PILL_HUE[row.pill] : "gray",
+    emptyTitle: `No working time in the next ${horizonDays} days, and ${hours(committed)} committed.`,
+  };
+}
+
+/** "12.5", as `hours` writes it, without the unit. */
+function bare(value: number): string {
+  return hours(value).replace(/h$/, "");
 }
 
 /**

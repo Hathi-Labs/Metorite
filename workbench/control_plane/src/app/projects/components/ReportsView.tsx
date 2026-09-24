@@ -35,6 +35,7 @@ import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
+import { CollapsibleSection } from "@/components/ui/Collapsible";
 import Input from "@/components/ui/Input";
 import { SelectButton } from "@/components/ui/SelectButton";
 import { accentForHue, statusAccent } from "@/lib/statusAccent";
@@ -51,6 +52,15 @@ import {
 } from "../lib/api";
 import { capacityReportRows } from "../lib/capacity";
 import { conflictsReportRows } from "../lib/conflicts";
+import {
+  capacityPanelData,
+  conflictsPanelData,
+  finishedPanelData,
+  loadPanelData,
+  reportTiles,
+  stuckPanelData,
+  throughputPanelData,
+} from "../lib/reportPanels";
 import {
   type BuilderState,
   MAX_REPORT_NAME,
@@ -72,6 +82,15 @@ import {
   withPeriod,
   yourReports,
 } from "../lib/reportBuilder";
+import {
+  CapacityPanel,
+  ConflictsPanel,
+  FinishedPanel,
+  LoadPanel,
+  Stat,
+  StuckPanel,
+  ThroughputPanel,
+} from "./AnalyticsPanels";
 import { ReportFileButtons } from "./ReportFileButtons";
 
 /** Hours as a person reads them. Mirrors `AnalyticsPanels`, deliberately. */
@@ -102,18 +121,36 @@ function periodLabel(from: string, to: string): string {
   return `${Number(fd)} ${MONTHS[Number(fm) - 1]} ${fy} – ${Number(td)} ${tail}`;
 }
 
-function Section({
+/**
+ * A section's table, folded under its panel (WS-27bn R2b).
+ *
+ * The picture comes first and the figures second. `keepMounted` keeps the
+ * folded table in the page, so find-in-page reaches it and a render test
+ * can see that the panel and the table agree.
+ *
+ * ⚠️ `title` is the section's name in the report's own words, which the
+ * chat's report card borrows (`skill_projects/views.py`
+ * `REPORT_CARD_SECTIONS`, fenced by `test_projects_agent.py`). The panel
+ * above carries the heading, so here the words name the disclosure only.
+ */
+function Table({
   title,
+  count,
   children,
 }: {
   title: string;
+  count?: number;
   children: React.ReactNode;
 }) {
   return (
-    <section className="border-t border-border pt-3">
-      <h4 className="mb-2 text-[11px] font-semibold text-foreground">{title}</h4>
+    <CollapsibleSection
+      label={`${title}, as a table`}
+      count={count}
+      defaultOpen={false}
+      keepMounted
+    >
       {children}
-    </section>
+    </CollapsibleSection>
   );
 }
 
@@ -150,6 +187,13 @@ function Row({
  * Exported so it can be rendered against fixture data without a session. The
  * pane around it needs the API; this part is pure, and the part worth looking
  * at before a report is scheduled to anybody.
+ *
+ * WS-27bn R2b (`projects_reports.md` §8): four summary tiles, then each
+ * section as its Analytics panel, then its table folded under it. The panel
+ * is the SAME component the Analytics app draws, fed through
+ * `lib/reportPanels.ts`. The panel carries the heading, so the section has
+ * no heading of its own. Each `sections.<name>` access stays literal,
+ * because `test_projects_report_sections_lockstep.py` reads them.
  */
 export function RenderedBody({
   body,
@@ -159,6 +203,8 @@ export function RenderedBody({
   const done = statusAccent({ category: "done" });
   const late = statusAccent({ category: "cancelled" });
   const { sections } = body;
+  const tiles = reportTiles(sections);
+  const tone = { done: done.text, late: late.text };
 
   return (
     // ⚠️ A readable MEASURE, not the panel's full width. Photographed
@@ -176,170 +222,207 @@ export function RenderedBody({
         </p>
       </header>
 
+      {tiles.length > 0 && (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          {tiles.map((t) => (
+            <Stat
+              key={t.key}
+              label={t.label}
+              value={t.value}
+              display={t.key === "median" ? duration(t.hours) : undefined}
+              tone={t.tone ? tone[t.tone] : undefined}
+              title={t.title}
+            />
+          ))}
+        </div>
+      )}
+
       {sections.finished && (
-        <Section title="What we finished">
-          <p
-            className={`mb-1 text-lg font-semibold tabular-nums ${done.text}`}
-            title={`${sections.finished.total_completed} tasks reached a done status in this period`}
-          >
-            {sections.finished.total_completed}
-          </p>
-          <ul className="space-y-0.5">
-            {sections.finished.projects.slice(0, 8).map((p) => (
-              <Row
-                key={p.project_id}
-                name={p.name}
-                value={p.completed}
-                aside={p.cancelled ? `−${p.cancelled}` : undefined}
-                title={
-                  `${p.completed} finished in ${p.name}` +
-                  (p.cancelled ? `, ${p.cancelled} cancelled` : "")
-                }
-              />
-            ))}
-          </ul>
-          {sections.finished.total_cancelled > 0 && (
+        <div className="space-y-1">
+          <FinishedPanel data={finishedPanelData(sections.finished, body)} />
+          <Table title="What we finished" count={sections.finished.projects.length}>
             <p
-              className="mt-1 text-[11px] text-muted-foreground"
-              // ⚠️ Beside the finished count, never added to it. A team that
-              // cancelled nine did not finish nine.
-              title="Cancellations are never counted as finished work."
+              className={`mb-1 text-[11px] font-medium tabular-nums ${done.text}`}
+              title={`${sections.finished.total_completed} tasks reached a done status in this period`}
             >
-              {sections.finished.total_cancelled} cancelled
+              {sections.finished.total_completed} finished
             </p>
-          )}
-        </Section>
+            <ul className="space-y-0.5">
+              {sections.finished.projects.slice(0, 8).map((p) => (
+                <Row
+                  key={p.project_id}
+                  name={p.name}
+                  value={p.completed}
+                  aside={p.cancelled ? `−${p.cancelled}` : undefined}
+                  title={
+                    `${p.completed} finished in ${p.name}` +
+                    (p.cancelled ? `, ${p.cancelled} cancelled` : "")
+                  }
+                />
+              ))}
+            </ul>
+            {sections.finished.total_cancelled > 0 && (
+              <p
+                className="mt-1 text-[11px] text-muted-foreground"
+                // ⚠️ Beside the finished count, never added to it. A team that
+                // cancelled nine did not finish nine.
+                title="Cancellations are never counted as finished work."
+              >
+                {sections.finished.total_cancelled} cancelled
+              </p>
+            )}
+          </Table>
+        </div>
       )}
 
       {sections.throughput && (
-        <Section title="How long it took">
-          <p
-            className="text-[11px]"
-            title={
-              sections.throughput.median_hours === null
-                ? "No task in this period recorded both a start and a finish."
-                : `Half of the ${sections.throughput.measured} measured tasks took less than this, from first In progress until done.`
-            }
-          >
-            Median{" "}
-            <strong className="tabular-nums">
-              {duration(sections.throughput.median_hours)}
-            </strong>{" "}
-            <span className="text-muted-foreground">
-              over {sections.throughput.measured} measured
-            </span>
-          </p>
-        </Section>
+        <div className="space-y-1">
+          <ThroughputPanel
+            data={throughputPanelData(sections.throughput, body)}
+          />
+          <Table title="How long it took" count={sections.throughput.series.length}>
+            <p
+              className="text-[11px]"
+              title={
+                sections.throughput.median_hours === null
+                  ? "No task in this period recorded both a start and a finish."
+                  : `Half of the ${sections.throughput.measured} measured tasks took less than this, from first In progress until done.`
+              }
+            >
+              Median{" "}
+              <strong className="tabular-nums">
+                {duration(sections.throughput.median_hours)}
+              </strong>{" "}
+              <span className="text-muted-foreground">
+                over {sections.throughput.measured} measured
+              </span>
+            </p>
+            <ul className="mt-1 space-y-0.5">
+              {sections.throughput.series.map((w) => (
+                <Row
+                  key={w.week_start}
+                  name={`Week of ${w.week_start}`}
+                  value={w.completed}
+                  title={`${w.completed} finished in the week of ${w.week_start}`}
+                />
+              ))}
+            </ul>
+          </Table>
+        </div>
       )}
 
-      {sections.stuck && sections.stuck.overdue_total > 0 && (
-        <Section title="Overdue">
-          <p
-            className={`mb-1 text-lg font-semibold tabular-nums ${late.text}`}
-            title={`${sections.stuck.overdue_total} open tasks are past their due date`}
-          >
-            {sections.stuck.overdue_total}
-          </p>
-          <ul className="space-y-0.5">
-            {sections.stuck.overdue.slice(0, 8).map((o) => (
-              <Row
-                key={o.project_id}
-                name={o.name}
-                value={o.overdue}
-                tone={late.text}
-                title={`${o.overdue} open tasks in ${o.name} are past their due date`}
-              />
-            ))}
-          </ul>
-        </Section>
+      {sections.stuck && (
+        <div className="space-y-1">
+          <StuckPanel data={stuckPanelData(sections.stuck, body)} />
+          <Table title="Overdue" count={sections.stuck.overdue.length}>
+            <p
+              className={`mb-1 text-[11px] font-medium tabular-nums ${late.text}`}
+              title={`${sections.stuck.overdue_total} open tasks are past their due date`}
+            >
+              {sections.stuck.overdue_total} overdue
+            </p>
+            <ul className="space-y-0.5">
+              {sections.stuck.overdue.slice(0, 8).map((o) => (
+                <Row
+                  key={o.project_id}
+                  name={o.name}
+                  value={o.overdue}
+                  tone={late.text}
+                  title={`${o.overdue} open tasks in ${o.name} are past their due date`}
+                />
+              ))}
+            </ul>
+          </Table>
+        </div>
       )}
 
       {sections.load && (
-        <Section title="Open work">
-          <p
-            className="mb-1 text-[11px] text-muted-foreground"
-            // ⚠️ The rows sum past this. A task with two assignees sits on
-            // both plates, so the total is counted over tasks.
-            title="Counted over tasks. A task assigned to two people appears in both rows, so the rows add up to more than this."
-          >
-            {sections.load.total_tasks} open
-          </p>
-          <ul className="space-y-0.5">
-            {sections.load.people.slice(0, 8).map((p) => (
-              <Row
-                key={p.assignee ?? "__unassigned"}
-                name={p.assignee ?? "Unassigned"}
-                value={p.open_tasks}
-                aside={p.overdue ? `${p.overdue} late` : undefined}
-                title={
-                  `${p.open_tasks} open for ${p.assignee ?? "nobody"}` +
-                  (p.overdue ? `, ${p.overdue} overdue` : "")
-                }
-              />
-            ))}
-          </ul>
-        </Section>
+        <div className="space-y-1">
+          <LoadPanel data={loadPanelData(sections.load, body)} />
+          <Table title="Open work" count={sections.load.people.length}>
+            <p
+              className="mb-1 text-[11px] text-muted-foreground"
+              // ⚠️ The rows sum past this. A task with two assignees sits on
+              // both plates, so the total is counted over tasks.
+              title="Counted over tasks. A task assigned to two people appears in both rows, so the rows add up to more than this."
+            >
+              {sections.load.total_tasks} open
+            </p>
+            <ul className="space-y-0.5">
+              {sections.load.people.slice(0, 8).map((p) => (
+                <Row
+                  key={p.assignee ?? "__unassigned"}
+                  name={p.assignee ?? "Unassigned"}
+                  value={p.open_tasks}
+                  aside={p.overdue ? `${p.overdue} late` : undefined}
+                  title={
+                    `${p.open_tasks} open for ${p.assignee ?? "nobody"}` +
+                    (p.overdue ? `, ${p.overdue} overdue` : "")
+                  }
+                />
+              ))}
+            </ul>
+          </Table>
+        </div>
       )}
 
       {/* WS-27bm S7a. Opt-in: only a report that asked for `capacity` has it.
           The rows and the hours are the capacity route's, verbatim. */}
       {sections.capacity && (
-        <Section title="Who has the hours">
-          <p
-            className="mb-1 text-[11px] text-muted-foreground"
-            title={`Spare hours cover the next ${sections.capacity.horizon_days} days, across all the work the reader can see.`}
-          >
-            {sections.capacity.total_tasks} open · next{" "}
-            {sections.capacity.horizon_days} days
-          </p>
-          <ul className="space-y-0.5">
-            {capacityReportRows(sections.capacity.people).map((p) => (
-              <Row
-                key={p.key}
-                name={p.name}
-                value={p.open}
-                aside={p.aside}
-                title={p.title}
-              />
-            ))}
-          </ul>
-          {!sections.capacity.hr_visible && (
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              Hours need HR read access. An admin can see them.
+        <div className="space-y-1">
+          <CapacityPanel data={capacityPanelData(sections.capacity, body)} />
+          <Table title="Who has the hours" count={sections.capacity.people.length}>
+            <p
+              className="mb-1 text-[11px] text-muted-foreground"
+              title={`Spare hours cover the next ${sections.capacity.horizon_days} days, across all the work the reader can see.`}
+            >
+              {sections.capacity.total_tasks} open · next{" "}
+              {sections.capacity.horizon_days} days
             </p>
-          )}
-        </Section>
+            <ul className="space-y-0.5">
+              {capacityReportRows(sections.capacity.people).map((p) => (
+                <Row
+                  key={p.key}
+                  name={p.name}
+                  value={p.open}
+                  aside={p.aside}
+                  title={p.title}
+                />
+              ))}
+            </ul>
+          </Table>
+        </div>
       )}
 
       {/* WS-27bm S7c. Opt-in: only a report that asked for `conflicts` has
           it. The rows and the sentences are the conflicts route's, verbatim. */}
       {sections.conflicts && (
-        <Section title="Where the plan conflicts">
-          <p
-            className="mb-1 text-[11px] text-muted-foreground"
-            title={`Counted by the server over every row. Dated kinds read the next ${sections.conflicts.horizon_days} days.`}
-          >
-            {sections.conflicts.total} conflicts
-          </p>
-          <ul className="space-y-1">
-            {conflictsReportRows(sections.conflicts.rows).map((c) => (
-              <li key={c.key} className="text-[11px]" title={c.sentence}>
-                {/* The dot carries the severity, as on the Analytics panel. */}
-                <span
-                  className={`mr-1.5 inline-block size-1.5 rounded-full align-middle ${accentForHue(c.hue).dot}`}
-                  aria-hidden
-                />
-                <span className="font-medium text-foreground">{c.label}</span>
-                <span className="text-muted-foreground"> · {c.sentence}</span>
-              </li>
-            ))}
-          </ul>
-          {!sections.conflicts.hr_visible && (
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              Four kinds need HR read access. An admin can see them.
+        <div className="space-y-1">
+          <ConflictsPanel
+            data={conflictsPanelData(sections.conflicts, body)}
+          />
+          <Table title="Where the plan conflicts" count={sections.conflicts.rows.length}>
+            <p
+              className="mb-1 text-[11px] text-muted-foreground"
+              title={`Counted by the server over every row. Dated kinds read the next ${sections.conflicts.horizon_days} days.`}
+            >
+              {sections.conflicts.total} conflicts
             </p>
-          )}
-        </Section>
+            <ul className="space-y-1">
+              {conflictsReportRows(sections.conflicts.rows).map((c) => (
+                <li key={c.key} className="text-[11px]" title={c.sentence}>
+                  {/* The dot carries the severity, as on the Analytics panel. */}
+                  <span
+                    className={`mr-1.5 inline-block size-1.5 rounded-full align-middle ${accentForHue(c.hue).dot}`}
+                    aria-hidden
+                  />
+                  <span className="font-medium text-foreground">{c.label}</span>
+                  <span className="text-muted-foreground"> · {c.sentence}</span>
+                </li>
+              ))}
+            </ul>
+          </Table>
+        </div>
       )}
     </div>
   );

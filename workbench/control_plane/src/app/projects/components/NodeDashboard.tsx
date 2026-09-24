@@ -47,6 +47,7 @@ import {
   FinishedPanel,
   LoadPanel,
   OutlookPanel,
+  Stat,
   StuckPanel,
   ThroughputPanel,
 } from "./AnalyticsPanels";
@@ -90,42 +91,6 @@ function orderedCategories(counts: Record<string, number>) {
     .filter((c) => !CATEGORY_ORDER.includes(c as never) && counts[c] > 0)
     .sort();
   return [...known, ...extra];
-}
-
-/**
- * One figure, and never a blank. Same contract as `AnalyticsView`'s Stat.
- *
- * ⚠️ `value` is typed as a number and is not guaranteed to be one. The roll-up
- * is cast rather than validated, so an absent `projects` renders `{undefined}`
- * — which is NOTHING. A heading over empty space reads as a number that
- * failed, not as a number that is zero, and the reader cannot tell which.
- */
-function Stat({
-  label,
-  value,
-  tone,
-  title,
-  className = "",
-}: {
-  label: string;
-  value?: number;
-  tone?: string;
-  /** What this figure counts. The dash below still wins when it is absent. */
-  title?: string;
-  className?: string;
-}) {
-  const known = typeof value === "number" && Number.isFinite(value);
-  return (
-    <div className={`rounded-lg border border-border bg-card px-3 py-2 ${className}`}>
-      <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
-      <p
-        className={`text-lg font-semibold ${known ? (tone ?? "text-foreground") : "text-muted-foreground"}`}
-        title={known ? title : `${label} did not come back from the server`}
-      >
-        {known ? value : "—"}
-      </p>
-    </div>
-  );
 }
 
 /**

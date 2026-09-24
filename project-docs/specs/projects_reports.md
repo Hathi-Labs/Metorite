@@ -2,8 +2,10 @@
 
 **Status: ACTIVE. R1 BUILT 2026-09-24** (the builder, `render_body` and
 `POST /projects/reports/preview`). **R2 BUILT 2026-09-24** (the template
-catalogue, `config.template`, the gallery and "Your reports"). R3 to R9 and
-Phases 2 and 3 are not built. R3 is next.
+catalogue, `config.template`, the gallery and "Your reports"). **R2b BUILT
+2026-09-24** (the visual report body: each section draws its Analytics panel,
+with its table folded under it). R3 to R9 and Phases 2 and 3 are not built.
+R3 is next.
 
 Written
 2026-09-24 and verified against the code on 2026-09-24. The owner answered
@@ -92,8 +94,9 @@ defect.
   `actual_end` carry every hours figure.
 - **No automatic AI summary.** The AI summary runs only when a person asks
   for it (owner, 2026-09-24).
-- **No new chart library.** Charts use the categorical ramp through
-  `src/lib/categorical.ts`, as §9.12.7 says.
+- **No new chart library.** A report draws with the Analytics panels (R2b).
+  A categorical series uses the `--cat-*` ramp through `src/lib/categorical.ts`,
+  as §9.12.7 says. State uses `src/lib/statusAccent.ts`.
 - **No public share link.** A stakeholder report (§4, T9) reaches a person
   outside the organization only through email, and only after H-111 is armed.
 - **No PDF export** in this spec. The email body and the in-app page are the
@@ -391,6 +394,9 @@ uses `src/lib/statusAccent.ts`. Severity uses the destructive and warning
 tokens, as the Conflicts panel does (`projects_ai_chat.md` §13.5, as built).
 An email carries no colour (§9.12.8).
 
+**Pictures first.** Each section shows a chart, a progress bar or a tile
+first, and its table second. Slice R2b sets the rules.
+
 ---
 
 ## 7. Data and privacy rules
@@ -557,6 +563,128 @@ caller cannot see. It uses `Visibility.project_clause`, as
   it. To check it, search `src/` for a template key outside the test files.
   The search must find nothing.
 
+### R2b — The visual report body · AGENT-SAFE · BUILT 2026-09-24
+
+**As built.** `lib/reportPanels.ts` maps each section to its panel.
+`reportVisuals.test.ts` is the fence, and
+`test_projects_report_visuals.py` proves the pass-through on a real
+database. Each folded table carries the section's old heading as its
+label, because the chat's report card borrows those words.
+
+**Owner directive, 2026-09-24:** the reports must have as many good visual
+elements as possible, such as progress bars and charts. A reader must see the
+state of the organization, a project or a person at a glance.
+
+**What:** a rendered report draws each section as a picture first and a table
+second. The pictures are the panels that the Analytics app already draws, so a
+report and the Analytics app look the same.
+
+**The audit of 2026-09-24 measured the gap.** Three panels need figures that
+the render body drops. The analytics SQL already selects each of them, and
+`render_body` does not copy them into the body. So R2b passes them through
+(the supervisor chose option B on 2026-09-24).
+
+**Pass-through figures.** `render_body` copies these columns, which the SQL
+that it calls already selects. It adds no query and no arithmetic.
+- `load`: `due_next_7d` and `later` for each person, from `load_sql`.
+- `throughput`: `p90_hours`, `no_start` and `cancelled`, from
+  `_CYCLE_MEASURES`.
+- `finished`: `median_hours` for each project, from `finished_sql`.
+
+A real-database test proves each copied value equals the analytics route's
+value for the same scope and period (R8).
+
+**The visual for each section:**
+- `finished`: `FinishedPanel`, a bar for each project.
+- `throughput`: `ThroughputPanel`, weekly completions as bars, with the
+  median and p90.
+- `load`: `LoadPanel`, a stacked bar for each person: overdue, due in the
+  next 7 days, and later.
+- `capacity`: `CapacityPanel`, with a new progress bar for each person:
+  committed hours of working hours in the horizon. It shows only with the HR
+  half and `hours_basis`. The text states "X of Y h", because a bar clips
+  above 100 percent.
+- `stuck`: `StuckPanel`, overdue work for each project. The report body has
+  no untouched bands, so the panel draws no band chart and no band legend for
+  a report. It must not say "No open work in this scope". The bands wait for
+  R3.
+- `conflicts`: `ConflictsPanel`, the rows with the kind label and the
+  severity dot, and the count line for each kind.
+
+**Summary tiles.** Four tiles above the sections. Each takes one figure from
+one section, and it hides when its section is not in the config.
+- Finished: `finished.total_completed`.
+- Open: `load.total_tasks`, or `capacity.total_tasks` when `load` is absent.
+- Overdue: `stuck.overdue_total`. Never a sum of the rows for each person,
+  because a shared task counts in each row.
+- Median cycle time: `throughput.median_hours`. A null shows "not measured".
+
+**The table stays** under each panel, in a `CollapsibleSection` from
+`src/components/ui/Collapsible.tsx`, closed by default. The primitive gains a
+`keepMounted` pass-through, so a closed table stays in the page.
+
+**The email and the download** (`reportLayout` in `src/lib/reportEmail.ts`,
+which `reportFiles.ts` also reads) draw a text bar with U+2588 and U+2591.
+Each bar prints two server figures and computes neither:
+- `finished`: each project, "completed of total_completed".
+- `stuck`: each project, "overdue of overdue_total".
+- `load`: each person, "overdue of open_tasks". Not "of total_tasks",
+  because the rows for each person add up to more than the total.
+- `capacity`: "committed of working h", only with the HR half and
+  `hours_basis`.
+- `throughput`: one bar for each week, scaled to the peak week, with no "of".
+
+**Rules for the build:**
+- **One chart seam.** A report section and an Analytics panel draw the same
+  data with the same component. A pure adapter in `lib/reportPanels.ts` maps a
+  section to its panel type. When a panel cannot take a report's shape, change
+  the panel so that an absent field draws nothing. A second chart component
+  for the same data is a defect (CLAUDE.md §4).
+- **One tile.** `AnalyticsView.tsx` and `NodeDashboard.tsx` each hold a
+  private `Stat`. Export one `Stat` from `AnalyticsPanels.tsx`, from the
+  NodeDashboard copy, and use it in all three places. `Bar` stays private.
+- **Colour follows the panels.** State uses `src/lib/statusAccent.ts`, and
+  an ordinal scale uses `accentForHue`, as the panels do now. R2b adds no
+  categorical series, so it adds no `--cat-*` colour. Each colour has a text
+  label beside it.
+- **An accessible name.** `Panel` gains `aria-labelledby` on its title. Each
+  bar states its value in text, not only in a tooltip.
+- **One heading.** `Panel` already carries a title, so the report drops its
+  own section heading where a panel draws.
+- **Keep the lockstep text.** `test_projects_report_sections_lockstep.py`
+  needs the literal `sections.<name>` in `ReportsView.tsx`. Keep each access
+  literal. Do not loop over a map.
+- **The Analytics app does not change** except for the guards, the
+  accessible name, the shared `Stat` and the capacity bar.
+
+**Done when:**
+- Each of the six sections renders its panel in the in-app report, and its
+  table under the panel.
+- **Agree:** a test gives each section a unique sentinel figure. The figure
+  appears in the panel and in the table.
+- **Degrade:** with report-shaped data, the markup contains no "undefined",
+  no "NaN" and no "No open work in this scope".
+- **A tile hides** when its section is not in the config.
+- **The fence**, in `src/app/projects/components/reportVisuals.test.ts`:
+  - (a) The render test above, with all six sections.
+  - (b) A source test. `ReportsView.tsx` imports the six panels from
+    `./AnalyticsPanels` and renders each one. It has no inline width or
+    height style and no function named for a bar or a chart. A self-test
+    proves that a hand-drawn bar string fires the fence.
+  - (c) Unit tests for the adapters in `lib/reportPanels.ts`, with the
+    arithmetic check of `capacity.test.ts` applied to that module.
+- **The pass-through test** runs on a real database, as above.
+- `reportEmail.test.ts` shows the text bars of the list above, and the colour
+  checks stay green.
+- The Analytics app and the node dashboard render as before. Their tests pass
+  without change, except the tests for the four changes above.
+- The visual review passes in light mode, compact density, a changed accent
+  and at 390 px, on the report and on the Analytics app.
+
+**From R2b on, a section ships with its visual.** R3 and every later slice add
+the visual for each new section in the same PR. R3 also adds the untouched
+bands to `stuck`.
+
 ### R3 — Four new sections · AGENT-SAFE
 
 Each section is one server read and one entry in the five lockstep lists
@@ -574,6 +702,10 @@ goes into `DEFAULT_SECTIONS`.
 **Done when:**
 - Each section renders in the app, in the email body with no colour, and in
   the chat card.
+- Each section draws its visual, under the R2b rules. `pulse` draws one card
+  for each person: a load bar, the pill, the top focus tasks and a "needs
+  help" mark. `outlook` draws a range bar from the planned finish to the
+  forecast finish, so the slip is visible.
 - `pulse` gives the same pill as the capacity route for the same person and
   window. One test pins this, so the two cannot drift.
 - A person on leave today shows "on leave" and no `idle` pill.
@@ -715,9 +847,10 @@ item 6) and the chat's `send_report` both call it.
 
 ### Order
 
-**Phase 1, on request:** R1 → R2 → R3 → R5 → R4 → R6 → R8 → R9.
+**Phase 1, on request:** R1 → R2 → R2b → R3 → R5 → R4 → R6 → R8 → R9.
 
 - R1 and R2 give a member control of what exists.
+- R2b draws each section as a chart or a progress bar.
 - R3 makes the morning report real.
 - R5 adds the person and team scope and the permission rule.
 - R4 gives a report a memory, and R6 adds the AI summary.
@@ -814,7 +947,7 @@ names a built tool which never calls the route fails there.
 Client, in `workbench/control_plane`:
 
 ```bash
-npx tsc --noEmit && npx vitest run src/app/projects src/lib/reportEmail.test.ts
+npx tsc --noEmit && npx vitest run src/app/projects src/lib/reportEmail.test.ts src/lib/theme src/lib/sourceHygiene.test.ts
 ```
 
 Each slice adds its own test file and names it in its PR. A UI slice also runs
