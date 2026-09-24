@@ -220,6 +220,19 @@ describe("delete in Next Actions", () => {
     expect(apiPurgeItem).toHaveBeenCalledWith("my-task");
   });
 
+  it("Undo on my own deleted task restores the disposition it had, not INBOX", async () => {
+    vi.mocked(apiRestoreItem).mockResolvedValue(task("my-task"));
+    useTaskStore.setState({
+      items: [task("my-task", { disposition: "WAITING" }), task("fresh", { isTriaged: false })],
+    });
+    useTaskStore.getState().deleteItems(["my-task", "fresh"]);
+    useTaskStore.getState().undoLastChange();
+    await vi.runAllTimersAsync();
+    expect(apiRestoreItem).toHaveBeenCalledWith("my-task", "WAITING");
+    // An untriaged row is cleared, never given a triage it did not have.
+    expect(apiRestoreItem).toHaveBeenCalledWith("fresh", null);
+  });
+
   it("Undo on a removed board task writes back what my overlay said, and never restores as INBOX", async () => {
     vi.mocked(apiBulkDispose).mockResolvedValue([]);
     useTaskStore.getState().deleteItems(["board-task"]);

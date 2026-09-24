@@ -37,7 +37,7 @@ import { DelegatePopup } from "./components/DelegatePopup";
 // Projects one with no commands (`paletteCommands`), so it searches tasks only.
 import { SearchPalette } from "../projects/components/SearchPalette";
 import { isOpenShortcut } from "../projects/lib/search";
-import { hitTarget } from "./lib/searchHit";
+import { hitTarget, searchAllowed } from "./lib/searchHit";
 
 // My Tasks — 4-panel shell, mirroring the email app's layout
 // philosophy: Lists/Contexts · Item list (+ capture) · Item detail · Assistant.
@@ -158,7 +158,11 @@ export default function TasksPage() {
           el.isContentEditable);
       if (isOpenShortcut(e)) {
         e.preventDefault();
-        setSearching(true);
+        // Not over another overlay (`searchAllowed`): the palette would open
+        // hidden behind it and take the keystrokes.
+        if (searchAllowed(useTaskStore.getState(), maximisedId !== null)) {
+          setSearching(true);
+        }
         return;
       }
       if (searching) return; // the palette owns the keyboard
@@ -175,7 +179,7 @@ export default function TasksPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [openQuickCapture, quickCaptureOpen, clarifyModalOpen, searching]);
+  }, [openQuickCapture, quickCaptureOpen, clarifyModalOpen, searching, maximisedId]);
 
   // A hit My Tasks holds opens here. Any other task opens in Projects, because
   // the palette searches every project and My Tasks cannot draw a task it does

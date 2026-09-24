@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 import { COMMANDS, paletteCommands } from "@/app/projects/lib/commands";
 import { PANEL_MODES } from "@/app/projects/lib/panelMode";
 
-import { hitTarget } from "./searchHit";
+import { hitTarget, searchAllowed } from "./searchHit";
 
 const SRC = fileURLToPath(new URL("../../..", import.meta.url));
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8").replace(/\r\n/g, "\n");
@@ -29,6 +29,49 @@ describe("where a hit opens", () => {
       kind: "projects",
       href: "/projects?task=a%20b",
     });
+  });
+});
+
+describe("⌘K does not open search over another overlay", () => {
+  const closed = {
+    quickCaptureOpen: false,
+    clarifyModalOpen: false,
+    focusedItemId: null,
+    settingsModalOpen: false,
+    reclarifyItemId: null,
+    pendingDeleteIds: null,
+    scheduleItemId: null,
+    eliminateItemId: null,
+    delegateItemId: null,
+  };
+
+  it("opens when nothing is up", () => {
+    expect(searchAllowed(closed, false)).toBe(true);
+    expect(searchAllowed({ ...closed, pendingDeleteIds: [] }, false)).toBe(true);
+  });
+
+  it.each([
+    ["the focus view", { focusedItemId: "t1" }],
+    ["settings", { settingsModalOpen: true }],
+    ["re-clarify", { reclarifyItemId: "t1" }],
+    ["capture", { quickCaptureOpen: true }],
+    ["clarify", { clarifyModalOpen: true }],
+    ["a delete prompt", { pendingDeleteIds: ["t1"] }],
+    ["schedule", { scheduleItemId: "t1" }],
+    ["eliminate", { eliminateItemId: "t1" }],
+    ["delegate", { delegateItemId: "t1" }],
+  ])("stays shut while %s is open", (_what, over) => {
+    expect(searchAllowed({ ...closed, ...over }, false)).toBe(false);
+  });
+
+  it("stays shut while the page's maximised view is up", () => {
+    expect(searchAllowed(closed, true)).toBe(false);
+  });
+
+  it("the page asks it, with the live store and the maximised view", () => {
+    expect(read("app/tasks/page.tsx")).toMatch(
+      /if \(searchAllowed\(useTaskStore\.getState\(\), maximisedId !== null\)\) \{\s*setSearching\(true\);/,
+    );
   });
 });
 
@@ -59,7 +102,7 @@ describe("My Tasks binds ⌘K to search", () => {
   it("⌘K opens the search palette, not capture", () => {
     const src = page();
     expect(src).toMatch(
-      /if \(isOpenShortcut\(e\)\) \{\s*e\.preventDefault\(\);\s*setSearching\(true\);\s*return;\s*\}/,
+      /if \(isOpenShortcut\(e\)\) \{\s*e\.preventDefault\(\);[\s\S]{0,400}?setSearching\(true\);\s*\}\s*return;\s*\}/,
     );
     // The old binding, gone.
     expect(src).not.toMatch(/e\.key === "k"/);

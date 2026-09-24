@@ -111,7 +111,7 @@ export type PillRank = "strong" | "soft" | "faint";
  * own glyph too, so it reads without colour (D-PM-27). A level never uses the
  * member's accent, because a level is not a selection.
  *
- * Fence: `taskCard.test.ts` ("the priority chip").
+ * Fence: `lib/priorityChip.test.ts`.
  */
 export const PRIORITY_CHIP_STYLE: Record<
   PriorityCell,
