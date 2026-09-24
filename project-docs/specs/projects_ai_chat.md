@@ -1367,7 +1367,7 @@ owner took rules 1, 2 and 3 on 2026-09-24.
 500 tasks in the viewer's scope. The columns are number, title, project, status
 category, assignees, estimate, start, due, completed, created and blockers. The
 agent computes an uncommon figure from it, for example cycle time by tag or
-the share of work each phase holds.
+the share of work each stage holds.
 
 **The rule for a number the chat computes.** The answer says that the chat
 computed it, and from how many rows. If the table was truncated, the chat does
