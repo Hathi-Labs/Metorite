@@ -31,13 +31,20 @@ describe("quickAddPrefill per axis", () => {
     });
   });
 
-  it("importance → an integer, not the string the key carries", () => {
-    // The gateway's TaskIn declares `importance: int`; a "3" would 422.
-    expect(quickAddPrefill("importance", "3")).toEqual({
-      create: { importance: 3 },
+  it("importance → the flags the matrix level implies (D78)", () => {
+    // The key is a level. The create body carries the integer and the
+    // boolean, never the level string, which the gateway would refuse.
+    expect(quickAddPrefill("importance", "critical")).toEqual({
+      create: { importance: 2, leveraged: true },
     });
-    expect(quickAddPrefill("importance", "0")).toEqual({
-      create: { importance: 0 },
+    expect(quickAddPrefill("importance", "urgent")).toEqual({
+      create: { importance: 2, leveraged: false },
+    });
+    expect(quickAddPrefill("importance", "speculative-bet")).toEqual({
+      create: { importance: 0, leveraged: true },
+    });
+    expect(quickAddPrefill("importance", "low-priority")).toEqual({
+      create: { importance: 0, leveraged: false },
     });
   });
 
@@ -85,9 +92,13 @@ describe("mergePlans — a lane cell is two contexts at once", () => {
   it("merges a column's field with a lane's field", () => {
     const merged = mergePlans(
       quickAddPrefill("status", "s-doing"),
-      quickAddPrefill("importance", "2")
+      quickAddPrefill("importance", "important")
     );
-    expect(merged.create).toEqual({ status_id: "s-doing", importance: 2 });
+    expect(merged.create).toEqual({
+      status_id: "s-doing",
+      importance: 2,
+      leveraged: false,
+    });
     expect(merged.assignees).toBeUndefined();
   });
 

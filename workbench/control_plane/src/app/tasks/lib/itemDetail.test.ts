@@ -120,12 +120,12 @@ describe("one task panel composition (S6e)", () => {
 
 // ── No two labels alike in one host (S6e repair) ────────────────────────────
 //
-// D53.8: `MyTask.important` (the member's Eisenhower pair) is NOT
-// `pm_tasks.importance` (the task's shared Priority integer). The first S6e
-// draw put "Priority" on both — the strip's matrix section and the body's
-// cell — with two different values a hand's width apart. Every label a
-// member reads in the lens host has to be unique, case-insensitive, across
-// the strip and the body together.
+// D53.8. The first S6e draw put "Priority" on two controls, the strip's
+// matrix section and the body's cell, with two different values a hand's
+// width apart. Every label a member reads in the lens host has to be unique,
+// case-insensitive, across the strip and the body together. D78 made the
+// body's "Priority" the one matrix control. The strip keeps "Your focus" for
+// what is personal (the nudge and Deep work).
 
 /** The labels the lens host draws: the strip's, minus its lens-off blocks. */
 function lensHostLabels(): string[] {
@@ -157,7 +157,7 @@ describe("no two labels alike in the lens host (D53.8)", () => {
   const labels = lensHostLabels();
 
   it("reads both halves", () => {
-    expect(labels).toContain("Focus matrix");
+    expect(labels).toContain("Your focus");
     expect(labels).toContain("Priority");
     expect(labels).toContain("Context");
     expect(labels).toContain("Due");
@@ -175,8 +175,21 @@ describe("no two labels alike in the lens host (D53.8)", () => {
     expect(
       clashes,
       "Two controls with one name and two values on one panel. The body's " +
-        "'Priority' is pm_tasks.importance; the strip's matrix is 'Focus matrix'.",
+        "'Priority' is the matrix, and the strip's personal card is 'Your focus'.",
     ).toEqual([]);
+  });
+
+  it("draws the Important and Leveraged toggles in the body only (D78)", () => {
+    // They are one shared answer on the task, so they have one editor. The
+    // strip's card keeps only what is personal.
+    const strip = HOSTS["tasks/components/ItemDetail.tsx"];
+    expect(BODY).toMatch(/<WeightToggles[\s\S]*?showDeepWork=\{false\}/);
+    expect(BODY).toContain("<PriorityBadge");
+    expect(BODY).toMatch(/importance: importanceFor\(|payload\.importance = importanceFor\(/);
+    expect(strip).not.toContain("<WeightToggles");
+    expect(strip).not.toContain("<PriorityBadge");
+    expect(strip).toContain("<DeepWorkToggle");
+    expect(strip).toContain("<SuggestionBadge");
   });
 
   it("draws every WORK fact in the body and none of them in the strip (D77)", () => {

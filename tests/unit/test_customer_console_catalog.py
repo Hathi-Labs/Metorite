@@ -216,10 +216,38 @@ class TestTheWriteContractIsInsertOnly:
                     out.append((verb, path))
         return out
 
+    #: Tables whose ROWS a commercial route may never destroy (§6A.5).
+    _COMMERCIAL_TABLES = ("tier_binding", "tier_rate_card", "model_rate_card")
+
     def test_no_route_updates_or_deletes_a_binding_or_a_rate(self):
+        """The rule its NAME states: no row is updated or destroyed.
+
+        📌 **This checked the HTTP VERB until 2026-09-24, and the verb was
+        standing in for the rule.** H-178 added
+        `DELETE /catalog/bindings`, which takes a job off the air by APPENDING
+        a tombstone — the superseded binding stays readable, which is exactly
+        what §6A.5 asks for. Banning the verb would have banned the fix for a
+        broken tier while changing nothing about what gets destroyed.
+        `tier-stt` sat unfixable for that reason.
+
+        ⚠️ So this now reads the SQL, which is where the rule can be true or
+        false. `PATCH` and `PUT` stay banned on their names: both MEAN mutate,
+        and a route that means it will find a way.
+        """
         bad = [f"{v.upper()} {p}" for v, p in self._catalog_routes()
-               if p in self.INSERT_ONLY and v in ("patch", "put", "delete")]
+               if p in self.INSERT_ONLY and v in ("patch", "put")]
         assert not bad, f"catalog COMMERCIAL writes must be INSERT-only: {bad}"
+
+        src = MAIN_SRC.read_text(encoding="utf-8")
+        destructive = [
+            f"{stmt} {table}"
+            for table in self._COMMERCIAL_TABLES
+            for stmt in ("DELETE FROM", "UPDATE")
+            if f"{stmt} {table}" in src
+        ]
+        assert not destructive, (
+            "a commercial catalog table is written destructively, so a past "
+            f"invoice can stop being readable against what it charged: {destructive}")
 
     def test_every_catalog_path_is_classified_one_way_or_the_other(self):
         """🔴 The fence that keeps the exemption from becoming a loophole.

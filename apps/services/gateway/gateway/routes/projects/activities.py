@@ -56,7 +56,8 @@ from sqlalchemy import text
 #: re-stamping and the status re-point that ``/move`` owes. Reverting a move is
 #: a move.
 _REVERTIBLE: frozenset[str] = frozenset({
-    "title", "description", "importance", "due_at", "start_date", "estimate_mins",
+    "title", "description", "importance", "leveraged", "due_at", "start_date",
+    "estimate_mins",
 })
 
 #: The prefix `patch_task` files a custom-field change under (WS-27l).

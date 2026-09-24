@@ -11,10 +11,6 @@ import {
   activeFilterCount,
   NO_CONTEXT_FACET,
   NO_ENERGY_FACET,
-  NO_ORG_PRIORITY_FACET,
-  ORG_PRIORITY_ORDER,
-  orgPriorityFacet,
-  orgPriorityLabel,
   SORT_LABEL,
   type GroupBy,
   type SortField,
@@ -44,23 +40,22 @@ import { contextAccent } from "../lib/contextColors";
 // the active sort from the same map this menu draws it from.
 
 const SORT_FIELDS: SortField[] = [
-  "manual", "priority", "orgPriority", "due", "created", "title", "energy",
+  "manual", "priority", "due", "created", "title", "energy",
 ];
 
 const GROUP_LABEL: Record<GroupBy | "", string> = {
   "": "Status", // the default grouping for Next Actions IS by status
   none: "No grouping",
   context: "Context",
-  // D77 (F1): "Priority" is only the shared field. The matrix is "Your focus".
-  priority: "Your focus",
-  orgPriority: "Priority",
+  // D78: one priority system, the matrix, in both apps.
+  priority: "Priority",
   mode: "Suggestion",
   energy: "Energy",
   depth: "Work mode",
 };
 
 const GROUP_OPTIONS: (GroupBy | "")[] = [
-  "", "context", "priority", "orgPriority", "mode", "energy", "depth", "none",
+  "", "context", "priority", "mode", "energy", "depth", "none",
 ];
 
 const ENERGY_VALUES: { value: string; label: string }[] = [
@@ -124,20 +119,6 @@ export function TaskToolbar({ items }: { items: MyTask[] }) {
     }));
   }, [items]);
 
-  // D77 — the shared Priority facet, in D76's words, Highest first.
-  const orgPriorityOpts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const i of items) {
-      const k = orgPriorityFacet(i);
-      counts.set(k, (counts.get(k) ?? 0) + 1);
-    }
-    return ORG_PRIORITY_ORDER.filter((k) => counts.has(k)).map((k) => ({
-      value: k,
-      label: orgPriorityLabel(k),
-      count: counts.get(k)!,
-    }));
-  }, [items]);
-
   const energyOpts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const i of items) counts.set(i.energy || NO_ENERGY_FACET, (counts.get(i.energy || NO_ENERGY_FACET) ?? 0) + 1);
@@ -193,11 +174,10 @@ export function TaskToolbar({ items }: { items: MyTask[] }) {
 
       {/* Filter — one popover for every facet */}
       <FilterMenu
-        count={filters.contexts.length + filters.priorities.length + (filters.orgPriorities ?? []).length + filters.energies.length}
+        count={filters.contexts.length + filters.priorities.length + filters.energies.length}
         sections={[
           { key: "contexts", label: "Context", options: contextOpts, selected: filters.contexts },
-          { key: "orgPriorities", label: "Priority", options: orgPriorityOpts, selected: filters.orgPriorities ?? [] },
-          { key: "priorities", label: "Your focus", options: priorityOpts, selected: filters.priorities },
+          { key: "priorities", label: "Priority", options: priorityOpts, selected: filters.priorities },
           { key: "energies", label: "Energy", options: energyOpts, selected: filters.energies },
         ]}
         onToggle={toggle}
@@ -304,8 +284,8 @@ interface FacetOption {
   emoji?: string;
   count: number;
 }
-/** The multi-select facets. `orgPriorities` is the shared Priority (D77). */
-type FacetKey = "contexts" | "priorities" | "orgPriorities" | "energies";
+/** The multi-select facets. */
+type FacetKey = "contexts" | "priorities" | "energies";
 
 interface FacetSection {
   key: FacetKey;
@@ -446,11 +426,6 @@ function FacetChips({
         icon: meta?.icon,
       };
     }),
-    ...(filters.orgPriorities ?? []).map((v) => ({
-      key: "orgPriorities" as const,
-      value: v,
-      label: v === NO_ORG_PRIORITY_FACET ? "No priority" : `${orgPriorityLabel(v)} priority`,
-    })),
     ...filters.energies.map((v) => ({
       key: "energies" as const,
       value: v,

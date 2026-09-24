@@ -733,7 +733,10 @@ export interface TaskRow {
   status_id: string;
   title: string;
   description?: string | null;
+  /** The matrix's Important is `importance >= 2` (D78, `IMPORTANT_AT`). */
   importance?: number | null;
+  /** D78 — the matrix's shared Leveraged input. Migration 218. */
+  leveraged?: boolean | null;
   estimate_mins?: number | null;
   /**
    * WS-27q — a floating calendar date (`DATE`, not an instant), which is why

@@ -11,7 +11,6 @@
 /** A toggleable list column. `key` is the stable id used in storage + settings. */
 export type ColumnKey =
   | "priority"
-  | "focus"
   | "mode"
   | "context"
   | "energy"
@@ -41,16 +40,13 @@ export interface ColumnDef {
 // mid-word. Reclaiming it is what lets Name have a readable floor *without*
 // pushing Due date off the right edge.
 //
-// D77 (2026-09-23): the "Priority" column is the task's SHARED Priority
-// (`pm_tasks.importance`, the D76 vocabulary, widest "Highest"). The
-// member's own matrix cell that used to sit under that name is "Your
-// focus", the name the Projects panel gives the same private row (D76).
-// Two columns under one header would give two answers to one question. The
-// key `priority` stays on the shared field, so a member's stored choice to
-// show the Priority column still means the column called Priority.
+// D78 (2026-09-24): ONE "Priority" column, the matrix level, which is the
+// task's shared level in both apps. D77 had two columns here, the old 0-3
+// field as "Priority" and the matrix as "Your focus". That was two answers
+// to one question, and the owner asked for one. `parseVisibility` ignores a
+// stored `focus` key, and `priority` defaults to visible.
 export const COLUMNS: ColumnDef[] = [
-  { key: "priority", label: "Priority", width: "76px", align: "left" },
-  { key: "focus", label: "Your focus", width: "130px", align: "left" },
+  { key: "priority", label: "Priority", width: "130px", align: "left" },
   { key: "mode", label: "Suggestion", width: "110px", align: "left" },
   { key: "context", label: "Context", width: "100px", align: "left" },
   { key: "energy", label: "Energy", width: "76px", align: "left" },
@@ -65,7 +61,6 @@ export const COLUMNS: ColumnDef[] = [
  *  default; the noisier count columns (files/subtasks) start hidden. */
 export const DEFAULT_VISIBLE: Record<ColumnKey, boolean> = {
   priority: true,
-  focus: true,
   mode: true,
   context: true,
   // D77 (S6f): off by default, to pay for the shared Priority track. The

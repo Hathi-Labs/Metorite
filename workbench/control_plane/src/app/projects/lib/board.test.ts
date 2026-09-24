@@ -123,19 +123,20 @@ describe("buildColumnDropUpdate", () => {
     expect(buildColumnDropUpdate(undefined, null)).toBeNull();
   });
 
-  it("patches importance as an integer, and the UNSET lane as null (WS-27y)", () => {
-    // The gateway's TaskIn declares `importance: int`; "2" would 422, and
-    // Number(UNSET) would be NaN.
-    expect(buildColumnDropUpdate("importance", "2")).toEqual({ importance: 2 });
-    expect(buildColumnDropUpdate("importance", "0")).toEqual({ importance: 0 });
-    expect(buildColumnDropUpdate("importance", UNSET)).toEqual({ importance: null });
+  it("patches nothing for a priority level (D78)", () => {
+    // A level is computed from Important, Leveraged and the due date.
+    // A drop cannot write it, so the drop moves no field.
+    expect(buildColumnDropUpdate("importance", "critical")).toBeNull();
+    expect(buildColumnDropUpdate("importance", "low-priority")).toBeNull();
+    expect(buildColumnDropUpdate("importance", UNSET)).toBeNull();
   });
 });
 
 describe("dropRefusal (WS-27y)", () => {
   it("allows the single-valued plain-PATCH axes", () => {
     expect(dropRefusal("status")).toBeNull();
-    expect(dropRefusal("importance")).toBeNull();
+    expect(dropRefusal("category")).toBeNull();
+    expect(dropRefusal("type")).toBeNull();
     expect(dropRefusal("none")).toBeNull();
     expect(dropRefusal(undefined)).toBeNull();
   });
@@ -143,6 +144,13 @@ describe("dropRefusal (WS-27y)", () => {
   it("refuses many-valued axes, and says why", () => {
     expect(dropRefusal("assignee")).toMatch(/many-valued/i);
     expect(dropRefusal("tag")).toMatch(/many-valued/i);
+  });
+
+  it("refuses a drop onto a priority level, and names the inputs (D78)", () => {
+    const reason = dropRefusal("importance");
+    expect(reason).toMatch(/Important/);
+    expect(reason).toMatch(/Leveraged/);
+    expect(reason).toMatch(/due date/);
   });
 
   it("refuses a project move with the grant boundary named", () => {
@@ -154,7 +162,8 @@ describe("dropRefusal (WS-27y)", () => {
     // is not.
     expect(dropRefusal("status", "assignee")).toMatch(/many-valued/i);
     expect(dropRefusal("assignee", "status")).toMatch(/many-valued/i);
-    expect(dropRefusal("status", "importance")).toBeNull();
+    expect(dropRefusal("status", "type")).toBeNull();
+    expect(dropRefusal("status", "importance")).toMatch(/priority level/i);
   });
 
   it("refuses an axis it has never heard of, naming it", () => {
@@ -180,10 +189,16 @@ describe("currentAxisKey", () => {
     expect(currentAxisKey(task, "project")).toBe("p-1");
   });
 
-  it("keeps importance 0 a real bucket and missing importance UNSET", () => {
-    expect(currentAxisKey(task, "importance")).toBe("0");
-    expect(currentAxisKey({ importance: null }, "importance")).toBe(UNSET);
-    expect(currentAxisKey({}, "importance")).toBe(UNSET);
+  it("reads the matrix level on the importance axis (D78)", () => {
+    // Every task has a level. An unflagged task is Low Priority, never UNSET.
+    expect(currentAxisKey(task, "importance")).toBe("low-priority");
+    expect(currentAxisKey({ importance: null }, "importance")).toBe("low-priority");
+    expect(currentAxisKey({}, "importance")).toBe("low-priority");
+    expect(currentAxisKey({ importance: 2 }, "importance")).toBe("important");
+    expect(currentAxisKey({ importance: 3, leveraged: true }, "importance")).toBe(
+      "high-leverage"
+    );
+    expect(currentAxisKey({ leveraged: true }, "importance")).toBe("speculative-bet");
   });
 
   it("has no single answer for many-valued or unknown axes", () => {
@@ -193,24 +208,28 @@ describe("currentAxisKey", () => {
 });
 
 describe("buildCellDropPatch (WS-27y)", () => {
-  const task = { status_id: "s-todo", importance: null };
+  const task = { status_id: "s-todo", type_id: "t-bug", importance: null };
 
   it("sets BOTH axes when a card lands in a foreign cell", () => {
-    expect(
-      buildCellDropPatch(task, "status", "s-doing", "importance", "2")
-    ).toEqual({ status_id: "s-doing", importance: 2 });
+    expect(buildCellDropPatch(task, "status", "s-doing", "type", "t-feature")).toEqual({
+      status_id: "s-doing",
+      type_id: "t-feature",
+    });
   });
 
   it("patches only the axis that actually moved", () => {
-    // Dropped elsewhere in its own column: the lane changed, status did not —
-    // patching status anyway would write an activity row about a non-move.
-    expect(buildCellDropPatch(task, "status", "s-todo", "importance", "1")).toEqual({
-      importance: 1,
+    // Dropped elsewhere in its own column: the lane changed, status did not.
+    // Patching status anyway would write an activity row about a non-move.
+    expect(buildCellDropPatch(task, "status", "s-todo", "type", "t-feature")).toEqual({
+      type_id: "t-feature",
     });
   });
 
   it("patches nothing for a drop into the cell it came from", () => {
-    expect(buildCellDropPatch(task, "status", "s-todo", "importance", UNSET)).toBeNull();
+    expect(buildCellDropPatch(task, "status", "s-todo", "type", "t-bug")).toBeNull();
+    expect(
+      buildCellDropPatch(task, "status", "s-todo", "importance", "low-priority")
+    ).toBeNull();
   });
 
   it("works without a lane axis — the flat board's column drop", () => {
@@ -220,10 +239,20 @@ describe("buildCellDropPatch (WS-27y)", () => {
     expect(buildCellDropPatch(task, "status", "s-todo")).toBeNull();
   });
 
-  it("clears priority when dropped into the no-priority lane", () => {
+  it("never writes the priority from a level lane (D78)", () => {
+    // The UI refuses this drop first (dropRefusal). This is the second line.
     expect(
-      buildCellDropPatch({ status_id: "s-todo", importance: 2 }, "status", "s-todo", "importance", UNSET)
-    ).toEqual({ importance: null });
+      buildCellDropPatch(
+        { status_id: "s-todo", importance: 2 },
+        "status",
+        "s-todo",
+        "importance",
+        "low-priority"
+      )
+    ).toBeNull();
+    expect(
+      buildCellDropPatch(task, "status", "s-doing", "importance", "critical")
+    ).toEqual({ status_id: "s-doing" });
   });
 });
 

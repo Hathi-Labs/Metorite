@@ -134,8 +134,24 @@ def resolve_tier(conn: Connection, tier: str, task: str = "chat") -> ResolvedTie
         text(
             """
             SELECT model FROM tier_binding
-            WHERE tier = :tier AND task = :task AND effective_from <= now()
-            ORDER BY effective_from DESC, rank ASC
+            WHERE tier = :tier AND task = :task
+              -- 🔴 **The newest SET, then the primary within it** (H-178).
+              -- This read used to take the newest ROW that had a model, with
+              -- `ORDER BY effective_from DESC, rank ASC LIMIT 1`. That is the
+              -- same answer while every row carries a model, and it is the
+              -- WRONG answer once one does not: a tombstone would be skipped
+              -- and the superseded binding would keep serving, so unbinding a
+              -- tier would change nothing the Router does. Caught by
+              -- `test_the_ROUTER_refuses_an_unbound_job_rather_than_serving_NULL`.
+              AND effective_from = (
+                  SELECT max(effective_from) FROM tier_binding
+                  WHERE tier = :tier AND task = :task
+                    AND effective_from <= now()
+              )
+              -- ⚠️ Applied AFTER the set is chosen, never before. Filtering
+              -- first would let the subquery pick a set this row is not in.
+              AND model IS NOT NULL
+            ORDER BY rank ASC
             LIMIT 1
             """
         ),
@@ -175,6 +191,10 @@ def resolve_chain(conn: Connection, tier: str, task: str = "chat") -> list[Resol
             """
             SELECT model, rank FROM tier_binding
             WHERE tier = :tier AND task = :task
+              -- ⚠️ The tombstone filter (H-178). The subquery below still
+              -- picks the NEWEST set, so an unbound job selects that set and
+              -- then keeps none of it — which is exactly "no chain".
+              AND model IS NOT NULL
               AND effective_from = (
                   SELECT max(effective_from) FROM tier_binding
                   WHERE tier = :tier AND task = :task

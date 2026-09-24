@@ -68,7 +68,8 @@ from sqlalchemy import text
 #: a subtree and belong to the move endpoint, and `status_id` is excluded
 #: because a status move is a transition — see the module docstring.
 PATCHABLE_FIELDS: tuple[str, ...] = (
-    "title", "description", "importance", "due_at", "start_date", "estimate_mins",
+    "title", "description", "importance", "leveraged", "due_at", "start_date",
+    "estimate_mins",
 )
 
 #: Mirrors `tasks.py::_TRACKED_TASK_FIELDS` for the subset above — the same

@@ -822,3 +822,41 @@ export function clarifyChangesSharedTask(
   if (decision.dueAt && decision.dueAt !== item.dueAt) return true;
   return false;
 }
+
+/**
+ * The clarify card's starting Important and Leveraged (D78, review 2026-09-24).
+ *
+ * Both are the task's SHARED answer. A task a PM already judged keeps that
+ * judgement: the proposal fills Important only while nobody has judged it
+ * (`important` undefined, which is `importance` NULL). A proposal may turn
+ * Leveraged on, and it never turns off a Leveraged the task already has.
+ */
+export function seedWeight(
+  item: { important?: boolean; leveraged?: boolean },
+  proposal: { important?: boolean; leveraged?: boolean },
+): { important: boolean; leveraged: boolean } {
+  return {
+    important:
+      item.important !== undefined ? item.important : Boolean(proposal.important),
+    leveraged: Boolean(item.leveraged) || Boolean(proposal.leveraged),
+  };
+}
+
+/**
+ * The write the clarify card's flags turn into (D78, review 2026-09-24).
+ *
+ * Deep work is the member's own and always goes. Important and Leveraged go
+ * only when the member changed them from the task's current answer, so
+ * confirming a clarify card never rewrites a shared flag nobody touched.
+ */
+export function weightPatch(
+  before: { important?: boolean; leveraged?: boolean } | undefined,
+  weight: { important: boolean; leveraged: boolean; deepWork: boolean },
+): Record<string, boolean> {
+  const out: Record<string, boolean> = { deep_work: weight.deepWork };
+  if (weight.important !== Boolean(before?.important) || before?.important === undefined) {
+    out.important = weight.important;
+  }
+  if (weight.leveraged !== Boolean(before?.leveraged)) out.leveraged = weight.leveraged;
+  return out;
+}

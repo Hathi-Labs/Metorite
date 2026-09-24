@@ -18,6 +18,7 @@ import {
   whereVisibilityHint,
   type ClarifyDisposition,
   type ClarifyProposal,
+  seedWeight,
 } from "../lib/clarify";
 import { apiClarifyPropose, apiSuggestTitle } from "../lib/api";
 import type { ConnectedProvider } from "../lib/mockData";
@@ -227,8 +228,18 @@ export function ClarifyPanel({
   const [energy, setEnergy] = useState<Energy>(proposal.energy ?? "medium");
   // Prioritization flags — AI-prefilled, user confirms (urgent is derived from
   // the due date, so it isn't a toggle here).
-  const [important, setImportant] = useState<boolean>(!!proposal.important);
-  const [leveraged, setLeveraged] = useState<boolean>(!!proposal.leveraged);
+  //
+  // 🔴 D78: Important and Leveraged are the TASK's shared answer now, and a
+  // PM may already have given it. The proposal is a keyword guess from the
+  // title, so it may only fill a gap: `seedWeight` starts from the task's
+  // own answer. Before D78 a wrong guess landed on my private overlay. Now
+  // it would erase a teammate's judgement for everyone.
+  const [important, setImportant] = useState<boolean>(
+    seedWeight(item, proposal).important,
+  );
+  const [leveraged, setLeveraged] = useState<boolean>(
+    seedWeight(item, proposal).leveraged,
+  );
   const [deepWork, setDeepWork] = useState<boolean>(!!proposal.deepWork);
   const [assignee, setAssignee] = useState<Person | null>(proposal.suggestedAssignee ?? null);
   const [dueAt, setDueAt] = useState("");
@@ -279,8 +290,8 @@ export function ClarifyPanel({
       setOutcome(sp.outcome ?? `${item.title} — done`);
       setContext(sp.context ?? "@computer");
       setEnergy(sp.energy ?? "medium");
-      setImportant(!!sp.important);
-      setLeveraged(!!sp.leveraged);
+      setImportant(seedWeight(item, sp).important);
+      setLeveraged(seedWeight(item, sp).leveraged);
       setDeepWork(!!sp.deepWork);
       setAssignee(sp.suggestedAssignee ?? null);
       if (sp.target) setDest(sp.target);
@@ -1299,10 +1310,11 @@ export function ClarifyPanel({
                   </div>
                 </SubField>
 
-                {/* Your focus — the matrix inputs (AI-prefilled, you confirm).
+                {/* Priority — the matrix inputs (AI-prefilled, you confirm).
                     Urgent is derived from the due date, so it isn't a toggle.
-                    D77 (F1): never "Priority", which is the shared field. */}
-                <SubField label="Your focus" inline>
+                    D78: Important and Leveraged are the task's shared answer,
+                    and Deep work stays mine. */}
+                <SubField label="Priority" inline>
                   <div className="flex flex-col gap-1">
                     <div className="flex flex-wrap gap-1.5">
                       <Pill active={important} onClick={() => setImportant((v) => !v)}>

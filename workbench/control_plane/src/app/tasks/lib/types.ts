@@ -138,17 +138,14 @@ export interface MyTask {
   timeEstimateMins?: number;
   isTwoMinute?: boolean;
   /** Prioritization matrix inputs. `urgent` is NOT stored — derive it from
-   *  dueAt via isUrgent(); the 8-cell label comes from priorityCell(). */
+   *  dueAt via isUrgent(); the 8-cell label comes from priorityCell().
+   *
+   *  D78 (2026-09-24): both are SHARED facts about the work, one answer per
+   *  task in both apps. `important` is `pm_tasks.importance >= 2`
+   *  (`importantFromImportance`), and undefined means nobody judged it yet.
+   *  `leveraged` is `pm_tasks.leveraged`. */
   important?: boolean;
   leveraged?: boolean;
-  /**
-   * The SHARED priority the Projects board sets (`pm_tasks.importance`, 0 Low
-   * to 3 Highest). Read-only here. It is the org's word on the task, not
-   * mine, and it never overwrites `important` — while `important` is unstated
-   * it SEEDS a suggestion (`seededImportant` in priority.ts). Owner decision,
-   * 2026-09-23.
-   */
-  orgPriority?: number;
   /** needs an unbroken FLOW state (deep/creative/builder work) — the planner
    *  protects a long peak-energy block; Focus Mode defaults to a longer timer */
   deepWork?: boolean;

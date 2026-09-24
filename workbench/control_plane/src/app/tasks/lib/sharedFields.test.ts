@@ -7,13 +7,12 @@
  *
  * This file pins the client half of the derivations that are pure:
  *
- *   1. the member's Important stays theirs (D76): the shared Priority only
- *      seeds it, and the switch writes the overlay, never the Priority;
- *   2. the list keeps the shared Priority column beside the member's own
- *      matrix column, and the cells keep D76's labels;
- *   3. the shared start date tickles a task like my own defer does;
- *   4. the card and the list draw the shared Priority and tags with the
- *      Projects card's own chips.
+ *   1. Important and Leveraged are one shared answer on the task (D78). The
+ *      switch writes the task, never the overlay.
+ *   2. The list has ONE Priority column, the matrix level (D78).
+ *   3. The shared start date tickles a task like my own defer does.
+ *   4. The card draws the shared tags with the Projects card's own chips.
+ *      It draws no priority chip, because PriorityBadge draws the level.
  *
  * The lens split (`TASK_KEYS` / `OVERLAY_KEYS`) is fenced in `lens.test.ts`,
  * and the one-label-per-panel rule in `itemDetail.test.ts`.
@@ -27,7 +26,7 @@ import { describe, expect, it } from "vitest";
 import { taskMetaChips } from "./cardMeta";
 import { COLUMNS, DEFAULT_VISIBLE } from "./columns";
 import { splitPatch } from "./lens";
-import { CELL_META, priorityCell, seededImportant } from "./priority";
+import { CELL_META, importantFromImportance, priorityCell } from "./priority";
 import type { MyTask } from "./types";
 import { isTickled, localDate, resurfacesAt } from "./utils";
 
@@ -41,43 +40,53 @@ const BASE: MyTask = {
   updatedAt: "2026-09-01T00:00:00Z",
 };
 
-describe("the member's Important stays theirs (D76, unchanged by D77)", () => {
-  it("is seeded by High or Highest while unstated, and nothing else", () => {
-    expect(seededImportant({ orgPriority: 3 })).toBe(true);
-    expect(seededImportant({ orgPriority: 2 })).toBe(true);
-    expect(seededImportant({ orgPriority: 1 })).toBe(false);
-    expect(seededImportant({ orgPriority: 3, important: false })).toBe(false);
-    expect(seededImportant({ orgPriority: 3, important: true })).toBe(false);
+describe("Important and Leveraged are shared facts on the task (D78)", () => {
+  it("reads Important from the shared importance, with no seed", () => {
+    const at = (importance: number | null) => ({
+      ...BASE,
+      important: importantFromImportance(importance),
+    });
+    expect(priorityCell(at(3))).toBe("important");
+    expect(priorityCell(at(2))).toBe("important");
+    expect(priorityCell(at(1))).toBe("low-priority");
+    expect(priorityCell(at(null))).toBe("low-priority");
   });
 
-  it("lets the member's own answer win over the shared Priority", () => {
-    // "Not important to me" sticks on a Highest task: the cell is Low Priority.
-    expect(priorityCell({ ...BASE, orgPriority: 3, important: false })).toBe("low-priority");
-    expect(priorityCell({ ...BASE, orgPriority: 3 })).not.toBe("low-priority");
-  });
-
-  it("sends the Important switch to the overlay, never to the shared Priority", () => {
+  it("sends the Important switch to the task, never to the overlay", () => {
     const split = splitPatch({ important: true });
-    expect(split.personal).toEqual({ important: true });
+    expect(split.task).toEqual({ importance: 2 });
+    expect(split.personal).toEqual({});
+  });
+
+  it("sends the Leveraged switch to the task, never to the overlay", () => {
+    const split = splitPatch({ leveraged: true });
+    expect(split.task).toEqual({ leveraged: true });
+    expect(split.personal).toEqual({});
+  });
+
+  it("keeps Deep work personal", () => {
+    const split = splitPatch({ deep_work: true });
+    expect(split.personal).toEqual({ deep_work: true });
     expect(split.task).toEqual({});
   });
 });
 
-describe("the list shows the shared Priority beside the member's own cell (D77)", () => {
-  it("keeps D76's cell labels", () => {
+describe("the list has ONE Priority column, the matrix level (D78)", () => {
+  it("keeps the matrix's cell labels", () => {
     expect(CELL_META["low-priority"].label).toBe("Low Priority");
   });
 
-  it("names the shared column Priority and the member's cell Your focus", () => {
-    // Two columns under one header would give two answers to one question.
-    // "Your focus" is the name the Projects panel gives the private row (D76).
+  it("names one column Priority and has no Your focus column", () => {
+    // Two columns under two headers gave two answers to one question.
     const byKey = Object.fromEntries(COLUMNS.map((c) => [c.key, c.label]));
-    expect(byKey.priority).toBe("Priority");
-    expect(byKey.focus).toBe("Your focus");
+    expect(COLUMNS.filter((c) => c.label === "Priority").map((c) => c.key)).toEqual([
+      "priority",
+    ]);
+    expect(byKey).not.toHaveProperty("focus");
+    expect(COLUMNS.some((c) => c.label === "Your focus")).toBe(false);
     expect(byKey.tags).toBe("Tags");
     expect(DEFAULT_VISIBLE.priority).toBe(true);
     expect(DEFAULT_VISIBLE.tags).toBe(false);
-    // The Priority track is paid for by Energy, or Due date falls off at 1440.
     expect(DEFAULT_VISIBLE.energy).toBe(false);
   });
 });
@@ -179,18 +188,21 @@ describe("isTickled holds the gateway's rule (the shared fixture)", () => {
   });
 });
 
-describe("the card draws the shared facts with the Projects chips (D77)", () => {
-  it("adds the Priority chip first, in D76's words, and the tags", () => {
-    const chips = taskMetaChips({ ...BASE, orgPriority: 3, tags: ["ops"] });
-    expect(chips[0]).toMatchObject({ key: "importance", label: "Highest" });
+describe("the card draws the shared facts with the Projects chips (D77, D78)", () => {
+  it("draws the tags with the Projects pills", () => {
+    const chips = taskMetaChips({ ...BASE, tags: ["ops"] });
     expect(chips.some((c) => c.key === "tags:ops")).toBe(true);
   });
 
-  it("draws no Priority chip for an unset Priority, but does for Low", () => {
-    expect(taskMetaChips(BASE).some((c) => c.key === "importance")).toBe(false);
-    expect(taskMetaChips({ ...BASE, orgPriority: 0 })[0]).toMatchObject({
-      key: "importance",
-      label: "Low",
-    });
+  it("draws no priority chip, because PriorityBadge draws the level", () => {
+    // D78. A chip here would be a second drawing of the one level.
+    const soon = new Date(Date.now() + 3_600_000).toISOString();
+    for (const item of [
+      BASE,
+      { ...BASE, important: true },
+      { ...BASE, important: true, leveraged: true, dueAt: soon },
+    ]) {
+      expect(taskMetaChips(item).some((c) => c.key === "importance")).toBe(false);
+    }
   });
 });

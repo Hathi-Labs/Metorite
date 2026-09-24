@@ -69,8 +69,8 @@ BRANCHING_TYPES = frozenset({"condition"})
 #: lacks, in either direction.
 PM_TASK_FIELDS = frozenset(
     {
-        "title", "description", "importance", "due_at", "start_date",
-        "estimate_mins", "status",
+        "title", "description", "importance", "leveraged", "due_at",
+        "start_date", "estimate_mins", "status",
     }
 )
 

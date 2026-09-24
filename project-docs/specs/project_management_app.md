@@ -7966,6 +7966,12 @@ personal lens is an overlay rather than a filter.
 
 ### 12.5b The Priority scale, and my focus on the card (D76, 2026-09-23)
 
+⚠️ **Superseded by D78 (2026-09-24).** The Low-to-Highest scale is retired.
+Projects shows the matrix level, the same as My Tasks. The task body sets
+Important and `Leveraged`, and the "Your focus" row keeps only Deep work.
+`lib/matrix.ts` owns the level on a task row. The text below is the record
+of D76.
+
 **The scale is Highest, High, Normal and Low.** Level 3 was "Urgent" until
 2026-09-23. My Tasks derives its own `urgent` from the due date, so the old
 word said two things about one task. The labels live in ONE place,

@@ -12,6 +12,9 @@ Design (agreed with the user):
     stored — so it can't go stale.
   * important = downside (something stalls if skipped); leveraged = upside
     (asymmetric 100x). Separate axes on purpose.
+  * D78: important and leveraged are ONE shared answer on the task, not per
+    member. Important is `pm_tasks.importance >= 2` and leveraged is
+    `pm_tasks.leveraged`.
   * The 8 cells are a projection of the three booleans (the user's Notion
     formula, verbatim). Never persisted.
 """
@@ -23,23 +26,22 @@ from datetime import UTC, datetime
 
 DEFAULT_URGENT_WINDOW_HOURS = 48
 
-#: The shared Projects priority at which a task counts as important while the
-#: member has not said (D76, 2026-09-23). 2 is High, 3 Highest. The client's
-#: twin is `ORG_PRIORITY_SEED` in `lib/priority.ts`, and
-#: `test_the_seed_threshold_matches_the_client` holds the two equal.
-ORG_PRIORITY_SEED = 2
+#: The shared priority at which a task counts as Important (D78, 2026-09-24).
+#: Important is `pm_tasks.importance >= 2`: 2 is High and 3 is Highest. The
+#: client's twin is `IMPORTANT_AT` in `lib/priority.ts`, and
+#: `test_priority_shared.py` holds the two equal.
+IMPORTANT_AT = 2
 
 
-def seeded_important(important: bool | None, org_priority: int | None) -> bool:
-    """The member's own answer, or — only while they have given NONE — the org's.
+def important_from_importance(importance: int | None) -> bool | None:
+    """The matrix's Important input, read from the task's shared priority.
 
-    ``None`` is "never stated" (migration 188 keeps it nullable for exactly
-    this). Any stated value wins, ``False`` included, so a member's "not
-    important to me" survives a Highest priority. The seed writes nothing.
+    ``None`` stays ``None``: nobody has judged the task yet. The matrix reads
+    that as not important. Any value is important when it is 2 or more.
     """
-    if important is not None:
-        return bool(important)
-    return org_priority is not None and int(org_priority) >= ORG_PRIORITY_SEED
+    if importance is None:
+        return None
+    return int(importance) >= IMPORTANT_AT
 
 
 def is_urgent(
@@ -111,12 +113,11 @@ def priority_inputs(
     due_at: datetime | None,
     window_hours: int = DEFAULT_URGENT_WINDOW_HOURS,
     now: datetime | None = None,
-    org_priority: int | None = None,
 ) -> PriorityInputs:
-    # `seeded_important`, the twin of the client's `priorityInputs` (D76). A
-    # caller passing a plain bool gets exactly what it got before.
+    # D78: Important and Leveraged are shared facts on the task. The caller
+    # reads them from `pm_tasks` (see `important_from_importance`).
     return PriorityInputs(
-        important=seeded_important(important, org_priority),
+        important=bool(important),
         leveraged=bool(leveraged),
         urgent=is_urgent(due_at, window_hours, now),
     )
@@ -129,11 +130,10 @@ def priority_cell(
     due_at: datetime | None,
     window_hours: int = DEFAULT_URGENT_WINDOW_HOURS,
     now: datetime | None = None,
-    org_priority: int | None = None,
 ) -> str:
     return cell_for_inputs(priority_inputs(
         important=important, leveraged=leveraged, due_at=due_at,
-        window_hours=window_hours, now=now, org_priority=org_priority))
+        window_hours=window_hours, now=now))
 
 
 def priority_rank(**kwargs) -> int:

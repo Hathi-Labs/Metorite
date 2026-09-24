@@ -39,6 +39,7 @@ import { computeContextUsage, activeContextSlice, isCompactionCheckpoint } from 
 import { serializeReasoning } from "@/lib/chatStream";
 import { useAgentEvents } from "@/lib/agentEvents";
 import { buildFrontendToolsAddendum, runFrontendToolEvent } from "@/hooks/useFrontendTool";
+import { isInterruptedReply } from "@/lib/chatInterrupted";
 
 // Unified model fallback — shown while /api/models/all is loading.
 // Always includes the tiers (always accessible) and Gemini models (default provider).
@@ -56,6 +57,7 @@ const MODELS_FALLBACK: UnifiedModel[] = [
 // Keeps initial restore fast for very long sessions; older messages load on
 // scroll-up.
 const HISTORY_PAGE_SIZE = 30;
+const HISTORY_LOADER_DELAY_MS = 300;
 
 type SendMode = "send" | "queue" | "steer";
 
@@ -429,6 +431,18 @@ export default function AgentChat({
   const [loadingHistory, setLoadingHistory] = useState(
     () => (expectedMessageCount ?? 0) > 0,
   );
+  // The loader appears only if the load takes longer than HISTORY_LOADER_DELAY_MS.
+  // A fast load used to flash a spinner and three skeleton bubbles for a
+  // fraction of a second, then swap in the thread.
+  const [historyLoaderVisible, setHistoryLoaderVisible] = useState(false);
+  useEffect(() => {
+    if (!loadingHistory) {
+      setHistoryLoaderVisible(false);
+      return;
+    }
+    const t = setTimeout(() => setHistoryLoaderVisible(true), HISTORY_LOADER_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [loadingHistory]);
 
   // On mount, fetch the authoritative FULL message history from Postgres and
   // sync into memory if it's richer than the local cache (more messages OR
@@ -1605,31 +1619,32 @@ export default function AgentChat({
             </div>
           ) : !isLoading && messages.length > 0 && (() => {
             const last = messages[messages.length - 1];
-            const wasInterrupted = last?.role === "assistant" && last.content && !/[.?!]\s*$/.test(last.content.trim());
+            const wasInterrupted = isInterruptedReply(last) && !!last?.content;
             return wasInterrupted ? (
               <div className="rounded-lg border border-warning/20 bg-warning/5 px-3 py-2 text-[11px] text-warning/80">
                 ⚡ Stream was interrupted. Messages are saved — you can continue chatting below.
               </div>
             ) : null;
           })()}
-          {loadingHistory && messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center min-h-[50vh] gap-3 text-center">
-              <span className="w-6 h-6 rounded-full border-2 border-muted border-t-primary animate-spin" />
-              <div className="text-foreground text-sm font-medium">Loading conversation…</div>
-              <div className="text-muted-foreground text-xs">Fetching your history from the server</div>
-              <div className="w-full max-w-3xl mx-auto space-y-3 pt-6" aria-hidden>
-                <div className="h-12 w-2/3 rounded-2xl bg-muted/40 animate-pulse" />
-                <div className="h-16 w-3/4 rounded-2xl bg-muted/30 animate-pulse ml-auto" />
-                <div className="h-12 w-1/2 rounded-2xl bg-muted/40 animate-pulse" />
+          {/* One indicator only: skeleton bubbles in the shape of a thread,
+              with one caption. It used to stack a spinner, two lines of text
+              and the bubbles, centred in half the viewport, beside a second
+              spinner in the send button. */}
+          {loadingHistory && historyLoaderVisible && messages.length === 0 && (
+            <div role="status" aria-live="polite" className="space-y-3 pt-2 animate-fade-in">
+              <div className="text-muted-foreground text-xs text-center">Loading conversation…</div>
+              <div className="space-y-3" aria-hidden>
+                <div className="h-10 w-2/3 rounded-2xl bg-muted/40 animate-pulse ml-auto" />
+                <div className="h-16 w-5/6 rounded-2xl bg-muted/30 animate-pulse" />
+                <div className="h-10 w-1/2 rounded-2xl bg-muted/40 animate-pulse ml-auto" />
               </div>
             </div>
           )}
-          {/* Subtle syncing banner — messages are visible (from localStorage) but
-              the richer DB versions are still loading in the background. */}
-          {loadingHistory && messages.length > 0 && (
-            <div className="flex items-center justify-center gap-2 py-2 px-4 mx-auto mb-1 rounded-lg border border-border/50 bg-card/60 text-[11px] text-muted-foreground animate-fade-in">
-              <span className="w-3 h-3 rounded-full border-2 border-muted border-t-primary animate-spin" />
-              <span>Syncing your history…</span>
+          {/* Cached messages are already on screen. A slow server sync gets
+              one quiet line, with no spinner. */}
+          {loadingHistory && historyLoaderVisible && messages.length > 0 && (
+            <div role="status" aria-live="polite" className="text-center text-[11px] text-muted-foreground animate-fade-in">
+              Syncing your history…
             </div>
           )}
           {!loadingHistory && messages.length === 0 && (
@@ -1829,11 +1844,10 @@ export default function AgentChat({
                 onInput={(e) => { const t = e.currentTarget; t.style.height = "auto"; t.style.height = `${Math.min(t.scrollHeight, 160)}px`; }} />
 
               {/* Contextual send / stop button */}
-              {loadingHistory ? (
-                <div className="shrink-0 self-end h-9 w-9 rounded-xl bg-muted flex items-center justify-center">
-                  <span className="w-4 h-4 rounded-full border-2 border-muted-foreground/30 border-t-muted-foreground animate-spin" />
-                </div>
-              ) : isRunActive ? (
+              {/* While history loads, the send button stays in place and is
+                  disabled. It showed a second spinner, beside the one in the
+                  thread, which read as two separate things loading. */}
+              {isRunActive && !loadingHistory ? (
                 <div className="shrink-0 flex items-stretch self-end" ref={sendMenuRef}>
                   {/* Stop button — always visible while a run is active */}
                   <button type="button" onClick={handleStop}
@@ -1910,7 +1924,7 @@ export default function AgentChat({
                   )}
                 </div>
               ) : (
-                <button type="submit" disabled={!input.trim()}
+                <button type="submit" disabled={!input.trim() || loadingHistory}
                   className="shrink-0 self-end h-9 w-9 rounded-xl bg-primary text-primary-foreground flex items-center justify-center disabled:opacity-25 disabled:cursor-not-allowed hover:opacity-90 tech-transition"
                   aria-label="Send" title="Send message">
                   <Icon name="ArrowUp" size={16} strokeWidth={2.5} />

@@ -95,28 +95,142 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-175 · Set the Hathi Labs tenant org's DOMAIN, or its people cannot ask to join · [OWNER]
+### H-178 · An operator can take a job off the air. Two callers cannot yet · [AGENT]
+- **Check:** `rg -c "model IS NOT NULL" packages/acb_llm apps/services/gateway`
+  → a zero in a file that reads `tier_binding` means a reader was added
+  without the tombstone filter, and this is open again.
+- 📌 **BUILT 2026-09-24.** `DELETE /catalog/bindings` takes a job off the air
+  by APPENDING a row whose `model` is NULL. Migration 034 makes the column
+  nullable. The tiers board offers it where the dead Save used to be.
+- 🔴 **Why it was needed.** `tier-stt` pointed at a Groq model on a box
+  holding only a DeepSeek credential, so every transcription failed at the
+  provider and billed zero. The answer was to unbind it and the console could
+  not: `POST /catalog/bindings` refuses an empty chain.
+- ⚠️ **A SEPARATE verb, and that is the safety of it.** Letting `POST` accept
+  an empty `models` list would mean a caller that simply forgot the field
+  takes a tier off the air. A different verb cannot be reached by forgetting.
+- 🔴 **Two things the tests caught that reading did not.**
+  `resolve_tier` took the newest ROW that had a model, so it stepped over a
+  tombstone and kept serving the superseded binding — unbinding would have
+  changed nothing the Router does. And migration 010 backfills
+  `model_capability.model` from `tier_binding.model`, which is NOT NULL, so a
+  ladder replay against a database holding one tombstone died outright.
+- ⚠️ **Two fences moved from a VERB to the rule they stood for.**
+  `test_no_route_updates_or_deletes_a_binding_or_a_rate` and its frontend twin
+  banned the `DELETE` method. The rule is *no row is destroyed*, and this
+  route destroys none. Both now read the SQL, which is where the rule can be
+  true or false. `PATCH` and `PUT` stay banned on their names.
+- ⚠️ **WHAT IS LEFT: two readers outside the Console.** The check above names
+  them. `packages/acb_llm` and the gateway do not read `tier_binding` today,
+  and if either starts, it needs the filter or it will resolve a model named
+  NULL.
+- **Fences:** `tests/unit/test_unbind_a_tier.py` (11, R8).
+- **Authority:** owner report, 2026-09-24 — *"Shouldn't you be able to allow
+  me to remove a model from a tier?"* · §6A.5
+- **Added:** 2026-09-24 · the unbind session.
+
+### H-177 · Nobody can prove an organization owns the domain it claims · [AGENT]
+- **Check:** `rg -n "domain" infra/postgres/*.sql | rg -i "verif|token|txt"`
+  → no hit means verification is unbuilt, and this is open. Also
+  `SELECT slug, domain FROM organization WHERE domain IS NOT NULL;` on the
+  TENANT database: every row there routes sign-in knocks on trust alone.
+- **Why this outranks H-176.** `organization.domain` decides whose Requests
+  tab a colleague's knock reaches (H-118, 2026-09-24). It is a plain text
+  column and nothing checks it. So one customer can claim another's domain and
+  receive their colleagues' knocks — names, addresses, and that they even
+  tried. H-176 is about knocks that reach NOBODY. This is about knocks that
+  reach the WRONG somebody, which is the worse direction.
+- **What already narrows it.** `_PUBLIC_MAIL_DOMAINS` (2026-09-24) refuses
+  `gmail.com` and 23 other hosts nobody owns, so the unbounded case is closed.
+  The bounded one is not: a claim on a real company's domain still routes.
+  ⚠️ **That list is a guard and not the verification.** Its own comment says
+  so, so nobody reads it as this ticket being done.
+- **The shape, and it is well trodden.** Atlassian's approved domains, Slack's
+  workspace domains and Google Workspace all do the same thing: the
+  organization publishes a DNS TXT record carrying a token this product
+  generated, and the domain routes nothing until a check finds it.
+  ⚠️ The owner asked on 2026-09-24 whether domains need DNS work today. They
+  do NOT — matching is a string compare. This ticket is what would introduce
+  that requirement, and it introduces it deliberately, for the organizations
+  that opt in.
+- 📌 **Not urgent while the owner sets every domain by hand.** It becomes
+  urgent the first time a CUSTOMER can set one. Build it before that, not
+  after.
+- **Authority:** D15 · `colleague_onboarding.md` §6 · H-175 · owner decision
+  2026-09-24 (invite is the main way in, a domain is opt-in)
+- **Added:** 2026-09-24 · the H-118 session
+
+### H-176 · An unrouted sign-in reaches nobody, and only journald remembers · [AGENT]
+- **Check:** `rg -n "access_request_no_matching_org" packages/acb_auth/` → the
+  log line exists. Then look for a READER: `rg -n "unrouted|no_matching_org"
+  apps/services/customer_console/ workbench/operator_console/` → no hit means
+  nothing but journald holds it, and this is open.
+- **What happens today.** A person signs in, no organization claims their
+  email domain, and the resolver logs `access_request_no_matching_org` and
+  files nothing. That is CORRECT — filing them into a customer's queue would
+  mislead that admin and disclose that the address knocked (owner decision,
+  2026-09-24). The gap is that the operator never learns it happened.
+- **Why it is worth something.** It is the only signal that a customer is
+  misconfigured, or that somebody is trying to reach a tenant that will never
+  answer them. On a young product that is the difference between hearing about
+  a problem and being told about it weeks later.
+- ⚠️ **MEASURED 2026-09-24, because this looked like "add a view" and is not.**
+  There is NO home for a tenant-less record on either plane:
+  * **Tenant plane** — 137 of 152 tables carry row-level security. Every audit
+    candidate (`app_audit`, `audit_event`, `copilot_event`) is FORCE RLS keyed
+    on `app.tenant_id`. A knock with no tenant hits the identical
+    chicken-and-egg that made H-118 fail.
+  * **Console plane** — 39 tables and none for this. Reaching it needs a new
+    table, a new HTTP door, a new entry on the `console_resolve` allowlist
+    (the fence that rations seat allocation) and Operator Console UI.
+    **Four layers across two deployables.**
+- ⚠️ **Do not ship the cheap half.** A new RLS-exempt tenant table is twenty
+  minutes of work and would be a table NOBODY CAN READ, because the Operator
+  Console reads the other database. That is the defect this queue keeps
+  recording: `/people/overview` sat built and unreachable for a month, and
+  `seal_counts` shipped with no caller. Build the reader in the same slice, or
+  do not start.
+- 📌 **The capability already exists, undocumented.** Until somebody builds
+  this, the operator can ask the box directly:
+  `sudo journalctl -u acb-gateway --since '7 days ago' | grep
+  access_request_no_matching_org`
+- **Authority:** owner decision 2026-09-24 · H-118 · H-109 (the two planes)
+- **Added:** 2026-09-24 · the H-118 session
+
+### H-175 · 🟡 OPTIONAL — a tenant org's DOMAIN is opt-in, and nothing is blocked without it · [OWNER]
 - **Check:** ask the TENANT database, and not the Console:
   `SELECT slug, domain FROM organization ORDER BY created_at;`
-  A row whose `domain` is NULL means nobody with that company's addresses can
-  reach its Requests tab, and this entry is open.
+  A NULL `domain` is a legitimate resting state, so this entry never becomes
+  "overdue". Read it when somebody asks why a colleague's knock did not appear.
 - **Measured 2026-09-24:** `default` (Fracktal Works) carries
   `domain = 'fracktal.in'`. `hathi-labs-llp` carries **NULL**.
-- **Why it matters now.** H-118 shipped the same day. A knock is filed against
-  the organization whose `domain` matches the caller's email domain, and it is
-  filed nowhere when no organization claims that domain (owner decision,
-  2026-09-24). So today an `@hathilabs.com` colleague who signs in reaches the
-  self-serve path that creates them their OWN organization, in place of the
-  Requests tab of the organization they work for.
-- ⚠️ **This is a one-field write to a LIVE organization**, which is why it is
-  owner-gated and not done. It also decides who may ask to join that tenant,
-  so it is a security-relevant routing key and not bookkeeping.
-- **The act:** set `organization.domain` to the company's real mail domain, on
-  the TENANT database, for every organization that must accept knocks.
+- ⚠️ **Re-scoped the same day, after the owner asked whether this needs DNS.**
+  It does not. `organization.domain` is a plain text column, and the resolver
+  folds the part of the address after `@` and compares. Nothing is published,
+  nothing is verified, and neither side touches a DNS zone.
+- **What the owner decided, 2026-09-24.** **Invite is the main way in.** A
+  domain is an OPT-IN shortcut per organization, which is the shape Atlassian
+  (approved domains) and Slack both use. With no domain set, a colleague who
+  signs in reaches the self-serve path and an admin invites them — the
+  ordinary flow, and the default for every product of this kind.
+- **So what setting it BUYS:** a colleague who signs in before anybody invites
+  them lands in that organization's Requests tab, in place of a dead end. That
+  is worth having when people onboard themselves faster than an admin can
+  invite them. It is worth nothing while the admin invites first.
+- ⚠️ **What it COSTS, and the part still missing.** Nothing proves the
+  organization owns the domain it claims. The public mail domains are refused
+  by name now (`_PUBLIC_MAIL_DOMAINS`, 2026-09-24), which removes the
+  unbounded case. The bounded one remains: one customer could claim another's
+  domain and receive their colleagues' knocks. **The real answer is domain
+  verification — a DNS TXT record, the Atlassian model — and it is NOT built.**
+  Build it before a customer sets a domain you did not set for them.
+- **The act, when it is wanted:** set `organization.domain` on the TENANT
+  database, for the organizations that should accept knocks.
   📌 Two organizations must never claim ONE domain. The resolver refuses to
   guess between them and files nothing, which is safe and also silent.
-- **Authority:** D15 · `colleague_onboarding.md` §6 · H-109 (the two planes)
-- **Added:** 2026-09-24 · the H-118 session
+- **Authority:** D15 · `colleague_onboarding.md` §6 · H-109 (the two planes) ·
+  owner decision 2026-09-24
+- **Added:** 2026-09-24 · the H-118 session, re-scoped the same day
 
 ### H-174 · `--warning` is the same bright yellow in both colour modes, so warning TEXT is unreadable on white · [AGENT]
 - **Check:** `grep -n "\-\-warning:" workbench/control_plane/src/app/globals.css`.
@@ -140,22 +254,22 @@ line — never reclaim a number by deleting the other entry.
   renumbered the same day: #431 took H-172 three minutes before #429
   merged, and #429 merged second.
 
-### H-173 · The chat tools let the model write Priority 4, and the scale stops at 3 · [AGENT]
+### H-173 · The chat tools still speak the retired 0-4 priority scale · [AGENT]
 - **Check:** `grep -rn "importance is 0 to 4" apps/skills/skill-projects/`.
   Any hit means this is open.
-- **What happens.** The Projects scale is 0 Low to 3 Highest
-  (`IMPORTANCE_OPTIONS`, D76). Four places in `skill_projects`
-  (`guarded.py`, `inbox.py`, `forms.py` twice) tell the model the range is
-  0 to 4 and accept a 4. Nothing else refuses it: `pm_tasks.importance` is a
-  bare `SMALLINT` with no CHECK, and `TaskModel.importance` is `int | None`.
-  A 4 then prints as a bare "4" in the table and draws no chip on a card.
-- **The D76 seed is safe.** `>= 2` counts a 4 as important. Only the display
-  breaks.
-- **Why an agent did not fix it here.** The owner is building the Projects
-  chat in a separate stream. Change the four messages and the four bounds to
-  0 to 3 there, or add a CHECK (0 to 3) in an expand/contract migration after
-  a count of rows above 3 on production.
-- Added: 2026-09-23, found while building D76.
+- **What happens.** D78 (2026-09-24) retired the Low-to-Highest scale.
+  Projects and My Tasks show the matrix level, from the shared Important
+  (`importance >= 2`) and `Leveraged` (`pm_tasks.leveraged`). The chat tools
+  in `skill_projects` (`writes.py`, `guarded.py`, `inbox.py`, `forms.py`)
+  still ask the model for an `importance` from 0 to 4. They cannot set
+  `Leveraged`. The chat cards (`genUITemplates.tsx`) and the CSV export
+  (`routes/projects/export.py`) print the raw number.
+- **Do.** Give the tools `important` and `leveraged` booleans, and show the
+  level in the cards and the export. `lib/matrix.ts` and
+  `routes/tasks/priority.py` own the level. Keep `importance` accepted for
+  one release, and read 2 or more as Important.
+- **Authority:** `work_plan.md` §3 D78.
+- Added: 2026-09-23, found while building D76. Rewritten 2026-09-24 for D78.
 
 
 ### H-172 · The shared scratch DB cannot replay the migration ladder any more · [AGENT]
