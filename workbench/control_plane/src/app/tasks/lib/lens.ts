@@ -61,6 +61,7 @@
 import { projectsCall } from "@/app/projects/lib/api";
 
 import type { OrganizeBody, ProviderTaskDetail } from "./api";
+import { importanceFor, importantFromImportance } from "./priority";
 import type {
   Disposition,
   GtdItem,
@@ -173,17 +174,12 @@ export function mapLensItem(raw: Raw): GtdItem {
     timeEstimateMins: num(raw.estimate_mins),
     isTwoMinute: Boolean(raw.is_two_minute),
 
-    // ⚠️ `important` is the overlay's Eisenhower boolean. It is NOT
-    // `pm_tasks.importance`, the shared Priority integer the Projects table
-    // edits (D53.8). Reading one as the other publishes private triage.
-    // D77 leaves this alone: the shared Priority only SEEDS it (D76).
-    important: tri(raw.important),
+    // D78 (2026-09-24, amends D76): the matrix's two stated inputs are
+    // SHARED facts about the work. Important is `pm_tasks.importance >= 2`,
+    // read from the task's own column so there is one answer. Leveraged is
+    // `pm_tasks.leveraged`. Nobody's private flag is read any more.
+    important: importantFromImportance(num(raw.importance)),
     leveraged: tri(raw.leveraged),
-    // The shared Priority, carried BESIDE `important` and never into it. It
-    // was on this wire all along (`TaskModel.importance`) and nothing read it,
-    // so the org's word never reached the member's matrix. Measured on a live
-    // row 2026-09-23: `importance: 0`, `important: null`.
-    orgPriority: num(raw.importance),
     deepWork: tri(raw.deep_work),
     keptMine: tri(raw.kept_mine),
 
@@ -235,11 +231,14 @@ export function mapLensItem(raw: Raw): GtdItem {
  *
  * D77 (2026-09-23) moved two here: the estimate (My Tasks' Estimate writes
  * `estimate_mins`, the column People capacity reads) and the start date.
- * The shared Priority is not written from My Tasks: the member's Important
- * stays private (D76). Exported for `lens.test.ts`, which pins the split.
+ * D78 moved Important and Leveraged here: one answer per task, in both apps.
+ * Exported for `lens.test.ts`, which pins the split.
  */
 export const TASK_KEYS: Readonly<Record<string, string>> = {
   title: "title",
+  // D78: shared. `important` is here too, but it needs a VALUE change as well
+  // as a rename (true → 2, false → 0), so `splitPatch` handles it by name.
+  leveraged: "leveraged",
   notes: "description",
   due_at: "due_at",
   time_estimate_mins: "estimate_mins",
@@ -250,15 +249,15 @@ export const TASK_KEYS: Readonly<Record<string, string>> = {
 /**
  * My practice. `PATCH /projects/tasks/{id}/personal`. D77 took
  * `time_estimate_mins` off this list: it was a second copy of a work fact,
- * and the gateway now refuses it by name. `important` stays, because it is
- * the member's own answer (D76).
+ * and the gateway now refuses it by name. D78 did the same to `important`
+ * and `leveraged`: they are shared facts on the task now.
  */
 export const OVERLAY_KEYS: readonly string[] = [
   "disposition", "next_action", "context", "energy",
   "is_two_minute", "defer_until",
   "scheduled_start", "scheduled_end", "flexible", "is_hard_date",
   "actual_start", "actual_end",
-  "important", "leveraged", "deep_work", "kept_mine", "sort_key",
+  "deep_work", "kept_mine", "sort_key",
   "waiting_on", "delegated_at", "expected_by", "last_nudged_at",
 ];
 
@@ -307,7 +306,9 @@ export function splitPatch(patch: Record<string, unknown>): SplitPatch {
           "like a successful save.",
       );
     }
-    if (key in TASK_KEYS) {
+    if (key === "important") {
+      out.task.importance = importanceFor(Boolean(value));
+    } else if (key in TASK_KEYS) {
       out.task[TASK_KEYS[key]] = value;
     } else if (OVERLAY_KEYS.includes(key)) {
       out.personal[key] = value;
@@ -525,14 +526,13 @@ export async function lensMyOverlay(id: string): Promise<MyOverlay | null> {
  * whose focus most needs setting. It now answers for every task in my lens,
  * and `filedByMe` carries the chip's old rule.
  *
- * The SHARED facts the matrix also reads — the due date and the project's
- * priority — are deliberately NOT here. The panel reads them off its own live
- * task row, so editing Priority in the same panel re-seeds the focus at once
- * instead of waiting for a re-fetch.
+ * The SHARED facts the matrix reads — Important, Leveraged and the due date —
+ * are deliberately NOT here (D78). The panel reads them off its own live task
+ * row, so there is one copy on the page.
  */
 export type MyOverlay = Pick<
   GtdItem,
-  "disposition" | "context" | "isTriaged" | "important" | "leveraged" | "deepWork"
+  "disposition" | "context" | "isTriaged" | "deepWork"
 >;
 
 /**
@@ -543,17 +543,11 @@ export type MyOverlay = Pick<
  * because its store renames `deepWork` before calling the lens
  * (`taskStore.ts`). The Projects focus row called the lens directly, so its
  * Deep work toggle drew on, threw, re-read, and drew off — a control that
- * visibly did nothing. `important` and `leveraged` only worked because both
- * spellings happen to match. Caught in review, 2026-09-23.
+ * visibly did nothing. Caught in review, 2026-09-23. Since D78 it carries
+ * only Deep work: Important and Leveraged are shared and go to the task.
  */
-export function focusPatch(patch: {
-  important?: boolean;
-  leveraged?: boolean;
-  deepWork?: boolean;
-}): Record<string, boolean> {
+export function focusPatch(patch: { deepWork?: boolean }): Record<string, boolean> {
   const out: Record<string, boolean> = {};
-  if (patch.important !== undefined) out.important = patch.important;
-  if (patch.leveraged !== undefined) out.leveraged = patch.leveraged;
   if (patch.deepWork !== undefined) out.deep_work = patch.deepWork;
   return out;
 }
@@ -563,8 +557,6 @@ export function overlayOf(item: GtdItem): MyOverlay {
     disposition: item.disposition,
     context: item.context,
     isTriaged: item.isTriaged,
-    important: item.important,
-    leveraged: item.leveraged,
     deepWork: item.deepWork,
   };
 }

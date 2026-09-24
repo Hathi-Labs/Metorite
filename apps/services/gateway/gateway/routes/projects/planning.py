@@ -53,6 +53,7 @@ from gateway.routes.tasks.calendar import (
     replan_day_for,
     rollover_day_for,
 )
+from gateway.routes.tasks.priority import important_from_importance
 from sqlalchemy import text
 
 # ── The one store ───────────────────────────────────────────────────────────
@@ -68,7 +69,11 @@ from sqlalchemy import text
 #: ⚠️ D77: one name the packer reads is now a SHARED fact, aliased to the name
 #: it already knows. `time_estimate_mins` is `pm_tasks.estimate_mins` (the one
 #: estimate, the one People capacity reads). The overlay column of that name
-#: is no longer read. `important` stays the member's own (D76).
+#: is no longer read.
+#:
+#: ⚠️ D78: `importance` and `leveraged` are the SHARED matrix inputs on
+#: `pm_tasks`. Important is `importance >= 2`. The overlay's `important` and
+#: `leveraged` columns are no longer read. `deep_work` stays the member's own.
 _PM_SELECT = """
 SELECT t.id::text                AS id,
        t.title,
@@ -82,11 +87,8 @@ SELECT t.id::text                AS id,
        t.estimate_mins           AS time_estimate_mins,
        p.scheduled_start, p.scheduled_end, p.flexible, p.is_hard_date,
        p.actual_start, p.actual_end,
-       p.important, p.leveraged, p.deep_work, p.kept_mine, p.sort_key,
-       -- The SHARED priority, for the D76 seed. The planner ranked on
-       -- `p.important` alone, so a High task the member had not judged was
-       -- important in the Calendar list and not important to "Plan my day".
-       t.importance              AS org_priority,
+       t.importance, t.leveraged,
+       p.deep_work, p.kept_mine, p.sort_key,
        (SELECT count(*) FROM pm_task_assignees a2 WHERE a2.task_id = t.id)
                                  AS assignee_count,
        EXISTS (SELECT 1 FROM pm_task_assignees a3
@@ -190,6 +192,9 @@ def _pm_row(row: Any) -> SimpleNamespace:
     stated = getattr(row, "stated_disposition", None)
     return SimpleNamespace(
         **{k: getattr(row, k) for k in _PM_PASSTHROUGH},
+        # D78: the matrix inputs are shared facts on the task.
+        important=bool(important_from_importance(getattr(row, "importance", None))),
+        leveraged=bool(getattr(row, "leveraged", None)),
         disposition=effective_disposition(
             stated,
             status_category=getattr(row, "status_category", None),
@@ -204,8 +209,7 @@ _PM_PASSTHROUGH = (
     "next_action", "context", "energy", "time_estimate_mins",
     "scheduled_start", "scheduled_end", "flexible", "is_hard_date",
     "actual_start", "actual_end",
-    "important", "leveraged", "deep_work", "kept_mine", "sort_key", "is_mine",
-    "org_priority",
+    "importance", "deep_work", "kept_mine", "sort_key", "is_mine",
 )
 
 

@@ -11,6 +11,7 @@
 
 import { UNSET } from "./grouping";
 import { type Placeable, landingLane } from "./statusOrder";
+import { taskCell } from "./matrix";
 
 export interface PositionedTask {
   id: string;
@@ -178,13 +179,6 @@ export function buildColumnDropUpdate(
       return { type_id: groupKey };
     case "project":
       return { project_id: groupKey };
-    case "importance":
-      // The UNSET lane means "no priority", and priority travels as an
-      // integer — `Number(UNSET)` would be NaN, which JSON turns into null
-      // only by luck of the serialiser.
-      return {
-        importance: groupKey === null || groupKey === UNSET ? null : Number(groupKey),
-      };
     default:
       // An unknown grouping is not an error — the drop still reorders within
       // the column; it simply patches no field.
@@ -225,8 +219,12 @@ export function dropRefusal(
     tag: "Tags are many-valued — edit them on the task instead.",
     project:
       "Moving between projects crosses a grant boundary — use the task panel.",
+    // D78 — a level is computed from Important, Leveraged AND the due date,
+    // so a drop cannot promise the card lands in the level it was dropped on.
+    importance:
+      "A priority level is worked out from Important, Leveraged and the due date — set them on the task.",
   };
-  const WRITABLE = new Set(["status", "category", "importance", "type", "none"]);
+  const WRITABLE = new Set(["status", "category", "type", "none"]);
 
   for (const axis of [columnBy, laneBy]) {
     if (!axis || axis === "none" || WRITABLE.has(axis)) continue;
@@ -244,6 +242,8 @@ export function currentAxisKey(
     type_id?: string | null;
     project_id?: string | null;
     importance?: number | null;
+    leveraged?: boolean | null;
+    due_at?: string | null;
   },
   axis: string | null | undefined,
   /** Lanes, for the `category` axis alone — a stage is read THROUGH the lane. */
@@ -266,9 +266,7 @@ export function currentAxisKey(
     case "project":
       return task.project_id ?? null;
     case "importance":
-      return task.importance === null || task.importance === undefined
-        ? UNSET
-        : String(task.importance);
+      return taskCell(task);
     default:
       return null;
   }

@@ -11,8 +11,8 @@ The claims a hermetic fake can judge are pinned here:
 * who a WAITING task waits on is its assignees minus me (`waiting_on_for`);
 * the shared start date hides a task from my inbox (`DEFERRED_CLAUSE`);
 * the overlay's ``time_estimate_mins`` is refused, never dropped, at the
-  route and at the one upsert. ``important`` is NOT refused: it is the
-  member's own answer (D76), and the shared Priority only seeds it;
+  route and at the one upsert. D78 (2026-09-24) retired ``important`` and
+  ``leveraged`` the same way: both are shared facts on ``pm_tasks`` now;
 * the organize estimate lands on the task, and a delegation keeps a
   deadline the task already has;
 * migration 216's text: the estimate, and no priority.
@@ -300,10 +300,27 @@ async def test_the_one_upsert_refuses_the_retired_estimate(db) -> None:
         )
 
 
-def test_important_is_the_members_own_and_is_not_retired() -> None:
-    """D76 keeps `important` on the overlay. D77 must not refuse it."""
-    assert "important" not in pm_personal.RETIRED_OVERLAY_KEYS
-    assert pm_personal.validate_overlay({"important": False}) == {"important": False}
+def test_important_and_leveraged_are_retired_from_the_overlay() -> None:
+    """D78 amends D76. Both matrix inputs are ONE shared answer on the task,
+    so a write to the overlay is refused by name, never dropped."""
+    assert "important" in pm_personal.RETIRED_OVERLAY_KEYS
+    assert "leveraged" in pm_personal.RETIRED_OVERLAY_KEYS
+    with pytest.raises(HTTPException) as caught:
+        pm_personal.validate_overlay({"important": False})
+    assert caught.value.status_code == 422
+    assert "importance" in caught.value.detail
+    with pytest.raises(HTTPException) as caught:
+        pm_personal.validate_overlay({"leveraged": True})
+    assert "pm_tasks.leveraged" in caught.value.detail
+
+
+async def test_the_bulk_overlay_refuses_important() -> None:
+    with pytest.raises(HTTPException) as caught:
+        pm_bulk.validate_personal(
+            "personal", pm_personal.PersonalIn(important=True),
+        )
+    assert caught.value.status_code == 422
+    assert "importance" in caught.value.detail
 
 
 async def test_the_bulk_overlay_refuses_a_retired_column() -> None:
@@ -317,36 +334,47 @@ async def test_the_bulk_overlay_refuses_a_retired_column() -> None:
 def test_no_reader_projects_the_retired_estimate() -> None:
     assert "p.time_estimate_mins" not in pm_personal._MY_TASKS_SQL
     assert "time_estimate_mins" not in pm_personal._OVERLAY_PASSTHROUGH
-    # D76: the member's own `important` is still read, and still projected.
-    assert "p.important" in pm_personal._MY_TASKS_SQL
-    assert "important" in pm_personal._OVERLAY_PASSTHROUGH
+    # D78: the matrix inputs come off the task (`t.*`), never the overlay.
+    assert "p.important" not in pm_personal._MY_TASKS_SQL
+    assert "p.leveraged" not in pm_personal._MY_TASKS_SQL
+    assert "important" not in pm_personal._OVERLAY_PASSTHROUGH
+    assert "leveraged" not in pm_personal._OVERLAY_PASSTHROUGH
 
 
-def test_the_planner_reads_the_shared_estimate_and_my_important() -> None:
+def test_the_planner_reads_the_shared_estimate_and_the_shared_matrix() -> None:
     select = pm_planning._PM_SELECT
     assert "t.estimate_mins           AS time_estimate_mins" in select
     assert "p.time_estimate_mins" not in select
-    # D76: my answer, and the shared Priority beside it for the seed. Never
-    # a Priority read AS `important`.
-    assert "p.important" in select
-    assert "t.importance              AS org_priority" in select
-    assert "AS important" not in select
+    # D78: Important and Leveraged are read off the task, not my overlay.
+    assert "t.importance" in select
+    assert "t.leveraged" in select
+    assert "p.important" not in select
+    assert "p.leveraged" not in select
+    assert "org_priority" not in select
+    assert "org_priority" not in pm_planning._PM_PASSTHROUGH
+    # Deep work stays the member's own.
+    assert "p.deep_work" in select
     assert "tk.estimate_mins" in pm_planning._PM_RATIO_SQL
 
 
-def test_no_writer_turns_important_into_the_shared_priority() -> None:
-    """The withdrawn draft of D77 made the Important switch write `importance`.
-    D76 forbids that. The chat skill and the client each split a write, and
-    neither may send `importance` to the task (D76, D77)."""
+def test_the_chat_writes_important_to_the_shared_priority() -> None:
+    """D78 amends D76. The chat skill splits a write the way the client
+    does, and Important and Leveraged now go to the TASK."""
     from skill_task_gtd import core as skill_core
 
-    assert "importance" not in skill_core._TASK_KEYS
-    assert "important" in skill_core._OVERLAY_KEYS
-    assert not hasattr(skill_core, "_IMPORTANT_AT")
-    ts = (ROOT / "workbench/control_plane/src/app/tasks/lib/priority.ts").read_text(
-        encoding="utf-8")
-    assert "importanceForImportant" not in ts
-    assert "IMPORTANT_AT" not in ts
+    assert skill_core._TASK_KEYS["importance"] == "importance"
+    assert skill_core._TASK_KEYS["leveraged"] == "leveraged"
+    assert "important" not in skill_core._OVERLAY_KEYS
+    assert "leveraged" not in skill_core._OVERLAY_KEYS
+    assert skill_core.IMPORTANT_AT == 2
+    # True raises to High and leaves a Highest alone. False lowers to 0.
+    assert skill_core._importance_for(True, None) == 2
+    assert skill_core._importance_for(True, 1) == 2
+    assert skill_core._importance_for(True, 3) is None
+    assert skill_core._importance_for(True, 2) is None
+    assert skill_core._importance_for(False, 3) == 0
+    assert skill_core._importance_for(False, None) == 0
+    assert skill_core._importance_for(False, 0) is None
 
 
 # ── Organize ────────────────────────────────────────────────────────────────
@@ -500,8 +528,8 @@ async def test_trash_and_a_context_leave_a_closed_task_closed(db: FakeProjectsDB
 
 
 def test_the_backfill_writes_no_priority() -> None:
-    """D76 keeps `important` private. The backfill copies the estimate and
-    nothing else, so no member's flag reaches the shared Priority."""
+    """Migration 216 copies the estimate and nothing else. The matrix carry
+    is migration 218's job (D78), and it runs once, under its own guard."""
     body = "\n".join(
         line for line in _backfill_sql().splitlines()
         if not line.lstrip().startswith("--")

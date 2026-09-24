@@ -843,74 +843,70 @@ async def test_the_calendar_read_is_scoped_to_the_caller(
 # ── The overlay's remaining per-member fields (migration 188, S3a-server-2) ──
 
 
-async def test_two_assignees_hold_different_matrix_flags(
+async def test_two_assignees_share_the_matrix_and_keep_their_own_deep_work(
     db: FakeProjectsDB,
 ) -> None:
-    """Migration 188's whole argument, and the third time it is the same one.
+    """D78 (2026-09-24) amends migration 188's argument for two flags.
 
-    Alice thinks this task is her highest-leverage work of the week. Bob, also
-    assigned, has decided it is neither important nor deep — he is reviewing it
-    for ten minutes. Both are correct, because the matrix is a judgement about
-    the judge's own time, not a property of the work. A column on `pm_tasks`
-    would make one of them overwrite the other with no notice, which is exactly
-    what D53.7 was recorded to prevent for the block.
+    Important and Leveraged are facts about the WORK, so they are ONE shared
+    answer on `pm_tasks`: Alice's PATCH of the task is what Bob sees. Deep
+    work is still a judgement about the judge's own time, so it stays on each
+    member's overlay and the two may disagree.
     """
     project, todo, _ = _team_project(db)
     task = db.seed_task(project.id, todo.id)
     _assign(db, task.id, "alice@fracktal.in", "bob@fracktal.in")
 
+    patched = await pm_tasks.patch_task(
+        str(task.id), pm_core.TaskIn(importance=2, leveraged=True),
+        user=ALICE, if_match=None,
+    )
+    assert patched["importance"] == 2 and patched["leveraged"] is True
     await pm_personal.set_personal(
-        str(task.id),
-        pm_personal.PersonalIn(important=True, leveraged=True, deep_work=True),
-        user=ALICE,
+        str(task.id), pm_personal.PersonalIn(deep_work=True), user=ALICE,
     )
     await pm_personal.set_personal(
-        str(task.id),
-        pm_personal.PersonalIn(important=False, leveraged=False, deep_work=False),
-        user=BOB,
+        str(task.id), pm_personal.PersonalIn(deep_work=False), user=BOB,
     )
 
     alice = await pm_personal.my_inbox(user=ALICE, page=page())
     bob = await pm_personal.my_inbox(user=BOB, page=page())
 
-    assert alice.rows[0]["important"] is True
+    for row in (alice.rows[0], bob.rows[0]):
+        assert row["important"] is True
+        assert row["leveraged"] is True
+        assert row["importance"] == 2
     assert alice.rows[0]["deep_work"] is True
-    assert bob.rows[0]["important"] is False
     assert bob.rows[0]["deep_work"] is False
     # One task, two overlays, no third row anywhere.
     assert len(db.rows("pm_tasks")) == 1
     assert len(db.rows("pm_task_personal")) == 2
 
 
-async def test_matrix_flags_are_tri_state_not_booleans(
+async def test_important_is_tri_state_from_the_shared_priority(
     db: FakeProjectsDB,
 ) -> None:
     """`None` is not `False`, and the difference is the whole triage nudge.
 
-    A member who has never opened the matrix and a member who looked and said
-    "not important" are different states. Only the first should be asked. If
-    the reader coerced with `bool()` — which 187's own comment warns about —
-    the two would be indistinguishable on the wire and the nudge would either
-    chase everybody forever or nobody at all.
+    D78: `important` derives from `pm_tasks.importance`. A NULL importance
+    (nobody judged the task) reads `None`, and a set Low reads `False`.
+    `leveraged` is a plain boolean, and NULL reads `False`.
     """
     project, todo, _ = _team_project(db)
     task = db.seed_task(project.id, todo.id)
+    low = db.seed_task(project.id, todo.id, title="Low", importance=0)
     _assign(db, task.id, "alice@fracktal.in")
+    _assign(db, low.id, "alice@fracktal.in")
 
-    # Triaged, but the matrix was never touched.
     await pm_personal.set_personal(
         str(task.id), pm_personal.PersonalIn(disposition="NEXT"), user=ALICE,
     )
-    rows = (await pm_personal.my_inbox(user=ALICE, page=page())).rows
-    assert rows[0]["important"] is None, "never stated must not read as False"
-    assert rows[0]["leveraged"] is None
-    assert rows[0]["kept_mine"] is None
-
-    await pm_personal.set_personal(
-        str(task.id), pm_personal.PersonalIn(important=False), user=ALICE,
-    )
-    rows = (await pm_personal.my_inbox(user=ALICE, page=page())).rows
-    assert rows[0]["important"] is False, "an explicit no must survive as False"
+    rows = {r["title"]: r for r in
+            (await pm_personal.my_inbox(user=ALICE, page=page())).rows}
+    assert rows["A task"]["important"] is None, "never judged must not read as False"
+    assert rows["A task"]["leveraged"] is False
+    assert rows["A task"]["kept_mine"] is None
+    assert rows["Low"]["important"] is False, "a set Low must survive as False"
 
 
 async def test_waiting_for_round_trips_through_the_overlay(
@@ -1061,8 +1057,9 @@ async def test_every_writable_overlay_field_can_be_read_back(
     remembered. This one derives the list from the model itself, so the next
     field is covered before anybody writes a test for it.
     """
-    # D77's retired column is on the model only to be REFUSED by name
-    # (`RETIRED_OVERLAY_KEYS`), so it is the one sanctioned exception.
+    # The retired columns (D77 estimate, D78 important and leveraged) are on
+    # the model only to be REFUSED by name (`RETIRED_OVERLAY_KEYS`), so they
+    # are the sanctioned exceptions.
     writable = set(pm_personal.PersonalIn.model_fields) - set(
         pm_personal.RETIRED_OVERLAY_KEYS
     )
@@ -1114,7 +1111,6 @@ async def test_the_inbox_and_the_calendar_project_the_same_task_shape(
         str(task.id),
         pm_personal.PersonalIn(
             disposition="NEXT",
-            important=True,
             deep_work=True,
             scheduled_start="2026-09-01T09:00:00+00:00",
             scheduled_end="2026-09-01T11:00:00+00:00",

@@ -626,9 +626,9 @@ async def test_the_planner_never_packs_a_waiting_task(monkeypatch) -> None:
             stated_disposition=disposition, next_action=None, context=None,
             energy=None, time_estimate_mins=None, scheduled_start=yesterday,
             scheduled_end=yesterday, flexible=None, is_hard_date=None,
-            actual_start=None, actual_end=None, important=None,
+            actual_start=None, actual_end=None, importance=None,
             leveraged=None, deep_work=None, kept_mine=None, sort_key=None,
-            assignee_count=1, is_mine=True, org_priority=None,
+            assignee_count=1, is_mine=True,
         )
 
     class _Rows:

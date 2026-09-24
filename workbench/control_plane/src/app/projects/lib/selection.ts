@@ -27,6 +27,7 @@ import {
 } from "@/lib/selection";
 
 import type { TaskRow } from "./api";
+import { type MatrixFlags, flagsPatch } from "./matrix";
 import { type Filters } from "./grouping";
 
 export { allSelected, clickSelect, prune, range, toggle };
@@ -64,7 +65,9 @@ export function visibleIds(groups: { tasks: TaskRow[] }[]): string[] {
 
 export interface BulkDraft {
   status: string;
-  importance: string;
+  /** D78 — the priority flags to set on every selected task. `""` leaves them
+   *  alone, `"none"` clears both, and the rest are `MatrixFlags`. */
+  priority: "" | "none" | Exclude<MatrixFlags, "">;
   assigneeAdd: string;
   assigneeRemove: string;
   tagAdd: string;
@@ -73,7 +76,7 @@ export interface BulkDraft {
 
 export const EMPTY_DRAFT: BulkDraft = {
   status: "",
-  importance: "",
+  priority: "",
   assigneeAdd: "",
   assigneeRemove: "",
   tagAdd: "",
@@ -105,15 +108,11 @@ export function buildRequest(
 
   const patch: Record<string, unknown> = {};
   if (draft.status) patch.status = draft.status;
-  // `""` is "leave it alone"; `"0"` is Low. The explicit emptiness check is
-  // what separates them — and it is `Number("")` that makes it matter, since
-  // dropping the guard entirely would turn an untouched box into a silent
-  // "set every selected task to Low".
-  //
-  // (A truthiness check would behave the same here, because the draft holds a
-  // STRING and `"0"` is truthy in JS. Said plainly because the falsy-zero trap
-  // is real one line later, where the value has become a number.)
-  if (draft.importance !== "") patch.importance = Number(draft.importance);
+  // D78 — `""` is "leave it alone". "Not flagged" is its own value, `"none"`,
+  // so an untouched box can never clear the flags of every selected task.
+  if (draft.priority !== "") {
+    Object.assign(patch, flagsPatch(draft.priority === "none" ? "" : draft.priority));
+  }
 
   const request: BulkRequest = { task_ids: [...ids] };
   if (Object.keys(patch).length) request.patch = patch;

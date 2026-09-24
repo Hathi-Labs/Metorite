@@ -26,7 +26,8 @@ import {
 } from "@/lib/taskCard";
 
 import type { TagRow, TaskRow, TaskTypeRow } from "./api";
-import { importanceLabel } from "./table";
+import { CELL_ICON_NAME, type PriorityCell } from "@/app/tasks/lib/priority";
+import { cellLabel, taskCell } from "./matrix";
 
 /**
  * `lower(tag name)` → the registry's stored colour.
@@ -86,42 +87,42 @@ export function taskFacts(
 }
 
 /**
- * S6 — `importance` as a chip, in the vocabulary the table already speaks.
+ * The task's priority LEVEL as a chip — the matrix level (D78, 2026-09-24).
  *
- * The closest true analogue of the /tasks priority pill, and the one field
- * `DEFAULT_SHOWN` has promised since WS-27x while no card drew it: a view says
- * "show Priority", the spreadsheet obeys, the board and list did not.
+ * Projects and My Tasks show one priority system: shared Important × urgent
+ * from the due date × shared Leveraged (`lib/matrix.ts`). The chip key stays
+ * `importance`, so a saved view's "show Priority" still governs it.
  *
- * **Unset earns no chip, but `0` does.** `importance` is only ever set by a
- * deliberate act (the select's own empty row PATCHes `null`), so a value is
- * somebody's decision and `0` means Low rather than "nobody said" — the exact
- * distinction `importanceLabel` was written for, reused here so the card and
- * the cell cannot disagree about what a 2 is called.
+ * **Low Priority earns no chip.** It is the level of every task nobody has
+ * flagged, and a pill on every ordinary card is noise. My Tasks' card makes
+ * the same call (`hideLowPriority`).
  *
- * Only `Highest` gets the danger tone. A scale where three of four levels are
- * loud is a scale nobody reads; `warning` is the step below, and Normal/Low
- * stay quiet while still saying which they are. The four glyphs differ so the
- * level survives a reader who cannot see the tones apart.
+ * Tones step down with the level, and never use the member's accent: a
+ * level is not a selection. Each level has its own glyph as well, so it reads
+ * without colour (D-PM-27).
  */
-const IMPORTANCE_CHIP: Record<number, { icon: string; tone: MetaChip["tone"] }> = {
-  3: { icon: "ArrowUp", tone: "danger" },
-  2: { icon: "ChevronUp", tone: "warning" },
-  1: { icon: "Minus", tone: "muted" },
-  0: { icon: "ChevronDown", tone: "muted" },
+const CELL_TONE: Record<Exclude<PriorityCell, "low-priority">, MetaChip["tone"]> = {
+  critical: "danger",
+  urgent: "danger",
+  "high-leverage": "warning",
+  important: "warning",
+  "quick-leverage": "muted",
+  "speculative-bet": "muted",
 };
 
-export function importanceChip(task: Pick<TaskRow, "importance">): MetaChip | null {
-  const value = task.importance;
-  if (value === null || value === undefined) return null;
-  const style = IMPORTANCE_CHIP[value];
-  const label = importanceLabel(value);
-  if (!style || !label) return null;
+export function importanceChip(
+  task: Pick<TaskRow, "importance" | "leveraged" | "due_at">,
+  nowMs?: number
+): MetaChip | null {
+  const cell = taskCell(task, nowMs);
+  if (cell === "low-priority") return null;
+  const label = cellLabel(cell);
   return {
     key: "importance",
-    icon: style.icon,
+    icon: CELL_ICON_NAME[cell],
     label,
-    tone: style.tone,
-    title: `${label} priority`,
+    tone: CELL_TONE[cell],
+    title: `Priority: ${label}`,
   };
 }
 
@@ -141,7 +142,7 @@ export function cardChips(
   types?: ReadonlyMap<string, TypeFact>
 ): MetaChip[] {
   const chips = taskMeta(taskFacts(task, colours, types), nowMs);
-  const priority = importanceChip(task);
+  const priority = importanceChip(task, nowMs);
   if (priority) {
     const at = chips.findIndex((chip) => chip.key === "blocked") + 1;
     chips.splice(at, 0, priority);

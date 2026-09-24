@@ -28,7 +28,7 @@ import { TagPicker } from "./TagPicker";
 
 import type { StatusRow, TagRow } from "../lib/api";
 import { labelWith } from "../lib/grouping";
-import { IMPORTANCE_OPTIONS } from "../lib/table";
+import { MATRIX_FLAG_OPTIONS } from "../lib/matrix";
 import { type BulkDraft, EMPTY_DRAFT, buildRequest } from "../lib/selection";
 
 /**
@@ -43,14 +43,14 @@ const OFF_DEFAULT = "border-primary/50 bg-primary/10 text-primary";
 const AT_DEFAULT = "";
 
 /**
- * The priority picker's rows. Read from `IMPORTANCE_OPTIONS` rather than
- * spelt again — this was the third copy of the labels, and the note above
- * said a third surface is when they move to one place. Only the empty row's
- * word differs: here it is a prompt, not the "No priority" of a cell.
+ * The priority picker's rows (D78): the matrix's two stated inputs, from
+ * `MATRIX_FLAG_OPTIONS` so the table cell and this bar cannot disagree. The
+ * empty row is the prompt "leave alone", so "Not flagged" becomes `none`.
  */
-const IMPORTANCE = IMPORTANCE_OPTIONS.map(({ value, label }) =>
-  value === "" ? { value, label: "Priority…" } : { value, label },
-);
+const PRIORITY = [
+  { value: "", label: "Priority…" },
+  ...MATRIX_FLAG_OPTIONS.map(({ value, label }) => ({ value: value || "none", label })),
+];
 
 interface Props {
   count: number;
@@ -166,10 +166,10 @@ export function BulkBar({
         <SelectButton
           label="Set priority"
           widthClass="w-[8rem]"
-          className={draft.importance ? OFF_DEFAULT : AT_DEFAULT}
-          value={draft.importance}
-          onChange={(next) => set({ importance: next })}
-          options={IMPORTANCE}
+          className={draft.priority ? OFF_DEFAULT : AT_DEFAULT}
+          value={draft.priority}
+          onChange={(next) => set({ priority: next as BulkDraft["priority"] })}
+          options={PRIORITY}
         />
 
         {/* ⚠️ The add/remove fields are PAIRS, and the pair is the unit that

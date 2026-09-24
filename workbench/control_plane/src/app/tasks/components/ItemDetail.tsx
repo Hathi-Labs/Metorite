@@ -37,9 +37,8 @@ import { AttachmentChips } from "./AttachmentComposer";
 import { ClarifyPanel } from "./ClarifyPanel";
 import { AiTaskActions } from "./AiTaskActions";
 import { DelegateDialog } from "./DelegateDialog";
-import { WeightToggles, PriorityBadge, SuggestionBadge } from "./PriorityControls";
-import { isUntagged, seededImportant } from "../lib/priority";
-import { importanceLabel } from "@/app/projects/lib/table";
+import { DeepWorkToggle, SuggestionBadge } from "./PriorityControls";
+import { isUntagged } from "../lib/priority";
 import { isWaitingOverdue } from "../lib/waiting";
 import { useCardActions } from "../lib/useCardActions";
 import { ProjectLabel } from "./ProjectLabel";
@@ -645,50 +644,37 @@ export function TaskDetail({
             </div>
           </section>
 
-          {/* Focus matrix — the member's OWN Eisenhower inputs (Important /
-              Leveraged manual, Urgent derived) + the computed cell. ⚠️ Not
-              "Priority": the shared body draws the task's Priority integer
-              (`pm_tasks.importance`) under that name, and D53.8 keeps the two
-              apart. Not shown for unprocessed inbox items (they get judged in
+          {/* Your focus — what is MINE about this task. D78 (owner decision
+              2026-09-24) made Important and Leveraged one shared answer on
+              the task, and the body below draws them, with the level, under
+              "Priority" — the same control Projects shows. Drawing them here
+              too put two priority controls on one panel. What stays is
+              personal: the action nudge (delegate / schedule / eliminate),
+              which reads my own list, and Deep work, which is how I do the
+              work. Not shown for unprocessed inbox items (they get judged in
               the clarify card). */}
           {item.disposition !== "INBOX" && (
             <section className="rounded-lg border border-border bg-card px-3 py-2.5">
-              {/* Top-right of the sub-card: the priority cell pill and — right
-                  beside it — the competing action nudge (delegate / schedule /
-                  eliminate). Same suggestion the card carries, here in full: a
-                  suggestion, not a status; dismiss with its × ("keep mine"), and
-                  "Schedule?"/"Eliminate?" open their popups. */}
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Focus matrix
+                  Your focus
                 </span>
                 <div className="flex flex-wrap items-center justify-end gap-1.5">
-                  <PriorityBadge
-                    item={item}
-                    urgentWindowHours={urgentWindowHours}
-                  />
                   <SuggestionBadge
                     item={item}
                     urgentWindowHours={urgentWindowHours}
                   />
+                  <DeepWorkToggle
+                    active={Boolean(item.deepWork)}
+                    onChange={(next) => updateItem(item.id, { deepWork: next })}
+                    size="sm"
+                  />
                 </div>
               </div>
-              <div className="mt-2">
-                <WeightToggles
-                  item={item}
-                  urgentWindowHours={urgentWindowHours}
-                  onChange={(w) => updateItem(item.id, w)}
-                />
-              </div>
-              {/* ⚠️ Two different "not yet judged" sentences since the org
-                  priority began seeding (2026-09-23). An unjudged High task
-                  no longer defaults to low priority, and telling the member
-                  it does would be the product misleading them again. */}
               {isUntagged(item) && (
                 <p className="mt-1.5 text-[11px] text-muted-foreground/70">
-                  {seededImportant(item)
-                    ? `Not yet judged — the project marks this ${importanceLabel(item.orgPriority)} priority, so it counts as important until you confirm or dismiss it.`
-                    : "Not yet judged — flag it important or leveraged, or leave it to default low priority."}
+                  Not yet judged — mark it Important or Leveraged under
+                  Priority, or leave it at Low Priority.
                 </p>
               )}
             </section>

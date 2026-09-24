@@ -125,21 +125,43 @@ describe("groupTasks by project and importance", () => {
     expect(groupTasks([task()], "project", ctx)[0].label).toBe("Project");
   });
 
-  it("separates priorities and keeps the unset ones last", () => {
+  it("groups by matrix level, in rank order and not by name (D78)", () => {
+    // An alphabetical sort would put Critical after Important.
+    const far = new Date(Date.now() + 30 * 86_400_000).toISOString();
+    const soon = new Date(Date.now() + 3_600_000).toISOString();
     const groups = groupTasks(
-      [task({ id: "a", importance: 3 }), task({ id: "b" })],
+      [
+        task({ id: "low" }),
+        task({ id: "imp", importance: 2, due_at: far }),
+        task({ id: "crit", importance: 3, leveraged: true, due_at: soon }),
+        task({ id: "bet", leveraged: true }),
+      ],
       "importance",
       ctx,
     );
-    expect(groups.map((g) => g.label)).toEqual(["Highest", "No priority"]);
+    expect(groups.map((g) => g.key)).toEqual([
+      "critical",
+      "important",
+      "speculative-bet",
+      "low-priority",
+    ]);
+    expect(groups.map((g) => g.label)).toEqual([
+      "Critical",
+      "Important",
+      "Speculative Bet",
+      "Low Priority",
+    ]);
   });
 
-  it("treats importance 0 as a real value, not as absent", () => {
-    // `0` is falsy — the bug this guards is a Low-priority task silently
-    // landing in "No priority".
-    const groups = groupTasks([task({ importance: 0 })], "importance", ctx);
-    expect(groups[0].key).toBe("0");
-    expect(groups[0].label).toBe("Low");
+  it("has no unset bucket, because an unflagged task is Low Priority", () => {
+    const groups = groupTasks(
+      [task({ id: "a", importance: 0 }), task({ id: "b", importance: null }), task({ id: "c" })],
+      "importance",
+      ctx,
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0].key).toBe("low-priority");
+    expect(groups[0].tasks.map((t) => t.id)).toEqual(["a", "b", "c"]);
   });
 });
 

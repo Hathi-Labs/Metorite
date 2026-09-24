@@ -143,16 +143,31 @@ describe("buildRequest", () => {
     expect(JSON.stringify(request)).not.toContain("status_id");
   });
 
-  it("keeps a priority of zero, which is Low and not 'unset'", () => {
-    // The falsy-`0` trap: a truthiness check silently drops every attempt to
-    // set the lowest priority.
-    expect(buildRequest(["a"], draft({ importance: "0" }))?.patch).toEqual({
+  it("sets both priority flags from one choice (D78)", () => {
+    expect(buildRequest(["a"], draft({ priority: "important" }))?.patch).toEqual({
+      importance: 2,
+      leveraged: false,
+    });
+    expect(buildRequest(["a"], draft({ priority: "leveraged" }))?.patch).toEqual({
       importance: 0,
+      leveraged: true,
+    });
+    expect(buildRequest(["a"], draft({ priority: "both" }))?.patch).toEqual({
+      importance: 2,
+      leveraged: true,
+    });
+  });
+
+  it("clears both flags on 'none', which is a real choice and not 'unset'", () => {
+    // The trap: 'none' and the untouched box must not read the same.
+    expect(buildRequest(["a"], draft({ priority: "none" }))?.patch).toEqual({
+      importance: 0,
+      leveraged: false,
     });
   });
 
   it("leaves priority alone when the box was untouched", () => {
-    expect(buildRequest(["a"], draft({ status: "Done", importance: "" }))?.patch)
+    expect(buildRequest(["a"], draft({ status: "Done", priority: "" }))?.patch)
       .toEqual({ status: "Done" });
   });
 

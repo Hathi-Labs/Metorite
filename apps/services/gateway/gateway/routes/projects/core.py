@@ -58,7 +58,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 # ⚠️ It reads as UNUSED inside this module — it is a re-export. `ruff --fix`
 # deletes it and takes 25 test modules with it; do not let a linter "tidy" it.
 from gateway.db import tenant_session as _tenant_session
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import text
 
 _log = get_logger("gateway.projects")
@@ -643,7 +643,12 @@ class TaskModel(BaseModel):
     status_id: str
     title: str
     description: str | None = None
+    #: The shared priority, 0-3. D78: the matrix reads Important as
+    #: ``importance >= 2`` (`tasks/priority.py::IMPORTANT_AT`).
     importance: int | None = None
+    #: D78 (migration 218). The matrix's shared Leveraged input. The column is
+    #: nullable, and this model reads NULL as ``False``.
+    leveraged: bool = False
     estimate_mins: int | None = None
     start_date: str | None = None
     due_at: str | None = None
@@ -689,6 +694,13 @@ class TaskModel(BaseModel):
     #: SELECT and not to the model is dropped without a word.
     view_position: float | None = None
 
+    @field_validator("leveraged", mode="before")
+    @classmethod
+    def _null_leveraged_is_false(cls, value: Any) -> bool:
+        # Rows from before migration 218, and a fake row that has no such
+        # column, both carry NULL. The matrix reads that as not leveraged.
+        return bool(value) if value is not None else False
+
 
 class TaskIn(BaseModel):
     project_id: str | None = None
@@ -698,6 +710,8 @@ class TaskIn(BaseModel):
     title: str | None = None
     description: str | None = None
     importance: int | None = None
+    #: D78. The shared Leveraged input of the priority matrix.
+    leveraged: bool | None = None
     estimate_mins: int | None = None
     start_date: str | None = None
     due_at: str | None = None
@@ -823,6 +837,34 @@ SORT_TIEBREAK = "t.created_at {dir}, t.id {dir}"
 #: rank can never drift from the vocabulary the CHECK mirrors.
 _CATEGORY_RANK_ARRAY = "ARRAY[" + ", ".join(f"'{c}'" for c in STATUS_CATEGORIES) + "]"
 
+#: The priority matrix as ONE sortable number (D78, 2026-09-24).
+#:
+#: The expression is ``8 - rank``, where rank is the matrix cell order 1..7
+#: (`tasks/priority.py::CELL_META`). So a DESC sort puts the most pressing
+#: cell first, which is what "desc" meant for the old 0-3 `importance` sort.
+#: The sort KEY stays ``importance``, because clients and saved views name it.
+#:
+#: * Important is ``importance >= 2`` (`IMPORTANT_AT`). NULL reads as 0.
+#: * Leveraged is ``pm_tasks.leveraged``. NULL reads as false.
+#: * Urgent is a due date that is past or within 48 hours
+#:   (`DEFAULT_URGENT_WINDOW_HOURS`). No due date is never urgent.
+#:
+#: ⚠️ This SQL is a mirror of `cell_for_inputs`. `test_priority_shared.py`
+#: evaluates it for all eight input combinations against the Python rank.
+_IMP = "(COALESCE(t.importance, 0) >= 2)"
+_LEV = "COALESCE(t.leveraged, false)"
+_URG = "(t.due_at IS NOT NULL AND t.due_at <= now() + interval '48 hours')"
+PRIORITY_RANK_SQL = (
+    "(8 - CASE"
+    f" WHEN {_LEV} AND {_IMP} AND {_URG} THEN 1"
+    f" WHEN {_IMP} AND {_URG} THEN 2"
+    f" WHEN {_LEV} AND {_IMP} THEN 3"
+    f" WHEN {_IMP} THEN 4"
+    f" WHEN {_LEV} AND {_URG} THEN 5"
+    f" WHEN {_LEV} THEN 6"
+    " ELSE 7 END)"
+)
+
 #: Wire sort key → the ORDER BY fragment it may use, with ``{dir}`` as the
 #: direction slot. This dict IS the allowlist: anything not a key here is a
 #: 422, never a silent fall back to the default.
@@ -839,7 +881,7 @@ TASK_SORTS: dict[str, str] = {
     "created_at": SORT_TIEBREAK,
     "updated_at": f"t.updated_at {{dir}} NULLS LAST, {SORT_TIEBREAK}",
     "due_at": f"t.due_at {{dir}} NULLS LAST, {SORT_TIEBREAK}",
-    "importance": f"t.importance {{dir}} NULLS LAST, {SORT_TIEBREAK}",
+    "importance": f"{PRIORITY_RANK_SQL} {{dir}} NULLS LAST, {SORT_TIEBREAK}",
     "title": f"t.title {{dir}}, {SORT_TIEBREAK}",
     "task_number": f"t.task_number {{dir}} NULLS LAST, {SORT_TIEBREAK}",
     "completed_at": f"t.completed_at {{dir}} NULLS LAST, {SORT_TIEBREAK}",

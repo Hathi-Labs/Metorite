@@ -1205,10 +1205,11 @@ export function ClarifyPanel({
                   </div>
                 </SubField>
 
-                {/* Your focus — the matrix inputs (AI-prefilled, you confirm).
+                {/* Priority — the matrix inputs (AI-prefilled, you confirm).
                     Urgent is derived from the due date, so it isn't a toggle.
-                    D77 (F1): never "Priority", which is the shared field. */}
-                <SubField label="Your focus" inline>
+                    D78: Important and Leveraged are the task's shared answer,
+                    and Deep work stays mine. */}
+                <SubField label="Priority" inline>
                   <div className="flex flex-col gap-1">
                     <div className="flex flex-wrap gap-1.5">
                       <Pill active={important} onClick={() => setImportant((v) => !v)}>

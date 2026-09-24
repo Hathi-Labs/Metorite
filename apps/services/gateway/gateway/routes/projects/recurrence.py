@@ -70,8 +70,8 @@ MAX_CATCHUP = 4000
 #: unreadable by March.
 CARRIED_FIELDS: tuple[str, ...] = (
     "project_id", "root_project_id", "parent_task_id", "type_id", "title",
-    "description", "importance", "estimate_mins", "tags", "custom_fields",
-    "source",
+    "description", "importance", "leveraged", "estimate_mins", "tags",
+    "custom_fields", "source",
 )
 
 

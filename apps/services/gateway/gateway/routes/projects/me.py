@@ -20,6 +20,7 @@ from __future__ import annotations
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends
 from gateway.routes.projects.core import (
+    PRIORITY_RANK_SQL,
     ListResponse,
     Page,
     TaskModel,
@@ -87,7 +88,9 @@ async def assigned_to_me(
         rows = (await db.execute(
             text(
                 f"SELECT t.* FROM pm_tasks t{where} "
-                f"ORDER BY t.due_at NULLS LAST, t.importance DESC NULLS LAST, "
+                # D78: the tie on a due date breaks by the priority matrix,
+                # most pressing cell first.
+                f"ORDER BY t.due_at NULLS LAST, {PRIORITY_RANK_SQL} DESC, "
                 f"t.created_at DESC LIMIT :limit OFFSET :offset"
             ),
             {**scope, "limit": page.limit, "offset": page.offset},

@@ -84,6 +84,7 @@ from gateway.routes.projects.tasks import (
     MoveTask,
     move_task_in,
 )
+from gateway.routes.tasks.priority import important_from_importance
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -134,12 +135,11 @@ class PersonalIn(BaseModel):
     actual_end: str | None = None
 
     # ── the prioritisation matrix (migration 188) ───────────────────────────
-    #: The Eisenhower IMPORTANT axis. ⚠️ Not `pm_tasks.importance`, which is the
-    #: shared per-task Priority integer the Projects table edits — see 188's
-    #: header. `urgent` is the other axis and is deliberately absent: it is
-    #: DERIVED from `due_at`, never stored, so accepting it here would create a
-    #: second answer to a question the deadline already answers. D76 lets the
-    #: shared Priority SEED an unstated `important` on read; it never writes it.
+    #: ⚠️ RETIRED by D78 (2026-09-24). Important and Leveraged are ONE shared
+    #: answer on the task: `pm_tasks.importance >= 2` and `pm_tasks.leveraged`.
+    #: The model keeps both fields only so a stale client that sends one is
+    #: REFUSED by name (`RETIRED_OVERLAY_KEYS`). Nothing writes them here.
+    #: `urgent` is absent on purpose: it is DERIVED from `due_at`.
     important: bool | None = None
     leveraged: bool | None = None
     deep_work: bool | None = None
@@ -370,7 +370,8 @@ async def reopen_if_closed(
     return moved
 
 
-#: Overlay columns D77 retired, each with the shared column that replaced it.
+#: Overlay columns D77 and D78 retired, each with the shared column that
+#: replaced it.
 #: A write that names one is REFUSED (422), never dropped: a silently
 #: discarded field reads exactly like a save that worked. The columns stay on
 #: `pm_task_personal` until a later contract (R6).
@@ -379,10 +380,16 @@ RETIRED_OVERLAY_KEYS: dict[str, str] = {
         "the estimate is the shared `pm_tasks.estimate_mins` since D77. Set "
         "`estimate_mins` through PATCH /projects/tasks/{id}."
     ),
+    "important": (
+        "the Important flag is the shared `pm_tasks.importance` since D78 "
+        "(important means 2 or more). Set `importance` through "
+        "PATCH /projects/tasks/{id}."
+    ),
+    "leveraged": (
+        "Leveraged is the shared `pm_tasks.leveraged` since D78. Set "
+        "`leveraged` through PATCH /projects/tasks/{id}."
+    ),
 }
-# ⚠️ `important` is NOT here. It is the member's own answer, and D76 keeps
-# it on the overlay: the shared Priority only seeds it while it is unstated
-# (`routes/tasks/priority.py::seeded_important`).
 
 
 # ── The personal project ────────────────────────────────────────────────────
@@ -748,7 +755,7 @@ async def _upsert_personal(
     retired = sorted(set(values) & set(RETIRED_OVERLAY_KEYS))
     if retired:
         raise ValueError(
-            f"pm_task_personal: {retired} retired by D77 — "
+            f"pm_task_personal: {retired} retired by D77/D78 — "
             + " ".join(RETIRED_OVERLAY_KEYS[k] for k in retired)
         )
     columns = ["task_id", "member_email", *values]
@@ -989,12 +996,9 @@ def _personal_to_dict(row: Any) -> dict[str, Any]:
         "is_hard_date": getattr(row, "is_hard_date", None),
         "actual_start": _iso(row, "actual_start"),
         "actual_end": _iso(row, "actual_end"),
-        # ── The matrix + rank (188). Same tri-state rule as `flexible` above:
-        # never `bool()`-ed, because "has not triaged" and "decided: not
-        # important" are different answers and only one of them should be
-        # nudged.
-        "important": getattr(row, "important", None),
-        "leveraged": getattr(row, "leveraged", None),
+        # ── The rank flags (188). Same tri-state rule as `flexible` above.
+        # D78: no `important` or `leveraged` here. They are shared facts on
+        # the task, and the overlay columns are not read any more (R6).
         "deep_work": getattr(row, "deep_work", None),
         "kept_mine": getattr(row, "kept_mine", None),
         "sort_key": getattr(row, "sort_key", None),
@@ -1019,7 +1023,7 @@ def _personal_to_dict(row: Any) -> dict[str, Any]:
 _OVERLAY_PASSTHROUGH = (
     "next_action", "context", "energy",
     "flexible", "is_hard_date",
-    "important", "leveraged", "deep_work", "kept_mine", "sort_key",
+    "deep_work", "kept_mine", "sort_key",
 )
 
 #: Overlay instants. Rendered ISO-8601, or None.
@@ -1057,6 +1061,12 @@ def _apply_overlay(task: dict[str, Any], row: Any) -> None:
     # and it read as a plain bool before 188. Kept that way rather than widened
     # in passing — a wire-shape change is not a free rider on a column add.
     task["is_two_minute"] = bool(getattr(row, "p_is_two_minute", False))
+    # D78 — the matrix inputs are SHARED facts on the task, not the overlay.
+    # `important` keeps its tri-state: NULL `importance` means nobody judged
+    # the task, and the triage nudge looks for that. `importance` stays on
+    # the wire beside it, from `t.*`.
+    task["important"] = important_from_importance(getattr(row, "importance", None))
+    task["leveraged"] = bool(getattr(row, "leveraged", None))
     # D77 — who I wait on is DERIVED, not copied off the overlay. See
     # :func:`waiting_on_for`. `_project_task` blanks it when the effective
     # disposition is not WAITING.
@@ -1222,8 +1232,6 @@ SELECT t.*,
        p.is_hard_date       AS p_is_hard_date,
        p.actual_start       AS p_actual_start,
        p.actual_end         AS p_actual_end,
-       p.important          AS p_important,
-       p.leveraged          AS p_leveraged,
        p.deep_work          AS p_deep_work,
        p.kept_mine          AS p_kept_mine,
        p.sort_key           AS p_sort_key,

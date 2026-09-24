@@ -9,12 +9,10 @@ import {
   isUrgent,
   modeSuggestion,
   priorityCell,
-  seededImportant,
   type ActionMode,
   type PriorityCell,
 } from "../lib/priority";
 import { CELL_ICON, MODE_ICON } from "../lib/priorityIcons";
-import { importanceLabel } from "@/app/projects/lib/table";
 
 // Shared prioritization UI: the 3-flag Weight toggle (Important / Urgent-auto /
 // Leveraged) and the priority badges. Kept together so the visual language
@@ -38,8 +36,9 @@ export function WeightToggles({
   urgentWindowHours,
   onChange,
   size = "md",
+  showDeepWork = true,
 }: {
-  item: Pick<GtdItem, "important" | "leveraged" | "deepWork" | "dueAt" | "orgPriority">;
+  item: Pick<GtdItem, "important" | "leveraged" | "deepWork" | "dueAt">;
   urgentWindowHours?: number;
   onChange: (patch: {
     important?: boolean;
@@ -47,29 +46,23 @@ export function WeightToggles({
     deepWork?: boolean;
   }) => void;
   size?: "sm" | "md";
+  /** Deep work is the member's own (it is how I do the work, not what the
+   *  work is). Projects draws the SHARED pair and leaves it off (D78). */
+  showDeepWork?: boolean;
 }) {
   const urgent = isUrgent(item, urgentWindowHours);
   const pad = size === "sm" ? "px-2 py-0.5 text-[11px]" : "px-2.5 py-1 text-xs";
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      {seededImportant(item) ? (
-        <SuggestedImportant
-          orgLabel={importanceLabel(item.orgPriority)}
-          onConfirm={() => onChange({ important: true })}
-          onDismiss={() => onChange({ important: false })}
-          pad={pad}
-        />
-      ) : (
-        <FlagToggle
-          active={!!item.important}
-          onClick={() => onChange({ important: !item.important })}
-          icon={themedIcon("AlertTriangle")}
-          label="Important"
-          title="Something stalls or breaks if this is skipped (downside)."
-          tone="important"
-          pad={pad}
-        />
-      )}
+      <FlagToggle
+        active={!!item.important}
+        onClick={() => onChange({ important: !item.important })}
+        icon={themedIcon("AlertTriangle")}
+        label="Important"
+        title="Something stalls or breaks if this is skipped (downside)."
+        tone="important"
+        pad={pad}
+      />
       <FlagToggle
         active={!!item.leveraged}
         onClick={() => onChange({ leveraged: !item.leveraged })}
@@ -79,15 +72,17 @@ export function WeightToggles({
         tone="leveraged"
         pad={pad}
       />
-      <FlagToggle
-        active={!!item.deepWork}
-        onClick={() => onChange({ deepWork: !item.deepWork })}
-        icon={themedIcon("Waves")}
-        label="Deep work"
-        title="Needs an unbroken flow state — creative, building, writing, strategy. The planner protects a long peak-energy block for it."
-        tone="deep"
-        pad={pad}
-      />
+      {showDeepWork ? (
+        <FlagToggle
+          active={!!item.deepWork}
+          onClick={() => onChange({ deepWork: !item.deepWork })}
+          icon={themedIcon("Waves")}
+          label="Deep work"
+          title="Needs an unbroken flow state — creative, building, writing, strategy. The planner protects a long peak-energy block for it."
+          tone="deep"
+          pad={pad}
+        />
+      ) : null}
       {/* Urgent is derived — read-only. Only shown when actually urgent. */}
       <span
         title={
@@ -111,71 +106,29 @@ export function WeightToggles({
   );
 }
 
-/**
- * Important, as SUGGESTED by the project's shared priority — not yet decided.
- *
- * Owner decision 2026-09-23: a task the project marks High or Highest arrives
- * in My Tasks already counted as important, so it does not sink into Low
- * Priority for want of a flag nobody set. But it is the ORG's word, and the
- * member has not given theirs. So it must never look like the member's
- * answer: dashed, not filled, and it says "suggested" in words, because a
- * dashed border alone is a hue-and-line cue and the page has to read without
- * either (D-PM-27's argument, applied to a state).
- *
- * Two acts, both one click, and both END the suggestion by writing an answer:
- * confirm writes `important: true`, the ✕ writes `false`. After either, the
- * shared priority can change as often as it likes and this member's answer
- * stands (`seededImportant` reads only while `important` is unstated).
- *
- * Tokens only (`warning`), no palette class: this file sits on an exact
- * palette-debt budget in `conformance.test.ts`, which may only shrink.
- *
- * ⚠️ **The words are `muted-foreground`, not `warning`.** `--warning` is the
- * same bright yellow in both colour modes (globals.css), so warning-coloured
- * TEXT measured 1.57 : 1 on white — unreadable. The hue rides on the dashed
- * border and the icon instead. That also reads right: a suggestion is quieter
- * than a decision, and the confirmed chip is the solid one.
- */
-function SuggestedImportant({
-  orgLabel,
-  onConfirm,
-  onDismiss,
-  pad,
+/** Deep work, alone. It is the member's OWN flag (how I do the work, not what
+ *  the work is), so Projects draws it in the private "Your focus" row while
+ *  the shared Important and Leveraged sit in the task body (D78). The same
+ *  button `WeightToggles` draws, not a lookalike. */
+export function DeepWorkToggle({
+  active,
+  onChange,
+  size = "md",
 }: {
-  orgLabel: string;
-  onConfirm: () => void;
-  onDismiss: () => void;
-  pad: string;
+  active: boolean;
+  onChange: (next: boolean) => void;
+  size?: "sm" | "md";
 }) {
-  const why = `The project marks this ${orgLabel || "High"} priority, so it is counted as important until you say otherwise.`;
   return (
-    <span
-      className={[
-        "inline-flex items-center rounded-full border border-dashed border-warning/70 font-medium text-muted-foreground",
-        pad,
-      ].join(" ")}
-    >
-      <button
-        type="button"
-        onClick={onConfirm}
-        title={`${why} Click to confirm it matters to you.`}
-        aria-label={`Important, suggested by the project's ${orgLabel || "High"} priority. Confirm.`}
-        className="tech-transition inline-flex items-center gap-1 hover:opacity-80"
-      >
-        <AppIcon name="AlertTriangle" className="h-3 w-3 text-warning" />
-        Important
-        <span className="text-[9px] opacity-80">(suggested)</span>
-      </button>
-      <button
-        type="button"
-        onClick={onDismiss}
-        title="Not important to me. The project's priority stays as it is."
-        aria-label="Not important to me"
-        className="tech-transition ml-1 inline-flex items-center hover:opacity-80"
-      >
-        <AppIcon name="X" className="h-3 w-3" />
-      </button>
-    </span>
+    <FlagToggle
+      active={active}
+      onClick={() => onChange(!active)}
+      icon={themedIcon("Waves")}
+      label="Deep work"
+      title="Needs an unbroken flow state — creative, building, writing, strategy. The planner protects a long peak-energy block for it."
+      tone="deep"
+      pad={size === "sm" ? "px-2 py-0.5 text-[11px]" : "px-2.5 py-1 text-xs"}
+    />
   );
 }
 
@@ -224,11 +177,16 @@ function FlagToggle({
 
 const CELL_TONE: Record<PriorityCell, string> = {
   critical: "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400",
-  urgent: "border-orange-500/40 bg-orange-500/10 text-orange-600 dark:text-orange-400",
-  "high-leverage": "border-violet-500/40 bg-violet-500/10 text-violet-600 dark:text-violet-400",
-  important: "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400",
-  "quick-leverage": "border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-400",
-  "speculative-bet": "border-teal-500/40 bg-teal-500/10 text-teal-600 dark:text-teal-400",
+  urgent:
+    "border-orange-500/40 bg-orange-500/10 text-orange-600 dark:text-orange-400",
+  "high-leverage":
+    "border-violet-500/40 bg-violet-500/10 text-violet-600 dark:text-violet-400",
+  important:
+    "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+  "quick-leverage":
+    "border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-400",
+  "speculative-bet":
+    "border-teal-500/40 bg-teal-500/10 text-teal-600 dark:text-teal-400",
   "low-priority": "border-border bg-secondary/40 text-muted-foreground",
 };
 
@@ -241,7 +199,7 @@ export function PriorityBadge({
   showLabel = true,
   hideLowPriority = false,
 }: {
-  item: Pick<GtdItem, "important" | "leveraged" | "dueAt" | "orgPriority">;
+  item: Pick<GtdItem, "important" | "leveraged" | "dueAt">;
   urgentWindowHours?: number;
   showLabel?: boolean;
   /** On the card face, don't badge the default "low-priority" cell — a colored
@@ -255,14 +213,7 @@ export function PriorityBadge({
   const Icon = CELL_ICON[cell];
   return (
     <span
-      // The level may rest on the project's priority rather than the
-      // member's own flag. Say so, or a task rises in the list for a reason
-      // nobody on this screen can see.
-      title={
-        seededImportant(item)
-          ? `${meta.label} — important because the project marks it ${importanceLabel(item.orgPriority)} priority (suggested)`
-          : meta.label
-      }
+      title={meta.label}
       className={[
         "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium",
         CELL_TONE[cell],
@@ -275,8 +226,10 @@ export function PriorityBadge({
 }
 
 const SUGGESTION_TONE: Record<Exclude<ActionMode, "do">, string> = {
-  delegate: "border-orange-500/40 bg-orange-500/10 text-orange-600 dark:text-orange-400",
-  schedule: "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400",
+  delegate:
+    "border-orange-500/40 bg-orange-500/10 text-orange-600 dark:text-orange-400",
+  schedule:
+    "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400",
   drop: "border-border bg-secondary/60 text-muted-foreground",
 };
 

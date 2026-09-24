@@ -338,12 +338,33 @@ def _lane_miss(name: str, lanes: list[dict[str, Any]]) -> str:
 
 #: Shared facts about the WORK → `PATCH /projects/tasks/{id}`. D77 moved
 #: the estimate here (`pm_tasks.estimate_mins`, the one People capacity
-#: reads) and added the shared start date. The shared Priority is not
-#: written from here: `important` is the member's own (D76).
+#: reads) and added the shared start date. D78 moved the matrix inputs
+#: here: Important is the shared `importance` (2 or more), and Leveraged is
+#: the shared `leveraged`. `gtd_update` turns an Important flag into an
+#: `importance` value before the split (`_importance_for`).
 _TASK_KEYS: dict[str, str] = {"title": "title", "notes": "description",
                               "due_at": "due_at",
                               "time_estimate_mins": "estimate_mins",
-                              "start_date": "start_date"}
+                              "start_date": "start_date",
+                              "importance": "importance",
+                              "leveraged": "leveraged"}
+
+#: The shared priority at which a task is Important (D78). The gateway's twin
+#: is `routes/tasks/priority.py::IMPORTANT_AT`, and `test_priority_shared.py`
+#: holds the two equal.
+IMPORTANT_AT = 2
+
+
+def _importance_for(important: bool, current: Any) -> int | None:
+    """The `importance` value an Important flag writes, or None for no write.
+
+    True raises the task to High (2), and leaves a Highest (3) as it is.
+    False lowers it to 0. A task already on the right side is not written.
+    """
+    level = int(current) if current is not None else None
+    if important:
+        return None if level is not None and level >= IMPORTANT_AT else IMPORTANT_AT
+    return None if level == 0 else 0
 
 #: My practice → `PATCH /projects/tasks/{id}/personal`.
 _OVERLAY_KEYS: frozenset[str] = frozenset({
@@ -351,7 +372,7 @@ _OVERLAY_KEYS: frozenset[str] = frozenset({
     "is_two_minute", "defer_until",
     "scheduled_start", "scheduled_end", "flexible", "is_hard_date",
     "actual_start", "actual_end",
-    "important", "leveraged", "deep_work", "kept_mine", "sort_key",
+    "deep_work", "kept_mine", "sort_key",
     "waiting_on", "delegated_at", "expected_by", "last_nudged_at",
 })
 
@@ -846,8 +867,8 @@ async def gtd_update(item_id: str, title: str = "", notes: str = "",
                      leveraged: str = "", deep_work: str = "") -> str:
     """Edit a task's fields — rename, note, snooze, context, energy, estimate,
     due date, and the priority/work-mode flags. Only the fields you pass
-    change. Title, notes and due date are SHARED (everyone assigned sees
-    them); the rest is your own overlay.
+    change. Title, notes, due date, estimate, important and leveraged are
+    SHARED (everyone assigned sees them). The rest is your own overlay.
 
     Args:
         item_id: The item's full UUID.
@@ -860,9 +881,10 @@ async def gtd_update(item_id: str, title: str = "", notes: str = "",
             ONE estimate, shared with the board (D77).
         due_at: ISO date/datetime deadline; "clear" removes it.
         important: "true"/"false" — significant downside if it slips
-            (empty = unchanged).
+            (empty = unchanged). SHARED: true sets the task's priority to
+            High, false sets it to Low (D78).
         leveraged: "true"/"false" — outsized upside / 100x bet
-            (empty = unchanged).
+            (empty = unchanged). SHARED with everyone on the task (D78).
         deep_work: "true"/"false" — needs an unbroken FLOW state (creative,
             design, writing, building, strategy); the planner protects a long
             peak-energy block for it (empty = unchanged).
@@ -883,11 +905,18 @@ async def gtd_update(item_id: str, title: str = "", notes: str = "",
         patch["time_estimate_mins"] = time_estimate_mins
     if due_at:
         patch["due_at"] = None if due_at == "clear" else due_at
-    for key, raw in (("important", important), ("leveraged", leveraged),
-                     ("deep_work", deep_work)):
+    for key, raw in (("leveraged", leveraged), ("deep_work", deep_work)):
         val = _flag(raw)
         if val is not None:
             patch[key] = val
+    # D78: Important is the SHARED `importance`. Read the current value so a
+    # Highest (3) is not lowered to High.
+    imp = _flag(important)
+    if imp is not None:
+        current = (await _my_task(item_id)).get("importance") if imp else None
+        level = _importance_for(imp, current)
+        if level is not None:
+            patch["importance"] = level
     if not patch:
         return "Nothing to update."
     task, personal = _split_patch(patch)
@@ -960,14 +989,16 @@ async def gtd_detail(item_id: str) -> str:
     i = await _my_task(item_id)
     mine = await _my_project_ids()
     lines = [_fmt_item(i, mine)]
-    flags = [name for name, key in (("important", "important"),
-                                    ("leveraged", "leveraged"),
-                                    ("deep work (flow)", "deep_work"))
-             if i.get(key)]
+    # D78: Important and Leveraged are SHARED facts on the task. Important is
+    # read from `importance`, and the raw 0-3 number is not printed.
+    important = (i.get("importance") or 0) >= IMPORTANT_AT
+    flags = [name for name, on in (("important", important),
+                                   ("leveraged", bool(i.get("leveraged"))),
+                                   ("deep work (flow)", bool(i.get("deep_work"))))
+             if on]
     if flags:
         lines.append("  flags: " + ", ".join(flags))
     for label, key in (("energy", "energy"),
-                       ("priority", "importance"),
                        ("estimate mins", "estimate_mins"),
                        ("starts", "start_date"),
                        ("stage", "workflow_stage"),
