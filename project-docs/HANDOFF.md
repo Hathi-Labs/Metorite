@@ -95,6 +95,29 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-175 · Set the Hathi Labs tenant org's DOMAIN, or its people cannot ask to join · [OWNER]
+- **Check:** ask the TENANT database, and not the Console:
+  `SELECT slug, domain FROM organization ORDER BY created_at;`
+  A row whose `domain` is NULL means nobody with that company's addresses can
+  reach its Requests tab, and this entry is open.
+- **Measured 2026-09-24:** `default` (Fracktal Works) carries
+  `domain = 'fracktal.in'`. `hathi-labs-llp` carries **NULL**.
+- **Why it matters now.** H-118 shipped the same day. A knock is filed against
+  the organization whose `domain` matches the caller's email domain, and it is
+  filed nowhere when no organization claims that domain (owner decision,
+  2026-09-24). So today an `@hathilabs.com` colleague who signs in reaches the
+  self-serve path that creates them their OWN organization, in place of the
+  Requests tab of the organization they work for.
+- ⚠️ **This is a one-field write to a LIVE organization**, which is why it is
+  owner-gated and not done. It also decides who may ask to join that tenant,
+  so it is a security-relevant routing key and not bookkeeping.
+- **The act:** set `organization.domain` to the company's real mail domain, on
+  the TENANT database, for every organization that must accept knocks.
+  📌 Two organizations must never claim ONE domain. The resolver refuses to
+  guess between them and files nothing, which is safe and also silent.
+- **Authority:** D15 · `colleague_onboarding.md` §6 · H-109 (the two planes)
+- **Added:** 2026-09-24 · the H-118 session
+
 ### H-174 · `--warning` is the same bright yellow in both colour modes, so warning TEXT is unreadable on white · [AGENT]
 - **Check:** `grep -n "\-\-warning:" workbench/control_plane/src/app/globals.css`.
   Two lines with the same value, one in `:root` and one in `.light`, means
@@ -2530,49 +2553,6 @@ line — never reclaim a number by deleting the other entry.
   HAS the generated phases, so it can fail honestly. Or state that phase 4 is
   unapplied and mark the two tests expected-fail with that reason. Today they
   are neither, which is the worst of the three.
-
-### H-118 · 🔴 The access-request queue cannot record an unprovisioned person · [AGENT]
-- **Check:** `sudo journalctl -u acb-gateway --since today | grep -c
-  access_request_record_failed` on the box. Non-zero means this is open. Or ask
-  the app database for `access_request` rows — an empty table while people are
-  being onboarded is the same answer.
-- **Measured on production 2026-09-18, 13:02:47 UTC**, twice, for
-  `nithin@hathilabs.com` — a real person mid-onboarding:
-  `asyncpg.exceptions.InvalidTextRepresentationError: invalid input syntax for
-  type uuid: ""` on `INSERT INTO access_request`.
-- **The cause is structural, not a typo.** `access_request.organization_id` is
-  `uuid NOT NULL DEFAULT (current_setting('app.tenant_id', true))::uuid`. The
-  table is tenant-scoped. But `_record_signin_request` fires for somebody who
-  is **unprovisioned** — that is the whole point of the queue — so no tenant is
-  bound, `app.tenant_id` is empty, and the cast refuses it.
-  **The queue cannot record the one kind of person it exists to record.**
-- **What it costs.** Silently. `_record_signin_request` is best-effort by
-  design and never raises, so the sign-in still answers correctly and the owner
-  simply never learns that somebody asked for access. Nothing on screen is
-  wrong. The row is just never there.
-- **⚠️ Deciding the fix means deciding what an access request BELONGS to.**
-  A request from somebody in no organization is not a tenant's row. Two shapes,
-  and they are not equivalent:
-  1. The queue is a **platform** table, not a tenant one — drop the tenant
-     column and its RLS, and accept that the owner reads it unscoped.
-  2. The request is **addressed to** an organization (resolved from the email
-     domain, or from the invite it answers), and the column is filled
-     explicitly rather than defaulted from a GUC that is empty by construction.
-  Shape 2 keeps RLS and is the bigger change. Ask before building either.
-- **⚠️ `test_auth_sql_asyncpg.py` runs this exact statement and it PASSES.**
-  The fence did not catch it, and knowing why matters more than the row does:
-  the suite's transaction is not the production one, so `app.tenant_id` is
-  unset rather than empty, and `current_setting(…, true)` answers NULL there
-  instead of `''`. A fence that binds the right TYPES can still miss a defect
-  that lives in the SESSION STATE around the statement. That is a real limit of
-  the H-114 pattern and it should be written into the next suite.
-- **Authority:** `colleague_onboarding.md` §6 (N6a) ·
-  `acb_auth/access.py` `_record_signin_request` / `_ACCESS_REQUEST_UPSERT_SQL`
-- **Added:** 2026-09-18 · found in the post-deploy log check, not by a test.
-  *(Minted H-116. Renumbered to H-118 the same day: branch `operator-console`
-  had already taken 116 for a plan-guard defect, in a worktree with no pull
-  request open. That branch was written first, so this one moves — the rule
-  H-94's own note records.)*
 
 ### H-117 · An outage tells a member they belong to no organization · [AGENT]
 - **Check:** `rg -n "no_organization" apps/services/gateway/gateway/main.py` →
