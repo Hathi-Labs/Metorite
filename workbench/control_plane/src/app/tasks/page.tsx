@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Icon from "@/components/Icon";
+import AssistantToggle from "@/components/AssistantToggle";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
 import { useTaskStore } from "./lib/taskStore";
@@ -218,21 +219,11 @@ export default function TasksPage() {
           Capture
           <kbd className="rounded border border-border px-1 text-[9px]">C</kbd>
         </button>
-        <button
-          type="button"
-          onClick={() => setAssistantOpen((v) => !v)}
-          aria-pressed={assistantOpen}
-          title="Assistant"
-          className={[
-            "tech-transition ml-auto inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
-            assistantOpen
-              ? "border-primary/40 bg-primary/10 text-primary"
-              : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground",
-          ].join(" ")}
-        >
-          <Icon name="Sparkles" className="h-3.5 w-3.5" />
-          Assistant
-        </button>
+        <AssistantToggle
+          open={assistantOpen}
+          onToggle={() => setAssistantOpen((v) => !v)}
+          className="ml-auto"
+        />
       </div>
 
       <div className="flex min-h-0 flex-1 overflow-hidden">

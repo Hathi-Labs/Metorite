@@ -103,11 +103,20 @@ export function chatDockState(a: {
  * - `hidden` → show the chat: close the task that holds the column.
  * - `absent` and wide → dock. Too narrow → open the full slot, and leave the
  *   stored choice alone.
+ * - The `ai-chat` slot is open → close the slot. The slot IS the chat, so the
+ *   button reads as pressed there, and a press takes the member back to the
+ *   board. This case exists since the button moved to the app's top bar
+ *   (2026-09-24). The project header it sat in before is not drawn over the
+ *   slot, so nobody could press it there. Without this case a press would
+ *   store "docked" and change nothing on screen, because a dock beside the
+ *   slot is `absent`.
  */
 export function toggleAction(
   state: ChatDockState,
   wide: boolean,
-): "dock" | "undock" | "show" | "open-slot" {
+  slotOpen = false,
+): "dock" | "undock" | "show" | "open-slot" | "close-slot" {
+  if (slotOpen) return "close-slot";
   if (state === "shown") return "undock";
   if (state === "hidden") return "show";
   return wide ? "dock" : "open-slot";

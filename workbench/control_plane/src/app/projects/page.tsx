@@ -13,6 +13,7 @@
  */
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import AssistantToggle from "@/components/AssistantToggle";
 import { useToast } from "@/components/ui/Toast";
 import { PROJECT_STATES } from "@/lib/statusAccent";
 import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
@@ -4074,6 +4075,37 @@ function ProjectsWorkspace() {
             Search
           </Button>
           <NotificationBell onOpenTask={openTaskById} />
+          {/* The assistant sits at the right end of the top bar, where My
+              Tasks puts it (owner ask, 2026-09-24). One component for both
+              apps. It lived in the project header's action row until then,
+              so a space, a folder, Analytics, Reports and the chat slot had
+              no button at all. Fence: `components/AssistantToggle.test.ts`. */}
+          {CHAT_LIVE ? (
+            <AssistantToggle
+              open={dockState === "shown" || app === "ai-chat"}
+              title={
+                app === "ai-chat" || dockState === "shown"
+                  ? "Close the assistant"
+                  : dockState === "hidden"
+                    ? "Show the assistant (closes the task)"
+                    : "Ask the assistant about this project"
+              }
+              onToggle={() => {
+                const act = toggleAction(dockState, dockWide, app === "ai-chat");
+                if (act === "close-slot") {
+                  setApp(null);
+                } else if (act === "open-slot") {
+                  setApp("ai-chat");
+                } else if (act === "show") {
+                  setOpenTask(null);
+                } else {
+                  const next = act === "dock";
+                  setChatDocked(next);
+                  writeChatDocked(next);
+                }
+              }}
+            />
+          ) : null}
         </div>
       </div>
 
@@ -4156,35 +4188,6 @@ function ProjectsWorkspace() {
                 />
                 <div className="ml-auto flex shrink-0 items-center gap-1">
                   {projectActions(false)}
-                  {CHAT_LIVE ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      icon="Sparkles"
-                      selected={dockState === "shown"}
-                      title={
-                        dockState === "shown"
-                          ? "Close the assistant"
-                          : dockState === "hidden"
-                            ? "Show the assistant (closes the task)"
-                            : "Ask the assistant about this project"
-                      }
-                      onClick={() => {
-                        const act = toggleAction(dockState, dockWide);
-                        if (act === "open-slot") {
-                          setApp("ai-chat");
-                        } else if (act === "show") {
-                          setOpenTask(null);
-                        } else {
-                          const next = act === "dock";
-                          setChatDocked(next);
-                          writeChatDocked(next);
-                        }
-                      }}
-                    >
-                      Assistant
-                    </Button>
-                  ) : null}
                 </div>
               </div>
             )}

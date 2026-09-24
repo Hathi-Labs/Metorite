@@ -81,4 +81,12 @@ describe("the toggle does what the member sees", () => {
     expect(toggleAction("absent", true)).toBe("dock");
     expect(toggleAction("absent", false)).toBe("open-slot");
   });
+
+  it("closes the ai-chat slot, whatever the dock says, because the slot is the chat", () => {
+    // The dock beside an open slot is always `absent`, so without this a
+    // press would store "docked" and change nothing on screen.
+    expect(toggleAction("absent", true, true)).toBe("close-slot");
+    expect(toggleAction("absent", false, true)).toBe("close-slot");
+    expect(toggleAction("absent", true, false)).toBe("dock");
+  });
 });
