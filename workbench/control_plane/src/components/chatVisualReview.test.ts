@@ -266,9 +266,10 @@ describe("the minor findings", () => {
     expect(barColor("nonsense")).toBe("var(--cat-1)");
   });
 
-  it("the mode sets the native controls' colour scheme", () => {
-    const css = read("app/globals.css");
-    expect(css).toMatch(/:root\.light \{\s*color-scheme: light;/);
-    expect(css).toMatch(/:root:not\(\.light\) \{\s*color-scheme: dark;/);
+  it("adds no second colour-scheme mechanism (fix round 4)", () => {
+    // next-themes already sets `color-scheme` on <html> when the mode
+    // changes. Round 2 added a CSS rule for it, a second mechanism, and a
+    // real light-mode capture showed the date icons were fine without it.
+    expect(read("app/globals.css")).not.toMatch(/color-scheme:\s*(light|dark)\s*;/);
   });
 });

@@ -449,18 +449,6 @@ select optgroup {
   outline-offset: 2px;
 }
 
-/* ── Native controls follow the mode ────────────────────────────────────
-   A date input's picker icon, a scrollbar and a checkbox are drawn by the
-   browser from `color-scheme`. The `.light` class is the one switch for the
-   mode, so it sets the scheme as well: in light mode the plan card's date
-   icons were drawn for a dark page and nearly vanished (S8 visual review). */
-:root:not(.light) {
-  color-scheme: dark;
-}
-:root.light {
-  color-scheme: light;
-}
-
 /* ── Prose that follows the theme ───────────────────────────────────────
    `@tailwindcss/typography` ships one grey palette for light and
    `prose-invert` for dark. This app is dark by default and turns light
