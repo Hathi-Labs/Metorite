@@ -3,6 +3,7 @@
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useTaskStore } from "../lib/taskStore";
+import { useRemoval } from "../lib/useRemoval";
 
 // The "Eliminate" popup — opened from the Eliminate pill or a context menu (via
 // store.openEliminate(id)). The matrix reads the task as better dropped than
@@ -15,6 +16,7 @@ export function EliminatePopup() {
   const quickDispose = useTaskStore((s) => s.quickDispose);
   const requestDelete = useTaskStore((s) => s.requestDelete);
   const closeEliminate = useTaskStore((s) => s.closeEliminate);
+  const removal = useRemoval();
 
   const item = eliminateItemId
     ? items.find((i) => i.id === eliminateItemId)
@@ -77,12 +79,12 @@ export function EliminatePopup() {
             <Icon name="Trash2" className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
             <span className="min-w-0">
               <span className="block text-sm font-medium text-foreground">
-                Delete
+                {removal.label(item)}
               </span>
               <span className="block text-[11px] text-muted-foreground">
-                Remove it for good{" "}
-                {item.source === "SYNCED" ? "(archives it upstream)" : ""} — with a
-                confirmation.
+                {removal.canPurge(item)
+                  ? "Remove it for good — with a confirmation."
+                  : "It leaves your lists. The board keeps it for the team."}
               </span>
             </span>
           </button>

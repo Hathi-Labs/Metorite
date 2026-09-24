@@ -7,6 +7,7 @@ import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
 import { categoricalAccent } from "@/lib/categorical";
 import { allSelected } from "@/lib/selection";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useRemoval } from "../lib/useRemoval";
 import { useTaskStore, itemsForView, itemsInArea } from "../lib/taskStore";
 import { isUntagged } from "../lib/priority";
 import { ViewKey } from "../lib/types";
@@ -112,6 +113,8 @@ export function ItemList() {
   // Shift+Arrow extend through `@/lib/selection` — the grammar this app already
   // shared with /projects, now reachable without entering anything first.
   const selectedIds = useTaskStore((s) => s.selectedIds);
+  // S6g, P0 — the bulk remove says what it does to board tasks.
+  const removal = useRemoval();
   const selectAllVisible = useTaskStore((s) => s.selectAllVisible);
   const pruneSelection = useTaskStore((s) => s.pruneSelection);
   const clearSelection = useTaskStore((s) => s.clearSelection);
@@ -387,7 +390,7 @@ export function ItemList() {
               clearSelection();
             }}
           >
-            Delete
+            {removal.labelFor(items.filter((i) => selectedIds.has(i.id)))}
           </Button>
           <Button variant="ghost" size="sm" icon="X" onClick={clearSelection}>
             Clear

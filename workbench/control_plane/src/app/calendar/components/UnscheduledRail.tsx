@@ -3,6 +3,7 @@
 import Icon, { themedIcon } from "@/components/Icon";
 import { useState } from "react";
 import { MyTask } from "@/app/tasks/lib/types";
+import { useRemoval } from "@/app/tasks/lib/useRemoval";
 import { durationLabel } from "@/app/tasks/lib/utils";
 import { priorityRank } from "@/app/tasks/lib/priority";
 import {
@@ -54,6 +55,7 @@ export function UnscheduledRail({
 }) {
   const over = capacityMins > capacityTarget;
   // Right-click menu on a card (the rail is desktop-only, so no long-press).
+  const removal = useRemoval();
   const [ctx, setCtx] = useState<{ x: number; y: number; item: MyTask } | null>(
     null,
   );
@@ -287,8 +289,9 @@ export function UnscheduledRail({
             },
             {
               kind: "item",
-              label: "Delete task…",
-              icon: themedIcon("Trash2"),
+              // S6g, P0 — a board task leaves my lists, and says so.
+              label: removal.canPurge(ctx.item) ? "Delete task…" : "Remove from my lists…",
+              icon: themedIcon(removal.canPurge(ctx.item) ? "Trash2" : "UserX"),
               danger: true,
               onSelect: () => onDelete(ctx.item.id),
             },

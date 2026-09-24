@@ -866,7 +866,8 @@ required field, and the server refused the move after the card had moved.
    promoted while it was still INBOX is a board row.
 3. **The origin marker** is `InboxOrigin`. A personal row shows a neutral
    lock badge, "Personal". A board row shows `ProjectLabel` and "from
-   {assigner}". Both show the shared Priority chip when it is High or Highest.
+   {assigner}". Both show D78's level badge (`PriorityBadge`). The default
+   low-priority cell draws nothing, as on the card face.
 4. **The source filter** is the store's `sourceFilter`, with the values
    `all`, `personal` and `board`. Nothing set it before S6g. It narrows the
    Inbox list and nothing else. The stale Mine and Team chips are gone from
@@ -880,8 +881,8 @@ required field, and the server refused the move after the card had moved.
    The audit found that the delete path purges when its Undo window closes.
    On a board task, the purge is a hard DELETE of the team's task. So the
    board rows never use `requestDelete`. The `t` key and the bulk bar follow
-   the same rule. The purge on other views is a finding. It is not part of
-   this slice.
+   the same rule. The same defect was live in every other list. The P0 rule
+   below closes it.
 7. **The table** has a "Where" column in place of "Source".
 8. **Capture to a project.** A chip at the right of the capture box reads
    "Inbox" until the member picks a destination. Typing `#` at the start of a
@@ -927,6 +928,38 @@ The rule applies to the Move dialog, to Clarify and to the capture chip. The
 Clarify walk moves on at once. An Undo puts the capture back in the walk. The
 app's toast sits under the Clarify overlay, so the overlay carries the same
 line and its Undo.
+
+**The purge rule (P0, 2026-09-24).** My Tasks never hard-deletes a task
+that is not in my personal tree.
+
+The defect was live in every My Tasks list. A delete wrote TRASH on my
+overlay. When the Undo window closed, `dismissUndo` called `apiPurgeItem`,
+and that sent `DELETE /projects/tasks/{id}`. A colleague can assign a task to me
+from a board. When I deleted it, it was gone for the whole team, for good.
+
+1. `deleteItems` splits the gesture by `canPurge` (`lib/removal.ts`). A task
+   in my root or in one of my Areas is soft-deleted. The purge runs when the
+   Undo window closes.
+2. A board task is removed from my lists. My overlay says TRASH, through the
+   one-tap dispose. The board keeps the task, and no purge runs.
+3. `purgeable` refuses a purge before any request, for any id whose row is not
+   personal.
+4. The purge goes to a new route, `DELETE /projects/my/tasks/{id}`. The route
+   answers 409 for a task outside my tree. The check and the delete share one
+   transaction, through `tasks.delete_task_in`.
+5. Undo on a removed board task writes back the disposition my overlay held.
+   An unstated disposition is cleared, so the Undo states no triage.
+6. Every surface labels a board task's gesture "Remove from my lists". The
+   surfaces are the detail panel, the bulk bar, the `EliminatePopup` card, the
+   confirm dialog and the two Calendar menus. The Inbox keeps "Not mine".
+
+⚠️ **Finding, not changed.** `DELETE /projects/tasks/{id}` admits every member
+who can see the task (`load_visible_task`). No role check and no ownership
+check apply. That is the Projects app's own permission rule, so this slice
+does not change it. The board's delete is still open to every member who
+can see the task.
+
+Fences: `removal.test.ts` and `test_projects_personal_s6g.py`.
 
 **Decisions the request did not settle, each an agent default.**
 

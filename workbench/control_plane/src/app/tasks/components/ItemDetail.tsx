@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useTaskStore } from "../lib/taskStore";
+import { useRemoval } from "../lib/useRemoval";
 import {
   originEmailHref,
   DISPOSITION_LABEL,
@@ -314,6 +315,8 @@ export function TaskDetail({
   const updateItem = useTaskStore((s) => s.updateItem);
   const quickDispose = useTaskStore((s) => s.quickDispose);
   const requestDelete = useTaskStore((s) => s.requestDelete);
+  // S6g, P0 — a board task's trash REMOVES it from my lists, and says so.
+  const removal = useRemoval();
   const archiveItem = useTaskStore((s) => s.archiveItem);
   const openFocus = useTaskStore((s) => s.openFocus);
   const enterFocusSession = useTaskStore((s) => s.enterFocusSession);
@@ -923,8 +926,8 @@ export function TaskDetail({
           </button>
           <button
             type="button"
-            title="Delete task"
-            aria-label="Delete task"
+            title={removal.canPurge(item) ? "Delete task" : "Remove from my lists. The board keeps it."}
+            aria-label={removal.canPurge(item) ? "Delete task" : removal.label(item)}
             onClick={() => requestDelete([item.id])}
             className="tech-transition rounded-md p-1 text-muted-foreground/70 hover:bg-destructive/10 hover:text-destructive"
           >

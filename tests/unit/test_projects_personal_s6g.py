@@ -233,3 +233,38 @@ async def test_assignees_travel_with_the_move(
     owners = {a["assignee"] for a in db.rows("pm_task_assignees")
               if str(a["task_id"]) == task["id"]}
     assert owners == {"alice@fracktal.in", "bob@fracktal.in"}
+
+
+# ── The purge: My Tasks never hard-deletes a team task (S6g P0) ──────────────
+
+async def test_purge_deletes_a_task_in_my_tree(db: FakeProjectsDB, events: list) -> None:
+    task = await _captured(db, "A stray thought")
+    events.clear()
+    out = await pm_personal.purge_my_task(task["id"], user=ALICE)
+    assert out.deleted == task["id"]
+    assert not [t for t in db.rows("pm_tasks") if str(t["id"]) == task["id"]]
+    assert [k for k, _ in events] == ["pm.task.deleted"]
+
+
+async def test_purge_refuses_a_board_task_and_deletes_nothing(
+    db: FakeProjectsDB, monkeypatch: pytest.MonkeyPatch, events: list,
+) -> None:
+    board = _board_with_required_field(db, monkeypatch)
+    lane = next(s for s in db.rows("pm_task_statuses") if str(s["project_id"]) == str(board.id))
+    task = db.seed_task(board.id, lane["id"], title="The team's task")
+    db.seed("pm_task_assignees", task_id=task.id, assignee="alice@fracktal.in",
+            assigned_by="bob@fracktal.in")
+    events.clear()
+    with pytest.raises(HTTPException) as caught:
+        await pm_personal.purge_my_task(str(task.id), user=ALICE)
+    assert caught.value.status_code == 409
+    assert "team board" in str(caught.value.detail)
+    assert [t for t in db.rows("pm_tasks") if str(t["id"]) == str(task.id)]
+    assert not events
+
+
+async def test_the_projects_delete_route_shares_the_one_body() -> None:
+    """One delete body, two doors: the board's route and My Tasks' purge."""
+    import inspect
+    assert "delete_task_in(db, doomed)" in inspect.getsource(pm_tasks.delete_task)
+    assert "delete_task_in(db, task)" in inspect.getsource(pm_personal.purge_my_task)

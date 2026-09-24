@@ -21,6 +21,7 @@ import {
   promoteToast,
 } from "./promote";
 import type { InboxSource } from "./inbox";
+import { type RemovalScope, canPurge, purgeable } from "./removal";
 import type { CaptureDestination } from "./quickAdd";
 import {
   allSelected,
@@ -166,10 +167,29 @@ function disposeLive(
 function flushPendingPurge(
   snap: UndoSnapshot | null,
   backend: "live" | "demo",
+  scope: RemovalScope,
 ): void {
   if (snap?.softDeletedIds?.length && backend === "live") {
-    sync(Promise.all(snap.softDeletedIds.map((id) => apiPurgeItem(id).catch(() => {}))));
+    purgeSoftDeleted(snap, scope);
   }
+}
+
+/**
+ * Finalise a soft delete — ONLY for rows in my personal tree (S6g, P0).
+ *
+ * `purgeable` refuses, before any request, every id whose snapshot row is not
+ * mine. `deleteItems` already keeps board tasks out of `softDeletedIds`, so a
+ * refusal here means a code path broke that rule. The refused row stays
+ * TRASH on my overlay, which is the safe end state.
+ */
+function purgeSoftDeleted(snap: UndoSnapshot, scope: RemovalScope): void {
+  const { allowed } = purgeable(snap.softDeletedIds ?? [], snap.items, scope);
+  sync(Promise.all(allowed.map((id) => apiPurgeItem(id).catch(() => {}))));
+}
+
+/** My root and my Areas, as the purge rule reads them. */
+function removalScope(s: { personalRootId: string | null; areas: { id: string }[] }): RemovalScope {
+  return { personalRootId: s.personalRootId, areaIds: s.areas.map((a) => a.id) };
 }
 
 /** Sentinel @context for tasks that have none yet — the "@no context" bucket
@@ -462,6 +482,10 @@ interface UndoSnapshot {
    *  the toast dismisses without an undo, they're purged (apiPurgeItem), which
    *  also propagates the deletion to ClickUp for synced tasks. */
   softDeletedIds?: string[];
+  /** S6g — board tasks REMOVED FROM MY LISTS by this change: my overlay
+   *  says TRASH, and the board keeps the task. Undo writes back what my
+   *  overlay said before, and never purges (`removal.ts`). */
+  removedIds?: string[];
   /** Ids (bulk-)ARCHIVED or -restored by this change; undo flips them back
    *  upstream. archivedTo is the direction that was applied (true = archived). */
   archivedIds?: string[];
@@ -1645,7 +1669,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   clarify: (id, decision, weight, opts) => {
-    flushPendingPurge(get().undoSnapshot, get().backend);
+    flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
     // The confirmed matrix flags overlay the decision. Applied locally to the
     // clarified row and (live) patched after organize, independent of the GTD
     // disposition so the golden-eval organize path stays untouched.
@@ -1853,7 +1877,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }),
 
   quickDispose: (id, disposition) => {
-    flushPendingPurge(get().undoSnapshot, get().backend);
+    flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
     set((s) => ({
       items: s.items.map((i) => (i.id === id ? disposeOne(i, disposition) : i)),
       processedThisSession: s.processedThisSession + 1,
@@ -1873,7 +1897,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   bulkDispose: (ids, disposition) => {
-    flushPendingPurge(get().undoSnapshot, get().backend);
+    flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
     set((s) => {
       const set_ = new Set(ids);
       const affected = s.items.filter(
@@ -1954,7 +1978,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       (i) => set_.has(i.id) && Boolean(i.archivedAt) !== archived,
     );
     if (!affected.length) return;
-    flushPendingPurge(get().undoSnapshot, get().backend);
+    flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
     set((s) => ({
       items: s.items.map((i) =>
         set_.has(i.id)
@@ -2289,30 +2313,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   cancelPendingDelete: () => set({ pendingDeleteIds: null }),
 
-  deleteItem: (id) => {
-    const target = get().items.find((i) => i.id === id);
-    if (!target) return;
-    // A prior soft-delete's purge must not be orphaned by this new snapshot.
-    flushPendingPurge(get().undoSnapshot, get().backend);
-    set((s) => ({
-      items: s.items.filter((i) => i.id !== id),
-      selectedItemId: s.selectedItemId === id ? null : s.selectedItemId,
-      // Close the focus modal if we just deleted the focused task.
-      focusedItemId: s.focusedItemId === id ? null : s.focusedItemId,
-      undoSnapshot: {
-        items: s.items,
-        projects: s.projects,
-        processed: s.processedThisSession,
-        selectedItemId: s.selectedItemId,
-        label: "Deleted",
-        // Soft delete → lossless undo (restore) or a purge on dismiss.
-        softDeletedIds: [id],
-      },
-    }));
-    // Soft-delete server-side now; the actual removal + ClickUp propagation
-    // happen on dismiss (see dismissUndo), so Undo can restore losslessly.
-    if (get().backend === "live") sync(apiDeleteItem(id).catch(() => {}));
-  },
+  deleteItem: (id) => get().deleteItems([id]),
 
   mergeIntoExisting: async (id, targetId) => {
     // The capture is absorbed into an existing synced task — drop it locally
@@ -2407,8 +2408,21 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const remove = new Set(ids);
     const targets = get().items.filter((i) => remove.has(i.id));
     if (!targets.length) return;
-    const targetIds = targets.map((t) => t.id);
-    flushPendingPurge(get().undoSnapshot, get().backend);
+    // S6g, P0 — the rule in `removal.ts`. A task in my tree is soft-deleted
+    // and purged when the Undo window closes. A board task is REMOVED FROM MY
+    // LISTS: TRASH on my overlay, and never a purge.
+    const scope = removalScope(get());
+    const mine = targets.filter((t) => canPurge(t, scope)).map((t) => t.id);
+    const board = targets.filter((t) => !canPurge(t, scope)).map((t) => t.id);
+    flushPendingPurge(get().undoSnapshot, get().backend, scope);
+    const label =
+      board.length === 0
+        ? mine.length === 1
+          ? "Deleted"
+          : `Deleted ${mine.length} items`
+        : mine.length === 0
+          ? `Removed ${board.length === 1 ? "it" : `${board.length} tasks`} from your lists`
+          : `Deleted ${mine.length}, removed ${board.length} from your lists`;
     set((s) => ({
       items: s.items.filter((i) => !remove.has(i.id)),
       selectedItemId:
@@ -2424,12 +2438,17 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         projects: s.projects,
         processed: s.processedThisSession,
         selectedItemId: s.selectedItemId,
-        label: `Deleted ${targets.length} item${targets.length === 1 ? "" : "s"}`,
-        softDeletedIds: targetIds,
+        label,
+        // Soft delete → lossless undo (restore) or a purge on dismiss.
+        ...(mine.length ? { softDeletedIds: mine } : {}),
+        ...(board.length ? { removedIds: board } : {}),
       },
     }));
     if (get().backend === "live") {
-      sync(Promise.all(targetIds.map((id) => apiDeleteItem(id).catch(() => {}))));
+      if (mine.length) sync(Promise.all(mine.map((id) => apiDeleteItem(id).catch(() => {}))));
+      // The overlay write, the one-tap dispose's own path (`tasks/bulk`,
+      // action `personal`). It touches my overlay and nothing the team sees.
+      if (board.length) get().markTriaged(board, disposeLive(set, get, board, "TRASH"));
     }
   },
 
@@ -2599,7 +2618,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
   applySchedule: (label, changes) => {
     if (!changes.length) return;
-    flushPendingPurge(get().undoSnapshot, get().backend);
+    flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
     // Snapshot BEFORE applying, so undo restores the pre-change grid exactly;
     // the per-item writes then ride the normal updateItem path (optimistic +
     // server sync + authoritative-row swap).
@@ -2677,7 +2696,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     // show a state the board does not have, so there is no undo here.
     if (snap.sharedChangeTaskId) return;
     const { items, projects, processed, selectedItemId, changedIds,
-      deletedItems, softDeletedIds, archivedIds, archivedTo,
+      deletedItems, softDeletedIds, removedIds, archivedIds, archivedTo,
       scheduleRevertIds, untriagedIds } = snap;
     set((s) => {
       // An undone decision is undecided again: it rejoins the walk.
@@ -2697,6 +2716,23 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       };
     });
     if (get().backend !== "live") return;
+    if (removedIds?.length) {
+      // S6g — a board task removed from my lists comes back as my overlay
+      // said before. An unstated disposition (an untriaged row) is CLEARED,
+      // not written, so the undo states no triage the member never made.
+      const prev = new Map(items.map((i) => [i.id, i]));
+      sync(
+        Promise.all(
+          removedIds.map((id) => {
+            const p = prev.get(id);
+            if (!p) return Promise.resolve();
+            return apiPatchItem(id, {
+              disposition: p.isTriaged === false ? null : p.disposition,
+            }).catch(() => {});
+          }),
+        ).then(() => get().loadFromProjects()),
+      );
+    }
     if (softDeletedIds?.length) {
       // Lossless undo of a soft delete: the rows are only tombstoned, so just
       // clear the tombstone. Local state is already restored from the snapshot;
@@ -2782,9 +2818,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const snap = get().undoSnapshot;
     set({ undoSnapshot: null });
     if (snap?.softDeletedIds?.length && get().backend === "live") {
-      sync(
-        Promise.all(snap.softDeletedIds.map((id) => apiPurgeItem(id).catch(() => {}))),
-      );
+      purgeSoftDeleted(snap, removalScope(get()));
     }
   },
 

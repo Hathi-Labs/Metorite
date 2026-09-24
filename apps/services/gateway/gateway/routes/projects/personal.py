@@ -81,7 +81,9 @@ from gateway.routes.projects.filters import attach_assignees
 from gateway.routes.projects.notifications import EXCERPT_CHARS, notify
 from gateway.routes.projects.tasks import (
     _TRACKED_TASK_FIELDS,
+    DeleteResponse,
     MoveTask,
+    delete_task_in,
     move_task_in,
 )
 from gateway.routes.tasks.priority import important_from_importance
@@ -1632,6 +1634,58 @@ async def led_projects_for(
     for task in mine:
         led[str(task["project_id"])]["my_tasks"].append(task)
     return list(led.values())
+
+
+async def in_my_tree(db: Any, email: str, task: Any) -> bool:
+    """Whether ``task`` lives in MY personal tree: my root or one of my Areas.
+
+    Both carry ``personal_owner`` (an Area inherits it), so the project's own
+    column answers without a walk. A team project has none.
+    """
+    # The privacy guard's own read (`core.assert_move_keeps_privacy`), with
+    # both ends the task's project.
+    rows = (await db.execute(
+        text(
+            "SELECT id, personal_owner FROM pm_projects "
+            "WHERE id IN (CAST(:old AS uuid), CAST(:new AS uuid))"
+        ),
+        {"old": str(task.project_id), "new": str(task.project_id)},
+    )).fetchall()
+    owner = next((r.personal_owner for r in rows if str(r.id) == str(task.project_id)), None)
+    return bool(owner) and str(owner).strip().lower() == email
+
+
+@router.delete("/my/tasks/{task_id}")
+async def purge_my_task(
+    task_id: str, user: UserContext = Depends(get_current_user),
+) -> DeleteResponse:
+    """Delete a task for good — ONLY one in my personal tree (WS-39 S6g).
+
+    My Tasks' delete is a soft TRASH on my overlay, and the purge that
+    finalises it used to be ``DELETE /projects/tasks/{id}``. That route admits
+    anybody who can see the task, so a member who deleted a task a colleague
+    had assigned from a board removed it for the whole team once the Undo
+    window closed. The rule: **My Tasks never hard-deletes a task that is not
+    in my personal tree.** A board task leaves my lists through the overlay
+    (TRASH) and stays on the board.
+
+    The client refuses the purge before any request (``canPurge``). This route
+    is the second fence: it answers 409 for a task outside my tree, and the
+    check and the delete share one transaction.
+    """
+    email = actor(user).lower()
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        task = await load_visible_task(db, vis, task_id)
+        if not await in_my_tree(db, email, task):
+            raise HTTPException(
+                status_code=409,
+                detail="This task is on a team board. My Tasks can only remove "
+                       "it from your lists, never delete it for the team.",
+            )
+        result = await delete_task_in(db, task)
+    await emit("pm.task.deleted", {"task_id": task_id})
+    return result
 
 
 @router.get("/my/tasks/{task_id}")
