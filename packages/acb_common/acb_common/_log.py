@@ -131,12 +131,24 @@ def bind_run_context(
             ("source", source),
             ("instance", instance),
             ("app", app),
-            # A string, because every other field is one and a log line that
-            # prints `True` beside `"chat"` is a second vocabulary for a flag.
-            ("member_verified", "1" if member_verified else None),
         )
         if v
     }
+    # 🔴 **The flag belongs to the USER bound beside it, and to no other.**
+    # A first version bound it only when True, so binding a new user left a
+    # parent's "1" in place. A nested run that rebinds `user` to a request
+    # body's claim then inherited its parent's verification, and the stamp
+    # signed an address the body chose (H-73). Found by review. So binding a
+    # user now always settles the flag: set for a verified user, CLEARED for
+    # any other. A call that binds no user leaves both alone, which is right
+    # for a child acting for the same person as its parent.
+    if user:
+        if member_verified:
+            # A string, because every other field is one and a log line that
+            # prints `True` beside `"chat"` is a second vocabulary for a flag.
+            fields["member_verified"] = "1"
+        else:
+            structlog.contextvars.unbind_contextvars("member_verified")
     if fields:
         structlog.contextvars.bind_contextvars(**fields)
 

@@ -179,15 +179,21 @@ class TestThroughTheAgentFramework:
         client = self._client_seeing(monkeypatch, seen)
 
         async def call_as(who: str) -> str:
+            # Reset per call. Without it the proof assertion below could pass
+            # on the FIRST call's header alone (found by review).
+            seen.clear()
             with run_context_scope():
                 bind_run_context(user=who, app="projects", member_verified=True)
                 await client.get_response([Message(role="user", contents=["hi"])])
             return seen["x-cc-member"]
 
+        from acb_auth.member_proof import verify_member
+
         assert asyncio.run(call_as("dana@acme.com")) == "dana@acme.com"
+        assert verify_member(seen["x-cc-member-proof"], secret) == "dana@acme.com"
         assert asyncio.run(call_as("ravi@acme.com")) == "ravi@acme.com"
+        assert verify_member(seen["x-cc-member-proof"], secret) == "ravi@acme.com"
         assert seen["x-cc-module"] == "projects"
-        assert "x-cc-member-proof" in seen
 
     def test_the_agents_OWN_header_is_never_overwritten(self, monkeypatch):
         """A delegated sub-agent's run context can still carry its parent's
@@ -277,6 +283,35 @@ class TestANestedRunRestoresItsParent:
         assert after["app"] == "projects"
         assert after["member_verified"] == "1"
 
+    def test_a_child_that_names_ANOTHER_person_is_NOT_verified(self, secret):
+        """🔴 The H-73 hole review found in the first version.
+
+        The flag was bound only when True, so a nested run that rebound
+        `user` to a request body's claim kept its PARENT's "1". The stamp then
+        signed an address the body chose. The flag now belongs to the user
+        bound beside it: a new user without verification clears it.
+        """
+        bind_run_context(user="dana@acme.com", member_verified=True)
+        with run_context_scope():
+            bind_run_context(user="attacker-chosen@acme.com")
+            assert "member_verified" not in get_run_context()
+            out = attribution_headers()
+            assert out["X-CC-Member"] == "attacker-chosen@acme.com"
+            assert "X-CC-Member-Proof" not in out, "a body's claim was signed"
+        assert get_run_context()["member_verified"] == "1", "parent not restored"
+
+    def test_a_child_acting_for_the_SAME_person_keeps_the_verification(self):
+        """The common case: a sub-agent binds no user at all, so it acts for
+        its parent's member and must keep the parent's standing."""
+        bind_run_context(user="dana@acme.com", member_verified=True)
+        with run_context_scope():
+            bind_run_context(run_id="child", agent="crm-assistant")
+            assert get_run_context()["member_verified"] == "1"
+
+    def test_a_flag_with_NO_user_beside_it_verifies_nothing(self):
+        bind_run_context(member_verified=True)
+        assert "member_verified" not in get_run_context()
+
     def test_a_child_ADDS_nothing_that_outlives_it(self):
         """The reverse leak: a key the child bound and the parent never had."""
         bind_run_context(run_id="parent")
@@ -346,7 +381,13 @@ class TestEveryAgentDeclaresItsApp:
 
 class TestEveryClientUsesTheSeam:
     def test_no_agent_builds_a_client_that_cannot_attribute(self):
-        """🔴 The fence for the sixth agent.
+        """🔴 The fence for the sixth agent — on the FRAMEWORK path.
+
+        ⚠️ **It does not cover the Copilot SDK path, and that is H-181.**
+        ``agent-task-manager``, ``agent-app-builder`` and
+        ``agent-apis-config`` run on the Copilot SDK, whose 0.1.32
+        ``ProviderConfig`` has no ``headers`` field. Version 1.0.14 adds one.
+        ``test_the_copilot_path_is_a_KNOWN_gap`` below pins the two sites.
 
         Every ``OpenAIChatCompletionClient(`` in the tree must take its
         ``async_client`` from :func:`attributed_openai`. A client built the
@@ -370,3 +411,21 @@ class TestEveryClientUsesTheSeam:
                     line = src[: m.start()].count("\n") + 1
                     offenders.append(f"{py.relative_to(ROOT)}:{line}")
         assert not offenders, f"clients that cannot attribute: {offenders}"
+
+
+    def test_the_copilot_path_is_a_KNOWN_gap_until_H_181(self):
+        """Pins the gap so it cannot grow in silence, and fails the day it
+        closes so this test and H-181 are retired together.
+
+        The two sites build a Copilot provider dict with no ``headers``. When
+        the SDK upgrade lands they gain ``"headers": attribution_headers()``,
+        this assertion fails, and whoever lands it deletes this test.
+        """
+        sites = {
+            "apps/services/orchestrator/orchestrator/_model_resolution.py": 1,
+            "apps/services/orchestrator/orchestrator/executor.py": 1,
+        }
+        for rel, expected in sites.items():
+            src = (ROOT / rel).read_text(encoding="utf-8")
+            n = len(re.findall(r'_default_options\["provider"\]\s*=\s*\{', src))
+            assert n == expected, f"{rel}: {n} Copilot provider sites, expected {expected}"

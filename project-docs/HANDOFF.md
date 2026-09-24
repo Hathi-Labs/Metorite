@@ -144,6 +144,14 @@ line — never reclaim a number by deleting the other entry.
   `/copilot/chat` path.
 - **Done when:** all four agents and the orchestrator hold a tool conversation
   through the live Router on DeepSeek V4. A stubbed test does not count.
+- 🔴 **The upgrade also closes an attribution gap.** Three agents run on the
+  Copilot SDK: `task-manager`, `app-builder` and `apis-config`. Their model
+  calls reach the Router with no member, app or run. Version 0.1.32 has no
+  `headers` field on `ProviderConfig`, and 1.0.14 adds one. Set
+  `"headers": attribution_headers()` on the provider dict at the two sites
+  that build it. Then delete
+  `test_the_copilot_path_is_a_KNOWN_gap_until_H_181`, which fails on purpose
+  when the sites change.
 
 ### H-178 · An operator can take a job off the air. Two callers cannot yet · [AGENT]
 - **Check:** `rg -c "model IS NOT NULL" packages/acb_llm apps/services/gateway`
