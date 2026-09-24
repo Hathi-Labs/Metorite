@@ -50,11 +50,17 @@ import {
 } from "../lib/grouping";
 import { dueInstantForDay, quickAddPrefill } from "../lib/quickAdd";
 import {
-  IMPORTANCE_OPTIONS,
+  MATRIX_FLAG_OPTIONS,
+  type MatrixFlags,
+  cellLabel,
+  flagsOf,
+  flagsPatch,
+  taskCell,
+} from "../lib/matrix";
+import {
   type TableColumn,
   type TableSort,
   customKeyOf,
-  importanceLabel,
   nextSort,
   tableColumns,
   treeRows,
@@ -344,7 +350,7 @@ export function TableView({
         // `importance`'s reason: the display vocabulary lives in the chip.
         // ⚠️ The chip's LABEL, not the stored word, and never "—".
         //
-        // `readOnlyCell` renders `importanceLabel(...)` four arms above, so
+        // `readOnlyCell` renders the priority level's label four arms above, so
         // "screen shows the label, file shows the stored value" is already
         // this switch's rule and `export._render` already obeys it. The first
         // version printed the raw column, so the table read "import" beside a
@@ -368,7 +374,8 @@ export function TableView({
         // Date()`, which would move it a day west of Greenwich (see api.ts).
         return task.start_date ? task.start_date.slice(0, 10) : "—";
       case "importance":
-        return importanceLabel(task.importance) || "—";
+        // D78 — the matrix level. Computed, so it moves with the due date.
+        return cellLabel(taskCell(task));
       case "subtasks": {
         const counts = task.subtasks;
         return counts && counts.total > 0 ? `${counts.done}/${counts.total}` : "—";
@@ -417,17 +424,18 @@ export function TableView({
         <SelectButton
           autoOpen
           onClose={closeEditor}
-          label={`Priority of ${task.title}`}
+          // D78 — the level is computed, so the editor sets its two stated
+          // inputs. Urgent comes from the Due column.
+          label={`Priority flags of ${task.title}`}
           widthClass="w-full"
-          value={task.importance == null ? "" : String(task.importance)}
-          onChange={(next) =>
-            void saveCell(task, {
-              // ⚠️ `""` is "no priority" and `"0"` is Low. `Number("")`
-              // is 0, so the emptiness check is what keeps them apart.
-              importance: next === "" ? null : Number(next),
-            })
-          }
-          options={IMPORTANCE_OPTIONS.map((option) => ({
+          value={flagsOf(task)}
+          onChange={(next) => {
+            // Only what changed, so a stored 3 is not rewritten as 2.
+            const patch = flagsPatch(next as MatrixFlags, task);
+            if (Object.keys(patch).length) void saveCell(task, patch);
+            else closeEditor();
+          }}
+          options={MATRIX_FLAG_OPTIONS.map((option) => ({
             value: option.value,
             label: option.label,
           }))}

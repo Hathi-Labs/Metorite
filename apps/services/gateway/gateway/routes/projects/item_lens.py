@@ -74,19 +74,20 @@ from gateway.routes.projects.personal import (
 from gateway.routes.projects.planning import _CLOSED_LANE, _PM_ALIVE
 from gateway.routes.tasks.core import DEFAULT_CONTEXTS
 from gateway.routes.tasks.item_source import ItemSource, origin_key_sql
+from gateway.routes.tasks.priority import important_from_importance
 from sqlalchemy import text
 
 # ── Row shape ────────────────────────────────────────────────────────────────
 
 #: Overlay columns copied straight off a `_MY_TASKS_SQL` row (`p_<name>`).
 #: D77 took one name off this list: `time_estimate_mins` is read off the
-#: SHARED task in `_pm_item`, under the same name. `important` stays: it is
-#: the member's own answer (D76).
+#: SHARED task in `_pm_item`, under the same name. D78 took two more:
+#: `important` and `leveraged` are read off the SHARED task in `_pm_item`.
 _OVERLAY = (
     "next_action", "context", "energy", "defer_until",
     "clarified_at", "delegated_at", "expected_by", "last_nudged_at",
     "scheduled_start", "scheduled_end", "actual_start", "actual_end",
-    "important", "leveraged", "deep_work", "kept_mine", "sort_key",
+    "deep_work", "kept_mine", "sort_key",
 )
 
 #: The stored vocabulary is migration 147's. Two values the email router may
@@ -155,6 +156,11 @@ def _pm_item(row: Any) -> SimpleNamespace:
         ),
         # D77 — the one planning input that is a shared fact.
         time_estimate_mins=getattr(row, "estimate_mins", None),
+        # D78 — the matrix inputs are shared facts on the task. Important is
+        # `importance >= 2`. `importance` itself rides along for the reader.
+        importance=getattr(row, "importance", None),
+        important=important_from_importance(getattr(row, "importance", None)),
+        leveraged=bool(getattr(row, "leveraged", None)),
         due_at=getattr(row, "due_at", None),
         # D77 — the shared start date, for the inbox's "not yet" rule.
         start_date=getattr(row, "start_date", None),

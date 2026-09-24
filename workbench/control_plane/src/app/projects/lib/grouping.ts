@@ -14,7 +14,7 @@
 import { STATUS_CATEGORIES, categoryLabel } from "@/lib/statusCategory";
 
 import type { StatusRow, TaskRow } from "./api";
-import { importanceLabel } from "./table";
+import { MATRIX_LEVELS, cellLabel, taskCell } from "./matrix";
 import {
   DEFAULT_SHOWN,
   sameFieldSet,
@@ -659,10 +659,18 @@ export function groupTasks(
       const id = task.project_id;
       put(id, ctx.projectName?.(id) ?? "Project", task);
     } else {
-      const value = task.importance;
-      const key = value === null || value === undefined ? UNSET : String(value);
-      put(key, key === UNSET ? "No priority" : importanceLabel(Number(key)) || key, task);
+      // D78 — the matrix level. Every task has one, so there is no UNSET
+      // bucket on this axis: an unflagged task is Low Priority.
+      const cell = taskCell(task);
+      put(cell, cellLabel(cell), task);
     }
+  }
+
+  // Priority groups keep the matrix's rank order, Critical first. An
+  // alphabetical sort would put "Critical" after "Important".
+  if (by === "importance") {
+    const rank = (key: string) => MATRIX_LEVELS.indexOf(key as never);
+    return [...buckets.values()].sort((a, b) => rank(a.key) - rank(b.key));
   }
 
   // Unassigned / no-priority last: it is a residue, not a peer of the named

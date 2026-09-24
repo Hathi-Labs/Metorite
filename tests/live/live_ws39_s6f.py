@@ -17,10 +17,13 @@ S6f makes claims a hermetic fake cannot judge:
   * `start_date` against the real `current_date` hides a task from my inbox;
   * migration 216's copy picks the assignee's estimate, fills only an empty
     estimate, and a second run changes nothing — and the ledger guard skips;
-  * the shared Priority reaches the planner BESIDE my own `important`, never
-    as it (D76), and the backfill leaves the Priority alone;
-  * the retired overlay estimate is refused before any SQL runs, and my own
-    `important` is not;
+  * D78 (2026-09-24, amends D76): Important is the shared `importance >= 2`
+    and Leveraged is the shared `pm_tasks.leveraged`. My list and the planner
+    both read them off the task, and the matrix sort ranks on Postgres the way
+    `priority.py::cell_for_inputs` ranks in Python. Migration 216's backfill
+    still leaves the Priority alone;
+  * the retired overlay estimate, `important` and `leveraged` are all
+    refused before any SQL runs;
   * `time_spent_mins` sums every member's actuals on the real table;
   * another tenant sees none of it.
 
@@ -51,7 +54,7 @@ from pathlib import Path
 
 from gateway.routes.people.core import compute_load
 from gateway.routes.projects.bulk import _act_on_one
-from gateway.routes.projects.core import update_row
+from gateway.routes.projects.core import TASK_SORTS, update_row
 from gateway.routes.projects.personal import (
     _MY_TASKS_SQL,
     DEFERRED_CLAUSE,
@@ -218,10 +221,10 @@ async def main() -> None:
               f"task={mine_row['estimate_mins']} load={load} "
               f"planner={getattr(planner, 'time_estimate_mins', None)}")
 
-        # ── 5. the shared Priority SEEDS my important, never becomes it ───
-        #     D76: the planner reads my answer AND the Priority beside it.
-        #     A Highest task I have not judged carries no stored answer. My
-        #     "no" is stored as mine, and the Priority does not move.
+        # ── 5. D78: the matrix inputs are the TASK's ─────────────────────
+        #     A Highest, leveraged task reads important and leveraged in my
+        #     list and in the planner, from `pm_tasks`. Nothing is on my
+        #     overlay, and the planner row carries no `org_priority`.
         async def _planner_row():
             return (await db.execute(
                 text(_PM_SELECT + MY_TASKS_FROM + " AND t.id = CAST(:tid AS uuid)"),
@@ -229,20 +232,47 @@ async def main() -> None:
                  "vis_org": str(org), "tid": str(deck)},
             )).fetchone()
 
-        await update_row(db, "pm_tasks", str(deck), {"importance": 3})
-        unjudged = await _planner_row()
+        await update_row(db, "pm_tasks", str(deck), {"importance": 3, "leveraged": True})
+        planner = await _planner_row()
         mine_row = (await _mine(db, org, ALICE))["Board deck"]
-        await _upsert_personal(db, str(deck), ALICE, {"important": False})
-        judged = await _planner_row()
-        level = (await db.execute(text(
-            "SELECT importance FROM pm_tasks WHERE id = :t"), {"t": deck})).scalar_one()
-        check("5 the Priority reaches the planner beside my important, never as it",
-              unjudged.important is None and unjudged.org_priority == 3
-              and mine_row["importance"] == 3 and mine_row["important"] is None
-              and judged.important is False and judged.org_priority == 3
-              and level == 3,
-              f"unjudged={unjudged.important}/{unjudged.org_priority} "
-              f"judged={judged.important}/{judged.org_priority} level={level}")
+        check("5 Important and Leveraged reach my list and the planner from the task",
+              planner.importance == 3 and planner.leveraged is True
+              and not hasattr(planner, "org_priority")
+              and mine_row["importance"] == 3 and mine_row["important"] is True
+              and mine_row["leveraged"] is True,
+              f"planner={planner.importance}/{planner.leveraged} "
+              f"mine={mine_row['importance']}/{mine_row['important']}/"
+              f"{mine_row['leveraged']}")
+
+        # ── 5b. D78: the matrix sort on Postgres, all eight inputs ─────────
+        #     One row per (important, urgent, leveraged). `TASK_SORTS
+        #     ["importance"]` DESC must list them in the matrix's 1..7 order.
+        #     `now()` is frozen for the transaction, so "urgent" is stable.
+        from gateway.routes.tasks.priority import (
+            CELL_META,
+            PriorityInputs,
+            cell_for_inputs,
+        )
+        combos = [(i, u, lv) for i in (True, False) for u in (True, False)
+                  for lv in (True, False)]
+        rank_rows = ", ".join(
+            f"({n}, {3 if i else 1}, "
+            f"{'now() + interval ' + chr(39) + '1 hour' + chr(39) if u else 'NULL'}, "
+            f"{'true' if lv else 'NULL'}, "
+            f"now() - make_interval(secs => {n}), gen_random_uuid())"
+            for n, (i, u, lv) in enumerate(combos))
+        order = TASK_SORTS["importance"].format(dir="DESC")
+        got = [r[0] for r in (await db.execute(text(
+            "SELECT n FROM (VALUES " + rank_rows + ") AS "
+            "t(n, importance, due_at, leveraged, created_at, id) "
+            "ORDER BY " + order))).fetchall()]
+        want = sorted(range(len(combos)), key=lambda n: (
+            CELL_META[cell_for_inputs(PriorityInputs(
+                important=combos[n][0], urgent=combos[n][1],
+                leveraged=combos[n][2]))][0],
+            n))
+        check("5b the matrix sort on Postgres agrees with priority.py, all 8 inputs",
+              got == want, f"got={got} want={want}")
 
         # ── 6. a future start date hides it from my inbox ─────────────────
         await db.execute(text(
@@ -301,15 +331,18 @@ async def main() -> None:
               not wrong and stored.isoformat() == "2026-09-25",
               f"wrong={wrong} stored={stored}")
 
-        # ── 7. the retired overlay estimate is refused before any SQL ─────
+        # ── 7. the retired overlay columns are refused before any SQL ─────
+        #     D77 retired the estimate. D78 retired important and leveraged.
         refused = []
-        for field, value in (("important", True), ("time_estimate_mins", 1)):
+        for field, value in (("important", True), ("leveraged", True),
+                             ("time_estimate_mins", 1), ("deep_work", True)):
             try:
                 await _upsert_personal(db, str(deck), ALICE, {field: value})
             except ValueError:
                 refused.append(field)
-        check("7 the one upsert refuses the retired estimate, and takes my important",
-              refused == ["time_estimate_mins"], f"refused={refused}")
+        check("7 the one upsert refuses the retired columns, and takes deep work",
+              refused == ["important", "leveraged", "time_estimate_mins"],
+              f"refused={refused}")
 
         # ── 8. migration 216: the assignee's estimate, once ────────────────
         #     The copy statement is the file's own, run on this transaction.
@@ -325,8 +358,8 @@ async def main() -> None:
             "(:m, :bob, 45, now()), "
             "(:k, :bob, 99, now())"),
             {"m": memo, "k": kept, "carol": CAROL, "bob": BOB})
-        # A task Bob flagged important, with no Priority. D76: the flag is
-        # his, so the backfill must leave the shared Priority unset.
+        # A task Bob flagged important, with no Priority. Migration 216 is
+        # the estimate backfill only. The matrix carry is 218's (D78).
         flagged = await _task(db, org, sales, todo, "Flagged", 6)
         await _assign(db, flagged, BOB, "2026-09-01T09:00:00+00:00")
         await db.execute(text(

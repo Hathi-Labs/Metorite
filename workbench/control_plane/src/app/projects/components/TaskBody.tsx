@@ -75,7 +75,12 @@ import {
 import { previewKind, readableSize } from "../lib/preview";
 import { isAutomated } from "../lib/lifecycle";
 import { labelWith } from "../lib/grouping";
-import { IMPORTANCE_OPTIONS } from "../lib/table";
+import {
+  PriorityBadge,
+  WeightToggles,
+} from "@/app/tasks/components/PriorityControls";
+import { importanceFor } from "@/app/tasks/lib/priority";
+import { matrixOf } from "../lib/matrix";
 import { dueInstantForDay } from "../lib/quickAdd";
 import { AssigneePicker } from "./AssigneePicker";
 import { AssigneeChips } from "./AssigneeChips";
@@ -121,6 +126,13 @@ export interface TaskBodyProps {
    * region. My Tasks' overlay strip. Projects passes nothing.
    */
   above?: React.ReactNode;
+  /**
+   * D78 — the Urgent window for the Priority level, in hours. My Tasks passes
+   * the member's own setting, so the level in this body agrees with the list
+   * beside it. Projects leaves it out and gets the 48-hour default, which is
+   * also what the gateway's Priority sort uses.
+   */
+  urgentWindowHours?: number;
 }
 
 /**
@@ -280,6 +292,7 @@ export function TaskBody({
   onPeopleSeen,
   twoColumn = false,
   above,
+  urgentWindowHours,
 }: TaskBodyProps) {
   const toast = useToast();
 
@@ -692,25 +705,37 @@ export function TaskBody({
                 />
               </FieldCell>
 
-              {/* The shared Priority integer (`pm_tasks.importance`), the
-                  table's vocabulary. ⚠️ Not the member's Eisenhower
-                  `important` — that is on the overlay, and My Tasks draws it
-                  in its strip above. */}
-              <FieldCell label="Priority" icon="Flag">
-                <SelectButton
-                  label="Priority"
-                  widthClass="w-full"
-                  value={task.importance == null ? "" : String(task.importance)}
-                  disabled={busy}
-                  onChange={(next) =>
-                    // `""` is "no priority" and `"0"` is Low. `Number("")` is
-                    // 0, so the emptiness check is what keeps them apart.
-                    void patch({ importance: next === "" ? null : Number(next) })
-                  }
-                  options={IMPORTANCE_OPTIONS.map((option) => ({
-                    value: option.value,
-                    label: option.label,
-                  }))}
+              {/* D78 (owner decision 2026-09-24): ONE priority system in
+                  both apps, the matrix. Important and Leveraged are one
+                  shared answer on the task, and Urgent derives from the due
+                  date. This body is drawn by Projects AND My Tasks, so the
+                  control is in the same place in both. The level is computed
+                  and never stored. */}
+              <FieldCell
+                label="Priority"
+                icon="Flag"
+                trailing={
+                  <PriorityBadge
+                    item={matrixOf(task)}
+                    urgentWindowHours={urgentWindowHours}
+                  />
+                }
+              >
+                <WeightToggles
+                  item={matrixOf(task)}
+                  urgentWindowHours={urgentWindowHours}
+                  size="sm"
+                  showDeepWork={false}
+                  onChange={(flags) => {
+                    const payload: Record<string, unknown> = {};
+                    if (flags.important !== undefined) {
+                      payload.importance = importanceFor(flags.important);
+                    }
+                    if (flags.leveraged !== undefined) {
+                      payload.leveraged = flags.leveraged;
+                    }
+                    if (Object.keys(payload).length) void patch(payload);
+                  }}
                 />
               </FieldCell>
 

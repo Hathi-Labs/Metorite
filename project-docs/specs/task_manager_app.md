@@ -1148,10 +1148,10 @@ disappears.
 |---|---|---|
 | `disposition`, `nextAction`, `context`, `energy`, `isTwoMinute`, `deferUntil` | `pm_task_personal` (147) | per-member triage. **Amended by D77:** the lane wins over a stated `disposition` (a closed lane reads DONE, a reopened task reads NEXT) |
 | `timeEstimateMins` | `pm_tasks.estimate_mins` — **amended by D77** (was `pm_task_personal` 147) | one estimate, the one People capacity reads. Migration 216 copies the overlay values once |
-| `orgPriority` | `pm_tasks.importance` — read only | the shared Priority, in D76's words. Projects edits it. My Tasks shows it in a list column and a card chip, and seeds `important` from it (§13.4b) |
 | `startDate`, `tags` | `pm_tasks` — **added by D77** | the team's start date and labels. The inbox hides a task until its start date |
 | `scheduledStart/End`, `flexible`, `isHardDate`, `actualStart/End` | `pm_task_personal` (187, D53.7) | each assignee blocks their own time |
-| `important`, `leveraged`, `deepWork`, `keptMine`, `sortKey` | `pm_task_personal` (188) | a judgement about the judge's own week |
+| `important`, `leveraged` | **`pm_tasks` — amended by D78** | one shared answer per task. `important` is `importance >= 2`, and `leveraged` is the column migration 218 adds. Both apps show the same level |
+| `deepWork`, `keptMine`, `sortKey` | `pm_task_personal` (188) | a judgement about the judge's own week |
 | `waitingOn` | **derived from `pm_task_assignees` — amended by D77** | the assignees minus me. The stored record is a label, or the answer when no other person holds the task |
 | `delegatedAt`, `expectedBy`, `lastNudgedAt` | `pm_task_personal` (188) | "I am waiting on Priya" is true for the delegator, false for the doer — of one row |
 | `clarifiedAt` | `pm_task_personal` (147) — **existed all along** | written on every triage since 147, projected by nothing until 188's slice |
@@ -1176,6 +1176,11 @@ to the whole task. `urgent` has no column at all by design — it is derived fro
 `dueAt` via `isUrgent()`, and always was.
 
 ### 13.4b The shared Priority seeds `important` (D76, 2026-09-23)
+
+⚠️ **Superseded by D78 (2026-09-24).** There is no seed now. Important and
+`Leveraged` are one shared answer on the task, and the matrix level is the
+one Priority in both apps. `work_plan.md` §3 D78 holds the rule. The text
+below is the record of D76.
 
 The rule above still holds. `important` is never `importance`, and no code
 maps one onto the other. D76 adds one read, and it writes nothing.

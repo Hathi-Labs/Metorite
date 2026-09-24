@@ -497,18 +497,22 @@ def test_split_patch_places_every_field_or_refuses():
     task, personal = core._split_patch({
         "title": "t", "notes": "n", "due_at": "2026-10-01",
         "time_estimate_mins": 30, "start_date": "2026-10-01",
-        "context": "@home", "important": True, "defer_until": None,
+        "context": "@home", "importance": 2, "leveraged": True,
+        "deep_work": True, "defer_until": None,
     })
-    # D77: the estimate and the start date are the TASK's.
+    # D77: the estimate and the start date are the TASK's. D78: so are the
+    # matrix inputs, Important (as `importance`) and Leveraged.
     assert task == {"title": "t", "description": "n", "due_at": "2026-10-01",
-                    "estimate_mins": 30, "start_date": "2026-10-01"}
-    # D76: `important` is the member's own answer, on the overlay.
-    assert personal == {"context": "@home", "important": True, "defer_until": None}
+                    "estimate_mins": 30, "start_date": "2026-10-01",
+                    "importance": 2, "leveraged": True}
+    # Deep work stays the member's own, on the overlay.
+    assert personal == {"context": "@home", "deep_work": True, "defer_until": None}
     with pytest.raises(RuntimeError, match="cannot place"):
         core._split_patch({"provider_status": "x"})
-    # The skill never writes the shared Priority (D76, D77).
+    # D78: the overlay no longer holds the flag, so a bare `important` has
+    # no home. `my_tasks_update` turns it into `importance` before the split.
     with pytest.raises(RuntimeError, match="cannot place"):
-        core._split_patch({"importance": 2})
+        core._split_patch({"important": True})
 
 
 def test_update_clears_with_null_on_both_routes(gw: Recorder):
@@ -516,6 +520,28 @@ def test_update_clears_with_null_on_both_routes(gw: Recorder):
     assert gw.calls[:2] == [("PATCH", T), ("PATCH", f"{T}/personal")]
     assert gw.kwargs[0]["json"] == {"due_at": None}
     assert gw.kwargs[1]["json"] == {"defer_until": None}
+
+
+def test_update_writes_important_and_leveraged_to_the_shared_task(gw: Recorder):
+    """D78: the matrix inputs are the TASK's. Important=true raises the
+    shared `importance` to High (2), and nothing goes to `/personal`."""
+    run(core.my_tasks_update(item_id=TID, important="true", leveraged="true"))
+    assert gw.calls[:2] == [("GET", MY), ("PATCH", T)]
+    assert gw.kwargs[1]["json"] == {"importance": 2, "leveraged": True}
+    assert ("PATCH", f"{T}/personal") not in gw.calls
+
+
+def test_update_important_leaves_a_highest_task_alone(gw: Recorder, monkeypatch):
+    monkeypatch.setitem(TASK, "importance", 3)
+    run(core.my_tasks_update(item_id=TID, important="true"))
+    assert ("PATCH", T) not in gw.calls
+    assert ("PATCH", f"{T}/personal") not in gw.calls
+
+
+def test_update_not_important_lowers_the_shared_priority(gw: Recorder):
+    run(core.my_tasks_update(item_id=TID, important="false"))
+    assert gw.calls[0] == ("PATCH", T)
+    assert gw.kwargs[0]["json"] == {"importance": 0}
 
 
 def test_complete_is_the_shared_done_lane_not_an_overlay_write(gw: Recorder):

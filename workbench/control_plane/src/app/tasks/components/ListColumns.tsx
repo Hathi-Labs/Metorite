@@ -148,17 +148,9 @@ function CellBody({
   urgentWindowHours?: number;
 }) {
   switch (col.key) {
-    case "priority": {
-      // D77 — the task's SHARED Priority, drawn with the Projects card's own
-      // chip so "Highest" looks the same in both apps. Unset draws nothing.
-      // Display only: My Tasks never writes the shared Priority (D76).
-      const chip = importanceChip({ importance: item.orgPriority ?? null });
-      return chip ? <TaskMeta chips={[chip]} /> : null;
-    }
-    case "focus":
-      // The member's own matrix cell: their Important (seeded by the shared
-      // Priority while unstated, D76) × urgent from the due date × their
-      // leveraged flag. The Projects panel calls this row "Your focus".
+    case "priority":
+      // D78 — the task's level: shared Important × urgent from the due date
+      // × shared Leveraged. The same badge the Projects panel draws.
       return (
         <PriorityBadge item={item} urgentWindowHours={urgentWindowHours} />
       );

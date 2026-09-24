@@ -17,6 +17,7 @@
  */
 
 import { UNSET, type GroupBy } from "./grouping";
+import { flagsForCell, flagsPatch } from "./matrix";
 
 /** The axes a quick-add can sit inside: any grouping, plus a calendar day. */
 export type QuickAddAxis = GroupBy | "day";
@@ -66,7 +67,8 @@ export function quickAddPrefill(
       // project_id — a quick-add in the "Firmware" column creates IN Firmware.
       return { create: { project_id: key } };
     case "importance":
-      return { create: { importance: Number(key) } };
+      // D78 — the key is a matrix level. Set the flags it implies.
+      return { create: flagsPatch(flagsForCell(key)) };
     case "tag":
       return { create: { tags: [key] } };
     case "assignee":

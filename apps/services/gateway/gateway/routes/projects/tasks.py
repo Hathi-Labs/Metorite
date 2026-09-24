@@ -103,7 +103,7 @@ from sqlalchemy import text
 #: a status move is a TRANSITION and gets its own richer activity, so listing it
 #: here too would write the same fact twice under two types.
 _TRACKED_TASK_FIELDS: tuple[str, ...] = (
-    "title", "description", "importance", "due_at", "start_date",
+    "title", "description", "importance", "leveraged", "due_at", "start_date",
     "estimate_mins", "type_id", "parent_task_id", "project_id",
 )
 

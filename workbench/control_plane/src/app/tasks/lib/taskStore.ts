@@ -42,7 +42,7 @@ import {
   type ConnectedProvider,
 } from "./mockData";
 import { browserTimeZone, isCalendarItem, isTickled } from "./utils";
-import { clarifyChangesSharedTask, clarifyQueue, isClarifiable } from "./clarify";
+import { clarifyChangesSharedTask, clarifyQueue, isClarifiable, weightPatch } from "./clarify";
 import { type SyncState, canPush } from "./syncState";
 import {
   DEFAULT_FILTERS,
@@ -1533,18 +1533,15 @@ export const useTaskStore = create<TaskState>((set, get) => ({
             : "Couldn't organize it. The item is back where it was.",
         );
       };
-      // Persist the confirmed matrix flags as a local overlay (best-effort;
-      // independent of organize so a flag hiccup never blocks the decision).
+      // Persist the confirmed matrix flags (best-effort; independent of
+      // organize so a flag hiccup never blocks the decision). D78: Important
+      // and Leveraged are the task's SHARED answer, so only a flag the member
+      // actually changed is sent. Deep work is mine and always goes.
       if (weight) {
+        const before = get().items.find((i) => i.id === id);
         sync(
           apply
-            .then(() =>
-              apiPatchItem(id, {
-                important: weight.important,
-                leveraged: weight.leveraged,
-                deep_work: weight.deepWork,
-              }),
-            )
+            .then(() => apiPatchItem(id, weightPatch(before, weight)))
             .then((updated) =>
               set((s) => ({
                 items: s.items.map((i) => (i.id === id ? updated : i)),

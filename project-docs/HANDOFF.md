@@ -254,22 +254,22 @@ line — never reclaim a number by deleting the other entry.
   renumbered the same day: #431 took H-172 three minutes before #429
   merged, and #429 merged second.
 
-### H-173 · The chat tools let the model write Priority 4, and the scale stops at 3 · [AGENT]
+### H-173 · The chat tools still speak the retired 0-4 priority scale · [AGENT]
 - **Check:** `grep -rn "importance is 0 to 4" apps/skills/skill-projects/`.
   Any hit means this is open.
-- **What happens.** The Projects scale is 0 Low to 3 Highest
-  (`IMPORTANCE_OPTIONS`, D76). Four places in `skill_projects`
-  (`guarded.py`, `inbox.py`, `forms.py` twice) tell the model the range is
-  0 to 4 and accept a 4. Nothing else refuses it: `pm_tasks.importance` is a
-  bare `SMALLINT` with no CHECK, and `TaskModel.importance` is `int | None`.
-  A 4 then prints as a bare "4" in the table and draws no chip on a card.
-- **The D76 seed is safe.** `>= 2` counts a 4 as important. Only the display
-  breaks.
-- **Why an agent did not fix it here.** The owner is building the Projects
-  chat in a separate stream. Change the four messages and the four bounds to
-  0 to 3 there, or add a CHECK (0 to 3) in an expand/contract migration after
-  a count of rows above 3 on production.
-- Added: 2026-09-23, found while building D76.
+- **What happens.** D78 (2026-09-24) retired the Low-to-Highest scale.
+  Projects and My Tasks show the matrix level, from the shared Important
+  (`importance >= 2`) and `Leveraged` (`pm_tasks.leveraged`). The chat tools
+  in `skill_projects` (`writes.py`, `guarded.py`, `inbox.py`, `forms.py`)
+  still ask the model for an `importance` from 0 to 4. They cannot set
+  `Leveraged`. The chat cards (`genUITemplates.tsx`) and the CSV export
+  (`routes/projects/export.py`) print the raw number.
+- **Do.** Give the tools `important` and `leveraged` booleans, and show the
+  level in the cards and the export. `lib/matrix.ts` and
+  `routes/tasks/priority.py` own the level. Keep `importance` accepted for
+  one release, and read 2 or more as Important.
+- **Authority:** `work_plan.md` §3 D78.
+- Added: 2026-09-23, found while building D76. Rewritten 2026-09-24 for D78.
 
 
 ### H-172 · The shared scratch DB cannot replay the migration ladder any more · [AGENT]
