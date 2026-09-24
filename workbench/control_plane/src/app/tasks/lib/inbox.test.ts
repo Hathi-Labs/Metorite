@@ -225,3 +225,12 @@ describe("the keyboard (S6g)", () => {
     expect(view).toMatch(/filterBySource\(allRows, sourceFilter, scope\)/);
   });
 });
+
+describe("the capture chip (S6g repair P1-b)", () => {
+  it("a chip pick is for one capture: submit puts the chip back on Inbox", () => {
+    const view = read("components/InboxView.tsx");
+    const submit = view.slice(view.indexOf("const submit = () => {"), view.indexOf("const onKeyDown"));
+    expect(submit).toMatch(/captureLine\(raw, \{[\s\S]*dest: captureDest,/);
+    expect(submit).toMatch(/setCaptureDest\(null\);/);
+  });
+});

@@ -413,6 +413,9 @@ export function InboxView() {
     });
     setValue("");
     setPendingAtts([]);
+    // S6g repair P1-b: a chip pick is for ONE capture. The chip returns to
+    // "Inbox", or the next thought would land on the same board unasked.
+    setCaptureDest(null);
     setChipOpen(false);
   };
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
