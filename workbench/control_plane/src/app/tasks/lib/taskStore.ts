@@ -789,6 +789,11 @@ interface TaskState {
    *  hydrate through `fetchMyRoot`. Null before a first capture.
    *  `isPersonalTask` reads it to keep Areas off a team task's Where picker. */
   personalRootId: string | null;
+  /** Read `personalRootId` again when it is still null. A member's first
+   *  capture creates the root, and a failed `fetchMyRoot` leaves it null
+   *  too. Clarify reads the id, so a null that lingers after the root exists
+   *  misreads every capture (audit 2026-09-24, repair P1). */
+  refreshPersonalRoot: () => Promise<void>;
   /** Mint one. Resolves with the row, or `undefined` when refused (the
    *  reason is on `syncFailure`). */
   createArea: (name: string) => Promise<LensArea | undefined>;
@@ -961,6 +966,15 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   localHierarchy: null,
   areas: [],
   personalRootId: null,
+  refreshPersonalRoot: async () => {
+    if (get().backend !== "live" || get().personalRootId !== null) return;
+    try {
+      const root = await fetchMyRoot();
+      if (root?.id) set({ personalRootId: root.id });
+    } catch {
+      /* the next capture or hydrate tries again */
+    }
+  },
   selectedAreaId: null,
   fromProjectIds: new Set(),
   ledProjects: [],
@@ -1084,6 +1098,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
             selectedItemId:
               s.selectedItemId === item.id ? server.id : s.selectedItemId,
           }));
+          // A first capture creates my root. Learn its id now.
+          void get().refreshPersonalRoot();
           // Background duplicate check (capture stays frictionless): the AI
           // compares the new capture against open items. Confident duplicate
           // → auto-remove with an undoable notice; similar → ask the user.
@@ -1216,7 +1232,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }));
     if (get().backend === "live") {
       sync(
-        apiCaptureBatch(lines).then((serverItems) =>
+        apiCaptureBatch(lines).then((serverItems) => {
+          // A first capture creates my root. Learn its id now.
+          void get().refreshPersonalRoot();
           set((s) => {
             const byIndex = new Map(
               newItems.map((tmp, idx) => [tmp.id, serverItems[idx]]),
@@ -1227,8 +1245,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
                 (x) => byIndex.get(x)?.id ?? x,
               ),
             };
-          }),
-        ),
+          });
+        }),
       );
     }
   },

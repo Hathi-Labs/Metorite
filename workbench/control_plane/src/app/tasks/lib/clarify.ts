@@ -627,14 +627,16 @@ export interface InitialWhere {
  * click published a private capture to a board the member never chose. The
  * audit of 2026-09-24 found this in production.
  *
- * The rule, for a personal task (`isPersonalTask`):
- * - The task's own project, or one of my Areas, starts selected. Both stay
- *   private, so a one-click accept cannot publish anything.
- * - Any other id — a company project, or an id this client does not know —
- *   starts NOT selected. The picker shows it as a suggestion.
+ * The rule FAILS CLOSED. The proposal's project starts selected only when it
+ * is the task's own project (nothing moves) or one of my Areas (it stays
+ * private). Any other id starts NOT selected, and the picker marks it as a
+ * suggestion the member must click.
  *
- * A board task already lives on its board. The proposal names that board, so
- * it starts selected and nothing new is published.
+ * It does not ask `isPersonalTask`. That answer reads `personalRootId`, which
+ * is null for a member whose first capture has only just created the root,
+ * and after a failed `fetchMyRoot`. A null there made a capture read as a
+ * board task, and a board task used to take the proposal as-is (review of
+ * PR #440, P1).
  *
  * Fence: `clarifyWhere.test.ts`.
  */
@@ -643,13 +645,10 @@ export function initialWhere(input: {
   proposalProjectId?: string;
   /** The project the task lives in now, if any. */
   itemProjectId?: string;
-  /** `isPersonalTask` for this task. */
-  personal: boolean;
   areaIds: readonly string[];
 }): InitialWhere {
   const id = input.proposalProjectId;
   if (!id) return {};
-  if (!input.personal) return { selected: id };
   if (id === input.itemProjectId || input.areaIds.includes(id)) {
     return { selected: id };
   }

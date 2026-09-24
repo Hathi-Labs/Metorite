@@ -224,7 +224,6 @@ export function ClarifyPanel({
       initialWhere({
         proposalProjectId: proposal.projectId,
         itemProjectId: item.projectId,
-        personal: personalTask,
         areaIds,
       }).selected,
   );
@@ -273,8 +272,7 @@ export function ClarifyPanel({
         initialWhere({
           proposalProjectId: sp.projectId,
           itemProjectId: item.projectId,
-          personal: personalTask,
-          areaIds,
+            areaIds,
         }).selected,
       );
       // A guidance-named destination ("put it in ClickUp under Proposals")
@@ -306,7 +304,7 @@ export function ClarifyPanel({
       }
     },
     // Setters are stable; only these are read.
-    [item.title, item.projectId, providers, personalTask, areaIds],
+    [item.title, item.projectId, providers, areaIds],
   );
 
   useEffect(() => {

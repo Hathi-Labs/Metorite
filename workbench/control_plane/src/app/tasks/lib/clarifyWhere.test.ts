@@ -34,6 +34,20 @@ vi.mock("zustand", async (importOriginal) => {
   };
 });
 
+vi.mock("./api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./api")>();
+  return {
+    ...actual,
+    apiCapture: vi.fn(),
+    apiOrganize: vi.fn(),
+    apiPatchItem: vi.fn(),
+    fetchMyRoot: vi.fn(),
+    fetchUntriaged: vi.fn(),
+    fetchAreas: vi.fn(),
+  };
+});
+
+import { apiCapture, fetchMyRoot } from "./api";
 import { ClarifyModal } from "../components/ClarifyModal";
 import { ClarifyPanel } from "../components/ClarifyPanel";
 import { WherePicker } from "../components/WherePicker";
@@ -167,7 +181,6 @@ describe("initialWhere — no silent publish", () => {
       initialWhere({
         proposalProjectId: BOARD.id,
         itemProjectId: ROOT,
-        personal: true,
         areaIds: ["area-home"],
       }),
     ).toEqual({ suggested: BOARD.id });
@@ -178,7 +191,6 @@ describe("initialWhere — no silent publish", () => {
       initialWhere({
         proposalProjectId: "area-home",
         itemProjectId: ROOT,
-        personal: true,
         areaIds: ["area-home"],
       }),
     ).toEqual({ selected: "area-home" });
@@ -186,7 +198,7 @@ describe("initialWhere — no silent publish", () => {
 
   it("an unknown id is a suggestion, never a pre-selection", () => {
     expect(
-      initialWhere({ proposalProjectId: "x", itemProjectId: ROOT, personal: true, areaIds: [] }),
+      initialWhere({ proposalProjectId: "x", itemProjectId: ROOT, areaIds: [] }),
     ).toEqual({ suggested: "x" });
   });
 
@@ -195,14 +207,32 @@ describe("initialWhere — no silent publish", () => {
       initialWhere({
         proposalProjectId: BOARD.id,
         itemProjectId: BOARD.id,
-        personal: false,
         areaIds: [],
       }),
     ).toEqual({ selected: BOARD.id });
   });
 
+  it("fails closed: a board task never takes an inferred OTHER company project", () => {
+    expect(
+      initialWhere({ proposalProjectId: "p-other", itemProjectId: BOARD.id, areaIds: [] }),
+    ).toEqual({ suggested: "p-other" });
+  });
+
+  it("fails closed with personalRootId = null: the panel pre-selects nothing", () => {
+    // A first-time member, or a failed fetchMyRoot. isPersonalTask reads the
+    // capture as a board task here, and the rule must not care.
+    seed({ personalRootId: null });
+    expect(isPersonalTask(CAPTURE, null, ["area-home"])).toBe(false);
+    const html = renderToStaticMarkup(createElement(ClarifyPanel, { item: CAPTURE }));
+    // The heuristic did infer the board: the banner offers it by name.
+    expect(html).toContain("Company board · visible to the team");
+    // The destination chip names what Accept files into. It names no project.
+    expect(html).toMatch(/>Local<\/span>/);
+    expect(html).not.toMatch(/Local · Pricing page/);
+  });
+
   it("no proposal project starts on No project", () => {
-    expect(initialWhere({ itemProjectId: ROOT, personal: true, areaIds: [] })).toEqual({});
+    expect(initialWhere({ itemProjectId: ROOT, areaIds: [] })).toEqual({});
   });
 
   it("the local heuristic does infer the board for the capture — so the rule is load-bearing", () => {
@@ -270,5 +300,17 @@ describe("ClarifyPanel — a personal capture with an inferred company project",
     expect(html).not.toContain("Local project");
     // The recommendation chip names what Accept files into — nothing yet.
     expect(html).not.toMatch(/· Pricing page/);
+  });
+});
+
+describe("personalRootId is learned once a capture creates the root", () => {
+  it("a live capture with no root yet reads GET /my/project and stores the id", async () => {
+    seed({ backend: "live", personalRootId: null, settings: { captureDedup: false } as never });
+    vi.mocked(apiCapture).mockResolvedValue({ ...CAPTURE, id: "srv-1" });
+    vi.mocked(fetchMyRoot).mockResolvedValue({ id: "root-new", name: "Me" });
+    useTaskStore.getState().capture("First capture ever");
+    for (let i = 0; i < 6; i += 1) await new Promise((r) => setTimeout(r, 0));
+    expect(fetchMyRoot).toHaveBeenCalledTimes(1);
+    expect(useTaskStore.getState().personalRootId).toBe("root-new");
   });
 });
