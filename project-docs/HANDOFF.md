@@ -95,28 +95,40 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-175 · Set the Hathi Labs tenant org's DOMAIN, or its people cannot ask to join · [OWNER]
+### H-175 · 🟡 OPTIONAL — a tenant org's DOMAIN is opt-in, and nothing is blocked without it · [OWNER]
 - **Check:** ask the TENANT database, and not the Console:
   `SELECT slug, domain FROM organization ORDER BY created_at;`
-  A row whose `domain` is NULL means nobody with that company's addresses can
-  reach its Requests tab, and this entry is open.
+  A NULL `domain` is a legitimate resting state, so this entry never becomes
+  "overdue". Read it when somebody asks why a colleague's knock did not appear.
 - **Measured 2026-09-24:** `default` (Fracktal Works) carries
   `domain = 'fracktal.in'`. `hathi-labs-llp` carries **NULL**.
-- **Why it matters now.** H-118 shipped the same day. A knock is filed against
-  the organization whose `domain` matches the caller's email domain, and it is
-  filed nowhere when no organization claims that domain (owner decision,
-  2026-09-24). So today an `@hathilabs.com` colleague who signs in reaches the
-  self-serve path that creates them their OWN organization, in place of the
-  Requests tab of the organization they work for.
-- ⚠️ **This is a one-field write to a LIVE organization**, which is why it is
-  owner-gated and not done. It also decides who may ask to join that tenant,
-  so it is a security-relevant routing key and not bookkeeping.
-- **The act:** set `organization.domain` to the company's real mail domain, on
-  the TENANT database, for every organization that must accept knocks.
+- ⚠️ **Re-scoped the same day, after the owner asked whether this needs DNS.**
+  It does not. `organization.domain` is a plain text column, and the resolver
+  folds the part of the address after `@` and compares. Nothing is published,
+  nothing is verified, and neither side touches a DNS zone.
+- **What the owner decided, 2026-09-24.** **Invite is the main way in.** A
+  domain is an OPT-IN shortcut per organization, which is the shape Atlassian
+  (approved domains) and Slack both use. With no domain set, a colleague who
+  signs in reaches the self-serve path and an admin invites them — the
+  ordinary flow, and the default for every product of this kind.
+- **So what setting it BUYS:** a colleague who signs in before anybody invites
+  them lands in that organization's Requests tab, in place of a dead end. That
+  is worth having when people onboard themselves faster than an admin can
+  invite them. It is worth nothing while the admin invites first.
+- ⚠️ **What it COSTS, and the part still missing.** Nothing proves the
+  organization owns the domain it claims. The public mail domains are refused
+  by name now (`_PUBLIC_MAIL_DOMAINS`, 2026-09-24), which removes the
+  unbounded case. The bounded one remains: one customer could claim another's
+  domain and receive their colleagues' knocks. **The real answer is domain
+  verification — a DNS TXT record, the Atlassian model — and it is NOT built.**
+  Build it before a customer sets a domain you did not set for them.
+- **The act, when it is wanted:** set `organization.domain` on the TENANT
+  database, for the organizations that should accept knocks.
   📌 Two organizations must never claim ONE domain. The resolver refuses to
   guess between them and files nothing, which is safe and also silent.
-- **Authority:** D15 · `colleague_onboarding.md` §6 · H-109 (the two planes)
-- **Added:** 2026-09-24 · the H-118 session
+- **Authority:** D15 · `colleague_onboarding.md` §6 · H-109 (the two planes) ·
+  owner decision 2026-09-24
+- **Added:** 2026-09-24 · the H-118 session, re-scoped the same day
 
 ### H-174 · `--warning` is the same bright yellow in both colour modes, so warning TEXT is unreadable on white · [AGENT]
 - **Check:** `grep -n "\-\-warning:" workbench/control_plane/src/app/globals.css`.
