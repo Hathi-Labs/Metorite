@@ -1521,3 +1521,26 @@ async def test_a_zero_reaches_the_report_card(monkeypatch) -> None:
     card = specs[0]["props"]["data"]
     assert {"label": "Cancelled", "value": 0} in card["stats"]
     assert card["tables"][0]["rows"][0]["cells"] == ["Apollo", "4", "0"]
+
+
+@pytest.mark.parametrize("name", sorted(__import__("skill_projects.views", fromlist=["x"]).REPORT_CARD_SECTIONS))
+def test_every_report_card_section_labels_every_key(name: str) -> None:
+    """R7 (fix round 4): every section, not only finished and load. Putting a
+    raw key back as a label in any entry turns this red."""
+    from skill_projects.views import REPORT_CARD_SECTIONS, _card_section
+
+    spec = REPORT_CARD_SECTIONS[name]
+    section: dict[str, Any] = {key: 7 for key, _ in spec["stats"]}
+    if spec.get("rows"):
+        section[spec["rows"]] = [{key: "x" for key, _ in spec["columns"]}]
+    stats, table = _card_section(name, section)
+
+    assert spec["title"] != name and "_" not in spec["title"]
+    assert [s["label"] for s in stats] == [label for _, label in spec["stats"]]
+    for key, label in [*spec["stats"], *spec.get("columns", [])]:
+        assert label != key, f"{name}: {key} is labelled with its raw key"
+        assert "_" not in label, f"{name}: {label}"
+    if spec.get("rows"):
+        assert table is not None
+        assert table["title"] == spec["title"]
+        assert table["columns"] == [label for _, label in spec["columns"]]
