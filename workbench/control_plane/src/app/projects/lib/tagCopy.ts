@@ -17,7 +17,12 @@ import type { DeleteCopy } from "./deleteCopy";
 
 const tasks = (n: number) => `${n} task${n === 1 ? "" : "s"}`;
 
-/** Deleting one tag. `taskCount` is the registry's own count. */
+/**
+ * Deleting one tag. `task_count` is the registry's count of OPEN tasks
+ * (`tags.py` filters `archived_at IS NULL`), but the delete also strips the
+ * tag from archived tasks. So the copy names open tasks and says archived
+ * ones lose it too. It never says that no task wears it.
+ */
 export function tagDeleteCopy(tag: { name: string; task_count?: number | null }): DeleteCopy {
   const n = tag.task_count ?? 0;
   return {
@@ -25,8 +30,9 @@ export function tagDeleteCopy(tag: { name: string; task_count?: number | null })
     subject: tag.name,
     body:
       (n
-        ? `It is taken off ${tasks(n)} and deleted for good. The tasks stay.`
-        : "No task wears it. It is deleted for good.") + " This cannot be undone.",
+        ? `It is taken off ${n} open task${n === 1 ? "" : "s"}, and off any archived ones, and deleted for good. The tasks stay.`
+        : "No open task wears it. It is taken off any archived tasks and deleted for good.") +
+      " This cannot be undone.",
     note: null,
     confirmLabel: "Delete tag",
   };

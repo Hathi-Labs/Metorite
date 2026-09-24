@@ -22,9 +22,14 @@ describe("the words", () => {
     const copy = tagDeleteCopy({ name: "bug", task_count: 3 });
     expect(copy.subject).toBe("bug");
     expect(copy.body).toBe(
-      "It is taken off 3 tasks and deleted for good. The tasks stay. This cannot be undone.",
+      "It is taken off 3 open tasks, and off any archived ones, and deleted for good. The tasks stay. This cannot be undone.",
     );
-    expect(tagDeleteCopy({ name: "x", task_count: 0 }).body).toMatch(/^No task wears it\./);
+    // The count excludes archived tasks, and the delete strips them too, so
+    // a zero count must never claim that no task wears the tag.
+    const none = tagDeleteCopy({ name: "x", task_count: 0 }).body;
+    expect(none).toMatch(/^No open task wears it\./);
+    expect(none).toMatch(/archived/);
+    expect(none).not.toMatch(/^No task wears it/);
   });
 
   it("an org-wide rename states the count, or says it could not be read", () => {
