@@ -129,6 +129,12 @@ describe("the origin marker (S6g)", () => {
     }
   });
 
+  it("the Clarify header wears the same marker, not SourceBadge", () => {
+    const src = read("components/ClarifyPanel.tsx");
+    expect(src).not.toMatch(/SourceBadge/);
+    expect(src).toMatch(/<InboxOrigin item=\{item\} kind=\{personalTask \? "personal" : "board"\} \/>/);
+  });
+
   it("personal is a lock badge, a board row names its project and who assigned it", () => {
     const src = read("components/InboxOrigin.tsx");
     expect(src).toMatch(/<Badge tone="neutral" icon="Lock"[^>]*>\s*Personal\s*<\/Badge>/);

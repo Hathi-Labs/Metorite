@@ -24,7 +24,7 @@ import { apiClarifyPropose, apiSuggestTitle } from "../lib/api";
 import type { ConnectedProvider } from "../lib/mockData";
 import { Energy, MyTask, MyTasksProject, Person, Target } from "../lib/types";
 import { durationLabel, formatStatus, initials, originEmailHref, snoozeOptions } from "../lib/utils";
-import { SourceBadge } from "./SourceBadge";
+import { InboxOrigin } from "./InboxOrigin";
 import { AttachmentChips } from "./AttachmentComposer";
 import { WherePicker } from "./WherePicker";
 import {
@@ -761,11 +761,13 @@ export function ClarifyPanel({
       onKeyDownCapture={() => { dirtyRef.current = true; }}
     >
       <header className="border-b border-border bg-card px-5 py-4">
-        <div className="mb-2 flex items-center gap-2">
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
           <span className="rounded bg-primary/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
             {reclarify ? "Re-clarify" : "Clarify"}
           </span>
-          <SourceBadge source={item.source} provider={item.provider} />
+          {/* S6g — where it comes from, the Inbox row's own marker. The old
+              "Local" badge said the same thing on every task (D52). */}
+          <InboxOrigin item={item} kind={personalTask ? "personal" : "board"} />
         </div>
         <div className="flex items-start gap-2">
           {/* The title is directly editable — retype it, or use the context
