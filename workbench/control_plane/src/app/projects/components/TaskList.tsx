@@ -247,7 +247,7 @@ export function TaskList({
     <div
       tabIndex={0}
       onKeyDown={onKeyDown}
-      className="overflow-x-auto outline-none"
+      className="outline-none"
       aria-label="Task list — arrow keys move, Shift extends the selection, Enter opens"
     >
       <table className="w-full min-w-[640px] text-sm">

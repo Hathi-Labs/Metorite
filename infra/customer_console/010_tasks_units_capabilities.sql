@@ -219,12 +219,17 @@ WHERE NOT EXISTS (
 INSERT INTO model_capability (model, task, invocation, streams)
 SELECT tb.model, 'transcribe', 'atranscription', FALSE
 FROM tier_binding tb
-WHERE tb.task = 'transcribe'
+-- ⚠️ H-178 made `tier_binding.model` nullable, so a NULL here is a TOMBSTONE
+-- (the job was unbound) and not a model. `model_capability.model` is NOT
+-- NULL, so a replay against a database that holds one fails outright. On a
+-- fresh install there are no tombstones and this filter changes nothing.
+WHERE tb.task = 'transcribe' AND tb.model IS NOT NULL
 ON CONFLICT (model, task) DO NOTHING;
 
 -- Every other seeded binding is a chat model, and chat streams.
 INSERT INTO model_capability (model, task, invocation, streams)
 SELECT DISTINCT tb.model, 'chat', 'acompletion', TRUE
 FROM tier_binding tb
-WHERE tb.task = 'chat'
+-- ⚠️ The tombstone filter, for the reason above (H-178).
+WHERE tb.task = 'chat' AND tb.model IS NOT NULL
 ON CONFLICT (model, task) DO NOTHING;

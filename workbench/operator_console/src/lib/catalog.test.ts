@@ -163,12 +163,45 @@ describe("the surface", () => {
 
   it("offers no way to EDIT a binding or a rate", () => {
     // §6A.5: both are INSERT-only. A past invoice must stay readable against
-    // what it was actually charged on, so there is no PATCH and no DELETE.
+    // what it was actually charged on, so there is no PATCH and no PUT.
+    //
+    // 📌 **`DELETE` was on this list until 2026-09-24 (H-178), and the verb
+    // was standing in for the invariant.** The invariant is *no row is
+    // destroyed*. The tiers board now issues `DELETE /catalog/bindings` to
+    // take a job OFF THE AIR, and the Console answers it by APPENDING a
+    // tombstone — the superseded binding stays readable exactly as §6A.5
+    // requires. Keeping the verb banned would have banned the fix for a
+    // broken tier while changing nothing about what is destroyed.
+    //
+    // ⚠️ So the invariant is asserted where it is TRUE, in the test below,
+    // rather than inferred from a verb here.
     for (const f of [TIERS, DECLARE, RATECARD, BROWSER]) {
       expect(code(f)).not.toContain('method: "PATCH"');
-      expect(code(f)).not.toContain('method: "DELETE"');
       expect(code(f)).not.toContain('method: "PUT"');
     }
+    // The only DELETE allowed on this surface, and only from the tiers board.
+    for (const f of [DECLARE, RATECARD, BROWSER]) {
+      expect(code(f)).not.toContain('method: "DELETE"');
+    }
+  });
+
+  it("🔴 the unbind APPENDS a tombstone and destroys no row", () => {
+    // The invariant the verb used to stand for. Asserted against the Console
+    // route itself, because that is the only place it can be true or false.
+    const { readFileSync } = require("node:fs") as typeof import("node:fs");
+    const { join } = require("node:path") as typeof import("node:path");
+    const main = readFileSync(
+      join(
+        __dirname, "..", "..", "..", "..",
+        "apps/services/customer_console/customer_console/main.py",
+      ),
+      "utf8",
+    );
+    const route = main.slice(main.indexOf("def unbind_tier("));
+    const body = route.slice(0, route.indexOf("@app."));
+    expect(body).toContain("INSERT INTO tier_binding");
+    expect(body).not.toContain("DELETE FROM tier_binding");
+    expect(body).not.toContain("UPDATE tier_binding");
   });
 
   it("🔴 posts the WHOLE chain, never just the primary", () => {

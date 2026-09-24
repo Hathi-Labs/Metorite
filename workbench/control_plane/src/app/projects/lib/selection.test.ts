@@ -143,16 +143,26 @@ describe("buildRequest", () => {
     expect(JSON.stringify(request)).not.toContain("status_id");
   });
 
-  it("keeps a priority of zero, which is Low and not 'unset'", () => {
-    // The falsy-`0` trap: a truthiness check silently drops every attempt to
-    // set the lowest priority.
-    expect(buildRequest(["a"], draft({ importance: "0" }))?.patch).toEqual({
+  it("sets or clears ONE priority flag per action (D78)", () => {
+    // Review 2026-09-24. A selection is mixed, so "Leveraged" must never
+    // write Important as well. The old "set both" choice cleared Important on
+    // every selected task that had it.
+    expect(buildRequest(["a"], draft({ priority: "important:on" }))?.patch).toEqual({
+      importance: 2,
+    });
+    expect(buildRequest(["a"], draft({ priority: "important:off" }))?.patch).toEqual({
       importance: 0,
+    });
+    expect(buildRequest(["a"], draft({ priority: "leveraged:on" }))?.patch).toEqual({
+      leveraged: true,
+    });
+    expect(buildRequest(["a"], draft({ priority: "leveraged:off" }))?.patch).toEqual({
+      leveraged: false,
     });
   });
 
   it("leaves priority alone when the box was untouched", () => {
-    expect(buildRequest(["a"], draft({ status: "Done", importance: "" }))?.patch)
+    expect(buildRequest(["a"], draft({ status: "Done", priority: "" }))?.patch)
       .toEqual({ status: "Done" });
   });
 

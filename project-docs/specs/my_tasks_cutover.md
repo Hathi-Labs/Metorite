@@ -360,8 +360,8 @@ not in the detail body. The watch toggle was in the Projects header only.
 
 | Field | Decision | How |
 |---|---|---|
-| Priority | **Shared** | `pm_tasks.importance`, in D76's words (`IMPORTANCE_OPTIONS`). The shared body edits it. The My Tasks list column, the card chip, and a Priority sort, group and filter show it. My Tasks never writes it |
-| Important | **Mine**, D76 | The member's own answer on the overlay. High and Highest seed it while it is unstated. D77 does not change it. Every My Tasks control over the member's matrix says "Your focus", the name D76 gives the private row in Projects |
+| Priority | **Shared, amended by D78** | The matrix level, in both apps. Important is `importance >= 2`, and `Leveraged` is `pm_tasks.leveraged`. The shared body edits both. My Tasks writes them to the task |
+| Important | **Shared, D78** | One answer per task. The seed and the "Your focus" labels are gone. "Your focus" now names only the private card that holds Deep work and the action nudge |
 | Estimate | **Shared** | `pm_tasks.estimate_mins`. My Tasks' Estimate writes it. The planner reads it. Migration 216 copies the overlay values once |
 | Deadline | **Shared**, already `due_at` | A delegation never replaces a deadline the task has. The promised date is `expected_by` |
 | Start date | **Shared** | `start_date`, in the body of both apps. My inbox hides the task until the later of it and my own `defer_until`. "Today" is the member's own date, from `user_settings.timezone`, on the server and in the client |

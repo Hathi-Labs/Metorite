@@ -1917,6 +1917,27 @@ class CapabilityRemoveRequest(BaseModel):
     task: str | None = None
 
 
+class UnbindRequest(BaseModel):
+    """Take a job OFF the air. H-178.
+
+    🔴 **There was no way to do this, and that made a broken tier
+    permanent.** Owner report, 2026-09-24: `tier-stt` pointed at a Groq model
+    on a box whose only credential is DeepSeek, so every transcription failed
+    at the provider and billed zero. The advice was "unbind it", and the
+    console could not.
+
+    ⚠️ **A SEPARATE verb, and that is the whole safety of it.** The obvious
+    shape was to let `POST /catalog/bindings` accept an empty `models` list.
+    `BindingRequest.chain()` returns `[]` for an explicit empty list AND for a
+    caller that simply omitted the field — so a malformed request would have
+    taken a tier off the air, silently. A different verb cannot be reached by
+    forgetting something.
+    """
+
+    tier: str = Field(min_length=1)
+    task: str = Field(min_length=1)
+
+
 class BindingRequest(BaseModel):
     tier: str
     task: str
@@ -2057,7 +2078,11 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                 text(
                     "SELECT b.tier, b.task, b.model, b.rank, b.effective_from "
                     "FROM tier_binding b "
-                    "WHERE b.effective_from = ("
+                    # ⚠️ H-178: a NULL model is a tombstone, not a binding.
+                    # Surfacing one here would draw a chain step with no model
+                    # on the tiers board.
+                    "WHERE b.model IS NOT NULL "
+                    "  AND b.effective_from = ("
                     "    SELECT max(x.effective_from) FROM tier_binding x "
                     "    WHERE x.task = b.task AND x.tier = b.tier "
                     "      AND x.effective_from <= now()) "
@@ -2263,7 +2288,10 @@ def catalog_models(staff: Operator) -> dict[str, Any]:
                     "WHERE u.served_rank > 1 "
                     "  AND u.created_at >= now() - INTERVAL '14 days' "
                     "  AND EXISTS (SELECT 1 FROM tier_binding b "
-                    "              WHERE b.tier = u.tier AND b.task = u.task) "
+                    # ⚠️ H-178 — a tombstone alone is not a binding, so an
+                    # unbound tier stops counting as one here too.
+                    "              WHERE b.model IS NOT NULL "
+                    "                AND b.tier = u.tier AND b.task = u.task) "
                     "GROUP BY 1, u.tier, u.task, u.model, u.served_rank "
                     "ORDER BY 1 DESC, u.tier, u.task LIMIT 50"
                 )
@@ -2528,6 +2556,82 @@ _BLOCKING_BINDINGS_FOR_MODEL = (
     "            AND x.effective_from <= now())) "
     "ORDER BY b.task, b.tier, b.rank"
 )
+
+
+@app.delete("/catalog/bindings")
+def unbind_tier(req: UnbindRequest, staff: Operator) -> dict[str, Any]:
+    """Take a job off the air. An APPEND, never a delete. H-178.
+
+    🔴 **The gap this closes.** `tier-stt` pointed at a Groq model on a
+    box holding only a DeepSeek credential, so every transcription failed at
+    the provider and billed nothing. The right answer was to unbind it until
+    somebody sells speech-to-text, and there was no way to say that.
+
+    ⚠️ **It writes a TOMBSTONE and deletes nothing.** §6A.5 makes
+    `tier_binding` insert-only *"because a past invoice was computed against"*
+    it. Removing the rows would destroy the record of what served a call a
+    customer has already paid for. So this appends one row at a new
+    `effective_from` whose `model` is NULL. The newest set wins, as it always
+    has, and every earlier set stays readable.
+
+    ⚠️ **Idempotent, and it says which it did.** Unbinding an already
+    unbound job writes nothing and answers `already: true`. Appending a second
+    tombstone would be a row that changes no answer, and a reader comparing
+    two of them could not tell which mattered.
+
+    Refusals:
+      * **400** — no such task. The same check `bind_tier` makes, for the same
+        reason: a typo must not create a tombstone for a job nobody has.
+      * **404** — the job has no binding at all, so there is nothing to take
+        off the air. Distinct from `already`, which means it WAS bound and is
+        now tombstoned.
+    """
+    with get_engine().begin() as conn:
+        if not _task_exists(conn, req.task):
+            raise HTTPException(status_code=400, detail=f"unknown task {req.task!r}")
+
+        # The in-force set, under the same lock `bind_tier` takes, so an
+        # unbind and a concurrent bind cannot both believe they won.
+        rows = conn.execute(
+            text(
+                "SELECT model FROM tier_binding "
+                "WHERE tier = :tier AND task = :task "
+                "  AND effective_from = ("
+                "      SELECT max(x.effective_from) FROM tier_binding x "
+                "      WHERE x.tier = :tier AND x.task = :task "
+                "        AND x.effective_from <= now()) "
+                "FOR UPDATE"
+            ),
+            {"tier": req.tier, "task": req.task},
+        ).all()
+
+        if not rows:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"{req.tier!r} has no binding for {req.task!r}, so there is "
+                    f"nothing to take off the air"
+                ),
+            )
+        if all(r[0] is None for r in rows):
+            return {"tier": req.tier, "task": req.task, "already": True}
+
+        conn.execute(
+            text(
+                "INSERT INTO tier_binding (tier, task, model, rank, effective_from) "
+                "VALUES (:tier, :task, NULL, 1, now())"
+            ),
+            {"tier": req.tier, "task": req.task},
+        )
+        _audit(
+            conn,
+            None,
+            "catalog.unbind",
+            {"tier": req.tier, "task": req.task,
+             "was": [r[0] for r in rows if r[0] is not None]},
+            actor=staff.actor,
+        )
+    return {"tier": req.tier, "task": req.task, "already": False}
 
 
 @app.delete("/catalog/capabilities")

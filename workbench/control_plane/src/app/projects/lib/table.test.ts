@@ -15,11 +15,10 @@ import { describe, expect, it } from "vitest";
 
 import type { FieldDef } from "./customFields";
 import { DEFAULT_SHOWN, FIELD_KEYS } from "./shownFields";
+import { MATRIX_FLAG_OPTIONS, flagsOf, flagsPatch } from "./matrix";
 import {
-  IMPORTANCE_OPTIONS,
   TASK_SORT_KEYS,
   customKeyOf,
-  importanceLabel,
   nextSort,
   sortQuery,
   LIST_GATED_COLUMNS,
@@ -156,15 +155,16 @@ describe("customKeyOf", () => {
   });
 });
 
-describe("importance vocabulary", () => {
-  it("treats 0 as Low, never as unset — it is falsy", () => {
-    expect(importanceLabel(0)).toBe("Low");
-    expect(importanceLabel(null)).toBe("");
-    expect(importanceLabel(3)).toBe("Highest");
+describe("the priority cell's editor (D78)", () => {
+  it("offers a 'Not flagged' row so the flags can be cleared", () => {
+    expect(MATRIX_FLAG_OPTIONS[0]).toEqual({ value: "", label: "Not flagged" });
+    expect(flagsPatch("")).toEqual({ importance: 0, leveraged: false });
   });
 
-  it("offers an explicit unset row so the select can be emptied", () => {
-    expect(IMPORTANCE_OPTIONS[0]).toEqual({ value: "", label: "No priority" });
+  it("shows a row's current flags as the selected option", () => {
+    const values = MATRIX_FLAG_OPTIONS.map((o) => o.value);
+    expect(values).toContain(flagsOf({ importance: 2, leveraged: true }));
+    expect(values).toContain(flagsOf({ importance: null, leveraged: null }));
   });
 });
 

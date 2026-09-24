@@ -95,6 +95,40 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-178 · An operator can take a job off the air. Two callers cannot yet · [AGENT]
+- **Check:** `rg -c "model IS NOT NULL" packages/acb_llm apps/services/gateway`
+  → a zero in a file that reads `tier_binding` means a reader was added
+  without the tombstone filter, and this is open again.
+- 📌 **BUILT 2026-09-24.** `DELETE /catalog/bindings` takes a job off the air
+  by APPENDING a row whose `model` is NULL. Migration 034 makes the column
+  nullable. The tiers board offers it where the dead Save used to be.
+- 🔴 **Why it was needed.** `tier-stt` pointed at a Groq model on a box
+  holding only a DeepSeek credential, so every transcription failed at the
+  provider and billed zero. The answer was to unbind it and the console could
+  not: `POST /catalog/bindings` refuses an empty chain.
+- ⚠️ **A SEPARATE verb, and that is the safety of it.** Letting `POST` accept
+  an empty `models` list would mean a caller that simply forgot the field
+  takes a tier off the air. A different verb cannot be reached by forgetting.
+- 🔴 **Two things the tests caught that reading did not.**
+  `resolve_tier` took the newest ROW that had a model, so it stepped over a
+  tombstone and kept serving the superseded binding — unbinding would have
+  changed nothing the Router does. And migration 010 backfills
+  `model_capability.model` from `tier_binding.model`, which is NOT NULL, so a
+  ladder replay against a database holding one tombstone died outright.
+- ⚠️ **Two fences moved from a VERB to the rule they stood for.**
+  `test_no_route_updates_or_deletes_a_binding_or_a_rate` and its frontend twin
+  banned the `DELETE` method. The rule is *no row is destroyed*, and this
+  route destroys none. Both now read the SQL, which is where the rule can be
+  true or false. `PATCH` and `PUT` stay banned on their names.
+- ⚠️ **WHAT IS LEFT: two readers outside the Console.** The check above names
+  them. `packages/acb_llm` and the gateway do not read `tier_binding` today,
+  and if either starts, it needs the filter or it will resolve a model named
+  NULL.
+- **Fences:** `tests/unit/test_unbind_a_tier.py` (11, R8).
+- **Authority:** owner report, 2026-09-24 — *"Shouldn't you be able to allow
+  me to remove a model from a tier?"* · §6A.5
+- **Added:** 2026-09-24 · the unbind session.
+
 ### H-177 · Nobody can prove an organization owns the domain it claims · [AGENT]
 - **Check:** `rg -n "domain" infra/postgres/*.sql | rg -i "verif|token|txt"`
   → no hit means verification is unbuilt, and this is open. Also
@@ -220,22 +254,22 @@ line — never reclaim a number by deleting the other entry.
   renumbered the same day: #431 took H-172 three minutes before #429
   merged, and #429 merged second.
 
-### H-173 · The chat tools let the model write Priority 4, and the scale stops at 3 · [AGENT]
+### H-173 · The chat tools still speak the retired 0-4 priority scale · [AGENT]
 - **Check:** `grep -rn "importance is 0 to 4" apps/skills/skill-projects/`.
   Any hit means this is open.
-- **What happens.** The Projects scale is 0 Low to 3 Highest
-  (`IMPORTANCE_OPTIONS`, D76). Four places in `skill_projects`
-  (`guarded.py`, `inbox.py`, `forms.py` twice) tell the model the range is
-  0 to 4 and accept a 4. Nothing else refuses it: `pm_tasks.importance` is a
-  bare `SMALLINT` with no CHECK, and `TaskModel.importance` is `int | None`.
-  A 4 then prints as a bare "4" in the table and draws no chip on a card.
-- **The D76 seed is safe.** `>= 2` counts a 4 as important. Only the display
-  breaks.
-- **Why an agent did not fix it here.** The owner is building the Projects
-  chat in a separate stream. Change the four messages and the four bounds to
-  0 to 3 there, or add a CHECK (0 to 3) in an expand/contract migration after
-  a count of rows above 3 on production.
-- Added: 2026-09-23, found while building D76.
+- **What happens.** D78 (2026-09-24) retired the Low-to-Highest scale.
+  Projects and My Tasks show the matrix level, from the shared Important
+  (`importance >= 2`) and `Leveraged` (`pm_tasks.leveraged`). The chat tools
+  in `skill_projects` (`writes.py`, `guarded.py`, `inbox.py`, `forms.py`)
+  still ask the model for an `importance` from 0 to 4. They cannot set
+  `Leveraged`. The chat cards (`genUITemplates.tsx`) and the CSV export
+  (`routes/projects/export.py`) print the raw number.
+- **Do.** Give the tools `important` and `leveraged` booleans, and show the
+  level in the cards and the export. `lib/matrix.ts` and
+  `routes/tasks/priority.py` own the level. Keep `importance` accepted for
+  one release, and read 2 or more as Important.
+- **Authority:** `work_plan.md` §3 D78.
+- Added: 2026-09-23, found while building D76. Rewritten 2026-09-24 for D78.
 
 
 ### H-172 · The shared scratch DB cannot replay the migration ladder any more · [AGENT]

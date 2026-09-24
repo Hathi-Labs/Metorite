@@ -227,6 +227,12 @@ def _fold_scalars(target: Any, sources: list[Any]) -> dict[str, Any]:
     if priorities and max(priorities) != getattr(target, "importance", None):
         values["importance"] = max(priorities)
 
+    # D78: Leveraged is the matrix's shared upside flag. The merged task is
+    # leveraged when any task in the merge was. NULL reads as false.
+    leveraged = any(bool(getattr(t, "leveraged", None)) for t in every)
+    if leveraged and not bool(getattr(target, "leveraged", None)):
+        values["leveraged"] = True
+
     # Summed, because two tasks' work is still two tasks' work. A task with
     # no estimate contributes nothing rather than zeroing the total.
     estimates = [

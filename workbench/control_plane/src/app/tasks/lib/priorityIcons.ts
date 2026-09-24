@@ -7,20 +7,14 @@
 
 import { themedIcon } from "@/components/Icon";
 import type { ThemedIcon } from "@/components/Icon";
-import type { ActionMode, PriorityCell } from "./priority";
+import { CELL_ICON_NAME, type ActionMode, type PriorityCell } from "./priority";
 
 /** Priority level → icon. Matches CELL_META's order/meaning:
  *  🔥 critical, 🚨 urgent, 📈 high-leverage, ❗ important,
  *  🚀 quick-leverage, 🧪 speculative-bet, ↓ low-priority. */
-export const CELL_ICON: Record<PriorityCell, ThemedIcon> = {
-  critical: themedIcon("Flame"),
-  urgent: themedIcon("Siren"),
-  "high-leverage": themedIcon("TrendingUp"),
-  important: themedIcon("CircleAlert"),
-  "quick-leverage": themedIcon("Rocket"),
-  "speculative-bet": themedIcon("FlaskConical"),
-  "low-priority": themedIcon("ArrowDownWideNarrow"),
-};
+export const CELL_ICON = Object.fromEntries(
+  Object.entries(CELL_ICON_NAME).map(([cell, name]) => [cell, themedIcon(name)]),
+) as Record<PriorityCell, ThemedIcon>;
 
 /** Action-mode / suggestion → icon: 🎯 do, 🙋 delegate (hand to a person),
  *  📅 schedule, 🚫 drop (eliminate/ignore). Shared by the Suggestion column,

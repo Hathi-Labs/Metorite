@@ -198,6 +198,10 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # behind elevation would teach people the break-glass token.
     ("POST", "/catalog/feed/sync"): _R(EDITOR),
     ("POST", "/catalog/bindings"): _R(ADMIN, elevated=True),
+    # H-178 — taking a job OFF the air. The SAME bar as binding it, because
+    # the blast radius is the same size in the other direction: a wrong bind
+    # answers at the wrong price, and a wrong unbind stops answering at all.
+    ("DELETE", "/catalog/bindings"): _R(ADMIN, elevated=True),
     # "Try a decision" (CP-13b, §6A.14). It spends OUR platform key on a real
     # vendor call, so ADMIN. It changes nothing a customer runs on or pays,
     # so NO window: an operator proves a binding right after saving it, and

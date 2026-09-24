@@ -28,6 +28,7 @@ import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { emitAgentEvent } from "@/lib/agentEvents";
 import { applyStateSnapshot, applyStateDelta } from "@/hooks/useAgentState";
 import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, type StreamFold } from "@/lib/chatStream";
+import { isInterruptedReply } from "@/lib/chatInterrupted";
 
 // Re-export types for backward compatibility with AgentChat.tsx imports.
 export type { ChatMessage, ToolEvent };
@@ -472,12 +473,10 @@ export function useAgentChat({
     (async () => {
       const state = getSessionState(threadId);
       const last = state.messages[state.messages.length - 1];
-      const localInterrupted = Boolean(
-        last?.role === "assistant" && (
-          last.streaming ||
-          (last.content && !/[.?!]\s*$/.test(last.content.trim()))
-        )
-      );
+      // Only the saved `streaming` flag starts a recovery. A punctuation guess
+      // used to, and a finished reply that ends in a list, table or card then
+      // showed "Reconnecting…" and a Stop button on every reopen.
+      const localInterrupted = isInterruptedReply(last);
 
       // Server truth: is an agent actually running for this thread?
       let serverActive = false;

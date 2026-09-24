@@ -1,40 +1,63 @@
 /**
- * D77 (F1) — one word, one meaning in My Tasks.
+ * D78 — one priority system, one word, in My Tasks.
  *
- * "Priority" is ONLY the task's shared `importance`, in D76's vocabulary
- * (read here as `orgPriority`). Every control over the member's private
- * matrix says "Your focus", the name D76 gives the private row in Projects.
+ * D77 had two answers to one question. "Priority" was the shared 0-3 field
+ * (`orgPriority`), and "Your focus" was the member's private matrix. D78
+ * (owner, 2026-09-24) retires the 0-3 field. "Priority" is now the matrix
+ * level, which is the task's shared level in both apps.
  *
  * This file pins both halves:
- *   1. the toolbar's sort, group and filter, and the matrix view, never call
- *      a matrix option "Priority";
- *   2. the "Priority" sort, group and filter order and slice by `orgPriority`,
- *      so a member can rank their list by the company's priority.
+ *   1. no My Tasks source names `orgPriority`, and only the private "Your
+ *      focus" card in ItemDetail uses those words.
+ *   2. the matrix sort, group, filter, view and clarify section say
+ *      "Priority", and they order and slice by the matrix level.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { COLUMNS } from "./columns";
 import {
+  DEFAULT_FILTERS,
   DEFAULT_SORT,
-  NO_ORG_PRIORITY_FACET,
   SORT_LABEL,
   applyFilters,
   applySort,
   groupItems,
-  DEFAULT_FILTERS,
 } from "./ordering";
 import type { MyTask } from "./types";
 
-const read = (rel: string) =>
-  readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+const TASKS = fileURLToPath(new URL("..", import.meta.url));
 
-const TOOLBAR = read("../components/TaskToolbar.tsx");
-const ITEM_LIST = read("../components/ItemList.tsx");
+const raw = (path: string) => readFileSync(path, { encoding: "utf-8" });
 
-function task(id: string, orgPriority?: number, extra: Partial<MyTask> = {}): MyTask {
+/** Code only. A comment may tell the history of the old names. */
+const code = (path: string) =>
+  raw(path)
+    .replace(/\{\/\*[\s\S]*?\*\/\}/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+
+function sources(dir: string): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) out.push(...sources(path));
+    else if (/\.(ts|tsx)$/.test(name) && !/\.test\.ts$/.test(name)) out.push(path);
+  }
+  return out;
+}
+
+const rel = (path: string) => relative(TASKS, path).replace(/\\/g, "/");
+const read = (relPath: string) => code(join(TASKS, relPath));
+
+const TOOLBAR = read("components/TaskToolbar.tsx");
+const ITEM_LIST = read("components/ItemList.tsx");
+
+function task(id: string, extra: Partial<MyTask> = {}): MyTask {
   return {
     id,
     source: "LOCAL",
@@ -43,91 +66,90 @@ function task(id: string, orgPriority?: number, extra: Partial<MyTask> = {}): My
     isMine: true,
     createdAt: "2026-09-01T00:00:00Z",
     updatedAt: "2026-09-01T00:00:00Z",
-    orgPriority,
     ...extra,
   };
 }
 
-describe("no My Tasks control calls the matrix 'Priority' (D77 F1)", () => {
-  it("labels the matrix sort 'Your focus' and the shared sort 'Priority'", () => {
-    expect(SORT_LABEL.priority).toBe("Your focus");
-    expect(SORT_LABEL.orgPriority).toBe("Priority");
-    // The default stays the matrix rank.
-    expect(DEFAULT_SORT.field).toBe("priority");
+describe("the retired names are gone from My Tasks (D78)", () => {
+  it("has no source that names orgPriority", () => {
+    const offenders = sources(TASKS).filter((f) => /orgPriority/.test(raw(f)));
+    expect(offenders.map(rel)).toEqual([]);
   });
 
-  it("labels the matrix group-by 'Your focus' and the shared one 'Priority'", () => {
-    const group = TOOLBAR.slice(TOOLBAR.indexOf("const GROUP_LABEL"));
-    expect(group).toMatch(/\n\s*priority: "Your focus",/);
-    expect(group).toMatch(/\n\s*orgPriority: "Priority",/);
-    expect(TOOLBAR).toMatch(/"priority", "orgPriority"/);
-  });
-
-  it("labels the matrix filter 'Your focus' and the shared one 'Priority'", () => {
-    expect(TOOLBAR).toMatch(/key: "priorities", label: "Your focus"/);
-    expect(TOOLBAR).toMatch(/key: "orgPriorities", label: "Priority"/);
-  });
-
-  it("names the matrix view 'Your focus'", () => {
-    expect(ITEM_LIST).toMatch(/priority: \{ title: "Your focus"/);
-  });
-
-  it("names the clarify card's matrix section 'Your focus'", () => {
-    const clarify = read("../components/ClarifyPanel.tsx");
-    expect(clarify).toContain('<SubField label="Your focus" inline>');
-    expect(clarify).not.toContain('<SubField label="Priority"');
-  });
-
-  it("never pairs a matrix key with the word Priority anywhere in the toolbar", () => {
-    // Every `priority` / `priorities` key in the toolbar is the matrix.
-    expect(TOOLBAR).not.toMatch(/\bpriority: "Priority"/);
-    expect(TOOLBAR).not.toMatch(/key: "priorities", label: "Priority"/);
+  it("says 'Your focus' only on the private ItemDetail card", () => {
+    // The card holds what is MINE about a task (Deep work). It is not the
+    // matrix, so it keeps its own name.
+    const users = sources(TASKS).filter((f) => /Your focus/.test(code(f)));
+    expect(users.map(rel)).toEqual(["components/ItemDetail.tsx"]);
   });
 });
 
-describe("the 'Priority' controls read the shared orgPriority (D77 F1)", () => {
+describe("the matrix controls say 'Priority' (D78)", () => {
+  it("labels the matrix sort 'Priority', and it stays the default", () => {
+    expect(SORT_LABEL.priority).toBe("Priority");
+    expect(DEFAULT_SORT.field).toBe("priority");
+  });
+
+  it("labels the matrix group-by 'Priority'", () => {
+    const group = TOOLBAR.slice(TOOLBAR.indexOf("const GROUP_LABEL"));
+    expect(group).toMatch(/\n\s*priority: "Priority",/);
+  });
+
+  it("labels the matrix filter 'Priority'", () => {
+    expect(TOOLBAR).toMatch(/key: "priorities", label: "Priority"/);
+  });
+
+  it("names the matrix view 'Priority'", () => {
+    expect(ITEM_LIST).toMatch(/priority: \{ title: "Priority"/);
+  });
+
+  it("names the clarify card's matrix section 'Priority'", () => {
+    const clarify = read("components/ClarifyPanel.tsx");
+    expect(clarify).toContain('<SubField label="Priority" inline>');
+    expect(clarify).not.toContain('<SubField label="Your focus"');
+  });
+
+  it("has exactly one 'Priority' list column", () => {
+    expect(COLUMNS.filter((c) => c.label === "Priority").map((c) => c.key)).toEqual([
+      "priority",
+    ]);
+    expect(COLUMNS.some((c) => (c.key as string) === "focus")).toBe(false);
+  });
+});
+
+describe("the 'Priority' controls read the matrix level (D78)", () => {
+  // No due dates, so no level depends on the clock.
   const items = [
-    task("normal", 1),
-    task("unset"),
-    task("highest", 3),
-    task("low", 0),
-    task("high", 2),
+    task("low"),
+    task("bet", { leveraged: true }),
+    task("important", { important: true }),
+    task("high-leverage", { important: true, leveraged: true }),
   ];
 
-  it("sorts Highest first, unset last, and reverses on desc", () => {
-    const asc = applySort(items, { field: "orgPriority", dir: "asc" }).map((i) => i.id);
-    expect(asc).toEqual(["highest", "high", "normal", "low", "unset"]);
-    const desc = applySort(items, { field: "orgPriority", dir: "desc" }).map((i) => i.id);
-    expect(desc).toEqual(["low", "normal", "high", "highest", "unset"]);
+  it("sorts by matrix rank, and reverses on desc", () => {
+    const asc = applySort(items, { field: "priority", dir: "asc" }).map((i) => i.id);
+    expect(asc).toEqual(["high-leverage", "important", "bet", "low"]);
+    const desc = applySort(items, { field: "priority", dir: "desc" }).map((i) => i.id);
+    expect(desc).toEqual(["low", "bet", "important", "high-leverage"]);
   });
 
-  it("ignores the member's own flags when sorting by Priority", () => {
-    // My "important" on a Low task does not lift it in the company's order.
-    const mine = [task("low-but-mine", 0, { important: true }), task("high", 2)];
-    const asc = applySort(mine, { field: "orgPriority", dir: "asc" }).map((i) => i.id);
-    expect(asc).toEqual(["high", "low-but-mine"]);
-  });
-
-  it("groups in D76's words, Highest first", () => {
-    const groups = groupItems(items, "orgPriority");
+  it("groups by level, in rank order", () => {
+    const groups = groupItems(items, "priority");
     expect(groups.map((g) => g.label)).toEqual([
-      "Highest", "High", "Normal", "Low", "No priority",
+      "High-Leverage",
+      "Important",
+      "Speculative Bet",
+      "Low Priority",
     ]);
   });
 
-  it("filters by the shared level, and by 'no priority'", () => {
-    const high = applyFilters(items, { ...DEFAULT_FILTERS, orgPriorities: ["3", "2"] });
-    expect(high.map((i) => i.id).sort()).toEqual(["high", "highest"]);
-    const none = applyFilters(items, {
+  it("filters by level", () => {
+    const hit = applyFilters(items, {
       ...DEFAULT_FILTERS,
-      orgPriorities: [NO_ORG_PRIORITY_FACET],
+      priorities: ["important", "high-leverage"],
     });
-    expect(none.map((i) => i.id)).toEqual(["unset"]);
-  });
-
-  it("reads a filter state saved before the facet existed as 'any'", () => {
-    const legacy = { ...DEFAULT_FILTERS };
-    delete legacy.orgPriorities;
-    expect(applyFilters(items, legacy)).toHaveLength(items.length);
+    expect(hit.map((i) => i.id).sort()).toEqual(["high-leverage", "important"]);
+    const low = applyFilters(items, { ...DEFAULT_FILTERS, priorities: ["low-priority"] });
+    expect(low.map((i) => i.id)).toEqual(["low"]);
   });
 });

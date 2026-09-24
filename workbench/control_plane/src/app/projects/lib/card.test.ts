@@ -11,6 +11,7 @@ import { readFileSync, readdirSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
+import { CELL_ICON_NAME, CELL_META, type PriorityCell } from "@/app/tasks/lib/priority";
 import { accentForHue } from "@/lib/statusAccent";
 import { TASK_SOURCES, chipKind, taskMeta } from "@/lib/taskCard";
 
@@ -165,9 +166,10 @@ describe("cardChips", () => {
       ).map((c) => [c.key, c.label]),
     ).toEqual([
       ["blocked", "1"],
-      // S6 — priority sits between "do not start this" and "when": that is
-      // the order a reader scans a column in.
-      ["importance", "Highest"],
+      // S6. Priority sits between "do not start this" and "when". That is
+      // the order a reader scans a column in. D78 names the matrix level.
+      // Important and due in the past is Urgent.
+      ["importance", "Urgent"],
       ["due", "2h ago"],
       ["subtasks", "1/3"],
       ["tags:ops", "ops"],
@@ -195,55 +197,71 @@ describe("cardChips", () => {
   });
 });
 
-describe("the priority chip (S6)", () => {
-  const chip = (importance: number | null | undefined) =>
-    cardChips(row({ importance }), NOW).find((c) => c.key === "importance");
+describe("the priority chip (D78)", () => {
+  // One row per matrix level. A close due date makes a task urgent.
+  const SOON = hours(4);
+  const LEVEL_ROWS: Record<PriorityCell, Partial<TaskRow>> = {
+    critical: { importance: 2, leveraged: true, due_at: SOON },
+    urgent: { importance: 2, due_at: SOON },
+    "high-leverage": { importance: 2, leveraged: true },
+    important: { importance: 2 },
+    "quick-leverage": { leveraged: true, due_at: SOON },
+    "speculative-bet": { leveraged: true },
+    "low-priority": { importance: 0, due_at: SOON },
+  };
+  const chip = (over: Partial<TaskRow>) =>
+    cardChips(row(over), NOW).find((c) => c.key === "importance");
+  const LOUD = (Object.keys(LEVEL_ROWS) as PriorityCell[]).filter(
+    (cell) => cell !== "low-priority"
+  );
 
-  it("says nothing at all when nobody set a priority", () => {
-    // ⚠️ `null` is "nobody said" and MUST NOT read as Low. The select's empty
-    // row PATCHes null precisely so that distinction survives.
-    expect(chip(null)).toBeUndefined();
-    expect(chip(undefined)).toBeUndefined();
+  it("draws no chip for Low Priority, which every unflagged task is", () => {
+    expect(chip({})).toBeUndefined();
+    expect(chip({ importance: null })).toBeUndefined();
+    expect(chip({ importance: 0 })).toBeUndefined();
+    expect(chip({ importance: 1 })).toBeUndefined();
+    expect(chip(LEVEL_ROWS["low-priority"])).toBeUndefined();
   });
 
-  it("draws Low, which is a decision somebody took", () => {
-    // The falsy trap: `if (!importance)` would silence exactly this row.
-    expect(chip(0)?.label).toBe("Low");
+  it("reads Important from importance 2 and up", () => {
+    expect(chip({ importance: 2 })?.label).toBe("Important");
+    expect(chip({ importance: 3 })?.label).toBe("Important");
   });
 
-  it("speaks the table cell's vocabulary, word for word", () => {
-    // One label source (`table.importanceLabel`), two surfaces. A second map
-    // here is how the card starts calling a 2 "Medium".
-    expect([0, 1, 2, 3].map((v) => chip(v)?.label)).toEqual([
-      "Low",
-      "Normal",
-      "High",
-      "Highest",
-    ]);
+  it("speaks the matrix's labels, word for word", () => {
+    // One label source (CELL_META), two apps. A second map here is how
+    // Projects starts to call a level by another name.
+    for (const cell of LOUD) {
+      const drawn = chip(LEVEL_ROWS[cell]);
+      expect(drawn?.label, cell).toBe(CELL_META[cell].label);
+      expect(drawn?.title, cell).toBe(`Priority: ${CELL_META[cell].label}`);
+    }
   });
 
-  it("escalates the tone only at the top of the scale", () => {
-    // A scale where three of four levels are loud is a scale nobody reads.
-    expect([0, 1, 2, 3].map((v) => chip(v)?.tone)).toEqual([
-      "muted",
-      "muted",
-      "warning",
+  it("derives urgency from the due date, never from a stored value", () => {
+    expect(chip({ importance: 2, due_at: hours(4) })?.label).toBe("Urgent");
+    expect(chip({ importance: 2, due_at: hours(24 * 7) })?.label).toBe("Important");
+  });
+
+  it("steps the tone down with the level", () => {
+    expect(LOUD.map((cell) => chip(LEVEL_ROWS[cell])?.tone)).toEqual([
       "danger",
+      "danger",
+      "warning",
+      "warning",
+      "muted",
+      "muted",
     ]);
   });
 
   it("gives every level its own glyph, so the tone is never the only signal", () => {
-    const icons = [0, 1, 2, 3].map((v) => chip(v)!.icon!);
-    expect(new Set(icons).size).toBe(4);
-    // Reused glyphs would collide with the chips beside it: `AlertTriangle`
-    // is overdue's, `Ban` is blocked's.
+    const icons = LOUD.map((cell) => chip(LEVEL_ROWS[cell])!.icon!);
+    expect(icons).toEqual(LOUD.map((cell) => CELL_ICON_NAME[cell]));
+    expect(new Set(icons).size).toBe(LOUD.length);
+    // Reused glyphs would collide with the chips beside it. AlertTriangle
+    // is the overdue chip, and Ban is the blocked chip.
     expect(icons).not.toContain("AlertTriangle");
     expect(icons).not.toContain("Ban");
-  });
-
-  it("ignores a value outside the vocabulary rather than inventing a chip", () => {
-    // An imported workspace can carry a 7. A chip labelled "7" says nothing.
-    expect(chip(7)).toBeUndefined();
   });
 });
 

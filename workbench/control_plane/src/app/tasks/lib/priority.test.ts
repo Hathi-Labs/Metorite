@@ -3,22 +3,29 @@
  *
  * ⚠️ This file did not exist until 2026-09-23. `priority.ts` calls itself
  * "pure + unit-testable; imported everywhere the UI slices by priority", and
- * nothing tested it. The org-priority seed changes `priorityInputs`, the one
- * function every surface reads, so the formula it feeds is pinned here first.
+ * nothing tested it. `priorityInputs` is the one function every surface
+ * reads, so the formula it feeds is pinned here.
+ *
+ * D78 (2026-09-24) retired the org-priority seed. Important is one shared
+ * answer on the task, `pm_tasks.importance >= IMPORTANT_AT`, so there is
+ * nothing left to seed.
  */
 
 import { describe, expect, it } from "vitest";
 
 import {
-  ORG_PRIORITY_SEED,
+  CELL_ICON_NAME,
+  CELLS_IN_ORDER,
+  IMPORTANT_AT,
   actionMode,
   cellForInputs,
+  importanceFor,
+  importantFromImportance,
   isUntagged,
   isUrgent,
   modeSuggestion,
   priorityCell,
   priorityInputs,
-  seededImportant,
 } from "./priority";
 
 const NOW = Date.parse("2026-09-23T12:00:00Z");
@@ -48,78 +55,78 @@ describe("the matrix formula", () => {
   });
 });
 
-describe("the org priority seeds a suggestion, never a decision", () => {
-  it("seeds from High upward", () => {
-    // Owner decision 2026-09-23: 2 High and 3 Highest.
-    expect(ORG_PRIORITY_SEED).toBe(2);
-    expect(seededImportant({ important: undefined, orgPriority: 3 })).toBe(true);
-    expect(seededImportant({ important: undefined, orgPriority: 2 })).toBe(true);
-    expect(seededImportant({ important: undefined, orgPriority: 1 })).toBe(false);
-    expect(seededImportant({ important: undefined, orgPriority: 0 })).toBe(false);
-    expect(seededImportant({ important: undefined, orgPriority: undefined })).toBe(false);
+describe("Important is the shared answer on the task (D78)", () => {
+  it("is importance 2 and up, and NULL means nobody judged it", () => {
+    expect(IMPORTANT_AT).toBe(2);
+    expect([3, 2, 1, 0].map(importantFromImportance)).toEqual([true, true, false, false]);
+    expect(importantFromImportance(null)).toBeUndefined();
+    expect(importantFromImportance(undefined)).toBeUndefined();
   });
 
-  it("only while the member has said nothing", () => {
-    // 🔴 The rule migration 188 was written to protect: the member's own
-    // judgement is theirs. Any stated answer ends the seed, including "no".
-    expect(seededImportant({ important: true, orgPriority: 3 })).toBe(false);
-    expect(seededImportant({ important: false, orgPriority: 3 })).toBe(false);
+  it("writes 2 for Important and 0 for 'judged, not important'", () => {
+    // 0 is a decision. NULL is the absence of one. The two must not merge.
+    expect(importanceFor(true)).toBe(2);
+    expect(importanceFor(false)).toBe(0);
+    for (const value of [true, false]) {
+      expect(importantFromImportance(importanceFor(value))).toBe(value);
+    }
   });
 
-  it("lets an explicit 'not important' beat a Highest priority", () => {
-    // The OUTCOME a member sees. It is two guards deep — `??` here, and
-    // `seededImportant`'s "=== undefined" — so either one alone keeps it true.
-    // Measured 2026-09-23: loosening the second to "falsy" fails the test
-    // above, not this one. That test is the fence on the mechanism.
-    const inputs = priorityInputs(
-      { dueAt: undefined, important: false, leveraged: false, orgPriority: 3 },
-      48,
-      NOW,
-    );
-    expect(inputs.important).toBe(false);
+  it("reads Important straight, with no seed from anything else", () => {
+    expect(
+      priorityInputs({ dueAt: undefined, important: undefined, leveraged: false }, 48, NOW)
+        .important,
+    ).toBe(false);
+    expect(
+      priorityInputs({ dueAt: undefined, important: false, leveraged: false }, 48, NOW)
+        .important,
+    ).toBe(false);
+    expect(
+      priorityInputs({ dueAt: undefined, important: true, leveraged: false }, 48, NOW)
+        .important,
+    ).toBe(true);
   });
 
-  it("moves an unjudged High task out of Low Priority", () => {
-    // The whole point. Before the seed, a task a manager marked High landed
-    // in the assignee's Low Priority for want of a flag nobody had set.
-    const task = { dueAt: inHours(200), important: undefined, leveraged: false };
-    expect(priorityCell({ ...task, orgPriority: undefined }, 48, NOW)).toBe("low-priority");
-    expect(priorityCell({ ...task, orgPriority: 2 }, 48, NOW)).toBe("important");
+  it("leaves an unjudged task in Low Priority until somebody flags it", () => {
+    const task = { dueAt: inHours(200), leveraged: false };
+    expect(priorityCell({ ...task, important: undefined }, 48, NOW)).toBe("low-priority");
+    expect(
+      priorityCell({ ...task, important: importantFromImportance(2) }, 48, NOW),
+    ).toBe("important");
   });
 
   it("still combines with the DERIVED urgency, from the shared due date", () => {
-    // The org sets the due date; the due date sets urgency. So a High task
-    // due tomorrow reaches the top half of the matrix with no one flagging it.
-    const cell = priorityCell(
-      { dueAt: inHours(20), important: undefined, leveraged: false, orgPriority: 2 },
-      48,
-      NOW,
-    );
-    expect(cell).toBe("urgent");
-    expect(actionMode(
-      { dueAt: inHours(20), important: undefined, leveraged: false, orgPriority: 2 },
-      48,
-      NOW,
-    )).toBe("delegate");
+    // The due date sets urgency. An Important task due tomorrow reaches the
+    // top half of the matrix.
+    const task = { dueAt: inHours(20), important: true, leveraged: false };
+    expect(priorityCell(task, 48, NOW)).toBe("urgent");
+    expect(actionMode(task, 48, NOW)).toBe("delegate");
   });
 
-  it("leaves a seeded task UNTAGGED, so it still asks for the member's call", () => {
-    // The seed is the org's guess. The triage prompt is what asks the member
-    // for theirs, so it must keep showing until they answer.
+  it("keeps an unjudged task UNTAGGED, so it still asks for a call", () => {
     expect(isUntagged({ important: undefined, leveraged: undefined })).toBe(true);
+    expect(isUntagged({ important: true, leveraged: undefined })).toBe(false);
+    expect(isUntagged({ important: undefined, leveraged: true })).toBe(false);
   });
 
-  it("feeds the delegate/schedule nudge the same way", () => {
+  it("feeds the delegate/schedule nudge from the shared answer", () => {
     const item = {
       dueAt: inHours(200),
-      important: undefined,
+      important: true,
       leveraged: false,
-      orgPriority: 3,
       disposition: "NEXT" as const,
       isMine: true,
       keptMine: false,
     };
-    // Seeded important, not urgent → schedule, the "important" cell's mode.
+    // Important, not urgent. That is schedule, the "important" level's mode.
     expect(modeSuggestion(item, 48, NOW)).toEqual({ mode: "schedule", cell: "important" });
+  });
+});
+
+describe("the level icons", () => {
+  it("gives each of the seven levels its own glyph", () => {
+    const icons = CELLS_IN_ORDER.map((cell) => CELL_ICON_NAME[cell]);
+    expect(icons.every(Boolean)).toBe(true);
+    expect(new Set(icons).size).toBe(CELLS_IN_ORDER.length);
   });
 });
