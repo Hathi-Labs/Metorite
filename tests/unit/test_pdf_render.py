@@ -586,8 +586,10 @@ def test_r5_normal_cjk_paragraphs_still_render(sentence: str) -> None:
 
 def test_r5_one_render_per_organization(monkeypatch: pytest.MonkeyPatch) -> None:
     """A2: two seats of one tenant cannot hold both slots, and a second tenant
-    is not blocked by the first."""
+    is not blocked by the first. The org wait is cut to 0.3 s here, so the
+    second seat's wait runs out while the first child still sleeps."""
     monkeypatch.setattr(pdf_render, "_worker_argv", _slow_child(2))
+    monkeypatch.setattr(pdf_render, "ORG_WAIT_S", 0.3)
 
     async def scenario() -> tuple[int, int, int]:
         first = asyncio.ensure_future(
@@ -616,6 +618,7 @@ def test_r5_one_render_per_organization(monkeypatch: pytest.MonkeyPatch) -> None
 def test_r5_an_unbound_request_shares_one_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """No bound tenant must not mean no org cap."""
     monkeypatch.setattr(pdf_render, "_worker_argv", _slow_child(2))
+    monkeypatch.setattr(pdf_render, "ORG_WAIT_S", 0.3)
 
     async def scenario() -> int:
         first = asyncio.ensure_future(render_pdf("html", "<p>x</p>", member="a@x.test", org=None))
@@ -632,5 +635,290 @@ def test_r5_an_unbound_request_shares_one_key(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_r5_the_timeout_is_the_measured_backstop() -> None:
-    """A3: 3 x the slowest legitimate render measured (4.35 s)."""
+    """A3: 3 x the slowest legitimate render measured (4.35 s).
+
+    The measurement shape, so a change to the limit can be measured again.
+    The input is a Markdown table report, one row per task, rendered by
+    ``markdown_to_pdf`` with pymupdf 1.28.0.
+
+    * Dev box: 6,000 rows (608 KB), 286 pages, 4.35 s.
+    * Production, srv1914284 (2 CPUs), measured by the S8 review:
+      6,000 rows (501 KB) in 3.7 to 3.9 s, and 7,300 rows (609 KB) in 5.49 s.
+    * The 300-page cap stops a normal document near 7,600 rows, at about 6 s.
+    * A 1 MB HTML table is refused with 413 at the page cap, in 8.5 s.
+
+    13 s is above all of them.
+    """
     assert pdf_render.RENDER_TIMEOUT_S == 13.0
+
+
+# ── Follow-up to fix round 5: runs of break characters ──────────────────────
+
+
+#: Each case took 20 s to 80 s or more to lay out before the run check, on
+#: pymupdf 1.28.0. ``_SPACE_RUN`` refuses the alternating pairs, and
+#: ``_REPEATED`` refuses every run of one character.
+SLOW_RUNS = {
+    "hyphen": "-" * 300_000,
+    "em-space": "\u2003" * 300_000,
+    "narrow-nbsp": "\u202f" * 300_000,
+    "word-joiner": "\u2060" * 300_000,
+    "bom": "\ufeff" * 300_000,
+    "vertical-tab": "\x0b" * 300_000,
+    "pre-tabs": "<pre>" + "\t" * 300_000 + "</pre>",
+    "pre-spaces": "<pre>" + " " * 300_000 + "</pre>",
+    "pre-space-tab": "<pre>" + " \t" * 150_000 + "</pre>",
+    "em-en-pair": "\u2003\u2002" * 150_000,
+    "entity-em-space": "<p>" + "&#8195;" * 140_000 + "</p>",
+    "bold-joined-hyphens": "<p>" + "<b>-</b>" * 120_000 + "</p>",
+}
+
+
+@pytest.mark.parametrize("body", list(SLOW_RUNS.values()), ids=list(SLOW_RUNS))
+def test_f1_a_long_run_of_break_characters_is_refused(body: str) -> None:
+    """The timer covers the check, not the sanitizer that ran before it.
+    Measured at 0.01 to 0.03 s per case on the dev box."""
+    clean = sanitize_html(body)
+    start = time.monotonic()
+    with pytest.raises(PdfRenderError) as err:
+        check_word_lengths(clean)
+    assert err.value.status == 422
+    assert time.monotonic() - start < 1.0
+
+
+@pytest.mark.parametrize(
+    "body",
+    [SLOW_RUNS["hyphen"], SLOW_RUNS["em-en-pair"], SLOW_RUNS["pre-tabs"]],
+    ids=["hyphen", "em-en-pair", "pre-tabs"],
+)
+def test_f1_the_slow_runs_are_a_fast_422_through_render_pdf(body: str) -> None:
+    """The child refuses before it imports MuPDF. Measured at 0.3 to 0.5 s
+    on the dev box. The bound leaves room for a slow CI runner."""
+    start = time.monotonic()
+    with pytest.raises(PdfRenderError) as err:
+        asyncio.run(render_pdf("html", body, member=MEMBER, org=ORG))
+    assert err.value.status == 422
+    assert time.monotonic() - start < 5.0
+
+
+def test_f1_one_repeated_character_is_refused_whatever_its_class() -> None:
+    """Kana and ideographs break, so the word check passes them. The repeat
+    check does not. The limit is exact: 2,000 copies pass and 2,001 fail."""
+    for ch in ("\u3042", "\u65e5", "-"):
+        check_word_lengths(sanitize_html("<p>" + ch * MAX_WORD_CHARS + "</p>"))
+        with pytest.raises(PdfRenderError):
+            check_word_lengths(sanitize_html("<p>" + ch * (MAX_WORD_CHARS + 1) + "</p>"))
+    with pytest.raises(PdfRenderError):
+        check_word_lengths(sanitize_html("<pre>" + "\n" * 5000 + "</pre>"))
+
+
+def test_f1_a_block_tag_ends_a_run() -> None:
+    half = "-" * (MAX_WORD_CHARS // 2 + 1)
+    check_word_lengths(sanitize_html(f"<p>{half}</p><p>{half}</p>"))
+    check_word_lengths(sanitize_html("<p></p>" * 140_000))
+    with pytest.raises(PdfRenderError):
+        check_word_lengths(sanitize_html(f"<p>{half}<b>{half}</b></p>"))
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<p>a" + " " * 300_000 + "b</p>",
+        "<p>a" + "\t" * 300_000 + "b</p>",
+        "<p>a" + "\n" * 300_000 + "b</p>",
+        "<p><code>" + "\t" * 300_000 + "</code></p>",
+    ],
+    ids=["p-spaces", "p-tabs", "p-newlines", "code-tabs"],
+)
+def test_f1_ascii_whitespace_outside_pre_collapses_and_passes(body: str) -> None:
+    """HTML collapses these, and MuPDF laid each out in 0.01 s. So the check
+    does not refuse them."""
+    check_word_lengths(sanitize_html(body))
+
+
+def test_f1_a_normal_report_with_code_and_ascii_art_renders() -> None:
+    art = "\n".join([
+        "+--------+      +---------+",
+        "| client | ---> | gateway |",
+        "+--------+      +---------+",
+        "     |                |",
+        "     v                v",
+        "  [ cache ]      [ postgres ]",
+    ])
+    rows = "\n".join(f"| T-{i} | Task {i} | asha@x.test | open |" for i in range(200))
+    source = (
+        "# Weekly report\n\n"
+        "Status of the delivery team. See the diagram below.\n\n"
+        f"```\n{art}\n```\n\n"
+        "```python\ndef total(rows):\n\treturn sum(r.hours for r in rows)\n```\n\n"
+        "    indented code block\n    " + " " * 60 + "with a wide gap\n\n"
+        "---\n\n"
+        "| Id | Title | Owner | Status |\n|---|---|---|---|\n" + rows + "\n\n"
+        + "日本語の段落はスペースを使わずに書かれることが多いです。" * 60 + "\n"
+    )
+    check_word_lengths(sanitize_html(markdown_to_html(source)))
+    pdf = asyncio.run(render_pdf("markdown", source, member=MEMBER, org=ORG))
+    assert pdf.startswith(b"%PDF")
+    text = _text(pdf)
+    assert "gateway" in text
+    assert "T-199" in text
+
+
+# ── Follow-up to fix round 5: two colleagues download at once ───────────────
+
+
+def _fake_child(duration: float, starts: list[tuple[str, float]]):
+    """An in-process stand-in for the child: it records when a render
+    started, sleeps, and returns a PDF. No process, so the timing is exact."""
+
+    async def run(kind: str, source: str, timeout: float) -> bytes:
+        starts.append((source, time.monotonic()))
+        await asyncio.sleep(duration)
+        return b"%PDF-fake " + source.encode()
+
+    return run
+
+
+def test_f2_a_colleague_waits_and_then_gets_a_pdf(monkeypatch: pytest.MonkeyPatch) -> None:
+    starts: list[tuple[str, float]] = []
+    monkeypatch.setattr(pdf_render, "_run_child", _fake_child(1.0, starts))
+    monkeypatch.setattr(pdf_render, "MAX_CONCURRENT_RENDERS", 4)
+
+    async def scenario() -> list[bytes]:
+        first = asyncio.ensure_future(render_pdf("html", "first", member="asha@a.test", org="org-a"))
+        await asyncio.sleep(0.2)
+        second = asyncio.ensure_future(render_pdf("html", "second", member="ravi@a.test", org="org-a"))
+        return await asyncio.gather(first, second)
+
+    began = time.monotonic()
+    first, second = asyncio.run(scenario())
+    assert first.startswith(b"%PDF") and second.startswith(b"%PDF")
+    order = dict(starts)
+    # The second render started only after the first one ended.
+    assert order["second"] - order["first"] >= 0.95
+    assert time.monotonic() - began < 5
+    assert not pdf_render._orgs_rendering
+    assert not pdf_render._members_rendering
+
+
+def test_f2_the_wait_runs_out_to_429(monkeypatch: pytest.MonkeyPatch) -> None:
+    starts: list[tuple[str, float]] = []
+    monkeypatch.setattr(pdf_render, "_run_child", _fake_child(3.0, starts))
+    monkeypatch.setattr(pdf_render, "ORG_WAIT_S", 0.5)
+
+    async def scenario() -> tuple[int, float, str]:
+        first = asyncio.ensure_future(render_pdf("html", "first", member="asha@a.test", org="org-a"))
+        await asyncio.sleep(0.2)
+        start = time.monotonic()
+        try:
+            await render_pdf("html", "second", member="ravi@a.test", org="org-a")
+            status, message = 200, ""
+        except PdfRenderError as exc:
+            status, message = exc.status, str(exc)
+        waited = time.monotonic() - start
+        await first
+        return status, waited, message
+
+    status, waited, message = asyncio.run(scenario())
+    assert status == 429
+    assert 0.4 <= waited < 1.5
+    assert message == "A PDF is already being made for your organization. Try again in a moment."
+    assert [s for s, _ in starts] == ["first"]
+    # The member who gave up can ask again.
+    assert not pdf_render._members_rendering
+    assert not pdf_render._orgs_rendering
+
+
+def test_f2_the_same_member_still_gets_429_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A double click is not a colleague. It must not wait."""
+    starts: list[tuple[str, float]] = []
+    monkeypatch.setattr(pdf_render, "_run_child", _fake_child(2.0, starts))
+
+    async def scenario() -> tuple[int, float]:
+        first = asyncio.ensure_future(render_pdf("html", "first", member="asha@a.test", org="org-a"))
+        await asyncio.sleep(0.2)
+        start = time.monotonic()
+        try:
+            await render_pdf("html", "again", member="Asha@a.test", org="org-a")
+            status = 200
+        except PdfRenderError as exc:
+            status = exc.status
+        refused_in = time.monotonic() - start
+        await first
+        return status, refused_in
+
+    status, refused_in = asyncio.run(scenario())
+    assert status == 429
+    assert refused_in < 0.2
+
+
+def test_f2_another_organization_is_never_delayed(monkeypatch: pytest.MonkeyPatch) -> None:
+    starts: list[tuple[str, float]] = []
+    monkeypatch.setattr(pdf_render, "_run_child", _fake_child(1.5, starts))
+    monkeypatch.setattr(pdf_render, "MAX_CONCURRENT_RENDERS", 4)
+
+    async def scenario() -> float:
+        first = asyncio.ensure_future(render_pdf("html", "a1", member="asha@a.test", org="org-a"))
+        await asyncio.sleep(0.1)
+        waiting = asyncio.ensure_future(render_pdf("html", "a2", member="ravi@a.test", org="org-a"))
+        await asyncio.sleep(0.1)
+        asked = time.monotonic()
+        other = asyncio.ensure_future(render_pdf("html", "b1", member="bo@b.test", org="org-b"))
+        await asyncio.gather(first, waiting, other)
+        return asked
+
+    asked = asyncio.run(scenario())
+    order = dict(starts)
+    assert order["b1"] - asked < 0.1
+    assert order["a2"] - order["a1"] >= 1.45
+
+
+def test_f2_waiting_colleagues_hold_no_pool_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The r3 probe again: 40 members of one organization queue behind one
+    slow render. The wait is an ``await``, so an unrelated ``to_thread`` runs
+    at once. With a thread per waiter, 40 would fill the default pool."""
+    starts: list[tuple[str, float]] = []
+    monkeypatch.setattr(pdf_render, "_run_child", _fake_child(1.5, starts))
+    monkeypatch.setattr(pdf_render, "ORG_WAIT_S", 1.0)
+
+    async def scenario() -> tuple[float, list[int]]:
+        renders = [
+            asyncio.ensure_future(render_pdf("html", f"r{i}", member=f"m{i}@a.test", org="org-a"))
+            for i in range(40)
+        ]
+        await asyncio.sleep(0.2)
+        start = time.monotonic()
+        await asyncio.to_thread(lambda: None)
+        probe = time.monotonic() - start
+        done = await asyncio.gather(*renders, return_exceptions=True)
+        return probe, [getattr(r, "status", 200) for r in done]
+
+    began = time.monotonic()
+    probe, statuses = asyncio.run(scenario())
+    assert probe < 0.5, probe
+    assert statuses.count(200) == 1
+    assert statuses.count(429) == 39
+    assert time.monotonic() - began < 5
+    assert not pdf_render._orgs_rendering
+    assert not pdf_render._members_rendering
+
+
+def test_f2_a_cancelled_waiter_leaves_no_claim(monkeypatch: pytest.MonkeyPatch) -> None:
+    starts: list[tuple[str, float]] = []
+    monkeypatch.setattr(pdf_render, "_run_child", _fake_child(1.0, starts))
+
+    async def scenario() -> None:
+        first = asyncio.ensure_future(render_pdf("html", "first", member="asha@a.test", org="org-a"))
+        await asyncio.sleep(0.1)
+        waiter = asyncio.ensure_future(render_pdf("html", "gone", member="ravi@a.test", org="org-a"))
+        await asyncio.sleep(0.1)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert "ravi@a.test" not in pdf_render._members_rendering
+        await first
+
+    asyncio.run(scenario())
+    assert [s for s, _ in starts] == ["first"]
+    assert not pdf_render._orgs_rendering
+    assert not pdf_render._members_rendering

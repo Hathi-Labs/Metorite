@@ -29,8 +29,10 @@ proves that the render never asks for it.
 layout in a child process with a 20 s wall-clock limit. MuPDF is C code:
 deep nesting overflowed its native stack and killed the whole gateway, and
 one long word held the GIL for minutes (fix round 1). The sanitizer also
-refuses nesting past ``MAX_DEPTH`` and a word past ``MAX_WORD_CHARS``
-before layout. Fence: ``tests/unit/test_pdf_render.py``.
+refuses nesting past ``MAX_DEPTH``, a word past ``MAX_WORD_CHARS``, and a
+run of one repeated character or of break spaces past the same length
+(``check_repeated_runs``) before layout. Fence:
+``tests/unit/test_pdf_render.py``.
 
 ⚠️ **It computes nothing.** It lays out what it is given. The numbers in a
 report PDF are the render route's, formatted once by ``reportEmail.ts``.
@@ -249,6 +251,37 @@ def _class_ranges(codepoints: list[int]) -> str:
 _BREAKS = _class_ranges(break_codepoints())
 _LONG_WORD = re.compile("[^" + _BREAKS + "]{" + str(MAX_WORD_CHARS + 1) + ",}")
 
+#: A run of break characters is slow too (follow-up to fix round 5). MuPDF
+#: breaks at each one, and still lays out a long run of them as the square
+#: of its length. Measured on pymupdf 1.28.0, 300,000 characters: ``-`` took
+#: 38.8 s, U+2003 56.8 s, U+202F 81.9 s, U+2060 and U+FEFF about 37 s, and
+#: 300,000 tabs in a ``<pre>`` 22.3 s. An ALTERNATING pair of spaces
+#: (U+2003 U+2002) was just as slow, so one repeated character is not the
+#: whole rule. Two checks cover it.
+#:
+#: 1. :data:`_REPEATED` refuses more than :data:`MAX_WORD_CHARS` copies of
+#:    one character, whatever its class.
+#: 2. :data:`_SPACE_RUN` refuses more than :data:`MAX_WORD_CHARS` characters
+#:    from :data:`_BREAK_SPACE_CODEPOINTS` in any mix. A line feed and a
+#:    carriage return are left out: in a ``<pre>`` they end the line, and
+#:    300,000 of them stop at the page cap in under 1 s.
+#:
+#: Outside a ``<pre>``, HTML collapses a run of ASCII whitespace to one
+#: space, and MuPDF does too: 300,000 spaces or tabs in a ``<p>`` or a
+#: ``<code>`` took 0.01 s. So the checks collapse that run first, and only
+#: a ``<pre>`` keeps it.
+_REPEATED = re.compile(r"(.)\1{" + str(MAX_WORD_CHARS) + ",}", re.DOTALL)
+_SPACE_RUN = re.compile(
+    "["
+    + _class_ranges(sorted(set(_BREAK_SPACE_CODEPOINTS) - {0x0A, 0x0D}))
+    + "]{"
+    + str(MAX_WORD_CHARS + 1)
+    + ",}"
+)
+#: HTML's own whitespace, which a browser and MuPDF collapse outside ``<pre>``.
+_HTML_SPACE = re.compile(r"[ \t\n\r\f]+")
+_TAG_SPLIT = re.compile(r"(<[^>]*>)")
+
 
 class PdfRenderError(ValueError):
     """The source cannot become a PDF. ``status`` is the HTTP answer.
@@ -357,12 +390,44 @@ def check_word_lengths(clean: str) -> None:
     It reads the SANITIZED HTML, which is what MuPDF lays out. An inline tag
     joins the text on both sides into one word, and any other tag breaks it.
     """
-    text = _ANY_TAG.sub(" ", _INLINE_TAG.sub("", clean))
+    joined = _INLINE_TAG.sub("", clean)
+    text = _ANY_TAG.sub(" ", joined)
     if _LONG_WORD.search(_html.unescape(text)):
         raise PdfRenderError(
             f"The document has a run of more than {MAX_WORD_CHARS} characters "
             "with no space, which cannot be laid out on a page."
         )
+    check_repeated_runs(joined)
+
+
+def check_repeated_runs(joined: str) -> None:
+    """Refuse a long run of one character, or of break spaces in any mix.
+
+    ``joined`` is the sanitized HTML with its inline tags removed. Every other
+    tag ends a run. See :data:`_REPEATED` for the measurements.
+    """
+    pre = 0
+    for part in _TAG_SPLIT.split(joined):
+        if part.startswith("<"):
+            # The sanitizer writes `<pre>` and `</pre>` with no attributes.
+            if part == "<pre>":
+                pre += 1
+            elif part == "</pre>":
+                pre = max(0, pre - 1)
+            continue
+        # Unescaping and collapsing only make a part shorter. A part this
+        # short cannot hold a run past the limit, so skip the work.
+        if len(part) <= MAX_WORD_CHARS:
+            continue
+        text = _html.unescape(part)
+        if not pre:
+            text = _HTML_SPACE.sub(" ", text)
+        if _REPEATED.search(text) or _SPACE_RUN.search(text):
+            raise PdfRenderError(
+                "The document repeats one character, or a space, more than "
+                f"{MAX_WORD_CHARS} times in a row, which cannot be laid out "
+                "on a page."
+            )
 
 
 def markdown_to_html(source: str) -> str:
@@ -589,13 +654,52 @@ async def _run_child(kind: str, source: str, timeout: float) -> bytes:
 #: never by anything in the request.
 _members_rendering: set[str] = set()
 
-#: The organizations with a render in flight. One each (fix round 5): with
-#: two slots on the box, one tenant with two seats could otherwise hold both.
-#: Keyed by the tenant the authenticated request bound (``current_tenant()``
-#: at the route), never by request input. A request with no bound tenant
-#: shares one key, ``"unbound"``: that fails toward fairness, not toward a
-#: second slot.
-_orgs_rendering: set[str] = set()
+#: The organizations with a render in flight, each mapped to the event its
+#: render sets when it ends. One each (fix round 5): with two slots on the
+#: box, one tenant with two seats could otherwise hold both. Keyed by the
+#: tenant the authenticated request bound (``current_tenant()`` at the
+#: route), never by request input. A request with no bound tenant shares one
+#: key, ``"unbound"``: that fails toward fairness, not toward a second slot.
+_orgs_rendering: dict[str, Any] = {}
+
+#: How long a second member of one organization waits for that
+#: organization's render to end, then 429 (follow-up to fix round 5). Two
+#: colleagues who download at the same moment must both get a file. A
+#: 286-page report takes 5 to 6 s on the 2-CPU box, so 8 s covers it. The
+#: wait is an ``await`` on an event and holds no thread.
+ORG_WAIT_S = 8.0
+
+
+def _org_busy() -> PdfRenderError:
+    return PdfRenderError(
+        "A PDF is already being made for your organization. Try again in a moment.",
+        status=429,
+    )
+
+
+async def _take_org_turn(tenant: str) -> None:
+    """Wait up to :data:`ORG_WAIT_S` for ``tenant`` to have no render, then
+    claim it. The check and the claim run with no ``await`` between them, so
+    two waiters cannot both claim."""
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + ORG_WAIT_S
+    while tenant in _orgs_rendering:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise _org_busy()
+        try:
+            await asyncio.wait_for(_orgs_rendering[tenant].wait(), remaining)
+        except TimeoutError as exc:
+            raise _org_busy() from exc
+    _orgs_rendering[tenant] = asyncio.Event()
+
+
+def _end_org_turn(tenant: str) -> None:
+    done = _orgs_rendering.pop(tenant, None)
+    if done is not None:
+        done.set()
 
 
 async def render_pdf(
@@ -604,12 +708,13 @@ async def render_pdf(
     """The one way a route makes a PDF: in a child process, with a timeout.
 
     ``member`` is the caller's authenticated email and ``org`` the tenant the
-    request bound. A second render for the same member, or for the same
-    organization, while one runs is refused at once with 429. The size check
-    runs first, so an oversize body never starts a child. The slot is taken
-    with an ``await`` and a short bound, so a busy renderer answers 503 at
-    once and holds no thread. Every failure is a :class:`PdfRenderError` with
-    an HTTP status.
+    request bound. A second render for the same member while one runs is
+    refused at once with 429. A second render for the same organization
+    waits up to :data:`ORG_WAIT_S` for the first to end, then gets 429. The
+    size check runs first, so an oversize body never starts a child. Each
+    wait is an ``await`` with a bound, so a busy renderer answers 503 and
+    holds no thread. Every failure is a :class:`PdfRenderError` with an HTTP
+    status.
     """
     import asyncio
 
@@ -623,13 +728,12 @@ async def render_pdf(
             "A PDF is already being made for you. Wait for it, then try again.",
             status=429,
         )
-    if tenant in _orgs_rendering:
-        raise PdfRenderError(
-            "A PDF is already being made for your organization. Try again in a moment.",
-            status=429,
-        )
     _members_rendering.add(who)
-    _orgs_rendering.add(tenant)
+    try:
+        await _take_org_turn(tenant)
+    except BaseException:
+        _members_rendering.discard(who)
+        raise
     try:
         sem = _slot_semaphore()
         try:
@@ -644,7 +748,7 @@ async def render_pdf(
             sem.release()
     finally:
         _members_rendering.discard(who)
-        _orgs_rendering.discard(tenant)
+        _end_org_turn(tenant)
 
 
 def _worker_main(kind: str) -> int:
@@ -686,10 +790,12 @@ __all__ = [
     "MAX_PAGES",
     "MAX_SOURCE_BYTES",
     "MAX_WORD_CHARS",
+    "ORG_WAIT_S",
     "RENDER_TIMEOUT_S",
     "SOURCE_KINDS",
     "PdfRenderError",
     "attachment_disposition",
+    "check_repeated_runs",
     "check_word_lengths",
     "html_to_pdf",
     "markdown_to_html",
