@@ -384,7 +384,7 @@ export function ItemList() {
           <Button
             variant="destructive"
             size="sm"
-            icon="Trash2"
+            icon={removal.labelFor(items.filter((i) => selectedIds.has(i.id))) === "Remove from my lists" ? "UserX" : "Trash2"}
             onClick={() => {
               requestDelete([...selectedIds]);
               clearSelection();

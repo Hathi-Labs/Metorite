@@ -57,7 +57,7 @@ export function DeleteConfirmModal() {
       >
         <div className="flex items-start gap-3 px-4 py-4">
           <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-destructive/10 text-destructive">
-            <Icon name="Trash2" className="h-4 w-4" />
+            <Icon name={onlyBoard ? "UserX" : "Trash2"} className="h-4 w-4" />
           </div>
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold text-foreground">

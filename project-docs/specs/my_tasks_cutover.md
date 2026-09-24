@@ -961,6 +961,15 @@ can see the task.
 
 Fences: `removal.test.ts` and `test_projects_personal_s6g.py`.
 
+**Second round (2026-09-24).** Three more changes landed before review.
+
+1. The purge rule above.
+2. The mobile capture sheet (`QuickCapture`) takes a `#` token. The Inbox box
+   and the sheet call one store action, `captureLine`. It reads
+   `parseProjectToken` and routes through `captureTo`. The promote dialog is
+   now mounted once (`PromoteHost`), so both boxes open the same dialog.
+3. The Clarify header shows `InboxOrigin` in place of the "Local" badge.
+
 **Decisions the request did not settle, each an agent default.**
 
 1. The badge and the header count the whole Inbox. The source filter narrows
@@ -988,14 +997,18 @@ Fences: `removal.test.ts` and `test_projects_personal_s6g.py`.
 | the deferred commit sends after the delay, and Undo cancels it | `captureTo.test.ts` |
 | `custom_fields` reaches the move, and `pm.task.moved` is emitted | `test_projects_personal_s6g.py` |
 | a refusal moves nothing, on a real database | `live_ws39_s6g.py` |
+| a board task is never purged, and a personal task still is | `removal.test.ts`, `test_projects_personal_s6g.py`, `live_ws39_s6g.py` |
+| the mobile sheet takes `#` through the one capture-line flow | `quickCapture.test.ts` |
+| the Clarify header wears the origin marker | `inbox.test.ts` |
 
 **Verified.**
 
-- `tests/live/live_ws39_s6g.py`: **9/9 PASS**, on a fresh database built from
-  this branch's own ladder (`acb_tenant_s6g`: 01 plus 215 files, through
-  217). The database was dropped afterwards. The live scripts for S6a (13/13),
-  S6e (10/10) and S6f (17/17) pass on the same database.
-- `test_projects_personal_s6g.py`: 7 tests.
+- `tests/live/live_ws39_s6g.py`: **11/11 PASS**, on a fresh database built
+  from this branch's own ladder after the merge of `main` (`acb_tenant_s6g2`:
+  01 plus 216 files). Checks 5 and 5b prove the purge rule. The database was
+  dropped afterwards. The live scripts for S6a (13/13), S6e (10/10) and S6f
+  (18/18) pass on the same database.
+- `test_projects_personal_s6g.py`: 10 tests.
 - `npx tsc --noEmit` is clean. `npx vitest run` is green.
 - The captures are in `workbench/control_plane/ux-shots/s6g/`. The visual
   pass found one defect, and this slice fixed it. The Move dialog mounts

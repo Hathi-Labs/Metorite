@@ -18,7 +18,9 @@ claims a hermetic fake cannot judge:
     the refusal rolls back EVERYTHING the decision wrote: the move, the
     overlay, the activity row. Nothing moves;
   * an owner list that leaves me out is refused before anything is written;
-  * an owner list that keeps me adds the colleague in the same transaction.
+  * an owner list that keeps me adds the colleague in the same transaction;
+  * the purge (`DELETE /projects/my/tasks/{id}`) refuses a board task and
+    deletes nothing, and still deletes a task in my tree (the S6g P0 rule).
 
 The script imports the module's own helpers. It does not restate their SQL.
 
@@ -46,8 +48,10 @@ from gateway.routes.projects.core import (
     Visibility,
     load_default_status,
 )
+from gateway.routes.projects.tasks import delete_task_in
 from gateway.routes.projects.personal import (
     OrganizeIn,
+    in_my_tree,
     _organize,
     _read_my_task,
     create_personal_task,
@@ -214,6 +218,22 @@ async def main() -> None:
               str(row.project_id) == str(board)
               and await owners(db, both.id) == {WHO, OTHER},
               f"owners={await owners(db, both.id)}")
+
+        # ── 5. the purge rule (P0): the route's two halves, in one tx ────────
+        #     `purge_my_task` = `in_my_tree`, then `delete_task_in`. Run as the
+        #     route runs them, against the real join.
+        on_board = await task_row(db, both.id)
+        refused = not await in_my_tree(db, WHO, on_board)
+        still = await task_row(db, both.id)
+        check("5 a board task is not mine to purge, and nothing is deleted",
+              refused and still is not None, f"refused={refused}")
+        loose = await capture(db, root, "A stray thought")
+        mine = await task_row(db, loose.id)
+        allowed = await in_my_tree(db, WHO, mine)
+        if allowed:
+            await delete_task_in(db, mine)
+        check("5b a task in my root is mine to purge, and the purge deletes it",
+              allowed and await task_row(db, loose.id) is None, f"allowed={allowed}")
 
         await outer.rollback()
     await eng.dispose()
