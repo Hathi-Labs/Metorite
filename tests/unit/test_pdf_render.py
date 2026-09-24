@@ -30,6 +30,8 @@ from gateway.pdf_render import (
     source_to_pdf,
 )
 
+MEMBER = "a@fracktal.in"
+
 
 def _text(pdf: bytes) -> str:
     import fitz
@@ -194,7 +196,7 @@ def test_p0_unclosed_siblings_are_not_nesting() -> None:
 def test_p0_deep_nesting_through_render_pdf_is_a_4xx() -> None:
     start = time.monotonic()
     with pytest.raises(PdfRenderError) as err:
-        asyncio.run(render_pdf("html", "<div>" * 199_000 + "x"))
+        asyncio.run(render_pdf("html", "<div>" * 199_000 + "x", member=MEMBER))
     assert err.value.status == 422
     assert time.monotonic() - start < 30
 
@@ -206,7 +208,7 @@ def test_p0_a_child_that_crashes_is_a_refusal(monkeypatch: pytest.MonkeyPatch) -
         lambda kind: [sys.executable, "-c", "import os; os.abort()"],
     )
     with pytest.raises(PdfRenderError) as err:
-        asyncio.run(render_pdf("html", "<p>x</p>"))
+        asyncio.run(render_pdf("html", "<p>x</p>", member=MEMBER))
     assert err.value.status == 422
     assert "could not be laid out" in str(err.value)
 
@@ -221,7 +223,7 @@ def test_p0_p1_a_child_that_hangs_is_killed_at_the_timeout(
     monkeypatch.setattr(pdf_render, "RENDER_TIMEOUT_S", 1.0)
     start = time.monotonic()
     with pytest.raises(PdfRenderError) as err:
-        asyncio.run(render_pdf("html", "<p>x</p>"))
+        asyncio.run(render_pdf("html", "<p>x</p>", member=MEMBER))
     assert err.value.status == 503
     assert time.monotonic() - start < 15
 
@@ -242,7 +244,7 @@ def test_p1_a_long_unbroken_run_is_refused() -> None:
 def test_p1_a_long_run_through_render_pdf_is_a_fast_4xx() -> None:
     start = time.monotonic()
     with pytest.raises(PdfRenderError) as err:
-        asyncio.run(render_pdf("html", "x" * 900_000))
+        asyncio.run(render_pdf("html", "x" * 900_000, member=MEMBER))
     assert err.value.status == 422
     assert time.monotonic() - start < 30
 
@@ -263,7 +265,7 @@ def test_p2_a_mupdf_error_is_a_422(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_render_pdf_returns_a_pdf_from_the_child() -> None:
-    pdf = asyncio.run(render_pdf("markdown", "# Title\n\nText."))
+    pdf = asyncio.run(render_pdf("markdown", "# Title\n\nText.", member=MEMBER))
     assert pdf.startswith(b"%PDF")
     assert "Title" in _text(pdf)
 
@@ -274,10 +276,10 @@ def test_render_pdf_refuses_before_starting_a_child(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(pdf_render, "_run_child", _no_child)
     with pytest.raises(PdfRenderError) as err:
-        asyncio.run(render_pdf("html", "x" * (MAX_SOURCE_BYTES + 1)))
+        asyncio.run(render_pdf("html", "x" * (MAX_SOURCE_BYTES + 1), member=MEMBER))
     assert err.value.status == 413
     with pytest.raises(PdfRenderError) as err:
-        asyncio.run(render_pdf("docx", "x"))
+        asyncio.run(render_pdf("docx", "x", member=MEMBER))
     assert err.value.status == 415
 
 
@@ -310,7 +312,8 @@ def test_r3_a_flood_holds_no_pool_thread(monkeypatch: pytest.MonkeyPatch) -> Non
 
     async def scenario() -> tuple[float, list[int]]:
         renders = [
-            asyncio.ensure_future(render_pdf("html", "<p>x</p>")) for _ in range(40)
+            asyncio.ensure_future(render_pdf("html", "<p>x</p>", member=f"m{i}@x.test"))
+            for i in range(40)
         ]
         await asyncio.sleep(0.2)
         start = time.monotonic()
@@ -340,7 +343,7 @@ def test_r3_a_cancelled_render_kills_its_child(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", recording)
 
     async def scenario() -> None:
-        task = asyncio.ensure_future(render_pdf("html", "<p>x</p>"))
+        task = asyncio.ensure_future(render_pdf("html", "<p>x</p>", member=MEMBER))
         await asyncio.sleep(1.0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -369,7 +372,7 @@ def test_r3_no_break_spaces_count_as_one_word() -> None:
 def test_r3_the_nbsp_attacks_are_a_fast_422(body: str) -> None:
     start = time.monotonic()
     with pytest.raises(PdfRenderError) as err:
-        asyncio.run(render_pdf("html", body))
+        asyncio.run(render_pdf("html", body, member=MEMBER))
     assert err.value.status == 422
     assert time.monotonic() - start < 10
 
@@ -380,7 +383,7 @@ def test_r3_a_long_japanese_paragraph_renders() -> None:
     sentence = "日本語の段落はスペースを使わずに書かれることが多いです。"
     text = sentence * (2480 // len(sentence) + 1)
     check_word_lengths(f"<p>{text}</p>")
-    pdf = asyncio.run(render_pdf("html", f"<p>{text}</p>"))
+    pdf = asyncio.run(render_pdf("html", f"<p>{text}</p>", member=MEMBER))
     assert pdf.startswith(b"%PDF")
 
 
@@ -405,9 +408,87 @@ def test_r3_the_child_gets_no_secret(monkeypatch: pytest.MonkeyPatch) -> None:
             "import os,sys; sys.stdout.buffer.write(b'%PDF ' + ' '.join(sorted(os.environ)).encode())",
         ],
     )
-    out = asyncio.run(render_pdf("html", "<p>x</p>")).decode()
+    out = asyncio.run(render_pdf("html", "<p>x</p>", member=MEMBER)).decode()
     names = set(out.split()[1:])
     assert "GATEWAY_INTERNAL_TOKEN" not in names
     assert "DATABASE_URL" not in names
     assert "s3cret" not in out
     assert names <= set(pdf_render.CHILD_ENV_KEYS) | {"__CF_USER_TEXT_ENCODING"}
+
+
+# ── Fix round 4 ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("ch", ["\u300c", "\u301c", "\u3005"], ids=["kagikakko", "wave-dash", "iteration-mark"])
+def test_r4_cjk_punctuation_runs_are_a_fast_422(ch: str) -> None:
+    """P1: MuPDF does not break at CJK punctuation. Round 3 counted the whole
+    U+2E80-U+9FFF block as breaking, so a run of 「 passed and took 8-10 s per
+    120,000 characters."""
+    with pytest.raises(PdfRenderError):
+        check_word_lengths("<p>" + ch * (MAX_WORD_CHARS + 1) + "</p>")
+    start = time.monotonic()
+    with pytest.raises(PdfRenderError) as err:
+        asyncio.run(render_pdf("html", ch * 333_000, member=MEMBER))
+    assert err.value.status == 422
+    assert time.monotonic() - start < 10
+
+
+def test_r4_the_measured_exceptions_count_toward_a_run() -> None:
+    from gateway.pdf_render import _CJK_NO_BREAK
+
+    for cp in sorted(_CJK_NO_BREAK):
+        with pytest.raises(PdfRenderError):
+            check_word_lengths("<p>" + chr(cp) * (MAX_WORD_CHARS + 1) + "</p>")
+
+
+def test_r4_a_japanese_paragraph_with_brackets_still_renders() -> None:
+    sentence = "「日本語」の段落では、括弧や句読点を使います。"
+    text = sentence * (3000 // len(sentence) + 1)
+    check_word_lengths(f"<p>{text}</p>")
+    pdf = asyncio.run(render_pdf("html", f"<p>{text}</p>", member=MEMBER))
+    assert pdf.startswith(b"%PDF")
+
+
+def test_r4_one_render_per_member_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P1 (b): a second concurrent render for one member is refused at once,
+    and another member is not held up by it."""
+    monkeypatch.setattr(pdf_render, "_worker_argv", _slow_child(2))
+
+    async def scenario() -> tuple[int, float, int]:
+        first = asyncio.ensure_future(render_pdf("html", "<p>x</p>", member="Asha@x.test"))
+        await asyncio.sleep(0.3)
+        start = time.monotonic()
+        try:
+            await render_pdf("html", "<p>y</p>", member="asha@x.test")
+            second = 200
+        except PdfRenderError as exc:
+            second = exc.status
+        refused_in = time.monotonic() - start
+        other = asyncio.ensure_future(render_pdf("html", "<p>z</p>", member="ravi@x.test"))
+        results = await asyncio.gather(first, other, return_exceptions=True)
+        other_status = getattr(results[1], "status", 200)
+        return second, refused_in, other_status
+
+    second, refused_in, other_status = asyncio.run(scenario())
+    assert second == 429
+    assert refused_in < 0.5
+    # The slow child prints nothing, so it is a 422 refusal, not a busy 503
+    # or a per-member 429.
+    assert other_status == 422
+    assert not pdf_render._members_rendering
+
+
+def test_r4_the_slot_count_never_exceeds_the_cpus() -> None:
+    import os
+
+    assert 1 <= pdf_render.MAX_CONCURRENT_RENDERS <= max(1, os.cpu_count() or 1)
+    assert pdf_render.MAX_CONCURRENT_RENDERS <= 4
+
+
+def test_r4_the_routes_key_the_cap_by_the_authenticated_email() -> None:
+    import inspect
+
+    from gateway.routes import documents, workspace
+
+    assert 'render_pdf("html", source, member=user.email)' in inspect.getsource(documents)
+    assert "member=_user.email" in inspect.getsource(workspace)

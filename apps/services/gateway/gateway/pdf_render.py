@@ -137,7 +137,9 @@ MAX_WORD_CHARS = 2000
 RENDER_TIMEOUT_S = 20.0
 
 #: The most layouts that run at the same time. Each one is a process.
-MAX_CONCURRENT_RENDERS = 4
+#: Never more than the CPUs: the production box has two, and a layout is
+#: CPU-bound, so a fifth render only makes four slower (fix round 4).
+MAX_CONCURRENT_RENDERS = max(1, min(4, os.cpu_count() or 1))
 
 #: Tags a new tag of the same family closes, as a browser does: ``<li>`` after
 #: an open ``<li>`` is a sibling, not a child. Without this, hand-written HTML
@@ -162,22 +164,64 @@ _INLINE_TAG = re.compile(
     r"</?(?:a|b|strong|em|i|u|s|del|sup|sub|small|code|span)\b[^>]*>"
 )
 _ANY_TAG = re.compile(r"<[^>]*>")
-#: The characters MuPDF's line breaker breaks at, measured on pymupdf
-#: 1.28.0 (fix round 3). A run of 120,000 characters took under 0.2 s with
-#: each of these, and 6 s with U+00A0 (NO-BREAK SPACE) or with Thai, which
-#: are therefore NOT here. Python's ``\s`` matches U+00A0, so the round 1
-#: check (``\S{2001,}``) let ``"a\u00a0" * 300000`` through to a layout of
-#: more than a minute.
+#: The characters MuPDF's line breaker breaks at, measured on pymupdf 1.28.0.
+#: A run of one character, repeated, took under 0.2 s for 120,000 characters
+#: when MuPDF breaks there and 2 to 10 s when it does not.
 #:
-#: CJK ideographs, kana, Hangul and the full-width forms break between any
-#: two characters. 200,000 of them take 0.4 s, so a Japanese paragraph with
-#: no space is prose, not an attack, and it must not count as one word.
+#: Round 3 found that U+00A0 (NO-BREAK SPACE) and Thai do NOT break. Python's
+#: ``\s`` matches U+00A0, which is why this is a list and not ``\S``.
+#:
+#: Round 4 found that whole CJK blocks were too wide. MuPDF follows the
+#: Unicode line-breaking classes: it breaks between two ideographs, but not
+#: before or after CJK punctuation (U+3001-U+303F: 「」、。々〜 and the rest),
+#: small kana (ぁ っ ゃ ァ ッ ャ), the prolonged sound mark ー, or the
+#: full-width : ; ? [ ]. ``"\u300c" * 333000`` passed round 3's check and
+#: took 8-10 s per 120,000 characters. So only these ranges are listed, and
+#: the measured exceptions inside them are removed below:
+#: U+3000 alone, kana U+3040-U+30FF, ideographs U+3400-U+4DBF and
+#: U+4E00-U+9FFF, Hangul U+AC00-U+D7AF, full-width Latin U+FF10-U+FF5A, and
+#: the Supplementary Ideographic Plane. Every kana and full-width code point
+#: was measured one by one. The ideograph, Hangul and SIP blocks were
+#: measured by sample (one code point every 0x200 to 0x400).
+_BREAK_SPACES = " \t\n\r\f\v\\-\u00ad\u2000-\u200b\u2028\u2029\u202f\u205f\u2060\u3000\ufeff"
+_CJK_BREAK_RANGES = ((0x3040, 0x30FF), (0xFF10, 0xFF5A))
+_CJK_NO_BREAK = frozenset({
+    # Small kana, iteration and sound marks, the prolonged sound mark, and
+    # the middle dot: measured one by one, fix round 4.
+    0x3041, 0x3043, 0x3045, 0x3047, 0x3049, 0x3063, 0x3083, 0x3085, 0x3087,
+    0x308E, 0x3095, 0x3096, 0x3099, 0x309A, 0x309B, 0x309C, 0x309D, 0x309E,
+    0x30A0, 0x30A1, 0x30A3, 0x30A5, 0x30A7, 0x30A9, 0x30C3, 0x30E3, 0x30E5,
+    0x30E7, 0x30EE, 0x30F5, 0x30F6, 0x30FB, 0x30FC, 0x30FD, 0x30FE,
+    # Full-width : ; ? [ ]
+    0xFF1A, 0xFF1B, 0xFF1F, 0xFF3B, 0xFF3D,
+})
+
+
+def _class_ranges(codepoints: list[int]) -> str:
+    """Code points as a regex class body: one escaped span per run."""
+    out: list[str] = []
+    run_start = prev = None
+    for cp in codepoints:
+        if prev is not None and cp == prev + 1:
+            prev = cp
+            continue
+        if run_start is not None:
+            out.append(f"\\u{run_start:04x}-\\u{prev:04x}")
+        run_start = prev = cp
+    if run_start is not None:
+        out.append(f"\\u{run_start:04x}-\\u{prev:04x}")
+    return "".join(out)
+
+
 _BREAKS = (
-    " \t\n\r\f\v"
-    "\\-\u00ad"
-    "\u2000-\u200b\u2028\u2029\u202f\u205f\u2060\u3000\ufeff"
-    "\u2e80-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef"
-    "\U00020000-\U0003ffff"
+    _BREAK_SPACES
+    + _class_ranges([
+        cp
+        for lo, hi in _CJK_BREAK_RANGES
+        for cp in range(lo, hi + 1)
+        if cp not in _CJK_NO_BREAK
+    ])
+    + "\\u3400-\\u4dbf\\u4e00-\\u9fff\\uac00-\\ud7af\\U00020000-\\U0002ffff"
 )
 _LONG_WORD = re.compile("[^" + _BREAKS + "]{" + str(MAX_WORD_CHARS + 1) + ",}")
 
@@ -515,30 +559,49 @@ async def _run_child(kind: str, source: str, timeout: float) -> bytes:
     return _outcome(proc.returncode, stdout, stderr)
 
 
-async def render_pdf(kind: str, source: str) -> bytes:
+#: The members with a render in flight in this process. One each (fix round
+#: 4): one member must not hold every slot and turn the renderer away for
+#: every other tenant. Keyed by the AUTHENTICATED email the route passes,
+#: never by anything in the request.
+_members_rendering: set[str] = set()
+
+
+async def render_pdf(kind: str, source: str, *, member: str) -> bytes:
     """The one way a route makes a PDF: in a child process, with a timeout.
 
-    The size check runs here first, so an oversize body never starts a child.
-    The slot is taken with an ``await`` and a short bound, so a busy renderer
-    answers 503 at once and holds no thread. Every failure is a
-    :class:`PdfRenderError` with an HTTP status.
+    ``member`` is the caller's authenticated email. A second render for the
+    same member while one runs is refused at once with 429. The size check
+    runs first, so an oversize body never starts a child. The slot is taken
+    with an ``await`` and a short bound, so a busy renderer answers 503 at
+    once and holds no thread. Every failure is a :class:`PdfRenderError` with
+    an HTTP status.
     """
     import asyncio
 
     if kind not in ("markdown", "html"):
         raise PdfRenderError(f"A {kind} file cannot become a PDF.", status=415)
     _check_size(source)
-    sem = _slot_semaphore()
-    try:
-        await asyncio.wait_for(sem.acquire(), SLOT_WAIT_S)
-    except TimeoutError as exc:
+    who = (member or "").strip().lower()
+    if who in _members_rendering:
         raise PdfRenderError(
-            "The PDF renderer is busy. Try again in a moment.", status=503
-        ) from exc
+            "A PDF is already being made for you. Wait for it, then try again.",
+            status=429,
+        )
+    _members_rendering.add(who)
     try:
-        return await _run_child(kind, source, RENDER_TIMEOUT_S)
+        sem = _slot_semaphore()
+        try:
+            await asyncio.wait_for(sem.acquire(), SLOT_WAIT_S)
+        except TimeoutError as exc:
+            raise PdfRenderError(
+                "The PDF renderer is busy. Try again in a moment.", status=503
+            ) from exc
+        try:
+            return await _run_child(kind, source, RENDER_TIMEOUT_S)
+        finally:
+            sem.release()
     finally:
-        sem.release()
+        _members_rendering.discard(who)
 
 
 def _worker_main(kind: str) -> int:

@@ -72,7 +72,7 @@ async def html_document_to_pdf(
     try:
         # Out of process, with a timeout: a MuPDF crash or hang is a refusal
         # here, never the gateway's death (fix round 1).
-        pdf = await render_pdf("html", source)
+        pdf = await render_pdf("html", source, member=user.email)
     except PdfRenderError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
     return Response(

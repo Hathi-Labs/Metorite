@@ -578,7 +578,8 @@ async def get_workspace_file(
 
     file_size = file_path.stat().st_size
     if format_ == "pdf":
-        return await _file_as_pdf(file_path, file_size)
+        # The member is the authenticated caller, never request input.
+        return await _file_as_pdf(file_path, file_size, member=_user.email or "")
     if file_size > _MAX_FILE_BYTES:
         raise HTTPException(
             status_code=413,
@@ -603,7 +604,7 @@ async def get_workspace_file(
     )
 
 
-async def _file_as_pdf(file_path: Path, file_size: int) -> Response:
+async def _file_as_pdf(file_path: Path, file_size: int, *, member: str) -> Response:
     """A workspace document as a PDF download (WS-27bm S8, spec §14).
 
     The type check comes before the size check and before any read, so a
@@ -636,7 +637,7 @@ async def _file_as_pdf(file_path: Path, file_size: int) -> Response:
     try:
         # Out of process, with a timeout: a MuPDF crash or hang is a refusal
         # here, never the gateway's death (fix round 1).
-        pdf = await render_pdf(kind, source)
+        pdf = await render_pdf(kind, source, member=member)
     except PdfRenderError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
     return Response(
