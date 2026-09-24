@@ -220,6 +220,11 @@ class _FakeDB:
         self.provisioned = True
         self.committed = 0
         self.invalidated: list[str] = []
+        #: D63 / H-49 — seal and unseal calls, in order, as
+        #: ``{"email": …, "action": "seal" | "unseal"}``. Ordered, because the
+        #: claim worth asserting is that off-boarding reaches the seal INSIDE
+        #: the status transaction, and a set cannot show sequence.
+        self.sealed: list[dict[str, str]] = []
         #: Audit calls, in order, as ``(action, target)``. Ordered because the
         #: purge must record BEFORE it commits, and a set cannot show that.
         self.audit: list[tuple[str, str]] = []
@@ -720,6 +725,28 @@ class _FakeDB:
                 "status": p.get("status"),
                 "source": "member",
             }
+            return _Rows([], rowcount=1)
+
+        # ── D63 / H-49: the personal tree seals with the member ────────────
+        #
+        # Both off-boarding doors run this inside the SAME transaction as the
+        # `app_user` status write. This fake models the IDENTITY plane and has
+        # no `pm_projects`, so it records the CALL rather than the rows.
+        #
+        # ⚠️ Recording the call is the honest thing for it to do, and it is
+        # enough for what the admin suite asserts: that off-boarding reaches
+        # the seal, and that a display-name-only patch does not. Whether the
+        # seal actually removes a subtree is a property of a recursive CTE,
+        # and `tests/live/live_member_seal.sql` proves that against real
+        # Postgres (R8). A fake that answered the subtree question would be
+        # agreeing with whatever SQL it was handed, which is the exact failure
+        # R8 names.
+        if hits(s, "UPDATE pm_projects") and "sealed_at" in s:
+            self.sealed.append({
+                "email": str(p.get("who") or "").lower(),
+                # `SET sealed_at = now()` seals; `SET sealed_at = NULL` lifts.
+                "action": "unseal" if "sealed_at = NULL" in s else "seal",
+            })
             return _Rows([], rowcount=1)
 
         raise AssertionError(f"unhandled SQL in fake: {s}")

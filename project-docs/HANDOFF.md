@@ -1382,27 +1382,40 @@ line — never reclaim a number by deleting the other entry.
   `.github/workflows/phase-0-tripwire.yml`
 - **Added:** 2026-08-26 · guardrails/CI session
 
-### H-49 · Member deactivation must implement D63 (seal, don't inherit) · [AGENT]
-- **Check:** `grep -rn "status.*inactive" apps/services/gateway/gateway/routes/ --include=*.py`
-  → if a deactivation path for `app_user` exists, this entry is live and the
-  question is whether it honours D63. If it returns only `people` hits
-  (the retiring connector), deactivation is still unbuilt and this is a
-  standing constraint on whoever builds it.
-- **Why:** **D63 was taken 2026-08-26, before the flow it governs exists.** That
-  was deliberate — the default somebody picks under time pressure while building
-  deactivation is exactly the wrong way to settle what happens to a departed
-  colleague's private tasks. What D63 requires:
-  * tasks in their personal tree **assigned to someone else** → hand over
-  * tasks only ever theirs → **seal**; retained, invisible, **never deleted**
-  * their `pm_task_personal` rows on team tasks → left alone; the task needs
-    reassigning, the overlay just stops being read
-  * one **owner-only, logged** door to open or export a sealed tree
-  * the deactivation dialog states the split **in numbers before the click**
-  ⚠️ **Not a WS-39 deliverable.** WS-39 made the private tree richer (Areas,
-  migration 191), which is what turned this from theoretical into something with
-  real content behind it — but member writes are §6 owner-gate and deactivation
-  belongs to whoever owns identity.
-  📌 `app_user.status` is the hook point and today holds only `'active'`.
+### H-49 · D63's seal is BUILT. The dialog and the watched door are not · [AGENT]
+- **Check:** `rg -n "seal_personal_tree" apps/services/gateway/gateway/routes/`
+  → hits in `admin/members.py` mean slice 1 landed. Then
+  `rg -n "seal_counts|unseal_personal_tree" apps/services/gateway --include=*.py`
+  → if the only hits are the definitions in `projects/seal.py`, nothing calls
+  them and this entry is still live.
+- ✅ **SLICE 1 LANDED 2026-09-23.** Migration **215** adds
+  `pm_projects.sealed_at`. Both visibility clauses filter it on both arms, so
+  a sealed tree leaves the grant closure AND the `data:org:read` answer. Both
+  off-boarding doors — `PATCH /admin/members/{email}` and the DELETE — stamp
+  the tree inside the same transaction as the status write. `active` unseals.
+  `tests/live/live_member_seal.sql`: 14 checks on real Postgres.
+- ⚠️ **The hand-over needed NO code, and that is a finding.**
+  `task_visibility_clause` has a second arm over `pm_task_assignees` that never
+  consults the project. Sealing removes the grant arm and leaves that one, so a
+  task the leaver assigned outward stays visible to its assignee. No row moves,
+  and there is no half-finished state to recover from.
+- **Measured on production before the build, 2026-09-23:** 1 personal tree, 2
+  tasks, **0** assigned to anybody but the owner, 4 members, all `active`. Two
+  guards (`assert_move_keeps_privacy`, `assert_assignable_here`) already refuse
+  to create the cross-assigned state, so `handed_over` reads 0 on a healthy
+  tenant. That is correct, not broken.
+- **What is still owed, and both are D63's own words:**
+  1. **The dialog states the split in numbers BEFORE the click** — *"14 tasks
+     — 3 handed over, 11 sealed, not deleted; later access is recorded"*.
+     `projects/seal.py::seal_counts` computes exactly that and **no route calls
+     it**. A policy nobody is told about at the moment it applies is one they
+     discover by being surprised.
+  2. **One owner-only, LOGGED door** to open or export a sealed tree.
+     `unseal_personal_tree` is the mechanism and no route calls it either.
+     ⚠️ Reactivation already unseals, and that is NOT this door: it returns
+     the tree to its owner. This door lets somebody ELSE read it.
+- 📌 `app_user.status` still only ever holds `'active'` on production, so
+  nothing has exercised this against real data yet.
 - **Authority:** `work_plan.md` §3 D63 · §6 (member/role writes) · D53.7/D53.8
 - **Added:** 2026-08-26 · WS-39 personal-tree session *(minted as H-35; renumbered to H-49 the same session — `test_handoff_ids_are_unique` caught the collision with the WS-36 restore-spec entry. Ids are never reused.)*
 

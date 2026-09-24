@@ -505,6 +505,12 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         # reads the column off every row it compares, so a seeded team project
         # must carry the NULL Postgres would have returned.
         "personal_owner": None,
+        # Migration 215 / D63. NULL is a LIVE project, and every seeded row
+        # must carry it for the same reason `personal_owner` does: the grant
+        # closure reads the key off every row, and a row missing it would be
+        # treated as sealed by `.get()` returning None only by luck of the
+        # comparison, not by construction.
+        "sealed_at": None,
         # WS-27z — migration 166's lifecycle policy. NULL = off, the default.
         "archive_after_months": None, "close_after_months": None,
         "timezone": "UTC",
@@ -1659,12 +1665,29 @@ class FakeProjectsDB:
         database's parent-consistency trigger were ever dropped.
         """
         wanted = {str(g).lower() for g in groups}
+        # D63 (migration 215): a SEALED project leaves the closure, and so does
+        # everything beneath it. Filtered on BOTH arms, exactly as the SQL does
+        # — the seed reaches `pm_projects` through a JOIN, because a grant row
+        # carries no `sealed_at`, and the descent filters again so the walk
+        # cannot pass THROUGH a sealed Area into what hangs off it.
+        #
+        # ⚠️ Teaching the fake this is not bookkeeping. H-130 records what
+        # happens when a fake disagrees with Postgres about the one thing a
+        # feature exists for: `_ordered` honoured only the first ORDER BY key,
+        # and the hermetic suite could not have caught the fix landing OR
+        # failing. A fake that kept returning sealed projects would make every
+        # future seal test pass for the wrong reason.
+        sealed = {
+            str(p["id"]) for p in self.rows("pm_projects")
+            if p.get("sealed_at") is not None
+        }
         seeds = {
             str(g.get("project_id")) for g in self.rows("pm_project_grants")
             if (
                 organization_id is None
                 or str(g.get("organization_id")) == organization_id
             )
+            and str(g.get("project_id")) not in sealed
             and (
                 g.get("subject") == "org"
                 or str(g.get("subject") or "").lower() == (email or "").lower()
@@ -1682,16 +1705,28 @@ class FakeProjectsDB:
                     != descendant_organization_id
                 ):
                     continue
+                if str(project["id"]) in sealed:
+                    continue
                 if parent is not None and str(parent) in out and str(project["id"]) not in out:
                     out.add(str(project["id"]))
                     changed = True
         return out
 
     def tenant_project_ids(self, organization_id: str | None) -> set[str]:
-        """Every project in one organization — the `data:org:read` answer."""
+        """Every project in one organization — the `data:org:read` answer.
+
+        ⚠️ Sealed projects are excluded HERE TOO, and that is D63's point
+        rather than a copy-paste. `data:org:read` is the widest grant in the
+        product and the People Center holds it. The decision says an admin
+        reading a departed colleague's private tasks "must never be an
+        invisible act", and allows one door for it: owner-only and logged. An
+        unrestricted answer that included sealed rows would BE that invisible
+        act, handed to every HR admin by default.
+        """
         return {
             str(p["id"]) for p in self.rows("pm_projects")
             if str(p.get("organization_id")) == str(organization_id)
+            and p.get("sealed_at") is None
         }
 
     def _subtree_ids(self, root_id: str) -> set[str]:

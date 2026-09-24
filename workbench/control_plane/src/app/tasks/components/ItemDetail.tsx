@@ -55,7 +55,7 @@ import { PromoteDialog } from "./PromoteDialog";
 // member opening one task in each app meets the same fields. Nothing below
 // the strip is written here.
 //
-// D76 (2026-09-23): the strip draws NO work fact. The estimate, the notes
+// D77 (2026-09-23): the strip draws NO work fact. The estimate, the notes
 // (the task's description), the due date, the start date, Priority and the
 // watch toggle are the body's, in both apps. `itemDetail.test.ts` refuses a
 // label that appears in both halves.

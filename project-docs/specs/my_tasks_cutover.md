@@ -10,7 +10,7 @@ this spec and `work_plan.md` §2 disagree, the board wins.
 ---
 
 **Built so far.** S5, S6a to S6e and S8a are built and serving. S6f is built
-on 2026-09-23 (D76, §4.10). S7 ran on
+on 2026-09-23 (D77, §4.10). S7 ran on
 2026-09-23. S8 PR 1 is built on 2026-09-23 and waits for its merge window.
 
 ## 0. One paragraph
@@ -307,7 +307,7 @@ Fences: `app/tasks/lib/statusCategory.test.ts` (the grouping, the lane
 resolution and the settings modal source) and `naming.test.ts` (no member
 string says ClickUp).
 
-### 4.10 One set of fields across My Tasks and Projects (D76)
+### 4.10 One set of fields across My Tasks and Projects (D77)
 
 Owner directive, verbatim, 2026-09-23, in six fragments:
 
@@ -332,17 +332,20 @@ Owner directive, verbatim, 2026-09-23, in six fragments:
 of it. Both apps read and write that home. My Tasks keeps an overlay only for
 how one member holds the work. It never keeps a second copy of a work fact.
 
-⚠️ **This AMENDS D53.8 for two fields, by owner directive.** D53.8 kept the
-matrix's `important` apart from `pm_tasks.importance`. The overlay also held
-its own `time_estimate_mins`. Both now read the shared column. `work_plan.md`
-§3 D76 records the decision.
+⚠️ **This AMENDS D53.8 for one field, by owner directive.** The overlay held
+its own `time_estimate_mins`. It now reads the shared column. `work_plan.md`
+§3 D77 records the decision.
+
+⚠️ **D77 does not change priority. D76 owns it.** The member's `important`
+stays on the overlay, and the shared `importance` only seeds it while it is
+unstated. `task_manager_app.md` §13.4b owns that rule.
 
 **The audit, measured on `main` at `74653868`.** Six pairs held one fact
 twice, and each pair could disagree.
 
 | # | Pair | What went wrong |
 |---|---|---|
-| 1 | `importance` vs the matrix cell | A task Projects called Urgent read `Low Priority · Eliminate?`. The detail showed both |
+| 1 | `importance` vs the matrix cell | A task Projects called Urgent read `Low Priority · Eliminate?`. D76 answers this pair, with its seed |
 | 2 | `estimate_mins` vs the overlay's `time_estimate_mins` | A My Tasks estimate never reached People capacity or analytics |
 | 3 | the status vs the stated `disposition` | A teammate reopened a task, and it stayed DONE in my list. Projects closed it, and my NEXT stayed |
 | 4 | the assignees vs the stored `waiting_on` | Projects reassigned it, and my Waiting-For and the Nudge named the old person |
@@ -357,9 +360,9 @@ not in the detail body. The watch toggle was in the Projects header only.
 
 | Field | Decision | How |
 |---|---|---|
-| Priority | **Shared** | `pm_tasks.importance`, labelled as `projects/lib/table.ts` does. The My Tasks list column, the card chip and the body show and edit it |
-| Focus matrix | **Derived, not stored** | Migration 215 carries each `important = true` flag into `importance = 2` where the Priority is unset or lower. The assignee's flag wins, and it never lowers a Priority. Important is `importance >= 2`. Urgent comes from the due date. `leveraged` and `deep_work` stay mine. The seven cells and the Suggestion are unchanged. No cell says "Priority": the old "Low Priority" cell is "Low value" |
-| Estimate | **Shared** | `pm_tasks.estimate_mins`. My Tasks' Estimate writes it. The planner reads it. Migration 215 copies the overlay values once |
+| Priority | **Shared** | `pm_tasks.importance`, in D76's words (`IMPORTANCE_OPTIONS`). The shared body edits it. The My Tasks list column and card chip show it, and My Tasks never writes it |
+| Important | **Mine**, D76 | The member's own answer on the overlay. High and Highest seed it while it is unstated. D77 does not change it. The list column for the member's cell is "Your focus", the name D76 gives the private row in Projects |
+| Estimate | **Shared** | `pm_tasks.estimate_mins`. My Tasks' Estimate writes it. The planner reads it. Migration 216 copies the overlay values once |
 | Deadline | **Shared**, already `due_at` | A delegation never replaces a deadline the task has. The promised date is `expected_by` |
 | Start date | **Shared** | `start_date`, in the body of both apps. My inbox hides the task until the later of it and my own `defer_until` |
 | Completion | **Derived** | `effective_disposition`: a closed lane reads DONE. A stated DONE on an open lane reads NEXT, and `is_triaged` stays true. Nothing is written |
@@ -374,7 +377,7 @@ start date and the watch toggle, all in the shared `TaskBody`. Also **Time
 spent**, a read-only cell beside Estimate. It is the sum of every member's
 actuals (`actual_end - actual_start`), bound to the task the caller can see.
 
-**Four choices the directive did not settle, each an agent default:**
+**Three choices the directive did not settle, each an agent default:**
 
 1. **The stored `waiting_on` is not ignored.** It is the label when it names
    the same address. It is the whole answer when no other person holds the
@@ -392,9 +395,6 @@ actuals (`actual_end - actual_start`), bound to the task the caller can see.
    Every stored disposition except DONE and TRASH counts
    (`OPEN_DISPOSITIONS`). An Undo of a delete restores a closed task as
    DONE, so it never reopens it.
-4. **The Important switch writes Priority.** On raises a lower task to High.
-   Off lowers High or Urgent to Normal. A switch that already agrees writes
-   nothing, so Important never demotes Urgent.
 
 ## 5. The slices
 
