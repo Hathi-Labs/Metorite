@@ -27,22 +27,29 @@ export function ClarifyModal() {
   // is derived (NEXT, SOMEDAY or WAITING), never INBOX, so a test on INBOX
   // alone closed the modal on its first render (audit 2026-09-24).
   const fromProjectIds = useTaskStore((s) => s.fromProjectIds);
+  const done = useTaskStore((s) => s.clarifiedThisSession);
+  const selectItem = useTaskStore((s) => s.selectItem);
 
   const processed = useTaskStore((s) => s.processedThisSession);
   const vp = useVisualViewport();
   const item = selectedItemId
     ? items.find((i) => i.id === selectedItemId)
     : undefined;
-  const inboxLeft = clarifyQueue(items, fromProjectIds).length;
+  const queue = clarifyQueue(items, fromProjectIds, done);
+  const inboxLeft = queue.length;
   const total = processed + inboxLeft;
   const pct = total ? Math.round((processed / total) * 100) : 0;
-  const clarifiable = !!item && isClarifiable(item, fromProjectIds);
+  const clarifiable = !!item && isClarifiable(item, fromProjectIds, done);
   const active = open && clarifiable;
+  const nextId = queue[0]?.id;
 
-  // Close once there's nothing left to clarify.
+  // The current item left the walk (decided, or re-read out of the group).
+  // Advance while the queue still holds items. Close only when it is empty.
   useEffect(() => {
-    if (open && !clarifiable) close();
-  }, [open, clarifiable, close]);
+    if (!open || clarifiable) return;
+    if (nextId) selectItem(nextId);
+    else close();
+  }, [open, clarifiable, nextId, selectItem, close]);
 
   // Keyboard: Escape closes; t/s/r/2 file the current item and advance.
   useEffect(() => {

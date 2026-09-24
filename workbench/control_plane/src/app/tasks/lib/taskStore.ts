@@ -580,6 +580,11 @@ interface TaskState {
   // — the connect flow could only end in 400 "Unknown provider".
   /** count of items processed out of the inbox this session (momentum). */
   processedThisSession: number;
+  /** The ids decided in this session, by Clarify or a quick dispose. The
+   *  Clarify walk never returns to one, whatever a stale re-read of
+   *  `fromProjectIds` says (review of PR #440, P1). Undo takes its ids back
+   *  out. */
+  clarifiedThisSession: ReadonlySet<string>;
   /** one-level undo for the most recent dispose/clarify — the safety net that
    *  makes rapid triage feel safe (GTD: the system must be trusted). */
   undoSnapshot: UndoSnapshot | null;
@@ -1018,6 +1023,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   quickCaptureMode: "single",
   clarifyModalOpen: false,
   processedThisSession: 0,
+  clarifiedThisSession: new Set(),
   undoSnapshot: null,
   pendingDeleteIds: null,
   selectMode: false,
@@ -1455,6 +1461,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       const wasInbox = isClarifiable(
         s.items.find((i) => i.id === id) ?? { id, disposition: "" },
         s.fromProjectIds,
+        s.clarifiedThisSession,
       );
       if (!wasInbox) {
         return { items, projects, undoSnapshot: snapshot };
@@ -1467,15 +1474,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         next.delete(id);
         fromProjectIds = next;
       }
+      const clarifiedThisSession = new Set(s.clarifiedThisSession).add(id);
       // advance to the OLDEST remaining item of the walk — GTD processes FIFO
-      const nextInbox = clarifyQueue(
-        items.filter((i) => i.id !== id),
-        s.fromProjectIds,
-      )[0];
+      const nextInbox = clarifyQueue(items, s.fromProjectIds, clarifiedThisSession)[0];
       return {
         items,
         projects,
         fromProjectIds,
+        clarifiedThisSession,
         selectedItemId: nextInbox?.id ?? null,
         processedThisSession: s.processedThisSession + 1,
         undoSnapshot: snapshot,
@@ -1564,7 +1570,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     set((s) => {
       // The same walk Clarify advances through: captures and untriaged
       // "From Projects" rows together, oldest first.
-      const inbox = clarifyQueue(s.items, s.fromProjectIds);
+      const inbox = clarifyQueue(s.items, s.fromProjectIds, s.clarifiedThisSession);
       if (inbox.length <= 1) return s; // nothing else to move to
       const idx = inbox.findIndex((i) => i.id === s.selectedItemId);
       const next = inbox[(idx + 1) % inbox.length];
@@ -1576,6 +1582,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     set((s) => ({
       items: s.items.map((i) => (i.id === id ? disposeOne(i, disposition) : i)),
       processedThisSession: s.processedThisSession + 1,
+      clarifiedThisSession: new Set(s.clarifiedThisSession).add(id),
       undoSnapshot: {
         items: s.items,
         projects: s.projects,
@@ -1602,6 +1609,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           set_.has(i.id) ? disposeOne(i, disposition) : i,
         ),
         processedThisSession: s.processedThisSession + affected,
+        clarifiedThisSession: new Set([...s.clarifiedThisSession, ...ids]),
         undoSnapshot: {
           items: s.items,
           projects: s.projects,
@@ -1836,6 +1844,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   markTriaged: (ids, write) => {
+    // A refused write leaves the item undecided, so it rejoins the walk.
+    void write.catch(() =>
+      set((s) => {
+        const clarifiedThisSession = new Set(s.clarifiedThisSession);
+        for (const id of ids) clarifiedThisSession.delete(id);
+        return { clarifiedThisSession };
+      }),
+    );
     const current = get().fromProjectIds;
     const dropped = ids.filter((id) => current.has(id));
     if (dropped.length === 0) return;
@@ -2383,12 +2399,18 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const { items, projects, processed, selectedItemId, changedIds,
       deletedItems, softDeletedIds, archivedIds, archivedTo,
       scheduleRevertIds } = snap;
-    set({
-      items,
-      projects,
-      processedThisSession: processed,
-      selectedItemId,
-      undoSnapshot: null,
+    set((s) => {
+      // An undone decision is undecided again: it rejoins the walk.
+      const clarifiedThisSession = new Set(s.clarifiedThisSession);
+      for (const id of changedIds ?? []) clarifiedThisSession.delete(id);
+      return {
+        items,
+        projects,
+        processedThisSession: processed,
+        selectedItemId,
+        undoSnapshot: null,
+        clarifiedThisSession,
+      };
     });
     if (get().backend !== "live") return;
     if (softDeletedIds?.length) {

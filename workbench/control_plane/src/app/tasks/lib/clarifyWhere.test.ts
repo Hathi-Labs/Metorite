@@ -116,6 +116,7 @@ function seed(over: Record<string, unknown> = {}) {
     selectedItemId: null,
     clarifyModalOpen: false,
     processedThisSession: 0,
+    clarifiedThisSession: new Set(),
     undoSnapshot: null,
     ...over,
   });
@@ -347,5 +348,50 @@ describe("owner on a board task — no one-key reassign", () => {
     expect(delegateAllowed({ personal: false, delegating: true, pickedThisSession: true })).toBe(true);
     expect(delegateAllowed({ personal: true, delegating: true, pickedThisSession: false })).toBe(true);
     expect(delegateAllowed({ personal: false, delegating: false, pickedThisSession: false })).toBe(true);
+  });
+});
+
+describe("the walk never revisits a decided row", () => {
+  const A = { ...FROM_BOARD, id: "A", title: "Row A", createdAt: "2026-09-20T08:00:00+00:00" };
+  const B = { ...FROM_BOARD, id: "B", title: "Row B", createdAt: "2026-09-20T09:00:00+00:00" };
+  const C = { ...CAPTURE, id: "C", title: "Row C", createdAt: "2026-09-21T08:00:00+00:00" };
+
+  beforeEach(() =>
+    seed({ items: [A, B, C], fromProjectIds: new Set(["A", "B"]) }),
+  );
+
+  it("clarify A, then B, while an early re-read restores B: the next item is C", () => {
+    const st = () => useTaskStore.getState();
+    st().openClarify("A");
+    st().clarify("A", { kind: "someday" } as never);
+    expect(st().selectedItemId).toBe("B");
+    st().clarify("B", { kind: "someday" } as never);
+    // A re-read that answered before B's write landed puts B straight back.
+    useTaskStore.setState({ fromProjectIds: new Set(["B"]) });
+    expect(st().selectedItemId).toBe("C");
+    expect(clarifyQueue(st().items, st().fromProjectIds, st().clarifiedThisSession).map((i) => i.id)).toEqual(["C"]);
+    expect(isClarifiable(B, st().fromProjectIds, st().clarifiedThisSession)).toBe(false);
+    expect(st().processedThisSession).toBe(2);
+    // The modal draws C, and counts one left.
+    const html = renderToStaticMarkup(createElement(ClarifyModal));
+    expect(html).toContain("Row C");
+    expect(html).toContain("1 left");
+  });
+
+  it("skip does not land on a decided row either", () => {
+    const st = () => useTaskStore.getState();
+    st().openClarify("A");
+    st().clarify("A", { kind: "someday" } as never);
+    useTaskStore.setState({ fromProjectIds: new Set(["A", "B"]) });
+    st().skipToNextInbox();
+    expect(st().selectedItemId).toBe("C");
+  });
+
+  it("undo puts the row back into the walk", () => {
+    const st = () => useTaskStore.getState();
+    st().openClarify("A");
+    st().clarify("A", { kind: "someday" } as never);
+    st().undoLastChange();
+    expect(st().clarifiedThisSession.has("A")).toBe(false);
   });
 });

@@ -689,11 +689,21 @@ export function whereVisibilityHint(input: {
  * assigned to me and that I have not triaged. Its disposition is derived
  * (NEXT, SOMEDAY or WAITING), so a walk that reads INBOX alone skips it, and
  * the modal used to close on the first render for every such row.
+ *
+ * `done` is the ids decided in this session. They never come back into the
+ * walk, whatever a stale re-read of `fromProjectIds` says. A re-read that
+ * lands before the triage write puts the id straight back into that set, and
+ * the walk used to open the same row a second time (review of PR #440, P1).
  */
 export function clarifyQueue<
   T extends { id: string; disposition: string; createdAt: string; archivedAt?: string },
->(items: readonly T[], fromProjectIds: ReadonlySet<string>): T[] {
+>(
+  items: readonly T[],
+  fromProjectIds: ReadonlySet<string>,
+  done: ReadonlySet<string> = new Set(),
+): T[] {
   return items
+    .filter((i) => !done.has(i.id))
     .filter(
       (i) =>
         i.disposition === "INBOX" || (fromProjectIds.has(i.id) && !i.archivedAt),
@@ -708,7 +718,9 @@ export function clarifyQueue<
 export function isClarifiable(
   item: { id: string; disposition: string },
   fromProjectIds: ReadonlySet<string>,
+  done: ReadonlySet<string> = new Set(),
 ): boolean {
+  if (done.has(item.id)) return false;
   return item.disposition === "INBOX" || fromProjectIds.has(item.id);
 }
 
