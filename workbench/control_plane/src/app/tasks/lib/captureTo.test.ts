@@ -505,11 +505,15 @@ describe("closing the tab while a promote waits (S6g repair P2-b)", () => {
   });
 
   it("the handler cancels the unload: defaultPrevented, and a returnValue", () => {
-    // A real cancelable event proves the prevent. Node's `Event.returnValue`
-    // is the legacy boolean, so the browser's BeforeUnloadEvent string field
-    // is checked on a plain event object.
+    // A real cancelable event proves the prevent. ⚠️ Node's `Event` has no
+    // settable `returnValue`: Node 20 makes it getter-only and throws on the
+    // handler's write (CI went red on it), and Node 24 coerces it to a
+    // boolean. So the event gets its own writable field, as a browser's
+    // BeforeUnloadEvent has, and the test runs the same on both.
     const e = new Event("beforeunload", { cancelable: true });
+    Object.defineProperty(e, "returnValue", { value: undefined, writable: true });
     onPromoteUnload(e);
+    expect((e as Event & { returnValue?: unknown }).returnValue).toBe("");
     expect(e.defaultPrevented).toBe(true);
     const bu = { preventDefault: vi.fn(), returnValue: undefined as unknown };
     onPromoteUnload(bu);
