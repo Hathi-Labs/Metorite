@@ -5,7 +5,7 @@
  *
  * Features:
  *  • Full GitHub-flavoured Markdown (GFM): tables, strikethrough, task lists
- *  • Syntax-highlighted code blocks (VS Code dark+ theme via react-syntax-highlighter)
+ *  • Syntax-highlighted code blocks (token colours, `lib/codeTheme.ts`)
  *  • Terminal blocks with macOS-style chrome (red/yellow/green dots)
  *  • One-click copy button on every code block
  *  • Clickable links (open in new tab)
@@ -17,7 +17,7 @@ import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { CODE_THEME } from "@/lib/codeTheme";
 import Icon from "@/components/Icon";
 import ThinkingContainer from "@/components/ThinkingContainer";
 
@@ -164,9 +164,10 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
         <CopyButton text={code} />
       </div>
 
-      {/* Syntax-highlighted code (VS Code dark+ theme) */}
+      {/* Syntax-highlighted code, in theme tokens (`lib/codeTheme.ts`): one
+          look in both colour modes, no hex. */}
       <SyntaxHighlighter
-        style={vscDarkPlus}
+        style={CODE_THEME}
         language={lang || "text"}
         PreTag="div"
         customStyle={{
