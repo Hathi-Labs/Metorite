@@ -1458,7 +1458,9 @@ candidate for a server read and a report section, and the chat says so.
 let the member view and download a Markdown file. It must also let the member
 download a report as a PDF.
 
-**Status: BUILT 2026-09-24.**
+**Status: BUILT 2026-09-24.** A follow-up of the same date bounds a long
+run of break characters, and it wraps a long line in a code block. It
+also lets a colleague wait for a render (rules 6 and 7).
 
 ### 14.1 The answer
 
@@ -1547,10 +1549,13 @@ The audit of 2026-09-24 read these facts from the code.
    was a 286-page table report, at 4.35 s, and 13 s is three times that.
    At most four children run at one time, and never
    more than the CPU count, so two on the production box (fix round 4).
-   One member, and one organization, has at most one render in flight.
-   A second one gets 429 at once. The keys are the authenticated email
-   and the tenant the request bound. A request with no bound tenant
-   shares one key. A render
+   One member has at most one render in flight, and a second one gets
+   429 at once. One organization also has at most one render in flight.
+   A colleague's render waits up to 8 seconds for it to end, and then
+   gets 429. A 286-page report takes 5 to 6 s on the 2-CPU box, so two
+   people who download at the same moment both get a file. The keys are
+   the authenticated email and the tenant the request bound. A request
+   with no bound tenant shares one key. A render
    waits at most 2 seconds for a slot, with an `await` that holds no
    thread, and then gets 503 (fix round 3). A cancelled request kills its
    child. The child inherits only `CHILD_ENV_KEYS`, never the gateway's
@@ -1565,9 +1570,31 @@ The audit of 2026-09-24 read these facts from the code.
    full-width Latin. Everything else counts toward a run, so an unassigned
    or private-use code point is refused. `_CJK_NO_BREAK` in `pdf_render.py`
    lists the measured exceptions inside the kept ranges.
+   **A run of break characters is refused too** (follow-up to fix round 5).
+   MuPDF breaks at each one, but it lays out a long run of them as the
+   square of its length. With 300,000 characters, hyphens took 38.8 s and
+   U+202F took 81.9 s. So the check refuses more than 2,000 copies of one
+   character, of any class. It also refuses more than 2,000 break spaces
+   in any mix, such as tabs in a `<pre>` or U+2003 beside U+2002. The
+   exceptions are the line feed and the carriage return. The break-space
+   count leaves them out on purpose, because each one ends a line in a
+   `<pre>`, and 300,000 of them stop at the page cap in under 1 s. Outside a
+   `<pre>`, HTML collapses a run of ASCII spaces, tabs or line feeds to one
+   space. So the check collapses that run first and does not refuse it.
+   Later reviews of the follow-up found more cases. A combining mark or a
+   format character does not end a run, so the check removes the `Mn`,
+   `Me` and `Cf` characters first. It keeps a `Cf` character that is also
+   a break space, such as U+2060, so a run of those is still refused. A
+   form feed counts toward a run, because MuPDF does not collapse it.
+   **MuPDF does not wrap a line inside `<pre>`**, and it lays out a long
+   line as the square of its length. 1 MB of 20,000-character lines took
+   38.3 s. So `wrap_pre_lines` breaks every `<pre>` line at 80 columns
+   before layout. On A4 with this CSS, 83 columns fit inside the margin.
+   The same 1 MB now renders in 0.66 s.
 8. **Every failure has a status.** A size refusal is 413. A document that
    MuPDF cannot read, or a child that crashes, is 422. A second render for
-   the same member is 429. A timeout or a full renderer is 503. No MuPDF
+   the same member is 429. A colleague's render that waited 8 seconds is
+   429. A timeout or a full renderer is 503. No MuPDF
    error reaches the member as a 500.
 
 ### 14.5 Acceptance — S8
@@ -1624,6 +1651,20 @@ The audit of 2026-09-24 read these facts from the code.
   a base64 block in a document therefore gets 422. So does a Thai paragraph
   of more than 2,000 characters with no space, because MuPDF does not break
   inside Thai and its layout time grows as the square of the run.
+- A line of more than 2,000 copies of one character is refused, not laid
+  out. That includes a line of hyphens or of spaces in a code block.
+- A `<pre>` line longer than 80 columns wraps onto the next line. It is
+  not refused. So a one-line JSON dump of 4 KB or of 900 KB renders whole.
+  Before the wrap, a line past about 83 columns was clipped at the page
+  edge.
+- **How the 13 s limit was measured.** The input is a Markdown table report
+  with one row for each task. On the dev box, 6,000 rows (608 KB) made 286
+  pages in 4.35 s. On the production box, srv1914284 with 2 CPUs, the S8
+  review measured 6,000 rows (501 KB) in 3.7 to 3.9 s. It measured 7,300
+  rows (609 KB) in 5.49 s. The 300-page cap stops a normal document near
+  7,600 rows, at about 6 s. A 1 MB HTML table gets 413 at the page cap, in
+  8.5 s. `test_r5_the_timeout_is_the_measured_backstop` records the same
+  figures.
 
 ### 14.7 The visual review (fix round 2)
 
