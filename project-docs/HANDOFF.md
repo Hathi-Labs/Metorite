@@ -196,9 +196,17 @@ line — never reclaim a number by deleting the other entry.
   the webhook door, find which senders name a member, and keep only a member
   the server can prove. Then let the tool send `_get_memory_user_id()` when it
   is an email. Add a fence for each door.
-- ⚠️ **The same gap reaches the memory tools and the integration filter.** Both
-  read the member that the payload names. Fix it at the doors, never in each
-  tool.
+- ⚠️ **The same gap reaches three other consumers.** The memory tools and the
+  integration filter read the member that the payload names. And
+  `acb_llm/routed.py::_attribution` sends the run-context `user`, which the
+  executor binds from the same payload, as `member` on every routed
+  completion. On the deployment arm that selects the tenant. So `member=None`
+  on the tool does not close the gap alone. Fix it at the doors, never in
+  each consumer.
+- **Severity: a defence-in-depth P2** (the reviewer, 2026-09-24). Only a
+  holder of the internal bearer or the webhook HMAC secret can reach it, and
+  both can already assert any identity (`acb_auth/deps.py`, branch 1b). The
+  browser path, the Control Plane chat proxy, cannot name a member.
 - **What else is left of CP-13.** The owner acts in H-166. CP-13e to CP-13g are
   the app slices, and each one needs its own audit first (§6A.14).
 - 🔴 **Do not set `DECIDE_ENABLED` on a live box.** It is owner-only, and

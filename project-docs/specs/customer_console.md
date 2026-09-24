@@ -9962,6 +9962,17 @@ not an agent.**
 - **The schema costs 181 tokens.** The core floor went from 8744 to 8925 tokens,
   so the total ceiling of 9000 did not move. `CORE_SCHEMA_CEILINGS` gives
   `decide` a ceiling of 200.
+- **The flag gates the tool AND the prompt.** `decide_tools.decide_tool_enabled`
+  is the one switch. While `DECIDE_ENABLED` is off, the injection chain does not
+  inject `decide`, and `addendum.rendered_parts` does not render its sections.
+  So a box with the flag off pays no tokens for it, and the prompt never names
+  a tool the agent does not hold. The floor still NAMES `decide`, so the core
+  family and the floor stay equal. The registry fences run with the flag on
+  (`tests/unit/_decide_flag.py`), and `test_decide_tool.py` fences the off state.
+- **The tool logs an import failure.** A missing `acb_llm` logs
+  `decide_tool.import_failed` at WARNING, so a packaging defect does not read
+  as the flag. `packages/acb_skills/pyproject.toml` now declares `acb-common`
+  and `acb-llm`.
 - **The fences that moved.** `CALL_CONTRACTS` pins the four parameters and has
   no member field. The core family holds 20 tools, so
   `test_skills_registry.py` and `test_integrations_skills_route.py` count 20.
@@ -9988,6 +9999,15 @@ not an agent.**
     A deployment-key box refuses in the client with no request, and the tool
     gives the unavailable text. `agent` and `run_id` still come from
     `get_run_context()`, because they only attribute a call.
+  - ⚠️ `member=None` on this tool does not close the gap alone. The executor
+    also binds the payload's member as the run-context `user` (`_corr_user`
+    in `executor.py`). `acb_llm/routed.py::_attribution` sends that value as
+    `member` on every routed completion, and on the deployment arm it selects
+    the tenant. So the repair belongs at the `/agent/run*` and webhook doors.
+  - **Severity: a defence-in-depth P2** (the reviewer, 2026-09-24). Only a
+    holder of the internal bearer or the webhook HMAC secret can reach it.
+    Both can already assert any identity (`acb_auth/deps.py`, branch 1b). The
+    browser path, the Control Plane chat proxy, cannot name a member.
   - The tool can send a member again only when the gateway doors stop taking
     one from the body. HANDOFF H-165 holds that work.
 - Fences: `tests/unit/test_decide_tool.py` (hermetic, because no SQL runs on

@@ -309,3 +309,92 @@ def test_the_tool_never_imports_the_console_client() -> None:
     source = inspect.getsource(decide_tools)
     assert "console_resolve" not in source
     assert "decide_on_console" not in source
+
+
+# ── The flag gates the tool AND the prompt (review P2, 2026-09-24) ─────────
+#
+# `_wants` gates an addendum section on the SCOPE, and an unscoped agent
+# renders every section. So a gate on injection alone would still advertise
+# a tool the agent does not hold. `decide_tool_enabled` is the one switch, and
+# both halves ask it.
+
+#: A scoped agent: the resolved scope names `decide`, because the floor does.
+_SCOPED = frozenset({"decide", "web_search", "fetch_page", "write_artifact"})
+
+
+def _flag(monkeypatch, on: bool) -> None:
+    import orchestrator._tool_injection as ti
+
+    monkeypatch.setenv("DECIDE_ENABLED", "true" if on else "false")
+    get_settings.cache_clear()
+    ti._build_injected_tools_addendum.cache_clear()
+
+
+def _injected_names() -> set[str]:
+    import orchestrator._tool_injection as ti
+
+    return {ti._tool_name(t) for t in ti._collect_injectable_platform_tools()}
+
+
+def _addenda() -> list[str]:
+    import orchestrator._tool_injection as ti
+
+    out = []
+    for sub in (False, True):
+        for scope in (None, _SCOPED):
+            ti._build_injected_tools_addendum.cache_clear()
+            out.append(
+                ti._build_injected_tools_addendum(
+                    is_sub_agent=sub, effective_scope=scope
+                )
+            )
+    ti._build_injected_tools_addendum.cache_clear()
+    return out
+
+
+def test_flag_off_injects_no_decide_and_the_prompt_never_names_it(monkeypatch):
+    _flag(monkeypatch, on=False)
+    assert "decide" not in _injected_names()
+    for text in _addenda():
+        assert "Fast decisions" not in text
+        assert "decide(" not in text, "the prompt names a tool it did not inject"
+
+
+def test_flag_on_injects_decide_and_the_prompt_names_it(monkeypatch):
+    _flag(monkeypatch, on=True)
+    assert "decide" in _injected_names()
+    full_unscoped, full_scoped, compact_unscoped, compact_scoped = _addenda()
+    assert "Fast decisions" in full_unscoped
+    assert "Fast decisions" in full_scoped
+    assert "decide(question,context" in compact_unscoped
+    assert "decide(question,context" in compact_scoped
+
+
+def test_a_broken_settings_read_reads_as_off(monkeypatch):
+    import acb_common
+
+    def _boom():
+        raise RuntimeError("settings unreadable")
+
+    monkeypatch.setattr(acb_common, "get_settings", _boom)
+    assert decide_tools.decide_tool_enabled() is False
+
+
+async def test_an_import_failure_is_logged_not_silent(monkeypatch):
+    """A packaging defect must not read as "the flag is off"."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_llm(name, *args, **kwargs):
+        if name == "acb_llm":
+            raise ImportError("acb_llm is missing")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_llm)
+    with structlog.testing.capture_logs() as caps:
+        out = await decide("Q?", SECRET_CONTEXT)
+    assert out == UNAVAILABLE
+    records = [c for c in caps if c.get("event") == "decide_tool.import_failed"]
+    assert records and records[0]["log_level"] == "warning"
+    assert all(SECRET_CONTEXT not in repr(c) for c in caps)

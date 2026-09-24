@@ -32,6 +32,9 @@ clone cache.
    project-docs/specs/customer_console.md §6A.14). It asks one typed question
    through `acb_llm.decide` and never through the Console client. It sends no
    member (the R11 finding in that section), and it never logs `context`.
+   `decide_tool_enabled()` is its ONE switch. The injection chain and
+   `addendum.rendered_parts` both ask it, so with `DECIDE_ENABLED` off the
+   tool is not injected and no section names it.
    Fence: tests/unit/test_decide_tool.py.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox.
    The sandbox (SandboxedHtml.tsx) fails SILENTLY: a CDN fetch is CSP-blocked, a

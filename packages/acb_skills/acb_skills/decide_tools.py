@@ -100,6 +100,23 @@ def _format(kind: str, answer: Any) -> str:
     return f"{pick} (confidence {_p(confidence)}; next: {second} {p_second:.2f})"
 
 
+def decide_tool_enabled() -> bool:
+    """Whether this box offers the tool at all. ONE source of truth.
+
+    The injection chain (``_collect_injectable_platform_tools``) and the
+    addendum renderer (``addendum.rendered_parts``) both ask THIS function. So
+    the prompt never names a tool that is not injected, and a box with
+    ``DECIDE_ENABLED`` off pays no schema or addendum tokens for it. Any error
+    reads as off.
+    """
+    try:
+        from acb_common import get_settings
+
+        return bool(get_settings().decide_enabled)
+    except Exception:  # a broken settings read must not arm the tool
+        return False
+
+
 def _attribution() -> dict[str, str | None]:
     """``agent`` and ``run_id`` from the per-run context, and never a member."""
     try:
@@ -143,7 +160,9 @@ async def decide(
             ScoreQuestion,
         )
         from acb_llm import decide as facade
-    except ImportError:
+    except ImportError as exc:
+        # A packaging defect, not the flag. Say so, or it reads as "off".
+        _log.warning("decide_tool.import_failed", error_type=type(exc).__name__)
         return UNAVAILABLE
 
     instructions = question.strip()

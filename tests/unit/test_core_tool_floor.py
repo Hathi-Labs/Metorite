@@ -18,6 +18,10 @@ from orchestrator._tool_injection import (
     _resolve_injected_scope,
 )
 
+from tests.unit._decide_flag import (
+    decide_tool_on,  # noqa: F401 — module-scoped autouse, the flag ON
+)
+
 
 def test_no_scope_injects_everything() -> None:
     # None / empty scope → sentinel None ("inject all"), unchanged behaviour.

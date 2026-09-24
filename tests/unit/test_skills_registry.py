@@ -22,10 +22,13 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 import orchestrator._tool_injection as ti
+import pytest
 from acb_skills import skill_families as sf
+
+from tests.unit._decide_flag import (
+    decide_tool_on,  # noqa: F401 — module-scoped autouse, the flag ON
+)
 
 
 @pytest.fixture(autouse=True)

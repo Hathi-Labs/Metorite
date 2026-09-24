@@ -181,6 +181,8 @@ name = "acb-skills"
 version = "0.0.1"
 source = { editable = "packages/acb_skills" }
 dependencies = [
+    { name = "acb-common" },
+    { name = "acb-llm" },
     { name = "ddgs" },
     { name = "httpx" },
     { name = "pydantic" },
@@ -189,6 +191,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "acb-common", editable = "packages/acb_common" },
+    { name = "acb-llm", editable = "packages/acb_llm" },
     { name = "ddgs", specifier = ">=9.14.4" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.9" },

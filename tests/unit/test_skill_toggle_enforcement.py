@@ -23,10 +23,13 @@ import sys
 import types
 from typing import Any
 
-import pytest
-
 import orchestrator._tool_injection as ti
+import pytest
 from acb_skills import skill_families as sf
+
+from tests.unit._decide_flag import (
+    decide_tool_on,  # noqa: F401 — module-scoped autouse, the flag ON
+)
 
 MEMORY_TOOLS = set(sf.SKILL_FAMILIES["memory"]["tools"])
 ALL_STATIC_FAMILY_TOOLS = {

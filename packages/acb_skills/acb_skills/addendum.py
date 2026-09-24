@@ -424,6 +424,22 @@ def _wants(gate: tuple[str, ...],
     )
 
 
+def _dark_tools() -> frozenset[str]:
+    """Tools this box does not inject, so their sections must not render.
+
+    ``_wants`` gates on the SCOPE, and an unscoped agent renders every
+    section. A tool behind a box flag needs a second gate, or the prompt
+    advertises a tool the agent does not hold. ``decide`` (WS-31 CP-13d) is
+    the one such tool. Its switch is ``decide_tools.decide_tool_enabled``,
+    the same function the injection chain asks.
+    """
+    try:
+        from acb_skills.decide_tools import decide_tool_enabled
+    except ImportError:
+        return frozenset({"decide"})
+    return frozenset() if decide_tool_enabled() else frozenset({"decide"})
+
+
 def _mandatory_block(effective_scope: frozenset[str] | None) -> str | None:
     lines = [
         line.text for line in MANDATORY_LINES
@@ -465,9 +481,12 @@ def rendered_parts(
         risk_block=risk_block if risk_block is not None else _default_risk_block(),
     )
     sections = COMPACT_SECTIONS if is_sub_agent else FULL_SECTIONS
+    dark = _dark_tools()
     parts: list[tuple[str, str]] = []
     for section in sections:
         if not _wants(section.gate, effective_scope):
+            continue
+        if section.gate and set(section.gate) <= dark:
             continue
         if section.text == "__MANDATORY__":
             rendered = _mandatory_block(effective_scope)
