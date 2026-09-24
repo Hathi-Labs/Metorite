@@ -689,7 +689,7 @@ Each slice is one pull request. Each one is useful alone.
 | **Visual review** — ✅ **DONE 2026-09-23** | The rail and the cards seen in eight contexts. The defects it found are fixed (§4.2) | AGENT-SAFE |
 | **S7a · Capacity** — ✅ **BUILT 2026-09-23** | `GET /projects/analytics/capacity` · the Analytics app's Capacity panel · the report section `capacity` · the chat tool `team_capacity` (§13.3) | AGENT-SAFE |
 | **S7b · Fit** — ✅ **BUILT 2026-09-24** | `GET /projects/tasks/{id}/candidates` and its draft form · `GET /projects/analytics/rebalance` · "Suggested" in the assignee picker · the chat tools `fit_for_task` and `rebalance` (§13.4) | AGENT-SAFE |
-| **S7c · Conflicts** | `GET /projects/analytics/conflicts` with seven kinds · the Conflicts panel · the report section `conflicts` · the chat tool `find_conflicts` · the dependency rule moved to the server (§13.5) | AGENT-SAFE |
+| **S7c · Conflicts** | `GET /projects/analytics/conflicts` with seven kinds · the Conflicts panel · the report section `conflicts` · the chat tool `find_conflicts` · the dependency rule moved to the server with one fixture for both sides (§13.5, §10.5) | AGENT-SAFE |
 | **S7d · Plan with capacity** | `propose_plan` gains start dates, phases and dependencies, and shows each owner's fit on the plan card (§13.6) | AGENT-SAFE |
 | **S7e · On-the-fly analysis** | The read tool `task_dataset` and the rule for numbers the chat computes itself (§13.7) | AGENT-SAFE |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-09-30 |
@@ -792,6 +792,42 @@ Each slice is one pull request. Each one is useful alone.
 12. The status header, the §10 row, the board row and the INDEX line say that
     S7b is built (R4).
 
+### 10.5 Acceptance — S7c
+
+**Done when:**
+1. One fixture file drives both `dependency_conflict` (pytest) and
+   `conflicts()` (vitest). If one case changes, both suites fail.
+2. The route returns only the seven kinds. An R8 test builds each kind once
+   on a real database.
+3. A `blocks` link whose blocker the viewer cannot see gives no row. An R8
+   test proves that the blocker's id and title are absent from the body.
+4. A `relates_to` or `duplicates` link never gives a row. A closed blocker
+   never gives `dependency_order` or `blocker_late`. A pair that is late and
+   misordered gives one `blocker_late` row and no `dependency_order` row.
+5. A blocker in a stopped project still gives a row. An R8 test proves it.
+6. Without the HR grant, the body says `hr_visible: false` and carries none of
+   the four HR kinds. A test proves that they are absent.
+7. `absent_on_due`, `leaving` and `over_concurrency` agree with
+   `candidate_warnings` for the same inputs, and `test_projects_candidates.py`
+   passes unchanged.
+8. The `overcommitted` rows equal `at_risk_tasks` for the same person and
+   inputs, filtered to the scope.
+9. `parallel_person` follows rule 6. Tests show no row for two tasks, for
+   three tasks in one top-level project, for a shared end day, or for a task
+   with one date. A test proves the cap of 5.
+10. `horizon_days` outside 1 to 90 gets 422, and the response prints its
+    window.
+11. `conflicts` is in `SECTIONS` and not in `DEFAULT_SECTIONS`. The lockstep
+    test passes, and a new opt-in test fails if `conflicts` enters the
+    defaults.
+12. `find_conflicts` is class A and in `manifest.py`, and the coverage fence
+    passes. A run with no user makes zero HTTP calls.
+13. The panel draws from the route only, and a lib test scans it for
+    arithmetic. Somebody looks at it in light mode, at compact density, under
+    a changed accent, and beside Capacity.
+14. The status header, the §10 row, the board row and the INDEX line say that
+    S7c is built (R4).
+
 ---
 
 ## 11. Verification
@@ -825,6 +861,17 @@ In `workbench/control_plane`, run `npx tsc --noEmit` and
 Then look at the task panel's picker in light mode, at compact density, under
 a changed accent, and beside the bulk bar's picker. The slice creates the two
 new pytest files and `candidates.test.ts`.
+
+For S7c, with the same database settings:
+
+```
+uv run pytest tests/unit/test_projects_analytics_conflicts.py tests/unit/test_projects_candidates.py tests/unit/test_projects_analytics_capacity.py tests/unit/test_projects_relations.py tests/unit/test_projects_report_sections_lockstep.py tests/unit/test_projects_reports.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_agent.py
+```
+
+In `workbench/control_plane`, run `npx tsc --noEmit` and
+`npx vitest run src/app/projects/lib/timeline.test.ts src/app/projects/lib/conflicts.test.ts src/lib/reportEmail.test.ts`.
+The slice creates `test_projects_analytics_conflicts.py`, `gateway/conflicts.py`,
+`lib/conflicts.ts`, `lib/conflicts.test.ts` and the fixture file.
 
 `test_projects_report_sections_lockstep.py` is the lockstep test of §10.3
 item 6. It is a pytest that reads the two TypeScript files as text, so one test
@@ -1064,7 +1111,8 @@ it needs one task.
 
 ### 13.5 S7c — Conflicts
 
-`GET /projects/analytics/conflicts?project_id=&horizon_days=` returns one list.
+`GET /projects/analytics/conflicts?project_id=&include_subtree=&horizon_days=`
+returns one list.
 Each row carries its kind, the tasks and people it names, and one sentence
 that says why.
 
@@ -1072,7 +1120,7 @@ that says why.
 |---|---|---|
 | `dependency_order` | A task starts or is due before a task that blocks it is due | no |
 | `blocker_late` | A blocker is overdue, and the work it blocks is still open | no |
-| `parallel_person` | One person holds tasks in different projects whose start-to-due spans overlap | no |
+| `parallel_person` | On one day, one person holds 3 or more open tasks whose start-to-due spans all cover that day, in 2 or more top-level projects | no |
 | `overcommitted` | A person's dated work does not fit before a due date (`at_risk_tasks`) | yes |
 | `absent_on_due` | A task is due on a day its assignee is away (`absent_on`) | yes |
 | `over_concurrency` | A person has more tasks in progress than `max_concurrent_tasks` | yes |
@@ -1085,6 +1133,73 @@ so the two cannot drift.
 
 **Surfaces.** A Conflicts panel in the Analytics app. The report section kind
 `conflicts`. The chat tool `find_conflicts`, class A.
+
+**Rules for the build.** The S7c audit (2026-09-24) found twelve decisions
+that the text above does not make. The owner took four of them on
+2026-09-24: rules 4, 5 and 6. The rest follow the S7a and S7b precedent.
+
+1. **The query.** The route takes `project_id`, `include_subtree` and
+   `horizon_days`. It uses `check_horizon` (1 to 90, default 14) and
+   `scope_clause`, as S7a does.
+2. **One pure predicate, one fixture.** `gateway/conflicts.py` holds a pure
+   `dependency_conflict(blocker, blocked)`. It is the rule of
+   `timeline.ts:670`: a conflict is `interval(blocker).to` strictly after
+   `interval(blocked).from`, so a shared day is the normal handover. A task
+   with one date uses it for both ends, a due date before the start date is
+   swapped, and a completed blocker never conflicts. Only `blocks` links
+   count, from `source_task_id` to `target_task_id`.
+   `tests/fixtures/projects_dependency_conflicts.json` pins these cases, and
+   both the pytest and `timeline.test.ts` read it. Every `due_at` in the
+   fixture is noon UTC, so no case depends on the machine's time zone. The
+   timeline's own behaviour does not change.
+3. **The server's day.** The day of `due_at` is its UTC date, as `_due` and
+   `workload.as_date` read it. "Today" is `date.today()`, as S7a and S7b use.
+   The UI writes due days at noon local time, so the browser and the server
+   agree within 11 hours. S7c makes no other change to this.
+4. **Dependency scope and visibility.** The blocked task is open and in scope
+   (`load_open_where`). The blocker passes `task_visibility_clause` and is not
+   archived, in any project. A blocker the viewer cannot see gives no row, and
+   no count says that a row was dropped. **A blocker in a stopped project
+   still counts** (owner, 2026-09-24): the blocked task still waits on work
+   that nobody is doing.
+5. **A late blocker gives one row.** `blocker_late` means the blocker is open
+   and its `due_at` is before `now()`, the predicate of Load's overdue. **If a
+   pair is both late and misordered, it gives only `blocker_late`** (owner,
+   2026-09-24). That is the fact to act on, and it implies the order problem.
+6. **`parallel_person` needs three.** Only open, visible, in-scope tasks with
+   both a start date and a due date count. A span covers the days from its
+   start to its due day. **The row fires when, on one day, a person holds 3 or
+   more such tasks, in 2 or more top-level projects** (owner, 2026-09-24). A
+   sub-project counts as its root project, so the key is `root_project_id`.
+   Agents are left out. A person gives at most one row. It names the busiest
+   day, the tasks on that day up to 5, and `tasks_total`.
+7. **The HR kinds reuse S7b.** `candidate_warnings` splits into predicates
+   that return a kind, and its string output stays byte-identical, so
+   `test_projects_candidates.py` passes unchanged. `absent_on_due` uses
+   `absent_on` on `availability_day`, so a partial absence counts and an
+   overdue task checks today. `leaving` means `end_date` before the due day.
+   `over_concurrency` uses the S7a `in_progress` count over all visible work.
+8. **`overcommitted`.** The route calls `person_capacity` over all the work
+   the caller can see, as S7a does. It gives one row for each at-risk task in
+   scope, with its shortfall. The sentence says that the hours include work in
+   other projects.
+9. **The HR gate.** Without `admin:members:read`, the four HR kinds are absent
+   and the response says `hr_visible: false`, as S7a and S7b do.
+10. **The window.** `horizon_days` bounds the kinds that depend on a date:
+    `absent_on_due`, `leaving`, `overcommitted`, and `parallel_person` days in
+    the window. `dependency_order` and `blocker_late` ignore it, because a
+    wrong order is wrong whenever it falls.
+11. **Shape and cap.** Each row carries `kind`, `task_ids`, `people`,
+    `sentence` and `severity`. The response keeps at most 200 rows, carries
+    `total` and `by_kind`, and sorts by kind, then by due day, with a stable
+    sort. The report section caps like `load`.
+12. **Report and chat.** `conflicts` goes into `SECTIONS`, not into
+    `DEFAULT_SECTIONS`. `find_conflicts` is class A and GET only. The manifest
+    row is `Route("GET", "/projects/analytics/conflicts", "find_conflicts", "A")`.
+
+**Two known weak spots the server must not copy.** `TimelineView.tsx:1496`
+checks only the first blocker of a row, and `conflicts()` reads the browser's
+local day. The route checks every visible blocker, and reads the UTC day.
 
 ### 13.6 S7d — Plan with capacity
 
