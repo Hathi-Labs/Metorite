@@ -368,8 +368,19 @@ export function MarkdownBody({
         },
 
         // ── Tables (GFM) ──
+        // A table fits the width it is given: every cell may break a long
+        // word (`wrap-anywhere`), so its narrowest width is small. In the
+        // 26rem rail at compact density a column once held "Subramanian"
+        // whole, the table outgrew its box, and the owner column was clipped
+        // with no visible scroll (S8 fix round 4). The box still scrolls, with
+        // a visible thin bar, for a table that cannot fit. Cells size from
+        // the box itself (`@container`), not from the viewport, so the rail
+        // gets the tight padding at any screen width.
+        // Row lines are a TOP border on each body cell. The old bottom
+        // border with `last:border-b-0` dropped the line under the LAST
+        // COLUMN of every row, not under the last row.
         table: ({ children }) => (
-          <div className="my-4 max-w-full overflow-x-auto rounded-lg border border-border/60" role="region" aria-label="Table" tabIndex={0}>
+          <div className="@container my-4 max-w-full overflow-x-auto scrollbar-thin rounded-lg border border-border/60" role="region" aria-label="Table" tabIndex={0}>
             <table className="w-full text-[12px] sm:text-[13px] border-collapse">{children}</table>
           </div>
         ),
@@ -377,12 +388,12 @@ export function MarkdownBody({
           <thead className="bg-secondary/60">{children}</thead>
         ),
         th: ({ children }) => (
-          <th className="px-2.5 py-1.5 sm:px-4 sm:py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide border-b border-border/60">
+          <th className="px-2.5 py-1.5 @md:px-4 @md:py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide wrap-anywhere">
             {children}
           </th>
         ),
         td: ({ children }) => (
-          <td className="px-2.5 py-1.5 sm:px-4 sm:py-2 text-foreground border-b border-border/60 last:border-b-0">
+          <td className="px-2.5 py-1.5 @md:px-4 @md:py-2 text-foreground border-t border-border/60 wrap-anywhere">
             {children}
           </td>
         ),

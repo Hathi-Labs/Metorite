@@ -188,10 +188,26 @@ describe("narrow surfaces", () => {
     expect(src).toContain("order-3 flex w-full flex-wrap items-center gap-2 sm:order-2 sm:w-auto");
   });
 
-  it("a chat table scrolls in its own box", () => {
-    expect(read("components/MarkdownMessage.tsx")).toContain(
-      'className="my-4 max-w-full overflow-x-auto rounded-lg border border-border/60"',
+  it("a chat table fits its box, or scrolls with a visible bar (fix round 4)", () => {
+    const html = renderToStaticMarkup(
+      createElement(GenerativeUINode, {
+        spec: {
+          type: "markdown",
+          props: { text: "| Project | Owner |\n|---|---|\n| Firmware | Ravi Kumar Subramanian |\n| App | Asha |\n" },
+        },
+      }),
     );
+    // The box scrolls, shows a bar, and sizes its cells from itself.
+    expect(html).toMatch(/class="@container [^"]*overflow-x-auto[^"]*scrollbar-thin/);
+    // Every body cell may break a long word, so the table can fit.
+    const cells = [...html.matchAll(/<td class="([^"]*)"/g)].map((m) => m[1]);
+    expect(cells.length).toBe(4);
+    for (const cls of cells) {
+      expect(cls).toContain("wrap-anywhere");
+      // Row lines on every cell, the last column included.
+      expect(cls).toContain("border-t");
+      expect(cls).not.toContain("last:border-b-0");
+    }
   });
 });
 
