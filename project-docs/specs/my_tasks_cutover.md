@@ -1026,7 +1026,7 @@ Fences: `removal.test.ts` and `test_projects_personal_s6g.py`.
 **Verified.**
 
 - `tests/live/live_ws39_s6g.py`: **11/11 PASS** after the repair round, on a
-  fresh database built from this branch's own ladder (`acb_tenant_s6g3`: 01
+  fresh database built from this branch's own ladder (`acb_tenant_s6g4`: 01
   plus 216 files). Checks 3 to 3c call the purge route itself. Check 4 calls
   the bulk route. The database was dropped afterwards. The live scripts for
   S6a, S6e and S6f passed on the second round's fresh database.
