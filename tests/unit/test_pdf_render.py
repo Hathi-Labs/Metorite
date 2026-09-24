@@ -922,3 +922,103 @@ def test_f2_a_cancelled_waiter_leaves_no_claim(monkeypatch: pytest.MonkeyPatch) 
     assert [s for s, _ in starts] == ["first"]
     assert not pdf_render._orgs_rendering
     assert not pdf_render._members_rendering
+
+
+# -- Follow-up, second review: marks, form feeds and long <pre> lines --------
+
+
+EM_SPACE = chr(0x2003)
+ACUTE = chr(0x0301)  # a combining mark, category Mn
+
+#: Each case passed the first follow-up and was slow to lay out, measured on
+#: pymupdf 1.28.0 on the dev box: the mark pair more than 45 s at 300,000
+#: characters, the form feeds more than 45 s, the tab pair 29.5 s and the
+#: space pair 10.6 s.
+SECOND_ROUND = {
+    "space-and-mark": "<p>" + (EM_SPACE + ACUTE) * 40_000 + "</p>",
+    "space-and-mark-300k": "<p>" + (EM_SPACE + ACUTE) * 150_000 + "</p>",
+    "form-feeds": "<p>" + chr(0x0C) * 300_000 + "</p>",
+    "pre-tab-letter": "<pre>" + (chr(9) + "a") * 150_000 + "</pre>",
+    "pre-letter-space": "<pre>" + "x " * 150_000 + "</pre>",
+    "pre-long-line-in-markdown": None,
+}
+
+
+def _second_round(name: str) -> str:
+    body = SECOND_ROUND[name]
+    if body is None:  # a fenced code block with one 2,001-character line
+        body = markdown_to_html("```\n" + "ab " * 667 + "\n```\n")
+    return body
+
+
+@pytest.mark.parametrize("name", list(SECOND_ROUND))
+def test_f3_the_second_round_bypasses_are_refused(name: str) -> None:
+    clean = sanitize_html(_second_round(name))
+    start = time.monotonic()
+    with pytest.raises(PdfRenderError) as err:
+        check_word_lengths(clean)
+    assert err.value.status == 422
+    assert time.monotonic() - start < 1.0
+
+
+@pytest.mark.parametrize(
+    "name", ["space-and-mark-300k", "form-feeds", "pre-tab-letter"]
+)
+def test_f3_the_second_round_bypasses_are_a_fast_422_through_render_pdf(
+    name: str,
+) -> None:
+    start = time.monotonic()
+    with pytest.raises(PdfRenderError) as err:
+        asyncio.run(render_pdf("html", _second_round(name), member=MEMBER, org=ORG))
+    assert err.value.status == 422
+    assert time.monotonic() - start < 5.0
+
+
+def test_f3_a_pre_line_limit_is_exact_and_every_line_end_counts() -> None:
+    line = "ab " * 666 + "ab"  # 2,000 characters
+    assert len(line) == MAX_WORD_CHARS
+    for end in ("\n", "\r\n", "\r"):
+        check_word_lengths(sanitize_html("<pre>" + (line + end) * 50 + "</pre>"))
+    with pytest.raises(PdfRenderError):
+        check_word_lengths(sanitize_html("<pre>" + line + "x</pre>"))
+    # A <br> inside a <pre> ends the line too.
+    check_word_lengths(sanitize_html("<pre>" + line + "<br>" + line + "</pre>"))
+
+
+def test_f3_carriage_returns_outside_pre_still_collapse() -> None:
+    """MuPDF collapses \r in a <p> (300,000 of them took 0.01 s). It does
+    not collapse \f, so only the form feed counts toward a run."""
+    check_word_lengths(sanitize_html("<p>a" + chr(13) * 300_000 + "b</p>"))
+    with pytest.raises(PdfRenderError):
+        check_word_lengths(sanitize_html("<p>a" + chr(12) * 2001 + "b</p>"))
+
+
+def test_f3_accented_prose_and_marks_on_letters_still_pass() -> None:
+    word = "Cafe" + ACUTE + " re" + ACUTE + "sume" + ACUTE + " "
+    check_word_lengths(sanitize_html("<p>" + word * 20_000 + "</p>"))
+
+
+def test_f3_a_code_block_and_a_json_dump_still_render() -> None:
+    import json
+
+    dump = "\n".join(
+        json.dumps({
+            "id": i,
+            "title": f"Task number {i} with a long descriptive name",
+            "owner": "asha@x.test",
+            "tags": ["a", "b", "c"],
+            "notes": "x" * 60,
+        })
+        for i in range(300)
+    )
+    assert 150 < max(len(x) for x in dump.split("\n")) <= 220
+    source = (
+        "# Export\n\n"
+        "```python\nfor row in rows:\n\tif row.late:\n\t\tflag(row)\n```\n\n"
+        f"```json\n{dump}\n```\n"
+    )
+    check_word_lengths(sanitize_html(markdown_to_html(source)))
+    pdf = asyncio.run(render_pdf("markdown", source, member=MEMBER, org=ORG))
+    assert pdf.startswith(b"%PDF")
+    assert "flag(row)" in _text(pdf)
+

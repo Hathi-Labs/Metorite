@@ -267,9 +267,24 @@ _LONG_WORD = re.compile("[^" + _BREAKS + "]{" + str(MAX_WORD_CHARS + 1) + ",}")
 #:    300,000 of them stop at the page cap in under 1 s.
 #:
 #: Outside a ``<pre>``, HTML collapses a run of ASCII whitespace to one
-#: space, and MuPDF does too: 300,000 spaces or tabs in a ``<p>`` or a
-#: ``<code>`` took 0.01 s. So the checks collapse that run first, and only
-#: a ``<pre>`` keeps it.
+#: space, and MuPDF does too: 300,000 spaces, tabs, line feeds or carriage
+#: returns in a ``<p>`` took 0.01 s. So the checks collapse that run first,
+#: and only a ``<pre>`` keeps it.
+#:
+#: Three more rules came from the second review of this follow-up.
+#:
+#: 3. **A combining mark does not end a run.** U+2003 U+0301 repeated
+#:    (300,000 characters) took more than 45 s, because each mark split the
+#:    run for both patterns. So the checks strip every ``Mn`` and ``Me``
+#:    mark first (:func:`_strip_marks`).
+#: 4. **MuPDF does NOT collapse a form feed**, though HTML calls it
+#:    whitespace. 300,000 of them in a ``<p>`` took more than 45 s. So
+#:    :data:`_HTML_SPACE` leaves ``\f`` out, and it counts toward a run.
+#: 5. **MuPDF does not wrap a line inside ``<pre>``.** ``\ta`` repeated took
+#:    29.5 s and ``x `` repeated 10.6 s (300,000 characters each). So a
+#:    ``<pre>`` line longer than :data:`MAX_WORD_CHARS` is refused, whatever
+#:    it holds. A line feed, a carriage return and a CRLF each end a line:
+#:    ``x\r`` repeated in a ``<pre>`` filled the 300 pages in 0.36 s.
 _REPEATED = re.compile(r"(.)\1{" + str(MAX_WORD_CHARS) + ",}", re.DOTALL)
 _SPACE_RUN = re.compile(
     "["
@@ -278,9 +293,24 @@ _SPACE_RUN = re.compile(
     + str(MAX_WORD_CHARS + 1)
     + ",}"
 )
-#: HTML's own whitespace, which a browser and MuPDF collapse outside ``<pre>``.
-_HTML_SPACE = re.compile(r"[ \t\n\r\f]+")
+#: The whitespace that a browser AND MuPDF collapse outside ``<pre>``. Not
+#: ``\f``: see rule 4 above.
+_HTML_SPACE = re.compile(r"[ \t\n\r]+")
 _TAG_SPLIT = re.compile(r"(<[^>]*>)")
+_PRE_LINE_END = re.compile(r"\r\n|\r|\n")
+_MARK_CATEGORIES = frozenset({"Mn", "Me"})
+
+
+def _strip_marks(text: str) -> str:
+    """``text`` without its nonspacing and enclosing marks (rule 3).
+
+    It reads the category of each DISTINCT character, not of each character,
+    so a 1 MB part costs one ``set`` and one regex pass.
+    """
+    marks = [c for c in set(text) if unicodedata.category(c) in _MARK_CATEGORIES]
+    if not marks:
+        return text
+    return re.sub("[" + _class_ranges(sorted(map(ord, marks))) + "]", "", text)
 
 
 class PdfRenderError(ValueError):
@@ -420,8 +450,15 @@ def check_repeated_runs(joined: str) -> None:
         if len(part) <= MAX_WORD_CHARS:
             continue
         text = _html.unescape(part)
-        if not pre:
+        if pre:
+            if any(len(line) > MAX_WORD_CHARS for line in _PRE_LINE_END.split(text)):
+                raise PdfRenderError(
+                    f"A code block has a line longer than {MAX_WORD_CHARS} "
+                    "characters, which cannot be laid out on a page."
+                )
+        else:
             text = _HTML_SPACE.sub(" ", text)
+        text = _strip_marks(text)
         if _REPEATED.search(text) or _SPACE_RUN.search(text):
             raise PdfRenderError(
                 "The document repeats one character, or a space, more than "

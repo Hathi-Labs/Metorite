@@ -1459,8 +1459,8 @@ let the member view and download a Markdown file. It must also let the member
 download a report as a PDF.
 
 **Status: BUILT 2026-09-24.** A follow-up of the same date bounds a long
-run of break characters and lets a colleague wait for a render (rules 6
-and 7).
+run of break characters and a long line in a code block. It also lets a
+colleague wait for a render (rules 6 and 7).
 
 ### 14.1 The answer
 
@@ -1578,6 +1578,12 @@ The audit of 2026-09-24 read these facts from the code.
    in any mix, such as tabs in a `<pre>` or U+2003 beside U+2002. Outside a
    `<pre>`, HTML collapses a run of ASCII spaces, tabs or line feeds to one
    space. So the check collapses that run first and does not refuse it.
+   The second review of the follow-up found three more cases, and each is
+   now refused. A combining mark does not end a run, so the check removes
+   the `Mn` and `Me` marks first. A form feed counts toward a run, because
+   MuPDF does not collapse it. A `<pre>` line longer than 2,000 characters
+   is refused, whatever it holds, because MuPDF does not wrap a line inside
+   `<pre>`. A line feed, a carriage return and a CRLF each end a line.
 8. **Every failure has a status.** A size refusal is 413. A document that
    MuPDF cannot read, or a child that crashes, is 422. A second render for
    the same member is 429. A colleague's render that waited 8 seconds is
@@ -1640,6 +1646,9 @@ The audit of 2026-09-24 read these facts from the code.
   inside Thai and its layout time grows as the square of the run.
 - A line of more than 2,000 copies of one character is refused, not laid
   out. That includes a line of hyphens or of spaces in a code block.
+- A single `<pre>` line longer than 2,000 characters is refused, whatever it
+  holds. So a minified JSON file in a code block gets 422. A normal JSON
+  dump, with lines of about 200 characters, renders.
 - **How the 13 s limit was measured.** The input is a Markdown table report
   with one row for each task. On the dev box, 6,000 rows (608 KB) made 286
   pages in 4.35 s. On the production box, srv1914284 with 2 CPUs, the S8
