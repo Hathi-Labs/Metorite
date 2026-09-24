@@ -30,6 +30,7 @@ from __future__ import annotations
 from acb_auth import UserContext, get_current_user
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
+from gateway.db import current_tenant
 from gateway.pdf_render import (
     MAX_SOURCE_BYTES,
     PdfRenderError,
@@ -72,7 +73,9 @@ async def html_document_to_pdf(
     try:
         # Out of process, with a timeout: a MuPDF crash or hang is a refusal
         # here, never the gateway's death (fix round 1).
-        pdf = await render_pdf("html", source, member=user.email)
+        pdf = await render_pdf(
+            "html", source, member=user.email, org=current_tenant()
+        )
     except PdfRenderError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
     return Response(

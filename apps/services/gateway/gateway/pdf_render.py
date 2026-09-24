@@ -43,6 +43,7 @@ import os
 import re
 import subprocess
 import sys
+import unicodedata
 import weakref
 from html.parser import HTMLParser
 from typing import Any
@@ -134,12 +135,26 @@ MAX_WORD_CHARS = 2000
 
 #: The wall-clock limit on one layout, in seconds. The layout runs in a child
 #: process (:func:`render_pdf`), and the parent kills it at this limit.
-RENDER_TIMEOUT_S = 20.0
+#:
+#: It is the structural backstop behind the word check: a character the
+#: check misses costs this many seconds of one slot, never more (fix round
+#: 5). Measured on pymupdf 1.28.0, the slowest LEGITIMATE render was a
+#: 286-page Markdown table report (6,000 rows, 608 KB): 4.35 s. A 210-page
+#: Markdown document with lists and code took 0.52 s, and a 129-page HTML
+#: report 0.14 s. 3 x 4.35 s is 13 s. A table past the 300-page cap takes 6 to
+#: 9 s to refuse, which also fits.
+RENDER_TIMEOUT_S = 13.0
 
 #: The most layouts that run at the same time. Each one is a process.
 #: Never more than the CPUs: the production box has two, and a layout is
 #: CPU-bound, so a fifth render only makes four slower (fix round 4).
-MAX_CONCURRENT_RENDERS = max(1, min(4, os.cpu_count() or 1))
+def concurrent_render_slots(cpu_count: int | None = None) -> int:
+    """``min(4, CPUs)``, at least 1. ``cpu_count`` defaults to the host's."""
+    cpus = os.cpu_count() if cpu_count is None else cpu_count
+    return max(1, min(4, cpus or 1))
+
+
+MAX_CONCURRENT_RENDERS = concurrent_render_slots()
 
 #: Tags a new tag of the same family closes, as a browser does: ``<li>`` after
 #: an open ``<li>`` is a sibling, not a child. Without this, hand-written HTML
@@ -164,27 +179,33 @@ _INLINE_TAG = re.compile(
     r"</?(?:a|b|strong|em|i|u|s|del|sup|sub|small|code|span)\b[^>]*>"
 )
 _ANY_TAG = re.compile(r"<[^>]*>")
-#: The characters MuPDF's line breaker breaks at, measured on pymupdf 1.28.0.
-#: A run of one character, repeated, took under 0.2 s for 120,000 characters
-#: when MuPDF breaks there and 2 to 10 s when it does not.
+#: What MuPDF's line breaker breaks at, measured on pymupdf 1.28.0: a run of
+#: one character, repeated, took under 0.2 s for 120,000 characters where
+#: MuPDF breaks and 2 to 10 s where it does not.
 #:
-#: Round 3 found that U+00A0 (NO-BREAK SPACE) and Thai do NOT break. Python's
-#: ``\s`` matches U+00A0, which is why this is a list and not ``\S``.
-#:
-#: Round 4 found that whole CJK blocks were too wide. MuPDF follows the
-#: Unicode line-breaking classes: it breaks between two ideographs, but not
-#: before or after CJK punctuation (U+3001-U+303F: 「」、。々〜 and the rest),
-#: small kana (ぁ っ ゃ ァ ッ ャ), the prolonged sound mark ー, or the
-#: full-width : ; ? [ ]. ``"\u300c" * 333000`` passed round 3's check and
-#: took 8-10 s per 120,000 characters. So only these ranges are listed, and
-#: the measured exceptions inside them are removed below:
-#: U+3000 alone, kana U+3040-U+30FF, ideographs U+3400-U+4DBF and
-#: U+4E00-U+9FFF, Hangul U+AC00-U+D7AF, full-width Latin U+FF10-U+FF5A, and
-#: the Supplementary Ideographic Plane. Every kana and full-width code point
-#: was measured one by one. The ideograph, Hangul and SIP blocks were
-#: measured by sample (one code point every 0x200 to 0x400).
-_BREAK_SPACES = " \t\n\r\f\v\\-\u00ad\u2000-\u200b\u2028\u2029\u202f\u205f\u2060\u3000\ufeff"
+#: ⚠️ **The default is "does NOT break"** (fix round 5). A character counts
+#: as a break ONLY IF it is ASSIGNED (``unicodedata.category`` is not ``Cn``)
+#: AND it is in the measured set below. Everything else counts toward a word
+#: run: unassigned code points, private use, surrogates, noncharacters, and
+#: any character nobody measured. Rounds 3 and 4 listed wide ranges and
+#: removed exceptions, and each review found more exceptions inside the
+#: ranges: U+00A0, Thai, CJK punctuation, small kana, then U+3000 in a run and
+#: the unassigned U+3040, U+3097, U+3098 and U+D7A4-U+D7AF. A missed character
+#: now costs at most RENDER_TIMEOUT_S, and the fence is
+#: ``tests/unit/test_pdf_render.py``, which measures nothing but fails if a
+#: character known not to break enters the set.
+_BREAK_SPACE_CODEPOINTS = (
+    0x20, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x2D, 0xAD,
+    *range(0x2000, 0x200C),
+    0x2028, 0x2029, 0x202F, 0x205F, 0x2060, 0xFEFF,
+)
+#: Kana and full-width Latin: every code point measured one by one (round 4).
 _CJK_BREAK_RANGES = ((0x3040, 0x30FF), (0xFF10, 0xFF5A))
+#: Ideographs, Hangul and the Supplementary Ideographic Plane: measured by
+#: sample, one code point every 0x200 to 0x400.
+_SAMPLED_BREAK_RANGES = (
+    (0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xAC00, 0xD7AF), (0x20000, 0x2FFFF),
+)
 _CJK_NO_BREAK = frozenset({
     # Small kana, iteration and sound marks, the prolonged sound mark, and
     # the middle dot: measured one by one, fix round 4.
@@ -197,8 +218,20 @@ _CJK_NO_BREAK = frozenset({
 })
 
 
+def break_codepoints() -> list[int]:
+    """Every code point the word check treats as a break, sorted."""
+    candidates = list(_BREAK_SPACE_CODEPOINTS)
+    for lo, hi in (*_CJK_BREAK_RANGES, *_SAMPLED_BREAK_RANGES):
+        candidates.extend(range(lo, hi + 1))
+    return sorted({
+        cp
+        for cp in candidates
+        if cp not in _CJK_NO_BREAK and unicodedata.category(chr(cp)) != "Cn"
+    })
+
+
 def _class_ranges(codepoints: list[int]) -> str:
-    """Code points as a regex class body: one escaped span per run."""
+    """Sorted code points as a regex class body: one escaped span per run."""
     out: list[str] = []
     run_start = prev = None
     for cp in codepoints:
@@ -206,23 +239,14 @@ def _class_ranges(codepoints: list[int]) -> str:
             prev = cp
             continue
         if run_start is not None:
-            out.append(f"\\u{run_start:04x}-\\u{prev:04x}")
+            out.append(f"\\U{run_start:08x}-\\U{prev:08x}")
         run_start = prev = cp
     if run_start is not None:
-        out.append(f"\\u{run_start:04x}-\\u{prev:04x}")
+        out.append(f"\\U{run_start:08x}-\\U{prev:08x}")
     return "".join(out)
 
 
-_BREAKS = (
-    _BREAK_SPACES
-    + _class_ranges([
-        cp
-        for lo, hi in _CJK_BREAK_RANGES
-        for cp in range(lo, hi + 1)
-        if cp not in _CJK_NO_BREAK
-    ])
-    + "\\u3400-\\u4dbf\\u4e00-\\u9fff\\uac00-\\ud7af\\U00020000-\\U0002ffff"
-)
+_BREAKS = _class_ranges(break_codepoints())
 _LONG_WORD = re.compile("[^" + _BREAKS + "]{" + str(MAX_WORD_CHARS + 1) + ",}")
 
 
@@ -565,12 +589,23 @@ async def _run_child(kind: str, source: str, timeout: float) -> bytes:
 #: never by anything in the request.
 _members_rendering: set[str] = set()
 
+#: The organizations with a render in flight. One each (fix round 5): with
+#: two slots on the box, one tenant with two seats could otherwise hold both.
+#: Keyed by the tenant the authenticated request bound (``current_tenant()``
+#: at the route), never by request input. A request with no bound tenant
+#: shares one key, ``"unbound"``: that fails toward fairness, not toward a
+#: second slot.
+_orgs_rendering: set[str] = set()
 
-async def render_pdf(kind: str, source: str, *, member: str) -> bytes:
+
+async def render_pdf(
+    kind: str, source: str, *, member: str, org: str | None
+) -> bytes:
     """The one way a route makes a PDF: in a child process, with a timeout.
 
-    ``member`` is the caller's authenticated email. A second render for the
-    same member while one runs is refused at once with 429. The size check
+    ``member`` is the caller's authenticated email and ``org`` the tenant the
+    request bound. A second render for the same member, or for the same
+    organization, while one runs is refused at once with 429. The size check
     runs first, so an oversize body never starts a child. The slot is taken
     with an ``await`` and a short bound, so a busy renderer answers 503 at
     once and holds no thread. Every failure is a :class:`PdfRenderError` with
@@ -582,12 +617,19 @@ async def render_pdf(kind: str, source: str, *, member: str) -> bytes:
         raise PdfRenderError(f"A {kind} file cannot become a PDF.", status=415)
     _check_size(source)
     who = (member or "").strip().lower()
+    tenant = str(org) if org else "unbound"
     if who in _members_rendering:
         raise PdfRenderError(
             "A PDF is already being made for you. Wait for it, then try again.",
             status=429,
         )
+    if tenant in _orgs_rendering:
+        raise PdfRenderError(
+            "A PDF is already being made for your organization. Try again in a moment.",
+            status=429,
+        )
     _members_rendering.add(who)
+    _orgs_rendering.add(tenant)
     try:
         sem = _slot_semaphore()
         try:
@@ -602,6 +644,7 @@ async def render_pdf(kind: str, source: str, *, member: str) -> bytes:
             sem.release()
     finally:
         _members_rendering.discard(who)
+        _orgs_rendering.discard(tenant)
 
 
 def _worker_main(kind: str) -> int:

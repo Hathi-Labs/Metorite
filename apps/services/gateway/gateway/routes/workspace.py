@@ -611,6 +611,7 @@ async def _file_as_pdf(file_path: Path, file_size: int, *, member: str) -> Respo
     refused type costs nothing. The read runs in a thread, and the layout
     runs in a child process (``pdf_render.render_pdf``).
     """
+    from gateway.db import current_tenant
     from gateway.pdf_render import (
         MAX_SOURCE_BYTES,
         SOURCE_KINDS,
@@ -637,7 +638,7 @@ async def _file_as_pdf(file_path: Path, file_size: int, *, member: str) -> Respo
     try:
         # Out of process, with a timeout: a MuPDF crash or hang is a refusal
         # here, never the gateway's death (fix round 1).
-        pdf = await render_pdf(kind, source, member=member)
+        pdf = await render_pdf(kind, source, member=member, org=current_tenant())
     except PdfRenderError as exc:
         raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
     return Response(

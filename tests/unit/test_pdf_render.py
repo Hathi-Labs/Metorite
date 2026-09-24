@@ -31,6 +31,7 @@ from gateway.pdf_render import (
 )
 
 MEMBER = "a@fracktal.in"
+ORG = "org-test"
 
 
 def _text(pdf: bytes) -> str:
@@ -196,7 +197,7 @@ def test_p0_unclosed_siblings_are_not_nesting() -> None:
 def test_p0_deep_nesting_through_render_pdf_is_a_4xx() -> None:
     start = time.monotonic()
     with pytest.raises(PdfRenderError) as err:
-        asyncio.run(render_pdf("html", "<div>" * 199_000 + "x", member=MEMBER))
+        asyncio.run(render_pdf("html", "<div>" * 199_000 + "x", member=MEMBER, org=ORG))
     assert err.value.status == 422
     assert time.monotonic() - start < 30
 
@@ -208,7 +209,7 @@ def test_p0_a_child_that_crashes_is_a_refusal(monkeypatch: pytest.MonkeyPatch) -
         lambda kind: [sys.executable, "-c", "import os; os.abort()"],
     )
     with pytest.raises(PdfRenderError) as err:
-        asyncio.run(render_pdf("html", "<p>x</p>", member=MEMBER))
+        asyncio.run(render_pdf("html", "<p>x</p>", member=MEMBER, org=ORG))
     assert err.value.status == 422
     assert "could not be laid out" in str(err.value)
 
@@ -223,7 +224,7 @@ def test_p0_p1_a_child_that_hangs_is_killed_at_the_timeout(
     monkeypatch.setattr(pdf_render, "RENDER_TIMEOUT_S", 1.0)
     start = time.monotonic()
     with pytest.raises(PdfRenderError) as err:
-        asyncio.run(render_pdf("html", "<p>x</p>", member=MEMBER))
+        asyncio.run(render_pdf("html", "<p>x</p>", member=MEMBER, org=ORG))
     assert err.value.status == 503
     assert time.monotonic() - start < 15
 
@@ -244,7 +245,7 @@ def test_p1_a_long_unbroken_run_is_refused() -> None:
 def test_p1_a_long_run_through_render_pdf_is_a_fast_4xx() -> None:
     start = time.monotonic()
     with pytest.raises(PdfRenderError) as err:
-        asyncio.run(render_pdf("html", "x" * 900_000, member=MEMBER))
+        asyncio.run(render_pdf("html", "x" * 900_000, member=MEMBER, org=ORG))
     assert err.value.status == 422
     assert time.monotonic() - start < 30
 
@@ -265,7 +266,7 @@ def test_p2_a_mupdf_error_is_a_422(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_render_pdf_returns_a_pdf_from_the_child() -> None:
-    pdf = asyncio.run(render_pdf("markdown", "# Title\n\nText.", member=MEMBER))
+    pdf = asyncio.run(render_pdf("markdown", "# Title\n\nText.", member=MEMBER, org=ORG))
     assert pdf.startswith(b"%PDF")
     assert "Title" in _text(pdf)
 
@@ -276,10 +277,10 @@ def test_render_pdf_refuses_before_starting_a_child(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(pdf_render, "_run_child", _no_child)
     with pytest.raises(PdfRenderError) as err:
-        asyncio.run(render_pdf("html", "x" * (MAX_SOURCE_BYTES + 1), member=MEMBER))
+        asyncio.run(render_pdf("html", "x" * (MAX_SOURCE_BYTES + 1), member=MEMBER, org=ORG))
     assert err.value.status == 413
     with pytest.raises(PdfRenderError) as err:
-        asyncio.run(render_pdf("docx", "x", member=MEMBER))
+        asyncio.run(render_pdf("docx", "x", member=MEMBER, org=ORG))
     assert err.value.status == 415
 
 
@@ -312,7 +313,7 @@ def test_r3_a_flood_holds_no_pool_thread(monkeypatch: pytest.MonkeyPatch) -> Non
 
     async def scenario() -> tuple[float, list[int]]:
         renders = [
-            asyncio.ensure_future(render_pdf("html", "<p>x</p>", member=f"m{i}@x.test"))
+            asyncio.ensure_future(render_pdf("html", "<p>x</p>", member=f"m{i}@x.test", org=f"o{i}"))
             for i in range(40)
         ]
         await asyncio.sleep(0.2)
@@ -343,7 +344,7 @@ def test_r3_a_cancelled_render_kills_its_child(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", recording)
 
     async def scenario() -> None:
-        task = asyncio.ensure_future(render_pdf("html", "<p>x</p>", member=MEMBER))
+        task = asyncio.ensure_future(render_pdf("html", "<p>x</p>", member=MEMBER, org=ORG))
         await asyncio.sleep(1.0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -372,7 +373,7 @@ def test_r3_no_break_spaces_count_as_one_word() -> None:
 def test_r3_the_nbsp_attacks_are_a_fast_422(body: str) -> None:
     start = time.monotonic()
     with pytest.raises(PdfRenderError) as err:
-        asyncio.run(render_pdf("html", body, member=MEMBER))
+        asyncio.run(render_pdf("html", body, member=MEMBER, org=ORG))
     assert err.value.status == 422
     assert time.monotonic() - start < 10
 
@@ -383,7 +384,7 @@ def test_r3_a_long_japanese_paragraph_renders() -> None:
     sentence = "日本語の段落はスペースを使わずに書かれることが多いです。"
     text = sentence * (2480 // len(sentence) + 1)
     check_word_lengths(f"<p>{text}</p>")
-    pdf = asyncio.run(render_pdf("html", f"<p>{text}</p>", member=MEMBER))
+    pdf = asyncio.run(render_pdf("html", f"<p>{text}</p>", member=MEMBER, org=ORG))
     assert pdf.startswith(b"%PDF")
 
 
@@ -408,7 +409,7 @@ def test_r3_the_child_gets_no_secret(monkeypatch: pytest.MonkeyPatch) -> None:
             "import os,sys; sys.stdout.buffer.write(b'%PDF ' + ' '.join(sorted(os.environ)).encode())",
         ],
     )
-    out = asyncio.run(render_pdf("html", "<p>x</p>", member=MEMBER)).decode()
+    out = asyncio.run(render_pdf("html", "<p>x</p>", member=MEMBER, org=ORG)).decode()
     names = set(out.split()[1:])
     assert "GATEWAY_INTERNAL_TOKEN" not in names
     assert "DATABASE_URL" not in names
@@ -428,7 +429,7 @@ def test_r4_cjk_punctuation_runs_are_a_fast_422(ch: str) -> None:
         check_word_lengths("<p>" + ch * (MAX_WORD_CHARS + 1) + "</p>")
     start = time.monotonic()
     with pytest.raises(PdfRenderError) as err:
-        asyncio.run(render_pdf("html", ch * 333_000, member=MEMBER))
+        asyncio.run(render_pdf("html", ch * 333_000, member=MEMBER, org=ORG))
     assert err.value.status == 422
     assert time.monotonic() - start < 10
 
@@ -445,7 +446,7 @@ def test_r4_a_japanese_paragraph_with_brackets_still_renders() -> None:
     sentence = "「日本語」の段落では、括弧や句読点を使います。"
     text = sentence * (3000 // len(sentence) + 1)
     check_word_lengths(f"<p>{text}</p>")
-    pdf = asyncio.run(render_pdf("html", f"<p>{text}</p>", member=MEMBER))
+    pdf = asyncio.run(render_pdf("html", f"<p>{text}</p>", member=MEMBER, org=ORG))
     assert pdf.startswith(b"%PDF")
 
 
@@ -455,16 +456,16 @@ def test_r4_one_render_per_member_at_a_time(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(pdf_render, "_worker_argv", _slow_child(2))
 
     async def scenario() -> tuple[int, float, int]:
-        first = asyncio.ensure_future(render_pdf("html", "<p>x</p>", member="Asha@x.test"))
+        first = asyncio.ensure_future(render_pdf("html", "<p>x</p>", member="Asha@x.test", org="org-1"))
         await asyncio.sleep(0.3)
         start = time.monotonic()
         try:
-            await render_pdf("html", "<p>y</p>", member="asha@x.test")
+            await render_pdf("html", "<p>y</p>", member="asha@x.test", org="org-1")
             second = 200
         except PdfRenderError as exc:
             second = exc.status
         refused_in = time.monotonic() - start
-        other = asyncio.ensure_future(render_pdf("html", "<p>z</p>", member="ravi@x.test"))
+        other = asyncio.ensure_future(render_pdf("html", "<p>z</p>", member="ravi@x.test", org="org-2"))
         results = await asyncio.gather(first, other, return_exceptions=True)
         other_status = getattr(results[1], "status", 200)
         return second, refused_in, other_status
@@ -478,17 +479,158 @@ def test_r4_one_render_per_member_at_a_time(monkeypatch: pytest.MonkeyPatch) -> 
     assert not pdf_render._members_rendering
 
 
-def test_r4_the_slot_count_never_exceeds_the_cpus() -> None:
+def test_r4_the_slot_count_never_exceeds_the_cpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    """R7 (fix round 5): on a 28-CPU box the old assertion held with
+    ``min(cpu)`` deleted. Drive the expression with the CPU count instead."""
     import os
 
-    assert 1 <= pdf_render.MAX_CONCURRENT_RENDERS <= max(1, os.cpu_count() or 1)
-    assert pdf_render.MAX_CONCURRENT_RENDERS <= 4
+    from gateway.pdf_render import concurrent_render_slots
+
+    assert concurrent_render_slots(2) == 2
+    assert concurrent_render_slots(1) == 1
+    assert concurrent_render_slots(28) == 4
+    assert concurrent_render_slots(0) == 1
+    monkeypatch.setattr(os, "cpu_count", lambda: 2)
+    assert concurrent_render_slots() == 2
+    monkeypatch.setattr(os, "cpu_count", lambda: 1)
+    assert concurrent_render_slots() == 1
+    monkeypatch.setattr(os, "cpu_count", lambda: None)
+    assert concurrent_render_slots() == 1
 
 
-def test_r4_the_routes_key_the_cap_by_the_authenticated_email() -> None:
+def test_r4_the_routes_key_the_caps_by_the_authenticated_caller() -> None:
     import inspect
 
     from gateway.routes import documents, workspace
 
-    assert 'render_pdf("html", source, member=user.email)' in inspect.getsource(documents)
-    assert "member=_user.email" in inspect.getsource(workspace)
+    doc = inspect.getsource(documents)
+    ws = inspect.getsource(workspace)
+    assert 'member=user.email, org=current_tenant()' in doc
+    assert "member=_user.email" in ws
+    assert "org=current_tenant()" in ws
+
+
+# ── Fix round 5 ─────────────────────────────────────────────────────────────
+
+
+def _is_refused(ch: str) -> bool:
+    try:
+        check_word_lengths("<p>" + ch * (MAX_WORD_CHARS + 1) + "</p>")
+    except PdfRenderError:
+        return True
+    return False
+
+
+#: Characters MuPDF was MEASURED not to break at. Adding any of them back to
+#: the break set must turn a test red, because each one costs 2 to 10 s per
+#: 120,000 characters.
+KNOWN_NO_BREAK = sorted(
+    {0x00A0, 0x0E20, 0x3000, 0x3040, 0x3097, 0x3098}
+    | set(range(0x3001, 0x3040))
+    | set(range(0xD7A4, 0xD7B0))
+)
+
+
+def test_r5_every_known_non_breaking_character_counts_toward_a_run() -> None:
+    """B1 (R7): every character in U+3001-U+303F, every `_CJK_NO_BREAK`
+    entry and the five groups the round-5 review measured. A single one put
+    back in the break set fails here. Cheap: no layout, only the check."""
+    from gateway.pdf_render import _CJK_NO_BREAK, break_codepoints
+
+    breaks = set(break_codepoints())
+    for cp in [*KNOWN_NO_BREAK, *sorted(_CJK_NO_BREAK)]:
+        assert cp not in breaks, f"U+{cp:04X} is in the break set"
+        assert _is_refused(chr(cp)), f"U+{cp:04X} passed the word check"
+
+
+def test_r5_the_break_set_admits_no_unassigned_code_point() -> None:
+    import unicodedata
+
+    from gateway.pdf_render import break_codepoints
+
+    for cp in break_codepoints():
+        assert unicodedata.category(chr(cp)) != "Cn", f"U+{cp:04X}"
+
+
+@pytest.mark.parametrize(
+    "cp",
+    [0x3000, 0x3040, 0x3097, 0x3098, 0xD7A4, 0xD7AF, 0xE000, 0xE0080, 0x10FFFF],
+    ids=["ideo-space", "u3040", "u3097", "u3098", "ud7a4", "ud7af", "private-use", "cn-plane-14", "noncharacter"],
+)
+def test_r5_the_measured_groups_and_unassigned_are_a_fast_422(cp: int) -> None:
+    """A1: the five groups inside the old break ranges, and characters no one
+    measured, now count toward a word run."""
+    assert _is_refused(chr(cp))
+    start = time.monotonic()
+    with pytest.raises(PdfRenderError) as err:
+        asyncio.run(render_pdf("html", chr(cp) * 200_000, member=MEMBER, org=ORG))
+    assert err.value.status == 422
+    assert time.monotonic() - start < 10
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "日本語の段落はスペースを使わずに書かれることが多いです。",
+        "한국어 문단은 띄어쓰기를 사용하지만 긴 문장도 자주 있습니다.",
+        "中文段落通常不使用空格，而是一个字接一个字地书写下去。",  # noqa: RUF001 — real Chinese punctuation
+    ],
+    ids=["japanese", "korean", "chinese"],
+)
+def test_r5_normal_cjk_paragraphs_still_render(sentence: str) -> None:
+    text = sentence * (3000 // len(sentence) + 1)
+    check_word_lengths(f"<p>{text}</p>")
+    pdf = asyncio.run(render_pdf("html", f"<p>{text}</p>", member=MEMBER, org=ORG))
+    assert pdf.startswith(b"%PDF")
+
+
+def test_r5_one_render_per_organization(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A2: two seats of one tenant cannot hold both slots, and a second tenant
+    is not blocked by the first."""
+    monkeypatch.setattr(pdf_render, "_worker_argv", _slow_child(2))
+
+    async def scenario() -> tuple[int, int, int]:
+        first = asyncio.ensure_future(
+            render_pdf("html", "<p>x</p>", member="asha@a.test", org="org-a")
+        )
+        await asyncio.sleep(0.3)
+        try:
+            await render_pdf("html", "<p>y</p>", member="ravi@a.test", org="org-a")
+            same_org = 200
+        except PdfRenderError as exc:
+            same_org = exc.status
+        other = asyncio.ensure_future(
+            render_pdf("html", "<p>z</p>", member="bo@b.test", org="org-b")
+        )
+        results = await asyncio.gather(first, other, return_exceptions=True)
+        return same_org, getattr(results[0], "status", 200), getattr(results[1], "status", 200)
+
+    same_org, first_status, other_status = asyncio.run(scenario())
+    assert same_org == 429
+    # Both slow children print nothing, so each is a 422: they RAN.
+    assert first_status == 422
+    assert other_status == 422
+    assert not pdf_render._orgs_rendering
+
+
+def test_r5_an_unbound_request_shares_one_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No bound tenant must not mean no org cap."""
+    monkeypatch.setattr(pdf_render, "_worker_argv", _slow_child(2))
+
+    async def scenario() -> int:
+        first = asyncio.ensure_future(render_pdf("html", "<p>x</p>", member="a@x.test", org=None))
+        await asyncio.sleep(0.3)
+        try:
+            await render_pdf("html", "<p>y</p>", member="b@x.test", org=None)
+            status = 200
+        except PdfRenderError as exc:
+            status = exc.status
+        await asyncio.gather(first, return_exceptions=True)
+        return status
+
+    assert asyncio.run(scenario()) == 429
+
+
+def test_r5_the_timeout_is_the_measured_backstop() -> None:
+    """A3: 3 x the slowest legitimate render measured (4.35 s)."""
+    assert pdf_render.RENDER_TIMEOUT_S == 13.0

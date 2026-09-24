@@ -1543,10 +1543,14 @@ The audit of 2026-09-24 read these facts from the code.
    code. 199,000 nested `<div>` overflowed its stack and killed the gateway,
    and one word of 900,000 letters held the GIL for more than two minutes.
    So `render_pdf` lays out in a child process. The parent kills the child
-   after 20 seconds. At most four children run at one time, and never
+   after 13 seconds (fix round 5). The slowest legitimate render measured
+   was a 286-page table report, at 4.35 s, and 13 s is three times that.
+   At most four children run at one time, and never
    more than the CPU count, so two on the production box (fix round 4).
-   One member has at most one render in flight. A second one gets 429
-   at once. The key is the authenticated email. A render
+   One member, and one organization, has at most one render in flight.
+   A second one gets 429 at once. The keys are the authenticated email
+   and the tenant the request bound. A request with no bound tenant
+   shares one key. A render
    waits at most 2 seconds for a slot, with an `await` that holds no
    thread, and then gets 503 (fix round 3). A cancelled request kills its
    child. The child inherits only `CHILD_ENV_KEYS`, never the gateway's
@@ -1554,12 +1558,13 @@ The audit of 2026-09-24 read these facts from the code.
 7. **Two bounds apply before layout.** The sanitizer refuses nesting deeper
    than 64 elements. A run of more than 2,000 characters that MuPDF cannot
    break is also refused. Both get 422, and both bind Markdown too. The
-   break characters were measured (fix rounds 3 and 4). MuPDF breaks at a
-   space, a hyphen, and the other Unicode spaces except U+00A0. It breaks
-   between two ideographs, two Hangul syllables and most kana. It does not
-   break at U+00A0, inside Thai, or at CJK punctuation, small kana, the
-   prolonged sound mark and five full-width symbols. Those count toward a
-   run. `_CJK_NO_BREAK` in `pdf_render.py` lists the measured exceptions.
+   break characters were measured (fix rounds 3 to 5). **The default is
+   "does not break".** A character breaks a run only if it is assigned and
+   it is in the measured set: a space, a hyphen, the Unicode spaces except
+   U+00A0 and U+3000, and most kana, ideographs, Hangul syllables and
+   full-width Latin. Everything else counts toward a run, so an unassigned
+   or private-use code point is refused. `_CJK_NO_BREAK` in `pdf_render.py`
+   lists the measured exceptions inside the kept ranges.
 8. **Every failure has a status.** A size refusal is 413. A document that
    MuPDF cannot read, or a child that crashes, is 422. A second render for
    the same member is 429. A timeout or a full renderer is 503. No MuPDF
