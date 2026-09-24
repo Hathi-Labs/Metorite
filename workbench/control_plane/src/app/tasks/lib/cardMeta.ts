@@ -26,10 +26,10 @@ import type { GtdItem } from "./types";
  * Priority, due (with the overdue escalation), subtask count, tags,
  * attachments, estimate.
  *
- * D76 — Priority and tags are the TASK's shared facts, so the card draws
+ * D77 — Priority and tags are the TASK's shared facts, so the card draws
  * them with the Projects card's own chips (`importanceChip`, `taskMeta`'s
- * tag pills). One vocabulary: a task Projects shows as "Urgent" shows
- * "Urgent" here too, in the same place.
+ * tag pills). One vocabulary (`IMPORTANCE_OPTIONS`, D76): a task Projects
+ * shows as "Highest" shows "Highest" here too, in the same place.
  */
 export function gtdMetaChips(item: GtdItem, nowMs = Date.now()): MetaChip[] {
   const chips = taskMeta(
@@ -45,7 +45,7 @@ export function gtdMetaChips(item: GtdItem, nowMs = Date.now()): MetaChip[] {
 
   // The slot the Projects card gives it: right after `blocked`, which a
   // GTD item never earns, so first.
-  const priority = importanceChip({ importance: item.importance ?? null });
+  const priority = importanceChip({ importance: item.orgPriority ?? null });
   if (priority) {
     const at = chips.findIndex((c) => c.key === "blocked") + 1;
     chips.splice(at, 0, priority);

@@ -690,10 +690,28 @@ async def complete(task_id: str) -> str:
     return "\n".join(["Done:", *_task_line(merged, "done")])
 
 
+#: What a defer writes on the gateway (`personal.defer_task`).
+_DEFER_DISPOSITION = "SOMEDAY"
+
+
+def _defer_scope(task: dict[str, Any]) -> str:
+    """The defer card's scope, chosen the way `_overlay_card` chooses its own.
+
+    F2: the card must not promise "your inbox only" when the write would
+    move the board. A defer writes SOMEDAY, and under D77 choice 3 SOMEDAY
+    does not reopen a finished task, so today this answers "your inbox only"
+    every time. It reads `completed_at` and `_REOPENING` anyway, so the card
+    stays honest if the reopen rule ever changes.
+    """
+    if task.get("completed_at") and _DEFER_DISPOSITION in _REOPENING:
+        return "reopens the task on the board, then hides it from your inbox"
+    return "your inbox only"
+
+
 @_annotate(read_only=False, destructive=False, idempotent=True)
 async def defer(task_id: str, until: str) -> str:
     """Hide a task from the member's own inbox until a date (YYYY-MM-DD).
-    Mine only: the team's board does not change."""
+    Mine only: the team's board does not change, even on a finished task."""
     when = str(until or "").strip()
     if len(when) != 10:
         return "until is a date, YYYY-MM-DD."
@@ -701,7 +719,9 @@ async def defer(task_id: str, until: str) -> str:
     if not await _confirm(
         title=f"Defer until {when}?",
         detail=_ref(task),
-        context=_fields_block({"task": _ref(task), "until": when, "scope": "your inbox only"}),
+        context=_fields_block({
+            "task": _ref(task), "until": when, "scope": _defer_scope(task),
+        }),
     ):
         return CANCELLED
     await post(f"/projects/tasks/{tid}/defer", {"until": when})
@@ -1592,8 +1612,9 @@ async def create_personal_task(
 
 
 #: The dispositions that reopen a finished task on the board when stated
-#: (D76, `personal.OPEN_DISPOSITIONS`): every one but DONE and TRASH.
-_REOPENING = frozenset(d for d in DISPOSITIONS if d not in ("DONE", "TRASH"))
+#: (D77 choice 3, `personal.OPEN_DISPOSITIONS`): only the actionable ones.
+#: SOMEDAY, REFERENCE and PROJECT file a finished task without reopening it.
+_REOPENING = frozenset({"INBOX", "NEXT", "WAITING"})
 
 #: DONE is refused by `set_my_overlay`, not routed. Its card is about the
 #: member's own triage (manifest class B on /personal); a shared completion
@@ -1601,7 +1622,7 @@ _REOPENING = frozenset(d for d in DISPOSITIONS if d not in ("DONE", "TRASH"))
 #: `complete` has its own card and asks.
 _DONE_REFUSAL = (
     "DONE is not your own triage any more: a task is done when its shared "
-    "lane is done (D76). Use complete to finish it for everyone."
+    "lane is done (D77). Use complete to finish it for everyone."
 )
 
 
@@ -1623,8 +1644,9 @@ def _overlay_card(
 ) -> dict[str, Any]:
     """What the confirmation card says the write will do.
 
-    ⚠️ D76: an open disposition on a FINISHED task reopens it for everybody
-    (`personal.reopen_if_closed`), so "your overlay only" would be false.
+    ⚠️ D77: an actionable disposition (INBOX, NEXT, WAITING) on a FINISHED
+    task reopens it for everybody (`personal.reopen_if_closed`), so "your
+    overlay only" would be false. SOMEDAY, REFERENCE and PROJECT do not.
     The task read this tool already made carries `completed_at`, which
     `apply_status_transition` keeps equal to "the lane is closed".
     """
@@ -1654,9 +1676,9 @@ async def set_my_overlay(
     WAITING, SOMEDAY, PROJECT, REFERENCE, TRASH), context (@office), energy
     (low, medium, high), two_minute (yes or no). clear empties fields:
     context, energy, next_action. DONE is refused here: completion is the
-    task's shared lane (D76), so finish a task with complete. An open
-    disposition on a finished task reopens it for the board. defer sets a
-    date. The estimate is the TASK's, shared with the board since D76: set
+    task's shared lane (D77), so finish a task with complete. INBOX,
+    NEXT or WAITING on a finished task reopens it for the board. defer sets a
+    date. The estimate is the TASK's, shared with the board since D77: set
     it with update_task, not here."""
     tid, task = await _task(task_id)
     unread = ""
@@ -1690,9 +1712,9 @@ async def set_my_overlay(
         payload["next_action"] = next_action.strip()
         before["next_action"] = mine.get("next_action")
     if _int_or_none(estimate_mins) is not None:
-        # D76: one estimate, on the task. Refused by name rather than
+        # D77: one estimate, on the task. Refused by name rather than
         # dropped, so the model learns where it goes.
-        return ("The estimate is the task's own since D76, shared with the "
+        return ("The estimate is the task's own since D77, shared with the "
                 "board and People capacity. Set it with update_task "
                 "(estimate_mins).")
     flag = _yes_no(two_minute, "two_minute")

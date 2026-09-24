@@ -184,7 +184,7 @@ say "Manifest"
   # dataset here, without contradicting a single anchor. A wrong anchor is
   # worse than no anchor: it occupies the slot where the check should be.
   # So an unresolvable name is now reported as MISSING, loudly.
-  # The task anchor is `pm_tasks`, the one task store (D53). Migration 216
+  # The task anchor is `pm_tasks`, the one task store (D53). Migration 217
   # dropped the retired store it used to name (WS-39 S8, 2026-09-23).
   for t in app_user email_messages pm_tasks meeting agent_run; do
     if ! pg psql -U "$PG_USER" -d "$APP_DB" -tAc \

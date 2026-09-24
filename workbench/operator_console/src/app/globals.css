@@ -780,7 +780,8 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   padding: 7px 9px;
   background: var(--bg);
@@ -795,7 +796,8 @@ input::placeholder {
   color: var(--faint);
 }
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: var(--ring);
@@ -1568,6 +1570,23 @@ pre.token {
   gap: 6px;
 }
 
+/* 🔴 **The hint sentence takes a row of its own.** Owner report,
+   2026-09-24: it rendered BESIDE the last filter chip, so "Needs attention"
+   and a full sentence shared a line and the row read as broken.
+
+   It is a flex sibling of the chips, so it wrapped with them and landed
+   wherever the chips happened to stop. `flex-basis: 100%` makes it start a
+   new line whatever the chips did — at every width, and for any number of
+   facets, which a hand-tuned margin would not.
+
+   ⚠️ `order` is NOT used. The hint is already last in the markup, and an
+   explicit order would make the visual sequence depend on a number that the
+   reading order does not. `modelbrowser.test.ts` is the fence. */
+.facetrow > .muted.small {
+  flex-basis: 100%;
+  margin-top: 2px;
+}
+
 .facetlabel {
   min-width: 44px;
   font-size: 11px;
@@ -2007,6 +2026,60 @@ tr.picked > td {
   border-radius: var(--r);
   background: var(--accent-soft);
 }
+
+/* ── "Try a decision" (CP-13b) ─────────────────────────────────────────── */
+textarea {
+  resize: vertical;
+  line-height: 1.45;
+}
+.try-decision .field { margin-top: 8px; }
+.try-criteria {
+  margin: 10px 0 0;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  min-width: 0;
+}
+.try-criteria legend {
+  padding: 0 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.try-row {
+  display: grid;
+  grid-template-columns: minmax(80px, 1fr) 2fr;
+  gap: 8px;
+  margin-top: 6px;
+}
+.try-row-head {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+.try-criteria .job-actions { margin-top: 10px; }
+.try-result { margin-top: 10px; }
+.try-answer {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.try-answer .lbl {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-right: 6px;
+}
+/* Two by two, at any width. Four stacked rows at 390px pushed the cost, the
+   figure an operator came for, below the fold. */
+.try-result .stats {
+  margin: 10px 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.try-result .stat .num { overflow-wrap: anywhere; }
 
 /* ── The outage question ──────────────────────────────────────────────── */
 .outage-line {

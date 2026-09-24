@@ -81,10 +81,28 @@ def test_the_parse_itself_still_works() -> None:
     assert "anthropic" in found, "the parse missed a slug certainly there"
 
 
+def _native_vendors() -> set[str]:
+    """The vendors a Console NATIVE handler calls, and not litellm (CP-13b).
+
+    🔴 **Read from the handler module, never typed here.** TypeSafe has no
+    litellm provider id, because litellm reaches it only through the Proxy
+    that D58 rejects. The Router still finds its key by the model prefix, so
+    the slug rule holds. What changes is who answers to the slug.
+    """
+    from customer_console import handlers
+
+    return {handlers.TYPESAFE_PROVIDER}
+
+
 def test_every_offered_vendor_is_a_litellm_provider() -> None:
-    """🔴 The one rule. A slug litellm does not know can never be called."""
+    """🔴 The one rule. A slug litellm does not know can never be called.
+
+    ⚠️ A native vendor is exempt by name (:func:`_native_vendors`). The
+    exemption is a set of ONE today, and a typo in it fails the next test.
+    """
     litellm = pytest.importorskip("litellm")
     known = {getattr(p, "value", p) for p in litellm.provider_list}
+    known |= _native_vendors()
 
     unknown = [s for s in _slugs() if s not in known]
     assert not unknown, (
@@ -94,6 +112,17 @@ def test_every_offered_vendor_is_a_litellm_provider() -> None:
         "Use litellm's own id — 'gemini' not 'google', 'together_ai' not "
         "'together'."
     )
+
+
+def test_each_native_vendor_is_offered_and_is_not_a_litellm_id() -> None:
+    """The exemption stays honest. A native vendor must have a card, and it
+    must NOT be a litellm id. If litellm learns it, drop the exemption."""
+    litellm = pytest.importorskip("litellm")
+    known = {getattr(p, "value", p) for p in litellm.provider_list}
+    found = set(_slugs())
+    for slug in _native_vendors():
+        assert slug in found, f"{slug!r} is native but has no guide card"
+        assert slug not in known, f"litellm now knows {slug!r}; drop the exemption"
 
 
 def test_the_two_slugs_that_were_actually_wrong_stay_gone() -> None:

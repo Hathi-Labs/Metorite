@@ -1,6 +1,6 @@
-"""WS-39 S6f — one set of fields across My Tasks and Projects (D76), hermetic.
+"""WS-39 S6f — one set of fields across My Tasks and Projects (D77), hermetic.
 
-Spec: ``project-docs/specs/my_tasks_cutover.md`` §4.10 · §5 S6f · **D76**.
+Spec: ``project-docs/specs/my_tasks_cutover.md`` §4.10 · §5 S6f · **D77**.
 
 The rule: a fact about the WORK has one home, ``pm_tasks``, and both apps
 read and write it. The overlay holds only how one member holds the work.
@@ -10,12 +10,12 @@ The claims a hermetic fake can judge are pinned here:
   the task in My Tasks with no overlay write (`effective_disposition`);
 * who a WAITING task waits on is its assignees minus me (`waiting_on_for`);
 * the shared start date hides a task from my inbox (`DEFERRED_CLAUSE`);
-* the overlay's ``important`` and ``time_estimate_mins`` are refused, never
-  dropped, at the route and at the one upsert;
+* the overlay's ``time_estimate_mins`` is refused, never dropped, at the
+  route and at the one upsert. ``important`` is NOT refused: it is the
+  member's own answer (D76), and the shared Priority only seeds it;
 * the organize estimate lands on the task, and a delegation keeps a
   deadline the task already has;
-* migration 215's text, and the one number the client and the gateway
-  share (``IMPORTANT_AT``).
+* migration 216's text: the estimate, and no priority.
 
 The Postgres claims — the ARRAY subquery, ``current_date``, the backfill
 run twice, People capacity reading the shared column — are in
@@ -25,7 +25,7 @@ run twice, People capacity reading the shared column — are in
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -232,7 +232,39 @@ async def test_the_nudge_goes_to_whoever_holds_it_now(db: FakeProjectsDB) -> Non
 def test_the_deferred_clause_honours_both_dates() -> None:
     clause = pm_personal.DEFERRED_CLAUSE
     assert "p.defer_until IS NULL OR p.defer_until <= now()" in clause
-    assert "t.start_date IS NULL OR t.start_date <= current_date" in clause
+    # F5: the member's own date, bound. Never the database's UTC date.
+    assert "t.start_date IS NULL OR t.start_date <= CAST(:today AS date)" in clause
+    assert "current_date" not in clause
+
+
+def test_local_date_reads_the_members_zone() -> None:
+    """F5: at 20:00 UTC it is already tomorrow in India."""
+    at = datetime(2026, 9, 24, 20, 0, tzinfo=UTC)
+    assert pm_personal.local_date("Asia/Kolkata", at).isoformat() == "2026-09-25"
+    assert pm_personal.local_date("UTC", at).isoformat() == "2026-09-24"
+    assert pm_personal.local_date("America/Los_Angeles", at).isoformat() == "2026-09-24"
+    # An unknown or empty zone is UTC, the column's default.
+    assert pm_personal.local_date("Not/AZone", at).isoformat() == "2026-09-24"
+    assert pm_personal.local_date(None, at).isoformat() == "2026-09-24"
+
+
+async def test_the_inbox_binds_the_members_today(db: FakeProjectsDB) -> None:
+    """F5: the route binds `:today` from `user_settings.timezone`."""
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id, title="Starts tomorrow here")
+    _assign(db, task.id, "alice@fracktal.in")
+    seen: list[dict] = []
+    real = db.execute
+
+    async def spy(statement, params=None):
+        if params and "today" in params:
+            seen.append(dict(params))
+        return await real(statement, params)
+
+    db.execute = spy  # type: ignore[method-assign]
+    await pm_personal.my_inbox(user=ALICE, page=page())
+    # A `date`, never a string: asyncpg refuses text for `CAST(:today AS date)`.
+    assert seen and all(isinstance(p["today"], date) for p in seen)
 
 
 async def test_a_future_start_date_hides_it_from_my_inbox(db: FakeProjectsDB) -> None:
@@ -251,24 +283,27 @@ async def test_a_future_start_date_hides_it_from_my_inbox(db: FakeProjectsDB) ->
     assert str(later.id) in {r["id"] for r in everything.rows}
 
 
-# ── The two retired overlay columns ─────────────────────────────────────────
+# ── The retired overlay column ──────────────────────────────────────────────
 
-@pytest.mark.parametrize("field", ["important", "time_estimate_mins"])
-def test_the_overlay_route_refuses_a_retired_column(field) -> None:
-    value = True if field == "important" else 30
+def test_the_overlay_route_refuses_the_retired_estimate() -> None:
     with pytest.raises(HTTPException) as caught:
-        pm_personal.validate_overlay({field: value})
+        pm_personal.validate_overlay({"time_estimate_mins": 30})
     assert caught.value.status_code == 422
-    assert "D76" in caught.value.detail
+    assert "D77" in caught.value.detail
 
 
-@pytest.mark.parametrize("field", ["important", "time_estimate_mins"])
-async def test_the_one_upsert_refuses_a_retired_column(field, db) -> None:
-    with pytest.raises(ValueError, match="D76"):
+async def test_the_one_upsert_refuses_the_retired_estimate(db) -> None:
+    with pytest.raises(ValueError, match="D77"):
         await pm_personal._upsert_personal(
             db, "00000000-0000-0000-0000-000000000001", "alice@fracktal.in",
-            {field: 1},
+            {"time_estimate_mins": 1},
         )
+
+
+def test_important_is_the_members_own_and_is_not_retired() -> None:
+    """D76 keeps `important` on the overlay. D77 must not refuse it."""
+    assert "important" not in pm_personal.RETIRED_OVERLAY_KEYS
+    assert pm_personal.validate_overlay({"important": False}) == {"important": False}
 
 
 async def test_the_bulk_overlay_refuses_a_retired_column() -> None:
@@ -279,33 +314,39 @@ async def test_the_bulk_overlay_refuses_a_retired_column() -> None:
     assert caught.value.status_code == 422
 
 
-def test_no_reader_projects_a_retired_column() -> None:
+def test_no_reader_projects_the_retired_estimate() -> None:
     assert "p.time_estimate_mins" not in pm_personal._MY_TASKS_SQL
-    assert "p.important" not in pm_personal._MY_TASKS_SQL
     assert "time_estimate_mins" not in pm_personal._OVERLAY_PASSTHROUGH
-    assert "important" not in pm_personal._OVERLAY_PASSTHROUGH
+    # D76: the member's own `important` is still read, and still projected.
+    assert "p.important" in pm_personal._MY_TASKS_SQL
+    assert "important" in pm_personal._OVERLAY_PASSTHROUGH
 
 
-def test_the_planner_reads_the_shared_estimate_and_priority() -> None:
+def test_the_planner_reads_the_shared_estimate_and_my_important() -> None:
     select = pm_planning._PM_SELECT
     assert "t.estimate_mins           AS time_estimate_mins" in select
-    assert f"coalesce(t.importance, 0) >= {pm_personal.IMPORTANT_AT}" in select
     assert "p.time_estimate_mins" not in select
-    assert "p.important" not in select
+    # D76: my answer, and the shared Priority beside it for the seed. Never
+    # a Priority read AS `important`.
+    assert "p.important" in select
+    assert "t.importance              AS org_priority" in select
+    assert "AS important" not in select
     assert "tk.estimate_mins" in pm_planning._PM_RATIO_SQL
 
 
-def test_important_at_is_one_number_in_all_three_places() -> None:
-    ts = (ROOT / "workbench/control_plane/src/app/tasks/lib/priority.ts").read_text(
-        encoding="utf-8")
-    found = re.search(r"export const IMPORTANT_AT = (\d+);", ts)
-    assert found, "priority.ts must export IMPORTANT_AT"
-    assert int(found.group(1)) == pm_personal.IMPORTANT_AT == 2
-    # F3 — the chat skill's copy. It runs in the agent process and may not
-    # import the gateway, so it keeps its own constant, pinned here.
+def test_no_writer_turns_important_into_the_shared_priority() -> None:
+    """The withdrawn draft of D77 made the Important switch write `importance`.
+    D76 forbids that. The chat skill and the client each split a write, and
+    neither may send `importance` to the task (D76, D77)."""
     from skill_task_gtd import core as skill_core
 
-    assert skill_core._IMPORTANT_AT == pm_personal.IMPORTANT_AT
+    assert "importance" not in skill_core._TASK_KEYS
+    assert "important" in skill_core._OVERLAY_KEYS
+    assert not hasattr(skill_core, "_IMPORTANT_AT")
+    ts = (ROOT / "workbench/control_plane/src/app/tasks/lib/priority.ts").read_text(
+        encoding="utf-8")
+    assert "importanceForImportant" not in ts
+    assert "IMPORTANT_AT" not in ts
 
 
 # ── Organize ────────────────────────────────────────────────────────────────
@@ -336,11 +377,15 @@ async def test_a_delegation_keeps_the_deadline_the_task_already_has(
     assert shared["estimate_mins"] == 90, "the one estimate, on the task"
 
 
-# ── Migration 215 ───────────────────────────────────────────────────────────
+# ── Migration 216 ───────────────────────────────────────────────────────────
+
+def _backfill_sql() -> str:
+    (path,) = (ROOT / "infra/postgres").glob("*_pm_tasks_estimate_backfill.sql")
+    return path.read_text(encoding="utf-8")
+
 
 def test_the_estimate_backfill_is_guarded_tenant_bound_and_drops_nothing() -> None:
-    sql = (ROOT / "infra/postgres/215_pm_tasks_estimate_backfill.sql").read_text(
-        encoding="utf-8")
+    sql = _backfill_sql()
     body = "\n".join(
         line for line in sql.splitlines() if not line.lstrip().startswith("--")
     )
@@ -369,10 +414,39 @@ def test_time_spent_is_every_members_actuals_bound_to_the_task() -> None:
 
 # ── Un-checking a closed task reopens it, on every overlay door ─────────────
 
-def test_every_open_disposition_reopens_and_only_those() -> None:
-    assert {
-        "INBOX", "NEXT", "WAITING", "SOMEDAY", "PROJECT", "REFERENCE",
-    } == pm_personal.OPEN_DISPOSITIONS
+def test_only_an_actionable_disposition_reopens() -> None:
+    """F4: INBOX, NEXT and WAITING reopen. Filing is not reopening."""
+    assert {"INBOX", "NEXT", "WAITING"} == pm_personal.OPEN_DISPOSITIONS
+
+
+def test_the_chat_skill_holds_the_same_reopen_set() -> None:
+    from skill_projects import writes as skill_writes
+
+    assert skill_writes._REOPENING == pm_personal.OPEN_DISPOSITIONS
+
+
+@pytest.mark.parametrize("filed", ["SOMEDAY", "REFERENCE", "PROJECT"])
+async def test_filing_a_finished_task_does_not_reopen_it(
+    filed, db: FakeProjectsDB,
+) -> None:
+    """F4: Reference, Someday or Project on a closed task is my filing. The
+    lane stays closed, my stated value is kept, and the lane still reads
+    DONE."""
+    project, _todo, done = _team_project(db)
+    task = db.seed_task(project.id, done.id,
+                        completed_at="2026-09-20T09:00:00+00:00")
+    _assign(db, task.id, "alice@fracktal.in")
+    await pm_personal.set_personal(
+        str(task.id), pm_personal.PersonalIn(disposition=filed), user=ALICE,
+    )
+    shared = next(t for t in db.rows("pm_tasks") if str(t["id"]) == str(task.id))
+    assert str(shared["status_id"]) == str(done.id), "the team's lane is untouched"
+    mine = next(r for r in db.rows("pm_task_personal")
+                if str(r["task_id"]) == str(task.id))
+    assert mine["disposition"] == filed, "my stated value is kept"
+    assert pm_personal.effective_disposition(
+        filed, status_category="done", is_mine=True, has_assignee=True,
+    ) == "DONE"
 
 
 async def test_bulk_next_on_a_completed_task_reopens_it(db: FakeProjectsDB) -> None:
@@ -405,7 +479,7 @@ async def test_the_personal_patch_reopens_a_closed_task(db: FakeProjectsDB) -> N
     task = db.seed_task(project.id, done.id)
     _assign(db, task.id, "alice@fracktal.in")
     await pm_personal.set_personal(
-        str(task.id), pm_personal.PersonalIn(disposition="SOMEDAY"), user=ALICE,
+        str(task.id), pm_personal.PersonalIn(disposition="WAITING"), user=ALICE,
     )
     shared = next(t for t in db.rows("pm_tasks") if str(t["id"]) == str(task.id))
     assert str(shared["status_id"]) == str(todo.id)
@@ -425,20 +499,16 @@ async def test_trash_and_a_context_leave_a_closed_task_closed(db: FakeProjectsDB
     assert str(shared["status_id"]) == str(done.id)
 
 
-def test_the_backfill_carries_important_up_and_never_down() -> None:
-    sql = (ROOT / "infra/postgres/215_pm_tasks_estimate_backfill.sql").read_text(
-        encoding="utf-8")
+def test_the_backfill_writes_no_priority() -> None:
+    """D76 keeps `important` private. The backfill copies the estimate and
+    nothing else, so no member's flag reaches the shared Priority."""
     body = "\n".join(
-        line for line in sql.splitlines() if not line.lstrip().startswith("--")
+        line for line in _backfill_sql().splitlines()
+        if not line.lstrip().startswith("--")
     )
-    promote = body[body.index("WITH flag AS"):]
-    assert "SET importance = 2" in promote
-    assert promote.count("(t.importance IS NULL OR t.importance < 2)") == 2, (
-        "raises only an unset or lower Priority, in the pick and the UPDATE"
-    )
-    assert "AND flag.important" in promote, "a false flag changes nothing"
-    assert "(a.task_id IS NULL)" in promote, "the assignee's flag first"
-    assert "t.organization_id = p.organization_id" in promote
+    assert "importance" not in body
+    assert "important" not in body
+    assert body.count("UPDATE pm_tasks") == 1
 
 
 def test_the_ledger_guard_names_this_very_file() -> None:
@@ -454,7 +524,7 @@ def test_the_ledger_guard_names_this_very_file() -> None:
 
 
 def test_closed_lanes_are_pruned_in_sql_for_every_caller_that_drops_done() -> None:
-    """Completed rows must not crowd a LIMIT out of the open rows (D76)."""
+    """Completed rows must not crowd a LIMIT out of the open rows (D77)."""
     from gateway.routes.projects import item_lens as pm_item_lens
 
     closed = "s.category NOT IN ('cancelled', 'done')"
@@ -507,6 +577,18 @@ _PARITY = __import__("json").loads(
 )
 
 
+@pytest.mark.parametrize(
+    "case", _PARITY["explicit_today_cases"], ids=lambda c: c["name"])
+def test_not_yet_matches_the_explicit_today_cases(case) -> None:
+    """F5: one instant, one zone, both sides. The client runs the same rows
+    in `sharedFields.test.ts` with the same instant and zone."""
+    at = datetime.fromisoformat(case["at"])
+    today = pm_personal.local_date(case["timezone"], at)
+    assert today.isoformat() == case["today"]
+    defer = datetime.fromisoformat(case["defer_until"]) if case["defer_until"] else None
+    assert pm_personal.not_yet(defer, case["start_date"], at, today) is case["hidden"]
+
+
 @pytest.mark.parametrize("case", _PARITY["cases"], ids=lambda c: c["name"])
 def test_not_yet_matches_the_shared_table(case) -> None:
     from datetime import timedelta
@@ -525,12 +607,13 @@ def test_insight_counts_ages_the_inbox_by_the_one_rule() -> None:
     src = Path(pm_item_lens.__file__).read_text(encoding="utf-8")
     body = src[src.index("async def insight_counts"):]
     body = body[:body.index("async def items_by_origin")]
-    assert "not_yet(it.defer_until, it.start_date, at)" in body
+    assert "not_yet(it.defer_until, it.start_date, at, today)" in body
+    assert "member_today(db, uid, at)" in body
 
 
-async def test_deferring_a_finished_task_reopens_it(db: FakeProjectsDB) -> None:
-    """Defer writes SOMEDAY, an open disposition, so it takes the one reopen."""
-    project, todo, done = _team_project(db)
+async def test_deferring_a_finished_task_leaves_it_closed(db: FakeProjectsDB) -> None:
+    """F4: defer writes SOMEDAY, which is not actionable, so it never reopens."""
+    project, _todo, done = _team_project(db)
     task = db.seed_task(project.id, done.id)
     _assign(db, task.id, "alice@fracktal.in")
     await pm_personal.defer_task(
@@ -538,4 +621,7 @@ async def test_deferring_a_finished_task_reopens_it(db: FakeProjectsDB) -> None:
         user=ALICE,
     )
     shared = next(t for t in db.rows("pm_tasks") if str(t["id"]) == str(task.id))
-    assert str(shared["status_id"]) == str(todo.id)
+    assert str(shared["status_id"]) == str(done.id), "the team's lane is untouched"
+    mine = next(r for r in db.rows("pm_task_personal")
+                if str(r["task_id"]) == str(task.id))
+    assert mine["disposition"] == "SOMEDAY"

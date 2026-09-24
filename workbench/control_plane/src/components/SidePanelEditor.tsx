@@ -99,7 +99,16 @@ function ResizeHandle({ width }: { width: number }) {
   );
 }
 
-export default function SidePanelEditor() {
+export default function SidePanelEditor({
+  hideWhenEmpty = false,
+}: {
+  /**
+   * Draw nothing, not even the collapsed strip, until a document is open. For
+   * a host where the panel is occasional (the Projects page), rather than a
+   * standing part of the layout (the chat page).
+   */
+  hideWhenEmpty?: boolean;
+} = {}) {
   const state = useSyncExternalStore(subscribe, getState, getState);
   const { open, docs, activePath, width } = state;
 
@@ -112,6 +121,7 @@ export default function SidePanelEditor() {
   // Collapsed rail — a thin strip that reopens the panel and shows a doc
   // count. The WHOLE rail is the click target (a thin strip is fiddly to hit
   // an icon inside).
+  if (hideWhenEmpty && docs.length === 0) return null;
   if (!open) {
     return (
       <aside className="flex w-10 shrink-0 flex-col border-r border-border bg-card/40">

@@ -270,7 +270,7 @@ class TestTheFenceCanActuallyFail:
 
     def test_it_discovers_the_tenancy_tables_rather_than_transcribing_them(self):
         tables = tenancy_tables()
-        # 143 until 2026-09-23. Migration 216 (WS-39 S8) dropped six `gtd_*`
+        # 143 until 2026-09-23. Migration 217 (WS-39 S8) dropped six `gtd_*`
         # tables, and the phase files lost them in the same PR.
         assert len(tables) >= 130
         # The two that H-104 actually broke, and the one the homonym rule keeps

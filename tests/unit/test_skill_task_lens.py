@@ -496,19 +496,19 @@ def test_the_list_ranks_before_it_cuts_to_thirty(gw: Recorder):
 def test_split_patch_places_every_field_or_refuses():
     task, personal = core._split_patch({
         "title": "t", "notes": "n", "due_at": "2026-10-01",
-        "time_estimate_mins": 30, "importance": 2, "start_date": "2026-10-01",
-        "context": "@home", "leveraged": True, "defer_until": None,
+        "time_estimate_mins": 30, "start_date": "2026-10-01",
+        "context": "@home", "important": True, "defer_until": None,
     })
-    # D76: the estimate, the Priority and the start date are the TASK's.
+    # D77: the estimate and the start date are the TASK's.
     assert task == {"title": "t", "description": "n", "due_at": "2026-10-01",
-                    "estimate_mins": 30, "importance": 2,
-                    "start_date": "2026-10-01"}
-    assert personal == {"context": "@home", "leveraged": True, "defer_until": None}
+                    "estimate_mins": 30, "start_date": "2026-10-01"}
+    # D76: `important` is the member's own answer, on the overlay.
+    assert personal == {"context": "@home", "important": True, "defer_until": None}
     with pytest.raises(RuntimeError, match="cannot place"):
         core._split_patch({"provider_status": "x"})
-    # D76: the overlay's `important` is retired. It has no home and is refused.
+    # The skill never writes the shared Priority (D76, D77).
     with pytest.raises(RuntimeError, match="cannot place"):
-        core._split_patch({"important": True})
+        core._split_patch({"importance": 2})
 
 
 def test_update_clears_with_null_on_both_routes(gw: Recorder):

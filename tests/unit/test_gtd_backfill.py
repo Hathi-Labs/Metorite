@@ -25,7 +25,7 @@ So every claim about *what the body says* is made against the last definition,
 found by scanning the ladder rather than by naming a file — a 213 that
 redefined the function again would move the claims, and this suite says so.
 
-**WS-39 S8 PR 2 (2026-09-23) ends the story.** Migration 216 arms the guard
+**WS-39 S8 PR 2 (2026-09-23) ends the story.** Migration 217 arms the guard
 from reviewed code, lets 190 drop `gtd_items` and `gtd_waiting`, and drops
 the rest of the store. The last section fences exactly what it drops and
 what must survive, and proves the replayed ladder against a real Postgres.
@@ -279,15 +279,15 @@ def test_190_drops_without_cascade() -> None:
         )
 
 
-# ── WS-39 S8 PR 2: migration 216 drops the planned set and nothing else ─────
+# ── WS-39 S8 PR 2: migration 217 drops the planned set and nothing else ─────
 #
-# 190 dropped only `gtd_items` and `gtd_waiting`, and only when armed. 216 arms
+# 190 dropped only `gtd_items` and `gtd_waiting`, and only when armed. 217 arms
 # it from reviewed code, lets 190's guard decide, and then drops the rest of
-# the store. These fences read 216 as text. `tests/live/live_ws39_s8d.py`
+# the store. These fences read 217 as text. `tests/live/live_ws39_s8d.py`
 # proves the same against a seeded Postgres, including the refusal, and the
 # live test at the end of this module proves the replayed ladder.
 
-S8 = MIGRATIONS / "216_gtd_task_store_drop.sql"
+S8 = MIGRATIONS / "217_gtd_task_store_drop.sql"
 
 #: Exactly what S8 drops (my_tasks_cutover.md §4.3). `gtd_items` and
 #: `gtd_waiting` go through 190's guard, so they are listed apart.
@@ -322,7 +322,7 @@ def _drops(path: Path) -> set[str]:
     }
 
 
-def test_216_is_on_the_ladder_as_the_one_s8_drop() -> None:
+def test_217_is_on_the_ladder_as_the_one_s8_drop() -> None:
     assert S8.is_file(), f"missing {S8}"
     droppers = sorted(
         p.name for p in MIGRATIONS.glob("[0-9][0-9]*_*.sql")
@@ -334,10 +334,10 @@ def test_216_is_on_the_ladder_as_the_one_s8_drop() -> None:
     )
 
 
-def test_216_drops_exactly_the_planned_set() -> None:
+def test_217_drops_exactly_the_planned_set() -> None:
     dropped = _drops(S8)
     assert dropped == set(S8_DROPS | S8_GUARDED), (
-        f"216 drops {sorted(dropped)}. The §4.3 map drops exactly "
+        f"217 drops {sorted(dropped)}. The §4.3 map drops exactly "
         f"{sorted(S8_DROPS | S8_GUARDED)}. Anything else is a new decision."
     )
 
@@ -352,15 +352,15 @@ def test_no_migration_drops_a_table_that_survives(table: str, why: str) -> None:
         )
 
 
-def test_216_drops_without_cascade() -> None:
+def test_217_drops_without_cascade() -> None:
     for match in re.finditer(r"DROP (?:TABLE|VIEW|FUNCTION)[^;]*;", sql(S8), re.I):
         assert "CASCADE" not in match.group(0).upper(), (
-            f"216 uses CASCADE: {match.group(0)!r}. A retirement should fail "
+            f"217 uses CASCADE: {match.group(0)!r}. A retirement should fail "
             "loudly on an unexpected dependent, not consume it."
         )
 
 
-def test_216_is_one_transaction() -> None:
+def test_217_is_one_transaction() -> None:
     """The column drop in (c) must not survive a refusal in (a). psql -f
     commits each statement unless the file says BEGIN, and the runner feeds
     the file to psql."""
@@ -369,18 +369,18 @@ def test_216_is_one_transaction() -> None:
     assert body.count("BEGIN;") == 1 and body.count("COMMIT;") == 1
 
 
-def test_216_arms_then_lets_190s_guard_decide() -> None:
+def test_217_arms_then_lets_190s_guard_decide() -> None:
     """The arm moved from a hand INSERT into reviewed code. The data check
     did not move: 190's guard still refuses on an unmigrated row."""
     body = sql(S8)
     arm = body.index("INSERT INTO gtd_retirement_arm")
     call = body.index("PERFORM gtd_retirement_drop()")
-    assert arm < call, "216 must arm BEFORE it calls the guard"
-    assert "'migration 216 (WS-39 S8, D73)'" in body, (
+    assert arm < call, "217 must arm BEFORE it calls the guard"
+    assert "'migration 217 (WS-39 S8, D73)'" in body, (
         "the arm row must name the migration, so the audit says who armed it"
     )
     assert "RAISE EXCEPTION" in body[call:], (
-        "216 must refuse when the guard returns and the store is still there"
+        "217 must refuse when the guard returns and the store is still there"
     )
     # The guard is the only path that drops a table with rows in it.
     assert "DELETE FROM gtd_items" not in body
@@ -388,7 +388,7 @@ def test_216_arms_then_lets_190s_guard_decide() -> None:
 
 
 #: gtd_items columns the backfill (212) never copies. A value in any of them
-#: would be lost, so 216 refuses. `flexible` is exempt: NULL reads as flexible.
+#: would be lost, so 217 refuses. `flexible` is exempt: NULL reads as flexible.
 UNCOPIED = (
     "origin", "attachments", "sort_key", "important", "leveraged", "kept_mine", "deep_work",
     "scheduled_start", "scheduled_end", "actual_start", "actual_end",
@@ -396,18 +396,18 @@ UNCOPIED = (
 )
 
 
-def test_216_refuses_a_value_the_backfill_never_copied() -> None:
+def test_217_refuses_a_value_the_backfill_never_copied() -> None:
     body = sql(S8)
     block = body[body.index("$s8_uncopied$"):body.rindex("$s8_uncopied$")]
     for column in UNCOPIED:
-        assert f"('{column}'," in block, f"216 does not check gtd_items.{column}"
+        assert f"('{column}'," in block, f"217 does not check gtd_items.{column}"
     assert "'flexible'" not in block
     assert "RAISE EXCEPTION" in block
     # It runs before anything changes, so a refusal leaves the box as it was.
     assert body.index("$s8_uncopied$") < body.index("$s8_commitments$")
 
 
-def test_216_refuses_a_tree_table_that_holds_rows() -> None:
+def test_217_refuses_a_tree_table_that_holds_rows() -> None:
     body = sql(S8)
     block = body[body.index("$s8_tree_empty$"):body.rindex("$s8_tree_empty$")]
     for table in ("gtd_projects", "gtd_spaces", "gtd_folders", "gtd_contexts"):
@@ -417,7 +417,7 @@ def test_216_refuses_a_tree_table_that_holds_rows() -> None:
         "DROP TABLE IF EXISTS gtd_projects;"), "the check must run before the drop"
 
 
-def test_216_remaps_a_task_actions_dispatch_ref_before_the_drop() -> None:
+def test_217_remaps_a_task_actions_dispatch_ref_before_the_drop() -> None:
     """Migration 129 put the gtd id in `action_item.dispatch_ref` for
     `kind = 'task'`. It must name the pm task before gtd_items goes."""
     body = sql(S8)
@@ -428,7 +428,7 @@ def test_216_remaps_a_task_actions_dispatch_ref_before_the_drop() -> None:
     assert "JOIN pm_tasks t ON t.id = i.migrated_task_id" in block
 
 
-def test_216_moves_the_commitment_before_the_drop() -> None:
+def test_217_moves_the_commitment_before_the_drop() -> None:
     """`task_id` is filled from `gtd_items.migrated_task_id`, so the copy must
     run while `gtd_items` exists, and only onto a pm_tasks row that exists."""
     body = sql(S8)
@@ -439,7 +439,7 @@ def test_216_moves_the_commitment_before_the_drop() -> None:
         "ALTER TABLE wa_commitments DROP COLUMN gtd_item_id")
 
 
-def test_216_drops_in_foreign_key_order() -> None:
+def test_217_drops_in_foreign_key_order() -> None:
     """No CASCADE, so a child must go before the table it references."""
     body = sql(S8)
     order = [body.index(f"DROP TABLE IF EXISTS {t};")
@@ -453,17 +453,17 @@ def test_216_drops_in_foreign_key_order() -> None:
 
 
 #: Migration 48's text, line endings folded, as this PR leaves it.
-_48_SHA256 = "03e923cd611a7255d4bd237f2345d2462c93e5740d60213b96f866f551b642e7"
+_48_SHA256 = "af96cf9a4d8ea14fb7d9ace2ef5c05e7baf03b0f3493a9a7fdceefd763adfe76"
 
 
-def test_an_edit_to_48_is_a_decision_about_216() -> None:
+def test_an_edit_to_48_is_a_decision_about_217() -> None:
     """48 still CREATEs the dropped store, because a fresh ladder needs it
-    before 216 drops it. The runner re-runs a file whose checksum changed.
+    before 217 drops it. The runner re-runs a file whose checksum changed.
     So an edit to 48 alone rebuilds `gtd_items`, `gtd_waiting`,
-    `gtd_projects` and `gtd_contexts` on production, EMPTY, and 216 does not
+    `gtd_projects` and `gtd_contexts` on production, EMPTY, and 217 does not
     run again to drop them. Nothing fails. The tables are simply back.
 
-    The fix is to touch 216 in the same PR, so it re-runs too. It drops an
+    The fix is to touch 217 in the same PR, so it re-runs too. It drops an
     empty rebuilt store and refuses one that holds rows. Then update the hash.
     """
     import hashlib
@@ -471,7 +471,7 @@ def test_an_edit_to_48_is_a_decision_about_216() -> None:
     text = (MIGRATIONS / "48_task_manager_gtd.sql").read_text(encoding="utf-8")
     digest = hashlib.sha256(text.replace("\r\n", "\n").encode()).hexdigest()
     assert digest == _48_SHA256, (
-        "migration 48 changed. Read this test's docstring: touch 216 in the "
+        "migration 48 changed. Read this test's docstring: touch 217 in the "
         "same PR, or the dropped gtd_ tables come back empty on production."
     )
 
@@ -500,7 +500,7 @@ _URL = os.environ.get("TENANT_LADDER_DATABASE_URL", "").strip()
 def test_the_replayed_ladder_has_no_gtd_table_and_keeps_the_survivors() -> None:
     """`\\dt gtd_*` after a full ladder replay returns nothing (§5 S8, done
     when 2). The ladder here is replayed WITHOUT a ledger, so migration 48
-    builds the old store again and 216 must drop it again."""
+    builds the old store again and 217 must drop it again."""
     from sqlalchemy import create_engine, text
 
     from tests.unit._tenant_ladder import apply_ladder

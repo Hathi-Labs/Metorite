@@ -287,14 +287,132 @@ _THE_ROUTER_CALLER = "apps/services/gateway/gateway/routes/v1_compat.py"
 #: ``resolve_for_signin`` from startup, which is precisely the drift the list
 #: exists to catch.
 _THE_LIFESPAN_CALLER = "apps/services/gateway/gateway/main.py"
+
+#: The SEVENTH caller, added 2026-09-23 for **H-171**, and it is the same KIND
+#: as ``_THE_ROUTER_CALLER`` rather than a new kind.
+#:
+#: 🔴 **The product's own AI was never metered.** ``acb_llm`` held zero
+#: references to the Console, so the apps runtime, the email automation, the
+#: assistants and the agents spent our vendor account and billed nobody.
+#: Routing them is what closes that, and routing means reaching the one Console
+#: client this fence guards.
+#:
+#: ⚠️ **It calls ``chat_completion_on_console`` and nothing else.** That hop
+#: allocates no seat and names no person, which is the property this list's own
+#: message already records for ``v1_compat``. ``resolve_for_signin`` — the seat
+#: allocator this fence exists for — is not reachable from it.
+_THE_IN_PRODUCT_AI_CALLER = "packages/acb_llm/acb_llm/routed.py"
+
+#: ⚠️ **The EIGHTH entry — ``acb_llm/decide.py``, WS-31 CP-13c, 2026-09-24 —
+#: and the argument for it, because the paragraph above is this list's own
+#: rule.**
+#:
+#: It calls ``decide_on_console`` and nothing else. That function allocates no
+#: seat and names no person to the registry. It spends AI credits on the
+#: ``decide`` door, the same resource and the same credential pick as the fifth
+#: entry's chat hop. The ``X-CC-*`` values it forwards are attribution, and on
+#: the deployment arm ``X-CC-Member`` selects the tenant, so the CALLER of the
+#: facade must pass a server-derived member (R11). The facade takes no member
+#: from a request itself.
+#:
+#: **Why the facade and not a gateway route.** ``acb_llm.decide`` is the ONE
+#: tenant seam for typed decisions (§6A.14 CP-13c), and every app caller goes
+#: through it. ``console_resolve`` is the ONE Console HTTP client, so a second
+#: client in ``acb_llm`` would be the defect this module's header forbids.
+#:
+#: ⚠️ The entry is NARROWED by
+#: ``test_the_decide_facade_touches_only_the_decide_client`` below, the same
+#: pairing the lifespan entry has.
+_THE_DECIDE_CALLER = "packages/acb_llm/acb_llm/decide.py"
 _ALLOWED_CALLERS = (
+    _THE_IN_PRODUCT_AI_CALLER,
     _THE_ONE_CALLER,
     _THE_SIGNUP_CALLER,
     _THE_SEAT_CALLER,
     _THE_INVITE_CALLER,
     _THE_ROUTER_CALLER,
     _THE_LIFESPAN_CALLER,
+    _THE_DECIDE_CALLER,
 )
+
+#: The ONLY names ``acb_llm/decide.py`` may read from ``console_resolve``.
+_DECIDE_ALLOWED_NAMES = frozenset({"decide_on_console", "ConsoleRouterUnavailable"})
+
+
+def _console_resolve_names(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """Every name a module reads from ``console_resolve``, aliases resolved.
+
+    Returns ``(attributes read off the module, names imported from it)``.
+    It follows the name each import BINDS, so ``from acb_auth import
+    console_resolve as cr`` then ``cr.x`` is seen, and so is the dotted
+    ``acb_auth.console_resolve.x`` after a bare ``import``.
+    """
+    module_aliases: set[str] = set()
+    dotted = False
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 0:
+            if node.module == "acb_auth.console_resolve":
+                imported.update(a.name for a in node.names)
+            elif node.module == "acb_auth":
+                module_aliases.update(
+                    a.asname or a.name for a in node.names
+                    if a.name == "console_resolve"
+                )
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "acb_auth.console_resolve":
+                    if a.asname:
+                        module_aliases.add(a.asname)
+                    else:
+                        dotted = True
+
+    used: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute):
+            continue
+        base = node.value
+        aliased = isinstance(base, ast.Name) and base.id in module_aliases
+        spelled_out = (
+            dotted
+            and isinstance(base, ast.Attribute)
+            and base.attr == "console_resolve"
+            and isinstance(base.value, ast.Name)
+            and base.value.id == "acb_auth"
+        )
+        if aliased or spelled_out:
+            used.add(node.attr)
+    return used, imported
+
+
+def test_the_alias_resolver_sees_every_spelling() -> None:
+    """The narrowing test is only as good as this resolver, so it is shown
+    each spelling that must not slip past it."""
+    for src, expected in (
+        ("from acb_auth import console_resolve\nconsole_resolve.a", {"a"}),
+        ("from acb_auth import console_resolve as cr\ncr.b", {"b"}),
+        ("import acb_auth.console_resolve as cr\ncr.c", {"c"}),
+        ("import acb_auth.console_resolve\nacb_auth.console_resolve.d", {"d"}),
+        ("from acb_auth.console_resolve import e as x", {"e"}),
+    ):
+        used, imported = _console_resolve_names(ast.parse(src))
+        assert used | imported == expected, src
+
+
+def test_the_decide_facade_touches_only_the_decide_client() -> None:
+    """``acb_llm/decide.py`` is on the list for TWO names, and this pins them.
+
+    The list admits the FILE. This admits only the decide client and its
+    outage exception, so a later edit cannot call ``resolve_for_signin`` or a
+    seat write from the facade.
+    """
+    used, imported = _console_resolve_names(_tree(_REPO / _THE_DECIDE_CALLER))
+    assert used or imported, "the facade no longer reaches console_resolve"
+    assert (used | imported) <= _DECIDE_ALLOWED_NAMES, (
+        f"acb_llm/decide.py reads {sorted((used | imported) - _DECIDE_ALLOWED_NAMES)} "
+        "from console_resolve. It may read only the decide client and its "
+        "outage exception."
+    )
 
 
 def _imports_console_resolve(path: Path) -> bool:
@@ -313,7 +431,7 @@ def _imports_console_resolve(path: Path) -> bool:
 
 
 def test_resolve_is_reachable_only_from_the_signin_path() -> None:
-    """``console_resolve`` has exactly FIVE callers, and all are named here.
+    """``console_resolve`` has exactly EIGHT callers, and all are named here.
 
     A structural fence is preferred to an example one (R7): the failure is a
     second call site added later, which no runtime assertion sees until a
@@ -335,9 +453,15 @@ def test_resolve_is_reachable_only_from_the_signin_path() -> None:
     ``cc_live_`` credential and the route makes no tenant claim at all. The
     argument is written beside the name above.
 
+    ⚠️ FIVE → SIX by the lifespan bootstrap (2026-09-15), SIX → SEVEN by
+    H-171 (2026-09-23): ``acb_llm/routed.py`` (the in-product AI hop), and
+    SEVEN → EIGHT by WS-31 CP-13c (2026-09-24): ``acb_llm/decide.py``
+    (``decide_on_console``, the ``decide`` facade). Each argument is written
+    beside its name above.
+
     What stays forbidden is unchanged: wiring any of them behind
     ``resolve_access`` (six callers, one a room fan-out) = farmable seat burn.
-    A SIXTH is the drift.
+    A NINTH is the drift.
 
     ⚠️ It is deliberately paired with a frontend fence. This one alone is
     satisfied by a BFF that calls ``POST /signin/resolve`` from anywhere;
@@ -360,16 +484,18 @@ def test_resolve_is_reachable_only_from_the_signin_path() -> None:
     )
     assert callers == sorted(_ALLOWED_CALLERS), (
         f"console_resolve callers drifted: {callers}\n\n"
-        "It allocates a SEAT (`resolve_for_signin`). Exactly five sites may "
+        "It allocates a SEAT (`resolve_for_signin`). Exactly eight sites may "
         "call it — the completion of a sign-in, the self-serve signup provision, "
-        "the customer seat-admin write, the member-invite mirror and the CP-11 "
-        "AI Router hop (which allocates no seat and names no person). The first "
-        "four each carry a provider-verified session email. "
+        "the customer seat-admin write, the member-invite mirror, the CP-11 "
+        "AI Router hop, the gateway lifespan's bootstrap loop, the H-171 "
+        "in-product AI hop and the CP-13c `acb_llm.decide` facade. The last "
+        "four allocate no seat and name no "
+        "person. The first four each carry a provider-verified session email. "
         "Never `resolve_access` (six callers, "
         "one of them a fan-out over a room's participants), never "
         "`_with_resolved_access` (every authenticated request). "
         "customer_console.md §6 clause 11 · CP-2c slice 2 · WS-30 SC-2a · "
-        "WS-31 CP-2f."
+        "WS-31 CP-2f · CP-11 · CP-13c."
     )
 
 

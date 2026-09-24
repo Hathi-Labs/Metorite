@@ -123,7 +123,7 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     fake.seed_rows("agent_run", {"user_id": PRIYA})
     fake.seed_rows("apps", {"owner_email": PRIYA})
     fake.seed_rows("workflows", {"owner_email": PRIYA})
-    # ── her tasks, in the one store. Migration 216 (WS-39 S8) dropped the
+    # ── her tasks, in the one store. Migration 217 (WS-39 S8) dropped the
     #    retired task store, so the purge names no task table at all (D63).
     fake.seed_rows("pm_tasks", {"id": "t-1", "created_by": PRIYA})
     fake.seed_rows("meeting", {"owner_email": PRIYA})
@@ -413,7 +413,7 @@ def test_the_purge_names_no_task_table_and_deletes_no_pm_row() -> None:
     """D63: a departed member's tasks are SEALED, never deleted.
 
     The purge took the SYNCED half of the retired task store with the task
-    account, and kept the LOCAL half. Migration 216 (WS-39 S8 PR 2) dropped
+    account, and kept the LOCAL half. Migration 217 (WS-39 S8 PR 2) dropped
     that store, so the purge must name no `gtd_` table on either side. It must
     also delete no `pm_` row, because the one store is the member's work.
     """
@@ -533,7 +533,7 @@ def test_no_audit_table_appears_on_the_delete_side_at_all() -> None:
     # And no table is on both sides except the one that is legitimately
     # split, by a column the schema forces on us, asserted to be an exact
     # complement below. (The retired task store was split too, until
-    # migration 216 dropped it.)
+    # migration 217 dropped it.)
     assert not (deleted_tables & kept_tables) - {"chat_session"}, (
         "a table is both deleted and kept; only chat_session (by visibility) "
         "is legitimately split"

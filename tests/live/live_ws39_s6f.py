@@ -1,7 +1,7 @@
-"""WS-39 S6f — one set of fields across My Tasks and Projects (D76), against
+"""WS-39 S6f — one set of fields across My Tasks and Projects (D77), against
 a real Postgres (R8).
 
-Spec `my_tasks_cutover.md` §4.10 · §5 S6f · D76 · board WS-39.
+Spec `my_tasks_cutover.md` §4.10 · §5 S6f · D77 · board WS-39.
 
 ── Why this file exists ─────────────────────────────────────────────────────
 
@@ -15,9 +15,12 @@ S6f makes claims a hermetic fake cannot judge:
     capacity query (`people/core.py::compute_load`, tenant-bound through
     `app.tenant_id`) and the day planner (`planning._PM_SELECT`) both read it;
   * `start_date` against the real `current_date` hides a task from my inbox;
-  * migration 215's copy picks the assignee's estimate, fills only an empty
+  * migration 216's copy picks the assignee's estimate, fills only an empty
     estimate, and a second run changes nothing — and the ledger guard skips;
-  * the retired overlay columns are refused before any SQL runs;
+  * the shared Priority reaches the planner BESIDE my own `important`, never
+    as it (D76), and the backfill leaves the Priority alone;
+  * the retired overlay estimate is refused before any SQL runs, and my own
+    `important` is not;
   * `time_spent_mins` sums every member's actuals on the real table;
   * another tenant sees none of it.
 
@@ -43,7 +46,7 @@ import asyncio
 import json
 import os
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from gateway.routes.people.core import compute_load
@@ -56,6 +59,8 @@ from gateway.routes.projects.personal import (
     _project_task,
     _upsert_personal,
     complete_for_member,
+    local_date,
+    member_today,
     my_tasks_binds,
 )
 from gateway.routes.projects.planning import _PM_SELECT
@@ -66,10 +71,9 @@ from sqlalchemy.ext.asyncio import create_async_engine
 DSN = os.environ.get("LIVE_DSN") or os.environ["TENANT_LADDER_DATABASE_URL"].replace(
     "+psycopg", "+asyncpg",
 )
-MIGRATION = (
-    Path(__file__).resolve().parents[2]
-    / "infra/postgres/215_pm_tasks_estimate_backfill.sql"
-)
+# Found by its name, not its number: R1 can renumber it at merge.
+(MIGRATION,) = (Path(__file__).resolve().parents[2] / "infra/postgres").glob(
+    "*_pm_tasks_estimate_backfill.sql")
 PARITY = Path(__file__).resolve().parents[2] / "tests/fixtures/deferred_parity.json"
 TAG = uuid.uuid4().hex[:8]
 ALICE = f"alice-{TAG}@fracktal.in"
@@ -86,7 +90,8 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 async def _mine(db, org, who: str, *, deferred_hidden: bool = False) -> dict:
     """My tasks as the inbox projects them, from `org`'s side: title → task."""
-    binds = {**await my_tasks_binds(db, who, archived=False), "vis_org": str(org)}
+    binds = {**await my_tasks_binds(db, who, archived=False), "vis_org": str(org),
+             "today": await member_today(db, who)}
     sql = _MY_TASKS_SQL + (f" AND {DEFERRED_CLAUSE}" if deferred_hidden else "")
     rows = (await db.execute(text(sql), binds)).fetchall()
     return {r.title: _project_task(r)[0] for r in rows}
@@ -213,18 +218,31 @@ async def main() -> None:
               f"task={mine_row['estimate_mins']} load={load} "
               f"planner={getattr(planner, 'time_estimate_mins', None)}")
 
-        # ── 5. Priority is the matrix's Important, in the planner ──────────
+        # ── 5. the shared Priority SEEDS my important, never becomes it ───
+        #     D76: the planner reads my answer AND the Priority beside it.
+        #     A Highest task I have not judged carries no stored answer. My
+        #     "no" is stored as mine, and the Priority does not move.
+        async def _planner_row():
+            return (await db.execute(
+                text(_PM_SELECT + MY_TASKS_FROM + " AND t.id = CAST(:tid AS uuid)"),
+                {**await my_tasks_binds(db, ALICE, archived=False),
+                 "vis_org": str(org), "tid": str(deck)},
+            )).fetchone()
+
         await update_row(db, "pm_tasks", str(deck), {"importance": 3})
-        planner = (await db.execute(
-            text(_PM_SELECT + MY_TASKS_FROM + " AND t.id = CAST(:tid AS uuid)"),
-            {**await my_tasks_binds(db, ALICE, archived=False),
-             "vis_org": str(org), "tid": str(deck)},
-        )).fetchone()
+        unjudged = await _planner_row()
         mine_row = (await _mine(db, org, ALICE))["Board deck"]
-        check("5 an Urgent task is important to the planner, off the shared Priority",
-              planner.important is True and mine_row["importance"] == 3
-              and "important" not in mine_row,
-              f"planner.important={planner.important} row={mine_row.get('importance')}")
+        await _upsert_personal(db, str(deck), ALICE, {"important": False})
+        judged = await _planner_row()
+        level = (await db.execute(text(
+            "SELECT importance FROM pm_tasks WHERE id = :t"), {"t": deck})).scalar_one()
+        check("5 the Priority reaches the planner beside my important, never as it",
+              unjudged.important is None and unjudged.org_priority == 3
+              and mine_row["importance"] == 3 and mine_row["important"] is None
+              and judged.important is False and judged.org_priority == 3
+              and level == 3,
+              f"unjudged={unjudged.important}/{unjudged.org_priority} "
+              f"judged={judged.important}/{judged.org_priority} level={level}")
 
         # ── 6. a future start date hides it from my inbox ─────────────────
         await db.execute(text(
@@ -239,31 +257,61 @@ async def main() -> None:
               hidden and shown, f"hidden={hidden} shown={shown}")
 
         # ── 6b. the clause itself, against the shared fixture (F4) ─────────
-        parity = json.loads(PARITY.read_text(encoding="utf-8"))["cases"]
+        fixture = json.loads(PARITY.read_text(encoding="utf-8"))
+        parity = fixture["cases"]
+        db_today = (await db.execute(text("SELECT current_date"))).scalar_one()
         wrong = []
         for case in parity:
             hidden = (await db.execute(text(
                 "SELECT NOT (" + DEFERRED_CLAUSE + ") FROM "
                 "(SELECT now() + make_interval(days => CAST(:d AS int)) "
                 "   AS defer_until) p, "
-                "(SELECT current_date + CAST(:s AS int) AS start_date) t"),
-                {"d": case["defer_days"], "s": case["start_days"]})).scalar_one()
+                "(SELECT CAST(:today AS date) + CAST(:s AS int) AS start_date) t"),
+                {"d": case["defer_days"], "s": case["start_days"],
+                 "today": db_today})).scalar_one()
             if bool(hidden) is not case["hidden"]:
                 wrong.append(case["name"])
         check("6b DEFERRED_CLAUSE on Postgres agrees with the shared fixture",
               not wrong and len(parity) >= 10, f"wrong={wrong}")
 
-        # ── 7. the retired overlay columns are refused before any SQL ─────
+        # ── 6c. F5: the member's own date, from their stored zone ─────────
+        #     The explicit-today rows run the start-date half on Postgres with
+        #     the date `local_date` computes. The defer half reads the real
+        #     now(), so rows that carry a defer are the unit test's alone.
+        wrong = []
+        for case in fixture["explicit_today_cases"]:
+            if case["defer_until"]:
+                continue
+            at = datetime.fromisoformat(case["at"])
+            today = local_date(case["timezone"], at)
+            hidden = (await db.execute(text(
+                "SELECT NOT (" + DEFERRED_CLAUSE + ") FROM "
+                "(SELECT CAST(NULL AS timestamptz) AS defer_until) p, "
+                "(SELECT CAST(:s AS date) AS start_date) t"),
+                {"s": date.fromisoformat(case["start_date"]),
+                 "today": today})).scalar_one()
+            if today.isoformat() != case["today"] or bool(hidden) is not case["hidden"]:
+                wrong.append(case["name"])
+        await db.execute(text(
+            "INSERT INTO user_settings (user_id, timezone) VALUES (:u, 'Asia/Kolkata') "
+            "ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone"),
+            {"u": ALICE})
+        stored = await member_today(db, ALICE, datetime(2026, 9, 24, 20, 0, tzinfo=UTC))
+        check("6c the start date is judged on the member's own date, from their zone",
+              not wrong and stored.isoformat() == "2026-09-25",
+              f"wrong={wrong} stored={stored}")
+
+        # ── 7. the retired overlay estimate is refused before any SQL ─────
         refused = []
-        for field in ("important", "time_estimate_mins"):
+        for field, value in (("important", True), ("time_estimate_mins", 1)):
             try:
-                await _upsert_personal(db, str(deck), ALICE, {field: 1})
+                await _upsert_personal(db, str(deck), ALICE, {field: value})
             except ValueError:
                 refused.append(field)
-        check("7 the one upsert refuses both retired overlay columns",
-              refused == ["important", "time_estimate_mins"], f"refused={refused}")
+        check("7 the one upsert refuses the retired estimate, and takes my important",
+              refused == ["time_estimate_mins"], f"refused={refused}")
 
-        # ── 8. migration 215: the assignee's estimate, once ────────────────
+        # ── 8. migration 216: the assignee's estimate, once ────────────────
         #     The copy statement is the file's own, run on this transaction.
         #     Two overlay estimates on one task: Carol's (not assigned, and
         #     written first) and Bob's (the assignee). Bob's wins.
@@ -277,39 +325,22 @@ async def main() -> None:
             "(:m, :bob, 45, now()), "
             "(:k, :bob, 99, now())"),
             {"m": memo, "k": kept, "carol": CAROL, "bob": BOB})
-        # The Important flags. `flagged` has no Priority and Bob (assigned)
-        # flagged it. `urgent` is already Urgent. `vetoed` is Normal: Carol
-        # (not assigned) says important, Bob (assigned) says not, and his wins.
+        # A task Bob flagged important, with no Priority. D76: the flag is
+        # his, so the backfill must leave the shared Priority unset.
         flagged = await _task(db, org, sales, todo, "Flagged", 6)
-        urgent = await _task(db, org, sales, todo, "Already urgent", 7)
-        vetoed = await _task(db, org, sales, todo, "Vetoed", 8)
-        for tid in (flagged, urgent, vetoed):
-            await _assign(db, tid, BOB, "2026-09-01T09:00:00+00:00")
-        await db.execute(text("UPDATE pm_tasks SET importance = 3 WHERE id = :u"),
-                         {"u": urgent})
-        await db.execute(text("UPDATE pm_tasks SET importance = 1 WHERE id = :v"),
-                         {"v": vetoed})
+        await _assign(db, flagged, BOB, "2026-09-01T09:00:00+00:00")
         await db.execute(text(
-            "INSERT INTO pm_task_personal (task_id, member_email, important) VALUES "
-            "(:f, :bob, true), (:u, :bob, true), (:v, :bob, false), (:v, :carol, true)"),
-            {"f": flagged, "u": urgent, "v": vetoed, "bob": BOB, "carol": CAROL})
-        # The file's own two statements, run on this transaction.
+            "INSERT INTO pm_task_personal (task_id, member_email, important) "
+            "VALUES (:f, :bob, true)"), {"f": flagged, "bob": BOB})
+        # The file's own statement, run on this transaction.
         sql = MIGRATION.read_text(encoding="utf-8")
-        body = sql[sql.index("WITH pick AS"):sql.rindex("END")]
-        cut = body.index("WITH flag AS")
-        copy = body[:cut].strip().rstrip(";")
-        promote = body[cut:].strip().rstrip(";")
+        copy = sql[sql.index("WITH pick AS"):sql.rindex("END")].strip().rstrip(";")
         first_run = (await db.execute(text(copy))).rowcount
         second_run = (await db.execute(text(copy))).rowcount
-        await db.execute(text(promote))
-        promote_again = (await db.execute(text(promote))).rowcount
-        levels = {r.title: r.importance for r in (await db.execute(text(
-            "SELECT title, importance FROM pm_tasks WHERE id IN (:f, :u, :v)"),
-            {"f": flagged, "u": urgent, "v": vetoed})).fetchall()}
-        check("8b a flagged task becomes High, Urgent stays, the assignee's no wins",
-              levels == {"Flagged": 2, "Already urgent": 3, "Vetoed": 1}
-              and promote_again == 0,
-              f"levels={levels} second={promote_again}")
+        level = (await db.execute(text(
+            "SELECT importance FROM pm_tasks WHERE id = :f"), {"f": flagged})).scalar_one()
+        check("8b the backfill leaves the Priority alone, whatever I flagged",
+              level is None, f"importance={level}")
         memo_est, kept_est = (await db.execute(text(
             "SELECT (SELECT estimate_mins FROM pm_tasks WHERE id = :m), "
             "       (SELECT estimate_mins FROM pm_tasks WHERE id = :k)"),
@@ -325,7 +356,7 @@ async def main() -> None:
             "UPDATE pm_tasks SET estimate_mins = NULL WHERE id = :m"), {"m": memo})
         guarded = (await db.execute(text(
             "SELECT EXISTS (SELECT 1 FROM schema_migrations "
-            "WHERE filename = '215_pm_tasks_estimate_backfill.sql')"))).scalar_one()
+            "WHERE filename = :f)"), {"f": MIGRATION.name})).scalar_one()
         raw = await db.get_raw_connection()
         await raw.driver_connection.execute(sql)
         after_file = (await db.execute(text(
@@ -373,6 +404,29 @@ async def main() -> None:
               and state.completed_at is None and moves[-1:] == ["todo"],
               f"first={closed_first} now={after['disposition']} "
               f"lane={state.category} completed={state.completed_at} moves={moves}")
+
+        # ── 11c. file a finished task as Someday: the board stays closed ──
+        #     F4: only INBOX, NEXT and WAITING reopen. Filing is mine.
+        filed = await _task(db, org, sales, todo, "Filed task", 10)
+        await _assign(db, filed, ALICE, "2026-09-01T09:00:00+00:00")
+        row = (await db.execute(text("SELECT * FROM pm_tasks WHERE id = :t"),
+                                {"t": filed})).fetchone()
+        await complete_for_member(db, row, ALICE)
+        row = (await db.execute(text("SELECT * FROM pm_tasks WHERE id = :t"),
+                                {"t": filed})).fetchone()
+        outcome, _ = await _act_on_one(db, row, "personal", by=ALICE,
+                                       personal={"disposition": "SOMEDAY"})
+        lane = (await db.execute(text(
+            "SELECT s.category FROM pm_tasks t "
+            "JOIN pm_task_statuses s ON s.id = t.status_id WHERE t.id = :t"),
+            {"t": filed})).scalar_one()
+        stated = (await db.execute(text(
+            "SELECT disposition FROM pm_task_personal "
+            "WHERE task_id = :t AND member_email = :who"),
+            {"t": filed, "who": ALICE})).scalar_one()
+        check("11c bulk SOMEDAY on a finished task: the lane stays done, mine says SOMEDAY",
+              outcome == "applied" and lane == "done" and stated == "SOMEDAY",
+              f"outcome={outcome} lane={lane} stated={stated}")
 
         # ── 12. another tenant sees none of it ─────────────────────────────
         other = (await db.execute(text(

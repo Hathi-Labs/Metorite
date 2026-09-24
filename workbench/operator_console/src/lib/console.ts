@@ -363,6 +363,11 @@ export const setCreditPrice = (body: unknown, d?: Deps) =>
 export const setModelProfile = (body: unknown, d?: Deps) =>
   callConsole("/catalog/profiles", { method: "POST", body }, d ?? {});
 
+// "Try a decision" (CP-13b, §6A.14). Admin, no window. It spends the PLATFORM
+// key on one vendor call, writes one audit row, and writes no usage row.
+export const tryDecision = (body: unknown, d?: Deps) =>
+  callConsole("/catalog/decide/try", { method: "POST", body }, d ?? {});
+
 // Pull the vendor feed (migration 014) — litellm's price map — into
 // `vendor_price_feed` NOW. Reference data only: nothing billing reads moves.
 export const syncVendorFeed = (d?: Deps) =>

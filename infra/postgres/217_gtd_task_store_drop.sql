@@ -1,5 +1,5 @@
 -- ============================================================================
--- 216_gtd_task_store_drop.sql — WS-39 S8 PR 2. The `gtd_*` task store goes.
+-- 217_gtd_task_store_drop.sql — WS-39 S8 PR 2. The `gtd_*` task store goes.
 --
 -- Spec: project-docs/specs/my_tasks_cutover.md §4.3 (the table map) and §5 S8.
 -- Decisions: D53.5 (three releases), D53.6 (what survives), D73.
@@ -243,11 +243,11 @@ BEGIN
 
     IF NOT EXISTS (
         SELECT 1 FROM gtd_retirement_arm
-         WHERE armed_by = 'migration 216 (WS-39 S8, D73)'
+         WHERE armed_by = 'migration 217 (WS-39 S8, D73)'
     ) THEN
         INSERT INTO gtd_retirement_arm (armed_by, note)
         VALUES (
-            'migration 216 (WS-39 S8, D73)',
+            'migration 217 (WS-39 S8, D73)',
             'Armed by reviewed code, not by hand. S7 run record '
             '(my_tasks_cutover.md): backfill applied 2026-09-23 00:21 UTC, '
             'gtd_backfill_plan returned zero rows, TASKS_LENS on since 00:29 UTC. '
@@ -281,7 +281,7 @@ $s8_drop$;
 --
 -- ⚠️ These four tables must be EMPTY. The backfill turned a member's LOCAL
 -- projects into Areas, but it never deleted the old rows, and it copied
--- nothing from spaces, folders or contexts. A row here is data 216 would
+-- nothing from spaces, folders or contexts. A row here is data 217 would
 -- lose, so it RAISES and names the table. Production held 0 rows in all
 -- four on 2026-09-23 (my_tasks_cutover.md §5 S8).
 --

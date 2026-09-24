@@ -198,6 +198,11 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # behind elevation would teach people the break-glass token.
     ("POST", "/catalog/feed/sync"): _R(EDITOR),
     ("POST", "/catalog/bindings"): _R(ADMIN, elevated=True),
+    # "Try a decision" (CP-13b, §6A.14). It spends OUR platform key on a real
+    # vendor call, so ADMIN. It changes nothing a customer runs on or pays,
+    # so NO window: an operator proves a binding right after saving it, and
+    # a second window for the proof would teach the break-glass token.
+    ("POST", "/catalog/decide/try"): _R(ADMIN),
     # ⚠️ This is what customers are BILLED. Admin and a window, and the
     # number itself stays the owner's commercial act (H-42, §8).
     # The model-keyed route is RETIRED (D67) and answers 410 — the row stays

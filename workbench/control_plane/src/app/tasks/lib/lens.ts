@@ -60,8 +60,6 @@
 
 import { projectsCall } from "@/app/projects/lib/api";
 
-import { IMPORTANT_AT } from "./priority";
-
 import type { OrganizeBody, ProviderTaskDetail } from "./api";
 import type {
   Disposition,
@@ -169,22 +167,23 @@ export function mapLensItem(raw: Raw): GtdItem {
     nextAction: text(raw.next_action),
     context: text(raw.context),
     energy: (raw.energy ?? undefined) as GtdItem["energy"],
-    // D76 (amends D53.8): the task's ONE estimate, `pm_tasks.estimate_mins`
+    // D77 (amends D53.8): the task's ONE estimate, `pm_tasks.estimate_mins`
     // — the number the board, People capacity and analytics read. The
     // overlay's `time_estimate_mins` is retired and no longer on the wire.
     timeEstimateMins: num(raw.estimate_mins),
     isTwoMinute: Boolean(raw.is_two_minute),
 
-    // D76: Priority is the task's shared `importance`, and the Focus
-    // matrix's IMPORTANT axis is DERIVED from it (High or Urgent). One
-    // answer: a task Projects calls Urgent can no longer read "Low value"
-    // here. `undefined` for an unset Priority, which is not important.
-    importance: num(raw.importance),
-    important:
-      raw.importance === null || raw.importance === undefined
-        ? undefined
-        : Number(raw.importance) >= IMPORTANT_AT,
+    // ⚠️ `important` is the overlay's Eisenhower boolean. It is NOT
+    // `pm_tasks.importance`, the shared Priority integer the Projects table
+    // edits (D53.8). Reading one as the other publishes private triage.
+    // D77 leaves this alone: the shared Priority only SEEDS it (D76).
+    important: tri(raw.important),
     leveraged: tri(raw.leveraged),
+    // The shared Priority, carried BESIDE `important` and never into it. It
+    // was on this wire all along (`TaskModel.importance`) and nothing read it,
+    // so the org's word never reached the member's matrix. Measured on a live
+    // row 2026-09-23: `importance: 0`, `important: null`.
+    orgPriority: num(raw.importance),
     deepWork: tri(raw.deep_work),
     keptMine: tri(raw.kept_mine),
 
@@ -222,7 +221,7 @@ export function mapLensItem(raw: Raw): GtdItem {
     completedAt: text(raw.completed_at),
     clarifiedAt: text(raw.clarified_at),
     deferUntil: text(raw.defer_until),
-    // D76 — two shared facts My Tasks did not show: when the work starts,
+    // D77 — two shared facts My Tasks did not show: when the work starts,
     // and the team's tags.
     startDate: text(raw.start_date)?.slice(0, 10),
     tags: Array.isArray(raw.tags) ? (raw.tags as unknown[]).map(String) : [],
@@ -234,9 +233,10 @@ export function mapLensItem(raw: Raw): GtdItem {
 /**
  * Shared facts about the WORK. `PATCH /projects/tasks/{id}`.
  *
- * D76 (2026-09-23) moved three here: the estimate (My Tasks' Estimate writes
- * `estimate_mins`, the column People capacity reads), the Priority and the
- * start date. Exported for `lens.test.ts`, which pins the split.
+ * D77 (2026-09-23) moved two here: the estimate (My Tasks' Estimate writes
+ * `estimate_mins`, the column People capacity reads) and the start date.
+ * The shared Priority is not written from My Tasks: the member's Important
+ * stays private (D76). Exported for `lens.test.ts`, which pins the split.
  */
 export const TASK_KEYS: Readonly<Record<string, string>> = {
   title: "title",
@@ -244,21 +244,21 @@ export const TASK_KEYS: Readonly<Record<string, string>> = {
   due_at: "due_at",
   time_estimate_mins: "estimate_mins",
   estimate_mins: "estimate_mins",
-  importance: "importance",
   start_date: "start_date",
 };
 
 /**
- * My practice. `PATCH /projects/tasks/{id}/personal`. D76 took
- * `time_estimate_mins` and `important` off this list: both were a second
- * copy of a work fact, and the gateway now refuses them by name.
+ * My practice. `PATCH /projects/tasks/{id}/personal`. D77 took
+ * `time_estimate_mins` off this list: it was a second copy of a work fact,
+ * and the gateway now refuses it by name. `important` stays, because it is
+ * the member's own answer (D76).
  */
 export const OVERLAY_KEYS: readonly string[] = [
   "disposition", "next_action", "context", "energy",
   "is_two_minute", "defer_until",
   "scheduled_start", "scheduled_end", "flexible", "is_hard_date",
   "actual_start", "actual_end",
-  "leveraged", "deep_work", "kept_mine", "sort_key",
+  "important", "leveraged", "deep_work", "kept_mine", "sort_key",
   "waiting_on", "delegated_at", "expected_by", "last_nudged_at",
 ];
 
@@ -273,9 +273,6 @@ export const OVERLAY_KEYS: readonly string[] = [
 const NOT_YET: Readonly<Record<string, string>> = {
   provider_status: "retired with the connector (D52) — nothing writes it",
   is_mine: "derived from `pm_task_assignees`; set assignees instead",
-  important:
-    "derived from the shared Priority since D76; send `importance` " +
-    "(`priority.ts::importanceForImportant` turns a toggle into one)",
 };
 
 export interface SplitPatch {
@@ -507,16 +504,79 @@ export async function lensMyTaskLanes(id: string): Promise<LensLane[]> {
  * fragment. Nothing about anybody else's overlay: the route resolves the
  * caller from the session and has no `?member=`.
  */
-export async function lensMyOverlay(
-  id: string,
-): Promise<Pick<GtdItem, "disposition" | "context" | "isTriaged"> | null> {
+export async function lensMyOverlay(id: string): Promise<MyOverlay | null> {
   try {
-    const item = await lensGetItem(id);
-    if (!item.isTriaged && !item.context) return null;
-    return { disposition: item.disposition, context: item.context, isTriaged: item.isTriaged };
+    return overlayOf(await lensGetItem(id));
   } catch {
+    // `/my/tasks/{id}` answers only for a task in the caller's own lens. A
+    // task that is not mine is a 404, and "no overlay" is the right answer.
     return null;
   }
+}
+
+/**
+ * What the Projects panel may show of MY view of a task: how I filed it, and
+ * my own focus flags. Only the caller's own — `/my/tasks/{id}` answers for
+ * the session's caller and nobody else.
+ *
+ * ⚠️ Widened 2026-09-23, and the contract changed with it. This returned
+ * `null` for any task I had not triaged, which was right for the old "how you
+ * filed it" chip and wrong for the focus row: an untriaged task is the one
+ * whose focus most needs setting. It now answers for every task in my lens,
+ * and `filedByMe` carries the chip's old rule.
+ *
+ * The SHARED facts the matrix also reads — the due date and the project's
+ * priority — are deliberately NOT here. The panel reads them off its own live
+ * task row, so editing Priority in the same panel re-seeds the focus at once
+ * instead of waiting for a re-fetch.
+ */
+export type MyOverlay = Pick<
+  GtdItem,
+  "disposition" | "context" | "isTriaged" | "important" | "leveraged" | "deepWork"
+>;
+
+/**
+ * The focus controls' patch, in the overlay's own keys.
+ *
+ * 🔴 `WeightToggles` speaks `GtdItem` (`deepWork`), and `splitPatch` speaks the
+ * wire (`deep_work`) and throws on anything else. My Tasks never met this,
+ * because its store renames `deepWork` before calling the lens
+ * (`taskStore.ts`). The Projects focus row called the lens directly, so its
+ * Deep work toggle drew on, threw, re-read, and drew off — a control that
+ * visibly did nothing. `important` and `leveraged` only worked because both
+ * spellings happen to match. Caught in review, 2026-09-23.
+ */
+export function focusPatch(patch: {
+  important?: boolean;
+  leveraged?: boolean;
+  deepWork?: boolean;
+}): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  if (patch.important !== undefined) out.important = patch.important;
+  if (patch.leveraged !== undefined) out.leveraged = patch.leveraged;
+  if (patch.deepWork !== undefined) out.deep_work = patch.deepWork;
+  return out;
+}
+
+export function overlayOf(item: GtdItem): MyOverlay {
+  return {
+    disposition: item.disposition,
+    context: item.context,
+    isTriaged: item.isTriaged,
+    important: item.important,
+    leveraged: item.leveraged,
+    deepWork: item.deepWork,
+  };
+}
+
+/**
+ * Has the member actually filed this task? The derived disposition of an
+ * untriaged task is the server's guess, not "how I filed it", so the chip
+ * that says "how you filed this" stays hidden until there is something of
+ * theirs to show.
+ */
+export function filedByMe(overlay: MyOverlay | null): boolean {
+  return !!overlay && (!!overlay.isTriaged || !!overlay.context);
 }
 
 // ── Writes ──────────────────────────────────────────────────────────────────
@@ -599,7 +659,7 @@ export async function lensPatchItem(
   // consequence. The rest of the patch still applies.
   const completes = split.personal.disposition === "DONE";
   if (completes) delete split.personal.disposition;
-  // D76 — the reverse ("mark not done", "back to Next" on a closed task) is
+  // D77 — the reverse ("mark not done", "back to Next" on a closed task) is
   // the GATEWAY's: every overlay door reopens a closed task when it is given
   // an open disposition (`personal.reopen_if_closed`), so the bulk path the
   // checkbox takes gets it too. One rule, one place — nothing here.
@@ -671,7 +731,7 @@ export async function lensTrashItem(id: string): Promise<void> {
 
 /** Undo the soft delete — back to the inbox to be triaged again. */
 export async function lensRestoreItem(id: string): Promise<GtdItem> {
-  // D76 — an open disposition on a closed task REOPENS it for the board
+  // D77 — an open disposition on a closed task REOPENS it for the board
   // (`personal.reopen_if_closed`). Undoing a delete must not do that, so a
   // task whose lane is closed comes back as DONE, which is what it was.
   const current = await lensGetItem(id);
@@ -728,7 +788,7 @@ export async function lensDelegateItem(
     method: "PUT",
     body: JSON.stringify({ assignees: [who] }),
   });
-  // ⚠️ D76: only an EXPLICIT date the member typed. No caller passes one
+  // ⚠️ D77: only an EXPLICIT date the member typed. No caller passes one
   // today (the Delegate dialog collects none), and none may default it to
   // the delegator's own date — the deadline is the team's.
   if (body.due_at) {

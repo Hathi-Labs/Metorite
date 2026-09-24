@@ -38,7 +38,8 @@ import { ClarifyPanel } from "./ClarifyPanel";
 import { AiTaskActions } from "./AiTaskActions";
 import { DelegateDialog } from "./DelegateDialog";
 import { WeightToggles, PriorityBadge, SuggestionBadge } from "./PriorityControls";
-import { isUntagged } from "../lib/priority";
+import { isUntagged, seededImportant } from "../lib/priority";
+import { importanceLabel } from "@/app/projects/lib/table";
 import { isWaitingOverdue } from "../lib/waiting";
 import { useCardActions } from "../lib/useCardActions";
 import { ProjectLabel } from "./ProjectLabel";
@@ -54,7 +55,7 @@ import { PromoteDialog } from "./PromoteDialog";
 // member opening one task in each app meets the same fields. Nothing below
 // the strip is written here.
 //
-// D76 (2026-09-23): the strip draws NO work fact. The estimate, the notes
+// D77 (2026-09-23): the strip draws NO work fact. The estimate, the notes
 // (the task's description), the due date, the start date, Priority and the
 // watch toggle are the body's, in both apps. `itemDetail.test.ts` refuses a
 // label that appears in both halves.
@@ -435,7 +436,7 @@ export function TaskDetail({
                 )}
               </MetaEdit>
 
-              {/* Estimate — D76: the task's ONE estimate, a work fact. Under
+              {/* Estimate — D77: the task's ONE estimate, a work fact. Under
                   the lens the shared body draws and edits it; here only on
                   the demo backend. */}
               {!lens && (<>
@@ -679,16 +680,17 @@ export function TaskDetail({
                   onChange={(w) => updateItem(item.id, w)}
                 />
               </div>
+              {/* ⚠️ Two different "not yet judged" sentences since the org
+                  priority began seeding (2026-09-23). An unjudged High task
+                  no longer defaults to low priority, and telling the member
+                  it does would be the product misleading them again. */}
               {isUntagged(item) && (
                 <p className="mt-1.5 text-[11px] text-muted-foreground/70">
-                  Not yet judged — flag it important or leveraged, or leave it
-                  as low value.
+                  {seededImportant(item)
+                    ? `Not yet judged — the project marks this ${importanceLabel(item.orgPriority)} priority, so it counts as important until you confirm or dismiss it.`
+                    : "Not yet judged — flag it important or leveraged, or leave it to default low priority."}
                 </p>
               )}
-              {/* D76 — say where Important comes from, once. */}
-              <p className="mt-1 text-[11px] text-muted-foreground/70">
-                Important follows the task&apos;s Priority: High or Urgent.
-              </p>
             </section>
           )}
 
@@ -770,7 +772,7 @@ export function TaskDetail({
             </section>
           )}
 
-          {/* Notes — the task's description, a work fact (D76). Under the
+          {/* Notes — the task's description, a work fact (D77). Under the
               lens the shared body's Description editor is the one writer. */}
           {!lens && (<>
           <section>

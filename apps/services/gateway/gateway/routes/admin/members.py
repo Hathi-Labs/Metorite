@@ -57,6 +57,15 @@ from gateway.routes.admin._common import (
     router,
     set_roles,
 )
+
+# D63 (H-49). The Projects package owns what a personal tree IS, so the seal
+# lives there and this module calls it. Putting the SQL here would be a second
+# definition of "somebody's personal tree", and the two would drift the first
+# time Areas changed shape.
+from gateway.routes.projects.seal import (
+    seal_personal_tree,
+    unseal_personal_tree,
+)
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -293,6 +302,11 @@ async def update_member(
             detail=f"status must be one of {list(VALID_STATUSES)}.",
         )
 
+    # Declared before the session, because a display-name-only patch never
+    # enters the status branch and both names are read after it, on every path.
+    tree_action = "none"
+    tree_projects = 0
+
     async with _tenant_session() as db:
         org_id = await get_org_id(db, admin)
         member = await get_member(db, org_id, email)
@@ -321,6 +335,33 @@ async def update_member(
                 ),
                 {"status": patch.status, "uid": member["id"]},
             )
+            # D63 (H-49) — the personal tree follows the member's standing.
+            #
+            # IN THE SAME TRANSACTION as the status write, deliberately. A
+            # status that says "gone" beside a workspace still visible to the
+            # whole org is the exact state this decision exists to prevent, and
+            # two statements in two transactions can land that way.
+            #
+            # `suspended` seals as well as `removed`: both mean the person
+            # cannot sign in, and D63 is about the WORKSPACE being closed, not
+            # about whether the departure is permanent. `active` unseals, which
+            # is what makes a suspension reversible without a hand-written
+            # UPDATE against production.
+            #
+            # ⚠️ Unsealing here returns the tree TO ITS OWNER, who is a member
+            # again. It is not D63's watched door — that door lets somebody
+            # ELSE read a sealed tree, is owner-only and logged, and no route
+            # opens it yet.
+            if patch.status in ("suspended", "removed"):
+                tree_action = "sealed"
+                tree_projects = await seal_personal_tree(
+                    db, member["email"], org_id)
+            elif patch.status == "active":
+                tree_action = "unsealed"
+                tree_projects = await unseal_personal_tree(
+                    db, member["email"], org_id)
+            # `invited` falls through on the declared defaults: somebody who
+            # has not joined has no tree to close.
         if patch.display_name is not None:
             await db.execute(
                 text(
@@ -346,10 +387,15 @@ async def update_member(
         )
 
     invalidate_for(member["email"])
+    # ⚠️ `tree_action` and `tree_projects` ride on BOTH records, not just the
+    # log. D63 requires that closing or reopening somebody's workspace is never
+    # an invisible act, and `record_admin_change` is the half a human reads.
     _log.info("member_updated", email=member["email"], by=admin.email,
-              status=member["status"])
+              status=member["status"], tree=tree_action,
+              tree_projects=tree_projects)
     record_admin_change(admin.email, "org.member_updated",
-                        f"user:{member['email']}", status=member["status"])
+                        f"user:{member['email']}", status=member["status"],
+                        tree=tree_action, tree_projects=tree_projects)
     return MemberEntry(
         email=member["email"],
         display_name=member["display_name"] or "",
@@ -396,6 +442,14 @@ async def remove_member(
             ),
             {"uid": member["id"]},
         )
+        # D63 (H-49) — the SECOND door, and it reaches the same seal.
+        #
+        # ⚠️ This route's own docstring records why: it "used to hold its own
+        # copy of the comparison, which is precisely why the other door never
+        # grew one". The seal is written into both doors in the same change for
+        # that exact reason. A removal that left the tree open would be the
+        # whole defect, and it is the door an admin is most likely to use.
+        tree_projects = await seal_personal_tree(db, member["email"], org_id)
 
     # H6 slice 3a (WS-29, DARK, D48): propagate the off-boarding into the
     # RLS-EXEMPT shadow so `org_membership.status` is 'removed' too, or the H6
@@ -408,9 +462,11 @@ async def remove_member(
     )
 
     invalidate_for(member["email"])
-    _log.info("member_removed", email=member["email"], by=admin.email)
+    _log.info("member_removed", email=member["email"], by=admin.email,
+              tree="sealed", tree_projects=tree_projects)
     record_admin_change(admin.email, "org.member_removed",
-                        f"user:{member['email']}")
+                        f"user:{member['email']}",
+                        tree="sealed", tree_projects=tree_projects)
     return {"status": "removed", "email": member["email"]}
 
 
@@ -497,7 +553,7 @@ _CREDENTIAL_CASCADES: dict[str, tuple[str, ...]] = {
         "wa_group_summaries", "wa_labels", "wa_media", "wa_message_embeddings",
         "wa_messages", "wa_saved_replies", "wa_sync_log", "wa_templates",
     ),
-    # Nothing, since migration 216 (WS-39 S8 PR 2, 2026-09-23). The account
+    # Nothing, since migration 217 (WS-39 S8 PR 2, 2026-09-23). The account
     # used to cascade the SYNCED half of the retired task store. That store
     # is dropped, and no table left in the schema hangs off this one.
     "task_accounts": (),
@@ -570,7 +626,7 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
 #: commits, not about rows this list did not name — and a table can be
 #: emptied by a cascade three entries up. `shared_rooms` carries
 #: `visibility <> 'private'` for that reason. (The two task-store entries
-#: carried `account_id IS NULL` for the same one, until migration 216 dropped
+#: carried `account_id IS NULL` for the same one, until migration 217 dropped
 #: that store. D63 still holds: a purge deletes no `pm_tasks` row.) It is a structural fence, not a
 #: convention: `test_no_keep_clause_survives_a_cascade_on_the_delete_side`
 #: re-derives the cascade graph from the migrations and fails on any KEEP

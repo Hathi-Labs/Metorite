@@ -471,13 +471,40 @@ async def test_a_hidden_project_cannot_be_used_as_a_parent_across_tenants(
 
 def test_the_closure_scopes_all_three_subject_arms_together() -> None:
     """⚠️ The parenthesis, structurally. `AND` binds tighter than `OR`, so
-    without the brackets the tenant applies to `subject = 'org'` alone."""
+    without the brackets the tenant applies to `subject = 'org'` alone.
+
+    ⚠️ **Loosened 2026-09-23, and the loosening is bounded on purpose.** This
+    asserted that the tenant predicate was textually ADJACENT to the opening
+    bracket. D63's seal filter (migration 215) now sits between them. That is
+    a legitimate `AND` in the same conjunction and it changes nothing about
+    the binding.
+
+    Adjacency was never the property worth holding. It was a cheap proxy for
+    it, and it broke the first time somebody added a second legitimate
+    predicate. So this states the real property instead: the tenant arm is
+    present, the three subject arms share ONE bracket, and everything between
+    the two is `AND`-joined. An `OR` in that gap is what would actually
+    re-open the WS-29b leak, and the old assertion could not have seen one
+    either — it would simply have failed, the same way, for any change at all.
+    """
     sql = " ".join(pm_core._VISIBLE_PROJECTS_SQL.split())
-    assert (
-        "WHERE g.organization_id = CAST(:vis_org AS uuid) AND (g.subject = 'org'"
-        in sql
+
+    tenant = "g.organization_id = CAST(:vis_org AS uuid)"
+    opens = "(g.subject = 'org'"
+    assert tenant in sql, "the grant seed lost its tenant predicate"
+    assert opens in sql
+    assert "ANY(:vis_groups))" in sql, "the three subject arms share one bracket"
+
+    # Everything the closure adds between the tenant and the subject bracket
+    # must be conjunctive. One `OR` here detaches the tenant from the other two
+    # arms, which is the leak this whole file exists to prevent.
+    between = sql[sql.index(tenant) + len(tenant) : sql.index(opens)]
+    assert " OR " not in between.upper(), (
+        f"an OR between the tenant and the subject arms re-opens the leak: {between!r}"
     )
-    assert "ANY(:vis_groups))" in sql
+    assert between.strip().endswith("AND"), (
+        f"the subject bracket must be AND-joined to what precedes it: {between!r}"
+    )
 
 
 def test_the_task_clause_puts_the_tenant_outside_both_arms() -> None:

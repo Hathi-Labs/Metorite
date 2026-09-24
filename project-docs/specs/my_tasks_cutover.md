@@ -10,8 +10,8 @@ this spec and `work_plan.md` §2 disagree, the board wins.
 ---
 
 **Built so far.** S5, S6a to S6e and S8a are built and serving. S6f is built
-on 2026-09-23 (D76, §4.10). S7 ran on
-2026-09-23. S8 PR 1 is built on 2026-09-23 and waits for its merge window.
+on 2026-09-23 (D77, §4.10). S7 ran on
+2026-09-23. S8 PR 1 merged on 2026-09-24 as `6e028aa6` (#411).
 
 ## 0. One paragraph
 
@@ -307,7 +307,7 @@ Fences: `app/tasks/lib/statusCategory.test.ts` (the grouping, the lane
 resolution and the settings modal source) and `naming.test.ts` (no member
 string says ClickUp).
 
-### 4.10 One set of fields across My Tasks and Projects (D76)
+### 4.10 One set of fields across My Tasks and Projects (D77)
 
 Owner directive, verbatim, 2026-09-23, in six fragments:
 
@@ -332,17 +332,20 @@ Owner directive, verbatim, 2026-09-23, in six fragments:
 of it. Both apps read and write that home. My Tasks keeps an overlay only for
 how one member holds the work. It never keeps a second copy of a work fact.
 
-⚠️ **This AMENDS D53.8 for two fields, by owner directive.** D53.8 kept the
-matrix's `important` apart from `pm_tasks.importance`. The overlay also held
-its own `time_estimate_mins`. Both now read the shared column. `work_plan.md`
-§3 D76 records the decision.
+⚠️ **This AMENDS D53.8 for one field, by owner directive.** The overlay held
+its own `time_estimate_mins`. It now reads the shared column. `work_plan.md`
+§3 D77 records the decision.
+
+⚠️ **D77 does not change priority. D76 owns it.** The member's `important`
+stays on the overlay, and the shared `importance` only seeds it while it is
+unstated. `task_manager_app.md` §13.4b owns that rule.
 
 **The audit, measured on `main` at `74653868`.** Six pairs held one fact
 twice, and each pair could disagree.
 
 | # | Pair | What went wrong |
 |---|---|---|
-| 1 | `importance` vs the matrix cell | A task Projects called Urgent read `Low Priority · Eliminate?`. The detail showed both |
+| 1 | `importance` vs the matrix cell | A task Projects called Urgent read `Low Priority · Eliminate?`. D76 answers this pair, with its seed |
 | 2 | `estimate_mins` vs the overlay's `time_estimate_mins` | A My Tasks estimate never reached People capacity or analytics |
 | 3 | the status vs the stated `disposition` | A teammate reopened a task, and it stayed DONE in my list. Projects closed it, and my NEXT stayed |
 | 4 | the assignees vs the stored `waiting_on` | Projects reassigned it, and my Waiting-For and the Nudge named the old person |
@@ -357,11 +360,11 @@ not in the detail body. The watch toggle was in the Projects header only.
 
 | Field | Decision | How |
 |---|---|---|
-| Priority | **Shared** | `pm_tasks.importance`, labelled as `projects/lib/table.ts` does. The My Tasks list column, the card chip and the body show and edit it |
-| Focus matrix | **Derived, not stored** | Migration 215 carries each `important = true` flag into `importance = 2` where the Priority is unset or lower. The assignee's flag wins, and it never lowers a Priority. Important is `importance >= 2`. Urgent comes from the due date. `leveraged` and `deep_work` stay mine. The seven cells and the Suggestion are unchanged. No cell says "Priority": the old "Low Priority" cell is "Low value" |
-| Estimate | **Shared** | `pm_tasks.estimate_mins`. My Tasks' Estimate writes it. The planner reads it. Migration 215 copies the overlay values once |
+| Priority | **Shared** | `pm_tasks.importance`, in D76's words (`IMPORTANCE_OPTIONS`). The shared body edits it. The My Tasks list column, the card chip, and a Priority sort, group and filter show it. My Tasks never writes it |
+| Important | **Mine**, D76 | The member's own answer on the overlay. High and Highest seed it while it is unstated. D77 does not change it. Every My Tasks control over the member's matrix says "Your focus", the name D76 gives the private row in Projects |
+| Estimate | **Shared** | `pm_tasks.estimate_mins`. My Tasks' Estimate writes it. The planner reads it. Migration 216 copies the overlay values once |
 | Deadline | **Shared**, already `due_at` | A delegation never replaces a deadline the task has. The promised date is `expected_by` |
-| Start date | **Shared** | `start_date`, in the body of both apps. My inbox hides the task until the later of it and my own `defer_until` |
+| Start date | **Shared** | `start_date`, in the body of both apps. My inbox hides the task until the later of it and my own `defer_until`. "Today" is the member's own date, from `user_settings.timezone`, on the server and in the client |
 | Completion | **Derived** | `effective_disposition`: a closed lane reads DONE. A stated DONE on an open lane reads NEXT, and `is_triaged` stays true. Nothing is written |
 | Waiting on | **Derived from the assignees** | The task's assignees minus me, first by `assigned_at`. The Nudge goes to the same people |
 | Tags vs context | **Both kept** | Tags are the team's labels for the work. A context is how I batch MY time, and no work fact holds it |
@@ -369,12 +372,23 @@ not in the detail body. The watch toggle was in the Projects header only.
 | Watchers | **Shared** | The watch toggle is in the shared body |
 | Energy, two-minute, defer, block, flexible, hard date, actuals, rank, clarified, kept mine | **Mine**, unchanged | Each keeps its D53.5, D53.7 or D53.8 reason |
 
+**One word, one meaning.** In My Tasks, "Priority" means only the shared
+`importance`. Every control over the member's private matrix says "Your
+focus". That covers the list column, the sort, the group, the filter, the
+matrix view and the clarify card. A separate Priority sort, group and filter read the
+shared `orgPriority`, so a member can rank their list by the company's
+priority. The default sort stays the matrix rank, now named "Your focus".
+
+The internal keys (`priority`, `priorities`) stay on the matrix, so a saved
+sort or filter keeps its meaning. The matrix cells keep D76's names,
+"Low Priority" among them. `focusWording.test.ts` is the fence.
+
 **Promoted into Projects.** The Estimate editor, the description editor, the
 start date and the watch toggle, all in the shared `TaskBody`. Also **Time
 spent**, a read-only cell beside Estimate. It is the sum of every member's
 actuals (`actual_end - actual_start`), bound to the task the caller can see.
 
-**Four choices the directive did not settle, each an agent default:**
+**Three choices the directive did not settle, each an agent default:**
 
 1. **The stored `waiting_on` is not ignored.** It is the label when it names
    the same address. It is the whole answer when no other person holds the
@@ -382,19 +396,23 @@ actuals (`actual_end - actual_start`), bound to the task the caller can see.
    there is an outside person, and the overlay is the only place that fact is.
 2. **A stated TRASH stays TRASH on a closed lane.** Trash is my removal from
    my list, and a closed lane does not undo it.
-3. **An open disposition on a closed task reopens it for the board.** Without
-   this the lane wins, and "mark not done" snaps back to DONE. The gateway
-   does it once, in `reopen_if_closed`. Every overlay door calls it: the
-   PATCH, the bulk `personal` action, organize and defer. The checkbox, Focus mode
-   and Undo reach the bulk action. The task moves to the first `todo` lane
-   of its own set. The move goes through `apply_status_transition`, so the
-   timeline records the reopen.
-   Every stored disposition except DONE and TRASH counts
-   (`OPEN_DISPOSITIONS`). An Undo of a delete restores a closed task as
-   DONE, so it never reopens it.
-4. **The Important switch writes Priority.** On raises a lower task to High.
-   Off lowers High or Urgent to Normal. A switch that already agrees writes
-   nothing, so Important never demotes Urgent.
+3. **An actionable disposition on a closed task reopens it for the board.**
+   Without this the lane wins, and "mark not done" snaps back to DONE. The
+   gateway does it once, in `reopen_if_closed`. The PATCH, the bulk
+   `personal` action and organize call it. The checkbox, Focus mode and Undo
+   reach the bulk action. The task moves to the first `todo` lane of its own
+   set. The move goes through `apply_status_transition`, so the timeline
+   records the reopen.
+
+   Only INBOX, NEXT and WAITING count (`OPEN_DISPOSITIONS`). Each says that
+   somebody still has to do the work. SOMEDAY, REFERENCE and PROJECT do not
+   reopen: filing a finished task is about my list, not about the team's
+   work. The stated value is kept, and the closed lane still reads DONE.
+   A defer writes SOMEDAY, so a defer never reopens either, and the defer
+   card's "your inbox only" stays true.
+
+   Changed 2026-09-24 (F4). The first build reopened on every disposition but DONE and TRASH. An Undo of a
+   delete restores a closed task as DONE, so it never reopens it.
 
 ## 5. The slices
 
@@ -689,8 +707,15 @@ PASS. `test_projects_personal_s6e.py`, 12 tests. The vitest fences:
 
 ### S6f — one set of fields across My Tasks and Projects · AGENT-SAFE · BUILT 2026-09-23
 
-**Scope.** §4.10, decision D76. Branch `my-tasks-fields`, stacked on
-`my-tasks-s8b` (#411). It merged `origin/main` once, for D75 and the Nudge.
+**Scope.** §4.10, decision D77. Branch `my-tasks-fields`, stacked on
+`my-tasks-s8b` (#411). It merged `origin/main` for D75 and the Nudge, and
+again for D76 (#429).
+
+⚠️ **Reworked 2026-09-24 for D76.** The first build derived `important` from
+`importance`, and the Important switch wrote the shared Priority. D76 is the
+owner's decision and it says the opposite, so the rework took D76 whole. The
+decision number moved from D76 to D77, and the migration moved from 215 to
+216, because main took both first.
 
 **Gateway.**
 
@@ -699,18 +724,25 @@ PASS. `test_projects_personal_s6e.py`, 12 tests. The vitest fences:
    `_PM_ALIVE` now prunes TRASH only, because a stated DONE can be reopened.
 2. `_MY_TASKS_SQL` selects `other_assignees`. `waiting_on_for` turns it into
    the waiting-on person, and the Nudge uses the same rule.
-3. `DEFERRED_CLAUSE` adds `start_date <= current_date` to the defer clause.
-4. `validate_overlay` refuses `important` and `time_estimate_mins` with a 422.
-   `_upsert_personal` refuses them with a ValueError. Organize and email
-   capture write `pm_tasks.estimate_mins`.
+3. `DEFERRED_CLAUSE` adds `start_date <= CAST(:today AS date)` to the defer
+   clause. `member_today` computes `:today` from the member's
+   `user_settings.timezone` (F5, 2026-09-24). The first build used the
+   database's `current_date`, which is UTC, while the client read the local
+   date. My Tasks now stores the browser's zone on open, as the Calendar
+   does. The parity fixture has explicit-today rows that both sides run
+   with one instant and one zone. The bind is a `date`, because asyncpg
+   refuses text for a date parameter.
+4. `validate_overlay` refuses `time_estimate_mins` with a 422, and
+   `_upsert_personal` refuses it with a ValueError. Neither refuses
+   `important`, because it is the member's own answer (D76). Organize and
+   email capture write `pm_tasks.estimate_mins`.
 5. A delegation keeps a deadline the task already has.
 6. `GET /projects/tasks/{id}` carries `time_spent_mins`. It is a field on a
    route that exists, so the D-PM-37 manifest does not change.
-7. **Migration 215** copies each overlay estimate into an empty
+7. **Migration 216** copies each overlay estimate into an empty
    `estimate_mins`. The assignee's value wins, then the first assignee, then
-   the earliest `updated_at`. It also carries the `important` flags. Where
-   the chosen flag is true, an unset, Low or Normal Priority becomes High.
-   It never lowers a Priority. The ledger guard makes a replay a no-op.
+   the earliest `updated_at`. It writes no priority. The ledger guard makes a
+   replay a no-op, and a test holds the guard to the file's own name.
 8. `skill-task-gtd` and `skill-projects` follow the split. The chat tool
    `set_my_overlay` refuses DONE and points at `complete`. Its card says
    "your overlay only", so a shared completion behind that card would move
@@ -718,15 +750,25 @@ PASS. `test_projects_personal_s6e.py`, 12 tests. The vitest fences:
 
 **Client.**
 
-1. `lens.ts` maps `importance`, `estimate_mins`, `start_date` and `tags`.
-   `important` derives from `importance`. `TASK_KEYS` gains the estimate,
-   Priority and start date. `OVERLAY_KEYS` loses the two retired keys.
+1. `lens.ts` maps `estimate_mins`, `start_date` and `tags`. `important`
+   stays the overlay's, and `orgPriority` carries the shared Priority (D76).
+   `TASK_KEYS` gains the estimate and the start date. `OVERLAY_KEYS` loses
+   `time_estimate_mins` and keeps `important`.
 2. The client writes no lane for a reopen. The gateway's
    `reopen_if_closed` covers every door (§4.10 choice 3).
-3. The Important switch writes Priority (`importanceForImportant`).
-4. The Focus matrix, its column, group, filter, sort and view say "Focus".
-   The list's Priority column and the card draw the shared Priority and the
-   tags with the Projects chips (`importanceChip`, `taskMeta`).
+3. The Important switch writes the member's overlay, as D76 says. No My
+   Tasks path writes the shared Priority.
+4. The list's Priority column and the card draw the shared Priority
+   (`orgPriority`) and the tags. They use the Projects chips
+   (`importanceChip`, `taskMeta`) and D76's words. Every control over the
+   member's matrix says "Your focus". That covers the column, the sort, the
+   group, the filter, the view and the clarify card. A Priority sort, group and filter
+   read `orgPriority` (§4.10, "One word, one meaning").
+   ⚠️ **The column key `priority` changed meaning.** It named the matrix
+   column. It now names the shared Priority column, and the matrix column is
+   the new key `focus`. A member who saved "show Priority" now sees the
+   shared field under that name. This was accepted on 2026-09-24 (F6),
+   because the header reads "Priority" and shows Priority.
 5. `TaskBody` gains Start, Estimate, Time spent, Watch and a Description
    editor. The My Tasks strip loses Estimate and Notes under the lens. The
    Projects header loses its watch toggle.
@@ -736,21 +778,35 @@ PASS. `test_projects_personal_s6e.py`, 12 tests. The vitest fences:
 
 **Verified.**
 
-- `tests/live/live_ws39_s6f.py` on the dev database: **12/12 PASS**. It
-  checks reopen, close, reassign, the estimate and Priority in the planner,
-  and the estimate in capacity. It also checks the start date, the retired
-  columns, the backfill run twice, the ledger replay, time spent and tenancy.
-- `test_projects_personal_s6f.py`: 29 tests. The pytest run over every file
-  that imports a changed module: 2383 pass. One fails, and it fails at the
-  base too: `test_h3_rls_promotion_rehearsal.py`, order-dependent.
-- `npx tsc --noEmit` clean. `npx vitest run`: 3381 pass in 178 files. The new
-  fence is `sharedFields.test.ts`. `lens.test.ts` and `itemDetail.test.ts`
-  gained the D76 cases.
-- The live scripts for S6a, S6c, S6d, S6e, S8a and S8c pass. S6d reads the
-  capture's estimate off `pm_tasks` now.
+The repair round (F1 to F7) was verified on 2026-09-24, on a fresh
+database built from this branch's own ladder (`acb_tenant_verify_f`, 214
+files). The database was dropped afterwards.
+
+- `tests/live/live_ws39_s6f.py`: **17/17 PASS**. It checks reopen, close,
+  reassign, the estimate in the planner and in capacity, and the start date.
+  Check 5 proves that the Priority reaches the planner beside my
+  `important`, never as it. Check 6c proves that the start date is judged
+  on the member's own date (F5). Check 7 proves that the upsert refuses the
+  retired estimate and takes my `important`. Check 8b proves that the
+  backfill leaves the Priority alone. Check 11c proves that Someday on a
+  finished task leaves the lane done (F4). It also checks the backfill run
+  twice, the ledger replay, time spent, the reopen and tenancy.
+- `test_projects_personal_s6f.py`: 59 tests. The pytest run over every file
+  that imports a changed module, with `test_priority_seed.py`: 3508 pass. One
+  fails, and it passes alone: `test_h3_rls_promotion_rehearsal.py`, which
+  depends on the order of the run.
+- `npx tsc --noEmit` clean. `npx vitest run`: 3520 pass in 186 files, with
+  D76's `priorityVocabulary.test.ts` and `priority.test.ts`. The fences are
+  `sharedFields.test.ts` and `focusWording.test.ts`. `lens.test.ts` and
+  `itemDetail.test.ts` carry the D77 cases, and `itemDetail.test.ts` holds
+  D76's "Your focus" row to its name.
+- The live scripts for S6a (13/13), S6d (33/33), S6e (10/10), S8a (7/7) and
+  S8c (8/8) pass. S6d reads the capture's estimate off `pm_tasks` now.
 - The visual pass: one task in My Tasks and in Projects, light, compact and
   dark at 1440, and 390. The captures are in
-  `workbench/control_plane/ux-shots/s6f/`.
+  `workbench/control_plane/ux-shots/s6f/`. They are from the first build. The
+  rework renamed the member's cell column to "Your focus", and nobody has
+  shot it again.
 
 ### S7 — the cutover · dev-phase window, reported by evidence · RUN 2026-09-23
 
@@ -966,8 +1022,8 @@ flip (§6 step 10).**
 **PR 2 build record (2026-09-23).** Branch `my-tasks-s8d`, stacked on
 `my-tasks-fields` (#427).
 
-1. **Migration 216.** Main ended at 214 and #427 holds 215, so this one is
-   216. The file is one transaction, and its steps run in this order:
+1. **Migration 217.** Main holds 215 (`sealed`) and 216 (the estimate
+   backfill, #427), so this one is 217. The file is one transaction, and its steps run in this order:
    - (0) refuses when a `gtd_items` row holds a value in a column that the
      backfill never copied. There are 16 such columns, from `origin` to
      `horizon_id`. `flexible` is exempt. The RAISE names the column and the
@@ -984,15 +1040,15 @@ flip (§6 step 10).**
      in foreign-key order, and then the arm table, the view and both
      functions. No step uses CASCADE.
 2. **The arm moved into the migration.** §6 step 11 made the arm a hand
-   INSERT on the box. Migration 216 now writes the arm row, so the act is
+   INSERT on the box. Migration 217 now writes the arm row, so the act is
    reviewed code. The data check did not move. The guard from migration 190
    still counts the rows that have no `migrated_task_id`.
-3. ⚠️ **Migration 216 fails closed.** It RAISES in three cases: an
-   unmigrated row, an uncopied value, or a row in a tree table. The deploy then stops, and 216 changes nothing. This is the
+3. ⚠️ **Migration 217 fails closed.** It RAISES in three cases: an
+   unmigrated row, an uncopied value, or a row in a tree table. The deploy then stops, and 217 changes nothing. This is the
    intended behaviour. Do not widen a guard.
    ⚠️ **The wider failure case, from the review.** `vps_apply.sh` applies the
    migrations and then restarts the gateway. Any failure between those two
-   steps leaves the old code on the new schema. A refusal by 216 is one such
+   steps leaves the old code on the new schema. A refusal by 217 is one such
    failure, and any later step of `vps_apply.sh` is another. Migrations 48
    and 52 stay applied, so the old code names `gtd_attachments`, a table that
    is gone. File uploads then fail until a deploy completes. The old WhatsApp
@@ -1008,7 +1064,7 @@ flip (§6 step 10).**
      survive as `attachments`.
    - No `action_item.dispatch_ref` names a gtd id, and no
      `wa_commitments.gtd_item_id` is set.
-   So production loses nothing. Migration 216 now makes the same checks on
+   So production loses nothing. Migration 217 now makes the same checks on
    every other box.
 5. **Three renames**, each in the migration that creates the table.
    `gtd_attachments` is `attachments` (52). `gtd_horizons` and
@@ -1017,10 +1073,10 @@ flip (§6 step 10).**
    indexes these tables by name. Migration 150 names the old name in
    comments only.
 6. **Two guards for a lone re-run.** Migration 52 now guards its
-   `ALTER TABLE gtd_items`, because it re-runs after 216 drops that table.
-   Migration 216 drops an empty store that a lone re-run of 48 builds again.
+   `ALTER TABLE gtd_items`, because it re-runs after 217 drops that table.
+   Migration 217 drops an empty store that a lone re-run of 48 builds again.
    `test_gtd_backfill.py` pins the text of 48, so an edit to 48 must also
-   touch 216.
+   touch 217.
 7. **Code.** Both `attachments.py` modules write and read `attachments`.
    The WhatsApp list, the digest and the WhatsApp agent read `task_id`, and
    the API field is `task_id`. The member purge names no task table, and it
@@ -1036,21 +1092,21 @@ flip (§6 step 10).**
    These are `apps`, `packages`, `scripts` and `workbench`. It refuses a
    `gtd_` token that is not on its list. The list holds the 29 chat tool
    names, three settings helpers and one example tool name. S9 owns all of
-   them. `test_gtd_backfill.py` fences the exact drop set of 216 and the
+   them. `test_gtd_backfill.py` fences the exact drop set of 217 and the
    survivors. It also replays the ladder against a real Postgres.
 
 **Pre-flight for production.** Do both before the merge.
 1. Confirm that today's backup is on disk:
    `ls -la /opt/acb/backups | tail -1`.
-2. Confirm that the ledger holds 215 from #427:
-   `SELECT filename FROM schema_migrations WHERE filename LIKE '215_%';`.
+2. Confirm that the ledger holds 216 (the estimate backfill):
+   `SELECT filename FROM schema_migrations WHERE filename LIKE '216_%';`.
    PR 1 (#411) added no migration.
 
-The data checks are not a hand step. Migration 216 refuses by itself when a
+The data checks are not a hand step. Migration 217 refuses by itself when a
 row would be lost.
 
 After the deploy, `\dt gtd_*` must return nothing, and the ledger must hold
-`216_gtd_task_store_drop.sql`.
+`217_gtd_task_store_drop.sql`.
 
 **Done when.**
 1. `rg -l "gtd_" apps packages --glob '!infra/postgres/generated'` returns
@@ -1123,9 +1179,9 @@ After the deploy, `\dt gtd_*` must return nothing, and the ledger must hold
       |
 10. S8 PR 1 merges (the code stops naming gtd_*)
       |
-11. the S8 PR 2 pre-flight (§5 S8): backup, zero unmigrated rows, 215 in the ledger
+11. the S8 PR 2 pre-flight (§5 S8): backup, and 216 (the estimate backfill) in the ledger
       |
-12. S8 PR 2 merges. Migration 216 arms, calls the guard, drops. 48 and 52 rename.
+12. S8 PR 2 merges. Migration 217 arms, calls the guard, drops. 48 and 52 rename.
       |
 13. \dt gtd_*  ->  nothing
 ```
@@ -1139,7 +1195,7 @@ only after `SELECT filename FROM schema_migrations WHERE filename LIKE '212_%'`
 returns one row.
 
 **Step 11 changed on 2026-09-23.** It was a hand INSERT into the arm table.
-Migration 216 now writes the arm row, so the arm is reviewed code. Step 11 is
+Migration 217 now writes the arm row, so the arm is reviewed code. Step 11 is
 the pre-flight that S8 PR 2 lists. During the dev-phase window (CLAUDE.md
 §3a) an agent runs it and reports the three results in the same message. On
 2026-10-01 the pre-flight returns to the owner.
@@ -1159,11 +1215,11 @@ the pre-flight that S8 PR 2 lists. During the dev-phase window (CLAUDE.md
 | My Tasks and Projects share one task panel composition | the S6e source fence |
 | the rename prologues are guarded and not swept | `test_gtd_rename_upgrade.py` |
 | the drop is inert until armed and accounted for | `test_gtd_backfill.py` |
-| 216 drops exactly the planned set, and refuses an unmigrated row | `test_gtd_backfill.py`, `live_ws39_s8d.py` |
+| 217 drops exactly the planned set, and refuses a row it would lose | `test_gtd_backfill.py`, `live_ws39_s8d.py` |
 | no code names a `gtd_` table | `test_no_gtd_table_names.py` |
-| a work fact has one home, and My Tasks reads it (D76) | `test_projects_personal_s6f.py`, `live_ws39_s6f.py`, `sharedFields.test.ts` |
-| the strip draws no work fact, and the body draws them all (D76) | `itemDetail.test.ts` |
-| the lens never writes `important` or `time_estimate_mins` (D76) | `lens.test.ts`, `test_projects_personal_s6f.py` |
+| a work fact has one home, and My Tasks reads it (D77) | `test_projects_personal_s6f.py`, `live_ws39_s6f.py`, `sharedFields.test.ts` |
+| the strip draws no work fact, and the body draws them all (D77) | `itemDetail.test.ts` |
+| the lens never writes `time_estimate_mins`, and My Tasks never writes the shared Priority (D77, D76) | `lens.test.ts`, `sharedFields.test.ts`, `test_projects_personal_s6f.py` |
 | the ladder replays clean | `pr-check.yml` migrations job |
 
 ## 8. What this spec closes, and where

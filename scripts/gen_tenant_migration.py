@@ -201,7 +201,7 @@ _NEVER_A_TABLE = frozenset({"above", "below", "if", "not", "exists", "this", "th
 
 #: ``DROP TABLE [IF EXISTS] <name>``. A table the ladder drops is not a table,
 #: and a phase file that names it fails in the maintenance window. WS-39 S8
-#: (migration 216) is the first file to drop tables for good.
+#: (migration 217) is the first file to drop tables for good.
 _DROP_RE = re.compile(
     r"DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:public\.)?[\"']?([a-z_][a-z0-9_]*)[\"']?",
     re.IGNORECASE,
@@ -209,7 +209,7 @@ _DROP_RE = re.compile(
 
 
 def _ladder_order(path: Path) -> int:
-    """The numeric prefix. ``sorted()`` on names puts ``216_`` before ``48_``,
+    """The numeric prefix. ``sorted()`` on names puts ``217_`` before ``48_``,
     and that order would read a drop before the CREATE it undoes."""
     return int(path.name.split("_", 1)[0])
 
@@ -225,7 +225,7 @@ def discover_tables() -> list[str]:
 
     Files are read in LADDER order, and each file's CREATE and DROP statements
     in text order, so a table dropped by a later file leaves the set. The
-    WS-39 S8 drop (216) removed the `gtd_*` task store this way.
+    WS-39 S8 drop (217) removed the `gtd_*` task store this way.
     """
     names: set[str] = set()
     for path in sorted(_MIGRATIONS.glob("[0-9]*_*.sql"), key=_ladder_order):

@@ -107,6 +107,7 @@ def test_the_lens_row_carries_every_name_the_planner_reads() -> None:
         actual_start=None, actual_end=None, important=True, leveraged=None,
         deep_work=None, kept_mine=None, sort_key=None, is_mine=True,
         stated_disposition=None, status_category="todo", assignee_count=1,
+        org_priority=2,
     ))
     wanted = _names_the_planner_reads()
     # Sanity: an empty set would make this test assert nothing at all.
@@ -133,6 +134,8 @@ def _row(**kw) -> SimpleNamespace:
         important=None, leveraged=None, deep_work=None, kept_mine=None,
         sort_key=None, is_mine=False, stated_disposition=None,
         status_category="todo", assignee_count=0,
+        # D76: the shared priority rides every planner row, for the seed.
+        org_priority=None,
     )
     base.update(kw)
     return SimpleNamespace(**base)

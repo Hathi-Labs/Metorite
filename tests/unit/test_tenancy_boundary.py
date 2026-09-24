@@ -185,7 +185,7 @@ BASELINE_UNSCOPED = {
     # `organization_id` on the NUMBERED ladder for that one table, because
     # H-125 needed a per-tenant unique index and could not wait for the
     # whole generated phase (H-104). The other 142 tables still wait.
-    # ⚠️ Six more LEFT on 2026-09-23. Migration 216 (WS-39 S8) dropped the
+    # ⚠️ Six more LEFT on 2026-09-23. Migration 217 (WS-39 S8) dropped the
     # `gtd_*` task store: gtd_items, gtd_waiting, gtd_projects, gtd_spaces,
     # gtd_folders and gtd_contexts. The three survivors carry their new names.
     "my_tasks_horizons", "people_resumes",

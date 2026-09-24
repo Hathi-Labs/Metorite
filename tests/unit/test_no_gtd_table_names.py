@@ -2,9 +2,9 @@
 
 Spec `my_tasks_cutover.md` §4.3 and §5 S8 · decision D73 · board WS-39.
 
-After migration 216 no `gtd_*` table exists. Three slices renamed eleven of
+After migration 217 no `gtd_*` table exists. Three slices renamed eleven of
 them (People, Calendar and settings, then the three task-store survivors), and
-216 dropped the rest. So a `gtd_` table name in the code is one of two
+217 dropped the rest. So a `gtd_` table name in the code is one of two
 defects. Either it is a query that fails on the first request, or it is a
 comment that describes a schema that is gone.
 
@@ -81,7 +81,7 @@ ALLOWED_LITERALS: dict[str, str] = {
 
 #: Not tables, and gone with them. Named because no CREATE TABLE finds them.
 NON_TABLE_NAMES = frozenset({
-    "gtd_item_id",          # the wa_commitments column 216 dropped
+    "gtd_item_id",          # the wa_commitments column 217 dropped
     "gtd_backfill_plan",    # the S3b view
     "gtd_backfill_to_pm",   # the S3b function
     "gtd_retirement_drop",  # the S3c guard
@@ -146,7 +146,7 @@ def test_no_gtd_token_outside_the_allowed_list() -> None:
         for p in fenced_files() for line, token in _scan_text(_read(p))
     ]
     assert not bad, (
-        "These `gtd_` tokens are not in ALLOWED. After migration 216 no gtd_ "
+        "These `gtd_` tokens are not in ALLOWED. After migration 217 no gtd_ "
         "table exists. Use the new name (my_tasks_cutover.md §4.3), or, for a "
         "survivor, add it to ALLOWED with its reason:\n  " + "\n  ".join(bad)
     )

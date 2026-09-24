@@ -100,13 +100,13 @@ async def main() -> None:
             "SELECT indexname FROM pg_indexes WHERE tablename = 'pm_tasks' "
             "AND indexname LIKE 'idx_pm_tasks_origin_%'"))).fetchall()}
         check("0.4 four origin indexes, once each", len(idx) == 4, str(sorted(idx)))
-        # S8 PR 2 (migration 216) ran the contract half: the old column is gone.
+        # S8 PR 2 (migration 217) ran the contract half: the old column is gone.
         await db.execute(text("SELECT k.task_id FROM wa_commitments k LIMIT 0"))
         legacy = (await db.execute(text(
             "SELECT count(*) FROM information_schema.columns "
             "WHERE table_name = 'wa_commitments' AND column_name = 'gtd_item_id'"
         ))).scalar()
-        check("0.5 the digest reads task_id alone (216 dropped the old column)",
+        check("0.5 the digest reads task_id alone (217 dropped the old column)",
               legacy == 0, f"legacy={legacy}")
 
         # ── seed: two members in one org, one in another ─────────────────
@@ -154,7 +154,7 @@ async def main() -> None:
               row.personal_owner == ALICE and row.parent_project_id is None
               and row.mine == 1,
               f"owner={row.personal_owner} parent={row.parent_project_id} mine={row.mine}")
-        # D76 (S6f): the drafter's estimate is the TASK's one estimate, so
+        # D77 (S6f): the drafter's estimate is the TASK's one estimate, so
         # it lands on `pm_tasks.estimate_mins`, not the overlay.
         check("1.3 source is 'email' and the overlay carries the routing",
               row.source == "email" and row.disposition == "NEXT"
