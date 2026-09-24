@@ -484,13 +484,19 @@ def build_agents() -> list[Any]:
     Imported lazily so the module still loads where the optional deps differ."""
     from agent_framework import Agent
     from agent_framework.openai import OpenAIChatCompletionClient
+    from acb_llm.attribution import attributed_openai
 
     prov = _llm_provider()
     client = OpenAIChatCompletionClient(
         model=os.environ.get("WHATSAPP_AGENT_MODEL", "tier-balanced"),
-        api_key=prov["api_key"],
-        base_url=prov["base_url"],
-        default_headers={"X-CC-Agent": "whatsapp-assistant", "X-CC-Source": "chat"},
+        # Usage slice 1: `attributed_openai` adds the member, app and run to
+        # EVERY request, from the run context. A fixed header cannot, because
+        # one client serves everyone who chats with this agent.
+        async_client=attributed_openai(
+            base_url=prov["base_url"],
+            api_key=prov["api_key"],
+            default_headers={"X-CC-Agent": "whatsapp-assistant", "X-CC-Source": "chat"},
+        ),
     )
     return [
         Agent(

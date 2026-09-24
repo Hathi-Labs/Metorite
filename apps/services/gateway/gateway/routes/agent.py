@@ -2129,6 +2129,8 @@ async def run_agent_stream_endpoint(
         model=req.model,
         think_mode=_think_mode,
         organization_id=_organization_id,
+        # H-73: WHO pays is the session's answer, never the body's.
+        session_user=_session_member(user),
     )
 
     # The roster this run's authority intersection is folded over, recorded so a
@@ -2447,6 +2449,18 @@ async def cancel_agent_run(
     return {"ok": True, "cancelled": cancelled, "threadId": thread_id}
 
 
+def _session_member(user: Any) -> str | None:
+    """The signed-in person's email, for the run's billing identity. H-73.
+
+    ⚠️ **Only a real address.** A service caller authenticates without a
+    person behind it, and a run it starts must bill no member rather than a
+    placeholder like ``anonymous``. A placeholder would collect every
+    automation's spend under one fake person on the usage page.
+    """
+    email = str(getattr(user, "email", "") or "").strip()
+    return email if "@" in email else None
+
+
 @router.post("/run", response_model=AgentRunResponse)
 async def run_agent_sync(
     req: AgentRunRequest,
@@ -2470,6 +2484,7 @@ async def run_agent_sync(
             run_id=run_id,
             thread_id=req.thread_id,
             model=req.model,
+            session_user=_session_member(user),
         )
         return AgentRunResponse(
             run_id=run_id,
@@ -2507,7 +2522,8 @@ async def run_agent_async(
     async def _run() -> None:
         try:
             await run_agent(agent, req.payload, run_id=run_id,
-                            thread_id=req.thread_id, model=req.model)
+                            thread_id=req.thread_id, model=req.model,
+                            session_user=_session_member(user))
         except Exception as exc:  # noqa: BLE001
             _log.error(
                 "agent.async_run_error",

@@ -122,22 +122,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_reports.md` §3.1 · CLAUDE.md §3 rule 6 (R8)
 - **Added:** 2026-09-24 · the WS-27bn R1 build
 
-### H-179 · Prove a real Projects chat holds a tool conversation on DeepSeek V4 · [AGENT]
-- **Check:** on the box, count `usage_event` rows where `agent` is
-  `projects-assistant` and `tier` is a chat tier. Then read the gateway log for
-  `router.provider_error` after the deploy. Rows and no error close this entry.
-- 📌 **BUILT 2026-09-24.** The Router now carries a thinking model's
-  reasoning across a tool round-trip. `customer_console/reasoning.py` holds the
-  two halves, and `test_reasoning_passthrough.py` is the fence.
-- 🔴 **Why.** DeepSeek V4 returns `reasoning_content` and refuses the next
-  turn without it. The agent framework reads only `reasoning_details`. So every
-  tool call after the first failed with a 400.
-- ⚠️ **The tests use a stub.** Seven live probes set the shapes, and the module
-  records them. Only a real chat proves the wiring. That is this entry.
-- 🔴 **Review found a shape the first fix missed.** The framework splits a
-  turn that holds text AND tool calls into two messages. The vendor refused
-  the text half. The Router now joins the two halves into one turn again.
-
 ### H-180 · Carry reasoning on the STREAM path too · [AGENT]
 - **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`
   → no hit in the stream relay means this entry is still open.
@@ -160,6 +144,14 @@ line — never reclaim a number by deleting the other entry.
   `/copilot/chat` path.
 - **Done when:** all four agents and the orchestrator hold a tool conversation
   through the live Router on DeepSeek V4. A stubbed test does not count.
+- 🔴 **The upgrade also closes an attribution gap.** Three agents run on the
+  Copilot SDK: `task-manager`, `app-builder` and `apis-config`. Their model
+  calls reach the Router with no member, app or run. Version 0.1.32 has no
+  `headers` field on `ProviderConfig`, and 1.0.14 adds one. Set
+  `"headers": attribution_headers()` on the provider dict at the two sites
+  that build it. Then delete
+  `test_the_copilot_path_is_a_KNOWN_gap_until_H_181`, which fails on purpose
+  when the sites change.
 
 ### H-178 · An operator can take a job off the air. Two callers cannot yet · [AGENT]
 - **Check:** `rg -c "model IS NOT NULL" packages/acb_llm apps/services/gateway`
