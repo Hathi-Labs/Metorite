@@ -95,20 +95,6 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-182 · The report list shows reports on projects the reader cannot open · [AGENT]
-- **Check:** `grep -n "SELECT \* FROM pm_reports ORDER BY created_at DESC" apps/services/gateway/gateway/routes/projects/reports.py`
-  → a hit means this is open.
-- **Why:** `list_reports` filters rows by tenant (RLS) only. A report scoped
-  to a project that the reader cannot see still shows its name and its scope
-  in the list. `get_report` and `render_report` refuse that same row with 404,
-  so the list tells a reader more than the rest of the API does.
-- **Do:** Filter the list by `vis.project_clause("project_id")` and keep the
-  portfolio rows (`project_id IS NULL`). Add a real-DB test for a restricted
-  reader. The test must show that the list hides a node report on a hidden
-  project and keeps a portfolio report.
-- **Authority:** `specs/projects_reports.md` §7 rule 1 · the WS-27bn R1 audit
-- **Added:** 2026-09-24 · the WS-27bn R1 build
-
 ### H-183 · The report schedule PATCH fails on a real database · [AGENT]
 - **Check:** `grep -n '"updated_at": text("now()")' apps/services/gateway/gateway/routes/projects/reports.py`
   → a hit means this is open.

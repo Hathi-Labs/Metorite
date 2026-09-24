@@ -1,7 +1,9 @@
 # Projects · the reporting system — WS-27bn
 
 **Status: ACTIVE. R1 BUILT 2026-09-24** (the builder, `render_body` and
-`POST /projects/reports/preview`). R2 to R9 and Phases 2 and 3 are not built.
+`POST /projects/reports/preview`). **R2 BUILT 2026-09-24** (the template
+catalogue, `config.template`, the gallery and "Your reports"). R3 to R9 and
+Phases 2 and 3 are not built. R3 is next.
 
 Written
 2026-09-24 and verified against the code on 2026-09-24. The owner answered
@@ -116,17 +118,19 @@ defect.
 | Who fits one task | `GET /projects/tasks/{id}/candidates` · `candidates.py` | none |
 
 **The report routes** are in `routes/projects/reports.py`:
-- `SECTIONS` (`:90`) is the vocabulary, in a fixed order. `DEFAULT_SECTIONS`
-  (`:101`) is the four that a definition with no `sections` key renders.
-- `_DEFAULTS` (`:107`): one week, the current week skipped, the subtree
+- `SECTIONS` (`:93`) is the vocabulary, in a fixed order. `DEFAULT_SECTIONS`
+  (`:104`) is the four that a definition with no `sections` key renders.
+- `_DEFAULTS` (`:110`): one week, the current week skipped, the subtree
   included.
-- `SCHEDULES` (`:117`) holds only `"weekly"`.
-- `delivery_armed()` (`:120`) reads `PROJECT_REPORT_EMAIL_ENABLED`.
-- The routes: list, create, get, patch, delete (`:273` to `:369`), render
-  (`:383`), recipients (`:649` to `:730`) and schedule (`:748`).
-- **Since R1:** `render_body` (`:387`) holds the section loop. Render
-  (`:606`) and preview (`:642`) both call it. Recipients start at `:728` and
-  schedule is at `:827`.
+- `TEMPLATES` (`:150`) is the template catalogue of §4 (R2).
+- `SCHEDULES` (`:239`) holds only `"weekly"`.
+- `delivery_armed()` (`:242`) reads `PROJECT_REPORT_EMAIL_ENABLED`.
+- The routes: list is at `:425` and templates at `:459`. Create is at
+  `:476`. Get, patch and delete are at `:510` to `:554`. Render is at `:787`
+  and preview at `:823`. Recipients are at `:909` to `:990`, and schedule is
+  at `:1008`.
+- `render_body` (`:568`) holds the section loop. Render and preview both
+  call it.
 - **A render resolves visibility from the caller.** A send renders once for
   each recipient, with that recipient's own visibility (H-111). So a report
   never shows a person more than they can open in the app.
@@ -142,16 +146,17 @@ flag that applies, and a reason for each.
 ### 3.2 The client
 
 - `components/ReportsView.tsx`. It lists saved reports and draws a render with
-  `RenderedBody` (`:115`). The only create control is "New weekly report"
-  (`:380`). It posts no config.
+  `RenderedBody` (`:153`). The create control is "New report" (`:828`).
 - `components/AnalyticsView.tsx` and `components/NodeDashboard.tsx`. They draw
   the same panels from `AnalyticsPanels.tsx`, for the portfolio and for one
   node.
-- `lib/api.ts:1153` to `:1163`. The client can list, create, render and delete
-  a report. It has no call for patch, recipients or schedule.
-- **Since R1:** `ReportsView.tsx` has the builder (`ReportBuilder`) and a
-  "New report" control. `lib/api.ts` has `patchReport` and `previewReport`.
+- `lib/api.ts:1226` to `:1264`. The client can list, create, patch, preview,
+  render and delete a report, and read the templates. It has no call for
+  recipients or schedule.
+- **Since R1:** `ReportsView.tsx` has the builder (`ReportBuilder`, `:368`).
   `lib/reportBuilder.ts` holds the builder's choices as pure functions.
+- **Since R2:** `ReportsView.tsx` has the home screen (`ReportsHome`, `:640`)
+  and the template card (`TemplateCard`, `:583`).
 - `src/lib/reportEmail.ts`. It builds an email body with no colour.
   `sendReportEmail` throws while the flag is off.
 - Analytics and Reports are `live` in `lib/projectApps.ts`.
@@ -213,31 +218,42 @@ It reads ClickUp only.
 
 A **template** is a named question. It sets the sections, the scope kind and
 the default period. A member picks a template, then changes any of it. The
-saved report keeps the template name in `config.template`, so the home screen
+saved report keeps the template key in `config.template`, so the home screen
 can group reports and the chat can name them.
 
-**Status key:** ✅ every section exists · ◐ one or more sections are new in §8.
+**Status key:** ✅ live since R2 · ◐ it waits for a section, a scope, a period
+or a filter that §8 adds. The gallery shows a ◐ template as "coming soon".
 
-| # | Template | The question | Scope | Period | Sections | Status |
-|---|---|---|---|---|---|---|
-| T1 | **Team pulse** (the morning report) | How is each person on the team today, and who needs help? | team · project · org | today | `pulse`, `conflicts`, `rebalance` | ◐ |
-| T2 | **My day** | What do I work on today, and what waits on me? | me | today | `pulse` for one person, `waiting` | ◐ |
-| T3 | **What changed** | What happened since I last read this? | any | since the last run | `changes` | ◐ |
-| T4 | **Weekly delivery** | What did we finish last week, and how fast? | project · org | last week | `finished`, `throughput`, `load`, `stuck` | ✅ (the default today) |
-| T5 | **Project status** | Will this project finish on time, and what blocks it? | project | this week | `outlook`, `stuck`, `conflicts`, `finished` | ◐ |
-| T6 | **1:1 prep** | How is this person doing over a month? | person | last 4 weeks | `finished`, `throughput`, `pulse`, `waiting` | ◐ (§7.1 limits who may open it) |
-| T7 | **Exceptions** | What is wrong right now, and nothing else? | any | today | `stuck`, `conflicts`, `hygiene` (only the high rows) | ◐ |
-| T8 | **Capacity outlook** | Do we have the people for the next weeks? | team · org | next 2 to 6 weeks | `capacity`, `outlook`, `on_leave` | ◐ |
-| T9 | **Stakeholder update** | A short project summary to send outside the team | project | last 2 weeks | `finished`, `outlook`, with no per-person rows | ◐ |
-| T10 | **Portfolio health** | Which projects are healthy? | org | this month | `outlook` for each child project, `capacity` | ◐ |
-| T11 | **Focus and switching** | Who is spread over too many projects? | team · org | this week | `conflicts` (`parallel_person` only), `load` | ✅ |
-| T12 | **Retrospective** | What slipped in the period, and why? | project | a closed period | `finished`, `throughput`, `changes` (slips only) | ◐ |
-| T13 | **Data hygiene** | Which tasks make every other report wrong? | project · org | today | `hygiene` | ◐ |
+| # | Key | Template | The question | Scope | Period | Sections | Status |
+|---|---|---|---|---|---|---|---|
+| T1 | `team_pulse` | **Team pulse** (the morning report) | How is each person on the team today, and who needs help? | team · project · org | today | `pulse`, `conflicts`, `rebalance` | ◐ |
+| T2 | `my_day` | **My day** | What do I work on today, and what waits on me? | me | today | `pulse` for one person, `waiting` | ◐ |
+| T3 | `what_changed` | **What changed** | What happened since I last read this? | any | since the last run | `changes` | ◐ |
+| T4 | `weekly_delivery` | **Weekly delivery** | What did we finish last week, and how fast? | project · org | last week | `finished`, `throughput`, `load`, `stuck` | ✅ (the default today) |
+| T5 | `project_status` | **Project status** | Will this project finish on time, and what blocks it? | project | this week | `outlook`, `stuck`, `conflicts`, `finished` | ◐ |
+| T6 | `one_on_one` | **1:1 prep** | How is this person doing over a month? | person | last 4 weeks | `finished`, `throughput`, `pulse`, `waiting` | ◐ (§7.1 limits who may open it) |
+| T7 | `exceptions` | **Exceptions** | What is wrong right now, and nothing else? | any | today | `stuck`, `conflicts`, `hygiene` (only the high rows) | ◐ |
+| T8 | `capacity_outlook` | **Capacity outlook** | Do we have the people for the next weeks? | team · org | next 2 to 6 weeks | `capacity` (it carries absences), `outlook` | ◐ |
+| T9 | `stakeholder_update` | **Stakeholder update** | A short project summary to send outside the team | project | last 2 weeks | `finished`, `outlook`, with no per-person rows | ◐ |
+| T10 | `portfolio_health` | **Portfolio health** | Which projects are healthy? | org | this month | `outlook` for each child project, `capacity` | ◐ |
+| T11 | `focus_switching` | **Focus and switching** | Who is spread over too many projects? | team · org | this week | `conflicts` (`parallel_person` only), `load` | ◐ (it waits for a conflict-kind filter) |
+| T12 | `retrospective` | **Retrospective** | What slipped in the period, and why? | project | a closed period | `finished`, `throughput`, `changes` (slips only) | ◐ |
+| T13 | `data_hygiene` | **Data hygiene** | Which tasks make every other report wrong? | project · org | today | `hygiene` | ◐ |
+
+**T11 waits for a filter.** `conflicts_body` (`analytics_conflicts.py:366`)
+takes no argument for the conflict kind. So a T11 report would show every
+conflict, and not only `parallel_person`.
 
 **Templates live on the server,** as a `TEMPLATES` map in `reports.py` next to
-`SECTIONS`. The builder, the chat and the email read the one map.
-`test_projects_report_sections_lockstep.py` already holds five lists of section
-names together, and it gains the template map.
+`SECTIONS`. `GET /projects/reports/templates` serves it in catalogue order.
+The builder, the chat and the email read the one map, and the client holds no
+copy. `test_projects_report_sections_lockstep.py` already holds six lists of
+section names together, and it holds the template map too.
+
+**The keys are append-only.** A saved report keeps its key in
+`config.template`, and the server checks each config again when it reads a
+row. So a removed key makes each list and render of that report fail with
+422. The lockstep test pins the 13 keys.
 
 ---
 
@@ -281,6 +297,19 @@ The home screen has three areas, top to bottom.
 3. **Saved reports.** The list that exists today, with a filter for scope,
    template and owner.
 
+**In R2, "For you" is "Your reports".** It shows the reports that you
+created, newest first, at most six. A card shows the name, the template name
+(or "Custom") and the scope. The server marks each row `mine`, from the
+authenticated caller.
+
+**No card renders when the home screen loads.** A click opens the report, and
+the render runs then. The headline and the change mark wait for stored runs
+(R4). Pins wait for a later slice. The empty state offers the live templates,
+and in R2 that is T4 only.
+
+**In R2, the saved list has no filter.** The filter for scope, template and
+owner waits for a later slice.
+
 ### 6.2 The builder — one sentence
 
 The builder is one sentence of chips, with a live preview beside it:
@@ -302,7 +331,7 @@ The builder is one sentence of chips, with a live preview beside it:
   Today, a custom range and the forward periods need new config fields. A
   later slice adds those fields and those periods.
 - **"More"** opens the section list, so a member can add or remove a section.
-  Order stays fixed by `SECTIONS` (`reports.py:77` to `:89` gives the reason).
+  Order stays fixed by `SECTIONS` (`reports.py:80` to `:92` gives the reason).
 - **The preview renders from the server** on each change, with a short delay.
   It uses `POST /projects/reports/preview` with an unsaved config. The
   browser computes no figure (§9.12.7).
@@ -463,19 +492,59 @@ says that the chat reaches the preview in R8. R8 maps the row to
   equal period. A second render path is a defect (CLAUDE.md §4). The chat,
   the schedule and a workflow step call the same function later (§8a).
 
-### R2 — Templates and the home screen · AGENT-SAFE
+### R2 — Templates and the home screen · AGENT-SAFE · BUILT 2026-09-24
 
-**What:** the `TEMPLATES` map (§4), `config.template`, the gallery and the
-"For you" area of §6.1. Only the templates whose sections exist go live in
-this slice: T4 and T11. The others show in the gallery as "coming soon" and
-cannot be chosen.
+**What:** the `TEMPLATES` map (§4), `config.template`, the gallery and "Your
+reports" (§6.1). T4 only goes live in this slice. Its sections, its scope and
+its period exist. The others show in the gallery as "coming soon", and a
+member cannot choose them. T11 waits for a filter on the conflict kind (§4).
+
+**`config.template`.** No template, or `null`, adds no key. A live key is
+kept. An unknown key and a coming-soon key get 422. The key is an origin
+label, so a member can change the sections or the period and keep the key.
+
+**Route order.** `reports.py` declares `GET /reports/templates` above
+`GET /reports/{report_id}`. Otherwise FastAPI reads "templates" as an id.
+
+**The chat manifest row.** The templates route is class X. Its reason says
+that the chat reaches templates in R8. The row sits above the `{report_id}`
+row, because `route_for` takes the first match.
+
+**H-182, folded in.** The report list hides a report on a project that the
+caller cannot see. It uses `Visibility.project_clause`, as
+`load_visible_project` does. A portfolio report stays in the list.
+
+**Files:** `routes/projects/reports.py` · the chat manifest ·
+`components/ReportsView.tsx` · `lib/api.ts` · `lib/reportBuilder.ts`.
 
 **Done when:**
-- `GET /projects/reports/templates` returns the map, and the gallery draws it.
-- Choosing a template fills the builder, and the member can still change each
-  chip.
-- The lockstep test holds `TEMPLATES` and fails if a template names a section
-  outside `SECTIONS`.
+- `GET /projects/reports/templates` returns all 13 templates, and exactly
+  `weekly_delivery` has `available: true`. A test calls the route through the
+  app router. It proves that `/reports/{report_id}` does not capture
+  "templates".
+- Choosing T4 fills the builder with the sections `finished`, `throughput`,
+  `load` and `stuck`, with `weeks` 1 and `skip_current_week` true. The member
+  can still change each chip. A vitest proves the state.
+- A save with `config.template` `"weekly_delivery"` stores it, and PATCH and
+  render return it. A builder edit that changes only the sections keeps the
+  template. A vitest on `configFor` proves the round trip, and a real-DB test
+  proves the row.
+- An unknown template gets 422. A coming-soon template, such as
+  `"focus_switching"`, gets 422. A config with no template saves exactly as
+  in R1, and the R1 test stays green.
+- A coming-soon card cannot open the builder. A vitest proves that the
+  from-template function refuses an unavailable entry.
+- The lockstep test holds `TEMPLATES`. It fails if a live template names a
+  section outside `SECTIONS`, or out of `SECTIONS` order. It fails if a
+  coming-soon template carries sections. It fails if a key of the pinned 13
+  disappears. A self-test with a fake live template that names `pulse` proves
+  that the fence fires.
+- "Your reports" lists only the rows with `mine: true`, newest first, at most
+  six. A real-DB test with two authors proves `mine`.
+- `route_for("GET", "/projects/reports/templates").cls` is `"X"`, and
+  `test_projects_chat_coverage.py` passes.
+- The list hides a report on a hidden project from a caller who cannot see
+  it, and shows it to a caller with a grant. A real-DB test proves both.
 
 ### R3 — Four new sections · AGENT-SAFE
 
@@ -722,12 +791,14 @@ uv run pytest tests/unit/test_projects_reports.py \
   tests/unit/test_projects_chat_coverage.py \
   tests/unit/test_projects_agent.py \
   tests/unit/test_projects_report_builder.py \
+  tests/unit/test_projects_report_templates.py \
   tests/unit/test_tenant_coverage.py -q
 ```
 
 `test_projects_agent.py` holds the class-A reach fence. A manifest row that
 names a built tool which never calls the route fails there.
 `test_projects_report_builder.py` is R1's file.
+`test_projects_report_templates.py` is R2's file.
 
 Client, in `workbench/control_plane`:
 

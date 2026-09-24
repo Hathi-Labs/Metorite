@@ -2,7 +2,8 @@
 
 Spec: ``project-docs/specs/project_management_app.md`` §9.12.8.
 
-    GET    /projects/reports              → every report in the tenant
+    GET    /projects/reports              → every report the caller may open
+    GET    /projects/reports/templates    → the template catalogue (R2)
     POST   /projects/reports              → save a definition
     GET    /projects/reports/{id}
     PATCH  /projects/reports/{id}
@@ -33,6 +34,7 @@ time nobody did anything.
 
 from __future__ import annotations
 
+import copy
 import os
 from typing import Any
 
@@ -110,6 +112,125 @@ _DEFAULTS: dict[str, Any] = {
     "skip_current_week": True,
     "include_subtree": True,
     "sections": list(DEFAULT_SECTIONS),
+}
+
+#: Any scope a report can take once R5 adds people and teams.
+_ANY_SCOPE: tuple[str, ...] = ("person", "team", "project", "org")
+
+
+def _coming(
+    key: str, name: str, question: str, scope_kinds: tuple[str, ...],
+    waits_for: str,
+) -> dict[str, Any]:
+    """A template the gallery shows and a member cannot choose yet."""
+    return {
+        "key": key, "name": name, "question": question,
+        "scope_kinds": list(scope_kinds), "available": False,
+        "waits_for": waits_for,
+    }
+
+
+#: The template catalogue (`projects_reports.md` §4), in catalogue order.
+#:
+#: WS-27bn R2. A template is a named question with a preset of sections and a
+#: period. The builder, the chat and the email read this one map. The client
+#: holds NO copy of it: `GET /projects/reports/templates` serves it.
+#:
+#: ⚠️ **The keys are APPEND-ONLY.** A saved report keeps its template key in
+#: `config.template`, and `normalise_report_config` runs on every READ. A key
+#: removed here makes every list and render of such a report answer 422.
+#: `test_projects_report_sections_lockstep.py` pins the set of 13.
+#:
+#: ⚠️ **An unavailable template carries NO sections.** It waits for a section,
+#: a scope or a period that does not exist yet, and `waits_for` names it in
+#: words a member reads on the gallery card (§8 names the slice). A
+#: preset that named a missing section would be a save the server refuses.
+#: Only `weekly_delivery` (T4) is live in R2. T11 waits for a filter on the
+#: conflict kind, because `conflicts_body` takes no kinds argument.
+TEMPLATES: dict[str, dict[str, Any]] = {
+    t["key"]: t
+    for t in (
+        _coming(
+            "team_pulse", "Team pulse",
+            "How is each person on the team today, and who needs help?",
+            ("team", "project", "org"),
+            "The pulse and rebalance sections, and a today period",
+        ),
+        _coming(
+            "my_day", "My day",
+            "What do I work on today, and what waits on me?",
+            ("me",),
+            "The pulse section and the person scope",
+        ),
+        _coming(
+            "what_changed", "What changed",
+            "What happened since I last read this?",
+            _ANY_SCOPE,
+            "Stored runs and the changes section",
+        ),
+        {
+            "key": "weekly_delivery", "name": "Weekly delivery",
+            "question": "What did we finish last week, and how fast?",
+            "scope_kinds": ["project", "org"], "available": True,
+            # Exactly DEFAULT_SECTIONS. The lockstep test pins the equality.
+            "sections": ["finished", "throughput", "load", "stuck"],
+            "weeks": 1, "skip_current_week": True,
+        },
+        _coming(
+            "project_status", "Project status",
+            "Will this project finish on time, and what blocks it?",
+            ("project",),
+            "The outlook section",
+        ),
+        _coming(
+            "one_on_one", "1:1 prep",
+            "How is this person doing over a month?",
+            ("person",),
+            "The pulse section and the person scope",
+        ),
+        _coming(
+            "exceptions", "Exceptions",
+            "What is wrong right now, and nothing else?",
+            _ANY_SCOPE,
+            "The hygiene section, and a today period",
+        ),
+        _coming(
+            "capacity_outlook", "Capacity outlook",
+            "Do we have the people for the next weeks?",
+            ("team", "org"),
+            "The outlook section, and a forward period",
+        ),
+        _coming(
+            "stakeholder_update", "Stakeholder update",
+            "A short project summary to send outside the team",
+            ("project",),
+            "The outlook section, and a body with no per-person rows",
+        ),
+        _coming(
+            "portfolio_health", "Portfolio health",
+            "Which projects are healthy?",
+            ("org",),
+            "The outlook section, and a this-month period",
+        ),
+        _coming(
+            "focus_switching", "Focus and switching",
+            "Who is spread over too many projects?",
+            ("team", "org"),
+            "A filter on the kind of conflict",
+        ),
+        _coming(
+            "retrospective", "Retrospective",
+            "What slipped in the period, and why?",
+            ("project",),
+            "Stored runs and the changes section",
+        ),
+        _coming(
+            "data_hygiene", "Data hygiene",
+            "Which tasks make every other report wrong?",
+            ("project", "org"),
+            "The hygiene section",
+        ),
+    )
 }
 
 #: A name long enough to be useful and short enough for a subject line.
@@ -198,6 +319,30 @@ def normalise_report_config(raw: Any) -> dict[str, Any]:
                 )
             config[flag] = raw[flag]
 
+    # WS-27bn R2. The template is an ORIGIN LABEL, and it presets nothing
+    # here: a member may change the sections or the period and keep the
+    # key. An absent or null template adds NO key, so a config saved with no
+    # template holds exactly what R1 saved.
+    template = raw.get("template")
+    if template is not None:
+        if not isinstance(template, str) or template not in TEMPLATES:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Unknown report template: {template!r}."
+                    f" Known templates: {', '.join(TEMPLATES)}."
+                ),
+            )
+        if not TEMPLATES[template]["available"]:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"The template {template!r} is coming soon. It waits for:"
+                    f" {TEMPLATES[template]['waits_for']}."
+                ),
+            )
+        config["template"] = template
+
     return config
 
 
@@ -259,8 +404,14 @@ class ReportModel(BaseModel):
     updated_at: Any | None = None
 
 
-def _report_dict(row: Any) -> dict[str, Any]:
+def _report_dict(row: Any, user: Any = None) -> dict[str, Any]:
     out = row_to_dict(row, ReportModel)
+    if user is not None:
+        # WS-27bn R2. "Your reports" on the home screen. The SERVER decides
+        # who wrote a report, from the authenticated caller, never the client.
+        out["mine"] = (
+            (row.created_by or "").strip().lower() == actor(user).lower()
+        )
     out["config"] = normalise_report_config(out.get("config"))
     out["project_id"] = (
         str(row.project_id) if row.project_id is not None else None
@@ -275,21 +426,51 @@ def _report_dict(row: Any) -> dict[str, Any]:
 async def list_reports(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Every report the caller's tenant holds, newest first.
+    """Every report the caller may open, newest first.
 
-    Not filtered by project: a report list is a small set a person scans, and
-    the scope is on each row. RLS bounds it to one tenant.
+    RLS bounds the list to one tenant. A portfolio report (``project_id``
+    NULL) is always listed.
+
+    ⚠️ **A node report is listed only when the caller can see its node**
+    (H-182, closed in WS-27bn R2). `_visible_report` refuses that row with 404
+    on get, patch and render. A list that still showed it gave away its name
+    and its scope, so the list told a reader more than the rest of the API.
+    The clause is `Visibility.project_clause`, the one that
+    `load_visible_project` uses, so the list and the 404 cannot disagree.
+
+    Each row carries ``mine`` (WS-27bn R2): true when the caller wrote it.
     """
     async with _tenant_session() as db:
-        await resolve_visibility(db, user)
+        vis = await resolve_visibility(db, user)
         rows = (
             await db.execute(
                 text(
-                    "SELECT * FROM pm_reports ORDER BY created_at DESC LIMIT 200"
-                )
+                    "SELECT * FROM pm_reports"
+                    " WHERE project_id IS NULL"
+                    f" OR {vis.project_clause('project_id')}"
+                    " ORDER BY created_at DESC LIMIT 200"
+                ),
+                vis.params,
             )
         ).fetchall()
-        return {"reports": [_report_dict(r) for r in rows]}
+        return {"reports": [_report_dict(r, user) for r in rows]}
+
+
+@router.get("/reports/templates")
+async def list_report_templates(
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The template catalogue, in catalogue order (WS-27bn R2).
+
+    ⚠️ **Declared ABOVE ``GET /reports/{report_id}``.** FastAPI matches in
+    registration order, and the id route would capture "templates" as an id.
+    `test_projects_report_templates.py` calls this path through the app
+    router to prove it.
+
+    It opens no session: the catalogue is code, the same for every tenant.
+    """
+    del user  # The app-wide gate authenticates. The answer is the same.
+    return {"templates": copy.deepcopy(list(TEMPLATES.values()))}
 
 
 @router.post("/reports", status_code=201)
@@ -323,7 +504,7 @@ async def create_report(
                 "created_by": actor(user),
             },
         )
-        return _report_dict(row)
+        return _report_dict(row, user)
 
 
 @router.get("/reports/{report_id}")
@@ -333,7 +514,7 @@ async def get_report(
 ) -> dict[str, Any]:
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        return _report_dict(await _visible_report(db, vis, report_id))
+        return _report_dict(await _visible_report(db, vis, report_id), user)
 
 
 @router.patch("/reports/{report_id}")
@@ -367,7 +548,7 @@ async def update_report(
         # every PATCH ("multiple assignments to same column"). Found by the
         # WS-27bn R1 real-DB test. A fake database accepted it.
         row = await update_row(db, "pm_reports", report_id, values)
-        return _report_dict(row)
+        return _report_dict(row, user)
 
 
 @router.delete("/reports/{report_id}", status_code=204)
@@ -632,7 +813,7 @@ async def render_report(
         body = await render_body(
             db, vis, user, project_id=project_id, config=config,
         )
-        return {"report": _report_dict(row), **body}
+        return {"report": _report_dict(row, user), **body}
 
 
 #: The name a preview shows while the builder's name field is still empty.
