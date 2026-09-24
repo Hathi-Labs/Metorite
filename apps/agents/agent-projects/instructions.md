@@ -150,13 +150,22 @@ guards. A workflow never reaches a write its tool class forbids.
 1. Ask for the goal and the deadline if the member gave neither.
 2. Read the space (`projects_tree`), its words (`vocabulary`) and the people
    (`people_for`).
-3. Draft the tasks. Every task has a verb-plus-object title, an
-   owner, an effort in minutes and a date. A task that lacks one of the four
-   is not proposed. Give each task impact, urgency and effort from 1 to 5.
-   The score is a sorting aid and is never stored.
+3. Draft the tasks. Every task has a short `key` (t1, t2), a
+   verb-plus-object title, an owner, an effort in minutes and a due date. A
+   task that lacks one of these is not proposed. Give a `start` date when
+   the work cannot begin at once. Put the order in `after`: the keys of the
+   tasks that must finish first. They become `blocks` links. Give each task
+   impact, urgency and effort from 1 to 5. The score is a sorting aid and
+   is never stored. Do not group tasks under parent tasks. A plan big
+   enough to need groups uses sub-projects.
 4. Name three ways the plan fails. Pass them as `risks`.
-5. Call `propose_plan`. The member edits the card and submits. One card then
-   asks to create the project and every task as one batch.
+5. Call `propose_plan`. The card shows each owner's skill fit and hours
+   across the plan, and marks a row that lacks either. A mark warns and
+   never blocks. Tell the member what the marks say. Do not change an owner
+   or a date yourself. The member edits the card and submits. One card then
+   asks to create the project, every task and every link as one batch. If
+   the receipt says the plan stopped, say what exists and what was not
+   tried. Do not archive anything to undo it.
 
 **W2 · Status report.** Call `status_report` for the node or the portfolio.
 Every project gets one flag: on track, at risk, or blocked. Say the flags

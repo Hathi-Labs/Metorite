@@ -100,6 +100,8 @@ def test_every_feature_module_is_actually_mounted() -> None:
         "/projects/tasks/{task_id}/candidates",
         "/projects/candidates",
         "/projects/analytics/rebalance",
+        # WS-27bm S7d — the plan preview. A literal path, so it shadows nothing.
+        "/projects/plan/preview",
     ):
         assert expected in paths, f"{expected} is not mounted"
 

@@ -6,8 +6,8 @@ workflows, the views and the forms) and S5 (the rest of the manifest)
 built 2026-09-23. S6 (navigation and the frontend-tool dispatcher) built
 2026-09-23. The visual review ran 2026-09-23 (§4.2). S7, the team
 intelligence slices, was designed 2026-09-23 (§13). S7a (capacity) was built
-2026-09-23. S7b (fit and rebalancing) and S7c (conflicts) were built
-2026-09-24. S7d and S7e are not built.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+2026-09-23. S7b (fit and rebalancing), S7c (conflicts) and S7d (plan with
+capacity, no phases) were built 2026-09-24. S7e is not built.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -690,7 +690,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S7a · Capacity** — ✅ **BUILT 2026-09-23** | `GET /projects/analytics/capacity` · the Analytics app's Capacity panel · the report section `capacity` · the chat tool `team_capacity` (§13.3) | AGENT-SAFE |
 | **S7b · Fit** — ✅ **BUILT 2026-09-24** | `GET /projects/tasks/{id}/candidates` and its draft form · `GET /projects/analytics/rebalance` · "Suggested" in the assignee picker · the chat tools `fit_for_task` and `rebalance` (§13.4) | AGENT-SAFE |
 | **S7c · Conflicts** — ✅ **BUILT 2026-09-24** | `GET /projects/analytics/conflicts` with seven kinds · the Conflicts panel · the report section `conflicts` · the chat tool `find_conflicts` · the dependency rule moved to the server with one fixture for both sides (§13.5, §10.5) | AGENT-SAFE |
-| **S7d · Plan with capacity** | `propose_plan` gains start dates and dependencies, and shows each owner's fit and hours across the plan on the card, through `POST /projects/plan/preview` (§13.6, §10.6). No phases | AGENT-SAFE |
+| **S7d · Plan with capacity** — ✅ **BUILT 2026-09-24** | `propose_plan` gains start dates and dependencies, and shows each owner's fit and hours across the plan on the card, through `POST /projects/plan/preview` (§13.6, §10.6). No phases | AGENT-SAFE |
 | **S7e · On-the-fly analysis** | The read tool `task_dataset` and the rule for numbers the chat computes itself (§13.7) | AGENT-SAFE |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-09-30 |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
@@ -1360,6 +1360,49 @@ owner took rules 1, 2 and 3 on 2026-09-24.
 11. **Lockstep.** The planCard catalog line changes together with the
     component (`genUITemplates.test.ts`). The receipt in `ProjectToolCards.tsx`
     and step 3 of W1 in `instructions.md` change in the same slice.
+
+**As built, 2026-09-24.** Ten facts that the rules above do not say. The
+dispatch named five gaps, and three of them change what a member sees.
+- **Where each part lives.** The read is
+  `routes/projects/plan_preview.py`. The tool is `forms.py` `propose_plan`.
+  The card's decisions are in `lib/planCard.ts`, and `PlanCard` in
+  `genUITemplates.tsx` draws them.
+- **A full owner keeps the skill match** (gap 1, member-visible).
+  `rank_candidates` drops a person with no spare hours. So the preview
+  ranks the named owner with the neutral spare figure 1, as `rank_for_text`
+  does. The row shows the skills, and the hours tell the member separately
+  that the owner is full.
+- **No estimate on the owner's other work** (gap 2, member-visible). The
+  plan rows carry an effort, so the walk always has a basis. When none of
+  the owner's other open work carries an estimate, the row keeps its hours
+  and carries one note. That row shows no spare hours, because a spare
+  figure there reads as free time.
+- **The request** (gap 3). The body is
+  `{rows: [{key, title, owner, effort_mins, start?, due, after?}]}`. The
+  route refuses these with 422 before a session opens: more than 50 rows, a
+  bad or repeated key, a start after the due date, and an `after` key that
+  names no row. A body key
+  that the model does not declare gets 422, so a body cannot name a member
+  or a tenant (R5).
+- **The window** runs from today to the plan's last due date, clamped to 1
+  to 90 days, and the body prints it. A row due after the window, or before
+  today, says that the walk did not check it.
+- **Two reads.** The tool reads the preview before the plan card, and again
+  after the submit. The second read covers the whole submitted plan, not
+  only the owners the member edited. A dropped row changes the hours of the
+  rows beside it.
+- **Owners resolve twice.** Before the plan card, a name that does not
+  resolve is not a refusal. The row says "owner not resolved", and the
+  member can correct it. After the submit, the strict resolution of
+  `create_task` applies.
+- **A refused preview is not a refusal.** The plan card then says that
+  the tool could not check capacity, and the member can still create the plan.
+- **The partial receipt.** A `stopped:` line makes the receipt card read
+  "stopped part way", in the warning tone. It still opens the first task.
+- **The card lays out a block for each task**, not a table (visual review).
+  The rail beside the board is narrow, and a five-column table cut the title
+  and the owner to a few letters. The card prints each warning about order
+  in plain words. The confirm card keeps the fence.
 
 ### 13.7 S7e — On-the-fly analysis
 

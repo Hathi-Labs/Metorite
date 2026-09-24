@@ -599,9 +599,9 @@ async def emit_generative_ui(ui: str) -> dict:
              unit?, icon?}], tables?:[{title, columns:[string],
              rows:[{cells:[...]}]}]} — tiles plus tables.
          • planCard — {title?, description?, submitLabel?, project:{name,
-             parent?, description?}, tasks:[{title, owner, effort_mins, due,
-             importance?, priority?}], risks?:[string]} — an editable plan;
-             PAIR WITH ``"hitl":true``.
+             parent?, description?}, tasks:[{key, title, owner, effort_mins,
+             start?, due, after?, priority?}], risks?:[string]} — an editable
+             plan; PAIR WITH ``"hitl":true``.
 
     2. COMPONENT TREE — a safe whitelist of typed primitives (data, not code).
        Each node is ``{"type":<kind>,"props":{...},"children":[...]}``. Kinds:

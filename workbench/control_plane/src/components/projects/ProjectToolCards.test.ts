@@ -111,6 +111,22 @@ describe("classifyActionResult", () => {
     );
   });
 
+  it("is partial when a plan stopped part way, and never done (S7d rule 9)", () => {
+    const text = [
+      "Created project «Steps» under «Ops».",
+      `  project_id: ${ID}`,
+      "- #11 «Step 1» · due 2026-10-10",
+      `  full_id: ${ID}`,
+      "stopped: task 5 of 7, «Step 5», was refused. Projects POST /projects/tasks: Failed (422).",
+      "not tried: 2 tasks · 0 of 7 owners assigned · 0 of 0 links written",
+    ].join("\n");
+    expect(classifyActionResult(text, "done", "propose_plan")).toBe("partial");
+    expect(toneFor("partial", "propose_plan")).toContain("bg-warning");
+    // A title that says "stopped:" mid-line is not the stop line.
+    const fine = [`- #11 «stopped: not really»`, `  full_id: ${ID}`].join("\n");
+    expect(classifyActionResult(fine, "done", "propose_plan")).toBe("done");
+  });
+
   it("is cancelled when the member declined the card", () => {
     expect(classifyActionResult(CANCELLED, "done")).toBe("cancelled");
   });

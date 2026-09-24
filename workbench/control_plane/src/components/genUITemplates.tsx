@@ -26,6 +26,17 @@
 import { createElement, useEffect, useState } from "react";
 
 import { resolveIcon } from "@/lib/icons";
+import {
+  PLAN_EDIT_COLS,
+  type PlanRow,
+  afterLabel,
+  blankRow,
+  isMarked,
+  markLine,
+  planIncomplete,
+  planRowsFrom,
+  planSubmit,
+} from "@/app/projects/lib/planCard";
 
 type Data = Record<string, unknown>;
 
@@ -135,8 +146,8 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
   },
   {
     name: "planCard",
-    summary: "An editable project plan (title, owner, effort, due per task, with a priority score) that submits the edited rows back — pair with hitl.",
-    data: "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ title, owner, effort_mins, due, importance?, priority? }], risks?:[string] }",
+    summary: "An editable project plan (title, owner, effort, start, due per task, with a priority score; the owner's fit, hours and marks read-only) that submits the edited rows back — pair with hitl.",
+    data: "{ title?, description?, submitLabel?, project:{ name, parent?, description? }, tasks:[{ key, title, owner, effort_mins, start?, due, after?:[key], importance?, impact?, urgency?, effort?, priority?, fit?, hours?, marks?:[string], warnings?:[string] }], capacity?, warnings?:[string], risks?:[string] }",
   },
 ];
 
@@ -1158,37 +1169,40 @@ function ReportCard({ data }: { data: Data }) {
   );
 }
 
-const PLAN_COLS: Array<{ key: string; label: string; type: "text" | "number" | "date"; width: string }> = [
-  { key: "title", label: "Task", type: "text", width: "38%" },
-  { key: "owner", label: "Owner", type: "text", width: "22%" },
-  { key: "effort_mins", label: "Effort (min)", type: "number", width: "14%" },
-  { key: "due", label: "Due", type: "date", width: "18%" },
-];
+/** The four short fields share one wrapping grid under the title. The rail
+ *  beside the board is about 380px wide, and a five-column table there cut
+ *  the title and the owner to a few letters (S7d visual review). */
+const PLAN_GRID: React.CSSProperties = {
+  display: "grid", gap: 6, marginTop: 6,
+  gridTemplateColumns: "repeat(auto-fit, minmax(7.5rem, 1fr))",
+};
+const PLAN_WRAP: React.CSSProperties = { overflowWrap: "anywhere" };
+
+/** A warning tint behind foreground text. Warning TEXT on a light card is too
+ *  faint to read (S7c visual review), so the tint carries the tone. */
+const MARK_BOX: React.CSSProperties = {
+  ...CELL, fontSize: 11, borderRadius: 6, padding: "3px 8px", marginTop: 2,
+  background: "color-mix(in srgb, var(--warning) 14%, transparent)",
+};
 
 function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   const project = (data.project ?? {}) as Data;
   const [name, setName] = useState(str(project.name));
-  const [rows, setRows] = useState<Data[]>(() => arr(data.tasks).map((t) => ({ ...((t ?? {}) as Data) })));
+  const [rows, setRows] = useState<PlanRow[]>(() => planRowsFrom(data.tasks));
   const [submitted, setSubmitted] = useState(false);
   const risks = arr(data.risks).map((r) => str(r)).filter(Boolean);
-  const setCell = (i: number, key: string, v: unknown) =>
+  const warnings = arr(data.warnings).map((w) => str(w)).filter(Boolean);
+  const capacity = str(data.capacity);
+  const setCell = (i: number, key: keyof PlanRow, v: unknown) =>
     setRows((p) => p.map((r, k) => (k === i ? { ...r, [key]: v } : r)));
   const drop = (i: number) => setRows((p) => p.filter((_, k) => k !== i));
-  const add = () => setRows((p) => [...p, { title: "", owner: "", effort_mins: 60, due: "" }]);
-  const incomplete = !name.trim() || rows.length === 0 || rows.some((r) =>
-    !str(r.title).trim() || !str(r.owner).trim() || !str(r.due).trim() || !(num(r.effort_mins) > 0));
+  const add = () => setRows((p) => [...p, blankRow(p)]);
+  const blocked = planIncomplete(name, rows);
   const submit = () => {
-    if (!ctx?.onAction || submitted || incomplete) return;
+    if (!ctx?.onAction || submitted || blocked) return;
     setSubmitted(true);
     const label = str(data.submitLabel ?? data.title, "Plan");
-    ctx.onAction(`${label} — ${JSON.stringify({
-      project: { ...project, name: name.trim() },
-      tasks: rows.map((r) => ({
-        title: str(r.title).trim(), owner: str(r.owner).trim(),
-        effort_mins: num(r.effort_mins), due: str(r.due).slice(0, 10),
-        importance: r.importance ?? null,
-      })),
-    })}`);
+    ctx.onAction(`${label} — ${JSON.stringify(planSubmit(project, name, rows))}`);
   };
   return (
     <div style={CARD_BOX}>
@@ -1202,47 +1216,56 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
         <input value={name} onChange={(e) => setName(e.target.value)} disabled={submitted}
           style={{ ...FIELD_INPUT_STYLE, marginTop: 4 }} />
       </label>
-      <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr>
-              {PLAN_COLS.map((c) => (
-                <th key={c.key} style={{ ...MUTED, textAlign: "left", padding: "4px 4px", width: c.width,
-                  borderBottom: "1px solid var(--border)" }}>{c.label}</th>
-              ))}
-              <th style={{ ...MUTED, textAlign: "right", padding: "4px 4px", borderBottom: "1px solid var(--border)" }}>Score</th>
-              <th style={{ borderBottom: "1px solid var(--border)" }} />
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={i}>
-                {PLAN_COLS.map((c) => (
-                  <td key={c.key} style={{ padding: "3px 4px" }}>
-                    <input type={c.type} value={str(r[c.key])} disabled={submitted}
-                      onChange={(e) => setCell(i, c.key, c.type === "number" ? num(e.target.value) : e.target.value)}
-                      style={{ ...FIELD_INPUT_STYLE, padding: "5px 8px" }} />
-                  </td>
-                ))}
-                <td style={{ ...MUTED, textAlign: "right", padding: "3px 4px", fontVariantNumeric: "tabular-nums" }}>
-                  {r.priority != null ? str(r.priority) : ""}
-                </td>
-                <td style={{ padding: "3px 4px", textAlign: "right" }}>
-                  {!submitted && (
-                    <button type="button" onClick={() => drop(i)} aria-label="Remove task"
-                      style={{ border: "none", background: "transparent", cursor: "pointer",
-                        color: "var(--muted-foreground)", fontSize: 12 }}>✕</button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {rows.map((r, i) => {
+          const after = afterLabel(r, rows);
+          const facts = [
+            after ? `After: ${after}` : "",
+            r.fit != null ? `Fit: ${r.fit}` : "",
+            r.hours != null ? `Hours: ${r.hours}` : "",
+          ].filter(Boolean);
+          const [titleCol, ...shortCols] = PLAN_EDIT_COLS;
+          const field = (c: (typeof PLAN_EDIT_COLS)[number]) => (
+            <label key={c.key} style={{ ...MUTED, display: "block", minWidth: 0 }}>
+              {c.label}
+              <input type={c.type} value={str(r[c.key])} disabled={submitted}
+                onChange={(e) => setCell(i, c.key, c.type === "number" ? num(e.target.value) : e.target.value)}
+                style={{ ...FIELD_INPUT_STYLE, padding: "5px 8px", marginTop: 2 }} />
+            </label>
+          );
+          return (
+            <div key={r.key} style={{ borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 6 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>{field(titleCol)}</div>
+                {r.priority != null && (
+                  <span title="Priority score, a sorting aid" style={{ ...MUTED, paddingBottom: 7,
+                    fontVariantNumeric: "tabular-nums" }}>{str(r.priority)}</span>
+                )}
+                {!submitted && (
+                  <button type="button" onClick={() => drop(i)} aria-label="Remove task"
+                    style={{ border: "none", background: "transparent", cursor: "pointer", paddingBottom: 7,
+                      color: "var(--muted-foreground)", fontSize: 12 }}>✕</button>
+                )}
+              </div>
+              <div style={PLAN_GRID}>{shortCols.map(field)}</div>
+              {facts.length > 0 && <div style={{ ...MUTED, ...PLAN_WRAP, marginTop: 4 }}>{facts.join(" · ")}</div>}
+              {isMarked(r) && <div style={{ ...MARK_BOX, ...PLAN_WRAP }}>⚠ {markLine(r)}</div>}
+            </div>
+          );
+        })}
       </div>
       {!submitted && (
         <button type="button" onClick={add}
           style={{ ...MUTED, marginTop: 6, border: "1px dashed var(--border)", background: "transparent",
             borderRadius: 8, padding: "5px 10px", cursor: "pointer" }}>+ Add a task</button>
+      )}
+      {capacity && <div style={{ ...MUTED, marginTop: 8 }}>{capacity}</div>}
+      {warnings.length > 0 && (
+        <div style={{ marginTop: 10, borderRadius: 10, padding: "8px 10px",
+          background: "color-mix(in srgb, var(--warning) 12%, transparent)" }}>
+          <div style={{ ...MUTED, fontWeight: 600, marginBottom: 4 }}>Order warnings</div>
+          {warnings.map((w, i) => <div key={i} style={CELL}>• {w}</div>)}
+        </div>
       )}
       {risks.length > 0 && (
         <div style={{ marginTop: 10, borderRadius: 10, padding: "8px 10px",
@@ -1251,14 +1274,17 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           {risks.map((r, i) => <div key={i} style={CELL}>• {r}</div>)}
         </div>
       )}
-      <button type="button" onClick={submit} disabled={!ctx?.onAction || submitted || incomplete}
+      <button type="button" onClick={submit} disabled={!ctx?.onAction || submitted || !!blocked}
         style={{ marginTop: 12, fontSize: 12.5, fontWeight: 600, borderRadius: 8, padding: "8px 16px",
           border: "none", cursor: "pointer", color: "var(--primary-foreground)",
           background: submitted ? "var(--success)" : "var(--primary)",
-          opacity: !ctx?.onAction || incomplete ? 0.5 : 1 }}>
+          opacity: !ctx?.onAction || blocked ? 0.5 : 1 }}>
         {submitted ? "✓ Submitted" : str(data.submitLabel, "Review plan")}
       </button>
-      <div style={{ ...MUTED, marginTop: 6 }}>A confirmation card follows. Nothing is created until you approve it.</div>
+      <div style={{ ...MUTED, marginTop: 6 }}>
+        {blocked && !submitted ? `${blocked} ` : ""}
+        A confirmation card follows. Nothing is created until you approve it. A mark warns and never blocks.
+      </div>
     </div>
   );
 }
