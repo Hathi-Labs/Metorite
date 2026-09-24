@@ -1173,6 +1173,206 @@ async def find_conflicts(project_id: str = "", horizon_days: int = 14) -> str:
     return "\n".join(out)
 
 
+# ── On-the-fly analysis — S7e, the dataset ───────────────────────────────────
+
+#: The columns the tool asks for when the model names none. Short on purpose:
+#: a full table of 500 rows costs many tokens (§13.7 O4).
+DATASET_DEFAULT_COLUMNS = (
+    "number,title,project,status,status_category,assignees,estimate_mins,"
+    "due,completed_at,cycle_hours,tags"
+)
+#: The longest piece of member text one cell carries (§13.7 rule 10).
+DATASET_CELL = 80
+#: The columns whose values members wrote. Each is fenced, cell by cell.
+_MEMBER_TEXT = frozenset({"title", "project", "root_project", "status", "type"})
+_DAYS = frozenset({"start", "due", "completed_at", "created_at"})
+
+#: The trailer line for a table the cap cut (§13.7 rule 8).
+DATASET_TRUNCATED = (
+    "TRUNCATED: these rows are not the whole set. Do not compute a total, a "
+    "share or a median over the whole set from them. Call again with "
+    "group_by, and the server computes it."
+)
+#: What the model says for every figure it derives from rows (rule 8).
+DATASET_LABEL = (
+    "Label every figure you compute from these rows: \"computed by the "
+    "assistant from {n} of {m} tasks, not an Analytics figure\". A "
+    "statDashboard tile title begins \"Computed from {n} tasks\"."
+)
+#: What the tool says when the route withheld the per-person values (O3).
+DATASET_HR_HIDDEN = (
+    "The per-person values are hidden: this member does not hold "
+    "admin:members:read. An admin can see them. The counts stay. Do not "
+    "compute a person's estimate or speed from rows either."
+)
+
+
+def _fenced(value: Any) -> str:
+    """Member text for one cell: one line, no pipe, cut, then fenced."""
+    flat = " ".join(str(value or "").split()).replace("|", "/")
+    return data(flat[:DATASET_CELL])
+
+
+def _dataset_cell(column: str, value: Any) -> str:
+    """One cell of a dataset row, as the table prints it."""
+    if value is None or value == []:
+        return ""
+    if column == "number":
+        return f"#{value}"
+    if column in _MEMBER_TEXT:
+        return _fenced(value)
+    if column in ("tags", "assignees"):
+        return ", ".join(_fenced(v) for v in value)
+    if column == "blockers":
+        return ", ".join(
+            f"#{b.get('number')} {_fenced(b.get('title'))}" for b in value if isinstance(b, dict)
+        )
+    if column in _DAYS:
+        return _day(value)
+    return str(value)
+
+
+def _dataset_scope(payload: dict[str, Any]) -> str:
+    if payload.get("scope") == "portfolio" or not payload.get("project_id"):
+        return "portfolio"
+    tail = "+subtree" if payload.get("include_subtree") else ""
+    return f"node:{payload.get('project_id')}{tail}"
+
+
+def _cycle_line(payload: dict[str, Any]) -> str:
+    window = payload.get("cycle_window") or {}
+    return (
+        f"  cycle times: first in_progress to first done, for completions since"
+        f" {window.get('starts_on')} ({window.get('weeks')} weeks). An older"
+        " completion has no cycle time."
+    )
+
+
+def _dataset_groups(payload: dict[str, Any]) -> list[str]:
+    """The grouped answer: one line for each group, `key · value · n`."""
+    total = payload.get("total", 0)
+    measure = payload.get("measure") or "count"
+    out = [
+        f"Groups by {payload.get('group_by')}, measure {measure}, computed by the"
+        f" server over {total} {payload.get('state')} tasks:",
+        _cycle_line(payload),
+        "key · value · n",
+    ]
+    hidden = bool(payload.get("measure_hidden"))
+    for group in payload.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        key = group.get("key")
+        label = _fenced(group.get("label"))
+        if payload.get("group_by") == "assignee" and key and key != group.get("label"):
+            label += f" ({_fenced(key)})"
+        value = "hidden" if hidden or "value" not in group else group.get("value")
+        line = f"- {label} · {'none' if value is None else value} · {group.get('n', 0)}"
+        if not hidden and group.get("measured", group.get("n")) != group.get("n"):
+            line += f" · measured {group.get('measured')}"
+        if group.get("agent"):
+            line += " · agent"
+        out.append(line)
+    if hidden:
+        out.append(f"  {DATASET_HR_HIDDEN}")
+    shown = len(payload.get("groups") or [])
+    capped = "yes" if payload.get("groups_truncated") else "no"
+    out.append(
+        f"groups={shown} of {payload.get('groups_total', shown)} total={total}"
+        f" truncated={capped} scope={_dataset_scope(payload)} state={payload.get('state')}"
+    )
+    out.append(
+        f"These figures are exact. Label each one \"from the server, {total} tasks\"."
+        " You may summarise them. Do not add groups up: a task with two tags or"
+        " two assignees is in two groups."
+    )
+    return out
+
+
+def _dataset_rows(payload: dict[str, Any]) -> list[str]:
+    """The table: a header line, one line for each row, then the trailer."""
+    columns = [str(c) for c in payload.get("columns") or []]
+    rows = [r for r in payload.get("rows") or [] if isinstance(r, dict)]
+    total = payload.get("total", 0)
+    truncated = bool(payload.get("truncated"))
+    out = [
+        f"Tasks in {_scope_title(payload)}, state {payload.get('state')}:",
+        _cycle_line(payload),
+        " | ".join(columns),
+    ]
+    out.extend(" | ".join(_dataset_cell(c, row.get(c)) for c in columns) for row in rows)
+    out.append(
+        f"rows={len(rows)} total={total} truncated={'yes' if truncated else 'no'}"
+        f" scope={_dataset_scope(payload)} state={payload.get('state')}"
+    )
+    if truncated:
+        out.append(DATASET_TRUNCATED)
+    out.append(DATASET_LABEL.format(n=len(rows), m=total))
+    return out
+
+
+@_annotate(read_only=True, idempotent=True)
+async def task_dataset(
+    project_id: str = "",
+    state: str = "open",
+    columns: str = "",
+    group_by: str = "",
+    measure: str = "",
+    limit: int = 200,
+    status_category: str = "",
+    assignee: str = "",
+    tags: str = "",
+    tags_all: str = "",
+    overdue: bool = False,
+    unassigned: bool = False,
+    due_before: str = "",
+    created_after: str = "",
+    completed_after: str = "",
+    completed_before: str = "",
+    q: str = "",
+) -> str:
+    """A table of tasks for a question no analytics read answers, for example
+    cycle time by tag or the share of work in each stage. state is open
+    (default), closed or all. columns picks from number, full_id, title,
+    project, root_project, status, status_category, type, tags, assignees,
+    estimate_mins, start, due, completed_at, created_at, cycle_hours,
+    blockers. At most 500 rows (default 200). For a total, a share, a median
+    or a p90 over the whole set, pass group_by (tag, status, status_category,
+    project, assignee, type, created_week, completed_week) and measure
+    (count, estimate_sum, cycle_hours_median, cycle_hours_p90): the SERVER
+    computes exact figures over every matching task and sends no rows.
+    Filters: status_category, assignee, tags, tags_all, overdue, unassigned,
+    due_before, created_after, completed_after, completed_before (ISO dates)
+    and q. Leave project_id empty for the portfolio. Never write the rows to
+    a file and never run code over them."""
+    if (measure or "").strip() and not (group_by or "").strip():
+        return (
+            "measure needs group_by. Name what to group by, or use the analytics"
+            " reads for one figure over the whole scope."
+        )
+    params = _scope_params(project_id, state=(state or "open").strip())
+    if (group_by or "").strip():
+        params["group_by"] = group_by.strip()
+        params["measure"] = (measure or "count").strip()
+    else:
+        params["columns"] = (columns or DATASET_DEFAULT_COLUMNS).strip()
+        params["limit"] = max(1, min(500, int(limit or 200)))
+    given = {
+        "status_category": status_category, "assignee": assignee, "tags": tags,
+        "tags_all": tags_all, "due_before": due_before,
+        "created_after": created_after, "completed_after": completed_after,
+        "completed_before": completed_before, "q": q,
+    }
+    params.update({k: v.strip() for k, v in given.items() if (v or "").strip()})
+    if overdue:
+        params["overdue"] = True
+    if unassigned:
+        params["unassigned"] = True
+    payload = await get("/projects/analytics/dataset", params) or {}
+    body = _dataset_groups(payload) if payload.get("group_by") else _dataset_rows(payload)
+    return "\n".join([legend(), *body])
+
+
 # ── Reports ──────────────────────────────────────────────────────────────────
 
 

@@ -1020,6 +1020,25 @@ def team_capacity_sql(open_where: str) -> str:
     )
 
 
+def history_where(scope_sql: str, vis: Any) -> str:
+    """Throughput's scope: the node, the caller's grants, no triage.
+
+    ⚠️ **Named since WS-27bm S7e, because a second read uses it.** The chat's
+    dataset read (`analytics_dataset.py`) answers `state=closed` and
+    `state=all` over THIS predicate, so its cycle times describe the tasks
+    Throughput describes (`projects_ai_chat.md` §13.7 rule 2). A copy of the
+    string there would be a third spelling of the scope.
+
+    No archive arm and no status arm: see :func:`throughput`. A caller that
+    wants live rows only adds ``t.archived_at IS NULL`` itself.
+    """
+    return (
+        f"{scope_sql}"
+        f" AND ({task_visibility_clause(vis, 't')})"
+        f" AND ({triage_exclusion_clause('t')})"
+    )
+
+
 @router.get("/analytics/throughput")
 async def throughput(
     project_id: str | None = None,
@@ -1060,11 +1079,7 @@ async def throughput(
         # ⚠️ Deliberately WITHOUT `archived_at IS NULL` and without the
         # open-only status arm — see the docstring. Visibility and triage stay,
         # because those two are about who may read a row, not about when.
-        scope_where = (
-            f"{scope_sql}"
-            f" AND ({task_visibility_clause(vis, 't')})"
-            f" AND ({triage_exclusion_clause('t')})"
-        )
+        scope_where = history_where(scope_sql, vis)
         params: dict[str, Any] = {
             **vis.params,
             **scope_params(project_id),

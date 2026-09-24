@@ -9,7 +9,7 @@ intelligence slices, was designed 2026-09-23 (§13). S7a (capacity) was built
 2026-09-23. S7b (fit and rebalancing), S7c (conflicts) and S7d (plan with
 capacity, no phases) were built 2026-09-24. S8 (documents and downloads
 from the chat, §14) was built 2026-09-24. S9 (entity pills in the chat, §15)
-was built 2026-09-24. S7e is not built.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+was built 2026-09-24. S7e (on-the-fly analysis, §13.7) was built 2026-09-24.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -695,7 +695,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S7d · Plan with capacity** — ✅ **BUILT 2026-09-24** | `propose_plan` gains start dates and dependencies, and shows each owner's fit and hours across the plan on the card, through `POST /projects/plan/preview` (§13.6, §10.6). No phases | AGENT-SAFE |
 | **S8 · Documents and downloads** — ✅ **BUILT 2026-09-24** | A written document opens beside the board, as in `/chat` · the panel follows the session · Download PDF for a Markdown or HTML file · Download and Download PDF for a saved report, in the Reports app and on the chat's report card · the Files section of the instructions (§14) | AGENT-SAFE |
 | **S9 · Entity pills** — ✅ **BUILT 2026-09-24** | A task, a project, a person, a status and a tag in a chat answer draw as a pill. A task or a project opens in this tab. A pill links only on exactly one match in the same message's tool results. The link colour, the made-up stat delta, the missing space before bold and the date that wrapped (§15) | AGENT-SAFE |
-| **S7e · On-the-fly analysis** | The read tool `task_dataset` and the rule for numbers the chat computes itself (§13.7) | AGENT-SAFE |
+| **S7e · On-the-fly analysis** — ✅ **BUILT 2026-09-24** | `GET /projects/analytics/dataset` and the read tool `task_dataset`: a capped table, or the server's groups over the full set. The rule for numbers the chat computes itself (§13.7, §10.7) | AGENT-SAFE |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-09-30 |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 
@@ -1038,6 +1038,12 @@ light mode, at compact density, under a changed accent, and beside the board.
    until the owner says otherwise.
 3. **The tier.** `tier-balanced` by default, or `tier-powerful` as the Tasks
    rail chose. The cost difference is real once H-42 prices the card.
+4. **The dataset rows and O3** (S7e, 2026-09-24). O3 gates the per-person
+   estimate and speed in the server's groups. The rows still carry
+   `assignees` and `cycle_hours`, so a member can read them task by task.
+   The instructions forbid a per-person figure from the rows, and that rule
+   is advisory. The owner decides whether a caller without the HR grant also
+   loses `cycle_hours` on a row that carries `assignees`.
 
 ---
 
@@ -1610,6 +1616,39 @@ owner's answers. They follow the S7c and S7d precedent.
 more: `created_after`, `completed_after` and `completed_before`. Any other key
 gives 422. S7e has no HR column on a row. Hours, skills and absences stay in
 `team_capacity` and `fit_for_task`.
+
+**As built, 2026-09-24.** Nine facts that the rules above do not say.
+- **Where each part lives.** The route is
+  `routes/projects/analytics_dataset.py`, and the tool is `reads.py`
+  `task_dataset`. Throughput's scope now has a name,
+  `analytics.history_where`, and Throughput calls it. That is the S7a
+  precedent for `load_open_where`, and it keeps the scope in one place.
+- **The completion window is 26 weeks**, the widest Throughput window. The
+  route calls `cycle_cte_sql` with that window. A completion that is older
+  has no `completed_at` and no `cycle_hours`, and the response prints
+  `cycle_window`. `completed_at` is the first `done` on the spine. A
+  cancellation is not a completion, so a cancelled task has neither value.
+- **The completion filters read the spine too.** `completed_after` and
+  `completed_before` compare the same `done` that `completed_at` prints.
+- **A blocker is open and not in triage**, as in
+  `analytics_conflicts.dependency_sql`, because a closed blocker blocks
+  nothing. Each blocker carries its id, its number and its title.
+- **`measure` needs `group_by`.** A measure alone gets 422, and the detail
+  names Throughput for one figure over the whole scope.
+- **A group carries `measured` beside `value`**, which is the count of tasks
+  that had a figure. A task with two tags or two assignees is in two groups,
+  so the tool tells the model not to add groups up. The route keeps at most
+  100 groups and prints `groups_total`. A week group reads in date order.
+- **Without the HR grant the server does not compute the hidden value**, and
+  the body says `measure_hidden: true`. ⚠️ The rows are not gated. A member
+  can still read `assignees` and `cycle_hours` on each row. The instructions
+  forbid a per-person figure from the rows, and that rule is ADVISORY. §12
+  item 4 asks the owner whether the rows need a gate too.
+- **The tool asks for eleven columns by default** (O4), and it clamps the
+  limit to 1 to 500 before the call. A `|` in member text becomes `/`, so a
+  title cannot add a cell.
+- **The S9 pill index does not read these rows.** A dataset row is not the
+  `- #<n> «title»` card line, so its names draw as plain marked text.
 
 ### 13.8 What S7 does not do
 
