@@ -203,7 +203,7 @@ class PersonModel(BaseModel):
     provider_user_id: str | None = None
 
 
-class GtdItemModel(BaseModel):
+class MyTaskModel(BaseModel):
     id: str
     source: str = "LOCAL"
     provider: str | None = None          # account provider ('clickup' | …); None/'local' for LOCAL
@@ -339,9 +339,9 @@ def _iso(val: Any) -> str | None:
     return val.isoformat() if val is not None else None
 
 
-def _row_to_item(row: Any) -> GtdItemModel:
+def _row_to_item(row: Any) -> MyTaskModel:
     """A task row, as a seam arm shapes it (``item_lens._pm_item``) → model."""
-    return GtdItemModel(
+    return MyTaskModel(
         id=str(row.id),
         source=row.source,
         provider=getattr(row, "account_provider", None)

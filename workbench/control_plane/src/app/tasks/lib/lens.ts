@@ -1,5 +1,5 @@
 /**
- * Tasks · the Projects LENS — `GtdItem` over `/projects/my/*`.
+ * Tasks · the Projects LENS — `MyTask` over `/projects/my/*`.
  *
  * Spec: `task_manager_app.md` §13 (D53) · board **WS-39 slice S3a-client** ·
  * server side: `routes/projects/personal.py`.
@@ -9,7 +9,7 @@
  * Tasks does not own tasks any more. There is ONE store — `pm_tasks` plus the
  * per-member overlay `pm_task_personal` — and `/tasks`, `/projects` and
  * `/calendar` are three lenses on it. This file is the adapter that lets the
- * existing Tasks UI, which speaks `GtdItem` from end to end, read and write
+ * existing Tasks UI, which speaks `MyTask` from end to end, read and write
  * that store without being rewritten: the 95 KB store above it is untouched.
  *
  * ── It is the only path (S8 PR 1) ──────────────────────────────────────────
@@ -23,7 +23,7 @@
  *
  * **1. A field with no home does not fail loudly — it writes a 200 and
  * disappears.** So `mapLensItem` is fenced structurally (`lens.test.ts` reads
- * `types.ts` and refuses any `GtdItem` field that is neither mapped here nor
+ * `types.ts` and refuses any `MyTask` field that is neither mapped here nor
  * named in `UNMAPPED` with a reason), and `splitPatch` THROWS on a key it
  * cannot place rather than dropping it.
  *
@@ -63,7 +63,7 @@ import { projectsCall } from "@/app/projects/lib/api";
 import type { OrganizeBody, ProviderTaskDetail } from "./api";
 import type {
   Disposition,
-  GtdItem,
+  MyTask,
   Person,
   TaskAttachment,
 } from "./types";
@@ -76,13 +76,13 @@ interface ListResponse {
   total: number;
 }
 
-// ── Mapping: the wire → GtdItem ─────────────────────────────────────────────
+// ── Mapping: the wire → MyTask ─────────────────────────────────────────────
 
 /**
- * `GtdItem` fields the lens deliberately does not produce, each with the
+ * `MyTask` fields the lens deliberately does not produce, each with the
  * reason. `lens.test.ts` requires every field to be here or mapped, so this
  * list is a decision record the compiler helps keep honest — a field added to
- * `GtdItem` later cannot quietly join it.
+ * `MyTask` later cannot quietly join it.
  */
 export const UNMAPPED: Readonly<Record<string, string>> = {
   provider: "D52 — there is no connector; nothing is synced from anywhere",
@@ -138,7 +138,7 @@ function waitingPerson(v: unknown): Person | undefined {
 }
 
 /**
- * One `/projects/my/*` row → the `GtdItem` the Tasks store speaks.
+ * One `/projects/my/*` row → the `MyTask` the Tasks store speaks.
  *
  * The three readers (`/my/inbox`, `/my/calendar`, `/my/tasks/{id}`) return an
  * identical shape on purpose, fenced server-side by
@@ -147,7 +147,7 @@ function waitingPerson(v: unknown): Person | undefined {
  * into fields the UI renders, and the surface that read from it would draw a
  * task with no stage next to one that has one.
  */
-export function mapLensItem(raw: Raw): GtdItem {
+export function mapLensItem(raw: Raw): MyTask {
   const assignees = (Array.isArray(raw.assignees) ? raw.assignees : [])
     .map(emailPerson)
     .filter(Boolean) as Person[];
@@ -166,7 +166,7 @@ export function mapLensItem(raw: Raw): GtdItem {
     disposition: String(raw.disposition ?? "INBOX") as Disposition,
     nextAction: text(raw.next_action),
     context: text(raw.context),
-    energy: (raw.energy ?? undefined) as GtdItem["energy"],
+    energy: (raw.energy ?? undefined) as MyTask["energy"],
     // D77 (amends D53.8): the task's ONE estimate, `pm_tasks.estimate_mins`
     // — the number the board, People capacity and analytics read. The
     // overlay's `time_estimate_mins` is retired and no longer on the wire.
@@ -288,7 +288,7 @@ export interface SplitPatch {
 }
 
 /**
- * One `GtdItem` patch → the one, two or three requests it actually is.
+ * One `MyTask` patch → the one, two or three requests it actually is.
  *
  * A Tasks edit used to be a single `PATCH /items/{id}` because there was a
  * single row. Under one store, changing a title touches `pm_tasks` (everybody
@@ -324,7 +324,7 @@ export function splitPatch(patch: Record<string, unknown>): SplitPatch {
       if (value) out.assignees = [];
     } else {
       throw new Error(
-        `My Tasks lens: unknown patch key \`${key}\`. Every GtdItem field has a ` +
+        `My Tasks lens: unknown patch key \`${key}\`. Every MyTask field has a ` +
           "`pm_*` home (task_manager_app.md §13.4a) — if this one is new, " +
           "give it one there before writing it.",
       );
@@ -405,7 +405,7 @@ async function fetchAll(path: string, flags: string): Promise<Raw[]> {
 }
 
 /** My work, as the Tasks store wants it. `view` is one of `VIEW_FLAGS`. */
-export async function lensFetchItems(view = "all"): Promise<GtdItem[]> {
+export async function lensFetchItems(view = "all"): Promise<MyTask[]> {
   const flags = VIEW_FLAGS[view] ?? VIEW_FLAGS.all;
   return (await fetchAll(MY_ROUTES.inbox, flags)).map(mapLensItem);
 }
@@ -417,7 +417,7 @@ export async function lensFetchItems(view = "all"): Promise<GtdItem[]> {
  * PROJECT sees it, with no overlay at all, so a member would read their own
  * task back with their disposition, context and block missing.
  */
-export async function lensGetItem(id: string): Promise<GtdItem> {
+export async function lensGetItem(id: string): Promise<MyTask> {
   return mapLensItem(await projectsCall<Raw>(at(MY_ROUTES.task, id)));
 }
 
@@ -429,7 +429,7 @@ export async function lensGetItem(id: string): Promise<GtdItem> {
  * door as the list with one flag, so there is no second membership query.
  * Each row carries `assignedBy`.
  */
-export async function lensFetchUntriaged(): Promise<GtdItem[]> {
+export async function lensFetchUntriaged(): Promise<MyTask[]> {
   return (await fetchAll(MY_ROUTES.inbox, "untriaged=true")).map(mapLensItem);
 }
 
@@ -441,7 +441,7 @@ export interface LensLedProject {
   /** Everybody's open work on it — not archived, not in a closed lane. */
   openTasks: number;
   /** MY open tasks in it, in the inbox's shape (overlay included). */
-  myTasks: GtdItem[];
+  myTasks: MyTask[];
 }
 
 /**
@@ -531,14 +531,14 @@ export async function lensMyOverlay(id: string): Promise<MyOverlay | null> {
  * instead of waiting for a re-fetch.
  */
 export type MyOverlay = Pick<
-  GtdItem,
+  MyTask,
   "disposition" | "context" | "isTriaged" | "important" | "leveraged" | "deepWork"
 >;
 
 /**
  * The focus controls' patch, in the overlay's own keys.
  *
- * 🔴 `WeightToggles` speaks `GtdItem` (`deepWork`), and `splitPatch` speaks the
+ * 🔴 `WeightToggles` speaks `MyTask` (`deepWork`), and `splitPatch` speaks the
  * wire (`deep_work`) and throws on anything else. My Tasks never met this,
  * because its store renames `deepWork` before calling the lens
  * (`taskStore.ts`). The Projects focus row called the lens directly, so its
@@ -558,7 +558,7 @@ export function focusPatch(patch: {
   return out;
 }
 
-export function overlayOf(item: GtdItem): MyOverlay {
+export function overlayOf(item: MyTask): MyOverlay {
   return {
     disposition: item.disposition,
     context: item.context,
@@ -600,7 +600,7 @@ export async function lensCapture(
   notes?: string,
   attachments?: TaskAttachment[],
   dates?: { deferUntil?: string; dueAt?: string; isHardDate?: boolean },
-): Promise<GtdItem> {
+): Promise<MyTask> {
   // A pasted link has no row of its own under one store (`pm_task_attachments`
   // is the FILE registry), so it rides in the notes — which is where "keep it
   // for context later" lives. Files wait for the task to exist, below.
@@ -635,7 +635,7 @@ export async function lensCapture(
 }
 
 /**
- * A `GtdItem` edit — one to three writes, then one read back.
+ * A `MyTask` edit — one to three writes, then one read back.
  *
  * The read-back is not laziness. Each write answers with its own half, and the
  * store holds whole items; stitching two partial responses in the client would
@@ -645,7 +645,7 @@ export async function lensCapture(
 export async function lensPatchItem(
   id: string,
   patch: Record<string, unknown>,
-): Promise<GtdItem> {
+): Promise<MyTask> {
   const split = splitPatch(patch);
 
   // ⚠️ Completion is not an overlay write, and this is the one place the two
@@ -704,7 +704,7 @@ export async function lensPatchItem(
  * one store buys, and it is a real change from the old app, where "done" was a
  * disposition on a row only I could see.
  */
-export async function lensCompleteItem(id: string): Promise<GtdItem> {
+export async function lensCompleteItem(id: string): Promise<MyTask> {
   await post(`tasks/${id}/complete`);
   return lensGetItem(id);
 }
@@ -730,7 +730,7 @@ export async function lensTrashItem(id: string): Promise<void> {
 }
 
 /** Undo the soft delete — back to the inbox to be triaged again. */
-export async function lensRestoreItem(id: string): Promise<GtdItem> {
+export async function lensRestoreItem(id: string): Promise<MyTask> {
   // D77 — an open disposition on a closed task REOPENS it for the board
   // (`personal.reopen_if_closed`). Undoing a delete must not do that, so a
   // task whose lane is closed comes back as DONE, which is what it was.
@@ -761,7 +761,7 @@ export async function lensPurgeItem(id: string): Promise<void> {
 export async function lensArchiveItem(
   id: string,
   archived: boolean,
-): Promise<GtdItem> {
+): Promise<MyTask> {
   await post(`tasks/${id}/${archived ? "archive" : "unarchive"}`);
   return lensGetItem(id);
 }
@@ -782,7 +782,7 @@ export async function lensDelegateItem(
     due_at?: string;
     expected_by?: string;
   },
-): Promise<GtdItem> {
+): Promise<MyTask> {
   const who = body.assignee.email ?? body.assignee.name;
   await projectsCall<Raw>(`tasks/${id}/assignees`, {
     method: "PUT",
@@ -1037,7 +1037,7 @@ function mapAttachment(raw: Raw): TaskAttachment {
  * A child row as the checklist wants it. Project-shaped (no overlay), so the
  * only disposition it can honestly state is DONE, read off `completed_at`.
  */
-function mapSubtask(raw: Raw): GtdItem {
+function mapSubtask(raw: Raw): MyTask {
   const item = mapLensItem(raw);
   if (raw.completed_at) item.disposition = "DONE";
   return item;
@@ -1079,7 +1079,7 @@ export async function lensItemDetail(id: string): Promise<ProviderTaskDetail> {
 }
 
 /** Many thoughts, ONE transaction — the multi-line capture box. */
-export async function lensCaptureBatch(titles: string[]): Promise<GtdItem[]> {
+export async function lensCaptureBatch(titles: string[]): Promise<MyTask[]> {
   const res = (await post(MY_ROUTES.batch, {
     items: titles.map((title) => ({ title })),
   })) as unknown as ListResponse;
@@ -1087,7 +1087,7 @@ export async function lensCaptureBatch(titles: string[]): Promise<GtdItem[]> {
 }
 
 /** The selection, read back after a bulk write. */
-const readBack = (ids: string[]): Promise<GtdItem[]> =>
+const readBack = (ids: string[]): Promise<MyTask[]> =>
   Promise.all(ids.map(lensGetItem));
 
 /**
@@ -1096,7 +1096,7 @@ const readBack = (ids: string[]): Promise<GtdItem[]> =>
  */
 export class LensPartialFailure extends Error {
   constructor(
-    readonly items: GtdItem[],
+    readonly items: MyTask[],
     readonly failed: number,
     readonly total: number,
     cause?: unknown,
@@ -1119,7 +1119,7 @@ export class LensPartialFailure extends Error {
 export async function lensBulkDispose(
   ids: string[],
   disposition: Disposition,
-): Promise<GtdItem[]> {
+): Promise<MyTask[]> {
   if (!ids.length) return [];
   if (disposition === "DONE") {
     // Settled, not raced: `Promise.all` would report the first refusal and
@@ -1152,7 +1152,7 @@ export async function lensBulkDispose(
 export async function lensBulkArchive(
   ids: string[],
   archived: boolean,
-): Promise<GtdItem[]> {
+): Promise<MyTask[]> {
   if (!ids.length) return [];
   await post("tasks/bulk", {
     task_ids: ids,
@@ -1172,7 +1172,7 @@ export async function lensBulkArchive(
 export async function lensOrganize(
   id: string,
   body: OrganizeBody,
-): Promise<GtdItem> {
+): Promise<MyTask> {
   const { account_id: _account, status, ...decision } = body;
   void _account;
   const raw = await post(at(MY_ROUTES.organize, id), decision);
@@ -1188,7 +1188,7 @@ export async function lensOrganize(
 }
 
 /** A task's children, in board order. See `mapSubtask` for what they carry. */
-export async function lensListSubtasks(id: string): Promise<GtdItem[]> {
+export async function lensListSubtasks(id: string): Promise<MyTask[]> {
   const res = await projectsCall<ListResponse>(
     `tasks?parent_task_id=${id}&sort=created_at&direction=asc&page_size=${PAGE_SIZE}`,
   );
@@ -1224,7 +1224,7 @@ export function lensWhoAmI(): Promise<string> {
 export async function lensAddSubtasks(
   id: string,
   titles: string[],
-): Promise<GtdItem[]> {
+): Promise<MyTask[]> {
   const parent = await projectsCall<Raw>(`tasks/${id}`);
   const me = await lensWhoAmI();
   for (const title of titles) {
@@ -1245,7 +1245,7 @@ export async function lensAddSubtasks(
 export async function lensMergeInto(
   id: string,
   targetId: string,
-): Promise<GtdItem> {
+): Promise<MyTask> {
   await post(`tasks/${targetId}/merge`, { sources: [id] });
   return lensGetItem(targetId);
 }
@@ -1254,7 +1254,7 @@ export async function lensMergeInto(
 export async function lensFileUnder(
   id: string,
   parentId: string,
-): Promise<GtdItem> {
+): Promise<MyTask> {
   await post(`tasks/${id}/move`, { parent_task_id: parentId });
   return lensGetItem(parentId);
 }

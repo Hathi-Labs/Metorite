@@ -27,9 +27,9 @@ import { apiMoveTask, fetchProjects } from "./api";
 import { lensGetItem } from "./lens";
 import { promoteAllowed, promoteToast } from "./promote";
 import { useTaskStore } from "./taskStore";
-import type { GtdItem } from "./types";
+import type { MyTask } from "./types";
 
-const item = (id: string, over: Partial<GtdItem> = {}): GtdItem => ({
+const item = (id: string, over: Partial<MyTask> = {}): MyTask => ({
   id,
   source: "LOCAL",
   title: `Task ${id}`,

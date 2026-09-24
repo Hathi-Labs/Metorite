@@ -3,7 +3,7 @@
 import Icon from "@/components/Icon";
 import { StatusChip } from "@/components/StatusChip";
 import { useState } from "react";
-import { GtdItem } from "../lib/types";
+import { MyTask } from "../lib/types";
 import { useCardActions } from "../lib/useCardActions";
 import { categoryAccent } from "../lib/stageColors";
 
@@ -19,7 +19,7 @@ import { categoryAccent } from "../lib/stageColors";
 // draws in its list and table cells — the classes are unchanged, they just live
 // somewhere both apps can reach. What stays here is the interaction: /projects'
 // status is read-only or a `<select>`, this one opens a stage menu.
-export function StatusPill({ item }: { item: GtdItem }) {
+export function StatusPill({ item }: { item: MyTask }) {
   const { categories, categoryLabel, currentCategory, laneName, setCategory } =
     useCardActions(item);
   const [open, setOpen] = useState(false);

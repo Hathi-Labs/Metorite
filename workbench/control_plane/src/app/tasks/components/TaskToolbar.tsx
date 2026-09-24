@@ -4,7 +4,7 @@ import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import type { ThemedIcon } from "@/components/Icon";
 import { useMemo, useRef, useState, useEffect } from "react";
-import { GtdItem } from "../lib/types";
+import { MyTask } from "../lib/types";
 import { useTaskStore } from "../lib/taskStore";
 import {
   filtersActive,
@@ -70,7 +70,7 @@ const ENERGY_VALUES: { value: string; label: string }[] = [
   { value: NO_ENERGY_FACET, label: "No energy set" },
 ];
 
-export function TaskToolbar({ items }: { items: GtdItem[] }) {
+export function TaskToolbar({ items }: { items: MyTask[] }) {
   const filters = useTaskStore((s) => s.filters);
   const setFilters = useTaskStore((s) => s.setFilters);
   const clearFilters = useTaskStore((s) => s.clearFilters);

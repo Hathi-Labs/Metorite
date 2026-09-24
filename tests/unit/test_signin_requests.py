@@ -218,6 +218,12 @@ class _FakeSession:
             # `_Rows.fetchall` does `tuple(r.values())`, so rows are DICTS
             # here and become 1-tuples on the way out — the shape
             # `_organization_for_email` reads with `rows[0][0]`.
+            #
+            # Recorded, because "was the database asked at all" is its own
+            # claim: the public-domain guard has to short-circuit BEFORE the
+            # query, and a guard on the RESULT would look identical here
+            # without it.
+            self._owner.domain_lookups.append(str(p["domain"]))
             hits = self._owner.domains.get(p["domain"], [])
             return _Rows([{"id": o} for o in hits])
         if "FROM app_user u" in s or "FROM app_user WHERE" in s:
@@ -243,6 +249,8 @@ class _AccessWorld:
         #: not "it wrote" but "it wrote GUC-BOUND to the RIGHT tenant" — an
         #: unbound write is what H-118 was.
         self.bound: list[str] = []
+        #: Every domain the resolver actually asked the database about.
+        self.domain_lookups: list[str] = []
 
     def seed_member(self, email: str, *, status: str = "active") -> None:
         self.rows[email.lower()] = {
@@ -1711,3 +1719,117 @@ async def test_an_already_a_member_approval_mirrors_nothing(
     )
 
     assert console.calls == []
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 10. A public mail domain never routes, whatever the database says
+# ════════════════════════════════════════════════════════════════════════════
+#
+# ⚠️ **The hole.** `organization.domain` is a plain text column and nothing
+# verifies that the organization setting it owns that domain. For a company's
+# own domain that is fine. For a public one it is unbounded: an organization
+# that claimed `gmail.com` would receive the knock of every Gmail user who
+# ever signed in, learning their addresses.
+#
+# **This guard is not the verification.** The industry answer — Atlassian's
+# approved domains, Slack's workspace domains — proves ownership with a DNS
+# record before a domain routes at all. That is the right shape and it is not
+# built. Until it is, refusing the domains nobody can own removes the case
+# where the damage is unbounded.
+#
+# Owner decision, 2026-09-24: invite stays the main way in, and a domain is
+# opt-in per organization. So this bites rarely, and when it bites it is on a
+# configuration that was never going to be correct.
+
+
+async def test_a_public_mail_domain_never_routes(world: _AccessWorld) -> None:
+    """Even with an organization claiming it in the database.
+
+    The discriminator is `world.domains` — the row EXISTS and still does not
+    route, which is what separates this from "no organization claims it".
+    """
+    from acb_auth.access import resolve_access
+
+    world.domains["gmail.com"] = [ORG]
+
+    await resolve_access("somebody@gmail.com", record_request=True)
+
+    assert world.writes == []
+    assert world.bound == [], (
+        "a claimed public domain still routed — every Gmail user's knock "
+        "would reach that organization's queue"
+    )
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "a@gmail.com",
+        "a@googlemail.com",
+        "a@outlook.com",
+        "a@hotmail.com",
+        "a@yahoo.com",
+        "a@icloud.com",
+        "a@proton.me",
+        "a@rediffmail.com",
+    ],
+)
+async def test_the_common_public_domains_are_all_refused(
+    world: _AccessWorld, address: str,
+) -> None:
+    """One case each, because a list is only as good as its worst entry."""
+    from acb_auth.access import resolve_access
+
+    domain = address.split("@", 1)[1]
+    world.domains[domain] = [ORG]
+
+    await resolve_access(address, record_request=True)
+
+    assert world.bound == [], f"{domain} routed"
+
+
+async def test_the_guard_runs_BEFORE_the_query(world: _AccessWorld) -> None:
+    """⚠️ Not merely "the answer is None".
+
+    A guard applied to the RESULT would still have asked the database, and the
+    cheapest version of this fix — filtering after the SELECT — leaves the row
+    routable the moment somebody refactors the filter out. Checking first means
+    a claimed public domain cannot route even once.
+    """
+    from acb_auth.access import resolve_access
+
+    world.domains["gmail.com"] = [ORG]
+    before = len(world.domain_lookups)
+
+    await resolve_access("somebody@gmail.com", record_request=True)
+
+    assert len(world.domain_lookups) == before, (
+        "the public-domain check must short-circuit before the lookup"
+    )
+
+
+async def test_a_company_domain_still_routes(world: _AccessWorld) -> None:
+    """The guard must not become a wall. `fracktal.in` is nobody's public
+    mail host and must be unaffected."""
+    from acb_auth.access import resolve_access
+
+    await resolve_access("stranger@fracktal.in", record_request=True)
+
+    assert world.bound == [ORG]
+
+
+def test_the_list_holds_no_company_domain() -> None:
+    """A defensive read of the constant itself.
+
+    Adding a customer's own domain here would silently stop their colleagues
+    reaching their queue, and the symptom — "requests just don't appear" — is
+    the hardest kind to trace back to a list.
+    """
+    from acb_auth.access import _PUBLIC_MAIL_DOMAINS
+
+    assert "fracktal.in" not in _PUBLIC_MAIL_DOMAINS
+    assert "hathilabs.com" not in _PUBLIC_MAIL_DOMAINS
+    assert all(d == d.lower() for d in _PUBLIC_MAIL_DOMAINS), (
+        "entries are compared against a folded domain, so an upper-case one "
+        "would never match and would read as present while doing nothing"
+    )

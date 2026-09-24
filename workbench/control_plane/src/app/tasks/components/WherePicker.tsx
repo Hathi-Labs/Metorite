@@ -9,7 +9,7 @@ import { categoricalAccent } from "@/lib/categorical";
 
 import type { LensArea } from "../lib/api";
 import { whereGroups } from "../lib/clarify";
-import type { GtdProject } from "../lib/types";
+import type { MyTasksProject } from "../lib/types";
 
 /**
  * The Clarify "Where" picker under the lens (WS-39 S6b).
@@ -41,7 +41,7 @@ export function WherePicker({
   includeAreas?: boolean;
   /** False for a task on a company board — see `whereOffersNoProject`. */
   includeNoProject?: boolean;
-  projects: GtdProject[];
+  projects: MyTasksProject[];
   value?: string;
   suggestedId?: string;
   onChange: (id: string | undefined) => void;

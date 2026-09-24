@@ -844,8 +844,8 @@ async def _replan_core(
     ranked_by = "ai"
     rank_note: str | None = None
     if cands:
-        from gateway.routes.tasks.settings import gtd_models
-        model = (await gtd_models(db, uid))["chat"]
+        from gateway.routes.tasks.settings import task_models
+        model = (await task_models(db, uid))["chat"]
         ordered_res, notes, rank_note = await _llm_rank_day(
             cands, req.energy_note, req.capacity_mins, model, one_thing_id,
             prefs["planning_prompt"], tflines)

@@ -64,12 +64,12 @@ import {
   whereVisibilityHint,
 } from "./clarify";
 import { useTaskStore } from "./taskStore";
-import type { GtdItem, GtdProject } from "./types";
+import type { MyTask, MyTasksProject } from "./types";
 
 const ROOT = "root-me";
 const AREA = { id: "area-home", name: "Home", openCount: 0 } as never;
 
-const BOARD: GtdProject = {
+const BOARD: MyTasksProject = {
   id: "p-launch",
   source: "LOCAL",
   provider: "local",
@@ -79,7 +79,7 @@ const BOARD: GtdProject = {
 };
 
 /** An untriaged board row: a colleague assigned it, its disposition is derived. */
-const FROM_BOARD: GtdItem = {
+const FROM_BOARD: MyTask = {
   id: "t-board",
   source: "LOCAL",
   title: "Review the pricing page copy",
@@ -94,7 +94,7 @@ const FROM_BOARD: GtdItem = {
 };
 
 /** A private capture whose words match the company board. */
-const CAPTURE: GtdItem = {
+const CAPTURE: MyTask = {
   id: "c-1",
   source: "LOCAL",
   title: "Check pricing page copy wording",

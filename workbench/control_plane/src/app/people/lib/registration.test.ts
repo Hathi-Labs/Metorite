@@ -59,7 +59,7 @@ describe("the People app is reachable", () => {
   it("does NOT ride the tasks feature", () => {
     // The whole reason `people` exists as its own slug: a manager who needs the
     // org chart and the assignee picker should not have to be handed the
-    // personal GTD task manager to get them (§6).
+    // personal task app (My Tasks) to get them (§6).
     expect(featureForPath(PEOPLE_HREF)).not.toBe("tasks");
   });
 });

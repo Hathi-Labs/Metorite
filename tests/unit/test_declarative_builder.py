@@ -58,7 +58,7 @@ def test_skill_tools_match_task_manager_factory() -> None:
     the manifest already expresses — and deleting it changes nothing.
     """
     expected = _tool_names_in_factory(TASK_MANAGER_DIR / "agents.py")
-    pytest.importorskip("skill_task_gtd", reason="skill-task-gtd not installed")
+    pytest.importorskip("skill_my_tasks", reason="skill-my-tasks not installed")
 
     cfg = json.loads((TASK_MANAGER_DIR / "config.json").read_text("utf-8"))
     manifest = AgentManifest.from_config(cfg, name="task-manager")
@@ -89,7 +89,7 @@ def test_instructions_come_from_the_agent_directory() -> None:
 # ---------------------------------------------------------------------------
 
 def test_repo_name_maps_to_module_name() -> None:
-    assert declarative.skill_module_name("skill-task-gtd") == "skill_task_gtd"
+    assert declarative.skill_module_name("skill-my-tasks") == "skill_my_tasks"
     assert declarative.skill_module_name(" skill-zoho-crm ") == "skill_zoho_crm"
 
 
@@ -104,28 +104,28 @@ def test_no_skills_resolves_empty() -> None:
 
 
 def test_own_tool_scope_narrows_the_surface() -> None:
-    pytest.importorskip("skill_task_gtd", reason="skill-task-gtd not installed")
-    everything = declarative.resolve_skill_tools(["skill-task-gtd"])
+    pytest.importorskip("skill_my_tasks", reason="skill-my-tasks not installed")
+    everything = declarative.resolve_skill_tools(["skill-my-tasks"])
     narrowed = declarative.resolve_skill_tools(
-        ["skill-task-gtd"], own_tool_scope=["gtd_capture", "gtd_list"],
+        ["skill-my-tasks"], own_tool_scope=["my_tasks_capture", "my_tasks_list"],
     )
-    assert {t.__name__ for t in narrowed} == {"gtd_capture", "gtd_list"}
+    assert {t.__name__ for t in narrowed} == {"my_tasks_capture", "my_tasks_list"}
     assert len(narrowed) < len(everything)
 
 
 def test_duplicate_skills_do_not_duplicate_tools() -> None:
-    pytest.importorskip("skill_task_gtd", reason="skill-task-gtd not installed")
-    once = declarative.resolve_skill_tools(["skill-task-gtd"])
-    twice = declarative.resolve_skill_tools(["skill-task-gtd", "skill-task-gtd"])
+    pytest.importorskip("skill_my_tasks", reason="skill-my-tasks not installed")
+    once = declarative.resolve_skill_tools(["skill-my-tasks"])
+    twice = declarative.resolve_skill_tools(["skill-my-tasks", "skill-my-tasks"])
     assert len(once) == len(twice)
 
 
 def test_resolution_is_deterministic() -> None:
     """Tool order feeds the prompt's tool surface, which prompt caching relies on
     being byte-stable across turns."""
-    pytest.importorskip("skill_task_gtd", reason="skill-task-gtd not installed")
-    a = [t.__name__ for t in declarative.resolve_skill_tools(["skill-task-gtd"])]
-    b = [t.__name__ for t in declarative.resolve_skill_tools(["skill-task-gtd"])]
+    pytest.importorskip("skill_my_tasks", reason="skill-my-tasks not installed")
+    a = [t.__name__ for t in declarative.resolve_skill_tools(["skill-my-tasks"])]
+    b = [t.__name__ for t in declarative.resolve_skill_tools(["skill-my-tasks"])]
     assert a == b
 
 
@@ -247,7 +247,7 @@ def test_extra_tools_are_appended(tmp_path: Path) -> None:
 def test_built_agent_carries_the_full_skill_surface() -> None:
     """End to end: manifest in, an agent holding all 29 GTD tools out."""
     pytest.importorskip("agent_framework")
-    pytest.importorskip("skill_task_gtd", reason="skill-task-gtd not installed")
+    pytest.importorskip("skill_my_tasks", reason="skill-my-tasks not installed")
 
     cfg = json.loads((TASK_MANAGER_DIR / "config.json").read_text("utf-8"))
     manifest = AgentManifest.from_config(cfg, name="task-manager")

@@ -13,7 +13,7 @@
  */
 
 import type { LensLane } from "./lens";
-import type { GtdItem } from "./types";
+import type { MyTask } from "./types";
 
 /** The three groups of Next Actions, in order. */
 export type NextCategory = "todo" | "in_progress" | "done";
@@ -49,7 +49,7 @@ export function isNextCategory(v: string | undefined | null): v is NextCategory 
  * * A row with no category (the demo backend's mock rows) is To do.
  */
 export function nextCategoryOf(
-  item: Pick<GtdItem, "statusCategory" | "disposition">,
+  item: Pick<MyTask, "statusCategory" | "disposition">,
 ): NextCategory | null {
   if (item.disposition === "DONE") return "done";
   const c = item.statusCategory;

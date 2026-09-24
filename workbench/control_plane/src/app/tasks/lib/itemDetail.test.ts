@@ -117,7 +117,7 @@ describe("one task panel composition (S6e)", () => {
 
 // ── No two labels alike in one host (S6e repair) ────────────────────────────
 //
-// D53.8: `GtdItem.important` (the member's Eisenhower pair) is NOT
+// D53.8: `MyTask.important` (the member's Eisenhower pair) is NOT
 // `pm_tasks.importance` (the task's shared Priority integer). The first S6e
 // draw put "Priority" on both — the strip's matrix section and the body's
 // cell — with two different values a hand's width apart. Every label a

@@ -10,12 +10,12 @@ import { describe, expect, it } from "vitest";
 
 import { taskMeta } from "@/lib/taskCard";
 
-import { gtdMetaChips } from "./cardMeta";
-import type { GtdItem } from "./types";
+import { taskMetaChips } from "./cardMeta";
+import type { MyTask } from "./types";
 
 const NOW = Date.parse("2026-08-09T12:00:00Z");
 
-function item(patch: Partial<GtdItem>): GtdItem {
+function item(patch: Partial<MyTask>): MyTask {
   return {
     id: "t1",
     source: "LOCAL",
@@ -28,13 +28,13 @@ function item(patch: Partial<GtdItem>): GtdItem {
   };
 }
 
-describe("gtdMetaChips", () => {
+describe("taskMetaChips", () => {
   it("earns nothing for a bare task — zeros are silent", () => {
-    expect(gtdMetaChips(item({}), NOW)).toEqual([]);
+    expect(taskMetaChips(item({}), NOW)).toEqual([]);
   });
 
   it("speaks the shared vocabulary for due, attachments and estimate", () => {
-    const chips = gtdMetaChips(
+    const chips = taskMetaChips(
       item({
         dueAt: "2026-08-10T12:00:00Z",
         attachments: [{ kind: "file", name: "a", url: "u" }],
@@ -54,10 +54,10 @@ describe("gtdMetaChips", () => {
   });
 
   it("escalates overdue exactly as the shared rule does — done is never overdue", () => {
-    const late = gtdMetaChips(item({ dueAt: "2026-08-01T00:00:00Z" }), NOW);
+    const late = taskMetaChips(item({ dueAt: "2026-08-01T00:00:00Z" }), NOW);
     expect(late[0]).toMatchObject({ key: "due", tone: "danger", icon: "AlertTriangle" });
 
-    const done = gtdMetaChips(
+    const done = taskMetaChips(
       item({ dueAt: "2026-08-01T00:00:00Z", completedAt: "2026-08-02T00:00:00Z" }),
       NOW,
     );
@@ -65,7 +65,7 @@ describe("gtdMetaChips", () => {
   });
 
   it("counts subtasks in the shared slot, key and icon", () => {
-    const chips = gtdMetaChips(
+    const chips = taskMetaChips(
       item({
         dueAt: "2026-08-10T12:00:00Z",
         subtaskCount: 3,
@@ -84,7 +84,7 @@ describe("gtdMetaChips", () => {
   });
 
   it("leads with the subtask count when there is no due date", () => {
-    const chips = gtdMetaChips(item({ subtaskCount: 1 }), NOW);
+    const chips = taskMetaChips(item({ subtaskCount: 1 }), NOW);
     expect(chips.map((c) => c.key)).toEqual(["subtasks"]);
     expect(chips[0].title).toBe("1 subtask");
   });

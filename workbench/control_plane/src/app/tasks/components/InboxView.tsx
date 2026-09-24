@@ -18,7 +18,7 @@ import {
   clickSelect,
 } from "@/lib/selection";
 import { useTaskStore } from "../lib/taskStore";
-import { Disposition, GtdItem } from "../lib/types";
+import { Disposition, MyTask } from "../lib/types";
 import {
   DateBucketKey,
   dateBucket,
@@ -751,7 +751,7 @@ function TicklerList({
   items,
   onUndefer,
 }: {
-  items: GtdItem[];
+  items: MyTask[];
   onUndefer: (id: string) => void;
 }) {
   if (!items.length) {

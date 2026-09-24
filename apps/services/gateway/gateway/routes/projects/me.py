@@ -6,7 +6,7 @@ Spec: ``project-docs/specs/project_management_app.md`` §4 (``me.py`` row).
 
 This is the read WS-27e's personal mirror consumes (§6.1): the org store's
 answer to "what is mine", which the Tasks app turned into rows of its own store so
-the whole GTD overlay — clarify, timeboxing, Waiting-For — works on org tasks
+the whole My Tasks overlay — clarify, timeboxing, Waiting-For — works on org tasks
 with no changes to its code.
 
 It is deliberately **not** ``/projects/tasks?assignee=<me>``. That route exists

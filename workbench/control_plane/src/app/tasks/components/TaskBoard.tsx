@@ -6,7 +6,7 @@ import { useFlash } from "@/components/useFlash";
 import { gapKey } from "@/lib/boardDrop";
 import { clampCursor, stepCursor } from "@/lib/cursor";
 import { Fragment, useCallback, useMemo, useState } from "react";
-import { GtdItem, ViewKey } from "../lib/types";
+import { MyTask, ViewKey } from "../lib/types";
 import { useTaskStore } from "../lib/taskStore";
 import { TaskCard } from "./TaskCard";
 import { dropRefusal } from "../lib/dropRules";
@@ -61,7 +61,7 @@ const NOBODY: ReadonlySet<string> = new Set();
 export function TaskBoard({
   items,
 }: {
-  items: GtdItem[];
+  items: MyTask[];
   view: ViewKey;
 }) {
   const setCategory = useTaskStore((s) => s.setCategory);
@@ -99,7 +99,7 @@ export function TaskBoard({
   // A task whose category is not a Next column (backlog, triage, cancelled)
   // answers null and is not drawn.
   const stageOf = useCallback(
-    (i: GtdItem): NextCategory | null => nextCategoryOf(i),
+    (i: MyTask): NextCategory | null => nextCategoryOf(i),
     [],
   );
 
@@ -109,7 +109,7 @@ export function TaskBoard({
   );
 
   const byColumn = useMemo(() => {
-    const m = new Map<string, GtdItem[]>();
+    const m = new Map<string, MyTask[]>();
     for (const c of columns) m.set(c.key, []);
     for (const i of items) {
       const k = stageOf(i);

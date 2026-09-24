@@ -48,7 +48,7 @@ import {
   noLaneMessage,
 } from "./statusCategory";
 import { itemsForView, useTaskStore, viewCounts } from "./taskStore";
-import type { GtdItem } from "./types";
+import type { MyTask } from "./types";
 
 const lane = (
   id: string,
@@ -126,7 +126,7 @@ describe("laneForCategory — the first lane by position in the task's project",
 
 // ── The store action ────────────────────────────────────────────────────────
 
-const task = (over: Partial<GtdItem>): GtdItem => ({
+const task = (over: Partial<MyTask>): MyTask => ({
   id: "t1",
   source: "LOCAL",
   title: "Wire the jig",

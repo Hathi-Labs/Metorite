@@ -49,10 +49,10 @@ import { useToast } from "@/components/ui/Toast";
 
 import { promotePlan, promoteToast } from "../lib/promote";
 import { useTaskStore } from "../lib/taskStore";
-import type { GtdItem } from "../lib/types";
+import type { MyTask } from "../lib/types";
 
 /** The owners as the gateway names them — an email, or `agent:<name>`. */
-function ownerIds(item: GtdItem): string[] {
+function ownerIds(item: MyTask): string[] {
   const people = item.assignees?.length
     ? item.assignees
     : item.assignee
@@ -67,7 +67,7 @@ export function PromoteDialog({
   item,
   onClose,
 }: {
-  item: GtdItem;
+  item: MyTask;
   onClose: () => void;
 }) {
   const promoteItem = useTaskStore((s) => s.promoteItem);

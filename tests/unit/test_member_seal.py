@@ -333,3 +333,76 @@ def test_a_seeded_project_is_live_by_default():
     db = _fake()
     project = db.seed_project(name="Anything")
     assert _row(db, project.id)["sealed_at"] is None
+
+
+# ── The preview the dialog reads (H-49 slice 2) ────────────────────────────
+#
+# D63's last requirement: **"The deactivation dialog must state the split in
+# numbers before the click"** — *"14 tasks — 3 handed over, 11 sealed, not
+# deleted; later access is recorded"*. A policy nobody is told about at the
+# moment it applies is one they discover by being surprised.
+#
+# ⚠️ These prove the ROUTE, not the counts. What the numbers are is a property
+# of a recursive CTE over a personal tree, and `live_member_seal.sql` settles
+# that against real Postgres (R8). A fake answering the arithmetic would agree
+# with whatever SQL it was handed.
+
+
+def test_the_preview_route_is_a_READ_on_the_read_permission():
+    """⚠️ `admin:members:read`, deliberately NOT the manage permission.
+
+    An admin who may look at the roster may know what off-boarding would cost.
+    Requiring the destructive permission to see the WARNING about the
+    destructive act is backwards, and it would hide the sentence from exactly
+    the person deciding whether to escalate.
+    """
+    source = read(MEMBERS)
+    match = re.search(
+        r'@router\.get\("/members/\{email\}/seal-preview".*?'
+        r"async def get_seal_preview\(.*?\) -> dict\[str, Any\]:",
+        source, re.S,
+    )
+    assert match, "the preview route moved; re-point this test"
+    decorator = match.group(0)
+    assert "require_admin_user" in decorator
+    assert "admin:members:manage" not in decorator
+
+
+def test_the_preview_writes_nothing():
+    """It is offered BEFORE the click, so opening the dialog and cancelling
+    must change nothing at all."""
+    source = read(MEMBERS)
+    match = re.search(
+        r"async def get_seal_preview\(.*?(?=\n@router|\Z)", source, re.S,
+    )
+    body = match.group(0)
+    for writer in ("seal_personal_tree", "unseal_personal_tree", "UPDATE ",
+                   "INSERT ", "DELETE "):
+        assert writer not in body, f"the preview must not {writer.strip()}"
+
+
+def test_the_preview_resolves_the_member_first():
+    """An unknown address must 404 rather than return a tidy row of zeros.
+
+    Zeros read as "there is nothing to lose here", which is the wrong thing to
+    tell somebody about an address the organization has never heard of.
+    """
+    source = read(MEMBERS)
+    match = re.search(
+        r"async def get_seal_preview\(.*?(?=\n@router|\Z)", source, re.S,
+    )
+    body = match.group(0)
+    assert body.index("get_member") < body.index("seal_counts")
+
+
+def test_the_server_states_that_nothing_is_deleted():
+    """D63 is emphatic — "retained, invisible, NEVER deleted" — and the
+    promise belongs in the payload rather than in the dialog's own copy, so
+    the client cannot soften it."""
+    source = read(MEMBERS)
+    match = re.search(
+        r"async def get_seal_preview\(.*?(?=\n@router|\Z)", source, re.S,
+    )
+    body = match.group(0)
+    assert '"deleted": False' in body
+    assert '"reversible": True' in body

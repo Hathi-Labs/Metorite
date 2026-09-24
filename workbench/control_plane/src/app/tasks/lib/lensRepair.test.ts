@@ -25,7 +25,7 @@ vi.mock("./api", async (importOriginal) => {
 
 import { apiOrganize, fetchItems, mapProject } from "./api";
 import { useTaskStore } from "./taskStore";
-import type { GtdItem } from "./types";
+import type { MyTask } from "./types";
 
 // ── 1. The delegate rule under the lens ─────────────────────────────────────
 
@@ -96,7 +96,7 @@ describe("mapProject reads a node", () => {
 
 // ── 3. The refused write ────────────────────────────────────────────────────
 
-const ITEM: GtdItem = {
+const ITEM: MyTask = {
   id: "t1",
   source: "LOCAL",
   title: "Draft the quote",

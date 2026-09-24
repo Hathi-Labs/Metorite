@@ -338,7 +338,7 @@ def test_no_writer_turns_important_into_the_shared_priority() -> None:
     """The withdrawn draft of D77 made the Important switch write `importance`.
     D76 forbids that. The chat skill and the client each split a write, and
     neither may send `importance` to the task (D76, D77)."""
-    from skill_task_gtd import core as skill_core
+    from skill_my_tasks import core as skill_core
 
     assert "importance" not in skill_core._TASK_KEYS
     assert "important" in skill_core._OVERLAY_KEYS

@@ -63,6 +63,7 @@ from gateway.routes.admin._common import (
 # definition of "somebody's personal tree", and the two would drift the first
 # time Areas changed shape.
 from gateway.routes.projects.seal import (
+    seal_counts,
     seal_personal_tree,
     unseal_personal_tree,
 )
@@ -418,7 +419,7 @@ async def remove_member(
 
     The row is kept because ~every user-scoped table in the schema references
     people by email (`apps.owner_email`, `app_audit.user_email`, chat sessions,
-    GTD items). Hard-deleting the identity would orphan all of it; what
+    tasks). Hard-deleting the identity would orphan all of it; what
     actually matters for access is that the member resolves to nothing, which
     the `removed` status guarantees.
     """
@@ -1082,3 +1083,52 @@ async def set_member_overrides(
                         overrides=[{"permission": p, "effect": e, "reason": r}
                                    for p, e, r in cleaned])
     return await get_member_access(member["email"], admin)  # type: ignore[arg-type]
+
+
+@router.get("/members/{email}/seal-preview",
+            summary="What off-boarding this member would seal")
+async def get_seal_preview(
+    email: str,
+    admin: UserContext = Depends(require_admin_user),
+) -> dict[str, Any]:
+    """The D63 split, in numbers, BEFORE the click.
+
+    D63's last requirement, and it is quoted rather than paraphrased because
+    the wording carries the policy: *"The deactivation dialog must state the
+    split in numbers before the click"* — ``"14 tasks — 3 handed over, 11
+    sealed, not deleted; later access is recorded"``. **A policy nobody is told
+    about at the moment it applies is one they discover by being surprised.**
+
+    A READ, and only a read. It seals nothing, and a caller who never presses
+    the button changes nothing by asking. That is why it sits on
+    ``require_admin_user`` (``admin:members:read``) rather than the manage
+    permission the write doors carry: an admin who may look at the roster may
+    know what off-boarding would cost, and making them hold the destructive
+    permission to see the warning would be backwards.
+
+    ⚠️ **``handed_over`` is normally 0, and that is correct.**
+    ``assert_move_keeps_privacy`` and ``assert_assignable_here`` both refuse to
+    create a task in a personal tree assigned to somebody else, so only rows
+    predating those guards can carry it. Measured on production 2026-09-23: 2
+    tasks in 1 personal tree, 0 of them cross-assigned. The dialog should say
+    "0 handed over" plainly rather than hide the line — a zero here is the
+    reassuring answer, not a missing one.
+    """
+    async with _tenant_session() as db:
+        org_id = await get_org_id(db, admin)
+        # Resolves the member first, so an unknown address 404s here rather
+        # than returning a tidy row of zeros that reads as "nothing to lose".
+        member = await get_member(db, org_id, email)
+        counts = await seal_counts(db, member["email"], org_id)
+
+    return {
+        "email": member["email"],
+        "status": member["status"],
+        **counts,
+        # Stated by the SERVER, so the dialog cannot soften it. D63 is explicit
+        # that the tree is "retained, invisible, NEVER deleted", and the
+        # sentence a person reads at the moment of the act is the only place
+        # that promise does any work.
+        "deleted": False,
+        "reversible": True,
+    }

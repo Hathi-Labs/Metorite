@@ -27,7 +27,7 @@ import Button from "@/components/ui/Button";
 import Icon, { themedIcon, type ThemedIcon } from "@/components/Icon";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTaskStore } from "../lib/taskStore";
-import { GtdItem } from "../lib/types";
+import { MyTask } from "../lib/types";
 import { blocksForDay, startOfDay, type Block } from "../lib/scheduling";
 import { fmtClock } from "../lib/utils";
 import {
@@ -133,7 +133,7 @@ function FocusRoom({ itemId }: { itemId: string }) {
   const [finished, setFinished] = useState<null | { actualMins: number | null }>(
     null,
   );
-  const [subtasks, setSubtasks] = useState<GtdItem[] | null>(null);
+  const [subtasks, setSubtasks] = useState<MyTask[] | null>(null);
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -263,7 +263,7 @@ function FocusRoom({ itemId }: { itemId: string }) {
     applySchedule("Extended 15 min", changes);
   };
 
-  const toggleSubtask = (st: GtdItem) => {
+  const toggleSubtask = (st: MyTask) => {
     const toDone = st.disposition !== "DONE";
     setSubtasks((rows) =>
       (rows ?? []).map((r) =>

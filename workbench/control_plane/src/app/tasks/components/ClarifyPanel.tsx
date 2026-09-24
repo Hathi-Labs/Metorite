@@ -20,7 +20,7 @@ import {
 } from "../lib/clarify";
 import { apiClarifyPropose, apiSuggestTitle } from "../lib/api";
 import type { ConnectedProvider } from "../lib/mockData";
-import { Energy, GtdItem, GtdProject, Person, Target } from "../lib/types";
+import { Energy, MyTask, MyTasksProject, Person, Target } from "../lib/types";
 import { durationLabel, formatStatus, initials, originEmailHref, snoozeOptions } from "../lib/utils";
 import { SourceBadge } from "./SourceBadge";
 import { AttachmentChips } from "./AttachmentComposer";
@@ -101,7 +101,7 @@ export function ClarifyPanel({
   reclarify = false,
   onDone,
 }: {
-  item: GtdItem;
+  item: MyTask;
   /** Re-clarifying an already-processed task: seed from its CURRENT state, ask
    *  the server to preserve a SYNCED task's ClickUp binding, and lock the
    *  destination picker so the two-way sync target can't be moved. */
@@ -1353,7 +1353,7 @@ function ProjectSuggestBanner({
   onFile,
   onDismiss,
 }: {
-  project: GtdProject;
+  project: MyTasksProject;
   assignee: Person | null;
   onFile: () => void;
   onDismiss: () => void;
@@ -1567,7 +1567,7 @@ function LockedWhere({
 }: {
   dest: Target;
   providers: ConnectedProvider[];
-  selectedProject?: GtdProject;
+  selectedProject?: MyTasksProject;
   statuses: string[];
   status?: string;
   setStatus: (s: string) => void;

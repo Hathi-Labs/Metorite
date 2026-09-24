@@ -7,7 +7,7 @@
 import { useEffect, useState } from "react";
 import type { EnergyWindow, DayTemplate } from "@/app/tasks/lib/api";
 import { startOfDay, addDays, sameDay, type Block } from "@/app/tasks/lib/scheduling";
-import type { GtdItem } from "@/app/tasks/lib/types";
+import type { MyTask } from "@/app/tasks/lib/types";
 
 // ── layout constants ─────────────────────────────────────────────────────────
 export const DAY_START_HOUR = 7; // default grid window (overridden by prefs)
@@ -86,7 +86,7 @@ export function fmtLeft(mins: number): string {
 
 // ── grid helpers ─────────────────────────────────────────────────────────────
 /** Deadline items (hard date, not timeboxed) due on `day` — the all-day lane. */
-export function deadlinesForDay(items: GtdItem[], day: Date): GtdItem[] {
+export function deadlinesForDay(items: MyTask[], day: Date): MyTask[] {
   return items.filter(
     (i) =>
       i.isHardDate &&

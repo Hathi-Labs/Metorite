@@ -13,8 +13,8 @@ hardcoded one:
 Plus toggles: ``capture_dedup`` (background duplicate check on quick
 capture) and ``auto_sync_on_open`` (incremental provider pull on app open).
 
-GTD settings are per USER (a GTD system is personal), unlike email settings
-which are per mailbox. ``gtd_models()`` is the helper the
+My Tasks settings are per USER (a task system is personal), unlike email settings
+which are per mailbox. ``task_models()`` is the helper the
 other tasks modules consume — every value falls back to its per-function
 default so the app works before the user ever opens Settings.
 """
@@ -121,7 +121,7 @@ class UserSettingsPatch(BaseModel):
     day_templates: list[dict] | None = None
 
 
-async def gtd_models(db: Any, user_id: str) -> dict[str, str]:
+async def task_models(db: Any, user_id: str) -> dict[str, str]:
     """The user's per-function models with per-function defaults filled in.
     Never raises — a failed lookup returns the defaults so AI features work
     before settings exist."""
@@ -143,7 +143,7 @@ async def gtd_models(db: Any, user_id: str) -> dict[str, str]:
     return out
 
 
-async def gtd_toggles(db: Any, user_id: str) -> dict[str, bool]:
+async def task_toggles(db: Any, user_id: str) -> dict[str, bool]:
     """The user's AI/behaviour toggles with safe defaults. Never raises — a
     missing row or a pre-migration DB (no such column) returns the defaults
     (features on), so callers degrade to current behaviour rather than break."""
@@ -163,7 +163,7 @@ async def gtd_toggles(db: Any, user_id: str) -> dict[str, bool]:
     return out
 
 
-async def gtd_calendar_prefs(db: Any, user_id: str) -> dict[str, Any]:
+async def calendar_prefs(db: Any, user_id: str) -> dict[str, Any]:
     """Calendar/timeboxing prefs with safe defaults (never raises), for the grid
     + the AI day-planner. energy_windows = [{start_hour,end_hour,energy}]."""
     out: dict[str, Any] = {

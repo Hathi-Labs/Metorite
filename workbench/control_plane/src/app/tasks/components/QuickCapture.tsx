@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTaskStore } from "../lib/taskStore";
 import { apiAtomize } from "../lib/api";
 import { snoozeOptions, detectDateHint, matchWhere } from "../lib/utils";
-import { GTD_TRIGGERS } from "../lib/mockData";
+import { CAPTURE_TRIGGERS } from "../lib/mockData";
 import { AttachmentComposer } from "./AttachmentComposer";
 import type { TaskAttachment } from "../lib/types";
 import { useVisualViewport } from "../lib/useVisualViewport";
@@ -313,7 +313,7 @@ function QuickCapturePanel() {
                 Trigger list
               </p>
               <div className="flex flex-wrap gap-1.5">
-                {GTD_TRIGGERS.map((t) => (
+                {CAPTURE_TRIGGERS.map((t) => (
                   <button
                     key={t}
                     type="button"
