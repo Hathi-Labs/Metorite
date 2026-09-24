@@ -814,7 +814,9 @@ Each slice is one pull request. Each one is useful alone.
    inputs, filtered to the scope.
 9. `parallel_person` follows rule 6. Tests show no row for two tasks, for
    three tasks in one top-level project, for a shared end day, or for a task
-   with one date. A test proves the cap of 5.
+   with one date. In a project scope, a person with one in-scope task and two
+   visible tasks in other top-level projects on the same day gives one row. A
+   test proves the cap of 5.
 10. `horizon_days` outside 1 to 90 gets 422, and the response prints its
     window.
 11. `conflicts` is in `SECTIONS` and not in `DEFAULT_SECTIONS`. The lockstep
@@ -869,8 +871,8 @@ uv run pytest tests/unit/test_projects_analytics_conflicts.py tests/unit/test_pr
 ```
 
 In `workbench/control_plane`, run `npx tsc --noEmit` and
-`npx vitest run src/app/projects/lib/timeline.test.ts src/app/projects/lib/conflicts.test.ts src/lib/reportEmail.test.ts`.
-The slice creates `test_projects_analytics_conflicts.py`, `gateway/conflicts.py`,
+`npx vitest run src/app/projects/lib/timeline.test.ts src/app/projects/components/TimelineView.test.ts src/app/projects/lib/conflicts.test.ts src/lib/reportEmail.test.ts`.
+The timeline's copy of the rule must not change. The slice creates `test_projects_analytics_conflicts.py`, `gateway/conflicts.py`,
 `lib/conflicts.ts`, `lib/conflicts.test.ts` and the fixture file.
 
 `test_projects_report_sections_lockstep.py` is the lockstep test of §10.3
@@ -1135,8 +1137,9 @@ so the two cannot drift.
 `conflicts`. The chat tool `find_conflicts`, class A.
 
 **Rules for the build.** The S7c audit (2026-09-24) found twelve decisions
-that the text above does not make. The owner took four of them on
-2026-09-24: rules 4, 5 and 6. The rest follow the S7a and S7b precedent.
+that the text above does not make. The owner took four decisions on
+2026-09-24: one in rule 4, one in rule 5 and two in rule 6. The rest follow
+the S7a and S7b precedent.
 
 1. **The query.** The route takes `project_id`, `include_subtree` and
    `horizon_days`. It uses `check_horizon` (1 to 90, default 14) and
@@ -1166,13 +1169,17 @@ that the text above does not make. The owner took four of them on
    and its `due_at` is before `now()`, the predicate of Load's overdue. **If a
    pair is both late and misordered, it gives only `blocker_late`** (owner,
    2026-09-24). That is the fact to act on, and it implies the order problem.
-6. **`parallel_person` needs three.** Only open, visible, in-scope tasks with
-   both a start date and a due date count. A span covers the days from its
-   start to its due day. **The row fires when, on one day, a person holds 3 or
-   more such tasks, in 2 or more top-level projects** (owner, 2026-09-24). A
-   sub-project counts as its root project, so the key is `root_project_id`.
-   Agents are left out. A person gives at most one row. It names the busiest
-   day, the tasks on that day up to 5, and `tasks_total`.
+6. **`parallel_person` needs three.** Only open, visible tasks with both a
+   start date and a due date count. A span covers the days from its start to
+   its due day. **The row fires when, on one day, a person holds 3 or more such
+   tasks, in 2 or more top-level projects** (owner, 2026-09-24). A sub-project
+   counts as its root project, so the key is `root_project_id`. The route
+   counts a person's tasks over ALL the work the caller can see, as rule 8
+   does, because a project's own scope has only one root and the kind could
+   never fire there. The row fires only when at least one task on that day is
+   in scope, and it lists the in-scope tasks first. Agents are left out. A
+   person gives at most one row. It names the busiest day, the tasks on that
+   day up to 5, and `tasks_total`.
 7. **The HR kinds reuse S7b.** `candidate_warnings` splits into predicates
    that return a kind, and its string output stays byte-identical, so
    `test_projects_candidates.py` passes unchanged. `absent_on_due` uses
@@ -1187,10 +1194,14 @@ that the text above does not make. The owner took four of them on
    and the response says `hr_visible: false`, as S7a and S7b do.
 10. **The window.** `horizon_days` bounds the kinds that depend on a date:
     `absent_on_due`, `leaving`, `overcommitted`, and `parallel_person` days in
-    the window. `dependency_order` and `blocker_late` ignore it, because a
+    the window. An overdue task is always in the window, because rule 7 checks
+    it today, and that is the row that matters most. `dependency_order` and `blocker_late` ignore it, because a
     wrong order is wrong whenever it falls.
 11. **Shape and cap.** Each row carries `kind`, `task_ids`, `people`,
-    `sentence` and `severity`. The response keeps at most 200 rows, carries
+    `sentence` and `severity`. `severity` is `high` when a due date is at
+    stake (`blocker_late`, `overcommitted`, `absent_on_due`, `leaving`), and
+    `medium` for the rest (`dependency_order`, `over_concurrency`,
+    `parallel_person`). No other value exists. The response keeps at most 200 rows, carries
     `total` and `by_kind`, and sorts by kind, then by due day, with a stable
     sort. The report section caps like `load`.
 12. **Report and chat.** `conflicts` goes into `SECTIONS`, not into
