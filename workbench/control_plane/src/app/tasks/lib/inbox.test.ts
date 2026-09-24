@@ -255,8 +255,28 @@ describe("the capture chip (S6g repair P1-b)", () => {
     expect(captureLine).not.toHaveBeenCalled();
   });
 
-  it("the Inbox box submits through it", () => {
-    expect(read("components/InboxView.tsx")).toMatch(/const next = submitCaptureBox\(/);
+  it("the Inbox box submits through it, and applies EVERY field of the next state", () => {
+    // Round 4: dropping `setCaptureDest(next.dest)` kept the other tests
+    // green, and the chip then kept its pick after a capture. Each field of
+    // `CaptureBoxState` must reach its setter.
+    const view = read("components/InboxView.tsx");
+    const submit = view.slice(view.indexOf("const submit = () => {"), view.indexOf("const onKeyDown"));
+    expect(submit).toMatch(/const next = submitCaptureBox\(/);
+    for (const [setter, field] of [
+      ["setValue", "value"],
+      ["setCaptureDest", "dest"],
+      ["setPendingAtts", "attachments"],
+      ["setChipOpen", "chipOpen"],
+    ]) {
+      expect(submit, setter).toContain(`${setter}(next.${field});`);
+    }
+    // ...and those are all the fields there are.
+    const next = submitCaptureBox(
+      { value: "x", dest: null, attachments: [], chipOpen: true },
+      () => undefined,
+      [],
+    );
+    expect(Object.keys(next).sort()).toEqual(["attachments", "chipOpen", "dest", "value"]);
   });
 });
 
