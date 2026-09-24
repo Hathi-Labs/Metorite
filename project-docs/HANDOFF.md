@@ -95,7 +95,7 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
-### H-179 · The report list shows reports on projects the reader cannot open · [AGENT]
+### H-182 · The report list shows reports on projects the reader cannot open · [AGENT]
 - **Check:** `grep -n "SELECT \* FROM pm_reports ORDER BY created_at DESC" apps/services/gateway/gateway/routes/projects/reports.py`
   → a hit means this is open.
 - **Why:** `list_reports` filters rows by tenant (RLS) only. A report scoped
@@ -109,7 +109,7 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_reports.md` §7 rule 1 · the WS-27bn R1 audit
 - **Added:** 2026-09-24 · the WS-27bn R1 build
 
-### H-180 · The report schedule PATCH fails on a real database · [AGENT]
+### H-183 · The report schedule PATCH fails on a real database · [AGENT]
 - **Check:** `grep -n '"updated_at": text("now()")' apps/services/gateway/gateway/routes/projects/reports.py`
   → a hit means this is open.
 - **Why:** `PATCH /projects/reports/{id}/schedule` sends `updated_at` to
@@ -121,6 +121,45 @@ line — never reclaim a number by deleting the other entry.
   real-DB test that calls the route and reads the row back.
 - **Authority:** `specs/projects_reports.md` §3.1 · CLAUDE.md §3 rule 6 (R8)
 - **Added:** 2026-09-24 · the WS-27bn R1 build
+
+### H-179 · Prove a real Projects chat holds a tool conversation on DeepSeek V4 · [AGENT]
+- **Check:** on the box, count `usage_event` rows where `agent` is
+  `projects-assistant` and `tier` is a chat tier. Then read the gateway log for
+  `router.provider_error` after the deploy. Rows and no error close this entry.
+- 📌 **BUILT 2026-09-24.** The Router now carries a thinking model's
+  reasoning across a tool round-trip. `customer_console/reasoning.py` holds the
+  two halves, and `test_reasoning_passthrough.py` is the fence.
+- 🔴 **Why.** DeepSeek V4 returns `reasoning_content` and refuses the next
+  turn without it. The agent framework reads only `reasoning_details`. So every
+  tool call after the first failed with a 400.
+- ⚠️ **The tests use a stub.** Seven live probes set the shapes, and the module
+  records them. Only a real chat proves the wiring. That is this entry.
+- 🔴 **Review found a shape the first fix missed.** The framework splits a
+  turn that holds text AND tool calls into two messages. The vendor refused
+  the text half. The Router now joins the two halves into one turn again.
+
+### H-180 · Carry reasoning on the STREAM path too · [AGENT]
+- **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`
+  → no hit in the stream relay means this entry is still open.
+- **Why.** H-179 fixed the buffered path only. `relay_stream` promises that a
+  frame leaves exactly as it arrived, and a mirror on each delta breaks that
+  promise.
+- ⚠️ **Latent today.** Every stream already falls back to the buffered path,
+  because the stream open answers 422 `extra_forbidden`. Fix that 422 and this
+  bug appears on the stream path at once. Do both in one slice.
+
+### H-181 · Upgrade the agent framework and the Copilot SDK · [AGENT]
+- **Check:** `grep -A1 'name = "agent-framework-core"' uv.lock` → a version
+  below 1.19 means this is still open.
+- **Measured 2026-09-24.** `agent-framework-core` 1.8.1 against 1.19.0.
+  `agent-framework-openai` 1.7.0 against 1.14.4. `github-copilot-sdk` 0.1.32
+  against 1.0.14.
+- ⚠️ **An upgrade does NOT fix H-179.** Version 1.14.4 still reads only
+  `reasoning_details`. Keep the Router adapter.
+- ⚠️ **The Copilot SDK crosses 1.0.** Expect breaking changes on the
+  `/copilot/chat` path.
+- **Done when:** all four agents and the orchestrator hold a tool conversation
+  through the live Router on DeepSeek V4. A stubbed test does not count.
 
 ### H-178 · An operator can take a job off the air. Two callers cannot yet · [AGENT]
 - **Check:** `rg -c "model IS NOT NULL" packages/acb_llm apps/services/gateway`
