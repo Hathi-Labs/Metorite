@@ -29,6 +29,8 @@ import re
 from datetime import date
 from typing import Any
 
+import httpx
+
 from skill_projects.client import GatewayRefusal, data, post, put, uuid_of
 from skill_projects.reads import _task_line
 from skill_projects.views import _emit, _plain, _template
@@ -335,6 +337,12 @@ SCORE_KEYS = ("impact", "urgency", "effort")
 #: route holds the same alphabet (``plan_preview._KEY``).
 _KEY = re.compile(r"^[A-Za-z0-9_.-]{1,40}$")
 PREVIEW_PATH = "/projects/plan/preview"
+#: The longest effort one row may carry: 90 days of minutes. The preview route
+#: holds the same bound (``plan_preview.MAX_EFFORT_MINS``).
+MAX_EFFORT_MINS = 90 * 24 * 60
+#: A write whose connection broke may or may not have landed. Both kinds end
+#: the batch with the same receipt (§13.6 rule 9, review round 1).
+_WRITE_FAILED = (GatewayRefusal, httpx.TransportError)
 
 #: The words a mark carries on the card (§13.6 rules 1 and 2).
 MARK_WORDS = {
@@ -372,6 +380,13 @@ def _plan_row(i: int, item: Any) -> dict[str, Any] | str:
         effort = int(item.get("effort_mins"))
     except (TypeError, ValueError):
         return f"Task {i}: effort_mins is a number of minutes."
+    if not 0 <= effort <= MAX_EFFORT_MINS:
+        # The preview route's own bound (`plan_preview.MAX_EFFORT_MINS`).
+        # Outside it the preview says 422 and the whole card loses capacity.
+        return (
+            f"Task {i} ({data(item.get('title'))}): effort_mins is 0 to {MAX_EFFORT_MINS} "
+            "minutes. Nothing was created."
+        )
     due = _clean(item.get("due"))[:10]
     try:
         due_on = date.fromisoformat(due)
@@ -532,7 +547,9 @@ async def _preview(rows: list[dict[str, Any]], owners: dict[str, str]) -> dict[s
     }
     try:
         answer = await post(PREVIEW_PATH, body)
-    except GatewayRefusal:
+    except (GatewayRefusal, httpx.TransportError):
+        # A refused or unreachable read: capacity is not checked, and the
+        # plan goes on (§13.6 As built, review round 1).
         return None
     return answer if isinstance(answer, dict) else None
 
@@ -563,7 +580,13 @@ def _capacity(
     warnings as sentences, and the one capacity line for the card."""
     titles = {r["key"]: r["title"] for r in rows}
     due_of = {r["key"]: r["due"] for r in rows}
-    by_key: dict[str, dict[str, Any]] = {}
+    # A name that did not resolve is picker data every member reads, not HR
+    # data. So the mark shows with or without the grant, and without a
+    # preview (review round 1, P2a). The member fixes it before the submit.
+    by_key: dict[str, dict[str, Any]] = {
+        r["key"]: {"marks": ["owner not resolved"], "warnings": [unresolved[r["owner"]]]}
+        for r in rows if r["owner"] in unresolved
+    }
     if answer is None:
         return by_key, [], "Capacity could not be checked, so no row carries a fit or hours."
     warnings = [
@@ -582,10 +605,10 @@ def _capacity(
         fit = got.get("fit") or {}
         marks = [MARK_WORDS.get(str(m), str(m)) for m in got.get("marks") or []]
         fit_text = str(fit.get("text") or "")
-        owner_name = next((r["owner"] for r in rows if r["key"] == key), "")
-        if owner_name in unresolved:
-            fit_text = "owner not resolved: give an address"
-            marks = ["owner not resolved"]
+        if key in by_key:
+            # Resolution failed, so the preview measured a name, not a person.
+            by_key[key]["fit"] = "owner not resolved: give an address"
+            continue
         by_key[key] = {
             "fit": fit_text,
             "hours": _hours_text(got.get("hours") or {}, due_of[key]),
@@ -627,7 +650,7 @@ def _check_line(check: dict[str, Any]) -> str:
 def _stopped(
     out: list[str],
     what: str,
-    exc: GatewayRefusal,
+    exc: Exception,
     *,
     tasks_left: int,
     owners: tuple[int, int],
@@ -635,7 +658,15 @@ def _stopped(
 ) -> str:
     """The partial receipt (§13.6 rule 9). It lists what exists, names the
     row that failed and counts what was not tried. It archives nothing."""
-    out.append(f"stopped: {what} was refused. {exc}")
+    if isinstance(exc, httpx.TransportError):
+        # A broken connection says nothing about the write it carried.
+        out.append(
+            f"stopped: {what} lost its connection to the gateway "
+            f"({type(exc).__name__}). That write may or may not have landed. "
+            "Read the project before you try again."
+        )
+    else:
+        out.append(f"stopped: {what} was refused. {exc}")
     out.append(
         f"not tried: {tasks_left} task{'s' if tasks_left != 1 else ''} · "
         f"{owners[0]} of {owners[1]} owners assigned · {links[0]} of {links[1]} links written"
@@ -843,7 +874,7 @@ async def _write_plan(
             body["importance"] = row["importance"]
         try:
             task = await post("/projects/tasks", body)
-        except GatewayRefusal as exc:
+        except _WRITE_FAILED as exc:
             for _, made in created:
                 out.extend(_task_line(made))
             return _stopped(
@@ -857,7 +888,7 @@ async def _write_plan(
         tids[row["key"]] = tid
         try:
             await put(f"/projects/tasks/{tid}/assignees", {"assignees": [owners[row["owner"]]]})
-        except GatewayRefusal as exc:
+        except _WRITE_FAILED as exc:
             for _, made in created:
                 out.extend(_task_line(made))
             return _stopped(
@@ -875,7 +906,7 @@ async def _write_plan(
                 f"/projects/tasks/{blocker}/links",
                 {"target_task_id": tids[b], "link_type": "blocks"},
             )
-        except GatewayRefusal as exc:
+        except _WRITE_FAILED as exc:
             return _stopped(
                 out, f"the link {link}", exc,
                 tasks_left=0, owners=(len(final), len(final)), links=(n, len(links)),

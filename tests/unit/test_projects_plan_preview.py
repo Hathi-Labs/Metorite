@@ -317,6 +317,7 @@ def seeded(_ladder):
 
     * ``wel`` has the skill ``welding`` (expert) and no open work.
     * ``nos`` has no skills and no open work.
+    * ``une`` holds UNE in ``A`` (no estimate, due +3).
     * ``busy`` holds EST in ``A`` (30 h, due +3) and HID in ``H`` (200 h, due
       +2). The restricted viewer sees EST only.
     """
@@ -356,7 +357,7 @@ def seeded(_ladder):
             ),
             {"p": made["A"], "s": made["viewer"], "o": org},
         )
-        for key in ("wel", "nos", "busy"):
+        for key in ("wel", "nos", "busy", "une"):
             made[key] = f"{key}-{tag}@example.test"
             made[f"{key}_id"] = str(c.execute(
                 text(
@@ -376,7 +377,7 @@ def seeded(_ladder):
             {"o": org, "p": made["wel_id"]},
         )
 
-        def task(key: str, where: str, est: int, due: int, who: str) -> None:
+        def task(key: str, where: str, est: int | None, due: int, who: str) -> None:
             made[key] = str(c.execute(
                 text(
                     "INSERT INTO pm_tasks (title, project_id, root_project_id,"
@@ -401,6 +402,7 @@ def seeded(_ladder):
 
         task("EST", "A", 30 * 60, 3, "busy")
         task("HID", "H", 200 * 60, 2, "busy")
+        task("UNE", "A", None, 3, "une")
     yield made
     with eng.begin() as c:
         ids = [made["A"], made["H"]]
@@ -412,7 +414,7 @@ def seeded(_ladder):
                   {"p": ids})
         c.execute(text("DELETE FROM pm_projects WHERE id = ANY(CAST(:p AS uuid[]))"), {"p": ids})
         c.execute(text("DELETE FROM people WHERE id = ANY(CAST(:i AS uuid[]))"),
-                  {"i": [made[f"{k}_id"] for k in ("wel", "nos", "busy")]})
+                  {"i": [made[f"{k}_id"] for k in ("wel", "nos", "busy", "une")]})
     eng.dispose()
 
 
@@ -515,20 +517,90 @@ async def test_a_skilled_owner_with_no_spare_hours_keeps_the_skill_match(seeded)
     assert row["marks"] == ["short_of_hours"]
 
 
+async def _available(seeded: dict[str, Any], who: str, days: int) -> float:
+    """The owner's working hours from today to ``days`` out, by the schedule's
+    own arithmetic, so the test sizes its rows against the real window."""
+    from gateway.work_schedule import load_policy, person_schedule, working_hours_between
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    eng = create_async_engine(_async_url(), future=True, poolclass=NullPool)
+    try:
+        async with eng.connect() as db:
+            policy = await load_policy(db)
+            record = (await db.execute(
+                text("SELECT id, working_hours FROM people WHERE id = CAST(:i AS uuid)"),
+                {"i": seeded[f"{who}_id"]},
+            )).fetchone()
+    finally:
+        await eng.dispose()
+    today = date.today()
+    return working_hours_between(
+        person_schedule(policy or {}, record), today, today + timedelta(days=days), [],
+    )
+
+
 @_needs_db
 async def test_two_rows_for_one_owner_mark_the_second_when_the_hours_run_out(seeded) -> None:
-    """Item 6 and §13.6 rule 2. Each fits alone. Together they do not."""
-    body = await _preview(seeded, [
-        _row("t1", owner=seeded["nos"], effort_mins=60, due=_day(7)),
-        _row("t2", owner=seeded["nos"], effort_mins=100 * 60, due=_day(8)),
-    ])
-    rows = _by_key(body)
-    assert rows["t1"]["hours"]["fits"] is True and "short_of_hours" not in rows["t1"]["marks"]
-    assert rows["t2"]["hours"]["fits"] is False and "short_of_hours" in rows["t2"]["marks"]
-    alone = await _preview(seeded, [
-        _row("t2", owner=seeded["nos"], effort_mins=60, due=_day(8)),
-    ])
-    assert _by_key(alone)["t2"]["hours"]["fits"] is True
+    """Item 6 and §13.6 rule 2, the owner's fence. Each row fits ALONE, and
+    together they do not, so the second is marked. Review round 1 (F1): the
+    first version made the second row short by itself, and dropping the
+    first row from the walk left every test green."""
+    first = await _available(seeded, "nos", 7)
+    second = await _available(seeded, "nos", 8)
+    # Each row is 60% of the hours to the later date. Alone, each fits. The
+    # two together need 120%, so the later one runs out.
+    mins = int(second * 0.6 * 60)
+    assert mins / 60 <= first, "the window is too short for this test's arithmetic"
+    rows = [
+        _row("t1", owner=seeded["nos"], effort_mins=mins, due=_day(7)),
+        _row("t2", owner=seeded["nos"], effort_mins=mins, due=_day(8)),
+    ]
+    both = _by_key(await _preview(seeded, rows))
+    assert both["t1"]["hours"]["fits"] is True and "short_of_hours" not in both["t1"]["marks"]
+    assert both["t2"]["hours"]["fits"] is False and "short_of_hours" in both["t2"]["marks"]
+    for row in rows:
+        alone = _by_key(await _preview(seeded, [row]))[row["key"]]
+        assert alone["hours"]["fits"] is True, row["key"]
+        assert "short_of_hours" not in alone["marks"], row["key"]
+
+
+@_needs_db
+async def test_an_owner_whose_other_work_has_no_estimate_keeps_hours_and_a_note(seeded) -> None:
+    """Dispatch gap 2 (review round 1, F2). ``une`` holds one open task with
+    no estimate. The plan row still has an hours basis and a fit verdict,
+    carries the note, and shows no spare hours, because a spare figure there
+    reads as free time (§13.2 rule 4)."""
+    body = await _preview(seeded, [_row("t1", owner=seeded["une"], effort_mins=60, due=_day(7))])
+    hours = _by_key(body)["t1"]["hours"]
+    assert hours["basis"] is True
+    assert hours["fits"] is True
+    assert hours["estimate_note"] == route.ESTIMATE_NOTE
+    assert "spare_hours" not in hours
+
+    # An owner with estimated work carries no note, and does show spare hours.
+    other = _by_key(await _preview(seeded, [_row("t1", owner=seeded["busy"], due=_day(7))]))
+    assert "estimate_note" not in other["t1"]["hours"]
+    assert "spare_hours" in other["t1"]["hours"]
+
+
+def test_the_note_is_set_only_when_every_other_open_task_is_unestimated() -> None:
+    """The hermetic half of F2: the rule behind ``unestimated_only``."""
+    rows = route.checked_rows(_body(_row("t1", due="2026-10-01")))
+    record = SimpleNamespace(id="p", name="Une", email="a@x.in", end_date=None,
+                             max_concurrent_tasks=None)
+    base = {"hours_basis": False, "spare_horizon": 30.0}
+    across = {"hours_basis": True}
+    owner = {"record": record, "base": base, "across": across, "risky": {},
+             "unestimated_only": True,
+             "helper": {"spans": [], "end_date": None, "max_concurrent_tasks": None,
+                        "in_progress": 0}}
+    got = route._row_answer(rows[0], owner, {}, TODAY, date(2026, 10, 1))
+    assert got["hours"]["estimate_note"] == route.ESTIMATE_NOTE
+    assert "spare_hours" not in got["hours"]
+    owner["unestimated_only"] = False
+    got = route._row_answer(rows[0], owner, {}, TODAY, date(2026, 10, 1))
+    assert "estimate_note" not in got["hours"]
 
 
 @_needs_db

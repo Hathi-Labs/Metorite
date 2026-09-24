@@ -1361,7 +1361,7 @@ owner took rules 1, 2 and 3 on 2026-09-24.
     component (`genUITemplates.test.ts`). The receipt in `ProjectToolCards.tsx`
     and step 3 of W1 in `instructions.md` change in the same slice.
 
-**As built, 2026-09-24.** Ten facts that the rules above do not say. The
+**As built, 2026-09-24.** Fourteen facts that the rules above do not say. The
 dispatch named five gaps, and three of them change what a member sees.
 - **Where each part lives.** The read is
   `routes/projects/plan_preview.py`. The tool is `forms.py` `propose_plan`.
@@ -1397,6 +1397,15 @@ dispatch named five gaps, and three of them change what a member sees.
   `create_task` applies.
 - **A refused preview is not a refusal.** The plan card then says that
   the tool could not check capacity, and the member can still create the plan.
+  A lost connection on the preview does the same (review round 1).
+- **An owner that did not resolve is marked for every planner** (review
+  round 1). A name is picker data that every member reads, so the mark
+  "owner not resolved" does not need the HR grant or a preview.
+- **A lost connection mid-batch gives the partial receipt too** (review
+  round 1). The `stopped:` line then says that the write may or may not
+  have landed, and asks the member to read the project before a retry.
+- **The effort of a row is 0 to 129600 minutes**, the bound of the preview
+  route. The tool refuses a row outside it before the card (review round 1).
 - **The partial receipt.** A `stopped:` line makes the receipt card read
   "stopped part way", in the warning tone. It still opens the first task.
 - **The card lays out a block for each task**, not a table (visual review).

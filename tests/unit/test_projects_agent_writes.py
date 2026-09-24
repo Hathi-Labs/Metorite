@@ -2226,3 +2226,129 @@ def test_the_plan_keeps_no_copy_of_the_dependency_rule() -> None:
     source = (SKILL_DIR / "forms.py").read_text(encoding="utf-8")
     assert "dependency_conflict" not in source and "interval(" not in source
     assert F.PREVIEW_PATH == "/projects/plan/preview"
+
+
+# ── S7d review round 1 ──────────────────────────────────────────────────────
+
+
+async def test_an_unresolved_owner_is_marked_on_the_card_without_the_hr_grant(
+    monkeypatch,
+) -> None:
+    """P2a. Name resolution is picker data every member reads, not HR data.
+    A planner without the grant sees "owner not resolved" before the submit,
+    where they can still fix it."""
+    base = _plan_gateway(hr=False)
+
+    def twins(call: dict) -> Any:
+        if call["path"] == "/projects/assignees":
+            return {"people": [{"assignee": "p1@x.io", "name": "Priya S"},
+                               {"assignee": "p2@x.io", "name": "Priya R"}], "agents": []}
+        return base(call)
+
+    rows = [{**PLAN_DEPS[0], "owner": "Priya"}]
+    drawn = form_stub(monkeypatch, _plan_submit([{**rows[0], "owner": "p1@x.io"}]))
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, twins)
+    await skill_projects.propose_plan("Frame", _json.dumps(rows))
+    row = drawn[0]["props"]["data"]["tasks"][0]
+    assert row["marks"] == ["owner not resolved"]
+    assert "Close matches" in row["warnings"][0]
+    assert not {"fit", "hours"} & set(row)
+    assert len(asked) == 1
+
+
+async def test_an_unresolved_owner_is_marked_when_the_preview_fails(monkeypatch) -> None:
+    base = _plan_gateway()
+
+    def broken(call: dict) -> Any:
+        if call["path"] == "/projects/plan/preview":
+            raise client.GatewayRefusal("Projects POST /projects/plan/preview: Failed (500).")
+        if call["path"] == "/projects/assignees":
+            return {"people": [], "agents": []}
+        return base(call)
+
+    rows = [{**PLAN_DEPS[0], "owner": "Nobody"}]
+    drawn = form_stub(monkeypatch, {})
+    fake_gateway(monkeypatch, broken)
+    await skill_projects.propose_plan("Frame", _json.dumps(rows))
+    assert drawn[0]["props"]["data"]["tasks"][0]["marks"] == ["owner not resolved"]
+
+
+async def test_a_preview_that_loses_its_connection_is_not_a_refusal(monkeypatch) -> None:
+    """P2b. A transport error on the read means "capacity could not be
+    checked". It does not abort the plan."""
+    import httpx
+
+    base = _plan_gateway()
+
+    def dropped(call: dict) -> Any:
+        if call["path"] == "/projects/plan/preview":
+            raise httpx.ConnectError("connection refused")
+        return base(call)
+
+    drawn = form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, dropped)
+    out = await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    assert drawn[0]["props"]["data"]["capacity"].startswith("Capacity could not be checked")
+    assert len(asked) == 1 and "project_id:" in out
+
+
+@pytest.mark.parametrize(
+    "where, words",
+    [
+        ("task", "stopped: task 3 of 7, «Step 3», lost its connection to the gateway"),
+        ("owner", "stopped: the owner of «Step 2» lost its connection to the gateway"),
+        ("link", "stopped: the link «Step 1» blocks «Step 2» lost its connection to the gateway"),
+    ],
+)
+async def test_a_lost_connection_mid_batch_still_gives_the_partial_receipt(
+    where: str, words: str, monkeypatch,
+) -> None:
+    """P2b. A gateway that restarts mid-batch raises a transport error, not a
+    refusal. The receipt still says what exists, so a retry does not make a
+    second plan."""
+    import httpx
+
+    rows = [
+        {"key": f"t{i}", "title": f"Step {i}", "owner": "priya@x.io",
+         "effort_mins": 30, "due": "2026-10-10", **({"after": ["t1"]} if i == 2 else {})}
+        for i in range(1, 8)
+    ]
+    base = _plan_gateway()
+    count = {"task": 0, "owner": 0}
+
+    def drop(call: dict) -> Any:
+        if where == "task" and call["method"] == "POST" and call["path"] == "/projects/tasks":
+            count["task"] += 1
+            if count["task"] == 3:
+                raise httpx.ReadTimeout("timed out")
+        if where == "owner" and call["path"].endswith("/assignees"):
+            count["owner"] += 1
+            if count["owner"] == 2:
+                raise httpx.ConnectError("refused")
+        if where == "link" and call["path"].endswith("/links"):
+            raise httpx.ConnectError("refused")
+        return base(call)
+
+    form_stub(monkeypatch, _plan_submit(rows))
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, drop)
+    out = await skill_projects.propose_plan("Steps", _json.dumps(rows))
+    assert words in out, out
+    assert "not tried:" in out and "Nothing was archived." in out
+    assert "may or may not" in out
+
+
+@pytest.mark.parametrize("effort", [-30, 129_601])
+async def test_an_effort_out_of_range_is_refused_before_the_card(
+    effort: int, monkeypatch,
+) -> None:
+    """Minor. The preview refuses these, so the row is refused first."""
+    drawn = form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan(
+        "Frame", _json.dumps([{**PLAN_DEPS[0], "effort_mins": effort}]))
+    assert "effort_mins is 0 to 129600 minutes" in out
+    assert drawn == [] and asked == [] and calls == []
