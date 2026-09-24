@@ -11,24 +11,21 @@
  * - **Board**: the project, linked to the board with the task open
  *   (`ProjectLabel`, `taskDeepLink`), then who put it on my plate.
  *
- * Both kinds also show the shared Priority chip (D76's words, the Projects
- * card's own `importanceChip`) when it is High or Highest. Lower levels stay
- * quiet here, because the Inbox is for triage and Low is not news.
+ * Both kinds also show the task's priority level, D78's `PriorityBadge`,
+ * with the card face's own rule: the default low-priority cell draws
+ * nothing. The Inbox is for triage, and Low is not news.
  */
 
-import { importanceChip } from "@/app/projects/lib/card";
-import { TaskMeta } from "@/components/TaskMeta";
 import Badge from "@/components/ui/Badge";
 
 import { type InboxKind, assignedByLabel } from "../lib/inbox";
 import { useTaskStore } from "../lib/taskStore";
 import type { MyTask } from "../lib/types";
+import { PriorityBadge } from "./PriorityControls";
 import { ProjectLabel } from "./ProjectLabel";
 
 export function InboxOrigin({ item, kind }: { item: MyTask; kind: InboxKind }) {
   const projects = useTaskStore((s) => s.projects);
-  const priority =
-    (item.orgPriority ?? -1) >= 2 ? importanceChip({ importance: item.orgPriority ?? null }) : null;
   const projectName =
     item.projectName ?? projects.find((p) => p.id === item.projectId)?.outcome ?? "a board";
   const from = assignedByLabel(item.assignedBy);
@@ -49,7 +46,7 @@ export function InboxOrigin({ item, kind }: { item: MyTask; kind: InboxKind }) {
           {from ? <span className="whitespace-nowrap text-muted-foreground">{from}</span> : null}
         </>
       )}
-      {priority ? <TaskMeta chips={[priority]} /> : null}
+      <PriorityBadge item={item} hideLowPriority />
     </span>
   );
 }

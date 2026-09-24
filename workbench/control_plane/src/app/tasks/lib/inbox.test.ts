@@ -134,8 +134,8 @@ describe("the origin marker (S6g)", () => {
     expect(src).toMatch(/<Badge tone="neutral" icon="Lock"[^>]*>\s*Personal\s*<\/Badge>/);
     expect(src).toMatch(/<ProjectLabel/);
     expect(src).toMatch(/assignedByLabel\(item\.assignedBy\)/);
-    // D76's words through the Projects card's own chip, High and above.
-    expect(src).toMatch(/>= 2 \? importanceChip\(/);
+    // D78's level badge, with the card face's rule: Low draws nothing.
+    expect(src).toMatch(/<PriorityBadge item=\{item\} hideLowPriority \/>/);
     expect(assignedByLabel("priya@fracktal.in")).toBe("from priya");
     expect(assignedByLabel("")).toBeNull();
   });
