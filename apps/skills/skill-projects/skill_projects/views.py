@@ -80,8 +80,12 @@ def _template(name: str, payload: dict[str, Any], *, surface: str = "inline") ->
 
 def _plain(value: Any) -> str:
     """Member text for a card: newlines collapsed, no fence. A card cell is
-    not a line the receipt parser reads, so the guillemets would only clutter."""
-    return " ".join(str(value or "").split())
+    not a line the receipt parser reads, so the guillemets would only clutter.
+
+    Only ``None`` is empty. A count of 0 is a fact and prints as "0" (S8
+    fix round 4: ``str(value or "")`` blanked "Cancelled 0" and "Spare
+    hours 0")."""
+    return " ".join(("" if value is None else str(value)).split())
 
 
 def _change_text(meta: dict[str, Any]) -> tuple[str, str, str]:

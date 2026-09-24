@@ -1490,3 +1490,34 @@ def test_the_report_card_titles_are_the_reports_apps_words() -> None:
     ).read_text(encoding="utf-8")
     for name, spec in REPORT_CARD_SECTIONS.items():
         assert f'<Section title="{spec["title"]}">' in tsx, name
+
+
+def test_a_card_cell_keeps_a_zero() -> None:
+    """S8 fix round 4, P2: a count of 0 is not an empty cell."""
+    from skill_projects.views import _plain
+
+    assert _plain(0) == "0"
+    assert _plain(0.0) == "0.0"
+    assert _plain(None) == ""
+    assert _plain("a\nb") == "a b"
+
+
+async def test_a_zero_reaches_the_report_card(monkeypatch) -> None:
+    body = {
+        "report": {"name": "Weekly", "scope": "portfolio"},
+        "period_start": "2026-09-14",
+        "period_end": "2026-09-20",
+        "sections": {
+            "finished": {
+                "projects": [{"project_id": "p", "name": "Apollo", "completed": 4, "cancelled": 0}],
+                "total_completed": 4,
+                "total_cancelled": 0,
+            },
+        },
+    }
+    specs = drawn(monkeypatch)
+    fake_gateway(monkeypatch, lambda call: body)
+    await skill_projects.render_report(report_id=UUID)
+    card = specs[0]["props"]["data"]
+    assert {"label": "Cancelled", "value": 0} in card["stats"]
+    assert card["tables"][0]["rows"][0]["cells"] == ["Apollo", "4", "0"]
