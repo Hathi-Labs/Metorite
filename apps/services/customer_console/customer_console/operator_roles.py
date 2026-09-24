@@ -128,6 +128,14 @@ MATRIX: dict[tuple[str, str], RouteRule] = {
     # balances only, never a prompt, a response or a key.
     ("GET", "/admin/usage/orgs"): _R(VIEWER),
     ("GET", "/admin/usage/daily"): _R(VIEWER),
+    # Usage slice 2: one customer's spend by app, agent and person, with our
+    # cost. VIEWER, like its two siblings, which already show cost per org.
+    # 🔴 Missing from the first version, and the matrix fails CLOSED, so every
+    # signed-in operator got 403 and only break-glass could open it. The
+    # route tests used the shared token, which bypasses this table, so they
+    # passed. `test_operator_matrix_coverage.py` now fails on any Operator
+    # route without a row here.
+    ("GET", "/admin/usage/breakdown"): _R(VIEWER),
 
     # ── Day-to-day writes. An editor runs the business ──────────────────────
     ("POST", "/orgs/provision"): _R(EDITOR),

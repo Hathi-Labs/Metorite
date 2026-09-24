@@ -155,3 +155,36 @@ describe("the activity breakdown scopes itself from the SESSION", () => {
     expect(consoleCalls()).toEqual([]);
   });
 });
+
+describe("the by-app breakdown scopes itself from the SESSION (usage slice 3)", () => {
+  it("pins a non-admin to their own member address", async () => {
+    stubFetch(false);
+    const { GET } = await import("@/app/api/billing/usage/apps/route");
+    await GET();
+    expect(consoleCalls()[0]).toContain("/my/usage/apps");
+    expect(consoleCalls()[0]).toContain(
+      `member=${encodeURIComponent("priya@fracktal.in")}`,
+    );
+  });
+
+  it("does not scope an admin — they read the organization", async () => {
+    stubFetch(true);
+    const { GET } = await import("@/app/api/billing/usage/apps/route");
+    await GET();
+    expect(consoleCalls()[0]).not.toContain("member=");
+  });
+
+  it("takes no member from the caller — the handler accepts no request", async () => {
+    const { GET } = await import("@/app/api/billing/usage/apps/route");
+    expect(GET.length).toBe(0);
+  });
+
+  it("is refused for a signed-out caller, and reads nothing", async () => {
+    session.email = null;
+    stubFetch(true);
+    const { GET } = await import("@/app/api/billing/usage/apps/route");
+    const res = await GET();
+    expect(res.status).toBe(401);
+    expect(consoleCalls()).toEqual([]);
+  });
+});
