@@ -40,6 +40,7 @@ import { PILL_HUE, PILL_LABEL } from "@/app/people/lib/dashboard";
 
 import type {
   CapacityReport,
+  ConflictsReport,
   FinishedReport,
   LoadReport,
   OutlookReport,
@@ -55,6 +56,16 @@ import {
   skillLine,
   windowsLine,
 } from "../lib/capacity";
+import {
+  KIND_LABEL,
+  PANEL_ROWS,
+  capNote,
+  conflictRows,
+  countsLine,
+  rowPeople,
+  severityHue,
+  windowLine,
+} from "../lib/conflicts";
 import { effortDisplay, personEffort } from "../lib/effort";
 import {
   type OutlookLine,
@@ -529,6 +540,111 @@ export function CapacityPanel({ data }: { data: CapacityReport }) {
         >
           {windowsLine(data)}
         </p>
+      )}
+    </Panel>
+  );
+}
+
+/**
+ * WS-27bm S7c — where the plan interferes with itself, beside Capacity.
+ *
+ * ⚠️ **Draws the route and counts nothing** (`projects_ai_chat.md` §10.5
+ * item 13). Every row, count and date is the server's, and `lib/conflicts.ts`
+ * holds only the words and the hues. Severity wears the ONE status
+ * vocabulary: `high` is the destructive token, `medium` the warning token.
+ *
+ * ⚠️ **Four kinds are HR tier.** Without `admin:members:read` the server sends
+ * the three task kinds only, and the panel says so in one line instead of
+ * implying that nobody is overcommitted.
+ */
+export function ConflictsPanel({ data }: { data: ConflictsReport }) {
+  const drawn = conflictRows(data).slice(0, PANEL_ROWS);
+  const counts = countsLine(data);
+  const span = windowLine(data);
+  const cap = capNote(data, drawn.length);
+
+  return (
+    <Panel
+      title="Where the plan conflicts"
+      hint="Work that starts before its blocker is due, late blockers, and one person on too many projects at once. Nothing is rescheduled."
+    >
+      {drawn.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">
+          No conflicts in this scope.
+        </p>
+      ) : (
+        <>
+          {counts && (
+            <p
+              className="mb-2 text-[11px] text-muted-foreground"
+              title="Counted by the server over every row, before any cap."
+            >
+              {counts}
+            </p>
+          )}
+          <ul className="space-y-2">
+            {drawn.map((row, i) => {
+              const accent = accentForHue(severityHue(row));
+              const who = rowPeople(row);
+              return (
+                <li key={`${row.kind}:${asList<string>(row.task_ids).join(",")}:${i}`}>
+                  <div className="flex min-w-0 items-baseline gap-2 text-[11px]">
+                    <span
+                      className={`size-1.5 shrink-0 rounded-full ${accent.dot}`}
+                      aria-hidden
+                    />
+                    <span
+                      // The DOT carries the severity, and the label stays in
+                      // the foreground. Warning-token text on a light card
+                      // read too faint in the visual review (2026-09-24).
+                      className="shrink-0 font-medium text-foreground"
+                      title={
+                        row.severity === "high"
+                          ? "High: a due date is at stake."
+                          : "Medium: the plan disagrees with itself."
+                      }
+                    >
+                      {KIND_LABEL[row.kind]}
+                    </span>
+                    {who && (
+                      <span
+                        // `pr-px`: the Load panel's italic-clip lesson.
+                        className="ml-auto min-w-0 truncate pr-px text-muted-foreground"
+                        title={who}
+                      >
+                        {who}
+                      </span>
+                    )}
+                  </div>
+                  <p
+                    className="mt-0.5 line-clamp-2 text-[10px] text-muted-foreground"
+                    title={row.sentence}
+                  >
+                    {row.sentence}
+                  </p>
+                </li>
+              );
+            })}
+          </ul>
+          {cap && (
+            <p className="mt-2 text-[10px] text-muted-foreground">{cap}</p>
+          )}
+        </>
+      )}
+      {data?.hr_visible === false ? (
+        <p className="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground">
+          Overcommitment, absences, leaving dates and work over a ceiling need
+          HR read access. An admin can see them.
+        </p>
+      ) : (
+        span && (
+          <p
+            className="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground"
+            title="The window bounds absences, leaving dates, overcommitment and parallel work. A dependency is wrong whenever it falls."
+          >
+            {span}
+          </p>
+        )
       )}
     </Panel>
   );

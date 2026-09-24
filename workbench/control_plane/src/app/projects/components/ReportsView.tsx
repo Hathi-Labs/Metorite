@@ -24,7 +24,7 @@ import { useEffect, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
-import { statusAccent } from "@/lib/statusAccent";
+import { accentForHue, statusAccent } from "@/lib/statusAccent";
 
 import {
   type FinishedReport,
@@ -33,6 +33,7 @@ import {
   projectsApi,
 } from "../lib/api";
 import { capacityReportRows } from "../lib/capacity";
+import { conflictsReportRows } from "../lib/conflicts";
 
 /** Hours as a person reads them. Mirrors `AnalyticsPanels`, deliberately. */
 function duration(hours: number | null | undefined): string {
@@ -262,6 +263,37 @@ export function RenderedBody({ body }: { body: RenderedReportBody }) {
           {!sections.capacity.hr_visible && (
             <p className="mt-1 text-[11px] text-muted-foreground">
               Hours need HR read access. An admin can see them.
+            </p>
+          )}
+        </Section>
+      )}
+
+      {/* WS-27bm S7c. Opt-in: only a report that asked for `conflicts` has
+          it. The rows and the sentences are the conflicts route's, verbatim. */}
+      {sections.conflicts && (
+        <Section title="Where the plan conflicts">
+          <p
+            className="mb-1 text-[11px] text-muted-foreground"
+            title={`Counted by the server over every row. Dated kinds read the next ${sections.conflicts.horizon_days} days.`}
+          >
+            {sections.conflicts.total} conflicts
+          </p>
+          <ul className="space-y-1">
+            {conflictsReportRows(sections.conflicts.rows).map((c) => (
+              <li key={c.key} className="text-[11px]" title={c.sentence}>
+                {/* The dot carries the severity, as on the Analytics panel. */}
+                <span
+                  className={`mr-1.5 inline-block size-1.5 rounded-full align-middle ${accentForHue(c.hue).dot}`}
+                  aria-hidden
+                />
+                <span className="font-medium text-foreground">{c.label}</span>
+                <span className="text-muted-foreground"> · {c.sentence}</span>
+              </li>
+            ))}
+          </ul>
+          {!sections.conflicts.hr_visible && (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Four kinds need HR read access. An admin can see them.
             </p>
           )}
         </Section>

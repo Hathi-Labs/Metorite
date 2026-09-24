@@ -814,9 +814,9 @@ async def update_project(
 # ── Reports ──────────────────────────────────────────────────────────────────
 
 #: The route's `reports.SECTIONS`, held equal by
-#: `tests/unit/test_projects_report_sections_lockstep.py`. `capacity` is
-#: opt-in: a report carries it only when the member asks for it.
-REPORT_SECTIONS = ("finished", "throughput", "load", "capacity", "stuck")
+#: `tests/unit/test_projects_report_sections_lockstep.py`. `capacity` and
+#: `conflicts` are opt-in: a report carries one only when the member asks.
+REPORT_SECTIONS = ("finished", "throughput", "load", "capacity", "stuck", "conflicts")
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False)
@@ -826,7 +826,8 @@ async def report_save(
     """Save a report definition, or change one (pass report_id). A report
     stores the question: scope (project_id, or empty for the portfolio),
     sections (comma-separated from finished, throughput, load, capacity,
-    stuck; capacity is never there unless asked for) and weeks. Render it
+    stuck, conflicts; capacity and conflicts are never there unless asked
+    for) and weeks. Render it
     with report_render. Delivery and schedules stay in the Reports app."""
     label = str(name or "").strip()
     asked = [s.strip().lower() for s in _split(sections)]

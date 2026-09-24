@@ -1,0 +1,96 @@
+{
+  "$comment": [
+    "The dependency-conflict rule (WS-27bm S7c, specs/projects_ai_chat.md §13.5 rule 2, D-PM-12).",
+    "",
+    "ONE file, read by BOTH runners: tests/unit/test_projects_analytics_conflicts.py drives it",
+    "through gateway/conflicts.py::dependency_conflict, and",
+    "workbench/control_plane/src/app/projects/lib/timeline.test.ts drives it through",
+    "timeline.ts::conflicts. The timeline keeps its copy for live feedback while a member drags",
+    "a bar, and this file is what stops the two copies from drifting.",
+    "",
+    "A case is (blocker, blocked) and the one answer both sides must give. `null` means the",
+    "field is absent. Every due_at is NOON UTC, so no case depends on the machine's time zone:",
+    "the server reads the UTC day and the browser reads its local day, and at noon UTC the two",
+    "are the same day from UTC-11 to UTC+11."
+  ],
+  "cases": [
+    {
+      "name": "the blocker finishes after the blocked task starts",
+      "blocker": {"start_date": "2026-08-01", "due_at": "2026-08-12T12:00:00Z", "completed_at": null},
+      "blocked": {"start_date": "2026-08-10", "due_at": "2026-08-20T12:00:00Z"},
+      "conflict": true
+    },
+    {
+      "name": "a shared day is the normal handover",
+      "blocker": {"start_date": null, "due_at": "2026-08-10T12:00:00Z", "completed_at": null},
+      "blocked": {"start_date": "2026-08-10", "due_at": null},
+      "conflict": false
+    },
+    {
+      "name": "a well-ordered pair",
+      "blocker": {"start_date": null, "due_at": "2026-08-05T12:00:00Z", "completed_at": null},
+      "blocked": {"start_date": "2026-08-10", "due_at": null},
+      "conflict": false
+    },
+    {
+      "name": "a blocker with no dates is unknowable",
+      "blocker": {"start_date": null, "due_at": null, "completed_at": null},
+      "blocked": {"start_date": "2026-08-01", "due_at": null},
+      "conflict": false
+    },
+    {
+      "name": "a blocked task with no dates is unknowable",
+      "blocker": {"start_date": null, "due_at": "2026-08-20T12:00:00Z", "completed_at": null},
+      "blocked": {"start_date": null, "due_at": null},
+      "conflict": false
+    },
+    {
+      "name": "a completed blocker never conflicts",
+      "blocker": {"start_date": null, "due_at": "2026-08-20T12:00:00Z", "completed_at": "2026-08-01T12:00:00Z"},
+      "blocked": {"start_date": "2026-08-10", "due_at": null},
+      "conflict": false
+    },
+    {
+      "name": "the rule reads the blocker's END, not its start",
+      "blocker": {"start_date": "2026-08-12", "due_at": "2026-08-12T12:00:00Z", "completed_at": null},
+      "blocked": {"start_date": "2026-08-14", "due_at": null},
+      "conflict": false
+    },
+    {
+      "name": "a blocker with only a start date uses it for both ends",
+      "blocker": {"start_date": "2026-08-15", "due_at": null, "completed_at": null},
+      "blocked": {"start_date": "2026-08-10", "due_at": "2026-08-20T12:00:00Z"},
+      "conflict": true
+    },
+    {
+      "name": "a blocked task with only a due date starts on it",
+      "blocker": {"start_date": null, "due_at": "2026-08-12T12:00:00Z", "completed_at": null},
+      "blocked": {"start_date": null, "due_at": "2026-08-10T12:00:00Z"},
+      "conflict": true
+    },
+    {
+      "name": "a blocker due before its start is swapped",
+      "blocker": {"start_date": "2026-08-20", "due_at": "2026-08-05T12:00:00Z", "completed_at": null},
+      "blocked": {"start_date": "2026-08-10", "due_at": null},
+      "conflict": true
+    },
+    {
+      "name": "a blocked task due before its start is swapped",
+      "blocker": {"start_date": null, "due_at": "2026-08-09T12:00:00Z", "completed_at": null},
+      "blocked": {"start_date": "2026-08-20", "due_at": "2026-08-08T12:00:00Z"},
+      "conflict": true
+    },
+    {
+      "name": "a blocked task that starts the day after the blocker is due",
+      "blocker": {"start_date": null, "due_at": "2026-08-15T12:00:00Z", "completed_at": null},
+      "blocked": {"start_date": "2026-08-16", "due_at": "2026-08-20T12:00:00Z"},
+      "conflict": false
+    },
+    {
+      "name": "one day late is a conflict",
+      "blocker": {"start_date": "2026-08-01", "due_at": "2026-08-11T12:00:00Z", "completed_at": null},
+      "blocked": {"start_date": "2026-08-10", "due_at": "2026-08-12T12:00:00Z"},
+      "conflict": true
+    }
+  ]
+}

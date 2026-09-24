@@ -50,6 +50,7 @@ from skill_projects.reads import (
     analytics_outlook,
     analytics_stuck,
     analytics_throughput,
+    find_conflicts,
     find_tasks,
     fit_for_task,
     list_tasks,
@@ -141,10 +142,12 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "watchers",
     # Class A — navigation (S6)
     "open_in_app",
-    # Class A — team intelligence (S7a capacity, S7b fit and rebalancing)
+    # Class A — team intelligence (S7a capacity, S7b fit and rebalancing,
+    # S7c conflicts)
     "team_capacity",
     "fit_for_task",
     "rebalance",
+    "find_conflicts",
     # Class B — reversible writes, one card each (S2)
     "add_subtasks",
     "assign",

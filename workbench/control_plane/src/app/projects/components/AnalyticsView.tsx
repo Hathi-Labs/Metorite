@@ -29,6 +29,7 @@ import { accentForSlot } from "@/lib/categorical";
 
 import type {
   CapacityReport,
+  ConflictsReport,
   FinishedReport,
   LoadReport,
   NodeSummary,
@@ -39,6 +40,7 @@ import type {
 } from "../lib/api";
 import {
   CapacityPanel,
+  ConflictsPanel,
   FinishedPanel,
   LoadPanel,
   OutlookPanel,
@@ -134,6 +136,7 @@ export default function AnalyticsView({
   finished,
   outlook,
   capacity = null,
+  conflicts = null,
   onOpen,
 }: {
   /** The PORTFOLIO roll-up — every space the caller can see. */
@@ -163,6 +166,11 @@ export default function AnalyticsView({
    * other panel here does.
    */
   capacity?: CapacityReport | null;
+  /**
+   * WS-27bm S7c — where the plan conflicts, drawn beside Capacity. Optional
+   * for the same reason `capacity` is; `null` renders nothing.
+   */
+  conflicts?: ConflictsReport | null;
   onOpen: (id: string) => void;
 }) {
   /**
@@ -218,13 +226,16 @@ export default function AnalyticsView({
           <OutlookPanel data={outlook} />
         </div>
       )}
-      {(stuck || load || capacity || throughput || finished) && (
+      {(stuck || load || capacity || conflicts || throughput || finished) && (
         <div className="mb-5 grid gap-3 lg:grid-cols-2 2xl:grid-cols-4">
           {/* ⚠️ Load leads since S7a, so Capacity can sit BESIDE it: the
               two read one set of open work, and a reader compares them row by
               row. The node dashboards already lead with Load. */}
           {load && <LoadPanel data={load} />}
           {capacity && <CapacityPanel data={capacity} />}
+          {/* S7c. Beside Capacity: the hours say who is full, and this
+              says where the plan for that work disagrees with itself. */}
+          {conflicts && <ConflictsPanel data={conflicts} />}
           {stuck && <StuckPanel data={stuck} />}
           {throughput && <ThroughputPanel data={throughput} />}
           {finished && <FinishedPanel data={finished} />}

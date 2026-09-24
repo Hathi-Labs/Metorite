@@ -85,6 +85,16 @@ export interface RenderedReport {
       overdue: { name: string; overdue: number }[];
       overdue_total: number;
     };
+    /**
+     * WS-27bm S7c. Opt-in. The four HR kinds are absent for a reader without
+     * `admin:members:read`, so `hr_visible` travels.
+     */
+    conflicts?: {
+      rows: { kind: string; severity: string; sentence: string }[];
+      total: number;
+      hr_visible: boolean;
+      horizon_days: number;
+    };
   };
 }
 
@@ -281,6 +291,30 @@ export function reportEmail(
     }
     if (!cap.hr_visible) {
       const note = "Hours need HR read access.";
+      lines.push(`  ${note}`);
+      blocks.push(`<p>${escapeHtml(note)}</p>`);
+    }
+    lines.push("");
+  }
+
+  const conf = sections.conflicts;
+  if (conf) {
+    const head = `Where the plan conflicts: ${conf.total}`;
+    lines.push(head);
+    blocks.push(`<p>${escapeHtml(head)}</p>`);
+    // ⚠️ The sentence is the server's, verbatim, and it carries task titles
+    // a member typed. It is escaped like every other member string here.
+    const said = conf.rows
+      .slice(0, MAX_EMAIL_ROWS)
+      .map((r) => `${r.severity === "high" ? "High" : "Medium"}: ${r.sentence}`);
+    if (said.length) {
+      blocks.push(
+        `<ul>${said.map((d) => `<li>${escapeHtml(d)}</li>`).join("")}</ul>`,
+      );
+      for (const d of said) lines.push(`  ${d}`);
+    }
+    if (!conf.hr_visible) {
+      const note = "Four kinds need HR read access.";
       lines.push(`  ${note}`);
       blocks.push(`<p>${escapeHtml(note)}</p>`);
     }
