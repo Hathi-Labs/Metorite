@@ -542,7 +542,9 @@ class SystemOneHandler:
                 reads_cost=self.reads_cost,
                 vendor=self.provider,
             )
-        except (ValueError, NativeProviderError) as exc:
+        except (ValueError, OverflowError, NativeProviderError) as exc:
+            # OverflowError: an absurd integer score (10**400) cannot become a
+            # float. The vendor has still charged us, so it is terminal too.
             reason = str(exc) if isinstance(exc, NativeProviderError) else "body is not JSON"
             _log.error(
                 "handlers.vendor_unreadable",

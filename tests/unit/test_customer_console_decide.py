@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import copy
 import json
 import os
 import pathlib
@@ -1462,6 +1463,15 @@ class TestAimlApiErrorMapping:
             _run_aiml(_Vendor(body={"answers": "not a map"}))
         assert exc.value.terminal is True
         assert exc.value.status_code is None
+
+    def test_an_absurd_integer_score_is_terminal_not_a_crash(self):
+        # A paid 200 whose score overflows a float must stop the chain like
+        # any other unreadable body. It must not fail over and pay twice.
+        body = copy.deepcopy(AIML_RECORDED)
+        body["answers"]["frustration"]["score"] = 10**400
+        with pytest.raises(NativeProviderError) as exc:
+            _run_aiml(_Vendor(body=body))
+        assert exc.value.terminal is True
 
     def test_a_dropped_connection_carries_no_status(self):
         def _drop(request):
