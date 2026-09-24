@@ -14,10 +14,12 @@
  * **S6e (my_tasks_cutover.md §4.8 point 3) went one step further: the field
  * blocks are now ONE component, `TaskBody`, and this file is a host.** It
  * draws the header — the task ref, the copy-link, the width stops, the
- * watch toggle, the close, the title and the chip row — and everything
- * under the header is `TaskBody`: status, priority, assignees, due date,
- * description, tags, custom fields, links and subtasks, files, and the
- * discussion with its composer. `ItemDetail` in My Tasks hosts the same
+ * close, the title and the chip row — and everything under the header is
+ * `TaskBody`: status, priority, assignees, due and start dates, the
+ * estimate and time spent, the watch toggle, description, tags, custom
+ * fields, links and subtasks, files, and the discussion with its composer.
+ * D77 moved the watch toggle out of this header into the body, so My Tasks
+ * can watch a task too. `ItemDetail` in My Tasks hosts the same
  * body under its own header and its overlay strip, so a member meets the
  * same fields in the same order in both apps. Neither host writes a field
  * block of its own.
@@ -62,7 +64,6 @@ import {
   type StatusRow,
   type TagRow,
   type TaskRow,
-  watchersApi,
 } from "../lib/api";
 import { taskDeepLink, taskRef } from "../lib/card";
 import {
@@ -149,9 +150,6 @@ export function TaskPanel({
 
   // WS-27w item 6 — the copy-deep-link affordance's "it worked" flash.
   const [copied, setCopied] = useState(false);
-  // WS-27v — null until the read lands, so the toggle never renders a state
-  // it is only guessing at.
-  const [watching, setWatching] = useState<boolean | null>(null);
   // S6e — the way back (§4.8 point 4): what I filed this task as in My
   // Tasks. Null with the lens off, and null when I hold no overlay row.
   const [mine, setMine] = useState<MyOverlay>(null);
@@ -180,18 +178,10 @@ export function TaskPanel({
 
   useEffect(() => {
     let live = true;
-    // The rule below wants these derived from `task.id` during render. They
-    // cannot be: both are also written by the toggle and by the reads.
+    // The rule below wants this derived from `task.id` during render. It
+    // cannot be: the read writes it too.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setWatching(null);
     setMine(null);
-    watchersApi
-      .get(task.id)
-      .then((res) => {
-        if (live) setWatching(res.watching);
-      })
-      // No toggle beats a blank panel.
-      .catch(() => undefined);
     void lensMyOverlay(task.id).then((got) => {
       if (live) setMine(got);
     });
@@ -199,18 +189,6 @@ export function TaskPanel({
       live = false;
     };
   }, [task.id]);
-
-  async function toggleWatch() {
-    if (watching === null) return;
-    // Optimistic — both writes are idempotent, so a failure just reverts.
-    const next = !watching;
-    setWatching(next);
-    try {
-      await (next ? watchersApi.watch(task.id) : watchersApi.unwatch(task.id));
-    } catch {
-      setWatching(!next);
-    }
-  }
 
   /**
    * Copy a URL that reopens this panel — `/projects?task=<id>`, the deep-link
@@ -292,22 +270,6 @@ export function TaskPanel({
                 aria-label={PANEL_MODE_HINTS[mode]}
                 title={PANEL_MODE_HINTS[mode]}
                 onClick={() => onMode(mode === "full" ? "side" : "full")}
-              />
-            ) : null}
-            {/* WS-27v — watch/unwatch. Hidden (not disabled) until the state
-                is known. */}
-            {watching !== null ? (
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                icon={watching ? "BellOff" : "Bell"}
-                aria-label={watching ? "Stop watching this task" : "Watch this task"}
-                title={
-                  watching
-                    ? "Watching — click to stop being notified about this task"
-                    : "Watch — get notified about this task"
-                }
-                onClick={() => void toggleWatch()}
               />
             ) : null}
             <Button

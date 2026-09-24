@@ -41,7 +41,7 @@ import {
   MOCK_PROJECTS,
   type ConnectedProvider,
 } from "./mockData";
-import { isCalendarItem, isTickled } from "./utils";
+import { browserTimeZone, isCalendarItem, isTickled } from "./utils";
 import { clarifyChangesSharedTask, clarifyQueue, isClarifiable } from "./clarify";
 import { type SyncState, canPush } from "./syncState";
 import {
@@ -2294,7 +2294,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       if (patch.context !== undefined) body.context = patch.context;
       if (patch.energy !== undefined) body.energy = patch.energy;
       if (patch.timeEstimateMins !== undefined)
-        body.time_estimate_mins = patch.timeEstimateMins;
+        // D77: the task's ONE estimate. 0 was this app's "clear", and on a
+        // shared column a clear is null — never "zero minutes of work".
+        body.time_estimate_mins = patch.timeEstimateMins || null;
       if (patch.dueAt !== undefined) body.due_at = patch.dueAt;
       if (patch.expectedBy !== undefined) body.expected_by = patch.expectedBy;
       if (patch.scheduledStart !== undefined)
@@ -2574,6 +2576,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       // usable before they arrive.
       const settings = await fetchTaskSettings().catch(() => get().settings);
       set({ settings });
+      // F5 — the gateway reads "today" for the start-date rule in the zone
+      // stored here. Store this browser's zone when it differs, as
+      // `CalendarView` does, so the inbox and `isTickled` agree on the date.
+      const zone = browserTimeZone();
+      if (zone && zone !== settings.timezone) void get().updateSettings({ timezone: zone });
       // ⚠️ The auto-sync-on-open fire was REMOVED 2026-08-25 (D52, WS-39 S1
       // repair round 1). It ran `syncNow()` whenever any `task_accounts` row
       // survived — which, after the retirement, is the ONLY state it could be

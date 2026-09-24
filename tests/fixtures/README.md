@@ -23,3 +23,4 @@ Rules for anything added here:
 | File | Readers | Holds |
 |---|---|---|
 | `crm_weighted_parity.json` | `tests/unit/test_crm_reports.py` · `workbench/control_plane/src/app/crm/lib/board.test.ts` | Weighted ₹ — `(amount, deal_probability, stage_probability, stage_type) → weighted`. Pins `core.WEIGHTED_SQL` against `board.ts::weightedDeal`/`weightedRows`, including the NULL-inherits-the-stage-default rule and the open/ongoing-only filter (WS-26g, `specs/crm_app.md` §9). |
+| `deferred_parity.json` | `tests/unit/test_projects_personal_s6f.py` · `tests/live/live_ws39_s6f.py` · `workbench/control_plane/src/app/tasks/lib/sharedFields.test.ts` | "Not yet" — `(defer_days, start_days) → hidden`. Pins `personal.DEFERRED_CLAUSE` (on Postgres), `personal.not_yet` and `utils.ts::isTickled` to one rule: hidden until the later of my defer and the shared start date (D77, `specs/my_tasks_cutover.md` §4.10). |

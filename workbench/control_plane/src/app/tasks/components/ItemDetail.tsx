@@ -49,11 +49,16 @@ import { PromoteDialog } from "./PromoteDialog";
 //
 // On the live backend this panel is a HOST of the shared
 // `TaskBody` (`app/projects/components/TaskBody.tsx`): its own header, then
-// the overlay STRIP — next action, context, energy, estimate, defer, the
-// founder matrix, waiting-on, notes: the member's own facts on
-// `pm_task_personal` — and then the body Projects draws, in the same order
-// Projects draws it. A member opening one task in each app meets the same
-// fields. Nothing below the strip is written here.
+// the overlay STRIP — next action, context, energy, defer, the Focus
+// matrix, waiting-on: the member's own facts on `pm_task_personal` — and
+// then the body Projects draws, in the same order Projects draws it. A
+// member opening one task in each app meets the same fields. Nothing below
+// the strip is written here.
+//
+// D77 (2026-09-23): the strip draws NO work fact. The estimate, the notes
+// (the task's description), the due date, the start date, Priority and the
+// watch toggle are the body's, in both apps. `itemDetail.test.ts` refuses a
+// label that appears in both halves.
 //
 // S8 PR 1 deleted the flag. The thinner composition below `!lens` serves the
 // demo backend only (`backend !== "live"`, the bundled mock data), which has
@@ -263,8 +268,6 @@ function LensBody({
       tags={tags}
       twoColumn={!!focused && !isMobile}
       above={strip}
-      // The strip's Notes editor IS the description. Drawn once.
-      showDescription={false}
       onChanged={(fresh) => {
         setTask(fresh);
         void refreshItem(item.id);
@@ -433,7 +436,10 @@ export function TaskDetail({
                 )}
               </MetaEdit>
 
-              {/* Estimate */}
+              {/* Estimate — D77: the task's ONE estimate, a work fact. Under
+                  the lens the shared body draws and edits it; here only on
+                  the demo backend. */}
+              {!lens && (<>
               <MetaEdit label="Estimate" icon={themedIcon("Zap")}
                 display={item.timeEstimateMins
                   ? <span>{durationLabel(item.timeEstimateMins)}</span>
@@ -452,6 +458,7 @@ export function TaskDetail({
                   />
                 )}
               </MetaEdit>
+              </>)}
 
               {/* Defer — the tickler (my_tasks_cutover.md §4.8 point 3 names
                   it in the strip). Hidden from the active lists until the
@@ -765,7 +772,9 @@ export function TaskDetail({
             </section>
           )}
 
-          {/* Notes — editable */}
+          {/* Notes — the task's description, a work fact (D77). Under the
+              lens the shared body's Description editor is the one writer. */}
+          {!lens && (<>
           <section>
             <SectionLabel>Notes</SectionLabel>
             <EditableText
@@ -776,6 +785,7 @@ export function TaskDetail({
               onSave={(v) => updateItem(item.id, { notes: v })}
             />
           </section>
+          </>)}
 
           {/* The demo tail — demo backend only. On the live backend the shared body
               draws subtasks, files, comments and the timeline. */}

@@ -1009,6 +1009,59 @@ async def test_the_overlay_card_shows_the_members_own_before_values(monkeypatch)
     assert patched[0]["json"] == {"energy": None, "disposition": "SOMEDAY"}
 
 
+async def test_the_overlay_refuses_done_and_points_at_complete(monkeypatch) -> None:
+    """D77: completion is the shared lane. A DONE behind a card that says
+    "your overlay only" would be a no-op, and routing it to /complete there
+    would move the board without asking about the board."""
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.set_my_overlay(UUID, disposition="done")
+    assert "complete" in out and "D77" in out
+    assert asked == [] and writes(calls) == []
+
+
+async def test_the_overlay_card_says_when_it_reopens_the_board(monkeypatch) -> None:
+    """D77: INBOX, NEXT or WAITING on a FINISHED task reopens it for everybody
+    (`personal.reopen_if_closed`). The card must not say "your overlay only"."""
+    def finished(call: dict) -> Any:
+        if call["path"] == f"/projects/tasks/{UUID}":
+            return {**TASK, "completed_at": "2026-09-20T09:00:00+00:00"}
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, finished)
+    await skill_projects.set_my_overlay(UUID, disposition="next")
+    assert "reopens the task on the board, then sets your overlay" in asked[0]["context"]
+    assert "your overlay only" not in asked[0]["context"]
+
+    # A context alone on the same finished task reopens nothing.
+    asked.clear()
+    await skill_projects.set_my_overlay(UUID, context="@home")
+    assert "scope: «your overlay only»" in asked[0]["context"]
+
+    # F4: filing the finished task as Someday reopens nothing either.
+    asked.clear()
+    await skill_projects.set_my_overlay(UUID, disposition="someday")
+    assert "scope: «your overlay only»" in asked[0]["context"]
+    assert "reopens" not in asked[0]["context"]
+
+
+async def test_the_overlay_card_on_an_open_task_is_overlay_only(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.set_my_overlay(UUID, disposition="next")
+    assert "scope: «your overlay only»" in asked[0]["context"]
+    assert "reopens" not in asked[0]["context"]
+
+
+async def test_the_overlay_refuses_an_estimate_and_points_at_update_task(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.set_my_overlay(UUID, estimate_mins=30)
+    assert "update_task" in out
+    assert asked == [] and writes(calls) == []
+
+
 async def test_a_private_capture_lands_in_my_tasks_and_says_who_sees_it(monkeypatch) -> None:
     asked = approve(monkeypatch)
     calls = fake_gateway(monkeypatch, responder)
@@ -1799,3 +1852,48 @@ def test_the_cards_know_every_guarded_tool() -> None:
     assert block, "GUARDED_TOOLS literal not found in ProjectToolCards.tsx"
     in_cards = set(re.findall(r'"([a-z_]+)"', block.group(1)))
     assert in_cards == m.tools_by_class("C")
+
+
+# ── F2: the defer card says what the defer does ─────────────────────────────
+
+def _finished_task(call: dict) -> Any:
+    if call["path"] == f"/projects/tasks/{UUID}":
+        return {**TASK, "completed_at": "2026-09-20T09:00:00+00:00"}
+    return responder(call)
+
+
+async def test_the_defer_card_on_a_finished_task_says_inbox_only(monkeypatch) -> None:
+    """F2 + F4: a defer writes SOMEDAY, which does not reopen a finished
+    task, so "your inbox only" is the true scope even when it is done."""
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _finished_task)
+    await skill_projects.defer(UUID, until="2026-10-06")
+    assert "scope: «your inbox only»" in asked[0]["context"]
+    assert "reopens" not in asked[0]["context"]
+
+
+async def test_the_defer_card_names_a_reopen_if_the_rule_ever_reopens(monkeypatch) -> None:
+    """F2: the card reads `completed_at` and the reopen set, the way
+    `set_my_overlay`'s card does. Were SOMEDAY to reopen, it would say so."""
+    monkeypatch.setattr(W, "_REOPENING", W._REOPENING | {W._DEFER_DISPOSITION})
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _finished_task)
+    await skill_projects.defer(UUID, until="2026-10-06")
+    assert "reopens the task on the board" in asked[0]["context"]
+    assert "your inbox only" not in asked[0]["context"]
+
+    # An open task keeps "your inbox only" under any rule.
+    asked.clear()
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.defer(UUID, until="2026-10-06")
+    assert "scope: «your inbox only»" in asked[0]["context"]
+
+
+def test_the_defer_disposition_is_the_gateways() -> None:
+    """The card's rule reads the disposition the gateway's defer writes."""
+    import inspect
+
+    from gateway.routes.projects import personal as pm_personal
+
+    assert f'"disposition": "{W._DEFER_DISPOSITION}"' in inspect.getsource(
+        pm_personal.defer_task)

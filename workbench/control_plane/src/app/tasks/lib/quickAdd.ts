@@ -67,6 +67,7 @@ export function quickAddPrefill(
     case "none":
       return {};
     case "priority":
+    case "orgPriority":
     case "mode":
       // Computed from flags + due date — a create cannot promise the landing.
       return null;

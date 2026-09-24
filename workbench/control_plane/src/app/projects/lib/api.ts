@@ -694,6 +694,12 @@ export interface TaskRow {
    */
   subtasks?: { done: number; total: number };
   blocked_by_count?: number;
+  /**
+   * D77 — minutes every member has timed on this task (their overlay
+   * actuals, summed). Only the single read (`GET /tasks/{id}`) carries it;
+   * the list endpoint does not, so a board row reads `undefined`.
+   */
+  time_spent_mins?: number;
 }
 
 export interface StatusRow {

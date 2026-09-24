@@ -133,7 +133,7 @@ async def main() -> None:
         row = (await db.execute(text(
             "SELECT t.origin, t.source, t.project_id, proj.personal_owner, "
             "       proj.parent_project_id, p.disposition, p.context, "
-            "       p.is_hard_date, p.time_estimate_mins, "
+            "       p.is_hard_date, t.estimate_mins, "
             "       (SELECT count(*) FROM pm_task_assignees a "
             "         WHERE a.task_id = t.id AND a.assignee = :who) AS mine, "
             "       (SELECT count(*) FROM pm_tasks c "
@@ -150,11 +150,14 @@ async def main() -> None:
               row.personal_owner == ALICE and row.parent_project_id is None
               and row.mine == 1,
               f"owner={row.personal_owner} parent={row.parent_project_id} mine={row.mine}")
+        # D77 (S6f): the drafter's estimate is the TASK's one estimate, so
+        # it lands on `pm_tasks.estimate_mins`, not the overlay.
         check("1.3 source is 'email' and the overlay carries the routing",
               row.source == "email" and row.disposition == "NEXT"
               and row.context == "@computer" and row.is_hard_date is True
-              and row.time_estimate_mins == 15,
-              f"{row.source} {row.disposition} {row.context} {row.is_hard_date}")
+              and row.estimate_mins == 15,
+              f"{row.source} {row.disposition} {row.context} {row.is_hard_date} "
+              f"est={row.estimate_mins}")
         check("1.4 subtasks are children", row.subs == 2, f"subs={row.subs}")
 
         # ── 2. idempotency by origin ────────────────────────────────────

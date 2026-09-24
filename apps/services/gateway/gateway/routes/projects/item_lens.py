@@ -19,9 +19,10 @@ mine is ``_MY_TASKS_SQL``, called. Where a capture lands is
 called. A copy of any of them here would be a mirror, and mirrors go stale and
 then lie.
 
-**Disposition is STATED where triaged and DERIVED otherwise.** Every query
-prunes in SQL on the stated column (``_PM_ALIVE``) and rules in Python with
-``derive_disposition``, exactly as the planner does. A SQL copy of the rule
+**Disposition is STATED where triaged and DERIVED otherwise**, and the
+task's lane wins over both (D77). Every query prunes in SQL on the stated
+column (``_PM_ALIVE``) and rules in Python with ``effective_disposition``,
+exactly as the planner does. A SQL copy of the rule
 would be the mirror the paragraph above refuses.
 
 **Where a capture goes.** Into the caller's personal root, self-assigned,
@@ -62,12 +63,15 @@ from gateway.routes.projects.personal import (
     _upsert_personal,
     complete_for_member,
     create_personal_task,
-    derive_disposition,
+    effective_disposition,
     ensure_personal_project,
     member_contexts,
+    member_today,
     my_tasks_binds,
+    not_yet,
+    waiting_on_for,
 )
-from gateway.routes.projects.planning import _PM_ALIVE
+from gateway.routes.projects.planning import _CLOSED_LANE, _PM_ALIVE
 from gateway.routes.tasks.core import DEFAULT_CONTEXTS
 from gateway.routes.tasks.item_source import ItemSource, origin_key_sql
 from sqlalchemy import text
@@ -75,8 +79,11 @@ from sqlalchemy import text
 # ── Row shape ────────────────────────────────────────────────────────────────
 
 #: Overlay columns copied straight off a `_MY_TASKS_SQL` row (`p_<name>`).
+#: D77 took one name off this list: `time_estimate_mins` is read off the
+#: SHARED task in `_pm_item`, under the same name. `important` stays: it is
+#: the member's own answer (D76).
 _OVERLAY = (
-    "next_action", "context", "energy", "time_estimate_mins", "defer_until",
+    "next_action", "context", "energy", "defer_until",
     "clarified_at", "delegated_at", "expected_by", "last_nudged_at",
     "scheduled_start", "scheduled_end", "actual_start", "actual_end",
     "important", "leveraged", "deep_work", "kept_mine", "sort_key",
@@ -132,16 +139,25 @@ def _pm_item(row: Any) -> SimpleNamespace:
         status_id=str(getattr(row, "status_id", "") or "") or None,
         status_category=getattr(row, "status_category", None),
         stated_disposition=stated,
-        disposition=stated or derive_disposition(
-            status_category=str(getattr(row, "status_category", "") or ""),
+        disposition=effective_disposition(
+            stated,
+            status_category=getattr(row, "status_category", None),
             is_mine=bool(getattr(row, "is_mine", False)),
             has_assignee=int(getattr(row, "assignee_count", 0) or 0) > 0,
         ),
         is_two_minute=bool(getattr(row, "p_is_two_minute", False)),
         is_hard_date=bool(getattr(row, "p_is_hard_date", False)),
         flexible=True if flexible is None else bool(flexible),
-        waiting_on=from_jsonb(getattr(row, "p_waiting_on", None)),
+        # D77 — the task's assignees minus me, the rule the inbox applies.
+        waiting_on=waiting_on_for(
+            getattr(row, "other_assignees", None),
+            from_jsonb(getattr(row, "p_waiting_on", None)),
+        ),
+        # D77 — the one planning input that is a shared fact.
+        time_estimate_mins=getattr(row, "estimate_mins", None),
         due_at=getattr(row, "due_at", None),
+        # D77 — the shared start date, for the inbox's "not yet" rule.
+        start_date=getattr(row, "start_date", None),
         assignee=None,
         assignees=None,
         is_mine=bool(getattr(row, "is_mine", False)),
@@ -292,7 +308,11 @@ class _PmLens(ItemSource):
     async def context_less_actionables(self, db, uid, limit):
         items = await self._items(
             db, uid,
-            " AND (p.disposition IS NULL OR p.disposition IN ('NEXT', 'WAITING'))"
+            # D77: a stated DONE on a reopened task reads NEXT, so it stays
+            # in the prune and Python rules on the effective value.
+            " AND (p.disposition IS NULL"
+            "      OR p.disposition IN ('NEXT', 'WAITING', 'DONE'))"
+            + _CLOSED_LANE +
             " AND (p.context IS NULL OR p.context = '')"
             " AND t.parent_task_id IS NULL"
             " ORDER BY t.updated_at DESC LIMIT :lim",
@@ -302,6 +322,8 @@ class _PmLens(ItemSource):
     async def insight_counts(self, db, uid):
         items = await self._items(db, uid)
         at = datetime.now(UTC)
+        # F5 — the member's own date for the start-date half of the rule.
+        today = await member_today(db, uid, at)
         counts: dict[str, int] = {}
         oldest: datetime | None = None
         stale = 0
@@ -309,10 +331,13 @@ class _PmLens(ItemSource):
         for it in items:
             counts[it.disposition] = counts.get(it.disposition, 0) + 1
             if it.disposition == "INBOX":
-                defer = _as_utc(it.defer_until)
+                # D77 — the inbox's own "not yet" rule: the later of my defer
+                # and the shared start date (`DEFERRED_CLAUSE`), one place.
                 created = _as_utc(it.created_at)
-                if (defer is None or defer <= at) and created is not None \
-                        and (oldest is None or created < oldest):
+                waiting = not_yet(it.defer_until, it.start_date, at, today)
+                if not waiting and created is not None and (
+                    oldest is None or created < oldest
+                ):
                     oldest = created
             elif it.disposition == "WAITING":
                 delegated = _as_utc(it.delegated_at)
@@ -342,9 +367,10 @@ class _PmLens(ItemSource):
             where += " AND coalesce(t.origin->>'email_id', '') <> :eid"
             params["eid"] = str(exclude_email_id)
         where += " ORDER BY t.created_at DESC"
-        # The limit is applied AFTER the Python rule, on purpose: a derived
-        # DONE row (closed status, no overlay) survives the SQL prune, and a
-        # LIMIT in SQL could let it crowd out the open row the caller wants.
+        # The limit is applied AFTER the Python rule. Since D77 the SQL prune
+        # drops a closed lane (`_CLOSED_LANE`), so no DONE row reaches here.
+        # A stated TRASH is pruned too. The Python rule still runs, and the
+        # limit after it is the safe place should the prune ever narrow.
         items = _alive(await self._items(db, uid, where, **params))
         return items[:limit] if limit is not None else items
 
@@ -391,6 +417,8 @@ class _PmLens(ItemSource):
             "title": fields["title"],
             "description": fields.get("description") or None,
             "due_at": fields.get("due_at"),
+            # D77: the drafter's estimate is the task's one estimate.
+            "estimate_mins": fields.get("time_estimate_mins"),
             "source": source,
             "origin": origin,
         }, {
@@ -398,7 +426,6 @@ class _PmLens(ItemSource):
             "next_action": fields.get("next_action") or None,
             "context": fields.get("context") or None,
             "energy": fields.get("energy") or None,
-            "time_estimate_mins": fields.get("time_estimate_mins"),
             "defer_until": fields.get("defer_until"),
             "is_hard_date": bool(fields.get("is_hard_date", False)),
             "clarified_at": fields.get("clarified_at"),

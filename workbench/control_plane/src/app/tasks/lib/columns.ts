@@ -11,11 +11,13 @@
 /** A toggleable list column. `key` is the stable id used in storage + settings. */
 export type ColumnKey =
   | "priority"
+  | "focus"
   | "mode"
   | "context"
   | "energy"
   | "estimate"
   | "due"
+  | "tags"
   | "attachments"
   | "subtasks";
 
@@ -38,13 +40,23 @@ export interface ColumnDef {
 // the reason the Name column was left with 147px and every title truncated
 // mid-word. Reclaiming it is what lets Name have a readable floor *without*
 // pushing Due date off the right edge.
+//
+// D77 (2026-09-23): the "Priority" column is the task's SHARED Priority
+// (`pm_tasks.importance`, the D76 vocabulary, widest "Highest"). The
+// member's own matrix cell that used to sit under that name is "Your
+// focus", the name the Projects panel gives the same private row (D76).
+// Two columns under one header would give two answers to one question. The
+// key `priority` stays on the shared field, so a member's stored choice to
+// show the Priority column still means the column called Priority.
 export const COLUMNS: ColumnDef[] = [
-  { key: "priority", label: "Priority", width: "130px", align: "left" },
+  { key: "priority", label: "Priority", width: "76px", align: "left" },
+  { key: "focus", label: "Your focus", width: "130px", align: "left" },
   { key: "mode", label: "Suggestion", width: "110px", align: "left" },
   { key: "context", label: "Context", width: "100px", align: "left" },
   { key: "energy", label: "Energy", width: "76px", align: "left" },
   { key: "estimate", label: "Estimate", width: "64px", align: "left" },
   { key: "due", label: "Due date", width: "96px", align: "left" },
+  { key: "tags", label: "Tags", width: "120px", align: "left" },
   { key: "attachments", label: "Files", width: "56px", align: "center" },
   { key: "subtasks", label: "Subtasks", width: "72px", align: "center" },
 ];
@@ -53,11 +65,19 @@ export const COLUMNS: ColumnDef[] = [
  *  default; the noisier count columns (files/subtasks) start hidden. */
 export const DEFAULT_VISIBLE: Record<ColumnKey, boolean> = {
   priority: true,
+  focus: true,
   mode: true,
   context: true,
-  energy: true,
+  // D77 (S6f): off by default, to pay for the shared Priority track. The
+  // Priority column took 76px + a gap, and at 1440 with both rails open
+  // that pushed Due date off the right edge (measured by the S6f rig). Energy
+  // is one toggle away in Settings, and the card still draws it.
+  energy: false,
   estimate: true,
   due: true,
+  // D77 — the team's tags, off by default: the card already draws them, and
+  // a seventh default track would take the room the Name floor needs.
+  tags: false,
   attachments: false,
   subtasks: false,
 };

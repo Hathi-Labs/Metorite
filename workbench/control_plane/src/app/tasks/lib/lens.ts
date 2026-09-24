@@ -167,15 +167,16 @@ export function mapLensItem(raw: Raw): GtdItem {
     nextAction: text(raw.next_action),
     context: text(raw.context),
     energy: (raw.energy ?? undefined) as GtdItem["energy"],
-    // ⚠️ The overlay's `time_estimate_mins`, NOT `pm_tasks.estimate_mins`.
-    // The task's estimate is the team's; this is mine, and they disagree
-    // exactly when somebody privately thinks a job is bigger than billed.
-    timeEstimateMins: num(raw.time_estimate_mins),
+    // D77 (amends D53.8): the task's ONE estimate, `pm_tasks.estimate_mins`
+    // — the number the board, People capacity and analytics read. The
+    // overlay's `time_estimate_mins` is retired and no longer on the wire.
+    timeEstimateMins: num(raw.estimate_mins),
     isTwoMinute: Boolean(raw.is_two_minute),
 
     // ⚠️ `important` is the overlay's Eisenhower boolean. It is NOT
     // `pm_tasks.importance`, the shared Priority integer the Projects table
     // edits (D53.8). Reading one as the other publishes private triage.
+    // D77 leaves this alone: the shared Priority only SEEDS it (D76).
     important: tri(raw.important),
     leveraged: tri(raw.leveraged),
     // The shared Priority, carried BESIDE `important` and never into it. It
@@ -220,21 +221,40 @@ export function mapLensItem(raw: Raw): GtdItem {
     completedAt: text(raw.completed_at),
     clarifiedAt: text(raw.clarified_at),
     deferUntil: text(raw.defer_until),
+    // D77 — two shared facts My Tasks did not show: when the work starts,
+    // and the team's tags.
+    startDate: text(raw.start_date)?.slice(0, 10),
+    tags: Array.isArray(raw.tags) ? (raw.tags as unknown[]).map(String) : [],
   };
 }
 
 // ── Splitting a write ───────────────────────────────────────────────────────
 
-/** Shared facts about the WORK. `PATCH /projects/tasks/{id}`. */
-const TASK_KEYS: Readonly<Record<string, string>> = {
+/**
+ * Shared facts about the WORK. `PATCH /projects/tasks/{id}`.
+ *
+ * D77 (2026-09-23) moved two here: the estimate (My Tasks' Estimate writes
+ * `estimate_mins`, the column People capacity reads) and the start date.
+ * The shared Priority is not written from My Tasks: the member's Important
+ * stays private (D76). Exported for `lens.test.ts`, which pins the split.
+ */
+export const TASK_KEYS: Readonly<Record<string, string>> = {
   title: "title",
   notes: "description",
   due_at: "due_at",
+  time_estimate_mins: "estimate_mins",
+  estimate_mins: "estimate_mins",
+  start_date: "start_date",
 };
 
-/** My practice. `PATCH /projects/tasks/{id}/personal`. */
-const OVERLAY_KEYS: readonly string[] = [
-  "disposition", "next_action", "context", "energy", "time_estimate_mins",
+/**
+ * My practice. `PATCH /projects/tasks/{id}/personal`. D77 took
+ * `time_estimate_mins` off this list: it was a second copy of a work fact,
+ * and the gateway now refuses it by name. `important` stays, because it is
+ * the member's own answer (D76).
+ */
+export const OVERLAY_KEYS: readonly string[] = [
+  "disposition", "next_action", "context", "energy",
   "is_two_minute", "defer_until",
   "scheduled_start", "scheduled_end", "flexible", "is_hard_date",
   "actual_start", "actual_end",
@@ -639,6 +659,10 @@ export async function lensPatchItem(
   // consequence. The rest of the patch still applies.
   const completes = split.personal.disposition === "DONE";
   if (completes) delete split.personal.disposition;
+  // D77 — the reverse ("mark not done", "back to Next" on a closed task) is
+  // the GATEWAY's: every overlay door reopens a closed task when it is given
+  // an open disposition (`personal.reopen_if_closed`), so the bulk path the
+  // checkbox takes gets it too. One rule, one place — nothing here.
   if (Object.keys(split.task).length) {
     await projectsCall<Raw>(`tasks/${id}`, {
       method: "PATCH",
@@ -707,9 +731,14 @@ export async function lensTrashItem(id: string): Promise<void> {
 
 /** Undo the soft delete — back to the inbox to be triaged again. */
 export async function lensRestoreItem(id: string): Promise<GtdItem> {
+  // D77 — an open disposition on a closed task REOPENS it for the board
+  // (`personal.reopen_if_closed`). Undoing a delete must not do that, so a
+  // task whose lane is closed comes back as DONE, which is what it was.
+  const current = await lensGetItem(id);
+  const closed = ["done", "cancelled"].includes(current.statusCategory ?? "");
   await projectsCall<Raw>(`tasks/${id}/personal`, {
     method: "PATCH",
-    body: JSON.stringify({ disposition: "INBOX" }),
+    body: JSON.stringify({ disposition: closed ? "DONE" : "INBOX" }),
   });
   return lensGetItem(id);
 }
@@ -759,6 +788,9 @@ export async function lensDelegateItem(
     method: "PUT",
     body: JSON.stringify({ assignees: [who] }),
   });
+  // ⚠️ D77: only an EXPLICIT date the member typed. No caller passes one
+  // today (the Delegate dialog collects none), and none may default it to
+  // the delegator's own date — the deadline is the team's.
   if (body.due_at) {
     await projectsCall<Raw>(`tasks/${id}`, {
       method: "PATCH",

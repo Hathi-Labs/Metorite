@@ -1821,10 +1821,8 @@ class FakeProjectsDB:
             if not reached:
                 continue
 
-            if "p.defer_until IS NULL OR p.defer_until <= now()" in statement:
-                deferred = mine.get("defer_until")
-                if deferred is not None and _as_datetime(deferred) > _now():
-                    continue
+            if _not_yet(statement, mine, task, args):
+                continue
             if "lower(p.context) = :context" in statement:
                 wanted = str(args.get("context") or "").lower()
                 if str(mine.get("context") or "").lower() != wanted:
@@ -1865,7 +1863,9 @@ class FakeProjectsDB:
                 p_next_action=mine.get("next_action"),
                 p_context=mine.get("context"),
                 p_energy=mine.get("energy"),
-                p_time_estimate_mins=mine.get("time_estimate_mins"),
+                # D77: no `p_time_estimate_mins` — the SQL stopped selecting
+                # it, and a mirror that kept it would answer a retired column
+                # as if it were read.
                 p_is_two_minute=bool(mine.get("is_two_minute", False)),
                 p_defer_until=mine.get("defer_until"),
                 # The scheduled block (187, WS-39 S3a). ⚠️ Projected here
@@ -1910,8 +1910,27 @@ class FakeProjectsDB:
                 ),
                 assignee_count=len(assignees),
                 is_mine=who in assignees,
+                # D77 — the ARRAY subquery: everybody else on the task, in
+                # assignment order (`assigned_at`, then the address).
+                other_assignees=(
+                    self._others_on(task["id"], who)
+                    if "other_assignees" in statement else None
+                ),
             ))
         return out
+
+    def _others_on(self, task_id: str, who: str) -> list[str]:
+        """D77 — the ARRAY subquery: everybody else on the task, in
+        assignment order (`assigned_at`, then the address)."""
+        return [
+            str(a.get("assignee")) for a in sorted(
+                (a for a in self.rows("pm_task_assignees")
+                 if str(a.get("task_id")) == str(task_id)
+                 and str(a.get("assignee") or "").lower() != who),
+                key=lambda a: (str(a.get("assigned_at") or ""),
+                               str(a.get("assignee") or "")),
+            )
+        ]
 
     def _assignees_of(self, task_id: str) -> set[str]:
         return {
@@ -2319,6 +2338,22 @@ class FakeProjectsDB:
         elif re.search(r"\bLIMIT\s+1\b", statement, re.I):
             rows = rows[:1]
         return rows
+
+
+def _not_yet(statement: str, mine: dict, task: dict, args: dict) -> bool:
+    """The tickler, mirrored off the statement: my own `defer_until` in the
+    future, or — D77, `DEFERRED_CLAUSE` — the work's shared `start_date`
+    after the bound `:today`, the member's own date (F5)."""
+    if "p.defer_until IS NULL OR p.defer_until <= now()" in statement:
+        deferred = mine.get("defer_until")
+        if deferred is not None and _as_datetime(deferred) > _now():
+            return True
+    if "t.start_date <= CAST(:today AS date)" in statement:
+        starts = task.get("start_date")
+        today = str(args["today"])[:10]
+        if starts is not None and str(starts)[:10] > today:
+            return True
+    return False
 
 
 def _as_datetime(value: Any) -> datetime:

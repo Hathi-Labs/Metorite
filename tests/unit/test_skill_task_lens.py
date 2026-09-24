@@ -496,12 +496,19 @@ def test_the_list_ranks_before_it_cuts_to_thirty(gw: Recorder):
 def test_split_patch_places_every_field_or_refuses():
     task, personal = core._split_patch({
         "title": "t", "notes": "n", "due_at": "2026-10-01",
+        "time_estimate_mins": 30, "start_date": "2026-10-01",
         "context": "@home", "important": True, "defer_until": None,
     })
-    assert task == {"title": "t", "description": "n", "due_at": "2026-10-01"}
+    # D77: the estimate and the start date are the TASK's.
+    assert task == {"title": "t", "description": "n", "due_at": "2026-10-01",
+                    "estimate_mins": 30, "start_date": "2026-10-01"}
+    # D76: `important` is the member's own answer, on the overlay.
     assert personal == {"context": "@home", "important": True, "defer_until": None}
     with pytest.raises(RuntimeError, match="cannot place"):
         core._split_patch({"provider_status": "x"})
+    # The skill never writes the shared Priority (D76, D77).
+    with pytest.raises(RuntimeError, match="cannot place"):
+        core._split_patch({"importance": 2})
 
 
 def test_update_clears_with_null_on_both_routes(gw: Recorder):

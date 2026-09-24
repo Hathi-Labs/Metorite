@@ -535,7 +535,6 @@ OVERLAY_FACTS = (
     "context",
     "energy",
     "next_action",
-    "time_estimate_mins",
     "defer_until",
     "scheduled_start",
     "scheduled_end",

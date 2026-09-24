@@ -35,8 +35,9 @@ so no request can be made to read or write somebody else's practice.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
@@ -53,6 +54,7 @@ from gateway.routes.projects.core import (
     actor,
     clean_payload,
     coerce_write_values,
+    diff_changes,
     emit,
     from_jsonb,
     insert_row,
@@ -61,6 +63,7 @@ from gateway.routes.projects.core import (
     next_task_number,
     now,
     record_activity,
+    record_field_change,
     require_organization_of,
     resolve_organization_id,
     resolve_visibility,
@@ -76,7 +79,11 @@ from gateway.routes.projects.filters import attach_assignees
 # cycle — the same note `notifications` itself carries about `watchers`, and the
 # same import `tasks`, `bulk` and `activities` already take.
 from gateway.routes.projects.notifications import EXCERPT_CHARS, notify
-from gateway.routes.projects.tasks import MoveTask, move_task_in
+from gateway.routes.projects.tasks import (
+    _TRACKED_TASK_FIELDS,
+    MoveTask,
+    move_task_in,
+)
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -108,6 +115,10 @@ class PersonalIn(BaseModel):
     next_action: str | None = None
     context: str | None = None
     energy: str | None = None
+    #: ⚠️ RETIRED by D77 (2026-09-23). Kept on the model only so a stale
+    #: client that sends it is REFUSED by name (`RETIRED_OVERLAY_KEYS`)
+    #: instead of being dropped with a 200. The estimate is
+    #: `pm_tasks.estimate_mins`, written through `PATCH /projects/tasks/{id}`.
     time_estimate_mins: int | None = None
     is_two_minute: bool | None = None
     defer_until: str | None = None
@@ -127,7 +138,8 @@ class PersonalIn(BaseModel):
     #: shared per-task Priority integer the Projects table edits — see 188's
     #: header. `urgent` is the other axis and is deliberately absent: it is
     #: DERIVED from `due_at`, never stored, so accepting it here would create a
-    #: second answer to a question the deadline already answers.
+    #: second answer to a question the deadline already answers. D76 lets the
+    #: shared Priority SEED an unstated `important` on read; it never writes it.
     important: bool | None = None
     leveraged: bool | None = None
     deep_work: bool | None = None
@@ -262,6 +274,115 @@ def derive_disposition(
     if has_assignee:
         return "WAITING"
     return "INBOX"
+
+
+def effective_disposition(
+    stated: str | None, *, status_category: str | None, is_mine: bool,
+    has_assignee: bool,
+) -> str:
+    """The disposition a member SEES: stated where triaged, derived otherwise,
+    and never in contradiction with the task's shared status (D77).
+
+    Completion is a fact about the WORK — it is the task's lane — so it wins
+    over anything the member stated:
+
+        stated TRASH                      → TRASH (my removal, not a completion)
+        the lane closes (done/cancelled)  → DONE, whatever I stated
+        stated DONE, the lane is open     → NEXT (a teammate reopened it)
+        stated anything else              → as stated
+        nothing stated                    → :func:`derive_disposition`
+
+    ⚠️ **Read-side only. Nothing is written.** A stated DONE on a reopened
+    task stays stored, so ``is_triaged`` stays true: the member triaged it
+    once, and the Weekly Review must not ask again. Measured before D77: a
+    teammate reopened a task in Projects and it stayed DONE in My Tasks, and
+    a task Projects moved to Done kept my stated NEXT.
+
+    One function, called by every reader — the inbox (`_project_task`), the
+    planner (`planning._pm_row`) and the AI seam (`item_lens._pm_item`). A
+    second copy of the rule in any of them is the mirror D77 removes.
+    """
+    category = str(status_category or "")
+    if stated == "TRASH":
+        return "TRASH"
+    if category in CLOSING_CATEGORIES:
+        return "DONE"
+    if stated == "DONE":
+        return "NEXT"
+    if stated:
+        return stated
+    return derive_disposition(
+        status_category=category, is_mine=is_mine, has_assignee=has_assignee,
+    )
+
+
+#: The dispositions that REOPEN a closed task for everybody (D77 choice 3).
+#: Only the ACTIONABLE ones: INBOX, NEXT and WAITING each say "somebody still
+#: has to do this", and without the reopen the lane wins in
+#: `effective_disposition`, so the member's "not done after all" snaps
+#: straight back to DONE. CALENDAR is not stored — organize maps it to NEXT.
+#:
+#: ⚠️ SOMEDAY, REFERENCE and PROJECT do NOT reopen (F4, 2026-09-24). Filing a
+#: finished task for later reading is a statement about MY list, not a claim
+#: that the team's work is unfinished. The stated value is kept, and the
+#: closed lane still reads DONE. A defer writes SOMEDAY, so a defer never
+#: reopens either. DONE is the completion itself, and TRASH is my removal.
+OPEN_DISPOSITIONS: frozenset[str] = frozenset({"INBOX", "NEXT", "WAITING"})
+
+
+async def reopen_if_closed(
+    db: Any, task: Any, email: str, disposition: str | None,
+) -> dict[str, Any] | None:
+    """Move a CLOSED task back to its project's first to-do lane when a member
+    states an open disposition on it (D77). ``None`` when nothing moved.
+
+    The one reopen, called by every overlay door: ``PATCH /tasks/{id}/personal``,
+    the bulk ``personal`` action and organize. It goes through
+    `apply_status_transition`, so the timeline records the move and
+    `completed_at` is cleared, exactly as a board drag would.
+
+    The lane is the first ``todo`` lane of the task's OWN status set. A set
+    with no ``todo`` lane falls back to the first lane by position, and when
+    that lane closes too the task stays where it is: the lane decides.
+    """
+    if disposition not in OPEN_DISPOSITIONS:
+        return None
+    current = (await db.execute(
+        text("SELECT category FROM pm_task_statuses WHERE id = CAST(:sid AS uuid)"),
+        {"sid": str(task.status_id)},
+    )).fetchone()
+    if current is None or getattr(current, "category", None) not in CLOSING_CATEGORIES:
+        return None
+    from gateway.routes.projects.core import apply_status_transition
+
+    owner = await status_owner_id(db, str(task.project_id))
+    try:
+        lane = await load_default_status(db, owner, "todo")
+    except HTTPException:
+        lane = await load_default_status(db, owner)
+    if getattr(lane, "category", None) in CLOSING_CATEGORIES:
+        return None
+    moved = await apply_status_transition(db, task, str(lane.id), created_by=email)
+    await emit("pm.task.status_changed", {
+        "task_id": str(task.id), "from": moved["from"].name,
+        "to": moved["to"].name, "to_category": moved["to"].category,
+    })
+    return moved
+
+
+#: Overlay columns D77 retired, each with the shared column that replaced it.
+#: A write that names one is REFUSED (422), never dropped: a silently
+#: discarded field reads exactly like a save that worked. The columns stay on
+#: `pm_task_personal` until a later contract (R6).
+RETIRED_OVERLAY_KEYS: dict[str, str] = {
+    "time_estimate_mins": (
+        "the estimate is the shared `pm_tasks.estimate_mins` since D77. Set "
+        "`estimate_mins` through PATCH /projects/tasks/{id}."
+    ),
+}
+# ⚠️ `important` is NOT here. It is the member's own answer, and D76 keeps
+# it on the overlay: the shared Priority only seeds it while it is unstated
+# (`routes/tasks/priority.py::seeded_important`).
 
 
 # ── The personal project ────────────────────────────────────────────────────
@@ -620,6 +741,16 @@ async def _upsert_personal(
     db: Any, task_id: str, email: str, values: dict[str, Any],
 ) -> Any:
     """Write MY overlay row for a task. Never anybody else's."""
+    # D77's fence at the ONE writer. Every overlay write in the gateway —
+    # the PATCH, bulk, organize, the planner, the AI seam — comes through
+    # here, so a retired column cannot be written by a path the 422 in
+    # `validate_overlay` does not see.
+    retired = sorted(set(values) & set(RETIRED_OVERLAY_KEYS))
+    if retired:
+        raise ValueError(
+            f"pm_task_personal: {retired} retired by D77 — "
+            + " ".join(RETIRED_OVERLAY_KEYS[k] for k in retired)
+        )
     columns = ["task_id", "member_email", *values]
     assignments = ", ".join(f"{c} = EXCLUDED.{c}" for c in values)
     # `pm_task_personal` has a COMPOSITE key, so the shared `update_row` helper
@@ -773,6 +904,12 @@ def validate_overlay(values: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(
             status_code=422, detail=f"Unknown energy. One of: {list(ENERGIES)}.",
         )
+    retired = sorted(set(values) & set(RETIRED_OVERLAY_KEYS))
+    if retired:
+        raise HTTPException(
+            status_code=422,
+            detail=" ".join(RETIRED_OVERLAY_KEYS[k] for k in retired),
+        )
     return values
 
 
@@ -797,7 +934,7 @@ async def set_personal(
         # (`load_visible_task`), so a task delegated across a Center boundary is
         # triageable by the person asked to do it — which is the case that would
         # otherwise be unusable.
-        await load_visible_task(db, vis, task_id)
+        task = await load_visible_task(db, vis, task_id)
 
         # ── The block must still be a block AFTER the merge ─────────────────
         #
@@ -818,6 +955,8 @@ async def set_personal(
         # this" is the Weekly Review's question, and a no-op PATCH is still a
         # member looking at it.
         values["clarified_at"] = now()
+        # D77 — INBOX, NEXT or WAITING on a closed task reopens it for the board.
+        await reopen_if_closed(db, task, email, values.get("disposition"))
         row = await _upsert_personal(db, task_id, email, values)
         return _personal_to_dict(row)
 
@@ -836,7 +975,8 @@ def _personal_to_dict(row: Any) -> dict[str, Any]:
         "next_action": getattr(row, "next_action", None),
         "context": getattr(row, "context", None),
         "energy": getattr(row, "energy", None),
-        "time_estimate_mins": getattr(row, "time_estimate_mins", None),
+        # D77: no `time_estimate_mins` here. The column is still on the row
+        # (R6) and is not read any more.
         "is_two_minute": bool(getattr(row, "is_two_minute", False)),
         "defer_until": _iso(row, "defer_until"),
         # The block. ⚠️ `flexible` and `is_hard_date` are passed through as
@@ -877,7 +1017,7 @@ def _personal_to_dict(row: Any) -> dict[str, Any]:
 #: coerced. NULL means "this member has never stated it", which is a different
 #: answer from `false`/`0` and is the one the triage nudge looks for.
 _OVERLAY_PASSTHROUGH = (
-    "next_action", "context", "energy", "time_estimate_mins",
+    "next_action", "context", "energy",
     "flexible", "is_hard_date",
     "important", "leveraged", "deep_work", "kept_mine", "sort_key",
 )
@@ -917,10 +1057,44 @@ def _apply_overlay(task: dict[str, Any], row: Any) -> None:
     # and it read as a plain bool before 188. Kept that way rather than widened
     # in passing — a wire-shape change is not a free rider on a column add.
     task["is_two_minute"] = bool(getattr(row, "p_is_two_minute", False))
-    # jsonb over bare `text()` arrives as a STRING (no declared column type to
-    # decode against), so a client typed `dict` would otherwise be handed
-    # '{"email": "..."}' as text.
-    task["waiting_on"] = from_jsonb(getattr(row, "p_waiting_on", None))
+    # D77 — who I wait on is DERIVED, not copied off the overlay. See
+    # :func:`waiting_on_for`. `_project_task` blanks it when the effective
+    # disposition is not WAITING.
+    task["waiting_on"] = waiting_on_for(
+        getattr(row, "other_assignees", None),
+        from_jsonb(getattr(row, "p_waiting_on", None)),
+    )
+
+
+def waiting_on_for(others: Any, stored: Any) -> dict[str, Any] | None:
+    """Who a WAITING task waits on (D77): its CURRENT assignees minus me.
+
+    Before D77 this was the overlay's `waiting_on`, a copy made at delegation
+    time. Reassign the task in Projects and my Waiting-For list and the Nudge
+    still named the old person. The assignees are the fact, so they win.
+
+    ``others`` is the task's assignees other than the member, in assignment
+    order (`_MY_TASKS_SQL`'s ``other_assignees``). The first one is who the
+    card names.
+
+    The stored record is used in exactly two ways, and neither is a second
+    answer about the work:
+
+    * **as a LABEL**, when it names the same address — the delegator typed
+      "Bob Smith", and the assignee row holds only the address;
+    * **as the whole answer when nobody else is assigned.** A task in my own
+      tree cannot carry a colleague (D62), so a chase there is an outside
+      person — an email correspondent, a vendor — who is on no assignee row.
+      The overlay is the only place that fact lives.
+    """
+    rest = [str(a) for a in (others or []) if a]
+    if not rest:
+        return stored or None
+    who = rest[0]
+    name = who
+    if isinstance(stored, dict) and str(stored.get("email") or "").lower() == who.lower():
+        name = str(stored.get("name") or who)
+    return {"name": name, "email": who}
 
 
 # ── The inbox ───────────────────────────────────────────────────────────────
@@ -1040,7 +1214,6 @@ SELECT t.*,
        p.next_action        AS p_next_action,
        p.context            AS p_context,
        p.energy             AS p_energy,
-       p.time_estimate_mins AS p_time_estimate_mins,
        p.is_two_minute      AS p_is_two_minute,
        p.defer_until        AS p_defer_until,
        p.scheduled_start    AS p_scheduled_start,
@@ -1068,7 +1241,13 @@ SELECT t.*,
                             AS assignee_count,
        EXISTS (SELECT 1 FROM pm_task_assignees a3
                WHERE a3.task_id = t.id AND lower(a3.assignee) = :who)
-                            AS is_mine
+                            AS is_mine,
+       -- D77: who a WAITING task waits on is its assignees minus me,
+       -- in assignment order (`waiting_on_for`).
+       ARRAY(SELECT a5.assignee FROM pm_task_assignees a5
+              WHERE a5.task_id = t.id AND lower(a5.assignee) <> :who
+              ORDER BY a5.assigned_at, a5.assignee)
+                            AS other_assignees
 """ + MY_TASKS_FROM
 
 #: The inbox's order, and it is not cosmetic. `my_inbox` pages in Python over
@@ -1105,8 +1284,9 @@ def _project_task(row: Any) -> tuple[dict[str, Any], str]:
     ``is_triaged`` was already on the inbox's wire and is now on all three, for
     the one-shape reason above.
     """
-    effective = getattr(row, "p_disposition", None) or derive_disposition(
-        status_category=str(getattr(row, "status_category", "") or ""),
+    effective = effective_disposition(
+        getattr(row, "p_disposition", None),
+        status_category=getattr(row, "status_category", None),
         is_mine=bool(getattr(row, "is_mine", False)),
         has_assignee=int(getattr(row, "assignee_count", 0) or 0) > 0,
     )
@@ -1137,6 +1317,10 @@ def _project_task(row: Any) -> tuple[dict[str, Any], str]:
     # inbox, the calendar and the single read alike (S8a).
     task["origin"] = from_jsonb(getattr(row, "origin", None))
     _apply_overlay(task, row)
+    if effective != "WAITING":
+        # A task I no longer wait on names nobody, even when the overlay
+        # still holds the delegation record (history, R6).
+        task["waiting_on"] = None
     return task, effective
 
 
@@ -1151,6 +1335,67 @@ def _project_task(row: Any) -> tuple[dict[str, Any], str]:
 UNTRIAGED_CLAUSE = (
     "(p.task_id IS NULL OR p.disposition IS NULL) AND proj.personal_owner IS NULL"
 )
+
+#: "Not yet" — hidden from my inbox until the LATER of my own defer date and
+#: the work's shared start date (D77). `start_date` is a DATE, so a task
+#: starting today is in today's list.
+#:
+#: ⚠️ **"Today" is the MEMBER's date, bound as ``:today``** (F5, 2026-09-24).
+#: The first build compared with the database's `current_date`, which is
+#: UTC. The client's `isTickled` reads the member's local date, so for five
+#: and a half hours every evening in India the two disagreed about a task
+#: starting tomorrow. :func:`member_today` computes the bind from the
+#: member's stored timezone. One spelling, shared by the route and
+#: `tests/live/live_ws39_s6f.py`.
+DEFERRED_CLAUSE = (
+    "(p.defer_until IS NULL OR p.defer_until <= now())"
+    " AND (t.start_date IS NULL OR t.start_date <= CAST(:today AS date))"
+)
+
+
+def local_date(tz_name: Any, at: datetime) -> date:
+    """``at`` as a calendar date in the IANA zone ``tz_name``. An unknown or
+    empty zone reads as UTC, the default `user_settings.timezone` carries."""
+    try:
+        zone = ZoneInfo(str(tz_name or "UTC"))
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = ZoneInfo("UTC")
+    return at.astimezone(zone).date()
+
+
+async def member_today(db: Any, email: str, at: datetime | None = None) -> date:
+    """The member's own date now (F5): `user_settings.timezone`, the zone the
+    client stores for itself (`taskStore.hydrate`, `CalendarView`). A member
+    with no row reads as UTC."""
+    row = (await db.execute(
+        text("SELECT timezone FROM user_settings WHERE user_id = :uid"),
+        {"uid": email},
+    )).fetchone()
+    return local_date(getattr(row, "timezone", None), at or datetime.now(UTC))
+
+
+def not_yet(
+    defer_until: Any, start_date: Any, at: datetime, today: date | None = None,
+) -> bool:
+    """:data:`DEFERRED_CLAUSE`, negated, for a caller already holding the row.
+
+    True while the task waits: my own ``defer_until`` is still ahead, or the
+    shared ``start_date`` is after ``today`` — the member's date, from
+    :func:`member_today`. Without one it falls back to ``at``'s UTC date.
+    The SQL and this function are one rule in two forms, held together by
+    ``tests/fixtures/deferred_parity.json`` — the unit test drives this, the
+    live check drives the clause on Postgres, and `sharedFields.test.ts`
+    drives the client's ``isTickled``.
+    """
+    defer = _as_utc(defer_until)
+    if defer is not None and defer > at:
+        return True
+    if start_date is None:
+        return False
+    starts = start_date if not isinstance(start_date, datetime) else start_date.date()
+    if isinstance(starts, str):
+        starts = datetime.fromisoformat(starts[:10]).date()
+    return starts > (today or at.date())
 
 
 @router.get("/my/inbox")
@@ -1197,7 +1442,13 @@ async def my_inbox(
     extra: dict[str, Any] = {}
     if not include_deferred:
         # The tickler: a deferred task is not in the inbox until its date.
-        clauses.append("(p.defer_until IS NULL OR p.defer_until <= now())")
+        # D77 — and not before the work's shared START date either. The two
+        # clauses AND, so the task waits for the later of the two:
+        # `defer_until` is mine, `start_date` is the team's.
+        clauses.append(DEFERRED_CLAUSE)
+        needs_today = True
+    else:
+        needs_today = False
     if context:
         clauses.append("lower(p.context) = :context")
         extra["context"] = context.strip().lower()
@@ -1207,6 +1458,11 @@ async def my_inbox(
     sql = _MY_TASKS_SQL + ("".join(f" AND {c}" for c in clauses)) + _INBOX_ORDER
     items: list[dict[str, Any]] = []
     async with _tenant_session() as db:
+        if needs_today:
+            # F5 — the member's own date, never the database's UTC one. A
+            # `date`, not a string: asyncpg types `CAST(:today AS date)` as a
+            # date parameter and refuses text (measured on the live check).
+            extra["today"] = await member_today(db, email)
         params = await my_tasks_binds(
             db, email, archived=include_archived, **extra,
         )
@@ -1775,9 +2031,34 @@ async def _organize(
         await move_task_in(db, vis, task, move, by=email)
         task = await load_visible_task(db, vis, task_id)
 
-    # ── 2. The shared deadline — one fact, on the task ──────────────────────
-    if (payload.due_at or "").strip():
-        await update_row(db, "pm_tasks", task_id, {"due_at": payload.due_at})
+    # ── 2. The shared facts — one deadline, one estimate, on the task ───────
+    #
+    # ⚠️ D77: a DELEGATION never replaces a deadline the task already has.
+    # The deadline is the team's. A date on the delegate decision is the
+    # delegator's wish, and the promise the delegate makes is `expected_by`
+    # (theirs to state, never copied). A task with no deadline yet takes the
+    # date, because then nobody's deadline is overwritten. To move an
+    # existing deadline the member edits Due in the shared body.
+    shared: dict[str, Any] = {}
+    if (payload.due_at or "").strip() and not (
+        delegated and getattr(task, "due_at", None) is not None
+    ):
+        shared["due_at"] = payload.due_at
+    if payload.time_estimate_mins is not None:
+        # D77: the one estimate. The clarify card's Estimate is the same
+        # field People capacity and analytics read.
+        shared["estimate_mins"] = payload.time_estimate_mins
+    if shared:
+        # The way `patch_task` writes them: the row, then what actually moved
+        # through the ONE field_change door, so the timeline shows the
+        # deadline and the estimate an organize set (D77 repair).
+        after = await update_row(db, "pm_tasks", task_id, shared)
+        changes = diff_changes(task, after, _TRACKED_TASK_FIELDS)
+        if changes:
+            await record_field_change(
+                db, created_by=email, task_id=task_id, changes=changes,
+            )
+        task = after
 
     # ── 3. My overlay ───────────────────────────────────────────────────────
     if payload.kind == "do-now":
@@ -1791,7 +2072,6 @@ async def _organize(
         "next_action": (payload.next_action or "").strip() or None,
         "context": payload.context,
         "energy": payload.energy,
-        "time_estimate_mins": payload.time_estimate_mins,
         "is_two_minute": payload.kind == "do-now",
         # Written on EVERY decision, as `items.py` did: a re-clarify from
         # "calendar" to "next" must drop the hard date, or the task stays
@@ -1812,6 +2092,8 @@ async def _organize(
         # somehow survived cannot roll into tomorrow either.
         values["scheduled_start"] = None
         values["scheduled_end"] = None
+    # D77 — INBOX, NEXT or WAITING on a closed task reopens it for the board.
+    await reopen_if_closed(db, task, email, disposition)
     await _upsert_personal(db, task_id, email, values)
 
     # ── 4. The steps — children of the task where it now lives ─────────────
@@ -1875,7 +2157,8 @@ async def defer_task(
 ) -> dict:
     """Hide a task from my inbox until a date. Mine only — the team's board is
     unaffected, because deferring is a statement about my attention, not about
-    the work."""
+    the work. It writes SOMEDAY, which is not an actionable disposition, so a
+    defer never reopens a finished task (D77 choice 3, `OPEN_DISPOSITIONS`)."""
     email = actor(user).lower()
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
@@ -1919,14 +2202,56 @@ async def nudge_task(
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
 
+        # D77 — a finished task has nobody left to chase. The lane decides
+        # completion, so a closed lane refuses whatever the overlay says.
+        lane = (await db.execute(
+            text("SELECT category FROM pm_task_statuses WHERE id = CAST(:sid AS uuid)"),
+            {"sid": str(task.status_id)},
+        )).fetchone()
+        if lane is not None and getattr(lane, "category", None) in CLOSING_CATEGORIES:
+            raise HTTPException(
+                status_code=409,
+                detail="This task is done. There is nobody to chase.",
+            )
+
         stored = (await db.execute(
             text(
-                "SELECT waiting_on FROM pm_task_personal "
+                "SELECT waiting_on, disposition FROM pm_task_personal "
                 "WHERE task_id = CAST(:tid AS uuid) AND member_email = :who"
             ),
             {"tid": task_id, "who": email},
         )).fetchone()
-        waiting_on = from_jsonb(getattr(stored, "waiting_on", None))
+        # A chase needs a delegation: my stated WAITING, or a delegation
+        # record. Being one of several assignees is not waiting on the rest.
+        delegated = stored is not None and (
+            getattr(stored, "disposition", None) == "WAITING"
+            or bool(getattr(stored, "waiting_on", None))
+        )
+        # D77 — the nudge goes to whoever holds the task NOW: its assignees
+        # minus me, through the same rule the Waiting-For list draws
+        # (`waiting_on_for`). Reassign it in Projects and the nudge follows.
+        holders = (await db.execute(
+            text(
+                "SELECT assignee, assigned_at FROM pm_task_assignees "
+                "WHERE task_id = CAST(:tid AS uuid)"
+            ),
+            {"tid": task_id},
+        )).fetchall()
+        # Ordered and filtered here rather than in SQL, so the order is the
+        # one `_MY_TASKS_SQL`'s `other_assignees` uses, spelled once in Python.
+        others = [
+            str(r.assignee) for r in sorted(
+                holders,
+                key=lambda r: (str(getattr(r, "assigned_at", "") or ""),
+                               str(r.assignee)),
+            )
+            if str(r.assignee).lower() != email
+        ]
+        waiting_on = waiting_on_for(
+            others, from_jsonb(getattr(stored, "waiting_on", None)),
+        )
+        if not delegated:
+            waiting_on = None
         if not waiting_on:
             # 409, not 422: the payload is fine, the STATE is not. There is
             # nobody to chase because this task is not delegated.
