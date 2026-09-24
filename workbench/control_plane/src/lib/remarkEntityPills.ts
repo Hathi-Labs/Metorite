@@ -262,9 +262,56 @@ export function spaceBeforeBold(content: string): string {
     .join("\n");
 }
 
+/**
+ * Split a line into text and inline code, the CommonMark way: a run of N
+ * backticks opens a code span, and only the next run of exactly N closes it.
+ * So ``a`b`` is one span. A run with no closing partner is plain text.
+ * Returns the parts with code at the odd indexes. Exported for its test.
+ */
+export function splitCodeSpans(line: string): string[] {
+  const parts: string[] = [];
+  let text = "";
+  let k = 0;
+  while (k < line.length) {
+    if (line[k] !== "`") {
+      text += line[k];
+      k += 1;
+      continue;
+    }
+    let n = 0;
+    while (line[k + n] === "`") n += 1;
+    // Find the next run of exactly n backticks.
+    let close = -1;
+    let j = k + n;
+    while (j < line.length) {
+      if (line[j] !== "`") {
+        j += 1;
+        continue;
+      }
+      let m = 0;
+      while (line[j + m] === "`") m += 1;
+      if (m === n) {
+        close = j;
+        break;
+      }
+      j += m;
+    }
+    if (close === -1) {
+      text += line.slice(k, k + n);
+      k += n;
+      continue;
+    }
+    parts.push(text, line.slice(k, close + n));
+    text = "";
+    k = close + n;
+  }
+  parts.push(text);
+  return parts;
+}
+
 function fixLine(line: string, state: { bolds: number }): string {
-  // Split out inline code spans; only the parts between them are touched.
-  const parts = line.split(/(`+[^`]*`+)/);
+  // Only the text between inline code spans is touched.
+  const parts = splitCodeSpans(line);
   return parts
     .map((part, i) => {
       if (i % 2 === 1) return part;

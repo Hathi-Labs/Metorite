@@ -12,6 +12,7 @@ import remarkEntityPills, {
   PILL_GROUP_CLASS,
   PILL_TEXT_ATTR,
   spaceBeforeBold,
+  splitCodeSpans,
   splitText,
   type MdNode,
 } from "./remarkEntityPills";
@@ -157,6 +158,14 @@ describe("spaceBeforeBold", () => {
     expect(spaceBeforeBold("Intro **spans\nline.**Next")).toBe("Intro **spans\nline.** Next");
     // A blank line starts the count again.
     expect(spaceBeforeBold("An **open\n\ntoday.**Early**")).toBe("An **open\n\ntoday. **Early**");
+  });
+
+  it("leaves a code span alone when it holds a backtick (fix round 3)", () => {
+    expect(spaceBeforeBold("``a`b.**c**`` d.**e**")).toBe("``a`b.**c**`` d. **e**");
+    // A run with no partner of the same length is text, as CommonMark reads it.
+    expect(splitCodeSpans("``a`b`` x")).toEqual(["", "``a`b``", " x"]);
+    expect(splitCodeSpans("a `b` c")).toEqual(["a ", "`b`", " c"]);
+    expect(splitCodeSpans("a ``b` c")).toEqual(["a ``b` c"]);
   });
 
   it("leaves a line indented four spaces alone", () => {
