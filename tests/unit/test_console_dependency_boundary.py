@@ -431,7 +431,7 @@ def _imports_console_resolve(path: Path) -> bool:
 
 
 def test_resolve_is_reachable_only_from_the_signin_path() -> None:
-    """``console_resolve`` has exactly SEVEN callers, and all are named here.
+    """``console_resolve`` has exactly EIGHT callers, and all are named here.
 
     A structural fence is preferred to an example one (R7): the failure is a
     second call site added later, which no runtime assertion sees until a
@@ -453,13 +453,15 @@ def test_resolve_is_reachable_only_from_the_signin_path() -> None:
     ``cc_live_`` credential and the route makes no tenant claim at all. The
     argument is written beside the name above.
 
-    ⚠️ FIVE → SIX by the lifespan bootstrap (2026-09-15), and SIX → SEVEN by
-    WS-31 CP-13c (2026-09-24): ``acb_llm/decide.py`` (``decide_on_console``,
-    the ``decide`` facade). Both arguments are written beside the names above.
+    ⚠️ FIVE → SIX by the lifespan bootstrap (2026-09-15), SIX → SEVEN by
+    H-171 (2026-09-23): ``acb_llm/routed.py`` (the in-product AI hop), and
+    SEVEN → EIGHT by WS-31 CP-13c (2026-09-24): ``acb_llm/decide.py``
+    (``decide_on_console``, the ``decide`` facade). Each argument is written
+    beside its name above.
 
     What stays forbidden is unchanged: wiring any of them behind
     ``resolve_access`` (six callers, one a room fan-out) = farmable seat burn.
-    An EIGHTH is the drift.
+    A NINTH is the drift.
 
     ⚠️ It is deliberately paired with a frontend fence. This one alone is
     satisfied by a BFF that calls ``POST /signin/resolve`` from anywhere;
@@ -482,11 +484,12 @@ def test_resolve_is_reachable_only_from_the_signin_path() -> None:
     )
     assert callers == sorted(_ALLOWED_CALLERS), (
         f"console_resolve callers drifted: {callers}\n\n"
-        "It allocates a SEAT (`resolve_for_signin`). Exactly seven sites may "
+        "It allocates a SEAT (`resolve_for_signin`). Exactly eight sites may "
         "call it — the completion of a sign-in, the self-serve signup provision, "
         "the customer seat-admin write, the member-invite mirror, the CP-11 "
-        "AI Router hop, the gateway lifespan's bootstrap loop and the CP-13c "
-        "`acb_llm.decide` facade. The last three allocate no seat and name no "
+        "AI Router hop, the gateway lifespan's bootstrap loop, the H-171 "
+        "in-product AI hop and the CP-13c `acb_llm.decide` facade. The last "
+        "four allocate no seat and name no "
         "person. The first four each carry a provider-verified session email. "
         "Never `resolve_access` (six callers, "
         "one of them a fan-out over a room's participants), never "
