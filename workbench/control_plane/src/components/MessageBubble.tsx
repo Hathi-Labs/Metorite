@@ -21,6 +21,9 @@ import { openDoc, openGenUI } from "@/lib/sidePanelStore";
 import { useSidePanelFits } from "@/lib/sidePanelFit";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import { capabilityLabel, type RoomParticipant } from "@/lib/rooms";
+import { EntityIndexContext } from "@/components/ChatEntityPill";
+import { buildEntityIndex } from "@/lib/entityIndex";
+import { pillsForTurn } from "@/lib/projectsAgent";
 
 /** The only part of a room participant a message bubble needs: a face. */
 export type BubbleParticipant = Pick<
@@ -102,6 +105,7 @@ function MessageBubble({
   viewerEmail,
   participants,
   sessionAgentName,
+  entityPills = false,
 }: {
   message: ChatMessage;
   sessionId: string;
@@ -120,6 +124,10 @@ function MessageBubble({
   participants?: BubbleParticipant[];
   /** The thread's own agent — a turn from any OTHER agent gets a name plate. */
   sessionAgentName?: string;
+  /** Draw «names» as entity pills (WS-27bm S9). The caller passes true for
+   *  the Projects assistant only. A turn by another agent in the thread
+   *  still draws none. */
+  entityPills?: boolean;
 }) {
   // Whether a document may open in the side panel here (`lib/sidePanelFit.ts`).
   const panelFits = useSidePanelFits();
@@ -179,6 +187,16 @@ function MessageBubble({
       return true;
     });
   }, [message.toolEvents]);
+
+  // The names this turn's tools printed (WS-27bm S9), built once. The answer
+  // gets it as a prop, and a generative-UI `markdown` node reads it through
+  // the context. Only a Projects turn builds it: another agent's tools hold
+  // email bodies and other text that no pill may resolve against.
+  const pills = pillsForTurn(entityPills, message);
+  const entityIndex = useMemo(
+    () => (pills ? buildEntityIndex(dedupedToolEvents) : null),
+    [pills, dedupedToolEvents],
+  );
 
   // Dismissed tool/artifact cards (persisted) — filter them out of every card
   // surface so closing a card sticks across reloads.
@@ -447,6 +465,8 @@ function MessageBubble({
         segments={message.segments}
         onChoice={onChoice}
         sessionId={sessionId}
+        entityPills={pills}
+        entityIndex={entityIndex ?? undefined}
       />
       {/* Inline artifact cards — dismissable (persisted), keyed by sha/path. */}
       {(() => {
@@ -485,6 +505,7 @@ function MessageBubble({
           view lives in the side panel); specs carrying a request_id route
           interactions through the blocking HITL resume path. */}
       {genUiEvents.length > 0 && (
+        <EntityIndexContext.Provider value={entityIndex}>
         <div className="mt-3 space-y-2">
           {genUiEvents.map((spec, i) => {
             const rec = (spec && typeof spec === "object"
@@ -521,6 +542,7 @@ function MessageBubble({
             return <GenerativeUINode key={i} spec={spec} onAction={act} />;
           })}
         </div>
+        </EntityIndexContext.Provider>
       )}
       {/* Inline email-assistant cards (editable draft, rule disable/delete).
           Inert unless the message contains email-assistant tool calls, so this
@@ -599,5 +621,6 @@ export default React.memo(MessageBubble, (a, b) =>
   a.emailContext?.emailId === b.emailContext?.emailId &&
   a.viewerEmail === b.viewerEmail &&
   a.sessionAgentName === b.sessionAgentName &&
+  a.entityPills === b.entityPills &&
   sameParticipants(a.participants, b.participants),
 );

@@ -53,7 +53,10 @@ import {
   type ScopeEntry,
 } from "../lib/chatScope";
 
-export const PROJECTS_AGENT = "projects-assistant";
+// The name lives in `lib/projectsAgent.ts`, because the chat reads it too
+// (the entity pills, WS-27bm S9). Re-exported for the rail's callers.
+import { PROJECTS_AGENT } from "@/lib/projectsAgent";
+export { PROJECTS_AGENT };
 
 /** The permission the vocabulary writes need (`routes/projects/core.py`). */
 const SETTINGS_WRITE = "projects:settings:write";

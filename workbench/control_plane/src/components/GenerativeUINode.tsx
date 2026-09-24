@@ -32,8 +32,9 @@
  * of agent code in our context.
  */
 
-import { createElement } from "react";
+import { createElement, useContext } from "react";
 
+import { EntityIndexContext } from "@/components/ChatEntityPill";
 import { MarkdownBody } from "@/components/MarkdownMessage";
 import SandboxedHtml from "@/components/SandboxedHtml";
 import Button from "@/components/ui/Button";
@@ -94,6 +95,18 @@ const s = text;
 
 // ─── Node renderer ───────────────────────────────────────────────────────
 
+/**
+ * A `markdown` node's body: pills only inside a Projects turn's provider
+ * (`EntityIndexContext`, WS-27bm S9 fix round 1), plain Markdown elsewhere.
+ * Exported for its test.
+ */
+export function GenUiMarkdown({ content }: { content: string }) {
+  const index = useContext(EntityIndexContext);
+  return (
+    <MarkdownBody content={content} entityPills={index !== null} entityIndex={index ?? undefined} />
+  );
+}
+
 function Node({
   node, onAction, depth = 0,
 }: {
@@ -141,7 +154,10 @@ function Node({
     case "markdown":
       return (
         <div className="min-w-0 text-[13px] leading-relaxed text-foreground">
-          <MarkdownBody content={s(props.text)} />
+          {/* Pills only inside a Projects turn (WS-27bm S9): the names
+              resolve against that turn's tools through `EntityIndexContext`.
+              Anywhere else this is plain Markdown. */}
+          <GenUiMarkdown content={s(props.text)} />
         </div>
       );
 

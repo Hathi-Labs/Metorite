@@ -112,6 +112,9 @@ Five rules on top of the three above. Each one exists because it was broken:
    every prose colour at a token. **Chat Markdown has one renderer,**
    `MarkdownBody` in `MarkdownMessage.tsx`. Fence:
    `src/components/chatVisualReview.test.ts`.
+   **An entity in chat text is one pill,** `src/components/ui/EntityPill.tsx`
+   (WS-27bm S9). Do not draw a task, a project or a person as bold text or
+   as a second chip. Fence: `src/components/ui/EntityPill.test.ts`.
    ⚠️ **The BOM trap binds at every hop, and "keep it a `Blob` in the client" is only
    half of it.** `Response.text()` is a UTF-8 *decode* and a UTF-8 decode strips a
    leading byte order mark, so **a BFF proxy that does `await res.text()` and rebuilds

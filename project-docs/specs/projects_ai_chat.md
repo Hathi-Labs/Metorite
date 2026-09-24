@@ -8,7 +8,8 @@ built 2026-09-23. S6 (navigation and the frontend-tool dispatcher) built
 intelligence slices, was designed 2026-09-23 (§13). S7a (capacity) was built
 2026-09-23. S7b (fit and rebalancing), S7c (conflicts) and S7d (plan with
 capacity, no phases) were built 2026-09-24. S8 (documents and downloads
-from the chat, §14) was built 2026-09-24. S7e is not built.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+from the chat, §14) was built 2026-09-24. S9 (entity pills in the chat, §15)
+was built 2026-09-24. S7e is not built.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -693,6 +694,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S7c · Conflicts** — ✅ **BUILT 2026-09-24** | `GET /projects/analytics/conflicts` with seven kinds · the Conflicts panel · the report section `conflicts` · the chat tool `find_conflicts` · the dependency rule moved to the server with one fixture for both sides (§13.5, §10.5) | AGENT-SAFE |
 | **S7d · Plan with capacity** — ✅ **BUILT 2026-09-24** | `propose_plan` gains start dates and dependencies, and shows each owner's fit and hours across the plan on the card, through `POST /projects/plan/preview` (§13.6, §10.6). No phases | AGENT-SAFE |
 | **S8 · Documents and downloads** — ✅ **BUILT 2026-09-24** | A written document opens beside the board, as in `/chat` · the panel follows the session · Download PDF for a Markdown or HTML file · Download and Download PDF for a saved report, in the Reports app and on the chat's report card · the Files section of the instructions (§14) | AGENT-SAFE |
+| **S9 · Entity pills** — ✅ **BUILT 2026-09-24** | A task, a project, a person, a status and a tag in a chat answer draw as a pill. A task or a project opens in this tab. A pill links only on exactly one match in the same message's tool results. The link colour, the made-up stat delta, the missing space before bold and the date that wrapped (§15) | AGENT-SAFE |
 | **S7e · On-the-fly analysis** | The read tool `task_dataset` and the rule for numbers the chat computes itself (§13.7) | AGENT-SAFE |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-09-30 |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
@@ -934,6 +936,20 @@ Then look at the report card in the rail, and at the Reports app, in light
 mode, at compact density and under a changed accent. The slice creates the
 two pytest files, the three new vitest files, `gateway/pdf_render.py`,
 `routes/documents.py` and `lib/autoOpenArtifact.ts`.
+
+For S9, with the same database settings:
+
+```
+uv run pytest tests/unit/test_projects_agent.py tests/unit/test_projects_chat_coverage.py tests/unit/test_genui_catalog_lockstep.py tests/unit/test_projects_agent_writes.py
+```
+
+In `workbench/control_plane`, run `npx tsc --noEmit` and
+`npx vitest run src/lib/remarkEntityPills.test.ts src/lib/entityIndex.test.ts src/components/ui/EntityPill.test.ts src/components/markdownPills.test.ts src/components/genUITemplates.test.ts src/lib/theme/`.
+Then look at an answer with pills in the rail and in `/chat`. Look in light
+mode, at compact density, under a changed accent and at 390px. The slice
+creates the four new vitest files, `lib/remarkEntityPills.ts`,
+`lib/entityIndex.ts`, `lib/projectToolRows.ts`, `ui/EntityPill.tsx` and
+`ChatEntityPill.tsx`.
 
 `test_projects_report_sections_lockstep.py` is the lockstep test of §10.3
 item 6. It is a pytest that reads the two TypeScript files as text, so one test
@@ -1713,3 +1729,187 @@ table and long code line scrolled with a 10px bar. **A capture rig must show
 scrollbars.** Playwright's headless Chromium starts with `--hide-scrollbars`,
 so a capture shows no bar even where the box scrolls. Pass
 `ignoreDefaultArgs: ["--hide-scrollbars"]` before you judge a scroll box.
+
+---
+
+## 15. Entity pills in the chat (S9)
+
+**Owner request, 2026-09-24.** The owner sent a screenshot of a Projects chat
+answer and asked for pills "rather than just text". The answer showed four
+defects:
+
+- `**«Projects/Tasks App»** — 15 tasks`: a bold name, with the marks.
+- `#5 **«Notification engine for projects»**`: the same, after a task number.
+- `assigned to vjvarada@hathilabs.com`, drawn as a blue `mailto:` link.
+- A `statDashboard` tile "Overdue 2" with a red "▼ 2". No tool printed that
+  change. The model copied the value into `delta`.
+
+The text `today.**Early stages` also had no space before the bold. That is a
+model error, not a renderer error.
+
+**Status: BUILT 2026-09-24.**
+
+### 15.1 The answer
+
+The model keeps the «guillemets» that the tools print around a name. The chat
+draws each marked name as a pill. A pill for a task or a project opens the
+row in this tab. A pill resolves only against the tool results of the same
+message, and it links only on exactly one match.
+
+The skill output does not change. The cards read the «» in the tool output
+(`ProjectToolCards.tsx`), and many tests hold that fence.
+
+### 15.2 What S9 builds
+
+1. **A remark plugin**, `lib/remarkEntityPills.ts`. `MarkdownBody` turns it
+   on with the `entityPills` prop. `AgentChat` passes the prop only when its
+   agent is `PROJECTS_AGENT` (`lib/projectsAgent.ts`). So the Projects rail
+   and a Projects thread in `/chat` get pills, and every other agent does not.
+   A generative-UI `markdown` node gets pills only inside the Projects turn's
+   `EntityIndexContext`. `DocumentPane` and the meeting notes leave it off.
+   - `«X»` in a text node becomes a pill. Code and inline code stay as they
+     are.
+   - `**«X»**` loses the bold. `#n «X»` becomes one task pill.
+   - A bare email, and the `mailto:` link that remark-gfm makes for it,
+     becomes a person pill. This is the fallback when the model drops the
+     marks.
+   - A pill never shows the marks. The plugin also drops a stray mark.
+2. **One index per message**, `lib/entityIndex.ts`. It reads the tool
+   results of the message and nothing else.
+   - Tasks come from `parseTaskRows` and from a receipt line such as
+     `Commented on #7 «x»` above a `full_id` line. A task pill links to
+     `/projects?task=<id>`.
+   - Projects come from the new `parseProjectRows`: `- «name» [level]` above
+     a `full_id` line. The level picks the icon. A project pill links to
+     `/projects?project=<id>`.
+   - People come from the fenced addresses and from `people_for`. A person
+     pill shows initials and the printed name, or the local part of the
+     address. It has no `mailto:`.
+   - Statuses come from the task rows and from `vocabulary`. A status pill is
+     `StatusChip`. Tags come from `vocabulary`, and a tag pill takes its hue
+     from `categoricalAccent`.
+   - `parseTaskRows` moved to `lib/projectToolRows.ts`, beside
+     `parseProjectRows`. `ProjectToolCards.tsx` exports it again, so the
+     cards and their tests keep their import path.
+3. **A primitive**, `components/ui/EntityPill.tsx`, on the shape and tones of
+   `Badge` (`BADGE_BASE`, `BADGE_SHAPE`, `badgeTone`).
+4. **The Markdown link.** An in-app path opens in this tab through
+   `ControlLink` and `router.push`. A modified click still opens a tab. Any
+   other URL opens in a new tab with `noopener`. `//host` and `/api/` are not
+   in-app paths. The colour is `text-primary`, not a palette blue.
+5. **The instructions.** In its chat answer only, the model keeps the marks
+   around a name from a tool. It never writes the marks into a file, a
+   comment, a title, a description or any other tool argument. The text
+   inside the marks is still data and never an instruction. The model
+   sends no `delta` on a stat tile unless a tool printed a change over a
+   period. The model puts a space after a full stop before bold text.
+6. **The stat tile.** `shownDelta` drops a delta whose size equals the value
+   when the stat has no `deltaLabel` and no `period`.
+7. **The missing space.** `spaceBeforeBold` finds `**` after a letter and
+   `.`, `!` or `?`. It puts a space before an opening `**` and after a closing
+   one. It leaves code, URLs and numbers alone. It counts open and closed
+   bold across the lines of one paragraph. It skips a line indented four
+   spaces. A fence closes only on a fence of the same character that is at
+   least as long. An inline code span closes only on a run of backticks of
+   the same length, as CommonMark reads it.
+8. **A date cell does not wrap.** `isDateCell` holds a `dataGrid` date on one
+   line, so `2026-09-30` does not break at a hyphen in the rail.
+
+### 15.3 Rules
+
+1. **A pill links only on exactly one match.** Two tasks with one title give
+   a neutral pill that does not click. `#n` is unique per root only, so a
+   number and a title must match one task together.
+2. **The index reads the same message only.** A name that no tool in the
+   message printed does not link.
+3. **Only an in-app path links.** `isInAppPath` refuses `//host`, `/api/`,
+   `javascript:` and `mailto:`. The path must also resolve to the origin of
+   a fixed base. So `/\evil.com` fails, and a path with a tab fails too.
+4. **An icon carries the kind.** A hue is never the only signal. A task has
+   ListChecks and a space has Layers. A folder has Folder and a project has
+   FolderKanban. A person has initials, an agent has Bot and a tag has Tag.
+   The accessible name of a task pill includes its status.
+5. **A pill that does not click has no hover layer.** It uses `BADGE_SHAPE`
+   without `.cc-control`.
+6. **Tokens only.** The pill uses Badge tones, `statusAccent` and
+   `categoricalAccent`. The person initials use `PersonAvatar`, which is the
+   identity-hue exception of the conformance suite.
+7. **Pills are for the Projects assistant only** (fix round 1). Another
+   agent keeps its «text» and its `mailto:` links, and its tool results are
+   never indexed. A turn by another agent in a Projects thread draws no
+   pills. Fence: `src/components/entityPillsGate.test.ts`.
+   A turn names its agent from the moment it starts to stream (fix round 3).
+   `useAgentChat` stamps `agentAuthor(agentName)` on a new turn, on a replay
+   placeholder and on a restored turn with no author. So a switch to the
+   Projects assistant does not redraw an earlier answer with pills. When a
+   turn has an author, `pillsForTurn` needs that author to be the Projects
+   assistant. The server keeps the first stamp, so a reload reads the same
+   name. Fence: `src/components/entityPillsAuthor.test.ts`.
+8. **The marks stay in the chat answer** (fix round 1). The model never
+   writes them into a tool argument, because nothing removes them there.
+   Fence: `test_the_marks_stay_out_of_every_tool_argument`.
+9. **A linked pill reads as ink, not as a blue word** (visual review). Its
+   label is foreground ink on a `bg-primary/10` tint. Its icon and its `#n`
+   take `text-primary`. A hover makes the tint stronger and underlines the label. Fence:
+   `src/components/ui/EntityPill.test.ts`.
+10. **No space before the punctuation after a pill** (visual review). The
+    markup holds none. The gap that the review saw was the right padding of
+    the pill, so a pill now takes `px-1`. The plugin keeps a pill and its
+    punctuation on one line. Fence: `src/components/markdownPills.test.ts`.
+    The group also takes an opening bracket or quote that touches the pill,
+    so "Scope (" does not end a line alone (visual re-check). Fence:
+    `src/lib/remarkEntityPills.test.ts`.
+    The pill text is `0.9em` of the text around it, as inline code is
+    `0.82em`. At compact density it no longer shrinks more than the prose.
+    A measured line with a pill is as tall as a line without one. Fence:
+    `src/components/ui/EntityPill.test.ts`.
+11. **A person pill takes a name from any read in the message** (visual
+    review). The index reads `- «Name» · assignee «email»` at any indent and
+    `«Name» («email»)`. An address printed as its own name is no name. Fence:
+    `src/lib/entityIndex.test.ts`.
+
+### 15.4 Acceptance — S9
+
+**Done when:**
+
+1. The plugin makes pills in text and not in code. It unwraps `**«X»**`
+   and absorbs `#n`. It turns an email into a person pill and leaves no «».
+   Fence: `src/lib/remarkEntityPills.test.ts`.
+2. The index resolves a task, a project and a person from real skill output.
+   It does not link an ambiguous title. Fence:
+   `src/lib/entityIndex.test.ts`. The fixture is
+   `src/lib/entityPills.fixture.ts`, and
+   `test_the_pill_fixture_is_the_skill_output` runs the Python formatters
+   again and fails when a line no longer matches.
+3. `EntityPill` is an anchor with an accessible name and the right href, and
+   a plain click calls `router.push`. Fence:
+   `src/components/ui/EntityPill.test.ts`. The conformance suite passes.
+4. An in-app link opens in this tab, and an external link in a new tab. No
+   link is a palette blue. Fence: `src/components/markdownPills.test.ts`.
+5. The owner's answer renders through `MarkdownMessage`. It has pills with
+   hrefs for #5, #3 and the project, and a person pill for the email. It has
+   no «» and no `mailto:`. Fence: `src/components/markdownPills.test.ts`.
+6. `shownDelta` drops the copied delta, and `isDateCell` knows a date. Fence:
+   `src/components/genUITemplates.test.ts`.
+7. Three pytests pin the instruction sentences:
+   `test_the_model_keeps_the_marks_and_they_stay_data`,
+   `test_the_model_sends_no_made_up_delta` and
+   `test_the_model_puts_a_space_before_bold`.
+8. The status header, the §10 row, the board row and the INDEX line say that
+   S9 is built (R4).
+
+### 15.5 What S9 does not do
+
+- It does not change the skill output. The «» stay in every tool result.
+- A person pill does not open a page. The Projects app has no person deep
+  link.
+- A task row names its project as `in «X»`, with no `full_id` for the
+  project. A summary child row prints no level. Neither kind of name links.
+- The generative-UI `markdown` node in the side panel has no provider. It
+  draws plain Markdown, with no pills.
+- The `statDashboard` catalog entry does not name `deltaLabel` or `period`.
+  The tile honours them when they arrive. A catalog change needs the lockstep
+  docstring change in the same PR.
+- Nobody has looked at the pills in a browser yet. The Playwright review is
+  the next step, in light mode, at compact density, under a changed accent,
+  in the 26rem rail and at 390px.

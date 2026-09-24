@@ -7,7 +7,13 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { TEMPLATE_CATALOG, TEMPLATE_REGISTRY, taskHref } from "./genUITemplates";
+import {
+  TEMPLATE_CATALOG,
+  TEMPLATE_REGISTRY,
+  isDateCell,
+  shownDelta,
+  taskHref,
+} from "./genUITemplates";
 import { PROJECTS_CHANGED_EVENT } from "./projects/ProjectToolCards";
 
 const ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
@@ -47,5 +53,43 @@ describe("the catalog and the registry", () => {
 describe("the refresh seam", () => {
   it("is one named event", () => {
     expect(PROJECTS_CHANGED_EVENT).toBe("cc-projects-changed");
+  });
+});
+
+// ── WS-27bm S9 — a delta the model made up, and a date that wrapped ─────────
+
+describe("shownDelta", () => {
+  it("drops a delta that only copies the value", () => {
+    // The owner's screenshot: "Overdue 2" with a red "▼ 2" no tool printed.
+    expect(shownDelta({ label: "Overdue", value: 2, delta: -2 })).toBeNull();
+    expect(shownDelta({ label: "Overdue", value: "2", delta: 2 })).toBeNull();
+  });
+
+  it("keeps a delta that says what it is a change over", () => {
+    expect(shownDelta({ value: 2, delta: -2, period: "since last week" })).toBe(-2);
+    expect(shownDelta({ value: 2, delta: 2, deltaLabel: "vs last sprint" })).toBe(2);
+  });
+
+  it("keeps a delta that differs from the value, and a zero", () => {
+    expect(shownDelta({ value: 12, delta: 3 })).toBe(3);
+    expect(shownDelta({ value: 0, delta: 0 })).toBe(0);
+  });
+
+  it("draws nothing when no delta was sent", () => {
+    expect(shownDelta({ value: 5 })).toBeNull();
+  });
+});
+
+describe("isDateCell", () => {
+  it("knows a date, with or without a time", () => {
+    for (const cell of ["2026-09-30", "2026-09-30 10:00", "2026-09-30T10:00:00"]) {
+      expect(isDateCell(cell)).toBe(true);
+    }
+  });
+
+  it("does not hold a sentence or a number to one line", () => {
+    for (const cell of ["Due 2026-09-30 or later", 42, "", null, "2026-09"]) {
+      expect(isDateCell(cell)).toBe(false);
+    }
   });
 });

@@ -453,7 +453,7 @@ describe("no raw Tailwind palette colours", () => {
     "components/FileUploadButton.tsx": 10,
     "components/GitHubAccountBadge.tsx": 1,
     "components/IntegrationSetup.tsx": 1,
-    "components/MarkdownMessage.tsx": 11,
+    "components/MarkdownMessage.tsx": 9, // S9: the link lost its palette blue
     "components/MessageBubble.tsx": 4,
     "components/Sidebar.tsx": 2,
     "components/ThinkingContainer.tsx": 44,
