@@ -22,6 +22,9 @@ import {
   hasUnbilled,
   unbilledTotals,
   customerUsageState,
+  breakdownCut,
+  isLoss,
+  readBreakdown,
 } from "./usage";
 
 const ROW = (over: Partial<OrgUsageRow> = {}): OrgUsageRow => ({
@@ -380,5 +383,58 @@ describe("customerUsageState", () => {
       { day: "2026-09-01", calls: 900, credits: "0" },
     ]);
     expect(s.kind).toBe("truncated");
+  });
+});
+
+describe("one customer's breakdown (usage slice 3)", () => {
+  const body = {
+    windowDays: 30,
+    apps: [
+      {
+        app: "projects", calls: 5, credits: "81.4000", costUsd: "0.01417",
+        realisedMargin: "0.98",
+        agents: [{ agent: "projects-assistant", calls: 5, credits: "81.4000",
+                   costUsd: "0.01417", realisedMargin: "0.98" }],
+      },
+    ],
+    members: [
+      { member: "dana@acme.com", calls: 5, credits: "81.4000",
+        costUsd: "0.01417", realisedMargin: null },
+    ],
+    appsTotal: 1,
+    membersTotal: 240,
+  };
+
+  it("reads the Console's shape, keeping money as strings", () => {
+    const b = readBreakdown(body);
+    expect(b?.apps[0].credits).toBe("81.4000");
+    expect(b?.apps[0].agents[0].agent).toBe("projects-assistant");
+    expect(b?.members[0].realisedMargin).toBeNull();
+  });
+
+  it("refuses a body it does not understand, rather than drawing it EMPTY", () => {
+    // An empty table would say a busy customer spent nothing.
+    expect(readBreakdown({ rows: [] })).toBeNull();
+    expect(readBreakdown(null)).toBeNull();
+    expect(readBreakdown("nope")).toBeNull();
+  });
+
+  it("says when a list was cut, and stays quiet when it was not", () => {
+    const b = readBreakdown(body)!;
+    expect(breakdownCut(b.members.length, b.membersTotal)).toBe("Showing 1 of 240");
+    expect(breakdownCut(b.apps.length, b.appsTotal)).toBeNull();
+  });
+
+  it("an older Console without totals treats what it shows as the whole", () => {
+    const { appsTotal: _a, membersTotal: _m, ...old } = body;
+    const b = readBreakdown(old)!;
+    expect(b.membersTotal).toBe(1);
+  });
+
+  it("calls a NEGATIVE margin a loss, and a missing one nothing at all", () => {
+    expect(isLoss("-0.12")).toBe(true);
+    expect(isLoss("0.40")).toBe(false);
+    // NULL is neutral: no saved credit price, so no verdict.
+    expect(isLoss(null)).toBe(false);
   });
 });
