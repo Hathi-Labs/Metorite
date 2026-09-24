@@ -122,7 +122,9 @@ for (const [mode, label] of [
     await page.waitForTimeout(2000);
     await page
       .getByRole("group", { name: "View mode" })
-      .getByRole("button", { name: mode, exact: true })
+      // The label is "Board", not "board": `ModeSwitch` capitalises in JS,
+      // because `.cc-control` overrides a `capitalize` class.
+      .getByRole("button", { name: mode.charAt(0).toUpperCase() + mode.slice(1), exact: true })
       .first()
       .click();
     await page.waitForTimeout(2000);
