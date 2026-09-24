@@ -690,10 +690,28 @@ async def complete(task_id: str) -> str:
     return "\n".join(["Done:", *_task_line(merged, "done")])
 
 
+#: What a defer writes on the gateway (`personal.defer_task`).
+_DEFER_DISPOSITION = "SOMEDAY"
+
+
+def _defer_scope(task: dict[str, Any]) -> str:
+    """The defer card's scope, chosen the way `_overlay_card` chooses its own.
+
+    F2: the card must not promise "your inbox only" when the write would
+    move the board. A defer writes SOMEDAY, and under D77 choice 3 SOMEDAY
+    does not reopen a finished task, so today this answers "your inbox only"
+    every time. It reads `completed_at` and `_REOPENING` anyway, so the card
+    stays honest if the reopen rule ever changes.
+    """
+    if task.get("completed_at") and _DEFER_DISPOSITION in _REOPENING:
+        return "reopens the task on the board, then hides it from your inbox"
+    return "your inbox only"
+
+
 @_annotate(read_only=False, destructive=False, idempotent=True)
 async def defer(task_id: str, until: str) -> str:
     """Hide a task from the member's own inbox until a date (YYYY-MM-DD).
-    Mine only: the team's board does not change."""
+    Mine only: the team's board does not change, even on a finished task."""
     when = str(until or "").strip()
     if len(when) != 10:
         return "until is a date, YYYY-MM-DD."
@@ -701,7 +719,9 @@ async def defer(task_id: str, until: str) -> str:
     if not await _confirm(
         title=f"Defer until {when}?",
         detail=_ref(task),
-        context=_fields_block({"task": _ref(task), "until": when, "scope": "your inbox only"}),
+        context=_fields_block({
+            "task": _ref(task), "until": when, "scope": _defer_scope(task),
+        }),
     ):
         return CANCELLED
     await post(f"/projects/tasks/{tid}/defer", {"until": when})

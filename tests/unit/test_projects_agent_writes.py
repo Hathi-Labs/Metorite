@@ -1852,3 +1852,48 @@ def test_the_cards_know_every_guarded_tool() -> None:
     assert block, "GUARDED_TOOLS literal not found in ProjectToolCards.tsx"
     in_cards = set(re.findall(r'"([a-z_]+)"', block.group(1)))
     assert in_cards == m.tools_by_class("C")
+
+
+# ── F2: the defer card says what the defer does ─────────────────────────────
+
+def _finished_task(call: dict) -> Any:
+    if call["path"] == f"/projects/tasks/{UUID}":
+        return {**TASK, "completed_at": "2026-09-20T09:00:00+00:00"}
+    return responder(call)
+
+
+async def test_the_defer_card_on_a_finished_task_says_inbox_only(monkeypatch) -> None:
+    """F2 + F4: a defer writes SOMEDAY, which does not reopen a finished
+    task, so "your inbox only" is the true scope even when it is done."""
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _finished_task)
+    await skill_projects.defer(UUID, until="2026-10-06")
+    assert "scope: «your inbox only»" in asked[0]["context"]
+    assert "reopens" not in asked[0]["context"]
+
+
+async def test_the_defer_card_names_a_reopen_if_the_rule_ever_reopens(monkeypatch) -> None:
+    """F2: the card reads `completed_at` and the reopen set, the way
+    `set_my_overlay`'s card does. Were SOMEDAY to reopen, it would say so."""
+    monkeypatch.setattr(W, "_REOPENING", W._REOPENING | {W._DEFER_DISPOSITION})
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _finished_task)
+    await skill_projects.defer(UUID, until="2026-10-06")
+    assert "reopens the task on the board" in asked[0]["context"]
+    assert "your inbox only" not in asked[0]["context"]
+
+    # An open task keeps "your inbox only" under any rule.
+    asked.clear()
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.defer(UUID, until="2026-10-06")
+    assert "scope: «your inbox only»" in asked[0]["context"]
+
+
+def test_the_defer_disposition_is_the_gateways() -> None:
+    """The card's rule reads the disposition the gateway's defer writes."""
+    import inspect
+
+    from gateway.routes.projects import personal as pm_personal
+
+    assert f'"disposition": "{W._DEFER_DISPOSITION}"' in inspect.getsource(
+        pm_personal.defer_task)
