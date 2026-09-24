@@ -1,7 +1,8 @@
 # Projects · the reporting system — WS-27bn
 
 **Status: ACTIVE, SPEC ONLY. Nothing in this file is built.** Written
-2026-09-24 and verified against the code on 2026-09-24. Each anchor carries a
+2026-09-24 and verified against the code on 2026-09-24. The owner answered
+the open questions on 2026-09-24, and §9 records the answers. Each anchor carries a
 file name and a line number. Check them again at dispatch, because this tree
 moves every day.
 
@@ -41,8 +42,14 @@ report.
 1. **A report builder** over the API that exists (§6, slice R1).
 2. **Templates.** A template is a named question with a preset of sections,
    scope and period. The morning report is the template "Team pulse" (§4).
-3. **Four new sections, a person and team scope, stored runs and a daily
-   schedule.** Each is a slice in §8.
+3. **Four new sections, a person and team scope, stored runs, an AI summary
+   and an "Email this report" action.** Each is a slice in §8.
+
+**Phase 1 generates a report on request only** (owner, 2026-09-24). A member,
+or the chat for a member, asks for a report, and the server renders it. Phase
+2 adds the timer that renders a report by itself and emails it. Phase 3 lets
+other apps, such as Workflows, use reports. All three phases call one render
+function, so a report reads the same wherever it comes from.
 
 **The rule that binds every slice: the server computes every number, and the
 LLM only writes words about them.** A headline that the LLM writes links each
@@ -60,9 +67,14 @@ defect.
 - A report about one person, one team, one project subtree, or the whole
   organization.
 - Stored runs of a report, and the change since the last run.
-- A daily schedule next to the weekly one, and the job that sends both.
+- An AI summary that a member asks for, paid with AI credits.
+- "Email this report": a member or the chat sends one render to one person
+  in the directory, on request.
 - Entry points into a report from the node dashboard, from a person, from
-  Tasks and from the chat.
+  Tasks and from the chat. The chat can list, create, render and email a
+  report.
+- **Phase 2 (later):** a report that renders on a timer and emails itself.
+- **Phase 3 (later):** a report as a step that Workflows and other apps call.
 
 **Non-goals:**
 - **No second arithmetic.** Hours come from `gateway/work_schedule.py` and
@@ -71,7 +83,10 @@ defect.
   spec too.
 - **No auto-assign.** A suggestion opens the assignment flow that exists. The
   member confirms each change.
-- **No time tracking.** §9, question Q3, holds that decision for the owner.
+- **No time tracking** (owner, 2026-09-24). Estimates, `actual_start` and
+  `actual_end` carry every hours figure.
+- **No automatic AI summary.** The AI summary runs only when a person asks
+  for it (owner, 2026-09-24).
 - **No new chart library.** Charts use the categorical ramp through
   `src/lib/categorical.ts`, as §9.12.7 says.
 - **No public share link.** A stakeholder report (§4, T9) reaches a person
@@ -201,7 +216,7 @@ can group reports and the chat can name them.
 | T3 | **What changed** | What happened since I last read this? | any | since the last run | `changes` | ◐ |
 | T4 | **Weekly delivery** | What did we finish last week, and how fast? | project · org | last week | `finished`, `throughput`, `load`, `stuck` | ✅ (the default today) |
 | T5 | **Project status** | Will this project finish on time, and what blocks it? | project | this week | `outlook`, `stuck`, `conflicts`, `finished` | ◐ |
-| T6 | **1:1 prep** | How is this person doing over a month? | person | last 4 weeks | `finished`, `throughput`, `pulse`, `waiting` | ◐ ⚠️ Q1 |
+| T6 | **1:1 prep** | How is this person doing over a month? | person | last 4 weeks | `finished`, `throughput`, `pulse`, `waiting` | ◐ (§7.1 limits who may open it) |
 | T7 | **Exceptions** | What is wrong right now, and nothing else? | any | today | `stuck`, `conflicts`, `hygiene` (only the high rows) | ◐ |
 | T8 | **Capacity outlook** | Do we have the people for the next weeks? | team · org | next 2 to 6 weeks | `capacity`, `outlook`, `on_leave` | ◐ |
 | T9 | **Stakeholder update** | A short project summary to send outside the team | project | last 2 weeks | `finished`, `outlook`, with no per-person rows | ◐ |
@@ -261,11 +276,12 @@ The home screen has three areas, top to bottom.
 
 The builder is one sentence of chips, with a live preview beside it:
 
-> Show **[Team pulse ▾]** for **[Hardware team ▾]** over **[Today ▾]**, and
-> send it to **[me ▾]** every **[weekday at 09:00 ▾]**.
+> Show **[Team pulse ▾]** for **[Hardware team ▾]** over **[Today ▾]**.
 
 - **The scope chip** opens one picker with four groups: people, teams
-  (`org_group`), the project tree, and "Whole organization".
+  (`org_group`), the project tree, and "Whole organization". It lists only
+  the people and teams that §7.1 lets this member report on. A member with no
+  admin grant and no lead role sees "Me" in the people group, and nobody else.
 - **The period chip** offers today, this week, last week, the last 4 weeks and
   a custom range. A forward template (T8) offers the next 2, 4 or 6 weeks.
 - **"More"** opens the section list, so a member can add or remove a section.
@@ -273,9 +289,9 @@ The builder is one sentence of chips, with a live preview beside it:
 - **The preview renders from the server** on each change, with a short delay.
   It uses `/render` with an unsaved config. No figure is computed in the
   browser (§9.12.7).
-- **The delivery half** is hidden until the member opens it. While
-  `delivery_armed()` is false, the builder says that email is off for this
-  organization and saves the schedule anyway.
+- **No schedule control in Phase 1.** A report renders when a member opens
+  it. Phase 2 adds the schedule chip: "and send it to [person] every
+  [weekday at 09:00]".
 
 On a phone, the preview moves under the sentence, and each chip takes the full
 width.
@@ -288,9 +304,10 @@ in.
 | From | Control | Opens |
 |---|---|---|
 | A space, folder or project dashboard (`NodeDashboard.tsx`) | "Report on this" | The builder, scope set to the node |
-| A person in the People app or a task's assignee | "1:1 prep" | T6, scope set to the person. Shown only when Q1 allows it. |
+| A person in the People app or a task's assignee | "1:1 prep" | T6, scope set to the person. Shown only when §7.1 allows it. |
 | My Tasks | "My day" | T2 for me |
 | The Projects chat | "Give me the morning report for Design" | `render_report` with T1. The chat draws the card that exists. |
+| The Projects chat | "Email it to Priya" | `send_report` (R9), behind a confirm card |
 | An email | "Open in Metorite" | The stored run (R4), or a live render before R4 |
 
 ### 6.4 The reading layout
@@ -298,9 +315,11 @@ in.
 One layout for every template. The top answers the question, and the detail
 comes after.
 
-1. **The headline.** Two or three sentences. With R6 on, the LLM writes them.
-   Without R6, a fixed sentence built from the counts. Each figure links to its
-   section.
+1. **The headline.** A fixed sentence built from the counts, which costs
+   nothing. Beside it, a **Summarize with AI** control (R6). When the member
+   presses it, the LLM writes two or three sentences, and the org pays in AI
+   credits. Nothing calls the LLM before a person asks. Each figure links to
+   its section.
 2. **Attention cards.** The exceptions, sorted by severity: needs help,
    behind, conflicts at `high`, then the rest. Each card names the person or
    the task, and the reason.
@@ -314,6 +333,9 @@ comes after.
    change.
 5. **The change mark.** With R4 on, each figure carries an arrow and the value
    of the last run.
+6. **Email this report** (R9). It opens a picker of people in the directory,
+   then a confirm card. While `delivery_armed()` is false, the control says
+   that email is off for this organization, and it sends nothing.
 
 **Every figure opens a filtered task list.** A count that you cannot open is a
 count that you cannot check.
@@ -335,13 +357,56 @@ An email carries no colour (§9.12.8).
    `hr_visible: false`, as S7 does. The UI says that an admin can see
    capacity. It does not guess.
 3. **One render for each recipient.** A send renders with the recipient's
-   visibility (H-111). This rule already exists and binds R7.
-4. **A person scope is not a licence.** A report about one person shows that
-   person's work that the reader can see. Q1 decides who may open T6 at all.
+   visibility (H-111). This rule already exists and binds R9 and R7.
+4. **A person scope is not a licence.** A report about one person shows only
+   the work of that person that the reader can see. §7.1 decides who may open
+   it at all.
 5. **D-PM-32 applies.** A stopped project's open work leaves every report. Its
    finished history stays. `reports.py` applies this in the render.
 6. **R5 binds every new table.** A stored run (R4) carries `organization_id`
    and passes `test_tenant_coverage.py`.
+
+### 7.1 Who may report on whom (owner, 2026-09-24)
+
+**The reader's own role decides whose report they may open.** An admin
+reports on everybody. A member reports on themselves. A team lead also reports
+on their team.
+
+| Reader | May open a report on | The check |
+|---|---|---|
+| **Admin** | Every person, every team, the whole organization | `can_read_hr_fields` (`routes/tasks/core.py:75`), the `admin:members:read` grant |
+| **Team lead** | Themselves, each team where they are `lead`, and each member of those teams | `org_group_member.role = 'lead'` (migration 138) |
+| **Member** | Themselves | The subject is the reader's own address |
+| **Member, with the org setting on** | Themselves, and each team they belong to, as a whole | A new org setting, `reports.members_see_own_team`, default off |
+
+**Rules for the build.**
+1. **One check, on the server.** A function `may_report_on(user, subject)`
+   in `reports.py` answers for a person and for a team. Every path calls it:
+   the builder's picker, the render, `send_report`, the chat and, later, the
+   schedule and Workflows. The picker lists what the function allows. It
+   never shows a subject and then refuses it.
+2. **A refusal gives 403 and says why.** The chat tells the member which
+   role would allow it. It does not guess.
+3. **Per-person rows follow the same rule.** A report on a project or on the
+   whole organization contains per-person sections (`pulse`, `rebalance`,
+   the HR half of `capacity`). A reader who is not an admin sees only the
+   rows of the people that they may report on. The totals still count every
+   person. One line says "This report hides N other people".
+4. **"The team" is an `org_group`.** It expands to its members at render
+   time. A member who leaves the team leaves the report on the next render.
+5. **The member setting shows the team, and not each person.** With
+   `reports.members_see_own_team` on, a member sees the team's totals and
+   their own row. They cannot open a report on one teammate.
+6. **The HR tier stays separate.** Hours, absences and skills still need
+   `admin:members:read` (§7 rule 2). A lead without that grant sees the task
+   half of their team. The capacity section tells the lead that an admin can
+   see the hours.
+
+⚠️ **The `load` section is older than this rule.** It lists open work for each
+person, and today any member who can see the tasks can read it. Slice R5
+applies rule 3 to `load` too, so the Analytics app and a report agree. The
+Load panel in the Analytics app then changes in the same way. The PR for R5
+must say this.
 
 ---
 
@@ -428,7 +493,7 @@ report: completed, slipped due date, reassigned, blocked, created.
 **Done when:** a second run shows an arrow and the last value on each figure.
 `changes` lists each event type with a link to its task.
 
-### R5 — Person and team scope · AGENT-SAFE after Q1
+### R5 — Person and team scope · AGENT-SAFE
 
 **What:** `config.subject` with `kind` `person` or `team`, and an address or
 an `org_group` slug. The sections filter their task half to that subject's
@@ -440,77 +505,171 @@ assignments. `pm_reports.project_id` stays the node scope, so the two combine:
   text gets 422.
 - A team expands to its members at render time, not at save time. A new
   member joins the report by joining the team.
-- Q1 decides whether T6 needs the HR grant or a lead role.
+- `may_report_on` (§7.1) gates the save, the render and the picker. The
+  org setting `reports.members_see_own_team` lands in this slice, default off.
 
-**Done when:** a report on one person shows only that person's rows. A report
-on a team shows each member once. A person outside the directory gets 422.
+**Done when:**
+- A report on one person shows only that person's rows. A report on a team
+  shows each member once. A person outside the directory gets 422.
+- A member without a grant gets 403 for a report on a colleague, and 200 for
+  a report on themselves.
+- A lead gets 200 for their own team and for each member of it, and 403 for
+  another team.
+- An admin gets 200 for every person and team.
+- On a report of the whole organization, a member sees their own row and the
+  line "This report hides N other people". One test per role pins this.
 
-### R6 — The headline · AGENT-SAFE to build, OWNER-GATE to turn on
+### R6 — The AI summary, on request · AGENT-SAFE
 
-**What:** an LLM writes two or three sentences from the render body. The body
-is the only input. Each figure in the text must match a figure in the body. A
-check compares them and drops the headline if one does not match. The
+**What:** a **Summarize with AI** control on a rendered report. When a person
+presses it, an LLM writes two or three sentences from the render body. The
+body is the only input. Each figure in the text must match a figure in the
+body. A check compares them and drops the summary if one does not match. The
 fallback is the fixed sentence of §6.4.
 
 **Rules:**
-- The call goes through the Router, and the org pays for it in AI credits.
-  So it is off by default for each report, behind the flag
-  `PROJECT_REPORT_HEADLINE_ENABLED`. Q4 decides who turns it on.
-- The prompt fences task titles as data, as the chat does (§13.5, as built).
+- **On request only** (owner, 2026-09-24). No render, no schedule and no
+  page load calls the LLM. A person presses the control, or asks the chat.
+- **Anybody with AI credits may use it** (owner, 2026-09-24). The call goes
+  through the Router, like every other AI call, and spends the credits of the
+  person who asked. With no credits, the control says why and sends nothing.
+  It adds no second credit check. It reads the one that the chat uses.
+- The prompt fences task titles as data, as the chat does
+  (`projects_ai_chat.md` §13.5, as built).
+- A stored run (R4) keeps the summary beside the body, so a second reader
+  sees it without a second charge.
 
-**Done when:** a headline with an invented figure is dropped by the check. A
-test proves this with a fake model that returns a wrong number.
+**Done when:**
+- A summary with an invented figure is dropped by the check. A test proves
+  this with a fake model that returns a wrong number.
+- A render with no request makes zero LLM calls. A test counts them.
+- A person with no credits gets a refusal that names the reason, and the
+  Router records no call.
 
-### R7 — The daily schedule and the send job · AGENT-SAFE to build, OWNER-GATE to arm
+⚠️ **H-152 applies.** Today a self-serve customer can never be served AI.
+Until H-152 closes, those customers see the refusal.
 
-**What:** `SCHEDULES` gains `weekday_daily`. A schedule carries a local time
-and the recipient's timezone decides the hour. The job is the one H-111 names
-as missing. It copies the claim pattern of `routes/workflows/scheduler.py`: it
-claims `last_sent_at` with compare-and-set, so two workers cannot send twice.
-It renders once for each recipient (§7 rule 3) and writes a stored run (R4).
+### R8 — The chat: list, create, render and email · AGENT-SAFE
+
+**What:** the controls of §6.3, and four chat tools over the report routes.
+
+| Tool | Route | Class |
+|---|---|---|
+| `report_list` | `GET /projects/reports` | A — exists |
+| `report_save` | `POST` and `PATCH /projects/reports` | B — exists. It gains `template` and `subject`. |
+| `render_report` | `GET /projects/reports/{id}/render`, or the preview of R1 | A — exists. It gains a template name and a subject, so "the morning report for Design" works without a saved report. |
+| `summarize_report` | the R6 route | B — it spends credits, so a card shows the cost first |
+| `send_report` | the R9 route | C — a guarded act, behind a confirm card |
 
 **Rules:**
-- The job runs dark. `delivery_armed()` stays the second lock, and
-  `PROJECT_REPORT_EMAIL_ENABLED` stays the owner's (CLAUDE.md §3a rule 3).
-- In-app delivery needs no email. With the flag off, a scheduled report still
-  writes its run, and "For you" shows it. This is the first channel (Q2).
-- A send that fails is logged with the report id and the recipient, and it
-  does not advance `last_sent_at`.
+- The chat obeys `may_report_on` (§7.1). It never renders a report that the
+  member cannot open.
+- `send_report` changes D-PM-37's map. Today the manifest excludes every
+  delivery route with `_DELIVERY_REASON`, "the chat renders a report, it
+  never sends one" (`skill_projects/manifest.py:77`). The owner changed this
+  on 2026-09-24: the chat may email a report to one person on request. The
+  recipient, recipients-list and schedule routes stay class X. Only the R9
+  route becomes class C. Update `projects_ai_chat.md` in the same PR.
+
+**Done when:**
+- Each control opens the builder with the scope filled in.
+- The chat renders T1 for a team by name.
+- The chat emails a report only after the member confirms the card.
+  `test_projects_chat_coverage.py` passes with the new map.
+
+### R9 — Email this report, on request · AGENT-SAFE to build, OWNER-GATE to arm
+
+**What:** `POST /projects/reports/{id}/send` with one recipient. It renders
+the report once, with the **recipient's** visibility (H-111), and sends it
+through `sendReportEmail` (`src/lib/reportEmail.ts`). The Reports page (§6.4
+item 6) and the chat's `send_report` both call it.
+
+**Rules:**
+- **The recipient is a person in the directory**, never free text. This is
+  the H-111 rule, and it stops an open mail relay from our one sender.
+- **The sender must also pass `may_report_on`** for the report's subject.
+  A member cannot email a report that they cannot open.
+- **`delivery_armed()` is the lock.** `PROJECT_REPORT_EMAIL_ENABLED` stays
+  the owner's to turn on, because the send reaches a real person (CLAUDE.md
+  §3a rule 3). While it is off, the route returns 409 with a clear reason.
+  It never reports a send that did not happen.
+- A send writes a stored run (R4) for the recipient, so "Open in Metorite"
+  opens exactly what the email said.
+- Rate limit: 20 sends for each member in each hour. A chat loop cannot mail
+  the directory.
+
+**Done when:**
+- With the flag off, the route returns 409 and a fake sender sees no call.
+- With the flag on and a fake sender, one call sends one email, and the body
+  uses the recipient's visibility. One test shows a task that the sender can
+  see and the recipient cannot, and the email leaves it out.
+- An address outside the directory gets 422.
+
+### Order
+
+**Phase 1, on request:** R1 → R2 → R3 → R5 → R4 → R6 → R8 → R9.
+
+- R1 and R2 give a member control of what exists.
+- R3 makes the morning report real.
+- R5 adds the person and team scope and the permission rule.
+- R4 gives a report a memory, and R6 adds the AI summary.
+- R8 and R9 let the chat and the member send a report to one person.
+
+---
+
+## 8a. Later phases — recorded, not scheduled
+
+### Phase 2 — R7, a report that renders and emails itself · OWNER-GATE to arm
+
+**What:** a schedule on a saved report: a recipient, a day pattern and a
+local time. `SCHEDULES` gains `weekday_daily` next to `weekly`. The job is
+the one that H-111 names as missing. It copies the claim pattern of
+`routes/workflows/scheduler.py`, which claims `last_sent_at` with
+compare-and-set, so two workers cannot send twice. For each recipient, it
+calls the R9 send path. It adds no second path.
+
+**Rules:**
+- The job runs dark, behind `delivery_armed()`.
+- The recipient's timezone decides the hour. The default is 09:00 on
+  weekdays.
+- The job never calls the AI summary by itself. A schedule may carry an AI
+  summary only after the owner decides who pays for an unattended AI call.
+- A failed send is logged with the report id and the recipient, and it does
+  not advance `last_sent_at`.
 
 **Done when:** with the flag off, a due schedule writes one run for each
 recipient and sends nothing. With a fake sender and the flag on, it sends
 once, even when two workers claim the same report.
 
-### R8 — Entry points and the chat · AGENT-SAFE
+### Phase 3 — R10, reports as a step in other apps
 
-**What:** the controls of §6.3. The chat's `render_report` accepts a template
-name and a subject, so "morning report for Design" works. The chat still
-cannot send (D-PM-37 class X).
+**What:** a Workflows step "Render a report" and a step "Email a report".
+Each step calls the one render function and the R9 send path, as the
+workflow's owner. A step passes `may_report_on` for that owner.
 
-**Done when:** each control opens the builder with the scope filled in, and
-the chat renders T1 for a team by name.
-
-### Order
-
-**R1 → R2 → R3 → R4 → R7**, with R5 after Q1 and R6 after Q4. R1 and R2 give a
-member control of what exists. R3 makes the morning report real. R4 gives it a
-memory. R7 delivers it.
+**The seam that makes this cheap:** Phase 1 keeps the render in one server
+function that takes a config and a user. The route, the chat, the schedule
+and a workflow all call it. A second render path is a defect (CLAUDE.md §4).
+R1's preview route is the first proof that the render does not need a saved
+row.
 
 ---
 
-## 9. Questions for the owner
+## 9. Owner answers (2026-09-24)
 
-| # | Question | Recommendation |
+| # | Question | Answer |
 |---|---|---|
-| **Q1** | Who may open a report about one person (T6, 1:1 prep)? It is performance data. | The person, and a member with `admin:members:read`. The task half follows visibility for everyone else. |
-| **Q2** | Which channel comes first? | In-app first, because it needs no gate (R7). Email second, when H-111 is armed. WhatsApp later, through the digest that exists. |
-| **Q3** | Do we add time tracking? | Not now. Estimates and `actual_start`/`actual_end` carry the reports. Look again when a customer asks for billable hours. |
-| **Q4** | Who turns on the LLM headline, which spends credits? | A report owner, for each report, after the owner prices the AI rate card (H-42). |
-| **Q5** | When does the morning report send? | 09:00 on weekdays, in each recipient's timezone. The report owner can change the time. |
+| Q1 | Who may open a report about one person? | The reader's own role decides. An admin reports on everybody, a member on themselves, and a lead also on their team. §7.1 holds the rule. |
+| Q2 | Which channel comes first? | In-app, on request. A member or the chat can email one render to one person (R9). A timer comes later (Phase 2). Other apps come after that (Phase 3). |
+| Q3 | Do we add time tracking? | No. |
+| Q4 | Who may use the AI summary? | Anybody with AI credits, and only when they ask for it (R6). |
+| Q5 | When does the morning report send? | Nothing sends by itself in Phase 1. Phase 2 uses 09:00 on weekdays, in the recipient's timezone, as its default. |
 
-**One question is already answered:** whose view a scheduled report uses. The
-send renders once for each recipient with that recipient's visibility (H-111,
-answered 2026-09-17).
+**Answered before this spec:** whose view a sent report uses. The send renders
+once for each recipient with that recipient's visibility (H-111, 2026-09-17).
+
+**Still the owner's:** turning on `PROJECT_REPORT_EMAIL_ENABLED` (H-111). R9 is
+built dark until then.
 
 ---
 

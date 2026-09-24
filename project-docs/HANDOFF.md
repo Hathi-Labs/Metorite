@@ -3313,19 +3313,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_ai_chat.md` §3.2 · the S2 review, 2026-09-22
 - **Added:** 2026-09-22 · the Projects chat S2 session. Minted as H-161, renumbered to H-162 because main took H-161 first
 
-### H-179 · Answer the five questions of the reporting spec · [OWNER]
-- **Check:** `grep -n "^| \*\*Q[1-5]\*\*" project-docs/specs/projects_reports.md`
-  → five hits mean that the owner has answered no question yet. When the owner answers
-  one, move the answer into the spec and delete its row.
-- **Why:** WS-27bn (`specs/projects_reports.md`) is SPEC ONLY. Slices R1 to
-  R4 and R7 can start now. R5 (a report on one person or one team) waits on
-  Q1, who may open a report about one person. R6 (the LLM headline) waits on
-  Q4, who turns on a feature that spends AI credits. Q2, Q3 and Q5 set the
-  first channel, time tracking and the morning send time. Each question has a
-  recommendation in §9.
-- **Authority:** `specs/projects_reports.md` §9 · owner directive, 2026-09-24
-- **Added:** 2026-09-24 · the reporting brainstorm session
-
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git
