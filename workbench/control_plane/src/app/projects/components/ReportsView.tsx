@@ -19,21 +19,50 @@
  * `GET /projects/reports/{id}/render`, which re-runs §9.12.7's own SQL. This
  * file chooses words and order. The rule is §9.12.8's own: a report with its
  * own arithmetic is the second set of numbers, and two sets disagree.
+ *
+ * WS-27bn R1 (`projects_reports.md` §6.2) adds the builder: a scope, a period,
+ * a subtree toggle, the sections and a name, with a live preview from
+ * `POST /projects/reports/preview`. The preview is a server render too. The
+ * builder's choices live in `lib/reportBuilder.ts`, as pure functions.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
+import Checkbox from "@/components/ui/Checkbox";
+import Input from "@/components/ui/Input";
+import { SelectButton } from "@/components/ui/SelectButton";
 import { accentForHue, statusAccent } from "@/lib/statusAccent";
+import { useCachedResource } from "@/lib/useCachedResource";
 
 import {
   type FinishedReport,
+  type PreviewReportBody,
   type ReportRow,
   type RenderedReportBody,
   projectsApi,
+  projectsKey,
 } from "../lib/api";
 import { capacityReportRows } from "../lib/capacity";
 import { conflictsReportRows } from "../lib/conflicts";
+import {
+  type BuilderState,
+  MAX_REPORT_NAME,
+  REPORT_SECTIONS,
+  SAVED_PERIOD,
+  WHOLE_ORGANIZATION,
+  builderStateFrom,
+  configFor,
+  createPayload,
+  newBuilderState,
+  patchPayload,
+  periodKey,
+  periodOptions,
+  saveRefusal,
+  scopeOptions,
+  toggleSection,
+  withPeriod,
+} from "../lib/reportBuilder";
 
 /** Hours as a person reads them. Mirrors `AnalyticsPanels`, deliberately. */
 function duration(hours: number | null | undefined): string {
@@ -112,7 +141,11 @@ function Row({
  * pane around it needs the API; this part is pure, and the part worth looking
  * at before a report is scheduled to anybody.
  */
-export function RenderedBody({ body }: { body: RenderedReportBody }) {
+export function RenderedBody({
+  body,
+}: {
+  body: RenderedReportBody | PreviewReportBody;
+}) {
   const done = statusAccent({ category: "done" });
   const late = statusAccent({ category: "cancelled" });
   const { sections } = body;
@@ -302,6 +335,241 @@ export function RenderedBody({ body }: { body: RenderedReportBody }) {
   );
 }
 
+/** How long the builder waits after a change before it asks for a preview. */
+const PREVIEW_DELAY_MS = 400;
+
+/** An error as one sentence a member can read. */
+function message(e: unknown, fallback: string): string {
+  return e instanceof Error && e.message ? e.message : fallback;
+}
+
+/**
+ * WS-27bn R1 — the builder, one sentence of chips (§6.2).
+ *
+ * ⚠️ **The preview is the server's.** Each change asks
+ * `POST /projects/reports/preview` after a short delay. The browser computes
+ * no figure, so the preview and the saved render are one computation.
+ *
+ * ⚠️ **An edit sends the WHOLE config.** PATCH replaces `config` on the
+ * server, so a partial one would reset the fields it left out.
+ *
+ * ⚠️ **The scope of a saved report is fixed.** PATCH takes a name and a
+ * config, and no `project_id`. So the scope chip is off while editing.
+ */
+function ReportBuilder({
+  initial,
+  editing,
+  roots,
+  onSaved,
+  onCancel,
+}: {
+  initial: BuilderState;
+  /** The saved report under edit, or `null` for a new one. */
+  editing: ReportRow | null;
+  roots: Parameters<typeof scopeOptions>[0];
+  onSaved: (row: ReportRow) => void;
+  onCancel: () => void;
+}) {
+  const [state, setState] = useState<BuilderState>(initial);
+  const [preview, setPreview] = useState<PreviewReportBody | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const scopes = useMemo(() => scopeOptions(roots), [roots]);
+  const refusal = saveRefusal(state);
+
+  // The name is not part of the key: the header shows the typed name, so a
+  // keystroke in the name field asks the server for nothing.
+  const previewKey = JSON.stringify({
+    project_id: state.projectId,
+    config: configFor(state),
+  });
+
+  useEffect(() => {
+    let off = false;
+    const { project_id, config } = JSON.parse(previewKey) as {
+      project_id: string | null;
+      config: ReturnType<typeof configFor>;
+    };
+    const timer = setTimeout(() => {
+      projectsApi.previewReport({ project_id, name: "", config }).then(
+        (body) => {
+          if (off) return;
+          setPreview(body);
+          setPreviewError(null);
+        },
+        (e) => {
+          if (off) return;
+          setPreviewError(message(e, "The preview could not be rendered."));
+        }
+      );
+    }, PREVIEW_DELAY_MS);
+    return () => {
+      off = true;
+      clearTimeout(timer);
+    };
+  }, [previewKey]);
+
+  async function save() {
+    if (refusal) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const row = editing
+        ? await projectsApi.patchReport(editing.id, patchPayload(state))
+        : await projectsApi.createReport(createPayload(state));
+      onSaved(row);
+    } catch (e) {
+      setSaveError(message(e, "That report could not be saved."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const shownName = state.name.trim() || "Untitled report";
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-muted-foreground">Report on</span>
+        <SelectButton
+          label="Scope"
+          widthClass="w-full sm:w-[16rem]"
+          value={state.projectId ?? WHOLE_ORGANIZATION}
+          defaultValue={WHOLE_ORGANIZATION}
+          options={scopes}
+          disabled={editing !== null}
+          onChange={(value) =>
+            setState((s) => ({
+              ...s,
+              projectId: value === WHOLE_ORGANIZATION ? null : value,
+            }))
+          }
+        />
+        <span className="text-muted-foreground">over</span>
+        <SelectButton
+          label="Period"
+          widthClass="w-full sm:w-[14rem]"
+          value={periodKey(state) ?? SAVED_PERIOD}
+          defaultValue="last_week"
+          options={periodOptions(state)}
+          onChange={(value) => setState((s) => withPeriod(s, value))}
+        />
+      </div>
+
+      {editing !== null && (
+        <p className="text-[11px] text-muted-foreground">
+          The scope of a saved report stays as saved. To report on another
+          scope, start a new report.
+        </p>
+      )}
+
+      {state.projectId !== null && (
+        <label className="flex items-center gap-2 text-[11px]">
+          <Checkbox
+            size="sm"
+            checked={state.includeSubtree}
+            onChange={(e) =>
+              setState((s) => ({ ...s, includeSubtree: e.target.checked }))
+            }
+          />
+          Include the projects under it
+        </label>
+      )}
+
+      <fieldset>
+        <legend className="mb-1 text-[11px] font-semibold text-foreground">
+          Sections
+        </legend>
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+          {REPORT_SECTIONS.map((section) => {
+            const on = state.sections.includes(section.key);
+            return (
+              <label
+                key={section.key}
+                className="flex items-center gap-1.5 text-[11px]"
+                title={
+                  on && state.sections.length === 1
+                    ? "A report needs at least one section."
+                    : undefined
+                }
+              >
+                <Checkbox
+                  size="sm"
+                  checked={on}
+                  disabled={on && state.sections.length === 1}
+                  onChange={() =>
+                    setState((s) => ({
+                      ...s,
+                      sections: toggleSection(s.sections, section.key),
+                    }))
+                  }
+                />
+                {section.label}
+              </label>
+            );
+          })}
+        </div>
+      </fieldset>
+
+      <label className="block text-[11px]">
+        <span className="mb-1 block font-semibold text-foreground">Name</span>
+        <Input
+          inputSize="sm"
+          className="w-full sm:w-[20rem]"
+          value={state.name}
+          maxLength={MAX_REPORT_NAME}
+          onChange={(e) => setState((s) => ({ ...s, name: e.target.value }))}
+        />
+      </label>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="primary"
+          size="sm"
+          loading={saving}
+          disabled={refusal !== null}
+          onClick={save}
+        >
+          {editing ? "Save changes" : "Save report"}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+        {(refusal || saveError) && (
+          <p className="text-[11px] text-destructive" role="alert">
+            {saveError ?? refusal}
+          </p>
+        )}
+      </div>
+
+      <section className="border-t border-border pt-3" aria-label="Preview">
+        <p className="mb-2 text-[11px] text-muted-foreground">
+          Preview. The server computes each number, and nothing is saved.
+        </p>
+        {previewError ? (
+          <p className="text-[11px] text-destructive" role="alert">
+            {previewError}
+          </p>
+        ) : preview ? (
+          <RenderedBody
+            body={{ ...preview, report: { ...preview.report, name: shownName } }}
+          />
+        ) : (
+          <p className="text-[11px] text-muted-foreground">Rendering…</p>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/** What the right pane shows: a saved render, or the builder. */
+type Pane =
+  | { kind: "view" }
+  | { kind: "new" }
+  | { kind: "edit"; row: ReportRow };
+
 export default function ReportsView({
   finished,
 }: {
@@ -312,7 +580,14 @@ export default function ReportsView({
   const [selected, setSelected] = useState<string | null>(null);
   const [body, setBody] = useState<RenderedReportBody | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [pane, setPane] = useState<Pane>({ kind: "view" });
+  /** Moves after a save, so the render of an edited report runs again. */
+  const [renderRound, setRenderRound] = useState(0);
+
+  // The scope chip lists the tree the caller can see. One read cache, the
+  // same key the page uses, so this adds no request on a warm page.
+  const tree = useCachedResource(projectsKey("tree"), () => projectsApi.tree());
+  const roots = useMemo(() => tree.data?.rows ?? [], [tree.data]);
 
   useEffect(() => {
     let off = false;
@@ -340,32 +615,20 @@ export default function ReportsView({
     return () => {
       off = true;
     };
-  }, [selected]);
+  }, [selected, renderRound]);
 
-  async function createWeekly() {
-    setBusy(true);
-    setError(null);
-    try {
-      const made = await projectsApi.createReport({
-        name: "Weekly delivery",
-        // ⚠️ No config: the server's defaults ARE the report shape — one whole
-        // week, ending last Sunday. Sending a config from here would be a
-        // second place for that decision to live.
-      });
-      setRows((prev) => [made, ...(prev ?? [])]);
-      setSelected(made.id);
-    } catch (e) {
-      setError(
-        e instanceof Error ? e.message : "That report could not be saved."
-      );
-    } finally {
-      setBusy(false);
-    }
+  function saved(row: ReportRow) {
+    setRows((prev) => [row, ...(prev ?? []).filter((r) => r.id !== row.id)]);
+    setPane({ kind: "view" });
+    setSelected(row.id);
+    setRenderRound((n) => n + 1);
   }
+
+  const selectedRow = rows?.find((r) => r.id === selected) ?? null;
 
   return (
     <div className="flex-1 overflow-y-auto p-4">
-      <div className="mb-3 flex items-baseline gap-2">
+      <div className="mb-3 flex flex-wrap items-baseline gap-2">
         <h2 className="text-sm font-semibold">Reports</h2>
         <p className="text-[11px] text-muted-foreground">
           A saved question, answered from the same numbers the dashboard shows.
@@ -374,10 +637,11 @@ export default function ReportsView({
           className="ml-auto"
           variant="secondary"
           size="sm"
-          loading={busy}
-          onClick={createWeekly}
+          icon="Plus"
+          disabled={pane.kind === "new"}
+          onClick={() => setPane({ kind: "new" })}
         >
-          New weekly report
+          New report
         </Button>
       </div>
 
@@ -404,9 +668,14 @@ export default function ReportsView({
                 <li key={r.id}>
                   <button
                     type="button"
-                    onClick={() => setSelected(r.id)}
+                    onClick={() => {
+                      setSelected(r.id);
+                      setPane({ kind: "view" });
+                    }}
                     className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-[11px] hover:bg-muted ${
-                      selected === r.id ? "bg-muted font-medium" : ""
+                      selected === r.id && pane.kind === "view"
+                        ? "bg-muted font-medium"
+                        : ""
                     }`}
                   >
                     <Icon name="FileText" className="h-3 w-3 shrink-0" />
@@ -434,15 +703,47 @@ export default function ReportsView({
           )}
         </aside>
 
-        <div className="rounded-lg border border-border bg-card p-3">
-          {!selected ? (
+        <div className="min-w-0 rounded-lg border border-border bg-card p-3">
+          {pane.kind === "new" ? (
+            <ReportBuilder
+              key="new"
+              initial={newBuilderState()}
+              editing={null}
+              roots={roots}
+              onSaved={saved}
+              onCancel={() => setPane({ kind: "view" })}
+            />
+          ) : pane.kind === "edit" ? (
+            <ReportBuilder
+              key={`edit:${pane.row.id}`}
+              initial={builderStateFrom(pane.row)}
+              editing={pane.row}
+              roots={roots}
+              onSaved={saved}
+              onCancel={() => setPane({ kind: "view" })}
+            />
+          ) : !selected ? (
             <p className="text-[11px] text-muted-foreground">
-              Choose a report to see exactly what it says.
+              Choose a report to see exactly what it says, or start a new one.
             </p>
           ) : body === null && !error ? (
             <p className="text-[11px] text-muted-foreground">Rendering…</p>
           ) : body ? (
-            <RenderedBody body={body} />
+            <div className="space-y-3">
+              {selectedRow && (
+                <div className="flex justify-end">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    icon="Pencil"
+                    onClick={() => setPane({ kind: "edit", row: selectedRow })}
+                  >
+                    Edit
+                  </Button>
+                </div>
+              )}
+              <RenderedBody body={body} />
+            </div>
           ) : null}
         </div>
       </div>
