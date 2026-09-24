@@ -5,6 +5,7 @@ from acb_common._log import (
     configure_logging,
     get_logger,
     get_run_context,
+    run_context_scope,
 )
 from acb_common.activity import (
     active_runs,
@@ -32,5 +33,6 @@ __all__ = [
     "read_activity_since",
     "recent_activity",
     "refresh_run_presence",
+    "run_context_scope",
     "save_org_setting",
 ]

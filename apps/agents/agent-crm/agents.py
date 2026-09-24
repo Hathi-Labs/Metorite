@@ -1002,15 +1002,21 @@ def build_agents() -> list[Any]:
     optional deps differ."""
     from agent_framework import Agent
     from agent_framework.openai import OpenAIChatCompletionClient
+    from acb_llm.attribution import attributed_openai
 
     prov = _llm_provider()
     client = OpenAIChatCompletionClient(
         model=os.environ.get("CRM_AGENT_MODEL", "tier-balanced"),
-        api_key=prov["api_key"],
-        base_url=prov["base_url"],
         # Stamp identity so v1_compat attributes this agent's model calls + cost
         # to it on the observability bus (specs/observability_e2.md §6.2).
-        default_headers={"X-CC-Agent": "crm-assistant", "X-CC-Source": "chat"},
+        # Usage slice 1: `attributed_openai` adds the member, app and run to
+        # EVERY request, from the run context. A fixed header cannot, because
+        # one client serves everyone who chats with this agent.
+        async_client=attributed_openai(
+            base_url=prov["base_url"],
+            api_key=prov["api_key"],
+            default_headers={"X-CC-Agent": "crm-assistant", "X-CC-Source": "chat"},
+        ),
     )
     return [
         Agent(

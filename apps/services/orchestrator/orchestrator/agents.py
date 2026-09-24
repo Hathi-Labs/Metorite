@@ -430,11 +430,18 @@ def _make_openai_client(
     # authenticate as the platform (BO-2 residual #4). /v1 accepts this key via
     # acb_auth.require_llm_api_auth.
     gateway_key = getattr(settings, "llm_api_key", "") or "sk-local"
+    from acb_llm.attribution import attributed_openai
+
     return OpenAIChatCompletionClient(
-        base_url=f"{gateway_base}/v1",
-        api_key=gateway_key,
         model="tier-balanced",
-        default_headers={"X-CC-Agent": agent_name, "X-CC-Source": source},
+        # Usage slice 1: `attributed_openai` adds the member, app and run to
+        # EVERY request, from the run context. A fixed header cannot, because
+        # one client serves everyone who chats with this agent.
+        async_client=attributed_openai(
+            base_url=f"{gateway_base}/v1",
+            api_key=gateway_key,
+            default_headers={"X-CC-Agent": agent_name, "X-CC-Source": source},
+        ),
     )
 
 

@@ -122,22 +122,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_reports.md` §3.1 · CLAUDE.md §3 rule 6 (R8)
 - **Added:** 2026-09-24 · the WS-27bn R1 build
 
-### H-179 · Prove a real Projects chat holds a tool conversation on DeepSeek V4 · [AGENT]
-- **Check:** on the box, count `usage_event` rows where `agent` is
-  `projects-assistant` and `tier` is a chat tier. Then read the gateway log for
-  `router.provider_error` after the deploy. Rows and no error close this entry.
-- 📌 **BUILT 2026-09-24.** The Router now carries a thinking model's
-  reasoning across a tool round-trip. `customer_console/reasoning.py` holds the
-  two halves, and `test_reasoning_passthrough.py` is the fence.
-- 🔴 **Why.** DeepSeek V4 returns `reasoning_content` and refuses the next
-  turn without it. The agent framework reads only `reasoning_details`. So every
-  tool call after the first failed with a 400.
-- ⚠️ **The tests use a stub.** Seven live probes set the shapes, and the module
-  records them. Only a real chat proves the wiring. That is this entry.
-- 🔴 **Review found a shape the first fix missed.** The framework splits a
-  turn that holds text AND tool calls into two messages. The vendor refused
-  the text half. The Router now joins the two halves into one turn again.
-
 ### H-180 · Carry reasoning on the STREAM path too · [AGENT]
 - **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`
   → no hit in the stream relay means this entry is still open.
