@@ -36,6 +36,8 @@ KNOWN_INVOCATIONS = frozenset({
     "aspeech",
     "aimage_generation",
     "native_typesafe",
+    # CP-13h (2026-09-24): the same Jev through the AI/ML API reseller.
+    "native_aimlapi",
 })
 
 #: Only these tasks stream (§6A.9 rule 4). A `transcribe` capability claiming

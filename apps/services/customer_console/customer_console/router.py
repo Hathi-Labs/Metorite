@@ -634,6 +634,9 @@ SERVING_INVOCATIONS = frozenset(
         "aimage_generation",
         "aspeech",
         "native_typesafe",
+        # CP-13h (2026-09-24): Jev through the AI/ML API reseller. The same
+        # door and the same wire class, with a second instance.
+        "native_aimlapi",
     }
 )
 
@@ -1090,15 +1093,32 @@ def vendor_reported_cost_usd(response: Any) -> Decimal | None:
         headers = hidden.get("additional_headers")
         if not isinstance(headers, dict):
             return None
-        raw = headers.get(_LITELLM_COST_KEY)
+        return reported_cost_usd(headers.get(_LITELLM_COST_KEY))
+    except (InvalidOperation, ValueError, TypeError, AttributeError):
+        return None
+
+
+def reported_cost_usd(raw: Any) -> Decimal | None:
+    """One vendor-stated USD figure → a Decimal at 8 places, or ``None``.
+
+    🔴 **The ONE parse of a vendor-reported cost.** The litellm path above
+    and the native handlers (``handlers.py``, CP-13h) both read a vendor's
+    own figure through here, so the rules below have one home.
+
+    A number or a numeric string reads. A bool, a negative, NaN, infinity or
+    anything else is ``None``. ⚠️ **Never raises**, because a missing cost must
+    never fail a call the customer already holds.
+    """
+    try:
         if raw is None or isinstance(raw, bool):
             return None
         if not isinstance(raw, (int, float, str, Decimal)):
             return None
         # Through `str`, so a float's binary error never enters money maths.
-        cost = Decimal(str(raw))
+        cost = Decimal(str(raw).strip())
         # A negative charge is not a thing a vendor does. Reading one means we
         # misunderstood the field, and a wrong number is worse than no number.
+        # ⚠️ NaN raises on this comparison, and infinity on the quantize.
         if cost < 0:
             return None
         return cost.quantize(Decimal("0.00000001"))

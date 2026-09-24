@@ -88,17 +88,25 @@ def _native_vendors() -> set[str]:
     litellm provider id, because litellm reaches it only through the Proxy
     that D58 rejects. The Router still finds its key by the model prefix, so
     the slug rule holds. What changes is who answers to the slug.
+
+    CP-13h (2026-09-24): ``aimlapi`` joined. litellm knows the reseller as
+    ``aiml``, and not as ``aimlapi``. So the set is read from the handler
+    table (``handlers.native_vendors``), and a third instance joins it with
+    no edit here.
     """
     from customer_console import handlers
 
-    return {handlers.TYPESAFE_PROVIDER}
+    vendors = set(handlers.native_vendors())
+    assert {"typesafe", "aimlapi"} <= vendors, vendors
+    return vendors
 
 
 def test_every_offered_vendor_is_a_litellm_provider() -> None:
     """🔴 The one rule. A slug litellm does not know can never be called.
 
     ⚠️ A native vendor is exempt by name (:func:`_native_vendors`). The
-    exemption is a set of ONE today, and a typo in it fails the next test.
+    exemption holds the handler table's vendors, and a vendor with no guide
+    card fails the next test.
     """
     litellm = pytest.importorskip("litellm")
     known = {getattr(p, "value", p) for p in litellm.provider_list}

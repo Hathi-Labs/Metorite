@@ -68,7 +68,8 @@ export default function DeclareModel({
         A model has to be declared before any tier can use it. The provider verb
         is how the Router calls it — chat models use <span className="mono">
         acompletion</span>, and a decision model uses <span className="mono">
-        native_typesafe</span>.
+        native_typesafe</span> or, through the AI/ML API reseller,{" "}
+        <span className="mono">native_aimlapi</span>.
       </p>
 
       <div className="formrow">

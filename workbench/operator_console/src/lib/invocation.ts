@@ -15,7 +15,8 @@
 
 /** Every verb an operator may declare. `native_typesafe` joined on
  *  2026-09-23 (CP-13b): TypeSafe's Jev has no litellm verb, so the Console
- *  calls it through its own handler. */
+ *  calls it through its own handler. `native_aimlapi` joined on 2026-09-24
+ *  (CP-13h): the same Jev through the AI/ML API reseller. */
 export const VERBS = [
   "acompletion",
   "aembedding",
@@ -23,6 +24,7 @@ export const VERBS = [
   "aspeech",
   "aimage_generation",
   "native_typesafe",
+  "native_aimlapi",
 ] as const;
 
 export type Verb = (typeof VERBS)[number];
