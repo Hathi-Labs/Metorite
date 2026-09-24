@@ -217,6 +217,11 @@ describe("schedulePromote / undoPromote", () => {
     ["quick-dispose", () => useTaskStore.getState().quickDispose("t1", "TRASH")],
     ["bulk-dispose", () => useTaskStore.getState().bulkDispose(["t1"], "SOMEDAY")],
     ["archive", () => useTaskStore.getState().archiveItem("t1", true)],
+    ["bulk-archive", () => useTaskStore.getState().bulkArchive(["t1"], true)],
+    [
+      "fresh clarify",
+      () => useTaskStore.getState().clarify("t1", { kind: "someday" }, undefined, { reclarify: true }),
+    ],
   ] as const) {
     it(`a ${name} inside the window cancels the promote, never sends it`, () => {
       const commit = vi.fn().mockResolvedValue({ left: false, item: task("t1") });
@@ -253,6 +258,20 @@ describe("schedulePromote / undoPromote", () => {
     useTaskStore.getState().schedulePromote({ id: "t2", projectName: "B", commit: second });
     expect(first).toHaveBeenCalledTimes(1);
     expect(second).not.toHaveBeenCalled();
+  });
+
+  it("a second promote of the SAME task replaces the first: one server call, to the second board", async () => {
+    // S6g round 3. A flush sent the task to board A, then moved it to board B.
+    vi.mocked(apiMoveTask).mockReset().mockResolvedValue({});
+    vi.mocked(lensGetItem).mockReset().mockImplementation(async () => task("t1", { projectId: "pB" }));
+    const s = useTaskStore.getState();
+    s.schedulePromote({ id: "t1", projectName: "A", commit: () => useTaskStore.getState().promoteItem("t1", { projectId: "pA" }) });
+    s.schedulePromote({ id: "t1", projectName: "B", commit: () => useTaskStore.getState().promoteItem("t1", { projectId: "pB" }) });
+    expect(apiMoveTask).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(PROMOTE_UNDO_MS);
+    await vi.runAllTimersAsync();
+    expect(apiMoveTask).toHaveBeenCalledTimes(1);
+    expect(apiMoveTask).toHaveBeenCalledWith("t1", { projectId: "pB" });
   });
 });
 

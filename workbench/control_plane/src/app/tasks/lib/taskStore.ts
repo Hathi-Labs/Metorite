@@ -1157,9 +1157,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   clearPromoteNotice: () => set({ promoteNotice: null }),
 
   schedulePromote: ({ id, projectName, commit, dropped, onCancel }) => {
-    // One pending promote at a time. A second one sends the first now, so
-    // the member never has two Undo windows over two different moves.
-    pendingCommit?.flush();
+    // One pending promote at a time. A second one for ANOTHER task sends the
+    // first now, so the member never has two Undo windows over two moves.
+    // ⚠️ A second one for the SAME task replaces the first: cancel, never
+    // flush (S6g round 3). A flush sent the task to board A and then moved
+    // it to board B when Clarify or the Move dialog was used again.
+    const waiting = get().pendingPromote;
+    if (waiting && !waiting.sending && waiting.id === id) {
+      pendingCommit?.cancel();
+      pendingCommit = null;
+      pendingCancel = null;
+    } else {
+      pendingCommit?.flush();
+    }
     const key = `tasks-promote:${id}:${++promoteSeq}`;
     pendingCancel = onCancel ?? null;
     set({ pendingPromote: { id, projectName, key, sending: false } });
