@@ -145,6 +145,10 @@ from customer_console.lifecycle import (
     assert_transition,
     capabilities_of,
 )
+from customer_console.reasoning import (
+    publish_reasoning_alias,
+    reasoning_for_vendor,
+)
 from customer_console.router import (
     SSE_DONE,
     ExtractedUsage,
@@ -2502,6 +2506,8 @@ def declare_capability(req: CapabilityRequest, staff: Operator) -> dict[str, Any
     """
     try:
         invocation = catalog.check_invocation_for_task(req.invocation, req.task)
+        # CP-13h: a native verb must call the vendor the model prefix names.
+        catalog.check_model_for_invocation(req.model, invocation)
         streams = catalog.check_streams(req.task, req.streams)
     except catalog.CatalogRefused as exc:
         raise _catalog_refusal(exc) from exc
@@ -7052,6 +7058,13 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
         passthrough = {
             k: v for k, v in req.model_dump(exclude_none=True).items() if k in _FORWARDABLE
         }
+        # 🔴 **H-179.** A thinking model refuses a tool round-trip whose
+        # assistant turns dropped their reasoning, and the agent framework
+        # drops it because it knows only the OTHER vendor's spelling. Done per
+        # STEP rather than once, because a failover chain may legally mix two
+        # vendors and each step builds its own body. `messages` is a required
+        # field, so no guard: a guard here was pure complexity (C901).
+        passthrough["messages"] = reasoning_for_vendor(passthrough["messages"])
         requested_max = passthrough.get("max_tokens")
         passthrough["max_tokens"] = min(
             int(requested_max) if requested_max else _MAX_OUTPUT_TOKENS,
@@ -7204,7 +7217,11 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
         request_id=request_id,
     )
 
-    return response
+    # 🔴 **H-179, the other half.** Metering first, because this only renames a
+    # field and a completion is already paid for by here. The framework reads
+    # `reasoning_details` and nothing else, so without this mirror there is
+    # nothing for `reasoning_for_vendor` to send back one turn later.
+    return publish_reasoning_alias(response)
 
 
 # ── H-46: the transcribe endpoint (§6A.10a) ─────────────────────────────────
@@ -8376,25 +8393,15 @@ def try_decision(req: TryDecisionRequest, staff: Operator) -> dict[str, Any]:
 
     usage = response.usage
     cost: Decimal | None = None
-    try:
-        with get_engine().begin() as conn:
-            prices = _vendor_prices(
-                conn,
-                resolved.model,
-                prompt_tokens=usage.prompt_tokens,
-                started_at=started_at,
-            )
-            cost = router_mod.vendor_cost_usd(
-                usage,
-                input_per_1m=prices["input"],
-                output_per_1m=prices["output"],
-                cached_per_1m=prices["cached"],
-            )
-    except Exception:
-        # The answer is paid for and in hand. A price read that fails must
-        # not turn it into a 500, so the cost reads "not priced" instead.
-        _log.exception("catalog.decide_try_price_failed")
-        cost = None
+    # CP-13h: a vendor that states its own charge is a MEASUREMENT, and it
+    # outranks the profile arithmetic. The same rule as `_record_completion`.
+    cost_source: str | None = None
+    if usage.vendor_reported_cost_usd is not None:
+        cost = usage.vendor_reported_cost_usd
+        cost_source = "vendor"
+    else:
+        cost = _try_cost_from_profile(resolved.model, usage, started_at)
+        cost_source = None if cost is None else "computed"
     _audit_decide_try(
         staff.actor,
         {
@@ -8405,6 +8412,7 @@ def try_decision(req: TryDecisionRequest, staff: Operator) -> dict[str, Any]:
             "input_tokens": usage.prompt_tokens,
             "output_tokens": usage.completion_tokens,
             "vendor_cost_usd": None if cost is None else str(cost),
+            "cost_source": cost_source,
             "latency_ms": latency_ms,
         },
     )
@@ -8422,6 +8430,31 @@ def try_decision(req: TryDecisionRequest, staff: Operator) -> dict[str, Any]:
         # the profile holds no price, and the panel says so.
         "vendor_cost_usd": None if cost is None else str(cost),
     }
+
+
+def _try_cost_from_profile(
+    model: str, usage: ExtractedUsage, started_at: datetime
+) -> Decimal | None:
+    """The try's cost from our recorded prices, or None. Never raises."""
+    try:
+        with get_engine().begin() as conn:
+            prices = _vendor_prices(
+                conn,
+                model,
+                prompt_tokens=usage.prompt_tokens,
+                started_at=started_at,
+            )
+            return router_mod.vendor_cost_usd(
+                usage,
+                input_per_1m=prices["input"],
+                output_per_1m=prices["output"],
+                cached_per_1m=prices["cached"],
+            )
+    except Exception:
+        # The answer is paid for and in hand. A price read that fails must
+        # not turn it into a 500, so the cost reads "not priced" instead.
+        _log.exception("catalog.decide_try_price_failed")
+        return None
 
 
 @app.get("/me/billing")

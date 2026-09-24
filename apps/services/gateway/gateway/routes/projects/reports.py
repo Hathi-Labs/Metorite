@@ -8,6 +8,7 @@ Spec: ``project-docs/specs/project_management_app.md`` §9.12.8.
     PATCH  /projects/reports/{id}
     DELETE /projects/reports/{id}
     GET    /projects/reports/{id}/render  → the body, computed now
+    POST   /projects/reports/preview      → the body of an unsaved config
 
 **The owner drew the line: analytics is what you look at, a report is what
 gets delivered.** So this is built ON §9.12.7 and after it.
@@ -361,7 +362,10 @@ async def update_report(
             raise HTTPException(
                 status_code=422, detail="Nothing to change.",
             )
-        values["updated_at"] = text("now()")
+        # ⚠️ No `updated_at` here. `update_row` already appends
+        # `updated_at = now()`, and a second assignment made Postgres refuse
+        # every PATCH ("multiple assignments to same column"). Found by the
+        # WS-27bn R1 real-DB test. A fake database accepted it.
         row = await update_row(db, "pm_reports", report_id, values)
         return _report_dict(row)
 
@@ -378,6 +382,225 @@ async def delete_report(
             text("DELETE FROM pm_reports WHERE id = CAST(:i AS uuid)"),
             {"i": report_id},
         )
+
+
+async def render_body(
+    db: Any,
+    vis: Any,
+    user: UserContext,
+    *,
+    project_id: str | None,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """The period and the sections of one report config, computed NOW.
+
+    WS-27bn R1. **The one render function** (`projects_reports.md` §8a). The
+    saved-report render and the unsaved preview both call it, and a later
+    schedule, chat tool or workflow step calls it too. A second render path
+    is a defect: two paths give two answers for one config.
+
+    ``config`` is already normalised by `normalise_report_config`. The
+    caller has already checked that ``project_id`` is visible. ``user``
+    decides the HR tier, so the reader's grant decides it, as before.
+    """
+    scope_sql = await scope_clause(
+        db, vis, project_id, bool(config["include_subtree"]),
+    )
+    # The history predicate, matching `throughput` and `finished`:
+    # deliberately WITHOUT `archived_at IS NULL`, because a report
+    # describes the past and an archive sweep must not empty it.
+    past_where = (
+        f"{scope_sql}"
+        f" AND ({task_visibility_clause(vis, 't')})"
+        f" AND ({triage_exclusion_clause('t')})"
+    )
+    # The open-work predicate, matching `load` and `stuck`.
+    #
+    # ⚠️ **D-PM-32(b) lands HERE and not on `past_where`, and the split is
+    # the point.** A stopped project's outstanding work leaves the report,
+    # because nobody is going to do it. What it already FINISHED stays,
+    # for the reason the comment above gives about archiving: a report
+    # describes the past, and stopping a project in September must not
+    # empty July. Putting the clause on `past_where` would rewrite every
+    # week we have already sent.
+    open_where = (
+        f"{past_where}"
+        f" AND t.archived_at IS NULL"
+        f" AND ({reportable_with_ancestors_clause('t')})"
+        f" AND s.category <> ALL(CAST(:closed AS text[]))"
+    )
+    params: dict[str, Any] = {
+        **vis.params,
+        **scope_params(project_id),
+        "reportable_states": sorted(REPORTABLE_STATUSES),
+        "weeks": int(config["weeks"]),
+        "closing": sorted(CLOSING_CATEGORIES),
+        "closed": sorted(CLOSING_CATEGORIES),
+        "done_cat": COMPLETED_CATEGORY,
+        "started_cat": STARTED_CATEGORY,
+    }
+    skip = bool(config["skip_current_week"])
+
+    window = (
+        await db.execute(
+            text(finished_period_sql(skip_current_week=skip)),
+            {"weeks": int(config["weeks"])},
+        )
+    ).one()
+
+    sections: dict[str, Any] = {}
+    for name in config["sections"]:
+        if name == "finished":
+            rows = (
+                await db.execute(
+                    text(finished_sql(past_where, skip_current_week=skip)),
+                    params,
+                )
+            ).fetchall()
+            totals = (
+                await db.execute(
+                    text(
+                        cycle_summary_sql(past_where, skip_current_week=skip)
+                    ),
+                    params,
+                )
+            ).one()
+            sections[name] = {
+                "projects": [
+                    {
+                        "project_id": str(r.project_id),
+                        "name": r.name,
+                        "completed": int(r.completed),
+                        "cancelled": int(r.cancelled),
+                    }
+                    for r in rows
+                ],
+                "total_completed": int(totals.completed or 0),
+                "total_cancelled": int(totals.cancelled or 0),
+            }
+        elif name == "throughput":
+            # ⚠️ `weekly_sql` has no `skip_current_week` arm, and that is
+            # correct: a trend wants every week including the running one,
+            # and the summary beside it already answers the closed period.
+            series = (
+                await db.execute(text(weekly_sql(past_where)), params)
+            ).fetchall()
+            totals = (
+                await db.execute(
+                    text(
+                        cycle_summary_sql(past_where, skip_current_week=skip)
+                    ),
+                    params,
+                )
+            ).one()
+            sections[name] = {
+                "series": [
+                    {
+                        "week_start": w.week.date().isoformat(),
+                        "completed": int(w.completed or 0),
+                    }
+                    for w in series
+                ],
+                "median_hours": (
+                    None if totals.median_hours is None
+                    else round(float(totals.median_hours), 2)
+                ),
+                "measured": int(totals.measured or 0),
+            }
+        elif name == "load":
+            people = (
+                await db.execute(text(load_sql(open_where)), params)
+            ).fetchall()
+            total = int(
+                (
+                    await db.execute(text(total_open_sql(open_where)), params)
+                ).scalar()
+                or 0
+            )
+            sections[name] = {
+                "people": [
+                    {
+                        "assignee": p.who or None,
+                        "open_tasks": int(p.open_tasks),
+                        "overdue": int(p.overdue),
+                    }
+                    for p in people[:MAX_PEOPLE]
+                ],
+                "total_tasks": total,
+            }
+        elif name == "capacity":
+            # WS-27bm S7a. The capacity route's OWN body, imported: the
+            # panel and the report are one computation. The HR tier is the
+            # READER's grant, as every other number here is the reader's.
+            cap = await capacity_body(
+                db, vis,
+                hr_visible=can_read_hr_fields(user),
+                project_id=project_id,
+                include_subtree=bool(config["include_subtree"]),
+            )
+            named = [r for r in cap["rows"] if r["kind"] != "unassigned"]
+            nobody = [r for r in cap["rows"] if r["kind"] == "unassigned"]
+            sections[name] = {
+                # Capped like `load`, and the unassigned row survives the
+                # cap: it is the one row a reader can act on today.
+                "people": named[:MAX_PEOPLE] + nobody,
+                "people_total": cap["people_total"],
+                "total_tasks": cap["total_tasks"],
+                "hr_visible": cap["hr_visible"],
+                "horizon_days": cap["horizon_days"],
+                "windows": cap["windows"],
+            }
+        elif name == "conflicts":
+            # WS-27bm S7c. The conflicts route's OWN body, imported, as
+            # `capacity` does. The HR kinds follow the READER's grant.
+            found = await conflicts_body(
+                db, vis,
+                hr_visible=can_read_hr_fields(user),
+                project_id=project_id,
+                include_subtree=bool(config["include_subtree"]),
+            )
+            sections[name] = {
+                # Capped like `load`. `total` and `by_kind` count every
+                # row, so a reader sees how many the cap left out.
+                "rows": found["rows"][:MAX_PEOPLE],
+                "total": found["total"],
+                "by_kind": found["by_kind"],
+                "hr_visible": found["hr_visible"],
+                "horizon_days": found["horizon_days"],
+                "window": found["window"],
+            }
+        elif name == "stuck":
+            # The one number a report needs from (a): what is overdue, by
+            # project. The ageing bands are a dashboard shape — four
+            # buckets asking to be looked at, not read aloud.
+            #
+            # ⚠️ The builder is ANALYTICS', imported. A count written
+            # here would be the second set of numbers §9.12.8 forbids.
+            overdue = (
+                await db.execute(
+                    text(overdue_by_project_sql(open_where)), params,
+                )
+            ).fetchall()
+            sections[name] = {
+                "overdue": [
+                    {
+                        "project_id": str(o.project_id),
+                        "name": o.name,
+                        "overdue": int(o.overdue),
+                    }
+                    for o in overdue
+                ],
+                "overdue_total": sum(int(o.overdue) for o in overdue),
+            }
+
+    return {
+        # ⚠️ From the SERVER. A client that derives the window from its own
+        # clock disagrees across a timezone, and two copies of one report
+        # then name different weeks.
+        "period_start": window.period_start.isoformat(),
+        "period_end": window.period_end.isoformat(),
+        "sections": sections,
+    }
 
 
 @router.get("/reports/{report_id}/render")
@@ -406,204 +629,60 @@ async def render_report(
         config = normalise_report_config(row.config)
 
         project_id = str(row.project_id) if row.project_id is not None else None
-        scope_sql = await scope_clause(
-            db, vis, project_id, bool(config["include_subtree"]),
+        body = await render_body(
+            db, vis, user, project_id=project_id, config=config,
         )
-        # The history predicate, matching `throughput` and `finished`:
-        # deliberately WITHOUT `archived_at IS NULL`, because a report
-        # describes the past and an archive sweep must not empty it.
-        past_where = (
-            f"{scope_sql}"
-            f" AND ({task_visibility_clause(vis, 't')})"
-            f" AND ({triage_exclusion_clause('t')})"
+        return {"report": _report_dict(row), **body}
+
+
+#: The name a preview shows while the builder's name field is still empty.
+PREVIEW_NAME = "Untitled report"
+
+
+@router.post("/reports/preview")
+async def preview_report(
+    payload: dict[str, Any],
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Render a config that is NOT saved, and write no row (WS-27bn R1).
+
+    The builder calls this on each change, so a member sees what a report
+    says before they save it. It takes ``{project_id?, name?, config}``.
+
+    ⚠️ **It validates exactly as create does.** The config goes through
+    `normalise_report_config`, and a ``project_id`` goes through
+    `load_visible_project`. A preview that accepted what a save refuses
+    would show a member a report that they cannot keep.
+
+    ⚠️ **It writes nothing**, so the chat manifest lists it in
+    ``READ_ONLY_POSTS``. The ``report`` in the answer is a stub with no
+    ``id``, because no row exists.
+    """
+    config = normalise_report_config(payload.get("config"))
+    raw_name = payload.get("name")
+    name = (
+        _clean_name(raw_name) if str(raw_name or "").strip() else PREVIEW_NAME
+    )
+    raw_project = payload.get("project_id")
+    project_id = str(raw_project) if raw_project else None
+
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        if project_id is not None:
+            # The same refusal as create: seeing the node is required.
+            await load_visible_project(db, vis, project_id)
+        body = await render_body(
+            db, vis, user, project_id=project_id, config=config,
         )
-        # The open-work predicate, matching `load` and `stuck`.
-        #
-        # ⚠️ **D-PM-32(b) lands HERE and not on `past_where`, and the split is
-        # the point.** A stopped project's outstanding work leaves the report,
-        # because nobody is going to do it. What it already FINISHED stays,
-        # for the reason the comment above gives about archiving: a report
-        # describes the past, and stopping a project in September must not
-        # empty July. Putting the clause on `past_where` would rewrite every
-        # week we have already sent.
-        open_where = (
-            f"{past_where}"
-            f" AND t.archived_at IS NULL"
-            f" AND ({reportable_with_ancestors_clause('t')})"
-            f" AND s.category <> ALL(CAST(:closed AS text[]))"
-        )
-        params: dict[str, Any] = {
-            **vis.params,
-            **scope_params(project_id),
-            "reportable_states": sorted(REPORTABLE_STATUSES),
-            "weeks": int(config["weeks"]),
-            "closing": sorted(CLOSING_CATEGORIES),
-            "closed": sorted(CLOSING_CATEGORIES),
-            "done_cat": COMPLETED_CATEGORY,
-            "started_cat": STARTED_CATEGORY,
-        }
-        skip = bool(config["skip_current_week"])
-
-        window = (
-            await db.execute(
-                text(finished_period_sql(skip_current_week=skip)),
-                {"weeks": int(config["weeks"])},
-            )
-        ).one()
-
-        sections: dict[str, Any] = {}
-        for name in config["sections"]:
-            if name == "finished":
-                rows = (
-                    await db.execute(
-                        text(finished_sql(past_where, skip_current_week=skip)),
-                        params,
-                    )
-                ).fetchall()
-                totals = (
-                    await db.execute(
-                        text(
-                            cycle_summary_sql(past_where, skip_current_week=skip)
-                        ),
-                        params,
-                    )
-                ).one()
-                sections[name] = {
-                    "projects": [
-                        {
-                            "project_id": str(r.project_id),
-                            "name": r.name,
-                            "completed": int(r.completed),
-                            "cancelled": int(r.cancelled),
-                        }
-                        for r in rows
-                    ],
-                    "total_completed": int(totals.completed or 0),
-                    "total_cancelled": int(totals.cancelled or 0),
-                }
-            elif name == "throughput":
-                # ⚠️ `weekly_sql` has no `skip_current_week` arm, and that is
-                # correct: a trend wants every week including the running one,
-                # and the summary beside it already answers the closed period.
-                series = (
-                    await db.execute(text(weekly_sql(past_where)), params)
-                ).fetchall()
-                totals = (
-                    await db.execute(
-                        text(
-                            cycle_summary_sql(past_where, skip_current_week=skip)
-                        ),
-                        params,
-                    )
-                ).one()
-                sections[name] = {
-                    "series": [
-                        {
-                            "week_start": w.week.date().isoformat(),
-                            "completed": int(w.completed or 0),
-                        }
-                        for w in series
-                    ],
-                    "median_hours": (
-                        None if totals.median_hours is None
-                        else round(float(totals.median_hours), 2)
-                    ),
-                    "measured": int(totals.measured or 0),
-                }
-            elif name == "load":
-                people = (
-                    await db.execute(text(load_sql(open_where)), params)
-                ).fetchall()
-                total = int(
-                    (
-                        await db.execute(text(total_open_sql(open_where)), params)
-                    ).scalar()
-                    or 0
-                )
-                sections[name] = {
-                    "people": [
-                        {
-                            "assignee": p.who or None,
-                            "open_tasks": int(p.open_tasks),
-                            "overdue": int(p.overdue),
-                        }
-                        for p in people[:MAX_PEOPLE]
-                    ],
-                    "total_tasks": total,
-                }
-            elif name == "capacity":
-                # WS-27bm S7a. The capacity route's OWN body, imported: the
-                # panel and the report are one computation. The HR tier is the
-                # READER's grant, as every other number here is the reader's.
-                cap = await capacity_body(
-                    db, vis,
-                    hr_visible=can_read_hr_fields(user),
-                    project_id=project_id,
-                    include_subtree=bool(config["include_subtree"]),
-                )
-                named = [r for r in cap["rows"] if r["kind"] != "unassigned"]
-                nobody = [r for r in cap["rows"] if r["kind"] == "unassigned"]
-                sections[name] = {
-                    # Capped like `load`, and the unassigned row survives the
-                    # cap: it is the one row a reader can act on today.
-                    "people": named[:MAX_PEOPLE] + nobody,
-                    "people_total": cap["people_total"],
-                    "total_tasks": cap["total_tasks"],
-                    "hr_visible": cap["hr_visible"],
-                    "horizon_days": cap["horizon_days"],
-                    "windows": cap["windows"],
-                }
-            elif name == "conflicts":
-                # WS-27bm S7c. The conflicts route's OWN body, imported, as
-                # `capacity` does. The HR kinds follow the READER's grant.
-                found = await conflicts_body(
-                    db, vis,
-                    hr_visible=can_read_hr_fields(user),
-                    project_id=project_id,
-                    include_subtree=bool(config["include_subtree"]),
-                )
-                sections[name] = {
-                    # Capped like `load`. `total` and `by_kind` count every
-                    # row, so a reader sees how many the cap left out.
-                    "rows": found["rows"][:MAX_PEOPLE],
-                    "total": found["total"],
-                    "by_kind": found["by_kind"],
-                    "hr_visible": found["hr_visible"],
-                    "horizon_days": found["horizon_days"],
-                    "window": found["window"],
-                }
-            elif name == "stuck":
-                # The one number a report needs from (a): what is overdue, by
-                # project. The ageing bands are a dashboard shape — four
-                # buckets asking to be looked at, not read aloud.
-                #
-                # ⚠️ The builder is ANALYTICS', imported. A count written
-                # here would be the second set of numbers §9.12.8 forbids.
-                overdue = (
-                    await db.execute(
-                        text(overdue_by_project_sql(open_where)), params,
-                    )
-                ).fetchall()
-                sections[name] = {
-                    "overdue": [
-                        {
-                            "project_id": str(o.project_id),
-                            "name": o.name,
-                            "overdue": int(o.overdue),
-                        }
-                        for o in overdue
-                    ],
-                    "overdue_total": sum(int(o.overdue) for o in overdue),
-                }
-
         return {
-            "report": _report_dict(row),
-            # ⚠️ From the SERVER. A client that derives the window from its own
-            # clock disagrees across a timezone, and two copies of one report
-            # then name different weeks.
-            "period_start": window.period_start.isoformat(),
-            "period_end": window.period_end.isoformat(),
-            "sections": sections,
+            "report": {
+                "id": None,
+                "project_id": project_id,
+                "name": name,
+                "config": config,
+                "scope": "portfolio" if project_id is None else "node",
+            },
+            **body,
         }
 
 

@@ -62,13 +62,14 @@ describe("the seven vocabularies know decide", () => {
 });
 
 describe("the verb follows the job (mirrors check_invocation_for_task)", () => {
-  it("offers only the native verb for decide", () => {
-    expect(verbsForTask("decide")).toEqual(["native_typesafe"]);
+  it("offers only the native verbs for decide", () => {
+    expect(verbsForTask("decide")).toEqual(["native_typesafe", "native_aimlapi"]);
   });
 
-  it("never offers the native verb for any other job", () => {
+  it("never offers a native verb for any other job", () => {
     for (const task of ["chat", "transcribe", "speak", "image", "embed"]) {
       expect(verbsForTask(task)).not.toContain("native_typesafe");
+      expect(verbsForTask(task)).not.toContain("native_aimlapi");
       expect(verbsForTask(task).length).toBeGreaterThan(0);
     }
   });
@@ -107,5 +108,38 @@ describe("the TypeSafe guide", () => {
       "litellm reaches TypeSafe only through its Proxy, which we do not run, " +
         "so the Console calls it natively.",
     );
+  });
+});
+
+describe("the AI/ML API guide (CP-13h)", () => {
+  const g = PROVIDER_GUIDES.aimlapi;
+
+  it("serves decide, sits in the Decisions section, and reads as called", () => {
+    expect(g.serves).toEqual(["decide"]);
+    expect(sectionOf("aimlapi")).toBe("decide");
+    expect(isRoutedToday("aimlapi")).toBe(true);
+  });
+
+  it("gives the provider id, the model, the verb and the window", () => {
+    const steps = g.steps.join(" ");
+    expect(steps).toContain("provider id aimlapi");
+    expect(steps).toContain("aimlapi/typesafe/jev");
+    expect(steps).toContain("native_aimlapi");
+    expect(steps).toContain("no streaming");
+    expect(steps).toContain("32000");
+    expect(steps).toContain("records the cost the reseller reports");
+    expect(steps).toContain("Try a decision");
+  });
+
+  it("tells the operator to leave the prices EMPTY, never 0 (review P2)", () => {
+    const steps = g.steps.join(" ");
+    expect(steps).toContain("Leave the input and output prices EMPTY");
+    expect(steps).toContain("Do not enter 0");
+    expect(steps).not.toContain("best estimate or 0");
+  });
+
+  it("the native verb fits decide and not chat", () => {
+    expect(verbFitsTask("native_aimlapi", "decide")).toBe(true);
+    expect(verbFitsTask("native_aimlapi", "chat")).toBe(false);
   });
 });

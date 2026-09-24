@@ -36,6 +36,8 @@ KNOWN_INVOCATIONS = frozenset({
     "aspeech",
     "aimage_generation",
     "native_typesafe",
+    # CP-13h (2026-09-24): the same Jev through the AI/ML API reseller.
+    "native_aimlapi",
 })
 
 #: Only these tasks stream (§6A.9 rule 4). A `transcribe` capability claiming
@@ -146,6 +148,36 @@ def check_invocation_for_task(invocation: str, task: str) -> str:
             f"({NATIVE_INVOCATION_PREFIX}*), not {verb!r}"
         )
     return verb
+
+
+def check_model_for_invocation(model: str, invocation: str) -> None:
+    """A native verb must match the vendor the model id names (CP-13h).
+
+    🔴 **The model prefix picks the credential, and the verb picks the
+    host.** ``aimlapi/typesafe/jev`` with ``native_typesafe`` would send the
+    AI/ML API key to TypeSafe. So the pair is refused here, at declare time,
+    and the handler refuses it again before any network call.
+
+    ⚠️ **The verb-to-vendor map comes from ``handlers.NATIVE_HANDLERS``**,
+    never from a list typed here. A litellm verb is not checked, because
+    litellm routes by the prefix itself.
+    """
+    if not invocation.startswith(NATIVE_INVOCATION_PREFIX):
+        return
+    # Imported here: `handlers` imports the Router, and this module stays a
+    # leaf that the Router may import.
+    from customer_console import handlers
+
+    vendor = handlers.native_provider_of(invocation)
+    prefix = model.partition("/")[0]
+    if vendor is None:
+        raise CatalogRefused(f"invocation {invocation!r} has no native handler")
+    if prefix != vendor:
+        raise CatalogRefused(
+            f"model {model!r} names the credential {prefix!r}, but invocation "
+            f"{invocation!r} calls {vendor!r}. Declare {vendor}/<model> for "
+            f"{invocation!r}, or pick the verb that calls {prefix!r}"
+        )
 
 
 def check_streams(task: str, streams: bool) -> bool:

@@ -79,6 +79,11 @@ _DELETE_REASON = (
 _DELIVERY_REASON = (
     "Report delivery stays in the Reports app. Arming the schedule is owner-gated (§9.12.8)."
 )
+#: WS-27bn R1. The builder's preview is the Reports app's. The chat reaches
+#: it in R8, when render_report renders a template with no saved row.
+_PREVIEW_REASON = (
+    "The report builder's preview. The chat reaches it in WS-27bn R8, through render_report."
+)
 #: Writing who can see a project is a membership-shaped act. Owner question
 #: 2 in the spec §12.
 _GRANT_REASON = "A grant write is membership-shaped. Spec §12 question 2 holds it for the owner."
@@ -323,6 +328,10 @@ MANIFEST: tuple[Route, ...] = (
     Route("PATCH", "/projects/reports/{report_id}", "report_save", "B"),
     Route("DELETE", "/projects/reports/{report_id}", "report_delete", "C"),
     Route("GET", "/projects/reports/{report_id}/render", "report_render", "A"),
+    # WS-27bn R1 - the builder's unsaved preview. It writes nothing, so it
+    # is in READ_ONLY_POSTS. Class X until R8 gives render_report the
+    # preview and changes this row to class A.
+    Route("POST", "/projects/reports/preview", "", "X", _PREVIEW_REASON),
     Route("GET", "/projects/reports/{report_id}/recipients", "", "X", _DELIVERY_REASON),
     Route("POST", "/projects/reports/{report_id}/recipients", "", "X", _DELIVERY_REASON),
     Route("DELETE", "/projects/reports/{report_id}/recipients/{email}", "", "X", _DELIVERY_REASON),
@@ -427,6 +436,7 @@ READ_ONLY_POSTS: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/projects/tasks/move/preview"),
         ("POST", "/projects/nodes/{project_id}/status-set/preview"),
         ("POST", "/projects/plan/preview"),
+        ("POST", "/projects/reports/preview"),
     }
 )
 

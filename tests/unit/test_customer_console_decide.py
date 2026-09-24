@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import copy
 import json
 import os
 import pathlib
@@ -107,13 +108,15 @@ OUTPUT_TOKENS = 4
 CALL_COST = (Decimal(INPUT_TOKENS) * INPUT_PER_1M / Decimal(1_000_000)).quantize(
     Decimal("0.00000001"))
 
-#: A TypeSafe System One response, built from the API reference (read
-#: 2026-09-23). ⚠️ It carries the three things that must NOT leak: the word
-#: `noul`, a score's `legend`, and the model id the vendor echoes.
+#: A TypeSafe System One response in the DOCUMENTED shape (docs.typesafe.ai
+#: /api.md, re-read 2026-09-24 for CP-13h). A `noul` answer is the `noul`
+#: field. A score is a level POSITION with index-keyed `legend` and
+#: `probabilities`. ⚠️ It carries the three things that must NOT leak: the
+#: word `noul`, a score's `legend`, and the model id the vendor echoes.
 RECORDED = {
     "model": "jev-1.13.0",
     "answers": {
-        "cold": {"type": "noul", "probability": 0.93},
+        "cold": {"type": "noul", "noul": 0.93},
         "rule": {
             "type": "choice",
             "choice": "fyi",
@@ -122,9 +125,9 @@ RECORDED = {
         },
         "urgency": {
             "type": "score",
-            "score": "high",
-            "legend": {"low": "can wait", "mid": "this week", "high": "today"},
-            "probabilities": {"low": 0.1, "mid": 0.2, "high": 0.7},
+            "score": 1.8,
+            "legend": {"0": "can wait", "1": "this week", "2": "today"},
+            "probabilities": {"0": 0.1, "1": 0.2, "2": 0.7},
             "confidence": 0.66,
         },
     },
@@ -255,6 +258,9 @@ class TestTheHandlerMapsTheVendorShape:
         assert sent["questions"]["rule"]["type"] == "choice"
         assert sent["questions"]["urgency"]["type"] == "score"
         assert sent["questions"]["cold"]["criteria"] == QUESTIONS["cold"]["criteria"]
+        # CP-13h: TypeSafe documents score levels as an ORDERED ARRAY, so a
+        # map would be a 422. The descriptions go out, lowest first.
+        assert sent["questions"]["urgency"]["criteria"] == ["can wait", "this week", "today"]
 
     def test_the_vendor_sees_the_bare_model_id_and_our_key(self):
         """Clause 6: the prefix names OUR credential, and the vendor must not
@@ -285,7 +291,10 @@ class TestTheHandlerMapsTheVendorShape:
             },
             "urgency": {
                 "type": "score",
-                "score": "high",
+                # The position, the nearest level, and level-keyed
+                # probabilities: the ONE meaning (CP-13h).
+                "score": 1.8,
+                "level": "high",
                 "probabilities": {"low": 0.1, "mid": 0.2, "high": 0.7},
                 "confidence": 0.66,
             },
@@ -482,8 +491,12 @@ def vendor(monkeypatch):
     return recorded
 
 
-def _bind_decide(db, models: list[str]):
+def _bind_decide(db, models: list[str], *, invocation: str = "native_typesafe",
+                 provider: str = "typesafe"):
     """Declare, profile and bind ``models`` as ranks 1..n of `tier-decide`.
+
+    ``invocation`` and ``provider`` default to TypeSafe direct. CP-13h binds
+    the reseller with ``native_aimlapi`` and ``aimlapi``.
 
     ⚠️ **The binding carries its OWN ``effective_from``**, a random instant on
     2026-01-01, and the teardown deletes exactly those rows. The scratch
@@ -498,7 +511,7 @@ def _bind_decide(db, models: list[str]):
         for rank, model in enumerate(models, start=1):
             c.execute(text(
                 "INSERT INTO model_capability (model, task, invocation, streams) "
-                "VALUES (:m, 'decide', 'native_typesafe', FALSE)"), {"m": model})
+                "VALUES (:m, 'decide', :v, FALSE)"), {"m": model, "v": invocation})
             c.execute(text(
                 "INSERT INTO model_profile (model, vendor_input_per_1m_usd, "
                 " vendor_output_per_1m_usd, context_window) "
@@ -510,12 +523,13 @@ def _bind_decide(db, models: list[str]):
                 {"m": model, "r": rank, "f": since})
         c.execute(text(
             "INSERT INTO provider_credential (provider, secret_enc, label) "
-            "VALUES ('typesafe', :s, :l) ON CONFLICT DO NOTHING"),
-            {"s": router_mod.encrypt_secret("sk-typesafe-fence"), "l": _FENCE_LABEL})
+            "VALUES (:p, :s, :l) ON CONFLICT DO NOTHING"),
+            {"p": provider, "s": router_mod.encrypt_secret(f"sk-{provider}-fence"),
+             "l": _FENCE_LABEL})
     return since
 
 
-def _unbind_decide(db, models: list[str], since) -> None:
+def _unbind_decide(db, models: list[str], since, *, provider: str = "typesafe") -> None:
     with db.begin() as c:
         for model in models:
             c.execute(text(
@@ -525,8 +539,8 @@ def _unbind_decide(db, models: list[str], since) -> None:
             c.execute(text("DELETE FROM model_capability WHERE model = :m"), {"m": model})
             c.execute(text("DELETE FROM model_profile WHERE model = :m"), {"m": model})
         c.execute(text(
-            "DELETE FROM provider_credential WHERE provider = 'typesafe' AND label = :l"),
-            {"l": _FENCE_LABEL})
+            "DELETE FROM provider_credential WHERE provider = :p AND label = :l"),
+            {"p": provider, "l": _FENCE_LABEL})
 
 
 @pytest.fixture
@@ -1195,6 +1209,649 @@ class TestTryADecision:
         assert r.status_code == 503, r.text
         assert r.json()["detail"] == "no provider credential configured for 'typesafe'"
         assert recording_fake["calls"] == []
+
+
+# ── CP-13h: Jev through the AI/ML API reseller (§6A.14 CP-13h) ─────────────
+
+#: What the operator binds. `aimlapi` names the credential, and the reseller
+#: sees `typesafe/jev`.
+AIML_JEV = "aimlapi/typesafe/jev"
+
+#: The reseller's documented response, VERBATIM from
+#: https://docs.aimlapi.com/api-references/decision-models/typesafe/jev (read
+#: 2026-09-24). It carries every word that must not leak: `noul`, `legend`,
+#: the dated model id, and the `meta` block with `credits_used`.
+AIML_RECORDED = {
+    "model": "typesafe/jev-1.13-20260917",
+    "answers": {
+        "is_urgent": {"type": "noul", "noul": 0.96},
+        "department": {
+            "type": "choice",
+            "choice": "billing",
+            "confidence": 0.97,
+            "probabilities": {"billing": 0.98, "technical": 0.02, "sales": 0},
+        },
+        "frustration": {
+            "type": "score",
+            "score": 1.3,
+            "confidence": 0.55,
+            "legend": {"0": "Calm", "1": "Frustrated", "2": "Very angry"},
+            "probabilities": {"0": 0, "1": 0.7, "2": 0.3},
+        },
+    },
+    "usage": {"input_tokens": 403, "output_tokens": 73},
+    "meta": {"usage": {"credits_used": 47, "usd_spent": 0.0000235}},
+}
+
+AIML_STATE = "Help! My payments have been failing for 3 days and nobody answers support."
+
+#: The documented request, in OUR words. The score levels are a map here,
+#: and the handler sends the descriptions as the reseller's ordered array.
+AIML_QUESTIONS = {
+    "is_urgent": {"type": "boolean", "instructions": "Does this convey urgency?",
+                  "criteria": {}},
+    "department": {
+        "type": "choice",
+        "instructions": "Which team should handle this?",
+        "criteria": {
+            "billing": "Payments, invoicing, refunds",
+            "technical": "Bugs, outages, integrations",
+            "sales": "Pricing, upgrades, new accounts",
+        },
+    },
+    "frustration": {
+        "type": "score",
+        "instructions": "How frustrated is the customer?",
+        "criteria": {"calm": "Calm", "frustrated": "Frustrated",
+                     "very_angry": "Very angry"},
+    },
+}
+
+AIML_COST = Decimal("0.0000235")
+
+
+def _aiml_questions() -> dict[str, Question]:
+    return {qid: Question(type=q["type"], instructions=q["instructions"],
+                          criteria=q["criteria"]) for qid, q in AIML_QUESTIONS.items()}
+
+
+def _run_aiml(vendor: _Vendor, *, api_base: str | None = None) -> ProviderResult:
+    handler = handlers.AimlApiHandler(transport=vendor.transport())
+    payload = DecidePayload(model=AIML_JEV, state=AIML_STATE, questions=_aiml_questions(),
+                            api_key="sk-aimlapi-test", api_base=api_base)
+    return asyncio.run(handler.call("decide", payload))
+
+
+class TestAimlApiIsRegistered:
+    def test_native_aimlapi_is_in_both_invocation_sets(self):
+        assert "native_aimlapi" in catalog.KNOWN_INVOCATIONS
+        assert "native_aimlapi" in router_mod.SERVING_INVOCATIONS
+        assert isinstance(handlers.NATIVE_HANDLERS["native_aimlapi"],
+                          handlers.AimlApiHandler)
+
+    def test_one_wire_class_serves_both_vendors(self):
+        """No parallel abstraction: both are instances of ONE class."""
+        for name in ("native_typesafe", "native_aimlapi"):
+            assert isinstance(handlers.NATIVE_HANDLERS[name], handlers.SystemOneHandler)
+        assert handlers.native_vendors() == frozenset({"typesafe", "aimlapi"})
+
+    def test_the_pairing_refuses_it_for_chat(self):
+        with pytest.raises(catalog.CatalogRefused):
+            catalog.check_invocation_for_task("native_aimlapi", "chat")
+        assert catalog.check_invocation_for_task("native_aimlapi", "decide") == "native_aimlapi"
+
+
+class TestAimlApiRequest:
+    def test_the_request_goes_to_the_reseller_with_the_prefix_stripped(self):
+        vendor = _Vendor(body=AIML_RECORDED)
+        _run_aiml(vendor)
+        request = vendor.requests[-1]
+        assert request.method == "POST"
+        assert str(request.url) == "https://api.aimlapi.com/v1/decisions"
+        assert request.headers["Authorization"] == "Bearer sk-aimlapi-test"
+        sent = vendor.sent()
+        assert sent["model"] == "typesafe/jev"
+        assert sent["state"] == AIML_STATE
+
+    def test_the_questions_go_out_in_the_resellers_words(self):
+        vendor = _Vendor(body=AIML_RECORDED)
+        _run_aiml(vendor)
+        questions = vendor.sent()["questions"]
+        assert questions["is_urgent"]["type"] == "noul"
+        assert questions["department"] == {
+            "type": "choice",
+            "instructions": "Which team should handle this?",
+            "criteria": AIML_QUESTIONS["department"]["criteria"],
+        }
+        # The reseller documents score levels as an ORDERED ARRAY.
+        assert questions["frustration"] == {
+            "type": "score",
+            "instructions": "How frustrated is the customer?",
+            "criteria": ["Calm", "Frustrated", "Very angry"],
+        }
+
+    def test_a_blank_level_description_sends_its_key(self):
+        vendor = _Vendor(body=AIML_RECORDED)
+        handler = handlers.AimlApiHandler(transport=vendor.transport())
+        questions = _aiml_questions()
+        questions["frustration"] = Question(
+            type="score", instructions="x", criteria={"low": "", "high": "very"})
+        asyncio.run(handler.call("decide", DecidePayload(
+            model=AIML_JEV, state="s", questions=questions, api_key="k")))
+        assert vendor.sent()["questions"]["frustration"]["criteria"] == ["low", "very"]
+
+    def test_the_credential_api_base_wins(self):
+        vendor = _Vendor(body=AIML_RECORDED)
+        _run_aiml(vendor, api_base="https://proxy.example/")
+        assert str(vendor.requests[-1].url) == "https://proxy.example/v1/decisions"
+
+
+class TestAimlApiResponse:
+    def test_the_documented_body_comes_back_in_OUR_shape(self):
+        result = _run_aiml(_Vendor(body=AIML_RECORDED))
+        assert result.body["answers"] == {
+            "is_urgent": {"type": "boolean", "probability": 0.96},
+            "department": {
+                "type": "choice",
+                "choice": "billing",
+                "probabilities": {"billing": 0.98, "technical": 0.02, "sales": 0.0},
+                "confidence": 0.97,
+            },
+            "frustration": {
+                "type": "score",
+                # The 0-based POSITION, as the vendor sent it.
+                "score": 1.3,
+                # The caller's key of the nearest position.
+                "level": "frustrated",
+                # The reseller keys levels by index. The caller reads its own keys.
+                "probabilities": {"calm": 0.0, "frustrated": 0.7, "very_angry": 0.3},
+                "confidence": 0.55,
+            },
+        }
+
+    def test_no_vendor_word_leaks(self):
+        body = json.dumps(_run_aiml(_Vendor(body=AIML_RECORDED)).body).lower()
+        for word in ("noul", "legend", "typesafe", "jev", "meta", "credits_used"):
+            assert word not in body, word
+
+    def test_usage_and_the_vendor_reported_cost(self):
+        result = _run_aiml(_Vendor(body=AIML_RECORDED))
+        assert result.usage.prompt_tokens == 403
+        assert result.usage.completion_tokens == 73
+        assert result.usage.vendor_reported_cost_usd == AIML_COST
+        assert result.quantity is None
+
+    @pytest.mark.parametrize("usd, expected", [
+        ("0.0000235", AIML_COST),
+        (0, Decimal(0)),
+        (-0.01, None),
+        (True, None),
+        ("not a number", None),
+        ("NaN", None),
+        ("Infinity", None),
+        (None, None),
+        ([1], None),
+    ])
+    def test_the_cost_parse_is_defensive(self, usd, expected):
+        recorded = json.loads(json.dumps(AIML_RECORDED))
+        recorded["meta"]["usage"]["usd_spent"] = usd
+        result = _run_aiml(_Vendor(body=recorded))
+        assert result.usage.vendor_reported_cost_usd == expected
+        # A missing or odd cost never fails a served call.
+        assert result.body["answers"]["is_urgent"]["probability"] == 0.96
+
+    @pytest.mark.parametrize("meta", [None, "x", {}, {"usage": "x"}])
+    def test_a_missing_meta_block_is_no_cost_and_still_served(self, meta):
+        recorded = json.loads(json.dumps(AIML_RECORDED))
+        if meta is None:
+            del recorded["meta"]
+        else:
+            recorded["meta"] = meta
+        result = _run_aiml(_Vendor(body=recorded))
+        assert result.usage.vendor_reported_cost_usd is None
+
+    def test_typesafe_direct_never_reads_a_meta_cost(self):
+        """`native_typesafe` is unchanged: it reads no vendor cost."""
+        recorded = json.loads(json.dumps(RECORDED))
+        recorded["meta"] = {"usage": {"usd_spent": 1}}
+        assert _run_handler(_Vendor(body=recorded)).usage.vendor_reported_cost_usd is None
+
+
+class TestAFractionalScoreReads:
+    """CP-13a's latent bug. Both vendors document a score that can land
+    between levels. A float was refused, and that was a TERMINAL 502 after
+    the vendor had charged us."""
+
+    def test_typesafe_direct_reads_a_fractional_score(self):
+        recorded = json.loads(json.dumps(RECORDED))
+        recorded["answers"]["urgency"]["score"] = 1.05
+        result = _run_handler(_Vendor(body=recorded))
+        assert result.body["answers"]["urgency"]["score"] == 1.05
+
+    def test_the_reseller_reads_a_fractional_score(self):
+        assert _run_aiml(_Vendor(body=AIML_RECORDED)).body[
+            "answers"]["frustration"]["score"] == 1.3
+
+    @pytest.mark.parametrize("bad", [True, None, [1], {"x": 1}])
+    def test_a_bool_or_a_non_number_is_still_refused(self, bad):
+        recorded = json.loads(json.dumps(AIML_RECORDED))
+        recorded["answers"]["frustration"]["score"] = bad
+        with pytest.raises(NativeProviderError) as exc:
+            _run_aiml(_Vendor(body=recorded))
+        assert exc.value.terminal is True
+
+    def test_typesafe_direct_reads_the_documented_noul_field(self):
+        recorded = json.loads(json.dumps(RECORDED))
+        recorded["answers"]["cold"] = {"type": "noul", "noul": 0.4}
+        result = _run_handler(_Vendor(body=recorded))
+        assert result.body["answers"]["cold"] == {"type": "boolean", "probability": 0.4}
+
+
+class TestAimlApiErrorMapping:
+    """Identical to TypeSafe: the status travels, the body does not."""
+
+    @pytest.mark.parametrize("status", [401, 422, 429, 500, 529])
+    def test_status_code_is_on_the_error(self, status):
+        with pytest.raises(NativeProviderError) as exc:
+            _run_aiml(_Vendor(status=status, body={"error": "quoted request"}))
+        assert exc.value.status_code == status
+        assert exc.value.terminal is False
+        assert "quoted request" not in str(exc.value)
+
+    def test_an_unreadable_200_is_terminal(self):
+        with pytest.raises(NativeProviderError) as exc:
+            _run_aiml(_Vendor(body={"answers": "not a map"}))
+        assert exc.value.terminal is True
+        assert exc.value.status_code is None
+
+    def test_an_absurd_integer_score_is_terminal_not_a_crash(self):
+        # A paid 200 whose score overflows a float must stop the chain like
+        # any other unreadable body. It must not fail over and pay twice.
+        body = copy.deepcopy(AIML_RECORDED)
+        body["answers"]["frustration"]["score"] = 10**400
+        with pytest.raises(NativeProviderError) as exc:
+            _run_aiml(_Vendor(body=body))
+        assert exc.value.terminal is True
+
+    def test_a_dropped_connection_carries_no_status(self):
+        def _drop(request):
+            raise httpx.ConnectError("refused", request=request)
+
+        handler = handlers.AimlApiHandler(transport=httpx.MockTransport(_drop))
+        payload = DecidePayload(model=AIML_JEV, state="s", questions=_aiml_questions(),
+                                api_key="k")
+        with pytest.raises(NativeProviderError) as exc:
+            asyncio.run(handler.call("decide", payload))
+        assert exc.value.status_code is None
+
+
+def _score(handler_cls, score, *, criteria=None):
+    """One score answer through a real handler, from a recorded body."""
+    criteria = criteria or {"calm": "Calm", "frustrated": "Frustrated", "very_angry": "Very angry"}
+    body = {"answers": {"s": {"type": "score", "score": score, "confidence": 0.5,
+                              "legend": {}, "probabilities": {"0": 0.2, "1": 0.8}}},
+            "usage": {"input_tokens": 5, "output_tokens": 1}}
+    vendor = _Vendor(body=body)
+    model = AIML_JEV if handler_cls is handlers.AimlApiHandler else JEV
+    payload = DecidePayload(model=model, state="s", api_key="k", questions={
+        "s": Question(type="score", instructions="x", criteria=criteria)})
+    return asyncio.run(handler_cls(transport=vendor.transport()).call(
+        "decide", payload)).body["answers"]["s"]
+
+
+class TestOneScoreMeaning:
+    """Review P1-1. ONE meaning for both vendors, so a failover never changes
+    it: `score` is the 0-based position, `level` the nearest caller key, and
+    `probabilities` are keyed by caller level keys."""
+
+    @pytest.mark.parametrize("handler_cls", [handlers.TypeSafeHandler,
+                                             handlers.AimlApiHandler])
+    @pytest.mark.parametrize("position, level", [
+        (0, "calm"), (0.49, "calm"), (0.5, "frustrated"), (1.3, "frustrated"),
+        (1.5, "very_angry"), (2, "very_angry"),
+    ])
+    def test_level_is_the_nearest_position_rounded_half_up(self, handler_cls, position, level):
+        answer = _score(handler_cls, position)
+        assert answer["score"] == position
+        assert answer["level"] == level
+        assert answer["probabilities"] == {"calm": 0.2, "frustrated": 0.8}
+
+    @pytest.mark.parametrize("position, level", [(3.4, "very_angry"), (-0.7, "calm")])
+    def test_an_out_of_range_position_clamps_its_level_and_logs_once(
+        self, caplog, position, level
+    ):
+        with caplog.at_level("WARNING", logger="customer_console.handlers"):
+            answer = _score(handlers.AimlApiHandler, position)
+        assert answer["score"] == position
+        assert answer["level"] == level
+        alarms = [r for r in caplog.records
+                  if r.getMessage() == "handlers.score_out_of_range"]
+        assert len(alarms) == 1
+
+    def test_an_in_range_position_logs_nothing(self, caplog):
+        with caplog.at_level("WARNING", logger="customer_console.handlers"):
+            _score(handlers.AimlApiHandler, 1.3)
+        assert not [r for r in caplog.records
+                    if r.getMessage() == "handlers.score_out_of_range"]
+
+    def test_a_level_key_as_the_score_reads_as_its_position(self):
+        answer = _score(handlers.TypeSafeHandler, "very_angry")
+        assert (answer["score"], answer["level"]) == (2, "very_angry")
+
+    def test_an_unknown_string_is_unreadable(self):
+        with pytest.raises(NativeProviderError) as exc:
+            _score(handlers.AimlApiHandler, "loud")
+        assert exc.value.terminal is True
+
+    @pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+    def test_a_non_finite_position_is_unreadable(self, bad):
+        """httpx will not encode these, so the parse is called directly."""
+        question = Question(type="score", instructions="x",
+                            criteria={"a": "A", "b": "B"})
+        with pytest.raises(NativeProviderError):
+            handlers._answer(question, {"type": "score", "score": bad})
+
+
+class TestAMismatchedPrefixNeverLeavesTheBox:
+    """Review P1-2, layer (a). The model prefix picks the key, the handler
+    picks the host. A mismatch would post one vendor's key to the other."""
+
+    @pytest.mark.parametrize("handler_cls, model", [
+        (handlers.TypeSafeHandler, AIML_JEV),
+        (handlers.AimlApiHandler, JEV),
+        (handlers.AimlApiHandler, "typesafe/jev"),
+        (handlers.TypeSafeHandler, "jev-1.13.0"),
+    ])
+    def test_a_mismatch_makes_ZERO_network_calls(self, caplog, handler_cls, model):
+        vendor = _Vendor(body=AIML_RECORDED)
+        payload = DecidePayload(model=model, state="s", questions=_aiml_questions(),
+                                api_key="sk-must-not-travel")
+        with (
+            caplog.at_level("ERROR", logger="customer_console.handlers"),
+            pytest.raises(NativeProviderError) as exc,
+        ):
+            asyncio.run(handler_cls(transport=vendor.transport()).call("decide", payload))
+        assert vendor.requests == []
+        assert exc.value.status_code is None
+        assert exc.value.terminal is False
+        assert "model prefix does not match handler" in str(exc.value)
+        [alarm] = [r for r in caplog.records
+                   if r.getMessage() == "handlers.model_prefix_mismatch"]
+        assert "sk-must-not-travel" not in str(alarm.__dict__)
+
+
+class TestTheDeclareRefusesAMismatchedPair:
+    """Review P1-2, layer (b). The verb-to-vendor map comes from the handler
+    table, never from a typed list."""
+
+    def test_the_map_is_read_from_the_handler_table(self):
+        for verb, handler in handlers.NATIVE_HANDLERS.items():
+            assert handlers.native_provider_of(verb) == handler.provider
+        assert handlers.native_provider_of("acompletion") is None
+
+    @pytest.mark.parametrize("model, verb", [
+        (AIML_JEV, "native_typesafe"),
+        (JEV, "native_aimlapi"),
+        ("openai/gpt-4o", "native_aimlapi"),
+    ])
+    def test_a_mismatch_is_refused_naming_both(self, model, verb):
+        with pytest.raises(catalog.CatalogRefused) as exc:
+            catalog.check_model_for_invocation(model, verb)
+        vendor = handlers.native_provider_of(verb)
+        assert repr(model.partition("/")[0]) in str(exc.value)
+        assert repr(vendor) in str(exc.value)
+
+    @pytest.mark.parametrize("model, verb", [
+        (AIML_JEV, "native_aimlapi"), (JEV, "native_typesafe"),
+        ("openai/gpt-4o", "acompletion"),
+    ])
+    def test_a_matching_pair_passes(self, model, verb):
+        assert catalog.check_model_for_invocation(model, verb) is None
+
+
+class TestTheReportedCostCeiling:
+    """Review P2. `provider_cost_usd` is NUMERIC(14, 8). A huge figure would
+    fail the INSERT and lose the usage row, so it reads as None."""
+
+    @pytest.mark.parametrize("raw, expected", [
+        ("1000", Decimal("1000.00000000")),
+        ("1000.00000001", None),
+        (1e9, None),
+        ("99999999999999", None),
+    ])
+    def test_the_ceiling(self, raw, expected):
+        assert router_mod.reported_cost_usd(raw) == expected
+
+    def test_above_the_ceiling_logs(self, caplog):
+        with caplog.at_level("WARNING", logger="customer_console.router"):
+            assert router_mod.reported_cost_usd(5000) is None
+        assert [r for r in caplog.records
+                if r.getMessage() == "router.reported_cost_above_ceiling"]
+
+
+@pytest.fixture
+def aiml_bound(db, monkeypatch):
+    """The operator's CP-13h path: declare `aimlapi/typesafe/jev` with
+    `native_aimlapi`, bind `tier-decide`, install an `aimlapi` key. The real
+    handler answers from the documented body."""
+    recorded = _Vendor(body=json.loads(json.dumps(AIML_RECORDED)))
+    monkeypatch.setitem(handlers.NATIVE_HANDLERS, "native_aimlapi",
+                        handlers.AimlApiHandler(transport=recorded.transport()))
+    since = _bind_decide(db, [AIML_JEV], invocation="native_aimlapi", provider="aimlapi")
+    yield recorded
+    _unbind_decide(db, [AIML_JEV], since, provider="aimlapi")
+
+
+def _aiml_decide(client, key):
+    return client.post("/v1/decide", headers=key, json={
+        "tier": "tier-decide", "state": AIML_STATE, "questions": AIML_QUESTIONS})
+
+
+@_DB
+class TestAimlApiEndToEnd:
+    """R8: the row a real call through `POST /v1/decide` wrote."""
+
+    def test_the_door_meters_the_vendor_reported_cost(self, client, db, org, aiml_bound):
+        r = _aiml_decide(client, org["key"])
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["tier"] == "tier-decide"
+        assert body["answers"]["frustration"]["score"] == 1.3
+        lowered = r.text.lower()
+        for word in ("jev", "typesafe", "noul", "legend", "meta", "credits_used", "aimlapi"):
+            assert word not in lowered, word
+        with db.begin() as c:
+            rows = c.execute(text(
+                "SELECT model, prompt_tokens, completion_tokens, provider_cost_usd, "
+                "       cost_source, metering_fault "
+                "FROM usage_event WHERE organization_id = CAST(:o AS uuid)"),
+                {"o": org["id"]}).all()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.model == AIML_JEV
+        assert (row.prompt_tokens, row.completion_tokens) == (403, 73)
+        assert Decimal(row.provider_cost_usd) == AIML_COST
+        assert row.cost_source == "vendor"
+        assert row.metering_fault is None
+        # The reseller saw its own key and the bare model.
+        assert aiml_bound.requests[-1].headers["Authorization"] == "Bearer sk-aimlapi-fence"
+        assert aiml_bound.sent()["model"] == "typesafe/jev"
+
+    @pytest.mark.parametrize("vendor_status, ours", [(429, 429), (500, 502), (401, 502)])
+    def test_a_vendor_failure_maps_as_typesafe_does(
+        self, client, db, org, aiml_bound, vendor_status, ours
+    ):
+        aiml_bound.status = vendor_status
+        aiml_bound.body = {"error": "the vendor quotes the request here"}
+        r = _aiml_decide(client, org["key"])
+        assert r.status_code == ours, r.text
+        assert r.json()["detail"] == "upstream provider error"
+        assert _rows(db, org["id"]) == []
+
+    def test_an_unreadable_200_is_a_502(self, client, db, org, aiml_bound):
+        aiml_bound.body = {"answers": "not a map", "usage": {"input_tokens": 5}}
+        r = _aiml_decide(client, org["key"])
+        assert r.status_code == 502, r.text
+        assert _rows(db, org["id"]) == []
+
+    def test_the_capability_write_refuses_it_for_chat(self, client):
+        model = f"aimlapi/pair-{uuid.uuid4().hex[:6]}"
+        r = client.post("/catalog/capabilities", headers=OP, json={
+            "model": model, "task": "chat", "invocation": "native_aimlapi"})
+        assert r.status_code == 400, r.text
+        assert "serves only decide" in r.json()["detail"]
+
+    @pytest.mark.parametrize("model, verb", [
+        ("aimlapi/typesafe/jev", "native_typesafe"),
+        ("typesafe/jev-1.13.0", "native_aimlapi"),
+    ])
+    def test_the_capability_write_refuses_a_mismatched_pair(self, client, db, model, verb):
+        """Review P1-2, layer (b): a 400 at declare time that names both the
+        credential the prefix picks and the vendor the verb calls."""
+        r = client.post("/catalog/capabilities", headers=OP, json={
+            "model": model, "task": "decide", "invocation": verb})
+        assert r.status_code == 400, r.text
+        detail = r.json()["detail"]
+        assert repr(model.partition("/")[0]) in detail
+        assert repr(handlers.native_provider_of(verb)) in detail
+        with db.begin() as c:
+            assert c.execute(text(
+                "SELECT count(*) FROM model_capability WHERE model = :m AND task = 'decide' "
+                "AND invocation = :v"), {"m": model, "v": verb}).scalar_one() == 0
+
+    def test_a_mismatched_row_written_before_the_rule_never_reaches_a_vendor(
+        self, client, db, org, monkeypatch
+    ):
+        """Review P1-2, layer (a), end to end. A row that pairs the reseller's
+        model with `native_typesafe` finds the `aimlapi` key. The handler
+        refuses it with ZERO network calls, and the caller reads a 502."""
+        typesafe = _Vendor()
+        monkeypatch.setitem(handlers.NATIVE_HANDLERS, "native_typesafe",
+                            handlers.TypeSafeHandler(transport=typesafe.transport()))
+        since = _bind_decide(db, [AIML_JEV], invocation="native_typesafe",
+                             provider="aimlapi")
+        try:
+            r = _aiml_decide(client, org["key"])
+        finally:
+            _unbind_decide(db, [AIML_JEV], since, provider="aimlapi")
+        assert r.status_code == 502, r.text
+        assert typesafe.requests == []
+        assert _rows(db, org["id"]) == []
+
+    def test_a_huge_reported_cost_falls_back_to_the_computed_cost(
+        self, client, db, org, aiml_bound
+    ):
+        """Review P2. Above the ceiling the figure reads as None, so the row
+        is still written, with the profile arithmetic."""
+        aiml_bound.body["meta"]["usage"]["usd_spent"] = 1e12
+        r = _aiml_decide(client, org["key"])
+        assert r.status_code == 200, r.text
+        with db.begin() as c:
+            row = c.execute(text(
+                "SELECT provider_cost_usd, cost_source FROM usage_event "
+                "WHERE organization_id = CAST(:o AS uuid)"), {"o": org["id"]}).one()
+        expected = (Decimal(403) * INPUT_PER_1M / Decimal(1_000_000)).quantize(
+            Decimal("0.00000001"))
+        assert Decimal(row.provider_cost_usd) == expected
+        assert row.cost_source == "computed"
+
+    def test_the_documented_score_reads_the_same_at_the_door_the_facade_and_the_tool(
+        self, client, db, org, aiml_bound, monkeypatch
+    ):
+        """Review P1-1. The documented reseller answer goes through the
+        Console door, then through `acb_llm.decide`, then through the tool's
+        formatter. Each layer reads ONE meaning, and none refuses a float."""
+        import acb_llm
+        from acb_auth import console_resolve
+        from acb_common.settings import get_settings
+        from acb_skills import decide_tools
+
+        levels = ["Calm", "Frustrated", "Very angry"]
+        aiml_bound.body["answers"] = {"q": AIML_RECORDED["answers"]["frustration"]}
+        # The question the tool builds: each level is its own key.
+        question = {"type": "score", "instructions": "How frustrated is the customer?",
+                    "criteria": {lvl: lvl for lvl in levels}}
+        r = client.post("/v1/decide", headers=org["key"], json={
+            "tier": "tier-decide", "state": AIML_STATE, "questions": {"q": question}})
+        assert r.status_code == 200, r.text
+        door = r.json()
+        assert door["answers"]["q"] == {
+            "type": "score", "score": 1.3, "level": "Frustrated",
+            "probabilities": {"Calm": 0.0, "Frustrated": 0.7, "Very angry": 0.3},
+            "confidence": 0.55,
+        }
+
+        # The tenant side reads the door's own JSON.
+        def _client(timeout=None):
+            return httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json=door)))
+
+        monkeypatch.setenv("DECIDE_ENABLED", "true")
+        monkeypatch.setenv("CUSTOMER_CONSOLE_URL", "https://console.metorite.test")
+        monkeypatch.setenv("CUSTOMER_CONSOLE_ORG_KEY", "cc_live_abcd_secretsecretsecret")
+        monkeypatch.setenv("CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY", "false")
+        get_settings.cache_clear()
+        monkeypatch.setattr(console_resolve, "_new_http_client", _client)
+        try:
+            decision = asyncio.run(acb_llm.decide(
+                AIML_STATE, {"q": acb_llm.ScoreQuestion(
+                    question["instructions"], question["criteria"])}))
+            answer = decision["q"]
+            assert isinstance(answer, acb_llm.ScoreAnswer)
+            assert (answer.score, answer.level, answer.confidence) == (1.3, "Frustrated", 0.55)
+
+            line = asyncio.run(decide_tools.decide(
+                question["instructions"], AIML_STATE, kind="score",
+                options="\n".join(levels)))
+            assert line == "Frustrated (position 1.3, confidence 0.55)"
+        finally:
+            get_settings.cache_clear()
+
+
+@_DB
+class TestTryADecisionOnTheReseller:
+    """Try a decision works for the new handler unchanged, and shows the
+    cost the reseller reported."""
+
+    def test_the_try_shows_the_vendor_reported_cost(self, client, db, aiml_bound):
+        headers, email = _operator(db, "admin")
+        before = _usage_count(db)
+        r = client.post("/catalog/decide/try", headers=headers, json={
+            "state": AIML_STATE, "questions": AIML_QUESTIONS})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["model"] == AIML_JEV
+        assert body["answers"]["frustration"]["score"] == 1.3
+        assert body["usage"] == {"input_tokens": 403, "output_tokens": 73}
+        # The profile says 0.042 per million input. The reseller's own figure wins.
+        assert Decimal(body["vendor_cost_usd"]) == AIML_COST
+        assert "sk-aimlapi" not in r.text
+        assert _usage_count(db) == before
+        [(_, detail)] = _try_audits(db, email)
+        assert Decimal(detail["vendor_cost_usd"]) == AIML_COST
+        assert detail["cost_source"] == "vendor"
+
+    def test_the_try_goes_through_the_provider_seam(
+        self, client, db, aiml_bound, recording_fake
+    ):
+        headers, _ = _operator(db, "admin")
+        r = client.post("/catalog/decide/try", headers=headers, json={
+            "state": AIML_STATE, "questions": AIML_QUESTIONS})
+        assert r.status_code == 200, r.text
+        [call] = recording_fake["calls"]
+        assert call["invocation"] == "native_aimlapi"
+        assert call["payload"].api_key == "sk-aimlapi-fence"
+        assert call["payload"].model == AIML_JEV
+        assert aiml_bound.requests == []
+
+    def test_the_typesafe_try_still_computes_its_cost(self, client, db, bound):
+        """No vendor figure, so the profile arithmetic answers, as before."""
+        headers, email = _operator(db, "admin")
+        r = _try(client, headers)
+        assert r.status_code == 200, r.text
+        assert Decimal(r.json()["vendor_cost_usd"]) == CALL_COST
+        [(_, detail)] = _try_audits(db, email)
+        assert detail["cost_source"] == "computed"
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard():

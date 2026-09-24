@@ -618,16 +618,41 @@ export interface ReportRow {
   project_id: string | null;
   scope: "portfolio" | "node";
   name: string;
-  config: {
-    weeks: number;
-    /** On for a report: a weekly report describes a week that ENDED. */
-    skip_current_week: boolean;
-    include_subtree: boolean;
-    sections: string[];
-  };
+  config: ReportConfig;
   created_by: string;
   created_at: string;
 }
+
+/**
+ * What a report asks: the period, the scope's depth and the sections.
+ *
+ * ⚠️ The server validates it in `normalise_report_config` and PATCH
+ * REPLACES it. So a client always sends the whole object, never a part.
+ */
+export interface ReportConfig {
+  weeks: number;
+  /** On for a report: a weekly report describes a week that ENDED. */
+  skip_current_week: boolean;
+  include_subtree: boolean;
+  sections: string[];
+}
+
+/**
+ * WS-27bn R1 — the `report` in a preview. No row exists, so it has no id.
+ * `RenderedBody` reads only `name` and `scope`.
+ */
+export interface ReportStub {
+  id: null;
+  project_id: string | null;
+  scope: "portfolio" | "node";
+  name: string;
+  config: ReportConfig;
+}
+
+/** What `POST /projects/reports/preview` answers: a render with a stub. */
+export type PreviewReportBody = Omit<RenderedReportBody, "report"> & {
+  report: ReportStub;
+};
 
 /** What `GET /projects/reports/{id}/render` answers. */
 export interface RenderedReportBody {
@@ -1100,9 +1125,24 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
    * Nothing blanks. Only a mount with nothing cached ever shows a skeleton.
    */
   const method = (init?.method ?? "GET").toUpperCase();
-  if (method !== "GET") invalidate(PROJECTS_CACHE);
+  if (method !== "GET" && !isReadOnlyPost(method, path)) {
+    invalidate(PROJECTS_CACHE);
+  }
 
   return body as T;
+}
+
+/**
+ * A POST that writes nothing: a preview. It drops no cached read.
+ *
+ * WS-27bn R1. The report builder previews on each change. While a preview
+ * counted as a write, each one dropped every cached Projects read, and every
+ * mounted lens read the server again for no change. The chat manifest's
+ * `READ_ONLY_POSTS` holds the same rule: each entry ends in `/preview`.
+ */
+export function isReadOnlyPost(method: string, path: string): boolean {
+  if (method.toUpperCase() !== "POST") return false;
+  return path.split("?")[0].endsWith("/preview");
 }
 
 export { call as projectsCall };
@@ -1152,13 +1192,39 @@ export const projectsApi = {
 
   /** §9.12.8 — saved report definitions, and the render of one. */
   reports: () => call<{ reports: ReportRow[] }>("reports"),
-  createReport: (body: { name: string; project_id?: string | null }) =>
+  createReport: (body: {
+    name: string;
+    project_id?: string | null;
+    config?: ReportConfig;
+  }) =>
     call<ReportRow>("reports", {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  /**
+   * WS-27bn R1. ⚠️ `config` is REPLACED on the server, never merged. Send
+   * the whole config, or the fields left out go back to the defaults.
+   */
+  patchReport: (id: string, body: { name?: string; config?: ReportConfig }) =>
+    call<ReportRow>(`reports/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
   renderReport: (id: string) =>
     call<RenderedReportBody>(`reports/${id}/render`),
+  /**
+   * WS-27bn R1. Render a config that is not saved. The server writes no row
+   * and computes every figure. The browser computes none.
+   */
+  previewReport: (body: {
+    project_id: string | null;
+    name: string;
+    config: ReportConfig;
+  }) =>
+    call<PreviewReportBody>("reports/preview", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   deleteReport: (id: string) =>
     call<void>(`reports/${id}`, { method: "DELETE" }),
 

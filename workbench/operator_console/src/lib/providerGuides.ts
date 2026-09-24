@@ -293,6 +293,30 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
     ],
     serves: ["decide"],
   },
+  // CP-13h (2026-09-24). TypeSafe paused signups, so the owner reaches the
+  // SAME Jev through the AI/ML API reseller. The Console calls it with the
+  // same System One handler class (`native_aimlapi`). litellm knows the
+  // reseller as `aiml`, not `aimlapi`, so the vendor-slug fence exempts this
+  // slug, and it reads the exemption from the handler table.
+  aimlapi: {
+    label: "AI/ML API",
+    description:
+      "A reseller that serves TypeSafe's Jev, the typed decision model behind " +
+      "tier-decide. Use it while TypeSafe direct signups are paused. The " +
+      "Console calls it natively, and it reports its own cost for each call.",
+    setupUrl: "https://aimlapi.com/app/keys",
+    docsUrl: "https://docs.aimlapi.com/api-references/decision-models/typesafe/jev",
+    steps: [
+      "Open an account at aimlapi.com and create an API key. Make sure the key is enabled.",
+      "Install it here with the provider id aimlapi.",
+      "On Models, declare aimlapi/typesafe/jev for Makes decisions, with the verb native_aimlapi and no streaming.",
+      // ⚠️ Review P2: a 0 here makes a call with no reported cost record a
+      // FALSE zero. Empty is NULL, and NULL reads as "unknown".
+      "Fill its profile: window 32000. The Console records the cost the reseller reports for each call. Leave the input and output prices EMPTY unless you know the reseller's real rate for each token. Do not enter 0, because a call with no reported cost would then record a false zero.",
+      "Bind tier-decide to it on Tiers, then use Try a decision there to prove it.",
+    ],
+    serves: ["decide"],
+  },
 };
 
 /** Vendors we can offer a guide for. Insertion order, which is roughly the
