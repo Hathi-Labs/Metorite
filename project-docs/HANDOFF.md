@@ -105,8 +105,11 @@ line — never reclaim a number by deleting the other entry.
 - 🔴 **Why.** DeepSeek V4 returns `reasoning_content` and refuses the next
   turn without it. The agent framework reads only `reasoning_details`. So every
   tool call after the first failed with a 400.
-- ⚠️ **The tests use a stub.** Four live probes set the shapes, and the module
+- ⚠️ **The tests use a stub.** Seven live probes set the shapes, and the module
   records them. Only a real chat proves the wiring. That is this entry.
+- 🔴 **Review found a shape the first fix missed.** The framework splits a
+  turn that holds text AND tool calls into two messages. The vendor refused
+  the text half. The Router now joins the two halves into one turn again.
 
 ### H-180 · Carry reasoning on the STREAM path too · [AGENT]
 - **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`

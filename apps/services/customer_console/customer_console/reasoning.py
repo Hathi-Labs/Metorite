@@ -128,6 +128,70 @@ def reasoning_for_vendor(messages: list[dict[str, Any]]) -> list[dict[str, Any]]
         # A copy, because `req.messages` belongs to the request and a failover
         # step must not inherit the edit the step before it made.
         out.append({**message, VENDOR_KEY: text})
+    return _rejoin_split_turns(out)
+
+
+def _is_text_only_assistant(message: Any) -> bool:
+    return (
+        isinstance(message, dict)
+        and message.get("role") == "assistant"
+        and bool(message.get("content"))
+        and not message.get("tool_calls")
+    )
+
+
+def _is_tool_call_assistant(message: Any) -> bool:
+    return (
+        isinstance(message, dict)
+        and message.get("role") == "assistant"
+        and bool(message.get("tool_calls"))
+    )
+
+
+def _rejoin_split_turns(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Put back together the one turn the framework split in two.
+
+    🔴 **Found by review, then MEASURED, and the first fix missed it.** When
+    the model writes text AND calls a tool in one turn, the framework sends
+    that turn back as TWO assistant messages: the text alone, then the tool
+    calls carrying the reasoning. The vendor refused the text half, which had
+    no reasoning of its own::
+
+        text-only turn + tool turn (reasoning on the tool turn)   400
+        the same turn MERGED back into one                         OK
+        the same reasoning COPIED onto both halves                 OK
+        an EARLIER plain answer with no reasoning, then a tool round   OK
+
+    ⚠️ **Merged, not copied.** Both pass. A merge restores the turn the model
+    actually produced, and a copy shows the model its own thought twice, as
+    if it had reasoned the same way on two turns.
+
+    ⚠️ **Only an ADJACENT pair.** A text answer followed by a user message is a
+    finished turn, and the fourth probe shows the vendor accepts it bare.
+    Joining across a user message would invent a turn nobody took.
+    """
+    out: list[dict[str, Any]] = []
+    i = 0
+    while i < len(messages):
+        here = messages[i]
+        after = messages[i + 1] if i + 1 < len(messages) else None
+        if (
+            after is not None
+            and _is_text_only_assistant(here)
+            and _is_tool_call_assistant(after)
+        ):
+            merged = {**after, "content": here["content"]}
+            thoughts = [
+                t for t in (here.get(VENDOR_KEY), after.get(VENDOR_KEY))
+                if isinstance(t, str) and t
+            ]
+            if thoughts:
+                merged[VENDOR_KEY] = "\n".join(thoughts)
+            out.append(merged)
+            i += 2
+            continue
+        out.append(here)
+        i += 1
     return out
 
 

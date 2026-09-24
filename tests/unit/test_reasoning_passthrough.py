@@ -158,6 +158,70 @@ class TestWhatGoesToTheVendor:
         assert reasoning_for_vendor([]) == []
 
 
+class TestTheSplitTurnIsRejoined:
+    """🔴 Found by the adversarial review, then MEASURED against the vendor.
+
+    When the model writes text AND calls a tool in one turn, the framework
+    sends it back as two assistant messages, and only the second carries the
+    reasoning. The vendor refused the pair with the same 400 this ticket
+    exists to fix. The first version of this fix would have shipped with it.
+    """
+
+    def test_text_then_tool_calls_become_ONE_turn_with_the_reasoning(self):
+        out = reasoning_for_vendor([
+            {"role": "user", "content": "weather in Pune"},
+            {"role": "assistant", "content": "Checking Pune."},
+            _assistant("call_1", reasoning_details="Pune first"),
+            {"role": "tool", "tool_call_id": "call_1", "content": "28C"},
+        ])
+        assistants = [m for m in out if m["role"] == "assistant"]
+        assert len(assistants) == 1, "the split turn was left split"
+        turn = assistants[0]
+        assert turn["content"] == "Checking Pune."
+        assert turn["tool_calls"][0]["id"] == "call_1"
+        assert turn["reasoning_content"] == "Pune first"
+
+    def test_EVERY_split_turn_in_the_history_is_rejoined(self):
+        """The second tool round is where the owner's chat died."""
+        out = reasoning_for_vendor([
+            {"role": "user", "content": "Pune then Nashik"},
+            {"role": "assistant", "content": "Pune first."},
+            _assistant("call_1", reasoning_details="one"),
+            {"role": "tool", "tool_call_id": "call_1", "content": "28C"},
+            {"role": "assistant", "content": "Now Nashik."},
+            _assistant("call_2", reasoning_details="two"),
+            {"role": "tool", "tool_call_id": "call_2", "content": "31C"},
+        ])
+        assistants = [m for m in out if m["role"] == "assistant"]
+        assert [a["reasoning_content"] for a in assistants] == ["one", "two"]
+        assert [a["content"] for a in assistants] == ["Pune first.", "Now Nashik."]
+
+    def test_a_FINISHED_answer_before_a_user_message_is_NOT_joined(self):
+        """⚠️ Only an adjacent pair. A text answer followed by the user is a
+        complete turn, and the vendor accepts it bare (the fourth probe).
+        Joining across the user would invent a turn nobody took."""
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "Hello!"},
+            {"role": "user", "content": "weather in Pune"},
+            _assistant("call_1", reasoning_details="look it up"),
+        ]
+        out = reasoning_for_vendor(msgs)
+        assert [m["role"] for m in out] == ["user", "assistant", "user", "assistant"]
+        assert out[1] == {"role": "assistant", "content": "Hello!"}
+
+    def test_the_merge_does_not_EDIT_the_callers_messages(self):
+        """Same property as the translation half, for the same failover
+        reason."""
+        original = [
+            {"role": "assistant", "content": "Checking."},
+            _assistant("call_1", reasoning_details="r"),
+        ]
+        before = [dict(m) for m in original]
+        reasoning_for_vendor(original)
+        assert original == before
+
+
 class _Msg:
     pass
 
@@ -298,7 +362,11 @@ class TestTheServingRouteUsesBoth:
                 "usage": {"prompt_tokens": 10, "completion_tokens": 2},
             }
 
-        router_mod.set_provider_call(_stub)
+        # ⚠️ Swapped through monkeypatch, so teardown puts the real call
+        # back. A stub left installed answers every suite that runs later.
+        # NOT `set_provider_call`: it edits the module's list in place, so
+        # restoring the list object would restore the stub along with it.
+        monkeypatch.setattr(router_mod, "_PROVIDER_CALL", [_stub])
 
         from customer_console.main import app
         client = TestClient(app)
