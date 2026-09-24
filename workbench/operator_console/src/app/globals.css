@@ -1570,6 +1570,23 @@ pre.token {
   gap: 6px;
 }
 
+/* 🔴 **The hint sentence takes a row of its own.** Owner report,
+   2026-09-24: it rendered BESIDE the last filter chip, so "Needs attention"
+   and a full sentence shared a line and the row read as broken.
+
+   It is a flex sibling of the chips, so it wrapped with them and landed
+   wherever the chips happened to stop. `flex-basis: 100%` makes it start a
+   new line whatever the chips did — at every width, and for any number of
+   facets, which a hand-tuned margin would not.
+
+   ⚠️ `order` is NOT used. The hint is already last in the markup, and an
+   explicit order would make the visual sequence depend on a number that the
+   reading order does not. `modelbrowser.test.ts` is the fence. */
+.facetrow > .muted.small {
+  flex-basis: 100%;
+  margin-top: 2px;
+}
+
 .facetlabel {
   min-width: 44px;
   font-size: 11px;
