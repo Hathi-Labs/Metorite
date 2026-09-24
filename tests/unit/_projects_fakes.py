@@ -1821,7 +1821,7 @@ class FakeProjectsDB:
             if not reached:
                 continue
 
-            if _not_yet(statement, mine, task):
+            if _not_yet(statement, mine, task, args):
                 continue
             if "lower(p.context) = :context" in statement:
                 wanted = str(args.get("context") or "").lower()
@@ -2340,17 +2340,18 @@ class FakeProjectsDB:
         return rows
 
 
-def _not_yet(statement: str, mine: dict, task: dict) -> bool:
+def _not_yet(statement: str, mine: dict, task: dict, args: dict) -> bool:
     """The tickler, mirrored off the statement: my own `defer_until` in the
     future, or — D77, `DEFERRED_CLAUSE` — the work's shared `start_date`
-    after today (a DATE, compared with today's date)."""
+    after the bound `:today`, the member's own date (F5)."""
     if "p.defer_until IS NULL OR p.defer_until <= now()" in statement:
         deferred = mine.get("defer_until")
         if deferred is not None and _as_datetime(deferred) > _now():
             return True
-    if "t.start_date <= current_date" in statement:
+    if "t.start_date <= CAST(:today AS date)" in statement:
         starts = task.get("start_date")
-        if starts is not None and str(starts)[:10] > _now().date().isoformat():
+        today = str(args["today"])[:10]
+        if starts is not None and str(starts)[:10] > today:
             return True
     return False
 

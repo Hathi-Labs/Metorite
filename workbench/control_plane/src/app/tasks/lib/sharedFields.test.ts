@@ -29,7 +29,7 @@ import { COLUMNS, DEFAULT_VISIBLE } from "./columns";
 import { splitPatch } from "./lens";
 import { CELL_META, priorityCell, seededImportant } from "./priority";
 import type { GtdItem } from "./types";
-import { isTickled, resurfacesAt } from "./utils";
+import { isTickled, localDate, resurfacesAt } from "./utils";
 
 const BASE: GtdItem = {
   id: "t",
@@ -119,6 +119,35 @@ const PARITY = JSON.parse(
     "utf8",
   ),
 ) as { cases: ParityCase[] };
+
+interface ExplicitCase {
+  name: string;
+  at: string;
+  timezone: string;
+  today: string;
+  start_date: string | null;
+  defer_until: string | null;
+  hidden: boolean;
+}
+
+describe("isTickled reads the member's own date (F5, the shared fixture)", () => {
+  const cases = (PARITY as unknown as { explicit_today_cases: ExplicitCase[] })
+    .explicit_today_cases;
+
+  it("reads every case", () => {
+    expect(cases.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it.each(cases.map((c) => [c.name, c] as const))("%s", (_name, c) => {
+    const now = Date.parse(c.at);
+    expect(localDate(now, c.timezone)).toBe(c.today);
+    const item = {
+      startDate: c.start_date ?? undefined,
+      deferUntil: c.defer_until ?? undefined,
+    };
+    expect(isTickled(item, now, c.timezone)).toBe(c.hidden);
+  });
+});
 
 describe("isTickled holds the gateway's rule (the shared fixture)", () => {
   const now = new Date(2026, 8, 23, 12);

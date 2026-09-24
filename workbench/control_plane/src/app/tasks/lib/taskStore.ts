@@ -41,7 +41,7 @@ import {
   MOCK_PROJECTS,
   type ConnectedProvider,
 } from "./mockData";
-import { isCalendarItem, isTickled } from "./utils";
+import { browserTimeZone, isCalendarItem, isTickled } from "./utils";
 import { type SyncState, canPush } from "./syncState";
 import {
   DEFAULT_FILTERS,
@@ -2479,6 +2479,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       // usable before they arrive.
       const settings = await fetchTaskSettings().catch(() => get().settings);
       set({ settings });
+      // F5 — the gateway reads "today" for the start-date rule in the zone
+      // stored here. Store this browser's zone when it differs, as
+      // `CalendarView` does, so the inbox and `isTickled` agree on the date.
+      const zone = browserTimeZone();
+      if (zone && zone !== settings.timezone) void get().updateSettings({ timezone: zone });
       // ⚠️ The auto-sync-on-open fire was REMOVED 2026-08-25 (D52, WS-39 S1
       // repair round 1). It ran `syncNow()` whenever any `task_accounts` row
       // survived — which, after the retirement, is the ONLY state it could be

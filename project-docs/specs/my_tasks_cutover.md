@@ -364,7 +364,7 @@ not in the detail body. The watch toggle was in the Projects header only.
 | Important | **Mine**, D76 | The member's own answer on the overlay. High and Highest seed it while it is unstated. D77 does not change it. Every My Tasks control over the member's matrix says "Your focus", the name D76 gives the private row in Projects |
 | Estimate | **Shared** | `pm_tasks.estimate_mins`. My Tasks' Estimate writes it. The planner reads it. Migration 216 copies the overlay values once |
 | Deadline | **Shared**, already `due_at` | A delegation never replaces a deadline the task has. The promised date is `expected_by` |
-| Start date | **Shared** | `start_date`, in the body of both apps. My inbox hides the task until the later of it and my own `defer_until` |
+| Start date | **Shared** | `start_date`, in the body of both apps. My inbox hides the task until the later of it and my own `defer_until`. "Today" is the member's own date, from `user_settings.timezone`, on the server and in the client |
 | Completion | **Derived** | `effective_disposition`: a closed lane reads DONE. A stated DONE on an open lane reads NEXT, and `is_triaged` stays true. Nothing is written |
 | Waiting on | **Derived from the assignees** | The task's assignees minus me, first by `assigned_at`. The Nudge goes to the same people |
 | Tags vs context | **Both kept** | Tags are the team's labels for the work. A context is how I batch MY time, and no work fact holds it |
@@ -724,7 +724,14 @@ decision number moved from D76 to D77, and the migration moved from 215 to
    `_PM_ALIVE` now prunes TRASH only, because a stated DONE can be reopened.
 2. `_MY_TASKS_SQL` selects `other_assignees`. `waiting_on_for` turns it into
    the waiting-on person, and the Nudge uses the same rule.
-3. `DEFERRED_CLAUSE` adds `start_date <= current_date` to the defer clause.
+3. `DEFERRED_CLAUSE` adds `start_date <= CAST(:today AS date)` to the defer
+   clause. `member_today` computes `:today` from the member's
+   `user_settings.timezone` (F5, 2026-09-24). The first build used the
+   database's `current_date`, which is UTC, while the client read the local
+   date. My Tasks now stores the browser's zone on open, as the Calendar
+   does. The parity fixture has explicit-today rows that both sides run
+   with one instant and one zone. The bind is a `date`, because asyncpg
+   refuses text for a date parameter.
 4. `validate_overlay` refuses `time_estimate_mins` with a 422, and
    `_upsert_personal` refuses it with a ValueError. Neither refuses
    `important`, because it is the member's own answer (D76). Organize and

@@ -35,8 +35,9 @@ so no request can be made to read or write somebody else's practice.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
@@ -1337,21 +1338,51 @@ UNTRIAGED_CLAUSE = (
 
 #: "Not yet" — hidden from my inbox until the LATER of my own defer date and
 #: the work's shared start date (D77). `start_date` is a DATE, so a task
-#: starting today is in today's list. `current_date` is the database
-#: session's date, the same clock `now()` beside it reads. One spelling,
-#: shared by the route and `tests/live/live_ws39_s6f.py`.
+#: starting today is in today's list.
+#:
+#: ⚠️ **"Today" is the MEMBER's date, bound as ``:today``** (F5, 2026-09-24).
+#: The first build compared with the database's `current_date`, which is
+#: UTC. The client's `isTickled` reads the member's local date, so for five
+#: and a half hours every evening in India the two disagreed about a task
+#: starting tomorrow. :func:`member_today` computes the bind from the
+#: member's stored timezone. One spelling, shared by the route and
+#: `tests/live/live_ws39_s6f.py`.
 DEFERRED_CLAUSE = (
     "(p.defer_until IS NULL OR p.defer_until <= now())"
-    " AND (t.start_date IS NULL OR t.start_date <= current_date)"
+    " AND (t.start_date IS NULL OR t.start_date <= CAST(:today AS date))"
 )
 
 
-def not_yet(defer_until: Any, start_date: Any, at: datetime) -> bool:
+def local_date(tz_name: Any, at: datetime) -> date:
+    """``at`` as a calendar date in the IANA zone ``tz_name``. An unknown or
+    empty zone reads as UTC, the default `user_settings.timezone` carries."""
+    try:
+        zone = ZoneInfo(str(tz_name or "UTC"))
+    except (ZoneInfoNotFoundError, ValueError):
+        zone = ZoneInfo("UTC")
+    return at.astimezone(zone).date()
+
+
+async def member_today(db: Any, email: str, at: datetime | None = None) -> date:
+    """The member's own date now (F5): `user_settings.timezone`, the zone the
+    client stores for itself (`taskStore.hydrate`, `CalendarView`). A member
+    with no row reads as UTC."""
+    row = (await db.execute(
+        text("SELECT timezone FROM user_settings WHERE user_id = :uid"),
+        {"uid": email},
+    )).fetchone()
+    return local_date(getattr(row, "timezone", None), at or datetime.now(UTC))
+
+
+def not_yet(
+    defer_until: Any, start_date: Any, at: datetime, today: date | None = None,
+) -> bool:
     """:data:`DEFERRED_CLAUSE`, negated, for a caller already holding the row.
 
     True while the task waits: my own ``defer_until`` is still ahead, or the
-    shared ``start_date`` is after ``at``'s date. The SQL and this function
-    are one rule in two forms, held together by
+    shared ``start_date`` is after ``today`` — the member's date, from
+    :func:`member_today`. Without one it falls back to ``at``'s UTC date.
+    The SQL and this function are one rule in two forms, held together by
     ``tests/fixtures/deferred_parity.json`` — the unit test drives this, the
     live check drives the clause on Postgres, and `sharedFields.test.ts`
     drives the client's ``isTickled``.
@@ -1364,7 +1395,7 @@ def not_yet(defer_until: Any, start_date: Any, at: datetime) -> bool:
     starts = start_date if not isinstance(start_date, datetime) else start_date.date()
     if isinstance(starts, str):
         starts = datetime.fromisoformat(starts[:10]).date()
-    return starts > at.date()
+    return starts > (today or at.date())
 
 
 @router.get("/my/inbox")
@@ -1415,6 +1446,9 @@ async def my_inbox(
         # clauses AND, so the task waits for the later of the two:
         # `defer_until` is mine, `start_date` is the team's.
         clauses.append(DEFERRED_CLAUSE)
+        needs_today = True
+    else:
+        needs_today = False
     if context:
         clauses.append("lower(p.context) = :context")
         extra["context"] = context.strip().lower()
@@ -1424,6 +1458,11 @@ async def my_inbox(
     sql = _MY_TASKS_SQL + ("".join(f" AND {c}" for c in clauses)) + _INBOX_ORDER
     items: list[dict[str, Any]] = []
     async with _tenant_session() as db:
+        if needs_today:
+            # F5 — the member's own date, never the database's UTC one. A
+            # `date`, not a string: asyncpg types `CAST(:today AS date)` as a
+            # date parameter and refuses text (measured on the live check).
+            extra["today"] = await member_today(db, email)
         params = await my_tasks_binds(
             db, email, archived=include_archived, **extra,
         )

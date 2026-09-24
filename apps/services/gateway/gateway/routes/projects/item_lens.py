@@ -66,6 +66,7 @@ from gateway.routes.projects.personal import (
     effective_disposition,
     ensure_personal_project,
     member_contexts,
+    member_today,
     my_tasks_binds,
     not_yet,
     waiting_on_for,
@@ -321,6 +322,8 @@ class _PmLens(ItemSource):
     async def insight_counts(self, db, uid):
         items = await self._items(db, uid)
         at = datetime.now(UTC)
+        # F5 — the member's own date for the start-date half of the rule.
+        today = await member_today(db, uid, at)
         counts: dict[str, int] = {}
         oldest: datetime | None = None
         stale = 0
@@ -331,7 +334,7 @@ class _PmLens(ItemSource):
                 # D77 — the inbox's own "not yet" rule: the later of my defer
                 # and the shared start date (`DEFERRED_CLAUSE`), one place.
                 created = _as_utc(it.created_at)
-                waiting = not_yet(it.defer_until, it.start_date, at)
+                waiting = not_yet(it.defer_until, it.start_date, at, today)
                 if not waiting and created is not None and (
                     oldest is None or created < oldest
                 ):

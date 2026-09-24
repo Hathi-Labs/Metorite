@@ -46,7 +46,7 @@ import asyncio
 import json
 import os
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from gateway.routes.people.core import compute_load
@@ -59,6 +59,8 @@ from gateway.routes.projects.personal import (
     _project_task,
     _upsert_personal,
     complete_for_member,
+    local_date,
+    member_today,
     my_tasks_binds,
 )
 from gateway.routes.projects.planning import _PM_SELECT
@@ -88,7 +90,8 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 async def _mine(db, org, who: str, *, deferred_hidden: bool = False) -> dict:
     """My tasks as the inbox projects them, from `org`'s side: title → task."""
-    binds = {**await my_tasks_binds(db, who, archived=False), "vis_org": str(org)}
+    binds = {**await my_tasks_binds(db, who, archived=False), "vis_org": str(org),
+             "today": await member_today(db, who)}
     sql = _MY_TASKS_SQL + (f" AND {DEFERRED_CLAUSE}" if deferred_hidden else "")
     rows = (await db.execute(text(sql), binds)).fetchall()
     return {r.title: _project_task(r)[0] for r in rows}
@@ -254,19 +257,49 @@ async def main() -> None:
               hidden and shown, f"hidden={hidden} shown={shown}")
 
         # ── 6b. the clause itself, against the shared fixture (F4) ─────────
-        parity = json.loads(PARITY.read_text(encoding="utf-8"))["cases"]
+        fixture = json.loads(PARITY.read_text(encoding="utf-8"))
+        parity = fixture["cases"]
+        db_today = (await db.execute(text("SELECT current_date"))).scalar_one()
         wrong = []
         for case in parity:
             hidden = (await db.execute(text(
                 "SELECT NOT (" + DEFERRED_CLAUSE + ") FROM "
                 "(SELECT now() + make_interval(days => CAST(:d AS int)) "
                 "   AS defer_until) p, "
-                "(SELECT current_date + CAST(:s AS int) AS start_date) t"),
-                {"d": case["defer_days"], "s": case["start_days"]})).scalar_one()
+                "(SELECT CAST(:today AS date) + CAST(:s AS int) AS start_date) t"),
+                {"d": case["defer_days"], "s": case["start_days"],
+                 "today": db_today})).scalar_one()
             if bool(hidden) is not case["hidden"]:
                 wrong.append(case["name"])
         check("6b DEFERRED_CLAUSE on Postgres agrees with the shared fixture",
               not wrong and len(parity) >= 10, f"wrong={wrong}")
+
+        # ── 6c. F5: the member's own date, from their stored zone ─────────
+        #     The explicit-today rows run the start-date half on Postgres with
+        #     the date `local_date` computes. The defer half reads the real
+        #     now(), so rows that carry a defer are the unit test's alone.
+        wrong = []
+        for case in fixture["explicit_today_cases"]:
+            if case["defer_until"]:
+                continue
+            at = datetime.fromisoformat(case["at"])
+            today = local_date(case["timezone"], at)
+            hidden = (await db.execute(text(
+                "SELECT NOT (" + DEFERRED_CLAUSE + ") FROM "
+                "(SELECT CAST(NULL AS timestamptz) AS defer_until) p, "
+                "(SELECT CAST(:s AS date) AS start_date) t"),
+                {"s": date.fromisoformat(case["start_date"]),
+                 "today": today})).scalar_one()
+            if today.isoformat() != case["today"] or bool(hidden) is not case["hidden"]:
+                wrong.append(case["name"])
+        await db.execute(text(
+            "INSERT INTO user_settings (user_id, timezone) VALUES (:u, 'Asia/Kolkata') "
+            "ON CONFLICT (user_id) DO UPDATE SET timezone = EXCLUDED.timezone"),
+            {"u": ALICE})
+        stored = await member_today(db, ALICE, datetime(2026, 9, 24, 20, 0, tzinfo=UTC))
+        check("6c the start date is judged on the member's own date, from their zone",
+              not wrong and stored.isoformat() == "2026-09-25",
+              f"wrong={wrong} stored={stored}")
 
         # ── 7. the retired overlay estimate is refused before any SQL ─────
         refused = []

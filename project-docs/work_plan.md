@@ -4134,7 +4134,7 @@ and each pair could disagree:
 | The word "Priority" | one meaning | In My Tasks it names only the shared `importance`. Every control over the member's matrix says "Your focus", D76's name for the private row. The default sort is still the matrix rank |
 | Estimate | shared `estimate_mins` | Migration 216 copies the overlay values once |
 | Deadline | shared `due_at` | A delegation never replaces a deadline the task has |
-| Start date | shared `start_date` | My inbox hides the task until the later of it and my defer |
+| Start date | shared `start_date` | My inbox hides the task until the later of it and my defer. The server and the client both judge "today" in the member's own timezone |
 | Completion | derived from the lane | A closed lane reads DONE. A stated DONE on an open lane reads NEXT. Only INBOX, NEXT or WAITING on a closed task reopens it. Someday, Reference, Project and a defer file it and leave the lane closed |
 | Waiting on | derived from the assignees | The assignees minus me. The stored record is a label, or the answer when no other person holds the task |
 | Tags / context | both kept | Tags say what the work IS. A context says how I batch my own time |

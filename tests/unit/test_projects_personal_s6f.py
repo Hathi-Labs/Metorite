@@ -25,7 +25,7 @@ run twice, People capacity reading the shared column — are in
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import pytest
@@ -232,7 +232,39 @@ async def test_the_nudge_goes_to_whoever_holds_it_now(db: FakeProjectsDB) -> Non
 def test_the_deferred_clause_honours_both_dates() -> None:
     clause = pm_personal.DEFERRED_CLAUSE
     assert "p.defer_until IS NULL OR p.defer_until <= now()" in clause
-    assert "t.start_date IS NULL OR t.start_date <= current_date" in clause
+    # F5: the member's own date, bound. Never the database's UTC date.
+    assert "t.start_date IS NULL OR t.start_date <= CAST(:today AS date)" in clause
+    assert "current_date" not in clause
+
+
+def test_local_date_reads_the_members_zone() -> None:
+    """F5: at 20:00 UTC it is already tomorrow in India."""
+    at = datetime(2026, 9, 24, 20, 0, tzinfo=UTC)
+    assert pm_personal.local_date("Asia/Kolkata", at).isoformat() == "2026-09-25"
+    assert pm_personal.local_date("UTC", at).isoformat() == "2026-09-24"
+    assert pm_personal.local_date("America/Los_Angeles", at).isoformat() == "2026-09-24"
+    # An unknown or empty zone is UTC, the column's default.
+    assert pm_personal.local_date("Not/AZone", at).isoformat() == "2026-09-24"
+    assert pm_personal.local_date(None, at).isoformat() == "2026-09-24"
+
+
+async def test_the_inbox_binds_the_members_today(db: FakeProjectsDB) -> None:
+    """F5: the route binds `:today` from `user_settings.timezone`."""
+    project, todo, _ = _team_project(db)
+    task = db.seed_task(project.id, todo.id, title="Starts tomorrow here")
+    _assign(db, task.id, "alice@fracktal.in")
+    seen: list[dict] = []
+    real = db.execute
+
+    async def spy(statement, params=None):
+        if params and "today" in params:
+            seen.append(dict(params))
+        return await real(statement, params)
+
+    db.execute = spy  # type: ignore[method-assign]
+    await pm_personal.my_inbox(user=ALICE, page=page())
+    # A `date`, never a string: asyncpg refuses text for `CAST(:today AS date)`.
+    assert seen and all(isinstance(p["today"], date) for p in seen)
 
 
 async def test_a_future_start_date_hides_it_from_my_inbox(db: FakeProjectsDB) -> None:
@@ -545,6 +577,18 @@ _PARITY = __import__("json").loads(
 )
 
 
+@pytest.mark.parametrize(
+    "case", _PARITY["explicit_today_cases"], ids=lambda c: c["name"])
+def test_not_yet_matches_the_explicit_today_cases(case) -> None:
+    """F5: one instant, one zone, both sides. The client runs the same rows
+    in `sharedFields.test.ts` with the same instant and zone."""
+    at = datetime.fromisoformat(case["at"])
+    today = pm_personal.local_date(case["timezone"], at)
+    assert today.isoformat() == case["today"]
+    defer = datetime.fromisoformat(case["defer_until"]) if case["defer_until"] else None
+    assert pm_personal.not_yet(defer, case["start_date"], at, today) is case["hidden"]
+
+
 @pytest.mark.parametrize("case", _PARITY["cases"], ids=lambda c: c["name"])
 def test_not_yet_matches_the_shared_table(case) -> None:
     from datetime import timedelta
@@ -563,7 +607,8 @@ def test_insight_counts_ages_the_inbox_by_the_one_rule() -> None:
     src = Path(pm_item_lens.__file__).read_text(encoding="utf-8")
     body = src[src.index("async def insight_counts"):]
     body = body[:body.index("async def items_by_origin")]
-    assert "not_yet(it.defer_until, it.start_date, at)" in body
+    assert "not_yet(it.defer_until, it.start_date, at, today)" in body
+    assert "member_today(db, uid, at)" in body
 
 
 async def test_deferring_a_finished_task_leaves_it_closed(db: FakeProjectsDB) -> None:
