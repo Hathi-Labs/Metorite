@@ -12,6 +12,8 @@
  * menu read one spelling. `statusCategory.test.ts` fences both.
  */
 
+import { CATEGORY_LABEL } from "@/lib/statusCategory";
+
 import type { LensLane } from "./lens";
 import type { MyTask } from "./types";
 
@@ -20,11 +22,10 @@ export type NextCategory = "todo" | "in_progress" | "done";
 
 export const NEXT_CATEGORIES: readonly NextCategory[] = ["todo", "in_progress", "done"];
 
-export const CATEGORY_LABEL: Readonly<Record<NextCategory, string>> = {
-  todo: "To do",
-  in_progress: "In progress",
-  done: "Done",
-};
+// ⚠️ No label table here. The labels are `lib/statusCategory.ts`'s
+// `CATEGORY_LABEL`, the one place a category is named, so a Projects stage
+// and a My Tasks group read the same word. This file held its own copy until
+// 2026-09-24. Fence: `sharedTaskUi.test.ts`, "the stage labels".
 
 /** Is `v` one of the three Next Actions groups? */
 export function isNextCategory(v: string | undefined | null): v is NextCategory {

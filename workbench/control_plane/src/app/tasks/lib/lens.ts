@@ -184,6 +184,7 @@ export function mapLensItem(raw: Raw): MyTask {
     keptMine: tri(raw.kept_mine),
 
     projectId: text(raw.project_id),
+    taskNumber: num(raw.task_number),
     projectName: text(raw.project_name),
     isTriaged: tri(raw.is_triaged),
     assignedBy: text(raw.assigned_by),

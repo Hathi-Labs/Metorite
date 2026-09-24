@@ -92,7 +92,8 @@ describe("the matrix controls say 'Priority' (D78)", () => {
 
   it("labels the matrix group-by 'Priority'", () => {
     const group = TOOLBAR.slice(TOOLBAR.indexOf("const GROUP_LABEL"));
-    expect(group).toMatch(/\n\s*priority: "Priority",/);
+    // Each option names what it does, as Projects' "Group by …" options do.
+    expect(group).toMatch(/\n\s*priority: "Group by priority",/);
   });
 
   it("labels the matrix filter 'Priority'", () => {

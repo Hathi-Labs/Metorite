@@ -152,6 +152,9 @@ export interface MyTask {
   /** the user dismissed the delegate/schedule suggestion ("this one's mine") */
   keptMine?: boolean;
   projectId?: string;
+  /** The task's number in its root project (`pm_tasks.task_number`), which
+   *  Projects shows as "#42". Absent on a demo row. */
+  taskNumber?: number;
   /** S6e — the project's NAME, off the gateway's join. A member reached by
    *  assignment alone may hold no grant on the project, so the company list
    *  cannot be relied on to name it; the row names itself. */

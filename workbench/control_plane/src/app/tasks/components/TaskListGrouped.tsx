@@ -1,5 +1,6 @@
 "use client";
 
+import { CATEGORY_LABEL } from "@/lib/statusCategory";
 import Icon from "@/components/Icon";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { QuickAdd } from "@/components/QuickAdd";
@@ -24,7 +25,6 @@ import {
 } from "../lib/ordering";
 import { categoryAccent, stageAccent } from "../lib/stageColors";
 import {
-  CATEGORY_LABEL,
   NEXT_CATEGORIES,
   isNextCategory,
   nextCategoryOf,

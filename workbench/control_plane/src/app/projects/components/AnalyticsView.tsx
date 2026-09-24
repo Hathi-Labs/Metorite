@@ -49,6 +49,7 @@ import {
   ThroughputPanel,
 } from "./AnalyticsPanels";
 import { spaceMarker } from "../lib/tree";
+import { CATEGORY_LABEL } from "@/lib/statusCategory";
 
 /** The lanes as table columns, board order. Cancelled earns no column of
  *  its own until somebody cancels something — see `columns()` below. */
@@ -61,14 +62,8 @@ const COLUMN_ORDER = [
   "cancelled",
 ] as const;
 
-const COLUMN_LABELS: Record<string, string> = {
-  triage: "Triage",
-  backlog: "Backlog",
-  todo: "To do",
-  in_progress: "In progress",
-  done: "Done",
-  cancelled: "Cancelled",
-};
+/** The labels are `lib/statusCategory.ts`'s. One place names a category. */
+const COLUMN_LABELS: Record<string, string> = CATEGORY_LABEL;
 
 /**
  * Which category columns the table draws: every ordered lane with at least

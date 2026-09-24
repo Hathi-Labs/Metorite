@@ -102,10 +102,22 @@ describe("My Tasks binds ⌘K to search", () => {
   it("⌘K opens the search palette, not capture", () => {
     const src = page();
     expect(src).toMatch(
-      /if \(isOpenShortcut\(e\)\) \{\s*e\.preventDefault\(\);[\s\S]{0,400}?setSearching\(true\);\s*\}\s*return;\s*\}/,
+      /if \(isOpenShortcut\(e\)\) \{\s*e\.preventDefault\(\);\s*openSearch\(\);\s*return;\s*\}/,
     );
     // The old binding, gone.
     expect(src).not.toMatch(/e\.key === "k"/);
+  });
+
+  it("search opens through ONE guard, from the key and from the top bar", () => {
+    const src = page();
+    // The guard: no palette over another overlay (`searchAllowed`).
+    expect(src).toMatch(
+      /const openSearch = useCallback\(\(\) => \{\s*if \(searchAllowed\(useTaskStore\.getState\(\), maximisedId !== null\)\) \{\s*setSearching\(true\);\s*\}\s*\}, \[maximisedId\]\);/,
+    );
+    // Nothing else opens the palette around the guard.
+    expect(src.match(/setSearching\(true\)/g) ?? []).toHaveLength(1);
+    // The top bar's Search button is the second way in, through the guard.
+    expect(src).toMatch(/<AppSearchButton onOpen=\{openSearch\} \/>/);
   });
 
   it("capture stays on C", () => {

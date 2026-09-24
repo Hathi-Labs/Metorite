@@ -25,6 +25,8 @@
  * in `panelMode.test.ts` rather than clicks.
  */
 
+import { EXPAND_ICONS, EXPAND_LABELS, TASK_PANEL_WIDTH } from "@/lib/taskPanel";
+
 /**
  * The two stops, narrowest first. Order is the escalation order.
  *
@@ -98,15 +100,10 @@ export const PANEL_MODE_LABELS: Record<PanelMode, string> = {
  * cheapest way to mislead the next reader, because keeping it wrong costs
  * nothing.
  */
-export const PANEL_MODE_ICONS: Record<PanelMode, string> = {
-  side: "Maximize2",
-  full: "Minimize2",
-};
+export const PANEL_MODE_ICONS: Record<PanelMode, string> = EXPAND_ICONS;
 
-export const PANEL_MODE_HINTS: Record<PanelMode, string> = {
-  side: "Open as a full card",
-  full: "Back to the side panel",
-};
+/** The words are `lib/taskPanel.ts`'s, which My Tasks' header reads too. */
+export const PANEL_MODE_HINTS: Record<PanelMode, string> = EXPAND_LABELS;
 
 /**
  * The width the panel's `<aside>` takes at each stop.
@@ -122,7 +119,9 @@ export const PANEL_MODE_HINTS: Record<PanelMode, string> = {
  * track back to its start.
  */
 export const PANEL_WIDTH_CLASS: Record<PanelMode, string> = {
-  side: "max-w-md",
+  // The docked width both apps share (`lib/taskPanel.ts`). It was `max-w-md`
+  // here and 380px in My Tasks until 2026-09-24.
+  side: TASK_PANEL_WIDTH,
   full: "max-w-3xl",
 };
 

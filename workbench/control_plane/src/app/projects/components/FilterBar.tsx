@@ -34,7 +34,7 @@ import Icon from "@/components/Icon";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import SelectButton from "@/components/ui/SelectButton";
+import SelectButton, { OFF_DEFAULT } from "@/components/ui/SelectButton";
 import { Checkbox } from "@/components/ui/Checkbox";
 import { useEffect, useRef, useState } from "react";
 
@@ -63,15 +63,19 @@ import {
   toggleField,
 } from "../lib/shownFields";
 import { byUsage, chipClass } from "../lib/tags";
+import { CATEGORY_LABEL, EDITABLE_CATEGORIES } from "@/lib/statusCategory";
 
-/** The status categories, labelled. Mirrors the gateway's `STATUS_CATEGORIES`. */
+/**
+ * The stage filter's options. The labels come from `lib/statusCategory.ts`,
+ * the one place a category is named, which My Tasks' Next Actions groups
+ * read too. This file held a third copy of them until 2026-09-24.
+ *
+ * "Stage", never "status": this filters by the CATEGORY, which is what the
+ * "Group by stage" option below calls it. A status is a lane's own name.
+ */
 const CATEGORIES: Array<[string, string]> = [
-  ["", "Any status"],
-  ["backlog", "Backlog"],
-  ["todo", "To do"],
-  ["in_progress", "In progress"],
-  ["done", "Done"],
-  ["cancelled", "Cancelled"],
+  ["", "Any stage"],
+  ...EDITABLE_CATEGORIES.map((c): [string, string] => [c, CATEGORY_LABEL[c]]),
 ];
 
 
@@ -107,7 +111,8 @@ const LANE_OPTION_LABELS: Record<GroupBy, string> = {
 };
 
 /**
- * A control that is NOT at its default wears the house active pair.
+ * A control that is NOT at its default wears the house active pair
+ * (`OFF_DEFAULT`, from `SelectButton.tsx`, so My Tasks' row wears the same).
  *
  * `bg-primary/10 text-primary` is the measured norm for active/selected across
  * this tree (`AGENTS.md` rule 6), and it is the same primary the pressed
@@ -134,7 +139,6 @@ const LANE_OPTION_LABELS: Record<GroupBy, string> = {
  * `font-weight` from `--label-weight` in unlayered CSS, which beats a utility
  * class.
  */
-const OFF_DEFAULT = "border-primary/50 bg-primary/10 text-primary";
 const AT_DEFAULT = "";
 
 
@@ -377,7 +381,7 @@ export function FilterBar({
             a single one off it, so the row answers "what have I changed?"
             from the glyphs before the colour is read. */}
         <SelectButton
-          label="Status"
+          label="Stage"
           widthClass="w-[9rem]"
           className={filters.statusCategory ? OFF_DEFAULT : AT_DEFAULT}
           value={filters.statusCategory}
