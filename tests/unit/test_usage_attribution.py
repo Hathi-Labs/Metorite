@@ -414,18 +414,27 @@ class TestEveryClientUsesTheSeam:
 
 
     def test_the_copilot_path_is_a_KNOWN_gap_until_H_181(self):
-        """Pins the gap so it cannot grow in silence, and fails the day it
-        closes so this test and H-181 are retired together.
+        """Pins the gap so it cannot grow in silence, and FAILS the day it
+        closes, so this test and H-181 are retired together.
 
-        The two sites build a Copilot provider dict with no ``headers``. When
-        the SDK upgrade lands they gain ``"headers": attribution_headers()``,
-        this assertion fails, and whoever lands it deletes this test.
+        Reads each provider dict literal and asserts it carries no
+        ``"headers"`` key. A first version only counted the sites, so adding
+        the headers H-181 prescribes left it green forever (found by review).
         """
-        sites = {
-            "apps/services/orchestrator/orchestrator/_model_resolution.py": 1,
-            "apps/services/orchestrator/orchestrator/executor.py": 1,
-        }
-        for rel, expected in sites.items():
+        sites = (
+            "apps/services/orchestrator/orchestrator/_model_resolution.py",
+            "apps/services/orchestrator/orchestrator/executor.py",
+        )
+        for rel in sites:
             src = (ROOT / rel).read_text(encoding="utf-8")
-            n = len(re.findall(r'_default_options\["provider"\]\s*=\s*\{', src))
-            assert n == expected, f"{rel}: {n} Copilot provider sites, expected {expected}"
+            found = list(re.finditer(r'_default_options\["provider"\]\s*=\s*\{', src))
+            assert len(found) == 1, f"{rel}: {len(found)} Copilot provider sites"
+            body_start = found[0].end()
+            depth, i = 1, body_start
+            while depth:
+                depth += (src[i] == "{") - (src[i] == "}")
+                i += 1
+            literal = src[body_start:i]
+            assert '"headers"' not in literal, (
+                f"{rel}: the provider dict now carries headers. H-181 has "
+                "landed: delete this test and the H-181 attribution note.")
