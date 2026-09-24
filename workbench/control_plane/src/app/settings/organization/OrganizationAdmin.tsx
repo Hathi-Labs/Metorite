@@ -45,6 +45,13 @@ import Tabs from "@/components/Tabs";
 import { useAccess } from "@/components/AccessProvider";
 import { rowActions } from "./lib/selfGuard";
 import { purgeConfirmed } from "./lib/confirmPurge";
+// D63 / H-49 slice 2. The WORDING is the policy, so it lives in a pure module
+// with its own tests rather than inline in the dialog's JSX.
+import {
+  type SealPreview,
+  describeHandover,
+  describeSeal,
+} from "./lib/sealPreview";
 import BrandingTab from "./BrandingTab";
 import {
   afterInvite,
@@ -774,6 +781,37 @@ function RemoveDialog({
   onConfirm: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
+  /**
+   * D63's last requirement (H-49 slice 2): **the dialog must state the split
+   * in numbers BEFORE the click** — *"14 tasks — 3 handed over, 11 sealed,
+   * not deleted; later access is recorded"*. A policy nobody is told about at
+   * the moment it applies is one they discover by being surprised.
+   *
+   * ⚠️ `undefined` is "still asking" and `null` is "asked, and there is
+   * nothing to say". They are kept apart because the button's copy differs:
+   * removing somebody mid-fetch must not claim their tree is empty.
+   */
+  const [seal, setSeal] = useState<SealPreview | null | undefined>(undefined);
+
+  useEffect(() => {
+    let alive = true;
+    // A READ. It seals nothing, so an admin who opens this dialog and cancels
+    // has changed nothing — which is what makes showing it before the click
+    // safe rather than a commitment.
+    fetch(`/api/admin/members/${encodeURIComponent(member.email)}/seal-preview`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => alive && setSeal(body))
+      // The preview is a courtesy; the removal is the act. A failed preview
+      // must not block an off-boarding an admin has decided on, so this
+      // degrades to "no numbers" rather than to a broken dialog.
+      .catch(() => alive && setSeal(null));
+    return () => {
+      alive = false;
+    };
+  }, [member.email]);
+
+  const sealLine = describeSeal(seal ?? null);
+  const handoverLine = describeHandover(seal ?? null);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -794,6 +832,31 @@ function RemoveDialog({
           and activating the invitation. If you only want to pause their access,
           use <span className="text-foreground">Suspend</span> instead.
         </p>
+
+        {/*
+          D63, stated where the decision is taken. `soft`+`text` rather than a
+          destructive tone on purpose: sealing is not damage, it is the
+          workspace closing, and the sentence's own job is to say that nothing
+          is deleted.
+        */}
+        {seal === undefined && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            Checking what their personal workspace holds…
+          </p>
+        )}
+        {sealLine && (
+          <div className="mt-3 rounded-lg border border-border bg-muted/40 p-3">
+            <p className="flex items-start gap-1.5 text-xs text-foreground">
+              <Icon name="Lock" size={13} className="mt-0.5 shrink-0" />
+              <span>{sealLine}</span>
+            </p>
+            {handoverLine && (
+              <p className="mt-1 pl-[18px] text-[11px] text-muted-foreground">
+                {handoverLine}
+              </p>
+            )}
+          </div>
+        )}
 
         <div className="mt-5 flex justify-end gap-2">
           <button

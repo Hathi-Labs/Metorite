@@ -310,6 +310,9 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/analytics/rebalance", "rebalance", "A"),
     # S7c — conflicts (analytics_conflicts.py). The HR kinds are the route's.
     Route("GET", "/projects/analytics/conflicts", "find_conflicts", "A"),
+    # S7d — the plan preview (plan_preview.py). It writes nothing, so it is
+    # in READ_ONLY_POSTS. Its class is the tool's: propose_plan is class B.
+    Route("POST", "/projects/plan/preview", "propose_plan", "B"),
     Route("GET", "/projects/reports", "report_list", "A"),
     Route("POST", "/projects/reports", "report_save", "B"),
     Route("GET", "/projects/reports/{report_id}", "report_render", "A"),
@@ -406,7 +409,8 @@ COMPOSITE: dict[str, frozenset[str]] = {
     "project_views": frozenset({"project_summary"}),
     "edit_task": frozenset({"update_task"}),
     "edit_project": frozenset({"update_project"}),
-    "propose_plan": frozenset({"create_project", "create_task"}),
+    # S7d — the plan also writes its `blocks` links under the same card.
+    "propose_plan": frozenset({"create_project", "create_task", "link_tasks"}),
     # S6 — navigation reads the row it opens, then dispatches to the page.
     "open_in_app": frozenset({"task_detail", "project_summary"}),
 }
@@ -418,6 +422,7 @@ READ_ONLY_POSTS: frozenset[tuple[str, str]] = frozenset(
     {
         ("POST", "/projects/tasks/move/preview"),
         ("POST", "/projects/nodes/{project_id}/status-set/preview"),
+        ("POST", "/projects/plan/preview"),
     }
 )
 

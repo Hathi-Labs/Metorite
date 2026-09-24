@@ -1378,3 +1378,28 @@ async def test_a_conflicts_report_section_fences_its_sentences(monkeypatch) -> N
     row = next(line for line in out.splitlines() if line.startswith("- «blocker_late»"))
     assert "sentence «" in row
     assert not any(line.startswith("forged") for line in out.splitlines())
+
+
+# ── S7d — W1 plans with start dates and links, and never with phases ────────
+
+
+def _w1() -> str:
+    text = (AGENT_DIR / "instructions.md").read_text(encoding="utf-8")
+    start = text.index("**W1 · Plan a project from a goal.**")
+    return text[start:text.index("**W2 ·", start)]
+
+
+def test_w1_never_asks_for_phases() -> None:
+    """§10.6 item 10. The owner declined phases (2026-09-24). Start dates and
+    `blocks` links carry the order, and sub-projects carry the grouping. The
+    word coming back into W1 is the design coming back."""
+    import re
+
+    assert not re.search(r"phase", _w1(), re.I), "W1 asks for phases again"
+
+
+def test_w1_names_the_plan_inputs_s7d_added() -> None:
+    """Rule 11: step 3 of W1 changes with the tool."""
+    w1 = _w1()
+    for word in ("`key`", "`start`", "`after`", "`blocks`", "never blocks"):
+        assert word in w1, word

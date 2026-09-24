@@ -53,3 +53,22 @@ def test_the_projects_views_emit_catalog_templates_only() -> None:
     emitted = set(re.findall(r'_template\(\s*"([A-Za-z]+)"', src))
     assert emitted, "no template emitted"
     assert emitted <= _catalog(), f"emitted but not in the catalog: {emitted - _catalog()}"
+
+
+def test_the_plan_card_shape_in_the_docstring_names_every_catalog_field() -> None:
+    """WS-27bm S7d review round 1 (F3). The planCard shape the model reads
+    drifted from the catalog's, so the model never learned the fields the
+    card draws. Every field name in the catalog's planCard ``data`` must be in
+    the docstring's planCard bullet."""
+    tsx = TSX.read_text(encoding="utf-8")
+    entry = tsx.split('name: "planCard",', 1)[1]
+    catalog = entry.split('data: "', 1)[1].split('",', 1)[0]
+    src = PY.read_text(encoding="utf-8")
+    bullet = src.split("• planCard —", 1)[1].split("2. COMPONENT TREE", 1)[0]
+    bullet = bullet.split("• ", 1)[0]
+    fields = set(re.findall(r"([a-z_]+)\??:", catalog)) | set(
+        re.findall(r"[{,]\s*([a-z_]+)\??(?=[,}\s])", catalog)
+    )
+    fields.discard("string")
+    missing = sorted(f for f in fields if not re.search(rf"\b{f}\b", bullet))
+    assert fields and not missing, f"planCard fields the docstring omits: {missing}"
