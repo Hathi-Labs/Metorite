@@ -778,25 +778,28 @@ decision number moved from D76 to D77, and the migration moved from 215 to
 
 **Verified.**
 
-The rework was verified again on 2026-09-24, on a fresh database built from
-this branch's own ladder (`acb_tenant_s6f_rework`, 214 files applied).
+The repair round (F1 to F7) was verified on 2026-09-24, on a fresh
+database built from this branch's own ladder (`acb_tenant_verify_f`, 214
+files). The database was dropped afterwards.
 
-- `tests/live/live_ws39_s6f.py`: **15/15 PASS**. It checks reopen, close,
+- `tests/live/live_ws39_s6f.py`: **17/17 PASS**. It checks reopen, close,
   reassign, the estimate in the planner and in capacity, and the start date.
   Check 5 proves that the Priority reaches the planner beside my
-  `important`, never as it. Check 7 proves that the upsert refuses the
+  `important`, never as it. Check 6c proves that the start date is judged
+  on the member's own date (F5). Check 7 proves that the upsert refuses the
   retired estimate and takes my `important`. Check 8b proves that the
-  backfill leaves the Priority alone. It also checks the backfill run twice,
-  the ledger replay, time spent, the reopen and tenancy.
-- `test_projects_personal_s6f.py`: 49 tests. The pytest run over every file
-  that imports a changed module, with `test_priority_seed.py`: 3495 pass. One
+  backfill leaves the Priority alone. Check 11c proves that Someday on a
+  finished task leaves the lane done (F4). It also checks the backfill run
+  twice, the ledger replay, time spent, the reopen and tenancy.
+- `test_projects_personal_s6f.py`: 59 tests. The pytest run over every file
+  that imports a changed module, with `test_priority_seed.py`: 3508 pass. One
   fails, and it passes alone: `test_h3_rls_promotion_rehearsal.py`, which
   depends on the order of the run.
-- `npx tsc --noEmit` clean. `npx vitest run`: 3504 pass in 185 files, with
-  D76's `priorityVocabulary.test.ts` and `priority.test.ts`. The new fence is
-  `sharedFields.test.ts`. `lens.test.ts` and `itemDetail.test.ts` carry the
-  D77 cases, and `itemDetail.test.ts` holds D76's "Your focus" row to its
-  name.
+- `npx tsc --noEmit` clean. `npx vitest run`: 3520 pass in 186 files, with
+  D76's `priorityVocabulary.test.ts` and `priority.test.ts`. The fences are
+  `sharedFields.test.ts` and `focusWording.test.ts`. `lens.test.ts` and
+  `itemDetail.test.ts` carry the D77 cases, and `itemDetail.test.ts` holds
+  D76's "Your focus" row to its name.
 - The live scripts for S6a (13/13), S6d (33/33), S6e (10/10), S8a (7/7) and
   S8c (8/8) pass. S6d reads the capture's estimate off `pm_tasks` now.
 - The visual pass: one task in My Tasks and in Projects, light, compact and
