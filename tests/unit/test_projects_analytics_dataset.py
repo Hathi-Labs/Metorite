@@ -367,8 +367,12 @@ def seeded(_ladder):
 
         person("ana")
         person("bo")
+        person("cy")
         made["bot"] = f"agent:ds-bot-{tag}"
         made["bug"], made["cad"] = f"bug-{tag}", f"cad-{tag}"
+        # A tag only Ana's tasks carry: grouped by it, a cycle measure is
+        # Ana's speed under another name (the K rule, fix round 2).
+        made["solo"] = f"solo-{tag}"
 
         def task(key: str, where: str, *, root: str | None = None, lane: str = "todo",
                  age: int = 0, est: int | None = None, tags: tuple[str, ...] = (),
@@ -437,11 +441,14 @@ def seeded(_ladder):
         task("O3", "A", age=30)
         task("O4", "A1", root="A", age=20, est=30, tags=("cad",), who=("bo",))
         task("KA", "A", age=10)
-        for key, hours, who in (("D1", 2, "ana"), ("D2", 4, "bo"), ("D3", 10, "ana")):
-            task(key, "A", lane="done", age=60 * 24 * 5, tags=("bug",), who=(who,), est=60)
+        for key, hours, who, extra in (("D1", 2, "ana", ("solo",)), ("D2", 4, "bo", ()),
+                                       ("D3", 10, "ana", ("solo",))):
+            task(key, "A", lane="done", age=60 * 24 * 5, tags=("bug", *extra),
+                 who=(who,), est=60)
             move(key, "in_progress", 72 + hours)
             move(key, "done", 72)
-        task("D4", "A", lane="done", age=60 * 24 * 5, tags=("bug",))
+        # cy makes `bug` a group of three people: ana, bo and cy.
+        task("D4", "A", lane="done", age=60 * 24 * 5, tags=("bug",), who=("cy",))
         move("D4", "done", 72)
         task("C1", "A", lane="cancelled", age=60 * 24 * 5)
         move("C1", "cancelled", 72)
@@ -449,6 +456,9 @@ def seeded(_ladder):
         task("TR", "A", lane="triage", age=5)
         task("KC", "A", lane="done", age=60 * 24 * 5)
         task("KH", "H", age=5)
+        # Visible to the restricted viewer through the assignee arm only.
+        # Its project H is not, so no row may print H's name (fix round 2).
+        task("VH", "H", age=5, who=("viewer",))
         task("SO", "S", age=5)
         task("B1", "B", age=5)
         link("KA", "O1")
@@ -470,7 +480,7 @@ def seeded(_ladder):
             c.execute(text("DELETE FROM pm_projects WHERE id = CAST(:p AS uuid)"),
                       {"p": made[key]})
         c.execute(text("DELETE FROM people WHERE id = ANY(CAST(:i AS uuid[]))"),
-                  {"i": [made[f"{k}_id"] for k in ("ana", "bo")]})
+                  {"i": [made[f"{k}_id"] for k in ("ana", "bo", "cy")]})
     eng.dispose()
 
 
@@ -735,8 +745,12 @@ def test_the_gate_drops_the_pair_and_keeps_assignees() -> None:
     assert hidden == ["estimate_mins", "cycle_hours"] and q.columns == ("assignees",)
     q, hidden = route.hr_gate(_q(columns="title,cycle_hours", assignee="a@x.io"), False)
     assert hidden == ["cycle_hours"] and q.columns == ("title",)
-    q, hidden = route.hr_gate(_q(columns="title,cycle_hours,estimate_mins"), False)
-    assert hidden == [] and "cycle_hours" in q.columns
+    # Fix round 2: no person on the row is no longer enough. Two calls,
+    # joined on the task, would give each person's speed.
+    q, hidden = route.hr_gate(_q(columns="full_id,cycle_hours,estimate_mins"), False)
+    assert hidden == ["estimate_mins", "cycle_hours"] and q.columns == ("full_id",)
+    q, hidden = route.hr_gate(_q(columns="full_id,title"), False)
+    assert hidden == [] and q.columns == ("full_id", "title")
     q, hidden = route.hr_gate(_q(columns="assignees,cycle_hours"), True)
     assert hidden == [] and q.columns == ("assignees", "cycle_hours")
 
@@ -775,13 +789,57 @@ async def test_without_the_grant_an_assignee_filter_hides_speed_too(seeded) -> N
 
 
 @_needs_db
-async def test_cycle_hours_alone_stay_for_every_member(seeded) -> None:
-    """A cycle time with no person on the row is a fact about a task."""
+async def test_without_the_grant_cycle_hours_alone_are_hidden_too(seeded) -> None:
+    """P1, the join bypass (fix round 2). ``full_id,cycle_hours`` in one call
+    and ``full_id,assignees`` in another, joined on the task, is each
+    person's speed. So a row without the grant never carries the column."""
     s = seeded
     body = await _body(s, hr=False, state="closed", columns="full_id,cycle_hours", limit=500)
-    assert body["hidden_columns"] == []
-    got = {r["full_id"]: r["cycle_hours"] for r in body["rows"]}
-    assert got[s["D1"]] == 2.0
+    assert body["hidden_columns"] == ["cycle_hours"]
+    assert body["columns"] == ["full_id"]
+    assert all("cycle_hours" not in r for r in body["rows"])
+    seen = await _body(s, hr=True, state="closed", columns="full_id,cycle_hours", limit=500)
+    assert seen["hidden_columns"] == []
+    assert {r["full_id"]: r["cycle_hours"] for r in seen["rows"]}[s["D1"]] == 2.0
+
+
+@_needs_db
+async def test_a_group_of_one_person_hides_its_value(seeded) -> None:
+    """P1, K = 3 (fix round 2). ``solo`` is carried only by Ana's tasks, so
+    its median is Ana's speed. Without the grant the value is absent, the
+    group says so, and ``n`` stays. ``bug`` holds ana, bo and cy, so it
+    shows its value. The HR viewer sees both."""
+    s = seeded
+    body = await _body(s, hr=False, state="all", group_by="tag", measure="cycle_hours_median")
+    solo = _groups(body)[s["solo"]]
+    assert solo["measure_hidden"] is True and "value" not in solo and "measured" not in solo
+    assert solo["n"] == 2
+    bug = _groups(body)[s["bug"]]
+    assert bug["value"] == 4.0 and "measure_hidden" not in bug
+    assert "measure_hidden" not in body, "one group hides, not the answer"
+    est = await _body(s, hr=False, group_by="project", measure="estimate_sum")
+    assert _groups(est)[s["A1"]]["measure_hidden"] is True  # bo alone
+    counted = await _body(s, hr=False, state="all", group_by="tag")
+    assert _groups(counted)[s["solo"]]["value"] == 2, "a count is for every member"
+    admin = await _body(s, hr=True, state="all", group_by="tag", measure="cycle_hours_median")
+    assert _groups(admin)[s["solo"]]["value"] == 6.0
+    assert all("measure_hidden" not in g for g in admin["groups"])
+
+
+@_needs_db
+async def test_a_hidden_projects_name_never_reaches_a_row(seeded) -> None:
+    """P2 (fix round 2). The viewer sees VH through the assignee arm, and
+    cannot see project H. The row carries VH, and H's name is absent."""
+    s = seeded
+    body = await _body(s, restricted=True, project=None, state="open", limit=500,
+                       columns="full_id,project,root_project")
+    [vh] = [r for r in body["rows"] if r["full_id"] == s["VH"]]
+    assert vh["project"] is None and vh["root_project"] is None
+    assert f"ds-H-{s['tag']}" not in json.dumps(body)
+    [o1] = [r for r in body["rows"] if r["full_id"] == s["O1"]]
+    assert o1["project"] == f"ds-A-{s['tag']}"
+    grouped = await _body(s, restricted=True, project=None, state="open", group_by="project")
+    assert f"ds-H-{s['tag']}" not in json.dumps(grouped)
 
 
 @_needs_db

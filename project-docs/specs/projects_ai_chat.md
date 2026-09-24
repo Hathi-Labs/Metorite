@@ -895,11 +895,13 @@ Each item maps to the §13.7 rule with the same number.
    422. R8 tests check the group values against hand-computed figures, the
    median and the p90 over the full set, and the HR gate. Without the grant,
    the value keys are absent for `assignee` with `estimate_sum` or a cycle
-   measure. An agent group carries `agent: true`. Without the grant, a row
-   with `assignees`, or a request with an assignee filter, has no
-   `cycle_hours` and no `estimate_mins` key, and `hidden_columns` names them.
-   With the grant, every column comes back. A mutation that drops the rule
-   fails an R8 test.
+   measure. An agent group carries `agent: true`. Without the grant, no row
+   has a `cycle_hours` or an `estimate_mins` key, also for `full_id,cycle_hours`
+   alone, and `hidden_columns` names them. With the grant, every column comes
+   back. Without the grant, a tag that only one person uses hides its value
+   and keeps `n`. A group of 3 people shows its value, and the HR viewer
+   sees every value. Mutations that restore the per-request rule, set K to 1
+   or drop the K rule each fail an R8 test.
 8. The tool trailer tells the model not to compute a figure over the whole
    set when `truncated=yes`. `instructions.md` carries the two labels, and a
    test pins them.
@@ -1586,14 +1588,24 @@ owner's answers. They follow the S7c and S7d precedent.
    `assignee` with `estimate_sum` or a cycle measure, and a caller without
    the HR grant. Then the value keys are absent and `hr_visible` is false. A
    test proves that they are absent. The server marks an agent in an assignee
-   group. **The rows follow O3 too** (fix round 1, 2026-09-24). A caller
-   without the HR grant never gets `cycle_hours` or `estimate_mins` on a row
-   when the row carries `assignees`, or when an `assignee` or `assignees`
-   filter is set. The server drops the gated columns and keeps `assignees`,
-   because a count per person is for every member. The body says
-   `hr_visible: false` and lists `hidden_columns`. A grouped measure behind
-   an assignee filter hides its value in the same way. `cycle_hours` with no
-   person on the row stays, because it is a fact about a task.
+   group. **The rows follow O3 too** (fix rounds 1 and 2, 2026-09-24). A
+   row for a caller without the HR grant NEVER carries `cycle_hours` or
+   `estimate_mins`, whatever else the request names. The server drops them
+   and lists them in `hidden_columns`, and the body says `hr_visible: false`.
+   A narrower rule, which dropped them only beside `assignees`, failed to one
+   join. A call for `full_id,cycle_hours` and a call for `full_id,assignees`,
+   joined on the task, give each person's speed. `assignees` stays, and so
+   does `group_by=assignee&measure=count`, because a count per person is
+   for every member. A grouped measure behind an assignee filter hides its
+   value in the same way.
+   **A group of fewer than K = 3 people hides its value** (fix round 2). The
+   server counts the distinct people in each group, and an agent is not a
+   person. Without the grant, a group with fewer than 3 people carries no
+   `value` and no `measured`, it says `measure_hidden: true`, and it keeps
+   `n`. A tag that only Ana uses, or a project where only Ana works, is
+   Ana's speed under another name. With 3 people, no one member of the
+   group reads another's figure by taking their own out. Cycle time by tag
+   or by stage stays available as a server group under this rule.
 8. **The label rule.** Every figure that the chat derives carries "computed by
    the assistant from N of M tasks, not an Analytics figure". A
    `statDashboard` tile title begins "Computed from N tasks". With
@@ -1645,16 +1657,31 @@ gives 422. S7e has no HR column on a row. Hours, skills and absences stay in
   so the tool tells the model not to add groups up. The route keeps at most
   100 groups and prints `groups_total`. A week group reads in date order.
 - **Without the HR grant the server does not compute the hidden value**, and
-  the body says `measure_hidden: true`. The rows follow the same rule
-  (rule 7), in `analytics_dataset.hr_gate`. A grouped read ignores the
-  column set, so the default columns do not hide a group's value.
-- **The tool asks for eleven columns by default** (O4). The default names
-  `assignees`, so a member without the grant loses `cycle_hours` and
-  `estimate_mins`, and the tool prints a "Hidden columns" line that says
-  why. It clamps the limit to 1 to 500 before the call. A `|` in member text becomes `/`, so a
+  the body says `measure_hidden: true`. The row rule is
+  `analytics_dataset.hr_gate`, and the K rule is `MIN_GROUP_PEOPLE`.
+- **One grouped statement.** The groups, the count of people in each group,
+  `groups_total` and the task total come from ONE statement, so the cycle
+  CTE runs once. The group cap of 100 is a SQL `LIMIT`.
+- **A project name follows the caller's grants** (fix round 2). A task can
+  be visible through its assignee while its project is not. Such a row and
+  such a group print no project name.
+- **The lead-time proxy is accepted** (owner, 2026-09-24). `completed_at`
+  and `created_at` stay on the row for every member, also beside
+  `assignees`. A member can read a lead time for each person from them. The
+  instructions sentence that forbids a person's lead time is the only fence,
+  and it is ADVISORY.
+- **The tool asks for eleven columns by default** (O4). Without the grant
+  the table loses `cycle_hours` and `estimate_mins`, and the tool prints a
+  "Hidden columns" line that says why. It clamps the limit to 1 to 500 before the call. A `|` in member text becomes `/`, so a
   title cannot add a cell.
 - **The S9 pill index does not read these rows.** A dataset row is not the
   `- #<n> «title»` card line, so its names draw as plain marked text.
+- **Deferred from review round 2** (the owner put S7e on production first).
+  Nobody has measured the token size of a full table. An estimate is 15k
+  to 20k tokens for 200 rows of eleven columns. The `agents.py` description
+  does not name `task_dataset` literally. No test pins Throughput's
+  rendered SQL, so a change to `history_where` fails only the dataset
+  tests.
 
 ### 13.8 What S7 does not do
 

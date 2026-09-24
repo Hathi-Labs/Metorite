@@ -291,18 +291,23 @@ HR_ROW_COLUMNS: tuple[str, ...] = ("estimate_mins", "cycle_hours")
 ASSIGNEE_FILTERS: tuple[str, ...] = ("assignee", "assignees")
 
 
-def per_person(query: DatasetQuery) -> bool:
-    """Does this request tie its figures to people (owner O3)?
+#: The fewest distinct people a group must hold before a caller without the
+#: HR grant sees its estimate or cycle measure (fix round 2). A tag only Ana
+#: uses, or a project only Ana works in, is Ana's speed under another name.
+#: With three, no one member of the group reads another's figure by taking
+#: their own out.
+MIN_GROUP_PEOPLE = 3
 
-    True when a row names its assignees, when the table is grouped by
-    assignee, or when a filter narrows the set to named people. A cycle time
-    alone, with none of these, is a fact about a task and stays.
+
+def per_person(query: DatasetQuery) -> bool:
+    """Is this GROUPED request tied to named people (owner O3)?
+
+    True when the groups are people, or when a filter narrows the set to
+    named people. The row table does not ask: its gate is unconditional
+    (:func:`hr_gate`).
     """
-    # The columns count for the table only. A grouped read sends no rows,
-    # and its column set is the unused default, which names assignees.
     return (
-        (query.group_by is None and "assignees" in query.columns)
-        or query.group_by == "assignee"
+        query.group_by == "assignee"
         or any(query.filters.get(k) for k in ASSIGNEE_FILTERS)
     )
 
@@ -310,11 +315,14 @@ def per_person(query: DatasetQuery) -> bool:
 def hr_gate(query: DatasetQuery, hr_visible: bool) -> tuple[DatasetQuery, list[str]]:
     """The query the caller may run, and the row columns it lost (O3).
 
-    ⚠️ **The server enforces this, and no prompt does.** Without the rule a
-    member asks for ``assignees,cycle_hours`` and reads each person's speed
-    row by row, which is the figure the owner kept for admins.
+    ⚠️ **Without the HR grant a row NEVER carries these columns, whatever
+    else the request names** (fix round 2). A rule that dropped them only
+    beside ``assignees`` was one join from useless: a call for
+    ``full_id,cycle_hours`` and a call for ``full_id,assignees``, joined on
+    the task, give each person's speed. Cycle time by tag or by stage stays
+    as a server group, behind :data:`MIN_GROUP_PEOPLE`.
     """
-    if hr_visible or not per_person(query):
+    if hr_visible:
         return query, []
     hidden = [c for c in HR_ROW_COLUMNS if c in query.columns]
     if not hidden:
@@ -436,10 +444,6 @@ def rows_sql(history: str, where: str) -> str:
     )
 
 
-def total_sql(history: str, where: str) -> str:
-    return f"{dataset_cte_sql(history, where)} SELECT count(*) FROM ds"
-
-
 #: ``group_by`` → (the key expression, the join it needs).
 _GROUP_KEYS: dict[str, tuple[str, str]] = {
     "tag": ("g.tag", " LEFT JOIN LATERAL unnest(ds.tags) AS g(tag) ON TRUE"),
@@ -489,13 +493,31 @@ def groups_sql(history: str, where: str, group_by: str, measure: str | None) -> 
         "k NULLS LAST" if group_by.endswith("_week")
         else "v DESC NULLS LAST, n DESC, k NULLS LAST"
     )
+    # ONE statement, so the cycle CTE runs once. `keyed` is one row for
+    # each (task, group key). `owners` counts the distinct PEOPLE in each
+    # group, agents left out, and the K rule reads it. The LIMIT is in SQL,
+    # and `groups_total` is the window count taken before it. `tally` is
+    # the task count over the same `ds`.
     return (
         f"{dataset_cte_sql(history, where)}"
-        f" SELECT {key} AS k, count(DISTINCT ds.id) AS n,"
-        f"        {value} AS v, {measured} AS m"
-        f"   FROM ds{join}"
-        f"  GROUP BY 1"
+        f", keyed AS (SELECT {key} AS k, ds.* FROM ds{join})"
+        f", owners AS ("
+        f"  SELECT kd.k, count(DISTINCT lower(pa.assignee)) AS people"
+        f"    FROM keyed kd"
+        f"    JOIN pm_task_assignees pa ON pa.task_id = kd.id"
+        f"   WHERE lower(pa.assignee) NOT LIKE 'agent:%'"
+        f"   GROUP BY kd.k"
+        f"), tally AS (SELECT count(*) AS total FROM ds)"
+        f" SELECT ds.k AS k, count(DISTINCT ds.id) AS n,"
+        f"        {value} AS v, {measured} AS m,"
+        f"        coalesce(max(o.people), 0) AS people,"
+        f"        count(*) OVER () AS groups_total,"
+        f"        (SELECT total FROM tally) AS total"
+        f"   FROM keyed ds"
+        f"   LEFT JOIN owners o ON o.k IS NOT DISTINCT FROM ds.k"
+        f"  GROUP BY ds.k"
         f"  ORDER BY {order}"
+        f"  LIMIT :ds_groups"
     )
 
 
@@ -522,9 +544,19 @@ def blockers_sql(vis: Any) -> str:
     )
 
 
-_PROJECT_NAMES_SQL = (
-    "SELECT id, name FROM pm_projects WHERE id = ANY(CAST(:ids AS uuid[]))"
-)
+def project_names_sql(vis: Any) -> str:
+    """Project names, for the projects the CALLER may see and no others.
+
+    ⚠️ A task is visible through its assignee arm even when its project is
+    not (``task_visibility_clause``). Its row must not print that project's
+    name, so the lookup carries the project grant, and a hidden project
+    gives no name (fix round 2).
+    """
+    return (
+        "SELECT id, name FROM pm_projects"
+        " WHERE id = ANY(CAST(:ids AS uuid[]))"
+        f"   AND {vis.project_clause('id')}"
+    )
 _TYPE_NAMES_SQL = (
     "SELECT id, name FROM pm_task_types WHERE id = ANY(CAST(:ids AS uuid[]))"
 )
@@ -563,10 +595,12 @@ def _iso(value: Any) -> Any:
     return value
 
 
-async def _names(db: Any, sql: str, ids: set[str]) -> dict[str, str]:
+async def _names(
+    db: Any, sql: str, ids: set[str], binds: dict[str, Any] | None = None,
+) -> dict[str, str]:
     if not ids:
         return {}
-    rows = (await db.execute(text(sql), {"ids": sorted(ids)})).fetchall()
+    rows = (await db.execute(text(sql), {**(binds or {}), "ids": sorted(ids)})).fetchall()
     return {str(r.id): str(r.name or "") for r in rows}
 
 
@@ -611,7 +645,7 @@ async def dataset_body(
         },
     }
     if query.group_by is not None:
-        return {**head, **await _grouped(db, history, where, params, query, hr_visible)}
+        return {**head, **await _grouped(db, vis, history, where, params, query, hr_visible)}
     query, hidden_columns = hr_gate(query, hr_visible)
     body = await _tabled(db, vis, history, where, params, query)
     # Always present in the table shape, so a client never has to guess
@@ -621,6 +655,7 @@ async def dataset_body(
 
 async def _grouped(
     db: Any,
+    vis: Any,
     history: str,
     where: str,
     params: dict[str, Any],
@@ -629,19 +664,25 @@ async def _grouped(
 ) -> dict[str, Any]:
     """The groups (rule 7). The value keys are absent when O3 hides them."""
     assert query.group_by is not None
-    # Grouped by person, or filtered to named people: either way the value
-    # is a person's estimate or speed (O3).
-    hidden = query.measure in HR_MEASURES and not hr_visible and per_person(query)
+    gated = query.measure in HR_MEASURES and not hr_visible
+    # Grouped by person, or filtered to named people: every value is a
+    # person's estimate or speed (O3), so the server does not compute it.
+    hidden = gated and per_person(query)
     rows = (await db.execute(
         text(groups_sql(history, where, query.group_by, None if hidden else query.measure)),
-        params,
+        {**params, "ds_groups": MAX_GROUPS + 1},
     )).fetchall()
-    total = int((await db.execute(text(total_sql(history, where)), params)).scalar() or 0)
+    # No group means no task, because every group key join is a LEFT join.
+    total = int(rows[0].total) if rows else 0
+    groups_total = int(rows[0].groups_total) if rows else 0
+    rows = rows[:MAX_GROUPS]
 
     keys = [None if r.k is None else str(r.k) for r in rows]
     labels: dict[str, str] = {}
     if query.group_by == "project":
-        labels = await _names(db, _PROJECT_NAMES_SQL, {k for k in keys if k})
+        labels = await _names(
+            db, project_names_sql(vis), {k for k in keys if k}, vis.params,
+        )
     elif query.group_by == "type":
         labels = await _names(db, _TYPE_NAMES_SQL, {k for k in keys if k})
     elif query.group_by == "assignee":
@@ -659,7 +700,13 @@ async def _grouped(
         }
         if query.group_by == "assignee" and key and key.startswith("agent:"):
             group["agent"] = True
-        if not hidden:
+        if hidden:
+            pass
+        elif gated and int(row.people or 0) < MIN_GROUP_PEOPLE:
+            # Fewer than K people: one person's figure under another name.
+            # `n` stays, because a count is for every member.
+            group["measure_hidden"] = True
+        else:
             group["value"] = _value(query.measure, row.v)
             group["measured"] = int(row.m or 0)
         groups.append(group)
@@ -668,9 +715,9 @@ async def _grouped(
         "group_by": query.group_by,
         "measure": query.measure,
         "total": total,
-        "groups_total": len(groups),
-        "groups_truncated": len(groups) > MAX_GROUPS,
-        "groups": groups[:MAX_GROUPS],
+        "groups_total": groups_total,
+        "groups_truncated": groups_total > MAX_GROUPS,
+        "groups": groups,
         # The server computed every figure here, over the full set (O2).
         "basis": "server",
     }
@@ -744,9 +791,9 @@ async def _lookups(db: Any, vis: Any, fetched: list[Any], cols: set[str]) -> _Lo
     if not ids:
         return lk
     if cols & {"project", "root_project"}:
-        lk.projects = await _names(db, _PROJECT_NAMES_SQL, {
+        lk.projects = await _names(db, project_names_sql(vis), {
             str(v) for r in fetched for v in (r.project_id, r.root_project_id) if v
-        })
+        }, vis.params)
     if "type" in cols:
         lk.types = await _names(
             db, _TYPE_NAMES_SQL, {str(r.type_id) for r in fetched if r.type_id},

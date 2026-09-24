@@ -152,7 +152,8 @@ are cycle time by tag, and the share of work in each stage.
   server computes, and member data never goes into a script.
 - **Speed for each person is for admins.** Without HR read access, the tool
   hides the estimate and the cycle figures for each person. Say that an
-  admin can see them. Do not compute them from the rows either.
+  admin can see them. Do not compute them from the rows either. Do not
+  compute a person's lead time from `created_at` and `completed_at`.
 - **Say when a figure should be a report.** A figure that people ask for
   twice is a candidate for a server read and a report section. Say so.
 

@@ -1804,6 +1804,9 @@ def test_the_numbers_section_carries_the_s7e_rules() -> None:
         "`truncated=yes`, compute no total, share or median from the rows.",
         "Never write the rows with\n  `write_artifact`. Never run `run_script` or `code_task` over them.",
         "admin can see them. Do not compute them from the rows either.",
+        # The owner accepted the lead-time proxy (2026-09-24). This sentence
+        # is its only fence, and it is advisory.
+        "Do not\n  compute a person's lead time from `created_at` and `completed_at`.",
     ):
         assert phrase in section, phrase
 
@@ -1832,6 +1835,15 @@ async def test_task_dataset_says_which_columns_the_server_hid(monkeypatch) -> No
     payload["hr_visible"] = False
     out, _ = await _dataset(monkeypatch, payload)
     assert "Hidden columns: estimate_mins, cycle_hours." in out
-    assert "An admin can see them. Do not guess them." in out
+    assert "two reads joined on the task" in out and "An admin can see them." in out
     clean, _ = await _dataset(monkeypatch, _dataset_payload(grouped=False))
     assert "Hidden columns" not in clean
+
+
+async def test_task_dataset_says_a_small_group_hid_its_value(monkeypatch) -> None:
+    """K = 3 (fix round 2). One group hides its value, and the tool says why."""
+    payload = _dataset_payload(grouped=True)
+    payload["groups"][0] = {"key": "solo", "label": "solo", "n": 2, "measure_hidden": True}
+    out, _ = await _dataset(monkeypatch, payload, group_by="tag", measure="cycle_hours_median")
+    assert "- «solo» · hidden · 2" in out
+    assert "A group with fewer than three people hides its estimate or cycle value" in out

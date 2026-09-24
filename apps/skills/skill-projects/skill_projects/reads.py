@@ -1210,9 +1210,18 @@ DATASET_HR_HIDDEN = (
 #: What the tool says when the route dropped row columns (O3). The default
 #: column set names assignees, so a member without the grant always sees it.
 DATASET_COLUMNS_HIDDEN = (
-    "Hidden columns: {columns}. With assignees on the row, or a filter by "
-    "person, they are a person's estimate or speed, and this member does not "
-    "hold admin:members:read. An admin can see them. Do not guess them."
+    "Hidden columns: {columns}. They need admin:members:read, because two "
+    "reads joined on the task give a person's estimate or speed. An admin "
+    "can see them. Do not guess them. For cycle time by tag or by stage, "
+    "pass group_by and a measure."
+)
+
+
+#: What the tool says when a group of fewer than three people hid its value.
+DATASET_GROUP_HIDDEN = (
+    "A group with fewer than three people hides its estimate or cycle value, "
+    "because it is one person's figure under another name. An admin can see "
+    "it. Do not guess it."
 )
 
 
@@ -1284,6 +1293,8 @@ def _dataset_groups(payload: dict[str, Any]) -> list[str]:
         out.append(line)
     if hidden:
         out.append(f"  {DATASET_HR_HIDDEN}")
+    elif any(isinstance(g, dict) and g.get("measure_hidden") for g in payload.get("groups") or []):
+        out.append(f"  {DATASET_GROUP_HIDDEN}")
     shown = len(payload.get("groups") or [])
     capped = "yes" if payload.get("groups_truncated") else "no"
     out.append(
