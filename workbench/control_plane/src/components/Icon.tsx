@@ -39,6 +39,8 @@ export type IconProps = {
   onClick?: React.MouseEventHandler<SVGSVGElement>;
   "aria-label"?: string;
   "aria-hidden"?: boolean;
+  /** `"img"` when the glyph carries meaning and an `aria-label`. */
+  role?: "img";
 };
 
 export default function Icon({

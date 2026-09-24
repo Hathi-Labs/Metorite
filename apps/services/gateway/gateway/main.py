@@ -1332,6 +1332,14 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-27bm S8 — POST /documents/pdf, formatted HTML as a PDF download.
+    from gateway.routes.documents import router as _documents_router
+
+    app.include_router(_documents_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     from gateway.routes.memory import router as _memory_router
 
     app.include_router(_memory_router)

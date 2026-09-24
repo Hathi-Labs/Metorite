@@ -27,7 +27,8 @@ import type { ArtifactEntry } from "@/hooks/useAgentChat";
 import ArtifactSidebar, { type FileEntry } from "@/components/ArtifactSidebar";
 import ArtifactViewerModal from "@/components/ArtifactViewerModal";
 import SidePanelEditor from "@/components/SidePanelEditor";
-import { openDoc, pruneToSession, setDocLive } from "@/lib/sidePanelStore";
+import { openDoc } from "@/lib/sidePanelStore";
+import { autoOpenArtifact, syncPanelToSession } from "@/lib/autoOpenArtifact";
 import FileUploadButton from "@/components/FileUploadButton";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
@@ -835,7 +836,7 @@ function ChatPageInner() {
   // Side panel shows the ACTIVE session's documents only — drop other sessions'
   // tabs when switching so we never render a file from the wrong workspace.
   useEffect(() => {
-    if (activeSessionId) pruneToSession(activeSessionId);
+    syncPanelToSession(activeSessionId);
   }, [activeSessionId]);
 
   // Open a workspace file as a tab in the side-panel editor (right-click action
@@ -1119,31 +1120,12 @@ function ChatPageInner() {
                   });
 
                   // Auto-open documents the agent writes so the user watches
-                  // them build in real time (Markdown/HTML → live preview in the
-                  // side panel). Other file types surface in the Files tree only.
-                  const ext = name.split(".").pop()?.toLowerCase() ?? "";
-                  // A .jsx/.tsx under outputs/ is a full-page React artifact, so
-                  // it opens like any other document. Elsewhere those extensions
-                  // are ordinary source files an agent may be editing — opening
-                  // every one of those would hijack the panel (matches
-                  // DocumentPane's isArtifactPath rule).
-                  const isReactArtifact =
-                    (ext === "jsx" || ext === "tsx") &&
-                    entry.path.replace(/^\/+/, "").startsWith("outputs/");
-                  const isDoc =
-                    ["md", "mdx", "html", "htm"].includes(ext) || isReactArtifact;
-                  if (isDoc && activeSession && !isMobile) {
-                    openDoc({
-                      path: entry.path,
-                      name,
-                      sessionId: activeSession.id,
-                      live: true,
-                    });
-                    // Clear the "writing" badge shortly after the last write —
-                    // a subsequent write to the same path re-sets it to live.
-                    const sid = activeSession.id;
-                    window.setTimeout(() => setDocLive(sid, entry.path, false), 2500);
-                  }
+                  // them build in real time. ONE rule, shared with the
+                  // Projects rail (`lib/autoOpenArtifact.ts`).
+                  autoOpenArtifact(entry.path, {
+                    sessionId: activeSession?.id,
+                    isMobile,
+                  });
                 }}
               />
           ) : (

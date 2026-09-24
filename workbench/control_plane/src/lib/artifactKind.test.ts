@@ -1,6 +1,17 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { classifyArtifact, isArtifactPath, isRenderable } from "./artifactKind";
+import {
+  HTML_EXTS,
+  MARKDOWN_EXTS,
+  canDownloadPdf,
+  classifyArtifact,
+  isArtifactPath,
+  isRenderable,
+  pdfNameFor,
+  workspaceFileUrl,
+} from "./artifactKind";
 
 describe("classifyArtifact", () => {
   // The mobile bug this module exists to prevent: ArtifactViewerModal is the
@@ -63,6 +74,65 @@ describe("isRenderable", () => {
     expect(isRenderable("react")).toBe(true);
     for (const k of ["markdown", "code", "image", "pdf", "docx", "text", "binary"] as const) {
       expect(isRenderable(k)).toBe(false);
+    }
+  });
+});
+
+// WS-27bm S8 — the PDF link. The gateway converts md/markdown/mdx/html/htm and
+// answers any other file with a 415, so the viewers offer the link for the
+// same two kinds and no other.
+describe("canDownloadPdf", () => {
+  it("is true for Markdown and HTML only", () => {
+    expect(canDownloadPdf("markdown")).toBe(true);
+    expect(canDownloadPdf("html")).toBe(true);
+    for (const k of ["react", "code", "image", "pdf", "docx", "text", "binary"] as const) {
+      expect(canDownloadPdf(k)).toBe(false);
+    }
+  });
+});
+
+describe("workspaceFileUrl", () => {
+  it("builds the raw link and the PDF link to one file", () => {
+    expect(workspaceFileUrl("s1", "outputs/a b.md")).toBe(
+      "/api/agent/workspace/s1/file?path=outputs%2Fa%20b.md",
+    );
+    expect(workspaceFileUrl("s1", "outputs/a b.md", { pdf: true })).toBe(
+      "/api/agent/workspace/s1/file?path=outputs%2Fa%20b.md&format=pdf",
+    );
+  });
+
+  it("names the PDF after the file", () => {
+    expect(pdfNameFor("status.md")).toBe("status.pdf");
+    expect(pdfNameFor("page.v2.html")).toBe("page.v2.pdf");
+    expect(pdfNameFor("README")).toBe("README.pdf");
+  });
+});
+
+describe("the PDF extensions agree with the gateway", () => {
+  // Fix round 1: `.markdown` was text here and a PDF source there, so the
+  // viewers hid a link the gateway would have served.
+  const py = readFileSync(
+    fileURLToPath(
+      new URL("../../../../apps/services/gateway/gateway/pdf_render.py", import.meta.url),
+    ),
+    "utf8",
+  );
+  const block = py.slice(py.indexOf("SOURCE_KINDS"), py.indexOf("}", py.indexOf("SOURCE_KINDS")));
+  const gateway = [...block.matchAll(/"\.(\w+)":\s*"(\w+)"/g)].map((m) => [m[1], m[2]]);
+
+  it("reads the gateway's list", () => {
+    expect(gateway.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it("offers the PDF link for exactly the gateway's extensions", () => {
+    const here = [
+      ...MARKDOWN_EXTS.map((e) => [e, "markdown"]),
+      ...HTML_EXTS.map((e) => [e, "html"]),
+    ];
+    expect([...here].sort()).toEqual([...gateway].sort());
+    for (const [ext] of gateway) {
+      const kind = classifyArtifact(`f.${ext}`, `outputs/f.${ext}`);
+      expect(canDownloadPdf(kind), ext).toBe(true);
     }
   });
 });

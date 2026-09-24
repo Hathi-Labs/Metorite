@@ -209,7 +209,6 @@ const COLOR_DEBT: Record<string, number> = {
   "app/calendar/components/TimeGrid.tsx": 2,
   "app/whatsapp/numbers/page.tsx": 1,
   "app/whatsapp/page.tsx": 4,
-  "components/GenerativeUINode.tsx": 5,
   "components/ThinkingContainer.tsx": 4,
 };
 
@@ -294,7 +293,6 @@ describe("icons are a theme choice", () => {
 describe("no arbitrary Tailwind colour values", () => {
   const ARBITRARY_DEBT: Record<string, number> = {
     "components/ThinkingContainer.tsx": 4,
-    "components/GenerativeUINode.tsx": 1,
     "app/whatsapp/connect/page.tsx": 1,
   };
 
@@ -449,12 +447,10 @@ describe("no raw Tailwind palette colours", () => {
     "components/AgentStatusBar.tsx": 4,
     "components/ArtifactCard.tsx": 5,
     "components/ArtifactSidebar.tsx": 11,
-    "components/ArtifactViewerModal.tsx": 24,
+    "components/ArtifactViewerModal.tsx": 5,
     "components/ChatErrorCard.tsx": 7,
     "components/ConfirmationCard.tsx": 8,
     "components/FileUploadButton.tsx": 10,
-    "components/GenerativeUINode.tsx": 31,
-    "components/GenerativeUIPanel.tsx": 6,
     "components/GitHubAccountBadge.tsx": 1,
     "components/IntegrationSetup.tsx": 1,
     "components/MarkdownMessage.tsx": 11,

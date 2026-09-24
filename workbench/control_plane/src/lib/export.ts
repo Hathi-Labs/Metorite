@@ -71,6 +71,16 @@ export function filenameFromDisposition(
  * through the proxies (`export.test.ts`), which are the two places it was lost.
  */
 export function saveCsv(body: Blob, filename: string): void {
+  saveBlob(body, filename);
+}
+
+/**
+ * Hand any fetched file to the browser as a download. `saveCsv` is this with
+ * a CSV's name. WS-27bm S8 added the second use: a report saved as Markdown or
+ * as a PDF (`app/projects/lib/reportFiles.ts`). The `Blob` rule above binds
+ * here too, and a PDF is the plainest case: a decode would break every byte.
+ */
+export function saveBlob(body: Blob, filename: string): void {
   const url = URL.createObjectURL(body);
   const link = document.createElement("a");
   link.href = url;

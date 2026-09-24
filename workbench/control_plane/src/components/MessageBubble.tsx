@@ -18,6 +18,7 @@ import ErrorCard from "@/components/ChatErrorCard";
 import { DismissableCard } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
 import { openDoc, openGenUI } from "@/lib/sidePanelStore";
+import { useSidePanelFits } from "@/lib/sidePanelFit";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import { capabilityLabel, type RoomParticipant } from "@/lib/rooms";
 
@@ -120,6 +121,8 @@ function MessageBubble({
   /** The thread's own agent — a turn from any OTHER agent gets a name plate. */
   sessionAgentName?: string;
 }) {
+  // Whether a document may open in the side panel here (`lib/sidePanelFit.ts`).
+  const panelFits = useSidePanelFits();
   // Deliberately NOT `role === "user"`.  `role` is the model's vocabulary: it
   // says which side of the conversation a turn sits on, and in a room every
   // person's turn is `role: "user"` — mine and yours alike.  Ownership is an
@@ -461,8 +464,14 @@ function MessageBubble({
                     artifact={a}
                     sessionId={sessionId}
                     onOpen={onFileOpen}
-                    onOpenInSidePanel={(entry) =>
-                      openDoc({ path: entry.path, name: entry.name, sessionId })
+                    // Absent where the board would lose its minimum width
+                    // (`lib/sidePanelFit.ts`): the card then opens the
+                    // full-screen viewer instead.
+                    onOpenInSidePanel={
+                      panelFits
+                        ? (entry) =>
+                            openDoc({ path: entry.path, name: entry.name, sessionId })
+                        : undefined
                     }
                   />
                 </DismissableCard>

@@ -32,6 +32,10 @@ dependencies = [
     # Résumé ingestion (Task Manager HR): PDF + DOCX text extraction.
     "pymupdf>=1.24",
     "python-docx>=1.1",
+    # WS-27bm S8 — Markdown to HTML for the one PDF seam (gateway/pdf_render.py).
+    # It was already in uv.lock through `rich`; this line makes it a direct
+    # dependency, so the PDF route does not rest on another package's choice.
+    "markdown-it-py>=3",
     # Workflow schedule triggers: cron parsing only (CronTrigger), no
     # scheduler process — see routes/workflows/scheduler.py.
     "apscheduler>=3.10,<4",

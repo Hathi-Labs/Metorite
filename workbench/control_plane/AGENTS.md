@@ -98,6 +98,20 @@ Five rules on top of the three above. Each one exists because it was broken:
    traps are why it is shared rather than copied — the UTF-8 BOM, and the filename,
    which is the SERVER's, read back off `Content-Disposition` rather than composed here.
    Each app keeps only its own `exportQuery`/`exportPath`.
+   `saveBlob` is the same save for any file, and `saveCsv` calls it (WS-27bm
+   S8). **`src/lib/reportEmail.ts` is the one report formatter.** It builds one
+   layout and draws it as the email, as a Markdown file and as the HTML the
+   gateway lays out as a PDF. `app/projects/lib/reportFiles.ts` is the one
+   download path. Fences: `reportEmail.test.ts` and `reportFiles.test.ts`.
+   **`src/lib/autoOpenArtifact.ts` is the one rule** for a file a chat agent
+   writes: `/chat` and the Projects rail both call it. Fence:
+   `autoOpenArtifact.test.ts`.
+   **Prose is `cc-prose prose`, never `prose-invert`** (WS-27bm S8). The
+   typography plugin's invert variant hard-codes dark text, and this app
+   turns light with the `.light` class. `.cc-prose` in `globals.css` points
+   every prose colour at a token. **Chat Markdown has one renderer,**
+   `MarkdownBody` in `MarkdownMessage.tsx`. Fence:
+   `src/components/chatVisualReview.test.ts`.
    ⚠️ **The BOM trap binds at every hop, and "keep it a `Blob` in the client" is only
    half of it.** `Response.text()` is a UTF-8 *decode* and a UTF-8 decode strips a
    leading byte order mark, so **a BFF proxy that does `await res.text()` and rebuilds
