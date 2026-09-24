@@ -20,12 +20,12 @@ Four guards, each tested in ``tests/unit/test_documents_pdf_route.py``:
    length and again while the body streams in, so a lying header buys nothing.
 4. **No fetch.** ``pdf_render`` keeps only text tags and gives the renderer no
    archive. A posted ``<img src="http://169.254.169.254/…">`` loads nothing.
+5. **No crash.** ``render_pdf`` lays out in a child process with a timeout,
+   and every failure is a ``PdfRenderError`` with its own 4xx or 503.
 
 The route reads no table and writes none (R5): it is a pure transform.
 """
 from __future__ import annotations
-
-import asyncio
 
 from acb_auth import UserContext, get_current_user
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -34,8 +34,8 @@ from gateway.pdf_render import (
     MAX_SOURCE_BYTES,
     PdfRenderError,
     attachment_disposition,
-    html_to_pdf,
     pdf_filename,
+    render_pdf,
 )
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -70,9 +70,11 @@ async def html_document_to_pdf(
     if not source.strip():
         raise HTTPException(status_code=422, detail="The document is empty.")
     try:
-        pdf = await asyncio.to_thread(html_to_pdf, source)
+        # Out of process, with a timeout: a MuPDF crash or hang is a refusal
+        # here, never the gateway's death (fix round 1).
+        pdf = await render_pdf("html", source)
     except PdfRenderError as exc:
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
     return Response(
         content=pdf,
         media_type="application/pdf",

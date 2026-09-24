@@ -1,6 +1,10 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  HTML_EXTS,
+  MARKDOWN_EXTS,
   canDownloadPdf,
   classifyArtifact,
   isArtifactPath,
@@ -101,5 +105,34 @@ describe("workspaceFileUrl", () => {
     expect(pdfNameFor("status.md")).toBe("status.pdf");
     expect(pdfNameFor("page.v2.html")).toBe("page.v2.pdf");
     expect(pdfNameFor("README")).toBe("README.pdf");
+  });
+});
+
+describe("the PDF extensions agree with the gateway", () => {
+  // Fix round 1: `.markdown` was text here and a PDF source there, so the
+  // viewers hid a link the gateway would have served.
+  const py = readFileSync(
+    fileURLToPath(
+      new URL("../../../../apps/services/gateway/gateway/pdf_render.py", import.meta.url),
+    ),
+    "utf8",
+  );
+  const block = py.slice(py.indexOf("SOURCE_KINDS"), py.indexOf("}", py.indexOf("SOURCE_KINDS")));
+  const gateway = [...block.matchAll(/"\.(\w+)":\s*"(\w+)"/g)].map((m) => [m[1], m[2]]);
+
+  it("reads the gateway's list", () => {
+    expect(gateway.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it("offers the PDF link for exactly the gateway's extensions", () => {
+    const here = [
+      ...MARKDOWN_EXTS.map((e) => [e, "markdown"]),
+      ...HTML_EXTS.map((e) => [e, "html"]),
+    ];
+    expect([...here].sort()).toEqual([...gateway].sort());
+    for (const [ext] of gateway) {
+      const kind = classifyArtifact(`f.${ext}`, `outputs/f.${ext}`);
+      expect(canDownloadPdf(kind), ext).toBe(true);
+    }
   });
 });

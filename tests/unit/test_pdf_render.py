@@ -6,19 +6,26 @@ never fetches a resource, and the size and page caps refuse rather than run.
 """
 from __future__ import annotations
 
+import asyncio
 import http.server
+import sys
 import threading
+import time
 
 import pytest
 from gateway import pdf_render
 from gateway.pdf_render import (
+    MAX_DEPTH,
     MAX_SOURCE_BYTES,
+    MAX_WORD_CHARS,
     PdfRenderError,
     attachment_disposition,
+    check_word_lengths,
     html_to_pdf,
     markdown_to_html,
     markdown_to_pdf,
     pdf_filename,
+    render_pdf,
     sanitize_html,
     source_to_pdf,
 )
@@ -150,3 +157,137 @@ def test_the_filename_is_safe_and_ends_in_pdf() -> None:
     assert header.startswith('attachment; filename="')
     assert "filename*=UTF-8''" in header
     assert header.count('"') == 2
+
+
+# ── Fix round 1 — MuPDF must never take the gateway down ────────────────────
+#
+# Every test below is bounded. The hostile inputs never reach MuPDF in this
+# process: they either stop in the pure-Python sanitizer, or they run through
+# `render_pdf`, whose child process the parent kills at a timeout.
+
+def test_p0_deep_nesting_is_refused_before_layout() -> None:
+    """199,000 nested divs killed the gateway (reviewer P0). The sanitizer
+    stops at MAX_DEPTH, in Python, so MuPDF never sees them."""
+    with pytest.raises(PdfRenderError) as err:
+        sanitize_html("<div>" * 199_000 + "x")
+    assert err.value.status == 422
+    ok = sanitize_html("<div>" * MAX_DEPTH + "x")
+    assert ok.count("<div>") == MAX_DEPTH
+    assert ok.endswith("</div>" * MAX_DEPTH)
+
+
+def test_p0_markdown_nesting_is_bounded_too() -> None:
+    deep = "*" * 5000 + "x" + "*" * 5000
+    with pytest.raises(PdfRenderError):
+        sanitize_html(markdown_to_html(deep))
+
+
+def test_p0_unclosed_siblings_are_not_nesting() -> None:
+    """Hand-written HTML leaves `<li>` and `<p>` open. They are siblings, as
+    a browser reads them, so they must not count against MAX_DEPTH."""
+    out = sanitize_html("<ul>" + "<li>item" * 500 + "</ul>" + "<p>para" * 500)
+    assert out.count("<li>") == 500
+    assert out.count("</li>") == 500
+    assert out.count("</p>") == 500
+
+
+def test_p0_deep_nesting_through_render_pdf_is_a_4xx() -> None:
+    start = time.monotonic()
+    with pytest.raises(PdfRenderError) as err:
+        asyncio.run(render_pdf("html", "<div>" * 199_000 + "x"))
+    assert err.value.status == 422
+    assert time.monotonic() - start < 30
+
+
+def test_p0_a_child_that_crashes_is_a_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A MuPDF crash kills the child, never the caller."""
+    monkeypatch.setattr(
+        pdf_render, "_worker_argv",
+        lambda kind: [sys.executable, "-c", "import os; os.abort()"],
+    )
+    with pytest.raises(PdfRenderError) as err:
+        asyncio.run(render_pdf("html", "<p>x</p>"))
+    assert err.value.status == 422
+    assert "could not be laid out" in str(err.value)
+
+
+def test_p0_p1_a_child_that_hangs_is_killed_at_the_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        pdf_render, "_worker_argv",
+        lambda kind: [sys.executable, "-c", "import time; time.sleep(60)"],
+    )
+    monkeypatch.setattr(pdf_render, "RENDER_TIMEOUT_S", 1.0)
+    start = time.monotonic()
+    with pytest.raises(PdfRenderError) as err:
+        asyncio.run(render_pdf("html", "<p>x</p>"))
+    assert err.value.status == 503
+    assert time.monotonic() - start < 15
+
+
+def test_p1_a_long_unbroken_run_is_refused() -> None:
+    """900,000 characters with no space took more than 120 s (reviewer P1)."""
+    check_word_lengths("<p>" + "x" * MAX_WORD_CHARS + "</p>")
+    with pytest.raises(PdfRenderError) as err:
+        check_word_lengths("<p>" + "x" * (MAX_WORD_CHARS + 1) + "</p>")
+    assert err.value.status == 422
+    half = "x" * (MAX_WORD_CHARS // 2 + 1)
+    # An inline tag joins a word, and a block tag breaks it.
+    with pytest.raises(PdfRenderError):
+        check_word_lengths(f"<p>{half}<b>{half}</b></p>")
+    check_word_lengths(f"<p>{half}</p><p>{half}</p>")
+
+
+def test_p1_a_long_run_through_render_pdf_is_a_fast_4xx() -> None:
+    start = time.monotonic()
+    with pytest.raises(PdfRenderError) as err:
+        asyncio.run(render_pdf("html", "x" * 900_000))
+    assert err.value.status == 422
+    assert time.monotonic() - start < 30
+
+
+def test_p2_a_mupdf_error_is_a_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    import fitz
+
+    class FzErrorSyntax(Exception):
+        pass
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise FzErrorSyntax("syntax error in html")
+
+    monkeypatch.setattr(fitz, "Story", _boom)
+    with pytest.raises(PdfRenderError) as err:
+        html_to_pdf("<p>x</p>")
+    assert err.value.status == 422
+
+
+def test_render_pdf_returns_a_pdf_from_the_child() -> None:
+    pdf = asyncio.run(render_pdf("markdown", "# Title\n\nText."))
+    assert pdf.startswith(b"%PDF")
+    assert "Title" in _text(pdf)
+
+
+def test_render_pdf_refuses_before_starting_a_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _no_child(*_a: object, **_k: object) -> bytes:
+        raise AssertionError("a child started")
+
+    monkeypatch.setattr(pdf_render, "_run_child", _no_child)
+    with pytest.raises(PdfRenderError) as err:
+        asyncio.run(render_pdf("html", "x" * (MAX_SOURCE_BYTES + 1)))
+    assert err.value.status == 413
+    with pytest.raises(PdfRenderError) as err:
+        asyncio.run(render_pdf("docx", "x"))
+    assert err.value.status == 415
+
+
+def test_devanagari_draws_in_a_devanagari_font() -> None:
+    """Verifier finding 4. The glyphs draw shaped and correct in MuPDF's
+    built-in Noto Serif Devanagari (checked by eye on a rendered page). Text
+    EXTRACTION from the PDF is garbled for conjuncts, which is a known limit
+    recorded in spec §14.6 and not asserted here."""
+    import fitz
+
+    with fitz.open(stream=html_to_pdf("<p>नमस्ते दुनिया</p>"), filetype="pdf") as doc:
+        fonts = [f[3] for f in doc[0].get_fonts()]
+    assert any("Devanagari" in name for name in fonts), fonts

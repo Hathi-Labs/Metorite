@@ -79,4 +79,36 @@ describe("POST /api/documents/pdf", () => {
     expect(res.status).toBe(415);
     expect(await res.json()).toEqual({ detail: "Send the document as text/html." });
   });
+
+  it("refuses a body over the cap before it reaches the gateway", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const { NextRequest } = await import("next/server");
+    const { POST, MAX_PDF_SOURCE_BYTES } = await import("./route");
+    const res = await POST(
+      new NextRequest("http://localhost:3001/api/documents/pdf", {
+        method: "POST",
+        body: "x".repeat(MAX_PDF_SOURCE_BYTES + 1),
+        headers: { "content-type": "text/html" },
+      }),
+    );
+    expect(res.status).toBe(413);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses a declared length over the cap without reading the body", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const { NextRequest } = await import("next/server");
+    const { POST } = await import("./route");
+    const res = await POST(
+      new NextRequest("http://localhost:3001/api/documents/pdf", {
+        method: "POST",
+        body: "<p>small</p>",
+        headers: { "content-type": "text/html", "content-length": "5000000" },
+      }),
+    );
+    expect(res.status).toBe(413);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 });

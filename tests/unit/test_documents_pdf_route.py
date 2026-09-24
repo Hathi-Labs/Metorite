@@ -174,3 +174,92 @@ def test_the_filename_cannot_break_the_header() -> None:
     assert res.status_code == 200
     assert "x-evil" not in {k.lower() for k in res.headers}
     assert res.headers["content-disposition"].count('"') == 2
+
+
+# ── Fix round 1 ─────────────────────────────────────────────────────────────
+
+
+def _no_render(monkeypatch: pytest.MonkeyPatch, module) -> None:
+    async def _called(*_a: object, **_k: object) -> bytes:
+        raise AssertionError("the route reached the renderer past its own cap")
+
+    monkeypatch.setattr(module, "render_pdf", _called)
+
+
+def test_the_route_cap_refuses_an_over_cap_body_itself(monkeypatch: pytest.MonkeyPatch) -> None:
+    """R7: `pdf_render` also caps the size, so without this test deleting the
+    route's own `_read_capped` left every test green (verifier finding 1)."""
+    _no_render(monkeypatch, documents)
+    res = _post(_client(documents.router, MEMBER), "x" * (MAX_SOURCE_BYTES + 1))
+    assert res.status_code == 413
+
+
+def test_the_route_cap_trusts_a_large_declared_length(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A declared length over the cap is refused before a byte is read."""
+    _no_render(monkeypatch, documents)
+    res = _client(documents.router, MEMBER).post(
+        "/documents/pdf",
+        content=b"<p>small</p>",
+        headers={"Content-Type": "text/html", "Content-Length": str(MAX_SOURCE_BYTES + 1)},
+    )
+    assert res.status_code == 413
+
+
+def test_the_route_cap_does_not_trust_a_small_declared_length() -> None:
+    """A body larger than its header says is still counted as it streams."""
+    import asyncio
+
+    class _Req:
+        def __init__(self) -> None:
+            self.headers = {"content-length": "10"}
+
+        async def stream(self):
+            for _ in range(20):
+                yield b"x" * 100_000
+
+    with pytest.raises(documents.HTTPException) as err:
+        asyncio.run(documents._read_capped(_Req()))  # type: ignore[arg-type]
+    assert err.value.status_code == 413
+
+
+@pytest.mark.parametrize("status", [413, 422, 503])
+def test_a_render_refusal_keeps_its_status_on_post(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    """P2: a MuPDF error reaches the member as a 4xx (or a 503), never a 500."""
+
+    async def _refuse(*_a: object, **_k: object) -> bytes:
+        raise documents.PdfRenderError("plain words", status=status)
+
+    monkeypatch.setattr(documents, "render_pdf", _refuse)
+    res = _post(_client(documents.router, MEMBER), "<p>x</p>")
+    assert res.status_code == status
+    assert res.json()["detail"] == "plain words"
+
+
+def test_a_render_refusal_keeps_its_status_on_the_workspace_route(
+    ws: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import gateway.pdf_render as pdf_render
+
+    async def _refuse(*_a: object, **_k: object) -> bytes:
+        raise pdf_render.PdfRenderError("could not lay out", status=422)
+
+    monkeypatch.setattr(pdf_render, "render_pdf", _refuse)
+    res = _pdf_get(_client(workspace.router, MEMBER), "outputs/status.md")
+    assert res.status_code == 422
+
+
+def test_hostile_html_through_the_route_is_a_4xx_and_the_app_lives() -> None:
+    """P0 end to end: the deep-nesting body that killed the gateway."""
+    client = _client(documents.router, MEMBER)
+    res = _post(client, "<div>" * 199_000 + "x")
+    assert res.status_code == 422
+    assert _post(client, "<p>still here</p>").status_code == 200
+
+
+def test_a_dot_markdown_file_converts(ws: Path) -> None:
+    (ws / "outputs" / "notes.markdown").write_text("# Notes\n", encoding="utf-8")
+    res = _pdf_get(_client(workspace.router, MEMBER), "outputs/notes.markdown")
+    assert res.status_code == 200
+    assert res.content.startswith(b"%PDF")

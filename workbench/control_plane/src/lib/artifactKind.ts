@@ -43,6 +43,14 @@ const TEXT_EXTS = new Set([
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
+/**
+ * The Markdown and HTML extensions. WS-27bm S8: together they are exactly the
+ * gateway's `pdf_render.SOURCE_KINDS`, the files it converts to a PDF.
+ * `artifactKind.test.ts` reads that Python dict and fails if the two differ.
+ */
+export const MARKDOWN_EXTS: readonly string[] = ["md", "markdown", "mdx"];
+export const HTML_EXTS: readonly string[] = ["html", "htm"];
+
 export function extOf(name: string): string {
   return (name.split(".").pop() ?? "").toLowerCase();
 }
@@ -70,8 +78,8 @@ export function classifyArtifact(
   mimeType = "",
 ): ArtifactKind {
   const ext = extOf(name);
-  if (ext === "md" || ext === "mdx") return "markdown";
-  if (ext === "html" || ext === "htm") return "html";
+  if (MARKDOWN_EXTS.includes(ext)) return "markdown";
+  if (HTML_EXTS.includes(ext)) return "html";
   if ((ext === "jsx" || ext === "tsx") && isArtifactPath(path)) return "react";
   if (ext === "pdf" || mimeType === "application/pdf") return "pdf";
   if (ext === "docx" || mimeType === DOCX_MIME) return "docx";

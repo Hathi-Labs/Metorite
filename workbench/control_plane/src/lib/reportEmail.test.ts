@@ -443,3 +443,106 @@ describe("reportDocument", () => {
     expect(doc.html).not.toMatch(/style=/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fix round 1 — the email HTML, pinned byte for byte
+// ---------------------------------------------------------------------------
+//
+// WS-27bm S8 moved the email onto one shared layout. These two strings are
+// what `origin/main`'s formatter produced before that move, captured by
+// running it, so a one-byte change to a separator, a tag or an escape fails
+// here. The contains-tests above could not see one (the verifier changed
+// " · " to " : " and "<p>" to "<P>", and every test stayed green).
+const GOLDEN_A: RenderedReport = {
+  report: { name: "Weekly delivery", scope: "portfolio" },
+  period_start: "2026-09-07",
+  period_end: "2026-09-13",
+  sections: {
+    finished: {
+      projects: [
+        { name: "Mobile App", completed: 12, cancelled: 1 },
+        { name: "Billing", completed: 5, cancelled: 0 },
+      ],
+      total_completed: 17,
+      total_cancelled: 1,
+    },
+    throughput: { median_hours: 27, measured: 15 },
+    stuck: { overdue: [{ name: "Mobile App", overdue: 4 }], overdue_total: 4 },
+    load: {
+      people: [
+        { assignee: null, open_tasks: 9, overdue: 2 },
+        { assignee: "ana@example.test", open_tasks: 6, overdue: 0 },
+      ],
+      total_tasks: 15,
+    },
+  },
+};
+const GOLDEN_B: RenderedReport = {
+  report: { name: "R&D <core>", scope: "node" },
+  period_start: "2025-12-29",
+  period_end: "2026-01-04",
+  sections: {
+    finished: {
+      projects: Array.from({ length: 12 }, (_, i) => ({ name: `P${i}`, completed: i, cancelled: 0 })),
+      total_completed: 66,
+      total_cancelled: 0,
+    },
+    capacity: {
+      people: [
+        { assignee: "ana@example.test", name: "Ana", kind: "person", open_tasks: 3, hours_basis: true, spare_hours_horizon: 12.5 },
+        { assignee: "bo@example.test", name: null, kind: "person", open_tasks: 2, hours_basis: false },
+        { assignee: null, name: null, kind: "unassigned", open_tasks: 1 },
+      ],
+      total_tasks: 6,
+      hr_visible: false,
+      horizon_days: 14,
+    },
+    conflicts: {
+      rows: [
+        { kind: "blocker_late", severity: "high", sentence: '"Order <steel>" is late.' },
+        { kind: "parallel_person", severity: "medium", sentence: "Bo holds 3." },
+      ],
+      total: 2,
+      hr_visible: false,
+      horizon_days: 14,
+    },
+  },
+};
+
+describe("reportEmail · the exact HTML", () => {
+  it("draws the four core sections exactly", () => {
+    expect(reportEmail(GOLDEN_A).html).toBe(
+      [
+      "<div><h2>Weekly delivery</h2>",
+      "<p>7 – 13 Sep 2026 · Every space you can see</p>",
+      "<p><strong>Finished: 17</strong> · 1 cancelled</p>",
+      "<ul><li>Mobile App: 12 (1 cancelled)</li><li>Billing: 5</li></ul>",
+      "<p>Median time to finish: 27 hours (over 15 measured)</p>",
+      "<p><strong>Overdue: 4</strong></p>",
+      "<ul><li>Mobile App: 4</li></ul>",
+      "<p>Open work: 15</p>",
+      "<ul><li>Unassigned: 9 (2 overdue)</li><li>ana@example.test: 6</li></ul>",
+      "</div>",
+      ].join(""),
+    );
+  });
+
+  it("draws a cut list, capacity, conflicts and the HR notes exactly", () => {
+    expect(reportEmail(GOLDEN_B).html).toBe(
+      [
+      "<div><h2>R&amp;D &lt;core&gt;</h2>",
+      "<p>29 Dec 2025 – 4 Jan 2026 · This project</p>",
+      "<p><strong>Finished: 66</strong></p>",
+      "<ul><li>P0: 0</li><li>P1: 1</li><li>P2: 2</li><li>P3: 3</li><li>P4: 4</li><li>P5: 5</li><li>P6: 6</li><li>P7: 7</li><li>P8: 8</li><li>P9: 9</li></ul>",
+      "<p>…and 2 more projects</p>",
+      "<p>Who has the hours (next 14 days): 6 open</p>",
+      "<ul><li>Ana: 3 open, 12.5h spare</li><li>bo@example.test: 2 open, no hours</li><li>Unassigned: 1 open</li></ul>",
+      "<p>Hours need HR read access.</p>",
+      "<p>Where the plan conflicts: 2</p>",
+      "<ul><li>High: &quot;Order &lt;steel&gt;&quot; is late.</li><li>Medium: Bo holds 3.</li></ul>",
+      "<p>Four kinds need HR read access.</p>",
+      "</div>",
+      ].join(""),
+    );
+  });
+});

@@ -607,7 +607,8 @@ async def _file_as_pdf(file_path: Path, file_size: int) -> Response:
     """A workspace document as a PDF download (WS-27bm S8, spec §14).
 
     The type check comes before the size check and before any read, so a
-    refused type costs nothing. Layout is CPU work, so it runs in a thread.
+    refused type costs nothing. The read runs in a thread, and the layout
+    runs in a child process (``pdf_render.render_pdf``).
     """
     from gateway.pdf_render import (
         MAX_SOURCE_BYTES,
@@ -615,7 +616,7 @@ async def _file_as_pdf(file_path: Path, file_size: int) -> Response:
         PdfRenderError,
         attachment_disposition,
         pdf_filename,
-        source_to_pdf,
+        render_pdf,
     )
 
     kind = SOURCE_KINDS.get(file_path.suffix.lower())
@@ -629,11 +630,15 @@ async def _file_as_pdf(file_path: Path, file_size: int) -> Response:
             status_code=413,
             detail=f"File too large for a PDF ({file_size} bytes). Maximum is {MAX_SOURCE_BYTES} bytes.",
         )
-    source = file_path.read_text(encoding="utf-8", errors="replace")
+    source = await asyncio.to_thread(
+        file_path.read_text, encoding="utf-8", errors="replace"
+    )
     try:
-        pdf = await asyncio.to_thread(source_to_pdf, kind, source)
+        # Out of process, with a timeout: a MuPDF crash or hang is a refusal
+        # here, never the gateway's death (fix round 1).
+        pdf = await render_pdf(kind, source)
     except PdfRenderError as exc:
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
     return Response(
         content=pdf,
         media_type="application/pdf",

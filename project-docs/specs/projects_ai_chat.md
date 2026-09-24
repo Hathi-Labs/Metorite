@@ -1534,11 +1534,22 @@ The audit of 2026-09-24 read these facts from the code.
    resource. The renderer gets no archive. A test serves an image on a local
    port and proves that a render never requests it.
 4. **Caps.** A source above 1,000,000 bytes gets 413. A layout past 300 pages
-   gets 413. `POST /documents/pdf` checks the declared length and the bytes
-   as they arrive.
+   gets 413. `POST /documents/pdf` and its Next proxy check the declared
+   length and the bytes as they arrive.
 5. **Identity.** Both routes sit under the app-wide `require_authenticated`.
    `POST /documents/pdf` also refuses an anonymous context itself. Neither
    route reads a table or writes one (R5).
+6. **MuPDF never runs in the gateway process** (fix round 1). MuPDF is C
+   code. 199,000 nested `<div>` overflowed its stack and killed the gateway,
+   and one word of 900,000 letters held the GIL for more than two minutes.
+   So `render_pdf` lays out in a child process. The parent kills the child
+   after 20 seconds, and at most four children run at one time.
+7. **Two bounds apply before layout.** The sanitizer refuses nesting deeper
+   than 64 elements. A run of more than 2,000 characters with no space is
+   also refused. Both get 422, and both bind Markdown too.
+8. **Every failure has a status.** A size refusal is 413. A document that
+   MuPDF cannot read, or a child that crashes, is 422. A timeout is 503. No
+   MuPDF error reaches the member as a 500.
 
 ### 14.5 Acceptance — S8
 
@@ -1565,6 +1576,17 @@ The audit of 2026-09-24 read these facts from the code.
 8. `instructions.md` has the Files section, and a test fails if it goes.
 9. The status header, the §10 row, the board row and the INDEX line say that
    S8 is built (R4).
+10. Rules 6 to 8 each have a bounded test. Deep nesting and a long word get
+    422 through `render_pdf`. A child that aborts gets 422, and a child that
+    hangs is killed at the timeout with 503. A MuPDF error gets 422. The
+    tests run the hostile input in a child or stop it in Python, so the suite
+    cannot crash.
+11. Deleting the route's own size cap fails a test, because the test
+    replaces the renderer with a trap.
+12. Two golden tests pin the email HTML byte for byte. The strings came from
+    the formatter on `main` before S8.
+13. The PDF extensions in `artifactKind.ts` equal the gateway's
+    `SOURCE_KINDS`, and a vitest reads the Python file to prove it.
 
 ### 14.6 What S8 does not do
 
@@ -1574,3 +1596,10 @@ The audit of 2026-09-24 read these facts from the code.
 - It flips no flag. The rail stays behind `NEXT_PUBLIC_PROJECTS_CHAT`.
 - A Markdown image does not reach the PDF. The sanitizer drops every `<img>`
   on purpose, because an image is a fetch.
+- **Known limit: Devanagari text cannot be copied out of the PDF.** MuPDF
+  draws it in its built-in Noto Serif Devanagari, and the page shows the
+  shaped text correctly. But the PDF maps a conjunct glyph to the wrong
+  character, so copy, search and a screen reader get wrong text. No font in
+  the tree or in `pymupdf` fixes that mapping.
+- A word longer than 2,000 characters is refused, not broken. A long hash or
+  a base64 block in a document therefore gets 422.

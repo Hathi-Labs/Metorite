@@ -25,6 +25,13 @@ Together they make the endpoint useless for SSRF. The fence is
 ``tests/unit/test_pdf_render.py``, which serves an image on a local port and
 proves that the render never asks for it.
 
+⚠️ **It never lays out in the gateway process.** ``render_pdf`` runs the
+layout in a child process with a 20 s wall-clock limit. MuPDF is C code:
+deep nesting overflowed its native stack and killed the whole gateway, and
+one long word held the GIL for minutes (fix round 1). The sanitizer also
+refuses nesting past ``MAX_DEPTH`` and a word past ``MAX_WORD_CHARS``
+before layout. Fence: ``tests/unit/test_pdf_render.py``.
+
 ⚠️ **It computes nothing.** It lays out what it is given. The numbers in a
 report PDF are the render route's, formatted once by ``reportEmail.ts``.
 """
@@ -33,6 +40,9 @@ from __future__ import annotations
 import html as _html
 import io
 import re
+import subprocess
+import sys
+import threading
 from html.parser import HTMLParser
 from urllib.parse import quote
 
@@ -108,17 +118,80 @@ th, td { border: 0.5pt solid black; padding: 2pt 4pt; text-align: left; }
 _MARGIN = 54
 
 
+#: The deepest element nesting a document may have. MuPDF lays out nested
+#: boxes by recursion on its native stack, and about 50,000 nested ``<div>``
+#: overflow it and kill the process (fix round 1, P0). A real document nests
+#: a list in a table in a quote, which is well under ten.
+MAX_DEPTH = 64
+
+#: The longest run of text with no whitespace. MuPDF's line breaker is
+#: quadratic in the length of one unbroken word: 200,000 characters took 16 s
+#: and 900,000 took more than 120 s (fix round 1, P1). A URL or a hash is a few
+#: hundred characters.
+MAX_WORD_CHARS = 2000
+
+#: The wall-clock limit on one layout, in seconds. The layout runs in a child
+#: process (:func:`render_pdf`), and the parent kills it at this limit.
+RENDER_TIMEOUT_S = 20.0
+
+#: The most layouts that run at the same time. Each one is a process.
+MAX_CONCURRENT_RENDERS = 4
+
+#: Tags a new tag of the same family closes, as a browser does: ``<li>`` after
+#: an open ``<li>`` is a sibling, not a child. Without this, hand-written HTML
+#: with unclosed list items would count as deep nesting.
+_IMPLIED_CLOSE: dict[str, frozenset[str]] = {
+    "p": frozenset({"p"}),
+    "li": frozenset({"li"}),
+    "dt": frozenset({"dt", "dd"}),
+    "dd": frozenset({"dt", "dd"}),
+    "tr": frozenset({"tr", "td", "th"}),
+    "td": frozenset({"td", "th"}),
+    "th": frozenset({"td", "th"}),
+}
+
+#: An implied close never reaches past one of these.
+_CLOSE_SCOPE = frozenset({
+    "ul", "ol", "dl", "table", "thead", "tbody", "tfoot", "blockquote", "div",
+})
+
+#: Inline tags do not break a word. Every other tag does.
+_INLINE_TAG = re.compile(
+    r"</?(?:a|b|strong|em|i|u|s|del|sup|sub|small|code|span)\b[^>]*>"
+)
+_ANY_TAG = re.compile(r"<[^>]*>")
+_LONG_WORD = re.compile(r"\S{" + str(MAX_WORD_CHARS + 1) + ",}")
+
+
 class PdfRenderError(ValueError):
-    """The source cannot become a PDF: too large, too long, or not text."""
+    """The source cannot become a PDF. ``status`` is the HTTP answer.
+
+    413 means too large, 422 means the content cannot be laid out, and 503
+    means the renderer did not answer in time. The message is for a person.
+    """
+
+    def __init__(self, message: str, status: int = 422) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class _Sanitizer(HTMLParser):
-    """Re-serialise HTML through an allowlist. See the module docstring."""
+    """Re-serialise HTML through an allowlist. See the module docstring.
+
+    It also keeps the output well formed. It tracks the open elements, closes
+    the ones a new sibling implies, and closes what is still open at the end.
+    So :data:`MAX_DEPTH` measures the nesting that MuPDF will see.
+    """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.out: list[str] = []
         self._skip = 0  # depth inside a _DROP_WITH_CONTENT tag
+        self._open: list[str] = []
+
+    def _close_to(self, index: int) -> None:
+        while len(self._open) > index:
+            self.out.append(f"</{self._open.pop()}>")
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in _DROP_WITH_CONTENT:
@@ -126,6 +199,21 @@ class _Sanitizer(HTMLParser):
             return
         if self._skip or tag not in _ALLOWED_TAGS:
             return
+        if tag in _VOID_TAGS:
+            self.out.append(f"<{tag}>")
+            return
+        family = _IMPLIED_CLOSE.get(tag)
+        if family:
+            for i in range(len(self._open) - 1, -1, -1):
+                if self._open[i] in _CLOSE_SCOPE:
+                    break
+                if self._open[i] in family:
+                    self._close_to(i)
+                    break
+        if len(self._open) >= MAX_DEPTH:
+            raise PdfRenderError(
+                f"The document nests elements more than {MAX_DEPTH} deep."
+            )
         kept: list[str] = []
         allowed = _ALLOWED_ATTRS.get(tag, frozenset())
         for name, value in attrs:
@@ -136,6 +224,7 @@ class _Sanitizer(HTMLParser):
             if name in ("colspan", "rowspan") and not value.isdigit():
                 continue
             kept.append(f' {name}="{_html.escape(value, quote=True)}"')
+        self._open.append(tag)
         self.out.append(f"<{tag}{''.join(kept)}>")
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -148,19 +237,45 @@ class _Sanitizer(HTMLParser):
             return
         if self._skip or tag not in _ALLOWED_TAGS or tag in _VOID_TAGS:
             return
-        self.out.append(f"</{tag}>")
+        # A close for an element that is not open is dropped. A close for one
+        # that is open closes everything opened inside it too.
+        for i in range(len(self._open) - 1, -1, -1):
+            if self._open[i] == tag:
+                self._close_to(i)
+                return
 
     def handle_data(self, data: str) -> None:
         if not self._skip:
             self.out.append(_html.escape(data, quote=False))
 
+    def finish(self) -> str:
+        self.close()
+        self._close_to(0)
+        return "".join(self.out)
+
 
 def sanitize_html(source: str) -> str:
-    """Keep the text tags of a document and drop everything that can load."""
+    """Keep the text tags of a document and drop everything that can load.
+
+    Raises :class:`PdfRenderError` (422) past :data:`MAX_DEPTH`.
+    """
     parser = _Sanitizer()
     parser.feed(source)
-    parser.close()
-    return "".join(parser.out)
+    return parser.finish()
+
+
+def check_word_lengths(clean: str) -> None:
+    """Refuse a run of text longer than :data:`MAX_WORD_CHARS` with no space.
+
+    It reads the SANITIZED HTML, which is what MuPDF lays out. An inline tag
+    joins the text on both sides into one word, and any other tag breaks it.
+    """
+    text = _ANY_TAG.sub(" ", _INLINE_TAG.sub("", clean))
+    if _LONG_WORD.search(_html.unescape(text)):
+        raise PdfRenderError(
+            f"The document has a run of more than {MAX_WORD_CHARS} characters "
+            "with no space, which cannot be laid out on a page."
+        )
 
 
 def markdown_to_html(source: str) -> str:
@@ -169,6 +284,7 @@ def markdown_to_html(source: str) -> str:
     ``html: False`` makes a ``<script>`` in the Markdown print as text. The
     output still passes through :func:`sanitize_html` in :func:`html_to_pdf`,
     because a Markdown image becomes an ``<img>`` and must be dropped too.
+    The depth and word bounds therefore bind Markdown as well.
     """
     from markdown_it import MarkdownIt
 
@@ -181,47 +297,61 @@ def _check_size(source: str) -> None:
     if len(source.encode("utf-8")) > MAX_SOURCE_BYTES:
         raise PdfRenderError(
             f"The document is larger than {MAX_SOURCE_BYTES} bytes, the most "
-            "a PDF render accepts."
+            "a PDF render accepts.",
+            status=413,
         )
 
 
 def html_to_pdf(source: str) -> bytes:
     """Lay out untrusted HTML as an A4 PDF and return the file's bytes.
 
-    Pure: no network, no file system, no clock. The caller runs it in a worker
-    thread, because layout is CPU work and the gateway's request path is async.
+    Pure: no network, no file system, no clock. ⚠️ **In process, it is the
+    worker's function, never a route's.** A route calls :func:`render_pdf`,
+    which runs this in a child process with a timeout.
     """
     _check_size(source)
     return _layout(source)
 
 
 def _layout(source: str) -> bytes:
-    """Sanitize, then lay out. The size check is the caller's, on its input."""
+    """Sanitize, check the bounds, then lay out. The size check is the caller's."""
+    clean = sanitize_html(source)
+    check_word_lengths(clean)
     import fitz  # pymupdf, a gateway dependency since the résumé parser
 
-    clean = sanitize_html(source)
-    # ⚠️ No `archive`: the renderer has nowhere to load an image, a font or a
-    # stylesheet from, whatever the sanitizer misses.
-    story = fitz.Story(html=f"<body>{clean}</body>", user_css=_CSS)
-    buf = io.BytesIO()
-    writer = fitz.DocumentWriter(buf)
-    mediabox = fitz.paper_rect("a4")
-    where = fitz.Rect(
-        _MARGIN, _MARGIN, mediabox.width - _MARGIN, mediabox.height - _MARGIN
-    )
-    pages = 0
-    more = True
-    while more:
-        pages += 1
-        if pages > MAX_PAGES:
-            writer.close()
-            raise PdfRenderError(f"The document runs past {MAX_PAGES} pages.")
-        device = writer.begin_page(mediabox)
-        more, _ = story.place(where)
-        story.draw(device)
-        writer.end_page()
-    writer.close()
-    return buf.getvalue()
+    try:
+        # ⚠️ No `archive`: the renderer has nowhere to load an image, a font
+        # or a stylesheet from, whatever the sanitizer misses.
+        story = fitz.Story(html=f"<body>{clean}</body>", user_css=_CSS)
+        buf = io.BytesIO()
+        writer = fitz.DocumentWriter(buf)
+        mediabox = fitz.paper_rect("a4")
+        where = fitz.Rect(
+            _MARGIN, _MARGIN, mediabox.width - _MARGIN, mediabox.height - _MARGIN
+        )
+        pages = 0
+        more = True
+        while more:
+            pages += 1
+            if pages > MAX_PAGES:
+                writer.close()
+                raise PdfRenderError(
+                    f"The document runs past {MAX_PAGES} pages.", status=413
+                )
+            device = writer.begin_page(mediabox)
+            more, _ = story.place(where)
+            story.draw(device)
+            writer.end_page()
+        writer.close()
+        return buf.getvalue()
+    except PdfRenderError:
+        raise
+    except Exception as exc:
+        # MuPDF raises its own classes (FzErrorSyntax and others). Each one
+        # is a document the renderer could not read, never a server fault.
+        raise PdfRenderError(
+            "The document could not be laid out as a PDF."
+        ) from exc
 
 
 def markdown_to_pdf(source: str) -> bytes:
@@ -239,7 +369,80 @@ def source_to_pdf(kind: str, source: str) -> bytes:
         return markdown_to_pdf(source)
     if kind == "html":
         return html_to_pdf(source)
-    raise PdfRenderError(f"A {kind} file cannot become a PDF.")
+    raise PdfRenderError(f"A {kind} file cannot become a PDF.", status=415)
+
+
+# ── Out of process ───────────────────────────────────────────────────────────
+#
+# ⚠️ MuPDF is C. A crash in it is a crash of the process that called it, and
+# a slow layout holds the GIL. So a route never lays out in the gateway
+# process: `render_pdf` starts this module as a child, hands it the source on
+# stdin, and reads the PDF from stdout. The parent kills a child that runs past
+# RENDER_TIMEOUT_S. A child that dies is a refusal, not an outage.
+
+_EXIT_REFUSED = 2
+_render_slots = threading.BoundedSemaphore(MAX_CONCURRENT_RENDERS)
+
+
+def _worker_argv(kind: str) -> list[str]:
+    """The child's command line. A test replaces it to simulate a crash."""
+    return [sys.executable, "-m", "gateway.pdf_render", kind]
+
+
+def _run_child(kind: str, source: str, timeout: float) -> bytes:
+    with _render_slots:
+        try:
+            done = subprocess.run(  # our own module, no shell
+                _worker_argv(kind),
+                input=source.encode("utf-8"),
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            # `run` has already killed the child.
+            raise PdfRenderError(
+                f"The PDF took longer than {int(timeout)} seconds to lay out. "
+                "Try a shorter document.",
+                status=503,
+            ) from exc
+        except OSError as exc:
+            raise PdfRenderError(
+                "The PDF renderer could not start. Try again.", status=503
+            ) from exc
+    if done.returncode == 0 and done.stdout.startswith(b"%PDF"):
+        return done.stdout
+    if done.returncode == _EXIT_REFUSED:
+        status, _, message = done.stderr.decode("utf-8", "replace").partition("|")
+        if status.isdigit():
+            raise PdfRenderError(message.strip(), status=int(status))
+    raise PdfRenderError("The document could not be laid out as a PDF.")
+
+
+async def render_pdf(kind: str, source: str) -> bytes:
+    """The one way a route makes a PDF: in a child process, with a timeout.
+
+    The size check runs here first, so an oversize body never starts a child.
+    Every failure is a :class:`PdfRenderError` with an HTTP status.
+    """
+    import asyncio
+
+    if kind not in ("markdown", "html"):
+        raise PdfRenderError(f"A {kind} file cannot become a PDF.", status=415)
+    _check_size(source)
+    return await asyncio.to_thread(_run_child, kind, source, RENDER_TIMEOUT_S)
+
+
+def _worker_main(kind: str) -> int:
+    source = sys.stdin.buffer.read().decode("utf-8", "replace")
+    try:
+        pdf = source_to_pdf(kind, source)
+    except PdfRenderError as exc:
+        sys.stderr.write(f"{exc.status}|{exc}")
+        return _EXIT_REFUSED
+    sys.stdout.buffer.write(pdf)
+    sys.stdout.buffer.flush()
+    return 0
 
 
 _UNSAFE_NAME = re.compile(r'[\x00-\x1f\x7f"\\/]')
@@ -265,15 +468,24 @@ def attachment_disposition(filename: str) -> str:
 
 
 __all__ = [
+    "MAX_DEPTH",
     "MAX_PAGES",
     "MAX_SOURCE_BYTES",
+    "MAX_WORD_CHARS",
+    "RENDER_TIMEOUT_S",
     "SOURCE_KINDS",
     "PdfRenderError",
     "attachment_disposition",
+    "check_word_lengths",
     "html_to_pdf",
     "markdown_to_html",
     "markdown_to_pdf",
     "pdf_filename",
+    "render_pdf",
     "sanitize_html",
     "source_to_pdf",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(_worker_main(sys.argv[1] if len(sys.argv) > 1 else ""))
