@@ -1575,7 +1575,10 @@ The audit of 2026-09-24 read these facts from the code.
    square of its length. With 300,000 characters, hyphens took 38.8 s and
    U+202F took 81.9 s. So the check refuses more than 2,000 copies of one
    character, of any class. It also refuses more than 2,000 break spaces
-   in any mix, such as tabs in a `<pre>` or U+2003 beside U+2002. Outside a
+   in any mix, such as tabs in a `<pre>` or U+2003 beside U+2002. The
+   exceptions are the line feed and the carriage return. The break-space
+   count leaves them out on purpose, because each one ends a line in a
+   `<pre>`, and 300,000 of them stop at the page cap in under 1 s. Outside a
    `<pre>`, HTML collapses a run of ASCII spaces, tabs or line feeds to one
    space. So the check collapses that run first and does not refuse it.
    The second review of the follow-up found three more cases, and each is

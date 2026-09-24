@@ -1022,3 +1022,48 @@ def test_f3_a_code_block_and_a_json_dump_still_render() -> None:
     assert pdf.startswith(b"%PDF")
     assert "flag(row)" in _text(pdf)
 
+
+def test_f2_two_waiting_colleagues_run_one_after_the_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R7 (verifier, second round). One render runs, and two colleagues wait
+    behind it. When it ends, both waiters wake, and only one may claim. The
+    other must wait again. With ``if`` in place of ``while`` in
+    ``_take_org_turn``, both claimed and the peak was 2."""
+    import itertools
+
+    active = 0
+    peak = 0
+    spans: dict[str, tuple[float, float]] = {}
+
+    async def child(kind: str, source: str, timeout: float) -> bytes:
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        began = time.monotonic()
+        try:
+            await asyncio.sleep(0.4)
+        finally:
+            active -= 1
+        spans[source] = (began, time.monotonic())
+        return b"%PDF-fake"
+
+    monkeypatch.setattr(pdf_render, "_run_child", child)
+    monkeypatch.setattr(pdf_render, "MAX_CONCURRENT_RENDERS", 4)
+    monkeypatch.setattr(pdf_render, "ORG_WAIT_S", 5.0)
+
+    async def scenario() -> list[object]:
+        first = asyncio.ensure_future(render_pdf("html", "a", member="asha@a.test", org="org-a"))
+        await asyncio.sleep(0.1)
+        second = asyncio.ensure_future(render_pdf("html", "b", member="ravi@a.test", org="org-a"))
+        third = asyncio.ensure_future(render_pdf("html", "c", member="mina@a.test", org="org-a"))
+        return await asyncio.gather(first, second, third, return_exceptions=True)
+
+    results = asyncio.run(scenario())
+    assert results == [b"%PDF-fake"] * 3, results
+    assert peak == 1
+    runs = sorted(spans.values())
+    assert len(runs) == 3
+    for (_, ended), (began, _) in itertools.pairwise(runs):
+        assert began >= ended
+    assert not pdf_render._orgs_rendering

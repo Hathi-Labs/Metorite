@@ -26,7 +26,7 @@ Together they make the endpoint useless for SSRF. The fence is
 proves that the render never asks for it.
 
 ⚠️ **It never lays out in the gateway process.** ``render_pdf`` runs the
-layout in a child process with a 20 s wall-clock limit. MuPDF is C code:
+layout in a child process with a 13 s wall-clock limit. MuPDF is C code:
 deep nesting overflowed its native stack and killed the whole gateway, and
 one long word held the GIL for minutes (fix round 1). The sanitizer also
 refuses nesting past ``MAX_DEPTH``, a word past ``MAX_WORD_CHARS``, and a
@@ -717,7 +717,13 @@ def _org_busy() -> PdfRenderError:
 async def _take_org_turn(tenant: str) -> None:
     """Wait up to :data:`ORG_WAIT_S` for ``tenant`` to have no render, then
     claim it. The check and the claim run with no ``await`` between them, so
-    two waiters cannot both claim."""
+    two waiters cannot both claim.
+
+    It is NOT a queue. The order in which waiters wake is best effort, and a
+    request that arrives just as a render ends can claim before a waiter
+    wakes. Over HTTP that stays fair, because the member cap gives each
+    member one render at a time. So a member's next render is a new request,
+    one round trip later, and a waiting colleague wakes first."""
     import asyncio
 
     loop = asyncio.get_running_loop()
