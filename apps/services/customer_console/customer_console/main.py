@@ -8576,6 +8576,70 @@ class MemberSpendView(BaseModel):
     windowDays: int
 
 
+class AgentSpendRow(BaseModel):
+    agent: str
+    calls: int
+    credits: str
+
+
+class AppSpendRow(BaseModel):
+    """One app, and the agents inside it. Usage slice 2."""
+
+    app: str
+    calls: int
+    credits: str
+    agents: list[AgentSpendRow]
+
+
+class AppSpendView(BaseModel):
+    rows: list[AppSpendRow]
+    windowDays: int
+    #: Echoed, as `ActivitySpendView` echoes it, so the page renders the scope
+    #: it actually got.
+    member: str | None = None
+
+
+# ── The operator's breakdown of ONE customer (usage slice 2) ────────────────
+#
+# 🔴 **These shapes carry our COST, so they are operator-only.** D66 keeps the
+# vendor's price off every customer screen. None of them may be returned by a
+# `/my/` route, and `test_usage_breakdown.py` fails if one is.
+
+
+class OpAgentRow(BaseModel):
+    agent: str
+    calls: int
+    credits: str
+    costUsd: str
+    #: `analytics.realised_margin`, the fleet board's own number. NULL until
+    #: the operator saves a credit price, and NULL is neutral, never zero.
+    realisedMargin: str | None = None
+
+
+class OpAppRow(BaseModel):
+    app: str
+    calls: int
+    credits: str
+    costUsd: str
+    realisedMargin: str | None = None
+    agents: list[OpAgentRow]
+
+
+class OpMemberRow(BaseModel):
+    member: str
+    calls: int
+    credits: str
+    costUsd: str
+    realisedMargin: str | None = None
+
+
+class OrgBreakdownView(BaseModel):
+    orgSlug: str
+    windowDays: int
+    apps: list[OpAppRow]
+    members: list[OpMemberRow]
+
+
 # ── The tier a customer picks (WS-31 slice 3) ───────────────────────────────
 #
 # Spec: `ai_metering_and_analytics.md` §8.4. D-AI-1 and D-AI-3 own the rules.
@@ -8858,6 +8922,127 @@ def my_usage_by_member(caller: KeyCaller) -> MemberSpendView:
             for r in rows
         ],
         windowDays=store.SPEND_WINDOW_DAYS,
+    )
+
+
+@app.get("/my/usage/apps")
+def my_usage_by_app(
+    caller: KeyCaller,
+    member: str | None = None,
+) -> AppSpendView:
+    """What each app spent, and which agents inside it. **Usage slice 2.**
+
+    The shape of `GET /my/usage/activity`, grouped one level up. Pass
+    ``member`` to scope it to one person. The workbench fills that from the
+    signed-in session for everyone but an admin, never from the browser.
+
+    ⚠️ **Credits only.** `usage_by_app` selects no cost, no model and no tier,
+    and the spend-reads fence checks its SQL.
+    """
+    with get_engine().begin() as conn:
+        rows = store.usage_by_app(conn, org_id=caller.organization_id, member=member)
+    return AppSpendView(
+        rows=[
+            AppSpendRow(
+                app=r["app"],
+                calls=r["calls"],
+                credits=str(r["credits"]),
+                agents=[
+                    AgentSpendRow(agent=g["agent"], calls=g["calls"], credits=str(g["credits"]))
+                    for g in r["agents"]
+                ],
+            )
+            for r in rows
+        ],
+        windowDays=store.SPEND_WINDOW_DAYS,
+        member=member,
+    )
+
+
+@app.get("/admin/usage/breakdown")
+def admin_usage_breakdown(
+    _: Operator,
+    org_slug: str,
+    days: int = store.SPEND_WINDOW_DAYS,
+) -> OrgBreakdownView:
+    """One customer's spend by app, by agent and by person, with OUR cost.
+
+    **Usage slice 2, and the read H-133 left for later.** The customer page
+    shows this organization's total and its daily series. When the customer
+    asks where the credits went, the operator needs the same split the
+    customer's admin sees, plus the margin on each line.
+
+    🔴 **The rows are the customer's own reads.** Apps come from
+    `store.usage_by_app` and people from `store.usage_by_member`, the functions
+    `/my/usage/apps` and `/my/usage/members` serve. Our cost is JOINED on from
+    `store.usage_cost_by` by key. So the operator and the customer's admin can
+    never see two different totals for one app, which a second grouping query
+    would eventually produce.
+
+    ⚠️ **`days` applies to the cost AND the rows.** The customer reads are
+    fixed at `SPEND_WINDOW_DAYS`, and passing a different window here keeps all
+    three reads on the same one.
+    """
+    days = max(1, min(int(days), store.USAGE_MAX_DAYS))
+    with get_engine().begin() as conn:
+        org_id = _org_id(conn, org_slug)
+        apps = store.usage_by_app(conn, org_id=org_id, days=days)
+        members = store.usage_by_member(conn, org_id=org_id, days=days)
+        cost_app = store.usage_cost_by(conn, org_id=org_id, by="app", days=days)
+        cost_agent = store.usage_cost_by(conn, org_id=org_id, by="app_agent", days=days)
+        cost_member = store.usage_cost_by(conn, org_id=org_id, by="member", days=days)
+        # The same row `/catalog/tiers` reads for the fleet's realised margin.
+        price = conn.execute(
+            text(
+                "SELECT inr_per_credit, usd_to_inr FROM credit_price "
+                "WHERE effective_from <= now() ORDER BY effective_from DESC LIMIT 1"
+            )
+        ).fetchone()
+
+    def _margin(credits: Decimal, cost: Decimal) -> str | None:
+        m = analytics.realised_margin(
+            credits,
+            cost,
+            inr_per_credit=(None if price is None else price[0]),
+            usd_to_inr=(None if price is None else price[1]),
+        )
+        return None if m is None else str(m)
+
+    zero = Decimal(0)
+    return OrgBreakdownView(
+        orgSlug=org_slug,
+        windowDays=days,
+        apps=[
+            OpAppRow(
+                app=a["app"],
+                calls=a["calls"],
+                credits=str(a["credits"]),
+                costUsd=str(cost_app.get(a["app"], zero)),
+                realisedMargin=_margin(a["credits"], cost_app.get(a["app"], zero)),
+                agents=[
+                    OpAgentRow(
+                        agent=g["agent"],
+                        calls=g["calls"],
+                        credits=str(g["credits"]),
+                        costUsd=str(cost_agent.get((a["app"], g["agent"]), zero)),
+                        realisedMargin=_margin(
+                            g["credits"], cost_agent.get((a["app"], g["agent"]), zero)),
+                    )
+                    for g in a["agents"]
+                ],
+            )
+            for a in apps
+        ],
+        members=[
+            OpMemberRow(
+                member=m["member"],
+                calls=m["calls"],
+                credits=str(m["credits"]),
+                costUsd=str(cost_member.get(m["member"], zero)),
+                realisedMargin=_margin(m["credits"], cost_member.get(m["member"], zero)),
+            )
+            for m in members
+        ],
     )
 
 
