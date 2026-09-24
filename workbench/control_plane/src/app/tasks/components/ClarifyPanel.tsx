@@ -17,7 +17,6 @@ import { apiClarifyPropose, apiSuggestTitle } from "../lib/api";
 import type { ConnectedProvider } from "../lib/mockData";
 import { Energy, GtdItem, GtdProject, Person, Target } from "../lib/types";
 import { durationLabel, formatStatus, initials, originEmailHref, snoozeOptions } from "../lib/utils";
-import { isImportant } from "../lib/priority";
 import { SourceBadge } from "./SourceBadge";
 import { AttachmentChips } from "./AttachmentComposer";
 import { WherePicker } from "./WherePicker";
@@ -199,15 +198,7 @@ export function ClarifyPanel({
   const [energy, setEnergy] = useState<Energy>(proposal.energy ?? "medium");
   // Prioritization flags — AI-prefilled, user confirms (urgent is derived from
   // the due date, so it isn't a toggle here).
-  // ⚠️ D76: Important is a view of the task's SHARED Priority. When the task
-  // already carries one, that is the truth the pill starts from — seeding it
-  // from the proposal would let an unread "not important" guess demote a
-  // task the team marked Urgent the moment the member confirms.
-  const seedImportant = (sp: ClarifyProposal) =>
-    item.importance !== undefined && item.importance !== null
-      ? isImportant(item)
-      : !!sp.important;
-  const [important, setImportant] = useState<boolean>(seedImportant(proposal));
+  const [important, setImportant] = useState<boolean>(!!proposal.important);
   const [leveraged, setLeveraged] = useState<boolean>(!!proposal.leveraged);
   const [deepWork, setDeepWork] = useState<boolean>(!!proposal.deepWork);
   const [assignee, setAssignee] = useState<Person | null>(proposal.suggestedAssignee ?? null);
@@ -248,7 +239,7 @@ export function ClarifyPanel({
       setOutcome(sp.outcome ?? `${item.title} — done`);
       setContext(sp.context ?? "@computer");
       setEnergy(sp.energy ?? "medium");
-      setImportant(seedImportant(sp));
+      setImportant(!!sp.important);
       setLeveraged(!!sp.leveraged);
       setDeepWork(!!sp.deepWork);
       setAssignee(sp.suggestedAssignee ?? null);
@@ -1140,12 +1131,9 @@ export function ClarifyPanel({
                   </div>
                 </SubField>
 
-                {/* Focus — the matrix inputs (AI-prefilled, you confirm).
-                    Urgent is derived from the due date, so it isn't a toggle.
-                    D76: never labelled "Priority" — Important sets the
-                    task's shared Priority to High, and that field owns the
-                    word. */}
-                <SubField label="Focus" inline>
+                {/* Priority — the matrix inputs (AI-prefilled, you confirm).
+                    Urgent is derived from the due date, so it isn't a toggle. */}
+                <SubField label="Priority" inline>
                   <div className="flex flex-col gap-1">
                     <div className="flex flex-wrap gap-1.5">
                       <Pill active={important} onClick={() => setImportant((v) => !v)}>

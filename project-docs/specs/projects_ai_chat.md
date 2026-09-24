@@ -6,8 +6,8 @@ workflows, the views and the forms) and S5 (the rest of the manifest)
 built 2026-09-23. S6 (navigation and the frontend-tool dispatcher) built
 2026-09-23. The visual review ran 2026-09-23 (§4.2). S7, the team
 intelligence slices, was designed 2026-09-23 (§13). S7a (capacity) was built
-2026-09-23. S7b to S7e are not built.** §10 says which slice each part belongs
-to. §4.4 lists what the chat reuses, file by file.
+2026-09-23. S7b (fit and rebalancing) was built 2026-09-24. S7c to S7e are not
+built.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -439,6 +439,31 @@ showed the model's «guillemet» fence, the `full_id:` lines and raw routes,
 so they now show plain words. The timeline coloured a comment with the
 member's accent, so its dots now use the categorical ramp.
 
+**The second UX review (2026-09-23, owner report).** A browser rig replayed
+the events the real view tools emit, with a Markdown answer, a file, and a
+class B and a class C receipt. It found five defects, and all are fixed.
+
+- **The chat was bound to one project.** It now reaches everything the member
+  can see. The header's "Chat about" picker (`lib/chatScope.ts`) sets a focus,
+  which is a hint and never a boundary. The focus follows the tree until the
+  member picks, and then it holds. The persona tells the model to find any
+  other project the member names, and to answer a general question across
+  everything.
+- **"Open task" stayed in the chat.** A card's link opened the task panel
+  beside a full-width chat, and the project never showed. Now the page leaves
+  the chat slot, selects the task's project, opens the task, and docks the
+  conversation.
+- **Each view showed twice.** The template drew, and then a text card showed
+  the same facts. For the status report that text was raw Markdown source. A
+  view tool's text is for the model, so `VIEW_TOOLS` hides its card once the
+  tool is done.
+- **A file had no side panel.** "Open in side panel" on a Markdown file
+  wrote to a store that only the chat page drew. The Projects page now mounts
+  `SidePanelEditor`, which draws nothing until a file is open.
+- **Raw data leaked.** The "Interactive view" fold repeated the file event as
+  JSON, and the cards showed `project_id` values and activity ids. The fold
+  now hides file events, and the cards strip both kinds of id.
+
 **The board follows the chat.** A receipt card that reports a done write
 fires `cc-projects-changed` once, and the Projects page reloads the selected
 project. The chat never reaches the page's state. That event is the one
@@ -663,7 +688,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S6 · Navigation** — ✅ **BUILT 2026-09-23** | The frontend-tool dispatcher (`acb_skills.frontend_tools`, `runFrontendToolEvent`) · `open_in_app` and the page's three handlers · the two S2 follow-ups (an unknown address named on the card, the subtasks receipt opens the parent) | AGENT-SAFE |
 | **Visual review** — ✅ **DONE 2026-09-23** | The rail and the cards seen in eight contexts. The defects it found are fixed (§4.2) | AGENT-SAFE |
 | **S7a · Capacity** — ✅ **BUILT 2026-09-23** | `GET /projects/analytics/capacity` · the Analytics app's Capacity panel · the report section `capacity` · the chat tool `team_capacity` (§13.3) | AGENT-SAFE |
-| **S7b · Fit** | `GET /projects/tasks/{id}/candidates` and its draft form · `GET /projects/analytics/rebalance` · "Suggested" in the assignee picker · the chat tools `suggest_assignees` and `rebalance` (§13.4) | AGENT-SAFE |
+| **S7b · Fit** — ✅ **BUILT 2026-09-24** | `GET /projects/tasks/{id}/candidates` and its draft form · `GET /projects/analytics/rebalance` · "Suggested" in the assignee picker · the chat tools `fit_for_task` and `rebalance` (§13.4) | AGENT-SAFE |
 | **S7c · Conflicts** | `GET /projects/analytics/conflicts` with seven kinds · the Conflicts panel · the report section `conflicts` · the chat tool `find_conflicts` · the dependency rule moved to the server (§13.5) | AGENT-SAFE |
 | **S7d · Plan with capacity** | `propose_plan` gains start dates, phases and dependencies, and shows each owner's fit on the plan card (§13.6) | AGENT-SAFE |
 | **S7e · On-the-fly analysis** | The read tool `task_dataset` and the rule for numbers the chat computes itself (§13.7) | AGENT-SAFE |
@@ -730,6 +755,43 @@ Each slice is one pull request. Each one is useful alone.
    Somebody looks at it in light mode, at compact density, under a changed
    accent, and beside Load.
 
+### 10.4 Acceptance — S7b
+
+**Done when:**
+1. `GET /projects/tasks/{id}/candidates` returns at most 3 candidates, ranked
+   by `rank_candidates` and by no second ranker. A source test asserts that
+   the new modules import `rank_candidates` and do not call `score_skills`.
+2. The match text is the title, the tag names and the capped description. A
+   test shows that a skill named only in a tag ranks a person.
+3. The pool follows §13.4 rule 4. A test shows a person with no open task as a
+   candidate, and no assignee or agent in the list.
+4. The window follows §13.4 rule 4, and the response prints it.
+5. With no estimate for any candidate, every rank follows §13.4 rule 2. A
+   test with a mixed list proves that `spare_hours` is absent on EVERY
+   candidate, not zero, and `test_people_suggestions.py` passes unchanged.
+6. Each of the three warnings in §13.4 rule 5 has its own test.
+7. A caller without `admin:members:read` gets 200 with `hr_visible: false` and
+   no `candidates` key. A test proves that the key is absent.
+8. `GET /projects/candidates?title=&tags=&due=` returns the same body as the
+   task route for the same text and due date. The test uses a task with no
+   assignees, because the task route leaves its assignees out. A title shorter than 2
+   characters gets 422.
+9. `GET /projects/analytics/rebalance?project_id=&include_subtree=&horizon_days=`
+   lists the at-risk tasks in scope with their helpers, and the idle people
+   with the unassigned tasks in scope. The helpers and the idle people come
+   from the rule 4 pool, so an idle person with no work in scope appears.
+   Both suggester routes call the one leaf join. An R8 test proves that no task outside the viewer's grant
+   appears. A caller without the grant gets no `at_risk` and no `pickups` key.
+10. "Suggested" renders above the name search in `TaskBody` only, and hides
+    when `hr_visible` is false. A pick goes through the existing `onPick`,
+    which writes `PUT /projects/tasks/{id}/assignees`. A pure lib function
+    holds the decisions, and a vitest covers it.
+11. `fit_for_task` and `rebalance` are class A, and `manifest.py` maps the
+    three routes. The coverage fence passes. A run with no user makes zero
+    HTTP calls, and no tool sends a request that is not a GET.
+12. The status header, the §10 row, the board row and the INDEX line say that
+    S7b is built (R4).
+
 ---
 
 ## 11. Verification
@@ -751,6 +813,18 @@ without it and the run still reads green:
 ```
 uv run pytest tests/unit/test_projects_analytics_capacity.py tests/unit/test_people_dashboard.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_agent.py tests/unit/test_projects_reports.py tests/unit/test_projects_report_sections_lockstep.py tests/unit/test_projects_reportable_reports.py
 ```
+
+For S7b, with the same database settings:
+
+```
+uv run pytest tests/unit/test_projects_candidates.py tests/unit/test_projects_analytics_rebalance.py tests/unit/test_people_suggestions.py tests/unit/test_people_dashboard.py tests/unit/test_projects_assignees.py tests/unit/test_projects_analytics_capacity.py tests/unit/test_projects_routes.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_agent.py
+```
+
+In `workbench/control_plane`, run `npx tsc --noEmit` and
+`npx vitest run src/app/projects/lib/assignees.test.ts src/app/projects/lib/candidates.test.ts`.
+Then look at the task panel's picker in light mode, at compact density, under
+a changed accent, and beside the bulk bar's picker. The slice creates the two
+new pytest files and `candidates.test.ts`.
 
 `test_projects_report_sections_lockstep.py` is the lockstep test of §10.3
 item 6. It is a pytest that reads the two TypeScript files as text, so one test
@@ -901,7 +975,8 @@ the section kind `capacity`, in `reports.py` `SECTIONS`, `RenderedBody`,
 ### 13.4 S7b — Fit and rebalancing
 
 `GET /projects/tasks/{id}/candidates` ranks people for one task by
-`rank_candidates`. The draft form is `GET /projects/candidates?title=&due=`.
+`rank_candidates`. The draft form is
+`GET /projects/candidates?title=&tags=&due=`.
 It ranks people for a task that does not exist yet, which planning needs. Each
 candidate carries the skills that matched and the spare hours before the due
 date. It also carries the warnings: away on the due date, leaving before it,
@@ -912,8 +987,80 @@ project subtree. It lists the at-risk tasks with the helpers who fit them, and
 the idle people with the unassigned work that fits them.
 
 **Surfaces.** The assignee picker in the task panel shows "Suggested" above the
-name search. The chat gets `suggest_assignees` and `rebalance`, both class A.
+name search. The chat gets `fit_for_task` and `rebalance`, both class A.
 Assigning stays the class B `assign` with its card.
+
+**Rules for the build.** The S7b audit (2026-09-23) found six decisions that
+the text above does not make. These are the decisions.
+
+1. **No HR grant, no candidates.** A caller without `admin:members:read` gets
+   200, `hr_visible: false`, and no `candidates` key. A ranked list of names
+   still says who holds which skill, so names alone are an oracle
+   (`people_center_app.md` §4.2). The picker then hides "Suggested". The
+   rebalance route leaves out `at_risk` and `pickups` in the same way.
+2. **No estimate, rank by skill and availability — for the whole list.** If
+   `hours_basis` is false for ANY candidate, the route calls
+   `rank_candidates` with a neutral spare figure of 1 for EVERY candidate. So
+   every rank is skill × away, and the ranks stay comparable. A mixed list
+   would put a person with no basis 30 times below a person with 30 spare
+   hours, from a figure the reader cannot see. The response then leaves out
+   `spare_hours` for every candidate and carries one `hours_note`. `rank_candidates` itself does not change, and
+   `test_people_suggestions.py` passes unchanged.
+3. **The match text.** It is the title, the tag names, and the first 500
+   characters of the description. A tag often names the skill that the title
+   does not. A long description mentions skills in passing, so it is capped.
+4. **The pool and the window.** The pool is every active person in `people`
+   with an email. The task's assignees and agents are left out. Spare hours
+   come from `person_capacity` over all the work the caller can see. The
+   horizon is the days from today to the due date, clamped to 1 to 90, or 14
+   days if the task has no due date. The response prints the window.
+5. **Warnings wrap the candidate.** The route wraps each `Candidate` with a
+   `warnings` list: away on the due date, an end date before the due date,
+   and more tasks in progress than `max_concurrent_tasks`. The `Candidate`
+   model in `suggestions.py` does not change.
+6. **One join for the suggester.** The join of at-risk tasks to helpers, and
+   of idle people to unassigned work, moves into a leaf function in
+   `gateway/capacity.py`. `/people/dashboard/suggestions` and
+   `/projects/analytics/rebalance` both call it. The rebalance route filters
+   the at-risk tasks to its scope, and takes the unassigned tasks from the
+   Load `scope_clause`. The helpers and the idle people come from the rule 4
+   pool. A person is idle when `person_capacity` gives the pill `idle`, over
+   all the work the caller can see.
+
+**Names.** The chat tool is `fit_for_task`, because `suggest_assignees` is
+already the name of the picker's route function in `assignees.py`. "Suggested"
+renders in `TaskBody` only, never in `BulkBar` or `MoveTasksDialog`, because
+it needs one task.
+
+**As built, 2026-09-24.** Seven facts that the rules above do not say.
+- **Where each part lives.** The two candidates routes are in
+  `routes/projects/candidates.py`, and the rebalance route is in
+  `routes/projects/analytics_rebalance.py`. `pool_capacity` reads the rule 4
+  pool with the S7a capacity SQL. `rank_for_text` applies rule 2 over
+  `rank_candidates`, and both routes rank through it.
+- **Who "any candidate" is (rule 2).** It is a pool person whose skills match
+  the text. `rank_for_text` finds them with `rank_candidates` itself, one
+  person at a time with the neutral figure. So neither new route module
+  scores a skill. The pickup match inside `rebalance_join` still calls
+  `score_skills`, because it is the People suggester's own loop, moved.
+- **The pool excludes alumni and keeps active people.** A contractor or an
+  invited person is not in the pool. The rebalance route still reads the
+  at-risk work of every directory person who is not alumni.
+- **Availability.** For one task, `away` is an absence on the due date. For
+  an overdue task, or a task with no due date, it is an absence today. For the rebalance route it is today, as on
+  the People dashboard. The picker prints one absence once.
+- **The rebalance route follows rules 2 and 3 too.** Each at-risk task ranks
+  its helpers through `rank_for_text` over the rule 3 match text. A task whose
+  helpers lack an hours basis shows no `spare_hours` and one `hours_note`.
+- **The People suggester keeps its output, except for a shared task.** It
+  calls `rebalance_join` with plain `rank_candidates` over the title. A
+  comparison of 400 random boards gave the same JSON before and after the
+  move, and `test_projects_analytics_rebalance.py` pins one board by hand.
+  One change is on purpose (review round 1). The join lists a task with two
+  holders ONCE, and no holder helps on it, as rule 4 says. Before, the task
+  appeared once for each holder, and each holder helped the other.
+- **The first two warnings need a due date.** With no due date there is no day
+  to be away on or to leave before. The concurrency warning needs none.
 
 ### 13.5 S7c — Conflicts
 

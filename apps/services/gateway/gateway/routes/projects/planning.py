@@ -39,7 +39,6 @@ from acb_auth import UserContext, get_current_user
 from fastapi import Depends
 from gateway.routes.projects.core import CLOSING_CATEGORIES, router
 from gateway.routes.projects.personal import (
-    IMPORTANT_AT,
     MY_TASKS_FROM,
     _upsert_personal,
     effective_disposition,
@@ -66,11 +65,10 @@ from sqlalchemy import text
 #: these names off the row directly; there is no collision, since none of the
 #: overlay's columns exists on `pm_tasks`.
 #:
-#: ⚠️ D76: two of the names the packer reads are now SHARED facts, aliased to
-#: the names it already knows. `time_estimate_mins` is `pm_tasks.estimate_mins`
-#: (the one estimate, the one People capacity reads), and `important` is the
-#: shared Priority read through `IMPORTANT_AT`. The overlay columns of those
-#: names are no longer read.
+#: ⚠️ D77: one name the packer reads is now a SHARED fact, aliased to the name
+#: it already knows. `time_estimate_mins` is `pm_tasks.estimate_mins` (the one
+#: estimate, the one People capacity reads). The overlay column of that name
+#: is no longer read. `important` stays the member's own (D76).
 _PM_SELECT = """
 SELECT t.id::text                AS id,
        t.title,
@@ -84,9 +82,11 @@ SELECT t.id::text                AS id,
        t.estimate_mins           AS time_estimate_mins,
        p.scheduled_start, p.scheduled_end, p.flexible, p.is_hard_date,
        p.actual_start, p.actual_end,
-       (coalesce(t.importance, 0) >= """ + str(IMPORTANT_AT) + """)
-                                 AS important,
-       p.leveraged, p.deep_work, p.kept_mine, p.sort_key,
+       p.important, p.leveraged, p.deep_work, p.kept_mine, p.sort_key,
+       -- The SHARED priority, for the D76 seed. The planner ranked on
+       -- `p.important` alone, so a High task the member had not judged was
+       -- important in the Calendar list and not important to "Plan my day".
+       t.importance              AS org_priority,
        (SELECT count(*) FROM pm_task_assignees a2 WHERE a2.task_id = t.id)
                                  AS assignee_count,
        EXISTS (SELECT 1 FROM pm_task_assignees a3
@@ -205,6 +205,7 @@ _PM_PASSTHROUGH = (
     "scheduled_start", "scheduled_end", "flexible", "is_hard_date",
     "actual_start", "actual_end",
     "important", "leveraged", "deep_work", "kept_mine", "sort_key", "is_mine",
+    "org_priority",
 )
 
 

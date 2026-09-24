@@ -6,10 +6,10 @@
 // Design (agreed with the user):
 //   • urgent is DERIVED from dueAt (overdue or due within a window), never
 //     stored — so it can't go stale. Overridable only by editing the due date.
-//   • important = downside (something stalls/breaks if skipped). D76
-//     (2026-09-23): DERIVED from the task's shared Priority,
-//     `pm_tasks.importance >= IMPORTANT_AT` — High or Urgent. One answer for
-//     everybody assigned, the same one the Projects board shows.
+//   • important = downside (something stalls/breaks if skipped) — manual.
+//     While a member has never stated it, the SHARED Projects priority seeds a
+//     suggestion: High or Highest reads as important until the member says
+//     otherwise (`seededImportant`). Owner decision, 2026-09-23.
 //   • leveraged = upside (asymmetric 100x outcome) — manual, the scarce flag.
 //   • The 8 cells are a projection of the three booleans (the user's Notion
 //     formula, verbatim). Never persisted.
@@ -19,40 +19,38 @@
 
 import { GtdItem } from "./types";
 
-/** D76 — Priority at or above this is "important" in the Focus matrix: 2 is
- *  High, 3 is Urgent (`projects/lib/table.ts::IMPORTANCE_OPTIONS`). The
- *  gateway's `personal.IMPORTANT_AT` is the same number, and
- *  `tests/unit/test_projects_personal_s6f.py` reads this line to prove it. */
-export const IMPORTANT_AT = 2;
-
-/** Is this task important? D76: read off the shared Priority when the task
- *  carries one; the stored boolean only for a row with no Priority field at
- *  all (the demo backend's mock rows). */
-export function isImportant(
-  item: Pick<GtdItem, "important" | "importance">,
-): boolean {
-  if (item.importance !== undefined && item.importance !== null) {
-    return item.importance >= IMPORTANT_AT;
-  }
-  return Boolean(item.important);
-}
+/**
+ * The shared Projects priority at which a task arrives SUGGESTED as important.
+ *
+ * `pm_tasks.importance` runs 0 Low, 1 Normal, 2 High, 3 Highest. Owner
+ * decision 2026-09-23: High and above. So the org's "this matters" reaches the
+ * member's Next Actions instead of landing in Low Priority for want of a flag
+ * nobody had set yet.
+ *
+ * ⚠️ **A suggestion, never a write.** Migration 188 warned that
+ * `important = importance >= 3` "would invent a threshold no decision records,
+ * make one member's private triage visible to everyone on the task". This
+ * threshold IS now recorded, and it still writes nothing. It is read only
+ * while `important` is unstated, the member's own answer always wins, and a
+ * later change to the shared priority never overwrites that answer.
+ */
+export const ORG_PRIORITY_SEED = 2;
 
 /**
- * The Priority an "important" toggle means (D76). The Focus matrix's
- * Important switch is a view of the shared Priority, so flipping it writes
- * Priority: ON raises a task below High to High, OFF lowers a High or Urgent
- * task to Normal. A toggle that already agrees changes nothing (`undefined`),
- * so switching Important on for an Urgent task never demotes it to High.
+ * Is this task important only because the org said so — not yet by the member?
+ *
+ * True exactly when the member has never stated `important` and the shared
+ * priority is at or above the seed. The UI draws this state differently from
+ * an answer the member gave, so a suggestion is never mistaken for a decision.
  */
-export function importanceForImportant(
-  current: number | undefined | null,
-  important: boolean,
-): number | undefined {
-  const level = current ?? undefined;
-  if (important) {
-    return level === undefined || level < IMPORTANT_AT ? IMPORTANT_AT : undefined;
-  }
-  return level !== undefined && level >= IMPORTANT_AT ? IMPORTANT_AT - 1 : undefined;
+export function seededImportant(
+  item: Pick<GtdItem, "important" | "orgPriority">,
+): boolean {
+  return (
+    item.important === undefined &&
+    typeof item.orgPriority === "number" &&
+    item.orgPriority >= ORG_PRIORITY_SEED
+  );
 }
 
 /** Default urgency window (hours). A due task is urgent when overdue or due
@@ -97,10 +95,8 @@ export function isNewlyUrgent(
 // urgent it is). The action to take about it — delegate / schedule / eliminate —
 // is NOT in the label; it surfaces separately as the competing card badge (see
 // SUGGESTION_BADGE). Removing the action-words collapses the two "eliminate"
-// cases (urgent-but-not-important AND neither) into a single "Low value"
-// level, so there are 7 levels, not 8. ⚠️ D76: no cell is called "…Priority".
-// Priority is the task's shared field; a matrix cell named after it put two
-// answers under one word ("Urgent" in Projects, "Low Priority" here).
+// cases (urgent-but-not-important AND neither) into a single "Low Priority"
+// level, so there are 7 levels, not 8.
 
 export type PriorityCell =
   | "critical" // 1. ❗⏰⚖️  Important + Urgent + Leveraged
@@ -134,7 +130,7 @@ export type ActionMode = "do" | "delegate" | "schedule" | "drop";
 // 1→7; `mode` is the badge the level nudges toward.
 //   1 Critical (do) · 2 Urgent (delegate) · 3 High-Leverage (do) ·
 //   4 Important (schedule) · 5 Quick Leverage Win (do) ·
-//   6 Speculative Bet (do) · 7 Low value (eliminate/delegate)
+//   6 Speculative Bet (do) · 7 Low Priority (eliminate/delegate)
 export const CELL_META: Record<PriorityCell, CellMeta> = {
   critical: { cell: "critical", order: 1, emoji: "🔥", label: "Critical", mode: "do" },
   urgent: { cell: "urgent", order: 2, emoji: "🚨", label: "Urgent", mode: "delegate" },
@@ -142,7 +138,7 @@ export const CELL_META: Record<PriorityCell, CellMeta> = {
   important: { cell: "important", order: 4, emoji: "❗", label: "Important", mode: "schedule" },
   "quick-leverage": { cell: "quick-leverage", order: 5, emoji: "📤", label: "Quick Leverage Win", mode: "do" },
   "speculative-bet": { cell: "speculative-bet", order: 6, emoji: "🧪", label: "Speculative Bet", mode: "do" },
-  "low-priority": { cell: "low-priority", order: 7, emoji: "🗑", label: "Low value", mode: "drop" },
+  "low-priority": { cell: "low-priority", order: 7, emoji: "🗑", label: "Low Priority", mode: "drop" },
 };
 
 /** The 7 levels in rank order (1 → 7). */
@@ -162,12 +158,17 @@ export interface PriorityInputs {
 
 /** Resolve a task's three matrix inputs (urgent derived from dueAt). */
 export function priorityInputs(
-  item: Pick<GtdItem, "dueAt" | "important" | "leveraged"> & Pick<Partial<GtdItem>, "importance">,
+  item: Pick<GtdItem, "dueAt" | "important" | "leveraged" | "orgPriority">,
   windowHours = DEFAULT_URGENT_WINDOW_HOURS,
   now: number = Date.now(),
 ): PriorityInputs {
   return {
-    important: isImportant(item),
+    // The member's own answer, or — only while they have given none — the
+    // org's. An explicit `false` is an answer and must win over a High
+    // priority, or "not important to me" could never stick. What guarantees
+    // that is `seededImportant`, which answers false for ANY stated value —
+    // not the `??` here. Measured: swapping it for `||` changes nothing.
+    important: item.important ?? seededImportant(item),
     leveraged: Boolean(item.leveraged),
     urgent: isUrgent(item, windowHours, now),
   };
@@ -185,13 +186,13 @@ export function cellForInputs({ important, urgent, leveraged }: PriorityInputs):
   }
   if (important && urgent) return "urgent"; // 2
   if (important && !urgent) return "important"; // 4
-  // Not important to you — urgent-only OR neither → one Low value level.
+  // Not important to you — urgent-only OR neither → one Low Priority level.
   return "low-priority"; // 7
 }
 
 /** The priority cell for a task (inputs resolved + formula applied). */
 export function priorityCell(
-  item: Pick<GtdItem, "dueAt" | "important" | "leveraged">,
+  item: Pick<GtdItem, "dueAt" | "important" | "leveraged" | "orgPriority">,
   windowHours = DEFAULT_URGENT_WINDOW_HOURS,
   now: number = Date.now(),
 ): PriorityCell {
@@ -200,7 +201,7 @@ export function priorityCell(
 
 /** The action mode for a task (do / delegate / schedule / drop). */
 export function actionMode(
-  item: Pick<GtdItem, "dueAt" | "important" | "leveraged">,
+  item: Pick<GtdItem, "dueAt" | "important" | "leveraged" | "orgPriority">,
   windowHours = DEFAULT_URGENT_WINDOW_HOURS,
   now: number = Date.now(),
 ): ActionMode {
@@ -223,7 +224,7 @@ export const ACTION_MODE_META: Record<
 
 /** The matrix rank (1 = highest). Lower sorts first. */
 export function priorityRank(
-  item: Pick<GtdItem, "dueAt" | "important" | "leveraged">,
+  item: Pick<GtdItem, "dueAt" | "important" | "leveraged" | "orgPriority">,
   windowHours = DEFAULT_URGENT_WINDOW_HOURS,
   now: number = Date.now(),
 ): number {
@@ -232,11 +233,15 @@ export function priorityRank(
 
 /** A task has NO explicit judgment yet (neither flag set) — the matrix is only
  *  *guessing* (via urgency) about it. Drives the "needs triage" affordance so
- *  the user can tell judged tasks from defaulted ones. */
+ *  the user can tell judged tasks from defaulted ones.
+ *
+ *  ⚠️ A task SEEDED as important by the org's priority is still untagged. The
+ *  seed is the org's guess, not the member's judgment, and this is exactly
+ *  the prompt that asks the member to give theirs. */
 export function isUntagged(
-  item: Pick<GtdItem, "important" | "leveraged"> & Pick<Partial<GtdItem>, "importance">,
+  item: Pick<GtdItem, "important" | "leveraged">,
 ): boolean {
-  return !isImportant(item) && !item.leveraged;
+  return !item.important && !item.leveraged;
 }
 
 // ── Action-mode suggestion (the competing badge on a task card) ──────────────
@@ -271,7 +276,7 @@ export const SUGGESTION_BADGE: Record<
     label: "Schedule?",
     prompt: "Important but not urgent — put it on the calendar or delegate it.",
   },
-  // Low value (urgent-only OR neither): not important to you — kill it, or
+  // Low Priority (urgent-only OR neither): not important to you — kill it, or
   // hand it off if it genuinely has to happen.
   drop: {
     emoji: "🗑",
@@ -289,7 +294,13 @@ export const SUGGESTION_BADGE: Record<
 export function modeSuggestion(
   item: Pick<
     GtdItem,
-    "dueAt" | "important" | "leveraged" | "disposition" | "isMine" | "keptMine"
+    | "dueAt"
+    | "important"
+    | "leveraged"
+    | "orgPriority"
+    | "disposition"
+    | "isMine"
+    | "keptMine"
   >,
   windowHours = DEFAULT_URGENT_WINDOW_HOURS,
   now: number = Date.now(),

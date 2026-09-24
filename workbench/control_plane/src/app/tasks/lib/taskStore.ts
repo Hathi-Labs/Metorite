@@ -42,7 +42,6 @@ import {
   type ConnectedProvider,
 } from "./mockData";
 import { isCalendarItem, isTickled } from "./utils";
-import { IMPORTANT_AT, importanceForImportant } from "./priority";
 import { type SyncState, canPush } from "./syncState";
 import {
   DEFAULT_FILTERS,
@@ -246,11 +245,7 @@ export interface ItemMetaPatch {
    *  false drops a handed-off/unassigned task from my list without deleting it
    *  on ClickUp; a LOCAL overlay only — never back-synced. */
   isMine?: boolean;
-  /** D76 — the task's shared Priority (`pm_tasks.importance`); `null` unsets. */
-  importance?: number | null;
-  /** The Focus matrix's Important switch. D76: a VIEW of the shared Priority,
-   *  so `updateItem` turns it into an `importance` write
-   *  (`importanceForImportant`) and never sends `important` itself. */
+  /** prioritization matrix flags (local overlay; urgent is derived, not here) */
   important?: boolean;
   leveraged?: boolean;
   /** needs an unbroken flow state (deep/creative/builder work) */
@@ -1369,23 +1364,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     // The confirmed matrix flags overlay the decision. Applied locally to the
     // clarified row and (live) patched after organize, independent of the GTD
     // disposition so the golden-eval organize path stays untouched.
-    // D76: the confirmed Important is a Priority write, resolved against the
-    // row as it stands (`importanceForImportant`), so the local copy and the
-    // PATCH below agree about which level it became.
-    const current = get().items.find((i) => i.id === id);
-    const level = weight
-      ? importanceForImportant(current?.importance, weight.important)
-      : undefined;
     const applyWeight = (i: GtdItem): GtdItem =>
-      weight
-        ? {
-            ...i,
-            ...(level !== undefined ? { importance: level } : {}),
-            important: weight.important,
-            leveraged: weight.leveraged,
-            deepWork: weight.deepWork,
-          }
-        : i;
+      weight ? { ...i, important: weight.important, leveraged: weight.leveraged, deepWork: weight.deepWork } : i;
     set((s) => {
       const snapshot: UndoSnapshot = {
         items: s.items,
@@ -1497,7 +1477,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           apply
             .then(() =>
               apiPatchItem(id, {
-                ...(level !== undefined ? { importance: level } : {}),
+                important: weight.important,
                 leveraged: weight.leveraged,
                 deep_work: weight.deepWork,
               }),
@@ -2152,17 +2132,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     if (get().backend === "live") sync(apiPatchItem(id, { defer_until: "" }));
   },
 
-  updateItem: (id, requested) => {
-    // D76 — the Important switch writes the shared Priority. Resolved once,
-    // against the row as it stands, so the optimistic copy and the request
-    // agree about which level it became.
-    const before = get().items.find((i) => i.id === id);
-    const patch: typeof requested = { ...requested };
-    if (patch.important !== undefined) {
-      const level = importanceForImportant(before?.importance, patch.important);
-      delete patch.important;
-      if (level !== undefined && patch.importance === undefined) patch.importance = level;
-    }
+  updateItem: (id, patch) => {
     set((s) => ({
       items: s.items.map((i) => {
         if (i.id !== id) return i;
@@ -2230,14 +2200,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
                 ? patch.assignee ?? undefined
                 : i.assignee,
           isMine: patch.isMine !== undefined ? patch.isMine : i.isMine,
-          importance:
-            patch.importance !== undefined
-              ? patch.importance ?? undefined
-              : i.importance,
           important:
-            patch.importance !== undefined
-              ? (patch.importance ?? -1) >= IMPORTANT_AT
-              : i.important,
+            patch.important !== undefined ? patch.important : i.important,
           leveraged:
             patch.leveraged !== undefined ? patch.leveraged : i.leveraged,
           deepWork:
@@ -2257,7 +2221,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       if (patch.context !== undefined) body.context = patch.context;
       if (patch.energy !== undefined) body.energy = patch.energy;
       if (patch.timeEstimateMins !== undefined)
-        // D76: the task's ONE estimate. 0 was this app's "clear", and on a
+        // D77: the task's ONE estimate. 0 was this app's "clear", and on a
         // shared column a clear is null — never "zero minutes of work".
         body.time_estimate_mins = patch.timeEstimateMins || null;
       if (patch.dueAt !== undefined) body.due_at = patch.dueAt;
@@ -2292,7 +2256,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           };
       }
       if (patch.isMine !== undefined) body.is_mine = patch.isMine;
-      if (patch.importance !== undefined) body.importance = patch.importance;
+      if (patch.important !== undefined) body.important = patch.important;
       if (patch.leveraged !== undefined) body.leveraged = patch.leveraged;
       if (patch.deepWork !== undefined) body.deep_work = patch.deepWork;
       if (patch.keptMine !== undefined) body.kept_mine = patch.keptMine;

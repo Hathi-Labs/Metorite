@@ -44,6 +44,9 @@ import {
   lensFetchProjects,
   lensFetchUntriaged,
   lensMyOverlay,
+  filedByMe,
+  focusPatch,
+  overlayOf,
   lensMyTaskLanes,
   lensFileUnder,
   lensItemDetail,
@@ -114,7 +117,8 @@ const ROW = {
   created_at: "2026-09-01T08:00:00+00:00",
   updated_at: "2026-09-01T09:00:00+00:00",
   archived_at: null,
-  // D76 — the shared Priority (Urgent) and the ONE estimate.
+  // ⚠️ the shared Priority integer — must NOT become `important`.
+  // D77 — and the ONE estimate.
   importance: 3,
   estimate_mins: 480,
   start_date: "2026-09-05",
@@ -136,6 +140,7 @@ const ROW = {
   is_hard_date: true,
   actual_start: null,
   actual_end: null,
+  important: true,
   leveraged: null,
   deep_work: true,
   kept_mine: null,
@@ -223,23 +228,19 @@ describe("mapLensItem", () => {
     expect(item.notes).toBe("with the notes intact");
   });
 
-  it("reads Priority and derives Important from it (D76)", () => {
-    // D76 amends D53.8: one Priority, the team's. Important is High or
-    // Urgent, so a task Projects calls Urgent can never read "Low value".
-    expect(item.importance).toBe(3);
+  it("does NOT read `important` from the shared Priority integer", () => {
+    // D53.8's confusable pair. `pm_tasks.importance` is the team's Priority;
+    // `important` is my private Eisenhower flag. Mapping one to the other
+    // publishes triage nobody asked to share. D76 lets the Priority SEED an
+    // unstated flag in `priority.ts`, never here, and D77 keeps that.
     expect(item.important).toBe(true);
-    expect(mapLensItem({ ...ROW, importance: 2 }).important).toBe(true);
-    expect(mapLensItem({ ...ROW, importance: 1 }).important).toBe(false);
-    expect(mapLensItem({ ...ROW, importance: 0 }).importance).toBe(0);
-    // Unset is not Low: no Priority, no Important, and no invented 0.
-    const unset = mapLensItem({ ...ROW, importance: null });
-    expect(unset.importance).toBeUndefined();
-    expect(unset.important).toBeUndefined();
-    // A stale overlay `important` on the wire is ignored, not read.
-    expect(mapLensItem({ ...ROW, importance: 0, important: true }).important).toBe(false);
+    expect(ROW.importance).toBe(3);
+    expect(item.orgPriority).toBe(3);
+    expect(mapLensItem({ ...ROW, importance: 0 }).important).toBe(true);
+    expect(mapLensItem({ ...ROW, important: null }).important).toBeUndefined();
   });
 
-  it("reads the ONE estimate off the task, never the overlay (D76)", () => {
+  it("reads the ONE estimate off the task, never the overlay (D77)", () => {
     expect(item.timeEstimateMins).toBe(480);
     expect(
       mapLensItem({ ...ROW, estimate_mins: null, time_estimate_mins: 45 })
@@ -247,7 +248,7 @@ describe("mapLensItem", () => {
     ).toBeUndefined();
   });
 
-  it("carries the shared start date and tags (D76)", () => {
+  it("carries the shared start date and tags (D77)", () => {
     expect(item.startDate).toBe("2026-09-05");
     expect(item.tags).toEqual(["ops", "quote"]);
     expect(mapLensItem({ ...ROW, tags: undefined }).tags).toEqual([]);
@@ -342,29 +343,29 @@ describe("splitPatch", () => {
     expect(splitPatch({ clear_assignee: true }).assignees).toEqual([]);
   });
 
-  it("sends the estimate, Priority and start date to the TASK (D76)", () => {
+  it("sends the estimate and start date to the TASK, and Important to ME (D77)", () => {
     const split = splitPatch({
       time_estimate_mins: 30,
-      importance: 2,
       start_date: "2026-10-01",
+      important: true,
       leveraged: true,
     });
     expect(split.task).toEqual({
       estimate_mins: 30,
-      importance: 2,
       start_date: "2026-10-01",
     });
-    expect(split.personal).toEqual({ leveraged: true });
+    expect(split.personal).toEqual({ important: true, leveraged: true });
   });
 
-  it("never writes the two retired overlay columns (D76)", () => {
-    // The fence the gateway's 422 mirrors: neither key is an overlay key,
-    // and `important` is refused by name rather than dropped.
-    expect(OVERLAY_KEYS).not.toContain("important");
+  it("never writes the retired overlay estimate, nor the shared Priority (D77)", () => {
+    // The fence the gateway's 422 mirrors: the estimate is not an overlay
+    // key. `important` IS one, because it is the member's own answer (D76),
+    // and no My Tasks write reaches the shared Priority.
+    expect(OVERLAY_KEYS).toContain("important");
     expect(OVERLAY_KEYS).not.toContain("time_estimate_mins");
     expect(Object.values(TASK_KEYS)).toContain("estimate_mins");
+    expect(Object.values(TASK_KEYS)).not.toContain("importance");
     expect(splitPatch({ time_estimate_mins: 45 }).personal).toEqual({});
-    expect(() => splitPatch({ important: true })).toThrow(/derived from the shared Priority/);
   });
 
   it("ignores undefined, so a spread patch does not clear fields", () => {
@@ -414,7 +415,7 @@ describe("the lens talks to /api/projects, never /api/tasks", () => {
     }
   });
 
-  it("leaves the reopen to the gateway: one overlay write, no lane write (D76)", async () => {
+  it("leaves the reopen to the gateway: one overlay write, no lane write (D77)", async () => {
     // `personal.reopen_if_closed` reopens a closed task on every overlay
     // door, the bulk one the checkbox takes included. A second, client-side
     // reopen would be a second rule.
@@ -430,7 +431,7 @@ describe("the lens talks to /api/projects, never /api/tasks", () => {
     ]);
   });
 
-  it("restores a deleted closed task as DONE, so Undo never reopens it (D76)", async () => {
+  it("restores a deleted closed task as DONE, so Undo never reopens it (D77)", async () => {
     const { calls, restore } = stub([{ ...ROW, status_category: "done" }, {}, ROW]);
     try {
       await lensRestoreItem("task-1");
@@ -1074,24 +1075,69 @@ describe("continuity with Projects (S6e)", () => {
     ]);
   });
 
-  it("answers the viewer's own overlay for the Projects chip, or null", async () => {
-    const a = stub([{ ...ROW, is_triaged: true, disposition: "WAITING", context: "@calls" }]);
+  it("answers the viewer's own overlay for the Projects panel", async () => {
+    const a = stub([
+      { ...ROW, is_triaged: true, disposition: "WAITING", context: "@calls", important: true, leveraged: null, deep_work: null },
+    ]);
     try {
       expect(await lensMyOverlay("task-1")).toEqual({
         disposition: "WAITING",
         context: "@calls",
         isTriaged: true,
+        important: true,
+        leveraged: undefined,
+        deepWork: undefined,
       });
       expect(a.calls[0].url).toBe("/api/projects/my/tasks/task-1");
     } finally {
       a.restore();
     }
-    // No overlay row: the derived disposition is not "how I filed it".
+  });
+
+  it("answers for an UNTRIAGED task too, and the chip rule moved to filedByMe", async () => {
+    // ⚠️ Changed 2026-09-23. This used to answer null here, which hid the
+    // focus row on exactly the task whose focus most needs setting. The old
+    // rule survives as `filedByMe`: the derived disposition of an untriaged
+    // task is not "how I filed it", so the chip stays hidden.
     const b = stub([{ ...ROW, is_triaged: false, context: null }]);
+    let overlay;
     try {
-      expect(await lensMyOverlay("task-1")).toBeNull();
+      overlay = await lensMyOverlay("task-1");
     } finally {
       b.restore();
     }
+    expect(overlay).not.toBeNull();
+    expect(filedByMe(overlay!)).toBe(false);
+    expect(filedByMe({ ...overlay!, isTriaged: true })).toBe(true);
+    expect(filedByMe({ ...overlay!, context: "@calls" })).toBe(true);
+    expect(filedByMe(null)).toBe(false);
+  });
+
+  it("sends every focus flag in the overlay's own keys", () => {
+    // 🔴 The Projects focus row shipped a dead Deep work toggle. The controls
+    // say `deepWork`, `splitPatch` takes `deep_work` and throws on the other
+    // spelling, so the toggle drew on, threw, re-read and drew off. Each
+    // flag goes through the REAL splitter here, not a copy of its key list.
+    for (const [flag, key] of [
+      ["important", "important"],
+      ["leveraged", "leveraged"],
+      ["deepWork", "deep_work"],
+    ] as const) {
+      for (const value of [true, false]) {
+        const split = splitPatch(focusPatch({ [flag]: value }));
+        expect(split.personal, `${flag}=${value}`).toEqual({ [key]: value });
+        expect(split.task).toEqual({});
+      }
+    }
+    // The raw control patch is exactly what used to throw.
+    expect(() => splitPatch({ deepWork: true })).toThrow();
+  });
+
+  it("carries only MY flags, never the shared facts the panel already holds", () => {
+    // The due date and the project priority come off the panel's live task
+    // row. A copy here would go stale the moment Priority is edited beside it.
+    const keys = Object.keys(overlayOf({ ...mapLensItem({ ...ROW, importance: 3 }) }));
+    expect(keys).not.toContain("orgPriority");
+    expect(keys).not.toContain("dueAt");
   });
 });

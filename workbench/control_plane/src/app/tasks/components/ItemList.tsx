@@ -50,8 +50,7 @@ const VIEW_META: Record<
 > = {
   inbox: { title: "Inbox", icon: themedIcon("Inbox"), hint: "Capture, then clarify each item to zero." },
   next: { title: "My Next Actions", icon: themedIcon("ListChecks"), hint: "Tasks assigned to you, grouped by status and sorted by priority — the very next physical step for each." },
-  // D76: "Focus", never "Priority" — that word is the task's shared field.
-  priority: { title: "Focus", icon: themedIcon("Target"), hint: "Your open work by the Focus matrix — Critical first, Eliminate last." },
+  priority: { title: "Priority", icon: themedIcon("Target"), hint: "Your open work by the founder matrix — Founder Fire first, Eliminate last." },
   engage: { title: "Engage · Now", icon: themedIcon("Zap"), hint: "What you can pick up right now, matched to your energy." },
   waiting: { title: "Waiting For", icon: themedIcon("Clock"), hint: "Delegated or blocked on someone else." },
   calendar: { title: "Calendar", icon: themedIcon("Calendar"), hint: "Date-specific actions — the hard landscape." },

@@ -33,6 +33,8 @@ export const TASK_KIND: Record<string, ModelKind> = {
   transcribe: "transcribe",
   speak: "speak",
   embed: "embed",
+  // CP-13b: a decision model is judged only against decision chains.
+  decide: "decide",
 };
 
 export type ChainContext = {

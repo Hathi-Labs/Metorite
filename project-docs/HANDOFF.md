@@ -95,6 +95,59 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-174 · `--warning` is the same bright yellow in both colour modes, so warning TEXT is unreadable on white · [AGENT]
+- **Check:** `grep -n "\-\-warning:" workbench/control_plane/src/app/globals.css`.
+  Two lines with the same value, one in `:root` and one in `.light`, means
+  this is open.
+- **What happens.** `--warning` is `hsl(47 96% 53%)` in both modes. As a fill
+  or a border on a dark ground it reads well. As TEXT on white it measured
+  **1.57 : 1** on 2026-09-23. WCAG AA asks for 4.5. The dark-mode value
+  measured 11.28 : 1, so only light mode is broken.
+- **Where it bites.** Every `text-warning`. `statusAccent.ts` draws the amber
+  hue's text slot with it, so an amber status reads pale yellow on white. The
+  D76 "suggested" chip met it first and moved its words to
+  `muted-foreground`.
+- **The fix.** Give `.light` a darker `--warning` that passes 4.5 : 1 as text,
+  and keep the bright value for dark mode. Then look at every amber status in
+  light mode, because this is the one look (`globals.css`). Mirror the value
+  in `lib/theme/themes.ts`, which `themes.test.ts` holds to it.
+- **Fence to add:** `src/lib/theme/contrast.ts` should measure `--warning` as
+  text on `--background` in both modes.
+- Added: 2026-09-23, found while building D76. Minted as H-172 and
+  renumbered the same day: #431 took H-172 three minutes before #429
+  merged, and #429 merged second.
+
+### H-173 · The chat tools let the model write Priority 4, and the scale stops at 3 · [AGENT]
+- **Check:** `grep -rn "importance is 0 to 4" apps/skills/skill-projects/`.
+  Any hit means this is open.
+- **What happens.** The Projects scale is 0 Low to 3 Highest
+  (`IMPORTANCE_OPTIONS`, D76). Four places in `skill_projects`
+  (`guarded.py`, `inbox.py`, `forms.py` twice) tell the model the range is
+  0 to 4 and accept a 4. Nothing else refuses it: `pm_tasks.importance` is a
+  bare `SMALLINT` with no CHECK, and `TaskModel.importance` is `int | None`.
+  A 4 then prints as a bare "4" in the table and draws no chip on a card.
+- **The D76 seed is safe.** `>= 2` counts a 4 as important. Only the display
+  breaks.
+- **Why an agent did not fix it here.** The owner is building the Projects
+  chat in a separate stream. Change the four messages and the four bounds to
+  0 to 3 there, or add a CHECK (0 to 3) in an expand/contract migration after
+  a count of rows above 3 on production.
+- Added: 2026-09-23, found while building D76.
+
+
+### H-172 · The shared scratch DB cannot replay the migration ladder any more · [AGENT]
+- **Check:** on the scratch DB, `SELECT max(attnum) FROM pg_attribute WHERE
+  attrelid = 'email_assistant_settings'::regclass` → 1600 means this is open.
+- **Why:** `42_email_model_roles.sql` drops columns that earlier migrations
+  add back. Each `apply_ladder` replay uses up attribute numbers, and dropped
+  columns keep theirs. The table hit Postgres's 1600-column limit, so every
+  R8 suite that replays the ladder on `metorite-scratch-tenant` now fails
+  with `TooManyColumns`. Found by the S7a build, 2026-09-23.
+- **Do:** Make migration 42 replay-safe, so a replay adds and drops nothing.
+  Then rebuild the shared DB with `bash scripts/dev_db.sh --down` and
+  `bash scripts/dev_db.sh`, at a time when no other checkout uses it.
+- **Authority:** R6 · R8 · `engineering_practice.md` §1.1
+- **Added:** 2026-09-23 · the S7a build
 
 ### H-170 · A Console migration runs with NO backup of the Console database · [AGENT]
 - **Check:** on the box, run
@@ -129,11 +182,12 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-23 · the CP-13a deploy check
 
 ### H-165 · Build CP-13a to CP-13d: the `decide` task, its door, the Console pages and the chat tool · [AGENT]
-- **Check:** CP-13a is BUILT (2026-09-23, branch `cp13a-decide`).
-  `rg -n 'native_typesafe' apps/services/customer_console/customer_console/handlers.py`
-  → no hit means CP-13a has not reached `main` yet.
-  `rg -n 'native_typesafe' workbench/operator_console/src/` → no hit means
-  CP-13b has not landed.
+- **Check:** CP-13a and CP-13b are BUILT (2026-09-23, branches
+  `cp13a-decide` and `cp13b-console`).
+  `rg -n 'decide/try' apps/services/customer_console/customer_console/operator_roles.py`
+  → no hit means CP-13b has not reached `main` yet.
+  `rg -n 'def decide' packages/acb_llm/` → no hit means CP-13c has not
+  landed.
 - **Why:** owner decision 2026-09-23 (D75). The owner chose TypeSafe's Jev for
   fast typed decisions, and asked for the Operator Console first.
 - **Do this in order:** CP-13a, then CP-13b, then CP-13c, then CP-13d. Build

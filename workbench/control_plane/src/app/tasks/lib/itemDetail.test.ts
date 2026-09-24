@@ -106,7 +106,7 @@ describe("one task panel composition (S6e)", () => {
 
   it("My Tasks' strip keeps the member's own facts above the body", () => {
     const src = HOSTS["tasks/components/ItemDetail.tsx"];
-    // D76: Estimate left this list — it is the task's ONE estimate, and the
+    // D77: Estimate left this list — it is the task's ONE estimate, and the
     // body draws it. Context, energy and defer are how I hold the work.
     for (const label of ['label="Context"', 'label="Energy"', 'label="Defer until"']) {
       expect(src, label).toContain(label);
@@ -176,7 +176,7 @@ describe("no two labels alike in the lens host (D53.8)", () => {
     ).toEqual([]);
   });
 
-  it("draws every WORK fact in the body and none of them in the strip (D76)", () => {
+  it("draws every WORK fact in the body and none of them in the strip (D77)", () => {
     // The owner directive: one set of fields. Each of these is a fact about
     // the task, so it has one control, in the body both apps host. A label
     // in both halves is two editors for one fact, a hand's width apart.
@@ -209,5 +209,18 @@ describe("no two labels alike in the lens host (D53.8)", () => {
       "",
     );
     expect(strip).not.toMatch(/uppercase[^"]*">\s*Priority\s*</);
+  });
+
+  it("names the Projects panel's private row 'Your focus', never 'Priority' (D76)", () => {
+    // D76 put the member's matrix on the Projects panel too, as a private
+    // row beside the body's shared Priority. D77's one-label rule holds
+    // there by name: the row is "Your focus", and the only control called
+    // Priority on that panel is the body's shared field. The row is not
+    // part of the body, so the work-fact check above does not see it.
+    const row = code(read("projects/components/MyFocusRow.tsx"));
+    expect(HOSTS["projects/components/TaskPanel.tsx"]).toContain("<MyFocusRow");
+    expect(row).toContain("Your focus");
+    expect(row).not.toMatch(/>\s*Priority\s*</);
+    expect(row).not.toMatch(/label="Priority"/);
   });
 });

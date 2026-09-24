@@ -1395,6 +1395,15 @@ export const projectsApi = {
       `assignees?q=${encodeURIComponent(q)}${due ? `&due=${due}` : ""}`
     ),
 
+  /**
+   * "Suggested" in the task panel's picker (WS-27bm S7b, projects_ai_chat.md
+   * §13.4). At most three people ranked FOR THIS TASK by the server. Without
+   * `admin:members:read` the answer says `hr_visible: false` and carries no
+   * `candidates` key, and the picker then shows no heading.
+   */
+  taskCandidates: (taskId: string) =>
+    call<import("./candidates").CandidatesResponse>(`tasks/${taskId}/candidates`),
+
   createTask: (payload: Record<string, unknown>) =>
     call<TaskRow>("tasks", { method: "POST", body: JSON.stringify(payload) }),
 

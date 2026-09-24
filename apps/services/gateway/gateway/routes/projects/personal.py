@@ -114,7 +114,7 @@ class PersonalIn(BaseModel):
     next_action: str | None = None
     context: str | None = None
     energy: str | None = None
-    #: ⚠️ RETIRED by D76 (2026-09-23). Kept on the model only so a stale
+    #: ⚠️ RETIRED by D77 (2026-09-23). Kept on the model only so a stale
     #: client that sends it is REFUSED by name (`RETIRED_OVERLAY_KEYS`)
     #: instead of being dropped with a 200. The estimate is
     #: `pm_tasks.estimate_mins`, written through `PATCH /projects/tasks/{id}`.
@@ -133,10 +133,12 @@ class PersonalIn(BaseModel):
     actual_end: str | None = None
 
     # ── the prioritisation matrix (migration 188) ───────────────────────────
-    #: ⚠️ RETIRED by D76 (2026-09-23), for the reason `urgent` was never here:
-    #: the matrix's IMPORTANT axis is now DERIVED from the shared Priority,
-    #: `pm_tasks.importance >= IMPORTANT_AT`. Refused by name, never dropped
-    #: (`RETIRED_OVERLAY_KEYS`). The column stays until a contract (R6).
+    #: The Eisenhower IMPORTANT axis. ⚠️ Not `pm_tasks.importance`, which is the
+    #: shared per-task Priority integer the Projects table edits — see 188's
+    #: header. `urgent` is the other axis and is deliberately absent: it is
+    #: DERIVED from `due_at`, never stored, so accepting it here would create a
+    #: second answer to a question the deadline already answers. D76 lets the
+    #: shared Priority SEED an unstated `important` on read; it never writes it.
     important: bool | None = None
     leveraged: bool | None = None
     deep_work: bool | None = None
@@ -364,27 +366,19 @@ async def reopen_if_closed(
     return moved
 
 
-#: Priority → the Focus matrix's IMPORTANT axis (D76). `pm_tasks.importance`
-#: is 0 Low, 1 Normal, 2 High, 3 Urgent (`projects/lib/table.ts`), and High or
-#: Urgent is important. The client's `priority.ts::IMPORTANT_AT` is the same
-#: number, and `test_projects_personal_s6f.py` pins the two together.
-IMPORTANT_AT = 2
-
-#: Overlay columns D76 retired, each with the shared column that replaced it.
+#: Overlay columns D77 retired, each with the shared column that replaced it.
 #: A write that names one is REFUSED (422), never dropped: a silently
 #: discarded field reads exactly like a save that worked. The columns stay on
 #: `pm_task_personal` until a later contract (R6).
 RETIRED_OVERLAY_KEYS: dict[str, str] = {
-    "important": (
-        "`important` is derived from the shared Priority "
-        f"(`pm_tasks.importance >= {IMPORTANT_AT}`) since D76. Set `importance` "
-        "through PATCH /projects/tasks/{id}."
-    ),
     "time_estimate_mins": (
         "the estimate is the shared `pm_tasks.estimate_mins` since D76. Set "
         "`estimate_mins` through PATCH /projects/tasks/{id}."
     ),
 }
+# ⚠️ `important` is NOT here. It is the member's own answer, and D76 keeps
+# it on the overlay: the shared Priority only seeds it while it is unstated
+# (`routes/tasks/priority.py::seeded_important`).
 
 
 # ── The personal project ────────────────────────────────────────────────────
@@ -977,8 +971,8 @@ def _personal_to_dict(row: Any) -> dict[str, Any]:
         "next_action": getattr(row, "next_action", None),
         "context": getattr(row, "context", None),
         "energy": getattr(row, "energy", None),
-        # D76: no `time_estimate_mins` and no `important` here. Both columns
-        # are still on the row (R6) and neither is read any more.
+        # D77: no `time_estimate_mins` here. The column is still on the row
+        # (R6) and is not read any more.
         "is_two_minute": bool(getattr(row, "is_two_minute", False)),
         "defer_until": _iso(row, "defer_until"),
         # The block. ⚠️ `flexible` and `is_hard_date` are passed through as
@@ -995,6 +989,7 @@ def _personal_to_dict(row: Any) -> dict[str, Any]:
         # never `bool()`-ed, because "has not triaged" and "decided: not
         # important" are different answers and only one of them should be
         # nudged.
+        "important": getattr(row, "important", None),
         "leveraged": getattr(row, "leveraged", None),
         "deep_work": getattr(row, "deep_work", None),
         "kept_mine": getattr(row, "kept_mine", None),
@@ -1020,7 +1015,7 @@ def _personal_to_dict(row: Any) -> dict[str, Any]:
 _OVERLAY_PASSTHROUGH = (
     "next_action", "context", "energy",
     "flexible", "is_hard_date",
-    "leveraged", "deep_work", "kept_mine", "sort_key",
+    "important", "leveraged", "deep_work", "kept_mine", "sort_key",
 )
 
 #: Overlay instants. Rendered ISO-8601, or None.
@@ -1223,6 +1218,7 @@ SELECT t.*,
        p.is_hard_date       AS p_is_hard_date,
        p.actual_start       AS p_actual_start,
        p.actual_end         AS p_actual_end,
+       p.important          AS p_important,
        p.leveraged          AS p_leveraged,
        p.deep_work          AS p_deep_work,
        p.kept_mine          AS p_kept_mine,

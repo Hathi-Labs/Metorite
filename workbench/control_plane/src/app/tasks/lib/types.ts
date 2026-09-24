@@ -133,20 +133,22 @@ export interface GtdItem {
   /** "@computer" | "@calls" | … (matches a GtdContext.name) */
   context?: string;
   energy?: Energy;
-  /** D76 — the task's ONE estimate, `pm_tasks.estimate_mins`: the number the
+  /** D77 — the task's ONE estimate, `pm_tasks.estimate_mins`: the number the
    *  Projects board, People capacity and analytics read. Shared, not mine. */
   timeEstimateMins?: number;
   isTwoMinute?: boolean;
-  /** D76 — the task's shared Priority, `pm_tasks.importance`: 0 Low, 1
-   *  Normal, 2 High, 3 Urgent (`projects/lib/table.ts`). Unset is undefined,
-   *  never 0 — 0 is Low. */
-  importance?: number;
-  /** Focus matrix inputs. `urgent` is NOT stored — derive it from dueAt via
-   *  isUrgent(). ⚠️ D76: `important` is NOT stored either — the lens derives
-   *  it from `importance` (High or Urgent, `priority.ts::IMPORTANT_AT`).
-   *  Kept on the type because the matrix code reads it; nothing writes it. */
+  /** Prioritization matrix inputs. `urgent` is NOT stored — derive it from
+   *  dueAt via isUrgent(); the 8-cell label comes from priorityCell(). */
   important?: boolean;
   leveraged?: boolean;
+  /**
+   * The SHARED priority the Projects board sets (`pm_tasks.importance`, 0 Low
+   * to 3 Highest). Read-only here. It is the org's word on the task, not
+   * mine, and it never overwrites `important` — while `important` is unstated
+   * it SEEDS a suggestion (`seededImportant` in priority.ts). Owner decision,
+   * 2026-09-23.
+   */
+  orgPriority?: number;
   /** needs an unbroken FLOW state (deep/creative/builder work) — the planner
    *  protects a long peak-energy block; Focus Mode defaults to a longer timer */
   deepWork?: boolean;

@@ -7955,6 +7955,25 @@ doing it says `NEXT`, the person who delegated it says `WAITING`. A single colum
 `(task_id, member_email)`. This is what delegation *is*, and it is the reason the
 personal lens is an overlay rather than a filter.
 
+### 12.5b The Priority scale, and my focus on the card (D76, 2026-09-23)
+
+**The scale is Highest, High, Normal and Low.** Level 3 was "Urgent" until
+2026-09-23. My Tasks derives its own `urgent` from the due date, so the old
+word said two things about one task. The labels live in ONE place,
+`IMPORTANCE_OPTIONS` in `lib/table.ts`. The bulk bar and the group-by lanes
+read that place.
+
+**The task panel shows "Your focus".** This row is private. It appears only
+for a task in the viewer's own lens, and it shows the viewer's own matrix: the
+level, then the `important`, `leveraged` and `deep_work` flags, then the
+derived `urgent`. It
+reuses `WeightToggles` and `PriorityBadge` from My Tasks, so one flag reads the
+same in both apps. The row reads the due date and the shared Priority from the
+live task, so a Priority edit in the same panel changes the row at once.
+
+**A shared Priority of High or Highest seeds Important** while the viewer has
+not stated it. Task Manager §13.4b owns that rule.
+
 ### 12.5a The scheduled block — per member, per D53.7
 
 `pm_task_personal` gained six columns in **migration 187** (WS-39 S3a):

@@ -95,6 +95,11 @@ def test_every_feature_module_is_actually_mounted() -> None:
         "/projects/assigned-to-me",
         "/projects/nodes/{project_id}/fields",
         "/projects/fields/{field_id}",
+        # WS-27bm S7b — fit and rebalancing. `/projects/candidates` is safe
+        # from shadowing only while no `/projects/{x}` template exists.
+        "/projects/tasks/{task_id}/candidates",
+        "/projects/candidates",
+        "/projects/analytics/rebalance",
     ):
         assert expected in paths, f"{expected} is not mounted"
 

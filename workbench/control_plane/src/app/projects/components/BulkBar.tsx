@@ -28,6 +28,7 @@ import { TagPicker } from "./TagPicker";
 
 import type { StatusRow, TagRow } from "../lib/api";
 import { labelWith } from "../lib/grouping";
+import { IMPORTANCE_OPTIONS } from "../lib/table";
 import { type BulkDraft, EMPTY_DRAFT, buildRequest } from "../lib/selection";
 
 /**
@@ -41,13 +42,15 @@ import { type BulkDraft, EMPTY_DRAFT, buildRequest } from "../lib/selection";
 const OFF_DEFAULT = "border-primary/50 bg-primary/10 text-primary";
 const AT_DEFAULT = "";
 
-const IMPORTANCE = [
-  ["", "Priority…"],
-  ["3", "Urgent"],
-  ["2", "High"],
-  ["1", "Normal"],
-  ["0", "Low"],
-] as const;
+/**
+ * The priority picker's rows. Read from `IMPORTANCE_OPTIONS` rather than
+ * spelt again — this was the third copy of the labels, and the note above
+ * said a third surface is when they move to one place. Only the empty row's
+ * word differs: here it is a prompt, not the "No priority" of a cell.
+ */
+const IMPORTANCE = IMPORTANCE_OPTIONS.map(({ value, label }) =>
+  value === "" ? { value, label: "Priority…" } : { value, label },
+);
 
 interface Props {
   count: number;
@@ -166,7 +169,7 @@ export function BulkBar({
           className={draft.importance ? OFF_DEFAULT : AT_DEFAULT}
           value={draft.importance}
           onChange={(next) => set({ importance: next })}
-          options={IMPORTANCE.map(([value, label]) => ({ value, label }))}
+          options={IMPORTANCE}
         />
 
         {/* ⚠️ The add/remove fields are PAIRS, and the pair is the unit that
