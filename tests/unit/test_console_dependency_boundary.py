@@ -339,6 +339,66 @@ _ALLOWED_CALLERS = (
 _DECIDE_ALLOWED_NAMES = frozenset({"decide_on_console", "ConsoleRouterUnavailable"})
 
 
+def _console_resolve_names(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """Every name a module reads from ``console_resolve``, aliases resolved.
+
+    Returns ``(attributes read off the module, names imported from it)``.
+    It follows the name each import BINDS, so ``from acb_auth import
+    console_resolve as cr`` then ``cr.x`` is seen, and so is the dotted
+    ``acb_auth.console_resolve.x`` after a bare ``import``.
+    """
+    module_aliases: set[str] = set()
+    dotted = False
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 0:
+            if node.module == "acb_auth.console_resolve":
+                imported.update(a.name for a in node.names)
+            elif node.module == "acb_auth":
+                module_aliases.update(
+                    a.asname or a.name for a in node.names
+                    if a.name == "console_resolve"
+                )
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "acb_auth.console_resolve":
+                    if a.asname:
+                        module_aliases.add(a.asname)
+                    else:
+                        dotted = True
+
+    used: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute):
+            continue
+        base = node.value
+        aliased = isinstance(base, ast.Name) and base.id in module_aliases
+        spelled_out = (
+            dotted
+            and isinstance(base, ast.Attribute)
+            and base.attr == "console_resolve"
+            and isinstance(base.value, ast.Name)
+            and base.value.id == "acb_auth"
+        )
+        if aliased or spelled_out:
+            used.add(node.attr)
+    return used, imported
+
+
+def test_the_alias_resolver_sees_every_spelling() -> None:
+    """The narrowing test is only as good as this resolver, so it is shown
+    each spelling that must not slip past it."""
+    for src, expected in (
+        ("from acb_auth import console_resolve\nconsole_resolve.a", {"a"}),
+        ("from acb_auth import console_resolve as cr\ncr.b", {"b"}),
+        ("import acb_auth.console_resolve as cr\ncr.c", {"c"}),
+        ("import acb_auth.console_resolve\nacb_auth.console_resolve.d", {"d"}),
+        ("from acb_auth.console_resolve import e as x", {"e"}),
+    ):
+        used, imported = _console_resolve_names(ast.parse(src))
+        assert used | imported == expected, src
+
+
 def test_the_decide_facade_touches_only_the_decide_client() -> None:
     """``acb_llm/decide.py`` is on the list for TWO names, and this pins them.
 
@@ -346,21 +406,7 @@ def test_the_decide_facade_touches_only_the_decide_client() -> None:
     outage exception, so a later edit cannot call ``resolve_for_signin`` or a
     seat write from the facade.
     """
-    tree = _tree(_REPO / _THE_DECIDE_CALLER)
-    used = {
-        node.attr
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "console_resolve"
-    }
-    imported = {
-        a.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "acb_auth.console_resolve"
-        for a in node.names
-    }
+    used, imported = _console_resolve_names(_tree(_REPO / _THE_DECIDE_CALLER))
     assert used or imported, "the facade no longer reaches console_resolve"
     assert (used | imported) <= _DECIDE_ALLOWED_NAMES, (
         f"acb_llm/decide.py reads {sorted((used | imported) - _DECIDE_ALLOWED_NAMES)} "
@@ -438,14 +484,15 @@ def test_resolve_is_reachable_only_from_the_signin_path() -> None:
         f"console_resolve callers drifted: {callers}\n\n"
         "It allocates a SEAT (`resolve_for_signin`). Exactly seven sites may "
         "call it — the completion of a sign-in, the self-serve signup provision, "
-        "the customer seat-admin write, the member-invite mirror and the CP-11 "
-        "AI Router hop (which allocates no seat and names no person). The first "
-        "four each carry a provider-verified session email. "
+        "the customer seat-admin write, the member-invite mirror, the CP-11 "
+        "AI Router hop, the gateway lifespan's bootstrap loop and the CP-13c "
+        "`acb_llm.decide` facade. The last three allocate no seat and name no "
+        "person. The first four each carry a provider-verified session email. "
         "Never `resolve_access` (six callers, "
         "one of them a fan-out over a room's participants), never "
         "`_with_resolved_access` (every authenticated request). "
         "customer_console.md §6 clause 11 · CP-2c slice 2 · WS-30 SC-2a · "
-        "WS-31 CP-2f."
+        "WS-31 CP-2f · CP-11 · CP-13c."
     )
 
 

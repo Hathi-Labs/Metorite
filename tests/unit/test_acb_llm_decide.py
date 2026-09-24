@@ -336,6 +336,56 @@ async def test_a_refused_request_is_DecideRequestInvalid_and_not_a_fallback(
     assert len(fake.requests) == 1
 
 
+async def test_an_UNBOUND_tier_degrades_and_does_not_crash(monkeypatch):
+    """Nobody has bound `tier-decide` in production today. The door says so
+    with a structured reason code, and the caller must fall back, exactly as
+    it does for a bound tier with no key (a 503)."""
+    fake = _box(monkeypatch)
+    fake.answers(400, {"detail": {
+        "reason": "tier_unknown",
+        "error": "no binding for tier 'tier-decide' on task 'decide'",
+    }})
+    with pytest.raises(DecideUnavailable) as err:
+        await decide("state", QUESTIONS)
+    assert err.value.reason == "tier_unknown"
+    assert err.value.status == 400
+    assert len(fake.requests) == 1
+
+
+async def test_a_structured_clause_13_refusal_stays_loud(monkeypatch):
+    fake = _box(monkeypatch)
+    fake.answers(400, {"detail": {"reason": "invalid_request", "error": "too many"}})
+    with pytest.raises(DecideRequestInvalid) as err:
+        await decide("state", QUESTIONS)
+    assert err.value.reason == "invalid_request"
+
+
+async def test_the_invalid_message_carries_no_tenant_text(monkeypatch):
+    """The Console's detail can quote a criterion key. A logged exception
+    must not carry it, so it rides on an attribute only."""
+    fake = _box(monkeypatch)
+    secret = "acme-secret-rule-name"
+    fake.answers(400, {"detail": {
+        "reason": "invalid_request",
+        "error": f"question 'q': criterion {secret!r} takes at most 4000 characters",
+    }})
+    with pytest.raises(DecideRequestInvalid) as err:
+        await decide("state", QUESTIONS)
+    assert secret not in str(err.value)
+    assert secret not in repr(err.value)
+    assert all(secret not in str(a) for a in err.value.args)
+    assert secret in json.dumps(err.value.detail), "the detail is still there to debug"
+
+
+async def test_a_non_str_question_id_is_a_TypeError_with_no_call(monkeypatch):
+    """`str(qid)` on the wire and a raw lookup on the way back would read
+    every answer as missing, after the Console billed the call."""
+    fake = _box(monkeypatch)
+    with pytest.raises(TypeError, match="question id"):
+        await decide("state", {1: QUESTIONS["urgent"]})  # type: ignore[dict-item]
+    assert fake.requests == []
+
+
 async def test_an_unexpected_status_degrades(monkeypatch):
     """A Console without the door answers 404. That is not a caller bug."""
     fake = _box(monkeypatch)

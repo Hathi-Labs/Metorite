@@ -62,9 +62,16 @@ _DEGRADE_VERDICTS: dict[int, str] = {
 }
 
 #: The Router's verdicts that mean "this request is wrong". A 400 is the
-#: clause-13 refusal or an unknown tier. A 422 is a body the door could not
-#: parse. Both are a caller or configuration fault that must be loud.
+#: clause-13 refusal. A 422 is a body the door could not parse. Both are a
+#: caller fault that must be loud.
 _INVALID_VERDICTS = frozenset({400, 422})
+
+#: The ONE 400 that is not the caller's fault. Nobody has bound
+#: ``tier-decide`` on the Console, which is the production state until an
+#: operator does. The door says so with a structured ``reason`` code (CP-13c),
+#: so the facade reads a code and never the sentence. It degrades, exactly as
+#: a bound tier with no key does (a 503).
+_TIER_UNKNOWN = "tier_unknown"
 
 
 # ── Exceptions ──────────────────────────────────────────────────────────────
@@ -92,15 +99,26 @@ class DecideUnavailable(DecideError):
 class DecideRequestInvalid(DecideError):
     """The Console refused the request itself (400 or 422).
 
-    This is NOT a fallback case. It is a caller bug, or a tier nobody bound,
-    and a silent fallback would hide it for ever. ``detail`` carries the
-    Console's own words, which name the rule the request broke.
+    This is NOT a fallback case. It is a caller bug, and a silent fallback
+    would hide it for ever. A caller lets it surface.
+
+    ⚠️ **The message holds the status and a reason CODE only.** The
+    Console's ``detail`` can quote question ids, criterion keys or the
+    request itself, which is tenant text. So it rides on :attr:`detail`,
+    which neither ``str()`` nor ``repr()`` prints, and a logged exception
+    carries no tenant text.
     """
 
     def __init__(self, status: int, detail: Any) -> None:
-        super().__init__(f"HTTP {status}: {detail}")
+        reason = detail.get("reason") if isinstance(detail, Mapping) else None
         self.status = status
+        self.reason = reason if isinstance(reason, str) else "request_invalid"
+        super().__init__(f"HTTP {status}: {self.reason}")
+        #: The Console's own words. Read it to debug. Do not log it.
         self.detail = detail
+
+    def __repr__(self) -> str:
+        return f"DecideRequestInvalid(status={self.status}, reason={self.reason!r})"
 
 
 # ── Questions ───────────────────────────────────────────────────────────────
@@ -275,12 +293,16 @@ def _wire_questions(questions: Mapping[str, Question]) -> dict[str, dict[str, An
         raise TypeError("decide() needs a non-empty mapping of question id to question")
     out: dict[str, dict[str, Any]] = {}
     for qid, question in questions.items():
+        # A non-str id would go out as `str(qid)` and come back under that
+        # key, so every answer would read as missing AFTER the call is billed.
+        if not isinstance(qid, str):
+            raise TypeError(f"a question id must be a str, not {type(qid).__name__}")
         if not isinstance(question, BooleanQuestion | ChoiceQuestion | ScoreQuestion):
             raise TypeError(
                 f"question {qid!r} must be a BooleanQuestion, ChoiceQuestion "
                 f"or ScoreQuestion, not {type(question).__name__}"
             )
-        out[str(qid)] = {
+        out[qid] = {
             "type": question.type,
             "instructions": question.instructions,
             "criteria": dict(question.criteria),
@@ -305,12 +327,13 @@ async def decide(
 
     Raises:
         DecideUnavailable: the switch is off, the box is not wired, a
-            deployment-key box got no member, the Console is out, or the
-            Router answered 402 or 403. Take the old path.
-        DecideRequestInvalid: the Console refused the request (400 or 422).
-            That is a bug to fix, not a fallback.
-        TypeError: ``questions`` holds something that is not one of the
-            three question types.
+            deployment-key box got no member, the Console is out, nobody
+            bound ``tier-decide`` (400 ``tier_unknown``), or the Router
+            answered 402 or 403. Catch it and take the old path.
+        DecideRequestInvalid: the Console refused the request (any other 400,
+            or a 422). That is a bug to fix. Let it surface.
+        TypeError: a question id is not a str, or ``questions`` holds
+            something that is not one of the three question types.
     """
     if not get_settings().decide_enabled:
         # 🔴 Before the import and before any I/O. Off means no call.
@@ -349,8 +372,17 @@ async def decide(
             _log.warning("decide.unreadable", extra={"decide_reason": str(exc)})
             raise DecideUnavailable(f"unreadable answer: {exc}", status=status) from exc
 
+    detail = body.get("detail")
+    if (
+        status == 400
+        and isinstance(detail, Mapping)
+        and detail.get("reason") == _TIER_UNKNOWN
+    ):
+        _log.info("decide.unavailable", extra={"decide_reason": _TIER_UNKNOWN, "decide_status": status})
+        raise DecideUnavailable(_TIER_UNKNOWN, status=status)
+
     if status in _INVALID_VERDICTS:
-        raise DecideRequestInvalid(status, body.get("detail"))
+        raise DecideRequestInvalid(status, detail)
 
     reason = _DEGRADE_VERDICTS.get(status, f"HTTP {status}")
     _log.info("decide.unavailable", extra={"decide_reason": reason, "decide_status": status})

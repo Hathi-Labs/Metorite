@@ -9854,10 +9854,25 @@ The tenant gateway reaches the Router for chat only today. A search for
     path.
   - A 402 gives `DecideUnavailable("insufficient_credits")`, and a 403 gives
     `DecideUnavailable("forbidden")`. A feature degrades and does not crash.
-  - A 400 or 422 gives `DecideRequestInvalid` with the Console's `detail`.
-    It is a caller bug, and a silent fallback would hide it. ⚠️ An unbound
-    `tier-decide` also answers 400 `tier_unknown`, so it is loud too.
+  - An unbound `tier-decide` gives `DecideUnavailable("tier_unknown")`. That
+    is the production state until an operator binds the tier. The decide
+    door answers 400 with `detail = {"reason": "tier_unknown", "error": ...}`,
+    and the facade reads the code, never the sentence. A bound tier with no
+    key answers 503, so both gaps now fall back.
+  - Every other 400, and a 422, gives `DecideRequestInvalid`. The decide
+    door gives a clause-13 breach the code `{"reason": "invalid_request",
+    "error": ...}`. It is a caller bug, and a silent fallback would hide it.
+    The exception message holds the status and the reason code only. The
+    Console's `detail` can quote tenant text, so it rides on `.detail`, and
+    `str()` and `repr()` leave it out.
   - Any other status, a 404 for example, gives `DecideUnavailable`.
+  - A question id that is not a `str` is a `TypeError` before any request.
+- 🔴 **The rule for each adopting caller.** Catch `DecideUnavailable` and
+  take the old path. Let `DecideRequestInvalid` surface as a bug. Do not
+  catch `DecideError` to fall back on both.
+- Only the decide door sends the structured `detail`. `_serving_prelude`
+  takes `structured_refusal=True` from that door only, so the image and
+  speak doors keep their plain-sentence 400.
 - The facade copies none of clause 13's limits. The Console is the ONE
   validator.
 - `packages/acb_llm/pyproject.toml` now declares `acb-auth`. Without it, the
@@ -10073,6 +10088,27 @@ CP-13c and CP-13d add the tenant facade and the chat tool. CP-13c creates
 uv run pytest tests/unit/test_acb_llm_decide.py \
   tests/unit/test_core_tool_floor.py \
   tests/unit/test_tool_schema_diet.py -q
+```
+
+CP-13c alone. The Console suite needs the database, as for CP-13a. The ruff
+line names only the files CP-13c changed. `console_resolve.py:1477` has an
+older SIM105 finding, so a ruff run over the whole package is not green.
+
+```bash
+uv run pytest tests/unit/test_acb_llm_decide.py \
+  tests/unit/test_console_router_client.py \
+  tests/unit/test_router_deployment_arm.py \
+  tests/unit/test_console_dependency_boundary.py \
+  tests/unit/test_customer_console_decide.py \
+  tests/unit/test_customer_console_tasks.py \
+  tests/unit/test_handoff_queue.py -q -rs
+uv run ruff check packages/acb_llm/acb_llm/decide.py \
+  packages/acb_llm/acb_llm/__init__.py \
+  packages/acb_common/acb_common/settings.py \
+  apps/services/customer_console/customer_console/main.py \
+  tests/unit/test_acb_llm_decide.py \
+  tests/unit/test_console_dependency_boundary.py \
+  tests/unit/test_customer_console_decide.py
 ```
 
 **The live check, in two steps.**
