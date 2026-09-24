@@ -624,6 +624,10 @@ interface TaskState {
     /** the confirmed prioritization flags (from the clarify card's Weight
      *  toggles). Applied as a local overlay alongside the GTD decision. */
     weight?: { important: boolean; leveraged: boolean; deepWork: boolean },
+    /** `reclarify: true` is an in-place edit from ItemDetail or the
+     *  Re-clarify modal. It never walks the inbox, moves `selectedItemId`
+     *  or counts as processed — even on a row still in "From Projects". */
+    opts?: { reclarify?: boolean },
   ) => void;
   /** Skip the current item (leave it in the inbox to process later) and move on. */
   skipToNextInbox: () => void;
@@ -1393,7 +1397,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     set((s) => ({ items: s.items.map((i) => (i.id === id ? server : i)) }));
   },
 
-  clarify: (id, decision, weight) => {
+  clarify: (id, decision, weight, opts) => {
     flushPendingPurge(get().undoSnapshot, get().backend);
     // The confirmed matrix flags overlay the decision. Applied locally to the
     // clarified row and (live) patched after organize, independent of the GTD
@@ -1482,7 +1486,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         s.fromProjectIds,
         s.clarifiedThisSession,
       );
-      if (!wasInbox) {
+      // An explicit Re-clarify is an edit whatever the row's state, so the
+      // caller says so rather than the store guessing from the disposition.
+      if (!wasInbox || opts?.reclarify) {
         return { items, projects, undoSnapshot: snapshot };
       }
       // Live: `markTriaged` below drops the id and re-reads the server's set

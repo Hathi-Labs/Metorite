@@ -459,3 +459,25 @@ describe("undo on a board-row clarify", () => {
     expect(clarifyChangesSharedTask(FROM_BOARD, { kind: "delegate", person: { name: "Dana" } })).toBe(true);
   });
 });
+
+describe("Re-clarify is an in-place edit", () => {
+  beforeEach(() => seed());
+
+  it("a re-clarify of a From Projects row does not advance or count", () => {
+    const st = () => useTaskStore.getState();
+    useTaskStore.setState({ selectedItemId: FROM_BOARD.id, reclarifyItemId: FROM_BOARD.id });
+    st().clarify(FROM_BOARD.id, { kind: "someday" } as never, undefined, { reclarify: true });
+    expect(st().selectedItemId).toBe(FROM_BOARD.id);
+    expect(st().processedThisSession).toBe(0);
+    expect(st().clarifiedThisSession.has(FROM_BOARD.id)).toBe(false);
+    expect(st().items.find((i) => i.id === FROM_BOARD.id)?.disposition).toBe("SOMEDAY");
+  });
+
+  it("a re-clarify of a capture does not walk the inbox either", () => {
+    const st = () => useTaskStore.getState();
+    useTaskStore.setState({ selectedItemId: CAPTURE.id });
+    st().clarify(CAPTURE.id, { kind: "reference" } as never, undefined, { reclarify: true });
+    expect(st().selectedItemId).toBe(CAPTURE.id);
+    expect(st().processedThisSession).toBe(0);
+  });
+});

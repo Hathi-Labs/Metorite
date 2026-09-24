@@ -525,13 +525,14 @@ export function ClarifyPanel({
         item.id,
         decision,
         weightful ? { important, leveraged, deepWork } : undefined,
+        { reclarify },
       );
       onDone?.();
     }
   }, [sort, size, pickedProjectId, newListName, nextAction, item.id, item.title,
       targetSpaceId, targetFolderId,
       createLocalProject, buildDecision, clarify, onDone, important, leveraged,
-      deepWork, personalTask, owner, delegatePicked]);
+      deepWork, personalTask, owner, delegatePicked, reclarify]);
 
   // Delegating to a connected tool needs a destination list so the teammate
   // can see it there — otherwise the task can't be pushed and would strand
@@ -632,7 +633,7 @@ export function ClarifyPanel({
   };
 
   const trashNow = () => {
-    clarify(item.id, { kind: "trash" });
+    clarify(item.id, { kind: "trash" }, undefined, { reclarify });
     onDone?.();
   };
 
@@ -788,7 +789,7 @@ export function ClarifyPanel({
               );
               onDone?.();
             }}
-            onDrop={() => { clarify(item.id, { kind: "trash" }); onDone?.(); }}
+            onDrop={() => { clarify(item.id, { kind: "trash" }, undefined, { reclarify }); onDone?.(); }}
             onDismiss={() => setDupDismissed(true)}
           />
         )}
