@@ -130,3 +130,34 @@ def test_a_definition_may_ask_for_capacity() -> None:
     got = reports.normalise_report_config({"sections": ["capacity", "load"]})
     # Declared order, not the caller's.
     assert got["sections"] == ["load", "capacity"]
+
+
+# ── conflicts is opt-in too (§13.5 rule 12, §10.5 item 11) ───────────────────
+
+
+def test_conflicts_is_a_section() -> None:
+    assert "conflicts" in reports.SECTIONS
+
+
+def test_conflicts_is_not_a_default_section() -> None:
+    """Fails if `conflicts` enters the defaults. A saved weekly report that
+    never asked for conflicts must not start to carry them."""
+    assert "conflicts" not in reports.DEFAULT_SECTIONS
+    assert "conflicts" not in reports._DEFAULTS["sections"]
+    assert "conflicts" not in reports.normalise_report_config({})["sections"]
+    assert "conflicts" not in reports.normalise_report_config(None)["sections"]
+
+
+def test_a_definition_may_ask_for_conflicts() -> None:
+    got = reports.normalise_report_config({"sections": ["conflicts", "capacity"]})
+    # Declared order, not the caller's.
+    assert got["sections"] == ["capacity", "conflicts"]
+
+
+def test_the_report_section_reads_the_routes_own_body() -> None:
+    """The panel and the report are one computation, as for `capacity`."""
+    source = (REPO / "apps/services/gateway/gateway/routes/projects/reports.py").read_text(
+        encoding="utf-8"
+    )
+    assert "from gateway.routes.projects.analytics_conflicts import conflicts_body" in source
+    assert "await conflicts_body(" in source

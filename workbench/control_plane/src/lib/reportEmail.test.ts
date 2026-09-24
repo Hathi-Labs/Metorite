@@ -304,3 +304,53 @@ describe("reportEmail · capacity", () => {
     expect(text).toContain("Hours need HR read access.");
   });
 });
+
+// WS-27bm S7c — the opt-in conflicts section.
+describe("reportEmail · conflicts", () => {
+  const withConflicts: RenderedReport = {
+    ...rendered,
+    sections: {
+      conflicts: {
+        rows: [
+          {
+            kind: "blocker_late",
+            severity: "high",
+            sentence: '"Order <steel>" was due on 2026-09-20 and is still open.',
+          },
+          {
+            kind: "parallel_person",
+            severity: "medium",
+            sentence: "Bo holds 3 open tasks on 2026-09-25, in 2 top-level projects.",
+          },
+        ],
+        total: 2,
+        hr_visible: true,
+        horizon_days: 14,
+      },
+    },
+  };
+
+  it("prints the server's total and its sentences verbatim, with the severity", () => {
+    const { text } = reportEmail(withConflicts);
+    expect(text).toContain("Where the plan conflicts: 2");
+    expect(text).toContain('High: "Order <steel>" was due on 2026-09-20');
+    expect(text).toContain("Medium: Bo holds 3 open tasks");
+  });
+
+  it("escapes a title inside a sentence, and carries no colour", () => {
+    const { html } = reportEmail(withConflicts);
+    expect(html).toContain("Order &lt;steel&gt;");
+    expect(html).not.toContain("<steel>");
+    expect(html).not.toMatch(/style=/);
+  });
+
+  it("says four kinds are hidden for a reader without the grant", () => {
+    const hidden: RenderedReport = {
+      ...withConflicts,
+      sections: {
+        conflicts: { ...withConflicts.sections.conflicts!, hr_visible: false },
+      },
+    };
+    expect(reportEmail(hidden).text).toContain("Four kinds need HR read access.");
+  });
+});

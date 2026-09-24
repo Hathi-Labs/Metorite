@@ -6,8 +6,8 @@ workflows, the views and the forms) and S5 (the rest of the manifest)
 built 2026-09-23. S6 (navigation and the frontend-tool dispatcher) built
 2026-09-23. The visual review ran 2026-09-23 (§4.2). S7, the team
 intelligence slices, was designed 2026-09-23 (§13). S7a (capacity) was built
-2026-09-23. S7b (fit and rebalancing) was built 2026-09-24. S7c to S7e are not
-built.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+2026-09-23. S7b (fit and rebalancing) and S7c (conflicts) were built
+2026-09-24. S7d and S7e are not built.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -689,7 +689,7 @@ Each slice is one pull request. Each one is useful alone.
 | **Visual review** — ✅ **DONE 2026-09-23** | The rail and the cards seen in eight contexts. The defects it found are fixed (§4.2) | AGENT-SAFE |
 | **S7a · Capacity** — ✅ **BUILT 2026-09-23** | `GET /projects/analytics/capacity` · the Analytics app's Capacity panel · the report section `capacity` · the chat tool `team_capacity` (§13.3) | AGENT-SAFE |
 | **S7b · Fit** — ✅ **BUILT 2026-09-24** | `GET /projects/tasks/{id}/candidates` and its draft form · `GET /projects/analytics/rebalance` · "Suggested" in the assignee picker · the chat tools `fit_for_task` and `rebalance` (§13.4) | AGENT-SAFE |
-| **S7c · Conflicts** | `GET /projects/analytics/conflicts` with seven kinds · the Conflicts panel · the report section `conflicts` · the chat tool `find_conflicts` · the dependency rule moved to the server with one fixture for both sides (§13.5, §10.5) | AGENT-SAFE |
+| **S7c · Conflicts** — ✅ **BUILT 2026-09-24** | `GET /projects/analytics/conflicts` with seven kinds · the Conflicts panel · the report section `conflicts` · the chat tool `find_conflicts` · the dependency rule moved to the server with one fixture for both sides (§13.5, §10.5) | AGENT-SAFE |
 | **S7d · Plan with capacity** | `propose_plan` gains start dates, phases and dependencies, and shows each owner's fit on the plan card (§13.6) | AGENT-SAFE |
 | **S7e · On-the-fly analysis** | The read tool `task_dataset` and the rule for numbers the chat computes itself (§13.7) | AGENT-SAFE |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-09-30 |
@@ -813,8 +813,8 @@ Each slice is one pull request. Each one is useful alone.
 8. The `overcommitted` rows equal `at_risk_tasks` for the same person and
    inputs, filtered to the scope.
 9. `parallel_person` follows rule 6. Tests show no row for two tasks, for
-   three tasks in one top-level project, for a shared end day, or for a task
-   with one date. In a project scope, a person with one in-scope task and two
+   three tasks in one top-level project, for tasks whose spans share no day,
+   or for a task with one date. Three tasks that are due today give a row. In a project scope, a person with one in-scope task and two
    visible tasks in other top-level projects on the same day gives one row. A
    test proves the cap of 5.
 10. `horizon_days` outside 1 to 90 gets 422, and the response prints its
@@ -1171,7 +1171,7 @@ the S7a and S7b precedent.
    2026-09-24). That is the fact to act on, and it implies the order problem.
 6. **`parallel_person` needs three.** Only open, visible tasks with both a
    start date and a due date count. A span covers the days from its start to
-   its due day. **The row fires when, on one day, a person holds 3 or more such
+   its due day, and both days count. **The row fires when, on one day, a person holds 3 or more such
    tasks, in 2 or more top-level projects** (owner, 2026-09-24). A sub-project
    counts as its root project, so the key is `root_project_id`. The route
    counts a person's tasks over ALL the work the caller can see, as rule 8
@@ -1211,6 +1211,44 @@ the S7a and S7b precedent.
 **Two known weak spots the server must not copy.** `TimelineView.tsx:1496`
 checks only the first blocker of a row, and `conflicts()` reads the browser's
 local day. The route checks every visible blocker, and reads the UTC day.
+
+**As built, 2026-09-24.** Eight facts that the rules above do not say.
+- **Where each part lives.** The route is
+  `routes/projects/analytics_conflicts.py`. The pure rules are in the leaf
+  module `gateway/conflicts.py`: the dependency rule, the parallel day, the
+  severity, the sort and the cap. The S7b warnings split into
+  `away_warning`, `leaving_warning` and `concurrency_warning`, and
+  `warning_kinds` returns each one with its kind.
+- **A parallel span includes its due day** (owner, review round 1). Work
+  that is due today is the parallel work that matters most. The first build
+  stopped each span one day early, and then three tasks due today gave no
+  row. The dependency rule keeps its handover day, because that rule is about
+  order and this one is about load. The rule is in one function,
+  `parallel_days`.
+- **The row carries more than rule 11 names.** `due_on` is the day that the
+  sort reads. For `dependency_order` it is the first day of the blocked task.
+  For `blocker_late` it is the due day of the blocker. `parallel_person` adds
+  `day` and `tasks_total`, and `overcommitted` adds the three hours figures.
+  `people` holds an address and a directory name for each person.
+- **The response names its own vocabulary.** `kinds` lists the kinds that
+  this caller may see, and `by_kind` has one key for each of them. Without
+  the HR grant, no HR kind name is in the body at all.
+  `window.ignored_by` names the two dependency kinds.
+- **The dependency kinds hide what no board shows** (review round 1). A
+  blocker in triage gives no row, because a parked task is on no board. A
+  row names no agent address. When a blocker's due date is before its start,
+  the sentence names its start date as the end, and says so.
+- **The HR kinds read the holders that the directory knows.** A holder with
+  no `people` row has no schedule, absences or end date, so that holder
+  gives no HR row. `over_concurrency` names the tasks in progress in scope.
+- **The report section caps at 20 rows**, the cap of `load`, and it carries
+  `total` and `by_kind`. The chat fences each sentence, because a sentence
+  carries task titles.
+- **The panel draws 12 rows**, then says how many the server sent. Severity
+  uses the status vocabulary: `high` is the destructive token and `medium`
+  is the warning token. The dot carries the severity, and the label stays in
+  the foreground colour. The visual review found warning text too faint on a
+  light card.
 
 ### 13.6 S7d — Plan with capacity
 

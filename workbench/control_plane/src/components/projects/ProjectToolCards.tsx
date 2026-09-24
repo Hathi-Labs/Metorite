@@ -60,6 +60,7 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   // S7b — who fits one task, and who could help whom.
   fit_for_task: { icon: "UserCheck", label: "Fit" },
   rebalance: { icon: "Scale", label: "Rebalance" },
+  find_conflicts: { icon: "TriangleAlert", label: "Conflicts" },
   report_list: { icon: "FileText", label: "Reports" },
   report_render: { icon: "FileText", label: "Report" },
   recurrence: { icon: "Repeat", label: "Repeat rule" },
@@ -95,6 +96,7 @@ const OPENS_APP: Record<string, { app: "analytics" | "reports"; label: string }>
   analytics_finished: { app: "analytics", label: "Open Analytics" },
   analytics_outlook: { app: "analytics", label: "Open Analytics" },
   team_capacity: { app: "analytics", label: "Open Analytics" },
+  find_conflicts: { app: "analytics", label: "Open Analytics" },
   report_list: { app: "reports", label: "Open Reports" },
   report_render: { app: "reports", label: "Open Reports" },
   render_report: { app: "reports", label: "Open Reports" },

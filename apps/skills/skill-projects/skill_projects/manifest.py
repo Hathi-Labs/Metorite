@@ -308,6 +308,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/tasks/{task_id}/candidates", "fit_for_task", "A"),
     Route("GET", "/projects/candidates", "fit_for_task", "A"),
     Route("GET", "/projects/analytics/rebalance", "rebalance", "A"),
+    # S7c — conflicts (analytics_conflicts.py). The HR kinds are the route's.
+    Route("GET", "/projects/analytics/conflicts", "find_conflicts", "A"),
     Route("GET", "/projects/reports", "report_list", "A"),
     Route("POST", "/projects/reports", "report_save", "B"),
     Route("GET", "/projects/reports/{report_id}", "report_render", "A"),
