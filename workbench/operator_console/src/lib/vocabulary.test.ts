@@ -127,8 +127,15 @@ describe("the AI/ML API guide (CP-13h)", () => {
     expect(steps).toContain("native_aimlapi");
     expect(steps).toContain("no streaming");
     expect(steps).toContain("32000");
-    expect(steps).toContain("bills the cost it reports");
+    expect(steps).toContain("records the cost the reseller reports");
     expect(steps).toContain("Try a decision");
+  });
+
+  it("tells the operator to leave the prices EMPTY, never 0 (review P2)", () => {
+    const steps = g.steps.join(" ");
+    expect(steps).toContain("Leave the input and output prices EMPTY");
+    expect(steps).toContain("Do not enter 0");
+    expect(steps).not.toContain("best estimate or 0");
   });
 
   it("the native verb fits decide and not chat", () => {

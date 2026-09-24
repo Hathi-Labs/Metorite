@@ -310,7 +310,9 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
       "Open an account at aimlapi.com and create an API key. Make sure the key is enabled.",
       "Install it here with the provider id aimlapi.",
       "On Models, declare aimlapi/typesafe/jev for Makes decisions, with the verb native_aimlapi and no streaming.",
-      "Fill its profile: window 32000. The reseller does not publish token prices, and the Console bills the cost it reports. Enter your best estimate or 0 for input and output.",
+      // ⚠️ Review P2: a 0 here makes a call with no reported cost record a
+      // FALSE zero. Empty is NULL, and NULL reads as "unknown".
+      "Fill its profile: window 32000. The Console records the cost the reseller reports for each call. Leave the input and output prices EMPTY unless you know the reseller's real rate for each token. Do not enter 0, because a call with no reported cost would then record a false zero.",
       "Bind tier-decide to it on Tiers, then use Try a decision there to prove it.",
     ],
     serves: ["decide"],

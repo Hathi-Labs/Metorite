@@ -81,7 +81,12 @@ export default function DeclareModel({
             id="cap-model"
             placeholder="openai/gpt-4o"
             value={model}
-            onChange={(e) => setModel(e.target.value)}
+            onChange={(e) => {
+              // 🔴 CP-13h: a native verb follows the model prefix, so the
+              // form never pairs one vendor's key with another vendor's host.
+              setModel(e.target.value);
+              setVerb(verbAfterTaskChange(verb, task, e.target.value));
+            }}
           />
           {warning && <span className="field-hint warn">{warning}</span>}
         </div>
@@ -94,7 +99,7 @@ export default function DeclareModel({
               // 🔴 The verb follows the job. `invocation.ts` mirrors the
               // Console's pairing rule, so a pair it refuses is never offered.
               setTask(e.target.value);
-              setVerb(verbAfterTaskChange(verb, e.target.value));
+              setVerb(verbAfterTaskChange(verb, e.target.value, model));
             }}>
             {tasks.map((t) => (
               <option key={t.slug} value={t.slug}>
@@ -108,7 +113,7 @@ export default function DeclareModel({
             Provider verb
           </label>
           <select id="cap-verb" title={HELP_DECLARE.verb} value={verb} onChange={(e) => setVerb(e.target.value)}>
-            {verbsForTask(task).map((v) => (
+            {verbsForTask(task, model).map((v) => (
               <option key={v} value={v}>
                 {v}
               </option>

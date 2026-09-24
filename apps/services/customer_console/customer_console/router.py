@@ -29,6 +29,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import logging
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -39,6 +40,8 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 from customer_console.credits import RateCard, TierRate, UnpricedModel
+
+_log = logging.getLogger(__name__)
 
 __all__ = [
     "CHAT_TASK",
@@ -1121,9 +1124,23 @@ def reported_cost_usd(raw: Any) -> Decimal | None:
         # ⚠️ NaN raises on this comparison, and infinity on the quantize.
         if cost < 0:
             return None
+        # 🔴 A CEILING (CP-13h review). `usage_event.provider_cost_usd` is
+        # NUMERIC(14, 8), so a huge figure fails the INSERT and the usage row
+        # is lost. No single call costs this much. Above it the figure is
+        # misread, so the meter falls back to its computed cost.
+        if cost > MAX_REPORTED_COST_USD:
+            _log.warning(
+                "router.reported_cost_above_ceiling",
+                extra={"reported_cost_usd": str(cost)},
+            )
+            return None
         return cost.quantize(Decimal("0.00000001"))
     except (InvalidOperation, ValueError, TypeError, AttributeError):
         return None
+
+
+#: The largest vendor-stated cost of ONE call that the meter believes, in USD.
+MAX_REPORTED_COST_USD = Decimal("1000")
 
 
 # ── Streaming relay (CP-4b) ─────────────────────────────────────────────────

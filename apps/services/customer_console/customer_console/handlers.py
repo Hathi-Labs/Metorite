@@ -31,8 +31,9 @@ and no caller change.
 
 🔴 **ONE System One wire class, two vendors** (CP-13h, 2026-09-24).
 :class:`SystemOneHandler` speaks the System One body. Each instance names
-its credential prefix, its host, its path, how it sends score levels and
-whether it reads a vendor-stated cost. ``native_typesafe`` calls TypeSafe
+its credential prefix, its host, its path and whether it reads a
+vendor-stated cost. A model whose prefix names another vendor is refused
+before any network call. ``native_typesafe`` calls TypeSafe
 direct. ``native_aimlapi`` calls the same Jev through the AI/ML API reseller,
 because TypeSafe paused signups. Do not add a second wire class for a third
 reseller. Add an instance.
@@ -63,6 +64,7 @@ __all__ = [
     "SystemOneHandler",
     "TypeSafeHandler",
     "call_native",
+    "native_provider_of",
     "native_vendors",
 ]
 
@@ -99,11 +101,6 @@ AIMLAPI_PROVIDER = "aimlapi"
 AIMLAPI_API_BASE = "https://api.aimlapi.com"
 AIMLAPI_PATH = "/v1/decisions"
 
-#: How a vendor wants the levels of a ``score`` question. ``map`` sends our
-#: key → description map as it is. ``list`` sends the descriptions as an
-#: ordered array, lowest first, and the vendor answers with level INDEXES.
-SCORE_LEVELS_MAP = "map"
-SCORE_LEVELS_LIST = "list"
 
 #: How long one decision may take. The vendor states 70 to 500 ms end to
 #: end, and we have not measured it. The ceiling is generous on purpose, so
@@ -197,12 +194,20 @@ class NativeHandler(Protocol):
     async def call(self, task: str, payload: DecidePayload) -> ProviderResult: ...
 
 
+def _model_prefix(model: str) -> str:
+    """The credential prefix of a bound model id: the text before the FIRST slash."""
+    return model.partition("/")[0]
+
+
 def _vendor_model(model: str, provider: str = TYPESAFE_PROVIDER) -> str:
     """Strip OUR prefix, and only ours. The vendor sees the rest.
 
     ``typesafe/jev-1.13.0`` → ``jev-1.13.0`` for TypeSafe.
     ``aimlapi/typesafe/jev`` → ``typesafe/jev`` for the reseller, because the
     split is on the FIRST slash and the reseller's own id has a slash too.
+
+    ⚠️ A foreign prefix is never passed through to a vendor.
+    :meth:`SystemOneHandler.call` refuses a mismatched model before this runs.
     """
     prefix, sep, rest = model.partition("/")
     if sep and prefix == provider and rest:
@@ -210,13 +215,14 @@ def _vendor_model(model: str, provider: str = TYPESAFE_PROVIDER) -> str:
     return model
 
 
-def _to_typesafe_questions(
-    questions: Mapping[str, Question], *, score_levels: str = SCORE_LEVELS_MAP
-) -> dict[str, Any]:
+def _to_typesafe_questions(questions: Mapping[str, Question]) -> dict[str, Any]:
     """Our questions, in the vendor's words. ``boolean`` becomes ``noul``.
 
-    With ``score_levels == "list"``, a ``score`` goes out as the ordered
-    array of its level descriptions. A blank description sends its key.
+    🔴 **A ``score`` goes out as an ORDERED ARRAY of level descriptions,
+    lowest first** (CP-13h). Both TypeSafe's API reference and the AI/ML API
+    page document the array, read 2026-09-24. A blank description sends its
+    key. The caller's level KEYS stay here, and :func:`_score_answer` maps
+    the vendor's level indexes back to them.
     """
     out: dict[str, Any] = {}
     for qid, question in questions.items():
@@ -227,7 +233,7 @@ def _to_typesafe_questions(
             # pay for it.
             raise NativeProviderError(None, f"unknown question type {question.type!r}")
         criteria: Any = dict(question.criteria)
-        if question.type == "score" and score_levels == SCORE_LEVELS_LIST:
+        if question.type == "score":
             criteria = [desc if desc.strip() else key for key, desc in criteria.items()]
         out[qid] = {
             "type": vendor_type,
@@ -262,24 +268,73 @@ def _probabilities(value: Any) -> dict[str, float]:
 def _level_keys(question: Question, probabilities: dict[str, float]) -> dict[str, float]:
     """Index-keyed level probabilities → OUR level keys.
 
-    A ``list`` vendor answers ``{"0": 0.0, "1": 0.7, "2": 0.3}``. The caller
-    named the levels, so the caller reads its own keys back. An index out of
-    range, or a key that is not an index, is dropped and never guessed.
+    The vendor answers ``{"0": 0.0, "1": 0.7, "2": 0.3}``. The caller named
+    the levels, so the caller reads its own keys back. An index out of range,
+    or a key that is neither an index nor a level key, is dropped.
     """
     keys = list(question.criteria)
     out: dict[str, float] = {}
     for raw_key, number in probabilities.items():
-        if not (raw_key.isascii() and raw_key.isdigit()):
-            continue
-        index = int(raw_key)
-        if index < len(keys):
-            out[keys[index]] = number
+        if raw_key.isascii() and raw_key.isdigit():
+            index = int(raw_key)
+            if index < len(keys):
+                out[keys[index]] = number
+        elif raw_key in question.criteria:
+            out[raw_key] = number
     return out
 
 
-def _answer(
-    question: Question, raw: Any, *, score_levels: str = SCORE_LEVELS_MAP
+def _score_answer(
+    question: Question, raw: Mapping[str, Any], confidence: float | None, vendor: str
 ) -> dict[str, Any]:
+    """A score answer in OUR ONE meaning (§6A.14 wire contract, CP-13h).
+
+    🔴 **One meaning for every vendor, so a failover never changes it.**
+
+    * ``score`` is the 0-based level POSITION, and it can be fractional.
+      Both vendors call it a probability-weighted position between levels.
+    * ``level`` is the caller's key of the NEAREST position, rounded half up
+      and clamped to the range.
+    * ``probabilities`` are keyed by the caller's level keys.
+
+    A position outside the range keeps its raw value, clamps its ``level``,
+    and logs ``handlers.score_out_of_range`` once for the answer. A bool,
+    NaN or infinity is unreadable. A string that names a level reads as that
+    level's position.
+    """
+    keys = list(question.criteria)
+    score = raw.get("score")
+    position: int | float
+    if isinstance(score, str) and score in question.criteria:
+        position = keys.index(score)
+    elif (
+        isinstance(score, bool)
+        or not isinstance(score, int | float)
+        or (isinstance(score, float) and not math.isfinite(score))
+    ):
+        raise NativeProviderError(None, "unreadable score answer")
+    else:
+        position = score
+    if not keys:
+        raise NativeProviderError(None, "unreadable score answer")
+
+    nearest = math.floor(position + 0.5)
+    clamped = min(max(nearest, 0), len(keys) - 1)
+    if not 0 <= position <= len(keys) - 1:
+        _log.warning(
+            "handlers.score_out_of_range",
+            extra={"vendor": vendor, "score_position": position, "score_levels": len(keys)},
+        )
+    return {
+        "type": "score",
+        "score": position,
+        "level": keys[clamped],
+        "probabilities": _level_keys(question, _probabilities(raw.get("probabilities"))),
+        "confidence": confidence,
+    }
+
+
+def _answer(question: Question, raw: Any, *, vendor: str = TYPESAFE_PROVIDER) -> dict[str, Any]:
     """One vendor answer, in OUR shape.
 
     🔴 **The TYPE comes from OUR question, and never from the vendor's
@@ -320,25 +375,7 @@ def _answer(
         }
 
     # score. The vendor's `legend` is NOT copied.
-    # 🔴 CP-13h: a score may be FRACTIONAL. Both vendors say it is a
-    # probability-weighted position that can land between levels (1.3). A
-    # float is read, never refused: refusing it was a TERMINAL 502 after the
-    # vendor had already charged us. A bool is not a score, and neither is
-    # NaN or infinity.
-    score = raw.get("score")
-    if isinstance(score, bool) or not isinstance(score, str | int | float):
-        raise NativeProviderError(None, "unreadable score answer")
-    if isinstance(score, float) and not math.isfinite(score):
-        raise NativeProviderError(None, "unreadable score answer")
-    probabilities = _probabilities(raw.get("probabilities"))
-    if score_levels == SCORE_LEVELS_LIST:
-        probabilities = _level_keys(question, probabilities)
-    return {
-        "type": "score",
-        "score": score,
-        "probabilities": probabilities,
-        "confidence": confidence,
-    }
+    return _score_answer(question, raw, confidence, vendor)
 
 
 def _token_count(value: Any) -> int:
@@ -368,8 +405,8 @@ def _from_typesafe(
     data: Any,
     questions: Mapping[str, Question],
     *,
-    score_levels: str = SCORE_LEVELS_MAP,
     reads_cost: bool = False,
+    vendor: str = TYPESAFE_PROVIDER,
 ) -> ProviderResult:
     """The vendor's body → our body plus the usage the meter reads.
 
@@ -387,7 +424,7 @@ def _from_typesafe(
     for qid, question in questions.items():
         if qid not in raw_answers:
             raise NativeProviderError(None, "an answer is missing")
-        answers[qid] = _answer(question, raw_answers[qid], score_levels=score_levels)
+        answers[qid] = _answer(question, raw_answers[qid], vendor=vendor)
 
     raw_usage = data.get("usage")
     raw_usage = raw_usage if isinstance(raw_usage, Mapping) else {}
@@ -414,9 +451,9 @@ class SystemOneHandler:
     """One System One call, for any vendor that speaks the body (CP-13h).
 
     Each instance names its vendor. ``provider`` is the credential prefix it
-    strips. ``api_base`` is the host when the credential names none, and
-    ``path`` is the endpoint. ``score_levels`` says how score levels go out.
-    ``reads_cost`` reads the vendor's own charge from ``meta.usage``.
+    answers to and strips. ``api_base`` is the host when the credential names
+    none, and ``path`` is the endpoint. ``reads_cost`` reads the vendor's own
+    charge from ``meta.usage``.
 
     ``transport`` exists so a test can answer with a recorded vendor body and
     no network. Production passes none.
@@ -428,16 +465,12 @@ class SystemOneHandler:
         provider: str,
         api_base: str,
         path: str,
-        score_levels: str = SCORE_LEVELS_MAP,
         reads_cost: bool = False,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        if score_levels not in (SCORE_LEVELS_MAP, SCORE_LEVELS_LIST):
-            raise ValueError(f"unknown score_levels {score_levels!r}")
         self.provider = provider
         self.api_base = api_base
         self.path = path
-        self.score_levels = score_levels
         self.reads_cost = reads_cost
         self._transport = transport
 
@@ -447,12 +480,30 @@ class SystemOneHandler:
                 None, f"{self.provider} serves {DECIDE_TASK!r}, not {task!r}"
             )
 
+        # 🔴 **The model prefix names the credential, so it must name THIS
+        # vendor** (CP-13h). The Router picked `payload.api_key` by the
+        # prefix. A capability row that pairs `aimlapi/...` with
+        # `native_typesafe` would post the reseller's key to TypeSafe. So a
+        # mismatch is refused BEFORE any network I/O. It is not terminal,
+        # because no vendor saw it and nothing was charged. The log names
+        # the model and the handler, and never the key.
+        prefix = _model_prefix(payload.model)
+        if prefix != self.provider:
+            _log.error(
+                "handlers.model_prefix_mismatch",
+                extra={
+                    "vendor": self.provider,
+                    "router_model": payload.model,
+                    "router_org": payload.organization_id,
+                    "router_request": payload.request_id,
+                },
+            )
+            raise NativeProviderError(None, "model prefix does not match handler")
+
         body = {
             "state": payload.state,
             "model": _vendor_model(payload.model, self.provider),
-            "questions": _to_typesafe_questions(
-                payload.questions, score_levels=self.score_levels
-            ),
+            "questions": _to_typesafe_questions(payload.questions),
         }
         url = (payload.api_base or self.api_base).rstrip("/") + self.path
 
@@ -488,8 +539,8 @@ class SystemOneHandler:
             return _from_typesafe(
                 response.json(),
                 payload.questions,
-                score_levels=self.score_levels,
                 reads_cost=self.reads_cost,
+                vendor=self.provider,
             )
         except (ValueError, NativeProviderError) as exc:
             reason = str(exc) if isinstance(exc, NativeProviderError) else "body is not JSON"
@@ -506,13 +557,7 @@ class SystemOneHandler:
 
 
 class TypeSafeHandler(SystemOneHandler):
-    """``native_typesafe``: one System One call to TypeSafe direct (D75).
-
-    ⚠️ **Byte for byte as CP-13a built it.** Score levels still go out as a
-    map. The vendor's API reference, read 2026-09-24, documents an ordered
-    ARRAY. §6A.14 CP-13h records that finding, and this slice does not act
-    on it.
-    """
+    """``native_typesafe``: one System One call to TypeSafe direct (D75)."""
 
     def __init__(self, transport: httpx.AsyncBaseTransport | None = None) -> None:
         super().__init__(
@@ -526,8 +571,7 @@ class TypeSafeHandler(SystemOneHandler):
 class AimlApiHandler(SystemOneHandler):
     """``native_aimlapi``: the same Jev, through the AI/ML API reseller (CP-13h).
 
-    Score levels go out as the ordered array the reseller documents, and the
-    reseller's ``meta.usage.usd_spent`` is the vendor-reported cost.
+    The reseller's ``meta.usage.usd_spent`` is the vendor-reported cost.
     """
 
     def __init__(self, transport: httpx.AsyncBaseTransport | None = None) -> None:
@@ -535,7 +579,6 @@ class AimlApiHandler(SystemOneHandler):
             provider=AIMLAPI_PROVIDER,
             api_base=AIMLAPI_API_BASE,
             path=AIMLAPI_PATH,
-            score_levels=SCORE_LEVELS_LIST,
             reads_cost=True,
             transport=transport,
         )
@@ -548,6 +591,16 @@ NATIVE_HANDLERS: dict[str, NativeHandler] = {
     "native_typesafe": TypeSafeHandler(),
     "native_aimlapi": AimlApiHandler(),
 }
+
+
+def native_provider_of(invocation: str) -> str | None:
+    """The credential prefix one native verb answers to, or None.
+
+    Read from the table, so the declare-time check and the fences never type
+    a second verb-to-vendor map.
+    """
+    vendor = getattr(NATIVE_HANDLERS.get(invocation), "provider", None)
+    return vendor if isinstance(vendor, str) else None
 
 
 def native_vendors() -> frozenset[str]:

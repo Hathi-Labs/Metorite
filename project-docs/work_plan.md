@@ -342,7 +342,7 @@ dark) and it means the remaining work is **flips and money decisions**, not code
 | **M2.9a** | 🆕 **AI model + provider-key management — the operator plane (CP-10, D56).** Inventory: **§6A** | 🔴 **`provider_credential` has zero writers**, so the Router cannot call a provider on our account at all | 🟢 build AGENT-SAFE · 🔴 a real key is §6 (e)/(f) |
 | **M2.9b** | 🆕 **The SERVING HOP — the app calls the Router (CP-11, D57). THE NEXT THING BUILT, with CP-10 s1.** Detail: **§6B** | 🔴 **Nothing calls the Router.** `v1_compat.py` goes straight to litellm, so operator configuration is inert as far as the product is concerned. This is §6 (d)'s long-awaited first-caller ticket | 🟢 build AGENT-SAFE · 🔴 wiring a live box + the flip are §6 (d)/(e) |
 | **M2.9c** | ✅ **Assigning AI credits from the Operator Console — ALREADY BUILT** | `CreditsPanel` → `/api/operator/credits` → `POST /credits/grant` → append-only `credit_ledger`; balance on the customer page. ⚠️ **Nothing draws credits down yet** | 🔴 price the card (D19.2) then flip `CUSTOMER_CONSOLE_SPEND_GATE` — **in that order** |
-| **M2.9d** | 🆕 **The `decide` task — fast typed decisions from TypeSafe's Jev (CP-13, D75).** Operator Console first, then the app layer. Detail: `customer_console.md` **§6A.14** | CP-13a is BUILT (2026-09-23): `POST /v1/decide` serves dark, because nothing binds `tier-decide`. CP-13b is BUILT (2026-09-23): the Operator Console knows the task, and "Try a decision" on `/tiers` proves a binding. CP-13c is BUILT (2026-09-24): the one tenant facade, `acb_llm.decide`, dark behind `DECIDE_ENABLED`. CP-13d is BUILT (2026-09-24): every MAF agent has a `decide` tool in its core floor. The tool sends no member, because some doors take the member from the request body (the R11 finding, H-165). CP-13h is BUILT (2026-09-24): TypeSafe paused signups, so `native_aimlapi` reaches Jev through the AI/ML API reseller (D75 clause 8). No app feature asks it yet. Email triage, the commitment gate and the meeting copilot ask a chat model and parse its JSON | 🟢 CP-13a to CP-13d AGENT-SAFE · 🔴 the account, the key, and tenant content to a new sub-processor (§6.1 WS-31 (i)) |
+| **M2.9d** | 🆕 **The `decide` task — fast typed decisions from TypeSafe's Jev (CP-13, D75).** Operator Console first, then the app layer. Detail: `customer_console.md` **§6A.14** | CP-13a is BUILT (2026-09-23): `POST /v1/decide` serves dark, because nothing binds `tier-decide`. CP-13b is BUILT (2026-09-23): the Operator Console knows the task, and "Try a decision" on `/tiers` proves a binding. CP-13c is BUILT (2026-09-24): the one tenant facade, `acb_llm.decide`, dark behind `DECIDE_ENABLED`. CP-13d is BUILT (2026-09-24): every MAF agent has a `decide` tool in its core floor. The tool sends no member, because some doors take the member from the request body (the R11 finding, H-165). CP-13h is BUILT (2026-09-24): TypeSafe paused signups, so `native_aimlapi` reaches Jev through the AI/ML API reseller (D75 clause 8). No app feature asks it yet. Email triage, the commitment gate and the meeting copilot ask a chat model and parse its JSON | 🟢 CP-13a to CP-13d and CP-13h AGENT-SAFE · 🔴 the account (AI/ML API or TypeSafe), the key, and tenant content to a new sub-processor (§6.1 WS-31 (i)) |
 | M2.10 | AI credits — ledger, balance gate, rate card | ◐ CP-6 mechanism built; **the rate card ships all-zero and a fence refuses a priced ladder** | 🔴 `CUSTOMER_CONSOLE_SPEND_GATE` · pricing is owner work (D19.2) |
 | M2.11 | Tax invoice, serials, credit notes (D38) | 🟡 SC-5 specced | |
 | M2.12 | Offboarding, end to end | ✅ CP-2g | |
@@ -4774,16 +4774,19 @@ to the public internet; the capability growth (`{resolve, provision}`) is
 (f)'s issuance class applied to a wider credential and is CP-2c's proposed
 answer to D43-2's open sub-question. Building the flow against fixtures,
 minting wide keys in tests and fencing both flag positions is agent-safe ·
-**(i) the `decide` vendor: the TypeSafe account, its live key, and the first real
-tenant content sent to it** (§8 gate 9, **new 2026-09-23 with CP-13**, D75).
-Opening the account is (b)'s class, an external commercial account. Installing
-the key on `/providers` is §6.0 B1. Sending tenant content to TypeSafe is a new
-class, because D19.6 promises India-only residency and the vendor states no
-region. Shadow mode sends the content too, so it waits for the same answer.
-Building CP-13a to CP-13d against a test key and made-up data is agent-safe.
+**(i) the `decide` vendor: TypeSafe, directly or through AI/ML API — the
+account, its live key, and the first real tenant content sent to it** (§8 gate
+9, **new 2026-09-23 with CP-13**, D75, **widened 2026-09-24 by CP-13h**, D75
+clause 8). Opening either account is (b)'s class, an external commercial
+account. Installing the key on `/providers` is §6.0 B1. Sending tenant content
+to TypeSafe, directly or through AI/ML API, is a new class. D19.6 promises
+India-only residency, and neither vendor states a region. A reseller call
+passes through both sub-processors. Shadow mode sends the content too, so it
+waits for the same answer. Building CP-13a to CP-13d and CP-13h against a test
+key and made-up data is agent-safe.
 ⚠️ **Setting `DECIDE_ENABLED` on a live box is this gate, and the §3a dev window
 does NOT open it.** It is the one switch between every tenant's content and
-TypeSafe, and it covers the chat tool and the app slices. CLAUDE.md §3a rule 3
+the `decide` vendor, and it covers the chat tool and the app slices. CLAUDE.md §3a rule 3
 already says it: third parties still stop you ·
 **WS-12 Phase 4.0's target choice** (minimal-bump vs full-bump,
 `multi_agent_orchestration.md` §6 Phase 4.0) — a cost/schedule call, and the

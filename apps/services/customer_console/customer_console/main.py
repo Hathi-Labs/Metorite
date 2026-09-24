@@ -2502,6 +2502,8 @@ def declare_capability(req: CapabilityRequest, staff: Operator) -> dict[str, Any
     """
     try:
         invocation = catalog.check_invocation_for_task(req.invocation, req.task)
+        # CP-13h: a native verb must call the vendor the model prefix names.
+        catalog.check_model_for_invocation(req.model, invocation)
         streams = catalog.check_streams(req.task, req.streams)
     except catalog.CatalogRefused as exc:
         raise _catalog_refusal(exc) from exc

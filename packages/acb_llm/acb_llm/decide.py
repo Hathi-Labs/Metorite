@@ -26,6 +26,7 @@ and ``tests/unit/test_console_dependency_boundary.py`` fences both rules.
 """
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -193,11 +194,17 @@ class ChoiceAnswer:
 
 @dataclass(frozen=True)
 class ScoreAnswer:
-    """The chosen level key, the per-level map and the confidence."""
+    """A position on the caller's ordered scale (§6A.14 wire contract, CP-13h).
 
-    score: str | int
+    ``score`` is the 0-based level POSITION, and it can be fractional (1.3).
+    ``level`` is the caller's key of the nearest position, or None when the
+    Console sent none. ``probabilities`` are keyed by the caller's level keys.
+    """
+
+    score: str | int | float
     probabilities: Mapping[str, float]
     confidence: float | None
+    level: str | None = None
 
 
 Answer = BooleanAnswer | ChoiceAnswer | ScoreAnswer
@@ -265,10 +272,21 @@ def _answer(question: Question, raw: Any) -> Answer:
             choice=choice, probabilities=probabilities, confidence=confidence
         )
 
+    # 🔴 CP-13h: the position can be FRACTIONAL. Refusing a float turned a
+    # billed answer into DecideUnavailable. A bool, NaN or infinity is not
+    # a position.
     score = raw.get("score")
-    if isinstance(score, bool) or not isinstance(score, str | int):
+    if isinstance(score, bool) or not isinstance(score, str | int | float):
         raise _Unreadable("a score answer has no score")
-    return ScoreAnswer(score=score, probabilities=probabilities, confidence=confidence)
+    if isinstance(score, float) and not math.isfinite(score):
+        raise _Unreadable("a score answer has no score")
+    level = raw.get("level")
+    return ScoreAnswer(
+        score=score,
+        probabilities=probabilities,
+        confidence=confidence,
+        level=level if isinstance(level, str) else None,
+    )
 
 
 def _decision(body: Mapping[str, Any], questions: Mapping[str, Question]) -> Decision:
