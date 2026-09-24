@@ -23,6 +23,18 @@ MAIN = (
 )
 _VERBS = {"get", "post", "put", "patch", "delete"}
 
+#: Every annotation whose dependency calls `require_operator` on its operator
+#: arm, and so meets the matrix. Review found the first version scanned only
+#: `Operator`, and five dual-arm aliases in `auth.py` open the same door.
+OPERATOR_DOORS = {
+    "Operator",
+    "CatalogCaller",
+    "ResolveCaller",
+    "ProvisionCaller",
+    "SeatAdminCaller",
+    "MemberAdminCaller",
+}
+
 
 def _operator_routes() -> list[tuple[str, str]]:
     """Every ``(VERB, path)`` whose handler takes an ``Operator`` parameter."""
@@ -32,7 +44,7 @@ def _operator_routes() -> list[tuple[str, str]]:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         takes_operator = any(
-            isinstance(a.annotation, ast.Name) and a.annotation.id == "Operator"
+            isinstance(a.annotation, ast.Name) and a.annotation.id in OPERATOR_DOORS
             for a in [*node.args.args, *node.args.kwonlyargs]
         )
         if not takes_operator:
@@ -65,3 +77,10 @@ def test_every_operator_route_has_a_matrix_row():
         "Operator routes with no role row answer 403 to every signed-in "
         f"operator: {missing}. Add each to operator_roles.MATRIX."
     )
+
+
+def test_every_door_name_is_still_a_real_alias():
+    """A renamed alias would silently drop its routes out of the scan."""
+    src = (MAIN.parent / "auth.py").read_text(encoding="utf-8")
+    missing = [d for d in OPERATOR_DOORS if f"{d} =" not in src and f"{d}=" not in src]
+    assert not missing, f"no longer defined in auth.py: {missing}"
