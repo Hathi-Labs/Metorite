@@ -49,6 +49,11 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     'call_agents_parallel': {'params': {'tasks': 'string'},
                              'required': ['tasks']},
     'code_task': {'params': {'task': 'string'}, 'required': ['task']},
+    # WS-31 CP-13d (D75). One question per call. The schema has NO member
+    # field on purpose: the member never comes from a tool argument.
+    'decide': {'params': {'context': 'string', 'kind': 'string',
+                          'options': 'string', 'question': 'string'},
+               'required': ['context', 'question']},
     'emit_generative_ui': {'params': {'ui': 'string'}, 'required': ['ui']},
     'fetch_page': {'params': {'max_chars': 'integer', 'url': 'string'},
                    'required': ['url']},
@@ -114,7 +119,7 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
 }
 
 # ---------------------------------------------------------------------------
-# 3. Per-tool token ceilings for the 19-tool core floor (post-diet + headroom)
+# 3. Per-tool token ceilings for the core floor (19 tools at the diet, 20 with decide)
 # ---------------------------------------------------------------------------
 # Post-diet measurement 2026-08-01 (chars/4 run-context tokenizer), rounded up
 # with ~10% headroom so ordinary wording edits don't fail CI. The floor summed
@@ -127,6 +132,9 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     "call_agent_background": 250,
     "call_agents_parallel": 310,
     "code_task": 420,
+    # WS-31 CP-13d (2026-09-24). Measured 181. The floor went 8744 -> 8925,
+    # so the total ceiling did not move.
+    "decide": 200,
     # 3050 after the diet. WS-27bm S4 (2026-09-23) added five templates to the
     # catalog (timeline, taskBoard, dataGrid, reportCard, planCard), and the
     # docstring mirrors the catalog by rule (generative_ui_2.md §3). Measured

@@ -213,6 +213,9 @@ FULL_SECTIONS: tuple[Section, ...] = (
 - **web_search(query, max_results=5)** — Web search (SerpAPI/Google first when configured, free engines as fallback). Use for current info, news, company research.
 - **fetch_page(url, max_chars=8000)** — Fetch a public URL as clean text via Jina Reader.
 """),
+    Section("core", ("decide",), """### Fast decisions
+- **decide(question, context, kind?, options?)** — A calibrated yes/no (``kind="yes_no"``), pick (``"choice"``) or rating (``"score"``) on ``context``, with its probability, in under a second. Use it for a classification you would otherwise guess: is this urgent, which of these projects fits, how severe is it. Put the facts to judge in ``context`` and one option per line in ``options``. It writes no text. When it answers "not available", decide yourself and go on.
+"""),
     Section("memory", _MEMORY, """### Memory & knowledge graph
 - **remember(query)** — Search episodic memory for past facts about the user. Call before making claims about history or preferences.
 - **recall_timeline(entity, query)** — Bi-temporal knowledge graph: "when did X happen?" or entity history.
@@ -346,6 +349,10 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
     )),
     Section("core", ("web_search", "fetch_page"),
             "web_search(query), fetch_page(url)"),
+    Section("core", ("decide",), (
+        "decide(question,context,kind?,options?) — fast calibrated "
+        "yes_no/choice/score with its probability; if not available, judge yourself"
+    )),
     Section("core", ("write_artifact",),
             "write_artifact(path,content) — files go to outputs/"),
     Section("core", ("share_artifact",), (

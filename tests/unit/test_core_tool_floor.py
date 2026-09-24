@@ -68,3 +68,20 @@ def test_floor_includes_the_delegation_family() -> None:
     resolved = _resolve_injected_scope(["web_search"])
     assert resolved is not None
     assert "call_agent" in resolved
+
+
+def test_floor_includes_decide() -> None:
+    """WS-31 CP-13d (customer_console.md §6A.14, Done-when row 13). Every MAF
+    agent gets the ``decide`` tool, the main chat included, and a scope that
+    names only a specialist tool cannot strip it. The tool is also in the
+    statically injectable set, so the floor names a tool that exists."""
+    from orchestrator._tool_injection import (
+        _collect_injectable_platform_tools,
+        _tool_name,
+    )
+
+    assert "decide" in _CORE_STANDARD_TOOL_NAMES
+    resolved = _resolve_injected_scope(["query_history"])
+    assert resolved is not None
+    assert "decide" in resolved
+    assert "decide" in {_tool_name(t) for t in _collect_injectable_platform_tools()}

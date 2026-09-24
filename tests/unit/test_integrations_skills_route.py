@@ -79,7 +79,7 @@ async def test_catalog_shape_and_costs(monkeypatch):
     assert out["total_injected_tokens"] > 0
     by_slug = {f["slug"]: f for f in out["families"]}
     assert by_slug["core"]["token_cost"] > 0
-    assert by_slug["core"]["tool_count"] == 19
+    assert by_slug["core"]["tool_count"] == 20  # 20 with decide (WS-31 CP-13d)
     assert by_slug["apps"]["dynamic"] is True
     assert by_slug["apps"]["token_cost"] == 0
     assert out["agents"] == []

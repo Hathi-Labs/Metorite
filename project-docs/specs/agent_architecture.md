@@ -467,7 +467,7 @@ budget question left open in [`memory_architecture.md`](memory_architecture.md) 
 | `call` | Synchronous sub-agent; result returns into the caller's turn | partial |
 | `handoff` | Transfers the conversation; the target owns subsequent turns | ✗ |
 | `background` | Fire-and-forget. It reports back | ✅ `call_agent_background` |
-| `decide` | A typed decision, not a run. The agent asks one question and gets a pick and a confidence | ✗ planned, CP-13d (D75) |
+| `decide` | A typed decision, not a run. The agent asks one question and gets a pick and a confidence | ✅ built, dark behind `DECIDE_ENABLED` (CP-13d, D75, 2026-09-24) |
 
 📌 **`decide` is a platform TOOL, and it is not a sub-agent** *(added
 2026-09-23, D75)*. The owner asked for a fast decision "sub agent" for the main
@@ -479,6 +479,9 @@ every MAF agent through `_collect_injectable_platform_tools`. It calls the
 Router's `POST /v1/decide` through the one tenant facade, `acb_llm.decide`. The
 delegation rule below does not apply, because the tool writes nothing and has
 no scopes. `customer_console.md` §6A.14 CP-13d is the contract.
+✅ **Built 2026-09-24** as `acb_skills/decide_tools.py::decide`, in the core
+floor. The tool sends no member, because a run's member can come from a
+caller's payload (the R11 finding in §6A.14 CP-13d).
 
 > **A delegated run executes at the caller's clearance, intersected with the callee's declared
 > scopes. Never wider.**

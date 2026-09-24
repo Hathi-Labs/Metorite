@@ -62,6 +62,11 @@ _CORE_STANDARD_TOOL_NAMES: frozenset[str] = frozenset({
     # request_confirmation gate still requires a human, and the delegation
     # cycle/depth guards in acb_skills.agent_tools already cap recursion.
     "call_agent", "call_agents_parallel", "call_agent_background",
+    # Fast typed decisions (WS-31 CP-13d, D75, customer_console.md §6A.14):
+    # a calibrated yes/no, pick or rating through the one facade,
+    # `acb_llm.decide`. Dark behind DECIDE_ENABLED, where it answers a fixed
+    # "not available" line and makes no call.
+    "decide",
 })
 
 
@@ -634,6 +639,14 @@ def _collect_injectable_platform_tools() -> list[Any]:
     try:
         from acb_skills.history_tools import query_history  # noqa: PLC0415
         _all_tools = _all_tools + [query_history]
+    except ImportError:
+        pass
+
+    # Fast typed decisions (WS-31 CP-13d) — one question through the ONE
+    # tenant facade, `acb_llm.decide`. Never the Console client directly.
+    try:
+        from acb_skills.decide_tools import decide
+        _all_tools = [*_all_tools, decide]
     except ImportError:
         pass
 
