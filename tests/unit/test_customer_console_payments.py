@@ -156,16 +156,26 @@ FULFIL_ALLOW_LIST: frozenset[tuple[str, str]] = frozenset({
 #: reservation in the same transaction as the charge, and every serving door
 #: meters through `record_usage`. `place_hold` reaches only the chat door,
 #: because only a token-priced call has an unknowable cost to reserve against.
+#:
+#: ⚠️ **`decide` joined it on 2026-09-23** (CP-13a, `customer_console.md`
+#: §6A.14). It is the Router's fifth serving door, and it meters through the
+#: same `_record_completion` and so the same `record_usage`. That gives it TWO
+#: edges, `add_credit` and `release_hold`. It places no hold (clause 11), so
+#: it takes no `place_hold` edge. The argument holds word for word: the
+#: amount comes from the input tokens the vendor reported and a tier card the
+#: customer cannot reach.
 METERING_EXEMPTION: frozenset[tuple[str, str]] = frozenset({
     ("chat_completions", "store.add_credit"),
     ("audio_transcriptions", "store.add_credit"),
     ("images_generations", "store.add_credit"),
     ("audio_speech", "store.add_credit"),
+    ("decide", "store.add_credit"),
     ("chat_completions", "store.place_hold"),
     ("chat_completions", "store.release_hold"),
     ("audio_transcriptions", "store.release_hold"),
     ("images_generations", "store.release_hold"),
     ("audio_speech", "store.release_hold"),
+    ("decide", "store.release_hold"),
 })
 
 #: What the walk may cross. Five entries, two arguments, two fences.
@@ -914,7 +924,7 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
             ("redeem_discount_code", "payments.fulfil"),
         }) == FULFIL_ALLOW_LIST
 
-    def test_the_metering_exemption_holds_the_four_router_serving_routes(self):
+    def test_the_metering_exemption_holds_the_five_router_serving_routes(self):
         """The DECLARED deviation, pinned so it cannot grow past the Router.
 
         ``POST /v1/chat/completions`` is organization-key authenticated (CP-3)
@@ -954,24 +964,32 @@ class TestNoOrgKeyRouteWritesAnEntitlement:
         know their quantity before the call — a duration, a picture count, a
         character count — so they have nothing unknowable to reserve against
         and take the exact charge at settle time (§5.2).
+
+        ``POST /v1/decide`` joined on 2026-09-23 (CP-13a, §6A.14). It is the
+        fifth serving door and the same argument: the amount comes from the
+        input tokens the vendor reported. It meters through the same
+        ``record_usage``, so it takes the ``add_credit`` edge and the
+        ``release_hold`` edge. It places no hold (clause 11).
         """
         assert frozenset({
             ("chat_completions", "store.add_credit"),
             ("audio_transcriptions", "store.add_credit"),
             ("images_generations", "store.add_credit"),
             ("audio_speech", "store.add_credit"),
+            ("decide", "store.add_credit"),
             ("chat_completions", "store.place_hold"),
             ("chat_completions", "store.release_hold"),
             ("audio_transcriptions", "store.release_hold"),
             ("images_generations", "store.release_hold"),
             ("audio_speech", "store.release_hold"),
+            ("decide", "store.release_hold"),
         }) == METERING_EXEMPTION
-        assert len(METERING_EXEMPTION) == 9
+        assert len(METERING_EXEMPTION) == 11
         # 🔴 Every entry is still a ROUTER SERVING ROUTE. That is the
         # property the count alone cannot state, and the one that matters.
         assert {route for route, _ in METERING_EXEMPTION} == {
             "chat_completions", "audio_transcriptions",
-            "images_generations", "audio_speech",
+            "images_generations", "audio_speech", "decide",
         }
 
     def test_the_metering_exemption_is_still_needed_and_still_that_shape(self):

@@ -63,6 +63,24 @@ export interface RenderedReport {
       people: { assignee: string | null; open_tasks: number; overdue: number }[];
       total_tasks: number;
     };
+    /**
+     * WS-27bm S7a. Opt-in, and the HR half is absent for a reader without
+     * `admin:members:read` — so every hours field is optional.
+     */
+    capacity?: {
+      people: {
+        assignee: string | null;
+        name: string | null;
+        kind: string;
+        open_tasks: number;
+        hours_basis?: boolean;
+        spare_hours_horizon?: number | null;
+        hours_note?: string | null;
+      }[];
+      total_tasks: number;
+      hr_visible: boolean;
+      horizon_days: number;
+    };
     stuck?: {
       overdue: { name: string; overdue: number }[];
       overdue_total: number;
@@ -230,6 +248,41 @@ export function reportEmail(
             (p.overdue ? ` (${p.overdue} overdue)` : ""),
         );
       }
+    }
+    lines.push("");
+  }
+
+  const cap = sections.capacity;
+  if (cap) {
+    const head = `Who has the hours (next ${cap.horizon_days} days): ${cap.total_tasks} open`;
+    lines.push(head);
+    blocks.push(`<p>${escapeHtml(head)}</p>`);
+    const described = cap.people.slice(0, MAX_EMAIL_ROWS).map((p) => {
+      const who =
+        p.kind === "unassigned" || !p.assignee
+          ? "Unassigned"
+          : p.name || p.assignee;
+      // ⚠️ The spare figure is the server's, verbatim, and it is printed
+      // ONLY when the server said the hours mean something. A missing figure
+      // is "no hours", never "0h" — zero reads as free.
+      const hoursPart =
+        p.hours_basis && typeof p.spare_hours_horizon === "number"
+          ? `, ${p.spare_hours_horizon}h spare`
+          : p.hours_basis === false
+            ? ", no hours"
+            : "";
+      return `${who}: ${p.open_tasks} open${hoursPart}`;
+    });
+    if (described.length) {
+      blocks.push(
+        `<ul>${described.map((d) => `<li>${escapeHtml(d)}</li>`).join("")}</ul>`,
+      );
+      for (const d of described) lines.push(`  ${d}`);
+    }
+    if (!cap.hr_visible) {
+      const note = "Hours need HR read access.";
+      lines.push(`  ${note}`);
+      blocks.push(`<p>${escapeHtml(note)}</p>`);
     }
     lines.push("");
   }

@@ -188,6 +188,10 @@ class TestTheWriteContractIsInsertOnly:
         "/catalog/capabilities",
         "/catalog/profiles",
         "/catalog/feed/sync",
+        # CP-13b (2026-09-23). "Try a decision" writes no catalog row at
+        # all: it calls the vendor and writes one audit row. No commercial
+        # term moves, so it is filed here, not under INSERT_ONLY.
+        "/catalog/decide/try",
     )
 
     def _catalog_routes(self) -> list[tuple[str, str]]:
@@ -336,7 +340,9 @@ class TestTheCatalogRead:
 
         assert {t["slug"] for t in body["tasks"]} == {
             "chat", "embed", "vision", "transcribe", "speak", "image",
-            "video", "music"}  # video and music joined in 015 (D67's slate)
+            # video and music joined in 015 (D67's slate), and decide in
+            # 033 (D75, CP-13a).
+            "video", "music", "decide"}
         assert any(c["task"] == "transcribe" for c in body["capabilities"])
         assert any(b["tier"] == "tier-stt" for b in body["bindings"])
         # The registry (015): the whole slate reaches the console, so an

@@ -210,22 +210,27 @@ function viewCommands(): Command[] {
 }
 
 const PANEL_COMMANDS: Command[] = [
+  // Two commands became one when the owner cut the axis to two stops
+  // (2026-09-23). "Widen" and "Narrow" described an escalation with a middle;
+  // with `side` and `full` the only move is the toggle the header draws, and
+  // two palette rows for one binary state is a menu that asks the reader to
+  // work out which one is available.
   {
-    id: "panel.wider",
-    label: "Widen the task panel",
+    id: "panel.toggleWidth",
+    label: "Open the task as a full card",
     section: "Panel",
-    keywords: ["peek", "side", "full", "expand", "escalate", "bigger"],
+    keywords: ["full", "card", "expand", "bigger", "side", "panel", "shrink"],
     icon: "Maximize2",
     when: (ctx) => ctx.panelOpen && ctx.panelMode !== "full",
     run: (actions, ctx) => actions.setPanelMode(widerPanel(ctx.panelMode)),
   },
   {
-    id: "panel.narrower",
-    label: "Narrow the task panel",
+    id: "panel.backToSide",
+    label: "Back to the side panel",
     section: "Panel",
-    keywords: ["peek", "side", "shrink", "smaller"],
+    keywords: ["side", "panel", "dock", "smaller", "shrink"],
     icon: "Minimize2",
-    when: (ctx) => ctx.panelOpen && ctx.panelMode !== "peek",
+    when: (ctx) => ctx.panelOpen && ctx.panelMode === "full",
     run: (actions, ctx) => actions.setPanelMode(narrowerPanel(ctx.panelMode)),
   },
 ];

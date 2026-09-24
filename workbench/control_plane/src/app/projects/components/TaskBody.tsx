@@ -130,15 +130,33 @@ export function resolveStatus(task: TaskRow, statuses: StatusRow[]) {
 }
 
 /**
- * The container class for a group of sections that may pair up. One helper
- * rather than the same ternary at each container, so the two groups cannot
- * drift into different gaps or different breakpoints. `items-start`
- * matters: without it the grid stretches both cells to the taller one.
+ * The container for a group of sections. Sections ALWAYS stack.
+ *
+ * The owner asked for this on 2026-09-23, looking at the panel at its widest:
+ * Details held four stacked fields in a narrow left column while Properties
+ * sat in the right one with a third of the panel empty below it. Pairing
+ * SECTIONS pairs their headings, and two sections are almost never the same
+ * height, so one column is always short. That dead space IS the defect.
+ *
+ * What pairs now is the FIELDS, inside a section, through `PAIRED_FIELDS`.
+ * That is `/tasks`' own grammar: `ItemDetail` puts Context beside Energy and
+ * Estimate beside Defer-until, and gives Project, the focus matrix and Notes
+ * the whole width. Two surfaces, one idea.
  */
-const PAIRED_SECTIONS = (twoColumn: boolean): string =>
+const SECTION_COLUMN = "flex flex-col gap-4 px-3 py-3";
+
+/**
+ * A grid of short field cells inside one section: two across when the host is
+ * wide, one when it is not.
+ *
+ * `items-start` matters. Without it the grid stretches both cells to the
+ * taller one, and an Assignees cell holding three chips would pad the Due
+ * cell beside it to the same height.
+ */
+const PAIRED_FIELDS = (twoColumn: boolean): string =>
   twoColumn
-    ? "grid grid-cols-2 items-start gap-4 px-3 py-3"
-    : "flex flex-col gap-4 px-3 py-3";
+    ? "grid grid-cols-2 items-start gap-2"
+    : "grid grid-cols-1 gap-2";
 
 /**
  * One labelled cell in the details block — the chrome `ItemDetail`'s
@@ -572,16 +590,16 @@ export function TaskBody({
       <div className="min-h-0 flex-1 overflow-y-auto">
         {above}
 
-        <div className={PAIRED_SECTIONS(twoColumn)}>
+        <div className={SECTION_COLUMN}>
           <CollapsibleSection
             label="Details"
             icon="SlidersHorizontal"
-            className={twoColumn ? "min-w-0" : undefined}
             {...fold("details")}
           >
-            {/* `grid-cols-1`, with no responsive variant on purpose — see the
-                width note in this file's header. */}
-            <div className="grid grid-cols-1 gap-2">
+            {/* Status beside Priority, Assignees beside Due. No responsive
+                variant on purpose: the HOST's width stop decides, never the
+                viewport - see the width note in this file's header. */}
+            <div className={PAIRED_FIELDS(twoColumn)}>
               <FieldCell
                 label="Status"
                 icon="CircleDot"
@@ -649,10 +667,14 @@ export function TaskBody({
                 {/* WS-28e: directory-backed suggestions. Free text still
                     commits: the server accepts any non-empty string, and the
                     picker must not invent a rule the API does not enforce. */}
+                {/* WS-27bm S7b: `taskId` turns on "Suggested", ranked for
+                    THIS task. Only this panel passes it. */}
                 <AssigneePicker
                   value={assignee}
                   disabled={busy}
                   due={task.due_at ?? null}
+                  taskId={task.id}
+                  assigned={assignees}
                   onChange={setAssignee}
                   onCommitText={() => void addAssignees()}
                   onPick={(who) => {
@@ -685,12 +707,12 @@ export function TaskBody({
           </CollapsibleSection>
 
           {showDescription && task.description ? (
-            // Prose spans both columns. `order-last` re-places it for
-            // auto-flow without touching the reading order Peek and Side use.
+            // Prose gets the whole width at every stop. It used to carry
+            // `order-last col-span-2` to escape the section grid; with the
+            // sections stacked there is no grid to escape.
             <CollapsibleSection
               label="Description"
               icon="AlignLeft"
-              className={twoColumn ? "order-last col-span-2 min-w-0" : undefined}
               {...fold("description")}
             >
               <p className="whitespace-pre-wrap text-sm text-foreground">
@@ -705,10 +727,17 @@ export function TaskBody({
           <CollapsibleSection
             label="Properties"
             icon="Tag"
-            className={twoColumn ? "min-w-0" : undefined}
             {...fold("properties")}
           >
-            <div className="space-y-3">
+            {/* Tags beside Repeats when there is room. Both are short, and
+                stacked they left the widest stop looking half-used. */}
+            <div
+              className={
+                twoColumn
+                  ? "grid grid-cols-2 items-start gap-4"
+                  : "flex flex-col gap-3"
+              }
+            >
               <TagPicker
                 value={task.tags ?? []}
                 registry={tags}
@@ -728,7 +757,7 @@ export function TaskBody({
             fields. */}
         <CustomFieldValues task={task} fields={fields} onChanged={onChanged} />
 
-        <div className={PAIRED_SECTIONS(twoColumn)}>
+        <div className={SECTION_COLUMN}>
           <CollapsibleSection
             label="Links & subtasks"
             icon="GitBranch"
@@ -876,7 +905,12 @@ export function TaskBody({
             label="Discussion"
             icon="MessageSquare"
             count={comments.total}
-            className={twoColumn ? "col-span-2 min-w-0" : undefined}
+            // ⚠️ `min-w-0` only. `col-span-2` was left over from when the
+            // SECTIONS were the grid cells. The parent is a flex column now
+            // and a column span means nothing there — a dead class that reads
+            // like live layout. `min-w-0` still earns its place: it is what
+            // stops a long unbroken comment forcing the panel wider.
+            className={twoColumn ? "min-w-0" : undefined}
             {...fold("activity")}
           >
             <Tabs

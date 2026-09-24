@@ -34,6 +34,7 @@ import {
   type StuckReport,
   type LoadReport,
   type OutlookReport,
+  type CapacityReport,
   type ThroughputReport,
   type FinishedReport,
   type ViewRow,
@@ -68,6 +69,7 @@ import { TaskPanel } from "./components/TaskPanel";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { TriageRail } from "./components/TriageRail";
 import { AssistantRail } from "./components/AssistantRail";
+import SidePanelEditor from "@/components/SidePanelEditor";
 import { PROJECTS_CHANGED_EVENT } from "@/components/projects/ProjectToolCards";
 import { invalidate } from "@/lib/dataCache";
 import { useFrontendTool } from "@/hooks/useFrontendTool";
@@ -154,10 +156,18 @@ import ReportsView from "./components/ReportsView";
 import NodeDashboard from "./components/NodeDashboard";
 import SpaceSettings from "./components/SpaceSettings";
 import {
+  chatEnabled,
   projectAppSections,
   type ProjectAppId,
   SPACES_SECTION_LABEL,
 } from "./lib/projectApps";
+import {
+  DOCK_QUERY,
+  chatDockState,
+  readChatDocked,
+  toggleAction,
+  writeChatDocked,
+} from "./lib/chatDock";
 
 /**
  * The sidebar's own destinations, with the flagged entries resolved
@@ -165,6 +175,8 @@ import {
  * `NEXT_PUBLIC_*` is inlined at build time, so this cannot change at runtime.
  */
 const PROJECT_APP_SECTIONS = projectAppSections();
+/** The same flag, as the dock reads it (`lib/chatDock.ts`). */
+const CHAT_LIVE = chatEnabled();
 
 /**
  * Five modes, not Tasks' two, because the domain genuinely has five — the
@@ -585,6 +597,21 @@ function ProjectsWorkspace() {
     setPanelModeState(next);
     writePanelMode(next);
   }, []);
+  // WS-27bm — the AI chat docked beside the board (`lib/chatDock.ts`). Read in
+  // an effect for the reason `panelMode` is: no storage on the server.
+  const [chatDocked, setChatDocked] = useState(false);
+  // Wide enough to dock — the same media query the CSS `xl` is, subscribed,
+  // so the column follows the window and a narrow one mounts no rail at all.
+  const [dockWide, setDockWide] = useState(false);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setChatDocked(readChatDocked());
+    const mql = window.matchMedia(DOCK_QUERY);
+    const onChange = () => setDockWide(mql.matches);
+    onChange();
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
   // The panel's statuses are held apart from the selected project's, because a
   // task opened from a deep link can belong to a project that is not selected —
   // and a panel offering another project's statuses would offer transitions
@@ -692,6 +719,9 @@ function ProjectsWorkspace() {
   const [stuck, setStuck] = useState<StuckReport | null>(null);
   const [load, setLoad] = useState<LoadReport | null>(null);
   const [outlook, setOutlook] = useState<OutlookReport | null>(null);
+  // WS-27bm S7a. The Analytics app's own read — the node dashboards do not
+  // draw it, so it is not fetched for them.
+  const [capacity, setCapacity] = useState<CapacityReport | null>(null);
   const [throughput, setThroughput] = useState<ThroughputReport | null>(null);
   const [finished, setFinished] = useState<FinishedReport | null>(null);
   const toast = useToast();
@@ -1337,6 +1367,26 @@ function ProjectsWorkspace() {
       cancelled = true;
     };
   }, [wantsAnalytics, analyticsNode, treeKey]);
+
+  /**
+   * WS-27bm S7a — the Capacity panel, for the Analytics app only.
+   *
+   * A separate effect rather than a sixth read in the one above: that one
+   * also feeds every node dashboard, and those do not draw this panel. A
+   * rejected read stays null and renders nothing, as the others do.
+   */
+  useEffect(() => {
+    if (app !== "analytics") return;
+    let cancelled = false;
+    setCapacity(null);
+    projectsApi.capacity().then(
+      (r) => !cancelled && setCapacity(r),
+      () => !cancelled && setCapacity(null)
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [app, treeKey]);
 
   // Selecting nothing is a real state (an empty portfolio), so the default is
   // applied only when the current selection has fallen out of the filtered set.
@@ -2121,6 +2171,25 @@ function ProjectsWorkspace() {
   // member can reach, so it is fetched.
   const openWithStatuses = useCallback(
     async (task: TaskRow) => {
+      // Opened from one of the app's own destinations — the AI chat slot, most
+      // often, where a card's "Open task" landed the panel beside a full-width
+      // chat and never showed the project (owner report, 2026-09-23). Leave
+      // the destination, select the task's project so its board shows, and
+      // carry the conversation into the dock, where it comes back beside the
+      // board when the task closes.
+      if (app !== null) {
+        const home = flatten(visibleRoots).find((e) => e.node.id === task.project_id);
+        if (home) setSelected(home.node as ProjectRow);
+        // Only where a dock can draw. Below 80rem, or on a phone, the dock is
+        // `absent`, so docking would hide the chat and store a choice the
+        // member never made (review of PR #431). There the conversation stays
+        // one tap away under "AI chat".
+        if (app === "ai-chat" && CHAT_LIVE && dockWide && !isMobile) {
+          setChatDocked(true);
+          writeChatDocked(true);
+        }
+        setApp(null);
+      }
       setOpenTask(task);
       if (selected && task.root_project_id === selected.id) {
         setPanelStatuses(statuses);
@@ -2135,7 +2204,7 @@ function ProjectsWorkspace() {
         setPanelStatuses([]);
       }
     },
-    [selected, statuses]
+    [selected, statuses, app, visibleRoots, dockWide, isMobile]
   );
 
   /**
@@ -3008,6 +3077,19 @@ function ProjectsWorkspace() {
     }
   }
 
+  /** Every visible node, for the chat's focus picker (`lib/chatScope.ts`). */
+  const chatScopes = useMemo(
+    () =>
+      flatten(visibleRoots).map((e) => ({
+        id: e.node.id,
+        name: e.node.name,
+        level: levelOf(visibleRoots, e.node.id),
+        depth: e.depth,
+        archived: Boolean((e.node as ProjectRow).archived_at),
+      })),
+    [visibleRoots],
+  );
+
   if (loading) return renderState("loading", LOADING_COPY, "page");
 
   // ── The parts both layouts render ────────────────────────────────────────
@@ -3216,35 +3298,37 @@ function ProjectsWorkspace() {
   const canvasKey = `${selected?.id ?? "none"}:${canvasLabel}`;
 
   /** Everything between the chrome and the canvas, plus the canvas. */
+  /**
+   * The member's PLACE, which both chat mounts hand the rail — the node they
+   * last selected, the filters, the open task and the selection — so "this
+   * project" resolves without an id. One object, so the slot and the dock
+   * cannot describe one place two ways.
+   */
+  const railPlace = {
+    node: selected
+      ? {
+          id: selected.id,
+          name: selected.name,
+          level: selectedLevel,
+          archived: Boolean(selected.archived_at),
+        }
+      : null,
+    filters,
+    openTask: openTask
+      ? { id: openTask.id, title: openTask.title, number: openTask.task_number ?? null }
+      : null,
+    selectedTaskIds: Array.from(picked),
+    scopes: chatScopes,
+  };
+
   const workArea = app === "ai-chat" ? (
     // WS-27bm — the AI chat, full width in its own slot. Reachable only when
     // `NEXT_PUBLIC_PROJECTS_CHAT` flips the entry to live; off, the sidebar
-    // disables it and says so. The rail gets the member's PLACE — the node
-    // they last selected (the rail header names it, because the tree does
-    // not highlight it while an app is open), the filters, the open task
-    // and the selection — so "this project" resolves without an id. No
-    // `view`: the member is looking at the chat, not at a canvas.
+    // disables it and says so. The rail header names the node, because the
+    // tree does not highlight it while an app is open. No `view`: the member
+    // is looking at the chat, not at a canvas.
     <div className="min-w-0 flex-1 overflow-hidden">
-      <AssistantRail
-        node={
-          selected
-            ? {
-                id: selected.id,
-                name: selected.name,
-                level: selectedLevel,
-                archived: Boolean(selected.archived_at),
-              }
-            : null
-        }
-        view={null}
-        filters={filters}
-        openTask={
-          openTask
-            ? { id: openTask.id, title: openTask.title, number: openTask.task_number ?? null }
-            : null
-        }
-        selectedTaskIds={Array.from(picked)}
-      />
+      <AssistantRail {...railPlace} view={null} />
     </div>
   ) : app === "reports" ? (
     // §9.12.8 — a saved question, rendered on screen before anything sends.
@@ -3265,6 +3349,7 @@ function ProjectsWorkspace() {
           throughput={throughput}
           finished={finished}
           outlook={outlook}
+          capacity={capacity}
           onOpen={(id) => {
             const row = flatten(visibleRoots).find((e) => e.node.id === id);
             if (row) {
@@ -3856,6 +3941,17 @@ function ProjectsWorkspace() {
   // One pane. The tree and the mode picker are sheets in the shell drawer
   // (AppShell's `isProjectsPage` tabs), and an opened task is a full-screen
   // surface rather than the third column it is on desktop.
+  // WS-27bm — the docked chat's one state for this render (`lib/chatDock.ts`).
+  // The toggle and the column both read it, so the button is pressed exactly
+  // when the column is on screen.
+  const dockState = chatDockState({
+    live: CHAT_LIVE,
+    docked: chatDocked,
+    wide: dockWide && !isMobile,
+    slotOpen: app === "ai-chat",
+    taskDocked: Boolean(taskPanel) && !isOverlayMode(panelMode),
+  });
+
   if (isMobile) {
     return (
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
@@ -3959,6 +4055,14 @@ function ProjectsWorkspace() {
           </nav>
         ) : null}
 
+        {/* The shared side panel — where a chat's "Open in side panel" on a
+            Markdown or HTML file, and a panel-surface generated view, draw.
+            The main chat page mounts it; this page did not, so those clicks
+            wrote to a store nothing rendered (owner report, 2026-09-23). It
+            draws nothing until something is opened, and it is a LEFT column,
+            as on the chat page: its resize handle and border assume that. */}
+        {CHAT_LIVE ? <SidePanelEditor hideWhenEmpty /> : null}
+
         <main className="flex min-w-0 flex-1 flex-col">
           <header className="shrink-0 border-b border-border">
             {/* Title row — what you are looking at, and nothing else. */}
@@ -3979,7 +4083,10 @@ function ProjectsWorkspace() {
                 leaving an empty strip would look like a surface that failed
                 to load. */}
             {noProjectChrome ? null : (
-              <div className="flex items-center gap-1 px-3 pb-2 pt-1.5">
+              // `flex-wrap`: with the chat docked the canvas loses 26rem, and
+              // an action row that cannot wrap paints its right half over the
+              // chat column (measured at 1440, 2026-09-23).
+              <div className="flex flex-wrap items-center gap-1 px-3 pb-2 pt-1.5">
                 <ModeSwitch
                   mode={mode}
                   layout="toolbar"
@@ -3987,6 +4094,35 @@ function ProjectsWorkspace() {
                 />
                 <div className="ml-auto flex shrink-0 items-center gap-1">
                   {projectActions(false)}
+                  {CHAT_LIVE ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon="Sparkles"
+                      selected={dockState === "shown"}
+                      title={
+                        dockState === "shown"
+                          ? "Close the assistant"
+                          : dockState === "hidden"
+                            ? "Show the assistant (closes the task)"
+                            : "Ask the assistant about this project"
+                      }
+                      onClick={() => {
+                        const act = toggleAction(dockState, dockWide);
+                        if (act === "open-slot") {
+                          setApp("ai-chat");
+                        } else if (act === "show") {
+                          setOpenTask(null);
+                        } else {
+                          const next = act === "dock";
+                          setChatDocked(next);
+                          writeChatDocked(next);
+                        }
+                      }}
+                    >
+                      Assistant
+                    </Button>
+                  ) : null}
                 </div>
               </div>
             )}
@@ -3999,6 +4135,28 @@ function ProjectsWorkspace() {
             wide. Full does not: it is mounted over the board below, because a
             docked column cannot be wider than the space left over. */}
         {isOverlayMode(panelMode) ? null : taskPanel}
+
+        {/* WS-27bm — the AI chat DOCKED beside the canvas (`lib/chatDock.ts`).
+            It shares the right-hand column with the docked task panel: while
+            a task holds the column the chat hides but stays mounted, so a
+            streaming reply keeps streaming. */}
+        {dockState === "absent" ? null : (
+          <aside
+            aria-label="Assistant"
+            hidden={dockState === "hidden"}
+            className="flex w-[26rem] shrink-0 flex-col overflow-hidden border-l border-border"
+          >
+            <AssistantRail
+              {...railPlace}
+              view={noProjectChrome ? null : mode}
+              onClose={() => {
+                setChatDocked(false);
+                writeChatDocked(false);
+              }}
+            />
+          </aside>
+        )}
+
       </div>
 
       {/* WS-27ab — the `full` stop. A scrim plus the same panel, at the same

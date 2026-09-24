@@ -38,7 +38,8 @@ import { ClarifyPanel } from "./ClarifyPanel";
 import { AiTaskActions } from "./AiTaskActions";
 import { DelegateDialog } from "./DelegateDialog";
 import { WeightToggles, PriorityBadge, SuggestionBadge } from "./PriorityControls";
-import { isUntagged } from "../lib/priority";
+import { isUntagged, seededImportant } from "../lib/priority";
+import { importanceLabel } from "@/app/projects/lib/table";
 import { isWaitingOverdue } from "../lib/waiting";
 import { useCardActions } from "../lib/useCardActions";
 import { ProjectLabel } from "./ProjectLabel";
@@ -672,10 +673,15 @@ export function TaskDetail({
                   onChange={(w) => updateItem(item.id, w)}
                 />
               </div>
+              {/* ⚠️ Two different "not yet judged" sentences since the org
+                  priority began seeding (2026-09-23). An unjudged High task
+                  no longer defaults to low priority, and telling the member
+                  it does would be the product misleading them again. */}
               {isUntagged(item) && (
                 <p className="mt-1.5 text-[11px] text-muted-foreground/70">
-                  Not yet judged — flag it important or leveraged, or leave it to
-                  default low priority.
+                  {seededImportant(item)
+                    ? `Not yet judged — the project marks this ${importanceLabel(item.orgPriority)} priority, so it counts as important until you confirm or dismiss it.`
+                    : "Not yet judged — flag it important or leveraged, or leave it to default low priority."}
                 </p>
               )}
             </section>

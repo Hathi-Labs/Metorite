@@ -101,6 +101,11 @@ const PANEL_HIDDEN_EVENTS = new Set([
   "generative_ui",
   // A dispatched browser action (H-164): a side effect with nothing to show.
   "frontend_tool",
+  // A file the turn wrote. `ArtifactCard` already renders it, with Open and
+  // Download; the fold showed the same event again as raw data (UX review
+  // 2026-09-23).
+  "artifact_created",
+  "artifact_updated",
 ]);
 
 /** A typed renderer for a specific custom-event `name`, returning the card body

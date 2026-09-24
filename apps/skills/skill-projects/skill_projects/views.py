@@ -31,11 +31,11 @@ from typing import Any
 
 from skill_projects.client import data, get, uuid_of
 from skill_projects.reads import (
-    DATA_LEGEND,
     _day,
     _report_section,
     _status_names,
     _task_line,
+    legend,
 )
 
 try:
@@ -120,7 +120,7 @@ async def render_timeline(task_id: str, kind: str = "all") -> str:
     events = (payload or {}).get("rows") or []
     total = int((payload or {}).get("total") or len(events))
     rows: list[dict[str, Any]] = []
-    lines = [DATA_LEGEND, *_task_line(task), f"Timeline ({len(events)} of {total}):"]
+    lines = [legend(), *_task_line(task), f"Timeline ({len(events)} of {total}):"]
     for ev in events:
         meta = ev.get("meta") or {}
         field, before, after = _change_text(meta if isinstance(meta, dict) else {})
@@ -214,7 +214,7 @@ async def render_board(project_id: str, assignee: str = "", tags: str = "") -> s
         for lane in lanes
     ]
     lines = [
-        DATA_LEGEND,
+        legend(),
         f"Board for {data(node.get('name'))}: {total} tasks, showing {len(tasks)}",
     ]
     for lane in lanes:
@@ -275,7 +275,7 @@ async def render_tasks(
         }
         for t in tasks
     ]
-    lines = [DATA_LEGEND, f"Tasks ({total} total, showing {len(tasks)}):"]
+    lines = [legend(), f"Tasks ({total} total, showing {len(tasks)}):"]
     for t in tasks:
         lines.extend(_task_line(t, names.get(str(t.get("status_id")), "")))
     await _emit(
@@ -305,7 +305,7 @@ async def render_report(report_id: str) -> str:
     report = payload.get("report") or {}
     sections = payload.get("sections") or {}
     lines = [
-        DATA_LEGEND,
+        legend(),
         f"Report {data(report.get('name'))} · {payload.get('period_start')} to "
         f"{payload.get('period_end')}",
     ]
@@ -458,7 +458,7 @@ async def status_report(project_id: str = "") -> str:
             },
         )
     )
-    text_lines = [DATA_LEGEND, *md]
+    text_lines = [legend(), *md]
     text_lines.append(
         "Save this as a Markdown artifact with write_artifact, then offer to comment on "
         "each at-risk task (one class B batch)."

@@ -14,6 +14,12 @@
  */
 import { ContextMenu } from "@/components/ContextMenu";
 import Icon, { themedIcon } from "@/components/Icon";
+import {
+  type NodeProgress,
+  showsWheel,
+  wheelLabel,
+} from "../lib/progressWheel";
+import { StateMark, stateMarkIcon } from "./StateMark";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import { PROJECT_STATES, projectStateAccent } from "@/lib/statusAccent";
@@ -58,35 +64,68 @@ function StateDot({
   inherited,
   projectName,
   level,
+  progress,
 }: {
   state: string;
   inherited: boolean;
   projectName: string;
   /** 'project' or 'subproject' — the two levels that own a run state. */
   level: NodeLevel;
+  /** The subtree roll-up `GET /projects/tree` now carries. */
+  progress: NodeProgress;
 }) {
-  const visual = PROJECT_STATES[state];
   const accent = projectStateAccent(state);
-  const label = visual?.label ?? state;
-  // A subproject draws the same glyph one step smaller. Indentation alone
+  const label = PROJECT_STATES[state]?.label ?? state;
+  // A subproject draws the same mark one step smaller. Indentation alone
   // stops being readable once a folder sits between the two (owner
   // directive 2026-08-31), and the STATE must stay the information — so the
   // level changes the size, never the hue.
-  const size = level === "subproject" ? "h-3 w-3" : "h-3.5 w-3.5";
+  //
+  // ⚠️ One step up from 14/12 px, 2026-09-23. The mark family draws every
+  // state on one heavy ring, and at 14px a pause or a stop left too small a
+  // hole to read. The folder glyph and the draft row's glyph moved to 16px in
+  // the same change (`MARKER_SIZE`), or a folder beside a project at one depth
+  // would start its label 2px to the left of the project's.
+  const size = level === "subproject" ? "h-3.5 w-3.5" : MARKER_SIZE;
+
+  // ⚠️ **A LIVE project draws a completion wheel.** Owner directive
+  // 2026-09-23. Every live project, including one with no tasks — it draws an
+  // empty ring. See `showsWheel`.
+  //
+  // ⚠️ **Every other state draws the SAME ring with a different inside**
+  // (owner directive 2026-09-23: *"continuity of iconography and everything
+  // looks like it has the same weight"*). They used to be Lucide glyphs at a
+  // thin stroke beside a heavy wheel. Shape still differs per state, so
+  // D-PM-27 holds: hue AND glyph, never hue alone. `lib/stateMark.ts` owns
+  // the shapes.
+  const live = showsWheel(state, progress);
+  const name = live
+    ? wheelLabel(level, projectName, progress)
+    : `${level}, ${label} — ${projectName}.`;
   return (
-    <Icon
-      name={visual?.icon ?? "Circle"}
-      className={`${size} shrink-0 ${accent.text} ${
-        inherited ? "opacity-50" : ""
-      }`}
-      aria-label={
-        inherited
-          ? `${level}, ${label} — inherited from a parent project`
-          : `${level}, ${label} — ${projectName}`
-      }
+    <StateMark
+      state={state}
+      progress={live ? progress : undefined}
+      className={`${size} shrink-0 ${accent.text}`}
+      // ⚠️ `dim`, not `opacity-50` in `className`. The class would land on the
+      // wrapper span, and `opacity` does not inherit, so anything that reads
+      // the svg's own computed opacity (e2e/project-state.spec.ts does) sees
+      // 1 on a row that is visibly dimmed.
+      dim={inherited}
+      // ⚠️ Lower-case "inherited", as the Lucide path said it before. The
+      // browser spec matches the word case-sensitively, and a screen reader
+      // gains nothing from a capital in the middle of one sentence.
+      label={inherited ? `${name} (inherited from a parent project)` : name}
     />
   );
 }
+
+/**
+ * The marker size for a project row, a folder row and a draft row. One value,
+ * so the three start their labels at the same x at one depth. A space marker
+ * draws at the same 16px by its own class.
+ */
+const MARKER_SIZE = "h-4 w-4";
 
 /**
  * The marker for a node that is NOT a project or subproject — a space or a
@@ -125,7 +164,7 @@ function LevelGlyph({
   return (
     <Icon
       name="Folder"
-      className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+      className={`${MARKER_SIZE} shrink-0 text-muted-foreground`}
       aria-label={`Folder — ${node.name}`}
     />
   );
@@ -184,7 +223,7 @@ function DraftRow({
         <span className="w-[18px] shrink-0" />
         <Icon
           name={LEVEL_ICONS[draft.level]}
-          className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+          className={`${MARKER_SIZE} shrink-0 text-muted-foreground`}
         />
         <form
           className="min-w-0 flex-1"
@@ -553,6 +592,7 @@ function Node({
                 inherited={run.inherited}
                 projectName={node.name}
                 level={level}
+                progress={node}
               />
             ) : (
               <LevelGlyph level={level} node={node} />
@@ -593,6 +633,7 @@ function Node({
                 inherited={run.inherited}
                 projectName={node.name}
                 level={level}
+                progress={node}
               />
             ) : (
               <LevelGlyph level={level} node={node} />
@@ -716,7 +757,15 @@ function Node({
             entry.kind === "item"
               ? {
                   ...entry,
-                  icon: entry.icon ? themedIcon(entry.icon) : undefined,
+                  // A run-state row draws the SAME mark the tree does: the
+                  // picker is where the state is changed, and a picker in one
+                  // icon set beside a tree in another is the discontinuity
+                  // the mark family removes.
+                  icon: entry.runState
+                    ? stateMarkIcon(entry.runState)
+                    : entry.icon
+                      ? themedIcon(entry.icon)
+                      : undefined,
                 }
               : entry
           )}

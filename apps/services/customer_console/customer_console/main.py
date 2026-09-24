@@ -51,6 +51,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
@@ -125,6 +126,13 @@ from customer_console.credits import (
     rate_call,
 )
 from customer_console.db import get_engine
+from customer_console.decide import (
+    DecideQuestion,
+    DecideRequest,
+    decide_refusal,
+    questions_of,
+)
+from customer_console.handlers import DECIDE_TASK, DecidePayload, ProviderResult
 from customer_console.keys import (
     ENV_DISCOUNT,
     is_discount_code,
@@ -2465,7 +2473,7 @@ def declare_capability(req: CapabilityRequest, staff: Operator) -> dict[str, Any
     Nobody is billed against it, so correcting it destroys no audit trail.
     """
     try:
-        invocation = catalog.check_invocation(req.invocation)
+        invocation = catalog.check_invocation_for_task(req.invocation, req.task)
         streams = catalog.check_streams(req.task, req.streams)
     except catalog.CatalogRefused as exc:
         raise _catalog_refusal(exc) from exc
@@ -6331,10 +6339,12 @@ def _upstream_refusal(failed: router_mod.UpstreamFailed) -> HTTPException:
     every SDK tells the customer to rotate THEIR key, and a vendor 402
     collides with this API's own top-up 402.
 
-    🔴 **ONE mapping for every serving route.** All four raise from here —
+    🔴 **ONE mapping for every serving route.** All five raise from here —
     `/v1/chat/completions`, `/v1/audio/transcriptions`,
-    `/v1/images/generations` and `/v1/audio/speech` — so a second endpoint
-    cannot grow a second opinion about what a vendor 500 means.
+    `/v1/images/generations`, `/v1/audio/speech` and `/v1/decide` — so a
+    second endpoint cannot grow a second opinion about what a vendor 500
+    means. A native handler raises an error that carries `status_code`, so
+    a TypeSafe 429 stays a 429 and its 529 becomes a 502 (§6A.14 clause 12).
     """
     status = failed.status
     _log.warning("router.provider_error", extra={"upstream_status": status})
@@ -6350,7 +6360,7 @@ def _chain_credentials(
     conn,
     chain: list[ResolvedTier],
     *,
-    org_id: str,
+    org_id: str | None,
 ) -> dict[str, router_mod.Credential | None]:
     """One credential per VENDOR named in the chain, read in the caller's
     transaction.
@@ -7557,7 +7567,7 @@ def _serving_prelude(
 ) -> tuple[list[ResolvedTier], dict[str, router_mod.Credential | None], dict[str, str]]:
     """Resolve the chain, load its keys and verbs, and stand the three walls.
 
-    🔴 **ONE prelude for the image door and the speak door.** The transcribe
+    🔴 **ONE prelude for the image, speak and decide doors.** The transcribe
     route wrote this shape first and the chat route wrote it before that. A
     third and a fourth copy is root ``CLAUDE.md`` §5's defect by name, so the
     two new routes share this function and the older two keep their own
@@ -7914,6 +7924,375 @@ def audio_speech(req: SpeechRequest, caller: ServingCaller) -> Response:
     )
 
     return Response(content=audio, media_type=media_type)
+
+
+# ── CP-13a: the decide door (§6A.14, D75) ──────────────────────────────────
+#
+# 🔴 **The first door no litellm verb can serve.** TypeSafe's Jev answers a
+# typed decision, and litellm reaches it only through the Proxy that D58
+# rejects. So the capability row names `native_typesafe`, and
+# `router._default_provider_call` sends that verb to `handlers.py`.
+#
+# ⚠️ **Nothing binds `tier-decide`, and no key is installed.** So the door
+# answers 400 `tier_unknown` until an operator declares the model, binds the
+# tier and installs the key (CP-13b). The key is the owner's act (§6.0 B1).
+
+
+@app.post("/v1/decide")
+def decide(req: DecideRequest, caller: ServingCaller) -> dict[str, Any]:
+    """Answer typed questions about a state, gate the call, and meter tokens.
+
+    The same shape as the image and speak doors, and deliberately so. The
+    organization comes from the credential, the model comes from the tier
+    binding, the three customer walls stand BEFORE the provider call in
+    ``_serving_prelude``, and ``_record_completion`` writes the one row.
+
+    🔴 **``ServingCaller``, never ``KeyCaller``** (the wire contract). A shared
+    box presents its per-box deployment key plus ``X-CC-Member``, and the
+    Console derives the tenant. A door on the organization key alone would
+    copy H-152's defect.
+
+    🔴 **Clause 13's limits refuse FIRST.** A breach is a 400 that names the
+    rule. It runs before the chain resolves, so it writes no usage row and no
+    vendor sees the request.
+
+    🔴 **The response names the TIER and never the model** (D32.7, D66). The
+    model goes into ``usage_event.model`` for the operator.
+
+    🔴 **Metering is by TOKEN, with no quantity** (clause 8). The handler
+    writes the vendor's input count into ``prompt_tokens``. A quantity would
+    send ``_record_completion`` down the per-unit branch, where ``tokens``
+    has no column.
+
+    ⚠️ **No hold, and no second spend check** (clause 11). The prelude already
+    runs ``_spend_refusal`` behind the spend gate, as it does for the image
+    and speak doors.
+
+    Declared ``def`` for the reason the module docstring gives.
+    """
+    rule = decide_refusal(req)
+    if rule is not None:
+        # Refused BEFORE anything is resolved or spent (clause 13).
+        raise HTTPException(status_code=400, detail=rule)
+
+    org_id = caller.organization_id
+    attempts, credentials, invocations = _serving_prelude(
+        tier=req.tier,
+        task=DECIDE_TASK,
+        org_id=org_id,
+        caller=caller,
+        client_ref=req.client_ref,
+    )
+    questions = questions_of(req)
+    # H-85: minted BEFORE the call, so the handler's unreadable-body alarm
+    # and the usage row name the same request.
+    request_id = _new_request_id()
+
+    def _kwargs_for(step: ResolvedTier) -> dict[str, Any]:
+        """Build the outgoing call for one step of the chain. ALLOWLIST.
+
+        ⚠️ The typed ``payload`` carries the credential. ``api_base`` is ours
+        alone, and nothing the caller sent reaches the vendor except the
+        state and the questions. ``model`` rides beside the payload so a
+        test fake and the failover log can read which step ran.
+        """
+        cred = credentials[step.model.split("/", 1)[0]]
+        assert cred is not None  # the attempts filter removed keyless steps
+        return {
+            "model": step.model,
+            "task": DECIDE_TASK,
+            # D60 step two: the verb `model_capability` named for this pair.
+            "invocation": invocations[step.model],
+            "payload": DecidePayload(
+                model=step.model,
+                state=req.state,
+                questions=questions,
+                api_key=cred.secret,
+                api_base=cred.api_base or None,
+                # Log context for the unreadable-body alarm. Never sent.
+                organization_id=org_id,
+                request_id=request_id,
+            ),
+        }
+
+    def _byok_served(step: ResolvedTier) -> bool:
+        cred = credentials[step.model.split("/", 1)[0]]
+        return bool(cred and cred.byok)
+
+    def _note_failover(frm: ResolvedTier, to: ResolvedTier, status: int | None) -> None:
+        _log.warning(
+            "router.failover",
+            extra={
+                "fo_from": frm.model,
+                "fo_to": to.model,
+                "fo_status": status,
+                "fo_tier": frm.tier,
+                "fo_task": DECIDE_TASK,
+            },
+        )
+
+    started_at = datetime.now(UTC)
+    try:
+        response, resolved = asyncio.run(
+            router_mod.call_chain(attempts, _kwargs_for, _note_failover)
+        )
+    except HTTPException:
+        raise
+    except router_mod.UpstreamFailed as failed:
+        # ONE mapping, shared with every serving route (clause 12).
+        raise _upstream_refusal(failed) from failed
+
+    if not isinstance(response, ProviderResult):
+        # A capability row that pairs `decide` with a litellm verb lands
+        # here. `catalog.check_invocation_for_task` refuses that row at
+        # declare time, so only a row written before that rule can reach
+        # this. It is our configuration fault, so the caller gets the 502 a
+        # broken vendor gets, and the log names the model.
+        _log.error(
+            "router.decide_unreadable",
+            extra={"router_model": resolved.model, "router_org": org_id},
+        )
+        raise HTTPException(status_code=502, detail="upstream provider error")
+
+    # Metering is best-effort and NEVER fails the call.
+    _record_completion(
+        response.usage,
+        org_id=org_id,
+        caller=caller,
+        resolved=resolved,
+        client_ref=req.client_ref,
+        byok=_byok_served(resolved),
+        started_at=started_at,
+        request_id=request_id,
+    )
+
+    return {"tier": resolved.tier, **response.body, "request_id": request_id}
+
+
+# ── CP-13b: "Try a decision" — the operator proves a binding (§6A.14) ──────
+#
+# 🔴 **It does NOT call the door, and it writes NO `usage_event` row.** No
+# platform organization exists, and `usage_event.organization_id` is NOT NULL.
+# A test through `/v1/decide` would land in a customer's usage and draw that
+# customer's credits once H-42 prices the card. So this route resolves the
+# chain and calls the handler itself, with the PLATFORM credential only.
+
+#: The one tier `033` registers for the task.
+DECIDE_TIER = "tier-decide"
+
+
+class TryDecisionRequest(BaseModel):
+    """What an operator types on `/tiers`: one state and its questions.
+
+    ⚠️ No ``tier`` field. The route tries ``tier-decide`` and nothing else, so
+    an operator cannot aim a test at a customer's chat tier by mistake.
+    """
+
+    state: str | dict[str, Any] | list[Any]
+    questions: dict[str, DecideQuestion]
+
+    model_config = {"extra": "forbid"}
+
+
+def _audit_decide_try(actor: str, detail: dict[str, Any]) -> None:
+    """Write the ONE audit row for a try that reached the vendor.
+
+    🔴 **Every attempt, served or failed.** A failed call may still be paid
+    for at the vendor, so ``outcome`` records ``served``, ``upstream_failed``
+    or ``unreadable``, and ``upstream_status`` records what the vendor said.
+
+    ⚠️ **Its own transaction, and it never raises.** It runs after the vendor
+    call. A database error here must not turn a served answer into a 500, so
+    the error is logged at ERROR with the detail, which holds no secret.
+    """
+    try:
+        with get_engine().begin() as conn:
+            _audit(conn, None, "catalog.decide_try", detail, actor=actor)
+    except Exception:
+        _log.exception("catalog.decide_try_audit_failed", extra={"try_detail": detail})
+
+
+@app.post("/catalog/decide/try")
+def try_decision(req: TryDecisionRequest, staff: Operator) -> dict[str, Any]:
+    """Send one operator-typed decision through the bound `tier-decide` chain.
+
+    🔴 **The SAME rules as the door.** The body becomes a ``DecideRequest``
+    and ``decide_refusal`` judges it, so clause 13 has one home. A breach is
+    a 400 before the chain resolves, and no vendor sees it.
+
+    🔴 **The PLATFORM credential only** (``organization_id IS NULL``). A BYOK
+    key belongs to a customer, and an operator test must not spend it.
+
+    🔴 **One ``control_audit`` row, and no ``usage_event`` row.** The audit
+    row names the operator, the tokens and the vendor cost, so the spend is
+    on record without landing in any customer's usage. A call that reached
+    the vendor and failed writes its one row too, with the outcome, because
+    the vendor may have charged for it (:func:`_audit_decide_try`).
+
+    ⚠️ **The provider call goes through ``router.call_provider``**, inside
+    ``call_chain``. So a test fake set by ``set_provider_call`` sees it, and
+    a vendor failure maps through ``_upstream_refusal`` like every door.
+
+    The answer names the model, because an operator reads models. It never
+    carries the key.
+    """
+    decide_req = DecideRequest(tier=DECIDE_TIER, state=req.state, questions=req.questions)
+    rule = decide_refusal(decide_req)
+    if rule is not None:
+        raise HTTPException(status_code=400, detail=rule)
+
+    credentials: dict[str, router_mod.Credential | None] = {}
+    invocations: dict[str, str] = {}
+    with get_engine().begin() as conn:
+        try:
+            chain = resolve_chain(conn, DECIDE_TIER, DECIDE_TASK)
+        except TierUnknown:
+            chain = []
+        if chain:
+            credentials = _chain_credentials(conn, chain, org_id=None)
+            invocations = _chain_invocations(conn, chain, task=DECIDE_TASK)
+
+    if not chain:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{REFUSAL_TIER_UNKNOWN}: no binding for tier {DECIDE_TIER!r} on task "
+                f"{DECIDE_TASK!r}; bind a model to it on this page first"
+            ),
+        )
+
+    attempts = [
+        step
+        for step in chain
+        if credentials.get(step.model.split("/", 1)[0]) is not None and step.model in invocations
+    ][: router_mod.MAX_CHAIN_ATTEMPTS]
+    if not attempts:
+        raise _nothing_to_try(chain[0], invocations, task=DECIDE_TASK)
+
+    questions = questions_of(decide_req)
+    # Log context for the handler's unreadable-body alarm. Not a usage id,
+    # because this call writes no usage row.
+    request_id = f"try-{uuid.uuid4().hex}"
+
+    def _kwargs_for(step: ResolvedTier) -> dict[str, Any]:
+        """The door's allowlist, with no organization."""
+        cred = credentials[step.model.split("/", 1)[0]]
+        assert cred is not None  # the attempts filter removed keyless steps
+        return {
+            "model": step.model,
+            "task": DECIDE_TASK,
+            "invocation": invocations[step.model],
+            "payload": DecidePayload(
+                model=step.model,
+                state=req.state,
+                questions=questions,
+                api_key=cred.secret,
+                api_base=cred.api_base or None,
+                organization_id=None,
+                request_id=request_id,
+            ),
+        }
+
+    def _note_failover(frm: ResolvedTier, to: ResolvedTier, status: int | None) -> None:
+        # The door's failover line, word for word, so a try that fell over
+        # reads the same as a customer call that did.
+        _log.warning(
+            "router.failover",
+            extra={
+                "fo_from": frm.model,
+                "fo_to": to.model,
+                "fo_status": status,
+                "fo_tier": frm.tier,
+                "fo_task": DECIDE_TASK,
+            },
+        )
+
+    started_at = datetime.now(UTC)
+    clock = time.perf_counter()
+    try:
+        response, resolved = asyncio.run(
+            router_mod.call_chain(attempts, _kwargs_for, _note_failover)
+        )
+    except router_mod.UpstreamFailed as failed:
+        # 🔴 The vendor was reached, and it may have charged us. So the
+        # attempt is on record even though it failed.
+        terminal = getattr(failed.__cause__, "terminal", False) is True
+        _audit_decide_try(
+            staff.actor,
+            {
+                "tier": DECIDE_TIER,
+                "model": None,
+                "outcome": "unreadable" if terminal else "upstream_failed",
+                "upstream_status": failed.status,
+                "latency_ms": round((time.perf_counter() - clock) * 1000),
+            },
+        )
+        raise _upstream_refusal(failed) from failed
+    latency_ms = round((time.perf_counter() - clock) * 1000)
+
+    if not isinstance(response, ProviderResult):
+        # A capability row written before `check_invocation_for_task` existed.
+        _log.error("router.decide_unreadable", extra={"router_model": resolved.model})
+        _audit_decide_try(
+            staff.actor,
+            {
+                "tier": resolved.tier,
+                "model": resolved.model,
+                "outcome": "unreadable",
+                "upstream_status": None,
+                "latency_ms": latency_ms,
+            },
+        )
+        raise HTTPException(status_code=502, detail="upstream provider error")
+
+    usage = response.usage
+    cost: Decimal | None = None
+    try:
+        with get_engine().begin() as conn:
+            prices = _vendor_prices(
+                conn,
+                resolved.model,
+                prompt_tokens=usage.prompt_tokens,
+                started_at=started_at,
+            )
+            cost = router_mod.vendor_cost_usd(
+                usage,
+                input_per_1m=prices["input"],
+                output_per_1m=prices["output"],
+                cached_per_1m=prices["cached"],
+            )
+    except Exception:
+        # The answer is paid for and in hand. A price read that fails must
+        # not turn it into a 500, so the cost reads "not priced" instead.
+        _log.exception("catalog.decide_try_price_failed")
+        cost = None
+    _audit_decide_try(
+        staff.actor,
+        {
+            "tier": resolved.tier,
+            "model": resolved.model,
+            "outcome": "served",
+            "upstream_status": 200,
+            "input_tokens": usage.prompt_tokens,
+            "output_tokens": usage.completion_tokens,
+            "vendor_cost_usd": None if cost is None else str(cost),
+            "latency_ms": latency_ms,
+        },
+    )
+
+    return {
+        "tier": resolved.tier,
+        "model": resolved.model,
+        "answers": response.body.get("answers", {}),
+        "usage": {
+            "input_tokens": usage.prompt_tokens,
+            "output_tokens": usage.completion_tokens,
+        },
+        "latency_ms": latency_ms,
+        # A string, like every money figure this service returns. None means
+        # the profile holds no price, and the panel says so.
+        "vendor_cost_usd": None if cost is None else str(cost),
+    }
 
 
 @app.get("/me/billing")

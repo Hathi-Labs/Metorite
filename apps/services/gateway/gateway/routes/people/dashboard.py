@@ -31,6 +31,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
+from gateway.capacity import absences_for, dated_until, person_capacity
 from gateway.routes.people.core import (
     _tenant_session,
     can_manage_people,
@@ -40,18 +41,13 @@ from gateway.routes.people.core import (
 )
 from gateway.work_schedule import (
     _absence_spans,
-    contracted_hours_per_week,
     load_policy,
     person_schedule,
-    working_hours_between,
 )
 from gateway.workload import (
     HORIZON_DAYS,
     IDLE_FRACTION,
     PILLS,
-    at_risk_tasks,
-    classify,
-    hours_of,
     rollup,
 )
 from pydantic import BaseModel
@@ -270,39 +266,18 @@ def _row(*, person_id, name, email, department, team, avatar, kind, schedule,
     Everything here is arithmetic over numbers already fetched — no query, no
     per-row round trip — which is what keeps the endpoint four statements wide
     regardless of headcount.
+
+    ⚠️ **The arithmetic is :func:`gateway.capacity.person_capacity` since
+    WS-27bm S7a**, shared with the Projects capacity read so the two cannot
+    disagree. This function only projects it onto the dashboard's row. The
+    dashboard keeps its own output on purpose: it still reports spare hours
+    when nothing is estimated, and ``hours_basis`` beside them says so.
     """
-    open_tasks = int(getattr(totals, "open_tasks", 0) or 0) if totals else 0
-    mins = int(getattr(totals, "mins", 0) or 0) if totals else 0
-    unestimated = int(getattr(totals, "unestimated", 0) or 0) if totals else 0
-    overdue = int(getattr(totals, "overdue", 0) or 0) if totals else 0
-    next_due = getattr(totals, "next_due", None) if totals else None
-
-    # This week's commitment: what is overdue plus what falls due on or before
-    # Sunday. §5.7.2 says "for the week", and the alternative — every open task
-    # ever, against one week of hours — compares a backlog to a week and calls
-    # everybody overloaded.
-    week_hours = sum(
-        hours_of(t.get("estimate_mins")) for t in dated
-        if (d := t.get("_due")) is not None and d <= sunday
+    m = person_capacity(
+        schedule=schedule, spans=spans, totals=totals, dated=dated,
+        today=today, horizon_days=HORIZON_DAYS,
     )
-
-    contracted = contracted_hours_per_week(schedule) if schedule else 0.0
-    available = (working_hours_between(schedule, today, sunday, spans)
-                 if schedule else None)
-    horizon_end = today + timedelta(days=HORIZON_DAYS)
-    committed_horizon = sum(
-        hours_of(t.get("estimate_mins")) for t in dated
-        if (d := t.get("_due")) is not None and d <= horizon_end)
-    available_horizon = (working_hours_between(schedule, today, horizon_end,
-                                               spans)
-                         if schedule else None)
-    risky = at_risk_tasks(schedule, dated, spans, today) if schedule else []
-
-    verdict = classify({
-        "open_tasks": open_tasks, "unestimated": unestimated,
-        "overdue": overdue, "contracted_hours": contracted,
-        "committed_this_week": week_hours, "at_risk": risky,
-    })
+    next_due = m["next_due"]
     # An agent is never given a pill: "idle" and "behind" are statements about
     # capacity and commitment, and neither means anything about a process
     # (§5.7.5). Its numbers still render — that is the whole reason it is here.
@@ -311,29 +286,27 @@ def _row(*, person_id, name, email, department, team, avatar, kind, schedule,
     return DashboardRow(
         person_id=person_id, name=name, email=email, department=department,
         team=team, avatar=avatar, kind=kind,
-        open_tasks=open_tasks, overdue=overdue, unestimated=unestimated,
-        committed_hours=round(mins / 60.0, 1),
-        committed_this_week=round(week_hours, 1),
-        contracted_hours=contracted,
-        hours_available_this_week=available,
-        spare_hours_this_week=(None if available is None
-                               else round(max(0.0, available - week_hours), 1)),
-        spare_hours_horizon=(None if available_horizon is None
-                             else round(max(0.0, available_horizon
-                                            - committed_horizon), 1)),
+        open_tasks=m["open_tasks"], overdue=m["overdue"],
+        unestimated=m["unestimated"],
+        committed_hours=m["committed_hours"],
+        committed_this_week=m["committed_this_week"],
+        contracted_hours=m["contracted_hours"],
+        hours_available_this_week=m["available_this_week"],
+        spare_hours_this_week=m["spare_this_week"],
+        spare_hours_horizon=m["spare_horizon"],
         next_due_at=next_due.isoformat() if next_due else None,
         last_activity_at=(last_activity.isoformat() if last_activity else None),
         projects=projects[:PROJECT_NAMES_SHOWN],
         projects_total=len(projects),
-        at_risk=([] if agent else risky),
+        at_risk=([] if agent else m["at_risk"]),
         away=_away(today, spans),
         away_this_week=any(s["starts_on"] <= sunday and s["ends_on"] >= today
                            for s in _absence_spans(spans)),
-        pill=(None if agent else verdict["pill"]),
-        reason=(None if agent else verdict["reason"]),
-        flags=([] if agent else verdict["flags"]),
-        hours_basis=(True if agent else verdict["hours_basis"]),
-        note=(None if agent else verdict["note"]),
+        pill=(None if agent else m["pill"]),
+        reason=(None if agent else m["reason"]),
+        flags=([] if agent else m["flags"]),
+        hours_basis=(True if agent else m["hours_basis"]),
+        note=(None if agent else m["note"]),
     )
 
 
@@ -404,7 +377,9 @@ async def _dated_tasks(db: Any, vis: Any, today: date) -> dict[str, list[dict]]:
     limit: a LIMIT here would silently drop the deadline that mattered, and a
     dashboard that under-reports risk is worse than one that reports none.
     """
-    params: dict[str, Any] = {"until": today + timedelta(days=HORIZON_DAYS + 1)}
+    # The bound the capacity route reads too (`gateway.capacity.dated_until`),
+    # so the two agree about the horizon's last day.
+    params: dict[str, Any] = {"until": dated_until(today, HORIZON_DAYS)}
     scope = _scope(vis, params)
     rows = (await db.execute(text(
         "SELECT lower(a.assignee) AS who, t.id, t.title, t.due_at, "
@@ -474,27 +449,6 @@ async def _last_activity(db: Any, vis: Any) -> dict[str, Any]:
     return {str(r.who): r.last_at for r in rows}
 
 
-async def _absences_for(db: Any, person_ids: list[str]) -> dict[str, list[dict]]:
-    """Every current-and-future span for the page, in the ARITHMETIC shape.
-
-    One statement rather than one per person, and best-effort for the same
-    reason :func:`~gateway.routes.people.absences.away_today` is: a database one
-    deploy behind migration 174 should answer "nobody is away" rather than
-    failing the whole dashboard.
-    """
-    if not person_ids:
-        return {}
-    try:
-        rows = (await db.execute(text(
-            "SELECT person_id, starts_on, ends_on, kind, hours_per_day "
-            "  FROM people_absences "
-            " WHERE person_id = ANY(CAST(:ids AS uuid[])) "
-            "   AND ends_on >= CURRENT_DATE"), {"ids": person_ids})).fetchall()
-    except Exception:
-        return {}
-    out: dict[str, list[dict[str, Any]]] = {}
-    for row in rows:
-        out.setdefault(str(row.person_id), []).append({
-            "starts_on": row.starts_on, "ends_on": row.ends_on,
-            "kind": row.kind, "hours_per_day": row.hours_per_day})
-    return out
+#: The absence reader moved to :func:`gateway.capacity.absences_for` in S7a,
+#: so the dashboard and the Projects capacity read load absences one way.
+_absences_for = absences_for

@@ -139,6 +139,14 @@ export interface GtdItem {
    *  dueAt via isUrgent(); the 8-cell label comes from priorityCell(). */
   important?: boolean;
   leveraged?: boolean;
+  /**
+   * The SHARED priority the Projects board sets (`pm_tasks.importance`, 0 Low
+   * to 3 Highest). Read-only here. It is the org's word on the task, not
+   * mine, and it never overwrites `important` — while `important` is unstated
+   * it SEEDS a suggestion (`seededImportant` in priority.ts). Owner decision,
+   * 2026-09-23.
+   */
+  orgPriority?: number;
   /** needs an unbroken FLOW state (deep/creative/builder work) — the planner
    *  protects a long peak-energy block; Focus Mode defaults to a longer timer */
   deepWork?: boolean;

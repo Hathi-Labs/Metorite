@@ -6,6 +6,7 @@ import {
   groupByWaitingOn,
   isStaleWaiting,
   isWaitingOverdue,
+  nudgeOutcome,
   waitingLine,
 } from "./waiting";
 
@@ -192,5 +193,42 @@ describe("groupByWaitingOn — the view's who/what/since-when rows", () => {
 
   it("returns nothing for an empty list", () => {
     expect(groupByWaitingOn([], NOW)).toEqual([]);
+  });
+});
+
+describe("nudgeOutcome", () => {
+  it("names the person when one was told", () => {
+    expect(nudgeOutcome({ notified: ["priya@fracktal.in"], skipped: [] })).toEqual({
+      ok: true,
+      message: "Nudged priya@fracktal.in.",
+    });
+  });
+
+  it("counts them when several were told", () => {
+    const got = nudgeOutcome({ notified: ["a@x.in", "b@x.in"], skipped: [] });
+    expect(got.ok).toBe(true);
+    expect(got.message).toBe("Nudged 2 people.");
+  });
+
+  it("🔴 does NOT claim success when the server told nobody", () => {
+    // The defect this function exists to prevent. `notified` empty on a 200
+    // means the person cannot open the task, and a row that said "Nudged"
+    // would leave somebody waiting on a colleague who was never told.
+    const got = nudgeOutcome({ notified: [], skipped: ["priya@fracktal.in"] });
+    expect(got.ok).toBe(false);
+    expect(got.message).toContain("cannot open this task");
+    expect(got.message).not.toMatch(/^Nudged/);
+  });
+
+  it("says so plainly when nothing happened at all", () => {
+    const got = nudgeOutcome({ notified: [], skipped: [] });
+    expect(got.ok).toBe(false);
+    expect(got.message).toBe("Nobody was nudged.");
+  });
+
+  it("is never ok with an empty notified list, whatever else is set", () => {
+    for (const skipped of [[], ["a@x.in"], ["a@x.in", "b@x.in"]]) {
+      expect(nudgeOutcome({ notified: [], skipped }).ok).toBe(false);
+    }
   });
 });

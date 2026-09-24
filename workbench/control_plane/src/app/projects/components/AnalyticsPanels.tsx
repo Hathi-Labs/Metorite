@@ -36,7 +36,10 @@ import {
   statusAccent,
 } from "@/lib/statusAccent";
 
+import { PILL_HUE, PILL_LABEL } from "@/app/people/lib/dashboard";
+
 import type {
+  CapacityReport,
   FinishedReport,
   LoadReport,
   OutlookReport,
@@ -44,6 +47,14 @@ import type {
   ThroughputReport,
 } from "../lib/api";
 import { asList, bandCount, staleBands } from "../lib/analyticsRead";
+import {
+  capacityRows,
+  hoursLine,
+  rowLabel,
+  rowWarnings,
+  skillLine,
+  windowsLine,
+} from "../lib/capacity";
 import { effortDisplay, personEffort } from "../lib/effort";
 import {
   type OutlookLine,
@@ -413,6 +424,111 @@ export function LoadPanel({ data }: { data: LoadReport }) {
           </p>
           <EffortLine data={data} />
         </>
+      )}
+    </Panel>
+  );
+}
+
+/**
+ * WS-27bm S7a — who has the hours for the open work, beside Load.
+ *
+ * ⚠️ **Draws the route and counts nothing** (`projects_ai_chat.md` §10.3
+ * item 8). Every figure is the server's, and `lib/capacity.ts` holds only the
+ * words. The pill is the People dashboard's pill, in the People dashboard's
+ * hues (`PILL_HUE`), so one pill never wears two colours in two apps.
+ *
+ * ⚠️ **The hours are HR tier.** Without `admin:members:read` the server sends
+ * the task half only, and the panel says so in one line instead of drawing
+ * empty hours that would read as "free".
+ */
+export function CapacityPanel({ data }: { data: CapacityReport }) {
+  const rows = capacityRows(data);
+  const horizonDays = data?.windows?.horizon?.days ?? data?.horizon_days ?? 14;
+
+  return (
+    <Panel
+      title="Who has the hours"
+      hint="Open work per person in this scope, with the spare hours they have across all the work you can see."
+    >
+      {rows.length <= 1 && (rows[0]?.open_tasks ?? 0) === 0 ? (
+        <p className="text-[11px] text-muted-foreground">
+          No open work in this scope.
+        </p>
+      ) : (
+        <ul className="space-y-2">
+          {rows.map((row) => {
+            const line = hoursLine(row, horizonDays);
+            const warnings = rowWarnings(row, data?.windows?.horizon?.starts_on);
+            const skills = skillLine(row);
+            const pill = row.pill;
+            const accent = pill ? accentForHue(PILL_HUE[pill]) : null;
+            return (
+              <li key={row.assignee ?? "__unassigned"}>
+                <div className="flex min-w-0 items-baseline gap-2 text-[11px]">
+                  <span
+                    // `pr-px`: an italic glyph leans past its advance width,
+                    // and `truncate` clips it. The Load panel learned this.
+                    className={`min-w-0 truncate pr-px ${row.assignee ? "" : "italic text-muted-foreground"}`}
+                    title={
+                      row.assignee ??
+                      "Open work with nobody assigned. Nobody's hours cover it."
+                    }
+                  >
+                    {rowLabel(row)}
+                  </span>
+                  {pill && accent && (
+                    <span
+                      className="flex shrink-0 items-center gap-1 text-muted-foreground"
+                      title={row.pill_reason ?? PILL_LABEL[pill]}
+                    >
+                      <span
+                        className={`size-1.5 rounded-full ${accent.dot}`}
+                        aria-hidden
+                      />
+                      {PILL_LABEL[pill]}
+                    </span>
+                  )}
+                  {line && (
+                    <span
+                      className="ml-auto shrink-0 tabular-nums text-muted-foreground"
+                      title={line.title}
+                    >
+                      {line.text}
+                    </span>
+                  )}
+                  <span
+                    className={`${line ? "" : "ml-auto "}shrink-0 font-medium tabular-nums`}
+                    title={`${row.open_tasks} open tasks in this scope, ${row.overdue} overdue. The same count the Load panel shows.`}
+                  >
+                    {row.open_tasks}
+                  </span>
+                </div>
+                {(skills || warnings.length > 0) && (
+                  <p
+                    className="mt-0.5 truncate text-[10px] text-muted-foreground"
+                    title={[...warnings, ...(skills ? [`Skills: ${skills}`] : [])].join(" · ")}
+                  >
+                    {[...warnings, ...(skills ? [skills] : [])].join(" · ")}
+                  </p>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {/* The windows name what the HOURS measured, so they print only
+          beside hours. Without the grant there are none to explain. */}
+      {data?.hr_visible === false ? (
+        <p className="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground">
+          Hours, absences and skills need HR read access. An admin can see them.
+        </p>
+      ) : (
+        <p
+          className="mt-3 border-t border-border pt-2 text-[11px] text-muted-foreground"
+          title="The pill compares this Monday-to-Sunday week with the contracted week. Spare hours and at-risk tasks read the horizon."
+        >
+          {windowsLine(data)}
+        </p>
       )}
     </Panel>
   );

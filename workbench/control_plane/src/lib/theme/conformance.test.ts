@@ -536,13 +536,23 @@ describe("active and selected use the house token", () => {
    *
    * The bar is the same as COLOR_EXCEPTIONS': it has to be the wrong rule, not
    * merely inconvenient to migrate.
+   *
+   * ⚠️ **EMPTY since 2026-09-23, and how it emptied is worth reading.**
+   *
+   * It held one entry, `lib/statusAccent.ts`, for "the violet lane's CHIP — a
+   * tag/status hue, not a selection". That argument was correct about THIS
+   * rule: the chip was not a selection, so the selection gate was the wrong
+   * gate. Nobody then asked the other question. `--accent` is
+   * hsl(27 96% 61%) — orange — so the hue named violet drew a violet dot, a
+   * violet bar, violet text and an ORANGE chip, and two of the five signals on
+   * People → Workload painted the same colour as each other.
+   *
+   * `violet.chip` is `bg-violet/10 text-violet` now, the shape every other hue
+   * already had, so the exception is unnecessary rather than waived. Kept as
+   * an empty map with the story, because an exception that is right about the
+   * rule it names can still be hiding a defect the rule was never looking for.
    */
-  const ACTIVE_EXCEPTIONS: Record<string, string> = {
-    "lib/statusAccent.ts":
-      "the violet lane's CHIP — a tag/status hue, not a selection; `accent` is " +
-      "the one token pair that reads distinctly without competing with primary " +
-      "(see the constant's own note)",
-  };
+  const ACTIVE_EXCEPTIONS: Record<string, string> = {};
 
   /**
    * The remaining call sites, per file. Same ratchet as the rules above: a

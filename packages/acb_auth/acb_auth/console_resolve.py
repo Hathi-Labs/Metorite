@@ -2164,6 +2164,7 @@ def _attribution_headers(
     agent: str | None,
     module_slug: str | None,
     run_id: str | None,
+    member_proven: bool = False,
 ) -> dict[str, str]:
     """The ``X-CC-*`` headers that let a ``usage_event`` answer *who burned it*.
 
@@ -2180,6 +2181,17 @@ def _attribution_headers(
         ("X-CC-Agent", agent),
         ("X-CC-Module", module_slug),
         ("X-CC-Run", run_id),
+        # 🔴 **Whether the member PROVED it, which is what a cap may key on**
+        # (H-73). `X-CC-Member` is the caller's claim, and the capped party
+        # must not choose which cap applies. The gateway sets this only after
+        # `member_proof.verify_member` answered, so it travels beside the
+        # address rather than replacing it — attribution keeps working for
+        # every existing report, and only enforcement waits for the proof.
+        #
+        # ⚠️ The CONSOLE may trust this because the gateway already holds the
+        # credential that authorises every unit of spending on this box. A
+        # party that could forge this header could simply spend directly.
+        ("X-CC-Member-Proven", "1" if (member_proven and member) else ""),
     )
     return {name: value for name, value in pairs if value}
 
@@ -2188,6 +2200,8 @@ async def chat_completion_on_console(
     payload: dict[str, Any],
     *,
     member: str | None = None,
+    #: Whether the gateway VERIFIED that member (H-73). A cap may key on it.
+    member_proven: bool = False,
     agent: str | None = None,
     module_slug: str | None = None,
     run_id: str | None = None,
@@ -2235,7 +2249,8 @@ async def chat_completion_on_console(
     headers = {"Authorization": f"Bearer {key}"}
     headers.update(
         _attribution_headers(
-            member=member, agent=agent, module_slug=module_slug, run_id=run_id
+            member=member, agent=agent, module_slug=module_slug, run_id=run_id,
+            member_proven=member_proven,
         )
     )
 
@@ -2294,6 +2309,8 @@ async def stream_completion_on_console(
     payload: dict[str, Any],
     *,
     member: str | None = None,
+    #: Whether the gateway VERIFIED that member (H-73). A cap may key on it.
+    member_proven: bool = False,
     agent: str | None = None,
     module_slug: str | None = None,
     run_id: str | None = None,
@@ -2341,7 +2358,8 @@ async def stream_completion_on_console(
     headers = {"Authorization": f"Bearer {key}"}
     headers.update(
         _attribution_headers(
-            member=member, agent=agent, module_slug=module_slug, run_id=run_id
+            member=member, agent=agent, module_slug=module_slug, run_id=run_id,
+            member_proven=member_proven,
         )
     )
 

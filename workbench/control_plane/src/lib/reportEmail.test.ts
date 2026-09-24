@@ -237,3 +237,70 @@ describe("the schedule is built DARK", () => {
     expect(sent[0].from).toBe("Metorite <no-reply@metorite.com>");
   });
 });
+
+// WS-27bm S7a — the opt-in capacity section.
+describe("reportEmail · capacity", () => {
+  const withCapacity: RenderedReport = {
+    ...rendered,
+    sections: {
+      capacity: {
+        people: [
+          {
+            assignee: "ana@example.test",
+            name: "Ana",
+            kind: "person",
+            open_tasks: 3,
+            hours_basis: true,
+            spare_hours_horizon: 12.5,
+          },
+          {
+            assignee: "bo@example.test",
+            name: null,
+            kind: "person",
+            open_tasks: 2,
+            hours_basis: false,
+            hours_note: "2 open tasks with no estimate.",
+          },
+          { assignee: null, name: null, kind: "unassigned", open_tasks: 1 },
+        ],
+        total_tasks: 5,
+        hr_visible: true,
+        horizon_days: 14,
+      },
+    },
+  };
+
+  it("prints the server's spare hours verbatim", () => {
+    const { text } = reportEmail(withCapacity);
+    expect(text).toContain("Who has the hours (next 14 days): 5 open");
+    expect(text).toContain("Ana: 3 open, 12.5h spare");
+    expect(text).toContain("Unassigned: 1 open");
+  });
+
+  it("never prints 0h for a row whose hours mean nothing", () => {
+    const { text, html } = reportEmail(withCapacity);
+    expect(text).toContain("bo@example.test: 2 open, no hours");
+    expect(text).not.toMatch(/\b0h\b/);
+    expect(html).not.toMatch(/style=/);
+  });
+
+  it("says the hours are hidden for a reader without the grant", () => {
+    const hidden: RenderedReport = {
+      ...withCapacity,
+      sections: {
+        capacity: {
+          people: [
+            { assignee: "ana@example.test", name: "Ana", kind: "person", open_tasks: 3 },
+          ],
+          total_tasks: 3,
+          hr_visible: false,
+          horizon_days: 14,
+        },
+      },
+    };
+    const { text } = reportEmail(hidden);
+    expect(text).toContain("Ana: 3 open");
+    expect(text).not.toContain("spare");
+    expect(text).toContain("Hours need HR read access.");
+  });
+});

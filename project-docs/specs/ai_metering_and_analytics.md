@@ -80,6 +80,12 @@ Speech to text, text to speech and other specialised models sit behind a
 proxy. An app such as the Note Taker calls the proxy. The customer does not see
 the model. The call still consumes AI credits.
 
+📌 **A decision model is the same shape** *(added 2026-09-23, D75)*. Email
+triage, a commitment check and the meeting copilot ask the `decide` task for a
+typed answer. The customer does not see the model, or a tier. The call shows in
+the customer's usage by app, as every AI call does. `customer_console.md`
+§6A.14 is the contract.
+
 ### 1.3 A customer administrator
 
 The administrator sees AI use across the whole company, and can slice it:
@@ -140,6 +146,7 @@ names it. The customer never sees a slug.
 | `tier-powerful` | Powerful |
 | `tier-vision` | (not shown — see §3.2) |
 | `tier-stt` | (not shown — see §3.3) |
+| `tier-decide` | (not shown — see §3.3. Planned, D75) |
 
 ⚠️ **The label is `Balanced`, and the slug is `tier-balanced`.** The owner
 considered "Medium" and kept "Balanced" on 2026-08-29. The two now agree, and
@@ -289,6 +296,7 @@ may overrule**, which is the D16/D17 convention CP-2b and CP-2c used.)*
 | `tier-embed` | **FALSE** | §1.2, and D19.2 absorbs the price. Nobody picks a search index |
 | `tier-video` | **FALSE** | Nothing binds it, and no Router verb serves it (§6A.11a) |
 | `tier-music` | **FALSE** | Nothing binds it, and litellm carries no `music` mode |
+| `tier-decide` | **FALSE** | Planned, D75. The app names `decide`. A member never picks a decision model. Migration `033` seeds it FALSE, because the column defaults to TRUE |
 
 **One test separates the two columns.** TRUE means a person chooses this tier
 on purpose. FALSE means the Router or the app chooses it, so a picker entry
@@ -307,6 +315,12 @@ of a hidden one.
 An administrator may change it. A member may not.
 
 This reuses `model_config`, key `agent_aliases`, which already exists.
+
+📌 **`decide` does not use this default** *(added 2026-09-23, D75)*. It has one
+hidden tier, so an app has nothing to choose. What an app chooses is its MODE,
+`off`, `shadow` or `on`, in `gateway/decide_features.py`. H-44's registry
+absorbs that file when H-44 is built. `customer_console.md` §6A.14 has the four
+adoption rules.
 
 ### 3.5 A tier holds an ordered chain
 

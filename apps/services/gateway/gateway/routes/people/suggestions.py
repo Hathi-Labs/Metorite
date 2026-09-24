@@ -214,70 +214,64 @@ async def get_suggestions(
         for r in people_rows
     ]
 
-    # ── The at-risk list: helpers per task ─────────────────────────────────
-    at_risk: list[AtRiskSuggestion] = []
-    total_risky = 0
-    for row in people_rows:
-        for task in row.at_risk:
-            total_risky += 1
-            if len(at_risk) >= MAX_AT_RISK_TASKS:
-                continue
-            candidates = rank_candidates(
-                str(task.get("title") or ""), helpers, this_year=this_year,
-                exclude_email=(row.email or "").lower())
-            at_risk.append(AtRiskSuggestion(
-                task_id=str(task.get("task_id")),
-                title=str(task.get("title") or ""),
-                project_name=task.get("project_name"),
-                due_on=task.get("due_on"),
-                shortfall_hours=task.get("shortfall_hours"),
-                holder={"person_id": row.person_id, "name": row.name,
-                        "email": row.email},
-                candidates=candidates,
-            ))
+    # ── The join: helpers per at-risk task, pickups per idle person ────────
+    #
+    # ⚠️ The join itself is `gateway.capacity.rebalance_join` since WS-27bm
+    # S7b, shared with `/projects/analytics/rebalance` (§13.4 rule 6). This
+    # function keeps its own rows and its own ranker, which is plain
+    # `rank_candidates` over the task title, so its output did not change.
+    from gateway.capacity import rebalance_join
 
-    # ── The idle list: what they could pick up ─────────────────────────────
-    pickups: list[PickupSuggestion] = []
-    for row in people_rows:
-        if row.pill != "idle":
-            continue
-        my_skills = skills_by_person.get(row.person_id or "", [])
-        options: list[dict[str, Any]] = []
-        for task in unassigned:
-            points, matched = score_skills(
-                str(task.title or ""), my_skills, this_year)
-            if points <= 0:
-                continue
-            options.append({
-                "task_id": str(task.id), "title": task.title,
-                "project_name": getattr(task, "project_name", None),
-                "kind": "unassigned", "skill_points": points,
-                "matched_skills": [m["skill"] for m in matched],
-            })
-        # The idle↔behind join: at-risk tasks where THEY are a listed helper.
-        for suggestion in at_risk:
-            for candidate in suggestion.candidates:
-                if candidate.email == (row.email or "").lower():
-                    options.append({
-                        "task_id": suggestion.task_id,
-                        "title": suggestion.title,
-                        "project_name": suggestion.project_name,
-                        "kind": "at_risk_help",
-                        "skill_points": candidate.skill_points,
-                        "matched_skills": candidate.matched_skills,
-                        "holder": suggestion.holder.get("name"),
-                    })
-        if options:
-            options.sort(key=lambda o: -float(o["skill_points"]))
-            pickups.append(PickupSuggestion(
-                person_id=row.person_id, name=row.name,
-                email=(row.email or "").lower(),
-                tasks=options[:MAX_PICKUPS_PER_PERSON],
-            ))
+    def _rank(text_: str, pool: list[dict[str, Any]], holder: str):
+        return (
+            rank_candidates(text_, pool, this_year=this_year, exclude_email=holder),
+            None,
+        )
+
+    joined = rebalance_join(
+        at_risk=[
+            {
+                "task_id": str(task.get("task_id")),
+                "title": str(task.get("title") or ""),
+                "project_name": task.get("project_name"),
+                "due_on": task.get("due_on"),
+                "shortfall_hours": task.get("shortfall_hours"),
+                "holder": {"person_id": row.person_id, "name": row.name,
+                           "email": row.email},
+            }
+            for row in people_rows for task in row.at_risk
+        ],
+        helpers=helpers,
+        idle=[
+            {"person_id": r.person_id, "name": r.name, "email": r.email,
+             "skill_rows": skills_by_person.get(r.person_id or "", [])}
+            for r in people_rows if r.pill == "idle"
+        ],
+        unassigned=[
+            {"task_id": str(t.id), "title": t.title,
+             "project_name": getattr(t, "project_name", None)}
+            for t in unassigned
+        ],
+        this_year=this_year,
+        rank=_rank,
+        max_at_risk=MAX_AT_RISK_TASKS,
+        max_pickups=MAX_PICKUPS_PER_PERSON,
+    )
+
+    at_risk = [
+        AtRiskSuggestion(
+            task_id=s["task"]["task_id"], title=s["task"]["title"],
+            project_name=s["task"]["project_name"], due_on=s["task"]["due_on"],
+            shortfall_hours=s["task"]["shortfall_hours"],
+            holder=s["task"]["holder"], candidates=s["candidates"],
+        )
+        for s in joined["at_risk"]
+    ]
+    pickups = [PickupSuggestion(**p) for p in joined["pickups"]]
 
     return SuggestionsResponse(
         at_risk=at_risk, pickups=pickups,
-        truncated=(total_risky > MAX_AT_RISK_TASKS
+        truncated=(joined["total_at_risk"] > MAX_AT_RISK_TASKS
                    or len(unassigned) >= MAX_UNASSIGNED_TASKS),
         partial=board.partial,
     )

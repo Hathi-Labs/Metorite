@@ -55,6 +55,11 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   analytics_throughput: { icon: "TrendingUp", label: "Throughput" },
   analytics_finished: { icon: "CheckCircle2", label: "Finished" },
   analytics_outlook: { icon: "Telescope", label: "Outlook" },
+  // S7a — who holds the work, and whether they have the hours.
+  team_capacity: { icon: "Gauge", label: "Capacity" },
+  // S7b — who fits one task, and who could help whom.
+  fit_for_task: { icon: "UserCheck", label: "Fit" },
+  rebalance: { icon: "Scale", label: "Rebalance" },
   report_list: { icon: "FileText", label: "Reports" },
   report_render: { icon: "FileText", label: "Report" },
   recurrence: { icon: "Repeat", label: "Repeat rule" },
@@ -89,6 +94,7 @@ const OPENS_APP: Record<string, { app: "analytics" | "reports"; label: string }>
   analytics_throughput: { app: "analytics", label: "Open Analytics" },
   analytics_finished: { app: "analytics", label: "Open Analytics" },
   analytics_outlook: { app: "analytics", label: "Open Analytics" },
+  team_capacity: { app: "analytics", label: "Open Analytics" },
   report_list: { app: "reports", label: "Open Reports" },
   report_render: { app: "reports", label: "Open Reports" },
   render_report: { app: "reports", label: "Open Reports" },
@@ -169,6 +175,24 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
 export const PROJECTS_CHANGED_EVENT = "cc-projects-changed";
 const announced = new Set<string>();
 
+/**
+ * How recent a receipt must be to announce. A write the member just made
+ * reloads the board. A receipt replayed from history must not: with the chat
+ * docked on the board, every past receipt in the conversation mounted on each
+ * page load and reloaded the board once per receipt (review of PR #415).
+ */
+export const FRESH_RECEIPT_MS = 60_000;
+
+/** Did this tool finish just now, in this page's life? Stored events keep the
+ *  `endedAt` they finished with, so a replay is old; one with no time at all
+ *  predates the field and is old too. */
+export function isFreshReceipt(e: { endedAt?: number }, now: number = Date.now()): boolean {
+  if (typeof e.endedAt !== "number") return false;
+  // A negative age is a server stamp ahead of this machine's clock: not fresh.
+  const age = now - e.endedAt;
+  return age >= 0 && age < FRESH_RECEIPT_MS;
+}
+
 function announceChange(eventId: string): void {
   if (announced.has(eventId)) return;
   announced.add(eventId);
@@ -185,6 +209,52 @@ function announceChange(eventId: string): void {
  * edit on either side fails a test instead of painting a decline green.
  */
 export const CANCELLED = "Cancelled — nothing was changed.";
+
+/**
+ * The class C tools: the guarded acts (archive, merge, bulk edit, delete a
+ * status, revert...). Their confirmation card carried an impact line, so a
+ * done receipt wears the warning tone rather than success: the member did a
+ * thing that is hard to undo, and the receipt says so at a glance.
+ *
+ * ⚠️ Held equal to `manifest.tools_by_class("C")` by
+ * `tests/unit/test_projects_agent_writes.py`, which reads this literal. A
+ * guarded tool added on the Python side without a line here fails that test.
+ */
+export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
+  "archive_project",
+  "unarchive_project",
+  "move_project",
+  "archive_task",
+  "merge_tasks",
+  "bulk_update",
+  "delete_comment",
+  "revert_activity",
+  "delete_status",
+  "set_status_set",
+  "delete_type",
+  "delete_field",
+  "delete_tag",
+  "merge_tags",
+  "delete_view",
+  "report_delete",
+  "delete_attachment",
+]);
+
+/**
+ * The receipt's fill, border and icon colour. Text keeps its own tokens.
+ *
+ * A guarded act also gets a warning FILL. `--warning` on a white card is
+ * 1.57:1 (`contrast.test.ts`), so an icon and a border alone barely read in
+ * light mode, and colour would be the only signal. The tint makes the card
+ * itself read differently.
+ */
+export function toneFor(outcome: string, tool: string): string {
+  if (outcome === "failed") return "bg-card/40 border-destructive/40 text-destructive";
+  if (outcome !== "done") return "bg-card/40 border-border text-muted-foreground";
+  return GUARDED_TOOLS.has(tool)
+    ? "bg-warning/5 border-warning/40 text-warning"
+    : "bg-card/40 border-success/40 text-success";
+}
 
 /**
  * Is this a Projects tool at all? The manifest's tool names are the
@@ -210,8 +280,24 @@ function isProjectsTool(e: ToolEvent): boolean {
   return typeof e.result === "string" && e.result.includes(LEGEND);
 }
 
+/**
+ * The tools that DRAW a template (`skill_projects/views.py`). Their text
+ * result is the facts for the model, and printing it as a card as well showed
+ * every view twice — the status report as raw Markdown source (UX review
+ * 2026-09-23). A failed view still shows its card, because then there is no
+ * template to look at.
+ */
+export const VIEW_TOOLS: ReadonlySet<string> = new Set([
+  "render_timeline",
+  "render_board",
+  "render_tasks",
+  "render_report",
+  "status_report",
+]);
+
 function hasProjectCard(e: ToolEvent): boolean {
   if (e.status !== "done" && e.status !== "error") return false;
+  if (e.status === "done" && VIEW_TOOLS.has(e.name)) return false;
   return isProjectsTool(e);
 }
 
@@ -353,6 +439,10 @@ export function forPeople(result: string): string {
     .map((l) =>
       l
         .replace(/^Projects (?:GET|POST|PATCH|PUT|DELETE) \S+: /, "")
+        // Ids the model carries forward and a member cannot use (UX review
+        // 2026-09-23): "· project_id <uuid>", "(activity id a1)".
+        .replace(/\s*·\s*[a-z_]+_id:? [0-9a-f-]{8,}/gi, "")
+        .replace(/\s*\(activity id [^)]*\)/g, "")
         .replace(/[«»]/g, "")
         .replace(/^- /, ""),
     )
@@ -458,9 +548,10 @@ export function receiptIdOf(result: string): string {
 }
 
 /**
- * The receipt for a class B write. Four states, each with its own tone from
- * the theme's tokens: done (success), refused by the tool in prose (muted),
- * cancelled at the card (muted), failed (destructive). The confirmation
+ * The receipt for a class B or class C write. Four states, each with its own
+ * tone from the theme's tokens (`toneFor`): done (success, or warning for a
+ * guarded act), refused by the tool in prose (muted), cancelled at the card
+ * (muted), failed (destructive). The confirmation
  * card BEFORE the write is the shared `ConfirmationCard`; this is the
  * receipt after it.
  */
@@ -469,17 +560,13 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const result = (e.result || "").trim();
   const outcome = classifyActionResult(result, e.status, e.name);
   useEffect(() => {
-    if (outcome === "done") announceChange(e.id);
+    if (outcome === "done" && isFreshReceipt(e)) announceChange(e.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
   }, [outcome, e.id]);
   const rowId = rowIdOf(result);
   const openTask = useOpenTask();
   const detail = forPeople(result);
-  const tone =
-    outcome === "failed"
-      ? "border-destructive/40 text-destructive"
-      : outcome === "done"
-        ? "border-success/40 text-success"
-        : "border-border text-muted-foreground";
+  const tone = toneFor(outcome, e.name);
   const icon =
     outcome === "failed" ? "X" : outcome === "cancelled" ? "Ban" : outcome === "refused" ? "Info" : meta.icon;
   const heading =
@@ -491,7 +578,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
           ? "Not done"
           : meta.label;
   return (
-    <div className={`rounded-lg border bg-card/40 px-2.5 py-2 ${tone}`}>
+    <div className={`rounded-lg border px-2.5 py-2 ${tone}`}>
       <div className="flex items-start gap-2">
         <span className="mt-0.5 flex-shrink-0">
           <AppIcon name={icon} size={13} />
@@ -510,7 +597,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
                 size="none"
                 icon="ExternalLink"
                 onClick={() => openTask(rowId)}
-                className="text-[10px]"
+                className="gap-1 text-[10px]"
               >
                 Open in Projects
               </Button>

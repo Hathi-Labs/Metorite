@@ -89,6 +89,18 @@ _UI_STATE_REASON = "Client UI state. The browser writes it, and a chat has no vi
 _PLANNER_REASON = (
     "The day planner is the Calendar app's and the Tasks assistant's (calendar_ai_review.md §4)."
 )
+#: A nudge tells a COLLEAGUE you are waiting on them. That is contacting a
+#: third party on the member's behalf, which CLAUDE.md §3a rule 3 holds for the
+#: owner. §9.12.9 also makes the act deliberately explicit — "a follow-up that
+#: always pings somebody is a tool people stop using" — and a chat tool is the
+#: shortest road to one that does. An assistant that chases people for you is a
+#: different product decision from one that reads and edits your own work, so
+#: this waits for an answer instead of assuming one. The member presses Nudge
+#: on the Waiting-For row.
+_NUDGE_REASON = (
+    "A nudge contacts a colleague. §9.12.9 makes it an explicit human act, and "
+    "whether the chat may chase somebody is an owner question."
+)
 
 MANIFEST: tuple[Route, ...] = (
     # ── tree.py ──────────────────────────────────────────────────────────
@@ -256,6 +268,7 @@ MANIFEST: tuple[Route, ...] = (
     ),
     Route("POST", "/projects/tasks/{task_id}/complete", "complete", "B"),
     Route("POST", "/projects/tasks/{task_id}/defer", "defer", "B"),
+    Route("POST", "/projects/tasks/{task_id}/nudge", "", "X", _NUDGE_REASON),
     # ── planning.py ──────────────────────────────────────────────────────
     Route("POST", "/projects/my/calendar/plan", "", "X", _PLANNER_REASON),
     Route("POST", "/projects/my/calendar/replan", "", "X", _PLANNER_REASON),
@@ -287,6 +300,14 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/analytics/throughput", "analytics_throughput", "A"),
     Route("GET", "/projects/analytics/finished", "analytics_finished", "A"),
     Route("GET", "/projects/analytics/outlook", "analytics_outlook", "A"),
+    # S7a — capacity (analytics_capacity.py). The HR tier is the route's.
+    Route("GET", "/projects/analytics/capacity", "team_capacity", "A"),
+    # S7b — fit and rebalancing (candidates.py, analytics_rebalance.py).
+    # `fit_for_task`, not `suggest_assignees`: that is the picker's route
+    # function in assignees.py. The HR tier is the routes'.
+    Route("GET", "/projects/tasks/{task_id}/candidates", "fit_for_task", "A"),
+    Route("GET", "/projects/candidates", "fit_for_task", "A"),
+    Route("GET", "/projects/analytics/rebalance", "rebalance", "A"),
     Route("GET", "/projects/reports", "report_list", "A"),
     Route("POST", "/projects/reports", "report_save", "B"),
     Route("GET", "/projects/reports/{report_id}", "report_render", "A"),

@@ -32,9 +32,21 @@ function fakeStore(seed: Record<string, string> = {}): PanelModeStore & {
   };
 }
 
-describe("the three stops", () => {
-  it("is peek → side → full, narrowest first", () => {
-    expect(PANEL_MODES).toEqual(["peek", "side", "full"]);
+describe("the two stops", () => {
+  it("is side to full, narrowest first", () => {
+    // The owner cut `peek` on 2026-09-23: "a sidebar which can also open
+    // as a full card. The switcher where we change the width of the
+    // sidebar is not needed."
+    expect(PANEL_MODES).toEqual(["side", "full"]);
+  });
+
+  it("a member who last chose `peek` lands on the docked panel", () => {
+    // The retired stop is still in somebody's localStorage. It must read
+    // as the default, NOT as an unknown mode with no width class - a
+    // panel that opens at zero width looks exactly like one that failed.
+    expect(isPanelMode("peek")).toBe(false);
+    expect(readPanelMode({ getItem: () => "peek", setItem: () => {} }))
+      .toBe("side");
   });
 
   it("defaults to the shipped docked width", () => {
@@ -51,17 +63,15 @@ describe("the three stops", () => {
   });
 
   it("widens monotonically and stops at the end rather than wrapping", () => {
-    expect(widerPanel("peek")).toBe("side");
     expect(widerPanel("side")).toBe("full");
-    // The one that matters: a cycling control makes "wider" mean "suddenly
-    // tiny" on the third press.
+    // The one that matters: a cycling control makes "wider" mean
+    // "suddenly tiny" on the next press.
     expect(widerPanel("full")).toBe("full");
   });
 
   it("narrows monotonically and stops at the start", () => {
     expect(narrowerPanel("full")).toBe("side");
-    expect(narrowerPanel("side")).toBe("peek");
-    expect(narrowerPanel("peek")).toBe("peek");
+    expect(narrowerPanel("side")).toBe("side");
   });
 
   it("only the widest stop is an overlay", () => {
@@ -105,12 +115,12 @@ describe("persistence", () => {
       },
     };
     expect(readPanelMode(angry)).toBe(DEFAULT_PANEL_MODE);
-    expect(() => writePanelMode("peek", angry)).not.toThrow();
+    expect(() => writePanelMode("full", angry)).not.toThrow();
   });
 
   it("does nothing when there is no store (SSR)", () => {
     expect(readPanelMode(null)).toBe(DEFAULT_PANEL_MODE);
-    expect(() => writePanelMode("peek", null)).not.toThrow();
+    expect(() => writePanelMode("full", null)).not.toThrow();
   });
 });
 

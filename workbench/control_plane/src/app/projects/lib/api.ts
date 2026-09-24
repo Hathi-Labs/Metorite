@@ -113,6 +113,30 @@ export interface ProjectRow {
   description?: string | null;
   parent_project_id?: string | null;
   /**
+   * The SUBTREE roll-up `GET /projects/tree` stamps on every node: how many
+   * tasks live at or under it, how many were delivered, and how many were
+   * abandoned.
+   *
+   * ⚠️ Optional because only `/tree` carries them. `/nodes` returns the same
+   * rows FLAT and rolls nothing up, so a consumer of that list reads
+   * `undefined` rather than a confident zero. The ring still draws, empty,
+   * rather than the row changing shape once a number arrives.
+   *
+   * ⚠️ **`done` is the DELIVERED count — the `done` category alone.**
+   * `cancelled` is reported separately because the completion rule subtracts
+   * it from the DENOMINATOR rather than adding it to the numerator. That is
+   * the rule `NodeDashboard` beside this tree has always printed. An earlier
+   * version folded the two together, and drew a full ring for a project whose
+   * work had all been abandoned.
+   *
+   * They agree with `nodes/{id}/summary` by construction: the same join, the
+   * same visibility clause. Measured 2026-09-23 against a real gateway, space
+   * and child alike.
+   */
+  tasks?: number | null;
+  done?: number | null;
+  cancelled?: number | null;
+  /**
    * 'project' | 'folder' (migration 193). Absent/null reads as 'project' —
    * resolve through `nodeKind()` in lib/tree.ts, never directly.
    */
@@ -272,6 +296,91 @@ export interface OutlookReport {
     /** An engagement ending inside the window — a risk no velocity can see. */
     leaving_within_90d: number;
   };
+}
+
+/**
+ * WS-27bm S7a — who holds the open work, and whether they have the hours.
+ *
+ * ⚠️ **The HR half is ABSENT for a caller without `admin:members:read`, not
+ * null.** Every HR key is optional here for that reason, and `hr_visible`
+ * says which answer arrived. A reader must test for the key, never compare a
+ * missing figure with zero: zero would read as "free".
+ *
+ * ⚠️ **Two scopes.** `open_tasks`, `overdue` and the estimate left are THIS
+ * scope, and equal Load's figures for it. The hours are measured over all the
+ * work the caller can see, and `all_work` carries those counts.
+ */
+export interface CapacityRow {
+  /** `null` is the unassigned row, which the server always sends, last. */
+  assignee: string | null;
+  name: string | null;
+  kind: "person" | "agent" | "unassigned";
+  in_directory: boolean;
+  open_tasks: number;
+  overdue: number;
+  due_next_7d: number;
+  later: number;
+  estimated_hours_left: number;
+  estimated: number;
+  // ── The HR half. Absent without the grant. ─────────────────────────────
+  all_work?: {
+    open_tasks: number;
+    overdue: number;
+    unestimated: number;
+    in_progress: number;
+  };
+  contracted_hours_per_week?: number;
+  working_hours_this_week?: number | null;
+  working_hours_horizon?: number | null;
+  /** The four below are ALSO absent when `hours_basis` is false. */
+  committed_hours_this_week?: number;
+  committed_hours_horizon?: number;
+  spare_hours_this_week?: number | null;
+  spare_hours_horizon?: number | null;
+  hours_basis?: boolean;
+  /** Why the hours are missing, when they are. */
+  hours_note?: string | null;
+  absences?: { kind: string; starts_on: string; ends_on: string }[];
+  end_date?: string | null;
+  leaving_in_window?: boolean;
+  at_risk?: {
+    task_id: string;
+    title: string;
+    due_on: string;
+    needed_hours: number;
+    available_hours: number;
+    shortfall_hours: number;
+  }[];
+  pill?: "behind" | "at_risk" | "overloaded" | "idle" | "on_track";
+  pill_reason?: string;
+  flags?: string[];
+  max_concurrent_tasks?: number | null;
+  over_concurrency?: boolean;
+  skills?: { skill: string; level: string | null }[];
+}
+
+export interface CapacityWindow {
+  starts_on: string;
+  ends_on: string;
+}
+
+export interface CapacityReport {
+  project_id: string | null;
+  scope: "portfolio" | "node";
+  horizon_days: number;
+  hr_visible: boolean;
+  /** The pill's Monday-to-Sunday week, and the spare-hours horizon. */
+  windows: {
+    week: CapacityWindow & { used_for: string };
+    horizon: CapacityWindow & { days: number; used_for: string };
+  };
+  task_scope: string;
+  hours_scope: string;
+  partial: boolean;
+  /** Counted over TASKS, as Load counts it. The rows sum past it. */
+  total_tasks: number;
+  people_total: number;
+  rows: CapacityRow[];
 }
 
 export interface StuckReport {
@@ -486,6 +595,15 @@ export interface RenderedReportBody {
     load?: {
       people: { assignee: string | null; open_tasks: number; overdue: number }[];
       total_tasks: number;
+    };
+    /** WS-27bm S7a. Opt-in: present only when the report asked for it. */
+    capacity?: {
+      people: CapacityRow[];
+      people_total: number;
+      total_tasks: number;
+      hr_visible: boolean;
+      horizon_days: number;
+      windows: CapacityReport["windows"];
     };
     stuck?: {
       overdue: { project_id: string; name: string; overdue: number }[];
@@ -939,6 +1057,13 @@ export const projectsApi = {
     call<FinishedReport>(`analytics/finished${scopeQuery(nodeId, weeks)}`),
   outlook: (nodeId?: string) =>
     call<OutlookReport>(`analytics/outlook${scopeQuery(nodeId)}`),
+  /** WS-27bm S7a. The server's default horizon (14 days) unless one is named. */
+  capacity: (nodeId?: string, horizonDays?: number) => {
+    const scope = scopeQuery(nodeId);
+    const horizon = horizonDays ? `horizon_days=${horizonDays}` : "";
+    const query = horizon ? (scope ? `${scope}&${horizon}` : `?${horizon}`) : scope;
+    return call<CapacityReport>(`analytics/capacity${query}`);
+  },
 
   /** §9.12.8 — saved report definitions, and the render of one. */
   reports: () => call<{ reports: ReportRow[] }>("reports"),
@@ -1263,6 +1388,15 @@ export const projectsApi = {
     call<import("./assignees").PickerResponse>(
       `assignees?q=${encodeURIComponent(q)}${due ? `&due=${due}` : ""}`
     ),
+
+  /**
+   * "Suggested" in the task panel's picker (WS-27bm S7b, projects_ai_chat.md
+   * §13.4). At most three people ranked FOR THIS TASK by the server. Without
+   * `admin:members:read` the answer says `hr_visible: false` and carries no
+   * `candidates` key, and the picker then shows no heading.
+   */
+  taskCandidates: (taskId: string) =>
+    call<import("./candidates").CandidatesResponse>(`tasks/${taskId}/candidates`),
 
   createTask: (payload: Record<string, unknown>) =>
     call<TaskRow>("tasks", { method: "POST", body: JSON.stringify(payload) }),

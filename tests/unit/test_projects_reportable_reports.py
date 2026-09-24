@@ -289,6 +289,14 @@ def test_every_open_work_predicate_carries_the_clause():
                 line = src[: match.start()].count("\n") + 1
                 missing.append(f"{name}:{line}")
 
+    # WS-27bm S7a named Load's predicate `load_open_where` so the capacity
+    # read shares it. A named predicate is held to the same rule.
+    src = (base / "analytics.py").read_text(encoding="utf-8")
+    named = src[src.index("def load_open_where("):]
+    named = named[: named.index("\ndef ")]
+    if "reportable_with_ancestors_clause" not in named:
+        missing.append("analytics.py:load_open_where")
+
     assert not missing, (
         "an open-work predicate does not carry D-PM-32(b): "
         + ", ".join(missing)
@@ -316,8 +324,15 @@ def test_the_scan_can_actually_find_something():
                        (base / name).read_text(encoding="utf-8"), re.M))
         for name in ("analytics.py", "reports.py")
     )
-    assert found >= 4, (
+    # Load's predicate is the named `load_open_where` since WS-27bm S7a, and
+    # the capacity read reaches the same function rather than a copy.
+    assert found >= 3, (
         f"the open_where scan matched {found} assignments, expected at least"
-        " 4 (stuck, load, outlook, the weekly report) — the shape changed and"
+        " 3 (stuck, outlook, the weekly report) — the shape changed and"
         " the fence above has gone blind"
     )
+    analytics = (base / "analytics.py").read_text(encoding="utf-8")
+    assert "def load_open_where(" in analytics
+    assert "open_where = load_open_where(" in analytics, "load stopped using it"
+    capacity = (base / "analytics_capacity.py").read_text(encoding="utf-8")
+    assert "load_open_where(" in capacity, "capacity built its own predicate"

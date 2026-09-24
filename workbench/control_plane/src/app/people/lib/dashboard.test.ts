@@ -20,6 +20,7 @@ import {
   PILL_HUE,
   PILL_LABEL,
   type Rollup,
+  article,
   capacityBar,
   describeActivity,
   describeDeadline,
@@ -359,6 +360,51 @@ describe("describeSpread", () => {
   it("says nothing where a spread means nothing", () => {
     // Rendering "0h" for a one-person department would read as a balanced team.
     expect(describeSpread(group())).toBeNull();
+  });
+
+  /**
+   * ⚠️ The article was hardcoded `a`, so a gap of 8, 11, 18 or anything in the
+   * eighties read "a 18h gap". Not an edge case — those are ordinary gaps, and
+   * this one helper is rendered by BOTH `/people/dashboard` and
+   * `/people/overview`. Found by reading the rendered page on 2026-09-23.
+   */
+  it("picks the article from how the number is said", () => {
+    const gap = (gap_hours: number) =>
+      describeSpread(
+        group({
+          spread: {
+            gap_hours,
+            most: { person_id: "a", name: "Priya", committed_hours: 46, contracted_hours: 40, percent: 115 },
+            least: { person_id: "b", name: "Ravi", committed_hours: 6, contracted_hours: 40, percent: 15 },
+          },
+        })
+      );
+    expect(gap(18)).toContain("— an 18h gap");
+    expect(gap(8)).toContain("— an 8h gap");
+    expect(gap(11)).toContain("— an 11h gap");
+    expect(gap(85)).toContain("— an 85h gap");
+    expect(gap(40)).toContain("— a 40h gap");
+    expect(gap(1)).toContain("— a 1h gap");
+    // 118 is "one hundred and eighteen" — the leading sound is what decides,
+    // not the digits the number happens to end in.
+    expect(gap(118)).toContain("— a 118h gap");
+  });
+});
+
+describe("article", () => {
+  it("answers on the leading sound, not the spelling", () => {
+    for (const n of [8, 11, 18, 80, 85, 89, 800, 880]) {
+      expect(article(n), `${n}`).toBe("an");
+    }
+    for (const n of [1, 2, 7, 9, 10, 12, 19, 40, 90, 100, 118, 180]) {
+      expect(article(n), `${n}`).toBe("a");
+    }
+  });
+
+  it("ignores a sign and a fraction", () => {
+    expect(article(-18)).toBe("an");
+    expect(article(18.5)).toBe("an");
+    expect(article(8.25)).toBe("an");
   });
 });
 

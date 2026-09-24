@@ -23,12 +23,19 @@ from decimal import Decimal
 #: The provider verbs we know how to call. Data rather than a frozenset in the
 #: database (`model_capability.invocation`); this list is what an operator may
 #: choose FROM, so a typo cannot invent a verb litellm has never heard of.
+#:
+#: 🔴 **Two families since CP-13a (§6A.10b clause 3, §6A.14 clause 5).** The
+#: ``a*`` names are litellm verbs. A ``native_*`` name is a handler in
+#: ``customer_console.handlers``, for a vendor litellm cannot call from the
+#: SDK. ``native_typesafe`` is the first one. It is still an ALLOWLIST, so an
+#: operator cannot bind a handler that does not exist.
 KNOWN_INVOCATIONS = frozenset({
     "acompletion",
     "aembedding",
     "atranscription",
     "aspeech",
     "aimage_generation",
+    "native_typesafe",
 })
 
 #: Only these tasks stream (§6A.9 rule 4). A `transcribe` capability claiming
@@ -101,6 +108,42 @@ def check_invocation(invocation: str) -> str:
         raise CatalogRefused(
             f"unknown invocation {verb!r}; expected one of "
             f"{', '.join(sorted(KNOWN_INVOCATIONS))}"
+        )
+    return verb
+
+
+#: The prefix every native handler name carries (`router.NATIVE_PREFIX`
+#: spells the same word for the serving side).
+NATIVE_INVOCATION_PREFIX = "native_"
+
+#: The tasks a NATIVE handler serves, and the only tasks it may serve.
+#: ``decide`` has no litellm verb at all (§6A.14), and a litellm task has no
+#: native handler yet.
+NATIVE_TASKS = frozenset({"decide"})
+
+
+def check_invocation_for_task(invocation: str, task: str) -> str:
+    """The verb must fit the task. Two directions, one rule (§6A.14 CP-13a).
+
+    🔴 **A ``native_*`` verb serves ``decide`` only, and ``decide`` takes a
+    ``native_*`` verb only.** Without this pair an operator could declare
+    ``(model, decide, acompletion)``. The door would then hand a decision to
+    a chat verb, get back a shape it cannot read, and answer 502 on the
+    first customer call. The other way round, ``(model, chat,
+    native_typesafe)`` sends a chat request to a decision vendor. Both are
+    refused at declare time, where the operator can fix them.
+    """
+    verb = check_invocation(invocation)
+    native = verb.startswith(NATIVE_INVOCATION_PREFIX)
+    if native and task not in NATIVE_TASKS:
+        raise CatalogRefused(
+            f"invocation {verb!r} is a native handler and serves only "
+            f"{', '.join(sorted(NATIVE_TASKS))}, not task {task!r}"
+        )
+    if task in NATIVE_TASKS and not native:
+        raise CatalogRefused(
+            f"task {task!r} takes only a native invocation "
+            f"({NATIVE_INVOCATION_PREFIX}*), not {verb!r}"
         )
     return verb
 

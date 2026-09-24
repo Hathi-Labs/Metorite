@@ -14,6 +14,7 @@
 import { STATUS_CATEGORIES, categoryLabel } from "@/lib/statusCategory";
 
 import type { StatusRow, TaskRow } from "./api";
+import { importanceLabel } from "./table";
 import {
   DEFAULT_SHOWN,
   sameFieldSet,
@@ -568,13 +569,6 @@ function orderPeople(people: readonly string[]): string[] {
   );
 }
 
-const IMPORTANCE_LABELS: Record<string, string> = {
-  "3": "Urgent",
-  "2": "High",
-  "1": "Normal",
-  "0": "Low",
-};
-
 /**
  * Split tasks into groups.
  *
@@ -667,7 +661,7 @@ export function groupTasks(
     } else {
       const value = task.importance;
       const key = value === null || value === undefined ? UNSET : String(value);
-      put(key, key === UNSET ? "No priority" : IMPORTANCE_LABELS[key] ?? key, task);
+      put(key, key === UNSET ? "No priority" : importanceLabel(Number(key)) || key, task);
     }
   }
 

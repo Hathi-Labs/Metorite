@@ -36,12 +36,15 @@ write path into ``pm_tasks``.
 """
 
 from gateway.routes.projects import analytics as _analytics  # noqa: F401
+from gateway.routes.projects import analytics_capacity as _analytics_capacity  # noqa: F401
+from gateway.routes.projects import analytics_rebalance as _analytics_rebalance  # noqa: F401
 from gateway.routes.projects import activities as _activities  # noqa: F401
 from gateway.routes.projects import assignees as _assignees  # noqa: F401
 from gateway.routes.projects import admin as _admin  # noqa: F401
 from gateway.routes.projects import attachments as _attachments  # noqa: F401
 from gateway.routes.projects import bulk as _bulk  # noqa: F401
 from gateway.routes.projects import calendar as _calendar  # noqa: F401
+from gateway.routes.projects import candidates as _candidates  # noqa: F401
 from gateway.routes.projects import custom_fields as _custom_fields  # noqa: F401
 from gateway.routes.projects import delta as _delta  # noqa: F401
 from gateway.routes.projects import export as _export  # noqa: F401

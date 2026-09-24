@@ -95,12 +95,162 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-174 · `--warning` is the same bright yellow in both colour modes, so warning TEXT is unreadable on white · [AGENT]
+- **Check:** `grep -n "\-\-warning:" workbench/control_plane/src/app/globals.css`.
+  Two lines with the same value, one in `:root` and one in `.light`, means
+  this is open.
+- **What happens.** `--warning` is `hsl(47 96% 53%)` in both modes. As a fill
+  or a border on a dark ground it reads well. As TEXT on white it measured
+  **1.57 : 1** on 2026-09-23. WCAG AA asks for 4.5. The dark-mode value
+  measured 11.28 : 1, so only light mode is broken.
+- **Where it bites.** Every `text-warning`. `statusAccent.ts` draws the amber
+  hue's text slot with it, so an amber status reads pale yellow on white. The
+  D76 "suggested" chip met it first and moved its words to
+  `muted-foreground`.
+- **The fix.** Give `.light` a darker `--warning` that passes 4.5 : 1 as text,
+  and keep the bright value for dark mode. Then look at every amber status in
+  light mode, because this is the one look (`globals.css`). Mirror the value
+  in `lib/theme/themes.ts`, which `themes.test.ts` holds to it.
+- **Fence to add:** `src/lib/theme/contrast.ts` should measure `--warning` as
+  text on `--background` in both modes.
+- Added: 2026-09-23, found while building D76. Minted as H-172 and
+  renumbered the same day: #431 took H-172 three minutes before #429
+  merged, and #429 merged second.
+
+### H-173 · The chat tools let the model write Priority 4, and the scale stops at 3 · [AGENT]
+- **Check:** `grep -rn "importance is 0 to 4" apps/skills/skill-projects/`.
+  Any hit means this is open.
+- **What happens.** The Projects scale is 0 Low to 3 Highest
+  (`IMPORTANCE_OPTIONS`, D76). Four places in `skill_projects`
+  (`guarded.py`, `inbox.py`, `forms.py` twice) tell the model the range is
+  0 to 4 and accept a 4. Nothing else refuses it: `pm_tasks.importance` is a
+  bare `SMALLINT` with no CHECK, and `TaskModel.importance` is `int | None`.
+  A 4 then prints as a bare "4" in the table and draws no chip on a card.
+- **The D76 seed is safe.** `>= 2` counts a 4 as important. Only the display
+  breaks.
+- **Why an agent did not fix it here.** The owner is building the Projects
+  chat in a separate stream. Change the four messages and the four bounds to
+  0 to 3 there, or add a CHECK (0 to 3) in an expand/contract migration after
+  a count of rows above 3 on production.
+- Added: 2026-09-23, found while building D76.
+
+
+### H-172 · The shared scratch DB cannot replay the migration ladder any more · [AGENT]
+- **Check:** on the scratch DB, `SELECT max(attnum) FROM pg_attribute WHERE
+  attrelid = 'email_assistant_settings'::regclass` → 1600 means this is open.
+- **Why:** `42_email_model_roles.sql` drops columns that earlier migrations
+  add back. Each `apply_ladder` replay uses up attribute numbers, and dropped
+  columns keep theirs. The table hit Postgres's 1600-column limit, so every
+  R8 suite that replays the ladder on `metorite-scratch-tenant` now fails
+  with `TooManyColumns`. Found by the S7a build, 2026-09-23.
+- **Do:** Make migration 42 replay-safe, so a replay adds and drops nothing.
+  Then rebuild the shared DB with `bash scripts/dev_db.sh --down` and
+  `bash scripts/dev_db.sh`, at a time when no other checkout uses it.
+- **Authority:** R6 · R8 · `engineering_practice.md` §1.1
+- **Added:** 2026-09-23 · the S7a build
+
+### H-170 · A Console migration runs with NO backup of the Console database · [AGENT]
+- **Check:** on the box, run
+  `for d in $(ls -1t /opt/acb/backups | head -14); do ls /opt/acb/backups/$d; done | grep -ci console`.
+  A zero means no backup on the box holds the Console database, and this is
+  open.
+- **What happens.** Measured 2026-09-23 on the deploy of `13988178`. The
+  pre-migration step calls `scripts/backup_db.sh` from
+  `scripts/apply_migrations.sh:91`. That environment has no
+  `CUSTOMER_CONSOLE_DATABASE_URL`, so the script prints "the Console database
+  is NOT in this backup" (`backup_db.sh:322`). Then
+  `apply_customer_console_migrations.sh` applies the Console ladder with no
+  backup of its own. It applied `033_decide_task.sql` that way.
+- 🔴 **The nightly dump does not save it.** `KEEP_DAILY` is 14
+  (`backup_db.sh:44`), and every deploy adds one dump. Fourteen deploys on
+  2026-09-23 pushed the 02:33 UTC nightly dump out. At 16:40 UTC, all 14
+  dumps on the box held `postgres.dump` and `globals.sql` only.
+- **The warning text points at a closed entry.** It says "that is H-98".
+  H-98 closed on 2026-09-19 for the TIMER's unit, which loads the Console
+  env file. The deploy path does not load it, and nothing tracked that.
+- **Fix, in order.** Make the deploy's backup call load
+  `/opt/acb/app/apps/services/customer_console/.env`, as `acb-backup.service`
+  does. Then refuse the Console ladder when that dump failed, as
+  `apply_migrations.sh:100` refuses the tenant ladder. Then keep the newest
+  nightly dump out of the retention count, so deploys cannot evict it.
+- ⚠️ **Supabase may hold its own backups of this project.** Nobody has checked
+  what the plan keeps. Check it before you call the risk closed.
+- 📌 **033 carried no real risk.** It is two `INSERT ... ON CONFLICT DO
+  NOTHING` rows. The next Console migration may not be so small.
+- **Authority:** `CLAUDE.md` §3a "A production migration is still one-way"
+  · R6
+- **Added:** 2026-09-23 · the CP-13a deploy check
+
+### H-165 · Build CP-13a to CP-13d: the `decide` task, its door, the Console pages and the chat tool · [AGENT]
+- **Check:** CP-13a and CP-13b are BUILT (2026-09-23, branches
+  `cp13a-decide` and `cp13b-console`).
+  `rg -n 'decide/try' apps/services/customer_console/customer_console/operator_roles.py`
+  → no hit means CP-13b has not reached `main` yet.
+  `rg -n 'def decide' packages/acb_llm/` → no hit means CP-13c has not
+  landed.
+- **Why:** owner decision 2026-09-23 (D75). The owner chose TypeSafe's Jev for
+  fast typed decisions, and asked for the Operator Console first.
+- **Do this in order:** CP-13a, then CP-13b, then CP-13c, then CP-13d. Build
+  against a test key and made-up data. Ship `DECIDE_ENABLED` OFF.
+- ⚠️ **Do not seed a binding or a price in the migration.** An operator makes
+  the binding on `/tiers`. The owner sets the price (H-42).
+- ⚠️ **Three fences break by design.** Update them in the same PR. §6A.14
+  CP-13a names them, and CP-13d names two more.
+- ⚠️ **CP-13c needs H-152's tenant slice.** The client presents the per-box
+  deployment key, and never the one organization key.
+- 🔴 **Do not set `DECIDE_ENABLED` on a live box.** It is owner-only, and
+  the §3a window does not open it (H-166).
+- ⚠️ **CP-13a took migration `033`** (`033_decide_task.sql`). Check it
+  again at merge (R1).
+- **Authority:** `specs/customer_console.md` §6A.14 · `work_plan.md` §3 D75 ·
+  board WS-31
+- **Added:** 2026-09-23 · the Jev planning session
+
+### H-166 · Open the TypeSafe account, install the key, and answer residency · [OWNER]
+- **Check:** on `/providers`, look for a live `typesafe` credential. None
+  means this is open. Then read `work_plan.md` D19.6. If it still says
+  India-only with no AI sub-processor clause, the residency answer is open.
+- **Why:** three acts gate CP-13 on a real tenant (§6.1 WS-31 (i)).
+  1. **Open the account and accept the terms.** An external commercial
+     account is an owner act. Ask TypeSafe for its DPA, its region, and
+     zero retention. The vendor gives zero retention to enterprise customers
+     on request.
+  2. **Install the key** on `/providers`, with provider `typesafe` (§6.0 B1).
+  3. **Answer residency.** D19.6 promises India-only data at launch, and the
+     vendor states no region. Choose one: amend D19.6 for AI sub-processors,
+     get a region in writing, or keep `decide` off real tenant content.
+  4. **Acknowledge the D61.1 amendment**, or reject it. D61.1 says every
+     Router door copies an OpenAI shape, and no such shape exists for a
+     decision. `work_plan.md` D75 clause 3 holds the proposal.
+  5. **Set `DECIDE_ENABLED`** on the box, after answer 3. No agent sets it.
+- ⚠️ **Shadow mode sends tenant content too.** Without answer 3, nothing
+  runs on Fracktal's data: not the chat tool, not an app slice, and not
+  shadow mode.
+- ⚠️ **Add TypeSafe to the sub-processor list** when WS-37 writes one (H-36).
+- **Authority:** `specs/customer_console.md` §8 gate 9 and §9 item 8 ·
+  `work_plan.md` §6.1 WS-31 (i)
+- **Added:** 2026-09-23 · the Jev planning session
 
 ### H-163 · The My Tasks cutover is in flight. The spec owns the order · [AGENT]
-- **Check:** `rg -c "lensEnabled\(\)" workbench/control_plane/src/app/tasks/lib/api.ts`
-  → below 25 means S6a has not landed. `\dt gtd_*` on the box → any row means
-  S8 has not landed. `rg -n '"Tasks"' workbench/control_plane/src/lib/nav.ts`
-  → a hit means S5 has not landed.
+- **Check:** `gh pr view 411 --json state` → `OPEN` means S8 PR 1 has not
+  merged. `\dt gtd_*` on the box → any row means S8 PR 2 has not landed.
+  `rg -l "GtdItem" workbench/control_plane/src` → any hit means S9 has not
+  landed.
+- **Next, in this order (2026-09-23 state).**
+  1. Merge PR #411 (S8 PR 1) NO EARLIER than 2026-09-24 00:30 UTC. All 19
+     checks were green at `9c45063c`. Merge `origin/main` first if it moved.
+     Watch the deploy and read `/version`.
+  2. Build S8 PR 2: arm `gtd_retirement_arm`, then a new migration (next free
+     number, R1) calls `gtd_retirement_drop()` and drops the tree tables,
+     `gtd_contexts` and `gtd_retirement_arm`. It renames `gtd_attachments`,
+     `gtd_horizons` and `gtd_reviews` through the guarded prologue. Spec §5 S8
+     and §6 steps 11 to 13 hold the order. The pre-migration backup must exist.
+  3. Build S9, the code-name sweep (§5 S9).
+- **Owed to the owner.** The Focus matrix badge still says "Low Priority".
+  The task panel's Priority field below it means `pm_tasks.importance`. The
+  word needs an owner call before anyone renames the matrix vocabulary.
+- **Owed by a person.** A signed-in member captures in My Tasks and sees the
+  task in Projects in the same page load (§6 step 9).
 - **Why:** owner directive 2026-09-23 (D73). `specs/my_tasks_cutover.md` §5
   holds nine slices in a load-bearing order, and §6 the corrected runbook.
   H-29 and H-151 stay open until the slice that closes each one lands (S6e
@@ -306,9 +456,16 @@ line — never reclaim a number by deleting the other entry.
           and not memory and not calendar"         run 2: pass
                                                    run 3: FAIL (another test)
 
-  So the suite that leaks the state is one the narrow filter EXCLUDES. That is
-  the most useful thing anybody has learned about this defect. Look at what
-  `tree`, `task` and `personal` pull in and `projects` does not.
+  So the suite that leaks the state is one the narrow filter EXCLUDES. Look at
+  what `tree`, `task` and `personal` pull in and `projects` does not.
+- **⚠️ 2026-09-23 — `-k "projects"` FAILED once, so yesterday's line above is
+  too strong.** It read as though the narrow selection had stopped failing.
+  Six green runs is not "stopped" — it is intermittent under that selection
+  too, and one run out of 2151 tests reproduced it the next day. The wider
+  selection remains the reliable reproduction. **Neither selection is a
+  clean bill of health**, which is the real hazard: a branch that touches
+  nothing near this can go red, and a branch that breaks something can go
+  green. It still passes alone, every time.
 - **🔴 A THIRD test fails the same way, and it is not a Projects test.** Run 3
   above failed
   `test_customer_console_catalog.py::TestRemovingAModelFromTheCatalog::test_removing_one_task_is_not_blocked_by_a_binding_on_ANOTHER`
@@ -1085,6 +1242,44 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-08-24 · WS-39 S1 session *(renumbered H-27→H-32 on 2026-08-25:
   `main` took H-27 for the e2e entry via PR #47; ids are never reused)*
 
+### H-164 · The deploy restarts the workbench while npm is still installing · [AGENT]
+- **Check:** on the box, grep the workbench journal for `next: not found`.
+  Any hit means this is still real:
+
+      journalctl -u acb-workbench --since "7 days ago" | grep -c "next: not found"
+- 🔴 **MEASURED 2026-09-23, and it turned a deploy RED across all three
+  rounds.** PR #406's run 35855523275 ended `WORKBENCH FAILED TO START`. The
+  box was healthy the whole time and the next deploy started it fine.
+- **The line that names it**, at 11:51:54 UTC:
+
+      npm[2736540]: > next start -p 3001
+      npm[2736540]: sh: 1: next: not found
+
+  The unit started while `node_modules` was being replaced, so the `next`
+  binary was absent for that moment. It is a RACE, not a broken build — the
+  build had already printed its route table and swapped in.
+- **What it costs.** A deploy goes red at random, on a branch that may have
+  nothing to do with the workbench. #406 touched two Python files and the
+  Console, and none of them is imported by a Next app. The next merge then
+  deploys the same code green, which teaches people that a red deploy means
+  nothing. That is the belief this repo can least afford.
+- ⚠️ **NOT H-60.** That entry is the ~3 minute 502 WINDOW while the workbench
+  restarts, and it assumes the process comes back. This is the process failing
+  to come back at all. Same file, different fault.
+- ⚠️ **NOT the EACCES fault either.** H-89 and the `reclaim_build_tree` work
+  cover `npm ci` refused by root-owned paths. Here `npm ci` was working. The
+  unit started in the middle of it.
+- **What to build.** Order the two: finish the dependency install, THEN swap
+  the build, THEN restart. Or gate the restart on the `next` binary existing.
+  `scripts/vps_apply.sh` owns both halves.
+- 📌 **A second fault was in the same window and has since stopped.** The OLD
+  workbench process logged `TypeError: o is not a function` every ~60 seconds
+  from a minified server chunk. Zero occurrences since the 11:52:36 restart,
+  so it is not currently live. Worth a look if it returns — a repeating
+  handler error on the customer app is its own entry.
+- **Authority:** run 35855523275 · `journalctl -u acb-workbench`
+- **Added:** 2026-09-23 · the H-152 gateway slice.
+
 ### H-60 · Every deploy gives live users a ~3 minute 502 · [AGENT]
 - 🔴 **MET AGAIN 2026-09-19, on the PR #297 deploy.** A probe of the
   workbench on :3001 returned **500** while the old process was still
@@ -1430,7 +1625,11 @@ line — never reclaim a number by deleting the other entry.
   Router unpriced so a month of real per-org burn lands in `usage_event` first
   (`002_seed_catalog.sql`'s own header). CP-11 is what finally produces that traffic, so
   this entry becomes actionable only after CP-11 has been serving for a while.
-  🔴 Pricing live is an owner act (D19.2, §6) and **must not be done via migration**.
+  🔴 Pricing live is an owner act (D19.2, §6) and **must not be done through a migration**.
+- 📌 **Added 2026-09-23 (D75): one more tier, `tier-decide`, and one more
+  question.** One decision costs about USD 0.000042. So choose one: exempt
+  `decide` from `MIN_CHARGE`, as `embed` is, or absorb it.
+  `credit_pricing.md` §5.4 clause 6 holds the question.
 - **Authority:** `work_plan.md` §6 · §2.0 M2.9c · D19.2 · **D57.4** clause 5 ·
   `specs/customer_console.md` CP-6
 - **Added:** 2026-08-26 · AI credits + keys session
@@ -1469,6 +1668,46 @@ line — never reclaim a number by deleting the other entry.
   the credential-scope redesign for `require_llm_api_auth` is the other half.
 - **Authority:** `work_plan.md` §3 **D58** · §6 (f) · `specs/customer_console.md` §4
 - **Added:** 2026-08-26 · AI architecture session
+
+### H-171 · The product's OWN AI is never metered, so it is free forever · [AGENT+OWNER]
+- **Check:** `rg -c "console_resolve|customer_console" packages/acb_llm/` → a
+  zero means `acb_llm` still reaches no meter, and this is open.
+- 🔴 **MEASURED 2026-09-23.** `acb_llm.acompletion_with_fallback` imports
+  litellm and calls `acompletion` directly. `acb_llm` holds **zero**
+  references to the Console. The only litellm callback registered anywhere is
+  `"otel"`, which is a trace and not a bill.
+- **So there are TWO AI paths and only one is metered.**
+  `POST /v1/chat/completions` reaches the Console Router behind
+  `ROUTER_SERVING_ENABLED`. Every in-product feature — the apps runtime, the
+  email automation, the assistants, the agents, **29 files** — takes the other
+  path and is billed to nobody.
+- 🔴 **What it costs.** A customer uses the AI inside the product for free, on
+  our vendor account, for ever. Turning the Router on does not change that,
+  because the Router is not on that path. It is a larger hole than the blank
+  cached-input box, and it does not close itself.
+- **The spec reads against it.** `launch_surface.md` §4.1: *"AI usage is
+  metered separately in credits"*. Not API usage. AI usage.
+- ⚠️ **It also empties the feature the owner asked for.** Per-app, per-agent
+  and per-person credit reporting all read `usage_event`. The apps and agents
+  people use write no row there, so those screens would be honest and
+  blank.
+- **Two shapes, and the choice is the owner's because it trades money against
+  latency and failure.**
+  1. **Proxy.** Send `acompletion_with_fallback` through the Console Router.
+     One path, one meter, the balance gate applies BEFORE spending. Costs a
+     Console round trip on every internal call, and D57.7 says a routed call
+     that fails, fails.
+  2. **Report.** Keep litellm serving and POST the result to
+     `/usage/record`, which exists, takes the internal token and is idempotent
+     on `(organization_id, request_id)`. No latency change and no new failure
+     mode. The balance gate cannot refuse before the spend, so a customer can
+     overrun by one call.
+- ⚠️ **Attribution is the real work in either shape.** The meter needs the
+  member, the agent and the module at 29 call sites. H-73 landed the identity
+  seam. H-44 records the same 80+ sites for tier selection, so sweep the two
+  together and not twice.
+- **Authority:** `launch_surface.md` §4.1 · D19.2 · D57.7 · CP-6 · H-73 · H-44
+- **Added:** 2026-09-23 · the H-73 session. **Renumbered from H-170 to H-171** the same day (R1): another branch minted the same next free id against a different base and merged first. An id is never reused.
 
 ### H-44 · Feature→tier binding is hardcoded at 80+ call sites · [AGENT]
 - **Check:** `rg -c '"tier-(fast|balanced|powerful|stt)"' --glob '*.py' --glob '*.ts' apps/ packages/ workbench/`
@@ -1615,6 +1854,9 @@ line — never reclaim a number by deleting the other entry.
   📌 **Home: `customer_console/handlers.py`**, and `packages/acb_stt` stays the
   tenant package. §6A.10b clause 1 holds the plane-boundary argument and the
   rejected `acb_provider` alternative.
+  📌 **2026-09-23: the first caller exists. It is TypeSafe's Jev** (D75).
+  H-165 builds this seam in CP-13a, with `native_typesafe` as its first value.
+  When H-165 merges, delete this entry.
 - **Authority:** `customer_console.md` **§6A.10b** (the done-when) ·
   `work_plan.md` §3 **D60.11(a)** · `specs/customer_console.md` **§6A.10
   G-2 / G-5** · CLAUDE.md §5 · `work_plan.md` §4 (the seam's owner row)
@@ -1967,17 +2209,33 @@ line — never reclaim a number by deleting the other entry.
   and `/my/usage/members` (CP-7 slice 1) report the same attribution and are
   safe, because a cost report is not an authorisation decision. **Attribution
   is good enough to REPORT and not good enough to ENFORCE.**
-- **Two questions, and the second is the owner's:**
-  1. Where does a trustworthy member identity come from? A session-scoped
-     door beside the org key is the obvious shape, but it is a new auth
-     scheme and §4's registry says who owns that.
-  2. ⚠️ **Is a per-member cap worth a fifth auth scheme at all?** The org
-     pool, the balance gate and the run ceiling already stop runaway spend.
-     A cap is a *management* feature, not a *safety* one. Answering "not yet"
-     is a legitimate answer and it costs nothing to defer.
+- **Both questions are ANSWERED, 2026-09-23.**
+  1. **Where a trustworthy identity comes from: a signed claim, not a new
+     door.** `acb_auth/member_proof.py` mints and verifies an HMAC over
+     `member:nonce:exp` under `gateway_session_secret`, with a 300s TTL.
+     `v1_compat._member_for` prefers a verified proof over the header and
+     returns `(member, proven)`. `console_resolve` carries `proven` to the
+     Console as `X-CC-Member-Proven`. **No fifth auth scheme**, so §4's
+     registry is not engaged — the credential set is unchanged and one header
+     gained a signature.
+  2. The owner answered yes on 2026-09-23, asking for per-member budgets,
+     redistribution and per-person usage.
+- ⚠️ **What is CLOSED: a member can no longer choose which cap applies.** Only
+  a holder of `gateway_session_secret` can mint, and that secret never reaches
+  a browser. A forged `X-CC-Member` loses to a proof, and a test asserts it.
+- 🔴 **What is NOT closed, and it is the remaining half.**
+  (a) **Nothing MINTS a proof yet.** Measured: no code in this tree sends
+  `X-CC-Member` to the gateway's `/v1` at all, which is consistent with
+  `usage_event` holding zero rows. The minter belongs wherever the workbench
+  originates an AI call with a session in hand.
+  (b) **"No cap row means unlimited" still stands.** A cap keyed on `proven`
+  is unforgeable, but an UNPROVEN caller still matches no row. The policy for
+  that case — refuse, fall back to an org-wide default, or allow — is a
+  decision, not an implementation, and it is the owner's.
 - **Authority:** **D32.8** · `specs/customer_console.md` §4.5 · §6 CP-7 ·
   `work_plan.md` §6 (f) · migration `005_metering_identity.sql`
-- **Added:** 2026-08-28 · WS-31 CP-7 slice 1
+- **Fences:** `tests/unit/test_member_proof.py` (24) · the three attribution clauses in `test_v1_router_serving.py`.
+- **Added:** 2026-08-28 · WS-31 CP-7 slice 1. **Updated:** 2026-09-23.
 
 ### H-74 · mypy is strict over a tree nobody has swept — 1508 errors · [AGENT]
 - **Check:** `uv run mypy apps packages --exclude '^apps/agents/' 2>&1 | tail -1`
@@ -2359,23 +2617,6 @@ line — never reclaim a number by deleting the other entry.
   through it is correct, and `email/automation/followups.py` does that. A
   lint there would fail correct code and grow an allowlist. The asyncpg
   suites are the answer for that half.
-
-### H-113 · Wave 6 needs only its NUDGE. The columns shipped in 188 · [AGENT]
-- **⚠️ This entry was wrong, and the correction is the point.** It said
-  §9.12.9 needs two new columns, and its Check looked for `follow_up_at`. That
-  name never existed. Migration **188** already shipped `waiting_on`,
-  `delegated_at`, `expected_by` and `last_nudged_at` on `pm_task_personal`,
-  with a partial index built for the "what is due back" read.
-- **Check:** `grep -n "last_nudged_at" apps/services/gateway/gateway/routes/projects/personal.py`
-  → the field is accepted and **nothing writes it**. That is the open half.
-- **What is already built.** The Tasks app sets and draws all of it —
-  `DelegateDialog`, `WaitingForView` and `ItemDetail` carry the date, the
-  person and the overdue badge.
-- **What is open.** The optional nudge. One notification to the person you
-  wait on, through `routes/projects/notifications.py` `notify()`, which
-  exists. It is off by default, and it stamps `last_nudged_at` once.
-  ⚠️ In-app only. A mail to a real person is owner-gated (CLAUDE.md §3a).
-- **Corrected:** 2026-09-19 · found while auditing wave 6 for dispatch.
 
 ### H-110 · Operator OTP sends now. Two dashboard acts are still unverified · [OWNER]
 - **Check:** ask Supabase project `uttxlicdccfkramtjfpi` for an OTP at an address
@@ -2784,20 +3025,6 @@ line — never reclaim a number by deleting the other entry.
   creating the connections for when they sign up"*
 - **Added:** 2026-09-22 · the auto-mint session. **Updated:** 2026-09-23.
 
-### H-144 · `GET /people/{id}/editable` has no caller · [AGENT]
-- **Check:** `rg -n "editable" workbench/control_plane/src/app/people/lib/api.ts`
-  → no hit means nothing calls it, and this is open.
-- **Why:** the endpoint answers "what may this caller write on that row"
-  (D-PC-4). The UI gets the same answer from `editable_fields`, which rides
-  on the person payload, so the standalone route is dead.
-- **The decision:** delete it, or keep it as the door a second client would
-  use. Same question as H-140 and worth answering the same way at the same
-  time.
-- 📌 Harmless while it sits there. Filed so it becomes a decision
-  instead of residue.
-- **Authority:** owner review 2026-09-21
-- **Added:** 2026-09-21 · the People end-to-end review
-
 ### H-126 · `build_sha()` returns None in EVERY git worktree · [AGENT]
 - **Check:** from a worktree, `uv run pytest tests/unit/test_build_info.py -q`
   → a failure that names `build_sha() disagrees with git rev-parse HEAD` means
@@ -2874,6 +3101,36 @@ line — never reclaim a number by deleting the other entry.
   manifest row and the spec, in one PR.
 - **Authority:** `specs/projects_ai_chat.md` §5.4, §12 · `org_access_control.md` §8d
 - **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
+
+### H-169 · The outlook's capacity reads only the typed hours, and ignores absences · [AGENT]
+- **Check:** `grep -n "hours_per_week=float(cap.stated_hours)" apps/services/gateway/gateway/routes/projects/analytics.py`
+  → a hit means this is open.
+- **Why:** `/projects/analytics/outlook` forecasts a finish date from
+  `people.capacity_hours_per_week` only. The docstring names `working_hours`
+  as the fallback, but the code only counts it. Absences are not subtracted.
+  The People dashboard and S7a's capacity route use `work_schedule.py`, so the
+  two surfaces can disagree about one person's hours.
+- **Do:** Compute the outlook's hours through `person_schedule` and
+  `working_hours_between`, as `routes/people/dashboard.py` does. Keep the typed
+  figure as the override that `capacity_disagreement` already reports.
+- **Authority:** `specs/projects_ai_chat.md` §13.8 · `people_center_app.md` §5.7
+- **Added:** 2026-09-23 · the Projects chat team-intelligence design
+
+### H-168 · The gateway refuses the LLM key on `/v1/embeddings` · [AGENT]
+- **Check:** `grep -n '"/v1/embeddings"' apps/services/gateway/gateway/main.py`
+  → one hit, on the route only, and not in `PUBLIC_ROUTES`, means this is open.
+- **Why:** PR #407 let the LLM key reach `/v1/chat/completions`. The app-wide
+  gate still refuses that key on `/v1/embeddings`, because the key is not an
+  identity. Four callers send it there: `acb_memory/mem0_client.py`,
+  `whatsapp_ingestion/wa_embeddings.py`, `email_ingestion/email_embeddings.py`
+  and `routes/tasks/capability.py`. Each one gets 401 today. The gateway log shows no call in seven days, so
+  nothing is broken in use yet.
+- **Do:** Put `Depends(require_llm_api_auth)` on the route. Then add the
+  template to `PUBLIC_ROUTES`. Extend `tests/unit/test_v1_llm_key_gate.py`,
+  including `test_only_the_completion_routes_are_listed`. Do not list the
+  route without its own lock, because it spends a stored provider key.
+- **Authority:** BO-2 residual #4 · `packages/acb_auth/acb_auth/deps.py` `require_llm_api_auth`
+- **Added:** 2026-09-23 · the review of PR #407
 
 ### H-161 · The seats matrix cannot PROPOSE, because the queue is the wrong shape · [OWNER]
 - **Check:** `rg -n "CREATE TABLE IF NOT EXISTS access_request" -A 12
