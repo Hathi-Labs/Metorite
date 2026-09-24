@@ -315,15 +315,18 @@ def effective_disposition(
     )
 
 
-#: The dispositions that say "this work is still open for me" (D77). Stating
-#: one on a task whose lane is closed REOPENS the task for everybody, because
-#: completion is the lane — otherwise the lane wins in `effective_disposition`
-#: and the member's "not done after all" snaps straight back to DONE. Every
-#: stored disposition except DONE (the completion itself) and TRASH (my
-#: removal). CALENDAR is not stored — organize maps it to NEXT.
-OPEN_DISPOSITIONS: frozenset[str] = frozenset(
-    d for d in DISPOSITIONS if d not in ("DONE", "TRASH")
-)
+#: The dispositions that REOPEN a closed task for everybody (D77 choice 3).
+#: Only the ACTIONABLE ones: INBOX, NEXT and WAITING each say "somebody still
+#: has to do this", and without the reopen the lane wins in
+#: `effective_disposition`, so the member's "not done after all" snaps
+#: straight back to DONE. CALENDAR is not stored — organize maps it to NEXT.
+#:
+#: ⚠️ SOMEDAY, REFERENCE and PROJECT do NOT reopen (F4, 2026-09-24). Filing a
+#: finished task for later reading is a statement about MY list, not a claim
+#: that the team's work is unfinished. The stated value is kept, and the
+#: closed lane still reads DONE. A defer writes SOMEDAY, so a defer never
+#: reopens either. DONE is the completion itself, and TRASH is my removal.
+OPEN_DISPOSITIONS: frozenset[str] = frozenset({"INBOX", "NEXT", "WAITING"})
 
 
 async def reopen_if_closed(
@@ -951,7 +954,7 @@ async def set_personal(
         # this" is the Weekly Review's question, and a no-op PATCH is still a
         # member looking at it.
         values["clarified_at"] = now()
-        # D77 — an open disposition on a closed task reopens it for the board.
+        # D77 — INBOX, NEXT or WAITING on a closed task reopens it for the board.
         await reopen_if_closed(db, task, email, values.get("disposition"))
         row = await _upsert_personal(db, task_id, email, values)
         return _personal_to_dict(row)
@@ -2050,7 +2053,7 @@ async def _organize(
         # somehow survived cannot roll into tomorrow either.
         values["scheduled_start"] = None
         values["scheduled_end"] = None
-    # D77 — an open decision on a closed task reopens it for the board.
+    # D77 — INBOX, NEXT or WAITING on a closed task reopens it for the board.
     await reopen_if_closed(db, task, email, disposition)
     await _upsert_personal(db, task_id, email, values)
 
@@ -2115,14 +2118,12 @@ async def defer_task(
 ) -> dict:
     """Hide a task from my inbox until a date. Mine only — the team's board is
     unaffected, because deferring is a statement about my attention, not about
-    the work. The one exception is D77's: SOMEDAY is an open disposition, so
-    deferring a FINISHED task reopens it through `reopen_if_closed`, as every
-    other overlay door does."""
+    the work. It writes SOMEDAY, which is not an actionable disposition, so a
+    defer never reopens a finished task (D77 choice 3, `OPEN_DISPOSITIONS`)."""
     email = actor(user).lower()
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        task = await load_visible_task(db, vis, task_id)
-        await reopen_if_closed(db, task, email, "SOMEDAY")
+        await load_visible_task(db, vis, task_id)
         row = await _upsert_personal(db, task_id, email, {
             "defer_until": payload.until, "disposition": "SOMEDAY",
         })

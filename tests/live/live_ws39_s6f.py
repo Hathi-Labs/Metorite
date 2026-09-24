@@ -372,6 +372,29 @@ async def main() -> None:
               f"first={closed_first} now={after['disposition']} "
               f"lane={state.category} completed={state.completed_at} moves={moves}")
 
+        # ── 11c. file a finished task as Someday: the board stays closed ──
+        #     F4: only INBOX, NEXT and WAITING reopen. Filing is mine.
+        filed = await _task(db, org, sales, todo, "Filed task", 10)
+        await _assign(db, filed, ALICE, "2026-09-01T09:00:00+00:00")
+        row = (await db.execute(text("SELECT * FROM pm_tasks WHERE id = :t"),
+                                {"t": filed})).fetchone()
+        await complete_for_member(db, row, ALICE)
+        row = (await db.execute(text("SELECT * FROM pm_tasks WHERE id = :t"),
+                                {"t": filed})).fetchone()
+        outcome, _ = await _act_on_one(db, row, "personal", by=ALICE,
+                                       personal={"disposition": "SOMEDAY"})
+        lane = (await db.execute(text(
+            "SELECT s.category FROM pm_tasks t "
+            "JOIN pm_task_statuses s ON s.id = t.status_id WHERE t.id = :t"),
+            {"t": filed})).scalar_one()
+        stated = (await db.execute(text(
+            "SELECT disposition FROM pm_task_personal "
+            "WHERE task_id = :t AND member_email = :who"),
+            {"t": filed, "who": ALICE})).scalar_one()
+        check("11c bulk SOMEDAY on a finished task: the lane stays done, mine says SOMEDAY",
+              outcome == "applied" and lane == "done" and stated == "SOMEDAY",
+              f"outcome={outcome} lane={lane} stated={stated}")
+
         # ── 12. another tenant sees none of it ─────────────────────────────
         other = (await db.execute(text(
             "INSERT INTO organization (slug, display_name) "

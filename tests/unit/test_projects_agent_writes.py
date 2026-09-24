@@ -1021,7 +1021,7 @@ async def test_the_overlay_refuses_done_and_points_at_complete(monkeypatch) -> N
 
 
 async def test_the_overlay_card_says_when_it_reopens_the_board(monkeypatch) -> None:
-    """D77: an open disposition on a FINISHED task reopens it for everybody
+    """D77: INBOX, NEXT or WAITING on a FINISHED task reopens it for everybody
     (`personal.reopen_if_closed`). The card must not say "your overlay only"."""
     def finished(call: dict) -> Any:
         if call["path"] == f"/projects/tasks/{UUID}":
@@ -1038,6 +1038,12 @@ async def test_the_overlay_card_says_when_it_reopens_the_board(monkeypatch) -> N
     asked.clear()
     await skill_projects.set_my_overlay(UUID, context="@home")
     assert "scope: «your overlay only»" in asked[0]["context"]
+
+    # F4: filing the finished task as Someday reopens nothing either.
+    asked.clear()
+    await skill_projects.set_my_overlay(UUID, disposition="someday")
+    assert "scope: «your overlay only»" in asked[0]["context"]
+    assert "reopens" not in asked[0]["context"]
 
 
 async def test_the_overlay_card_on_an_open_task_is_overlay_only(monkeypatch) -> None:

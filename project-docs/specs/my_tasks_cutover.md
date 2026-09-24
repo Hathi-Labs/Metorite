@@ -396,16 +396,23 @@ actuals (`actual_end - actual_start`), bound to the task the caller can see.
    there is an outside person, and the overlay is the only place that fact is.
 2. **A stated TRASH stays TRASH on a closed lane.** Trash is my removal from
    my list, and a closed lane does not undo it.
-3. **An open disposition on a closed task reopens it for the board.** Without
-   this the lane wins, and "mark not done" snaps back to DONE. The gateway
-   does it once, in `reopen_if_closed`. Every overlay door calls it: the
-   PATCH, the bulk `personal` action, organize and defer. The checkbox, Focus mode
-   and Undo reach the bulk action. The task moves to the first `todo` lane
-   of its own set. The move goes through `apply_status_transition`, so the
-   timeline records the reopen.
-   Every stored disposition except DONE and TRASH counts
-   (`OPEN_DISPOSITIONS`). An Undo of a delete restores a closed task as
-   DONE, so it never reopens it.
+3. **An actionable disposition on a closed task reopens it for the board.**
+   Without this the lane wins, and "mark not done" snaps back to DONE. The
+   gateway does it once, in `reopen_if_closed`. The PATCH, the bulk
+   `personal` action and organize call it. The checkbox, Focus mode and Undo
+   reach the bulk action. The task moves to the first `todo` lane of its own
+   set. The move goes through `apply_status_transition`, so the timeline
+   records the reopen.
+
+   Only INBOX, NEXT and WAITING count (`OPEN_DISPOSITIONS`). Each says that
+   somebody still has to do the work. SOMEDAY, REFERENCE and PROJECT do not
+   reopen: filing a finished task is about my list, not about the team's
+   work. The stated value is kept, and the closed lane still reads DONE.
+   A defer writes SOMEDAY, so a defer never reopens either, and the defer
+   card's "your inbox only" stays true.
+
+   Changed 2026-09-24 (F4). The first build reopened on every disposition but DONE and TRASH. An Undo of a
+   delete restores a closed task as DONE, so it never reopens it.
 
 ## 5. The slices
 

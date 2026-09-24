@@ -382,10 +382,39 @@ def test_time_spent_is_every_members_actuals_bound_to_the_task() -> None:
 
 # ── Un-checking a closed task reopens it, on every overlay door ─────────────
 
-def test_every_open_disposition_reopens_and_only_those() -> None:
-    assert {
-        "INBOX", "NEXT", "WAITING", "SOMEDAY", "PROJECT", "REFERENCE",
-    } == pm_personal.OPEN_DISPOSITIONS
+def test_only_an_actionable_disposition_reopens() -> None:
+    """F4: INBOX, NEXT and WAITING reopen. Filing is not reopening."""
+    assert {"INBOX", "NEXT", "WAITING"} == pm_personal.OPEN_DISPOSITIONS
+
+
+def test_the_chat_skill_holds_the_same_reopen_set() -> None:
+    from skill_projects import writes as skill_writes
+
+    assert skill_writes._REOPENING == pm_personal.OPEN_DISPOSITIONS
+
+
+@pytest.mark.parametrize("filed", ["SOMEDAY", "REFERENCE", "PROJECT"])
+async def test_filing_a_finished_task_does_not_reopen_it(
+    filed, db: FakeProjectsDB,
+) -> None:
+    """F4: Reference, Someday or Project on a closed task is my filing. The
+    lane stays closed, my stated value is kept, and the lane still reads
+    DONE."""
+    project, _todo, done = _team_project(db)
+    task = db.seed_task(project.id, done.id,
+                        completed_at="2026-09-20T09:00:00+00:00")
+    _assign(db, task.id, "alice@fracktal.in")
+    await pm_personal.set_personal(
+        str(task.id), pm_personal.PersonalIn(disposition=filed), user=ALICE,
+    )
+    shared = next(t for t in db.rows("pm_tasks") if str(t["id"]) == str(task.id))
+    assert str(shared["status_id"]) == str(done.id), "the team's lane is untouched"
+    mine = next(r for r in db.rows("pm_task_personal")
+                if str(r["task_id"]) == str(task.id))
+    assert mine["disposition"] == filed, "my stated value is kept"
+    assert pm_personal.effective_disposition(
+        filed, status_category="done", is_mine=True, has_assignee=True,
+    ) == "DONE"
 
 
 async def test_bulk_next_on_a_completed_task_reopens_it(db: FakeProjectsDB) -> None:
@@ -418,7 +447,7 @@ async def test_the_personal_patch_reopens_a_closed_task(db: FakeProjectsDB) -> N
     task = db.seed_task(project.id, done.id)
     _assign(db, task.id, "alice@fracktal.in")
     await pm_personal.set_personal(
-        str(task.id), pm_personal.PersonalIn(disposition="SOMEDAY"), user=ALICE,
+        str(task.id), pm_personal.PersonalIn(disposition="WAITING"), user=ALICE,
     )
     shared = next(t for t in db.rows("pm_tasks") if str(t["id"]) == str(task.id))
     assert str(shared["status_id"]) == str(todo.id)
@@ -537,9 +566,9 @@ def test_insight_counts_ages_the_inbox_by_the_one_rule() -> None:
     assert "not_yet(it.defer_until, it.start_date, at)" in body
 
 
-async def test_deferring_a_finished_task_reopens_it(db: FakeProjectsDB) -> None:
-    """Defer writes SOMEDAY, an open disposition, so it takes the one reopen."""
-    project, todo, done = _team_project(db)
+async def test_deferring_a_finished_task_leaves_it_closed(db: FakeProjectsDB) -> None:
+    """F4: defer writes SOMEDAY, which is not actionable, so it never reopens."""
+    project, _todo, done = _team_project(db)
     task = db.seed_task(project.id, done.id)
     _assign(db, task.id, "alice@fracktal.in")
     await pm_personal.defer_task(
@@ -547,4 +576,7 @@ async def test_deferring_a_finished_task_reopens_it(db: FakeProjectsDB) -> None:
         user=ALICE,
     )
     shared = next(t for t in db.rows("pm_tasks") if str(t["id"]) == str(task.id))
-    assert str(shared["status_id"]) == str(todo.id)
+    assert str(shared["status_id"]) == str(done.id), "the team's lane is untouched"
+    mine = next(r for r in db.rows("pm_task_personal")
+                if str(r["task_id"]) == str(task.id))
+    assert mine["disposition"] == "SOMEDAY"
