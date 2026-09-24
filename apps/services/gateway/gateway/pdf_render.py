@@ -273,18 +273,21 @@ _LONG_WORD = re.compile("[^" + _BREAKS + "]{" + str(MAX_WORD_CHARS + 1) + ",}")
 #:
 #: Three more rules came from the second review of this follow-up.
 #:
-#: 3. **A combining mark does not end a run.** U+2003 U+0301 repeated
-#:    (300,000 characters) took more than 45 s, because each mark split the
-#:    run for both patterns. So the checks strip every ``Mn`` and ``Me``
-#:    mark first (:func:`_strip_marks`).
+#: 3. **A combining mark or a format character does not end a run.**
+#:    U+2003 U+0301 repeated (300,000 characters) took more than 45 s,
+#:    U+2003 U+200E 29.9 s and U+2003 U+2066 31.1 s (120,000 characters),
+#:    because each one split the run for both patterns. So the checks strip
+#:    every ``Mn``, ``Me`` and ``Cf`` character first (:func:`_strip_marks`).
+#:    The ``Cf`` characters that ARE break spaces (U+00AD, U+200B, U+2060,
+#:    U+FEFF) stay, so a run of them is still refused.
 #: 4. **MuPDF does NOT collapse a form feed**, though HTML calls it
 #:    whitespace. 300,000 of them in a ``<p>`` took more than 45 s. So
 #:    :data:`_HTML_SPACE` leaves ``\f`` out, and it counts toward a run.
 #: 5. **MuPDF does not wrap a line inside ``<pre>``.** ``\ta`` repeated took
-#:    29.5 s and ``x `` repeated 10.6 s (300,000 characters each). So a
-#:    ``<pre>`` line longer than :data:`MAX_WORD_CHARS` is refused, whatever
-#:    it holds. A line feed, a carriage return and a CRLF each end a line:
-#:    ``x\r`` repeated in a ``<pre>`` filled the 300 pages in 0.36 s.
+#:    29.5 s, and 1 MB of 20,000-character lines 38.3 s. Refusing a long line
+#:    also refused a normal one-line JSON dump, so a long line is WRAPPED
+#:    instead: :func:`wrap_pre_lines` runs after the checks and breaks every
+#:    ``<pre>`` line at :data:`PRE_WRAP_COLUMNS`.
 _REPEATED = re.compile(r"(.)\1{" + str(MAX_WORD_CHARS) + ",}", re.DOTALL)
 _SPACE_RUN = re.compile(
     "["
@@ -297,20 +300,102 @@ _SPACE_RUN = re.compile(
 #: ``\f``: see rule 4 above.
 _HTML_SPACE = re.compile(r"[ \t\n\r]+")
 _TAG_SPLIT = re.compile(r"(<[^>]*>)")
-_PRE_LINE_END = re.compile(r"\r\n|\r|\n")
-_MARK_CATEGORIES = frozenset({"Mn", "Me"})
+_MARK_CATEGORIES = frozenset({"Mn", "Me", "Cf"})
+_KEPT_FORMAT_CHARS = frozenset(_BREAK_SPACE_CODEPOINTS)
+
+#: The widest ``<pre>`` line, in columns. Measured with :data:`_CSS` on A4:
+#: Nimbus Mono at 9.5 pt is 5.7 pt a column, the text starts at x = 64.5,
+#: and 83 columns end inside the right margin. 80 leaves room for a ``<pre>``
+#: in a list item. A longer line was clipped at the page edge before, and
+#: it now wraps. A tab moves to the next multiple of 8.
+PRE_WRAP_COLUMNS = 80
 
 
 def _strip_marks(text: str) -> str:
-    """``text`` without its nonspacing and enclosing marks (rule 3).
+    """``text`` without its marks and format characters (rule 3).
 
-    It reads the category of each DISTINCT character, not of each character,
-    so a 1 MB part costs one ``set`` and one regex pass.
+    It strips ``Mn``, ``Me`` and ``Cf``, but keeps a ``Cf`` character that is
+    also a break space. It reads the category of each DISTINCT character,
+    not of each character, so a 1 MB part costs one ``set`` and one regex
+    pass.
     """
-    marks = [c for c in set(text) if unicodedata.category(c) in _MARK_CATEGORIES]
+    marks = [
+        c for c in set(text)
+        if unicodedata.category(c) in _MARK_CATEGORIES
+        and ord(c) not in _KEPT_FORMAT_CHARS
+    ]
     if not marks:
         return text
     return re.sub("[" + _class_ranges(sorted(map(ord, marks))) + "]", "", text)
+
+
+def _wrap_line(line: str, col: int) -> tuple[str, int]:
+    """One ``<pre>`` line with no line end, wrapped from column ``col``."""
+    if "\t" not in line:
+        if col + len(line) <= PRE_WRAP_COLUMNS:
+            return line, col + len(line)
+        first = PRE_WRAP_COLUMNS - col
+        pieces = [line[:first]]
+        pieces.extend(
+            line[i:i + PRE_WRAP_COLUMNS]
+            for i in range(first, len(line), PRE_WRAP_COLUMNS)
+        )
+        return "\n".join(pieces), len(pieces[-1])
+    out: list[str] = []
+    for ch in line:
+        width_after = (col // 8 + 1) * 8 if ch == "\t" else col + 1
+        if width_after > PRE_WRAP_COLUMNS and col > 0:
+            out.append("\n")
+            col = 0
+            width_after = 8 if ch == "\t" else 1
+        out.append(ch)
+        col = width_after
+    return "".join(out), col
+
+
+def wrap_pre_lines(clean: str) -> str:
+    """Break every ``<pre>`` line of SANITIZED HTML at
+    :data:`PRE_WRAP_COLUMNS` (rule 5).
+
+    MuPDF does not wrap inside ``<pre>``, and it lays out a long line as the
+    square of its length. So the renderer wraps it first. An inline tag
+    keeps the column, and any other tag, a line feed or a carriage return
+    starts it again. It runs after :func:`check_word_lengths`, so the run
+    checks read the text as written.
+    """
+    out: list[str] = []
+    pre = 0
+    col = 0
+    for part in _TAG_SPLIT.split(clean):
+        if not part:
+            continue
+        if part.startswith("<"):
+            if part == "<pre>":
+                pre += 1
+            elif part == "</pre>":
+                pre = max(0, pre - 1)
+            if not _INLINE_TAG.fullmatch(part):
+                col = 0
+            out.append(part)
+            continue
+        if not pre:
+            out.append(part)
+            continue
+        text = _html.unescape(part)
+        lines = _PRE_LINE_END.split(text)
+        ends = _PRE_LINE_END.findall(text)
+        wrapped: list[str] = []
+        for i, line in enumerate(lines):
+            if i:
+                wrapped.append(ends[i - 1])
+                col = 0
+            line_out, col = _wrap_line(line, col)
+            wrapped.append(line_out)
+        out.append(_html.escape("".join(wrapped), quote=False))
+    return "".join(out)
+
+
+_PRE_LINE_END = re.compile(r"\r\n|\r|\n")
 
 
 class PdfRenderError(ValueError):
@@ -450,13 +535,7 @@ def check_repeated_runs(joined: str) -> None:
         if len(part) <= MAX_WORD_CHARS:
             continue
         text = _html.unescape(part)
-        if pre:
-            if any(len(line) > MAX_WORD_CHARS for line in _PRE_LINE_END.split(text)):
-                raise PdfRenderError(
-                    f"A code block has a line longer than {MAX_WORD_CHARS} "
-                    "characters, which cannot be laid out on a page."
-                )
-        else:
+        if not pre:
             text = _HTML_SPACE.sub(" ", text)
         text = _strip_marks(text)
         if _REPEATED.search(text) or _SPACE_RUN.search(text):
@@ -506,6 +585,7 @@ def _layout(source: str) -> bytes:
     """Sanitize, check the bounds, then lay out. The size check is the caller's."""
     clean = sanitize_html(source)
     check_word_lengths(clean)
+    clean = wrap_pre_lines(clean)
     import fitz  # pymupdf, a gateway dependency since the résumé parser
 
     try:
@@ -834,6 +914,7 @@ __all__ = [
     "MAX_SOURCE_BYTES",
     "MAX_WORD_CHARS",
     "ORG_WAIT_S",
+    "PRE_WRAP_COLUMNS",
     "RENDER_TIMEOUT_S",
     "SOURCE_KINDS",
     "PdfRenderError",
@@ -847,6 +928,7 @@ __all__ = [
     "render_pdf",
     "sanitize_html",
     "source_to_pdf",
+    "wrap_pre_lines",
 ]
 
 

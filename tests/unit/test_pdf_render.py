@@ -924,31 +924,27 @@ def test_f2_a_cancelled_waiter_leaves_no_claim(monkeypatch: pytest.MonkeyPatch) 
     assert not pdf_render._members_rendering
 
 
-# -- Follow-up, second review: marks, form feeds and long <pre> lines --------
+# -- Follow-up, second review: marks, form feeds and format characters -----
 
 
 EM_SPACE = chr(0x2003)
 ACUTE = chr(0x0301)  # a combining mark, category Mn
 
-#: Each case passed the first follow-up and was slow to lay out, measured on
+#: Each case passed an earlier check and was slow to lay out, measured on
 #: pymupdf 1.28.0 on the dev box: the mark pair more than 45 s at 300,000
-#: characters, the form feeds more than 45 s, the tab pair 29.5 s and the
-#: space pair 10.6 s.
+#: characters, the form feeds more than 45 s, and U+2003 beside U+200E (LRM)
+#: or U+2066 (LRI) 29.9 s and 31.1 s at 120,000 characters.
 SECOND_ROUND = {
     "space-and-mark": "<p>" + (EM_SPACE + ACUTE) * 40_000 + "</p>",
     "space-and-mark-300k": "<p>" + (EM_SPACE + ACUTE) * 150_000 + "</p>",
     "form-feeds": "<p>" + chr(0x0C) * 300_000 + "</p>",
-    "pre-tab-letter": "<pre>" + (chr(9) + "a") * 150_000 + "</pre>",
-    "pre-letter-space": "<pre>" + "x " * 150_000 + "</pre>",
-    "pre-long-line-in-markdown": None,
+    "space-and-lrm": "<p>" + (EM_SPACE + chr(0x200E)) * 60_000 + "</p>",
+    "space-and-lri": "<p>" + (EM_SPACE + chr(0x2066)) * 60_000 + "</p>",
 }
 
 
 def _second_round(name: str) -> str:
-    body = SECOND_ROUND[name]
-    if body is None:  # a fenced code block with one 2,001-character line
-        body = markdown_to_html("```\n" + "ab " * 667 + "\n```\n")
-    return body
+    return SECOND_ROUND[name]
 
 
 @pytest.mark.parametrize("name", list(SECOND_ROUND))
@@ -962,7 +958,7 @@ def test_f3_the_second_round_bypasses_are_refused(name: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "name", ["space-and-mark-300k", "form-feeds", "pre-tab-letter"]
+    "name", ["space-and-mark-300k", "form-feeds", "space-and-lrm", "space-and-lri"]
 )
 def test_f3_the_second_round_bypasses_are_a_fast_422_through_render_pdf(
     name: str,
@@ -974,15 +970,119 @@ def test_f3_the_second_round_bypasses_are_a_fast_422_through_render_pdf(
     assert time.monotonic() - start < 5.0
 
 
-def test_f3_a_pre_line_limit_is_exact_and_every_line_end_counts() -> None:
-    line = "ab " * 666 + "ab"  # 2,000 characters
-    assert len(line) == MAX_WORD_CHARS
+# -- Follow-up, third review: a long <pre> line wraps, it is not refused ------
+
+
+def test_f4_wrap_pre_lines_breaks_at_the_column() -> None:
+    from gateway.pdf_render import PRE_WRAP_COLUMNS, wrap_pre_lines
+
+    width = PRE_WRAP_COLUMNS
+    out = wrap_pre_lines("<pre>" + "x" * (width * 2 + 5) + "</pre>")
+    assert out == "<pre>" + "x" * width + "\n" + "x" * width + "\n" + "xxxxx</pre>"
+    # A line that fits is not touched, and each line end starts a new line.
     for end in ("\n", "\r\n", "\r"):
-        check_word_lengths(sanitize_html("<pre>" + (line + end) * 50 + "</pre>"))
-    with pytest.raises(PdfRenderError):
-        check_word_lengths(sanitize_html("<pre>" + line + "x</pre>"))
-    # A <br> inside a <pre> ends the line too.
-    check_word_lengths(sanitize_html("<pre>" + line + "<br>" + line + "</pre>"))
+        fits = "<pre>" + ("y" * width + end) * 3 + "</pre>"
+        assert wrap_pre_lines(fits) == fits
+    # A tab moves to the next multiple of 8.
+    tabbed = wrap_pre_lines("<pre>" + (chr(9) + "a") * 20 + "</pre>")
+    lines = tabbed[len("<pre>"):-len("</pre>")].split("\n")
+    assert all(len(x.expandtabs(8)) <= width for x in lines), lines
+    # An inline tag keeps the column, and a <br> starts it again.
+    assert wrap_pre_lines(
+        "<pre>" + "a" * (width - 1) + "<b>bb</b></pre>"
+    ) == "<pre>" + "a" * (width - 1) + "<b>b\nb</b></pre>"
+    assert wrap_pre_lines(
+        "<pre>" + "a" * (width - 1) + "<br>bb</pre>"
+    ) == "<pre>" + "a" * (width - 1) + "<br>bb</pre>"
+    # An entity is never cut in half.
+    assert wrap_pre_lines(
+        "<pre>" + "a" * (width - 1) + "&lt;&amp;</pre>"
+    ) == "<pre>" + "a" * (width - 1) + "&lt;\n&amp;</pre>"
+    # Text outside <pre> is not touched.
+    prose = "<p>" + "word " * 100 + "</p>"
+    assert wrap_pre_lines(prose) == prose
+
+
+def _one_line_json(rows: int) -> str:
+    import json
+
+    return json.dumps([
+        {"id": i, "title": f"Task number {i}", "owner": "asha@x.test", "notes": "x" * 40}
+        for i in range(rows)
+    ])
+
+
+def _squash(text: str) -> str:
+    return "".join(text.split())
+
+
+def test_f4_a_one_line_json_dump_renders_whole_and_wrapped() -> None:
+    """Round 2 refused this 4 KB fenced dump with 422. It renders now, with
+    every character, and no line is wider than the page."""
+    from gateway.pdf_render import PRE_WRAP_COLUMNS
+
+    dump = _one_line_json(40)
+    assert 4000 < len(dump) < 5000
+    pdf = asyncio.run(
+        render_pdf("markdown", "```json\n" + dump + "\n```\n", member=MEMBER, org=ORG)
+    )
+    text = _text(pdf)
+    assert _squash(dump) in _squash(text)
+    assert max(len(line) for line in text.split("\n")) <= PRE_WRAP_COLUMNS
+
+
+def test_f4_a_900_kb_one_line_json_dump_renders_in_time() -> None:
+    dump = _one_line_json(7500)
+    assert 850_000 < len(dump) < 950_000
+    start = time.monotonic()
+    pdf = asyncio.run(
+        render_pdf("markdown", "```json\n" + dump + "\n```\n", member=MEMBER, org=ORG)
+    )
+    assert time.monotonic() - start < pdf_render.RENDER_TIMEOUT_S
+    assert _squash(dump) in _squash(_text(pdf))
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<pre>" + "\n".join(("abcdefgh " * 2223)[:20_000] for _ in range(49)) + "</pre>",
+        "<pre>" + (chr(9) + "a") * 150_000 + "</pre>",
+        "<pre>" + "x " * 150_000 + "</pre>",
+    ],
+    ids=["1mb-of-20k-lines", "tab-letter", "letter-space"],
+)
+def test_f4_long_pre_lines_never_reach_the_timeout(body: str) -> None:
+    """Before the wrap: 38.3 s, 29.5 s and 10.6 s of layout. Each one is
+    now a PDF, or a 413 at the page cap, well inside the timeout."""
+    assert len(body.encode()) <= MAX_SOURCE_BYTES
+    start = time.monotonic()
+    try:
+        pdf = asyncio.run(render_pdf("html", body, member=MEMBER, org=ORG))
+        assert pdf.startswith(b"%PDF")
+    except PdfRenderError as exc:
+        assert exc.status == 413, exc
+    assert time.monotonic() - start < 8.0
+
+
+def test_f4_zwj_and_zwnj_in_emoji_and_indic_text_still_render() -> None:
+    """U+200D and U+200C are Cf, so the run checks strip them. Real text
+    that uses them never makes a long run, so it passes and renders."""
+    zwj, zwnj = chr(0x200D), chr(0x200C)
+    family = chr(0x1F468) + zwj + chr(0x1F469) + zwj + chr(0x1F467)
+    hindi = "क्" + zwj + "ष और क्" + zwnj + "ष"
+    malayalam = "ന്" + zwj + " അവന്" + zwj
+    body = "<p>" + (family + " family, " + hindi + " " + malayalam + " ") * 400 + "</p>"
+    check_word_lengths(sanitize_html(body))
+    pdf = asyncio.run(render_pdf("html", body, member=MEMBER, org=ORG))
+    assert pdf.startswith(b"%PDF")
+
+
+def test_f4_a_format_character_that_is_a_break_space_still_counts() -> None:
+    """U+2060 and U+FEFF are Cf AND break spaces. Stripping them would let a
+    run of them through, and each such run took about 37 s."""
+    for cp in (0x00AD, 0x200B, 0x2060, 0xFEFF):
+        with pytest.raises(PdfRenderError):
+            check_word_lengths(sanitize_html("<p>" + chr(cp) * 2001 + "</p>"))
 
 
 def test_f3_carriage_returns_outside_pre_still_collapse() -> None:
