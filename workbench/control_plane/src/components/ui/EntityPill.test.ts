@@ -92,6 +92,15 @@ describe("a pill that does not link", () => {
     expect(isInAppPath(TASK)).toBe(true);
   });
 
+  it("refuses a path that a URL parser reads as another site", () => {
+    // S9 fix round 1: each passed the prefix test, and each opens evil.com.
+    for (const href of ["/\\evil.com", "/\t/evil.com", "/\n/evil.com", "/\\/evil.com", "/api"]) {
+      expect(isInAppPath(href)).toBe(false);
+    }
+    expect(isInAppPath("/projects?project=abc")).toBe(true);
+    expect(isInAppPath("/projects/api/x")).toBe(true);
+  });
+
   it("truncates a long name, and the tooltip holds all of it", () => {
     const long = "A".repeat(120);
     const html = render({ kind: "project", label: long });

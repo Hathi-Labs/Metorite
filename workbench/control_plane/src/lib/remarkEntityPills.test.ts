@@ -138,6 +138,25 @@ describe("spaceBeforeBold", () => {
     expect(spaceBeforeBold("version 3.**Beta**")).toBe("version 3.**Beta**");
   });
 
+  // S9 fix round 1: three ways the first version damaged text.
+  it("counts a bold that spans two lines of one paragraph", () => {
+    expect(spaceBeforeBold("Intro **spans\nline.**Next")).toBe("Intro **spans\nline.** Next");
+    // A blank line starts the count again.
+    expect(spaceBeforeBold("An **open\n\ntoday.**Early**")).toBe("An **open\n\ntoday. **Early**");
+  });
+
+  it("leaves a line indented four spaces alone", () => {
+    expect(spaceBeforeBold("    x = obj.**kwargs")).toBe("    x = obj.**kwargs");
+    expect(spaceBeforeBold("\tx = obj.**kwargs")).toBe("\tx = obj.**kwargs");
+  });
+
+  it("closes a fence only on a fence at least as long", () => {
+    const text = "````\n```\nobj.**kwargs\n````\ntoday.**Early**";
+    expect(spaceBeforeBold(text)).toBe("````\n```\nobj.**kwargs\n````\ntoday. **Early**");
+    const tilde = "~~~\n```\na.**b\n~~~";
+    expect(spaceBeforeBold(tilde)).toBe(tilde);
+  });
+
   it("leaves text with a space already, or with no bold", () => {
     expect(spaceBeforeBold("today. **Early**")).toBe("today. **Early**");
     expect(spaceBeforeBold("today.Early")).toBe("today.Early");

@@ -182,32 +182,56 @@ export default function remarkEntityPills() {
  *
  * Only after `.`, `!` or `?` that follows a letter, and only when a letter
  * follows the `**`. An opening `**` gets the space before it. A closing one
- * (`**Done.**Next`) gets it after, so the bold still closes. Fenced code,
- * inline code and URLs are left alone, and a number such as `3.**` is not
- * touched because a digit is not a letter.
+ * (`**Done.**Next`) gets it after, so the bold still closes. A number such
+ * as `3.**` is not touched, because a digit is not a letter.
+ *
+ * Three rules keep it from damaging text (S9 fix round 1):
+ *
+ * - **Open or closed is counted per paragraph**, across its lines, and a
+ *   blank line starts the count again. A bold that opens on one line and
+ *   closes on the next is still one bold.
+ * - **A line indented four spaces or more is left alone**, because it can be
+ *   code. Fenced code and inline code are left alone too, and so is a URL.
+ * - **A fence closes only on a fence of the same character that is at least
+ *   as long.** A ``` line inside a ```` block does not end the block.
  */
 export function spaceBeforeBold(content: string): string {
   if (!content.includes("**")) return content;
   const lines = content.split("\n");
-  let fence: string | null = null;
+  let fence: { char: string; len: number } | null = null;
+  const state = { bolds: 0 };
   return lines
     .map((line) => {
-      const open = line.match(/^\s*(`{3,}|~{3,})/);
-      if (open) {
-        if (fence === null) fence = open[1][0];
-        else if (open[1][0] === fence) fence = null;
+      const mark = line.match(/^ {0,3}(`{3,}|~{3,})/);
+      if (fence !== null) {
+        if (
+          mark &&
+          mark[1][0] === fence.char &&
+          mark[1].length >= fence.len &&
+          line.slice(line.indexOf(mark[1]) + mark[1].length).trim() === ""
+        ) {
+          fence = null;
+        }
         return line;
       }
-      if (fence !== null) return line;
-      return fixLine(line);
+      if (mark) {
+        fence = { char: mark[1][0], len: mark[1].length };
+        state.bolds = 0;
+        return line;
+      }
+      if (line.trim() === "") {
+        state.bolds = 0;
+        return line;
+      }
+      if (/^(?: {4}|\t)/.test(line)) return line;
+      return fixLine(line, state);
     })
     .join("\n");
 }
 
-function fixLine(line: string): string {
+function fixLine(line: string, state: { bolds: number }): string {
   // Split out inline code spans; only the parts between them are touched.
   const parts = line.split(/(`+[^`]*`+)/);
-  let bolds = 0;
   return parts
     .map((part, i) => {
       if (i % 2 === 1) return part;
@@ -227,11 +251,11 @@ function fixLine(line: string): string {
             /\p{L}/u.test(after) &&
             !isUrl
           ) {
-            out += bolds % 2 === 0 ? " **" : "** ";
+            out += state.bolds % 2 === 0 ? " **" : "** ";
           } else {
             out += "**";
           }
-          bolds += 1;
+          state.bolds += 1;
           k += 2;
           continue;
         }

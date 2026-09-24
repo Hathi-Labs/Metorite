@@ -76,13 +76,29 @@ const KIND_WORD: Record<EntityKind, string> = {
   unknown: "",
 };
 
+/** A base no real page has, so the check below needs no `window`. */
+const IN_APP_BASE = "https://in-app.invalid";
+
 /**
  * True for a path inside this app: `/projects?task=…`. Never `//host`, which
  * a browser reads as another site, and never `/api/…`, which is a file or a
  * JSON answer and not a page. Exported for its test.
+ *
+ * The prefix test alone is not enough (S9 fix round 1). A URL parser strips a
+ * tab or a newline and reads `\` as `/`, so `/\evil.com` and `/<tab>/evil.com`
+ * both open another site. So the path must also resolve, against a fixed base,
+ * to that same base: the check the browser itself will make, run here first.
  */
 export function isInAppPath(href: string | undefined): boolean {
-  return !!href && href.startsWith("/") && !href.startsWith("//") && !href.startsWith("/api/");
+  if (!href || !href.startsWith("/") || href.startsWith("//")) return false;
+  let url: URL;
+  try {
+    url = new URL(href, IN_APP_BASE);
+  } catch {
+    return false;
+  }
+  if (url.origin !== IN_APP_BASE) return false;
+  return !url.pathname.startsWith("/api/") && url.pathname !== "/api";
 }
 
 /**

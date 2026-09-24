@@ -21,7 +21,14 @@ import EntityPill from "@/components/ui/EntityPill";
 import { EMPTY_INDEX, resolveEntity, type EntityIndex } from "@/lib/entityIndex";
 import { statusAccent } from "@/lib/statusAccent";
 
-export const EntityIndexContext = createContext<EntityIndex>(EMPTY_INDEX);
+/**
+ * The Projects turn's index, or null. Null is the default and means "no
+ * pills here": `MessageBubble` provides an index only for a Projects turn
+ * (S9 fix round 1), so a generative-UI node from any other agent, or one in
+ * the side panel, keeps its «text» and its mailto links.
+ */
+export const EntityIndexContext = createContext<EntityIndex | null>(null);
+
 
 export default function ChatEntityPill({
   text,
@@ -34,7 +41,7 @@ export default function ChatEntityPill({
   index?: EntityIndex;
 }) {
   const fromContext = useContext(EntityIndexContext);
-  const hit = resolveEntity(index ?? fromContext, text, number);
+  const hit = resolveEntity(index ?? fromContext ?? EMPTY_INDEX, text, number);
   switch (hit.kind) {
     case "task":
       return (

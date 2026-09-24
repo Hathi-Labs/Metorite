@@ -81,8 +81,12 @@ interface MarkdownMessageProps {
   /** Optional file path context for resolving relative image src in markdown (e.g. the .md file path). */
   mdFilePath?: string;
   /** Draw the «names» the tools printed as pills, resolved against
-   *  `toolEvents` (WS-27bm S9). The chat turns it on. A document does not. */
+   *  `toolEvents` (WS-27bm S9). The chat turns it on for the Projects
+   *  assistant only. A document does not. */
   entityPills?: boolean;
+  /** The index the caller already built (`MessageBubble`). Absent: built
+   *  here from `toolEvents`, so the index is made once either way. */
+  entityIndex?: EntityIndex;
 }
 
 // ─── Media path resolver (shared with ArtifactViewerModal) ────────────────────
@@ -529,11 +533,12 @@ export default function MarkdownMessage({
   sessionId,
   mdFilePath,
   entityPills = false,
+  entityIndex: givenIndex,
 }: MarkdownMessageProps) {
   // The names this message's tools printed, for the pills (WS-27bm S9).
   const entityIndex = useMemo(
-    () => (entityPills ? buildEntityIndex(toolEvents) : undefined),
-    [entityPills, toolEvents],
+    () => (entityPills ? givenIndex ?? buildEntityIndex(toolEvents) : undefined),
+    [entityPills, givenIndex, toolEvents],
   );
   // ── Segment-native rendering (Phase 3c — VS Code parity) ────────────────────
   // Every assistant TEXT segment is answer BODY, rendered inline in
