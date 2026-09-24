@@ -383,6 +383,66 @@ export interface CapacityReport {
   rows: CapacityRow[];
 }
 
+/**
+ * WS-27bm S7c — where the plan interferes with itself.
+ *
+ * ⚠️ **The four HR kinds are ABSENT for a caller without
+ * `admin:members:read`**, from `rows`, from `by_kind` and from `kinds`. A
+ * reader tests `hr_visible`, never a zero.
+ *
+ * ⚠️ **The rows are the server's decision.** `lib/conflicts.ts` chooses words
+ * and hues, and never decides whether a pair is in conflict.
+ */
+export type ConflictKind =
+  | "dependency_order"
+  | "blocker_late"
+  | "parallel_person"
+  | "overcommitted"
+  | "absent_on_due"
+  | "over_concurrency"
+  | "leaving";
+
+export interface ConflictRow {
+  kind: ConflictKind;
+  severity: "high" | "medium";
+  task_ids: string[];
+  people: { email: string; name: string | null }[];
+  /** One sentence from the server. It carries task titles. */
+  sentence: string;
+  /** The day the row is about, and the day the server sorts by. */
+  due_on: string | null;
+  /** `parallel_person` only: the busiest day, and how many tasks it holds. */
+  day?: string;
+  tasks_total?: number;
+  /** `overcommitted` only. */
+  shortfall_hours?: number;
+  needed_hours?: number;
+  available_hours?: number;
+}
+
+export interface ConflictsReport {
+  project_id: string | null;
+  scope: "portfolio" | "node";
+  include_subtree: boolean;
+  horizon_days: number;
+  hr_visible: boolean;
+  /** Bounds the dated kinds. The kinds in `ignored_by` read no window. */
+  window: {
+    starts_on: string;
+    ends_on: string;
+    days: number;
+    ignored_by: ConflictKind[];
+  };
+  partial: boolean;
+  /** The kinds THIS caller may see. */
+  kinds: ConflictKind[];
+  /** Every row, before the cap. */
+  total: number;
+  by_kind: Partial<Record<ConflictKind, number>>;
+  truncated: boolean;
+  rows: ConflictRow[];
+}
+
 export interface StuckReport {
   project_id: string | null;
   scope: "portfolio" | "node";
@@ -609,6 +669,15 @@ export interface RenderedReportBody {
       overdue: { project_id: string; name: string; overdue: number }[];
       overdue_total: number;
     };
+    /** WS-27bm S7c. Opt-in: present only when the report asked for it. */
+    conflicts?: {
+      rows: ConflictRow[];
+      total: number;
+      by_kind: ConflictsReport["by_kind"];
+      hr_visible: boolean;
+      horizon_days: number;
+      window: ConflictsReport["window"];
+    };
   };
 }
 
@@ -695,7 +764,7 @@ export interface TaskRow {
   subtasks?: { done: number; total: number };
   blocked_by_count?: number;
   /**
-   * D76 — minutes every member has timed on this task (their overlay
+   * D77 — minutes every member has timed on this task (their overlay
    * actuals, summed). Only the single read (`GET /tasks/{id}`) carries it;
    * the list endpoint does not, so a board row reads `undefined`.
    */
@@ -1070,6 +1139,13 @@ export const projectsApi = {
     const query = horizon ? (scope ? `${scope}&${horizon}` : `?${horizon}`) : scope;
     return call<CapacityReport>(`analytics/capacity${query}`);
   },
+  /** WS-27bm S7c. The server's default horizon (14 days) unless one is named. */
+  conflicts: (nodeId?: string, horizonDays?: number) => {
+    const scope = scopeQuery(nodeId);
+    const horizon = horizonDays ? `horizon_days=${horizonDays}` : "";
+    const query = horizon ? (scope ? `${scope}&${horizon}` : `?${horizon}`) : scope;
+    return call<ConflictsReport>(`analytics/conflicts${query}`);
+  },
 
   /** §9.12.8 — saved report definitions, and the render of one. */
   reports: () => call<{ reports: ReportRow[] }>("reports"),
@@ -1394,6 +1470,15 @@ export const projectsApi = {
     call<import("./assignees").PickerResponse>(
       `assignees?q=${encodeURIComponent(q)}${due ? `&due=${due}` : ""}`
     ),
+
+  /**
+   * "Suggested" in the task panel's picker (WS-27bm S7b, projects_ai_chat.md
+   * §13.4). At most three people ranked FOR THIS TASK by the server. Without
+   * `admin:members:read` the answer says `hr_visible: false` and carries no
+   * `candidates` key, and the picker then shows no heading.
+   */
+  taskCandidates: (taskId: string) =>
+    call<import("./candidates").CandidatesResponse>(`tasks/${taskId}/candidates`),
 
   createTask: (payload: Record<string, unknown>) =>
     call<TaskRow>("tasks", { method: "POST", body: JSON.stringify(payload) }),

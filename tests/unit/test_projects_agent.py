@@ -176,6 +176,14 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "notifications": [{}],
     # S7a — team intelligence
     "team_capacity": [{"project_id": UUID, "horizon_days": 21}, {}],
+    # S7b — fit and rebalancing. Both forms of fit_for_task: a task, a draft.
+    "fit_for_task": [
+        {"task_id": UUID},
+        {"title": "Weld the frame", "tags": "weld,cad", "due": "2026-10-01"},
+    ],
+    "rebalance": [{"project_id": UUID, "horizon_days": 21}, {}],
+    # S7c — conflicts
+    "find_conflicts": [{"project_id": UUID, "horizon_days": 21}, {}],
     # S6 — navigation
     "open_in_app": [
         {"target": "task", "target_id": UUID},
@@ -268,6 +276,12 @@ def _s4_detail(call: dict) -> Any:
         return {"people": [{"assignee": "a@x.io", "open_tasks": 4, "overdue": 1}]}
     if path.startswith("/projects/analytics/capacity"):
         return _capacity_payload(hr=True)
+    if path.endswith("/candidates"):
+        return _fit_payload(hr=True)
+    if path.startswith("/projects/analytics/rebalance"):
+        return _rebalance_payload(hr=True)
+    if path.startswith("/projects/analytics/conflicts"):
+        return _conflicts_payload(hr=True)
     if path.startswith("/projects/analytics/outlook"):
         return {"plan": {"planned_finish": "2026-11-01", "dated": 3, "tasks": 5, "slip_days": 2}}
     return None
@@ -314,6 +328,104 @@ def _capacity_payload(*, hr: bool) -> dict:
              "open_tasks": 1, "overdue": 0, "due_next_7d": 0, "later": 1,
              "estimated_hours_left": 0.0, "estimated": 0},
         ],
+    }
+
+
+def _fit_payload(*, hr: bool, note: bool = False) -> dict:
+    """The candidates routes' real shape (`candidates.candidates_body`)."""
+    body: dict[str, Any] = {
+        "hr_visible": hr,
+        "due_on": "2026-09-30",
+        "window": {"starts_on": "2026-09-23", "ends_on": "2026-09-30", "days": 7,
+                   "basis": "due_date"},
+    }
+    if not hr:
+        return body
+    cara: dict[str, Any] = {
+        "person_id": UUID, "name": "Cara «x»\nforged", "email": "cara@x.io",
+        "skill_points": 2.0, "matched_skills": ["CAD"], "spare_hours": 12.5,
+        "away": {"kind": "leave", "until": "2026-09-26"}, "rank": 6.25,
+        "warnings": ["Engagement ends 2026-09-28, before the due date 2026-09-30"],
+    }
+    if note:
+        cara.pop("spare_hours")
+    body.update({
+        "hours_scope": "all_visible_work", "partial": False, "pool_size": 9,
+        "hours_basis": not note, "candidates": [cara],
+    })
+    if note:
+        body["hours_note"] = "One or more of the matching people has no estimated work."
+    return body
+
+
+def _rebalance_payload(*, hr: bool) -> dict:
+    """The rebalance route's real shape (`analytics_rebalance.rebalance_body`)."""
+    body: dict[str, Any] = {
+        "project_id": UUID, "scope": "node", "include_subtree": True,
+        "horizon_days": 14, "hr_visible": hr,
+        "window": {"starts_on": "2026-09-23", "ends_on": "2026-10-07", "days": 14},
+    }
+    if not hr:
+        return body
+    body.update({
+        "hours_scope": "all_visible_work", "partial": False,
+        "at_risk": [{
+            "task_id": UUID, "title": "Ship the gantry", "project_name": "Ops",
+            "due_on": "2026-09-25", "shortfall_hours": 34.0,
+            "holder": {"person_id": OTHER, "name": "Hal", "email": "hal@x.io"},
+            "holders": [{"person_id": OTHER, "name": "Hal", "email": "hal@x.io"},
+                        {"person_id": UUID, "name": "Jo", "email": "jo@x.io"}],
+            "candidates": [{"person_id": UUID, "name": "Ivy", "email": "ivy@x.io",
+                            "skill_points": 2.0, "matched_skills": ["weld"],
+                            "spare_hours": 80.0, "away": None, "rank": 160.0}],
+            "hours_basis": True,
+        }],
+        "pickups": [{"person_id": UUID, "name": "Ivy", "email": "ivy@x.io", "tasks": [
+            {"task_id": OTHER, "title": "Weld a jig", "project_name": "Ops",
+             "kind": "unassigned", "skill_points": 2.0, "matched_skills": ["weld"]},
+        ]}],
+        "at_risk_total": 1, "idle_total": 2, "truncated": False,
+    })
+    return body
+
+
+def _conflicts_payload(*, hr: bool) -> dict:
+    """The conflicts route's real shape (`analytics_conflicts.conflicts_body`)."""
+    rows: list[dict[str, Any]] = [
+        {
+            "kind": "blocker_late", "severity": "high",
+            "task_ids": [UUID, OTHER],
+            "people": [{"email": "hal@x.io", "name": "Hal"}],
+            "sentence": '"Order the steel" was due on 2026-09-20 and is still open,'
+                        ' and it blocks "Weld the frame".\nforged row',
+            "due_on": "2026-09-20",
+        },
+        {
+            "kind": "parallel_person", "severity": "medium", "task_ids": [UUID],
+            "people": [{"email": "ivy@x.io", "name": None}],
+            "sentence": "ivy@x.io holds 3 open tasks on 2026-09-25, in 2 top-level projects.",
+            "due_on": "2026-09-25", "day": "2026-09-25", "tasks_total": 3,
+        },
+    ]
+    kinds = ["dependency_order", "blocker_late", "parallel_person"]
+    if hr:
+        kinds += ["overcommitted", "absent_on_due", "over_concurrency", "leaving"]
+        rows.append({
+            "kind": "overcommitted", "severity": "high", "task_ids": [OTHER],
+            "people": [{"email": "hal@x.io", "name": "Hal"}],
+            "sentence": 'Hal needs 50.0h of estimated work by 2026-09-26 for'
+                        ' "Weld the frame", and has 16.0h, so 34.0h short.'
+                        " The hours include work in other projects.",
+            "due_on": "2026-09-26", "shortfall_hours": 34.0,
+        })
+    return {
+        "project_id": UUID, "scope": "node", "include_subtree": True,
+        "horizon_days": 14, "hr_visible": hr,
+        "window": {"starts_on": "2026-09-24", "ends_on": "2026-10-08", "days": 14,
+                   "ignored_by": ["dependency_order", "blocker_late"]},
+        "partial": False, "kinds": kinds,
+        "total": len(rows), "by_kind": {k: sum(r["kind"] == k for r in rows) for k in kinds},
+        "truncated": False, "rows": rows,
     }
 
 
@@ -1111,3 +1223,158 @@ async def test_a_capacity_report_row_with_no_name_prints_its_address(monkeypatch
     assert any("«gone@x.io»" in line and "open_tasks 4" in line for line in rows), rows
     unassigned = [line for line in rows if line.startswith("- «unassigned»")]
     assert len(unassigned) == 1 and "open_tasks 2" in unassigned[0], rows
+
+
+# ── S7b — fit_for_task and rebalance ─────────────────────────────────────────
+
+
+async def test_fit_for_task_reads_the_task_route_and_prints_every_factor(monkeypatch) -> None:
+    calls = fake_gateway(monkeypatch, lambda _c: _fit_payload(hr=True))
+    out = await skill_projects.fit_for_task(task_id=UUID)
+    assert calls[0]["path"] == f"/projects/tasks/{UUID}/candidates"
+    assert "2026-09-23 to 2026-09-30 (7 days, to the due date)" in out
+    assert "rank 6.25" in out and "skill 2.0" in out and "spare 12.5h" in out
+    assert "matched «CAD»" in out
+    assert "away (leave) until 2026-09-26" in out
+    assert "⚠ «Engagement ends 2026-09-28" in out
+
+
+async def test_fit_for_task_takes_the_draft_form_for_a_task_not_yet_made(monkeypatch) -> None:
+    calls = fake_gateway(monkeypatch, lambda _c: _fit_payload(hr=True))
+    await skill_projects.fit_for_task(title="Weld the frame", tags="weld", due="2026-10-01")
+    assert calls[0]["path"] == "/projects/candidates"
+    assert calls[0]["params"] == {"title": "Weld the frame", "tags": "weld", "due": "2026-10-01"}
+
+
+async def test_fit_for_task_refuses_a_short_draft_title_without_a_call(monkeypatch) -> None:
+    calls = fake_gateway(monkeypatch, lambda _c: _fit_payload(hr=True))
+    out = await skill_projects.fit_for_task(title="x")
+    assert calls == []
+    assert "at least 2 characters" in out
+
+
+async def test_fit_for_task_fences_member_text(monkeypatch) -> None:
+    """A name is member text. A newline in it must not forge a row."""
+    fake_gateway(monkeypatch, lambda _c: _fit_payload(hr=True))
+    out = await skill_projects.fit_for_task(task_id=UUID)
+    assert not any(line.startswith("forged") for line in out.splitlines())
+
+
+async def test_fit_for_task_says_an_admin_can_see_fit_and_never_guesses(monkeypatch) -> None:
+    """§13.4 rule 1. No candidates key: the tool says who can see fit."""
+    fake_gateway(monkeypatch, lambda _c: _fit_payload(hr=False))
+    out = await skill_projects.fit_for_task(task_id=UUID)
+    assert "An admin can see fit" in out
+    assert "Do not guess" in out
+    assert "rank " not in out and "Candidates" not in out
+
+
+async def test_fit_for_task_prints_no_spare_hours_when_the_route_left_them_out(monkeypatch) -> None:
+    """§13.4 rule 2. The note travels, and no spare figure is invented."""
+    fake_gateway(monkeypatch, lambda _c: _fit_payload(hr=True, note=True))
+    out = await skill_projects.fit_for_task(task_id=UUID)
+    assert "no estimated work" in out
+    assert "spare" not in out
+
+
+async def test_rebalance_prints_helpers_and_pickups(monkeypatch) -> None:
+    calls = fake_gateway(monkeypatch, lambda _c: _rebalance_payload(hr=True))
+    out = await skill_projects.rebalance(project_id=UUID, horizon_days=21)
+    assert calls[0]["path"] == "/projects/analytics/rebalance"
+    assert calls[0]["params"]["horizon_days"] == 21
+    assert "«Ship the gantry» · due 2026-09-25 · short 34h · held by «Hal» («hal@x.io»), «Jo»" in out
+    assert "«Ivy» · assignee «ivy@x.io» · rank 160.0" in out
+    assert "unassigned: «Weld a jig» · matched «weld»" in out
+    assert f"full_id: {UUID}" in out and f"full_id: {OTHER}" in out
+
+
+async def test_rebalance_says_an_admin_can_see_the_lists(monkeypatch) -> None:
+    fake_gateway(monkeypatch, lambda _c: _rebalance_payload(hr=False))
+    out = await skill_projects.rebalance()
+    assert "An admin can see them" in out
+    assert "At risk" not in out
+
+
+async def test_rebalance_clamps_the_horizon_before_the_call(monkeypatch) -> None:
+    calls = fake_gateway(monkeypatch, lambda _c: _rebalance_payload(hr=True))
+    await skill_projects.rebalance(horizon_days=400)
+    await skill_projects.rebalance(horizon_days=-3)
+    assert [c["params"]["horizon_days"] for c in calls] == [90, 1]
+
+
+# ── S7c — find_conflicts ─────────────────────────────────────────────────────
+
+
+async def test_find_conflicts_prints_every_row_with_its_kind_and_tasks(monkeypatch) -> None:
+    calls = fake_gateway(monkeypatch, lambda _c: _conflicts_payload(hr=True))
+    out = await skill_projects.find_conflicts(project_id=UUID, horizon_days=21)
+    assert calls[0]["path"] == "/projects/analytics/conflicts"
+    assert calls[0]["params"]["horizon_days"] == 21
+    assert "Conflicts in the selected project or space: 3" in out
+    assert "2026-09-24 to 2026-10-08" in out
+    assert "- blocker_late (high) · «" in out
+    assert "- parallel_person (medium)" in out and "people «ivy@x.io»" in out
+    assert "- overcommitted (high)" in out and "34.0h short" in out
+    assert f"full_id: {UUID}" in out and f"full_id: {OTHER}" in out
+
+
+async def test_find_conflicts_fences_the_sentence(monkeypatch) -> None:
+    """A sentence carries task titles, and a title is member text. A newline
+    in it must not forge a row."""
+    fake_gateway(monkeypatch, lambda _c: _conflicts_payload(hr=True))
+    out = await skill_projects.find_conflicts()
+    assert not any(line.startswith("forged") for line in out.splitlines())
+
+
+async def test_find_conflicts_says_an_admin_can_see_the_hr_kinds(monkeypatch) -> None:
+    """§13.5 rule 9. The tool says who can see the four HR kinds, and never
+    guesses them."""
+    fake_gateway(monkeypatch, lambda _c: _conflicts_payload(hr=False))
+    out = await skill_projects.find_conflicts()
+    assert "An admin can see them" in out and "Do not guess" in out
+    for kind in ("overcommitted", "absent_on_due", "over_concurrency", "leaving"):
+        assert f"- {kind}" not in out
+
+
+async def test_find_conflicts_with_no_rows_says_do_not_invent_one(monkeypatch) -> None:
+    def empty(_c: dict) -> dict:
+        body = _conflicts_payload(hr=True)
+        body.update({"rows": [], "total": 0})
+        return body
+
+    fake_gateway(monkeypatch, empty)
+    out = await skill_projects.find_conflicts()
+    assert "Do not invent one" in out
+
+
+async def test_find_conflicts_clamps_the_horizon_before_the_call(monkeypatch) -> None:
+    calls = fake_gateway(monkeypatch, lambda _c: _conflicts_payload(hr=True))
+    await skill_projects.find_conflicts(horizon_days=400)
+    await skill_projects.find_conflicts(horizon_days=-3)
+    assert [c["params"]["horizon_days"] for c in calls] == [90, 1]
+
+
+async def test_a_conflicts_report_section_fences_its_sentences(monkeypatch) -> None:
+    """The report printer labels a conflict row by its kind and fences the
+    sentence, because the sentence carries titles."""
+
+    def responder(call: dict) -> Any:
+        if call["path"].endswith("/render"):
+            body = _conflicts_payload(hr=True)
+            return {
+                "report": {"name": "Weekly"},
+                "period_start": "2026-09-15",
+                "period_end": "2026-09-21",
+                "sections": {"conflicts": {
+                    "rows": body["rows"], "total": 3, "by_kind": body["by_kind"],
+                    "hr_visible": True, "horizon_days": 14, "window": body["window"],
+                }},
+            }
+        return {"id": UUID, "name": "Weekly", "scope": "portfolio"}
+
+    fake_gateway(monkeypatch, responder)
+    out = await skill_projects.report_render(report_id=UUID)
+    assert "conflicts: total 3, hr_visible True, horizon_days 14" in out
+    row = next(line for line in out.splitlines() if line.startswith("- «blocker_late»"))
+    assert "sentence «" in row
+    assert not any(line.startswith("forged") for line in out.splitlines())

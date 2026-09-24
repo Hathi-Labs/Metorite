@@ -37,7 +37,7 @@ old                         new
 ``gtd_reviews``             ``my_tasks_reviews``
 ==========================  =========================
 
-The rest of the task store is not renamed. Migration 216 drops it, and
+The rest of the task store is not renamed. Migration 217 drops it, and
 ``test_gtd_backfill.py`` fences that drop. ⚠️ ``attachments`` is a short,
 generic name. No table, view or column in the ladder held it before, and
 ``pm_task_attachments`` contains it as a suffix, so a test fake must match it
@@ -101,7 +101,7 @@ RENAMED: dict[str, tuple[str, str]] = {
     "user_settings": ("gtd_settings", "51_gtd_settings.sql"),
     "calendar_rollover_log": ("gtd_rollover_log", "78_gtd_calendar_rollover.sql"),
     "calendar_day_state": ("gtd_day_state", "92_gtd_day_state.sql"),
-    # slice 3 — the task-store tables that survive migration 216's drop
+    # slice 3 — the task-store tables that survive migration 217's drop
     "attachments": ("gtd_attachments", "52_gtd_attachments.sql"),
     "my_tasks_horizons": ("gtd_horizons", "48_task_manager_gtd.sql"),
     "my_tasks_reviews": ("gtd_reviews", "48_task_manager_gtd.sql"),

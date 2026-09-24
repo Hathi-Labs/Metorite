@@ -114,7 +114,7 @@ def _parse() -> tuple[dict[str, frozenset[str]], dict[str, frozenset[str]]]:
                     parent = ref.group(1).rsplit(".", 1)[-1]
                     children.setdefault(parent, set()).add(table)
 
-    # A table a later migration drops is not in the graph. Migration 216
+    # A table a later migration drops is not in the graph. Migration 217
     # (WS-39 S8) dropped the `gtd_*` task store, which `task_accounts` used
     # to cascade. Read from comment-stripped text, like everything above.
     dropped: set[str] = set()

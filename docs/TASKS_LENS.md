@@ -181,12 +181,12 @@ table, a view and two functions, and moves nothing.
       ↓
 7. the S8 PR 2 pre-flight                     ← my_tasks_cutover.md §5 S8
       ↓
-8. S8 PR 2 merges. Migration 216 arms the guard and drops the store
+8. S8 PR 2 merges. Migration 217 arms the guard and drops the store
 ```
 
-**Step 7 changed on 2026-09-23.** Migration 216 writes the arm row. Nobody
+**Step 7 changed on 2026-09-23.** Migration 217 writes the arm row. Nobody
 inserts it by hand. Run the pre-flight in `my_tasks_cutover.md` §5 S8 first.
-One unmigrated row makes migration 216 stop the deploy.
+One unmigrated row makes migration 217 stop the deploy.
 
 **Step 6 is not optional and it is why the backfill is re-runnable.** Between
 the move and the flag flip the app is still writing `gtd_items`; those rows

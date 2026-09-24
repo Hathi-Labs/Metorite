@@ -93,20 +93,24 @@ export function buildProjectsAssistantPersona(input: PersonaInput): string {
     );
   }
 
+  // The focus is a HINT, never a boundary (owner direction 2026-09-23,
+  // `lib/chatScope.ts`). The member may ask about anything they can see.
+  const reach =
+    "You can reach every space and project the member can see. If the " +
+    "question names another project or space, find it with projects_tree or " +
+    "find_tasks. If it is general, answer across everything: leave " +
+    "project_id empty for portfolio-wide reads.";
   if (input.node) {
     const level = input.node.level ? ` ${input.node.level}` : " node";
     parts.push(
-      `The member's current scope is the${level} ${data(input.node.name)} ` +
-        `(project_id: ${input.node.id}${input.node.archived ? ", archived" : ""}), ` +
-        `the node they selected last; the chat header names it. ` +
-        `Its name is ${FENCE}. When they say "this space", "this project" or ` +
-        `"here", they mean this node — pass its project_id to the tools.`,
+      `The chat is focused on the${level} ${data(input.node.name)} ` +
+        `(project_id: ${input.node.id}${input.node.archived ? ", archived" : ""}); ` +
+        `the chat header names it. Its name is ${FENCE}. When they say ` +
+        `"this space", "this project" or "here", they mean this node — pass ` +
+        `its project_id to the tools. ${reach}`,
     );
   } else {
-    parts.push(
-      "The member is on the portfolio view with no node selected. Leave " +
-        "project_id empty for portfolio-wide reads.",
-    );
+    parts.push(`The chat is focused on everything the member can see. ${reach}`);
   }
 
   if (input.view) {

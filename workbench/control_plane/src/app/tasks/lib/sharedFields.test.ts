@@ -1,5 +1,5 @@
 /**
- * WS-39 S6f — one set of fields across My Tasks and Projects (D76).
+ * WS-39 S6f — one set of fields across My Tasks and Projects (D77).
  *
  * Spec: `project-docs/specs/my_tasks_cutover.md` §4.10. The owner directive:
  * My Tasks derives every work fact from the Projects field, and keeps its
@@ -7,9 +7,10 @@
  *
  * This file pins the client half of the derivations that are pure:
  *
- *   1. Important is the shared Priority read at High or above, and the
- *      Important switch turns into a Priority write without demoting Urgent;
- *   2. no Focus matrix cell is called "…Priority" — that word is the field;
+ *   1. the member's Important stays theirs (D76): the shared Priority only
+ *      seeds it, and the switch writes the overlay, never the Priority;
+ *   2. the list keeps the shared Priority column beside the member's own
+ *      matrix column, and the cells keep D76's labels;
  *   3. the shared start date tickles a task like my own defer does;
  *   4. the card and the list draw the shared Priority and tags with the
  *      Projects card's own chips.
@@ -25,16 +26,10 @@ import { describe, expect, it } from "vitest";
 
 import { taskMetaChips } from "./cardMeta";
 import { COLUMNS, DEFAULT_VISIBLE } from "./columns";
-import {
-  CELL_META,
-  IMPORTANT_AT,
-  importanceForImportant,
-  isImportant,
-  isUntagged,
-  priorityCell,
-} from "./priority";
+import { splitPatch } from "./lens";
+import { CELL_META, priorityCell, seededImportant } from "./priority";
 import type { MyTask } from "./types";
-import { isTickled, resurfacesAt } from "./utils";
+import { isTickled, localDate, resurfacesAt } from "./utils";
 
 const BASE: MyTask = {
   id: "t",
@@ -46,58 +41,39 @@ const BASE: MyTask = {
   updatedAt: "2026-09-01T00:00:00Z",
 };
 
-describe("Important is the shared Priority (D76)", () => {
-  it("is High or Urgent, and one number with the gateway", () => {
-    expect(IMPORTANT_AT).toBe(2);
-    expect(isImportant({ importance: 3 })).toBe(true);
-    expect(isImportant({ importance: 2 })).toBe(true);
-    expect(isImportant({ importance: 1 })).toBe(false);
-    expect(isImportant({ importance: 0 })).toBe(false);
+describe("the member's Important stays theirs (D76, unchanged by D77)", () => {
+  it("is seeded by High or Highest while unstated, and nothing else", () => {
+    expect(seededImportant({ orgPriority: 3 })).toBe(true);
+    expect(seededImportant({ orgPriority: 2 })).toBe(true);
+    expect(seededImportant({ orgPriority: 1 })).toBe(false);
+    expect(seededImportant({ orgPriority: 3, important: false })).toBe(false);
+    expect(seededImportant({ orgPriority: 3, important: true })).toBe(false);
   });
 
-  it("wins over a stale stored flag whenever the task carries a Priority", () => {
-    expect(isImportant({ importance: 0, important: true })).toBe(false);
-    expect(isImportant({ importance: 3, important: false })).toBe(true);
-    // The demo backend's rows have no Priority field at all.
-    expect(isImportant({ important: true })).toBe(true);
+  it("lets the member's own answer win over the shared Priority", () => {
+    // "Not important to me" sticks on a Highest task: the cell is Low Priority.
+    expect(priorityCell({ ...BASE, orgPriority: 3, important: false })).toBe("low-priority");
+    expect(priorityCell({ ...BASE, orgPriority: 3 })).not.toBe("low-priority");
   });
 
-  it("puts an Urgent task in an important cell — never 'Low value'", () => {
-    // The measured defect: Projects said Urgent, My Tasks said
-    // "Low Priority · Eliminate?".
-    const urgent = { ...BASE, importance: 3 };
-    expect(priorityCell(urgent)).not.toBe("low-priority");
-    expect(isUntagged(urgent)).toBe(false);
-  });
-
-  it("turns the Important switch into a Priority write", () => {
-    expect(importanceForImportant(undefined, true)).toBe(2);
-    expect(importanceForImportant(0, true)).toBe(2);
-    expect(importanceForImportant(1, true)).toBe(2);
-    expect(importanceForImportant(3, false)).toBe(1);
-    expect(importanceForImportant(2, false)).toBe(1);
-  });
-
-  it("never demotes Urgent by switching Important on, and never writes a no-op", () => {
-    expect(importanceForImportant(3, true)).toBeUndefined();
-    expect(importanceForImportant(2, true)).toBeUndefined();
-    expect(importanceForImportant(1, false)).toBeUndefined();
-    expect(importanceForImportant(undefined, false)).toBeUndefined();
+  it("sends the Important switch to the overlay, never to the shared Priority", () => {
+    const split = splitPatch({ important: true });
+    expect(split.personal).toEqual({ important: true });
+    expect(split.task).toEqual({});
   });
 });
 
-describe("no Focus cell borrows the word Priority (D76)", () => {
-  it("labels every cell without it", () => {
-    for (const meta of Object.values(CELL_META)) {
-      expect(meta.label, meta.cell).not.toMatch(/priority/i);
-    }
-    expect(CELL_META["low-priority"].label).toBe("Low value");
+describe("the list shows the shared Priority beside the member's own cell (D77)", () => {
+  it("keeps D76's cell labels", () => {
+    expect(CELL_META["low-priority"].label).toBe("Low Priority");
   });
 
-  it("keeps the Priority column for the shared field and names the matrix Focus", () => {
+  it("names the shared column Priority and the member's cell Your focus", () => {
+    // Two columns under one header would give two answers to one question.
+    // "Your focus" is the name the Projects panel gives the private row (D76).
     const byKey = Object.fromEntries(COLUMNS.map((c) => [c.key, c.label]));
     expect(byKey.priority).toBe("Priority");
-    expect(byKey.focus).toBe("Focus");
+    expect(byKey.focus).toBe("Your focus");
     expect(byKey.tags).toBe("Tags");
     expect(DEFAULT_VISIBLE.priority).toBe(true);
     expect(DEFAULT_VISIBLE.tags).toBe(false);
@@ -106,7 +82,7 @@ describe("no Focus cell borrows the word Priority (D76)", () => {
   });
 });
 
-describe("the shared start date tickles a task (D76)", () => {
+describe("the shared start date tickles a task (D77)", () => {
   const now = new Date(2026, 8, 23, 12).getTime();
 
   it("hides it until the start day, local", () => {
@@ -144,6 +120,35 @@ const PARITY = JSON.parse(
   ),
 ) as { cases: ParityCase[] };
 
+interface ExplicitCase {
+  name: string;
+  at: string;
+  timezone: string;
+  today: string;
+  start_date: string | null;
+  defer_until: string | null;
+  hidden: boolean;
+}
+
+describe("isTickled reads the member's own date (F5, the shared fixture)", () => {
+  const cases = (PARITY as unknown as { explicit_today_cases: ExplicitCase[] })
+    .explicit_today_cases;
+
+  it("reads every case", () => {
+    expect(cases.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it.each(cases.map((c) => [c.name, c] as const))("%s", (_name, c) => {
+    const now = Date.parse(c.at);
+    expect(localDate(now, c.timezone)).toBe(c.today);
+    const item = {
+      startDate: c.start_date ?? undefined,
+      deferUntil: c.defer_until ?? undefined,
+    };
+    expect(isTickled(item, now, c.timezone)).toBe(c.hidden);
+  });
+});
+
 describe("isTickled holds the gateway's rule (the shared fixture)", () => {
   const now = new Date(2026, 8, 23, 12);
   const day = 24 * 60 * 60 * 1000;
@@ -174,16 +179,16 @@ describe("isTickled holds the gateway's rule (the shared fixture)", () => {
   });
 });
 
-describe("the card draws the shared facts with the Projects chips (D76)", () => {
-  it("adds the Priority chip first, and the tags", () => {
-    const chips = taskMetaChips({ ...BASE, importance: 3, tags: ["ops"] });
-    expect(chips[0]).toMatchObject({ key: "importance", label: "Urgent" });
+describe("the card draws the shared facts with the Projects chips (D77)", () => {
+  it("adds the Priority chip first, in D76's words, and the tags", () => {
+    const chips = taskMetaChips({ ...BASE, orgPriority: 3, tags: ["ops"] });
+    expect(chips[0]).toMatchObject({ key: "importance", label: "Highest" });
     expect(chips.some((c) => c.key === "tags:ops")).toBe(true);
   });
 
   it("draws no Priority chip for an unset Priority, but does for Low", () => {
     expect(taskMetaChips(BASE).some((c) => c.key === "importance")).toBe(false);
-    expect(taskMetaChips({ ...BASE, importance: 0 })[0]).toMatchObject({
+    expect(taskMetaChips({ ...BASE, orgPriority: 0 })[0]).toMatchObject({
       key: "importance",
       label: "Low",
     });

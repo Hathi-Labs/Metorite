@@ -95,6 +95,59 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-174 · `--warning` is the same bright yellow in both colour modes, so warning TEXT is unreadable on white · [AGENT]
+- **Check:** `grep -n "\-\-warning:" workbench/control_plane/src/app/globals.css`.
+  Two lines with the same value, one in `:root` and one in `.light`, means
+  this is open.
+- **What happens.** `--warning` is `hsl(47 96% 53%)` in both modes. As a fill
+  or a border on a dark ground it reads well. As TEXT on white it measured
+  **1.57 : 1** on 2026-09-23. WCAG AA asks for 4.5. The dark-mode value
+  measured 11.28 : 1, so only light mode is broken.
+- **Where it bites.** Every `text-warning`. `statusAccent.ts` draws the amber
+  hue's text slot with it, so an amber status reads pale yellow on white. The
+  D76 "suggested" chip met it first and moved its words to
+  `muted-foreground`.
+- **The fix.** Give `.light` a darker `--warning` that passes 4.5 : 1 as text,
+  and keep the bright value for dark mode. Then look at every amber status in
+  light mode, because this is the one look (`globals.css`). Mirror the value
+  in `lib/theme/themes.ts`, which `themes.test.ts` holds to it.
+- **Fence to add:** `src/lib/theme/contrast.ts` should measure `--warning` as
+  text on `--background` in both modes.
+- Added: 2026-09-23, found while building D76. Minted as H-172 and
+  renumbered the same day: #431 took H-172 three minutes before #429
+  merged, and #429 merged second.
+
+### H-173 · The chat tools let the model write Priority 4, and the scale stops at 3 · [AGENT]
+- **Check:** `grep -rn "importance is 0 to 4" apps/skills/skill-projects/`.
+  Any hit means this is open.
+- **What happens.** The Projects scale is 0 Low to 3 Highest
+  (`IMPORTANCE_OPTIONS`, D76). Four places in `skill_projects`
+  (`guarded.py`, `inbox.py`, `forms.py` twice) tell the model the range is
+  0 to 4 and accept a 4. Nothing else refuses it: `pm_tasks.importance` is a
+  bare `SMALLINT` with no CHECK, and `TaskModel.importance` is `int | None`.
+  A 4 then prints as a bare "4" in the table and draws no chip on a card.
+- **The D76 seed is safe.** `>= 2` counts a 4 as important. Only the display
+  breaks.
+- **Why an agent did not fix it here.** The owner is building the Projects
+  chat in a separate stream. Change the four messages and the four bounds to
+  0 to 3 there, or add a CHECK (0 to 3) in an expand/contract migration after
+  a count of rows above 3 on production.
+- Added: 2026-09-23, found while building D76.
+
+
+### H-172 · The shared scratch DB cannot replay the migration ladder any more · [AGENT]
+- **Check:** on the scratch DB, `SELECT max(attnum) FROM pg_attribute WHERE
+  attrelid = 'email_assistant_settings'::regclass` → 1600 means this is open.
+- **Why:** `42_email_model_roles.sql` drops columns that earlier migrations
+  add back. Each `apply_ladder` replay uses up attribute numbers, and dropped
+  columns keep theirs. The table hit Postgres's 1600-column limit, so every
+  R8 suite that replays the ladder on `metorite-scratch-tenant` now fails
+  with `TooManyColumns`. Found by the S7a build, 2026-09-23.
+- **Do:** Make migration 42 replay-safe, so a replay adds and drops nothing.
+  Then rebuild the shared DB with `bash scripts/dev_db.sh --down` and
+  `bash scripts/dev_db.sh`, at a time when no other checkout uses it.
+- **Authority:** R6 · R8 · `engineering_practice.md` §1.1
+- **Added:** 2026-09-23 · the S7a build
 
 ### H-170 · A Console migration runs with NO backup of the Console database · [AGENT]
 - **Check:** on the box, run
@@ -128,29 +181,40 @@ line — never reclaim a number by deleting the other entry.
   · R6
 - **Added:** 2026-09-23 · the CP-13a deploy check
 
-### H-165 · Build CP-13a to CP-13d: the `decide` task, its door, the Console pages and the chat tool · [AGENT]
-- **Check:** CP-13a is BUILT (2026-09-23, branch `cp13a-decide`).
-  `rg -n 'native_typesafe' apps/services/customer_console/customer_console/handlers.py`
-  → no hit means CP-13a has not reached `main` yet.
-  `rg -n 'native_typesafe' workbench/operator_console/src/` → no hit means
-  CP-13b has not landed.
-- **Why:** owner decision 2026-09-23 (D75). The owner chose TypeSafe's Jev for
-  fast typed decisions, and asked for the Operator Console first.
-- **Do this in order:** CP-13a, then CP-13b, then CP-13c, then CP-13d. Build
-  against a test key and made-up data. Ship `DECIDE_ENABLED` OFF.
-- ⚠️ **Do not seed a binding or a price in the migration.** An operator makes
-  the binding on `/tiers`. The owner sets the price (H-42).
-- ⚠️ **Three fences break by design.** Update them in the same PR. §6A.14
-  CP-13a names them, and CP-13d names two more.
-- ⚠️ **CP-13c needs H-152's tenant slice.** The client presents the per-box
-  deployment key, and never the one organization key.
+### H-165 · CP-13 is built through CP-13d. Stop the gateway taking the member from the body, so `decide` serves a shared box · [AGENT]
+- **Check:** `rg -n 'member=None' packages/acb_skills/acb_skills/decide_tools.py`
+  → a hit means the `decide` tool still sends no member, and this is open.
+  CP-13a to CP-13d are BUILT (2026-09-23 and 2026-09-24).
+- **Why:** the R11 finding in `specs/customer_console.md` §6A.14 CP-13d. The
+  executor binds each run's member from `event_payload["user_email"]`.
+  `POST /agent/run/stream`, `POST /agent/run` and `POST /agent/run/async` pass
+  the caller's payload unchanged, and the webhook door spreads the sender's
+  payload. On the deployment arm `X-CC-Member` selects the tenant. So the tool
+  sends no member, and a deployment-key box gets the unavailable text.
+- **Do this:** make the three `/agent/run*` doors drop `user_email` and
+  `user_id` from the body, and stamp the session's member instead. For
+  the webhook door, find which senders name a member, and keep only a member
+  the server can prove. Then let the tool send `_get_memory_user_id()` when it
+  is an email. Add a fence for each door.
+- ⚠️ **The same gap reaches three other consumers.** The memory tools and the
+  integration filter read the member that the payload names. And
+  `acb_llm/routed.py::_attribution` sends the run-context `user`, which the
+  executor binds from the same payload, as `member` on every routed
+  completion. On the deployment arm that selects the tenant. So `member=None`
+  on the tool does not close the gap alone. Fix it at the doors, never in
+  each consumer.
+- **Severity: a defence-in-depth P2** (the reviewer, 2026-09-24). Only a
+  holder of the internal bearer or the webhook HMAC secret can reach it, and
+  both can already assert any identity (`acb_auth/deps.py`, branch 1b). The
+  browser path, the Control Plane chat proxy, cannot name a member.
+- **What else is left of CP-13.** The owner acts in H-166. CP-13e to CP-13g are
+  the app slices, and each one needs its own audit first (§6A.14).
 - 🔴 **Do not set `DECIDE_ENABLED` on a live box.** It is owner-only, and
   the §3a window does not open it (H-166).
-- ⚠️ **CP-13a took migration `033`** (`033_decide_task.sql`). Check it
-  again at merge (R1).
-- **Authority:** `specs/customer_console.md` §6A.14 · `work_plan.md` §3 D75 ·
-  board WS-31
-- **Added:** 2026-09-23 · the Jev planning session
+- **Authority:** `specs/customer_console.md` §6A.14 CP-13d ·
+  `specs/user_management_contract.md` R11 · `work_plan.md` §3 D75 · board WS-31
+- **Added:** 2026-09-23 · the Jev planning session · **rewritten 2026-09-24**
+  when CP-13d was built
 
 ### H-166 · Open the TypeSafe account, install the key, and answer residency · [OWNER]
 - **Check:** on `/providers`, look for a live `typesafe` credential. None
@@ -1328,42 +1392,55 @@ line — never reclaim a number by deleting the other entry.
   `.github/workflows/phase-0-tripwire.yml`
 - **Added:** 2026-08-26 · guardrails/CI session
 
-### H-49 · Member deactivation must implement D63 (seal, don't inherit) · [AGENT]
-- **Check:** `grep -rn "status.*inactive" apps/services/gateway/gateway/routes/ --include=*.py`
-  → if a deactivation path for `app_user` exists, this entry is live and the
-  question is whether it honours D63. If it returns only `people` hits
-  (the retiring connector), deactivation is still unbuilt and this is a
-  standing constraint on whoever builds it.
-- **Why:** **D63 was taken 2026-08-26, before the flow it governs exists.** That
-  was deliberate — the default somebody picks under time pressure while building
-  deactivation is exactly the wrong way to settle what happens to a departed
-  colleague's private tasks. What D63 requires:
-  * tasks in their personal tree **assigned to someone else** → hand over
-  * tasks only ever theirs → **seal**; retained, invisible, **never deleted**
-  * their `pm_task_personal` rows on team tasks → left alone; the task needs
-    reassigning, the overlay just stops being read
-  * one **owner-only, logged** door to open or export a sealed tree
-  * the deactivation dialog states the split **in numbers before the click**
-  ⚠️ **Not a WS-39 deliverable.** WS-39 made the private tree richer (Areas,
-  migration 191), which is what turned this from theoretical into something with
-  real content behind it — but member writes are §6 owner-gate and deactivation
-  belongs to whoever owns identity.
-  📌 `app_user.status` is the hook point and today holds only `'active'`.
+### H-49 · D63's seal is BUILT. The dialog and the watched door are not · [AGENT]
+- **Check:** `rg -n "seal_personal_tree" apps/services/gateway/gateway/routes/`
+  → hits in `admin/members.py` mean slice 1 landed. Then
+  `rg -n "seal_counts|unseal_personal_tree" apps/services/gateway --include=*.py`
+  → if the only hits are the definitions in `projects/seal.py`, nothing calls
+  them and this entry is still live.
+- ✅ **SLICE 1 LANDED 2026-09-23.** Migration **215** adds
+  `pm_projects.sealed_at`. Both visibility clauses filter it on both arms, so
+  a sealed tree leaves the grant closure AND the `data:org:read` answer. Both
+  off-boarding doors — `PATCH /admin/members/{email}` and the DELETE — stamp
+  the tree inside the same transaction as the status write. `active` unseals.
+  `tests/live/live_member_seal.sql`: 14 checks on real Postgres.
+- ⚠️ **The hand-over needed NO code, and that is a finding.**
+  `task_visibility_clause` has a second arm over `pm_task_assignees` that never
+  consults the project. Sealing removes the grant arm and leaves that one, so a
+  task the leaver assigned outward stays visible to its assignee. No row moves,
+  and there is no half-finished state to recover from.
+- **Measured on production before the build, 2026-09-23:** 1 personal tree, 2
+  tasks, **0** assigned to anybody but the owner, 4 members, all `active`. Two
+  guards (`assert_move_keeps_privacy`, `assert_assignable_here`) already refuse
+  to create the cross-assigned state, so `handed_over` reads 0 on a healthy
+  tenant. That is correct, not broken.
+- **What is still owed, and both are D63's own words:**
+  1. **The dialog states the split in numbers BEFORE the click** — *"14 tasks
+     — 3 handed over, 11 sealed, not deleted; later access is recorded"*.
+     `projects/seal.py::seal_counts` computes exactly that and **no route calls
+     it**. A policy nobody is told about at the moment it applies is one they
+     discover by being surprised.
+  2. **One owner-only, LOGGED door** to open or export a sealed tree.
+     `unseal_personal_tree` is the mechanism and no route calls it either.
+     ⚠️ Reactivation already unseals, and that is NOT this door: it returns
+     the tree to its owner. This door lets somebody ELSE read it.
+- 📌 `app_user.status` still only ever holds `'active'` on production, so
+  nothing has exercised this against real data yet.
 - **Authority:** `work_plan.md` §3 D63 · §6 (member/role writes) · D53.7/D53.8
 - **Added:** 2026-08-26 · WS-39 personal-tree session *(minted as H-35; renumbered to H-49 the same session — `test_handoff_ids_are_unique` caught the collision with the WS-36 restore-spec entry. Ids are never reused.)*
 
 ### H-29 · WS-39 S3b/S3c/S8: verify the `gtd_*` drop on production · [AGENT]
 - **Check:** On the box, run `\dt gtd_*`. Then look in the ledger for
-  `216_gtd_task_store_drop.sql`. No table and one ledger row mean the drop is
+  `217_gtd_task_store_drop.sql`. No table and one ledger row mean the drop is
   done. Delete this entry then, and not before.
 - **S8 PR 2 closes this** (branch `my-tasks-s8d`). The run half is done. The
   S3b backfill moved every row on 2026-09-23, and `gtd_backfill_plan` returned
-  zero rows. Migration 216 arms the guard in reviewed code and drops the
+  zero rows. Migration 217 arms the guard in reviewed code and drops the
   store. The arm is no longer a hand INSERT.
 - **What is left:** the merge, the deploy and the check above. First run the
   pre-flight in `my_tasks_cutover.md` §5 S8. It needs today's backup and
-  migration 215 in the ledger. Migration 216 checks the data by itself.
-- ⚠️ **Migration 216 fails closed.** An unmigrated row, an uncopied value or
+  migration 216 (the estimate backfill) in the ledger. Migration 217 checks the data by itself.
+- ⚠️ **Migration 217 fails closed.** An unmigrated row, an uncopied value or
   a row in a tree table makes it RAISE, and the deploy stops. Do not widen the guard. Read `gtd_backfill_plan` and
   decide each row.
 - ⚠️ **The survivors are NOT part of the drop.** `user_settings`, the two
@@ -1635,6 +1712,31 @@ line — never reclaim a number by deleting the other entry.
   member, the agent and the module at 29 call sites. H-73 landed the identity
   seam. H-44 records the same 80+ sites for tier selection, so sweep the two
   together and not twice.
+- 📌 **THE OWNER CHOSE SHAPE 1 (proxy), 2026-09-24, and it is built.**
+  `acb_llm/routed.py` is the seam. `acompletion_with_fallback`,
+  `client.complete` and `client.complete_with_tools` all route when
+  `routing_is_on()`. The TIER travels, never a resolved model, so the
+  operator's ranked `tier_binding` chain decides. Attribution comes from
+  `get_run_context()`, so none of the call sites changed.
+- 🔴 **Two mistakes worth keeping, because both were caught by a fence and
+  not by me.** The first payload sent `{"tier": ...}` and spread the caller's
+  `**extra`. `CompletionRequest` forbids extras, and its field is called
+  `model`. So EVERY routed call would have been a 422. The suite stayed green,
+  because it stubbed the client. The second left tool-calling on the
+  direct path, on the belief that the Router had no `tools` field. It has,
+  with `tool_choice` beside it. A test that validates against the REAL
+  pydantic model caught both, and it is the fence to keep.
+- ⚠️ **STILL UNROUTED, and each for a reason.**
+  `context.acompletion_stream_text` — the Console streams through a different
+  client (`stream_completion_on_console`) with a different contract, so it is
+  its own slice. `gateway.main._prewarm_prompt_cache` — a startup warm-up with
+  no tenant and no member to bill, so routing it would invent a payer.
+- ⚠️ **It ships DARK.** `routing_is_on()` needs `ROUTER_SERVING_ENABLED` AND a
+  reachable Console. Every box that has not turned billing on behaves exactly
+  as before, and a test pins that for both the completion and the agent paths.
+- **Fences:** `tests/unit/test_internal_ai_is_routed.py` (20) ·
+  `test_console_dependency_boundary.py` gained the seventh allowed caller,
+  which is the same KIND as the `v1_compat` Router hop.
 - **Authority:** `launch_surface.md` §4.1 · D19.2 · D57.7 · CP-6 · H-73 · H-44
 - **Added:** 2026-09-23 · the H-73 session. **Renumbered from H-170 to H-171** the same day (R1): another branch minted the same next free id against a different base and merged first. An id is never reused.
 
@@ -2887,7 +2989,7 @@ line — never reclaim a number by deleting the other entry.
 - **S8 PR 2 closes the table half** (branch `my-tasks-s8d`, #434). Slice 3
   renamed the three survivors in the migrations that create them. `gtd_attachments` is
   `attachments` (52). `gtd_horizons` and `gtd_reviews` are
-  `my_tasks_horizons` and `my_tasks_reviews` (48). Migration 216 drops the
+  `my_tasks_horizons` and `my_tasks_reviews` (48). Migration 217 drops the
   rest of the store, and H-29 tracks that drop.
 - **What is done before it.** Slice 1, the People family, on 2026-09-21: `gtd_people` is
   `people`, and the four `gtd_person_*` tables are `people_*`. Slice 2, on
@@ -2902,8 +3004,8 @@ line — never reclaim a number by deleting the other entry.
   (`tests/unit/_sql_match.py` answers that). And an assertion over a whole
   migration file reads the prologue's own warning comment as the defect, so
   measure the executable block.
-- **S9 closes the code half when it merges** (branch `my-tasks-s9`, stacked
-  on #434). It moved all 29 agent tools at once, from `gtd_*` to
+- **S9 closes the code half when it merges** (branch `my-tasks-s9`, PR
+  #436, which targets `main`). It moved all 29 agent tools at once, from `gtd_*` to
   `my_tasks_*`, and the skill is `skill-my-tasks`. The settings helpers and
   the types of the client moved too. After both PRs merge, the fence allows
   only the upload folder `data/gtd_attachments` and the tool-name alias map in
@@ -2954,6 +3056,12 @@ line — never reclaim a number by deleting the other entry.
   nothing, by design.
 - ⚠️ **The per-org billing pages still read the org key**, so retiring that
   variable entirely is a separate move. `seats.py` records which reads stay.
+- ⚠️ **Orchestrator agent completions never send `X-CC-Member`.**
+  `orchestrator/agents.py:437` stamps only `X-CC-Agent` and `X-CC-Source`,
+  and nothing calls `member_proof.sign_member`. So on a box with
+  `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY` set and no org key,
+  `chat_completion_on_console` refuses every agent completion. The CP-13c
+  audit found this on 2026-09-24.
 - **Fences:** `tests/unit/test_router_deployment_arm.py` (12) ·
   `tests/unit/test_console_router_client.py` (5 new).
 - **Authority:** owner directive, 2026-09-22 — *"you are automatically

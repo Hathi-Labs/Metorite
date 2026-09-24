@@ -167,7 +167,7 @@ describe("cardChips", () => {
       ["blocked", "1"],
       // S6 — priority sits between "do not start this" and "when": that is
       // the order a reader scans a column in.
-      ["importance", "Urgent"],
+      ["importance", "Highest"],
       ["due", "2h ago"],
       ["subtasks", "1/3"],
       ["tags:ops", "ops"],
@@ -218,7 +218,7 @@ describe("the priority chip (S6)", () => {
       "Low",
       "Normal",
       "High",
-      "Urgent",
+      "Highest",
     ]);
   });
 

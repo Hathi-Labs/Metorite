@@ -686,7 +686,7 @@ def _scope_title(payload: dict[str, Any]) -> str:
     return (
         "the portfolio"
         if payload.get("scope") == "portfolio"
-        else f"node {payload.get('project_id')}"
+        else "the selected project or space"
     )
 
 
@@ -945,6 +945,234 @@ async def team_capacity(project_id: str = "", horizon_days: int = 14) -> str:
     return "\n".join(out)
 
 
+# ── Team intelligence — S7b, fit and rebalancing ─────────────────────────────
+
+#: What the chat says when the route withheld the ranked list (§13.4 rule 1).
+FIT_HIDDEN = (
+    "Fit is hidden: this member does not hold admin:members:read, and a ranked "
+    "list says who holds which skill. An admin can see fit. Do not guess "
+    "anybody's skills. Use people_for to find a person by name."
+)
+
+#: The shortest draft title the route takes (``candidates.MIN_TITLE_CHARS``).
+MIN_DRAFT_TITLE = 2
+
+
+def _window_line(window: dict[str, Any]) -> str:
+    basis = "to the due date" if window.get("basis") == "due_date" else "no due date, so 14 days"
+    return (
+        f"  window: {window.get('starts_on')} to {window.get('ends_on')}"
+        f" ({window.get('days')} days, {basis})"
+    )
+
+
+def _candidate_lines(c: dict[str, Any]) -> list[str]:
+    """One ranked person: the rank, and every factor it is the product of."""
+    facts = [
+        f"assignee {data(c.get('email'))}",
+        f"rank {c.get('rank')}",
+        f"skill {c.get('skill_points')}",
+        "matched " + ", ".join(data(s) for s in c.get("matched_skills") or []),
+    ]
+    if "spare_hours" in c:
+        facts.append(f"spare {_hours(c.get('spare_hours'))}")
+    away = c.get("away")
+    if isinstance(away, dict):
+        facts.append(f"away ({away.get('kind')}) until {away.get('until')}")
+    out = [f"- {data(c.get('name'))} · " + " · ".join(facts)]
+    out.extend(f"  ⚠ {data(w)}" for w in c.get("warnings") or [])
+    return out
+
+
+@_annotate(read_only=True, idempotent=True)
+async def fit_for_task(task_id: str = "", title: str = "", tags: str = "", due: str = "") -> str:
+    """Who fits one task best, ranked by skill, spare hours and availability:
+    at most three people, each with the skills that matched, the spare hours
+    before the due date and any warning (away on the due date, leaving
+    before it, too much work in progress). Pass task_id for a task that
+    exists. For a task that does not exist yet (planning), pass title, tags
+    (comma-separated) and due=YYYY-MM-DD instead. The value to assign is the
+    `assignee` field, through `assign`. Use people_for to find somebody by
+    name. Without HR read access fit is hidden: say an admin can see it, and
+    never guess skills."""
+    if (task_id or "").strip():
+        tid = uuid_of(task_id, "task_id")
+        payload = await get(f"/projects/tasks/{tid}/candidates")
+        head = "Fit for this task"
+    else:
+        clean = (title or "").strip()
+        if len(clean) < MIN_DRAFT_TITLE:
+            return f"Pass a task_id, or a draft title of at least {MIN_DRAFT_TITLE} characters."
+        params: dict[str, Any] = {"title": clean}
+        if (tags or "").strip():
+            params["tags"] = tags.strip()
+        if (due or "").strip():
+            params["due"] = due.strip()
+        payload = await get("/projects/candidates", params)
+        head = f"Fit for a draft task {data(clean)}"
+    payload = payload or {}
+    due_on = payload.get("due_on")
+    out = [legend(), head + (f" · due {due_on}" if due_on else "")]
+    out.append(_window_line(payload.get("window") or {}))
+    if payload.get("hr_visible") is False or "candidates" not in payload:
+        out.append(f"  {FIT_HIDDEN}")
+        return "\n".join(out)
+    if payload.get("hours_note"):
+        out.append(f"  {data(payload['hours_note'])}")
+    elif payload.get("partial"):
+        out.append("  (spare hours count only the work this member may open)")
+    candidates = payload.get("candidates") or []
+    pool = payload.get("pool_size", 0)
+    if not candidates:
+        out.append(
+            f"  Nobody of {pool} people has a skill this task names, or nobody"
+            " with one has hours. Do not guess a skill. Ask the member, or use"
+            " people_for to find somebody by name."
+        )
+        return "\n".join(out)
+    out.append(f"Candidates ({len(candidates)} of {pool} people):")
+    for c in candidates:
+        if isinstance(c, dict):
+            out.extend(_candidate_lines(c))
+    return "\n".join(out)
+
+
+def _pickup_lines(person: dict[str, Any]) -> list[str]:
+    out = [f"- {data(person.get('name'))} · assignee {data(person.get('email'))}"]
+    for task in person.get("tasks") or []:
+        kind = "help on at-risk" if task.get("kind") == "at_risk_help" else "unassigned"
+        skills = ", ".join(data(s) for s in task.get("matched_skills") or [])
+        out.append(f"  · {kind}: {data(task.get('title'))} · matched {skills}")
+        out.append(f"    full_id: {task.get('task_id')}")
+    return out
+
+
+@_annotate(read_only=True, idempotent=True)
+async def rebalance(project_id: str = "", horizon_days: int = 14) -> str:
+    """Who could help whom in a scope: the at-risk tasks with up to three
+    helpers who fit each one, and the idle people with the unassigned tasks
+    that fit them. Hours and pills are measured over all the work the member
+    can see, over the horizon (default 14 days, 1 to 90). Leave project_id
+    empty for the portfolio. Nothing is assigned: propose, then use `assign`
+    with its card. Without HR read access the lists are hidden: say an admin
+    can see them, and never guess."""
+    days = max(1, min(90, int(horizon_days or 14)))
+    payload = await get(
+        "/projects/analytics/rebalance", _scope_params(project_id, horizon_days=days)
+    )
+    payload = payload or {}
+    window = payload.get("window") or {}
+    out = [
+        legend(),
+        f"Rebalancing in {_scope_title(payload)}",
+        f"  horizon: {window.get('starts_on')} to {window.get('ends_on')}"
+        f" ({window.get('days', days)} days)",
+    ]
+    if payload.get("hr_visible") is False or "at_risk" not in payload:
+        out.append(
+            "  Helpers and idle people are hidden: this member does not hold"
+            " admin:members:read. An admin can see them. Do not guess."
+        )
+        return "\n".join(out)
+    at_risk = payload.get("at_risk") or []
+    out.append(f"At risk ({len(at_risk)} of {payload.get('at_risk_total', len(at_risk))}):")
+    for task in at_risk:
+        holders = task.get("holders") or [task.get("holder") or {}]
+        held = ", ".join(
+            f"{data(h.get('name'))} ({data(h.get('email'))})" for h in holders if isinstance(h, dict)
+        )
+        out.append(
+            f"- {data(task.get('title'))} · due {task.get('due_on')}"
+            f" · short {_hours(task.get('shortfall_hours'))} · held by {held}"
+        )
+        out.append(f"  full_id: {task.get('task_id')}")
+        if task.get("hours_note"):
+            out.append(f"  {data(task['hours_note'])}")
+        helpers = task.get("candidates") or []
+        if not helpers:
+            out.append("  no helper fits by skill and hours")
+        for c in helpers:
+            if isinstance(c, dict):
+                out.extend("  " + line for line in _candidate_lines(c))
+    pickups = payload.get("pickups") or []
+    idle = payload.get("idle_total", len(pickups))
+    out.append(f"Idle people with work to pick up ({len(pickups)} of {idle} idle):")
+    for person in pickups:
+        if isinstance(person, dict):
+            out.extend(_pickup_lines(person))
+    if payload.get("truncated"):
+        out.append("(capped: more at-risk or unassigned work exists than is listed)")
+    return "\n".join(out)
+
+
+# ── Team intelligence — S7c, conflicts ───────────────────────────────────────
+
+#: What the chat says when the route withheld the four HR kinds (§13.5 rule 9).
+CONFLICTS_HR_HIDDEN = (
+    "Overcommitment, absence on a due date, work over a person's ceiling and a "
+    "leaving date are hidden: this member does not hold admin:members:read. An "
+    "admin can see them. Do not guess anybody's hours or absences."
+)
+
+
+def _conflict_lines(row: dict[str, Any]) -> list[str]:
+    """One conflict: its kind and severity, the route's sentence, the tasks."""
+    who = ", ".join(
+        data(p.get("name") or p.get("email")) for p in row.get("people") or []
+        if isinstance(p, dict)
+    )
+    head = f"- {row.get('kind')} ({row.get('severity')}) · {data(row.get('sentence'))}"
+    if who:
+        head += f" · people {who}"
+    out = [head]
+    out.extend(f"  full_id: {tid}" for tid in row.get("task_ids") or [])
+    return out
+
+
+@_annotate(read_only=True, idempotent=True)
+async def find_conflicts(project_id: str = "", horizon_days: int = 14) -> str:
+    """Where the plan interferes with itself in a scope, as one list. Seven
+    kinds: dependency_order (a task starts or is due before a task that
+    blocks it is due), blocker_late (a blocker is overdue and its work is
+    open), parallel_person (one person holds 3 or more tasks on one day in 2
+    or more top-level projects), and, for a member with HR read access,
+    overcommitted, absent_on_due, over_concurrency and leaving. Each row has
+    a severity and one sentence from the server. The horizon (default 14
+    days, 1 to 90) bounds the dated kinds. Leave project_id empty for the
+    portfolio. Relay the rows. Never invent a conflict the list does not
+    carry."""
+    days = max(1, min(90, int(horizon_days or 14)))
+    payload = await get(
+        "/projects/analytics/conflicts", _scope_params(project_id, horizon_days=days)
+    )
+    payload = payload or {}
+    window = payload.get("window") or {}
+    by_kind = payload.get("by_kind") or {}
+    total = payload.get("total", 0)
+    out = [
+        legend(),
+        f"Conflicts in {_scope_title(payload)}: {total}",
+        f"  horizon: {window.get('starts_on')} to {window.get('ends_on')}"
+        f" ({window.get('days', days)} days, for the dated kinds; the dependency"
+        " kinds ignore it)",
+    ]
+    if by_kind:
+        out.append("  by kind: " + ", ".join(f"{k} {n}" for k, n in by_kind.items()))
+    if payload.get("hr_visible") is False:
+        out.append(f"  {CONFLICTS_HR_HIDDEN}")
+    elif payload.get("partial"):
+        out.append("  (this counts only the work this member may open)")
+    rows = payload.get("rows") or []
+    if not rows:
+        out.append("  No conflict of these kinds. Do not invent one.")
+    for row in rows:
+        if isinstance(row, dict):
+            out.extend(_conflict_lines(row))
+    if payload.get("truncated"):
+        out.append(f"(capped: {len(rows)} of {total} rows are listed)")
+    return "\n".join(out)
+
+
 # ── Reports ──────────────────────────────────────────────────────────────────
 
 
@@ -1001,6 +1229,9 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     # and prints as "unassigned". Nested HR blocks are skipped per row.
     "capacity": ("people", "name", ("total_tasks", "people_total", "hr_visible", "horizon_days")),
     "stuck":("overdue", "name", ("overdue_total", "blocked_total")),
+    # S7c. The row label is the kind. The sentence carries titles, so it is
+    # fenced like every other piece of member text below.
+    "conflicts": ("rows", "kind", ("total", "hr_visible", "horizon_days")),
 }
 
 
@@ -1023,7 +1254,7 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
         # or the model reads a former colleague's work as nobody's.
         label = row.get(label_key) or row.get("assignee")
         facts = ", ".join(
-            f"{k} {v}"
+            f"{k} {data(v) if k == 'sentence' else v}"
             for k, v in row.items()
             if k not in (label_key, "id", "project_id") and not isinstance(v, (dict, list))
         )

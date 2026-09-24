@@ -1,15 +1,15 @@
-"""WS-39 S8 PR 2 — migration 216 drops the `gtd_*` task store (R8).
+"""WS-39 S8 PR 2 — migration 217 drops the `gtd_*` task store (R8).
 
 Spec `my_tasks_cutover.md` §5 S8 · board WS-39 · decisions D53.5, D73.
 
 ── Why this file exists ─────────────────────────────────────────────────────
 
-Migration 216 is one-way. A drop that is wrong cannot be taken back, so each
+Migration 217 is one-way. A drop that is wrong cannot be taken back, so each
 claim below is proven against a real Postgres, in a database built for it:
 
-  A. THE UPGRADE. A database in production's shape (the ladder before 216,
+  A. THE UPGRADE. A database in production's shape (the ladder before 217,
      with the three surviving tables under their OLD names) is seeded, moved
-     by the real backfill, and then given 48, 52 and 216. Those are the files
+     by the real backfill, and then given 48, 52 and 217. Those are the files
      a deploy re-runs, because their checksums changed or they are new.
      1. Every `gtd_*` table, the view and both functions are gone.
      2. The WhatsApp commitment that pointed at a gtd row now points at the
@@ -19,10 +19,10 @@ claim below is proven against a real Postgres, in a database built for it:
      3. `attachments`, `my_tasks_horizons` and `my_tasks_reviews` hold the
         seeded rows. The D53.6 survivors still exist.
      4. A second run of all three files changes nothing.
-  B, C, D. THE REFUSALS. The same shape with one thing 216 must not lose:
+  B, C, D. THE REFUSALS. The same shape with one thing 217 must not lose:
      B a gtd row the backfill never moved, C a moved row with
      `leveraged = true` (a column the backfill never copied), D a row in
-     `gtd_projects`. 216 must RAISE, and every table, column and row must
+     `gtd_projects`. 217 must RAISE, and every table, column and row must
      stay where it was.
 
 ── How to run ───────────────────────────────────────────────────────────────
@@ -47,7 +47,7 @@ from sqlalchemy.engine import make_url
 
 REPO = Path(__file__).resolve().parents[2]
 MIGRATIONS = REPO / "infra" / "postgres"
-DROP_FILE = "216_gtd_task_store_drop.sql"
+DROP_FILE = "217_gtd_task_store_drop.sql"
 #: What a deploy re-runs on the upgrade: two edited files and the new one.
 RERUN = ["48_task_manager_gtd.sql", "52_gtd_attachments.sql", DROP_FILE]
 
@@ -95,11 +95,11 @@ def _run_file(conn: psycopg.Connection, filename: str) -> None:
     conn.execute(sql)  # type: ignore[arg-type]
 
 
-def _ladder_before_216() -> list[str]:
+def _ladder_before_217() -> list[str]:
     found = []
     for p in MIGRATIONS.iterdir():
         m = re.match(r"^(\d+)_.*\.sql$", p.name)
-        if m and not p.name.startswith(("00_", "01_")) and int(m.group(1)) < 216:
+        if m and not p.name.startswith(("00_", "01_")) and int(m.group(1)) < 217:
             found.append((int(m.group(1)), p.name))
     return [name for _, name in sorted(found)]
 
@@ -121,11 +121,11 @@ def _has_column(conn: psycopg.Connection, table: str, column: str) -> bool:
 
 
 def build_template(admin: psycopg.Connection, name: str) -> None:
-    """Production's shape before this PR: the ladder to 215, old names back."""
+    """Production's shape before this PR: the ladder to 216, old names back."""
     admin.execute(f'CREATE DATABASE "{name}"')
     with psycopg.connect(_db_url(name), autocommit=True) as conn:
         _run_file(conn, "01_schema.sql")
-        for filename in _ladder_before_216():
+        for filename in _ladder_before_217():
             _run_file(conn, filename)
         for new, old in RENAMED.items():
             conn.execute(f"ALTER TABLE {new} RENAME TO {old}")
@@ -136,7 +136,7 @@ def seed(conn: psycopg.Connection, *, unmigrated: bool = False,
          uncopied: bool = False, tree: bool = False) -> dict[str, str]:
     """A member with a moved store, in the shape production has.
 
-    Each flag adds one thing 216 must refuse: `unmigrated` a row nobody moved,
+    Each flag adds one thing 217 must refuse: `unmigrated` a row nobody moved,
     `uncopied` a moved row with `leveraged = true` (a column the backfill
     never copied), and `tree` a row in `gtd_projects`.
     """
@@ -286,7 +286,7 @@ def scenario_upgrade(admin: psycopg.Connection, template: str) -> None:
             detail = ""
         except psycopg.Error as exc:  # pragma: no cover - reported, not raised
             again, detail = False, str(exc).splitlines()[0]
-        check("A15 a second run of 48, 52 and 216 is a no-op",
+        check("A15 a second run of 48, 52 and 217 is a no-op",
               again and _one(conn, "SELECT task_id::text FROM wa_commitments "
                                    "WHERE id = %s", ids["k1"]) == str(task)
               and not any(_exists(conn, t) for t in DROPPED),
@@ -295,7 +295,7 @@ def scenario_upgrade(admin: psycopg.Connection, template: str) -> None:
 
 def scenario_refusal(admin: psycopg.Connection, template: str, *, tag: str,
                      label: str, expect: str, **flags: bool) -> None:
-    """216 must RAISE with `expect` in the message and change nothing."""
+    """217 must RAISE with `expect` in the message and change nothing."""
     name = f"ws39_s8d_{tag}_{TAG}"
     admin.execute(f'CREATE DATABASE "{name}" TEMPLATE "{template}"')
     with psycopg.connect(_db_url(name), autocommit=True) as conn:
@@ -312,7 +312,7 @@ def scenario_refusal(admin: psycopg.Connection, template: str, *, tag: str,
             raised, message = True, str(exc).splitlines()[0]
             conn.execute("ROLLBACK")
         p = tag.upper()
-        check(f"{p}1 216 RAISES: {label}",
+        check(f"{p}1 217 RAISES: {label}",
               raised and expect in message, f"message={message!r}")
 
         after = {t: (_one(conn, f"SELECT count(*) FROM {t}")

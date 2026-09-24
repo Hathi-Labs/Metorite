@@ -20,7 +20,7 @@ called. A copy of any of them here would be a mirror, and mirrors go stale and
 then lie.
 
 **Disposition is STATED where triaged and DERIVED otherwise**, and the
-task's lane wins over both (D76). Every query prunes in SQL on the stated
+task's lane wins over both (D77). Every query prunes in SQL on the stated
 column (``_PM_ALIVE``) and rules in Python with ``effective_disposition``,
 exactly as the planner does. A SQL copy of the rule
 would be the mirror the paragraph above refuses.
@@ -59,7 +59,6 @@ from gateway.routes.projects.core import (
 from gateway.routes.projects.personal import (
     _MY_TASKS_SQL,
     DISPOSITIONS,
-    IMPORTANT_AT,
     _as_utc,
     _upsert_personal,
     complete_for_member,
@@ -67,6 +66,7 @@ from gateway.routes.projects.personal import (
     effective_disposition,
     ensure_personal_project,
     member_contexts,
+    member_today,
     my_tasks_binds,
     not_yet,
     waiting_on_for,
@@ -79,13 +79,14 @@ from sqlalchemy import text
 # ── Row shape ────────────────────────────────────────────────────────────────
 
 #: Overlay columns copied straight off a `_MY_TASKS_SQL` row (`p_<name>`).
-#: D76 took two names off this list: `time_estimate_mins` and `important`
-#: are read off the SHARED task in `_pm_item`, under the same names.
+#: D77 took one name off this list: `time_estimate_mins` is read off the
+#: SHARED task in `_pm_item`, under the same name. `important` stays: it is
+#: the member's own answer (D76).
 _OVERLAY = (
     "next_action", "context", "energy", "defer_until",
     "clarified_at", "delegated_at", "expected_by", "last_nudged_at",
     "scheduled_start", "scheduled_end", "actual_start", "actual_end",
-    "leveraged", "deep_work", "kept_mine", "sort_key",
+    "important", "leveraged", "deep_work", "kept_mine", "sort_key",
 )
 
 #: The stored vocabulary is migration 147's. Two values the email router may
@@ -147,16 +148,15 @@ def _pm_item(row: Any) -> SimpleNamespace:
         is_two_minute=bool(getattr(row, "p_is_two_minute", False)),
         is_hard_date=bool(getattr(row, "p_is_hard_date", False)),
         flexible=True if flexible is None else bool(flexible),
-        # D76 — the task's assignees minus me, the rule the inbox applies.
+        # D77 — the task's assignees minus me, the rule the inbox applies.
         waiting_on=waiting_on_for(
             getattr(row, "other_assignees", None),
             from_jsonb(getattr(row, "p_waiting_on", None)),
         ),
-        # D76 — the two matrix and planning inputs that are shared facts.
+        # D77 — the one planning input that is a shared fact.
         time_estimate_mins=getattr(row, "estimate_mins", None),
-        important=(getattr(row, "importance", None) or 0) >= IMPORTANT_AT,
         due_at=getattr(row, "due_at", None),
-        # D76 — the shared start date, for the inbox's "not yet" rule.
+        # D77 — the shared start date, for the inbox's "not yet" rule.
         start_date=getattr(row, "start_date", None),
         assignee=None,
         assignees=None,
@@ -308,7 +308,7 @@ class _PmLens(ItemSource):
     async def context_less_actionables(self, db, uid, limit):
         items = await self._items(
             db, uid,
-            # D76: a stated DONE on a reopened task reads NEXT, so it stays
+            # D77: a stated DONE on a reopened task reads NEXT, so it stays
             # in the prune and Python rules on the effective value.
             " AND (p.disposition IS NULL"
             "      OR p.disposition IN ('NEXT', 'WAITING', 'DONE'))"
@@ -322,6 +322,8 @@ class _PmLens(ItemSource):
     async def insight_counts(self, db, uid):
         items = await self._items(db, uid)
         at = datetime.now(UTC)
+        # F5 — the member's own date for the start-date half of the rule.
+        today = await member_today(db, uid, at)
         counts: dict[str, int] = {}
         oldest: datetime | None = None
         stale = 0
@@ -329,10 +331,10 @@ class _PmLens(ItemSource):
         for it in items:
             counts[it.disposition] = counts.get(it.disposition, 0) + 1
             if it.disposition == "INBOX":
-                # D76 — the inbox's own "not yet" rule: the later of my defer
+                # D77 — the inbox's own "not yet" rule: the later of my defer
                 # and the shared start date (`DEFERRED_CLAUSE`), one place.
                 created = _as_utc(it.created_at)
-                waiting = not_yet(it.defer_until, it.start_date, at)
+                waiting = not_yet(it.defer_until, it.start_date, at, today)
                 if not waiting and created is not None and (
                     oldest is None or created < oldest
                 ):
@@ -365,7 +367,7 @@ class _PmLens(ItemSource):
             where += " AND coalesce(t.origin->>'email_id', '') <> :eid"
             params["eid"] = str(exclude_email_id)
         where += " ORDER BY t.created_at DESC"
-        # The limit is applied AFTER the Python rule. Since D76 the SQL prune
+        # The limit is applied AFTER the Python rule. Since D77 the SQL prune
         # drops a closed lane (`_CLOSED_LANE`), so no DONE row reaches here.
         # A stated TRASH is pruned too. The Python rule still runs, and the
         # limit after it is the safe place should the prune ever narrow.
@@ -415,7 +417,7 @@ class _PmLens(ItemSource):
             "title": fields["title"],
             "description": fields.get("description") or None,
             "due_at": fields.get("due_at"),
-            # D76: the drafter's estimate is the task's one estimate.
+            # D77: the drafter's estimate is the task's one estimate.
             "estimate_mins": fields.get("time_estimate_mins"),
             "source": source,
             "origin": origin,

@@ -134,6 +134,7 @@ name = "acb-llm"
 version = "0.0.1"
 source = { editable = "packages/acb_llm" }
 dependencies = [
+    { name = "acb-auth" },
     { name = "acb-common" },
     { name = "cryptography" },
     { name = "litellm" },
@@ -142,6 +143,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "acb-auth", editable = "packages/acb_auth" },
     { name = "acb-common", editable = "packages/acb_common" },
     { name = "cryptography", specifier = ">=42.0" },
     { name = "litellm", specifier = ">=1.52" },
@@ -179,6 +181,8 @@ name = "acb-skills"
 version = "0.0.1"
 source = { editable = "packages/acb_skills" }
 dependencies = [
+    { name = "acb-common" },
+    { name = "acb-llm" },
     { name = "ddgs" },
     { name = "httpx" },
     { name = "pydantic" },
@@ -187,6 +191,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "acb-common", editable = "packages/acb_common" },
+    { name = "acb-llm", editable = "packages/acb_llm" },
     { name = "ddgs", specifier = ">=9.14.4" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "pydantic", specifier = ">=2.9" },

@@ -453,6 +453,39 @@ describe("conflicts", () => {
     expect(label.toLowerCase()).toContain("nothing has been rescheduled");
   });
 
+  describe("the shared fixture (WS-27bm S7c)", () => {
+    // ⚠️ The SERVER owns this rule now (`gateway/conflicts.py`), and this copy
+    // stays for live feedback while a bar is dragged. One file of cases runs
+    // against both, so a change to one copy fails one of the two suites.
+    type Side = Pick<TaskRow, "start_date" | "due_at" | "completed_at">;
+    type Case = { name: string; blocker: Side; blocked: Side; conflict: boolean };
+
+    const CASES: Case[] = JSON.parse(
+      readFileSync(
+        fileURLToPath(
+          // …/projects/lib → …/projects → …/app → …/src → control_plane → workbench → repo
+          new URL(
+            "../../../../../../tests/fixtures/projects_dependency_conflicts.json",
+            import.meta.url,
+          ),
+        ),
+        "utf-8",
+      ),
+    ).cases;
+
+    it("is present and non-trivial", () => {
+      // A fixture that quietly disappeared would leave this block asserting
+      // nothing while the pytest half stayed green.
+      expect(CASES.length).toBeGreaterThanOrEqual(10);
+      expect(CASES.some((c) => c.conflict)).toBe(true);
+      expect(CASES.some((c) => !c.conflict)).toBe(true);
+    });
+
+    it.each(CASES)("agrees with the server: $name", (c: Case) => {
+      expect(conflicts(c.blocker, c.blocked)).toBe(c.conflict);
+    });
+  });
+
   it("writes nothing — the module holds no PATCH or reschedule", () => {
     // ⚠️ The structural half of D-PM-12. A later "helpful" auto-push would be
     // a decision reversal, not a refactor, and this is what makes it visible.

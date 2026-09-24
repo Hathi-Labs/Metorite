@@ -71,6 +71,7 @@ export function rankForDrop(ordered: MyTask[], toIndex: number): number {
 export type SortField =
   | "manual"
   | "priority"
+  | "orgPriority"
   | "due"
   | "created"
   | "title"
@@ -79,11 +80,17 @@ export type SortField =
 export type SortDir = "asc" | "desc";
 
 /** How each sort field reads to a human — the toolbar menu AND the board's
- *  drop-refusal overlay name sorts from this one map, so they cannot drift. */
+ *  drop-refusal overlay name sorts from this one map, so they cannot drift.
+ *
+ *  ⚠️ D77 (F1): one word, one meaning. "Priority" is ONLY the task's shared
+ *  `importance` (D76's vocabulary, read here as `orgPriority`). The member's
+ *  private matrix rank is "Your focus", the name D76 gives the private row.
+ *  The internal key `priority` stays on the matrix rank, so a stored sort
+ *  keeps meaning what it meant. */
 export const SORT_LABEL: Record<SortField, string> = {
   manual: "Manual",
-  // D76: the matrix rank, so "Focus" — Priority is the task's shared field.
-  priority: "Focus",
+  priority: "Your focus",
+  orgPriority: "Priority",
   due: "Due date",
   created: "Created",
   title: "Title",
@@ -99,8 +106,12 @@ export interface TaskFilters {
   query: string;
   /** @context names to include ([] = any). NO_CONTEXT sentinel = "no @context". */
   contexts: string[];
-  /** priority cells to include ([] = any). */
+  /** "Your focus" matrix cells to include ([] = any). */
   priorities: string[];
+  /** D77 — shared Priority levels to include ([] = any): "3".."0", or
+   *  NO_ORG_PRIORITY_FACET for a task with no Priority. Optional so a filter
+   *  state saved before this facet existed still reads as "any". */
+  orgPriorities?: string[];
   /** energy levels to include ([] = any). NO_ENERGY sentinel = "no energy set". */
   energies: string[];
   /** assignee name exact match ("" = any) — only used on non-next views. */
@@ -116,11 +127,18 @@ export interface TaskSort {
  *  other value (a task with no @context / no energy). */
 export const NO_CONTEXT_FACET = "∅context";
 export const NO_ENERGY_FACET = "∅energy";
+export const NO_ORG_PRIORITY_FACET = "∅priority";
+
+/** The facet value of a task's shared Priority. */
+export function orgPriorityFacet(i: Pick<MyTask, "orgPriority">): string {
+  return typeof i.orgPriority === "number" ? String(i.orgPriority) : NO_ORG_PRIORITY_FACET;
+}
 
 export const DEFAULT_FILTERS: TaskFilters = {
   query: "",
   contexts: [],
   priorities: [],
+  orgPriorities: [],
   energies: [],
   assignee: "",
 };
@@ -134,6 +152,7 @@ export function filtersActive(f: TaskFilters): boolean {
     f.query.trim() ||
       f.contexts.length ||
       f.priorities.length ||
+      (f.orgPriorities ?? []).length ||
       f.energies.length ||
       f.assignee,
   );
@@ -145,6 +164,7 @@ export function activeFilterCount(f: TaskFilters): number {
   return (
     f.contexts.length +
     f.priorities.length +
+    (f.orgPriorities ?? []).length +
     f.energies.length +
     (f.query.trim() ? 1 : 0) +
     (f.assignee ? 1 : 0)
@@ -158,6 +178,7 @@ export function applyFilters(items: MyTask[], f: TaskFilters): MyTask[] {
   const q = f.query.trim().toLowerCase();
   const ctxSet = new Set(f.contexts);
   const priSet = new Set(f.priorities);
+  const orgSet = new Set(f.orgPriorities ?? []);
   const enSet = new Set(f.energies);
   return items.filter((i) => {
     if (q) {
@@ -169,6 +190,7 @@ export function applyFilters(items: MyTask[], f: TaskFilters): MyTask[] {
       if (!ctxSet.has(key)) return false;
     }
     if (priSet.size && !priSet.has(priorityCell(i))) return false;
+    if (orgSet.size && !orgSet.has(orgPriorityFacet(i))) return false;
     if (enSet.size) {
       const key = i.energy || NO_ENERGY_FACET;
       if (!enSet.has(key)) return false;
@@ -201,8 +223,12 @@ export function applySort(items: MyTask[], s: TaskSort): MyTask[] {
 function sortKeyFor(i: MyTask, field: SortField): string | number | null {
   switch (field) {
     case "priority":
-      // Matrix rank 1..7 (1 = highest). Asc puts Critical first.
+      // "Your focus": matrix rank 1..7 (1 = highest). Asc puts Critical first.
       return priorityRank(i);
+    case "orgPriority":
+      // D77 — the shared Priority, 3 Highest .. 0 Low. Inverted so asc puts
+      // Highest first, like the matrix sort. Unset sorts last.
+      return typeof i.orgPriority === "number" ? 3 - i.orgPriority : null;
     case "due":
       return i.dueAt ?? null;
     case "created":
@@ -239,9 +265,10 @@ import {
   priorityCell,
   type ActionMode,
 } from "./priority";
+import { importanceLabel } from "@/app/projects/lib/table";
 
 export type GroupBy =
-  | "none" | "context" | "priority" | "mode" | "energy" | "depth";
+  | "none" | "context" | "priority" | "orgPriority" | "mode" | "energy" | "depth";
 
 export interface TaskGroup {
   key: string;
@@ -249,6 +276,14 @@ export interface TaskGroup {
   /** emoji/icon token for the header (optional). */
   emoji?: string;
   items: MyTask[];
+}
+
+/** D77 — the shared Priority facets, Highest first, then "no priority". */
+export const ORG_PRIORITY_ORDER: readonly string[] = ["3", "2", "1", "0", NO_ORG_PRIORITY_FACET];
+
+/** A shared-Priority facet's label, from D76's one vocabulary. */
+export function orgPriorityLabel(facet: string): string {
+  return facet === NO_ORG_PRIORITY_FACET ? "No priority" : importanceLabel(Number(facet));
 }
 
 const ENERGY_LABEL: Record<string, string> = {
@@ -282,6 +317,20 @@ export function groupItems(
       label: CELL_META[c].label,
       emoji: CELL_META[c].emoji,
       items: buckets.get(c)!,
+    }));
+  }
+
+  if (by === "orgPriority") {
+    // D77 — the shared Priority, in D76's words, Highest first.
+    const buckets = new Map<string, MyTask[]>();
+    for (const i of items) {
+      const k = orgPriorityFacet(i);
+      (buckets.get(k) ?? buckets.set(k, []).get(k)!).push(i);
+    }
+    return ORG_PRIORITY_ORDER.filter((k) => buckets.has(k)).map((k) => ({
+      key: k,
+      label: orgPriorityLabel(k),
+      items: buckets.get(k)!,
     }));
   }
 

@@ -59,13 +59,14 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "summary": (
             "Web access, file writing and rich generative UI, todo tracking, "
             "asking the user a question, diagnostics, working notes, the "
-            "coding skill, and delegation to other agents."
+            "coding skill, delegation to other agents, and fast typed decisions."
         ),
         "description": (
             "The guaranteed baseline every agent receives regardless of "
             "tool_scope: web access, file writing & generative UI, task "
             "tracking, HITL questions, diagnostics, working notes, the "
-            "coding skill, and inter-agent delegation. Not toggleable "
+            "coding skill, inter-agent delegation, and fast typed "
+            "decisions (decide, WS-31 CP-13d). Not toggleable "
             "(skills_registry.md rule 2)."
         ),
         "tools": (
@@ -74,6 +75,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "call_agent_background",
             "call_agents_parallel",
             "code_task",
+            "decide",
             "emit_generative_ui",
             "fetch_page",
             "get_errors",

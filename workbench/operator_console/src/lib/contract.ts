@@ -68,10 +68,12 @@ export type ModelKind =
   | "image"
   | "transcribe"
   | "speak"
-  | "embed";
+  | "embed"
+  // CP-13b (§6A.14). Answers typed questions about a state. Not chat.
+  | "decide";
 
 export const MODEL_KINDS: ModelKind[] = [
-  "chat", "reasoning", "vision", "image", "transcribe", "speak", "embed",
+  "chat", "reasoning", "vision", "image", "transcribe", "speak", "embed", "decide",
 ];
 
 /** Plain words for the filter chips. No operator should need the schema open. */
@@ -83,6 +85,7 @@ export const KIND_LABEL: Record<ModelKind, string> = {
   transcribe: "Speech to text",
   speak: "Text to speech",
   embed: "Search index",
+  decide: "Makes decisions",
 };
 
 export type CatalogModel = {

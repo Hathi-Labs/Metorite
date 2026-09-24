@@ -1,5 +1,5 @@
 -- ============================================================================
--- ⚠️ HISTORICAL since WS-39 S8 PR 2 (2026-09-23). Migration 216 drops the
+-- ⚠️ HISTORICAL since WS-39 S8 PR 2 (2026-09-23). Migration 217 drops the
 -- gtd_ store and both functions, so this script runs only on a ladder built
 -- from a tree BEFORE S8 PR 2 (d16079b5 or earlier). A ladder from a later
 -- tree has `attachments`, not `gtd_attachments`, so check 5l would fail

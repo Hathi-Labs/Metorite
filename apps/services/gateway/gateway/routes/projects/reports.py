@@ -51,6 +51,7 @@ from gateway.routes.projects.analytics import (
     weekly_sql,
 )
 from gateway.routes.projects.analytics_capacity import capacity_body
+from gateway.routes.projects.analytics_conflicts import conflicts_body
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -83,13 +84,17 @@ from sqlalchemy import text
 #: reader came for.
 #:
 #: `capacity` (WS-27bm S7a) sits beside `load`, because it reads the same open
-#: work and names who has the hours for it.
-SECTIONS: tuple[str, ...] = ("finished", "throughput", "load", "capacity", "stuck")
+#: work and names who has the hours for it. `conflicts` (WS-27bm S7c) comes
+#: after `stuck`: both say what is wrong with the open work, and conflicts
+#: says what is wrong with the plan for it.
+SECTIONS: tuple[str, ...] = (
+    "finished", "throughput", "load", "capacity", "stuck", "conflicts",
+)
 
 #: The sections a definition with no `sections` key renders.
 #:
 #: ⚠️ **An explicit list, never `list(SECTIONS)`.** `capacity` is OPT-IN
-#: (`projects_ai_chat.md` §13.3 rule 4). While this was `list(SECTIONS)`,
+#: (`projects_ai_chat.md` §13.3 rule 4), and so is `conflicts` (§13.5 rule 12). While this was `list(SECTIONS)`,
 #: adding a section to the vocabulary added it to every saved report that
 #: never asked for it — and capacity carries hours, which is not what a
 #: weekly delivery report was saved to say.
@@ -547,6 +552,25 @@ async def render_report(
                     "hr_visible": cap["hr_visible"],
                     "horizon_days": cap["horizon_days"],
                     "windows": cap["windows"],
+                }
+            elif name == "conflicts":
+                # WS-27bm S7c. The conflicts route's OWN body, imported, as
+                # `capacity` does. The HR kinds follow the READER's grant.
+                found = await conflicts_body(
+                    db, vis,
+                    hr_visible=can_read_hr_fields(user),
+                    project_id=project_id,
+                    include_subtree=bool(config["include_subtree"]),
+                )
+                sections[name] = {
+                    # Capped like `load`. `total` and `by_kind` count every
+                    # row, so a reader sees how many the cap left out.
+                    "rows": found["rows"][:MAX_PEOPLE],
+                    "total": found["total"],
+                    "by_kind": found["by_kind"],
+                    "hr_visible": found["hr_visible"],
+                    "horizon_days": found["horizon_days"],
+                    "window": found["window"],
                 }
             elif name == "stuck":
                 # The one number a report needs from (a): what is overdue, by

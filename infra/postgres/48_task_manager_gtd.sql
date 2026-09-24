@@ -23,7 +23,7 @@
 -- Two tables in this file survive the task-store drop, so they take the names
 -- of the D73.3 table map. Horizons becomes my_tasks_horizons (D65 keeps the
 -- store). Weekly reviews becomes my_tasks_reviews (WS-18 keeps the store).
--- Every other table in this file is dropped by migration 216.
+-- Every other table in this file is dropped by migration 217.
 --
 -- THE RENAME LIVES IN THE FILE THAT CREATES THE TABLE. One file then answers
 -- all three states:

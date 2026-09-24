@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 CREATE INDEX IF NOT EXISTS idx_gtd_attachments_user ON attachments(user_id);
 
--- Guarded since WS-39 S8 PR 2. Migration 216 drops gtd_items, and this file
+-- Guarded since WS-39 S8 PR 2. Migration 217 drops gtd_items, and this file
 -- re-runs on its own after that (its checksum changed with the prologue
 -- above). A bare ALTER then fails on a table that is gone.
 DO $s8_items_attachments$

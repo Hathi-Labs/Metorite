@@ -336,21 +336,14 @@ def _lane_miss(name: str, lanes: list[dict[str, Any]]) -> str:
             f"{', '.join(s['name'] for s in lanes) or '(none)'}")
 
 
-#: Shared facts about the WORK → `PATCH /projects/tasks/{id}`. D76 moved
+#: Shared facts about the WORK → `PATCH /projects/tasks/{id}`. D77 moved
 #: the estimate here (`pm_tasks.estimate_mins`, the one People capacity
-#: reads) and added the shared Priority and start date.
+#: reads) and added the shared start date. The shared Priority is not
+#: written from here: `important` is the member's own (D76).
 _TASK_KEYS: dict[str, str] = {"title": "title", "notes": "description",
                               "due_at": "due_at",
                               "time_estimate_mins": "estimate_mins",
-                              "importance": "importance",
                               "start_date": "start_date"}
-
-#: Priority → "important" in the Focus matrix: High (2) or Urgent (3). The
-#: gateway's `personal.IMPORTANT_AT` and the client's `priority.ts` agree, and
-#: `test_projects_personal_s6f.py::test_important_at_is_one_number_in_all_three_places`
-#: fails if any of the three moves. No skill imports the gateway, so this is
-#: a pinned copy rather than an import.
-_IMPORTANT_AT = 2
 
 #: My practice → `PATCH /projects/tasks/{id}/personal`.
 _OVERLAY_KEYS: frozenset[str] = frozenset({
@@ -358,7 +351,7 @@ _OVERLAY_KEYS: frozenset[str] = frozenset({
     "is_two_minute", "defer_until",
     "scheduled_start", "scheduled_end", "flexible", "is_hard_date",
     "actual_start", "actual_end",
-    "leveraged", "deep_work", "kept_mine", "sort_key",
+    "important", "leveraged", "deep_work", "kept_mine", "sort_key",
     "waiting_on", "delegated_at", "expected_by", "last_nudged_at",
 })
 
@@ -845,22 +838,6 @@ def _flag(v: str) -> bool | None:
     return None
 
 
-async def _importance_for(item_id: str, wants: bool | None) -> int | None:
-    """The shared Priority an "important" flag means (D76), or None to leave
-    it. Important is Priority at High or above: true raises a lower task to
-    High, false lowers High or Urgent to Normal, and a flag that already
-    agrees changes nothing — so "important" never demotes Urgent."""
-    if wants is None:
-        return None
-    current = (await _my_task(item_id)).get("importance")
-    level = current if isinstance(current, int) else None
-    if wants and (level is None or level < _IMPORTANT_AT):
-        return _IMPORTANT_AT
-    if not wants and level is not None and level >= _IMPORTANT_AT:
-        return _IMPORTANT_AT - 1
-    return None
-
-
 @_annotate_risk(idempotent=True)
 async def my_tasks_update(item_id: str, title: str = "", notes: str = "",
                      defer_until: str = "", context: str = "",
@@ -880,11 +857,10 @@ async def my_tasks_update(item_id: str, title: str = "", notes: str = "",
         context: "@computer" | "@calls" | … (empty = unchanged).
         energy: low | medium | high (empty = unchanged).
         time_estimate_mins: Estimated minutes (0 = unchanged). The task's
-            ONE estimate, shared with the board (D76).
+            ONE estimate, shared with the board (D77).
         due_at: ISO date/datetime deadline; "clear" removes it.
         important: "true"/"false" — significant downside if it slips
-            (empty = unchanged). Sets the SHARED Priority (D76): true
-            raises it to High, false lowers it to Normal.
+            (empty = unchanged).
         leveraged: "true"/"false" — outsized upside / 100x bet
             (empty = unchanged).
         deep_work: "true"/"false" — needs an unbroken FLOW state (creative,
@@ -907,10 +883,8 @@ async def my_tasks_update(item_id: str, title: str = "", notes: str = "",
         patch["time_estimate_mins"] = time_estimate_mins
     if due_at:
         patch["due_at"] = None if due_at == "clear" else due_at
-    level = await _importance_for(item_id, _flag(important))
-    if level is not None:
-        patch["importance"] = level
-    for key, raw in (("leveraged", leveraged), ("deep_work", deep_work)):
+    for key, raw in (("important", important), ("leveraged", leveraged),
+                     ("deep_work", deep_work)):
         val = _flag(raw)
         if val is not None:
             patch[key] = val
@@ -986,12 +960,10 @@ async def my_tasks_detail(item_id: str) -> str:
     i = await _my_task(item_id)
     mine = await _my_project_ids()
     lines = [_fmt_item(i, mine)]
-    flags = [name for name, key in (("leveraged", "leveraged"),
+    flags = [name for name, key in (("important", "important"),
+                                    ("leveraged", "leveraged"),
                                     ("deep work (flow)", "deep_work"))
              if i.get(key)]
-    # D76: important is read off the shared Priority, never the overlay.
-    if isinstance(i.get("importance"), int) and i["importance"] >= _IMPORTANT_AT:
-        flags.insert(0, "important")
     if flags:
         lines.append("  flags: " + ", ".join(flags))
     for label, key in (("energy", "energy"),

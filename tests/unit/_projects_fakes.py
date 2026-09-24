@@ -505,6 +505,12 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         # reads the column off every row it compares, so a seeded team project
         # must carry the NULL Postgres would have returned.
         "personal_owner": None,
+        # Migration 215 / D63. NULL is a LIVE project, and every seeded row
+        # must carry it for the same reason `personal_owner` does: the grant
+        # closure reads the key off every row, and a row missing it would be
+        # treated as sealed by `.get()` returning None only by luck of the
+        # comparison, not by construction.
+        "sealed_at": None,
         # WS-27z — migration 166's lifecycle policy. NULL = off, the default.
         "archive_after_months": None, "close_after_months": None,
         "timezone": "UTC",
@@ -1659,12 +1665,29 @@ class FakeProjectsDB:
         database's parent-consistency trigger were ever dropped.
         """
         wanted = {str(g).lower() for g in groups}
+        # D63 (migration 215): a SEALED project leaves the closure, and so does
+        # everything beneath it. Filtered on BOTH arms, exactly as the SQL does
+        # — the seed reaches `pm_projects` through a JOIN, because a grant row
+        # carries no `sealed_at`, and the descent filters again so the walk
+        # cannot pass THROUGH a sealed Area into what hangs off it.
+        #
+        # ⚠️ Teaching the fake this is not bookkeeping. H-130 records what
+        # happens when a fake disagrees with Postgres about the one thing a
+        # feature exists for: `_ordered` honoured only the first ORDER BY key,
+        # and the hermetic suite could not have caught the fix landing OR
+        # failing. A fake that kept returning sealed projects would make every
+        # future seal test pass for the wrong reason.
+        sealed = {
+            str(p["id"]) for p in self.rows("pm_projects")
+            if p.get("sealed_at") is not None
+        }
         seeds = {
             str(g.get("project_id")) for g in self.rows("pm_project_grants")
             if (
                 organization_id is None
                 or str(g.get("organization_id")) == organization_id
             )
+            and str(g.get("project_id")) not in sealed
             and (
                 g.get("subject") == "org"
                 or str(g.get("subject") or "").lower() == (email or "").lower()
@@ -1682,16 +1705,28 @@ class FakeProjectsDB:
                     != descendant_organization_id
                 ):
                     continue
+                if str(project["id"]) in sealed:
+                    continue
                 if parent is not None and str(parent) in out and str(project["id"]) not in out:
                     out.add(str(project["id"]))
                     changed = True
         return out
 
     def tenant_project_ids(self, organization_id: str | None) -> set[str]:
-        """Every project in one organization — the `data:org:read` answer."""
+        """Every project in one organization — the `data:org:read` answer.
+
+        ⚠️ Sealed projects are excluded HERE TOO, and that is D63's point
+        rather than a copy-paste. `data:org:read` is the widest grant in the
+        product and the People Center holds it. The decision says an admin
+        reading a departed colleague's private tasks "must never be an
+        invisible act", and allows one door for it: owner-only and logged. An
+        unrestricted answer that included sealed rows would BE that invisible
+        act, handed to every HR admin by default.
+        """
         return {
             str(p["id"]) for p in self.rows("pm_projects")
             if str(p.get("organization_id")) == str(organization_id)
+            and p.get("sealed_at") is None
         }
 
     def _subtree_ids(self, root_id: str) -> set[str]:
@@ -1786,7 +1821,7 @@ class FakeProjectsDB:
             if not reached:
                 continue
 
-            if _not_yet(statement, mine, task):
+            if _not_yet(statement, mine, task, args):
                 continue
             if "lower(p.context) = :context" in statement:
                 wanted = str(args.get("context") or "").lower()
@@ -1828,9 +1863,9 @@ class FakeProjectsDB:
                 p_next_action=mine.get("next_action"),
                 p_context=mine.get("context"),
                 p_energy=mine.get("energy"),
-                # D76: no `p_time_estimate_mins` and no `p_important` — the
-                # SQL stopped selecting them, and a mirror that kept them
-                # would answer a retired column as if it were read.
+                # D77: no `p_time_estimate_mins` — the SQL stopped selecting
+                # it, and a mirror that kept it would answer a retired column
+                # as if it were read.
                 p_is_two_minute=bool(mine.get("is_two_minute", False)),
                 p_defer_until=mine.get("defer_until"),
                 # The scheduled block (187, WS-39 S3a). ⚠️ Projected here
@@ -1850,6 +1885,7 @@ class FakeProjectsDB:
                 # missing test, it is a PASSING one — `getattr(row, "p_x", None)`
                 # answers None just as happily for "the member never set it" as
                 # for "this fake has never heard of it".
+                p_important=mine.get("important"),
                 p_leveraged=mine.get("leveraged"),
                 p_deep_work=mine.get("deep_work"),
                 p_kept_mine=mine.get("kept_mine"),
@@ -1874,7 +1910,7 @@ class FakeProjectsDB:
                 ),
                 assignee_count=len(assignees),
                 is_mine=who in assignees,
-                # D76 — the ARRAY subquery: everybody else on the task, in
+                # D77 — the ARRAY subquery: everybody else on the task, in
                 # assignment order (`assigned_at`, then the address).
                 other_assignees=(
                     self._others_on(task["id"], who)
@@ -1884,7 +1920,7 @@ class FakeProjectsDB:
         return out
 
     def _others_on(self, task_id: str, who: str) -> list[str]:
-        """D76 — the ARRAY subquery: everybody else on the task, in
+        """D77 — the ARRAY subquery: everybody else on the task, in
         assignment order (`assigned_at`, then the address)."""
         return [
             str(a.get("assignee")) for a in sorted(
@@ -2304,17 +2340,18 @@ class FakeProjectsDB:
         return rows
 
 
-def _not_yet(statement: str, mine: dict, task: dict) -> bool:
+def _not_yet(statement: str, mine: dict, task: dict, args: dict) -> bool:
     """The tickler, mirrored off the statement: my own `defer_until` in the
-    future, or — D76, `DEFERRED_CLAUSE` — the work's shared `start_date`
-    after today (a DATE, compared with today's date)."""
+    future, or — D77, `DEFERRED_CLAUSE` — the work's shared `start_date`
+    after the bound `:today`, the member's own date (F5)."""
     if "p.defer_until IS NULL OR p.defer_until <= now()" in statement:
         deferred = mine.get("defer_until")
         if deferred is not None and _as_datetime(deferred) > _now():
             return True
-    if "t.start_date <= current_date" in statement:
+    if "t.start_date <= CAST(:today AS date)" in statement:
         starts = task.get("start_date")
-        if starts is not None and str(starts)[:10] > _now().date().isoformat():
+        today = str(args["today"])[:10]
+        if starts is not None and str(starts)[:10] > today:
             return True
     return False
 

@@ -49,6 +49,8 @@ import { FORM } from "@/lib/words";
 import { describeTierRate } from "@/lib/catalog";
 import { capableModelsFor } from "@/lib/readiness";
 import { chipClass, pricingTone } from "@/lib/tone";
+import { DECIDE_TIER } from "@/lib/decide";
+import TryDecision from "./TryDecision";
 
 function Provider({ model }: { model: string }) {
   const p = model.includes("/") ? model.slice(0, model.indexOf("/")) : model;
@@ -580,6 +582,9 @@ export default function TierBoard({
                           setAdding={setAdding} pick={pick} setPick={setPick}
                           busy={busy} saveChain={saveChain} />
                       ))}
+                      {/* CP-13b: prove the decide binding before an app
+                          depends on it. The one tier with a Try panel. */}
+                      {t.slug === DECIDE_TIER && <TryDecision />}
                     </section>
                   );
                 })}

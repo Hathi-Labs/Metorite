@@ -43,6 +43,7 @@ from gateway.routes.tasks.core import (
     _uid,
     router,
 )
+from gateway.routes.tasks.priority import seeded_important
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -338,7 +339,12 @@ def _candidate_brief(m: Any, now: datetime) -> dict[str, Any]:
         "title": m.title,
         "estimate_mins": int(getattr(m, "time_estimate_mins", None) or 30),
         "energy": m.energy if m.energy in _ENERGY else None,
-        "important": bool(getattr(m, "important", False)),
+        # D76: the member's answer, or the shared priority while they have
+        # given none — the same rule the client's `priorityInputs` applies, so
+        # the list and "Plan my day" agree about one task.
+        "important": seeded_important(
+            getattr(m, "important", None), getattr(m, "org_priority", None)
+        ),
         "leveraged": bool(getattr(m, "leveraged", False)),
         "deep_work": bool(getattr(m, "deep_work", False)),
         "due_in_days": due_in,

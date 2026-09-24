@@ -607,3 +607,183 @@ export function isPersonalTask(
   if (rootId !== null && item.projectId === rootId) return true;
   return areaIds.includes(item.projectId);
 }
+
+// ── Where a Clarify starts, and what it may offer (audit 2026-09-24) ────────
+
+/** The Where picker's starting pick, and the row it marks as suggested. */
+export interface InitialWhere {
+  /** The project the form starts on. `undefined` means "No project". */
+  selected?: string;
+  /** A row the picker marks "suggested" and the member must click. */
+  suggested?: string;
+}
+
+/**
+ * Where the Clarify form starts for one task.
+ *
+ * ⚠️ A capture is PRIVATE. Filing it into a company project publishes it to
+ * everyone on that board. The assistant infers a project by keyword or on the
+ * server, and the old form pre-selected that inference, so one "Organize it"
+ * click published a private capture to a board the member never chose. The
+ * audit of 2026-09-24 found this in production.
+ *
+ * The rule FAILS CLOSED. The proposal's project starts selected only when it
+ * is the task's own project (nothing moves) or one of my Areas (it stays
+ * private). Any other id starts NOT selected, and the picker marks it as a
+ * suggestion the member must click.
+ *
+ * It does not ask `isPersonalTask`. That answer reads `personalRootId`, which
+ * is null for a member whose first capture has only just created the root,
+ * and after a failed `fetchMyRoot`. A null there made a capture read as a
+ * board task, and a board task used to take the proposal as-is (review of
+ * PR #440, P1).
+ *
+ * Fence: `clarifyWhere.test.ts`.
+ */
+export function initialWhere(input: {
+  /** The project the proposal names, if any. */
+  proposalProjectId?: string;
+  /** The project the task lives in now, if any. */
+  itemProjectId?: string;
+  areaIds: readonly string[];
+}): InitialWhere {
+  const id = input.proposalProjectId;
+  if (!id) return {};
+  if (id === input.itemProjectId || input.areaIds.includes(id)) {
+    return { selected: id };
+  }
+  return { suggested: id };
+}
+
+/**
+ * Whether the Where picker offers "No project".
+ *
+ * A board task cannot leave its board for my personal tree: D62 refuses a move
+ * from a team node into anybody's personal tree. "No project" IS that move, so
+ * offering it is offering a 422. A personal task may always stay loose.
+ */
+export function whereOffersNoProject(personal: boolean): boolean {
+  return personal;
+}
+
+/**
+ * The line under the Where picker. It says who can see the task once it is
+ * filed, so the member knows before the click, not after it.
+ */
+export function whereVisibilityHint(input: {
+  /** The picked id, or undefined for "No project". */
+  selected?: string;
+  companyProjectIds: readonly string[];
+}): string {
+  if (input.selected && input.companyProjectIds.includes(input.selected)) {
+    return "Visible to the team. A company project is shared with everyone on its board.";
+  }
+  return "Private to you until it joins a company project. File it in an Area, or leave it loose.";
+}
+
+/**
+ * The items a Clarify session walks, oldest first (GTD processes FIFO).
+ *
+ * Two sets feed the walk. The first is my captures, which are INBOX. The
+ * second is the "From Projects" group (S6e): a board task that a colleague
+ * assigned to me and that I have not triaged. Its disposition is derived
+ * (NEXT, SOMEDAY or WAITING), so a walk that reads INBOX alone skips it, and
+ * the modal used to close on the first render for every such row.
+ *
+ * `done` is the ids decided in this session. They never come back into the
+ * walk, whatever a stale re-read of `fromProjectIds` says. A re-read that
+ * lands before the triage write puts the id straight back into that set, and
+ * the walk used to open the same row a second time (review of PR #440, P1).
+ */
+export function clarifyQueue<
+  T extends { id: string; disposition: string; createdAt: string; archivedAt?: string },
+>(
+  items: readonly T[],
+  fromProjectIds: ReadonlySet<string>,
+  done: ReadonlySet<string> = new Set(),
+): T[] {
+  return items
+    .filter((i) => !done.has(i.id))
+    .filter(
+      (i) =>
+        i.disposition === "INBOX" || (fromProjectIds.has(i.id) && !i.archivedAt),
+    )
+    .sort(
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
+}
+
+/** Whether Clarify may open on this item: a capture, or an untriaged board row. */
+export function isClarifiable(
+  item: { id: string; disposition: string },
+  fromProjectIds: ReadonlySet<string>,
+  done: ReadonlySet<string> = new Set(),
+): boolean {
+  if (done.has(item.id)) return false;
+  return item.disposition === "INBOX" || fromProjectIds.has(item.id);
+}
+
+// ── Owner on a board task (review of PR #440, P1) ───────────────────────────
+
+/**
+ * Who the Clarify form starts on as the owner.
+ *
+ * ⚠️ On a board task a delegate is a REASSIGN. The organize request puts the
+ * colleague on the shared task and takes me, and any co-assignee, off it.
+ * The form used to start on "Delegate" whenever the assistant proposed a
+ * person, so one Enter reassigned a colleague's board task. A board task now
+ * starts on "Me", and only the member's own click picks Delegate. A personal
+ * capture keeps the proposal, because a delegate there first needs a company
+ * project the member picks (`lensDelegateBlock`).
+ *
+ * `personal` is `isPersonalTask`. When that answer is unsure (a null root),
+ * it reads false, so this fails closed to "Me".
+ */
+export function initialOwner(input: {
+  personal: boolean;
+  hasSuggestedAssignee: boolean;
+}): "me" | "delegate" {
+  return input.personal && input.hasSuggestedAssignee ? "delegate" : "me";
+}
+
+/**
+ * Whether a delegate decision may be applied. On a board task it may only
+ * when the member picked Delegate in this session, by a click. Enter, a late
+ * server proposal or a note re-run never picks it for them.
+ */
+export function delegateAllowed(input: {
+  personal: boolean;
+  delegating: boolean;
+  pickedThisSession: boolean;
+}): boolean {
+  if (!input.delegating || input.personal) return true;
+  return input.pickedThisSession;
+}
+
+// ── Undo on a board-row clarify (review of PR #440, P2) ─────────────────────
+
+/**
+ * Whether a clarify decision changed the SHARED task, not only my overlay.
+ *
+ * A move to another project, a delegate (a reassign on the board) and a due
+ * date all write the task the team sees. Undo here restores my overlay and
+ * nothing else, so it cannot take those back. The toast then offers
+ * "Open task" instead of an Undo that would only half-reverse the decision.
+ */
+export function clarifyChangesSharedTask(
+  item: { projectId?: string; dueAt?: string },
+  decision: {
+    kind: string;
+    projectId?: string;
+    assignee?: unknown;
+    person?: unknown;
+    dueAt?: string;
+  },
+): boolean {
+  if (decision.kind === "delegate" || decision.kind === "project") return true;
+  if (decision.assignee) return true;
+  if (decision.projectId && decision.projectId !== item.projectId) return true;
+  if (decision.dueAt && decision.dueAt !== item.dueAt) return true;
+  return false;
+}

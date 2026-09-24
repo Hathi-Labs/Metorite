@@ -149,19 +149,21 @@ function CellBody({
 }) {
   switch (col.key) {
     case "priority": {
-      // D76 — the task's SHARED Priority, drawn with the Projects card's own
-      // chip so "Urgent" looks the same in both apps. Unset draws nothing.
-      const chip = importanceChip({ importance: item.importance ?? null });
+      // D77 — the task's SHARED Priority, drawn with the Projects card's own
+      // chip so "Highest" looks the same in both apps. Unset draws nothing.
+      // Display only: My Tasks never writes the shared Priority (D76).
+      const chip = importanceChip({ importance: item.orgPriority ?? null });
       return chip ? <TaskMeta chips={[chip]} /> : null;
     }
     case "focus":
-      // The member's Focus matrix cell (important from Priority × urgent
-      // from the due date × their own leveraged flag).
+      // The member's own matrix cell: their Important (seeded by the shared
+      // Priority while unstated, D76) × urgent from the due date × their
+      // leveraged flag. The Projects panel calls this row "Your focus".
       return (
         <PriorityBadge item={item} urgentWindowHours={urgentWindowHours} />
       );
     case "tags": {
-      // D76 — the shared tags, as the card's tag pills.
+      // D77 — the shared tags, as the card's tag pills.
       const chips = taskMeta({ tags: (item.tags ?? []).map((name) => ({ name })) });
       return chips.length ? <TaskMeta chips={chips} className="min-w-0" /> : null;
     }

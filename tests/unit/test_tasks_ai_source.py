@@ -75,7 +75,7 @@ RETIRED = ["items", "hierarchy", "accounts", "sync", "providers",
 
 
 #: The `gtd_` tokens a string constant may still carry, each with its reason.
-#: S8 PR 2 (migration 216) removed the last two tables, and S9 renamed the 29
+#: S8 PR 2 (migration 217) removed the last two tables, and S9 renamed the 29
 #: chat tools from `gtd_*` to `my_tasks_*`. So nothing is left here, and a
 #: string that says `gtd_` anywhere in these trees is a defect.
 #: `test_no_gtd_table_names.py` is the repo-wide fence.
@@ -387,7 +387,7 @@ async def test_pm_reads_compose_the_shared_membership_clause(monkeypatch) -> Non
     assert sql.startswith(_MY_TASKS_SQL)
     assert "t.organization_id = CAST(:vis_org AS uuid)" in sql
     assert "t.origin->>'email_id' = :val" in sql
-    # D76: only TRASH prunes. A stated DONE may have been reopened.
+    # D77: only TRASH prunes. A stated DONE may have been reopened.
     assert "p.disposition <> 'TRASH'" in sql
     assert params == {"who": "alice@fracktal.in", "vis_org": "org-1",
                       "vis_email": "alice@fracktal.in", "vis_groups": [],

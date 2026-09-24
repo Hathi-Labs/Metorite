@@ -325,7 +325,7 @@ async def get_task(
         return result
 
 
-#: D76 — the work actually done on a task, summed over EVERY member's timed
+#: D77 — the work actually done on a task, summed over EVERY member's timed
 #: block (`pm_task_personal.actual_start` → `actual_end`). One member's
 #: actuals are theirs (the overlay), but the SUM is a fact about the work,
 #: which is why Projects shows it beside the shared estimate. Bound to the

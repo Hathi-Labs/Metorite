@@ -1811,7 +1811,16 @@ reasonably have gone the other way:
 
 Completing from a row calls `POST /tasks/{id}/complete`, which moves the **shared** status
 — the checkbox carries a title saying so. Triage buttons call
-`PATCH /tasks/{id}/personal` and cannot touch a shared field. One repair the surface forced:
+`PATCH /tasks/{id}/personal`.
+
+⚠️ **Amended by D77 (2026-09-23, narrowed 2026-09-24).** A triage button CAN
+move the shared lane in one case. INBOX, NEXT or WAITING on a closed task
+reopens it: the gateway moves it to the first `todo` lane through
+`reopen_if_closed`. SOMEDAY, REFERENCE, PROJECT, TRASH and a defer never
+move the lane. No other shared field changes. `my_tasks_cutover.md` §4.10
+choice 3 owns the rule.
+
+One repair the surface forced:
 `TaskPanel` previously read the *selected project's* statuses, which is wrong for a task
 opened from My work — it may belong to any project the member is assigned into — so the
 panel's statuses are now resolved from the task's own root project.
@@ -7954,6 +7963,25 @@ doing it says `NEXT`, the person who delegated it says `WAITING`. A single colum
 `pm_tasks` cannot express that, which is why the overlay is keyed
 `(task_id, member_email)`. This is what delegation *is*, and it is the reason the
 personal lens is an overlay rather than a filter.
+
+### 12.5b The Priority scale, and my focus on the card (D76, 2026-09-23)
+
+**The scale is Highest, High, Normal and Low.** Level 3 was "Urgent" until
+2026-09-23. My Tasks derives its own `urgent` from the due date, so the old
+word said two things about one task. The labels live in ONE place,
+`IMPORTANCE_OPTIONS` in `lib/table.ts`. The bulk bar and the group-by lanes
+read that place.
+
+**The task panel shows "Your focus".** This row is private. It appears only
+for a task in the viewer's own lens, and it shows the viewer's own matrix: the
+level, then the `important`, `leveraged` and `deep_work` flags, then the
+derived `urgent`. It
+reuses `WeightToggles` and `PriorityBadge` from My Tasks, so one flag reads the
+same in both apps. The row reads the due date and the shared Priority from the
+live task, so a Priority edit in the same panel changes the row at once.
+
+**A shared Priority of High or Highest seeds Important** while the viewer has
+not stated it. Task Manager §13.4b owns that rule.
 
 ### 12.5a The scheduled block — per member, per D53.7
 
