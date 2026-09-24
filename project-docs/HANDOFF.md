@@ -1706,6 +1706,31 @@ line — never reclaim a number by deleting the other entry.
   member, the agent and the module at 29 call sites. H-73 landed the identity
   seam. H-44 records the same 80+ sites for tier selection, so sweep the two
   together and not twice.
+- 📌 **THE OWNER CHOSE SHAPE 1 (proxy), 2026-09-24, and it is built.**
+  `acb_llm/routed.py` is the seam. `acompletion_with_fallback`,
+  `client.complete` and `client.complete_with_tools` all route when
+  `routing_is_on()`. The TIER travels, never a resolved model, so the
+  operator's ranked `tier_binding` chain decides. Attribution comes from
+  `get_run_context()`, so none of the call sites changed.
+- 🔴 **Two mistakes worth keeping, because both were caught by a fence and
+  not by me.** The first payload sent `{"tier": ...}` and spread the caller's
+  `**extra`. `CompletionRequest` is `extra="forbid"` and its field is
+  `model`, so EVERY routed call would have been a 422 — and the suite stayed
+  green because it stubbed the client. The second left tool-calling on the
+  direct path, on the belief that the Router had no `tools` field. It has,
+  with `tool_choice` beside it. A test that validates against the REAL
+  pydantic model caught both, and it is the fence to keep.
+- ⚠️ **STILL UNROUTED, and each for a reason.**
+  `context.acompletion_stream_text` — the Console streams through a different
+  client (`stream_completion_on_console`) with a different contract, so it is
+  its own slice. `gateway.main._prewarm_prompt_cache` — a startup warm-up with
+  no tenant and no member to bill, so routing it would invent a payer.
+- ⚠️ **It ships DARK.** `routing_is_on()` needs `ROUTER_SERVING_ENABLED` AND a
+  reachable Console. Every box that has not turned billing on behaves exactly
+  as before, and a test pins that for both the completion and the agent paths.
+- **Fences:** `tests/unit/test_internal_ai_is_routed.py` (20) ·
+  `test_console_dependency_boundary.py` gained the seventh allowed caller,
+  which is the same KIND as the `v1_compat` Router hop.
 - **Authority:** `launch_surface.md` §4.1 · D19.2 · D57.7 · CP-6 · H-73 · H-44
 - **Added:** 2026-09-23 · the H-73 session. **Renumbered from H-170 to H-171** the same day (R1): another branch minted the same next free id against a different base and merged first. An id is never reused.
 

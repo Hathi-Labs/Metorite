@@ -277,6 +277,39 @@ async def acompletion_with_fallback(
 
     _source = source if source is not None else _infer_app_source()
 
+    # ── H-171: our own Router bills this, or nobody does ────────────────
+    #
+    # 🔴 **The product's own AI was never metered.** This function called
+    # litellm directly, so the apps runtime, the email automation, the
+    # assistants and the agents spent our vendor account and billed nobody.
+    # `ROUTER_SERVING_ENABLED` did not change that, because the Router was not
+    # on this path — only `/v1/chat/completions` was.
+    #
+    # ⚠️ **The tier goes through untouched and the caller's `fallback_model`
+    # is IGNORED here.** Callers already pass `tier-fast` and friends, and the
+    # Console has a ranked `tier_binding` chain an operator maintains. Running
+    # this function's two-attempt loop as well would be a second opinion about
+    # failover, decided by whichever call site was edited last.
+    #
+    # ⚠️ **D57.7 — a routed call that fails, FAILS.** Nothing below this
+    # block runs when routing is on. Falling back to local litellm would
+    # restore the unbilled path exactly when the Console is refusing to be
+    # paid, which is the one moment it must not.
+    from acb_llm.routed import completion_on_router, routing_is_on
+
+    if routing_is_on():
+        fitted_for_router, _ = fit_messages_to_context(
+            messages, model, max_output_tokens=max_tokens,
+        )
+        return await completion_on_router(
+            tier=model,
+            messages=fitted_for_router,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            source=_source,
+            extra=extra,
+        )
+
     _litellm.drop_params = True
     _litellm.suppress_debug_info = True
     await _ensure_keys_loaded()
