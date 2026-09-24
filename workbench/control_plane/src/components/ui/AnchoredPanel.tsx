@@ -64,6 +64,13 @@ export interface AnchoredPanelProps {
   className?: string;
   /** Forwarded to the portalled element — a `role`, an `id`, a label. */
   panelProps?: React.HTMLAttributes<HTMLDivElement> & Record<string, unknown>;
+  /**
+   * Which edge of the anchor the panel lines up with. `start` (the default)
+   * hangs it from the anchor's left edge. `end` hangs it from the right edge,
+   * for a trigger near the right of the screen, where a wider panel hung from
+   * the left edge runs off the window (the S6g capture chip at 768px).
+   */
+  align?: "start" | "end";
 }
 
 export function AnchoredPanel({
@@ -73,10 +80,14 @@ export function AnchoredPanel({
   maxHeight = 256,
   className = "",
   panelProps,
+  align = "start",
 }: AnchoredPanelProps) {
-  const [box, setBox] = useState<{ left: number; top: number; width: number } | null>(
-    null,
-  );
+  const [box, setBox] = useState<{
+    left: number;
+    right: number;
+    top: number;
+    width: number;
+  } | null>(null);
 
   const place = useCallback(() => {
     if (!anchor) return;
@@ -85,6 +96,7 @@ export function AnchoredPanel({
     const up = below < maxHeight && rect.top > below;
     setBox({
       left: rect.left,
+      right: window.innerWidth - rect.right,
       // Never off the top either: a flipped panel taller than the space
       // above it is the same defect upside down.
       top: up ? Math.max(8, rect.top - maxHeight - 2) : rect.bottom + 2,
@@ -115,7 +127,12 @@ export function AnchoredPanel({
     <div
       {...panelProps}
       {...{ [PREVENT_OUTSIDE_CLICK]: "" }}
-      style={{ left: box.left, top: box.top, minWidth: box.width, maxHeight }}
+      style={{
+        ...(align === "end" ? { right: box.right } : { left: box.left }),
+        top: box.top,
+        minWidth: box.width,
+        maxHeight,
+      }}
       className={`fixed z-[60] overflow-y-auto rounded-md border border-border bg-card shadow-md ${className}`}
     >
       {children}

@@ -11,11 +11,17 @@
  * shown and disabled), with my Areas first, because an Area stays private. It
  * is drawn by `WherePicker`, the list Clarify's Where step draws, so the three
  * doors show one list.
+ *
+ * The list hangs from the chip through `AnchoredPanel`, the shared popover,
+ * so no ancestor clips it. A click in the portalled list is not "outside",
+ * because the panel carries `PREVENT_OUTSIDE_CLICK` (`shouldDismiss`).
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
+import AnchoredPanel from "@/components/ui/AnchoredPanel";
+import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
 
 import type { LensArea } from "../lib/api";
 import type { DestinationRow } from "../lib/companyTree";
@@ -46,13 +52,16 @@ export function CaptureProjectChip({
   onCreateArea: (name: string) => Promise<LensArea | undefined>;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const [chip, setChip] = useState<HTMLButtonElement | null>(null);
 
   // Close on a click anywhere else. The input keeps focus while `#` is typed,
   // so this listens for pointer events, not blur.
   useEffect(() => {
     if (!open) return;
     const onDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) onOpenChange(false);
+      if (shouldDismiss(e.target as Element | null, domClickWalk(rootRef.current))) {
+        onOpenChange(false);
+      }
     };
     window.addEventListener("pointerdown", onDown);
     return () => window.removeEventListener("pointerdown", onDown);
@@ -102,6 +111,7 @@ export function CaptureProjectChip({
   return (
     <div ref={rootRef} className="relative shrink-0">
       <button
+        ref={setChip}
         type="button"
         onClick={() => onOpenChange(!open)}
         aria-haspopup="listbox"
@@ -123,15 +133,17 @@ export function CaptureProjectChip({
           className="h-3.5 w-3.5 shrink-0"
         />
         {/* Collapses to the icon on a narrow screen. */}
-        <span className="hidden truncate md:inline">{label}</span>
+        <span className="hidden truncate lg:inline">{label}</span>
         <Icon name="ChevronDown" className="h-3 w-3 shrink-0" />
       </button>
-      {open && (
-        <div
-          role="listbox"
-          aria-label="Capture to"
-          className="absolute right-0 top-full z-50 mt-1 max-h-[60vh] w-72 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-xl"
-        >
+      <AnchoredPanel
+        anchor={chip}
+        open={open}
+        maxHeight={420}
+        align="end"
+        className="w-72 max-w-[calc(100vw-2rem)] p-1"
+        panelProps={{ role: "listbox", "aria-label": "Capture to" }}
+      >
           <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
             {q ? `Capture to “${query}”` : "Capture to"}
           </p>
@@ -144,8 +156,7 @@ export function CaptureProjectChip({
             onChange={pick}
             onCreateArea={onCreateArea}
           />
-        </div>
-      )}
+      </AnchoredPanel>
     </div>
   );
 }

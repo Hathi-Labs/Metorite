@@ -464,7 +464,9 @@ export function InboxView() {
             <AppIcon name="Inbox" className="h-4 w-4 text-primary" />
             <h1 className="text-base font-bold text-foreground">Inbox</h1>
           </div>
-          <div className="tech-transition flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-border bg-background px-3 py-1.5 focus-within:border-primary/50">
+          {/* `overflow-hidden`: the chip's list is portalled (AnchoredPanel),
+              so nothing inside needs to spill, and at 768 the chip used to. */}
+          <div className="tech-transition flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-lg border border-border bg-background px-3 py-1.5 focus-within:border-primary/50">
             <AppIcon name="Plus" className="h-4 w-4 shrink-0 text-muted-foreground" />
             <input
               value={value}

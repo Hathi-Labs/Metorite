@@ -234,3 +234,12 @@ describe("the capture chip (S6g repair P1-b)", () => {
     expect(submit).toMatch(/setCaptureDest\(null\);/);
   });
 });
+
+describe("the capture chip's list (S6g repair, advisory)", () => {
+  it("hangs from the chip through the shared AnchoredPanel, aligned to its right edge", () => {
+    const chip = read("components/CaptureProjectChip.tsx");
+    expect(chip).toMatch(/<AnchoredPanel[\s\S]*?anchor=\{chip\}[\s\S]*?align="end"/);
+    expect(chip).not.toMatch(/absolute right-0 top-full/);
+    expect(chip).toMatch(/shouldDismiss\(/);
+  });
+});
