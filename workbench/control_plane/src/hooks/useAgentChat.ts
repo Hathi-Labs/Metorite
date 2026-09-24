@@ -28,6 +28,7 @@ import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { emitAgentEvent } from "@/lib/agentEvents";
 import { applyStateSnapshot, applyStateDelta } from "@/hooks/useAgentState";
 import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, type StreamFold } from "@/lib/chatStream";
+import { isInterruptedReply } from "@/lib/chatInterrupted";
 
 // Re-export types for backward compatibility with AgentChat.tsx imports.
 export type { ChatMessage, ToolEvent };
@@ -472,12 +473,7 @@ export function useAgentChat({
     (async () => {
       const state = getSessionState(threadId);
       const last = state.messages[state.messages.length - 1];
-      const localInterrupted = Boolean(
-        last?.role === "assistant" && (
-          last.streaming ||
-          (last.content && !/[.?!]\s*$/.test(last.content.trim()))
-        )
-      );
+      const localInterrupted = isInterruptedReply(last);
 
       // Server truth: is an agent actually running for this thread?
       let serverActive = false;
@@ -820,12 +816,11 @@ export function useAgentChat({
   }, [threadId]);
 
   // ── Reconnection & cross-device polling ─────────────────────────────
-  // Three-tier polling (always runs, even while a stream appears active):
-  //   1. Recovery poll (1.5s): when recovering=true (stream was interrupted
-  //      by refresh and we're actively pulling content from Postgres).
-  //   2. Fast poll (3s): when the last assistant message looks incomplete
-  //      (no terminal punctuation) but we're not in recovery mode.
-  //   3. Slow poll (30s): always runs, picks up messages from other devices
+  // Polling (always runs, even while a stream appears active):
+  //   1. First poll (2s): pulls the settled rows from Postgres. When
+  //      recovering=true (a stream cut off by a refresh, with no agent still
+  //      running), this poll ends the recovery.
+  //   2. Slow poll (30s): always runs, picks up messages from other devices
   //      without requiring a session switch.
   //
   // We poll even when isLoading because the browser may have aborted the
@@ -833,12 +828,6 @@ export function useAgentChat({
   // loading state.  The backend continues running regardless, so polling
   // lets us recover the persisted messages.
   useEffect(() => {
-    const last = messages[messages.length - 1];
-    const lastIncomplete =
-      last?.role === "assistant" &&
-      last.content &&
-      (last.streaming || !/[.?!]\s*$/.test(last.content.trim()));
-
     // If the store says we're loading but no abortController is present,
     // the stream was lost (browser refresh / tab close).  Clear the stale
     // loading flag so polling can take over immediately.
@@ -856,9 +845,6 @@ export function useAgentChat({
 
     // Track the last known message count so we only update on change
     let lastKnownCount = messages.length;
-
-    // Recovery timeout: set when recovering is first detected, cleared when done.
-    let recoveryStartedAt = 0;
 
     const poll = async () => {
       if (cancelled) return;
@@ -1059,33 +1045,26 @@ export function useAgentChat({
           }));
         }
 
-        // Determine next poll interval and whether to clear recovering.
-        const updatedLast = remoteMsgs[remoteMsgs.length - 1];
-        const stillIncomplete =
-          updatedLast?.role === "assistant" &&
-          updatedLast.content &&
-          !/[.?!]\s*$/.test(updatedLast.content.trim());
-
-        // Clear recovering if the server message looks settled (ends with
-        // punctuation) or we've been in recovery for >45s.
-        const curRecovering = getSessionState(threadId).recovering;
-        if (curRecovering) {
-          // Track when recovery first started.
-          if (!recoveryStartedAt) recoveryStartedAt = Date.now();
-          const recoveryAge = Date.now() - recoveryStartedAt;
-          if (!stillIncomplete || recoveryAge > 45000) {
-            setSessionState(threadId, (prev) => ({ ...prev, recovering: false, runStatus: "idle" }));
-            recoveryStartedAt = 0;
-          }
-        } else {
-          recoveryStartedAt = 0;
+        // Clear recovering. This point is reached only with no live stream
+        // (a live one returned above on `abortController`), so no agent is
+        // still writing this thread and the rows just merged are the settled
+        // ones. Recovery used to wait for the last reply to end in . ? !,
+        // which a reply ending in a list, table or card never does, so it
+        // showed "Reconnecting…" for 45 s on every reopen.
+        if (getSessionState(threadId).recovering) {
+          setSessionState(threadId, (prev) => ({
+            ...prev,
+            recovering: false,
+            runStatus: "idle",
+            // The cut-off reply is final now, so it stops reading as live.
+            messages: prev.messages.map((m) =>
+              m.streaming ? { ...m, streaming: false, isThinkingActive: false } : m,
+            ),
+          }));
         }
 
         if (!cancelled) {
-          // Recovery mode: fast 1.5s polling. Incomplete: 3s. Settled: 30s.
-          const curStillRecovering = getSessionState(threadId).recovering;
-          const interval = curStillRecovering ? 1500 : stillIncomplete ? 3000 : 30000;
-          pollTimer = setTimeout(poll, interval);
+          pollTimer = setTimeout(poll, 30000);
         }
       } catch {
         if (!cancelled) pollTimer = setTimeout(poll, 10000);
