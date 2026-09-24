@@ -55,6 +55,23 @@ describe("prose follows the theme", () => {
     expect(offenders).toEqual([]);
   });
 
+  it("code in prose is foreground ink, never the accent (fix round 4)", () => {
+    // `prose-code:text-accent` drew "make flash" in pale orange on light grey.
+    const offenders: string[] = [];
+    for (const f of files) {
+      for (const [cls] of f.src.matchAll(/prose-(?:code|pre):text-[a-z-]+/g)) {
+        const isSize = /:text-(xs|sm|base|lg|\d*xl)$/.test(cls);
+        if (!isSize && !cls.endsWith(":text-foreground")) {
+          offenders.push(`${f.path}: ${cls}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+    const css = read("app/globals.css");
+    expect(css).toContain("--tw-prose-code: var(--foreground)");
+    expect(css).toContain("--tw-prose-pre-code: var(--foreground)");
+  });
+
   it("globals.css points the prose colours at tokens", () => {
     const css = read("app/globals.css");
     const block = css.slice(css.indexOf(".cc-prose {"), css.indexOf("}", css.indexOf(".cc-prose {")));
