@@ -134,6 +134,7 @@ name = "acb-llm"
 version = "0.0.1"
 source = { editable = "packages/acb_llm" }
 dependencies = [
+    { name = "acb-auth" },
     { name = "acb-common" },
     { name = "cryptography" },
     { name = "litellm" },
@@ -142,6 +143,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "acb-auth", editable = "packages/acb_auth" },
     { name = "acb-common", editable = "packages/acb_common" },
     { name = "cryptography", specifier = ">=42.0" },
     { name = "litellm", specifier = ">=1.52" },

@@ -691,6 +691,11 @@ class TestTheDoorShipsDark:
         so, and the vendor sees nothing."""
         r = _decide(client, org["key"])
         assert r.status_code == 400, r.text
+        # CP-13c: the reason is a CODE, so the tenant facade can fall back
+        # on it without reading the sentence.
+        detail = r.json()["detail"]
+        assert detail["reason"] == "tier_unknown"
+        assert "tier-decide" in detail["error"]
         assert recording_fake["calls"] == []
         rows = _rows(db, org["id"])
         assert [(row.task, row.refusal_reason) for row in rows] == [
@@ -785,7 +790,9 @@ class TestClause13RefusesBeforeTheVendor:
     ):
         r = _decide(client, org["key"], questions=questions)
         assert r.status_code == 400, r.text
-        assert words in r.json()["detail"]
+        # CP-13c: a structured reason, and the sentence beside it.
+        assert r.json()["detail"]["reason"] == "invalid_request"
+        assert words in r.json()["detail"]["error"]
         assert recording_fake["calls"] == []
         assert _rows(db, org["id"]) == []
 
@@ -793,7 +800,7 @@ class TestClause13RefusesBeforeTheVendor:
         state = "x" * (MAX_STATE_TOKENS * 4 + 4)
         r = _decide(client, org["key"], state=state)
         assert r.status_code == 400, r.text
-        assert f"the limit is {MAX_STATE_TOKENS}" in r.json()["detail"]
+        assert f"the limit is {MAX_STATE_TOKENS}" in r.json()["detail"]["error"]
         assert recording_fake["calls"] == []
         assert _rows(db, org["id"]) == []
 
@@ -810,7 +817,7 @@ class TestClause13RefusesBeforeTheVendor:
         }
         r = _decide(client, org["key"], state=state, questions=questions)
         assert r.status_code == 400, r.text
-        assert "state plus the longest question" in r.json()["detail"]
+        assert "state plus the longest question" in r.json()["detail"]["error"]
         assert recording_fake["calls"] == []
         assert _rows(db, org["id"]) == []
 
@@ -829,7 +836,8 @@ class TestClause13RefusesBeforeTheVendor:
     ):
         r = _decide(client, org["key"], questions={"q": question})
         assert r.status_code == 400, r.text
-        assert words in r.json()["detail"]
+        assert r.json()["detail"]["reason"] == "invalid_request"
+        assert words in r.json()["detail"]["error"]
         assert recording_fake["calls"] == []
         assert _rows(db, org["id"]) == []
 
