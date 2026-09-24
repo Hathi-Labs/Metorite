@@ -43,6 +43,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     archive_note,
+    assert_assignable_here,
     clean_payload,
     emit,
     load_visible_task,
@@ -331,6 +332,19 @@ async def _apply_to_one(
     task_id = str(task.id)
     outcome: dict[str, Any] = {"task_id": task_id, "changed": []}
     notify_these: list[str] = []
+
+    if add_people:
+        # S6g repair (P2-a). The single-task routes refuse a colleague on a
+        # task in somebody's personal tree (`assert_assignable_here`, owner
+        # directive 2026-08-26). The bulk path skipped the guard. FIRST, before
+        # any write, and as a per-task failure: one private task in a
+        # selection fails alone, and the rest of the selection still applies.
+        try:
+            await assert_assignable_here(
+                db, str(task.project_id), {p.lower() for p in add_people},
+            )
+        except HTTPException as exc:
+            raise TaskPatchError(str(exc.detail)) from exc
 
     if patch:
         result = await apply_task_patch(db, task_id, patch, actor=by)

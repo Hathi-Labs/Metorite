@@ -4,6 +4,7 @@ import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useEffect } from "react";
 import { clarifyQueue, isClarifiable } from "../lib/clarify";
+import { promotePendingToast } from "../lib/promote";
 import { useTaskStore } from "../lib/taskStore";
 import { useVisualViewport } from "../lib/useVisualViewport";
 import { ClarifyPanel } from "./ClarifyPanel";
@@ -29,6 +30,10 @@ export function ClarifyModal() {
   const fromProjectIds = useTaskStore((s) => s.fromProjectIds);
   const done = useTaskStore((s) => s.clarifiedThisSession);
   const selectItem = useTaskStore((s) => s.selectItem);
+  // S6g — a promote decided here waits to be sent. The app's toast sits
+  // under this overlay, so the modal carries the same line and its Undo.
+  const pendingPromote = useTaskStore((s) => s.pendingPromote);
+  const undoPromote = useTaskStore((s) => s.undoPromote);
 
   const processed = useTaskStore((s) => s.processedThisSession);
   const vp = useVisualViewport();
@@ -134,6 +139,25 @@ export function ClarifyModal() {
               style={{ width: `${pct}%` }}
             />
           </div>
+          {pendingPromote && !pendingPromote.sending && (
+            <div className="flex items-center gap-2 border-t border-border bg-primary/5 px-4 py-1.5 text-[11px]">
+              <Icon name="Loader2" className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate text-foreground">
+                {promotePendingToast(pendingPromote.projectName).title}
+              </span>
+              <Button
+                variant="text"
+                size="none"
+                layout="inline-flex items-center"
+                type="button"
+                onClick={() => undoPromote()}
+                className="gap-1 text-[11px] font-semibold"
+              >
+                <Icon name="Undo2" className="h-3 w-3" />
+                Undo
+              </Button>
+            </div>
+          )}
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           {/* keyed by id → the wizard resets as the modal advances to the next item */}

@@ -136,9 +136,10 @@ describe("where Suggested renders", () => {
 
   it("only the task panel asks for it", () => {
     // `taskId` is what turns "Suggested" on. The bulk bar and the move
-    // dialog hold many tasks or none, so they must not pass it.
+    // dialog hold many tasks or none, so they must not pass it. Since S6g
+    // the move dialog's assignee editor lives in `PromoteFields`.
     expect(read("components/TaskBody.tsx")).toMatch(/<AssigneePicker[\s\S]*?taskId=/);
-    for (const rel of ["components/BulkBar.tsx", "components/MoveTasksDialog.tsx"]) {
+    for (const rel of ["components/BulkBar.tsx", "components/PromoteFields.tsx"]) {
       const source = read(rel);
       const pickers = source.match(/<AssigneePicker[\s\S]*?\/>/g) ?? [];
       expect(pickers.length, rel).toBeGreaterThan(0);

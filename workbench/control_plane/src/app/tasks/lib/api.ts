@@ -555,6 +555,8 @@ export interface OrganizeBody {
   status?: string;
   assignee?: { name: string; email?: string; provider_user_id?: string };
   subtasks?: string[];
+  /** S6g — the destination's required custom fields, for a promote. */
+  custom_fields?: Record<string, unknown>;
 }
 
 export async function apiOrganize(id: string, body: OrganizeBody): Promise<MyTask> {

@@ -115,3 +115,129 @@ export function viewQuickAdd(
       return null;
   }
 }
+
+// ── `#` — capture straight onto a project (S6g) ──────────────────────────────
+
+/** One place a capture can land: an Area (mine) or a company project. */
+export interface CaptureDestination {
+  id: string;
+  name: string;
+  kind: "area" | "project";
+}
+
+/** What `parseProjectToken` read out of a capture line. */
+export interface ProjectTokenParse {
+  /** The line with the `#` token removed and the spaces tidied. */
+  title: string;
+  /** The destination the token named, when exactly one matched. */
+  match?: CaptureDestination;
+  /** The text after `#`, when a token was present, matched or not. */
+  query?: string;
+}
+
+/**
+ * The shortest start of a name that may name it (S6g repair P2-c). One letter
+ * is too easy to type by accident, and "#a" filing a task onto the only
+ * project starting with A publishes it. An exact name of any length still
+ * matches.
+ */
+export const MIN_PREFIX = 2;
+
+/** Where a `#` token starts: at the line's start, or after whitespace. */
+const TOKEN_START = /(^|\s)#(\S)/;
+
+/**
+ * Read a `#Name` token out of a capture line (my_tasks_cutover.md §5 S6g).
+ *
+ * The name may hold spaces ("#Printer v3"), so the reader takes the LONGEST
+ * run of words after `#` that names exactly one destination. A run matches
+ * when it equals a name, ignoring case, or when it is the start of exactly one
+ * name. An exact name wins over a prefix of a longer one. The words after the
+ * run go back into the title, so "#print fix the jam" files "fix the jam".
+ * A prefix needs at least `MIN_PREFIX` characters.
+ *
+ * Only the first `#` at a token start counts. A `#` inside a word ("C#") is
+ * text. A token that names nothing, or names two things, leaves the line
+ * alone and returns only its `query`, so the picker can ask.
+ */
+export function parseProjectToken(
+  text: string,
+  destinations: readonly CaptureDestination[],
+): ProjectTokenParse {
+  const found = TOKEN_START.exec(text);
+  if (!found) return { title: text.trim() };
+  const hashAt = found.index + found[1].length;
+  const before = text.slice(0, hashAt);
+  const after = text.slice(hashAt + 1);
+  const words = after.split(/\s+/).filter(Boolean);
+  const query = words.join(" ");
+  const lower = (s: string) => s.trim().toLowerCase();
+
+  for (let k = words.length; k >= 1; k--) {
+    const phrase = lower(words.slice(0, k).join(" "));
+    const exact = destinations.filter((d) => lower(d.name) === phrase);
+    const hit =
+      exact.length === 1
+        ? exact[0]
+        : exact.length === 0 && phrase.length >= MIN_PREFIX
+          ? (() => {
+              const starts = destinations.filter((d) => lower(d.name).startsWith(phrase));
+              return starts.length === 1 ? starts[0] : undefined;
+            })()
+          : undefined;
+    if (hit) {
+      const rest = words.slice(k).join(" ");
+      const title = `${before} ${rest}`.replace(/\s+/g, " ").trim();
+      return { title, match: hit, query };
+    }
+  }
+  return { title: text.trim(), query };
+}
+
+/**
+ * The `#` fragment the member is typing right now, if the caret sits in one.
+ * The capture box opens its picker while this is non-null, filtered by it.
+ */
+export function openHashQuery(text: string): string | null {
+  const m = /(?:^|\s)#([^#]*)$/.exec(text);
+  return m ? m[1] : null;
+}
+
+/** The Inbox capture box's own state. */
+export interface CaptureBoxState<A> {
+  value: string;
+  dest: CaptureDestination | null;
+  attachments: A[];
+  chipOpen: boolean;
+}
+
+/**
+ * Submit the Inbox capture box (S6g). Hands the line to `captureLine` (the
+ * store's one flow) and answers the box's next state.
+ *
+ * ⚠️ The chip's pick is for ONE capture (repair P1-b). The next state puts it
+ * back on "Inbox", or the next thought would land on the same board unasked.
+ * A blank line changes nothing.
+ */
+export function submitCaptureBox<A>(
+  box: CaptureBoxState<A>,
+  captureLine: (
+    raw: string,
+    opts: { targets: readonly CaptureDestination[]; dest: CaptureDestination | null; attachments?: A[] },
+  ) => unknown,
+  targets: readonly CaptureDestination[],
+): CaptureBoxState<A> {
+  const raw = box.value.trim();
+  if (!raw) return box;
+  captureLine(raw, {
+    targets,
+    dest: box.dest,
+    attachments: box.attachments.length ? box.attachments : undefined,
+  });
+  return { value: "", dest: null, attachments: [], chipOpen: false };
+}
+
+/** The line with the `#` fragment at its end removed, for a picker pick. */
+export function stripOpenHash(text: string): string {
+  return text.replace(/(^|\s)#[^#]*$/, "$1").replace(/\s+$/, "");
+}

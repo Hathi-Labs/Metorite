@@ -13,6 +13,9 @@ this spec and `work_plan.md` §2 disagree, the board wins.
 on 2026-09-23 (D77, §4.10). S7 ran on
 2026-09-23. S8 PR 1 merged on 2026-09-24 as `6e028aa6` (#411).
 
+S9 merged as `ec979545` (#436). S6g, one inbox and one promote path, is built on
+2026-09-24 and is the last slice open.
+
 ## 0. One paragraph
 
 The Tasks app becomes **My Tasks**. It reads and writes the one task store
@@ -629,7 +632,9 @@ card landed in S6c (`ProjectLabel.tsx`), so S6e does not build it again.
 
 **Done when.**
 1. Assign a task to Bob in Projects. Bob's inbox shows it under "From
-   Projects" in the same page load. Bob sets a context. It leaves the group.
+   Projects" in the same page load. Bob states a disposition, through
+   Clarify or a quick dispose. It leaves the group. A context alone does not
+   triage it (build record point 1). Corrected 2026-09-24 in S6g.
    Fence: `tests/unit/test_projects_personal_s6e.py` and a live check in
    `tests/live/live_ws39_s6e.py` with two members in one org.
 2. Make Bob the lead of a project with no task assigned to him. Bob's My Tasks
@@ -807,6 +812,241 @@ files). The database was dropped afterwards.
   `workbench/control_plane/ux-shots/s6f/`. They are from the first build. The
   rework renamed the member's cell column to "Your focus", and nobody has
   shot it again.
+
+### S6g — one inbox and one promote path · AGENT-SAFE · BUILT 2026-09-24
+
+**The owner's request, verbatim, 2026-09-24, in seven fragments.**
+
+> "the inbox system properly in the My Tasks app"
+
+> "dealing with both kinds of tasks"
+
+> "added in the My Tasks app directly as personal tasks"
+
+> "tasks that are added from the Projects app"
+
+> "add a task or promote a task into the projects app from the My Tasks app"
+
+> "when a task might become something that has to be part of a larger project"
+
+> "That mechanism also needs to be properly set up in terms of UI/UX."
+
+**What the audit found on `main`.** Two row components drew the Inbox, and
+they had different actions. The header count, "Clarify next", the date pills,
+the search, the selection and the keyboard ignored the board rows. The
+sidebar badge counted them, so the two numbers disagreed.
+
+Every capture wore a "Local" badge. "Move to project" was a right-click only,
+and the dense list had no door to it. Two promote doors disagreed on the destination list, on
+the required fields, on the copy and on the toast. Clarify never asked for a
+required field, and the server refused the move after the card had moved.
+
+**Scope.**
+
+1. One list and one row component for both kinds.
+2. An origin marker in place of `SourceBadge`.
+3. A source filter: All, Mine, From Projects.
+4. The same main action on both kinds, and a visible promote door.
+5. A capture that lands straight on a project, through a chip or a `#` token.
+6. One promote path for the Move dialog and for Clarify.
+7. An Undo for a promote, as a short deferred commit.
+8. Two keys, `m` and `o`.
+9. A phone layout at 390px with no horizontal scroll.
+
+**Build record (2026-09-24).** Branch `my-tasks-inbox`.
+
+1. **The one list.** `lib/inbox.ts` is the rule. The Inbox holds every INBOX
+   row and every untriaged board row, and it leaves out a tickled or archived
+   row. The sidebar badge reads `inboxCount`. The header reads the same list,
+   so the two numbers are equal. Board rows come first, then the captures.
+   The member's sort applies inside each block. "Inbox zero" shows only when
+   both kinds are empty. `FromProjectsGroup` is deleted.
+2. **The kind of a row** is `isPersonalTask`. A row in my root or in one of my
+   Areas is personal. Any other row is a board row. A capture that was
+   promoted while it was still INBOX is a board row.
+3. **The origin marker** is `InboxOrigin`. A personal row shows a neutral
+   lock badge, "Personal". A board row shows `ProjectLabel` and "from
+   {assigner}". Both show D78's level badge (`PriorityBadge`). The default
+   low-priority cell draws nothing, as on the card face.
+4. **The source filter** is the store's `sourceFilter`, with the values
+   `all`, `personal` and `board`. Nothing set it before S6g. It narrows the
+   Inbox list and nothing else. The stale Mine and Team chips are gone from
+   the Inbox and from the other lists. The date pill that read "All" now reads
+   "Any date", because two pills called "All" sat side by side.
+5. **The actions** come from one function, `inboxRowActions`. The card, the
+   table, the context menu and the keyboard read it. A personal row has
+   **Move to project** and **Delete**. A board row has **Not mine** and
+   **Open on board**, and no Delete. The actions are always visible.
+6. ⚠️ **"Not mine" writes TRASH on my overlay, through the one-tap dispose.**
+   The audit found that the delete path purges when its Undo window closes.
+   On a board task, the purge is a hard DELETE of the team's task. So the
+   board rows never use `requestDelete`. The `t` key and the bulk bar follow
+   the same rule. The same defect was live in every other list. The P0 rule
+   below closes it.
+7. **The table** has a "Where" column in place of "Source".
+8. **Capture to a project.** A chip at the right of the capture box reads
+   "Inbox" until the member picks a destination. Typing `#` at the start of a
+   word opens the same picker. `parseProjectToken` reads the longest run of
+   words that names one Area or project. An exact name wins over the start of
+   a longer name. A start of a name needs at least two characters. The token
+   leaves the title. The capture lands in my root
+   first, so a failed move loses nothing. An Area is a move in my own tree,
+   sent at once. A company project goes through the one promote path. A
+   project can have a required field that the capture does not carry. Then
+   the Inbox opens the promote dialog on that project, and sends nothing.
+9. **One promote path.** `PromoteFields` holds the mapping preview, the
+   required fields, the assignee editor and the losses. The Move dialog draws
+   it, and Clarify draws it under Where. Both doors build the request with
+   `promotePlan`. Both read the company tree through `useCompanyTree`, so a
+   folder is drawn and cannot be picked in both. Both say one hint:
+   "It moves onto the board. It stays in your lists while you are an
+   assignee." Both schedule through `schedulePromote`, and `PromoteToast`
+   is the only place that speaks.
+10. **The gateway.** `OrganizeIn` gains `custom_fields`. `_organize` passes
+    it into the one `MoveTask`. The answers count only when the task changes
+    project. The route emits `pm.task.moved` when the project changed. The
+    first build also added `assignees`. No client sent it, so the repair round
+    removed it (P2-d).
+11. **Clarify's owner.** Clarify hides the assignee editor of
+    `PromoteFields`, because its Owner step already answers who. A delegate
+    still sends its one assignee.
+12. **The "File it here" banner** on a personal task picks the project and
+    opens the form on it. It does not send, because a promote asks its
+    questions first.
+
+**The Undo rule for a promote.** D62 refuses a move from a company board back
+into my personal tree. So there is no Undo after a promote is sent. The Undo
+is a short deferred commit:
+
+1. The toast reads "Moving to {project}…" with **Undo**. Nothing is sent yet.
+2. After `PROMOTE_UNDO_MS` (5 seconds) the store sends the request.
+3. Undo before the send cancels it. Nothing reaches the server.
+4. After the send, the toast reads "Moved to {project}" with **Open board**.
+   It has no Undo.
+
+The rule applies to the Move dialog, to Clarify and to the capture chip. The
+Clarify walk moves on at once. An Undo puts the capture back in the walk. The
+app's toast sits under the Clarify overlay, so the overlay carries the same
+line and its Undo.
+
+A later gesture on the same task cancels a waiting promote. The gestures are
+a delete, a dispose, a bulk dispose, an archive and a fresh clarify. A row
+that leaves the list cancels it too. The promote is cancelled, and never sent
+early.
+
+⚠️ **A waiting promote lives only in the open page.** If the member closes
+the tab inside the window, the move is dropped and nothing is sent. The page
+asks before it closes while a promote waits (`promoteBlocksUnload`).
+
+**The purge rule (P0, 2026-09-24).** My Tasks never hard-deletes a task
+that is not in my personal tree.
+
+The defect was live in every My Tasks list. A delete wrote TRASH on my
+overlay. When the Undo window closed, `dismissUndo` called `apiPurgeItem`,
+and that sent `DELETE /projects/tasks/{id}`. A colleague can assign a task to me
+from a board. When I deleted it, it was gone for the whole team, for good.
+
+1. `deleteItems` splits the gesture by `canPurge` (`lib/removal.ts`). A task
+   in my root or in one of my Areas is soft-deleted. The purge runs when the
+   Undo window closes.
+2. A board task is removed from my lists. My overlay says TRASH, through the
+   one-tap dispose. The board keeps the task, and no purge runs.
+3. `purgeable` refuses a purge before any request, for any id whose row is not
+   personal.
+4. The purge goes to a new route, `DELETE /projects/my/tasks/{id}`. The route
+   answers 409 for a task outside my tree. It also answers 409 when another
+   member is an assignee of the task. The checks and the delete share one
+   transaction, through `tasks.delete_task_in`.
+5. Undo on a removed board task writes back the disposition my overlay held.
+   An unstated disposition is cleared, so the Undo states no triage.
+6. Every surface labels a board task's gesture "Remove from my lists". The
+   surfaces are the detail panel, the bulk bar, the `EliminatePopup` card, the
+   confirm dialog and the two Calendar menus. The Inbox keeps "Not mine".
+
+⚠️ **Finding, not changed.** `DELETE /projects/tasks/{id}` admits every member
+who can see the task (`load_visible_task`). No role check and no ownership
+check apply. That is the Projects app's own permission rule, so this slice
+does not change it. The board's delete is still open to every member who
+can see the task.
+
+Fences: `removal.test.ts` and `test_projects_personal_s6g.py`.
+
+**Second round (2026-09-24).** Three more changes landed before review.
+
+1. The purge rule above.
+2. The mobile capture sheet (`QuickCapture`) takes a `#` token. The Inbox box
+   and the sheet call one store action, `captureLine`. It reads
+   `parseProjectToken` and routes through `captureTo`. The promote dialog is
+   now mounted once (`PromoteHost`), so both boxes open the same dialog.
+3. The Clarify header shows `InboxOrigin` in place of the "Local" badge.
+
+**Repair round (2026-09-24), after review.**
+
+1. P1-a: a later gesture cancels a waiting promote (see the Undo rule).
+2. P1-b: the capture chip goes back to "Inbox" after each capture.
+3. P2-a: the purge refuses a task with another assignee. Bulk
+   `assignees_add` now runs `assert_assignable_here` for each task, before
+   any write.
+4. P2-b: the page asks before it closes while a promote waits.
+5. P2-c: a `#` prefix needs at least two characters.
+6. P2-d: `OrganizeIn.assignees` is gone.
+7. P2-e: the live script calls the purge route itself.
+
+**Round 3 (2026-09-24), after the verifier.**
+
+1. A second promote of the SAME task replaces the first. It cancels the
+   waiting one and never sends it. A second promote of another task still
+   sends the first at once.
+2. Fences now cover the cancel calls in `clarify` and `bulkArchive`.
+3. Three fences test behaviour, not source text: `submitCaptureBox`,
+   `onPromoteUnload` and the `AnchoredPanel` placement (`panelBox`,
+   `panelStyle`).
+
+**Decisions the request did not settle, each an agent default.**
+
+1. The badge and the header count the whole Inbox. The source filter narrows
+   the list only.
+2. A tickled board row goes to the Tickler, as a tickled capture does.
+3. A promote that is still waiting is sent at once when a second promote
+   starts. So there is never more than one Undo window.
+4. The Move dialog closes before the send. A refusal after the delay speaks
+   through the toast.
+5. `e` (edit the title) works on a personal row only, because a board task's
+   title belongs to the team.
+
+**Fences.**
+
+| Claim | Test |
+|---|---|
+| the badge and the header read one count, and "Inbox zero" needs both kinds empty | `inbox.test.ts` |
+| no `SourceBadge` on an Inbox row | `inbox.test.ts` |
+| the filter counts, and the order | `inbox.test.ts` |
+| "Not mine" writes TRASH and never deletes | `inbox.test.ts` |
+| `m` moves a capture, and `o` opens a board row | `inbox.test.ts` |
+| `#` parsing | `captureTo.test.ts` |
+| capture to a project, with and without a required field | `captureTo.test.ts` |
+| both doors build through `promotePlan`, and the toasts are equal | `captureTo.test.ts` |
+| the deferred commit sends after the delay, and Undo cancels it | `captureTo.test.ts` |
+| `custom_fields` reaches the move, and `pm.task.moved` is emitted | `test_projects_personal_s6g.py` |
+| a refusal moves nothing, on a real database | `live_ws39_s6g.py` |
+| a board task is never purged, and a personal task still is | `removal.test.ts`, `test_projects_personal_s6g.py`, `live_ws39_s6g.py` |
+| the mobile sheet takes `#` through the one capture-line flow | `quickCapture.test.ts` |
+| the Clarify header wears the origin marker | `inbox.test.ts` |
+
+**Verified.**
+
+- `tests/live/live_ws39_s6g.py`: **11/11 PASS** after the repair round, on a
+  fresh database built from this branch's own ladder (`acb_tenant_s6g4`: 01
+  plus 216 files). Checks 3 to 3c call the purge route itself. Check 4 calls
+  the bulk route. The database was dropped afterwards. The live scripts for
+  S6a, S6e and S6f passed on the second round's fresh database.
+- `test_projects_personal_s6g.py`: 11 tests.
+- `npx tsc --noEmit` is clean. `npx vitest run` is green.
+- The captures are in `workbench/control_plane/ux-shots/s6g/`. The visual
+  pass found one defect, and this slice fixed it. The Move dialog mounts
+  `PromoteFields` before a destination is picked. The idle preview answered a
+  new empty list on each render, and the report effect looped. The idle answer
+  is now two constants, and `captureTo.test.ts` holds it.
 
 ### S7 — the cutover · dev-phase window, reported by evidence · RUN 2026-09-23
 
@@ -1278,6 +1518,9 @@ the pre-flight that S8 PR 2 lists. During the dev-phase window (CLAUDE.md
 | a work fact has one home, and My Tasks reads it (D77) | `test_projects_personal_s6f.py`, `live_ws39_s6f.py`, `sharedFields.test.ts` |
 | the strip draws no work fact, and the body draws them all (D77) | `itemDetail.test.ts` |
 | the lens never writes `time_estimate_mins`, and My Tasks never writes the shared Priority (D77, D76) | `lens.test.ts`, `sharedFields.test.ts`, `test_projects_personal_s6f.py` |
+| the Inbox badge and header read one count, and a board row is never deleted (S6g) | `inbox.test.ts` |
+| both promote doors build through `promotePlan` and wait through one deferred commit (S6g) | `captureTo.test.ts` |
+| organize carries the promote answers, and a refusal moves nothing (S6g) | `test_projects_personal_s6g.py`, `live_ws39_s6g.py` |
 | the ladder replays clean | `pr-check.yml` migrations job |
 
 ## 8. What this spec closes, and where

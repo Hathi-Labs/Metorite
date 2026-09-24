@@ -447,36 +447,22 @@ line — never reclaim a number by deleting the other entry.
   `work_plan.md` §6.1 WS-31 (i)
 - **Added:** 2026-09-23 · the Jev planning session
 
-### H-163 · The My Tasks cutover is in flight. The spec owns the order · [AGENT]
-- **Check:** `gh pr view 411 --json state` → `OPEN` means S8 PR 1 has not
-  merged. `\dt gtd_*` on the box → any row means S8 PR 2 has not landed.
-  `rg -l "GtdItem" workbench/control_plane/src` → any hit means S9 has not
-  landed.
-- **Next, in this order (2026-09-23 state).**
-  1. Merge PR #411 (S8 PR 1) NO EARLIER than 2026-09-24 00:30 UTC. All 19
-     checks were green at `9c45063c`. Merge `origin/main` first if it moved.
-     Watch the deploy and read `/version`.
-  2. Build S8 PR 2: arm `gtd_retirement_arm`, then a new migration (next free
-     number, R1) calls `gtd_retirement_drop()` and drops the tree tables,
-     `gtd_contexts` and `gtd_retirement_arm`. It renames `gtd_attachments`,
-     `gtd_horizons` and `gtd_reviews` through the guarded prologue. Spec §5 S8
-     and §6 steps 11 to 13 hold the order. The pre-migration backup must exist.
-  3. Build S9, the code-name sweep (§5 S9).
-- **Owed to the owner.** The Focus matrix badge still says "Low Priority".
-  The task panel's Priority field below it means `pm_tasks.importance`. The
-  word needs an owner call before anyone renames the matrix vocabulary.
+### H-163 · My Tasks: only S6g is left of the cutover · [AGENT]
+- **Check:** `gh pr list --head my-tasks-inbox --state merged` → an empty
+  list means S6g has not merged. Delete this entry when it has merged and the
+  deploy serves it.
+- **What is left.** S6g, one inbox and one promote path (branch
+  `my-tasks-inbox`). `specs/my_tasks_cutover.md` §5 S6g holds its build
+  record. Every other slice is merged. S8 PR 2 dropped the old store
+  (migration 217, in the production ledger since 2026-09-24 05:40 UTC). S9
+  moved the code names (#436, `ec979545`).
 - **Owed by a person.** A signed-in member captures in My Tasks and sees the
   task in Projects in the same page load (§6 step 9).
-- **Why:** owner directive 2026-09-23 (D73). `specs/my_tasks_cutover.md` §5
-  holds nine slices in a load-bearing order, and §6 the corrected runbook.
-  H-29 and H-151 stay open until the slice that closes each one lands (S6e
-  closed H-33, H-59 and H-62). §8 of the spec says which.
-- ⚠️ **Migration 190 is in the production ledger as applied.** The drop needs
-  a new migration that calls `gtd_retirement_drop()` again. Do not wait for
-  "the next deploy" to run it.
+- **Why:** owner directive 2026-09-23 (D73), and the inbox directive of
+  2026-09-24. The spec's §5 holds the slices in order.
 - **Authority:** D73 · `specs/my_tasks_cutover.md` · `work_plan.md` §2 WS-39
-- **Added:** 2026-09-23 · the My Tasks planning session
-
+- **Added:** 2026-09-23 · the My Tasks planning session. **Re-cut**
+  2026-09-24 when S8 and S9 closed H-29 and H-151.
 ### H-104 · The generated tenancy files are NOT on the migration ladder · [AGENT]
 - **Check:** `ls infra/postgres/generated/*.sql`, and read the glob in
   `scripts/apply_migrations.sh` (it matches numbered files in `infra/postgres`
@@ -1634,27 +1620,6 @@ line — never reclaim a number by deleting the other entry.
   nothing has exercised this against real data yet.
 - **Authority:** `work_plan.md` §3 D63 · §6 (member/role writes) · D53.7/D53.8
 - **Added:** 2026-08-26 · WS-39 personal-tree session *(minted as H-35; renumbered to H-49 the same session — `test_handoff_ids_are_unique` caught the collision with the WS-36 restore-spec entry. Ids are never reused.)*
-
-### H-29 · WS-39 S3b/S3c/S8: verify the `gtd_*` drop on production · [AGENT]
-- **Check:** On the box, run `\dt gtd_*`. Then look in the ledger for
-  `217_gtd_task_store_drop.sql`. No table and one ledger row mean the drop is
-  done. Delete this entry then, and not before.
-- **S8 PR 2 closes this** (branch `my-tasks-s8d`). The run half is done. The
-  S3b backfill moved every row on 2026-09-23, and `gtd_backfill_plan` returned
-  zero rows. Migration 217 arms the guard in reviewed code and drops the
-  store. The arm is no longer a hand INSERT.
-- **What is left:** the merge, the deploy and the check above. First run the
-  pre-flight in `my_tasks_cutover.md` §5 S8. It needs today's backup and
-  migration 216 (the estimate backfill) in the ledger. Migration 217 checks the data by itself.
-- ⚠️ **Migration 217 fails closed.** An unmigrated row, an uncopied value or
-  a row in a tree table makes it RAISE, and the deploy stops. Do not widen the guard. Read `gtd_backfill_plan` and
-  decide each row.
-- ⚠️ **The survivors are NOT part of the drop.** `user_settings`, the two
-  Calendar tables and the five `people*` tables stay (D53.6).
-  `attachments`, `my_tasks_horizons` and `my_tasks_reviews` stay under their
-  new names. `test_gtd_backfill.py` pins each one.
-- **Authority:** `work_plan.md` §6 (f) · D53.5 · D73 · `my_tasks_cutover.md` §5 S8
-- **Added:** 2026-08-24 · WS-39 S1 session. **Re-cut** 2026-09-23 for S8 PR 2.
 
 ### H-27 · 33 browser tests are red, and CI gates only the half that is green · [AGENT]
 - **🟢 2026-09-22 — CI RUNS THE BROWSER SUITE.** `pr-check.yml` has an `e2e`
@@ -3144,45 +3109,6 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** owner directive 2026-09-21 · `org_access_control.md` §3 ·
   migration 207
 - **Added:** 2026-09-21 · the every-app-by-default session
-
-### H-151 · The `gtd_` name is off every table. Verify on production, then delete · [AGENT]
-- **Check:** `uv run pytest tests/unit/test_no_gtd_table_names.py` passes on
-  `main` with S9 merged, and `\dt gtd_*` on the box returns nothing. Both
-  mean this is done. Delete this entry then, and not before.
-- **S8 PR 2 closes the table half** (branch `my-tasks-s8d`, #434). Slice 3
-  renamed the three survivors in the migrations that create them. `gtd_attachments` is
-  `attachments` (52). `gtd_horizons` and `gtd_reviews` are
-  `my_tasks_horizons` and `my_tasks_reviews` (48). Migration 217 drops the
-  rest of the store, and H-29 tracks that drop.
-- **What is done before it.** Slice 1, the People family, on 2026-09-21: `gtd_people` is
-  `people`, and the four `gtd_person_*` tables are `people_*`. Slice 2, on
-  2026-09-22: `gtd_day_state` is `calendar_day_state`, `gtd_rollover_log` is
-  `calendar_rollover_log`, and `gtd_settings` is `user_settings`.
-  `tests/unit/test_gtd_rename_upgrade.py` is the one fence for all eleven, and
-  `people_center_app.md` §7.0 carries the mechanism.
-- ⚠️ **Three traps, all measured.** A sweep rewrites the rename prologue
-  itself into `ALTER TABLE new RENAME TO new`, a silent no-op — so sweep
-  first, and add the prologue after. A short new name can be a PREFIX of its
-  own family, which turns every `"FROM x" in sql` test fake into a wrong one
-  (`tests/unit/_sql_match.py` answers that). And an assertion over a whole
-  migration file reads the prologue's own warning comment as the defect, so
-  measure the executable block.
-- **S9 closes the code half when it merges** (branch `my-tasks-s9`, PR
-  #436, which targets `main`). It moved all 29 agent tools at once, from `gtd_*` to
-  `my_tasks_*`, and the skill is `skill-my-tasks`. The settings helpers and
-  the types of the client moved too. After both PRs merge, the fence allows
-  only the upload folder `data/gtd_attachments` and the tool-name alias map in
-  `TaskToolCards.tsx`. The map exists for stored chat history.
-  `my_tasks_cutover.md` §5 S9 has the rename map.
-- **One JSON field moved in slice 3.** The WhatsApp commitment list returned
-  `gtd_item_id`, and it now returns `task_id`. Its one reader, the WhatsApp
-  agent, moved in the same PR. No route path moved.
-  `tests/unit/test_client_route_contract.py` still fences the Tasks and
-  Calendar client paths.
-- **Authority:** owner directive, 2026-09-21 — *"I really don't want GTD
-  anymore... update the naming convention for all of the table names"*
-- **Added:** 2026-09-21 · the People rename session. **Updated:** 2026-09-23
-  (S8 PR 2, then S9).
 
 ### H-152 · A SELF-SERVE customer can never be served AI · [AGENT]
 - **Check:** `rg -n "CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY" /opt/acb/app/.env`

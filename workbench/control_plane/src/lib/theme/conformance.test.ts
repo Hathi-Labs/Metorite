@@ -422,7 +422,6 @@ describe("no raw Tailwind palette colours", () => {
     "app/observability/page.tsx": 29,
     "app/tasks/components/AssistantRail.tsx": 1,
     "app/tasks/components/ClarifyPanel.tsx": 5,
-    "app/tasks/components/DeleteConfirmModal.tsx": 4,
     "app/tasks/components/FocusMode.tsx": 2,
     "app/tasks/components/PriorityControls.tsx": 48,
     "app/calendar/components/StartupRitual.tsx": 6,
