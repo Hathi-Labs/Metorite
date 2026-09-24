@@ -26,6 +26,7 @@ import type { ChatMessage, ToolEvent } from "@/lib/chatStore";
 import { parseAgentError } from "@/lib/parseAgentError";
 import { activeContextSlice, isCompactionCheckpoint } from "@/lib/tokenCount";
 import { emitAgentEvent } from "@/lib/agentEvents";
+import { agentAuthor } from "@/lib/projectsAgent";
 import { applyStateSnapshot, applyStateDelta } from "@/hooks/useAgentState";
 import { applyStreamEvent, applySubAgentEvent, nanoid, parseReasoning, type StreamFold } from "@/lib/chatStream";
 import { isInterruptedReply } from "@/lib/chatInterrupted";
@@ -212,6 +213,8 @@ export function useAgentChat({
       const assistantMsg: ChatMessage = {
         id: assistantId, role: "assistant", content: "", timestamp: turnTs + 1,
         streaming: true, toolEvents: [], progressLines: [], isThinkingActive: true,
+        // Who this turn is from: the agent it was sent to (S9 fix round 3).
+        ...agentAuthor(agentNameRef.current),
       };
 
       // Claim exclusive write ownership of this message.  If a reconnect/replay
@@ -544,7 +547,16 @@ export function useAgentChat({
           isLoading: true,
           abortController: abortCtrl,
           messages: prev.messages.map((m) =>
-            m.id === lastId ? { ...m, streaming: false, isThinkingActive: false } : m
+            m.id === lastId
+              ? {
+                  ...m,
+                  streaming: false,
+                  isThinkingActive: false,
+                  // A turn restored from the local cache may predate the
+                  // stamp. The run being replayed is this agent's.
+                  ...(m.authorEmail ? {} : agentAuthor(agentNameRef.current)),
+                }
+              : m
           ),
         }));
       } else {
@@ -555,6 +567,7 @@ export function useAgentChat({
         const placeholder: ChatMessage = {
           id: lastId, role: "assistant", content: "", timestamp: Date.now(),
           streaming: true, toolEvents: [], progressLines: [], isThinkingActive: true,
+          ...agentAuthor(agentNameRef.current),
         };
         setSessionState(threadId, (prev) => ({
           ...prev,

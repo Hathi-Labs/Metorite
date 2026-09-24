@@ -1769,7 +1769,8 @@ The skill output does not change. The cards read the «» in the tool output
    one. It leaves code, URLs and numbers alone. It counts open and closed
    bold across the lines of one paragraph. It skips a line indented four
    spaces. A fence closes only on a fence of the same character that is at
-   least as long.
+   least as long. An inline code span closes only on a run of backticks of
+   the same length, as CommonMark reads it.
 8. **A date cell does not wrap.** `isDateCell` holds a `dataGrid` date on one
    line, so `2026-09-30` does not break at a hyphen in the rail.
 
@@ -1796,6 +1797,13 @@ The skill output does not change. The cards read the «» in the tool output
    agent keeps its «text» and its `mailto:` links, and its tool results are
    never indexed. A turn by another agent in a Projects thread draws no
    pills. Fence: `src/components/entityPillsGate.test.ts`.
+   A turn names its agent from the moment it starts to stream (fix round 3).
+   `useAgentChat` stamps `agentAuthor(agentName)` on a new turn, on a replay
+   placeholder and on a restored turn with no author. So a switch to the
+   Projects assistant does not redraw an earlier answer with pills. When a
+   turn has an author, `pillsForTurn` needs that author to be the Projects
+   assistant. The server keeps the first stamp, so a reload reads the same
+   name. Fence: `src/components/entityPillsAuthor.test.ts`.
 8. **The marks stay in the chat answer** (fix round 1). The model never
    writes them into a tool argument, because nothing removes them there.
    Fence: `test_the_marks_stay_out_of_every_tool_argument`.
