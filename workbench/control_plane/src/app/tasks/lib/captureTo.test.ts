@@ -99,6 +99,14 @@ describe("parseProjectToken", () => {
     expect(parseProjectToken("Fix #Nowhere", DESTS).match).toBeUndefined();
   });
 
+  it("a one-character prefix names nothing, two characters can (repair P2-c)", () => {
+    expect(parseProjectToken("Water plants #H", DESTS).match).toBeUndefined();
+    expect(parseProjectToken("Water plants #H", DESTS).title).toBe("Water plants #H");
+    expect(parseProjectToken("Water plants #Ho", DESTS).match?.id).toBe("a1");
+    // An exact one-letter name still matches.
+    expect(parseProjectToken("Go #X", [{ id: "x", name: "X", kind: "project" }]).match?.id).toBe("x");
+  });
+
   it("a # inside a word is text", () => {
     expect(parseProjectToken("Learn C# basics", DESTS)).toEqual({ title: "Learn C# basics" });
   });

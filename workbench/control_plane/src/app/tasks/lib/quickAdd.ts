@@ -135,6 +135,14 @@ export interface ProjectTokenParse {
   query?: string;
 }
 
+/**
+ * The shortest start of a name that may name it (S6g repair P2-c). One letter
+ * is too easy to type by accident, and "#a" filing a task onto the only
+ * project starting with A publishes it. An exact name of any length still
+ * matches.
+ */
+export const MIN_PREFIX = 2;
+
 /** Where a `#` token starts: at the line's start, or after whitespace. */
 const TOKEN_START = /(^|\s)#(\S)/;
 
@@ -146,6 +154,7 @@ const TOKEN_START = /(^|\s)#(\S)/;
  * when it equals a name, ignoring case, or when it is the start of exactly one
  * name. An exact name wins over a prefix of a longer one. The words after the
  * run go back into the title, so "#print fix the jam" files "fix the jam".
+ * A prefix needs at least `MIN_PREFIX` characters.
  *
  * Only the first `#` at a token start counts. A `#` inside a word ("C#") is
  * text. A token that names nothing, or names two things, leaves the line
@@ -170,7 +179,7 @@ export function parseProjectToken(
     const hit =
       exact.length === 1
         ? exact[0]
-        : exact.length === 0
+        : exact.length === 0 && phrase.length >= MIN_PREFIX
           ? (() => {
               const starts = destinations.filter((d) => lower(d.name).startsWith(phrase));
               return starts.length === 1 ? starts[0] : undefined;
