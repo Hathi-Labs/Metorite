@@ -103,12 +103,73 @@ export function chatDockState(a: {
  * - `hidden` → show the chat: close the task that holds the column.
  * - `absent` and wide → dock. Too narrow → open the full slot, and leave the
  *   stored choice alone.
+ * - The `ai-chat` slot is open → close the slot. The slot IS the chat, so the
+ *   button reads as pressed there, and a press takes the member back to the
+ *   board. This case exists since the button moved to the app's top bar
+ *   (2026-09-24). The project header it sat in before is not drawn over the
+ *   slot, so nobody could press it there. Without this case a press would
+ *   store "docked" and change nothing on screen, because a dock beside the
+ *   slot is `absent`.
  */
 export function toggleAction(
   state: ChatDockState,
   wide: boolean,
-): "dock" | "undock" | "show" | "open-slot" {
+  slotOpen = false,
+): "dock" | "undock" | "show" | "open-slot" | "close-slot" {
+  if (slotOpen) return "close-slot";
   if (state === "shown") return "undock";
   if (state === "hidden") return "show";
   return wide ? "dock" : "open-slot";
+}
+
+/**
+ * What one press of the top-bar button changes. Each field left `undefined`
+ * stays as it is.
+ *
+ * - `app` — the Projects destination: `"ai-chat"` opens the slot, `null`
+ *   leaves it.
+ * - `docked` — the stored dock choice. The page sets the state AND writes it.
+ * - `closeTask` — close the task panel that holds the right-hand column.
+ */
+export interface AssistantPress {
+  app?: "ai-chat" | null;
+  docked?: boolean;
+  closeTask?: boolean;
+}
+
+/**
+ * The top-bar assistant button, whole: whether it is pressed, its tooltip,
+ * and what a press changes. The page reads this and nothing else, so every
+ * decision is a pure function a test can reach (`vitest` runs without a DOM).
+ *
+ * ⚠️ **Closing the slot also undocks.** A member who docked the chat and then
+ * opened "AI chat" from the tree has `docked` stored as true. If a press
+ * only left the slot, the dock would come straight back, still pressed, and
+ * the member would have to press a second time (review of PR #467). One
+ * press closes the assistant, wherever it is.
+ *
+ * The tooltip is neutral on purpose. The button shows on a space, a folder,
+ * Analytics and Reports too, so "about this project" would be wrong there.
+ */
+export function assistantButton(a: {
+  state: ChatDockState;
+  wide: boolean;
+  slotOpen: boolean;
+}): { pressed: boolean; title: string; press: AssistantPress } {
+  const pressed = a.slotOpen || a.state === "shown";
+  const title = pressed
+    ? "Close the assistant"
+    : a.state === "hidden"
+      ? "Show the assistant (closes the task)"
+      : "Ask the assistant";
+  const act = toggleAction(a.state, a.wide, a.slotOpen);
+  const press: AssistantPress =
+    act === "close-slot"
+      ? { app: null, docked: false }
+      : act === "open-slot"
+        ? { app: "ai-chat" }
+        : act === "show"
+          ? { closeTask: true }
+          : { docked: act === "dock" };
+  return { pressed, title, press };
 }
