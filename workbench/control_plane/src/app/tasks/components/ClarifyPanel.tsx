@@ -8,8 +8,11 @@ import { useTaskStore, type ClarifyDecision } from "../lib/taskStore";
 import {
   proposeClarification,
   defaultStatus,
+  initialWhere,
   isPersonalTask,
   lensDelegateBlock,
+  whereOffersNoProject,
+  whereVisibilityHint,
   type ClarifyDisposition,
   type ClarifyProposal,
 } from "../lib/clarify";
@@ -123,6 +126,14 @@ export function ClarifyPanel({
   const renameExistingFromCapture = useTaskStore((s) => s.renameExistingFromCapture);
   const fileUnderParent = useTaskStore((s) => s.fileUnderParent);
 
+  // S6b repair. A task on a company board cannot be filed into an Area, nor
+  // become one (D62 refuses both moves into a personal tree). The rule is
+  // `lib/clarify.ts::isPersonalTask`, fenced by `areas.test.ts`; this hides
+  // the controls that would otherwise offer a 422. It also decides where the
+  // form starts (`initialWhere`), so it is read before any state is seeded.
+  const areaIds = useMemo(() => areas.map((a) => a.id), [areas]);
+  const personalTask = isPersonalTask(item, personalRootId, areaIds);
+
   // Re-clarify seeds the form from the task's CURRENT clarified state (an edit,
   // not a fresh decision). The item's own target is reconstructed so a SYNCED
   // task opens on its ClickUp destination.
@@ -204,7 +215,19 @@ export function ClarifyPanel({
   const [assignee, setAssignee] = useState<Person | null>(proposal.suggestedAssignee ?? null);
   const [dueAt, setDueAt] = useState("");
   const [dest, setDest] = useState<Target>(proposal.target ?? { source: "LOCAL", provider: "local" });
-  const [projectId, setProjectId] = useState<string | undefined>(proposal.projectId);
+  // ⚠️ Never the proposal's project as-is. A company project the assistant
+  // inferred starts NOT selected for a personal task, because filing there
+  // publishes a private capture to the team (audit 2026-09-24). The rule is
+  // `lib/clarify.ts::initialWhere`, fenced by `clarifyWhere.test.ts`.
+  const [projectId, setProjectId] = useState<string | undefined>(
+    () =>
+      initialWhere({
+        proposalProjectId: proposal.projectId,
+        itemProjectId: item.projectId,
+        personal: personalTask,
+        areaIds,
+      }).selected,
+  );
   // The Where-axis TARGET when Size=project: create the new list under this
   // space (and optional folder). Independent of `projectId` (the existing-list
   // pick used for single/subtasks).
@@ -244,7 +267,16 @@ export function ClarifyPanel({
       setDeepWork(!!sp.deepWork);
       setAssignee(sp.suggestedAssignee ?? null);
       if (sp.target) setDest(sp.target);
-      setProjectId(sp.projectId);
+      // The same rule as the first seed: a company project is a suggestion
+      // the member must click, never a pre-selection on a personal task.
+      setProjectId(
+        initialWhere({
+          proposalProjectId: sp.projectId,
+          itemProjectId: item.projectId,
+          personal: personalTask,
+          areaIds,
+        }).selected,
+      );
       // A guidance-named destination ("put it in ClickUp under Proposals")
       // arrives as a Where target — pre-select it so a Size=project commit
       // creates the new list right there.
@@ -273,8 +305,8 @@ export function ClarifyPanel({
         setSuggestedTitle(sp.suggestedTitle);
       }
     },
-    // Setters are stable; only item.title / providers are read.
-    [item.title, providers],
+    // Setters are stable; only these are read.
+    [item.title, item.projectId, providers, personalTask, areaIds],
   );
 
   useEffect(() => {
@@ -337,6 +369,12 @@ export function ClarifyPanel({
   const selectedProject = projectId
     ? projects.find((p) => p.id === projectId)
     : undefined;
+  // The form's own Where pick, named apart so `buildDecision` and `apply` can
+  // take a one-click override without shadowing confusion.
+  const pickedProjectId = projectId;
+  // Under the lens `projects` is the company's list, so membership is the
+  // answer to "does filing here publish it to the team?".
+  const companyProjectIds = useMemo(() => projects.map((p) => p.id), [projects]);
   const statusesForDest = useMemo(() => providerStatuses(dest, providers), [dest, providers]);
   // The delegate roster is the DIRECTORY, full stop. It used to be the
   // destination workspace's member list when there was one, reconciled
@@ -375,7 +413,10 @@ export function ClarifyPanel({
   };
 
   // ── Build the decision from the current Sort→Shape state ────────────────
-  const buildDecision = useCallback((): ClarifyDecision | null => {
+  // `pick` overrides the Where pick for one explicit click — the "File it
+  // here" banner names its own project rather than reading the form's.
+  const buildDecision = useCallback((pick?: { projectId: string }): ClarifyDecision | null => {
+    const projectId = pick ? pick.projectId : pickedProjectId;
     if (sort === "do-now") return { kind: "do-now" };
     if (sort === "reference") return { kind: "reference" };
     if (sort === "trash") return { kind: "trash" };
@@ -430,14 +471,15 @@ export function ClarifyPanel({
       subtasks: size === "subtasks" && subtasks.length ? subtasks : undefined,
     };
   }, [sort, size, owner, when, nextAction, outcome, context, energy, assignee,
-      dueAt, dest, projectId, status, subtasks]);
+      dueAt, dest, pickedProjectId, status, subtasks]);
 
   // A pending "create the project under this space/folder" is applied FIRST
   // (mints a real project), then the decision files into it.
   const [creatingTarget, setCreatingTarget] = useState(false);
   const [createTargetError, setCreateTargetError] = useState<string | null>(null);
 
-  const apply = useCallback(async () => {
+  const apply = useCallback(async (pick?: { projectId: string }) => {
+    const projectId = pick ? pick.projectId : pickedProjectId;
     // Size=project with no existing project picked but a Where target chosen:
     // create the new list/local-project under that space/folder first.
     if (sort === "actionable" && size === "project" && !projectId) {
@@ -455,7 +497,7 @@ export function ClarifyPanel({
         setCreatingTarget(false);
       }
     }
-    const decision = buildDecision();
+    const decision = buildDecision(pick);
     if (decision) {
       // Carry the confirmed matrix flags for actionable outcomes (trash/
       // reference/someday don't get prioritized).
@@ -468,7 +510,7 @@ export function ClarifyPanel({
       );
       onDone?.();
     }
-  }, [sort, size, projectId, newListName, nextAction, item.id, item.title,
+  }, [sort, size, pickedProjectId, newListName, nextAction, item.id, item.title,
       targetSpaceId, targetFolderId,
       createLocalProject, buildDecision, clarify, onDone, important, leveraged,
       deepWork]);
@@ -494,14 +536,8 @@ export function ClarifyPanel({
     size,
     projectId,
     itemProjectId: item.projectId,
-    companyProjectIds: projects.map((p) => p.id),
+    companyProjectIds,
   });
-  // S6b repair. A task on a company board cannot be filed into an Area, nor
-  // become one (D62 refuses both moves into a personal tree). The rule is
-  // `lib/clarify.ts::isPersonalTask`, fenced by `areas.test.ts`; this hides
-  // the two controls that would otherwise offer a 422.
-  const personalTask =
-    isPersonalTask(item, personalRootId, areas.map((a) => a.id));
   const delegateIntoPrivateProject = lensBlock === "private-project";
   const needsProjectForDelegate =
     (delegatingToSynced && !projectId && !targetSpaceId) || lensBlock !== null;
@@ -796,13 +832,10 @@ export function ClarifyPanel({
           (!proposal.parentSuggestion || parentDismissed) && (
           <ProjectSuggestBanner
             project={proposedProject}
-            providerLabel={
-              proposedProject.source !== "LOCAL" && proposal.target
-                ? destEntry(proposal.target, providers)?.label
-                : undefined
-            }
             assignee={owner === "delegate" ? assignee : null}
-            onFile={() => void apply()}
+            // An explicit click on a named destination: file into THIS
+            // project, whatever the form below has picked.
+            onFile={() => void apply({ projectId: proposedProject.id })}
             onDismiss={() => setProjectDismissed(true)}
           />
         )}
@@ -892,7 +925,7 @@ export function ClarifyPanel({
                   <AppIcon name="Cloud" className="h-3 w-3" />
                 )}
                 {proposedDestLabel}
-                {proposedProject ? ` · ${short(proposedProject.outcome, 16)}` : ""}
+                {selectedProject ? ` · ${short(selectedProject.outcome, 16)}` : ""}
               </span>
             )}
           </div>
@@ -1185,9 +1218,10 @@ export function ClarifyPanel({
                         <WherePicker
                           areas={areas}
                           includeAreas={personalTask}
+                          includeNoProject={whereOffersNoProject(personalTask)}
                           projects={projectsForDest}
                           value={projectId}
-                          suggestedId={proposal.projectInferred ? proposal.projectId : undefined}
+                          suggestedId={proposal.projectId}
                           onChange={setProjectId}
                           onCreateArea={createArea}
                         />
@@ -1219,7 +1253,7 @@ export function ClarifyPanel({
                       )}
                       {!isSynced && (
                         <p className="text-[10px] text-muted-foreground">
-                          Private to you until it joins a company project. File it in an Area, or leave it loose.
+                          {whereVisibilityHint({ selected: projectId, companyProjectIds })}
                         </p>
                       )}
                     </div>
@@ -1263,25 +1297,26 @@ export function ClarifyPanel({
 }
 
 // The "belongs in an existing project?" banner shown during inbox processing
-// when the assistant infers this capture logically fits a local or ClickUp
-// project. One tap files it there as a next action; the outcome line spells out
-// where it will surface (mine → My Next Actions; delegated → under that person
-// in Projects, and on ClickUp).
+// when the assistant infers this capture fits one of the company's projects.
+//
+// ⚠️ Filing here PUBLISHES the task. Under the one store every project this
+// banner can name is a company board, and a capture is private until it joins
+// one. The banner used to call it a "Local project" beside a hard-drive icon,
+// so a member read "stays on my machine" and one click shared it with the
+// team (audit 2026-09-24). It now names the destination for what it is, and
+// only its own explicit click files there — the form never pre-selects it.
 function ProjectSuggestBanner({
   project,
-  providerLabel,
   assignee,
   onFile,
   onDismiss,
 }: {
   project: GtdProject;
-  providerLabel?: string;
   assignee: Person | null;
   onFile: () => void;
   onDismiss: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const synced = project.source !== "LOCAL";
   return (
     <div className="flex flex-col gap-2.5 rounded-lg border border-primary/35 bg-primary/5 p-3">
       <div className="flex items-start gap-2 text-sm font-semibold text-foreground">
@@ -1290,22 +1325,19 @@ function ProjectSuggestBanner({
       </div>
       <div className="rounded-md border border-border bg-background/50 px-3 py-2">
         <div className="flex items-center gap-1.5 text-[12.5px] text-foreground">
-          {synced ? (
-            <AppIcon name="Cloud" className="h-3.5 w-3.5 shrink-0 text-primary/70" />
-          ) : (
-            <AppIcon name="HardDrive" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-          )}
+          <AppIcon name="FolderKanban" className="h-3.5 w-3.5 shrink-0 text-primary/70" />
           <span className="min-w-0 flex-1 truncate" title={project.outcome}>{project.outcome}</span>
         </div>
-        <div className="mt-0.5 pl-5 text-[10.5px] text-muted-foreground">
-          {synced ? (providerLabel ?? "Project board") : "Local project"}
+        <div className="mt-0.5 flex items-center gap-1 pl-5 text-[10.5px] text-muted-foreground">
+          <AppIcon name="Users" className="h-3 w-3 shrink-0" />
+          Company board · visible to the team
         </div>
       </div>
       <p className="flex items-start gap-1.5 text-[11.5px] text-muted-foreground">
         <AppIcon name="ArrowRight" className="mt-0.5 h-3 w-3 shrink-0 text-primary/70" />
         {assignee
-          ? `Assigned to ${assignee.name} — it'll show under them in Projects${synced ? ", and stays on its board" : ""}.`
-          : `Assigned to you — it'll show up in My Next Actions${synced ? ", and on its board" : ""}.`}
+          ? `Assigned to ${assignee.name}. It shows under them in Projects, and the team sees it on the board.`
+          : "Assigned to you. It shows in My Next Actions, and the team sees it on the board."}
       </p>
       <div className="flex flex-wrap items-center gap-2">
         <Button size="none" radius="keep" layout="inline-flex items-center" type="button" disabled={busy} onClick={() => { setBusy(true); onFile(); }} className="gap-1.5 rounded-md px-2.5 py-1.5 text-xs">

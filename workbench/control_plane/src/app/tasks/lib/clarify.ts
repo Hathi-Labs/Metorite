@@ -607,3 +607,108 @@ export function isPersonalTask(
   if (rootId !== null && item.projectId === rootId) return true;
   return areaIds.includes(item.projectId);
 }
+
+// ── Where a Clarify starts, and what it may offer (audit 2026-09-24) ────────
+
+/** The Where picker's starting pick, and the row it marks as suggested. */
+export interface InitialWhere {
+  /** The project the form starts on. `undefined` means "No project". */
+  selected?: string;
+  /** A row the picker marks "suggested" and the member must click. */
+  suggested?: string;
+}
+
+/**
+ * Where the Clarify form starts for one task.
+ *
+ * ⚠️ A capture is PRIVATE. Filing it into a company project publishes it to
+ * everyone on that board. The assistant infers a project by keyword or on the
+ * server, and the old form pre-selected that inference, so one "Organize it"
+ * click published a private capture to a board the member never chose. The
+ * audit of 2026-09-24 found this in production.
+ *
+ * The rule, for a personal task (`isPersonalTask`):
+ * - The task's own project, or one of my Areas, starts selected. Both stay
+ *   private, so a one-click accept cannot publish anything.
+ * - Any other id — a company project, or an id this client does not know —
+ *   starts NOT selected. The picker shows it as a suggestion.
+ *
+ * A board task already lives on its board. The proposal names that board, so
+ * it starts selected and nothing new is published.
+ *
+ * Fence: `clarifyWhere.test.ts`.
+ */
+export function initialWhere(input: {
+  /** The project the proposal names, if any. */
+  proposalProjectId?: string;
+  /** The project the task lives in now, if any. */
+  itemProjectId?: string;
+  /** `isPersonalTask` for this task. */
+  personal: boolean;
+  areaIds: readonly string[];
+}): InitialWhere {
+  const id = input.proposalProjectId;
+  if (!id) return {};
+  if (!input.personal) return { selected: id };
+  if (id === input.itemProjectId || input.areaIds.includes(id)) {
+    return { selected: id };
+  }
+  return { suggested: id };
+}
+
+/**
+ * Whether the Where picker offers "No project".
+ *
+ * A board task cannot leave its board for my personal tree: D62 refuses a move
+ * from a team node into anybody's personal tree. "No project" IS that move, so
+ * offering it is offering a 422. A personal task may always stay loose.
+ */
+export function whereOffersNoProject(personal: boolean): boolean {
+  return personal;
+}
+
+/**
+ * The line under the Where picker. It says who can see the task once it is
+ * filed, so the member knows before the click, not after it.
+ */
+export function whereVisibilityHint(input: {
+  /** The picked id, or undefined for "No project". */
+  selected?: string;
+  companyProjectIds: readonly string[];
+}): string {
+  if (input.selected && input.companyProjectIds.includes(input.selected)) {
+    return "Visible to the team. A company project is shared with everyone on its board.";
+  }
+  return "Private to you until it joins a company project. File it in an Area, or leave it loose.";
+}
+
+/**
+ * The items a Clarify session walks, oldest first (GTD processes FIFO).
+ *
+ * Two sets feed the walk. The first is my captures, which are INBOX. The
+ * second is the "From Projects" group (S6e): a board task that a colleague
+ * assigned to me and that I have not triaged. Its disposition is derived
+ * (NEXT, SOMEDAY or WAITING), so a walk that reads INBOX alone skips it, and
+ * the modal used to close on the first render for every such row.
+ */
+export function clarifyQueue<
+  T extends { id: string; disposition: string; createdAt: string; archivedAt?: string },
+>(items: readonly T[], fromProjectIds: ReadonlySet<string>): T[] {
+  return items
+    .filter(
+      (i) =>
+        i.disposition === "INBOX" || (fromProjectIds.has(i.id) && !i.archivedAt),
+    )
+    .sort(
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
+}
+
+/** Whether Clarify may open on this item: a capture, or an untriaged board row. */
+export function isClarifiable(
+  item: { id: string; disposition: string },
+  fromProjectIds: ReadonlySet<string>,
+): boolean {
+  return item.disposition === "INBOX" || fromProjectIds.has(item.id);
+}

@@ -42,6 +42,7 @@ import {
   type ConnectedProvider,
 } from "./mockData";
 import { isCalendarItem, isTickled } from "./utils";
+import { clarifyQueue, isClarifiable } from "./clarify";
 import { type SyncState, canPush } from "./syncState";
 import {
   DEFAULT_FILTERS,
@@ -1429,21 +1430,34 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       // Re-clarify (the item wasn't in the inbox) is an in-place edit — don't
       // walk the inbox, bump the session counter, or close the reclarify modal
       // out from under the wizard's own close handler.
-      const wasInbox =
-        s.items.find((i) => i.id === id)?.disposition === "INBOX";
+      //
+      // ⚠️ An untriaged "From Projects" row (S6e) is a FIRST clarify, not a
+      // re-clarify. Its disposition is derived (NEXT, SOMEDAY or WAITING), so
+      // a test on INBOX alone read it as an edit and the walk never advanced.
+      const wasInbox = isClarifiable(
+        s.items.find((i) => i.id === id) ?? { id, disposition: "" },
+        s.fromProjectIds,
+      );
       if (!wasInbox) {
         return { items, projects, undoSnapshot: snapshot };
       }
-      // advance to the OLDEST remaining inbox item — GTD processes FIFO
-      const remaining = items.filter((i) => i.disposition === "INBOX");
-      const nextInbox = remaining.length
-        ? remaining.reduce((a, b) =>
-            new Date(b.createdAt) < new Date(a.createdAt) ? b : a,
-          )
-        : undefined;
+      // Live: `markTriaged` below drops the id and re-reads the server's set
+      // after the write lands. Demo: nothing re-reads, so drop it here.
+      let fromProjectIds = s.fromProjectIds;
+      if (s.backend !== "live" && fromProjectIds.has(id)) {
+        const next = new Set(fromProjectIds);
+        next.delete(id);
+        fromProjectIds = next;
+      }
+      // advance to the OLDEST remaining item of the walk — GTD processes FIFO
+      const nextInbox = clarifyQueue(
+        items.filter((i) => i.id !== id),
+        s.fromProjectIds,
+      )[0];
       return {
         items,
         projects,
+        fromProjectIds,
         selectedItemId: nextInbox?.id ?? null,
         processedThisSession: s.processedThisSession + 1,
         undoSnapshot: snapshot,
@@ -1530,9 +1544,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   /** LIVE member refresh for one workspace (delegate-picker freshness). */
   skipToNextInbox: () =>
     set((s) => {
-      const inbox = s.items
-        .filter((i) => i.disposition === "INBOX")
-        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      // The same walk Clarify advances through: captures and untriaged
+      // "From Projects" rows together, oldest first.
+      const inbox = clarifyQueue(s.items, s.fromProjectIds);
       if (inbox.length <= 1) return s; // nothing else to move to
       const idx = inbox.findIndex((i) => i.id === s.selectedItemId);
       const next = inbox[(idx + 1) % inbox.length];
