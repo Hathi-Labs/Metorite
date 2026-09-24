@@ -129,7 +129,9 @@ describe("a control that refuses says why", () => {
     // chain takes the tier off the air — so it stays, and it speaks.
     const src = readFileSync(join(SRC, "app", "tiers", "TierBoard.tsx"), "utf8");
     expect(src).toContain("This job has no model left");
-    expect(src).toContain("Add at least one model");
+    // 📌 The wording moved on with H-178: an emptied chain now offers to
+    // take the job OFF THE AIR instead of only explaining a dead Save.
+    expect(src).toContain("Take it off the air");
   });
 
   it("every disabled button on these pages carries a title", () => {

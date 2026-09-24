@@ -78,7 +78,7 @@ const chainKey = (tier: string, task: string) => `${tier}::${task}`;
  */
 function Job({
   tier, job, ctx, models, rateFor, taskLabel, drafts, setDrafts,
-  adding, setAdding, pick, setPick, busy, saveChain,
+  adding, setAdding, pick, setPick, busy, saveChain, unbindJob,
 }: {
   tier: Tier;
   job: TierJob;
@@ -94,6 +94,7 @@ function Job({
   setPick: (p: string) => void;
   busy: boolean;
   saveChain: (tier: string, task: string, models: string[]) => void;
+  unbindJob: (tier: string, task: string) => void;
 }) {
   const saved = orderedChain(job).map((s) => s.model);
   const k = chainKey(tier.slug, job.task);
@@ -272,22 +273,36 @@ function Job({
               needed a model, so the button read as broken rather than as
               refusing. The refusal itself is right — saving an empty chain
               takes the tier off the air — so it stays, and now it speaks. */}
+          {/* 📌 **This used to be a dead end, and the owner hit it.** H-178.
+              The hint explained why Save was greyed out and offered no way
+              forward, which is only half a fix: for `tier-stt` — a Groq model
+              on a box with no Groq key — taking the job OFF the air was the
+              right answer and the board could not express it. */}
           {chain.length === 0 && (
             <p className="field-hint">
-              This job has no model left, so it cannot be saved. Add one below,
-              or press {FORM.undo} to put back what was here.
+              This job has no model left. Take it off the air, add a model
+              below, or press {FORM.undo} to put back what was here.
             </p>
           )}
           <div className="job-actions">
-            <button type="button" disabled={busy || chain.length === 0}
-              title={
-                chain.length === 0
-                  ? "Add at least one model. A job with none cannot serve."
-                  : HELP_TIERS.saveOrder
-              }
-              onClick={() => saveChain(tier.slug, job.task, chain)}>
-              {FORM.saveOrder}
-            </button>
+            {chain.length === 0 ? (
+              <button type="button" disabled={busy}
+                className="danger"
+                title={
+                  "Write this job off the air. It will serve nothing and " +
+                  "earn nothing until you bind a model again. The old " +
+                  "binding is kept as history, not deleted."
+                }
+                onClick={() => unbindJob(tier.slug, job.task)}>
+                {FORM.unbind}
+              </button>
+            ) : (
+              <button type="button" disabled={busy}
+                title={HELP_TIERS.saveOrder}
+                onClick={() => saveChain(tier.slug, job.task, chain)}>
+                {FORM.saveOrder}
+              </button>
+            )}
             <button type="button" className="secondary"
               title="Put back the saved order and lose these changes."
               onClick={() => { const d = { ...drafts }; delete d[k]; setDrafts(d); }}>
@@ -372,6 +387,46 @@ export default function TierBoard({
    * the chain with a one-step chain — silently removing the backups the
    * operator just added.
    */
+  async function unbindJob(tier: string, task: string) {
+    // 📌 H-178. A DELETE, not a POST with an empty list — a caller that forgot
+    // `models` must never take a tier off the air by accident.
+    //
+    // ⚠️ The Console APPENDS a tombstone and deletes nothing, because a past
+    // invoice was computed against the binding it supersedes. So this is
+    // reversible: bind a model again and the job comes back.
+    setBusy(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/operator/catalog/bindings", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tier, task }),
+      });
+      const text = await res.text();
+      setResult({
+        ok: res.ok,
+        text: res.ok ? "" : `The Console refused: ${text}`,
+      });
+      if (res.ok) {
+        // Drop the draft: the server is now the truth, and an empty draft
+        // left behind would redraw the "no model left" state for ever.
+        const d = { ...drafts };
+        delete d[chainKey(tier, task)];
+        setDrafts(d);
+        router.refresh();
+      }
+    } catch {
+      setResult({
+        ok: false,
+        text:
+          "The Console did not answer. The job was NOT taken off the air — " +
+          "check the network and try again.",
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveChain(tier: string, task: string, models: string[]) {
     setBusy(true);
     setResult(null);
@@ -580,7 +635,8 @@ export default function TierBoard({
                           taskLabel={taskLabel} drafts={drafts}
                           setDrafts={setDrafts} adding={adding}
                           setAdding={setAdding} pick={pick} setPick={setPick}
-                          busy={busy} saveChain={saveChain} />
+                          busy={busy} saveChain={saveChain}
+                          unbindJob={unbindJob} />
                       ))}
                       {/* CP-13b: prove the decide binding before an app
                           depends on it. The one tier with a Try panel. */}

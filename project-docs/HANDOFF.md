@@ -95,6 +95,40 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-178 · An operator can take a job off the air. Two callers cannot yet · [AGENT]
+- **Check:** `rg -c "model IS NOT NULL" packages/acb_llm apps/services/gateway`
+  → a zero in a file that reads `tier_binding` means a reader was added
+  without the tombstone filter, and this is open again.
+- 📌 **BUILT 2026-09-24.** `DELETE /catalog/bindings` takes a job off the air
+  by APPENDING a row whose `model` is NULL. Migration 034 makes the column
+  nullable. The tiers board offers it where the dead Save used to be.
+- 🔴 **Why it was needed.** `tier-stt` pointed at a Groq model on a box
+  holding only a DeepSeek credential, so every transcription failed at the
+  provider and billed zero. The answer was to unbind it and the console could
+  not: `POST /catalog/bindings` refuses an empty chain.
+- ⚠️ **A SEPARATE verb, and that is the safety of it.** Letting `POST` accept
+  an empty `models` list would mean a caller that simply forgot the field
+  takes a tier off the air. A different verb cannot be reached by forgetting.
+- 🔴 **Two things the tests caught that reading did not.**
+  `resolve_tier` took the newest ROW that had a model, so it stepped over a
+  tombstone and kept serving the superseded binding — unbinding would have
+  changed nothing the Router does. And migration 010 backfills
+  `model_capability.model` from `tier_binding.model`, which is NOT NULL, so a
+  ladder replay against a database holding one tombstone died outright.
+- ⚠️ **Two fences moved from a VERB to the rule they stood for.**
+  `test_no_route_updates_or_deletes_a_binding_or_a_rate` and its frontend twin
+  banned the `DELETE` method. The rule is *no row is destroyed*, and this
+  route destroys none. Both now read the SQL, which is where the rule can be
+  true or false. `PATCH` and `PUT` stay banned on their names.
+- ⚠️ **WHAT IS LEFT: two readers outside the Console.** The check above names
+  them. `packages/acb_llm` and the gateway do not read `tier_binding` today,
+  and if either starts, it needs the filter or it will resolve a model named
+  NULL.
+- **Fences:** `tests/unit/test_unbind_a_tier.py` (11, R8).
+- **Authority:** owner report, 2026-09-24 — *"Shouldn't you be able to allow
+  me to remove a model from a tier?"* · §6A.5
+- **Added:** 2026-09-24 · the unbind session.
+
 ### H-177 · Nobody can prove an organization owns the domain it claims · [AGENT]
 - **Check:** `rg -n "domain" infra/postgres/*.sql | rg -i "verif|token|txt"`
   → no hit means verification is unbuilt, and this is open. Also
