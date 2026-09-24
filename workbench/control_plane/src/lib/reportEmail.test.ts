@@ -16,6 +16,7 @@ import {
   type RenderedReport,
   isReportEmailEnabled,
   periodLabel,
+  reportDocument,
   reportEmail,
   sendReportEmail,
 } from "./reportEmail";
@@ -352,5 +353,93 @@ describe("reportEmail · conflicts", () => {
       },
     };
     expect(reportEmail(hidden).text).toContain("Four kinds need HR read access.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WS-27bm S8 — the same layout, as a FILE (spec projects_ai_chat.md §14)
+// ---------------------------------------------------------------------------
+
+describe("reportDocument", () => {
+  const doc = reportDocument(rendered);
+
+  it("writes the render as Markdown, headline first", () => {
+    expect(doc.markdown).toBe(
+      [
+        "# Weekly delivery",
+        "",
+        "7 – 13 Sep 2026 · Every space you can see",
+        "",
+        "**Finished: 17** · 1 cancelled",
+        "",
+        "- Mobile App: 12 (1 cancelled)",
+        "- Billing: 5",
+        "",
+        "Median time to finish: 27 hours (over 15 measured)",
+        "",
+        "**Overdue: 4**",
+        "",
+        "- Mobile App: 4",
+        "",
+        "Open work: 15",
+        "",
+        "- Unassigned: 9 (2 overdue)",
+        "- ana@example.test: 6",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("names the file after the report and its period", () => {
+    expect(doc.basename).toBe("Weekly delivery 2026-09-07 to 2026-09-13");
+    const odd = reportDocument({
+      ...rendered,
+      report: { name: 'Q3/Q4: "board" *view*', scope: "node" },
+    });
+    expect(odd.basename).not.toMatch(/[\/:*?"<>|]/);
+  });
+
+  it("carries EVERY row — a file is the whole report, unlike the email", () => {
+    const long = {
+      ...rendered,
+      sections: {
+        finished: {
+          projects: Array.from({ length: MAX_EMAIL_ROWS + 4 }, (_, i) => ({
+            name: `Project ${i}`,
+            completed: 1,
+            cancelled: 0,
+          })),
+          total_completed: MAX_EMAIL_ROWS + 4,
+          total_cancelled: 0,
+        },
+      },
+    };
+    const file = reportDocument(long);
+    expect(file.markdown).toContain(`- Project ${MAX_EMAIL_ROWS + 3}: 1`);
+    expect(file.markdown).not.toContain("more projects");
+    expect(reportEmail(long).text).toContain("and 4 more projects");
+  });
+
+  it("makes member text inert in Markdown and in the PDF's HTML", () => {
+    const nasty = reportDocument({
+      ...rendered,
+      report: { name: "*Q3* [x](http://evil) <b>", scope: "portfolio" },
+      sections: {
+        finished: {
+          projects: [{ name: "<script>bad()</script>", completed: 1, cancelled: 0 }],
+          total_completed: 1,
+          total_cancelled: 0,
+        },
+      },
+    });
+    expect(nasty.markdown).toContain(String.raw`# \*Q3\* \[x\](http://evil) \<b\>`);
+    expect(nasty.html).not.toContain("<script>");
+    expect(nasty.html).toContain("&lt;script&gt;");
+  });
+
+  it("draws the PDF from the email's own HTML renderer", () => {
+    // One formatter: the email and the file differ only in the row cap.
+    expect(doc.html).toBe(reportEmail(rendered).html);
+    expect(doc.html).not.toMatch(/style=/);
   });
 });

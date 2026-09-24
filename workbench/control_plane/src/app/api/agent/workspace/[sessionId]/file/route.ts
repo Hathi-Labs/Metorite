@@ -23,6 +23,10 @@ export async function GET(
 
     const upstream = new URL(`${GATEWAY_URL}/agent/workspace/${sessionId}/file`);
     upstream.searchParams.set("path", filePath);
+    // WS-27bm S8: `format=pdf` asks the gateway to convert a Markdown or HTML
+    // file. The gateway owns the check, and answers any other value with 422.
+    const format = req.nextUrl.searchParams.get("format");
+    if (format) upstream.searchParams.set("format", format);
 
     const res = await fetch(upstream.toString(), {
       headers: await gatewayHeaders(),

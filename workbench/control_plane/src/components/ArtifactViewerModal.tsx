@@ -22,7 +22,14 @@ import SandboxedHtml from "@/components/SandboxedHtml";
 import SandboxedReact from "@/components/SandboxedReact";
 import { iconsUsedIn } from "@/lib/iconSvg";
 import { useShikiTheme } from "@/lib/theme/surfaces";
-import { classifyArtifact, extOf, isRenderable } from "@/lib/artifactKind";
+import {
+  canDownloadPdf,
+  classifyArtifact,
+  extOf,
+  isRenderable,
+  pdfNameFor,
+  workspaceFileUrl,
+} from "@/lib/artifactKind";
 import type { FileEntry } from "./ArtifactSidebar";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -384,7 +391,14 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
   }, [onClose]);
 
   const downloadUrl = externalDownloadUrl
-    ?? `/api/agent/workspace/${sessionId}/file?path=${encodeURIComponent(entry.path)}`;
+    ?? workspaceFileUrl(sessionId, entry.path);
+  // WS-27bm S8: a session's Markdown or HTML file also downloads as a PDF.
+  // A file from the global artifacts browser (`externalDownloadUrl`) has no
+  // session route to convert it, so it keeps the raw download only.
+  const pdfUrl =
+    !externalDownloadUrl && canDownloadPdf(kind)
+      ? workspaceFileUrl(sessionId, entry.path, { pdf: true })
+      : null;
   const deletable =
     !readOnly && !externalDownloadUrl && (
       entry.path.startsWith("inputs/") ||
@@ -521,6 +535,15 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                 >
                   Download
                 </a>
+                {pdfUrl && (
+                  <a
+                    href={pdfUrl}
+                    download={pdfNameFor(entry.name)}
+                    className="rounded px-2 py-1 text-xs text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
+                  >
+                    Download PDF
+                  </a>
+                )}
                 {editable && (
                   <button
                     onClick={handleStartEdit}

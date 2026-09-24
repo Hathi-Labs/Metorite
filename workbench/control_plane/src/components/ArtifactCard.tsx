@@ -17,7 +17,13 @@ import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useViewMode } from "@/components/ViewModeProvider";
-import { classifyArtifact, isRenderable } from "@/lib/artifactKind";
+import {
+  canDownloadPdf,
+  classifyArtifact,
+  isRenderable,
+  pdfNameFor,
+  workspaceFileUrl,
+} from "@/lib/artifactKind";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -108,7 +114,12 @@ export default function ArtifactCard({
   onOpen,
   onOpenInSidePanel,
 }: ArtifactCardProps) {
-  const fileUrl = `/api/agent/workspace/${sessionId}/file?path=${encodeURIComponent(artifact.path)}`;
+  const fileUrl = workspaceFileUrl(sessionId, artifact.path);
+  // WS-27bm S8: a Markdown or HTML document also downloads as a PDF, which the
+  // gateway lays out from the same file (`gateway/pdf_render.py`).
+  const pdfUrl = canDownloadPdf(classifyArtifact(artifact.name, artifact.path, artifact.mimeType))
+    ? workspaceFileUrl(sessionId, artifact.path, { pdf: true })
+    : null;
   const image = isImage(artifact);
   const { isMobile } = useViewMode();
   const isDoc = hasRenderedView(artifact.name, artifact.path);
@@ -261,6 +272,19 @@ export default function ArtifactCard({
         >
           <Icon name="Download" size={14} />
         </a>
+        {pdfUrl && (
+          <a
+            href={pdfUrl}
+            download={pdfNameFor(artifact.name)}
+            onClick={(e) => e.stopPropagation()}
+            className="flex items-center gap-1 rounded-lg p-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+            title="Download PDF"
+            aria-label={`Download ${artifact.name} as PDF`}
+          >
+            <Icon name="FileDown" size={14} />
+            PDF
+          </a>
+        )}
       </div>
     </div>
   );

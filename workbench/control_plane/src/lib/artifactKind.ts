@@ -85,3 +85,31 @@ export function classifyArtifact(
 export function isRenderable(kind: ArtifactKind): boolean {
   return kind === "html" || kind === "react";
 }
+
+/**
+ * WS-27bm S8 — which kinds the gateway can turn into a PDF. The gateway's
+ * `pdf_render.SOURCE_KINDS` holds the same list by extension (md, markdown,
+ * mdx, html, htm), and refuses any other file with a 415.
+ */
+export function canDownloadPdf(kind: ArtifactKind): boolean {
+  return kind === "markdown" || kind === "html";
+}
+
+/**
+ * The one address of a workspace file, raw or as a PDF. Every viewer builds
+ * its links here, so the PDF link and the raw link cannot name two files.
+ */
+export function workspaceFileUrl(
+  sessionId: string,
+  path: string,
+  opts: { pdf?: boolean } = {},
+): string {
+  const base = `/api/agent/workspace/${sessionId}/file?path=${encodeURIComponent(path)}`;
+  return opts.pdf ? `${base}&format=pdf` : base;
+}
+
+/** `status.md` → `status.pdf`, the name the gateway also sends. */
+export function pdfNameFor(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return `${dot > 0 ? name.slice(0, dot) : name || "document"}.pdf`;
+}

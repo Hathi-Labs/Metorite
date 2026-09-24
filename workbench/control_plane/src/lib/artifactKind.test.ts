@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { classifyArtifact, isArtifactPath, isRenderable } from "./artifactKind";
+import {
+  canDownloadPdf,
+  classifyArtifact,
+  isArtifactPath,
+  isRenderable,
+  pdfNameFor,
+  workspaceFileUrl,
+} from "./artifactKind";
 
 describe("classifyArtifact", () => {
   // The mobile bug this module exists to prevent: ArtifactViewerModal is the
@@ -64,5 +71,35 @@ describe("isRenderable", () => {
     for (const k of ["markdown", "code", "image", "pdf", "docx", "text", "binary"] as const) {
       expect(isRenderable(k)).toBe(false);
     }
+  });
+});
+
+// WS-27bm S8 — the PDF link. The gateway converts md/markdown/mdx/html/htm and
+// answers any other file with a 415, so the viewers offer the link for the
+// same two kinds and no other.
+describe("canDownloadPdf", () => {
+  it("is true for Markdown and HTML only", () => {
+    expect(canDownloadPdf("markdown")).toBe(true);
+    expect(canDownloadPdf("html")).toBe(true);
+    for (const k of ["react", "code", "image", "pdf", "docx", "text", "binary"] as const) {
+      expect(canDownloadPdf(k)).toBe(false);
+    }
+  });
+});
+
+describe("workspaceFileUrl", () => {
+  it("builds the raw link and the PDF link to one file", () => {
+    expect(workspaceFileUrl("s1", "outputs/a b.md")).toBe(
+      "/api/agent/workspace/s1/file?path=outputs%2Fa%20b.md",
+    );
+    expect(workspaceFileUrl("s1", "outputs/a b.md", { pdf: true })).toBe(
+      "/api/agent/workspace/s1/file?path=outputs%2Fa%20b.md&format=pdf",
+    );
+  });
+
+  it("names the PDF after the file", () => {
+    expect(pdfNameFor("status.md")).toBe("status.pdf");
+    expect(pdfNameFor("page.v2.html")).toBe("page.v2.pdf");
+    expect(pdfNameFor("README")).toBe("README.pdf");
   });
 });

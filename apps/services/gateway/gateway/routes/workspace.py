@@ -41,11 +41,12 @@ import mimetypes
 import os
 from collections import defaultdict
 from pathlib import Path
+from typing import Literal
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 _log = get_logger("gateway.workspace")
@@ -540,13 +541,23 @@ async def get_workspace_tree(
     return WorkspaceTree(session_id=session_id, root=str(workspace), files=files)
 
 
-@router.get("/workspace/{session_id}/file")
+@router.get("/workspace/{session_id}/file", response_model=None)
 async def get_workspace_file(
     session_id: str,
     path: str = Query(..., description="Relative path within the workspace"),
+    format_: Literal["pdf"] | None = Query(
+        None,
+        alias="format",
+        description="`pdf` converts a Markdown or HTML file and sends it as a download",
+    ),
     _user: UserContext = Depends(get_current_user),
-) -> StreamingResponse:
-    """Stream a single file from the session workspace."""
+) -> StreamingResponse | Response:
+    """Stream a single file from the session workspace.
+
+    ``?format=pdf`` (WS-27bm S8) converts a Markdown or HTML file through the
+    one seam, ``gateway.pdf_render``, AFTER the same workspace, blocked-path
+    and containment checks as a raw read. Any other file type is a 415.
+    """
     import asyncio
     workspace = await asyncio.get_event_loop().run_in_executor(
         None, _get_workspace_path, session_id, _user.email
@@ -566,6 +577,8 @@ async def get_workspace_file(
             raise HTTPException(status_code=404, detail="File not found")
 
     file_size = file_path.stat().st_size
+    if format_ == "pdf":
+        return await _file_as_pdf(file_path, file_size)
     if file_size > _MAX_FILE_BYTES:
         raise HTTPException(
             status_code=413,
@@ -587,6 +600,44 @@ async def get_workspace_file(
             "Content-Disposition": f'inline; filename="{file_path.name}"',
             "Content-Length": str(file_size),
         },
+    )
+
+
+async def _file_as_pdf(file_path: Path, file_size: int) -> Response:
+    """A workspace document as a PDF download (WS-27bm S8, spec §14).
+
+    The type check comes before the size check and before any read, so a
+    refused type costs nothing. Layout is CPU work, so it runs in a thread.
+    """
+    from gateway.pdf_render import (
+        MAX_SOURCE_BYTES,
+        SOURCE_KINDS,
+        PdfRenderError,
+        attachment_disposition,
+        pdf_filename,
+        source_to_pdf,
+    )
+
+    kind = SOURCE_KINDS.get(file_path.suffix.lower())
+    if kind is None:
+        raise HTTPException(
+            status_code=415,
+            detail="Only a Markdown or HTML file can be downloaded as a PDF.",
+        )
+    if file_size > MAX_SOURCE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large for a PDF ({file_size} bytes). Maximum is {MAX_SOURCE_BYTES} bytes.",
+        )
+    source = file_path.read_text(encoding="utf-8", errors="replace")
+    try:
+        pdf = await asyncio.to_thread(source_to_pdf, kind, source)
+    except PdfRenderError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": attachment_disposition(pdf_filename(file_path.name))},
     )
 
 

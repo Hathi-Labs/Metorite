@@ -34,6 +34,7 @@ import {
 } from "../lib/api";
 import { capacityReportRows } from "../lib/capacity";
 import { conflictsReportRows } from "../lib/conflicts";
+import { ReportFileButtons } from "./ReportFileButtons";
 
 /** Hours as a person reads them. Mirrors `AnalyticsPanels`, deliberately. */
 function duration(hours: number | null | undefined): string {
@@ -442,7 +443,12 @@ export default function ReportsView({
           ) : body === null && !error ? (
             <p className="text-[11px] text-muted-foreground">Rendering…</p>
           ) : body ? (
-            <RenderedBody body={body} />
+            <div className="space-y-3">
+              {/* WS-27bm S8: the report as a file. Rendered again on the
+                  click, so the file carries the numbers of that moment. */}
+              <ReportFileButtons reportId={selected} />
+              <RenderedBody body={body} />
+            </div>
           ) : null}
         </div>
       </div>

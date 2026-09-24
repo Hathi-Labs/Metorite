@@ -1403,3 +1403,35 @@ def test_w1_names_the_plan_inputs_s7d_added() -> None:
     w1 = _w1()
     for word in ("`key`", "`start`", "`after`", "`blocks`", "never blocks"):
         assert word in w1, word
+
+
+# ── S8 — documents and downloads (spec §14) ─────────────────────────────────
+
+
+def _files_section() -> str:
+    text = (AGENT_DIR / "instructions.md").read_text(encoding="utf-8")
+    assert "\n## Files\n" in text, "instructions.md lost its Files section (spec §14)"
+    start = text.index("\n## Files\n")
+    end = text.find("\n## ", start + 1)
+    return text[start : end if end != -1 else len(text)]
+
+
+def test_the_files_section_tells_the_model_how_a_member_gets_a_file() -> None:
+    """§14 item 5. Without it the model saves a report nowhere, or says it made
+    a PDF it cannot make. Each phrase is one rule the section carries."""
+    section = _files_section()
+    for phrase in (
+        "`write_artifact`",
+        "`outputs/`",
+        "Open, Download and Download PDF",
+        "`render_report`",
+        "Download PDF",
+        "Never say that you made a PDF",
+    ):
+        assert phrase in section, phrase
+
+
+def test_the_agent_may_still_write_an_artifact() -> None:
+    """The Files section names a tool the agent must hold."""
+    config = json.loads((AGENT_DIR / "config.json").read_text(encoding="utf-8"))
+    assert "write_artifact" in json.dumps(config)

@@ -37,6 +37,7 @@ import {
   planRowsFrom,
   planSubmit,
 } from "@/app/projects/lib/planCard";
+import { ReportFileButtons } from "@/app/projects/components/ReportFileButtons";
 
 type Data = Record<string, unknown>;
 
@@ -1163,6 +1164,10 @@ function ReportCard({ data }: { data: Data }) {
         </span>
         {data.period != null && <span style={MUTED}>{str(data.period)}</span>}
       </div>
+      {/* WS-27bm S8: the saved report as a Markdown or PDF file. Drawn only
+          when the card carries a real report id, and rendered again on the
+          click, so the file is the Reports app's numbers of that moment. */}
+      <ReportFileButtons reportId={data.reportId} />
       {stats.length > 0 && <StatDashboard data={{ stats }} />}
       {tables.map((t, i) => <DataGrid key={i} data={{ title: t.title, columns: t.columns, rows: t.rows, openBase: "" }} />)}
     </div>

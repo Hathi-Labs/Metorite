@@ -28,8 +28,14 @@ import rehypeRaw from "rehype-raw";
 import SandboxedHtml from "@/components/SandboxedHtml";
 import SandboxedReact from "@/components/SandboxedReact";
 import { iconsUsedIn } from "@/lib/iconSvg";
-import { classifyArtifact, isRenderable, type ArtifactKind }
-  from "@/lib/artifactKind";
+import {
+  canDownloadPdf,
+  classifyArtifact,
+  isRenderable,
+  pdfNameFor,
+  workspaceFileUrl,
+  type ArtifactKind,
+} from "@/lib/artifactKind";
 
 /** PDFs and Word docs have no renderer here — offer the download instead. */
 const UNDISPLAYABLE = new Set<ArtifactKind>(["pdf", "docx", "binary"]);
@@ -51,7 +57,7 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
   const previewable = kind === "markdown" || isRenderable(kind);
 
 
-  const fileUrl = `/api/agent/workspace/${sessionId}/file?path=${encodeURIComponent(path)}`;
+  const fileUrl = workspaceFileUrl(sessionId, path);
 
   const [content, setContent] = useState<string>("");
   const [loading, setLoading] = useState(true);
@@ -202,6 +208,16 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
         >
           <Icon name="Download" size={12} />
         </a>
+        {canDownloadPdf(kind) && (
+          <a
+            href={workspaceFileUrl(sessionId, path, { pdf: true })}
+            download={pdfNameFor(name)}
+            className="flex items-center gap-1 rounded px-2 py-1 text-[11px] text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+            title={`Download ${name} as PDF`}
+          >
+            <Icon name="FileDown" size={12} /> PDF
+          </a>
+        )}
       </div>
     </div>
   );
