@@ -27,7 +27,7 @@ STORE = SRC / "store.py"
 MAIN = SRC / "main.py"
 
 #: The two reads D66 (a) and (b) are served by. Both are customer-facing.
-SPEND_READS = ("usage_by_activity", "usage_by_member")
+SPEND_READS = ("usage_by_activity", "usage_by_member", "usage_by_app")
 
 #: Column names that would put a model, a provider or a tier on a customer's
 #: screen. `tier` is here too: D32.7 lets a customer NAME a tier when calling,

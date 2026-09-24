@@ -1215,6 +1215,143 @@ def usage_by_member(
     ]
 
 
+def usage_by_app(
+    conn: Connection,
+    *,
+    org_id: str,
+    days: int = SPEND_WINDOW_DAYS,
+    member: str | None = None,
+) -> list[dict[str, Any]]:
+    """What each APP spent, and which agents inside it spent it. Usage slice 2.
+
+    Returns one row per app, most expensive first, each carrying ``agents``:
+    the same numbers split by agent. An app is ``usage_event.module_slug``,
+    which the agents stamp from their own ``config.json`` (usage slice 1).
+
+    🔴 **`usage_by_activity` could never show an app.** It groups by
+    ``COALESCE(agent, module_slug)``, and every agent call names its agent, so
+    the app column was unreachable. That was harmless while ``module_slug`` was
+    always empty. It is not once slice 1 fills it in.
+
+    Pass ``member`` for one person's own view, exactly as
+    :func:`usage_by_activity` takes it.
+
+    ⚠️ **Customer-facing, so credits only.** It must never select our cost,
+    the model or the tier (D32.7, D66). ``test_customer_console_spend_reads.py``
+    reads this function's SQL and fails if it does. The operator's cost comes
+    from :func:`usage_cost_by`, joined on by the operator route.
+
+    ⚠️ **Nothing is dropped for want of a name.** A call with no app or no
+    agent is reported under :data:`UNATTRIBUTED_ACTIVITY`, so a gap in
+    attribution is visible as a row. The list IS cut at
+    :data:`SPEND_PAGE_SIZE` apps, like every sibling read, and the operator
+    route reports the true count beside it.
+    """
+    rows = conn.execute(
+        text(
+            """
+            SELECT COALESCE(module_slug, :unattributed) AS app,
+                   COALESCE(agent, :unattributed)       AS agent,
+                   COUNT(*)                             AS calls,
+                   COALESCE(SUM(billed_credits), 0)     AS credits
+            FROM usage_event
+            WHERE organization_id = :org
+              AND created_at >= now() - make_interval(days => :days)
+              -- 🔴 A REFUSAL IS NOT A CALL (migration 020, §8.1). The same
+              -- filter `usage_by_activity` carries, for the same reason.
+              AND refusal_reason IS NULL
+              -- CITEXT, not TEXT: `usage_by_activity` records why.
+              AND (CAST(:member AS CITEXT) IS NULL
+                   OR user_email = CAST(:member AS CITEXT))
+            GROUP BY 1, 2
+            """
+        ),
+        {"org": org_id, "days": days, "member": member,
+         "unattributed": UNATTRIBUTED_ACTIVITY},
+    )
+    apps: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        entry = apps.setdefault(
+            r.app, {"app": r.app, "calls": 0, "credits": Decimal(0), "agents": []})
+        entry["calls"] += int(r.calls)
+        entry["credits"] += Decimal(r.credits)
+        entry["agents"].append(
+            {"agent": r.agent, "calls": int(r.calls), "credits": Decimal(r.credits)})
+
+    def _order(row: dict[str, Any], key: str) -> tuple[Any, ...]:
+        # Most expensive first, then busiest, then by name so a tie is stable.
+        return (-row["credits"], -row["calls"], row[key])
+
+    out = sorted(apps.values(), key=lambda a: _order(a, "app"))
+    for a in out:
+        a["agents"].sort(key=lambda g: _order(g, "agent"))
+    return out[:SPEND_PAGE_SIZE]
+
+
+#: The dimensions :func:`usage_cost_by` may group by, and the SQL for each.
+#: ⚠️ A FIXED MAP, never an interpolated column name. The key is the only
+#: thing a caller chooses, and an unknown key is a KeyError, not SQL.
+_COST_DIMENSIONS: dict[str, tuple[str, ...]] = {
+    "app": ("COALESCE(module_slug, :unattributed)",),
+    "member": ("COALESCE(MIN(user_email::text), :unattributed)",),
+    "app_agent": (
+        "COALESCE(module_slug, :unattributed)",
+        "COALESCE(agent, :unattributed)",
+    ),
+}
+
+
+def usage_cost_by(
+    conn: Connection,
+    *,
+    org_id: str,
+    by: str,
+    days: int = SPEND_WINDOW_DAYS,
+) -> dict[Any, Decimal]:
+    """What the VENDOR charged us, per app, per member or per app-and-agent.
+
+    🔴 **OPERATOR ONLY.** This is our cost, and D66 keeps it off every
+    customer screen. No customer route may call this, and
+    ``test_usage_breakdown.py`` fails if a ``/my/`` route does. It is separate
+    from :func:`usage_by_app` so the customer read never holds this column —
+    the spend-reads fence reads that function's SQL for exactly this word.
+
+    Returns ``{key: cost_usd}``. For ``app_agent`` the key is the pair
+    ``(app, agent)``. The keys match :func:`usage_by_app` and
+    :func:`usage_by_member` exactly, including :data:`UNATTRIBUTED_ACTIVITY`,
+    so the operator route joins by key and never re-derives a grouping.
+
+    ⚠️ **Member groups by the CITEXT column**, as :func:`usage_by_member` does,
+    so one person's cost is never split across two spellings of their address.
+    """
+    exprs = _COST_DIMENSIONS[by]
+    if by == "member":
+        select_keys = exprs[0] + " AS k0"
+        group = "user_email"
+    else:
+        select_keys = ", ".join(f"{e} AS k{i}" for i, e in enumerate(exprs))
+        group = ", ".join(str(i + 1) for i in range(len(exprs)))
+    rows = conn.execute(
+        text(
+            f"""
+            SELECT {select_keys},
+                   COALESCE(SUM(provider_cost_usd), 0) AS cost
+            FROM usage_event
+            WHERE organization_id = :org
+              AND created_at >= now() - make_interval(days => :days)
+              AND refusal_reason IS NULL
+            GROUP BY {group}
+            """  # every fragment is a literal from _COST_DIMENSIONS
+        ),
+        {"org": org_id, "days": days, "unattributed": UNATTRIBUTED_ACTIVITY},
+    )
+    out: dict[Any, Decimal] = {}
+    for r in rows:
+        key = (r.k0, r.k1) if by == "app_agent" else r.k0
+        out[key] = Decimal(r.cost)
+    return out
+
+
 # ── The tier words a customer may see (WS-31 slice 3) ───────────────────────
 #
 # Spec: `ai_metering_and_analytics.md` §8.4 clauses 3 and 5, and D-AI-1.
