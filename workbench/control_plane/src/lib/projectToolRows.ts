@@ -103,11 +103,12 @@ export const STATUS_CATEGORIES = [
  * category after the status it restates. `projectToolRows.test.ts` is the fence.
  */
 export function taskMetaForPeople(meta: string): string {
-  const facts = meta.replace(/[«»]/g, "").split(" · ");
-  const out = facts.filter(
-    (f, i) =>
-      !(i > 0 && facts[i - 1].startsWith("status ") &&
-        (STATUS_CATEGORIES as readonly string[]).includes(f.trim())),
+  // Match on the RAW meta, while the status name is still fenced: a name may
+  // itself hold " · " (data() keeps it), so a split before this would cut it.
+  const cats = STATUS_CATEGORIES.join("|");
+  const cleaned = meta.replace(
+    new RegExp(`^(status «[^»]*») · (?:${cats})(?= · |$)`),
+    "$1",
   );
-  return out.join(" · ");
+  return cleaned.replace(/[«»]/g, "");
 }
