@@ -1897,3 +1897,458 @@ def test_the_defer_disposition_is_the_gateways() -> None:
 
     assert f'"disposition": "{W._DEFER_DISPOSITION}"' in inspect.getsource(
         pm_personal.defer_task)
+
+
+# ── S7d — the plan with capacity, no phases (spec §13.6, §10.6) ─────────────
+
+import json as _json  # noqa: E402
+
+from skill_projects import forms as F  # noqa: E402
+
+PLAN_DEPS = [
+    {"key": "t1", "title": "Order the steel", "owner": "priya@x.io",
+     "effort_mins": 120, "due": "2026-10-10", "impact": 5, "urgency": 4, "effort": 2},
+    {"key": "t2", "title": "Weld the frame", "owner": "priya@x.io", "effort_mins": 240,
+     "start": "2026-10-05", "due": "2026-10-12", "after": ["t1"]},
+    {"key": "t3", "title": "Paint the frame", "owner": "sam@x.io", "effort_mins": 60,
+     "due": "2026-10-14", "after": ["t2"]},
+]
+
+
+def _plan_submit(tasks: list[dict[str, Any]], name: str = "Frame") -> dict[str, str]:
+    return {"Plan": "Review plan — " + _json.dumps({"project": {"name": name}, "tasks": tasks})}
+
+
+def _plan_gateway(*, hr: bool = True, marks: dict[str, list[str]] | None = None,
+                  refuse_task: int = 0, seen: list[dict] | None = None):
+    """A responder with the preview route. ``marks`` maps a key to the marks
+    the server gives it. ``refuse_task`` refuses the n-th task POST."""
+    from gateway.conflicts import dependency_conflict
+
+    counter = {"tasks": 0}
+
+    def answer(call: dict) -> Any:
+        path, method = call["path"], call["method"]
+        if path == "/projects/plan/preview":
+            rows = call["json"]["rows"]
+            if seen is not None:
+                seen.append(call["json"])
+            by_key = {r["key"]: r for r in rows}
+            warnings = []
+            for r in rows:
+                for a in r["after"]:
+                    b = by_key[a]
+                    if dependency_conflict(
+                        {"start_date": b.get("start"), "due_at": b["due"]},
+                        {"start_date": r.get("start"), "due_at": r["due"]},
+                    ):
+                        warnings.append({"kind": "dependency_order", "blocker": a,
+                                         "blocked": r["key"], "blocker_ends": b["due"],
+                                         "blocked_starts": r.get("start") or r["due"]})
+            body: dict[str, Any] = {"hr_visible": hr, "dependency_warnings": warnings,
+                                    "window": {"starts_on": "2026-09-24",
+                                               "ends_on": "2026-10-14"}}
+            if not hr:
+                body["rows"] = [{"key": r["key"]} for r in rows]
+                body["hr_note"] = "An admin can see capacity."
+                return body
+            out = []
+            for r in rows:
+                got = (marks or {}).get(r["key"], [])
+                hours: dict[str, Any] = {"basis": True, "fits": True, "spare_hours": 12.0}
+                if "short_of_hours" in got:
+                    hours = {"basis": True, "fits": False, "needed_hours": 20.0,
+                             "available_hours": 16.0, "shortfall_hours": 4.0}
+                fit = ({"matched": False, "skills": [], "text": "no skill match"}
+                       if "no_skill_match" in got
+                       else {"matched": True, "skills": ["welding"], "text": "welding"})
+                fit["warnings"] = []
+                out.append({"key": r["key"], "owner": r["owner"], "fit": fit,
+                            "hours": hours, "marks": got})
+            body["rows"] = out
+            return body
+        if path == "/projects/people/names":
+            return {"names": {"priya@x.io": "Priya", "sam@x.io": "Sam"}}
+        if method == "POST" and path == "/projects/tasks":
+            counter["tasks"] += 1
+            if refuse_task and counter["tasks"] == refuse_task:
+                raise client.GatewayRefusal("Projects POST /projects/tasks: Failed (422).")
+            n = counter["tasks"]
+            tid = f"{n:08x}-d9cb-469f-a165-70867728950e"
+            return {**TASK, "id": tid, "title": call["json"]["title"], "task_number": 10 + n,
+                    "due_at": call["json"].get("due_at"), "archived_at": None}
+        return responder(call)
+
+    return answer
+
+
+@pytest.mark.parametrize(
+    "rows, words",
+    [
+        ([{**PLAN_DEPS[0], "start": "2026-10-11"}], "after its due date"),
+        ([{**PLAN_DEPS[0], "after": ["t9"]}], "no task has that key"),
+        ([{**PLAN_DEPS[0], "after": ["t1"]}], "cannot block itself"),
+        ([{**PLAN_DEPS[0], "after": ["t3"]}, PLAN_DEPS[1], PLAN_DEPS[2]], "in a circle"),
+    ],
+    ids=["start-after-due", "unknown-key", "self-block", "cycle"],
+)
+async def test_propose_plan_refuses_each_rule_7_case_before_any_card(
+    rows: list[dict[str, Any]], words: str, monkeypatch,
+) -> None:
+    """§10.6 item 1. Each case is refused before the plan card, the confirm
+    card and any call that is not a GET."""
+    drawn = form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan("Frame", _json.dumps(rows))
+    assert words in out
+    assert drawn == [] and asked == []
+    assert all(c["method"] == "GET" for c in calls)
+
+
+@pytest.mark.parametrize(
+    "edit, words",
+    [
+        ({"start": "2026-10-20"}, "after its due date"),
+        ({"after": ["t3"]}, "in a circle"),
+    ],
+)
+async def test_an_edit_on_the_card_that_breaks_rule_7_is_refused_before_the_confirm(
+    edit: dict[str, Any], words: str, monkeypatch,
+) -> None:
+    submitted = [{**PLAN_DEPS[0], **edit}, PLAN_DEPS[1], PLAN_DEPS[2]]
+    form_stub(monkeypatch, _plan_submit(submitted))
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    assert words in out
+    assert asked == [] and writes(calls) == []
+
+
+async def test_the_plan_writes_in_rule_8_order_under_exactly_one_card(monkeypatch) -> None:
+    """§10.6 item 2. The node, then every task, then every owner, then every
+    link. One card. No write outside the routes the manifest gives the tool."""
+    import acb_skills.ask_tools as ask_tools
+
+    form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+
+    async def marker(**kwargs: Any) -> bool:
+        calls.append({"method": "CARD", "path": "", "headers": {}, "params": {}, "json": kwargs})
+        return True
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", marker)
+    await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    kinds = []
+    for c in calls:
+        if c["method"] == "CARD":
+            kinds.append("card")
+        elif m.is_read(c["method"], c["path"]):
+            continue
+        elif c["path"] == "/projects/nodes":
+            kinds.append("node")
+        elif c["path"] == "/projects/tasks":
+            kinds.append("task")
+        elif c["path"].endswith("/assignees"):
+            kinds.append("owner")
+        elif c["path"].endswith("/links"):
+            kinds.append("link")
+        else:
+            kinds.append(c["path"])
+    assert kinds == ["card", "node", "task", "task", "task", "owner", "owner", "owner",
+                     "link", "link"]
+    for c in writes([c for c in calls if c["method"] != "CARD"]):
+        row = m.route_for(c["method"], c["path"])
+        assert row is not None and m.reaches("propose_plan", row.tool), c["path"]
+    links = [c for c in calls if c["path"].endswith("/links")]
+    assert all(c["json"]["link_type"] == "blocks" for c in links)
+    # The preview is read twice: for the plan card, and again after the submit.
+    assert [c["path"] for c in calls].count("/projects/plan/preview") == 2
+
+
+async def test_every_link_is_on_the_confirm_card(monkeypatch) -> None:
+    form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    context = asked[0]["context"]
+    assert (
+        "links: «Order the steel» blocks «Weld the frame», "
+        "«Weld the frame» blocks «Paint the frame»"
+    ) in context
+    assert "2 links" in asked[0]["detail"]
+    assert "linked: «Order the steel» blocks «Weld the frame»" in out
+
+
+async def test_a_card_over_the_limit_refuses(monkeypatch) -> None:
+    """§10.6 item 3. A cut card is not consent, so the tool refuses."""
+    big = [
+        {"key": f"t{i}", "title": f"Write the chapter number {i} of the manual " + "x" * 40,
+         "owner": "priya@x.io", "effort_mins": 60, "due": "2026-10-10"}
+        for i in range(1, 51)
+    ]
+    form_stub(monkeypatch, _plan_submit(big))
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan("Manual", _json.dumps(big))
+    assert "does not fit on one confirmation card" in out
+    assert asked == [] and writes(calls) == []
+
+
+async def test_a_refused_fifth_task_stops_and_says_what_exists(monkeypatch) -> None:
+    """§10.6 item 4. The receipt lists the created ids, names the failed row,
+    counts the rows not tried, and nothing is deleted or archived."""
+    rows = [
+        {"key": f"t{i}", "title": f"Step {i}", "owner": "priya@x.io",
+         "effort_mins": 30, "due": "2026-10-10"}
+        for i in range(1, 8)
+    ]
+    form_stub(monkeypatch, _plan_submit(rows))
+    approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway(refuse_task=5))
+    out = await skill_projects.propose_plan("Steps", _json.dumps(rows))
+    assert out.count("full_id:") == 4
+    assert "stopped: task 5 of 7, «Step 5», was refused." in out
+    assert "not tried: 2 tasks · 0 of 7 owners assigned · 0 of 0 links written" in out
+    assert "Nothing was archived." in out
+    assert not any(c["method"] == "DELETE" or "archive" in c["path"] for c in calls)
+    assert not any(c["method"] == "PUT" for c in calls)
+
+
+async def test_the_posted_dates_are_the_submitted_ones_even_for_a_conflicting_pair(
+    monkeypatch,
+) -> None:
+    """§10.6 item 5. A mark and a warning never move a date (rule 3)."""
+    form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    posted = {c["json"]["title"]: c["json"] for c in calls
+              if c["method"] == "POST" and c["path"] == "/projects/tasks"}
+    for row in PLAN_DEPS:
+        assert posted[row["title"]]["due_at"] == row["due"]
+        assert posted[row["title"]].get("start_date") == row.get("start")
+    context = asked[0]["context"]
+    assert (
+        "«Weld the frame» starts on 2026-10-05, but «Order the steel», which blocks it, "
+        "runs until 2026-10-10. Both dates stay as planned."
+    ) in context
+    assert F.WARNS_NOT_BLOCKS in context
+
+
+async def test_a_dropped_row_drops_its_links_and_the_card_lists_them(monkeypatch) -> None:
+    kept = [PLAN_DEPS[0], {**PLAN_DEPS[2], "after": []}]
+    form_stub(monkeypatch, _plan_submit(kept))
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    context = asked[0]["context"]
+    assert "dropped links: «Order the steel» blocks «Weld the frame»" in context
+    assert "«Weld the frame» blocks «Paint the frame»" in context.split("dropped links:")[1]
+    assert not any(c["path"].endswith("/links") for c in calls)
+
+
+async def test_a_dropped_key_left_in_after_is_dropped_not_refused(monkeypatch) -> None:
+    """The member removed t2 and the card still sent t3's after. The link
+    drops with the row. It is not an unknown key."""
+    kept = [PLAN_DEPS[0], PLAN_DEPS[2]]
+    form_stub(monkeypatch, _plan_submit(kept))
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    assert len(asked) == 1 and "project_id:" in out
+
+
+async def test_the_three_scores_go_back_and_forth_through_the_submit(monkeypatch) -> None:
+    """§13.6 rule 10. The card carries the scores, the submit echoes them, and
+    the score after the submit is the score the card showed."""
+    drawn = form_stub(monkeypatch, {})
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, _plan_gateway())
+    await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    card_rows = drawn[0]["props"]["data"]["tasks"]
+    first = next(r for r in card_rows if r["key"] == "t1")
+    assert (first["impact"], first["urgency"], first["effort"], first["priority"]) == (5, 4, 2, 40)
+    again = F._plan_rows(card_rows)
+    assert not isinstance(again, str)
+    assert {r["key"]: r["priority"] for r in again} == {r["key"]: r["priority"] for r in card_rows}
+
+
+async def test_without_the_hr_grant_the_plan_card_says_an_admin_can_see_capacity(
+    monkeypatch,
+) -> None:
+    """§13.6 rule 4. No fit, no hours, no mark, and one line."""
+    drawn = form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _plan_gateway(hr=False))
+    await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    data_ = drawn[0]["props"]["data"]
+    assert data_["capacity"] == "An admin can see capacity."
+    for row in data_["tasks"]:
+        assert not {"fit", "hours", "marks"} & set(row)
+    assert "capacity: «An admin can see capacity.»" in asked[0]["context"]
+    assert "check:" not in asked[0]["context"]
+
+
+async def test_the_confirm_card_repeats_the_marks_the_server_computes_again(monkeypatch) -> None:
+    """§13.6 rule 3. The member gave t3 to somebody else on the card. The
+    second preview reads the edited owner, and the confirm card repeats its
+    mark."""
+    seen: list[dict] = []
+    edited = [PLAN_DEPS[0], PLAN_DEPS[1], {**PLAN_DEPS[2], "owner": "new@x.io"}]
+    drawn = form_stub(monkeypatch, _plan_submit(edited))
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _plan_gateway(
+        marks={"t2": ["short_of_hours"], "t3": ["no_skill_match"]}, seen=seen))
+    await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    assert [r["owner"] for r in seen[1]["rows"] if r["key"] == "t3"] == ["new@x.io"]
+    card_rows = {r["key"]: r for r in drawn[0]["props"]["data"]["tasks"]}
+    assert card_rows["t2"]["marks"] == ["short of hours"]
+    assert card_rows["t3"]["fit"] == "no skill match"
+    context = asked[0]["context"]
+    assert "short of hours · short 4.0 h by 2026-10-12" in context
+    assert "no skill match" in context
+    assert "not in the directory: «new@x.io»" in context
+
+
+async def test_the_card_names_an_owner_the_directory_does_not_know(monkeypatch) -> None:
+    """§13.6 rule 10, H-162: the same check as create_task."""
+    rows = [{**PLAN_DEPS[0], "owner": "typo@x.io"}]
+    form_stub(monkeypatch, _plan_submit(rows))
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, _plan_gateway())
+    await skill_projects.propose_plan("Frame", _json.dumps(rows))
+    assert "not in the directory: «typo@x.io»" in asked[0]["context"]
+
+
+def test_the_plan_keeps_no_copy_of_the_dependency_rule() -> None:
+    """§13.6 rule 5. The skill asks the preview. The rule is the server's."""
+    source = (SKILL_DIR / "forms.py").read_text(encoding="utf-8")
+    assert "dependency_conflict" not in source and "interval(" not in source
+    assert F.PREVIEW_PATH == "/projects/plan/preview"
+
+
+# ── S7d review round 1 ──────────────────────────────────────────────────────
+
+
+async def test_an_unresolved_owner_is_marked_on_the_card_without_the_hr_grant(
+    monkeypatch,
+) -> None:
+    """P2a. Name resolution is picker data every member reads, not HR data.
+    A planner without the grant sees "owner not resolved" before the submit,
+    where they can still fix it."""
+    base = _plan_gateway(hr=False)
+
+    def twins(call: dict) -> Any:
+        if call["path"] == "/projects/assignees":
+            return {"people": [{"assignee": "p1@x.io", "name": "Priya S"},
+                               {"assignee": "p2@x.io", "name": "Priya R"}], "agents": []}
+        return base(call)
+
+    rows = [{**PLAN_DEPS[0], "owner": "Priya"}]
+    drawn = form_stub(monkeypatch, _plan_submit([{**rows[0], "owner": "p1@x.io"}]))
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, twins)
+    await skill_projects.propose_plan("Frame", _json.dumps(rows))
+    row = drawn[0]["props"]["data"]["tasks"][0]
+    assert row["marks"] == ["owner not resolved"]
+    assert "Close matches" in row["warnings"][0]
+    assert not {"fit", "hours"} & set(row)
+    assert len(asked) == 1
+
+
+async def test_an_unresolved_owner_is_marked_when_the_preview_fails(monkeypatch) -> None:
+    base = _plan_gateway()
+
+    def broken(call: dict) -> Any:
+        if call["path"] == "/projects/plan/preview":
+            raise client.GatewayRefusal("Projects POST /projects/plan/preview: Failed (500).")
+        if call["path"] == "/projects/assignees":
+            return {"people": [], "agents": []}
+        return base(call)
+
+    rows = [{**PLAN_DEPS[0], "owner": "Nobody"}]
+    drawn = form_stub(monkeypatch, {})
+    fake_gateway(monkeypatch, broken)
+    await skill_projects.propose_plan("Frame", _json.dumps(rows))
+    assert drawn[0]["props"]["data"]["tasks"][0]["marks"] == ["owner not resolved"]
+
+
+async def test_a_preview_that_loses_its_connection_is_not_a_refusal(monkeypatch) -> None:
+    """P2b. A transport error on the read means "capacity could not be
+    checked". It does not abort the plan."""
+    import httpx
+
+    base = _plan_gateway()
+
+    def dropped(call: dict) -> Any:
+        if call["path"] == "/projects/plan/preview":
+            raise httpx.ConnectError("connection refused")
+        return base(call)
+
+    drawn = form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, dropped)
+    out = await skill_projects.propose_plan("Frame", _json.dumps(PLAN_DEPS))
+    assert drawn[0]["props"]["data"]["capacity"].startswith("Capacity could not be checked")
+    assert len(asked) == 1 and "project_id:" in out
+
+
+@pytest.mark.parametrize(
+    "where, words",
+    [
+        ("task", "stopped: task 3 of 7, «Step 3», lost its connection to the gateway"),
+        ("owner", "stopped: the owner of «Step 2» lost its connection to the gateway"),
+        ("link", "stopped: the link «Step 1» blocks «Step 2» lost its connection to the gateway"),
+    ],
+)
+async def test_a_lost_connection_mid_batch_still_gives_the_partial_receipt(
+    where: str, words: str, monkeypatch,
+) -> None:
+    """P2b. A gateway that restarts mid-batch raises a transport error, not a
+    refusal. The receipt still says what exists, so a retry does not make a
+    second plan."""
+    import httpx
+
+    rows = [
+        {"key": f"t{i}", "title": f"Step {i}", "owner": "priya@x.io",
+         "effort_mins": 30, "due": "2026-10-10", **({"after": ["t1"]} if i == 2 else {})}
+        for i in range(1, 8)
+    ]
+    base = _plan_gateway()
+    count = {"task": 0, "owner": 0}
+
+    def drop(call: dict) -> Any:
+        if where == "task" and call["method"] == "POST" and call["path"] == "/projects/tasks":
+            count["task"] += 1
+            if count["task"] == 3:
+                raise httpx.ReadTimeout("timed out")
+        if where == "owner" and call["path"].endswith("/assignees"):
+            count["owner"] += 1
+            if count["owner"] == 2:
+                raise httpx.ConnectError("refused")
+        if where == "link" and call["path"].endswith("/links"):
+            raise httpx.ConnectError("refused")
+        return base(call)
+
+    form_stub(monkeypatch, _plan_submit(rows))
+    approve(monkeypatch)
+    fake_gateway(monkeypatch, drop)
+    out = await skill_projects.propose_plan("Steps", _json.dumps(rows))
+    assert words in out, out
+    assert "not tried:" in out and "Nothing was archived." in out
+    assert "may or may not" in out
+
+
+@pytest.mark.parametrize("effort", [-30, 129_601])
+async def test_an_effort_out_of_range_is_refused_before_the_card(
+    effort: int, monkeypatch,
+) -> None:
+    """Minor. The preview refuses these, so the row is refused first."""
+    drawn = form_stub(monkeypatch, _plan_submit(PLAN_DEPS))
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, _plan_gateway())
+    out = await skill_projects.propose_plan(
+        "Frame", _json.dumps([{**PLAN_DEPS[0], "effort_mins": effort}]))
+    assert "effort_mins is 0 to 129600 minutes" in out
+    assert drawn == [] and asked == [] and calls == []

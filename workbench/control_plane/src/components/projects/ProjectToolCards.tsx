@@ -252,6 +252,8 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
  */
 export function toneFor(outcome: string, tool: string): string {
   if (outcome === "failed") return "bg-card/40 border-destructive/40 text-destructive";
+  // Part of the batch exists and part does not: the member has work to do.
+  if (outcome === "partial") return "bg-warning/5 border-warning/40 text-warning";
   if (outcome !== "done") return "bg-card/40 border-border text-muted-foreground";
   return GUARDED_TOOLS.has(tool)
     ? "bg-warning/5 border-warning/40 text-warning"
@@ -506,7 +508,7 @@ function InfoCard({
 }
 
 /** What a write tool's result says happened. Pure, so the card is testable. */
-export type ActionOutcome = "done" | "cancelled" | "refused" | "failed";
+export type ActionOutcome = "done" | "partial" | "cancelled" | "refused" | "failed";
 
 /**
  * Classify a write tool's result.
@@ -522,6 +524,12 @@ export type ActionOutcome = "done" | "cancelled" | "refused" | "failed";
 /** The tools whose success carries no row, only a `done:` line. */
 const DONE_LINE_TOOLS = new Set(["mark_notifications_read"]);
 
+/**
+ * The line a batch prints when it stops at its first refusal
+ * (`forms.py::_stopped`). The receipt above it lists what exists.
+ */
+export const STOPPED_LINE = /^\s*stopped:\s*\S/im;
+
 export function classifyActionResult(
   result: string,
   status: ToolEvent["status"],
@@ -530,6 +538,9 @@ export function classifyActionResult(
   if (status === "error") return "failed";
   const text = (result || "").trim();
   if (text.startsWith(CANCELLED)) return "cancelled";
+  // A batch that stopped part way (WS-27bm S7d, §13.6 rule 9): something
+  // exists, and the receipt says what did not happen. It is not a success.
+  if (receiptIdOf(text) && STOPPED_LINE.test(text)) return "partial";
   if (receiptIdOf(text)) return "done";
   return DONE_LINE_TOOLS.has(tool) && /^\s*done:\s*\S/im.test(text) ? "done" : "refused";
 }
@@ -562,7 +573,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const result = (e.result || "").trim();
   const outcome = classifyActionResult(result, e.status, e.name);
   useEffect(() => {
-    if (outcome === "done" && isFreshReceipt(e)) announceChange(e.id);
+    if ((outcome === "done" || outcome === "partial") && isFreshReceipt(e)) announceChange(e.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
   }, [outcome, e.id]);
   const rowId = rowIdOf(result);
@@ -570,11 +581,21 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
   const detail = forPeople(result);
   const tone = toneFor(outcome, e.name);
   const icon =
-    outcome === "failed" ? "X" : outcome === "cancelled" ? "Ban" : outcome === "refused" ? "Info" : meta.icon;
+    outcome === "failed"
+      ? "X"
+      : outcome === "partial"
+        ? "AlertTriangle"
+        : outcome === "cancelled"
+          ? "Ban"
+          : outcome === "refused"
+            ? "Info"
+            : meta.icon;
   const heading =
     outcome === "failed"
       ? `${meta.label} — failed`
-      : outcome === "cancelled"
+      : outcome === "partial"
+        ? `${meta.label} — stopped part way`
+        : outcome === "cancelled"
         ? "Cancelled"
         : outcome === "refused"
           ? "Not done"
@@ -592,7 +613,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
               {detail}
             </div>
           )}
-          {outcome === "done" && rowId && (
+          {(outcome === "done" || outcome === "partial") && rowId && (
             <div className="mt-1">
               <Button
                 variant="text"

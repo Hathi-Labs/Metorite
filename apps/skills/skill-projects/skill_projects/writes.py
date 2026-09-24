@@ -84,6 +84,25 @@ def _fields_block(payload: dict[str, Any], *, before: dict[str, Any] | None = No
     ``before`` adds the current value beside each changed field, so a member
     approving an update sees the change and not only the result.
     """
+    body = _card_lines(payload, before=before)
+    budget = CARD_CONTEXT_LIMIT - len(CARD_NOTE) - 1
+    if len(body) <= budget:
+        return f"{CARD_NOTE}\n{body}"
+    keep = max(0, budget - len(_TRUNCATED) - 1)
+    return f"{CARD_NOTE}\n{body[:keep]}\n{_TRUNCATED}"
+
+
+def _fits_on_card(payload: dict[str, Any]) -> bool:
+    """Does the whole payload fit under the clip, with no truncation?
+
+    A tool whose card IS the list of what it creates refuses instead of
+    cutting it (WS-27bm S7d, §13.6 rule 8). A cut card is not consent.
+    """
+    return len(_card_lines(payload)) <= CARD_CONTEXT_LIMIT - len(CARD_NOTE) - 1
+
+
+def _card_lines(payload: dict[str, Any], *, before: dict[str, Any] | None = None) -> str:
+    """The card body before the clip: one ``key: value`` line per field."""
 
     def shown(value: Any) -> Any:
         # A value that carries a fence is usually ours (`data()`, `_ref()`),
@@ -101,12 +120,7 @@ def _fields_block(payload: dict[str, Any], *, before: dict[str, Any] | None = No
             lines.append(f"{key}: {shown(before[key])} → {shown(value)}")
         else:
             lines.append(f"{key}: {shown(value)}")
-    body = "\n".join(lines)
-    budget = CARD_CONTEXT_LIMIT - len(CARD_NOTE) - 1
-    if len(body) <= budget:
-        return f"{CARD_NOTE}\n{body}"
-    keep = max(0, budget - len(_TRUNCATED) - 1)
-    return f"{CARD_NOTE}\n{body[:keep]}\n{_TRUNCATED}"
+    return "\n".join(lines)
 
 
 async def _confirm(title: str, detail: str, context: str) -> bool:
