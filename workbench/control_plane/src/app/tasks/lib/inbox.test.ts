@@ -172,11 +172,13 @@ describe("the actions per kind (S6g)", () => {
     ).toEqual(["remove"]);
   });
 
-  it("a board row offers Not mine and Open on board, and no Delete", () => {
+  it("a board row offers Remove from my lists and Open on board, and no Delete", () => {
     const s = spies();
     const actions = inboxRowActions({ kind: "board", canPromote: true, ...s });
     expect(actions.map((a) => a.id)).toEqual(["notMine", "openBoard"]);
-    expect(actions.map((a) => a.label)).toEqual(["Not mine", "Open on board"]);
+    // One name per act (2026-09-24): the label is REMOVE_LABEL, the name
+    // every other My Tasks surface gives this act. It read "Not mine".
+    expect(actions.map((a) => a.label)).toEqual(["Remove from my lists", "Open on board"]);
     actions.find((a) => a.id === "notMine")!.run();
     expect(s.notMine).toHaveBeenCalledTimes(1);
     expect(s.remove).not.toHaveBeenCalled();

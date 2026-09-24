@@ -10,7 +10,6 @@ import { MODE_ICON } from "../lib/priorityIcons";
 import { contextAccent } from "../lib/contextColors";
 import type { ColumnDef } from "../lib/columns";
 import { TaskMeta } from "@/components/TaskMeta";
-import { importanceChip } from "@/app/projects/lib/card";
 import { taskMeta } from "@/lib/taskCard";
 
 // The desktop columnar cells for the Next-Actions list. Each renders the SAME

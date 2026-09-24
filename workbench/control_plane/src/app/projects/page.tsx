@@ -63,6 +63,8 @@ import type { ProjectMenuHandlers } from "./lib/projectMenu";
 import { CalendarView } from "./components/CalendarView";
 import { MoreTasksBar } from "./components/MoreTasksBar";
 import { SearchPalette } from "./components/SearchPalette";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
+import { deleteTaskCopy, deleteTasksCopy } from "./lib/deleteCopy";
 import { TimelineView } from "./components/TimelineView";
 import { TableView } from "./components/TableView";
 import { TaskBoard } from "./components/TaskBoard";
@@ -876,6 +878,11 @@ function ProjectsWorkspace() {
   // WS-27r — the search palette. Held at the page rather than in a view,
   // because the whole point is that it works from wherever you already are.
   const [searching, setSearching] = useState(false);
+  // The delete waiting for the shared ConfirmDialog: one task, or the bulk
+  // bar's selection. Null while no dialog is up.
+  const [confirmingDelete, setConfirmingDelete] = useState<
+    { kind: "one"; taskId: string } | { kind: "bulk"; ids: string[] } | null
+  >(null);
   // WS-27ab — the `?` sheet, printed from the same command registry the
   // palette and the key sequences read.
   const [showingShortcuts, setShowingShortcuts] = useState(false);
@@ -2067,18 +2074,19 @@ function ProjectsWorkspace() {
    * ⚠️ **Delete is confirmed and the rest are not.** Archiving fifty tasks is
    * undone by restoring fifty tasks, and the Restore button is on the same
    * bar. Deleting fifty is undone by nothing.
+   *
+   * The confirmation is the shared `ConfirmDialog` (it was `window.confirm`
+   * until 2026-09-24). A delete without `confirmedIds` only opens it, and
+   * the dialog's confirm calls back here with the ids it showed.
    */
-  async function applyBulkAction(action: "archive" | "unarchive" | "delete") {
-    const ids = [...picked];
+  async function applyBulkAction(
+    action: "archive" | "unarchive" | "delete",
+    confirmedIds?: string[],
+  ) {
+    const ids = confirmedIds ?? [...picked];
     if (ids.length === 0) return;
-    if (
-      action === "delete" &&
-      !window.confirm(
-        `Delete ${ids.length} task${ids.length === 1 ? "" : "s"}? This cannot ` +
-          "be undone.\n\nAny subtasks they have are kept and moved up a " +
-          "level, not deleted.",
-      )
-    ) {
+    if (action === "delete" && !confirmedIds) {
+      setConfirmingDelete({ kind: "bulk", ids });
       return;
     }
     setBulkBusy(true);
@@ -2471,8 +2479,22 @@ function ProjectsWorkspace() {
   // Anything modal is up. Sequences are suppressed under it: `g` while a
   // dialog is open must not navigate the page out from under a half-filled
   // form.
+  const doomedTask =
+    confirmingDelete?.kind === "one"
+      ? tasks.find((t) => t.id === confirmingDelete.taskId)
+      : undefined;
+  const deleteCopy =
+    confirmingDelete?.kind === "bulk"
+      ? deleteTasksCopy(confirmingDelete.ids.length)
+      : deleteTaskCopy(
+          doomedTask
+            ? { title: doomedTask.title, subtasks: doomedTask.subtasks?.total ?? 0 }
+            : null,
+        );
+
   const overlayOpen =
     searching ||
+    Boolean(confirmingDelete) ||
     showingShortcuts ||
     Boolean(managingFields) ||
     Boolean(managingTags) ||
@@ -2771,19 +2793,16 @@ function ProjectsWorkspace() {
    * its children — `parent_task_id` SET NULLs — so they survive at the top
    * level. Somebody who expects a cascade would otherwise delete a parent to
    * be rid of a subtree and find the subtree still there, or, worse, hesitate
-   * to delete anything because they cannot tell which it does.
+   * to delete anything because they cannot tell which it does. The words
+   * are `deleteTaskCopy`'s, drawn by the shared `ConfirmDialog`.
+   *
+   * Without `confirmed` this only opens the dialog. Its confirm calls back.
    */
-  async function deleteTaskById(taskId: string) {
-    const doomed = tasks.find((t) => t.id === taskId);
-    const kids = doomed?.subtasks?.total ?? 0;
-    const ok = window.confirm(
-      `Delete “${doomed?.title ?? "this task"}”? This cannot be undone.` +
-        (kids
-          ? `\n\nIts ${kids} subtask${kids === 1 ? "" : "s"} will be kept and ` +
-            "moved up a level, not deleted."
-          : ""),
-    );
-    if (!ok) return;
+  async function deleteTaskById(taskId: string, confirmed = false) {
+    if (!confirmed) {
+      setConfirmingDelete({ kind: "one", taskId });
+      return;
+    }
     try {
       const done = await projectsApi.deleteTask(taskId);
       await refreshRef.current();
@@ -3912,6 +3931,20 @@ function ProjectsWorkspace() {
           setDeleteError(null);
         }}
         onConfirm={(project) => void deleteNode(project)}
+      />
+
+      {/* One delete confirmation, shared with My Tasks. The words are this
+          app's own and true for it: a Projects delete is permanent. */}
+      <ConfirmDialog
+        open={Boolean(confirmingDelete)}
+        {...deleteCopy}
+        onCancel={() => setConfirmingDelete(null)}
+        onConfirm={() => {
+          const pending = confirmingDelete;
+          setConfirmingDelete(null);
+          if (pending?.kind === "one") void deleteTaskById(pending.taskId, true);
+          if (pending?.kind === "bulk") void applyBulkAction("delete", pending.ids);
+        }}
       />
 
       <SearchPalette

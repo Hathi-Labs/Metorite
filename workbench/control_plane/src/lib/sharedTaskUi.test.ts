@@ -111,6 +111,27 @@ const SEAM: {
     declaration: /(?:^|\n)\s*const\s+TONE\s*:\s*Record<MetaTone/,
   },
   {
+    /**
+     * 2026-09-24. A priority level was drawn three ways in two apps. These
+     * three rows keep it at one: one descriptor, one ranked tone table, one
+     * component. A second `PriorityChip`, or a `CELL_TONE` table grown back
+     * in an app, is the old split returning.
+     */
+    what: "the priority chip",
+    home: "components/TaskMeta.tsx",
+    declaration: /(?:^|\n)\s*(?:export\s+)?function\s+PriorityChip\b/,
+  },
+  {
+    what: "the ranked pill table",
+    home: "components/TaskMeta.tsx",
+    declaration: /(?:^|\n)\s*const\s+RANKED\s*:/,
+  },
+  {
+    what: "the priority chip descriptor",
+    home: "lib/taskCard.ts",
+    declaration: /(?:^|\n)\s*(?:export\s+)?(?:function\s+priorityChip\b|const\s+(?:PRIORITY_CHIP_STYLE|CELL_TONE)\b)/,
+  },
+  {
     what: "the status colour vocabulary",
     home: "lib/statusAccent.ts",
     declaration: /export\s+function\s+(statusAccent|resolveHue)\b/,

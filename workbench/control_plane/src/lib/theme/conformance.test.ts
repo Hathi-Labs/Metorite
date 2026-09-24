@@ -332,7 +332,8 @@ describe("solid controls go through the Button primitive", () => {
   // workspace/project pickers). Lowering the number is part of the change —
   // this ratchet only holds if a file that got better cannot keep its old
   // budget for the next regression to spend.
-  const SOLID_BUTTON_DEBT = 25;
+  // 24 since 2026-09-24: My Tasks' DeleteConfirmModal moved onto ConfirmDialog.
+  const SOLID_BUTTON_DEBT = 24;
 
   function solidButtons(): Record<string, number> {
     const out: Record<string, number> = {};
@@ -423,7 +424,9 @@ describe("no raw Tailwind palette colours", () => {
     "app/tasks/components/AssistantRail.tsx": 1,
     "app/tasks/components/ClarifyPanel.tsx": 5,
     "app/tasks/components/FocusMode.tsx": 2,
-    "app/tasks/components/PriorityControls.tsx": 48,
+    // 24 since 2026-09-24: `CELL_TONE` went, and the level is the shared
+    // PriorityChip. What is left is the Weight toggles and the nudge badge.
+    "app/tasks/components/PriorityControls.tsx": 24,
     "app/calendar/components/StartupRitual.tsx": 6,
     "app/calendar/components/EndOfDayReview.tsx": 6,
     "app/calendar/components/ScheduleSheet.tsx": 1,
@@ -1082,6 +1085,9 @@ describe("the headless substrate is wrapped, not imported", () => {
     "app/projects/components/FieldManager.tsx",
     "app/projects/components/TagManager.tsx",
     "app/projects/components/LifecyclePolicy.tsx",
+    // 2026-09-24 — the one delete confirmation, for Projects and My Tasks. It
+    // replaced `window.confirm` and a hand-rolled `fixed inset-0` overlay.
+    "components/ui/ConfirmDialog.tsx",
   ];
 
   it("the converted /projects dialogs do not grow an overlay back by hand", () => {

@@ -1,0 +1,30 @@
+/**
+ * My Tasks · where a ⌘K search hit opens.
+ *
+ * ⌘K is search in both task apps, and both mount ONE palette
+ * (`app/projects/components/SearchPalette.tsx`). The palette searches every
+ * project the member can see, so a hit can be a task My Tasks does not hold.
+ *
+ * - **A task My Tasks holds opens HERE**, in the detail view, because the
+ *   member asked from My Tasks and the store already has the row.
+ * - **Any other task opens in Projects**, at the deep link the board already
+ *   reads (`taskDeepLink`). My Tasks cannot draw a task it does not hold.
+ *
+ * Fence: `searchHit.test.ts`.
+ */
+
+import { taskDeepLink } from "@/app/projects/lib/card";
+
+import type { MyTask } from "./types";
+
+export type HitTarget =
+  | { kind: "here"; id: string }
+  | { kind: "projects"; href: string };
+
+export function hitTarget(
+  id: string,
+  items: readonly Pick<MyTask, "id">[],
+): HitTarget {
+  if (items.some((item) => item.id === id)) return { kind: "here", id };
+  return { kind: "projects", href: taskDeepLink({ id }) };
+}

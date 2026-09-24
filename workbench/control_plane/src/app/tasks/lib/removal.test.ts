@@ -34,7 +34,15 @@ import {
   fetchItems,
   fetchUntriaged,
 } from "./api";
-import { REMOVE_LABEL, canPurge, purgeable, removalLabel, removalLabelFor } from "./removal";
+import {
+  REMOVE_LABEL,
+  UNDO_WINDOW_SECONDS,
+  canPurge,
+  purgeable,
+  removalCopy,
+  removalLabel,
+  removalLabelFor,
+} from "./removal";
 import { itemsForView, useTaskStore } from "./taskStore";
 import type { MyTask } from "./types";
 
@@ -81,6 +89,46 @@ describe("the rule", () => {
     expect(removalLabel(task("m"), scope)).toBe("Delete");
     expect(removalLabelFor([task("m"), task("b", { projectId: "board-1" })], scope)).toBe(
       "Delete or remove",
+    );
+  });
+});
+
+describe("the confirmation says what really happens", () => {
+  const board = (id: string) => task(id, { projectId: "board-1" });
+
+  it("my own task: undo for the toast's window, then deleted for good", () => {
+    const copy = removalCopy([task("m")], scope);
+    expect(copy.title).toBe("Delete this task?");
+    expect(copy.confirmLabel).toBe("Delete");
+    expect(copy.body).toBe(
+      `You can undo this for ${UNDO_WINDOW_SECONDS} seconds. After that, your task is deleted for good.`,
+    );
+    expect(copy.note).toBeNull();
+  });
+
+  it("the promised window IS the toast's timer", () => {
+    // The dialog quotes a number. If the toast used its own, the promise
+    // could drift from what Undo really allows.
+    const toast = read("components/UndoToast.tsx");
+    expect(toast).toMatch(/setTimeout\(\(\) => dismissUndo\(\), UNDO_WINDOW_SECONDS \* 1000\)/);
+  });
+
+  it("a board task: removed from my lists, the board keeps it, never 'delete'", () => {
+    const copy = removalCopy([board("b")], scope);
+    expect(copy.title).toBe("Remove this task from your lists?");
+    expect(copy.confirmLabel).toBe(REMOVE_LABEL);
+    expect(copy.body).toMatch(/The team board keeps it, and nothing is deleted\./);
+    expect(`${copy.title} ${copy.body} ${copy.confirmLabel}`).not.toMatch(/\bdelete\b(?!d)/i);
+    expect(copy.icon).toBe("UserX");
+  });
+
+  it("a mixed set names both acts, and which tasks each one reaches", () => {
+    const copy = removalCopy([task("m"), board("b"), board("c")], scope);
+    expect(copy.title).toBe("Delete or remove 3 tasks?");
+    expect(copy.confirmLabel).toBe("Delete or remove");
+    expect(copy.body).toMatch(/your task is deleted for good\./);
+    expect(copy.note).toBe(
+      "2 of these are on a team board. Those leave your lists, and the board keeps them.",
     );
   });
 });
@@ -213,6 +261,10 @@ describe("the fences around it", () => {
     ]) {
       expect(read(rel), rel).toMatch(/useRemoval\(\)/);
     }
-    expect(read("components/DeleteConfirmModal.tsx")).toMatch(/Remove this task from your lists\?/);
+    // The dialog is the shared ConfirmDialog, worded by `removalCopy`.
+    const modal = read("components/DeleteConfirmModal.tsx");
+    expect(modal).toMatch(/import ConfirmDialog from "@\/components\/ui\/ConfirmDialog";/);
+    expect(modal).toMatch(/const copy = removalCopy\(targets, scope\);/);
+    expect(modal).not.toMatch(/fixed inset-0/);
   });
 });

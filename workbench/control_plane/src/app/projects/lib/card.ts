@@ -22,12 +22,12 @@ import {
   type TaskFacts,
   type TypeFact,
   chipKind,
+  priorityChip,
   taskMeta,
 } from "@/lib/taskCard";
 
 import type { TagRow, TaskRow, TaskTypeRow } from "./api";
-import { CELL_ICON_NAME, type PriorityCell } from "@/app/tasks/lib/priority";
-import { cellLabel, taskCell } from "./matrix";
+import { taskCell } from "./matrix";
 
 /**
  * `lower(tag name)` → the registry's stored colour.
@@ -97,33 +97,17 @@ export function taskFacts(
  * flagged, and a pill on every ordinary card is noise. My Tasks' card makes
  * the same call (`hideLowPriority`).
  *
- * Tones step down with the level, and never use the member's accent: a
- * level is not a selection. Each level has its own glyph as well, so it reads
- * without colour (D-PM-27).
+ * The chip itself is `priorityChip` (`@/lib/taskCard`), the ONE priority
+ * chip My Tasks' `PriorityBadge` draws too, so a level looks the same in both
+ * apps. This file only reads the level off a `TaskRow`.
  */
-const CELL_TONE: Record<Exclude<PriorityCell, "low-priority">, MetaChip["tone"]> = {
-  critical: "danger",
-  urgent: "danger",
-  "high-leverage": "warning",
-  important: "warning",
-  "quick-leverage": "muted",
-  "speculative-bet": "muted",
-};
-
 export function importanceChip(
   task: Pick<TaskRow, "importance" | "leveraged" | "due_at">,
   nowMs?: number
 ): MetaChip | null {
   const cell = taskCell(task, nowMs);
   if (cell === "low-priority") return null;
-  const label = cellLabel(cell);
-  return {
-    key: "importance",
-    icon: CELL_ICON_NAME[cell],
-    label,
-    tone: CELL_TONE[cell],
-    title: `Priority: ${label}`,
-  };
+  return priorityChip(cell);
 }
 
 /**
