@@ -813,8 +813,8 @@ Each slice is one pull request. Each one is useful alone.
 8. The `overcommitted` rows equal `at_risk_tasks` for the same person and
    inputs, filtered to the scope.
 9. `parallel_person` follows rule 6. Tests show no row for two tasks, for
-   three tasks in one top-level project, for a shared end day, or for a task
-   with one date. In a project scope, a person with one in-scope task and two
+   three tasks in one top-level project, for tasks whose spans share no day,
+   or for a task with one date. Three tasks that are due today give a row. In a project scope, a person with one in-scope task and two
    visible tasks in other top-level projects on the same day gives one row. A
    test proves the cap of 5.
 10. `horizon_days` outside 1 to 90 gets 422, and the response prints its
@@ -1171,7 +1171,7 @@ the S7a and S7b precedent.
    2026-09-24). That is the fact to act on, and it implies the order problem.
 6. **`parallel_person` needs three.** Only open, visible tasks with both a
    start date and a due date count. A span covers the days from its start to
-   its due day. **The row fires when, on one day, a person holds 3 or more such
+   its due day, and both days count. **The row fires when, on one day, a person holds 3 or more such
    tasks, in 2 or more top-level projects** (owner, 2026-09-24). A sub-project
    counts as its root project, so the key is `root_project_id`. The route
    counts a person's tasks over ALL the work the caller can see, as rule 8
@@ -1212,18 +1212,19 @@ the S7a and S7b precedent.
 checks only the first blocker of a row, and `conflicts()` reads the browser's
 local day. The route checks every visible blocker, and reads the UTC day.
 
-**As built, 2026-09-24.** Seven facts that the rules above do not say.
+**As built, 2026-09-24.** Eight facts that the rules above do not say.
 - **Where each part lives.** The route is
   `routes/projects/analytics_conflicts.py`. The pure rules are in the leaf
   module `gateway/conflicts.py`: the dependency rule, the parallel day, the
   severity, the sort and the cap. The S7b warnings split into
   `away_warning`, `leaving_warning` and `concurrency_warning`, and
   `warning_kinds` returns each one with its kind.
-- **A parallel span stops the day before its due day.** A task covers the
-  days from its start to the day before its due day. A task that starts and
-  is due on one day covers that day. The due day is the handover, as in rule
-  2. Without this rule, item 9's "shared end day" gives a row. The owner can
-  change this in one function, `parallel_days`.
+- **A parallel span includes its due day** (owner, review round 1). Work
+  that is due today is the parallel work that matters most. The first build
+  stopped each span one day early, and then three tasks due today gave no
+  row. The dependency rule keeps its handover day, because that rule is about
+  order and this one is about load. The rule is in one function,
+  `parallel_days`.
 - **The row carries more than rule 11 names.** `due_on` is the day that the
   sort reads. For `dependency_order` it is the first day of the blocked task.
   For `blocker_late` it is the due day of the blocker. `parallel_person` adds
@@ -1233,6 +1234,10 @@ local day. The route checks every visible blocker, and reads the UTC day.
   this caller may see, and `by_kind` has one key for each of them. Without
   the HR grant, no HR kind name is in the body at all.
   `window.ignored_by` names the two dependency kinds.
+- **The dependency kinds hide what no board shows** (review round 1). A
+  blocker in triage gives no row, because a parked task is on no board. A
+  row names no agent address. When a blocker's due date is before its start,
+  the sentence names its start date as the end, and says so.
 - **The HR kinds read the holders that the directory knows.** A holder with
   no `people` row has no schedule, absences or end date, so that holder
   gives no HR row. `over_concurrency` names the tasks in progress in scope.

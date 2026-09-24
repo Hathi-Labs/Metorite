@@ -203,6 +203,51 @@ def test_a_well_ordered_pair_on_time_gives_nothing() -> None:
     assert route.dependency_rows([pair], {}) == []
 
 
+def test_a_swapped_blocker_is_never_called_due_on_its_start_date() -> None:
+    """Review round 1. The fixture's swapped case: the blocker starts on the
+    20th and is due on the 5th. The interval ends on the 20th, which is the
+    START date, so the sentence must not call the 20th its due date."""
+    [case] = [c for c in _cases() if c["name"] == "a blocker due before its start is swapped"]
+    pair = {
+        "blocker": {"id": "k", "title": "Order steel", **case["blocker"]},
+        "blocked": {"id": "b", "title": "Weld frame", **case["blocked"]},
+        "blocker_overdue": False,
+    }
+    [row] = route.dependency_rows([pair], {})
+    assert "due on 2026-08-20" not in row["sentence"]
+    assert "until 2026-08-20, its start date" in row["sentence"]
+
+
+def test_a_blocker_on_time_is_named_by_its_real_due_date() -> None:
+    pair = _pair(
+        blocker={"start_date": "2026-10-01", "due_at": "2026-10-12T12:00:00Z"},
+        blocked={"start_date": "2026-10-10", "due_at": None},
+        late=False,
+    )
+    [row] = route.dependency_rows([pair], {})
+    assert "which blocks it, is due on 2026-10-12" in row["sentence"]
+
+
+def test_a_dependency_row_names_no_agent() -> None:
+    """An agent address is not a person to talk to about a date."""
+    pair = _pair(
+        blocker={"start_date": None, "due_at": "2026-10-12T12:00:00Z"},
+        blocked={"start_date": "2026-10-10", "due_at": None},
+        late=False,
+    )
+    people = {"b": [{"email": "agent:fit-bot", "name": None}],
+              "k": [{"email": "ana@x.in", "name": "Ana"}]}
+    [row] = route.dependency_rows([pair], people)
+    assert [p["email"] for p in row["people"]] == ["ana@x.in"]
+
+
+def test_the_blocker_is_held_to_the_triage_exclusion() -> None:
+    """A parked triage task is on no board, so it must not name itself in a
+    sentence as a blocker."""
+    sql = route.dependency_sql("TRUE", "TRUE")
+    assert "s_triage.id = k.status_id" in sql
+
+
 def test_a_completed_blocker_gives_no_dependency_order() -> None:
     pair = _pair(
         blocker={"start_date": None, "due_at": "2026-10-12T12:00:00Z",
@@ -251,11 +296,29 @@ def test_three_tasks_in_one_top_level_project_give_no_row() -> None:
     assert _busiest([_span("a", "A", 1, 6), _span("b", "A", 1, 6), _span("c", "A", 1, 6)]) is None
 
 
-def test_a_shared_end_day_gives_no_row() -> None:
-    """The due day is the handover, as in the dependency rule. Two tasks end
-    on the day the third starts, so on no day do all three run."""
-    tasks = [_span("a", "A", 1, 5), _span("b", "B", 2, 5), _span("c", "C", 5, 9)]
+def test_tasks_whose_spans_share_no_day_give_no_row() -> None:
+    """Three tasks that never all run on one day are sequential work, not
+    parallel work."""
+    tasks = [_span("a", "A", 1, 4), _span("b", "B", 2, 4), _span("c", "C", 5, 9)]
     assert _busiest(tasks) is None
+
+
+def test_a_span_includes_its_due_day() -> None:
+    """Owner, review round 1. Rule 6 says "from its start to its due day", so
+    the due day counts. Work due TODAY is the parallel work that matters
+    most: three tasks from the 22nd to the 24th, with today the 24th, give a
+    row on the 24th."""
+    today = date(2026, 9, 24)
+    tasks = [
+        {"id": t, "root_project_id": r, "in_scope": True, "start_date": "2026-09-22",
+         "due_at": "2026-09-24T12:00:00Z"}
+        for t, r in (("a", "A"), ("b", "B"), ("c", "A"))
+    ]
+    found = rules.busiest_parallel_day(tasks, today, today + timedelta(days=14))
+    assert found is not None
+    day, covering = found
+    assert day == today and len(covering) == 3
+    assert rules.parallel_days(tasks[0]) == (date(2026, 9, 22), date(2026, 9, 24))
 
 
 def test_a_task_with_one_date_does_not_count() -> None:
@@ -570,6 +633,7 @@ def seeded(_ladder):
             status(root, "To do", "todo", 0)
         status("A", "Doing", "in_progress", 1)
         status("A", "Done", "done", 2)
+        status("A", "Parked", "triage", 3)
         c.execute(
             text(
                 "INSERT INTO pm_project_grants (project_id, subject, created_by,"
@@ -644,6 +708,7 @@ def seeded(_ladder):
                 {"s": made[source], "t": made[target], "k": kind},
             )
 
+        made["bot"] = f"agent:cf-bot-{tag}"
         person("bo")
         person("cy")
         person("ana", end=2, ceiling=1)
@@ -653,7 +718,7 @@ def seeded(_ladder):
 
         # The dependency kinds.
         task("T1", "A", start=3, due=8)
-        task("K1", "A", due=5)
+        task("K1", "A", due=5, who=("bot",))
         task("K4", "A", due=9)
         task("K5", "A", lane="done", due=9)
         link("K1", "T1")
@@ -669,6 +734,9 @@ def seeded(_ladder):
         task("T5", "A", start=2, due=12)
         task("KH", "H", due=9)
         link("KH", "T5")
+        task("T6", "A", start=2, due=12)
+        task("KT", "A", lane="triage", due=9)
+        link("KT", "T6")
 
         # parallel_person — bo, across A (with A1 under it) and B.
         task("P1", "A", start=1, due=6, who=("bo",))
@@ -936,3 +1004,83 @@ async def test_the_horizon_bounds_the_dated_kinds_and_is_printed(seeded) -> None
     # The dependency kinds ignore the window.
     one = await _body(s, project="A", horizon=1)
     assert _rows(one, "dependency_order", s["T4"], s["K6"])
+
+
+@_needs_db
+async def test_a_triage_blocker_gives_no_row_and_no_title(seeded) -> None:
+    """Review round 1. KT is parked in triage and blocks T6 with dates that
+    conflict. It is on no board, so it gives no row and its title is absent."""
+    s = seeded
+    body = await _body(s, project="A")
+    raw = json.dumps(body)
+    assert s["KT"] not in raw
+    assert f"KT {s['tag']}" not in raw
+
+
+@_needs_db
+async def test_a_dependency_row_on_a_real_database_names_no_agent(seeded) -> None:
+    s = seeded
+    body = await _body(s, project="A")
+    [row] = _rows(body, "dependency_order", s["T1"], s["K1"])
+    assert not any(p["email"].startswith("agent:") for p in row["people"])
+
+
+async def _report(seeded: dict[str, Any], monkeypatch, *, hr: bool) -> dict[str, Any]:
+    """The report route, with a saved `conflicts` section, on a real database."""
+    from contextlib import asynccontextmanager
+
+    from acb_auth import UserContext, UserRole, build_access
+    from gateway.routes.projects import reports
+    from sqlalchemy import create_engine
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    sync = create_engine(_TENANT_URL, future=True)
+    with sync.begin() as c:
+        rid = str(c.execute(
+            text(
+                "INSERT INTO pm_reports (project_id, organization_id, name, config,"
+                " created_by) VALUES (CAST(:p AS uuid), CAST(:o AS uuid), :n,"
+                " CAST(:cfg AS jsonb), 'cf@example.test') RETURNING id"
+            ),
+            {"p": seeded["A"], "o": seeded["org"], "n": f"cf-{seeded['tag']}",
+             "cfg": json.dumps({"sections": ["conflicts"]})},
+        ).scalar_one())
+    eng = create_async_engine(_async_url(), future=True, poolclass=NullPool)
+
+    @asynccontextmanager
+    async def _session(*_a, **_k):
+        async with eng.connect() as conn:
+            yield conn
+
+    async def _resolve(_db, _user):
+        return _vis(seeded, restricted=False)
+
+    monkeypatch.setattr(reports, "_tenant_session", _session)
+    monkeypatch.setattr(reports, "resolve_visibility", _resolve)
+    grants = ["feature:projects"] + (["admin:members:read"] if hr else [])
+    user = UserContext(email="cf@example.test", role=UserRole.EMPLOYEE,
+                       access=build_access(grants))
+    try:
+        return await reports.render_report(rid, user=user)
+    finally:
+        await eng.dispose()
+        with sync.begin() as c:
+            c.execute(text("DELETE FROM pm_reports WHERE id = CAST(:i AS uuid)"), {"i": rid})
+        sync.dispose()
+
+
+@_needs_db
+async def test_the_report_section_follows_the_readers_hr_grant(seeded, monkeypatch) -> None:
+    """R7 fence for the report half of rule 9. Hard-coding ``hr_visible=True``
+    in reports.py fails the first half, and hard-coding False fails the
+    second."""
+    hidden = (await _report(seeded, monkeypatch, hr=False))["sections"]["conflicts"]
+    assert hidden["hr_visible"] is False
+    raw = json.dumps(hidden)
+    for kind in HR_KIND_NAMES:
+        assert kind not in raw, kind
+    shown = (await _report(seeded, monkeypatch, hr=True))["sections"]["conflicts"]
+    assert shown["hr_visible"] is True
+    assert set(HR_KIND_NAMES) <= set(shown["by_kind"])
+    assert any(r["kind"] in HR_KIND_NAMES for r in shown["rows"])

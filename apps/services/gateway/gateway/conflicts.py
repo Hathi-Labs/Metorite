@@ -146,20 +146,13 @@ def parallel_days(task: dict[str, Any]) -> tuple[date, date] | None:
     """The days a task occupies for ``parallel_person``, inclusive, or None.
 
     Only a task with BOTH a start date and a due date counts (§13.5 rule 6).
-    The span runs from its start to the day BEFORE its due day, because the
-    due day is the handover, as it is in :func:`dependency_conflict`. So a
-    task that ends on the day another starts does not overlap it. A task that
-    starts and is due on one day occupies that day.
+    The span runs from its start to its due day, BOTH inclusive (owner, S7c
+    review round 1). Work due today is the parallel work that matters most,
+    and a span that stopped the day before its due day never counted it.
     """
     if start_day(task.get("start_date")) is None or utc_day(task.get("due_at")) is None:
         return None
-    span = interval(task)
-    if span is None:
-        return None
-    first, last = span
-    if last > first:
-        last = last - timedelta(days=1)
-    return first, last
+    return interval(task)
 
 
 def busiest_parallel_day(

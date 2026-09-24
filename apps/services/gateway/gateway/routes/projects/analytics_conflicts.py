@@ -88,6 +88,7 @@ from gateway.routes.projects.core import (
     resolve_visibility,
     router,
     task_visibility_clause,
+    triage_exclusion_clause,
 )
 from gateway.routes.tasks.core import can_read_hr_fields
 from gateway.workload import HORIZON_DAYS
@@ -118,6 +119,8 @@ def dependency_sql(open_where: str, blocker_visible: str) -> str:
         f"   AND {open_where}"
         f"   AND k.archived_at IS NULL"
         f"   AND ({blocker_visible})"
+        # A parked triage task is on no board, so it names itself nowhere.
+        f"   AND ({triage_exclusion_clause('k')})"
         f"   AND ks.category <> ALL(CAST(:closed AS text[]))"
         f" ORDER BY t.id, k.id"
     )
@@ -214,9 +217,11 @@ def dependency_rows(
     for pair in pairs:
         blocked, blocker = pair["blocked"], pair["blocker"]
         ids = [str(blocked["id"]), str(blocker["id"])]
-        people = people_of.get(ids[0], []) + [
-            p for p in people_of.get(ids[1], []) if p not in people_of.get(ids[0], [])
-        ]
+        people: list[dict[str, Any]] = []
+        for p in people_of.get(ids[0], []) + people_of.get(ids[1], []):
+            # An agent is not a person to talk to about a date.
+            if not str(p.get("email") or "").startswith("agent:") and p not in people:
+                people.append(p)
         if pair.get("blocker_overdue"):
             due = utc_day(blocker.get("due_at"))
             rows.append(conflict_row(
@@ -233,11 +238,25 @@ def dependency_rows(
                 "dependency_order", task_ids=ids, people=people, due_on=after[0],
                 sentence=(
                     f'"{blocked["title"]}" is planned from {after[0].isoformat()},'
-                    f' before "{blocker["title"]}", which blocks it, is due on'
-                    f" {before[1].isoformat()}. Nothing has been rescheduled."
+                    f' before "{blocker["title"]}", which blocks it,'
+                    f" {_blocker_end(blocker, before[1])}. Nothing has been"
+                    " rescheduled."
                 ),
             ))
     return rows
+
+
+def _blocker_end(blocker: dict[str, Any], end: date) -> str:
+    """How the sentence names the end of the blocker's span.
+
+    ⚠️ The end is the DUE date only when the due date is the end. A task due
+    before its start is swapped (rule 2), and then its interval ends on its
+    START date. Calling that the due date prints a date the task does not
+    carry (S7c review round 1).
+    """
+    if utc_day(blocker.get("due_at")) == end:
+        return f"is due on {end.isoformat()}"
+    return f"is scheduled until {end.isoformat()}, its start date"
 
 
 def parallel_rows(
