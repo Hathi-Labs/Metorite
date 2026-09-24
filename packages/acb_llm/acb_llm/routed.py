@@ -111,12 +111,24 @@ def routing_is_on() -> bool:
     return bool(getattr(settings, "router_serving_enabled", False)) and router_is_wired()
 
 
-def _attribution() -> dict[str, str | None]:
+def _attribution() -> dict[str, Any]:
     """Who to bill and what to blame, from the ambient run context.
 
-    ⚠️ ``user`` is the run context's name for the member, and ``source`` for
-    the app. The two vocabularies meet here and nowhere else, so the mapping is
+    ⚠️ ``user`` is the run context's name for the member, and ``app`` for the
+    app. The two vocabularies meet here and nowhere else, so the mapping is
     written once rather than at 29 call sites.
+
+    🔴 **``app`` first, and ``source`` only as the fallback.** ``source`` is
+    the SURFACE that started the run — ``chat``, ``workflows`` — so an agent
+    run that bills by it bills an app called "chat". The executor now binds
+    ``app`` from the agent's own ``config.json``, and
+    ``test_usage_attribution.py`` fails if an agent declares none. ``source``
+    stays as the fallback for the code that runs outside any agent, where it
+    names the app: an email automation binds ``source="email"`` and no agent.
+
+    ⚠️ **A member without an ``@`` is dropped**, exactly as
+    :mod:`acb_llm.attribution` drops it, so the two routed paths cannot
+    disagree about who a person is.
     """
     try:
         from acb_common._log import get_run_context
@@ -124,10 +136,16 @@ def _attribution() -> dict[str, str | None]:
         ctx = get_run_context()
     except Exception:
         ctx = {}
+    member = str(ctx.get("user") or "").strip()
+    member = member if "@" in member else ""
     return {
-        "member": ctx.get("user") or None,
+        "member": member or None,
+        # H-73: only the SESSION's member may decide a cap. This call runs in
+        # the gateway's own process, so there is no header to sign: the run
+        # context itself is the server-side fact.
+        "member_proven": bool(member) and ctx.get("member_verified") == "1",
         "agent": ctx.get("agent") or None,
-        "module_slug": ctx.get("source") or None,
+        "module_slug": ctx.get("app") or ctx.get("source") or None,
         "run_id": ctx.get("run_id") or None,
     }
 
