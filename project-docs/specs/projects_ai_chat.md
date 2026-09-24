@@ -895,7 +895,11 @@ Each item maps to the §13.7 rule with the same number.
    422. R8 tests check the group values against hand-computed figures, the
    median and the p90 over the full set, and the HR gate. Without the grant,
    the value keys are absent for `assignee` with `estimate_sum` or a cycle
-   measure. An agent group carries `agent: true`.
+   measure. An agent group carries `agent: true`. Without the grant, a row
+   with `assignees`, or a request with an assignee filter, has no
+   `cycle_hours` and no `estimate_mins` key, and `hidden_columns` names them.
+   With the grant, every column comes back. A mutation that drops the rule
+   fails an R8 test.
 8. The tool trailer tells the model not to compute a figure over the whole
    set when `truncated=yes`. `instructions.md` carries the two labels, and a
    test pins them.
@@ -1038,12 +1042,6 @@ light mode, at compact density, under a changed accent, and beside the board.
    until the owner says otherwise.
 3. **The tier.** `tier-balanced` by default, or `tier-powerful` as the Tasks
    rail chose. The cost difference is real once H-42 prices the card.
-4. **The dataset rows and O3** (S7e, 2026-09-24). O3 gates the per-person
-   estimate and speed in the server's groups. The rows still carry
-   `assignees` and `cycle_hours`, so a member can read them task by task.
-   The instructions forbid a per-person figure from the rows, and that rule
-   is advisory. The owner decides whether a caller without the HR grant also
-   loses `cycle_hours` on a row that carries `assignees`.
 
 ---
 
@@ -1588,7 +1586,14 @@ owner's answers. They follow the S7c and S7d precedent.
    `assignee` with `estimate_sum` or a cycle measure, and a caller without
    the HR grant. Then the value keys are absent and `hr_visible` is false. A
    test proves that they are absent. The server marks an agent in an assignee
-   group.
+   group. **The rows follow O3 too** (fix round 1, 2026-09-24). A caller
+   without the HR grant never gets `cycle_hours` or `estimate_mins` on a row
+   when the row carries `assignees`, or when an `assignee` or `assignees`
+   filter is set. The server drops the gated columns and keeps `assignees`,
+   because a count per person is for every member. The body says
+   `hr_visible: false` and lists `hidden_columns`. A grouped measure behind
+   an assignee filter hides its value in the same way. `cycle_hours` with no
+   person on the row stays, because it is a fact about a task.
 8. **The label rule.** Every figure that the chat derives carries "computed by
    the assistant from N of M tasks, not an Analytics figure". A
    `statDashboard` tile title begins "Computed from N tasks". With
@@ -1640,12 +1645,13 @@ gives 422. S7e has no HR column on a row. Hours, skills and absences stay in
   so the tool tells the model not to add groups up. The route keeps at most
   100 groups and prints `groups_total`. A week group reads in date order.
 - **Without the HR grant the server does not compute the hidden value**, and
-  the body says `measure_hidden: true`. ⚠️ The rows are not gated. A member
-  can still read `assignees` and `cycle_hours` on each row. The instructions
-  forbid a per-person figure from the rows, and that rule is ADVISORY. §12
-  item 4 asks the owner whether the rows need a gate too.
-- **The tool asks for eleven columns by default** (O4), and it clamps the
-  limit to 1 to 500 before the call. A `|` in member text becomes `/`, so a
+  the body says `measure_hidden: true`. The rows follow the same rule
+  (rule 7), in `analytics_dataset.hr_gate`. A grouped read ignores the
+  column set, so the default columns do not hide a group's value.
+- **The tool asks for eleven columns by default** (O4). The default names
+  `assignees`, so a member without the grant loses `cycle_hours` and
+  `estimate_mins`, and the tool prints a "Hidden columns" line that says
+  why. It clamps the limit to 1 to 500 before the call. A `|` in member text becomes `/`, so a
   title cannot add a cell.
 - **The S9 pill index does not read these rows.** A dataset row is not the
   `- #<n> «title»` card line, so its names draw as plain marked text.

@@ -1207,6 +1207,15 @@ DATASET_HR_HIDDEN = (
 )
 
 
+#: What the tool says when the route dropped row columns (O3). The default
+#: column set names assignees, so a member without the grant always sees it.
+DATASET_COLUMNS_HIDDEN = (
+    "Hidden columns: {columns}. With assignees on the row, or a filter by "
+    "person, they are a person's estimate or speed, and this member does not "
+    "hold admin:members:read. An admin can see them. Do not guess them."
+)
+
+
 def _fenced(value: Any) -> str:
     """Member text for one cell: one line, no pipe, cut, then fenced."""
     flat = " ".join(str(value or "").split()).replace("|", "/")
@@ -1305,6 +1314,9 @@ def _dataset_rows(payload: dict[str, Any]) -> list[str]:
         f"rows={len(rows)} total={total} truncated={'yes' if truncated else 'no'}"
         f" scope={_dataset_scope(payload)} state={payload.get('state')}"
     )
+    hidden = [str(c) for c in payload.get("hidden_columns") or []]
+    if hidden:
+        out.append(DATASET_COLUMNS_HIDDEN.format(columns=", ".join(hidden)))
     if truncated:
         out.append(DATASET_TRUNCATED)
     out.append(DATASET_LABEL.format(n=len(rows), m=total))

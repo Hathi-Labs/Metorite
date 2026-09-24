@@ -724,3 +724,71 @@ async def test_the_filters_narrow_on_a_real_database(seeded) -> None:
     assert none_yet["total"] == 0 and none_yet["rows"] == []
     young = await _body(s, state="open", created_after="2999-01-01", columns="full_id")
     assert young["total"] == 0
+
+
+# ── O3 on the rows (fix round 1): the server keeps per-person speed back ────
+
+
+def test_the_gate_drops_the_pair_and_keeps_assignees() -> None:
+    """Hermetic. Only a request that ties figures to people loses columns."""
+    q, hidden = route.hr_gate(_q(columns="assignees,cycle_hours,estimate_mins"), False)
+    assert hidden == ["estimate_mins", "cycle_hours"] and q.columns == ("assignees",)
+    q, hidden = route.hr_gate(_q(columns="title,cycle_hours", assignee="a@x.io"), False)
+    assert hidden == ["cycle_hours"] and q.columns == ("title",)
+    q, hidden = route.hr_gate(_q(columns="title,cycle_hours,estimate_mins"), False)
+    assert hidden == [] and "cycle_hours" in q.columns
+    q, hidden = route.hr_gate(_q(columns="assignees,cycle_hours"), True)
+    assert hidden == [] and q.columns == ("assignees", "cycle_hours")
+
+
+@_needs_db
+async def test_without_the_grant_a_row_never_pairs_assignees_with_speed(seeded) -> None:
+    """O3. The member keeps ``assignees``. ``cycle_hours`` and
+    ``estimate_mins`` are ABSENT, and ``hidden_columns`` names them."""
+    s = seeded
+    body = await _body(s, hr=False, state="all", limit=500,
+                       columns="full_id,assignees,cycle_hours,estimate_mins")
+    assert body["hr_visible"] is False
+    assert body["hidden_columns"] == ["estimate_mins", "cycle_hours"]
+    assert body["columns"] == ["full_id", "assignees"]
+    for row in body["rows"]:
+        assert set(row) == {"full_id", "assignees"}
+    [d1] = [r for r in body["rows"] if r["full_id"] == s["D1"]]
+    assert d1["assignees"] == [s["ana"]]
+
+
+@_needs_db
+async def test_without_the_grant_an_assignee_filter_hides_speed_too(seeded) -> None:
+    """O3. ``assignee=<x>`` with ``cycle_hours`` is one person's speed, even
+    with no ``assignees`` column. The grouped form hides its value too."""
+    s = seeded
+    body = await _body(s, hr=False, state="all", assignee=s["ana"],
+                       columns="full_id,cycle_hours,estimate_mins,completed_at")
+    assert body["hidden_columns"] == ["estimate_mins", "cycle_hours"]
+    assert sorted(_ids(body)) == sorted(s[k] for k in ("O1", "O2", "D1", "D3"))
+    for row in body["rows"]:
+        assert "cycle_hours" not in row and "estimate_mins" not in row
+    grouped = await _body(s, hr=False, state="all", assignee=s["ana"],
+                          group_by="tag", measure="cycle_hours_median")
+    assert grouped["measure_hidden"] is True
+    assert all("value" not in g for g in grouped["groups"])
+
+
+@_needs_db
+async def test_cycle_hours_alone_stay_for_every_member(seeded) -> None:
+    """A cycle time with no person on the row is a fact about a task."""
+    s = seeded
+    body = await _body(s, hr=False, state="closed", columns="full_id,cycle_hours", limit=500)
+    assert body["hidden_columns"] == []
+    got = {r["full_id"]: r["cycle_hours"] for r in body["rows"]}
+    assert got[s["D1"]] == 2.0
+
+
+@_needs_db
+async def test_with_the_grant_every_column_comes_back(seeded) -> None:
+    s = seeded
+    body = await _body(s, hr=True, state="all", assignee=s["ana"], limit=500,
+                       columns="full_id,assignees,cycle_hours,estimate_mins")
+    assert body["hidden_columns"] == []
+    [d1] = [r for r in body["rows"] if r["full_id"] == s["D1"]]
+    assert d1["cycle_hours"] == 2.0 and d1["estimate_mins"] == 60 and d1["assignees"] == [s["ana"]]

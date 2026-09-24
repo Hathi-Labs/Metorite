@@ -1821,3 +1821,17 @@ def test_the_three_old_number_rules_are_gone() -> None:
     assert "- **Numbers come from the server, or carry a label.**" in text
     assert "Draw a number that a tool printed, or a figure that you computed\nfrom `task_dataset` rows." in text
     assert "- **`task_dataset`** — a table of tasks, or the server's exact groups" in text
+
+
+async def test_task_dataset_says_which_columns_the_server_hid(monkeypatch) -> None:
+    """O3 fix round 1. The default columns name assignees, so a member
+    without the grant loses cycle_hours and estimate_mins. The tool says so
+    instead of printing a table that silently lacks them."""
+    payload = _dataset_payload(grouped=False)
+    payload["hidden_columns"] = ["estimate_mins", "cycle_hours"]
+    payload["hr_visible"] = False
+    out, _ = await _dataset(monkeypatch, payload)
+    assert "Hidden columns: estimate_mins, cycle_hours." in out
+    assert "An admin can see them. Do not guess them." in out
+    clean, _ = await _dataset(monkeypatch, _dataset_payload(grouped=False))
+    assert "Hidden columns" not in clean

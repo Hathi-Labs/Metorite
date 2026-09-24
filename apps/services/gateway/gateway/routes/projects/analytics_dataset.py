@@ -40,7 +40,7 @@ Read-only, and no migration.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Any
 from uuid import UUID
@@ -279,6 +279,49 @@ def _parse_filters(seen: dict[str, str]) -> tuple[dict[str, Any], dict[str, date
         else:
             filters[key] = raw.strip()
     return filters, dates
+
+
+#: The row columns that are a person's speed or load once a row names its
+#: assignees, or once the set is filtered to one person (owner O3). Without
+#: the HR grant the table drops them. ``assignees`` stays: counts per person
+#: are for every member.
+HR_ROW_COLUMNS: tuple[str, ...] = ("estimate_mins", "cycle_hours")
+
+#: The filters that narrow the set to named people.
+ASSIGNEE_FILTERS: tuple[str, ...] = ("assignee", "assignees")
+
+
+def per_person(query: DatasetQuery) -> bool:
+    """Does this request tie its figures to people (owner O3)?
+
+    True when a row names its assignees, when the table is grouped by
+    assignee, or when a filter narrows the set to named people. A cycle time
+    alone, with none of these, is a fact about a task and stays.
+    """
+    # The columns count for the table only. A grouped read sends no rows,
+    # and its column set is the unused default, which names assignees.
+    return (
+        (query.group_by is None and "assignees" in query.columns)
+        or query.group_by == "assignee"
+        or any(query.filters.get(k) for k in ASSIGNEE_FILTERS)
+    )
+
+
+def hr_gate(query: DatasetQuery, hr_visible: bool) -> tuple[DatasetQuery, list[str]]:
+    """The query the caller may run, and the row columns it lost (O3).
+
+    ⚠️ **The server enforces this, and no prompt does.** Without the rule a
+    member asks for ``assignees,cycle_hours`` and reads each person's speed
+    row by row, which is the figure the owner kept for admins.
+    """
+    if hr_visible or not per_person(query):
+        return query, []
+    hidden = [c for c in HR_ROW_COLUMNS if c in query.columns]
+    if not hidden:
+        return query, []
+    kept = tuple(c for c in query.columns if c not in hidden)
+    return replace(query, columns=kept), hidden
+
 
 
 # ── The SQL ─────────────────────────────────────────────────────────────────
@@ -569,7 +612,11 @@ async def dataset_body(
     }
     if query.group_by is not None:
         return {**head, **await _grouped(db, history, where, params, query, hr_visible)}
-    return {**head, **await _tabled(db, vis, history, where, params, query)}
+    query, hidden_columns = hr_gate(query, hr_visible)
+    body = await _tabled(db, vis, history, where, params, query)
+    # Always present in the table shape, so a client never has to guess
+    # whether a missing column was withheld or never asked for.
+    return {**head, **body, "hidden_columns": hidden_columns}
 
 
 async def _grouped(
@@ -582,11 +629,9 @@ async def _grouped(
 ) -> dict[str, Any]:
     """The groups (rule 7). The value keys are absent when O3 hides them."""
     assert query.group_by is not None
-    hidden = (
-        query.group_by == "assignee"
-        and query.measure in HR_MEASURES
-        and not hr_visible
-    )
+    # Grouped by person, or filtered to named people: either way the value
+    # is a person's estimate or speed (O3).
+    hidden = query.measure in HR_MEASURES and not hr_visible and per_person(query)
     rows = (await db.execute(
         text(groups_sql(history, where, query.group_by, None if hidden else query.measure)),
         params,
