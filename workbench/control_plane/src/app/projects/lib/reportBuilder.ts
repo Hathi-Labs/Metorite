@@ -16,8 +16,12 @@
  * ⚠️ **The scope is a project node or the whole organization.** People and
  * teams are R5, behind `may_report_on` (§7.1). A picker that listed a person
  * now would show a subject the server cannot scope to.
+ *
+ * WS-27bn R2 (§4, §6.1) adds templates. The catalogue is the server's
+ * (`GET /projects/reports/templates`), and this module holds no copy of it.
+ * A template presets the chips and stays on the config as `template`.
  */
-import type { ProjectRow, ReportConfig, ReportRow } from "./api";
+import type { ProjectRow, ReportConfig, ReportRow, ReportTemplate } from "./api";
 import { flatten } from "./tree";
 
 /**
@@ -107,6 +111,11 @@ export interface BuilderState {
   skipCurrentWeek: boolean;
   includeSubtree: boolean;
   sections: string[];
+  /**
+   * WS-27bn R2. The template key the report started from, or `null`. It is
+   * an origin label: a change of chips keeps it.
+   */
+  template: string | null;
 }
 
 /** A new report: the server's defaults, for the whole organization. */
@@ -118,6 +127,7 @@ export function newBuilderState(): BuilderState {
     skipCurrentWeek: true,
     includeSubtree: true,
     sections: [...DEFAULT_REPORT_SECTIONS],
+    template: null,
   };
 }
 
@@ -130,7 +140,58 @@ export function builderStateFrom(row: ReportRow): BuilderState {
     skipCurrentWeek: row.config.skip_current_week,
     includeSubtree: row.config.include_subtree,
     sections: orderedSections(row.config.sections),
+    template: row.config.template ?? null,
   };
+}
+
+/**
+ * WS-27bn R2. A new report, preset from one template of the server's
+ * catalogue. The member can still change each chip.
+ *
+ * ⚠️ **It refuses a coming-soon template** and answers `null`. Such a
+ * template names no sections, and the server refuses its key with 422. So a
+ * builder opened from it would offer a report that it cannot save.
+ */
+export function builderStateFromTemplate(
+  template: ReportTemplate
+): BuilderState | null {
+  if (!template.available || !template.sections?.length) return null;
+  const base = newBuilderState();
+  return {
+    ...base,
+    name: template.name,
+    weeks: template.weeks ?? base.weeks,
+    skipCurrentWeek: template.skip_current_week ?? base.skipCurrentWeek,
+    sections: orderedSections(template.sections),
+    template: template.key,
+  };
+}
+
+/** The most cards "Your reports" shows (§6.1, the R2 narrowing). */
+export const YOUR_REPORTS_LIMIT = 6;
+
+/**
+ * WS-27bn R2. "Your reports": the rows the server marks `mine`, newest
+ * first, at most six. The server decides `mine`. This only filters.
+ */
+export function yourReports(
+  rows: readonly ReportRow[],
+  limit: number = YOUR_REPORTS_LIMIT
+): ReportRow[] {
+  return rows
+    .filter((r) => r.mine === true)
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0))
+    .slice(0, limit);
+}
+
+/** The name a card shows for a report's template, or "Custom". */
+export function templateLabel(
+  row: ReportRow,
+  templates: readonly ReportTemplate[]
+): string {
+  const key = row.config.template;
+  if (!key) return "Custom";
+  return templates.find((t) => t.key === key)?.name ?? "Custom";
 }
 
 /** Sections in the server's order, with each name once. */
@@ -200,12 +261,16 @@ export function withPeriod(state: BuilderState, key: string): BuilderState {
  * always sends every field, never a part.
  */
 export function configFor(state: BuilderState): ReportConfig {
-  return {
+  const config: ReportConfig = {
     weeks: state.weeks,
     skip_current_week: state.skipCurrentWeek,
     include_subtree: state.includeSubtree,
     sections: orderedSections(state.sections),
   };
+  // WS-27bn R2. PATCH replaces the config, so a template left out here
+  // would be lost on every edit. No template sends no key, as in R1.
+  if (state.template) config.template = state.template;
+  return config;
 }
 
 /** The body of `POST /projects/reports` for this state. */

@@ -24,10 +24,15 @@
  * a subtree toggle, the sections and a name, with a live preview from
  * `POST /projects/reports/preview`. The preview is a server render too. The
  * builder's choices live in `lib/reportBuilder.ts`, as pure functions.
+ *
+ * WS-27bn R2 (§6.1) adds the home screen: "Your reports" and the template
+ * gallery, "Start from a question". The catalogue comes from
+ * `GET /projects/reports/templates`, and this file holds no copy of it.
  */
 import { useEffect, useMemo, useState } from "react";
 
 import Icon from "@/components/Icon";
+import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import Input from "@/components/ui/Input";
@@ -39,6 +44,7 @@ import {
   type FinishedReport,
   type PreviewReportBody,
   type ReportRow,
+  type ReportTemplate,
   type RenderedReportBody,
   projectsApi,
   projectsKey,
@@ -52,6 +58,7 @@ import {
   SAVED_PERIOD,
   WHOLE_ORGANIZATION,
   builderStateFrom,
+  builderStateFromTemplate,
   configFor,
   createPayload,
   newBuilderState,
@@ -60,8 +67,10 @@ import {
   periodOptions,
   saveRefusal,
   scopeOptions,
+  templateLabel,
   toggleSection,
   withPeriod,
+  yourReports,
 } from "../lib/reportBuilder";
 import { ReportFileButtons } from "./ReportFileButtons";
 
@@ -459,6 +468,12 @@ function ReportBuilder({
         />
       </div>
 
+      {state.template && (
+        <p className="text-[11px] text-muted-foreground">
+          Started from a template. You can change each choice.
+        </p>
+      )}
+
       {editing !== null && (
         <p className="text-[11px] text-muted-foreground">
           The scope of a saved report stays as saved. To report on another
@@ -565,10 +580,160 @@ function ReportBuilder({
   );
 }
 
+/** One template card. A coming-soon card is not a control. */
+function TemplateCard({
+  template,
+  onStart,
+}: {
+  template: ReportTemplate;
+  onStart: (template: ReportTemplate) => void;
+}) {
+  if (!template.available) {
+    return (
+      <div
+        aria-disabled="true"
+        className="h-full rounded-lg border border-dashed border-border p-2 text-muted-foreground"
+      >
+        <div className="flex items-center gap-2">
+          <span className="min-w-0 truncate pr-px text-xs font-medium">
+            {template.name}
+          </span>
+          <Badge size="xs" className="ml-auto shrink-0">
+            Coming soon
+          </Badge>
+        </div>
+        <p className="mt-1 text-[11px]">{template.question}</p>
+        {template.waits_for && (
+          <p className="mt-1 text-[10px]">Waits for: {template.waits_for}</p>
+        )}
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => onStart(template)}
+      className="tech-transition h-full w-full rounded-lg border border-border p-2 text-left hover:bg-muted"
+    >
+      <span className="flex items-center gap-2">
+        <Icon name="FileText" className="h-3 w-3 shrink-0 text-primary" />
+        <span className="min-w-0 truncate pr-px text-xs font-medium text-foreground">
+          {template.name}
+        </span>
+      </span>
+      <span className="mt-1 block text-[11px] text-muted-foreground">
+        {template.question}
+      </span>
+    </button>
+  );
+}
+
+/**
+ * WS-27bn R2 — the Reports home (§6.1, as narrowed for R2).
+ *
+ * ⚠️ **No card renders on load.** A card names a report. A click selects it,
+ * and the existing render runs then. A home screen that rendered each card
+ * would run every report's SQL on each visit.
+ *
+ * ⚠️ **"Your reports" is the server's `mine`.** The browser does not compare
+ * addresses. It filters the rows the server marked.
+ */
+function ReportsHome({
+  rows,
+  templates,
+  templatesError,
+  scopeName,
+  onOpen,
+  onStart,
+}: {
+  rows: ReportRow[] | null;
+  templates: ReportTemplate[] | undefined;
+  templatesError: string | null;
+  scopeName: (row: ReportRow) => string;
+  onOpen: (id: string) => void;
+  onStart: (template: ReportTemplate) => void;
+}) {
+  const mine = yourReports(rows ?? []);
+  const live = (templates ?? []).filter((t) => t.available);
+
+  return (
+    <div className="space-y-4">
+      <section aria-labelledby="reports-yours">
+        <h3
+          id="reports-yours"
+          className="mb-2 text-xs font-semibold text-foreground"
+        >
+          Your reports
+        </h3>
+        {rows === null ? (
+          <p className="text-[11px] text-muted-foreground">Loading…</p>
+        ) : mine.length === 0 ? (
+          <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+            <span>You have not saved a report yet. Start with:</span>
+            {live.map((t) => (
+              <Button
+                key={t.key}
+                variant="secondary"
+                size="sm"
+                onClick={() => onStart(t)}
+              >
+                {t.name}
+              </Button>
+            ))}
+          </div>
+        ) : (
+          <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {mine.map((r) => (
+              <li key={r.id}>
+                <button
+                  type="button"
+                  onClick={() => onOpen(r.id)}
+                  className="tech-transition h-full w-full rounded-lg border border-border p-2 text-left hover:bg-muted"
+                >
+                  <span className="block truncate pr-px text-xs font-medium text-foreground">
+                    {r.name}
+                  </span>
+                  <span className="mt-1 block truncate pr-px text-[11px] text-muted-foreground">
+                    {templateLabel(r, templates ?? [])} · {scopeName(r)}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section aria-labelledby="reports-gallery">
+        <h3
+          id="reports-gallery"
+          className="mb-2 text-xs font-semibold text-foreground"
+        >
+          Start from a question
+        </h3>
+        {templatesError && templates === undefined ? (
+          <p className="text-[11px] text-destructive" role="alert">
+            {templatesError}
+          </p>
+        ) : templates === undefined ? (
+          <p className="text-[11px] text-muted-foreground">Loading…</p>
+        ) : (
+          <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {templates.map((t) => (
+              <li key={t.key}>
+                <TemplateCard template={t} onStart={onStart} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </div>
+  );
+}
+
 /** What the right pane shows: a saved render, or the builder. */
 type Pane =
   | { kind: "view" }
-  | { kind: "new" }
+  | { kind: "new"; initial: BuilderState }
   | { kind: "edit"; row: ReportRow };
 
 export default function ReportsView({
@@ -589,6 +754,25 @@ export default function ReportsView({
   // same key the page uses, so this adds no request on a warm page.
   const tree = useCachedResource(projectsKey("tree"), () => projectsApi.tree());
   const roots = useMemo(() => tree.data?.rows ?? [], [tree.data]);
+  const scopes = useMemo(() => scopeOptions(roots), [roots]);
+
+  // WS-27bn R2. The catalogue is the server's, through the one read cache.
+  const catalogue = useCachedResource(projectsKey("reports/templates"), () =>
+    projectsApi.reportTemplates()
+  );
+  const templates = catalogue.data?.templates;
+
+  function scopeName(row: ReportRow): string {
+    if (row.project_id === null) return "Whole organization";
+    return scopes.find((s) => s.value === row.project_id)?.label ?? "Project";
+  }
+
+  /** Open the builder from a template. A coming-soon one opens nothing. */
+  function start(template: ReportTemplate) {
+    const initial = builderStateFromTemplate(template);
+    if (initial === null) return;
+    setPane({ kind: "new", initial });
+  }
 
   useEffect(() => {
     let off = false;
@@ -640,7 +824,7 @@ export default function ReportsView({
           size="sm"
           icon="Plus"
           disabled={pane.kind === "new"}
-          onClick={() => setPane({ kind: "new" })}
+          onClick={() => setPane({ kind: "new", initial: newBuilderState() })}
         >
           New report
         </Button>
@@ -707,8 +891,8 @@ export default function ReportsView({
         <div className="min-w-0 rounded-lg border border-border bg-card p-3">
           {pane.kind === "new" ? (
             <ReportBuilder
-              key="new"
-              initial={newBuilderState()}
+              key={`new:${pane.initial.template ?? "blank"}`}
+              initial={pane.initial}
               editing={null}
               roots={roots}
               onSaved={saved}
@@ -724,27 +908,42 @@ export default function ReportsView({
               onCancel={() => setPane({ kind: "view" })}
             />
           ) : !selected ? (
-            <p className="text-[11px] text-muted-foreground">
-              Choose a report to see exactly what it says, or start a new one.
-            </p>
+            <ReportsHome
+              rows={rows}
+              templates={templates}
+              templatesError={catalogue.error}
+              scopeName={scopeName}
+              onOpen={(id) => setSelected(id)}
+              onStart={start}
+            />
           ) : body === null && !error ? (
             <p className="text-[11px] text-muted-foreground">Rendering…</p>
           ) : body ? (
             <div className="space-y-3">
               {/* WS-27bm S8: the report as a file, beside Edit. Rendered
                   again on the click, so the file carries the numbers of that
-                  moment. */}
+                  moment. WS-27bn R2: Home returns to the Reports home. */}
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <ReportFileButtons reportId={selected} />
                 {selectedRow && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon="Pencil"
-                    onClick={() => setPane({ kind: "edit", row: selectedRow })}
-                  >
-                    Edit
-                  </Button>
+                  <div className="ml-auto flex gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon="LayoutGrid"
+                      onClick={() => setSelected(null)}
+                    >
+                      Home
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon="Pencil"
+                      onClick={() => setPane({ kind: "edit", row: selectedRow })}
+                    >
+                      Edit
+                    </Button>
+                  </div>
                 )}
               </div>
               <RenderedBody body={body} />

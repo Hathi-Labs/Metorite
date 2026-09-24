@@ -621,6 +621,11 @@ export interface ReportRow {
   config: ReportConfig;
   created_by: string;
   created_at: string;
+  /**
+   * WS-27bn R2. True when the caller wrote this report. The SERVER decides,
+   * from the authenticated caller. "Your reports" reads it.
+   */
+  mine?: boolean;
 }
 
 /**
@@ -635,6 +640,33 @@ export interface ReportConfig {
   skip_current_week: boolean;
   include_subtree: boolean;
   sections: string[];
+  /**
+   * WS-27bn R2. The template the report started from, as an origin label.
+   * Absent on a report that started from no template. The server refuses an
+   * unknown key and a coming-soon key with 422.
+   */
+  template?: string;
+}
+
+/**
+ * WS-27bn R2 — one entry of `GET /projects/reports/templates`.
+ *
+ * ⚠️ The client holds NO copy of the catalogue. `reports.py` `TEMPLATES` is
+ * the one list, and this type only describes its entries.
+ */
+export interface ReportTemplate {
+  key: string;
+  name: string;
+  /** The question the template answers, in plain words. */
+  question: string;
+  scope_kinds: string[];
+  available: boolean;
+  /** Only on a live template. */
+  sections?: string[];
+  weeks?: number;
+  skip_current_week?: boolean;
+  /** Only on a coming-soon template: what it waits for. */
+  waits_for?: string;
 }
 
 /**
@@ -1192,6 +1224,9 @@ export const projectsApi = {
 
   /** §9.12.8 — saved report definitions, and the render of one. */
   reports: () => call<{ reports: ReportRow[] }>("reports"),
+  /** WS-27bn R2. The template catalogue, in the server's order. */
+  reportTemplates: () =>
+    call<{ templates: ReportTemplate[] }>("reports/templates"),
   createReport: (body: {
     name: string;
     project_id?: string | null;

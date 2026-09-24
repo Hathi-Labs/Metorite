@@ -25,6 +25,10 @@ mirror constant in each file would be two more lists to keep in step. The
 reads look for the section's own access (``sections.capacity``). A comment
 that names the access counts too, so the scan is a floor against a FORGOTTEN
 section, not proof that a section draws.
+
+WS-27bn R2 adds the template catalogue, ``reports.py`` ``TEMPLATES``. A live
+template may name only sections in ``SECTIONS``, in that order. A coming-soon
+template names none. The 13 keys are append-only.
 """
 from __future__ import annotations
 
@@ -189,3 +193,81 @@ def test_the_builder_offers_every_section_in_the_routes_order() -> None:
 
 def test_the_builder_starts_from_the_routes_defaults() -> None:
     assert _ts_list("DEFAULT_REPORT_SECTIONS") == list(reports.DEFAULT_SECTIONS)
+
+
+# ── WS-27bn R2: the template catalogue ───────────────────────────────────────
+
+#: The 13 keys of `projects_reports.md` §4. APPEND-ONLY: a saved report keeps
+#: its key in `config.template`, and the config is normalised on every read.
+#: A key that leaves `TEMPLATES` makes each list and render of it answer 422.
+PINNED_TEMPLATE_KEYS: tuple[str, ...] = (
+    "team_pulse", "my_day", "what_changed", "weekly_delivery",
+    "project_status", "one_on_one", "exceptions", "capacity_outlook",
+    "stakeholder_update", "portfolio_health", "focus_switching",
+    "retrospective", "data_hygiene",
+)
+
+
+def template_faults(
+    templates: dict[str, dict], sections: tuple[str, ...],
+) -> list[str]:
+    """Each way a catalogue breaks the section vocabulary, as one line."""
+    faults: list[str] = []
+    for key, t in templates.items():
+        if t.get("key") != key:
+            faults.append(f"{key}: the entry names the key {t.get('key')!r}")
+        if not t.get("available"):
+            if "sections" in t:
+                faults.append(f"{key}: a coming-soon template carries sections")
+            if not t.get("waits_for"):
+                faults.append(f"{key}: a coming-soon template names no waits_for")
+            continue
+        asked = list(t.get("sections") or [])
+        unknown = [s for s in asked if s not in sections]
+        if unknown:
+            faults.append(f"{key}: sections outside SECTIONS: {unknown}")
+        elif asked != [s for s in sections if s in asked]:
+            faults.append(f"{key}: sections out of SECTIONS order: {asked}")
+        if not asked:
+            faults.append(f"{key}: a live template names no sections")
+    return faults
+
+
+def test_the_catalogue_names_only_sections_the_route_knows() -> None:
+    assert template_faults(reports.TEMPLATES, reports.SECTIONS) == []
+
+
+def test_no_template_key_disappears() -> None:
+    """Append-only. A removed key 422s every saved report that carries it."""
+    missing = [k for k in PINNED_TEMPLATE_KEYS if k not in reports.TEMPLATES]
+    assert missing == []
+    assert list(reports.TEMPLATES)[: len(PINNED_TEMPLATE_KEYS)] == list(
+        PINNED_TEMPLATE_KEYS
+    )
+
+
+def test_weekly_delivery_is_exactly_the_default_report() -> None:
+    t4 = reports.TEMPLATES["weekly_delivery"]
+    assert t4["available"] is True
+    assert t4["sections"] == list(reports.DEFAULT_SECTIONS)
+    assert (t4["weeks"], t4["skip_current_week"]) == (1, True)
+
+
+def test_the_template_fence_fires_on_a_missing_section() -> None:
+    """The fence's own fence: `pulse` is not a section until R3."""
+    fake = {
+        "team_pulse": {"key": "team_pulse", "available": True,
+                       "sections": ["pulse", "conflicts"]},
+    }
+    assert any("pulse" in f for f in template_faults(fake, reports.SECTIONS))
+
+
+def test_the_template_fence_fires_on_order_and_on_coming_soon_sections() -> None:
+    fake = {
+        "a": {"key": "a", "available": True, "sections": ["stuck", "finished"]},
+        "b": {"key": "b", "available": False, "waits_for": "R3",
+              "sections": ["load"]},
+    }
+    faults = template_faults(fake, reports.SECTIONS)
+    assert any("order" in f for f in faults)
+    assert any("coming-soon template carries sections" in f for f in faults)
