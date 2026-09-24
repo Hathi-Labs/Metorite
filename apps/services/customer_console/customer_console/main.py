@@ -145,6 +145,10 @@ from customer_console.lifecycle import (
     assert_transition,
     capabilities_of,
 )
+from customer_console.reasoning import (
+    publish_reasoning_alias,
+    reasoning_for_vendor,
+)
 from customer_console.router import (
     SSE_DONE,
     ExtractedUsage,
@@ -7052,6 +7056,13 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
         passthrough = {
             k: v for k, v in req.model_dump(exclude_none=True).items() if k in _FORWARDABLE
         }
+        # 🔴 **H-179.** A thinking model refuses a tool round-trip whose
+        # assistant turns dropped their reasoning, and the agent framework
+        # drops it because it knows only the OTHER vendor's spelling. Done per
+        # STEP rather than once, because a failover chain may legally mix two
+        # vendors and each step builds its own body. `messages` is a required
+        # field, so no guard: a guard here was pure complexity (C901).
+        passthrough["messages"] = reasoning_for_vendor(passthrough["messages"])
         requested_max = passthrough.get("max_tokens")
         passthrough["max_tokens"] = min(
             int(requested_max) if requested_max else _MAX_OUTPUT_TOKENS,
@@ -7204,7 +7215,11 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
         request_id=request_id,
     )
 
-    return response
+    # 🔴 **H-179, the other half.** Metering first, because this only renames a
+    # field and a completion is already paid for by here. The framework reads
+    # `reasoning_details` and nothing else, so without this mirror there is
+    # nothing for `reasoning_for_vendor` to send back one turn later.
+    return publish_reasoning_alias(response)
 
 
 # ── H-46: the transcribe endpoint (§6A.10a) ─────────────────────────────────
