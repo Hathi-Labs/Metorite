@@ -403,7 +403,7 @@ promote an app by granting its feature.**
 
 | Section | App | Owning WS | What is still owed on it |
 |---|---|---|---|
-| Personal Center | **My Tasks** | WS-18 · **WS-39** | Renamed from Tasks on 2026-09-23 (D73). The personal lens over Projects (D53). The lens flags were flipped on 2026-09-23 and are retired in S8 PR 1. Slices 1–4 landed. **The tail is `specs/my_tasks_cutover.md` S6a to S9** |
+| Personal Center | **My Tasks** | WS-18 · **WS-39** | Renamed from Tasks on 2026-09-23 (D73). The personal lens over Projects (D53). The lens flags were flipped on 2026-09-23 and are retired in S8 PR 1. Slices 1–4 landed. **The cutover is complete (2026-09-24).** Every slice of `specs/my_tasks_cutover.md`, S6a to S9, is merged and served. S6g was last (#454). HANDOFF H-163 holds the one signed-in check that is left |
 | Personal Center | **Calendar** | WS-21 · **WS-39** | Its own pane since D54. Behaviour (F2/F3, Focus Shield, timeboxing) stays WS-21. ⚠️ `gtd_time_blocks` and `calendar_accounts` **do not exist** — two specs cite them as built |
 | Personal Center | My Profile | WS-28 | — |
 | Personal Center | My Access | — | — |
