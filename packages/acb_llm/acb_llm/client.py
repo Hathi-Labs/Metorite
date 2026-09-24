@@ -707,6 +707,33 @@ _init_telemetry()
 _init_litellm_cache()
 
 
+async def _routed_text(
+    *, tier: str, messages: list[dict[str, Any]], temperature: float,
+    max_tokens: int,
+) -> str:
+    """`complete`'s routed arm. Returns TEXT, because its caller expects text.
+
+    ⚠️ `complete` answers a string, not a response object, so both arms must
+    agree on that. Returning the object here would break every agent at once,
+    and only under the flag — the hardest kind of break to attribute.
+
+    ⚠️ **No retry loop.** The direct arm retries three times because it owns
+    the transport. The Console owns its own failover across `tier_binding`,
+    and D57.7 says a routed call that fails, FAILS. Retrying here would be a
+    second opinion about failure, and it would bill for every attempt.
+    """
+    from acb_llm.routed import completion_on_router
+
+    resp, _used = await completion_on_router(
+        tier=tier, messages=messages, max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    choices = getattr(resp, "choices", None) or []
+    if not choices:
+        raise RuntimeError(f"the Router returned no choices (tier={tier})")
+    return (getattr(choices[0].message, "content", "") or "").strip()
+
+
 async def complete(
     *,
     tier: LLMTier,
@@ -729,6 +756,23 @@ async def complete(
     triage / extraction calls that repeat with identical inputs.
     """
     await _ensure_keys_loaded()
+
+    # ── H-171: the AGENT path bills too, or nothing does ──────────────
+    #
+    # 🔴 `acompletion_with_fallback` was routed first, and its own comment
+    # says *"client.complete covers agent runs"* — so agent runs were the
+    # LARGEST remaining unbilled path. An agent loop makes many calls, which
+    # makes this the one that costs most while billing least.
+    #
+    # ⚠️ The TIER travels, never `_TIER_MODEL[...]`. Resolving here would
+    # hand the Console a model and take away the operator's ranked failover.
+    from acb_llm.routed import routing_is_on
+
+    if routing_is_on():
+        return await _routed_text(
+            tier=tier.value, messages=messages, temperature=temperature,
+            max_tokens=max_tokens,
+        )
 
     model = _TIER_MODEL[tier.value]
 
@@ -819,6 +863,31 @@ async def complete_with_tools(
     ``cache_control`` so the whole (byte-stable) schema block is cached.
     """
     await _ensure_keys_loaded()
+
+    # ── H-171 ── and the Router DOES take tools ───────────────────
+    #
+    # ⚠️ A first pass left this on the direct path, on the belief that
+    # `CompletionRequest` had no `tools` field. It has — with `tool_choice`
+    # and `parallel_tool_calls` beside it. The belief came from a grep that
+    # stopped short of the field, and a test against the real model corrected
+    # it. Tool-calling turns are the longest-lived completions in the tree, so
+    # leaving them unbilled would have left the most expensive calls free.
+    from acb_llm.routed import completion_on_router, routing_is_on
+
+    if routing_is_on():
+        resp, _used = await completion_on_router(
+            tier=tier.value, messages=messages, max_tokens=max_tokens,
+            temperature=temperature,
+            extra={"tools": tools, "tool_choice": tool_choice},
+        )
+        choices = getattr(resp, "choices", None) or []
+        if not choices:
+            raise RuntimeError(f"the Router returned no choices (tier={tier.value})")
+        message = choices[0].message
+        # ⚠️ The contract is a JSON-serialisable dict, and the docstring says
+        # so. Handing back a litellm object would break the *next* turn, which
+        # feeds this straight into `messages`.
+        return message.model_dump() if hasattr(message, "model_dump") else dict(message)
 
     model = _TIER_MODEL[tier.value]
     ensure_model_registered(model)

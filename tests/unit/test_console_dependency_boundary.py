@@ -287,7 +287,21 @@ _THE_ROUTER_CALLER = "apps/services/gateway/gateway/routes/v1_compat.py"
 #: ``resolve_for_signin`` from startup, which is precisely the drift the list
 #: exists to catch.
 _THE_LIFESPAN_CALLER = "apps/services/gateway/gateway/main.py"
-#: ⚠️ **The SEVENTH entry — the APPROVE door, 2026-09-24 — and the argument,
+#: The SEVENTH caller, added 2026-09-23 for **H-171**, and it is the same KIND
+#: as ``_THE_ROUTER_CALLER`` rather than a new kind.
+#:
+#: 🔴 **The product's own AI was never metered.** ``acb_llm`` held zero
+#: references to the Console, so the apps runtime, the email automation, the
+#: assistants and the agents spent our vendor account and billed nobody.
+#: Routing them is what closes that, and routing means reaching the one Console
+#: client this fence guards.
+#:
+#: ⚠️ **It calls ``chat_completion_on_console`` and nothing else.** That hop
+#: allocates no seat and names no person, which is the property this list's own
+#: message already records for ``v1_compat``. ``resolve_for_signin`` — the seat
+#: allocator this fence exists for — is not reachable from it.
+_THE_IN_PRODUCT_AI_CALLER = "packages/acb_llm/acb_llm/routed.py"
+#: ⚠️ **The EIGHTH entry — the APPROVE door, 2026-09-24 — and the argument,
 #: because this list's own rule is that a new entry states one.**
 #:
 #: It imports exactly ONE name, ``invite_member_on_console``, and it is the
@@ -314,6 +328,7 @@ _THE_LIFESPAN_CALLER = "apps/services/gateway/gateway/main.py"
 #: row already in ``access_request``, never a caller-supplied body field.
 _THE_APPROVE_CALLER = "apps/services/gateway/gateway/routes/admin/access_requests.py"
 _ALLOWED_CALLERS = (
+    _THE_IN_PRODUCT_AI_CALLER,
     _THE_ONE_CALLER,
     _THE_SIGNUP_CALLER,
     _THE_SEAT_CALLER,
