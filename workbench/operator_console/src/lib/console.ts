@@ -178,6 +178,16 @@ export const usageDaily = (days: number, orgSlug?: string, d?: Deps) =>
     d ?? {},
   );
 
+/** One customer's spend by app, agent and person, with OUR cost. Usage
+ *  slice 2. `admin`-door (VIEWER), like the two usage reads above it. */
+export const usageBreakdown = (days: number, orgSlug: string, d?: Deps) =>
+  callConsole(
+    `/admin/usage/breakdown?days=${encodeURIComponent(String(days))}` +
+      `&org_slug=${encodeURIComponent(orgSlug)}`,
+    { method: "GET" },
+    d ?? {},
+  );
+
 export const catalog = (d?: Deps) =>
   callConsole("/billing/catalog", { method: "GET" }, d ?? {});
 

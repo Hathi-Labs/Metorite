@@ -24,6 +24,40 @@ const byPath = new Map([
   ["/operators", { operators: [] }],
   ["/operators/elevate", { elevated: false, can_elevate: false, required: false }],
   ["/providers/spend", { rows: [] }],
+  // Usage slice 3: one customer's breakdown. Shaped on production's first
+  // five metered calls (2026-09-24), plus the cases the panel must draw: an
+  // app with two agents, a gap named "unattributed", a LOSS, a margin with no
+  // credit price (null), and a person list CUT below its total.
+  ["/admin/usage/breakdown", {
+    orgSlug: "hathi-labs-llp",
+    windowDays: 30,
+    apps: [
+      { app: "projects", calls: 5, credits: "81.4040", costUsd: "0.01417135",
+        realisedMargin: "0.98",
+        agents: [
+          { agent: "projects-assistant", calls: 4, credits: "65.0000",
+            costUsd: "0.01100000", realisedMargin: "0.98" },
+          { agent: "task-manager", calls: 1, credits: "16.4040",
+            costUsd: "0.00317135", realisedMargin: "0.98" },
+        ] },
+      { app: "email", calls: 2, credits: "0.0100", costUsd: "0.00040000",
+        realisedMargin: "-2.88",
+        agents: [{ agent: "email-assistant", calls: 2, credits: "0.0100",
+                   costUsd: "0.00040000", realisedMargin: "-2.88" }] },
+      { app: "unattributed", calls: 2, credits: "0.4325", costUsd: "0.00059576",
+        realisedMargin: null,
+        agents: [{ agent: "unattributed", calls: 2, credits: "0.4325",
+                   costUsd: "0.00059576", realisedMargin: null }] },
+    ],
+    members: [
+      { member: "vjvarada@hathilabs.com", calls: 7, credits: "81.4140",
+        costUsd: "0.01457135", realisedMargin: "0.98" },
+      { member: "unattributed", calls: 2, credits: "0.4325",
+        costUsd: "0.00059576", realisedMargin: null },
+    ],
+    appsTotal: 3,
+    membersTotal: 14,
+  }],
 ]);
 
 createServer((req, res) => {

@@ -27,14 +27,19 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { PANES } from "@/lib/nav";
+
 import { formatCredits } from "./lib/billing";
 import {
   activityLabel,
+  agentLabel,
+  appLabel,
   sortSpend,
   spendIsMeasured,
   spendShare,
   spendTotals,
   type ActivityRow,
+  type AppSpendRow,
   type MemberSpendRow,
   type SpendPayload,
 } from "./lib/spend";
@@ -47,6 +52,7 @@ function SpendRow({
   share,
   measured,
   mono,
+  small,
 }: {
   name: string;
   calls: number;
@@ -54,12 +60,14 @@ function SpendRow({
   share: number;
   measured: boolean;
   mono?: boolean;
+  /** A nested row: an agent inside its app. */
+  small?: boolean;
 }) {
   return (
-    <div className="flex flex-col gap-1 py-2">
+    <div className={`flex flex-col gap-1 ${small ? "py-1.5" : "py-2"}`}>
       <div className="flex items-baseline justify-between gap-3">
         <span
-          className={`truncate text-sm text-foreground ${mono ? "font-mono text-xs" : ""}`}
+          className={`truncate ${small ? "text-xs text-muted-foreground" : "text-sm text-foreground"} ${mono ? "font-mono text-xs" : ""}`}
           title={name}
         >
           {name}
@@ -106,6 +114,9 @@ function Panel({
 }
 
 export default function SpendBreakdown() {
+  const [apps, setApps] = useState<
+    (SpendPayload<AppSpendRow> & { member?: string | null }) | null
+  >(null);
   const [activity, setActivity] = useState<SpendPayload<ActivityRow> | null>(null);
   const [members, setMembers] = useState<SpendPayload<MemberSpendRow> | null>(null);
 
@@ -113,6 +124,14 @@ export default function SpendBreakdown() {
   // rule the seats and roster blocks follow. A Console deployed nowhere 503s,
   // and billing must still render.
   const load = useCallback(async () => {
+    // Usage slice 3: apps first. The activity read stays as the FALLBACK, so
+    // a Console that predates `/my/usage/apps` still draws a breakdown.
+    try {
+      const r = await fetch("/api/billing/usage/apps", { cache: "no-store" });
+      setApps(r.ok ? await r.json() : null);
+    } catch {
+      setApps(null);
+    }
     try {
       const r = await fetch("/api/billing/usage/activity", { cache: "no-store" });
       setActivity(r.ok ? await r.json() : null);
@@ -133,16 +152,78 @@ export default function SpendBreakdown() {
     void load();
   }, [load]);
 
+  const appRows = apps?.rows ?? [];
   const aRows = activity?.rows ?? [];
   const mRows = members?.rows ?? [];
-  if (aRows.length === 0 && mRows.length === 0) return null;
+  if (appRows.length === 0 && aRows.length === 0 && mRows.length === 0) return null;
 
   const aMeasured = spendIsMeasured(aRows);
   const aTotals = spendTotals(aRows);
+  const appMeasured = spendIsMeasured(appRows);
+  const appTotals = spendTotals(appRows);
+  // The Console echoes the scope it applied. A member scope means this is the
+  // person's OWN view, and the heading must not claim the whole organization.
+  const ownView = Boolean(apps?.member);
 
   return (
     <div className="flex flex-col gap-6">
-      {aRows.length > 0 && (
+      {appRows.length > 0 && (
+        <Panel
+          title={ownView ? "Your use, by app" : "By app"}
+          hint={`Last ${apps?.windowDays ?? 30} days`}
+        >
+          {!appMeasured && (
+            <p className="mb-3 rounded-lg border border-border bg-secondary p-3 text-xs text-muted-foreground">
+              Your calls are counted from the first one. The credit figures
+              read zero because AI pricing is not switched on for this account
+              yet — nothing here has been charged.
+            </p>
+          )}
+          <div className="divide-y divide-border">
+            {sortSpend(appRows).map((a) => (
+              <div key={a.app} className="py-1">
+                <SpendRow
+                  name={appLabel(a.app, PANES)}
+                  calls={a.calls}
+                  credits={a.credits}
+                  share={spendShare(appRows, a)}
+                  measured={appMeasured}
+                />
+                {/* The agents inside the app. Drawn as a share of THIS app, so
+                    a small app's split is still readable. Omitted when one
+                    agent is the whole app — a single row would repeat it. */}
+                {a.agents.length > 1 && (
+                  <div className="mb-1 ml-4 border-l border-border pl-3">
+                    {sortSpend(a.agents).map((g) => (
+                      <SpendRow
+                        key={g.agent}
+                        name={agentLabel(g.agent)}
+                        calls={g.calls}
+                        credits={g.credits}
+                        share={spendShare(a.agents, g)}
+                        measured={appMeasured}
+                        small
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-xs text-muted-foreground">
+            {appTotals.calls.toLocaleString("en-IN")} call
+            {appTotals.calls === 1 ? "" : "s"} in total
+            {appMeasured
+              ? `, costing ${formatCredits(appTotals.credits)} credits`
+              : ""}
+            .
+          </p>
+        </Panel>
+      )}
+
+      {/* ⚠️ The FALLBACK, drawn only when the apps read gave nothing. Two
+          panels listing the same spend two ways would read as double. */}
+      {appRows.length === 0 && aRows.length > 0 && (
         <Panel
           title="What you used it on"
           hint={`Last ${activity?.windowDays ?? 30} days`}
@@ -189,7 +270,9 @@ export default function SpendBreakdown() {
             {sortSpend(mRows).map((r) => (
               <SpendRow
                 key={r.member}
-                name={r.member}
+                // The same words the app panel uses for a gap, not the raw
+                // Console token (it printed "unattributed" beside "Not attributed").
+                name={activityLabel(r.member)}
                 calls={r.calls}
                 credits={r.credits}
                 share={spendShare(mRows, r)}

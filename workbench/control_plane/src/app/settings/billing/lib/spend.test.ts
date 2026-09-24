@@ -17,6 +17,8 @@ import {
   spendTotals,
   UNATTRIBUTED,
   type ActivityRow,
+  agentLabel,
+  appLabel,
 } from "./spend";
 
 const row = (activity: string, calls: number, credits: string): ActivityRow => ({
@@ -110,5 +112,36 @@ describe("activityLabel", () => {
     // that grow without this file. Replacing an unknown slug with "Other"
     // would hide the app the customer is actually paying for.
     expect(activityLabel("meeting-notetaker")).toBe("meeting-notetaker");
+  });
+});
+
+describe("app and agent labels (usage slice 3)", () => {
+  const PANES = [
+    { href: "/projects", label: "Projects" },
+    { href: "/tasks", label: "My Tasks" },
+  ];
+
+  it("names an app the way the SIDEBAR does", () => {
+    // The sidebar says "My Tasks", not "tasks". A second map would drift.
+    expect(appLabel("tasks", PANES)).toBe("My Tasks");
+    expect(appLabel("projects", PANES)).toBe("Projects");
+  });
+
+  it("names a Custom App by its own name", () => {
+    expect(appLabel("app:invoices", PANES)).toBe("invoices");
+  });
+
+  it("passes an unknown app through rather than hiding it as Other", () => {
+    expect(appLabel("brand-new-app", PANES)).toBe("brand-new-app");
+  });
+
+  it("says a gap is a gap", () => {
+    expect(appLabel(UNATTRIBUTED, PANES)).toBe("Not attributed");
+    expect(agentLabel(UNATTRIBUTED)).toBe("Not attributed");
+  });
+
+  it("reads an agent slug aloud, raising only the first letter", () => {
+    expect(agentLabel("projects-assistant")).toBe("Projects assistant");
+    expect(agentLabel("crm_assistant")).toBe("Crm assistant");
   });
 });

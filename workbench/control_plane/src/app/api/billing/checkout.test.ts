@@ -209,6 +209,13 @@ const EXCLUDED: Record<string, string> = {
     "'from the signed-in session, never from the browser'. Requiring the " +
     "purchase capability would stop a member seeing their own usage, which is " +
     "the catalog read's argument. Fenced by `usage/usage.test.ts`.",
+  "usage/apps/route.ts":
+    "NOT a money route (usage slice 3): the activity read grouped by APP, " +
+    "with the agents inside each app. It mints nothing and moves nothing. " +
+    "Gated exactly as `usage/activity/route.ts` is: `requireSpendReader` " +
+    "resolves the session server-side and SCOPES a non-admin to their own " +
+    "member address, so a member sees their own apps and an admin sees the " +
+    "organization. Fenced by `usage/usage.test.ts`.",
   "usage/members/route.ts":
     "NOT a money route (D66 (b), H-134), and the one read here that is " +
     "ADMIN-ONLY: the row names a colleague and what they cost. " +
