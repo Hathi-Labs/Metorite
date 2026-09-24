@@ -82,6 +82,16 @@ export function promoteBlocksUnload(
   return !!pending && !pending.sending;
 }
 
+/**
+ * The `beforeunload` handler while a promote waits (S6g repair P2-b). Both
+ * halves are needed: `preventDefault` for the spec, and `returnValue` for the
+ * browsers that still read it.
+ */
+export function onPromoteUnload(e: { preventDefault(): void; returnValue?: unknown }): void {
+  e.preventDefault();
+  e.returnValue = "";
+}
+
 /** A commit that waits, and that Undo can cancel until it runs. */
 export interface DeferredCommit {
   /** Stop it. True when it had not run yet, so nothing was sent. */

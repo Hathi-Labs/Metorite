@@ -11,6 +11,7 @@ import { resolve } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { submitCaptureBox } from "./quickAdd";
 import {
   SOURCE_PILLS,
   assignedByLabel,
@@ -227,11 +228,35 @@ describe("the keyboard (S6g)", () => {
 });
 
 describe("the capture chip (S6g repair P1-b)", () => {
-  it("a chip pick is for one capture: submit puts the chip back on Inbox", () => {
-    const view = read("components/InboxView.tsx");
-    const submit = view.slice(view.indexOf("const submit = () => {"), view.indexOf("const onKeyDown"));
-    expect(submit).toMatch(/captureLine\(raw, \{[\s\S]*dest: captureDest,/);
-    expect(submit).toMatch(/setCaptureDest\(null\);/);
+  const PRINTER = { id: "p1", name: "Printer v3", kind: "project" as const };
+
+  it("a chip pick is for one capture: submit sends it, then puts the chip back on Inbox", () => {
+    const captureLine = vi.fn();
+    const next = submitCaptureBox(
+      { value: "Fix the jam", dest: PRINTER, attachments: [], chipOpen: true },
+      captureLine,
+      [PRINTER],
+    );
+    expect(captureLine).toHaveBeenCalledWith("Fix the jam", {
+      targets: [PRINTER],
+      dest: PRINTER,
+      attachments: undefined,
+    });
+    expect(next).toEqual({ value: "", dest: null, attachments: [], chipOpen: false });
+    // The next capture goes to the Inbox, not to the board picked before.
+    submitCaptureBox({ ...next, value: "Buy milk" }, captureLine, [PRINTER]);
+    expect(captureLine).toHaveBeenLastCalledWith("Buy milk", expect.objectContaining({ dest: null }));
+  });
+
+  it("a blank line sends nothing and keeps the pick", () => {
+    const captureLine = vi.fn();
+    const box = { value: "  ", dest: PRINTER, attachments: [], chipOpen: false };
+    expect(submitCaptureBox(box, captureLine, [PRINTER])).toBe(box);
+    expect(captureLine).not.toHaveBeenCalled();
+  });
+
+  it("the Inbox box submits through it", () => {
+    expect(read("components/InboxView.tsx")).toMatch(/const next = submitCaptureBox\(/);
   });
 });
 

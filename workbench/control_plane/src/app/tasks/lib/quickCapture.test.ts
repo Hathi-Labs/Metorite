@@ -62,7 +62,8 @@ describe("the sources", () => {
     const sheet = read("components/QuickCapture.tsx");
     const inbox = read("components/InboxView.tsx");
     expect(sheet).toMatch(/captureLine\(t, \{/);
-    expect(inbox).toMatch(/captureLine\(raw, \{/);
+    // The Inbox box hands `captureLine` to `submitCaptureBox` (quickAdd.ts).
+    expect(inbox).toMatch(/submitCaptureBox\([\s\S]*?captureLine,/);
     // The only parser is `quickAdd.parseProjectToken`.
     expect(sheet).not.toMatch(/split\(\/\s\+\/\)[\s\S]*#/);
     expect(inbox).not.toMatch(/parseProjectToken\(/);

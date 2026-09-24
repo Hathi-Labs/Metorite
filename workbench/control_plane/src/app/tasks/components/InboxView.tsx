@@ -44,6 +44,7 @@ import {
   type CaptureDestination,
   openHashQuery,
   stripOpenHash,
+  submitCaptureBox,
 } from "../lib/quickAdd";
 import { captureDestinations, destinations, useCompanyTree } from "../lib/companyTree";
 import { promoteAllowed } from "../lib/promote";
@@ -402,21 +403,17 @@ export function InboxView() {
   ]);
 
   const submit = () => {
-    const raw = value.trim();
-    if (!raw) return;
-    // S6g — the ONE capture-line flow: the chip's destination, or a `#Name`
-    // token, through `captureTo`. The mobile sheet calls the same action.
-    captureLine(raw, {
-      targets: captureTargets,
-      dest: captureDest,
-      attachments: pendingAtts.length ? pendingAtts : undefined,
-    });
-    setValue("");
-    setPendingAtts([]);
-    // S6g repair P1-b: a chip pick is for ONE capture. The chip returns to
-    // "Inbox", or the next thought would land on the same board unasked.
-    setCaptureDest(null);
-    setChipOpen(false);
+    // S6g — the ONE capture-line flow (`captureLine`), and the box's next
+    // state from `submitCaptureBox`, which puts the chip back on "Inbox".
+    const next = submitCaptureBox(
+      { value, dest: captureDest, attachments: pendingAtts, chipOpen },
+      captureLine,
+      captureTargets,
+    );
+    setValue(next.value);
+    setCaptureDest(next.dest);
+    setPendingAtts(next.attachments);
+    setChipOpen(next.chipOpen);
   };
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "Escape" && chipOpen) {

@@ -6,7 +6,7 @@ import { useEffect } from "react";
 import { taskDeepLink } from "@/app/projects/lib/card";
 import { useToast } from "@/components/ui/Toast";
 
-import { promoteBlocksUnload, promotePendingToast } from "../lib/promote";
+import { onPromoteUnload, promoteBlocksUnload, promotePendingToast } from "../lib/promote";
 import { useTaskStore } from "../lib/taskStore";
 
 /**
@@ -48,12 +48,8 @@ export function PromoteToast() {
   const blocks = promoteBlocksUnload(pending);
   useEffect(() => {
     if (!blocks) return;
-    const onUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
-    };
-    window.addEventListener("beforeunload", onUnload);
-    return () => window.removeEventListener("beforeunload", onUnload);
+    window.addEventListener("beforeunload", onPromoteUnload);
+    return () => window.removeEventListener("beforeunload", onPromoteUnload);
   }, [blocks]);
 
   useEffect(() => {

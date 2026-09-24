@@ -40,6 +40,7 @@ import {
   PROMOTE_HINT,
   PROMOTE_UNDO_MS,
   deferCommit,
+  onPromoteUnload,
   promoteBlocksUnload,
   promotePendingToast,
   promoteToast,
@@ -503,10 +504,23 @@ describe("closing the tab while a promote waits (S6g repair P2-b)", () => {
     expect(promoteBlocksUnload({ sending: true })).toBe(false);
   });
 
-  it("the toast bridge holds a beforeunload listener while it blocks", () => {
+  it("the handler cancels the unload: defaultPrevented, and a returnValue", () => {
+    // A real cancelable event proves the prevent. Node's `Event.returnValue`
+    // is the legacy boolean, so the browser's BeforeUnloadEvent string field
+    // is checked on a plain event object.
+    const e = new Event("beforeunload", { cancelable: true });
+    onPromoteUnload(e);
+    expect(e.defaultPrevented).toBe(true);
+    const bu = { preventDefault: vi.fn(), returnValue: undefined as unknown };
+    onPromoteUnload(bu);
+    expect(bu.preventDefault).toHaveBeenCalledTimes(1);
+    expect(bu.returnValue).toBe("");
+  });
+
+  it("the toast bridge holds that handler while it blocks", () => {
     const src = read("components/PromoteToast.tsx");
     expect(src).toMatch(/const blocks = promoteBlocksUnload\(pending\);/);
-    expect(src).toMatch(/window\.addEventListener\("beforeunload", onUnload\)/);
-    expect(src).toMatch(/window\.removeEventListener\("beforeunload", onUnload\)/);
+    expect(src).toMatch(/window\.addEventListener\("beforeunload", onPromoteUnload\)/);
+    expect(src).toMatch(/window\.removeEventListener\("beforeunload", onPromoteUnload\)/);
   });
 });

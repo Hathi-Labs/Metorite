@@ -73,6 +73,45 @@ export interface AnchoredPanelProps {
   align?: "start" | "end";
 }
 
+/** Where the panel sits, measured from the anchor's box. Pure, so it is testable. */
+export interface PanelBox {
+  left: number;
+  right: number;
+  top: number;
+  width: number;
+}
+
+export function panelBox(
+  rect: { left: number; right: number; top: number; bottom: number; width: number },
+  viewport: { width: number; height: number },
+  maxHeight: number,
+): PanelBox {
+  const below = viewport.height - rect.bottom;
+  const up = below < maxHeight && rect.top > below;
+  return {
+    left: rect.left,
+    right: viewport.width - rect.right,
+    // Never off the top either: a flipped panel taller than the space above
+    // it is the same defect upside down.
+    top: up ? Math.max(8, rect.top - maxHeight - 2) : rect.bottom + 2,
+    width: rect.width,
+  };
+}
+
+/** The portalled element's style. `start` hangs from the left edge. */
+export function panelStyle(
+  box: PanelBox,
+  align: "start" | "end",
+  maxHeight: number,
+): React.CSSProperties {
+  return {
+    ...(align === "end" ? { right: box.right } : { left: box.left }),
+    top: box.top,
+    minWidth: box.width,
+    maxHeight,
+  };
+}
+
 export function AnchoredPanel({
   anchor,
   open,
@@ -82,26 +121,17 @@ export function AnchoredPanel({
   panelProps,
   align = "start",
 }: AnchoredPanelProps) {
-  const [box, setBox] = useState<{
-    left: number;
-    right: number;
-    top: number;
-    width: number;
-  } | null>(null);
+  const [box, setBox] = useState<PanelBox | null>(null);
 
   const place = useCallback(() => {
     if (!anchor) return;
-    const rect = anchor.getBoundingClientRect();
-    const below = window.innerHeight - rect.bottom;
-    const up = below < maxHeight && rect.top > below;
-    setBox({
-      left: rect.left,
-      right: window.innerWidth - rect.right,
-      // Never off the top either: a flipped panel taller than the space
-      // above it is the same defect upside down.
-      top: up ? Math.max(8, rect.top - maxHeight - 2) : rect.bottom + 2,
-      width: rect.width,
-    });
+    setBox(
+      panelBox(
+        anchor.getBoundingClientRect(),
+        { width: window.innerWidth, height: window.innerHeight },
+        maxHeight,
+      ),
+    );
   }, [anchor, maxHeight]);
 
   useLayoutEffect(() => {
@@ -127,12 +157,7 @@ export function AnchoredPanel({
     <div
       {...panelProps}
       {...{ [PREVENT_OUTSIDE_CLICK]: "" }}
-      style={{
-        ...(align === "end" ? { right: box.right } : { left: box.left }),
-        top: box.top,
-        minWidth: box.width,
-        maxHeight,
-      }}
+      style={panelStyle(box, align, maxHeight)}
       className={`fixed z-[60] overflow-y-auto rounded-md border border-border bg-card shadow-md ${className}`}
     >
       {children}

@@ -992,6 +992,16 @@ Fences: `removal.test.ts` and `test_projects_personal_s6g.py`.
 6. P2-d: `OrganizeIn.assignees` is gone.
 7. P2-e: the live script calls the purge route itself.
 
+**Round 3 (2026-09-24), after the verifier.**
+
+1. A second promote of the SAME task replaces the first. It cancels the
+   waiting one and never sends it. A second promote of another task still
+   sends the first at once.
+2. Fences now cover the cancel calls in `clarify` and `bulkArchive`.
+3. Three fences test behaviour, not source text: `submitCaptureBox`,
+   `onPromoteUnload` and the `AnchoredPanel` placement (`panelBox`,
+   `panelStyle`).
+
 **Decisions the request did not settle, each an agent default.**
 
 1. The badge and the header count the whole Inbox. The source filter narrows
@@ -1030,7 +1040,7 @@ Fences: `removal.test.ts` and `test_projects_personal_s6g.py`.
   plus 216 files). Checks 3 to 3c call the purge route itself. Check 4 calls
   the bulk route. The database was dropped afterwards. The live scripts for
   S6a, S6e and S6f passed on the second round's fresh database.
-- `test_projects_personal_s6g.py`: 10 tests.
+- `test_projects_personal_s6g.py`: 11 tests.
 - `npx tsc --noEmit` is clean. `npx vitest run` is green.
 - The captures are in `workbench/control_plane/ux-shots/s6g/`. The visual
   pass found one defect, and this slice fixed it. The Move dialog mounts

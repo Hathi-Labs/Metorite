@@ -203,6 +203,40 @@ export function openHashQuery(text: string): string | null {
   return m ? m[1] : null;
 }
 
+/** The Inbox capture box's own state. */
+export interface CaptureBoxState<A> {
+  value: string;
+  dest: CaptureDestination | null;
+  attachments: A[];
+  chipOpen: boolean;
+}
+
+/**
+ * Submit the Inbox capture box (S6g). Hands the line to `captureLine` (the
+ * store's one flow) and answers the box's next state.
+ *
+ * ⚠️ The chip's pick is for ONE capture (repair P1-b). The next state puts it
+ * back on "Inbox", or the next thought would land on the same board unasked.
+ * A blank line changes nothing.
+ */
+export function submitCaptureBox<A>(
+  box: CaptureBoxState<A>,
+  captureLine: (
+    raw: string,
+    opts: { targets: readonly CaptureDestination[]; dest: CaptureDestination | null; attachments?: A[] },
+  ) => unknown,
+  targets: readonly CaptureDestination[],
+): CaptureBoxState<A> {
+  const raw = box.value.trim();
+  if (!raw) return box;
+  captureLine(raw, {
+    targets,
+    dest: box.dest,
+    attachments: box.attachments.length ? box.attachments : undefined,
+  });
+  return { value: "", dest: null, attachments: [], chipOpen: false };
+}
+
 /** The line with the `#` fragment at its end removed, for a picker pick. */
 export function stripOpenHash(text: string): string {
   return text.replace(/(^|\s)#[^#]*$/, "$1").replace(/\s+$/, "");
