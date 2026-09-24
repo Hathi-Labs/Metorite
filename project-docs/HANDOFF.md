@@ -95,6 +95,45 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-179 · Prove a real Projects chat holds a tool conversation on DeepSeek V4 · [AGENT]
+- **Check:** on the box, count `usage_event` rows where `agent` is
+  `projects-assistant` and `tier` is a chat tier. Then read the gateway log for
+  `router.provider_error` after the deploy. Rows and no error close this entry.
+- 📌 **BUILT 2026-09-24.** The Router now carries a thinking model's
+  reasoning across a tool round-trip. `customer_console/reasoning.py` holds the
+  two halves, and `test_reasoning_passthrough.py` is the fence.
+- 🔴 **Why.** DeepSeek V4 returns `reasoning_content` and refuses the next
+  turn without it. The agent framework reads only `reasoning_details`. So every
+  tool call after the first failed with a 400.
+- ⚠️ **The tests use a stub.** Seven live probes set the shapes, and the module
+  records them. Only a real chat proves the wiring. That is this entry.
+- 🔴 **Review found a shape the first fix missed.** The framework splits a
+  turn that holds text AND tool calls into two messages. The vendor refused
+  the text half. The Router now joins the two halves into one turn again.
+
+### H-180 · Carry reasoning on the STREAM path too · [AGENT]
+- **Check:** `rg -n "publish_reasoning_alias" apps/services/customer_console`
+  → no hit in the stream relay means this entry is still open.
+- **Why.** H-179 fixed the buffered path only. `relay_stream` promises that a
+  frame leaves exactly as it arrived, and a mirror on each delta breaks that
+  promise.
+- ⚠️ **Latent today.** Every stream already falls back to the buffered path,
+  because the stream open answers 422 `extra_forbidden`. Fix that 422 and this
+  bug appears on the stream path at once. Do both in one slice.
+
+### H-181 · Upgrade the agent framework and the Copilot SDK · [AGENT]
+- **Check:** `grep -A1 'name = "agent-framework-core"' uv.lock` → a version
+  below 1.19 means this is still open.
+- **Measured 2026-09-24.** `agent-framework-core` 1.8.1 against 1.19.0.
+  `agent-framework-openai` 1.7.0 against 1.14.4. `github-copilot-sdk` 0.1.32
+  against 1.0.14.
+- ⚠️ **An upgrade does NOT fix H-179.** Version 1.14.4 still reads only
+  `reasoning_details`. Keep the Router adapter.
+- ⚠️ **The Copilot SDK crosses 1.0.** Expect breaking changes on the
+  `/copilot/chat` path.
+- **Done when:** all four agents and the orchestrator hold a tool conversation
+  through the live Router on DeepSeek V4. A stubbed test does not count.
+
 ### H-178 · An operator can take a job off the air. Two callers cannot yet · [AGENT]
 - **Check:** `rg -c "model IS NOT NULL" packages/acb_llm apps/services/gateway`
   → a zero in a file that reads `tier_binding` means a reader was added
@@ -353,19 +392,21 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-23 · the Jev planning session · **rewritten 2026-09-24**
   when CP-13d was built
 
-### H-166 · Open the TypeSafe account, install the key, and answer residency · [OWNER]
-- **Check:** on `/providers`, look for a live `typesafe` credential. None
+### H-166 · Open the AI/ML API account, install the key, and answer residency · [OWNER]
+- **Check:** on `/providers`, look for a live `aimlapi` credential. None
   means this is open. Then read `work_plan.md` D19.6. If it still says
   India-only with no AI sub-processor clause, the residency answer is open.
 - **Why:** three acts gate CP-13 on a real tenant (§6.1 WS-31 (i)).
-  1. **Open the account and accept the terms.** An external commercial
-     account is an owner act. Ask TypeSafe for its DPA, its region, and
-     zero retention. The vendor gives zero retention to enterprise customers
-     on request.
-  2. **Install the key** on `/providers`, with provider `typesafe` (§6.0 B1).
-  3. **Answer residency.** D19.6 promises India-only data at launch, and the
-     vendor states no region. Choose one: amend D19.6 for AI sub-processors,
-     get a region in writing, or keep `decide` off real tenant content.
+  1. **Open an AI/ML API account** (TypeSafe has paused direct signups, D75
+     clause 8). An external commercial account is an owner act. Ask AI/ML
+     API and TypeSafe for their DPA, their region, and zero retention.
+  2. **Install the key** on `/providers`, with provider `aimlapi` (§6.0 B1).
+     Then follow the AI/ML API guide on that page. It binds
+     `aimlapi/typesafe/jev` with the verb `native_aimlapi` (§6A.14 CP-13h).
+  3. **Answer residency.** D19.6 promises India-only data at launch, and
+     neither vendor states a region. Choose one: amend D19.6 for AI
+     sub-processors, get a region in writing from BOTH, or keep `decide`
+     off real tenant content.
   4. **Acknowledge the D61.1 amendment**, or reject it. D61.1 says every
      Router door copies an OpenAI shape, and no such shape exists for a
      decision. `work_plan.md` D75 clause 3 holds the proposal.
@@ -373,7 +414,8 @@ line — never reclaim a number by deleting the other entry.
 - ⚠️ **Shadow mode sends tenant content too.** Without answer 3, nothing
   runs on Fracktal's data: not the chat tool, not an app slice, and not
   shadow mode.
-- ⚠️ **Add TypeSafe to the sub-processor list** when WS-37 writes one (H-36).
+- ⚠️ **Add AI/ML API AND TypeSafe to the sub-processor list** when WS-37
+  writes one (H-36). A reseller call passes through both.
 - **Authority:** `specs/customer_console.md` §8 gate 9 and §9 item 8 ·
   `work_plan.md` §6.1 WS-31 (i)
 - **Added:** 2026-09-23 · the Jev planning session

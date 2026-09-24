@@ -409,3 +409,44 @@ def test_the_facade_does_not_import_the_console_service():
     assert "import customer_console" not in src
     assert "from customer_console" not in src
     assert "MAX_QUESTIONS" not in src, "clause 13's limits live on the Console only"
+
+
+# ── CP-13h: a fractional score position (review P1-1) ───────────────────────
+
+
+async def test_a_fractional_score_position_reads_with_its_level(monkeypatch):
+    """The Console's ONE score meaning: `score` is a 0-based position that
+    can be fractional, and `level` is the caller's key of the nearest one.
+    Refusing the float turned a BILLED answer into DecideUnavailable."""
+    fake = _box(monkeypatch)
+    body = json.loads(json.dumps(ANSWERS))
+    body["answers"]["effort"] = {
+        "type": "score",
+        "score": 1.3,
+        "level": "mid",
+        "probabilities": {"low": 0.0, "mid": 0.7, "high": 0.3},
+        "confidence": 0.55,
+    }
+    fake.answers(200, body)
+    effort = (await decide("state", QUESTIONS))["effort"]
+    assert isinstance(effort, ScoreAnswer)
+    assert effort.score == pytest.approx(1.3)
+    assert effort.level == "mid"
+    assert dict(effort.probabilities) == {"low": 0.0, "mid": 0.7, "high": 0.3}
+    assert effort.confidence == pytest.approx(0.55)
+
+
+async def test_a_score_without_a_level_still_reads(monkeypatch):
+    _box(monkeypatch)
+    effort = (await decide("state", QUESTIONS))["effort"]
+    assert effort.level is None
+
+
+@pytest.mark.parametrize("bad", [True, None, [1]])
+async def test_a_bool_or_a_non_number_score_is_unavailable(monkeypatch, bad):
+    fake = _box(monkeypatch)
+    body = json.loads(json.dumps(ANSWERS))
+    body["answers"]["effort"]["score"] = bad
+    fake.answers(200, body)
+    with pytest.raises(DecideUnavailable):
+        await decide("state", QUESTIONS)

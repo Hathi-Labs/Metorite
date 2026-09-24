@@ -102,7 +102,10 @@ its routes* (D35.2), enforced by the deployment boundary, not a guard.
 - The invocation verbs and their pairing rule live in `src/lib/invocation.ts`.
   It mirrors the Console's `check_invocation_for_task`. Do not write a second
   verb list. `tests/unit/test_operator_console_invocations.py` fails when its
-  three constants differ from `catalog.py`.
+  three constants differ from `catalog.py`. It also fails when
+  `NATIVE_PROVIDER` differs from the Console's handler table (CP-13h). That
+  map lets the declare form pick the native verb from the model prefix, so
+  one vendor's key never goes to another vendor's host.
 - Everything server-shaped or rule-shaped is a pure `src/lib/*` module,
   unit-tested; `src/app` is composition.
 

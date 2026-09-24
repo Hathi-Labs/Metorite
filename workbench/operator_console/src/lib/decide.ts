@@ -105,6 +105,13 @@ export function answerText(raw: unknown): string {
     const p = pct(a.probability);
     return p ? `yes, with probability ${p}` : "no readable answer";
   }
+  // CP-13h: a score names its nearest `level` and its 0-based `score`
+  // position, which can be fractional (1.3).
+  if (a.type === "score" && typeof a.level === "string" && typeof a.score === "number") {
+    const c = pct(a.confidence);
+    const where = `position ${a.score}`;
+    return c ? `${a.level} (${where}, confidence ${c})` : `${a.level} (${where})`;
+  }
   const pick = a.type === "choice" ? a.choice : a.score;
   if (typeof pick !== "string" && typeof pick !== "number") return "no readable answer";
   const c = pct(a.confidence);

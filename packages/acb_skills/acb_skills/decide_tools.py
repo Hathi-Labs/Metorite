@@ -82,13 +82,24 @@ def _format(kind: str, answer: Any) -> str:
         p_yes = float(answer.probability)
         return f"yes (p={p_yes:.2f})" if p_yes >= 0.5 else f"no (p={1 - p_yes:.2f})"
 
-    pick = str(answer.choice if kind == "choice" else answer.score)
     probs = dict(answer.probabilities)
+    if kind == "score":
+        # CP-13h: `score` is a 0-based POSITION, possibly fractional, and
+        # `level` is the caller's key of the nearest one. The probabilities
+        # are keyed by level, so the fallback confidence reads the level.
+        position = answer.score
+        level = getattr(answer, "level", None) or str(position)
+        confidence = answer.confidence
+        if confidence is None:
+            confidence = probs.get(level)
+        if isinstance(position, int | float) and not isinstance(position, bool):
+            return f"{level} (position {position:g}, confidence {_p(confidence)})"
+        return f"{level} (confidence {_p(confidence)})"
+
+    pick = str(answer.choice)
     confidence = answer.confidence
     if confidence is None:
         confidence = probs.get(pick)
-    if kind == "score":
-        return f"{pick} (confidence {_p(confidence)})"
     others = sorted(
         ((k, v) for k, v in probs.items() if k != pick),
         key=lambda kv: kv[1],

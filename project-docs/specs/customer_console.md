@@ -6,10 +6,11 @@ path/env/package mapping is in D41.1.)*
 
 🆕 **CP-13 MINTED 2026-09-23 (D75): the `decide` task.** TypeSafe's Jev serves
 fast typed decisions through a new `POST /v1/decide` door. The Operator Console
-comes first, and the app layer follows. CP-13a, CP-13b and CP-13c are BUILT
-and on main. CP-13d, the `decide` tool for every MAF agent, is BUILT on branch
-`cp13d-decide-tool`. The facade and the tool are dark behind `DECIDE_ENABLED`.
-CP-13e to CP-13g are SPEC ONLY. **§6A.14** is the contract.
+comes first, and the app layer follows. CP-13a to CP-13d are BUILT and on
+main. CP-13d is the `decide` tool for every MAF agent. The facade and the tool
+are dark behind `DECIDE_ENABLED`.
+CP-13h, Jev through the AI/ML API reseller, is BUILT on branch `cp13-aimlapi`
+(2026-09-24). CP-13e to CP-13g are SPEC ONLY. **§6A.14** is the contract.
 
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · 🆕 **CP-10 MINTED 2026-08-26 (D56) — the operator
 model-management plane; CP-5 is re-scoped as its removal half · 🆕 **CP-11 MINTED
@@ -1512,6 +1513,7 @@ Seven slices, in order:
 | CP-13e | Email triage adopts it, shadow first | 🔴 real tenant content is §8 gate 9 |
 | CP-13f | The inline gates: commitment, meeting copilot, draft consult | 🔴 same |
 | CP-13g | The Tasks decisions, split from the drafted text | 🔴 same |
+| CP-13h | ✅ BUILT 2026-09-24. Jev through the AI/ML API reseller, `native_aimlapi` (D75 amendment) | 🟢 AGENT-SAFE to build. 🔴 the account is §8 gate 3, the key is §6.0 B1 |
 
 **Done when:** §6A.14's table is green, and an operator binds `tier-decide` and gets an
 answer from "Try a decision" with no code change. The `usage_event` row must carry
@@ -9393,7 +9395,11 @@ nothing.
 **Verification:** `uv run pytest tests/unit/test_customer_console_credit_price.py`
 against a real Postgres (R8).
 
-### 6A.14 The `decide` task — System One decisions through the Router (CP-13, D75) — CP-13a BUILT 2026-09-23 · CP-13b BUILT 2026-09-23 · CP-13c BUILT 2026-09-24 · CP-13d BUILT 2026-09-24 · CP-13e to CP-13g SPEC ONLY
+### 6A.14 The `decide` task — System One decisions through the Router (CP-13, D75) — CP-13a BUILT 2026-09-23 · CP-13b BUILT 2026-09-23 · CP-13c BUILT 2026-09-24 · CP-13d BUILT 2026-09-24 · CP-13h BUILT 2026-09-24 · CP-13e to CP-13g SPEC ONLY
+
+✅ **CP-13h is BUILT, on branch `cp13-aimlapi`.** TypeSafe paused signups, so
+`native_aimlapi` reaches the same Jev through the AI/ML API reseller. The
+subsection "CP-13h" below holds the facts, the design and the fences.
 
 ✅ **CP-13a is BUILT and on main.** Migration `033` seeds
 the task and the hidden tier. `handlers.py` holds the handler table, and
@@ -9410,7 +9416,7 @@ names the route and its fences.
 `decide_on_console` and the facade `acb_llm.decide` ship dark behind
 `DECIDE_ENABLED`. The "As built" note under CP-13c names the fences.
 
-✅ **CP-13d is BUILT, on branch `cp13d-decide-tool`.** The `decide` tool is in
+✅ **CP-13d is BUILT and on main (#444).** The `decide` tool is in
 the core floor of every MAF agent. It sends no member, and the "As built" note
 under CP-13d says why.
 
@@ -9613,8 +9619,15 @@ Three rules bind the shape:
 - **The response names the tier and never the model** (D32.7, D66). The model
   goes into `usage_event.model` for the operator, and it never reaches the
   caller.
-- **A `score` answer returns `score`, `probabilities` and `confidence`.** The
-  vendor's `legend` field stays inside the handler.
+- **A `score` answer returns `score`, `level`, `probabilities` and
+  `confidence`, with ONE meaning for every vendor** *(CP-13h, 2026-09-24)*.
+  `score` is the 0-based level POSITION in the caller's order, and it can
+  be fractional (1.3). `level` is the caller's key of the nearest position,
+  rounded half up and clamped to the range. `probabilities` are keyed by the
+  caller's level keys. A position out of range keeps its raw value, clamps
+  its `level`, and logs `handlers.score_out_of_range`. The vendor's `legend`
+  field stays inside the handler. So a failover to a second vendor never
+  changes what a score means.
 - **The caller names the task by the door it calls** (D61.3). The Router
   never looks at the body to decide the task.
 
@@ -10013,6 +10026,123 @@ not an agent.**
 - Fences: `tests/unit/test_decide_tool.py` (hermetic, because no SQL runs on
   this path), `test_core_tool_floor.py::test_floor_includes_decide` and
   `test_tool_schema_diet.py`.
+
+#### CP-13h · Jev through the AI/ML API reseller (D75 amendment, 2026-09-24)
+
+**Why.** TypeSafe has paused signups, so the owner cannot get a direct key.
+On 2026-09-24 the owner chose to reach the SAME Jev through the reseller AI/ML
+API. D75 clause 8 in `work_plan.md` records the amendment. CP-13a to CP-13d
+change in no other way.
+
+**The vendor facts.** Source: [the reseller's Jev page](https://docs.aimlapi.com/api-references/decision-models/typesafe/jev),
+read on 2026-09-24.
+
+| Fact | Value |
+|---|---|
+| Endpoint | `POST https://api.aimlapi.com/v1/decisions`, with `Authorization: Bearer <key>` |
+| Request | `model`, `state` and `questions`, the System One body |
+| Model id | `typesafe/jev`, the only value the schema allows. The response names a dated version, for example `typesafe/jev-1.13-20260917` |
+| Score levels | An ordered ARRAY of level descriptions, lowest first |
+| Answer | `noul` as `{"type": "noul", "noul": 0.96}`. `choice` with `confidence` and `probabilities`. `score` as a level index that can be fractional (1.3), with `confidence`, `legend` and index-keyed `probabilities` |
+| Usage | `usage.input_tokens` and `usage.output_tokens`, and `meta.usage.usd_spent`, the charge in USD |
+| Window | 32k tokens. Text only. No streaming |
+| Price | The model page publishes no token rate. The reseller reports its charge on each call |
+
+**The design, as built.**
+
+1. **One wire class, two instances.** `handlers.SystemOneHandler` speaks the
+   System One body. Each instance names its credential prefix, its host, its
+   path and whether it reads a vendor cost.
+   `TypeSafeHandler` and `AimlApiHandler` are two configured instances.
+   A third reseller is a third instance, and never a second wire class.
+2. **The model id.** The operator binds `aimlapi/typesafe/jev`. The Router
+   splits on the FIRST slash, so `aimlapi` names the `provider_credential`
+   row. `_vendor_model` strips only the handler's own prefix. The reseller
+   sees `typesafe/jev`.
+   🔴 **The prefix and the verb must name the same vendor** (review P1-2).
+   The prefix picks the key, and the verb picks the host. So a mismatch would
+   post one vendor's key to the other. Three layers refuse it. The handler
+   refuses before any network call, with a non-terminal error and the log
+   line `handlers.model_prefix_mismatch`, which never names the key.
+   `catalog.check_model_for_invocation` refuses the declare with a 400 that
+   names both vendors. It reads the verb-to-vendor map from
+   `handlers.NATIVE_HANDLERS`. The Operator Console declare form picks the
+   native verb from the model prefix (`invocation.ts` `NATIVE_PROVIDER`).
+3. **The cost.** The handler reads `meta.usage.usd_spent` into
+   `ExtractedUsage.vendor_reported_cost_usd`. `router.reported_cost_usd` is
+   the one parse, shared with the litellm path. A bool, a negative, NaN or
+   a non-number reads as None. A missing cost never fails a served call.
+   `_record_completion` then writes `cost_source = 'vendor'`.
+   ⚠️ **A ceiling of USD 1000 for each call** (review P2).
+   `usage_event.provider_cost_usd` is NUMERIC(14, 8), so a larger figure
+   would fail the INSERT and lose the usage row. Above the ceiling the parse
+   answers None and logs `router.reported_cost_above_ceiling`. The meter
+   then uses its computed cost.
+4. **Score levels go out as an array, for BOTH vendors.** TypeSafe's own
+   API reference and the reseller's page both document an ordered array,
+   read on 2026-09-24. The handler sends the level descriptions in the order
+   the caller gave them, and a blank description sends its key. CP-13a sent
+   a map, which the vendor would refuse with a 422. No live key existed, so
+   no call ever failed.
+5. **ONE score meaning, for both handlers** (review P1-1). The wire contract
+   above defines it: `score` is the position, `level` is the nearest caller
+   key, and the probabilities use the caller's level keys. CP-13a refused a
+   float score, and that was a TERMINAL 502 after the vendor had charged us.
+   The handler, `acb_llm.decide` (`ScoreAnswer.level`) and the `decide`
+   tool now all read a fractional position. The tool prints
+   `Frustrated (position 1.3, confidence 0.55)`.
+6. **The `noul` field reads, for both handlers.** Both vendors document the
+   boolean answer as `{"noul": 0.96}`. CP-13a read only a bare number or a
+   `probability` field. It now reads `noul` first.
+7. **Both invocation sets hold `native_aimlapi`.** `check_invocation_for_task`
+   treats every `native_*` verb as `decide` only, so it needed no change.
+8. **Try a decision works unchanged, and it shows the vendor cost.** The
+   route prefers `vendor_reported_cost_usd` over the profile arithmetic, and
+   its audit row names `cost_source`.
+9. **The Operator Console.** `VERBS` gains `native_aimlapi`. `/providers`
+   gains an `aimlapi` guide under Decisions. litellm knows the reseller as
+   `aiml` and not as `aimlapi`, so the vendor-slug fence reads its exemption
+   from `handlers.native_vendors()`.
+
+**Fences.** `tests/unit/test_customer_console_decide.py`:
+
+- The documented reseller body goes in through `httpx.MockTransport`, and our
+  shape comes out. No `noul`, `legend`, `typesafe`, `jev`, `meta` or
+  `credits_used` reaches the output body.
+- The request goes to `https://api.aimlapi.com/v1/decisions` with the bearer
+  key and `model: "typesafe/jev"`. The score levels go as an array.
+- Usage gives 403 prompt tokens and 73 completion tokens. The vendor cost is
+  `Decimal("0.0000235")`.
+- R8: a call through `POST /v1/decide` writes one `usage_event` row with
+  `provider_cost_usd` 0.0000235 and `cost_source = 'vendor'`.
+- A fractional score reads for both handlers, with its `level` rounded half
+  up and clamped. An out-of-range position logs once. `native_typesafe`
+  sends score levels as an array and reads no vendor cost.
+- The documented score goes through the Console door, then `acb_llm.decide`,
+  then the tool formatter, and each layer reads the same meaning.
+- A mismatched prefix makes ZERO network calls. The declare refuses it with
+  a 400, and an old mismatched row answers 502 with no vendor request.
+- A reported cost above USD 1000 reads as None, and the usage row keeps the
+  computed cost.
+- The error mapping matches TypeSafe. A 401 and a 5xx become 502, a 429 stays
+  429, and an unreadable 200 is terminal.
+- Try a decision on the reseller shows 0.0000235, and the seam fake sees
+  `native_aimlapi`.
+
+Also `test_acb_llm_decide.py`, `test_decide_tool.py`,
+`test_operator_console_invocations.py` (it pins `NATIVE_PROVIDER` to the
+handler table), `test_operator_console_vendor_slugs.py`, and the vitest cases
+in `workbench/operator_console/src/lib/`.
+
+**Owner gates.**
+
+- **Opening the AI/ML API account** is an external commercial account. That
+  is §8 gate 3's class, and it is the owner's act.
+- **Installing its key** on `/providers` with provider id `aimlapi` is §6.0
+  B1.
+- **AI/ML API is a SECOND sub-processor**, in front of TypeSafe. A decision
+  now passes through two third parties. The residency answer in §9 item 8
+  must cover both. Until it does, `decide` stays off real tenant content.
 
 #### CP-13e to CP-13g · The app layer adopts it, one feature at a time
 
@@ -10576,11 +10706,13 @@ surface, against fixtures.
    applied to a wider credential. Building the flow against fixtures, minting
    `{resolve, provision}` keys in tests, and fencing both flag positions is
    AGENT-SAFE.
-9. **The TypeSafe account, its live key, and the first real tenant content
-   sent to it** (CP-13, added 2026-09-23 by D75). Opening the account is gate
-   3's class, an external commercial account. Installing the key is §6.0 B1.
-   Sending tenant content to a new sub-processor is a new class. D19.6
-   promises India-only residency, and the vendor states no region. Setting
+9. **The `decide` vendor account, its live key, and the first real tenant
+   content sent to it** (CP-13, added 2026-09-23 by D75). The vendor is
+   TypeSafe, directly or through AI/ML API *(widened 2026-09-24 by CP-13h)*.
+   Opening either account is gate 3's class, an external commercial account.
+   Installing the key is §6.0 B1. Sending tenant content to a new
+   sub-processor is a new class. D19.6 promises India-only residency, and
+   neither vendor states a region. Setting
    `DECIDE_ENABLED` on a live box is this gate too, and the §3a dev window
    does not open it. Building CP-13 against a test key and made-up data is
    AGENT-SAFE. `work_plan.md` §6.1 WS-31 (i) registers this gate.
@@ -10719,7 +10851,10 @@ gates only how WS-30 wires it, not whether):
      no region. Choose one: amend D19.6 for AI sub-processors, get a region
      and zero retention in writing from TypeSafe, or keep `decide` off real
      tenant content. This one BLOCKS every real-tenant call, the chat tool
-     included.
+     included. *(Widened 2026-09-24 by CP-13h.)* A call on `native_aimlapi`
+     passes through AI/ML API first, and then TypeSafe. So the answer must
+     cover BOTH sub-processors. A region in writing from TypeSafe alone does
+     not open the reseller path.
    - **The price of `(tier-decide, decide)`.** It is H-42's act, with one new
      fact. At USD 0.042 for each million input tokens, the charge is almost
      all margin floor (`credit_pricing.md` §5.4 `MIN_CHARGE`). Decide whether
