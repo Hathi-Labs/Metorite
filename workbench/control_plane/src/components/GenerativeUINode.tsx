@@ -33,14 +33,15 @@
  */
 
 import { createElement } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 
+import { MarkdownBody } from "@/components/MarkdownMessage";
 import SandboxedHtml from "@/components/SandboxedHtml";
+import Button from "@/components/ui/Button";
 import SandboxedReact from "@/components/SandboxedReact";
 import { renderTemplate } from "@/components/genUITemplates";
 import { tableCells, tableColumns, text } from "@/lib/genUiText";
 import { resolveIcon } from "@/lib/icons";
+import { type AccentHue, accentForHue } from "@/lib/statusAccent";
 
 // ─── Schema ────────────────────────────────────────────────────────────────
 
@@ -58,12 +59,27 @@ const KNOWN_TYPES = new Set([
   "template", "html", "react", "icon",
 ]);
 
-/** tone → foreground color token for icons (matches badge/callout palette). */
+/**
+ * An agent's tone → the status hue that draws it. One vocabulary with the
+ * rest of the product (`lib/statusAccent.ts`), so a badge, a callout and an
+ * icon read in light mode, in dark mode and under any accent. Until the S8
+ * visual review these were raw palette classes and hex values tuned for dark
+ * mode only.
+ */
+export const TONE_HUE: Record<string, AccentHue> = {
+  success: "green",
+  error: "red",
+  danger: "red",
+  warning: "amber",
+  info: "blue",
+};
+
+/** tone → icon colour, as a CSS variable. */
 const ICON_TONE: Record<string, string> = {
-  success: "#10b981",
-  error: "#ef4444",
-  warning: "#f59e0b",
-  info: "#38bdf8",
+  success: "var(--success)",
+  error: "var(--destructive)",
+  warning: "var(--warning)",
+  info: "var(--info)",
   muted: "var(--muted-foreground)",
   neutral: "var(--foreground)",
 };
@@ -124,19 +140,16 @@ function Node({
 
     case "markdown":
       return (
-        <div className="text-[13px] leading-relaxed text-foreground">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{s(props.text)}</ReactMarkdown>
+        <div className="min-w-0 text-[13px] leading-relaxed text-foreground">
+          <MarkdownBody content={s(props.text)} />
         </div>
       );
 
     case "badge": {
-      const tone = s(props.tone, "neutral");
-      const toneCls =
-        tone === "success" ? "border-emerald-700/50 text-emerald-300 bg-emerald-950/30" :
-        tone === "error" ? "border-red-700/50 text-red-300 bg-red-950/30" :
-        tone === "warning" ? "border-amber-700/50 text-amber-300 bg-amber-950/30" :
-        tone === "info" ? "border-sky-700/50 text-sky-300 bg-sky-950/30" :
-        "border-border text-muted-foreground bg-secondary/50";
+      const hue = TONE_HUE[s(props.tone, "neutral")];
+      const toneCls = hue
+        ? `border-transparent ${accentForHue(hue).chip}`
+        : "border-border text-muted-foreground bg-secondary/50";
       return (
         <span className={`inline-block text-[10px] font-medium px-1.5 py-0.5 rounded border ${toneCls}`}>
           {s(props.text)}
@@ -212,7 +225,7 @@ function Node({
 
     case "code":
       return (
-        <pre className="rounded-md bg-[#0c0c0c] border border-white/10 p-2.5 overflow-x-auto text-[11px] text-zinc-100 font-mono">
+        <pre className="rounded-md bg-muted border border-border p-2.5 overflow-x-auto text-[11px] text-foreground font-mono">
           {s(props.text)}
         </pre>
       );
@@ -224,7 +237,7 @@ function Node({
       if (!safe) return <span className="text-muted-foreground">{s(props.text, href)}</span>;
       return (
         <a href={href} target="_blank" rel="noopener noreferrer"
-          className="text-sky-400 underline underline-offset-2 hover:text-sky-300 break-all text-[13px]">
+          className="text-primary underline underline-offset-2 hover:opacity-80 break-all text-[13px]">
           {s(props.text, href)}
         </a>
       );
@@ -234,31 +247,27 @@ function Node({
       const action = s(props.action);
       const label = s(props.label, "Action");
       const tone = s(props.tone, "default");
-      const toneCls =
-        tone === "primary" ? "border-emerald-600/70 bg-emerald-900/40 text-emerald-100 hover:bg-emerald-900/60" :
-        tone === "danger" ? "border-red-700/60 bg-red-950/40 text-red-200 hover:bg-red-900/50" :
-        "border-border bg-secondary/70 text-foreground hover:bg-secondary";
+      // The one control primitive (DESIGN_SYSTEM.md rule 3), so the button
+      // wears the theme's focus ring and state layer in both modes.
+      const variant =
+        tone === "primary" ? "primary" : tone === "danger" ? "destructive" : "secondary";
       return (
-        <button
+        <Button
           type="button"
+          variant={variant}
+          size="sm"
           disabled={!action || !onAction}
           onClick={() => action && onAction?.(action)}
-          className={`text-left text-xs rounded-lg border px-3 py-1.5 transition-colors disabled:opacity-50 ${toneCls}`}
         >
           {label}
-        </button>
+        </Button>
       );
     }
 
     case "callout": {
-      const tone = s(props.tone, "info");
-      const toneCls =
-        tone === "success" ? "border-emerald-700/40 bg-emerald-950/20" :
-        tone === "error" ? "border-red-700/40 bg-red-950/20" :
-        tone === "warning" ? "border-amber-700/40 bg-amber-950/20" :
-        "border-sky-700/40 bg-sky-950/20";
+      const accent = accentForHue(TONE_HUE[s(props.tone, "info")] ?? "blue");
       return (
-        <div className={`rounded-md border px-3 py-2 space-y-1 ${toneCls}`}>
+        <div className={`rounded-md border border-border border-l-2 px-3 py-2 space-y-1 ${accent.bar} ${accent.soft}`}>
           {props.title != null && (
             <div className="text-[12px] font-semibold text-foreground">{s(props.title)}</div>
           )}

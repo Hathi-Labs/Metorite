@@ -217,7 +217,7 @@ export default function ArtifactCard({
       role={isDoc ? "button" : undefined}
       tabIndex={isDoc ? 0 : undefined}
       aria-label={isDoc ? `Open ${artifact.name}` : undefined}
-      className={`mt-3 rounded-xl border border-border/60 bg-card/60 px-3 py-2.5 flex items-center gap-3 group/card transition-colors hover:border-primary/30/80 ${
+      className={`@container mt-3 rounded-xl border border-border/60 bg-card/60 px-3 py-2.5 flex items-center gap-3 group/card transition-colors hover:border-primary/30/80 ${
         isDoc
           ? "cursor-pointer hover:bg-card focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           : ""
@@ -228,18 +228,21 @@ export default function ArtifactCard({
         {fileIcon(artifact)}
       </div>
 
-      {/* File info */}
+      {/* File info. The card is its own size container: in the narrow rail
+          (below @md) the name wraps instead of truncating, the folder and the
+          hash hide, and the size stays on one line (S8 visual review: the rail
+          showed "output.." and a size broken over two lines). */}
       <div className="flex-1 min-w-0">
-        <div className="text-xs font-medium text-foreground truncate font-mono">
+        <div className="text-xs font-medium text-foreground font-mono break-all line-clamp-2 @md:truncate @md:break-normal" title={artifact.path}>
           {artifact.name}
         </div>
         <div className="flex items-center gap-2 mt-0.5">
-          <span className="text-[10px] text-muted-foreground truncate">{artifact.path}</span>
+          <span className="hidden @md:inline text-[10px] text-muted-foreground truncate">{artifact.path}</span>
           {artifact.size != null && (
-            <span className="text-[10px] text-muted-foreground">{formatBytes(artifact.size)}</span>
+            <span className="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground">{formatBytes(artifact.size)}</span>
           )}
           {artifact.sha256 && (
-            <span className="text-[10px] text-muted-foreground/70 font-mono" title={`sha256:${artifact.sha256}`}>
+            <span className="hidden @md:inline text-[10px] text-muted-foreground/70 font-mono" title={`sha256:${artifact.sha256}`}>
               #{artifact.sha256.slice(0, 7)}
             </span>
           )}
@@ -248,13 +251,13 @@ export default function ArtifactCard({
 
       {/* Actions */}
       <div className="flex items-center gap-1 shrink-0">
-        {isDoc && (isMobile || onOpenInSidePanel) && (
+        {isDoc && (isMobile || onOpenInSidePanel || onOpen) && (
           <button
             onClick={(e) => { e.stopPropagation(); openRendered(); }}
             className="flex items-center gap-1.5 rounded-lg bg-primary/10 px-2.5 py-1.5 text-[11px] font-medium text-primary hover:bg-primary/20 transition-colors"
-            title={isMobile ? "Open the rendered artifact" : "Open in side panel — edit + live preview"}
+            title={isMobile || !onOpenInSidePanel ? "Open the rendered artifact" : "Open in side panel — edit + live preview"}
           >
-            {isMobile ? <Icon name="Maximize2" size={13} /> : <Icon name="PanelLeft" size={13} />}
+            {isMobile || !onOpenInSidePanel ? <Icon name="Maximize2" size={13} /> : <Icon name="PanelLeft" size={13} />}
             Open
           </button>
         )}

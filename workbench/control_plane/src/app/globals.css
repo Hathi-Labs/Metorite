@@ -449,6 +449,47 @@ select optgroup {
   outline-offset: 2px;
 }
 
+/* ── Native controls follow the mode ────────────────────────────────────
+   A date input's picker icon, a scrollbar and a checkbox are drawn by the
+   browser from `color-scheme`. The `.light` class is the one switch for the
+   mode, so it sets the scheme as well: in light mode the plan card's date
+   icons were drawn for a dark page and nearly vanished (S8 visual review). */
+:root:not(.light) {
+  color-scheme: dark;
+}
+:root.light {
+  color-scheme: light;
+}
+
+/* ── Prose that follows the theme ───────────────────────────────────────
+   `@tailwindcss/typography` ships one grey palette for light and
+   `prose-invert` for dark. This app is dark by default and turns light
+   with the `.light` class, so neither fits. `prose-invert` hard-coded
+   dark text colours and left a document unreadable in light mode
+   (WS-27bm S8 visual review). `.cc-prose` points every prose colour at a
+   token, so one class reads in both modes and under any accent. Use
+   `cc-prose prose`, never `prose-invert`. Fence:
+   src/lib/proseTokens.test.ts. */
+.cc-prose {
+  --tw-prose-body: var(--foreground);
+  --tw-prose-headings: var(--foreground);
+  --tw-prose-lead: var(--muted-foreground);
+  --tw-prose-links: var(--primary);
+  --tw-prose-bold: var(--foreground);
+  --tw-prose-counters: var(--muted-foreground);
+  --tw-prose-bullets: var(--muted-foreground);
+  --tw-prose-hr: var(--border);
+  --tw-prose-quotes: var(--muted-foreground);
+  --tw-prose-quote-borders: var(--border);
+  --tw-prose-captions: var(--muted-foreground);
+  --tw-prose-kbd: var(--foreground);
+  --tw-prose-code: var(--foreground);
+  --tw-prose-pre-code: var(--foreground);
+  --tw-prose-pre-bg: var(--muted);
+  --tw-prose-th-borders: var(--border);
+  --tw-prose-td-borders: var(--border);
+}
+
 /* Material-style state layer: an overlay of the control's own text colour, so
    it works on any variant without knowing that variant's background. Themes
    leaving --control-state-layer at 0 render nothing and fall back to the

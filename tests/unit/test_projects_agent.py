@@ -1435,3 +1435,58 @@ def test_the_agent_may_still_write_an_artifact() -> None:
     """The Files section names a tool the agent must hold."""
     config = json.loads((AGENT_DIR / "config.json").read_text(encoding="utf-8"))
     assert "write_artifact" in json.dumps(config)
+
+
+# ── S8 visual review — the report card speaks the Reports app's words ───────
+
+
+async def test_the_report_card_carries_labels_not_keys(monkeypatch) -> None:
+    """The card printed "load open_tasks" and a column called `name`. Every
+    tile and every column now carries a person's word, and the Unassigned
+    row says so."""
+    body = {
+        "report": {"name": "Weekly", "scope": "portfolio"},
+        "period_start": "2026-09-14",
+        "period_end": "2026-09-20",
+        "sections": {
+            "finished": {
+                "projects": [{"project_id": "p", "name": "Apollo", "completed": 4, "cancelled": 1}],
+                "total_completed": 4,
+                "total_cancelled": 1,
+            },
+            "load": {
+                "people": [
+                    {"assignee": None, "open_tasks": 2, "overdue": 0},
+                    {"assignee": "asha@x.test", "open_tasks": 12, "overdue": 1},
+                ],
+                "total_tasks": 14,
+            },
+            "mystery_section": {"total": 3, "rows": [{"some_key": "v"}]},
+        },
+    }
+    specs = drawn(monkeypatch)
+    fake_gateway(monkeypatch, lambda call: body)
+    await skill_projects.render_report(report_id=UUID)
+    card = specs[0]["props"]["data"]
+    labels = [s["label"] for s in card["stats"]]
+    assert labels[:3] == ["Finished", "Cancelled", "Open tasks"]
+    assert "Mystery section: Total" in labels
+    by_title = {t["title"]: t for t in card["tables"]}
+    assert by_title["What we finished"]["columns"] == ["Project", "Finished", "Cancelled"]
+    assert by_title["Open work"]["columns"] == ["Assignee", "Open", "Overdue"]
+    assert by_title["Open work"]["rows"][0]["cells"][0] == "Unassigned"
+    assert by_title["Mystery section"]["columns"] == ["Some key"]
+    for text in labels + [c for t in card["tables"] for c in t["columns"]] + list(by_title):
+        assert "_" not in text, text
+
+
+def test_the_report_card_titles_are_the_reports_apps_words() -> None:
+    """One owner for the words: `RenderedBody` in ReportsView.tsx."""
+    from skill_projects.views import REPORT_CARD_SECTIONS
+
+    tsx = (
+        REPO_ROOT / "workbench" / "control_plane" / "src" / "app" / "projects"
+        / "components" / "ReportsView.tsx"
+    ).read_text(encoding="utf-8")
+    for name, spec in REPORT_CARD_SECTIONS.items():
+        assert f'<Section title="{spec["title"]}">' in tsx, name

@@ -147,6 +147,23 @@ export const CUSTOM_EVENT_RENDERERS: Record<string, CustomEventRenderer> = {
   },
 };
 
+/**
+ * State keys the fold must NOT show. `segments` and `todos` are the chat's own
+ * bookkeeping: the answer text and the plan, both already drawn by the
+ * message. A reloaded message whose state held only these drew an empty
+ * "Interactive view" fold (WS-27bm S8 visual review, 2026-09-24).
+ */
+export const STATE_HIDDEN_KEYS: ReadonlySet<string> = new Set(["segments", "todos"]);
+
+/** The part of an agent state worth showing, or null when nothing is. Pure. */
+export function displayableState(
+  agentState: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (!agentState || typeof agentState !== "object") return null;
+  const kept = Object.entries(agentState).filter(([k]) => !STATE_HIDDEN_KEYS.has(k));
+  return kept.length ? Object.fromEntries(kept) : null;
+}
+
 export default function GenerativeUIPanel({
   agentState,
   customEvents,
@@ -155,25 +172,26 @@ export default function GenerativeUIPanel({
   const displayEvents = (customEvents ?? []).filter(
     (ev) => !PANEL_HIDDEN_EVENTS.has(ev.name),
   );
-  const hasState = agentState && Object.keys(agentState).length > 0;
+  const shownState = displayableState(agentState);
+  const hasState = shownState !== null;
   const hasCustom = displayEvents.length > 0;
   if (!hasState && !hasCustom) return null;
 
   return (
-    <div className="mt-3 rounded-lg border border-sky-800/40 bg-sky-950/20">
+    <div className="mt-3 rounded-lg border border-border/60 bg-card/50">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-sky-300 hover:text-sky-200"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-muted-foreground hover:text-foreground"
       >
         <span className="text-[10px]">{open ? "▾" : "▸"}</span>
         Interactive view
-        <span className="ml-auto text-[10px] text-sky-500/70">AG-UI</span>
+        <span className="ml-auto text-[10px] text-muted-foreground">AG-UI</span>
       </button>
       {open && (
         <div className="space-y-3 px-3 pb-3">
           {hasState && (
             <div className="rounded-md bg-card/50 p-2">
-              <JsonView value={agentState} />
+              <JsonView value={shownState} />
             </div>
           )}
           {hasCustom &&
@@ -185,7 +203,7 @@ export default function GenerativeUIPanel({
                     renderer(ev.value)
                   ) : (
                     <>
-                      <div className="mb-1 text-[10px] uppercase tracking-wide text-sky-400/80">
+                      <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
                         {ev.name || "custom"}
                       </div>
                       <JsonView value={ev.value} />

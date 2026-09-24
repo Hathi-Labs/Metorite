@@ -294,6 +294,108 @@ async def render_tasks(
 
 # ── The report card ──────────────────────────────────────────────────────────
 
+#: How the report card names each section, its headline numbers and its
+#: columns (WS-27bm S8 visual review: the card printed raw keys such as
+#: "load open_tasks"). The section titles are the Reports app's own words,
+#: from ``RenderedBody`` in ``app/projects/components/ReportsView.tsx``, so
+#: the card and the app say the same thing. ``test_projects_agent.py`` reads
+#: that file and fails if a title here is not there.
+#:
+#: Each entry: ``title``, ``stats`` as ``(key, label)`` pairs, ``rows`` as the
+#: key of the row list, and ``columns`` as ``(key, label)`` pairs.
+REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
+    "finished": {
+        "title": "What we finished",
+        "stats": [("total_completed", "Finished"), ("total_cancelled", "Cancelled")],
+        "rows": "projects",
+        "columns": [("name", "Project"), ("completed", "Finished"), ("cancelled", "Cancelled")],
+    },
+    "throughput": {
+        "title": "How long it took",
+        "stats": [("median_hours", "Median hours"), ("measured", "Measured")],
+    },
+    "stuck": {
+        "title": "Overdue",
+        "stats": [("overdue_total", "Overdue")],
+        "rows": "overdue",
+        "columns": [("name", "Project"), ("overdue", "Overdue")],
+    },
+    "load": {
+        "title": "Open work",
+        "stats": [("total_tasks", "Open tasks")],
+        "rows": "people",
+        "columns": [("assignee", "Assignee"), ("open_tasks", "Open"), ("overdue", "Overdue")],
+    },
+    "capacity": {
+        "title": "Who has the hours",
+        "stats": [("total_tasks", "Open tasks")],
+        "rows": "people",
+        "columns": [
+            ("name", "Person"),
+            ("open_tasks", "Open"),
+            ("spare_hours_horizon", "Spare hours"),
+        ],
+    },
+    "conflicts": {
+        "title": "Where the plan conflicts",
+        "stats": [("total", "Conflicts")],
+        "rows": "rows",
+        "columns": [("severity", "Severity"), ("sentence", "Conflict")],
+    },
+}
+
+
+def _human(key: str) -> str:
+    """A key the table does not name: ``open_tasks`` → ``Open tasks``."""
+    text = str(key).replace("_", " ").strip()
+    return text[:1].upper() + text[1:]
+
+
+def _card_cell(key: str, row: dict[str, Any]) -> str:
+    value = row.get(key)
+    if key in ("assignee", "name") and not value:
+        # The Unassigned row carries no person. Say so, as the Reports app does.
+        return _plain(row.get("assignee") or "Unassigned")
+    return _plain(value)
+
+
+def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """The tiles and the table one section adds to the card."""
+    spec = REPORT_CARD_SECTIONS.get(name)
+    title = spec["title"] if spec else _human(name)
+    if spec:
+        stats = [
+            {"label": label, "value": section[key]}
+            for key, label in spec["stats"]
+            if isinstance(section.get(key), int | float) and not isinstance(section.get(key), bool)
+        ]
+        rows = section.get(spec["rows"]) if spec.get("rows") else None
+        columns = spec.get("columns") or []
+    else:
+        stats = [
+            {"label": f"{title}: {_human(key)}", "value": section[key]}
+            for key in ("total", "count", "open_tasks", "blocked_total")
+            if isinstance(section.get(key), int | float) and not isinstance(section.get(key), bool)
+        ]
+        rows = section.get("rows") or section.get("people") or section.get("projects")
+        columns = []
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+            columns = [
+                (k, _human(k)) for k in rows[0] if not isinstance(rows[0][k], dict | list)
+            ][:6]
+    table = None
+    if isinstance(rows, list) and rows and isinstance(rows[0], dict) and columns:
+        table = {
+            "title": title,
+            "columns": [label for _, label in columns],
+            "rows": [
+                {"cells": [_card_cell(key, r) for key, _ in columns]}
+                for r in rows[:25]
+                if isinstance(r, dict)
+            ],
+        }
+    return stats, table
+
 
 @_annotate(read_only=True, idempotent=True)
 async def render_report(report_id: str) -> str:
@@ -315,19 +417,10 @@ async def render_report(report_id: str) -> str:
         if not isinstance(section, dict):
             continue
         lines.extend(_report_section(str(name), section))
-        for key in ("total", "finished", "count", "open_tasks", "blocked_total"):
-            if isinstance(section.get(key), int | float):
-                stats.append({"label": f"{name} {key}".replace("_", " "), "value": section[key]})
-        rows = section.get("rows") or section.get("people") or section.get("projects") or []
-        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
-            columns = [k for k in rows[0] if not isinstance(rows[0][k], dict | list)][:6]
-            tables.append(
-                {
-                    "title": str(name).replace("_", " "),
-                    "columns": columns,
-                    "rows": [{"cells": [_plain(r.get(c)) for c in columns]} for r in rows[:25]],
-                }
-            )
+        section_stats, table = _card_section(str(name), section)
+        stats.extend(section_stats)
+        if table:
+            tables.append(table)
     await _emit(
         _template(
             "reportCard",

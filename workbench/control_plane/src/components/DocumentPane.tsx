@@ -336,7 +336,7 @@ export default function DocumentPane({ sessionId, path, name, live }: DocumentPa
 /** Themed markdown body — same prose styling the app uses elsewhere. */
 function MarkdownBody({ content }: { content: string }) {
   return (
-    <div className="prose prose-sm prose-invert max-w-none prose-headings:font-semibold prose-a:text-primary prose-code:text-accent">
+    <div className="cc-prose prose prose-sm max-w-none prose-headings:font-semibold prose-a:text-primary prose-code:text-accent">
       <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
         {content}
       </ReactMarkdown>

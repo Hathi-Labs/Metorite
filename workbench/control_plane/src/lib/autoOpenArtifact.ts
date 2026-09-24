@@ -37,9 +37,15 @@ const DEFAULT_DEPS: AutoOpenDeps = {
   schedule: (fn, ms) => window.setTimeout(fn, ms),
 };
 
-/** Whether a written file opens by itself. Pure. */
-export function shouldAutoOpen(path: string, isMobile: boolean): boolean {
-  if (isMobile) return false;
+/**
+ * Whether a written file opens by itself. Pure.
+ *
+ * `panelFits` is `lib/sidePanelFit.ts`'s answer. Where the board beside the
+ * panel would drop below its minimum width, nothing opens by itself, and the
+ * card's Open goes to the full-screen viewer.
+ */
+export function shouldAutoOpen(path: string, isMobile: boolean, panelFits = true): boolean {
+  if (isMobile || !panelFits) return false;
   const name = path.split("/").pop() ?? path;
   const kind = classifyArtifact(name, path);
   return kind === "markdown" || isRenderable(kind);
@@ -52,11 +58,11 @@ export function shouldAutoOpen(path: string, isMobile: boolean): boolean {
  */
 export function autoOpenArtifact(
   path: string,
-  ctx: { sessionId: string | null | undefined; isMobile: boolean },
+  ctx: { sessionId: string | null | undefined; isMobile: boolean; panelFits?: boolean },
   deps: AutoOpenDeps = DEFAULT_DEPS,
 ): boolean {
-  const { sessionId, isMobile } = ctx;
-  if (!sessionId || !shouldAutoOpen(path, isMobile)) return false;
+  const { sessionId, isMobile, panelFits = true } = ctx;
+  if (!sessionId || !shouldAutoOpen(path, isMobile, panelFits)) return false;
   const name = path.split("/").pop() ?? path;
   deps.openDoc({ path, name, sessionId, live: true });
   deps.schedule(() => deps.setDocLive(sessionId, path, false), LIVE_BADGE_MS);

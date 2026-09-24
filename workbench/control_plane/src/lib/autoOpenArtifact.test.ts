@@ -83,6 +83,15 @@ describe("autoOpenArtifact", () => {
     expect(d.openDoc).not.toHaveBeenCalled();
   });
 
+  it("opens nothing where the board would lose its minimum width", () => {
+    const d = deps();
+    expect(
+      autoOpenArtifact("outputs/status.md", { sessionId: "s1", isMobile: false, panelFits: false }, d),
+    ).toBe(false);
+    expect(d.openDoc).not.toHaveBeenCalled();
+    expect(shouldAutoOpen("outputs/status.md", false, false)).toBe(false);
+  });
+
   it("opens nothing without a session", () => {
     const d = deps();
     expect(autoOpenArtifact("outputs/status.md", { sessionId: "", isMobile: false }, d)).toBe(false);
@@ -122,7 +131,7 @@ describe("the two chats", () => {
   });
 
   it("the Projects rail hands written files to the shared rule", () => {
-    expect(rail).toContain("autoOpenArtifact(entry.path, { sessionId: activeId, isMobile })");
+    expect(rail).toContain("autoOpenArtifact(entry.path, { sessionId: activeId, isMobile, panelFits })");
     expect(rail).toContain("onArtifact={handleArtifact}");
   });
 

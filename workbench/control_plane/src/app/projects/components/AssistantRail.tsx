@@ -43,6 +43,7 @@ import {
 import { SelectButton } from "@/components/ui/SelectButton";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { autoOpenArtifact, syncPanelToSession } from "@/lib/autoOpenArtifact";
+import { useSidePanelFits } from "@/lib/sidePanelFit";
 import {
   EVERYTHING,
   focusedEntry,
@@ -242,12 +243,15 @@ export function AssistantRail({
   // A document the assistant writes opens beside the board, live, as it does
   // in `/chat` — one rule, `lib/autoOpenArtifact.ts`. On a phone there is no
   // side panel, so nothing opens and the card in the thread stays the way in.
+  // Where the board beside the panel would drop below its minimum width
+  // (`lib/sidePanelFit.ts`), nothing opens by itself either.
   const { isMobile } = useViewMode();
+  const panelFits = useSidePanelFits();
   const handleArtifact = useCallback(
     (entry: { path: string }) => {
-      autoOpenArtifact(entry.path, { sessionId: activeId, isMobile });
+      autoOpenArtifact(entry.path, { sessionId: activeId, isMobile, panelFits });
     },
-    [activeId, isMobile],
+    [activeId, isMobile, panelFits],
   );
 
   return (

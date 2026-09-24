@@ -1603,3 +1603,28 @@ The audit of 2026-09-24 read these facts from the code.
   the tree or in `pymupdf` fixes that mapping.
 - A word longer than 2,000 characters is refused, not broken. A long hash or
   a base64 block in a document therefore gets 422.
+
+### 14.7 The visual review (fix round 2)
+
+A Playwright review on 2026-09-24 looked at the rail, the side panel, the
+viewer and the Reports app in four contexts. It found eight defects. The fixes
+set four rules.
+
+1. **The board keeps 32rem.** `src/lib/sidePanelFit.ts` decides whether a
+   document may open in the side panel beside the board. If the row cannot
+   hold the tree, the panel, 32rem of board and the dock, the document opens
+   in the full-screen viewer. Nothing opens by itself then. The page's
+   `<main>` clips, so the board never draws over the chat.
+2. **Prose follows the theme.** `.cc-prose` in `globals.css` points every
+   prose colour at a token. `prose-invert` is gone from the tree.
+3. **One Markdown renderer.** `MarkdownBody` in `MarkdownMessage.tsx` draws
+   the chat's answer and the generative-UI `markdown` node.
+4. **The primitives use the status vocabulary.** A badge, a callout and an
+   icon take their hue from `statusAccent.ts`, and a button is the `Button`
+   primitive.
+
+The report card takes its section titles from the Reports app
+(`REPORT_CARD_SECTIONS` in `skill_projects/views.py`). A test reads
+`ReportsView.tsx` and fails if a title is not there. The fences are
+`src/components/chatVisualReview.test.ts`, `sidePanelFit.test.ts`,
+`scrollCue.test.ts` and `test_projects_agent.py`.
