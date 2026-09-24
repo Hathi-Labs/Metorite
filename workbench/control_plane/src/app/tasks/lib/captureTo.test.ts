@@ -424,6 +424,35 @@ describe("deferClarify", () => {
     expect(useTaskStore.getState().undoSnapshot).toBeNull();
   });
 
+  it("Clarify promote, then a Move-dialog re-promote, then Undo: back in the walk (round 4)", () => {
+    vi.mocked(apiMoveTask).mockReset();
+    useTaskStore.getState().deferClarify("c1", decision, undefined, "Printer v3");
+    expect(useTaskStore.getState().processedThisSession).toBe(1);
+    // The Move dialog's door brings no cancel hook of its own.
+    useTaskStore.getState().schedulePromote({
+      id: "c1",
+      projectName: "Enclosure",
+      commit: () => useTaskStore.getState().promoteItem("c1", { projectId: "p2" }),
+    });
+    // The replaced hook did NOT run at replace time.
+    expect(useTaskStore.getState().clarifiedThisSession.has("c1")).toBe(true);
+    expect(useTaskStore.getState().undoPromote()).toBe(true);
+    vi.advanceTimersByTime(PROMOTE_UNDO_MS * 2);
+    expect(apiMoveTask).not.toHaveBeenCalled();
+    expect(apiOrganize).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().clarifiedThisSession.has("c1")).toBe(false);
+    expect(useTaskStore.getState().processedThisSession).toBe(0);
+  });
+
+  it("a Clarify re-promote counts once, and Undo takes the count back to zero (round 4)", () => {
+    useTaskStore.getState().deferClarify("c1", decision, undefined, "Printer v3");
+    useTaskStore.getState().deferClarify("c1", { ...decision, projectId: "p2" }, undefined, "Enclosure");
+    expect(useTaskStore.getState().processedThisSession).toBe(1);
+    expect(useTaskStore.getState().undoPromote()).toBe(true);
+    expect(useTaskStore.getState().processedThisSession).toBe(0);
+    expect(useTaskStore.getState().clarifiedThisSession.has("c1")).toBe(false);
+  });
+
   it("Undo puts the capture back in the walk, and nothing is sent", () => {
     useTaskStore.getState().deferClarify("c1", decision, undefined, "Printer v3");
     expect(useTaskStore.getState().undoPromote()).toBe(true);

@@ -1163,15 +1163,21 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     // flush (S6g round 3). A flush sent the task to board A and then moved
     // it to board B when Clarify or the Move dialog was used again.
     const waiting = get().pendingPromote;
+    // The replaced promote's Undo hook, kept for the new one (round 4). A
+    // Clarify promote puts the task out of the walk. A Move-dialog re-promote
+    // brings no hook, and an Undo of it must still put the task back. The old
+    // hook is NOT run here: the task is still being moved.
+    let carried: (() => void) | null = null;
     if (waiting && !waiting.sending && waiting.id === id) {
       pendingCommit?.cancel();
       pendingCommit = null;
+      carried = pendingCancel;
       pendingCancel = null;
     } else {
       pendingCommit?.flush();
     }
     const key = `tasks-promote:${id}:${++promoteSeq}`;
-    pendingCancel = onCancel ?? null;
+    pendingCancel = onCancel ?? carried;
     set({ pendingPromote: { id, projectName, key, sending: false } });
     pendingCommit = deferCommit(() => {
       pendingCommit = null;
@@ -1229,14 +1235,16 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   deferClarify: (id, decision, weight, projectName) => {
-    // The walk moves on now, the way a sent decision moves it.
+    // The walk moves on now, the way a sent decision moves it. A task this
+    // session already counted (a Clarify re-promote) is not counted twice.
     set((s) => {
+      const counted = s.clarifiedThisSession.has(id);
       const clarifiedThisSession = new Set(s.clarifiedThisSession).add(id);
       const nextInbox = clarifyQueue(s.items, s.fromProjectIds, clarifiedThisSession)[0];
       return {
         clarifiedThisSession,
         selectedItemId: nextInbox?.id ?? null,
-        processedThisSession: s.processedThisSession + 1,
+        processedThisSession: s.processedThisSession + (counted ? 0 : 1),
       };
     });
     get().schedulePromote({
@@ -1251,9 +1259,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         if (!item) return { left: true, assignees: [] };
         return { left: false, item };
       },
-      // Undo: nothing was sent, so the capture is undecided again.
+      // Undo: nothing was sent, so the capture is undecided again. The
+      // count comes off once, and only when the walk still holds the task.
       onCancel: () =>
         set((s) => {
+          if (!s.clarifiedThisSession.has(id)) return {};
           const clarifiedThisSession = new Set(s.clarifiedThisSession);
           clarifiedThisSession.delete(id);
           return {
