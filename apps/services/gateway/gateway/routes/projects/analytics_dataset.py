@@ -479,6 +479,16 @@ _MEASURE_SQL: dict[str, tuple[str, str]] = {
 }
 
 
+#: The column a measure reads. A task with no value there does not feed the
+#: measure, so its owner does not count toward the K rule. ``count`` has no
+#: HR gate and needs no predicate.
+_MEASURE_FEEDS: dict[str, str] = {
+    "estimate_sum": " AND kd.estimate_mins IS NOT NULL",
+    "cycle_hours_median": " AND kd.cycle_hours IS NOT NULL",
+    "cycle_hours_p90": " AND kd.cycle_hours IS NOT NULL",
+}
+
+
 def groups_sql(history: str, where: str, group_by: str, measure: str | None) -> str:
     """One row for each group over the FULL set, never over the capped rows.
 
@@ -498,14 +508,20 @@ def groups_sql(history: str, where: str, group_by: str, measure: str | None) -> 
     # group, agents left out, and the K rule reads it. The LIMIT is in SQL,
     # and `groups_total` is the window count taken before it. `tally` is
     # the task count over the same `ds`.
+    #
+    # ⚠️ `owners` counts only the tasks that FEED the measure (round 3).
+    # `percentile_cont` skips a null cycle time and `sum` skips a null
+    # estimate. Counting every owner let two open tasks of Bo and Cy lift a
+    # group whose median is Ana's alone past K.
+    feeds = _MEASURE_FEEDS.get(measure or "", "")
     return (
         f"{dataset_cte_sql(history, where)}"
         f", keyed AS (SELECT {key} AS k, ds.* FROM ds{join})"
         f", owners AS ("
-        f"  SELECT kd.k, count(DISTINCT lower(pa.assignee)) AS people"
+        f"  SELECT kd.k, count(DISTINCT lower(btrim(pa.assignee))) AS people"
         f"    FROM keyed kd"
         f"    JOIN pm_task_assignees pa ON pa.task_id = kd.id"
-        f"   WHERE lower(pa.assignee) NOT LIKE 'agent:%'"
+        f"   WHERE lower(btrim(pa.assignee)) NOT LIKE 'agent:%'{feeds}"
         f"   GROUP BY kd.k"
         f"), tally AS (SELECT count(*) AS total FROM ds)"
         f" SELECT ds.k AS k, count(DISTINCT ds.id) AS n,"

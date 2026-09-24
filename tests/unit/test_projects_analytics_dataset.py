@@ -373,6 +373,8 @@ def seeded(_ladder):
         # A tag only Ana's tasks carry: grouped by it, a cycle measure is
         # Ana's speed under another name (the K rule, fix round 2).
         made["solo"] = f"solo-{tag}"
+        # Three owners, and only Ana's task has a cycle time (round 3).
+        made["trio"] = f"trio-{tag}"
 
         def task(key: str, where: str, *, root: str | None = None, lane: str = "todo",
                  age: int = 0, est: int | None = None, tags: tuple[str, ...] = (),
@@ -439,16 +441,19 @@ def seeded(_ladder):
         task("O2", "A", lane="in_progress", age=40, est=120, tags=("bug", "cad"),
              who=("ana", "bot"))
         task("O3", "A", age=30)
-        task("O4", "A1", root="A", age=20, est=30, tags=("cad",), who=("bo",))
+        task("O4", "A1", root="A", age=20, est=30, tags=("cad", "trio"), who=("bo",))
         task("KA", "A", age=10)
-        for key, hours, who, extra in (("D1", 2, "ana", ("solo",)), ("D2", 4, "bo", ()),
+        for key, hours, who, extra in (("D1", 2, "ana", ("solo", "trio")), ("D2", 4, "bo", ()),
                                        ("D3", 10, "ana", ("solo",))):
             task(key, "A", lane="done", age=60 * 24 * 5, tags=("bug", *extra),
                  who=(who,), est=60)
             move(key, "in_progress", 72 + hours)
             move(key, "done", 72)
-        # cy makes `bug` a group of three people: ana, bo and cy.
-        task("D4", "A", lane="done", age=60 * 24 * 5, tags=("bug",), who=("cy",))
+        # cy OWNS a `bug` task, and it has no cycle time. So `bug` has three
+        # owners and two people whose cycle times feed its median. D4 has an
+        # estimate, so the `done` stage has three estimators.
+        task("D4", "A", lane="done", age=60 * 24 * 5, tags=("bug", "trio"), who=("cy",),
+             est=60)
         move("D4", "done", 72)
         task("C1", "A", lane="cancelled", age=60 * 24 * 5)
         move("C1", "cancelled", 72)
@@ -652,8 +657,9 @@ async def test_without_the_hr_grant_the_per_person_values_are_absent(seeded) -> 
     counted = await _body(s, hr=False, group_by="assignee")
     assert "measure_hidden" not in counted
     assert _groups(counted)[s["ana"]]["value"] == 2
-    tagged = await _body(s, hr=False, state="all", group_by="tag", measure="cycle_hours_median")
-    assert _groups(tagged)[s["bug"]]["value"] == 4.0, "only the per-person values hide"
+    staged = await _body(s, hr=False, state="all", group_by="status_category",
+                         measure="estimate_sum")
+    assert _groups(staged)["done"]["value"] == 240, "only the per-person values hide"
 
 
 @_needs_db
@@ -814,15 +820,27 @@ async def test_a_group_of_one_person_hides_its_value(seeded) -> None:
     solo = _groups(body)[s["solo"]]
     assert solo["measure_hidden"] is True and "value" not in solo and "measured" not in solo
     assert solo["n"] == 2
+    # Round 3. `bug` has three owners, and only ana and bo carry a cycle
+    # time, so its median has two contributors and stays hidden.
     bug = _groups(body)[s["bug"]]
-    assert bug["value"] == 4.0 and "measure_hidden" not in bug
+    assert bug["measure_hidden"] is True and "value" not in bug
+    # Three owners, one cycle time: the median is Ana's alone.
+    trio = _groups(body)[s["trio"]]
+    assert trio["measure_hidden"] is True and "value" not in trio and trio["n"] == 3
     assert "measure_hidden" not in body, "one group hides, not the answer"
+    # Three estimators in the `done` stage (ana, bo, cy): the sum shows.
+    staged = await _body(s, hr=False, state="all", group_by="status_category",
+                         measure="estimate_sum")
+    done = _groups(staged)["done"]
+    assert done["value"] == 240 and done["measured"] == 4 and "measure_hidden" not in done
     est = await _body(s, hr=False, group_by="project", measure="estimate_sum")
     assert _groups(est)[s["A1"]]["measure_hidden"] is True  # bo alone
     counted = await _body(s, hr=False, state="all", group_by="tag")
     assert _groups(counted)[s["solo"]]["value"] == 2, "a count is for every member"
     admin = await _body(s, hr=True, state="all", group_by="tag", measure="cycle_hours_median")
     assert _groups(admin)[s["solo"]]["value"] == 6.0
+    assert _groups(admin)[s["bug"]]["value"] == 4.0
+    assert _groups(admin)[s["trio"]]["value"] == 2.0
     assert all("measure_hidden" not in g for g in admin["groups"])
 
 

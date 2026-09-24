@@ -1600,7 +1600,10 @@ owner's answers. They follow the S7c and S7d precedent.
    value in the same way.
    **A group of fewer than K = 3 people hides its value** (fix round 2). The
    server counts the distinct people in each group, and an agent is not a
-   person. Without the grant, a group with fewer than 3 people carries no
+   person. It counts only the people whose tasks FEED the measure (round 3).
+   A task with no cycle time adds nothing to a median, and a task with no
+   estimate adds nothing to a sum, so its owner does not count toward K.
+   The server trims and lower-cases each address first. Without the grant, a group with fewer than 3 people carries no
    `value` and no `measured`, it says `measure_hidden: true`, and it keeps
    `n`. A tag that only Ana uses, or a project where only Ana works, is
    Ana's speed under another name. With 3 people, no one member of the
