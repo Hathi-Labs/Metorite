@@ -305,3 +305,98 @@ export function customerUsageState(
   const served = days.some((d) => d.calls > 0);
   return served ? { kind: "truncated" } : { kind: "quiet" };
 }
+
+// ── One customer's breakdown (usage slice 3) ────────────────────────────────
+
+/** An agent inside an app, with our cost. `GET /admin/usage/breakdown`. */
+export interface BreakdownAgent {
+  agent: string;
+  calls: number;
+  credits: string;
+  costUsd: string;
+  /** A FRACTION, and NULL until a credit price is saved. NULL is neutral. */
+  realisedMargin: string | null;
+}
+
+export interface BreakdownApp extends Omit<BreakdownAgent, "agent"> {
+  app: string;
+  agents: BreakdownAgent[];
+}
+
+export interface BreakdownMember extends Omit<BreakdownAgent, "agent"> {
+  member: string;
+}
+
+export interface UsageBreakdown {
+  windowDays: number;
+  apps: BreakdownApp[];
+  members: BreakdownMember[];
+  appsTotal: number;
+  membersTotal: number;
+}
+
+const asRow = (r: Record<string, unknown>) => ({
+  calls: Number(r.calls) || 0,
+  credits: String(r.credits ?? "0"),
+  costUsd: String(r.costUsd ?? "0"),
+  realisedMargin:
+    r.realisedMargin === null || r.realisedMargin === undefined
+      ? null
+      : String(r.realisedMargin),
+});
+
+/**
+ * The breakdown body, or `null` when it is not the shape this build expects.
+ *
+ * ⚠️ **`null` means "cannot show", never "nothing spent".** A Console that
+ * predates the route answers 404 before this is reached. A body that parses
+ * but lacks `apps` is a Console this build does not understand, and drawing
+ * it as an empty table would tell the operator a busy customer spent nothing.
+ */
+export function readBreakdown(body: unknown): UsageBreakdown | null {
+  if (!body || typeof body !== "object") return null;
+  const b = body as Record<string, unknown>;
+  if (!Array.isArray(b.apps) || !Array.isArray(b.members)) return null;
+  const apps = (b.apps as Record<string, unknown>[]).map((a) => ({
+    app: String(a.app ?? ""),
+    ...asRow(a),
+    agents: (Array.isArray(a.agents) ? (a.agents as Record<string, unknown>[]) : []).map(
+      (g) => ({ agent: String(g.agent ?? ""), ...asRow(g) }),
+    ),
+  }));
+  const members = (b.members as Record<string, unknown>[]).map((m) => ({
+    member: String(m.member ?? ""),
+    ...asRow(m),
+  }));
+  return {
+    windowDays: Number(b.windowDays) || 0,
+    apps,
+    members,
+    // A Console without the totals is one that never cuts silently for
+    // fewer than a page, so the rows shown ARE the total.
+    appsTotal: Number(b.appsTotal) || apps.length,
+    membersTotal: Number(b.membersTotal) || members.length,
+  };
+}
+
+/**
+ * "Showing 100 of 240" when the list was cut, else `null`.
+ *
+ * 🔴 **The lists stop at a page, and a list that stops without saying so
+ * reads as complete** (H-76, the fleet board's own lesson).
+ */
+export function breakdownCut(shown: number, total: number): string | null {
+  return total > shown ? `Showing ${shown} of ${total}` : null;
+}
+
+/**
+ * Whether a realised margin is below zero — we paid the vendor more than the
+ * customer paid us. The only verdict this table draws. A margin above zero
+ * but under a tier's floor is the tier monitor's job, and this table has no
+ * floor to judge against.
+ */
+export function isLoss(realisedMargin: string | null): boolean {
+  if (realisedMargin === null) return false;
+  const n = Number(realisedMargin);
+  return Number.isFinite(n) && n < 0;
+}

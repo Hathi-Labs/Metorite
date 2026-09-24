@@ -7,6 +7,7 @@ import {
   listKeys,
   creditLedger,
   orgUsage,
+  usageBreakdown,
   usageDaily,
   ConsoleUnconfigured,
 } from "@/lib/console";
@@ -34,8 +35,14 @@ import {
   type Catalog,
   type CatalogPlan,
 } from "@/lib/format";
-import { type OrgUsageRow, type UsageDay } from "@/lib/usage";
+import {
+  readBreakdown,
+  type OrgUsageRow,
+  type UsageBreakdown,
+  type UsageDay,
+} from "@/lib/usage";
 import Actions from "./Actions";
+import CustomerBreakdown from "./CustomerBreakdown";
 import CustomerUsage from "./CustomerUsage";
 import Header from "../../Header";
 
@@ -93,6 +100,10 @@ type Loaded = {
   usageRow: OrgUsageRow | null;
   usageDays: UsageDay[];
   usageError: string | null;
+  /** Usage slice 3 — by app, agent and person, with our cost. `null` with no
+   *  error means the read was not attempted; with an error, it failed. */
+  breakdown: UsageBreakdown | null;
+  breakdownError: string | null;
   error: string | null;
 };
 
@@ -113,7 +124,8 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
     // organization, and its daily series. Both are `admin` reads the /usage
     // board already makes, so nothing new is exposed; this page simply
     // stopped being the only place that could not answer "spent on what".
-    const [listRes, catRes, sumRes, keysRes, ledgerRes, usageRes, daysRes] =
+    // Eight with usage slice 3: the breakdown, the same `admin` door.
+    const [listRes, catRes, sumRes, keysRes, ledgerRes, usageRes, daysRes, brkRes] =
       await Promise.all([
         listOrganizations(d),
         catalog(d),
@@ -122,6 +134,7 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
         creditLedger(slug, d),
         orgUsage(USAGE_WINDOW_DAYS, d),
         usageDaily(USAGE_WINDOW_DAYS, slug, d),
+        usageBreakdown(USAGE_WINDOW_DAYS, slug, d),
       ]);
     if (listRes.status !== 200) {
       return {
@@ -138,6 +151,8 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
         usageRow: null,
         usageDays: [],
         usageError: null,
+        breakdown: null,
+        breakdownError: null,
         error: `Console returned ${listRes.status}`,
       };
     }
@@ -221,6 +236,24 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
       }
     }
 
+    // ⚠️ Like every read above: a failure says so in its own panel and never
+    // blanks the page. A 404 is a Console that predates the route.
+    let breakdown: UsageBreakdown | null = null;
+    let breakdownError: string | null = null;
+    if (brkRes.status !== 200) {
+      breakdownError =
+        brkRes.status === 404
+          ? "This Console build cannot break usage down yet (it predates usage slice 2)."
+          : `The breakdown read returned ${brkRes.status}.`;
+    } else {
+      try {
+        breakdown = readBreakdown(JSON.parse(brkRes.body));
+        if (breakdown === null) breakdownError = "The breakdown read was not understood.";
+      } catch {
+        breakdownError = "The breakdown read could not be parsed.";
+      }
+    }
+
     return {
       org,
       plans,
@@ -235,6 +268,8 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
       usageRow,
       usageDays,
       usageError,
+      breakdown,
+      breakdownError,
       error: null,
     };
   } catch (e) {
@@ -251,6 +286,8 @@ async function loadOrg(slug: string, authToken?: string): Promise<Loaded> {
       usageRow: null,
       usageDays: [],
       usageError: null,
+      breakdown: null,
+      breakdownError: null,
       error:
         e instanceof ConsoleUnconfigured
           ? "Customer Console is not configured."
@@ -272,6 +309,7 @@ export default async function CustomerDetailPage({
   const {
     org, plans, plansError, members, membersError, lots, keys, keysError,
     usageRow, usageDays, usageError,
+    breakdown, breakdownError,
     ledger, ledgerError, error,
   } = await loadOrg(slug, gate.authToken);
 
@@ -573,6 +611,8 @@ export default async function CustomerDetailPage({
         windowDays={USAGE_WINDOW_DAYS}
         error={usageError}
       />
+
+      <CustomerBreakdown data={breakdown} error={breakdownError} />
 
       <Actions
         slug={org.slug}
