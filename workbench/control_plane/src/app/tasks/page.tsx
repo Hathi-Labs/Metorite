@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import Icon from "@/components/Icon";
 import AssistantToggle from "@/components/AssistantToggle";
 import Button from "@/components/ui/Button";
@@ -32,6 +33,11 @@ import { DeleteConfirmModal } from "./components/DeleteConfirmModal";
 import { SchedulePopup } from "./components/SchedulePopup";
 import { EliminatePopup } from "./components/EliminatePopup";
 import { DelegatePopup } from "./components/DelegatePopup";
+// ⌘K is search in both task apps, and it is ONE palette. My Tasks mounts the
+// Projects one with no commands (`paletteCommands`), so it searches tasks only.
+import { SearchPalette } from "../projects/components/SearchPalette";
+import { isOpenShortcut } from "../projects/lib/search";
+import { hitTarget, searchAllowed } from "./lib/searchHit";
 
 // My Tasks — 4-panel shell, mirroring the email app's layout
 // philosophy: Lists/Contexts · Item list (+ capture) · Item detail · Assistant.
@@ -50,7 +56,11 @@ export default function TasksPage() {
   const focusedItemId = useTaskStore((s) => s.focusedItemId);
   const selectItem = useTaskStore((s) => s.selectItem);
   const closeFocus = useTaskStore((s) => s.closeFocus);
+  const openFocus = useTaskStore((s) => s.openFocus);
+  const router = useRouter();
   const [leftOpen, setLeftOpen] = useState(true);
+  // The ⌘K search palette. Capture is `C` and the Capture button.
+  const [searching, setSearching] = useState(false);
   // The AI assistant opens as a scene from the left sidebar (email-app pattern),
   // not an always-on right rail.
   const [assistantOpen, setAssistantOpen] = useState(false);
@@ -132,9 +142,11 @@ export default function TasksPage() {
     return () => window.removeEventListener("cc-mobile-nav", handler);
   }, [openDrawer, closeDrawer, openQuickCapture, selectView]);
 
-  // Ubiquitous capture — a hotkey opens the capture palette from any Tasks view.
-  // (App-wide capture from other Metorite apps needs a persisted store +
-  // AppShell-level listener — see spec §2.1 C2 [plumbing].)
+  // Two hotkeys from any Tasks view: ⌘K searches and `C` captures. ⌘K opens
+  // the same palette it opens in Projects, so one key means one thing in both
+  // task apps. It captured here until 2026-09-24. (App-wide capture from other
+  // Metorite apps needs a persisted store + AppShell-level listener — see spec
+  // §2.1 C2 [plumbing].)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (quickCaptureOpen || clarifyModalOpen) return; // a modal owns the keyboard
@@ -144,11 +156,16 @@ export default function TasksPage() {
         (el.tagName === "INPUT" ||
           el.tagName === "TEXTAREA" ||
           el.isContentEditable);
-      if ((e.key === "k" || e.key === "K") && (e.metaKey || e.ctrlKey)) {
+      if (isOpenShortcut(e)) {
         e.preventDefault();
-        openQuickCapture("single");
+        // Not over another overlay (`searchAllowed`): the palette would open
+        // hidden behind it and take the keystrokes.
+        if (searchAllowed(useTaskStore.getState(), maximisedId !== null)) {
+          setSearching(true);
+        }
         return;
       }
+      if (searching) return; // the palette owns the keyboard
       if (
         !typing &&
         !e.metaKey &&
@@ -162,7 +179,26 @@ export default function TasksPage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [openQuickCapture, quickCaptureOpen, clarifyModalOpen]);
+  }, [openQuickCapture, quickCaptureOpen, clarifyModalOpen, searching, maximisedId]);
+
+  // A hit My Tasks holds opens here. Any other task opens in Projects, because
+  // the palette searches every project and My Tasks cannot draw a task it does
+  // not hold (`lib/searchHit.ts`).
+  const openHit = useCallback(
+    (id: string) => {
+      const target = hitTarget(id, useTaskStore.getState().items);
+      if (target.kind === "here") openFocus(target.id);
+      else router.push(target.href);
+    },
+    [openFocus, router],
+  );
+  const search = (
+    <SearchPalette
+      open={searching}
+      onClose={() => setSearching(false)}
+      onOpenTask={openHit}
+    />
+  );
 
   if (isMobile) {
     // Single-pane mobile flow. Section switching + capture live in the AppShell
@@ -193,7 +229,8 @@ export default function TasksPage() {
         <DeleteConfirmModal />
         <SchedulePopup />
         <EliminatePopup />
-      <DelegatePopup />
+        <DelegatePopup />
+        {search}
       </div>
     );
   }
@@ -321,6 +358,7 @@ export default function TasksPage() {
       <SchedulePopup />
       <EliminatePopup />
       <DelegatePopup />
+      {search}
     </div>
   );
 }

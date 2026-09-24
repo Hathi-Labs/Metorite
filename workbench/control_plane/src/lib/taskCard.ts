@@ -27,6 +27,13 @@
  */
 
 import { type AccentHue, resolveHue } from "@/lib/statusAccent";
+// The level vocabulary (D78): labels, rank order and glyphs. Pure data, and
+// it imports nothing back from here.
+import {
+  CELL_ICON_NAME,
+  CELL_META,
+  type PriorityCell,
+} from "@/app/tasks/lib/priority";
 
 /**
  * Which of the app's semantic tones a chip is painted in.
@@ -71,8 +78,65 @@ export interface MetaChip {
    * (how late, how blocked); that is why they draw as two shapes.
    */
   hue?: AccentHue;
+  /**
+   * Draw me as a bordered pill in my `tone`, at this strength — a RANK.
+   *
+   * The third shape, and only the priority level uses it. A hue is an
+   * identity (which tag). Bare tinted text is a measurement (how late). A
+   * level is a ranking: seven steps that must each look different and read
+   * in order. Three tones cannot carry seven steps, so each tone has a
+   * `strong` and a `soft` step, and `faint` is the bottom of the scale.
+   * Still a NAME, never a class: `TaskMeta` is the only file that draws it.
+   */
+  rank?: PillRank;
   /** Long form, for `title=` — a chip reading "2/5" needs to say what of. */
   title: string;
+}
+
+/** The strength of a ranked pill, strongest first. */
+export type PillRank = "strong" | "soft" | "faint";
+
+/**
+ * THE priority chip (D78) — one descriptor for every surface in both apps.
+ *
+ * Until 2026-09-24 a level was drawn three ways: a filled pill in raw
+ * Tailwind palette colours (`PriorityBadge`'s `CELL_TONE`), tinted text on
+ * the Projects card, list and table (`importanceChip`), and a level could be
+ * a violet pill in one app and amber text in the other. Now both apps build
+ * this descriptor and `PriorityChip` (`components/TaskMeta.tsx`) draws it.
+ *
+ * The scale reads in order and every step differs: danger for the two
+ * Important + Urgent levels, warning for the two Important ones, then neutral.
+ * Inside a tone the higher level is the `strong` step. Every level has its
+ * own glyph too, so it reads without colour (D-PM-27). A level never uses the
+ * member's accent, because a level is not a selection.
+ *
+ * Fence: `lib/priorityChip.test.ts`.
+ */
+export const PRIORITY_CHIP_STYLE: Record<
+  PriorityCell,
+  { tone: MetaTone; rank: PillRank }
+> = {
+  critical: { tone: "danger", rank: "strong" },
+  urgent: { tone: "danger", rank: "soft" },
+  "high-leverage": { tone: "warning", rank: "strong" },
+  important: { tone: "warning", rank: "soft" },
+  "quick-leverage": { tone: "muted", rank: "strong" },
+  "speculative-bet": { tone: "muted", rank: "soft" },
+  "low-priority": { tone: "muted", rank: "faint" },
+};
+
+/** The chip for one level. The key stays `importance`, which a saved view's
+ *  "show Priority" governs. */
+export function priorityChip(cell: PriorityCell): MetaChip {
+  const { label } = CELL_META[cell];
+  return {
+    key: "importance",
+    icon: CELL_ICON_NAME[cell],
+    label,
+    title: `Priority: ${label}`,
+    ...PRIORITY_CHIP_STYLE[cell],
+  };
 }
 
 /** One tag a card wears, with whatever the registry says it looks like. */

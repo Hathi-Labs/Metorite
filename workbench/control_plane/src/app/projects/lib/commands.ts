@@ -361,6 +361,23 @@ export function matchCommands(
     .map((entry) => entry.command);
 }
 
+/**
+ * The commands the palette lists for a query, or none.
+ *
+ * My Tasks mounts the SAME palette for its ⌘K and supplies no context,
+ * because every command in this registry acts on the Projects page (a view
+ * mode, a panel width, a project manager). With no context the palette is
+ * task search and nothing else. It never offers a command it cannot run.
+ */
+export function paletteCommands(
+  context: CommandContext | undefined,
+  query: string,
+  registry: readonly Command[] = COMMANDS,
+): Command[] {
+  if (!context) return [];
+  return matchCommands(availableCommands(context, registry), query);
+}
+
 /** "g p" — how a sequence is printed, everywhere it is printed. */
 export function sequenceLabel(command: Command): string {
   return (command.sequence ?? []).join(" ");

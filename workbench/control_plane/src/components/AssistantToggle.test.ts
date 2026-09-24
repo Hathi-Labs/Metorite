@@ -91,4 +91,20 @@ describe("the assistant button lives in the top bar", () => {
       /const assistant = assistantButton\(\{\s*state: dockState,\s*wide: dockWide,\s*slotOpen: app === "ai-chat",\s*\}\);/,
     );
   });
+
+  it("Projects applies every field of the press, the dock included", () => {
+    // Reading `press` proves nothing if a branch that applies it is dropped.
+    // `chatDock.test.ts` proves what `press` SAYS. This proves the page DOES
+    // it: the dock state on screen, and the stored choice that survives a
+    // reload. Without the `docked` branch a press shows no change at all.
+    const bar = topBar(read("app/projects/page.tsx"), "<SidePanelFitContext.Provider");
+    const start = bar.indexOf("onToggle={() => {");
+    expect(start, "the AssistantToggle onToggle handler moved").toBeGreaterThan(-1);
+    const handler = bar.slice(start, bar.indexOf("/>", start));
+    expect(handler).toMatch(/if \(press\.app !== undefined\) setApp\(press\.app\);/);
+    expect(handler).toMatch(/if \(press\.closeTask\) setOpenTask\(null\);/);
+    expect(handler).toMatch(
+      /if \(press\.docked !== undefined\) \{\s*setChatDocked\(press\.docked\);\s*writeChatDocked\(press\.docked\);\s*\}/,
+    );
+  });
 });

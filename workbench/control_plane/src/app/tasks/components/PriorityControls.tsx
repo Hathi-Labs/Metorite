@@ -3,16 +3,16 @@
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
 import { MyTask } from "../lib/types";
 import { useTaskStore } from "../lib/taskStore";
+import { PriorityChip } from "@/components/TaskMeta";
+import { priorityChip } from "@/lib/taskCard";
 import {
-  CELL_META,
   SUGGESTION_BADGE,
   isUrgent,
   modeSuggestion,
   priorityCell,
   type ActionMode,
-  type PriorityCell,
 } from "../lib/priority";
-import { CELL_ICON, MODE_ICON } from "../lib/priorityIcons";
+import { MODE_ICON } from "../lib/priorityIcons";
 
 // Shared prioritization UI: the 3-flag Weight toggle (Important / Urgent-auto /
 // Leveraged) and the priority badges. Kept together so the visual language
@@ -175,24 +175,12 @@ function FlagToggle({
   );
 }
 
-const CELL_TONE: Record<PriorityCell, string> = {
-  critical: "border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400",
-  urgent:
-    "border-orange-500/40 bg-orange-500/10 text-orange-600 dark:text-orange-400",
-  "high-leverage":
-    "border-violet-500/40 bg-violet-500/10 text-violet-600 dark:text-violet-400",
-  important:
-    "border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400",
-  "quick-leverage":
-    "border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-400",
-  "speculative-bet":
-    "border-teal-500/40 bg-teal-500/10 text-teal-600 dark:text-teal-400",
-  "low-priority": "border-border bg-secondary/40 text-muted-foreground",
-};
-
-/** The matrix-cell badge (emoji + optional label) — the task's priority level.
- *  Rides on every Next-Actions card (list + board) so the priority is visible at
- *  a glance; `showLabel=false` on the Priority view (grouped by level already). */
+/** The task's priority level, as THE shared priority chip (D78).
+ *  A thin wrapper: it resolves the level from a `MyTask`-shaped item and hands
+ *  `priorityChip(cell)` to `PriorityChip`, which Projects draws too. Its raw
+ *  palette table (a violet pill here and amber text in Projects) is gone. Rides on every Next-Actions card (list + board) so the priority is
+ *  visible at a glance; `showLabel=false` on the Priority view (grouped by
+ *  level already). */
 export function PriorityBadge({
   item,
   urgentWindowHours,
@@ -209,20 +197,7 @@ export function PriorityBadge({
 }) {
   const cell = priorityCell(item, urgentWindowHours);
   if (hideLowPriority && cell === "low-priority") return null;
-  const meta = CELL_META[cell];
-  const Icon = CELL_ICON[cell];
-  return (
-    <span
-      title={meta.label}
-      className={[
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium",
-        CELL_TONE[cell],
-      ].join(" ")}
-    >
-      <Icon className="h-3 w-3 shrink-0" aria-hidden />
-      {showLabel && meta.label}
-    </span>
-  );
+  return <PriorityChip chip={priorityChip(cell)} showLabel={showLabel} />;
 }
 
 const SUGGESTION_TONE: Record<Exclude<ActionMode, "do">, string> = {

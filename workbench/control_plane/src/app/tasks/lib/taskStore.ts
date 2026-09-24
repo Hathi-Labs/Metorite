@@ -2824,8 +2824,18 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       // Lossless undo of a soft delete: the rows are only tombstoned, so just
       // clear the tombstone. Local state is already restored from the snapshot;
       // nothing was touched upstream (the ClickUp delete only happens on purge).
+      // The overlay gets back what it said before the trash, from the
+      // snapshot, so a reload agrees with the screen. An untriaged row is
+      // cleared (null), never given a triage the member did not make.
+      const before = new Map(items.map((i) => [i.id, i]));
       sync(
-        Promise.all(softDeletedIds.map((id) => apiRestoreItem(id).catch(() => {}))),
+        Promise.all(
+          softDeletedIds.map((id) => {
+            const p = before.get(id);
+            const prior = p ? (p.isTriaged === false ? null : p.disposition) : undefined;
+            return apiRestoreItem(id, prior).catch(() => {});
+          }),
+        ),
       );
     } else if (deletedItems?.length) {
       // Undo a HARD delete: the row is gone server-side, so re-create it (a
