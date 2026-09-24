@@ -888,7 +888,8 @@ required field, and the server refused the move after the card had moved.
    "Inbox" until the member picks a destination. Typing `#` at the start of a
    word opens the same picker. `parseProjectToken` reads the longest run of
    words that names one Area or project. An exact name wins over the start of
-   a longer name. The token leaves the title. The capture lands in my root
+   a longer name. A start of a name needs at least two characters. The token
+   leaves the title. The capture lands in my root
    first, so a failed move loses nothing. An Area is a move in my own tree,
    sent at once. A company project goes through the one promote path. A
    project can have a required field that the capture does not carry. Then
@@ -901,12 +902,11 @@ required field, and the server refused the move after the card had moved.
    "It moves onto the board. It stays in your lists while you are an
    assignee." Both schedule through `schedulePromote`, and `PromoteToast`
    is the only place that speaks.
-10. **The gateway.** `OrganizeIn` gains `custom_fields` and `assignees`.
-    `_organize` passes both into the one `MoveTask`. The answers count only
-    when the task changes project. A decision that is not a delegate must keep
-    the actor in the owner list, or the gateway refuses it with 422. Without
-    this check the read-back would 404 inside the transaction. The route emits
-    `pm.task.moved` when the project changed.
+10. **The gateway.** `OrganizeIn` gains `custom_fields`. `_organize` passes
+    it into the one `MoveTask`. The answers count only when the task changes
+    project. The route emits `pm.task.moved` when the project changed. The
+    first build also added `assignees`. No client sent it, so the repair round
+    removed it (P2-d).
 11. **Clarify's owner.** Clarify hides the assignee editor of
     `PromoteFields`, because its Owner step already answers who. A delegate
     still sends its one assignee.
@@ -929,6 +929,15 @@ Clarify walk moves on at once. An Undo puts the capture back in the walk. The
 app's toast sits under the Clarify overlay, so the overlay carries the same
 line and its Undo.
 
+A later gesture on the same task cancels a waiting promote. The gestures are
+a delete, a dispose, a bulk dispose, an archive and a fresh clarify. A row
+that leaves the list cancels it too. The promote is cancelled, and never sent
+early.
+
+⚠️ **A waiting promote lives only in the open page.** If the member closes
+the tab inside the window, the move is dropped and nothing is sent. The page
+asks before it closes while a promote waits (`promoteBlocksUnload`).
+
 **The purge rule (P0, 2026-09-24).** My Tasks never hard-deletes a task
 that is not in my personal tree.
 
@@ -945,7 +954,8 @@ from a board. When I deleted it, it was gone for the whole team, for good.
 3. `purgeable` refuses a purge before any request, for any id whose row is not
    personal.
 4. The purge goes to a new route, `DELETE /projects/my/tasks/{id}`. The route
-   answers 409 for a task outside my tree. The check and the delete share one
+   answers 409 for a task outside my tree. It also answers 409 when another
+   member is an assignee of the task. The checks and the delete share one
    transaction, through `tasks.delete_task_in`.
 5. Undo on a removed board task writes back the disposition my overlay held.
    An unstated disposition is cleared, so the Undo states no triage.
@@ -969,6 +979,18 @@ Fences: `removal.test.ts` and `test_projects_personal_s6g.py`.
    `parseProjectToken` and routes through `captureTo`. The promote dialog is
    now mounted once (`PromoteHost`), so both boxes open the same dialog.
 3. The Clarify header shows `InboxOrigin` in place of the "Local" badge.
+
+**Repair round (2026-09-24), after review.**
+
+1. P1-a: a later gesture cancels a waiting promote (see the Undo rule).
+2. P1-b: the capture chip goes back to "Inbox" after each capture.
+3. P2-a: the purge refuses a task with another assignee. Bulk
+   `assignees_add` now runs `assert_assignable_here` for each task, before
+   any write.
+4. P2-b: the page asks before it closes while a promote waits.
+5. P2-c: a `#` prefix needs at least two characters.
+6. P2-d: `OrganizeIn.assignees` is gone.
+7. P2-e: the live script calls the purge route itself.
 
 **Decisions the request did not settle, each an agent default.**
 
@@ -1003,11 +1025,11 @@ Fences: `removal.test.ts` and `test_projects_personal_s6g.py`.
 
 **Verified.**
 
-- `tests/live/live_ws39_s6g.py`: **11/11 PASS**, on a fresh database built
-  from this branch's own ladder after the merge of `main` (`acb_tenant_s6g2`:
-  01 plus 216 files). Checks 5 and 5b prove the purge rule. The database was
-  dropped afterwards. The live scripts for S6a (13/13), S6e (10/10) and S6f
-  (18/18) pass on the same database.
+- `tests/live/live_ws39_s6g.py`: **11/11 PASS** after the repair round, on a
+  fresh database built from this branch's own ladder (`acb_tenant_s6g3`: 01
+  plus 216 files). Checks 3 to 3c call the purge route itself. Check 4 calls
+  the bulk route. The database was dropped afterwards. The live scripts for
+  S6a, S6e and S6f passed on the second round's fresh database.
 - `test_projects_personal_s6g.py`: 10 tests.
 - `npx tsc --noEmit` is clean. `npx vitest run` is green.
 - The captures are in `workbench/control_plane/ux-shots/s6g/`. The visual

@@ -40,6 +40,7 @@ import {
   PROMOTE_HINT,
   PROMOTE_UNDO_MS,
   deferCommit,
+  promoteBlocksUnload,
   promotePendingToast,
   promoteToast,
 } from "./promote";
@@ -473,5 +474,20 @@ describe("one promote path (S6g)", () => {
     expect(clarify).toMatch(/useCompanyTree\(backend === "live"\)/);
     expect(clarify).toMatch(/tree=\{tree\}/);
     expect(dialog).toMatch(/useCompanyTree\(backend === "live", true\)/);
+  });
+});
+
+describe("closing the tab while a promote waits (S6g repair P2-b)", () => {
+  it("asks only while the promote is waiting, not once it is sent", () => {
+    expect(promoteBlocksUnload(null)).toBe(false);
+    expect(promoteBlocksUnload({ sending: false })).toBe(true);
+    expect(promoteBlocksUnload({ sending: true })).toBe(false);
+  });
+
+  it("the toast bridge holds a beforeunload listener while it blocks", () => {
+    const src = read("components/PromoteToast.tsx");
+    expect(src).toMatch(/const blocks = promoteBlocksUnload\(pending\);/);
+    expect(src).toMatch(/window\.addEventListener\("beforeunload", onUnload\)/);
+    expect(src).toMatch(/window\.removeEventListener\("beforeunload", onUnload\)/);
   });
 });

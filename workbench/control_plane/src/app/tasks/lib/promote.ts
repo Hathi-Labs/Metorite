@@ -70,6 +70,18 @@ export function promotePendingToast(projectName: string): {
   };
 }
 
+/**
+ * Whether closing the tab should ask first (S6g repair P2-b). A promote that
+ * is still waiting lives only in this page: close it inside the window and the
+ * move is dropped, never sent. Once the request is in flight, it is the
+ * server's.
+ */
+export function promoteBlocksUnload(
+  pending: { sending: boolean } | null | undefined,
+): boolean {
+  return !!pending && !pending.sending;
+}
+
 /** A commit that waits, and that Undo can cancel until it runs. */
 export interface DeferredCommit {
   /** Stop it. True when it had not run yet, so nothing was sent. */

@@ -6,7 +6,7 @@ import { useEffect } from "react";
 import { taskDeepLink } from "@/app/projects/lib/card";
 import { useToast } from "@/components/ui/Toast";
 
-import { promotePendingToast } from "../lib/promote";
+import { promoteBlocksUnload, promotePendingToast } from "../lib/promote";
 import { useTaskStore } from "../lib/taskStore";
 
 /**
@@ -42,6 +42,19 @@ export function PromoteToast() {
       ...(pending.sending ? {} : { action: { label: "Undo", onClick: () => undoPromote() } }),
     });
   }, [pending, toast, undoPromote]);
+
+  // S6g repair P2-b — a waiting promote lives only in this page. Ask before
+  // the tab closes, because a close inside the window drops the move.
+  const blocks = promoteBlocksUnload(pending);
+  useEffect(() => {
+    if (!blocks) return;
+    const onUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onUnload);
+    return () => window.removeEventListener("beforeunload", onUnload);
+  }, [blocks]);
 
   useEffect(() => {
     if (!notice) return;
