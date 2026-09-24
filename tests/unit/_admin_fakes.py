@@ -225,6 +225,13 @@ class _FakeDB:
         #: claim worth asserting is that off-boarding reaches the seal INSIDE
         #: the status transaction, and a set cannot show sequence.
         self.sealed: list[dict[str, str]] = []
+        #: D63 / H-49 slice 2 — what `seal_counts` answers, and who was asked
+        #: about. The numbers are a knob because the DIALOG's arms are what the
+        #: unit suite can test; the counts themselves belong to the live file.
+        self.seal_preview: dict[str, int] = {
+            "projects": 3, "tasks": 14, "handed_over": 3, "sealed": 11,
+        }
+        self.seal_previews: list[str] = []
         #: Audit calls, in order, as ``(action, target)``. Ordered because the
         #: purge must record BEFORE it commits, and a set cannot show that.
         self.audit: list[tuple[str, str]] = []
@@ -748,6 +755,22 @@ class _FakeDB:
                 "action": "unseal" if "sealed_at = NULL" in s else "seal",
             })
             return _Rows([], rowcount=1)
+
+        # ── D63 / H-49 slice 2: what sealing WOULD do, in numbers ──────────
+        #
+        # The preview read behind the deactivation dialog. Same honesty as the
+        # branch above: this fake has no `pm_projects`, so it answers whatever
+        # `self.seal_preview` was set to and records who was asked about.
+        #
+        # ⚠️ That is enough for what the admin suite can assert — the route
+        # resolves the member, calls the counter, and shapes the response. What
+        # the COUNTS are is a property of a recursive CTE over a tree, and
+        # `tests/live/live_member_seal.sql` is where that is settled (R8).
+        if hits(s, "WITH tree AS") or (
+            "count(*) FROM tree" in s and "handed_over" in s
+        ):
+            self.seal_previews.append(str(p.get("who") or "").lower())
+            return _Rows([dict(self.seal_preview)])
 
         raise AssertionError(f"unhandled SQL in fake: {s}")
 
