@@ -24,6 +24,19 @@ const TONES: Record<BadgeTone, string> = {
   destructive: "bg-destructive/10 text-destructive",
 };
 
+/**
+ * The badge's shape and tone, without its size. `EntityPill` (WS-27bm S9)
+ * is built on these classes, so a pill and a badge are one shape. Read it
+ * here rather than copying the string, or the two drift apart.
+ */
+export const BADGE_SHAPE = "inline-flex items-center gap-1 rounded-md";
+/** The shape plus `.cc-control`: the themed focus ring and hover layer. */
+export const BADGE_BASE = `cc-control ${BADGE_SHAPE}`;
+
+export function badgeTone(tone: BadgeTone = "neutral"): string {
+  return TONES[tone];
+}
+
 export type BadgeSize = "sm" | "xs";
 
 /**
@@ -65,7 +78,7 @@ export default function Badge({
   return (
     <span
       title={title}
-      className={`cc-control inline-flex items-center gap-1 rounded-md ${dims.chip} ${TONES[tone]} ${className}`}
+      className={`${BADGE_BASE} ${dims.chip} ${TONES[tone]} ${className}`}
     >
       {dot && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
       {icon && <Icon name={icon} size={dims.icon} />}

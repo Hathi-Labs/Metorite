@@ -346,7 +346,25 @@ function WeatherCard({ data }: { data: Data }) {
   );
 }
 
+/**
+ * The delta a stat tile may draw, or null (WS-27bm S9).
+ *
+ * A model asked for "Overdue 2" sent `delta: -2`, and the tile drew a red
+ * "▼ 2" that no tool ever printed: it copied the value. A delta whose size
+ * equals the value, with no `deltaLabel` and no `period` to say what it is a
+ * change over, is that copy, so the tile drops it. A real change over a
+ * period carries one of the two. Exported for its test.
+ */
+export function shownDelta(stat: Data): number | null {
+  if (stat.delta == null) return null;
+  const delta = num(stat.delta);
+  const labelled = str(stat.deltaLabel).trim() !== "" || str(stat.period).trim() !== "";
+  if (!labelled && delta !== 0 && Math.abs(delta) === Math.abs(num(stat.value, NaN))) return null;
+  return delta;
+}
+
 function StatTile({ s }: { s: Data }) {
+  const delta = shownDelta(s);
   const value = num(s.value);
   const animated = useCountUp(value);
   const isNumeric = typeof s.value === "number" || /^-?\d/.test(str(s.value));
@@ -364,8 +382,8 @@ function StatTile({ s }: { s: Data }) {
         {isNumeric ? Math.round(animated).toLocaleString() : str(s.value)}
         {s.unit != null && <span style={{ fontSize: 13, color: "var(--muted-foreground)" }}> {str(s.unit)}</span>}
       </div>
-      {s.delta != null && (
-        <div style={{ fontSize: 11, marginTop: 2 }}><DeltaArrow delta={num(s.delta)} /></div>
+      {delta != null && (
+        <div style={{ fontSize: 11, marginTop: 2 }}><DeltaArrow delta={delta} /></div>
       )}
     </div>
   );
@@ -1126,6 +1144,15 @@ function TaskBoard({ data }: { data: Data }) {
   );
 }
 
+/**
+ * A date cell (`2026-09-30`, or a date and a time) never wraps (WS-27bm S9).
+ * In the 26rem rail the column was narrow enough that the browser broke the
+ * date at a hyphen, and "2026-09-" sat above "30". Exported for its test.
+ */
+export function isDateCell(cell: unknown): boolean {
+  return /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?$/.test(str(cell).trim());
+}
+
 function DataGrid({ data }: { data: Data }) {
   const columns = arr(data.columns).map((c) => str(c));
   const rows = arr(data.rows).map((r) => (r ?? {}) as Data);
@@ -1170,7 +1197,8 @@ function DataGrid({ data }: { data: Data }) {
               return (
                 <tr key={str(r.id) || i} style={{ borderBottom: "1px solid var(--border)" }}>
                   {arr(r.cells).map((cell, k) => (
-                    <td key={k} style={{ ...CELL, padding: "5px 6px", verticalAlign: "top" }}>
+                    <td key={k} style={{ ...CELL, padding: "5px 6px", verticalAlign: "top",
+                      ...(isDateCell(cell) ? { whiteSpace: "nowrap" as const } : {}) }}>
                       {k === 1 && href
                         ? <a href={href} style={{ color: "var(--primary)", textDecoration: "none" }}>{str(cell)}</a>
                         : str(cell)}

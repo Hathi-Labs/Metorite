@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CHAT_DOCK_STORAGE_KEY,
+  assistantButton,
   chatDockState,
   readChatDocked,
   toggleAction,
@@ -80,5 +81,56 @@ describe("the toggle does what the member sees", () => {
   it("docks when wide, and opens the slot when narrow", () => {
     expect(toggleAction("absent", true)).toBe("dock");
     expect(toggleAction("absent", false)).toBe("open-slot");
+  });
+
+  it("closes the ai-chat slot, whatever the dock says, because the slot is the chat", () => {
+    // The dock beside an open slot is always `absent`, so without this a
+    // press would store "docked" and change nothing on screen.
+    expect(toggleAction("absent", true, true)).toBe("close-slot");
+    expect(toggleAction("absent", false, true)).toBe("close-slot");
+    expect(toggleAction("absent", true, false)).toBe("dock");
+  });
+});
+
+describe("the top-bar button, whole (assistantButton)", () => {
+  const base = { state: "absent" as const, wide: true, slotOpen: false };
+
+  it("one press over the slot closes the slot AND undocks, so the dock does not come back", () => {
+    // A member who docked the chat, then opened "AI chat" from the tree.
+    const b = assistantButton({ ...base, slotOpen: true });
+    expect(b.press).toEqual({ app: null, docked: false });
+    // Replay the press: the next render has no slot and no stored dock.
+    const docked = b.press.docked ?? true;
+    const after = chatDockState({
+      live: true, docked, wide: true, slotOpen: b.press.app === "ai-chat", taskDocked: false,
+    });
+    expect(after).toBe("absent");
+    expect(assistantButton({ state: after, wide: true, slotOpen: false }).pressed).toBe(false);
+  });
+
+  it("is pressed over the slot and while the dock is shown, and nowhere else", () => {
+    expect(assistantButton({ ...base, slotOpen: true }).pressed).toBe(true);
+    expect(assistantButton({ ...base, state: "shown" }).pressed).toBe(true);
+    expect(assistantButton({ ...base, state: "hidden" }).pressed).toBe(false);
+    expect(assistantButton(base).pressed).toBe(false);
+  });
+
+  it("says what a press will do, in words that fit a space, a folder and an app", () => {
+    expect(assistantButton(base).title).toBe("Ask the assistant");
+    expect(assistantButton({ ...base, slotOpen: true }).title).toBe("Close the assistant");
+    expect(assistantButton({ ...base, state: "shown" }).title).toBe("Close the assistant");
+    expect(assistantButton({ ...base, state: "hidden" }).title).toBe(
+      "Show the assistant (closes the task)",
+    );
+    for (const s of ["absent", "hidden", "shown"] as const) {
+      expect(assistantButton({ ...base, state: s }).title).not.toMatch(/project/);
+    }
+  });
+
+  it("docks, undocks, shows and opens the slot as toggleAction says", () => {
+    expect(assistantButton(base).press).toEqual({ docked: true });
+    expect(assistantButton({ ...base, state: "shown" }).press).toEqual({ docked: false });
+    expect(assistantButton({ ...base, state: "hidden" }).press).toEqual({ closeTask: true });
+    expect(assistantButton({ ...base, wide: false }).press).toEqual({ app: "ai-chat" });
   });
 });

@@ -29,6 +29,7 @@ import ElicitationCard from "@/components/ElicitationCard";
 import type { ElicitationQuestion, ElicitationAnswers } from "@/components/ElicitationCard";
 import TodoPanel from "@/components/TodoPanel";
 import ContextRing from "@/components/ContextRing";
+import { PROJECTS_AGENT } from "@/lib/projectsAgent";
 import MessageBubble from "@/components/MessageBubble";
 import { RoomHeader } from "@/components/room/RoomHeader";
 import { PresenceRail } from "@/components/room/PresenceRail";
@@ -1717,6 +1718,8 @@ export default function AgentChat({
                   onResend={handleResend}
                   viewerEmail={viewerEmail}
                   participants={isRoom ? roomPeople : undefined}
+                  // Entity pills for the Projects assistant only (S9).
+                  entityPills={currentAgentName === PROJECTS_AGENT}
                   onRetryMessage={prevUserMsg ? handleRetryMessage : undefined} />
                 {/* Mailbox switch — everything below this line is about a
                     different inbox, and the assistant's per-account

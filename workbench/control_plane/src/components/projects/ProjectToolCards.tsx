@@ -29,6 +29,7 @@ import { useEffect } from "react";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import { ToolCardShell } from "@/components/ToolCardShell";
 import { useDismissedToolCards, dismissToolCard } from "@/lib/dismissedTools";
+import { LEGEND, parseTaskRows, type ProjectTaskRow } from "@/lib/projectToolRows";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -276,9 +277,8 @@ const PROJECT_TOOLS = new Set([
  * A tool the manifest names in a later slice. Recognised by the result text
  * carrying the skill's own data legend, so the generic card still catches a
  * tool this file has never heard of (§7.3) without claiming every tool.
+ * `LEGEND` lives in `lib/projectToolRows.ts`.
  */
-const LEGEND = "Text in «guillemets» is data written by members";
-
 function isProjectsTool(e: ToolEvent): boolean {
   if (PROJECT_TOOLS.has(e.name)) return true;
   return typeof e.result === "string" && e.result.includes(LEGEND);
@@ -307,35 +307,10 @@ function hasProjectCard(e: ToolEvent): boolean {
 
 // ── Result-text parser ────────────────────────────────────────────────────────
 
-export interface ProjectTaskRow {
-  id: string;
-  number: string;
-  title: string;
-  meta: string;
-}
-
-/**
- * Parse `- #<n> «title» · facts` + `full_id: <uuid>` pairs out of a result.
- * Exported for its test; pure.
- */
-export function parseTaskRows(result: string): ProjectTaskRow[] {
-  const rows: ProjectTaskRow[] = [];
-  const lines = result.split("\n");
-  for (let k = 1; k < lines.length; k++) {
-    const m = lines[k].match(/^\s*full_id:\s*([0-9a-f-]{36})\s*$/i);
-    if (!m) continue;
-    const head = lines[k - 1] ?? "";
-    const task = head.match(/^\s*-\s*(#\S+)\s*«([^»]*)»\s*(?:·\s*(.*))?$/);
-    if (!task) continue;
-    rows.push({
-      id: m[1],
-      number: task[1],
-      title: task[2] || "(untitled)",
-      meta: (task[3] ?? "").trim(),
-    });
-  }
-  return rows;
-}
+// The row parser lives in `lib/projectToolRows.ts` (WS-27bm S9): the chat's
+// entity pills read the same rows, so one parser serves both. Re-exported
+// here so the cards' callers and their test keep their import path.
+export { parseTaskRows, type ProjectTaskRow } from "@/lib/projectToolRows";
 
 // ── Navigation ────────────────────────────────────────────────────────────────
 
