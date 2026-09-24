@@ -231,7 +231,8 @@ export function InboxView() {
   }, [activeInbox, search, dateFilter, sortOrder, scope]);
 
   const pills = [
-    { id: "all", label: "All", count: activeInbox.length },
+    // "Any date", not "All": the source pills beside it already say All.
+    { id: "all", label: "Any date", count: activeInbox.length },
     { id: "today", label: "Today", count: bucketCounts.today },
     { id: "yesterday", label: "Yesterday", count: bucketCounts.yesterday },
     { id: "week", label: "This week", count: bucketCounts.week },
