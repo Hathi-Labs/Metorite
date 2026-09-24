@@ -30,7 +30,10 @@ export function WherePicker({
   areas,
   includeAreas = true,
   includeNoProject = true,
+  noProjectLabel = "No project",
+  allowCreateArea = true,
   projects,
+  tree,
   value,
   suggestedId,
   onChange,
@@ -41,7 +44,16 @@ export function WherePicker({
   includeAreas?: boolean;
   /** False for a task on a company board — see `whereOffersNoProject`. */
   includeNoProject?: boolean;
+  /** The label of the "leave it loose" row. The capture chip says "Inbox". */
+  noProjectLabel?: string;
+  /** False where a new Area has no place (none today; kept for the chip). */
+  allowCreateArea?: boolean;
   projects: MyTasksProject[];
+  /**
+   * S6g — the company TREE (`destinations`), the Move dialog's own list. When
+   * given, the company group draws it: indented, folders shown and disabled.
+   */
+  tree?: readonly { node: { id: string; name: string }; depth: number; legal: boolean }[];
   value?: string;
   suggestedId?: string;
   onChange: (id: string | undefined) => void;
@@ -51,7 +63,17 @@ export function WherePicker({
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
-  const groups = whereGroups({ areas, projects, includeAreas });
+  const groups = whereGroups({
+    areas,
+    projects,
+    includeAreas,
+    companyRows: tree?.map((r) => ({
+      id: r.node.id,
+      name: r.node.name,
+      depth: r.depth,
+      legal: r.legal,
+    })),
+  });
 
   const submit = async () => {
     const clean = name.trim();
@@ -76,7 +98,7 @@ export function WherePicker({
           selected={value === undefined}
           onClick={() => onChange(undefined)}
           icon={<Icon name="Inbox" className="h-3.5 w-3.5 text-muted-foreground" />}
-          label="No project"
+          label={noProjectLabel}
           muted
         />
       )}
@@ -98,6 +120,8 @@ export function WherePicker({
               // pick it (audit 2026-09-24: never a pre-selection).
               suggested={value !== row.id && suggestedId === row.id}
               onClick={() => onChange(row.id)}
+              depth={row.depth}
+              disabled={row.disabled}
               icon={
                 row.kind === "area" ? (
                   <span
@@ -111,7 +135,7 @@ export function WherePicker({
               label={row.name}
             />
           ))}
-          {group.kind === "area" &&
+          {group.kind === "area" && allowCreateArea &&
             (creating ? (
               <div className="flex items-center gap-1.5 px-1.5 py-1">
                 <Input
@@ -178,6 +202,8 @@ function Row({
   icon,
   label,
   onClick,
+  depth = 0,
+  disabled = false,
 }: {
   selected: boolean;
   suggested?: boolean;
@@ -185,15 +211,24 @@ function Row({
   icon: React.ReactNode;
   label: string;
   onClick: () => void;
+  /** S6g — the tree indent of a company row. */
+  depth?: number;
+  /** S6g — a folder holds projects, not tasks, so it cannot be picked. */
+  disabled?: boolean;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
       aria-pressed={selected}
+      disabled={disabled}
+      title={disabled ? "A folder holds projects, not tasks" : undefined}
+      style={depth ? { paddingLeft: `${0.375 + depth * 0.875}rem` } : undefined}
       className={[
         "tech-transition flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left text-xs",
-        selected
+        disabled
+          ? "cursor-not-allowed text-muted-foreground/70"
+          : selected
           ? "bg-primary/10 text-primary"
           : muted
             ? "text-muted-foreground hover:bg-secondary hover:text-foreground"

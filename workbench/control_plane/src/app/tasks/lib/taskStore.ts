@@ -12,8 +12,16 @@ import {
   laneForCategory,
   noLaneMessage,
 } from "./statusCategory";
-import { ProjectsApiError } from "@/app/projects/lib/api";
-import type { PromoteOutcome } from "./promote";
+import { ProjectsApiError, projectsApi } from "@/app/projects/lib/api";
+import {
+  type DeferredCommit,
+  type PromoteOutcome,
+  PROMOTE_UNDO_MS,
+  deferCommit,
+  promoteToast,
+} from "./promote";
+import type { InboxSource } from "./inbox";
+import type { CaptureDestination } from "./quickAdd";
 import {
   allSelected,
   clickSelect,
@@ -180,6 +188,10 @@ interface SyncFields {
   dueAt?: string;
   /** the tool's assignee/owner. */
   assignee?: Person;
+  /** S6g — the destination's required fields, from `promotePlan`. */
+  customFields?: Record<string, unknown>;
+  /** S6g — the owners after the move, from `promotePlan`. Absent = unchanged. */
+  assignees?: string[];
 }
 
 /** The outcome of clarifying an inbox item — the GTD decision tree (F2). */
@@ -187,10 +199,10 @@ export type ClarifyDecision =
   | { kind: "trash" }
   | { kind: "reference" }
   | { kind: "do-now" } // 2-minute rule → done
-  | ({ kind: "someday" } & Pick<SyncFields, "dest" | "projectId" | "status">)
+  | ({ kind: "someday" } & Pick<SyncFields, "dest" | "projectId" | "status" | "customFields" | "assignees">)
   | ({ kind: "delegate"; person: Person; nextAction: string } & Pick<
       SyncFields,
-      "dest" | "projectId" | "status" | "dueAt"
+      "dest" | "projectId" | "status" | "dueAt" | "customFields"
     >)
   | ({
       kind: "next";
@@ -299,6 +311,10 @@ function decisionToOrganizeBody(d: ClarifyDecision): OrganizeBody {
     body.time_estimate_mins = d.timeEstimateMins;
   if ("subtasks" in d && d.subtasks && d.subtasks.length)
     body.subtasks = d.subtasks;
+  // S6g — the promote answers, built by `promotePlan` in Clarify.
+  if ("customFields" in d && d.customFields && Object.keys(d.customFields).length)
+    body.custom_fields = d.customFields;
+  if ("assignees" in d && d.assignees) body.assignees = d.assignees;
   if (d.kind === "project") body.outcome = d.outcome;
   if (d.kind === "delegate")
     body.assignee = {
@@ -398,6 +414,12 @@ function applyDecision(
 // mutators get an async API call behind them; the component API stays the same.
 
 let idCounter = 1000;
+
+// S6g — the one pending promote, outside the store because a timer is not
+// state a component should render from. `pendingPromote` is its mirror.
+let pendingCommit: DeferredCommit | null = null;
+let pendingCancel: (() => void) | null = null;
+let promoteSeq = 0;
 const nextId = () => `local-${idCounter++}`;
 
 function makeCaptureItem(
@@ -558,10 +580,11 @@ interface TaskState {
   /** Remove the session UI. The component stops the remote timer (actualEnd)
    *  before calling this when the timer is still running. */
   clearFocusSession: () => void;
-  /** "Mine only / Synced / All" board filter — hides the connected-workspace
-   *  mirror so your own captures aren't swamped. */
-  sourceFilter: "all" | "local" | "synced";
-  setSourceFilter: (f: "all" | "local" | "synced") => void;
+  /** The Inbox's source filter (S6g): both kinds, my captures only, or the
+   *  board rows only. It narrows the Inbox list and nothing else. The sidebar
+   *  badge and the header count stay the whole Inbox (`inbox.ts`). */
+  sourceFilter: InboxSource;
+  setSourceFilter: (f: InboxSource) => void;
   /** Toolbar filters (search / context / assignee) applied to the active view
    *  in both list and board modes. */
   filters: TaskFilters;
@@ -627,8 +650,64 @@ interface TaskState {
     /** `reclarify: true` is an in-place edit from ItemDetail or the
      *  Re-clarify modal. It never walks the inbox, moves `selectedItemId`
      *  or counts as processed — even on a row still in "From Projects". */
-    opts?: { reclarify?: boolean },
+    opts?: {
+      reclarify?: boolean;
+      /** S6g — the decision is a deferred promote. The walk already moved on
+       *  (`deferClarify`), and D62 means no Undo after the send. */
+      promoted?: boolean;
+    },
+  ) => Promise<MyTask | undefined> | undefined;
+  /**
+   * S6g — a Clarify decision that moves a PERSONAL task onto a company board.
+   * The walk moves on at once. The decision is sent after `PROMOTE_UNDO_MS`
+   * through `schedulePromote`, and the toast's Undo cancels it before then.
+   */
+  deferClarify: (
+    id: string,
+    decision: ClarifyDecision,
+    weight: { important: boolean; leveraged: boolean; deepWork: boolean } | undefined,
+    projectName: string,
   ) => void;
+  /**
+   * S6g — the one deferred promote. Both doors (the Move dialog and Clarify)
+   * and the capture chip call it. `commit` is the request. It waits
+   * `PROMOTE_UNDO_MS`, and `undoPromote` cancels it until then. After it
+   * runs there is no Undo, because D62 refuses a move back into my tree.
+   * A second schedule sends the first one at once.
+   *
+   * `commit` reports its own failure (the toast seam). This only clears the
+   * pending toast.
+   */
+  schedulePromote: (input: {
+    id: string;
+    projectName: string;
+    commit: () => Promise<PromoteOutcome>;
+    dropped?: readonly string[] | null;
+    onCancel?: () => void;
+  }) => void;
+  /** Cancel the pending promote. True when nothing was sent. */
+  undoPromote: () => boolean;
+  /** The promote waiting to be sent, for the toast. */
+  pendingPromote: { id: string; projectName: string; key: string; sending: boolean } | null;
+  /** The last promote's outcome, for the toast. `PromoteToast` clears it. */
+  promoteNotice:
+    | { key: string; taskId: string; title: string; description: string }
+    | { key: string; failed: true }
+    | null;
+  clearPromoteNotice: () => void;
+  /**
+   * S6g — capture straight onto a destination (the `#` token or the chip).
+   * The capture lands in my root first, so a failed move loses nothing. An
+   * Area is a move inside my tree (D62 allows it). A company project runs the
+   * one promote path. When the project has required fields the capture does
+   * not carry, the answer is `needsFields`, and the Inbox opens the promote
+   * dialog on that destination.
+   */
+  captureTo: (
+    title: string,
+    dest: CaptureDestination,
+    attachments?: import("./types").TaskAttachment[],
+  ) => Promise<{ needsFields?: { taskId: string; destinationId: string } }>;
   /** Skip the current item (leave it in the inbox to process later) and move on. */
   skipToNextInbox: () => void;
   /** One-tap disposition (hover / keyboard triage) — no full decision tree. */
@@ -1023,6 +1102,174 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   clearFocusSession: () => set({ focusSessionId: null, focusMinimized: false }),
   sourceFilter: "all",
   setSourceFilter: (f) => set({ sourceFilter: f }),
+  pendingPromote: null,
+  promoteNotice: null,
+  clearPromoteNotice: () => set({ promoteNotice: null }),
+
+  schedulePromote: ({ id, projectName, commit, dropped, onCancel }) => {
+    // One pending promote at a time. A second one sends the first now, so
+    // the member never has two Undo windows over two different moves.
+    pendingCommit?.flush();
+    const key = `tasks-promote:${id}:${++promoteSeq}`;
+    pendingCancel = onCancel ?? null;
+    set({ pendingPromote: { id, projectName, key, sending: false } });
+    pendingCommit = deferCommit(() => {
+      pendingCommit = null;
+      pendingCancel = null;
+      set((s) =>
+        s.pendingPromote?.key === key
+          ? { pendingPromote: { ...s.pendingPromote, sending: true } }
+          : {},
+      );
+      const clear = () =>
+        set((s) => (s.pendingPromote?.key === key ? { pendingPromote: null } : {}));
+      // A commit that throws, or returns no promise, is a failure, not a crash.
+      let sent: Promise<PromoteOutcome>;
+      try {
+        sent = Promise.resolve(commit());
+      } catch (err) {
+        sent = Promise.reject(err);
+      }
+      sent.then(
+        (outcome) => {
+          clear();
+          if (!outcome) throw new Error("The move answered nothing.");
+          // Read AFTER the move: `promoteItem` re-reads the company list when
+          // the destination is new to it.
+          const projectId = outcome.left ? outcome.projectId : outcome.item.projectId;
+          const name =
+            get().projects.find((p) => p.id === projectId)?.outcome ?? projectName;
+          set({
+            promoteNotice: { key, taskId: id, ...promoteToast(outcome, name, dropped ?? null) },
+          });
+        },
+      ).catch(() => {
+        clear();
+        set({ promoteNotice: { key, failed: true } });
+      });
+    }, PROMOTE_UNDO_MS);
+  },
+
+  undoPromote: () => {
+    const cancelled = pendingCommit?.cancel() ?? false;
+    if (!cancelled) return false;
+    pendingCommit = null;
+    const hook = pendingCancel;
+    pendingCancel = null;
+    const key = get().pendingPromote?.key;
+    set({ pendingPromote: null, promoteNotice: key ? { key, failed: true } : null });
+    hook?.();
+    return true;
+  },
+
+  deferClarify: (id, decision, weight, projectName) => {
+    // The walk moves on now, the way a sent decision moves it.
+    set((s) => {
+      const clarifiedThisSession = new Set(s.clarifiedThisSession).add(id);
+      const nextInbox = clarifyQueue(s.items, s.fromProjectIds, clarifiedThisSession)[0];
+      return {
+        clarifiedThisSession,
+        selectedItemId: nextInbox?.id ?? null,
+        processedThisSession: s.processedThisSession + 1,
+      };
+    });
+    get().schedulePromote({
+      id,
+      projectName,
+      commit: async () => {
+        const server = await get().clarify(id, decision, weight, {
+          reclarify: true,
+          promoted: true,
+        });
+        const item = server ?? get().items.find((i) => i.id === id);
+        if (!item) return { left: true, assignees: [] };
+        return { left: false, item };
+      },
+      // Undo: nothing was sent, so the capture is undecided again.
+      onCancel: () =>
+        set((s) => {
+          const clarifiedThisSession = new Set(s.clarifiedThisSession);
+          clarifiedThisSession.delete(id);
+          return {
+            clarifiedThisSession,
+            processedThisSession: Math.max(0, s.processedThisSession - 1),
+          };
+        }),
+    });
+  },
+
+  captureTo: async (title, dest, attachments) => {
+    const t = title.trim();
+    if (!t) return {};
+    if (get().backend !== "live") {
+      // The demo backend has no board. Capture, and file the row locally.
+      get().capture(t, attachments);
+      const id = get().lastCaptureIds[0];
+      if (id) {
+        set((s) => ({
+          items: s.items.map((i) => (i.id === id ? { ...i, projectId: dest.id, projectName: dest.name } : i)),
+        }));
+      }
+      return {};
+    }
+    // The capture first, in my root. A failed move below leaves a private
+    // capture in my Inbox, never nothing.
+    let server: MyTask;
+    try {
+      server = await apiCapture(t, undefined, attachments);
+    } catch (err) {
+      get().reportSyncFailure(
+        err instanceof Error && err.message ? `Couldn't capture it: ${err.message}` : "Couldn't capture it.",
+      );
+      return {};
+    }
+    set((s) => ({ items: [server, ...s.items], lastCaptureIds: [server.id] }));
+    void get().refreshPersonalRoot();
+    const failed = (err: unknown) =>
+      get().reportSyncFailure(
+        `Couldn't move it to ${dest.name}: ${
+          err instanceof Error && err.message ? err.message : "the move was refused"
+        }. It stays in your Inbox.`,
+      );
+    if (dest.kind === "area") {
+      // Inside my own tree, which D62 allows. Nothing is published, so it
+      // needs no Undo window.
+      try {
+        await apiMoveTask(server.id, { projectId: dest.id });
+        await get().refreshItem(server.id);
+        void get().loadAreas();
+      } catch (err) {
+        failed(err);
+      }
+      return {};
+    }
+    // A company project. Ask the server what the move needs before sending.
+    try {
+      const plan = await projectsApi.previewMove({
+        task_ids: [server.id],
+        destination_project_id: dest.id,
+      });
+      if ((plan.required_missing ?? []).length > 0) {
+        return { needsFields: { taskId: server.id, destinationId: dest.id } };
+      }
+    } catch (err) {
+      failed(err);
+      return {};
+    }
+    get().schedulePromote({
+      id: server.id,
+      projectName: dest.name,
+      // `assignees` untouched: a capture is self-assigned, so it stays mine.
+      commit: () =>
+        get()
+          .promoteItem(server.id, { projectId: dest.id })
+          .catch((err: unknown) => {
+            failed(err);
+            throw err;
+          }),
+    });
+    return {};
+  },
   filters: DEFAULT_FILTERS,
   setFilters: (patch) => set((s) => ({ filters: { ...s.filters, ...patch } })),
   clearFilters: () => set({ filters: DEFAULT_FILTERS }),
@@ -1489,7 +1736,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       // An explicit Re-clarify is an edit whatever the row's state, so the
       // caller says so rather than the store guessing from the disposition.
       if (!wasInbox || opts?.reclarify) {
-        return { items, projects, undoSnapshot: snapshot };
+        // S6g — a promote has no Undo after the send (D62). Its toast offers
+        // "Open board" instead, so the one-level undo keeps what it held.
+        return { items, projects, undoSnapshot: opts?.promoted ? s.undoSnapshot : snapshot };
       }
       // Live: `markTriaged` below drops the id and re-reads the server's set
       // after the write lands. Demo: nothing re-reads, so drop it here.
@@ -1512,7 +1761,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         undoSnapshot: snapshot,
       };
     });
-    if (get().backend === "live") {
+    if (get().backend !== "live") return undefined;
+    {
       const apply = apiOrganize(id, decisionToOrganizeBody(decision));
       // A clarify decision states a disposition: it is the triage (S6e).
       get().markTriaged([id], apply);
@@ -1587,6 +1837,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           }, onRefused),
         );
       }
+      // S6g — the caller that waits (a deferred promote) reads the server row.
+      // A refusal is already reported above, through the toast seam.
+      return apply;
     }
   },
 

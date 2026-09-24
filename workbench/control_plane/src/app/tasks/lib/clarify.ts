@@ -539,6 +539,10 @@ export interface WhereRow {
   name: string;
   /** Mine and private, or the company's board. The two never mix in a group. */
   kind: "area" | "project";
+  /** S6g — the indent of a company row in the tree. */
+  depth?: number;
+  /** S6g — a folder: drawn for its indent, never pickable. */
+  disabled?: boolean;
 }
 
 /** One heading and the rows under it, in the order the picker draws them. */
@@ -570,13 +574,27 @@ export function whereGroups(input: {
    * personal tree, so offering an Area there is offering a 422. Default true.
    */
   includeAreas?: boolean;
+  /**
+   * S6g — the company TREE, the Move dialog's own destination list
+   * (`destinations`). When present it replaces `projects`, so Clarify offers
+   * the rows the dialog offers: a folder is drawn and cannot be picked.
+   */
+  companyRows?: readonly { id: string; name: string; depth: number; legal: boolean }[];
 }): WhereGroup[] {
   const areas = input.areas
     .filter((a) => !a.archived)
     .map((a) => ({ id: a.id, name: a.name, kind: "area" as const }));
-  const projects = input.projects
-    .filter((p) => p.status === undefined || p.status === "ACTIVE")
-    .map((p) => ({ id: p.id, name: p.outcome, kind: "project" as const }));
+  const projects: WhereRow[] = input.companyRows?.length
+    ? input.companyRows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        kind: "project" as const,
+        depth: r.depth,
+        disabled: !r.legal,
+      }))
+    : input.projects
+        .filter((p) => p.status === undefined || p.status === "ACTIVE")
+        .map((p) => ({ id: p.id, name: p.outcome, kind: "project" as const }));
   const groups: WhereGroup[] = [];
   if (input.includeAreas !== false) {
     groups.push({ label: "My Areas", kind: "area", rows: areas });
@@ -653,6 +671,23 @@ export function initialWhere(input: {
     return { selected: id };
   }
   return { suggested: id };
+}
+
+/**
+ * S6g — whether a Clarify decision PROMOTES the task: a task in my tree filed
+ * into a company project. Then the promote questions (`PromoteFields`) show
+ * under Where, and the decision waits `PROMOTE_UNDO_MS` before it is sent.
+ * A board task moving between two boards is not a promote.
+ */
+export function isPromoteDecision(input: {
+  personal: boolean;
+  projectId?: string;
+  itemProjectId?: string;
+  companyProjectIds: readonly string[];
+}): boolean {
+  const id = input.projectId;
+  if (!input.personal || !id || id === input.itemProjectId) return false;
+  return input.companyProjectIds.includes(id);
 }
 
 /**

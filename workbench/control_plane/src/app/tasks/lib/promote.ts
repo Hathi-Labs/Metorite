@@ -43,6 +43,65 @@ export type PromoteOutcome =
   | { left: false; item: MyTask }
   | { left: true; projectId?: string; assignees: string[] };
 
+/**
+ * The line both promote doors show before the move (S6g): the Move dialog's
+ * description and the Clarify Where hint. One sentence, one place, so the two
+ * doors cannot contradict each other again. They did: the dialog said "The
+ * task leaves your list" and the card said "stays yours".
+ */
+export { PROMOTE_HINT } from "@/app/projects/components/PromoteFields";
+
+/**
+ * How long a promote waits before it is sent (S6g). D62 refuses a move from a
+ * company board back into my personal tree, so once the move commits there is
+ * no Undo. The Undo is a short deferred commit instead: the request waits this
+ * long, and Undo cancels it before anything reaches the server.
+ */
+export const PROMOTE_UNDO_MS = 5000;
+
+/** The toast while a promote waits to be sent. */
+export function promotePendingToast(projectName: string): {
+  title: string;
+  description: string;
+} {
+  return {
+    title: `Moving to ${projectName}…`,
+    description: "Undo stops it before anything is sent.",
+  };
+}
+
+/** A commit that waits, and that Undo can cancel until it runs. */
+export interface DeferredCommit {
+  /** Stop it. True when it had not run yet, so nothing was sent. */
+  cancel(): boolean;
+  /** Run it now, if it has not run. */
+  flush(): void;
+}
+
+/**
+ * Run `run` after `ms`, unless `cancel` comes first (S6g, the promote Undo).
+ * Pure apart from the timer, so the test drives it with fake timers.
+ */
+export function deferCommit(run: () => void, ms = PROMOTE_UNDO_MS): DeferredCommit {
+  let done = false;
+  const fire = () => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    run();
+  };
+  const timer = setTimeout(fire, ms);
+  return {
+    cancel() {
+      if (done) return false;
+      done = true;
+      clearTimeout(timer);
+      return true;
+    },
+    flush: fire,
+  };
+}
+
 /** The success toast, in one place so the two outcomes cannot drift. */
 export function promoteToast(
   outcome: PromoteOutcome,
@@ -62,7 +121,7 @@ export function promoteToast(
   }
   return {
     title: `Moved to ${projectName}`,
-    description: `It is the same task, now on the board. Completing it there completes it here.${drops}`,
+    description: `It stays in your lists while you are an assignee. Completing it there completes it here.${drops}`,
   };
 }
 

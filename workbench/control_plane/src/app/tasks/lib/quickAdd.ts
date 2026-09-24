@@ -116,3 +116,86 @@ export function viewQuickAdd(
       return null;
   }
 }
+
+// ── `#` — capture straight onto a project (S6g) ──────────────────────────────
+
+/** One place a capture can land: an Area (mine) or a company project. */
+export interface CaptureDestination {
+  id: string;
+  name: string;
+  kind: "area" | "project";
+}
+
+/** What `parseProjectToken` read out of a capture line. */
+export interface ProjectTokenParse {
+  /** The line with the `#` token removed and the spaces tidied. */
+  title: string;
+  /** The destination the token named, when exactly one matched. */
+  match?: CaptureDestination;
+  /** The text after `#`, when a token was present, matched or not. */
+  query?: string;
+}
+
+/** Where a `#` token starts: at the line's start, or after whitespace. */
+const TOKEN_START = /(^|\s)#(\S)/;
+
+/**
+ * Read a `#Name` token out of a capture line (my_tasks_cutover.md §5 S6g).
+ *
+ * The name may hold spaces ("#Printer v3"), so the reader takes the LONGEST
+ * run of words after `#` that names exactly one destination. A run matches
+ * when it equals a name, ignoring case, or when it is the start of exactly one
+ * name. An exact name wins over a prefix of a longer one. The words after the
+ * run go back into the title, so "#print fix the jam" files "fix the jam".
+ *
+ * Only the first `#` at a token start counts. A `#` inside a word ("C#") is
+ * text. A token that names nothing, or names two things, leaves the line
+ * alone and returns only its `query`, so the picker can ask.
+ */
+export function parseProjectToken(
+  text: string,
+  destinations: readonly CaptureDestination[],
+): ProjectTokenParse {
+  const found = TOKEN_START.exec(text);
+  if (!found) return { title: text.trim() };
+  const hashAt = found.index + found[1].length;
+  const before = text.slice(0, hashAt);
+  const after = text.slice(hashAt + 1);
+  const words = after.split(/\s+/).filter(Boolean);
+  const query = words.join(" ");
+  const lower = (s: string) => s.trim().toLowerCase();
+
+  for (let k = words.length; k >= 1; k--) {
+    const phrase = lower(words.slice(0, k).join(" "));
+    const exact = destinations.filter((d) => lower(d.name) === phrase);
+    const hit =
+      exact.length === 1
+        ? exact[0]
+        : exact.length === 0
+          ? (() => {
+              const starts = destinations.filter((d) => lower(d.name).startsWith(phrase));
+              return starts.length === 1 ? starts[0] : undefined;
+            })()
+          : undefined;
+    if (hit) {
+      const rest = words.slice(k).join(" ");
+      const title = `${before} ${rest}`.replace(/\s+/g, " ").trim();
+      return { title, match: hit, query };
+    }
+  }
+  return { title: text.trim(), query };
+}
+
+/**
+ * The `#` fragment the member is typing right now, if the caret sits in one.
+ * The capture box opens its picker while this is non-null, filtered by it.
+ */
+export function openHashQuery(text: string): string | null {
+  const m = /(?:^|\s)#([^#]*)$/.exec(text);
+  return m ? m[1] : null;
+}
+
+/** The line with the `#` fragment at its end removed, for a picker pick. */
+export function stripOpenHash(text: string): string {
+  return text.replace(/(^|\s)#[^#]*$/, "$1").replace(/\s+$/, "");
+}

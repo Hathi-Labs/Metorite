@@ -66,7 +66,6 @@ export function ItemList() {
   const loading = useTaskStore((s) => s.loading);
   const view = useTaskStore((s) => s.selectedView);
   const context = useTaskStore((s) => s.selectedContext);
-  const sourceFilter = useTaskStore((s) => s.sourceFilter);
   const filters = useTaskStore((s) => s.filters);
   const sort = useTaskStore((s) => s.sort);
   // ⚠️ Was `accounts.length > 0`. With the connectors retired (D52) no new
@@ -126,8 +125,8 @@ export function ItemList() {
   // BEFORE the toolbar so its context/assignee dropdowns only offer what the
   // Area holds. `itemsInArea` says why membership is `projectId` alone.
   const inView = useMemo(
-    () => itemsInArea(itemsForView(items, view, context, sourceFilter), selectedAreaId),
-    [items, view, context, sourceFilter, selectedAreaId],
+    () => itemsInArea(itemsForView(items, view, context), selectedAreaId),
+    [items, view, context, selectedAreaId],
   );
   // The legacy Priority view (no longer a sidebar entry, but still reachable in
   // code) forces the priority sort so its sections read rank-ordered; every
@@ -282,25 +281,6 @@ export function ItemList() {
               </button>
             </div>
           )}
-          {/* The source toggle lives in the sidebar (governs every view). When
-              it's narrowed, show a small chip here so the active scope is
-              obvious on this page too. */}
-          {hasSynced && sourceFilter !== "all" && (
-            <span
-              className={[
-                "inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary",
-                boardable ? "ml-2" : "ml-auto",
-              ].join(" ")}
-              title="Filtered by source — change it in the sidebar"
-            >
-              {sourceFilter === "local" ? (
-                <AppIcon name="HardDrive" className="h-3 w-3" />
-              ) : (
-                <AppIcon name="Cloud" className="h-3 w-3" />
-              )}
-              {sourceFilter === "local" ? "Mine" : "Team"}
-            </span>
-          )}
           {hasSynced && contextlessCount > 0 && (
             <ContextBackfillButton count={contextlessCount} />
           )}
@@ -316,7 +296,6 @@ export function ItemList() {
               className={[
                 "inline-flex cursor-pointer items-center gap-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground",
                 boardable ||
-                (hasSynced && sourceFilter !== "all") ||
                 (hasSynced && contextlessCount > 0)
                   ? "ml-2"
                   : "ml-auto",
@@ -335,7 +314,6 @@ export function ItemList() {
             className={
               (bulkSelectable && visible.length > 0) ||
               boardable ||
-              (hasSynced && sourceFilter !== "all") ||
               (hasSynced && contextlessCount > 0)
                 ? "ml-2 text-xs text-muted-foreground"
                 : "ml-auto text-xs text-muted-foreground"

@@ -1,11 +1,15 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import Icon from "@/components/Icon";
+import { taskDeepLink } from "@/app/projects/lib/card";
 import { MyTask } from "../lib/types";
 import { useTaskStore } from "../lib/taskStore";
 import { proposeClarification, sortShapeSummary, type SortBucket } from "../lib/clarify";
+import { type InboxKind, inboxRowActions } from "../lib/inbox";
+import { promoteAllowed } from "../lib/promote";
 import { relativeTime } from "../lib/utils";
-import { SourceBadge } from "./SourceBadge";
+import { InboxOrigin } from "./InboxOrigin";
 
 // Chip styling per SORT bucket: do-now reads loud (primary), reference/someday
 // stay quiet (muted), trash leans destructive — so the triage read is instant.
@@ -17,18 +21,25 @@ const SORT_CHIP: Record<SortBucket, string> = {
   trash: "border-destructive/30 bg-destructive/10 text-destructive",
 };
 
-// Dense Notion-style list view for the inbox: one row per capture with the
+// Dense Notion-style list view for the inbox: one row per task with the
 // attributes that matter at triage time as columns — far more items on
-// screen than the card view. Someday · clarify reveal on hover; the trash
-// icon is always visible (removing a capture is never buried). Row click
-// selects, title click opens Clarify.
+// screen than the card view. Someday · clarify reveal on hover. The kind's
+// own actions (S6g: Move / Delete on a capture, Not mine / Open on board on a
+// board row) are always visible. Row click selects, title click opens Clarify.
+// The "Where" column is the card's origin marker (`InboxOrigin`).
 export function InboxTable({
   items,
+  kindOf,
+  onMove,
   cursorId,
   selectedIds,
   onSelectToggle,
 }: {
   items: MyTask[];
+  /** S6g — which kind a row is (`inbox.ts`). */
+  kindOf: (item: MyTask) => InboxKind;
+  /** S6g — open the one promote dialog, hosted by the Inbox. */
+  onMove: (id: string) => void;
   cursorId: string | null;
   /** Read-only: the table never mutates the caller's selection. */
   selectedIds: ReadonlySet<string>;
@@ -41,6 +52,7 @@ export function InboxTable({
   const quickDispose = useTaskStore((s) => s.quickDispose);
   const requestDelete = useTaskStore((s) => s.requestDelete);
   const selectItem = useTaskStore((s) => s.selectItem);
+  const router = useRouter();
 
   return (
     <div className="overflow-x-auto rounded-lg border border-border">
@@ -51,15 +63,25 @@ export function InboxTable({
             <th className="px-2 py-1.5 font-medium">Capture</th>
             <th className="w-36 px-2 py-1.5 font-medium">AI suggests</th>
             <th className="w-32 px-2 py-1.5 font-medium">From</th>
-            <th className="w-20 px-2 py-1.5 font-medium">Source</th>
+            <th className="w-56 px-2 py-1.5 font-medium">Where</th>
             <th className="w-20 px-2 py-1.5 font-medium">Age</th>
-            <th className="w-24 px-2 py-1.5 font-medium" aria-label="Actions" />
+            <th className="w-28 px-2 py-1.5 font-medium" aria-label="Actions" />
           </tr>
         </thead>
         <tbody>
           {items.map((item) => {
             const p = proposeClarification(item, people, projects);
             const selected = selectedIds.has(item.id);
+            const kind = kindOf(item);
+            const actions = inboxRowActions({
+              kind,
+              canPromote: promoteAllowed(item),
+              move: () => onMove(item.id),
+              // TRASH on my overlay, never a delete (see `InboxCard`).
+              notMine: () => quickDispose(item.id, "TRASH"),
+              remove: () => requestDelete([item.id]),
+              openBoard: () => router.push(taskDeepLink(item)),
+            });
             return (
               <tr
                 key={item.id}
@@ -153,8 +175,8 @@ export function InboxTable({
                     <span className="text-muted-foreground/40">—</span>
                   )}
                 </td>
-                <td className="px-2 py-1.5">
-                  <SourceBadge source={item.source} provider={item.provider} size="xs" />
+                <td className="max-w-0 px-2 py-1.5 text-[11px]">
+                  <InboxOrigin item={item} kind={kind} />
                 </td>
                 <td className="whitespace-nowrap px-2 py-1.5 text-[11px] text-muted-foreground">
                   {relativeTime(item.createdAt)}
@@ -183,19 +205,28 @@ export function InboxTable({
                     >
                       <Icon name="ArrowRight" className="h-3.5 w-3.5" />
                     </button>
-                    {/* Trash always visible — never hover-gated. */}
-                    <button
-                      type="button"
-                      title="Delete"
-                      aria-label="Delete"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        requestDelete([item.id]);
-                      }}
-                      className="tech-transition rounded p-1 text-muted-foreground/70 hover:bg-destructive/10 hover:text-destructive"
-                    >
-                      <Icon name="Trash2" className="h-3.5 w-3.5" />
-                    </button>
+                    {/* The kind's own actions — always visible, never
+                        hover-gated. One list with the card (`inboxRowActions`). */}
+                    {actions.map((a) => (
+                      <button
+                        key={a.id}
+                        type="button"
+                        title={a.title}
+                        aria-label={a.label}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          a.run();
+                        }}
+                        className={[
+                          "tech-transition rounded p-1",
+                          a.id === "remove"
+                            ? "text-muted-foreground/70 hover:bg-destructive/10 hover:text-destructive"
+                            : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+                        ].join(" ")}
+                      >
+                        <Icon name={a.icon} className="h-3.5 w-3.5" />
+                      </button>
+                    ))}
                   </span>
                 </td>
               </tr>

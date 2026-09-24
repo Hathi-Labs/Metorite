@@ -12,6 +12,7 @@ import {
   initialOwner,
   initialWhere,
   isPersonalTask,
+  isPromoteDecision,
   lensDelegateBlock,
   whereOffersNoProject,
   whereVisibilityHint,
@@ -25,6 +26,13 @@ import { durationLabel, formatStatus, initials, originEmailHref, snoozeOptions }
 import { SourceBadge } from "./SourceBadge";
 import { AttachmentChips } from "./AttachmentComposer";
 import { WherePicker } from "./WherePicker";
+import {
+  PromoteFields,
+  type PromoteFieldsState,
+} from "@/app/projects/components/PromoteFields";
+import { nameOf } from "@/app/projects/lib/destinations";
+import { destinations, useCompanyTree } from "../lib/companyTree";
+import { PROMOTE_HINT, promotePlan } from "../lib/promote";
 
 // F2 — Clarify, redesigned as SORT → SHAPE.
 //
@@ -110,6 +118,7 @@ export function ClarifyPanel({
   onDone?: () => void;
 }) {
   const clarify = useTaskStore((s) => s.clarify);
+  const deferClarify = useTaskStore((s) => s.deferClarify);
   const backend = useTaskStore((s) => s.backend);
   const contexts = useTaskStore((s) => s.contexts);
   const people = useTaskStore((s) => s.people);
@@ -379,9 +388,26 @@ export function ClarifyPanel({
   // The form's own Where pick, named apart so `buildDecision` and `apply` can
   // take a one-click override without shadowing confusion.
   const pickedProjectId = projectId;
-  // Under the lens `projects` is the company's list, so membership is the
-  // answer to "does filing here publish it to the team?".
-  const companyProjectIds = useMemo(() => projects.map((p) => p.id), [projects]);
+  // S6g — the company TREE, the Move dialog's own list (`destinations`), so
+  // Clarify offers the rows the dialog offers: folders drawn and disabled.
+  const { roots } = useCompanyTree(backend === "live");
+  const tree = useMemo(() => destinations(roots), [roots]);
+  // Membership answers "does filing here publish it to the team?". The flat
+  // company list and the tree's pickable rows are the same boards.
+  const companyProjectIds = useMemo(
+    () => [
+      ...new Set([
+        ...projects.map((p) => p.id),
+        ...tree.filter((r) => r.legal).map((r) => r.node.id),
+      ]),
+    ],
+    [projects, tree],
+  );
+  const projectNameOf = useCallback(
+    (id: string) =>
+      nameOf(tree, id) || projects.find((p) => p.id === id)?.outcome || "the project",
+    [tree, projects],
+  );
   const statusesForDest = useMemo(() => providerStatuses(dest, providers), [dest, providers]);
   // The delegate roster is the DIRECTORY, full stop. It used to be the
   // destination workspace's member list when there was one, reconciled
@@ -418,6 +444,24 @@ export function ClarifyPanel({
     setTargetSpaceId(undefined);
     setTargetFolderId(undefined);
   };
+
+  // ── S6g — a promote: a task in my tree filed into a company project ────
+  // The promote questions (`PromoteFields`, the Move dialog's own) show under
+  // Where, their answers ride the organize request, and the decision waits
+  // `PROMOTE_UNDO_MS` before it is sent (`deferClarify`). So a required field
+  // is asked for here, and never refused after an optimistic move.
+  const promoting =
+    sort !== "do-now" &&
+    sort !== "reference" &&
+    sort !== "trash" &&
+    !(sort === "actionable" && size === "project") &&
+    isPromoteDecision({
+      personal: personalTask,
+      projectId,
+      itemProjectId: item.projectId,
+      companyProjectIds,
+    });
+  const [promoteState, setPromoteState] = useState<PromoteFieldsState | null>(null);
 
   // ── Build the decision from the current Sort→Shape state ────────────────
   // `pick` overrides the Where pick for one explicit click — the "File it
@@ -486,6 +530,24 @@ export function ClarifyPanel({
   const [createTargetError, setCreateTargetError] = useState<string | null>(null);
 
   const apply = useCallback(async (pick?: { projectId: string }) => {
+    // S6g — "File it here" on a PERSONAL task is a promote, and a promote
+    // asks its questions first. The banner picks the project and opens the
+    // form on it; the member confirms there.
+    if (
+      pick &&
+      isPromoteDecision({
+        personal: personalTask,
+        projectId: pick.projectId,
+        itemProjectId: item.projectId,
+        companyProjectIds,
+      })
+    ) {
+      setSort("actionable");
+      setSize((s) => (s === "project" ? "single" : s));
+      setProjectId(pick.projectId);
+      setAdjustOpen(true);
+      return;
+    }
     const projectId = pick ? pick.projectId : pickedProjectId;
     // Every path in — Enter, Accept, Organize it, File it here — stops here
     // when a board-task delegate was not the member's own pick.
@@ -521,6 +583,32 @@ export function ClarifyPanel({
       // reference/someday don't get prioritized).
       const weightful =
         decision.kind !== "trash" && decision.kind !== "reference";
+      if (promoting && projectId && decision.kind !== "project") {
+        // The ONE builder both promote doors use (`promote.test.ts`).
+        // Clarify's Owner step says who owns it, so the owners travel only
+        // on a delegate, as `assignee`, and never from here.
+        const plan = promotePlan({
+          destinationId: projectId,
+          fields: promoteState?.answers.fields ?? [],
+          draft: promoteState?.answers.draft ?? {},
+          assignees: [],
+          initialAssignees: [],
+        });
+        if (!plan.ok || !promoteState?.ready) return;
+        // The answers ride the organize request (`OrganizeIn.custom_fields`).
+        const promoted = {
+          ...decision,
+          customFields: plan.request.customFields,
+        } as ClarifyDecision;
+        deferClarify(
+          item.id,
+          promoted,
+          weightful ? { important, leveraged, deepWork } : undefined,
+          projectNameOf(projectId),
+        );
+        onDone?.();
+        return;
+      }
       clarify(
         item.id,
         decision,
@@ -530,9 +618,10 @@ export function ClarifyPanel({
       onDone?.();
     }
   }, [sort, size, pickedProjectId, newListName, nextAction, item.id, item.title,
-      targetSpaceId, targetFolderId,
+      item.projectId, targetSpaceId, targetFolderId,
       createLocalProject, buildDecision, clarify, onDone, important, leveraged,
-      deepWork, personalTask, owner, delegatePicked, reclarify]);
+      deepWork, personalTask, owner, delegatePicked, reclarify, promoting,
+      promoteState, deferClarify, companyProjectIds, projectNameOf]);
 
   // Delegating to a connected tool needs a destination list so the teammate
   // can see it there — otherwise the task can't be pushed and would strand
@@ -572,8 +661,12 @@ export function ClarifyPanel({
     delegating: sort === "actionable" && owner === "delegate",
     pickedThisSession: delegatePicked,
   });
-  const canApply =
-    sort !== "actionable"
+  // S6g — a promote waits for its questions: the preview, and every required
+  // field answered. The button stays grey until then, never a refusal later.
+  const promoteReady = !promoting || !!promoteState?.ready;
+  const canApply = !promoteReady
+    ? false
+    : sort !== "actionable"
       ? true
       : !delegateOk
         ? false
@@ -587,7 +680,8 @@ export function ClarifyPanel({
   // asked to adjust — or when the proposal can't apply as-is, so the missing
   // piece (an assignee, a destination list…) is visible instead of a dead
   // Accept button.
-  const showForm = adjustOpen || !canApply;
+  // A promote keeps the form open: its questions live under Where.
+  const showForm = adjustOpen || !canApply || promoting;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1266,6 +1360,22 @@ export function ClarifyPanel({
                           suggestedId={proposal.projectId}
                           onChange={setProjectId}
                           onCreateArea={createArea}
+                          tree={tree}
+                        />
+                      )}
+                      {promoting && projectId && (
+                        /* S6g — the Move dialog's own questions: the mapping,
+                           the required fields, the losses. The Owner step
+                           above answers who, so the assignee editor is off. */
+                        <PromoteFields
+                          key={projectId}
+                          taskIds={[item.id]}
+                          destinationId={projectId}
+                          roots={roots}
+                          initialAssignees={[]}
+                          showAssignees={false}
+                          due={item.dueAt ?? null}
+                          onChange={setPromoteState}
                         />
                       )}
 
@@ -1295,7 +1405,9 @@ export function ClarifyPanel({
                       )}
                       {!isSynced && (
                         <p className="text-[10px] text-muted-foreground">
-                          {whereVisibilityHint({ selected: projectId, companyProjectIds })}
+                          {promoting
+                            ? PROMOTE_HINT
+                            : whereVisibilityHint({ selected: projectId, companyProjectIds })}
                         </p>
                       )}
                     </div>
