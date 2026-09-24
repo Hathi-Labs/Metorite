@@ -23,9 +23,10 @@
  * colors — see theme-css-vars memory) so it reads correctly in light and dark.
  */
 
-import { createElement, useEffect, useState } from "react";
+import { createElement, useEffect, useRef, useState } from "react";
 
 import { resolveIcon } from "@/lib/icons";
+import { hasMoreToTheRight } from "@/lib/scrollCue";
 import {
   PLAN_EDIT_COLS,
   type PlanRow,
@@ -37,6 +38,7 @@ import {
   planRowsFrom,
   planSubmit,
 } from "@/app/projects/lib/planCard";
+import { ReportFileButtons } from "@/app/projects/components/ReportFileButtons";
 
 type Data = Record<string, unknown>;
 
@@ -187,11 +189,20 @@ function useCountUp(target: number, ms = 700): number {
 // under `html[data-theme]`, so every semantic token is defined and a literal
 // here is simply a colour the theming engine cannot reach.
 const TONE_COLOR: Record<string, string> = {
+  // A bar with no tone is a CATEGORY, so it takes the first categorical slot.
+  // It used to take `--primary`, which is the member's accent: set the accent
+  // to red and every plain bar read as a warning (S8 visual review).
+  neutral: "var(--cat-1)",
   primary: "var(--primary)",
   success: "var(--success)",
   warning: "var(--warning)",
   danger: "var(--destructive)",
 };
+
+/** A bar's fill: its tone when it names one, else the neutral slot. */
+export function barColor(tone: unknown): string {
+  return TONE_COLOR[str(tone, "neutral")] ?? TONE_COLOR.neutral;
+}
 
 function DeltaArrow({ delta }: { delta: number }): React.ReactElement | null {
   if (!delta) return <span style={{ color: "var(--muted-foreground)" }}>—</span>;
@@ -390,7 +401,7 @@ function BarChart({ data }: { data: Data }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {bars.map((b, i) => {
           const pct = (num(b.value) / max) * 100;
-          const color = TONE_COLOR[str(b.tone, "primary")] ?? TONE_COLOR.primary;
+          const color = barColor(b.tone);
           return (
             <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <div style={{ width: 90, fontSize: 11, color: "var(--muted-foreground)", textAlign: "right",
@@ -996,8 +1007,12 @@ function Timeline({ data }: { data: Data }) {
         {data.total != null && <span style={MUTED}>{rows.length} of {num(data.total)}</span>}
       </div>
       {rows.length === 0 && <div style={MUTED}>Nothing has happened here yet.</div>}
-      <div style={{ borderLeft: "2px solid var(--secondary)", marginLeft: 6, paddingLeft: 14,
-        maxHeight: 420, overflowY: "auto" }}>
+      {/* The scroll box and the line are two boxes. The dots sit 20px left of
+          each row, over the line. On one box with overflowY the scroll clip
+          cut every dot in half (S8 visual review); the outer box now holds the
+          scroll, and the line sits inside it with room for the dots. */}
+      <div data-timeline-scroll style={{ maxHeight: 420, overflowY: "auto" }}>
+      <div style={{ borderLeft: "2px solid var(--secondary)", marginLeft: 6, paddingLeft: 14 }}>
         {rows.map((r, i) => {
           const type = str(r.type);
           return (
@@ -1027,6 +1042,7 @@ function Timeline({ data }: { data: Data }) {
             </div>
           );
         })}
+      </div>
       </div>
       <style>{`@keyframes ccFadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}`}</style>
     </div>
@@ -1061,6 +1077,23 @@ function TaskChip({ t }: { t: Data }) {
 
 function TaskBoard({ data }: { data: Data }) {
   const columns = arr(data.columns).map((c) => (c ?? {}) as Data);
+  // A cue while lanes sit off to the right (`lib/scrollCue.ts`). In the rail
+  // the third lane was cut at the edge with nothing to say it scrolls.
+  const stripRef = useRef<HTMLDivElement>(null);
+  const [more, setMore] = useState(false);
+  useEffect(() => {
+    const el = stripRef.current;
+    if (!el) return;
+    const check = () => setMore(hasMoreToTheRight(el.scrollWidth, el.clientWidth, el.scrollLeft));
+    check();
+    el.addEventListener("scroll", check, { passive: true });
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(check);
+    observer?.observe(el);
+    return () => {
+      el.removeEventListener("scroll", check);
+      observer?.disconnect();
+    };
+  }, [columns.length]);
   return (
     <div style={CARD_BOX}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
@@ -1070,7 +1103,7 @@ function TaskBoard({ data }: { data: Data }) {
         </div>
         {data.total != null && <span style={MUTED}>{num(data.total)} tasks</span>}
       </div>
-      <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 4 }}>
+      <div ref={stripRef} style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 4 }}>
         {columns.map((c, i) => {
           const tasks = arr(c.tasks).map((t) => (t ?? {}) as Data);
           return (
@@ -1084,6 +1117,11 @@ function TaskBoard({ data }: { data: Data }) {
           );
         })}
       </div>
+      {more && (
+        <div style={{ ...MUTED, display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 4, marginTop: 4 }}>
+          More lanes to the right <TIcon name="arrow-right" size={12} color="var(--muted-foreground)" />
+        </div>
+      )}
     </div>
   );
 }
@@ -1163,6 +1201,10 @@ function ReportCard({ data }: { data: Data }) {
         </span>
         {data.period != null && <span style={MUTED}>{str(data.period)}</span>}
       </div>
+      {/* WS-27bm S8: the saved report as a Markdown or PDF file. Drawn only
+          when the card carries a real report id, and rendered again on the
+          click, so the file is the Reports app's numbers of that moment. */}
+      <ReportFileButtons reportId={data.reportId} />
       {stats.length > 0 && <StatDashboard data={{ stats }} />}
       {tables.map((t, i) => <DataGrid key={i} data={{ title: t.title, columns: t.columns, rows: t.rows, openBase: "" }} />)}
     </div>

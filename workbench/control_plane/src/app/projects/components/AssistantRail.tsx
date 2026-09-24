@@ -41,6 +41,9 @@ import {
   type PersonaInput,
 } from "../lib/assistantPersona";
 import { SelectButton } from "@/components/ui/SelectButton";
+import { useViewMode } from "@/components/ViewModeProvider";
+import { artifactHandler, syncPanelToSession } from "@/lib/autoOpenArtifact";
+import { useSidePanelFits } from "@/lib/sidePanelFit";
 import {
   EVERYTHING,
   focusedEntry,
@@ -230,6 +233,25 @@ export function AssistantRail({
 
   const activeSession = mySessions.find((s) => s.id === activeId);
 
+  // WS-27bm S8 (spec §14). The side panel beside the board shows THIS
+  // conversation's files only, so a tab left open by `/chat` or by another
+  // conversation never renders here. The same call `/chat` makes.
+  useEffect(() => {
+    syncPanelToSession(activeId);
+  }, [activeId]);
+
+  // A document the assistant writes opens beside the board, live, as it does
+  // in `/chat` — one rule, `lib/autoOpenArtifact.ts`. On a phone there is no
+  // side panel, so nothing opens and the card in the thread stays the way in.
+  // Where the board beside the panel would drop below its minimum width
+  // (`lib/sidePanelFit.ts`), nothing opens by itself either.
+  const { isMobile } = useViewMode();
+  const panelFits = useSidePanelFits();
+  const handleArtifact = useMemo(
+    () => artifactHandler({ sessionId: activeId, isMobile, panelFits }),
+    [activeId, isMobile, panelFits],
+  );
+
   return (
     <div className="flex flex-col h-full bg-sidebar text-sidebar-foreground overflow-hidden">
       {/* Header */}
@@ -371,6 +393,7 @@ export function AssistantRail({
             memoryUserId={userId}
             expectedMessageCount={activeSession.messageCount}
             onActivity={handleActivity}
+            onArtifact={handleArtifact}
             pendingInput={pendingInput}
             onPendingInputConsumed={() => setPendingInput(undefined)}
           />

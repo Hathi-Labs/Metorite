@@ -43,6 +43,14 @@ const TEXT_EXTS = new Set([
 const DOCX_MIME =
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
+/**
+ * The Markdown and HTML extensions. WS-27bm S8: together they are exactly the
+ * gateway's `pdf_render.SOURCE_KINDS`, the files it converts to a PDF.
+ * `artifactKind.test.ts` reads that Python dict and fails if the two differ.
+ */
+export const MARKDOWN_EXTS: readonly string[] = ["md", "markdown", "mdx"];
+export const HTML_EXTS: readonly string[] = ["html", "htm"];
+
 export function extOf(name: string): string {
   return (name.split(".").pop() ?? "").toLowerCase();
 }
@@ -70,8 +78,8 @@ export function classifyArtifact(
   mimeType = "",
 ): ArtifactKind {
   const ext = extOf(name);
-  if (ext === "md" || ext === "mdx") return "markdown";
-  if (ext === "html" || ext === "htm") return "html";
+  if (MARKDOWN_EXTS.includes(ext)) return "markdown";
+  if (HTML_EXTS.includes(ext)) return "html";
   if ((ext === "jsx" || ext === "tsx") && isArtifactPath(path)) return "react";
   if (ext === "pdf" || mimeType === "application/pdf") return "pdf";
   if (ext === "docx" || mimeType === DOCX_MIME) return "docx";
@@ -84,4 +92,32 @@ export function classifyArtifact(
 /** Kinds with a rendered view distinct from their source. */
 export function isRenderable(kind: ArtifactKind): boolean {
   return kind === "html" || kind === "react";
+}
+
+/**
+ * WS-27bm S8 — which kinds the gateway can turn into a PDF. The gateway's
+ * `pdf_render.SOURCE_KINDS` holds the same list by extension (md, markdown,
+ * mdx, html, htm), and refuses any other file with a 415.
+ */
+export function canDownloadPdf(kind: ArtifactKind): boolean {
+  return kind === "markdown" || kind === "html";
+}
+
+/**
+ * The one address of a workspace file, raw or as a PDF. Every viewer builds
+ * its links here, so the PDF link and the raw link cannot name two files.
+ */
+export function workspaceFileUrl(
+  sessionId: string,
+  path: string,
+  opts: { pdf?: boolean } = {},
+): string {
+  const base = `/api/agent/workspace/${sessionId}/file?path=${encodeURIComponent(path)}`;
+  return opts.pdf ? `${base}&format=pdf` : base;
+}
+
+/** `status.md` → `status.pdf`, the name the gateway also sends. */
+export function pdfNameFor(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return `${dot > 0 ? name.slice(0, dot) : name || "document"}.pdf`;
 }

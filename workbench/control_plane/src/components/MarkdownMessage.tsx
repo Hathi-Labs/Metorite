@@ -5,7 +5,7 @@
  *
  * Features:
  *  • Full GitHub-flavoured Markdown (GFM): tables, strikethrough, task lists
- *  • Syntax-highlighted code blocks (VS Code dark+ theme via react-syntax-highlighter)
+ *  • Syntax-highlighted code blocks (token colours, `lib/codeTheme.ts`)
  *  • Terminal blocks with macOS-style chrome (red/yellow/green dots)
  *  • One-click copy button on every code block
  *  • Clickable links (open in new tab)
@@ -17,7 +17,8 @@ import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { CODE_THEME } from "@/lib/codeTheme";
+import Icon from "@/components/Icon";
 import ThinkingContainer from "@/components/ThinkingContainer";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -163,9 +164,10 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
         <CopyButton text={code} />
       </div>
 
-      {/* Syntax-highlighted code (VS Code dark+ theme) */}
+      {/* Syntax-highlighted code, in theme tokens (`lib/codeTheme.ts`): one
+          look in both colour modes, no hex. */}
       <SyntaxHighlighter
-        style={vscDarkPlus}
+        style={CODE_THEME}
         language={lang || "text"}
         PreTag="div"
         customStyle={{
@@ -255,6 +257,199 @@ function ChoiceBlock({
   );
 }
 
+// ─── The Markdown body ─────────────────────────────────────────────────────
+//
+// The ONE Markdown renderer for chat content: GFM, the token-styled
+// components, code blocks and MCQ choices. `MarkdownMessage` draws the
+// answer with it, and `GenerativeUINode` draws its `markdown` node with it
+// (WS-27bm S8 visual review: that node used bare ReactMarkdown, so its lists
+// had no bullets and its tables no cells).
+
+export function MarkdownBody({
+  content,
+  onChoice,
+  sessionId,
+  mdFilePath,
+}: {
+  content: string;
+  onChoice?: (choice: string) => void;
+  sessionId?: string;
+  mdFilePath?: string;
+}) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        // ── Headings ──
+        h1: ({ children }) => (
+          <h1 className="text-[1.1rem] font-bold text-foreground mt-5 mb-3 pb-1 border-b border-border">
+            {children}
+          </h1>
+        ),
+        h2: ({ children }) => (
+          <h2 className="text-[1rem] font-semibold text-foreground mt-4 mb-2">
+            {children}
+          </h2>
+        ),
+        h3: ({ children }) => (
+          <h3 className="text-[0.9rem] font-semibold text-foreground mt-3 mb-1.5">
+            {children}
+          </h3>
+        ),
+        h4: ({ children }) => (
+          <h4 className="text-sm font-semibold text-foreground mt-2 mb-1">
+            {children}
+          </h4>
+        ),
+
+        // ── Paragraphs & text ──
+        p: ({ children }) => (
+          <p className="mb-3 last:mb-0 text-foreground">{children}</p>
+        ),
+        strong: ({ children }) => (
+          <strong className="font-semibold text-foreground">{children}</strong>
+        ),
+        em: ({ children }) => (
+          <em className="italic text-foreground">{children}</em>
+        ),
+        del: ({ children }) => (
+          <del className="line-through text-muted-foreground">{children}</del>
+        ),
+
+        // ── Lists ──
+        ul: ({ children }) => (
+          <ul className="mb-3 ml-5 space-y-1 list-disc list-outside marker:text-muted-foreground">
+            {children}
+          </ul>
+        ),
+        ol: ({ children }) => (
+          <ol className="mb-3 ml-5 space-y-1 list-decimal list-outside marker:text-muted-foreground">
+            {children}
+          </ol>
+        ),
+        li: ({ children }) => (
+          <li className="text-foreground pl-0.5">{children}</li>
+        ),
+
+        // ── Links ──
+        a: ({ href, children }) => (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-400 underline underline-offset-2 hover:text-blue-300 transition-colors break-all"
+          >
+            {children}
+          </a>
+        ),
+
+        // ── Blockquote ──
+        blockquote: ({ children }) => (
+          <blockquote className="border-l-2 border-border pl-4 my-3 text-muted-foreground italic">
+            {children}
+          </blockquote>
+        ),
+
+        // ── Images ──
+        // Rewrite src to route through the gateway workspace file proxy.
+        // Full URLs (https://…) and data: URIs pass through unchanged.
+        img({ src, alt, ...rest }) {
+          const rawSrc = typeof src === "string" ? src : "";
+          const resolvedSrc = resolveMediaSrc(rawSrc, sessionId, mdFilePath);
+          // eslint-disable-next-line @next/next/no-img-element
+          return (
+            <img
+              src={resolvedSrc}
+              alt={alt ?? ""}
+              {...rest}
+              className="max-w-full max-h-96 rounded-lg my-3 border border-border/50 object-contain"
+              loading="lazy"
+            />
+          );
+        },
+
+        // ── Tables (GFM) ──
+        // A table keeps its words whole and scrolls when it is wider than its
+        // box. Cells take `break-words` (overflow-wrap: break-word), which
+        // breaks a word only when the word alone is wider than the whole
+        // box, and does not shrink the table's minimum width. Round 4 used
+        // `wrap-anywhere`, which did shrink it, so every table in every chat
+        // broke headers and names mid-word ("FINISHE/D"). A table wider
+        // than its box scrolls inside `overflow-x-auto`, with the thin bar
+        // visible. Cells size from the box itself (`@container`), not from
+        // the viewport, so the rail gets the tight padding at any width.
+        // Row lines are a TOP border on each body cell, so the line runs
+        // under every column (round 4 fixed a `last:` rule that dropped the
+        // line under the last column).
+        table: ({ children }) => (
+          <div className="@container my-4 max-w-full overflow-x-auto scrollbar-thin rounded-lg border border-border/60" role="region" aria-label="Table" tabIndex={0}>
+            <table className="w-full text-[12px] sm:text-[13px] border-collapse">{children}</table>
+          </div>
+        ),
+        thead: ({ children }) => (
+          <thead className="bg-secondary/60">{children}</thead>
+        ),
+        th: ({ children }) => (
+          <th className="px-2.5 py-1.5 @md:px-4 @md:py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide break-words">
+            {children}
+          </th>
+        ),
+        td: ({ children }) => (
+          <td className="px-2.5 py-1.5 @md:px-4 @md:py-2 text-foreground border-t border-border/60 break-words">
+            {children}
+          </td>
+        ),
+
+        // ── GFM task list ──
+        // The browser's disabled checkbox draws a black square in light
+        // mode. A task list here is read-only, so it draws as an icon.
+        input: ({ type, checked }) =>
+          type === "checkbox" ? (
+            <Icon
+              name={checked ? "SquareCheck" : "Square"}
+              size={14}
+              className={`mr-1 inline-block align-text-bottom ${checked ? "text-primary" : "text-muted-foreground"}`}
+              role="img"
+              aria-label={checked ? "Done" : "Not done"}
+            />
+          ) : null,
+
+        // ── HR ──
+        hr: () => <hr className="my-5 border-border" />,
+
+        // ── Code (inline + block) ──
+        pre: ({ children }) => <>{children}</>,
+        code({ className, children }) {
+          const match = /language-(\w+)/.exec(className || "");
+          const lang = match ? match[1].toLowerCase() : "";
+          const codeString = String(children).replace(/\n$/, "");
+
+          // Block code. react-markdown adds a `language-xxx` class only when a
+          // language is specified; a fenced block WITHOUT a language has no
+          // class, so also treat any multi-line code as a block — otherwise an
+          // unlabeled ``` block renders cramped as inline with literal newlines.
+          if (match || codeString.includes("\n")) {
+            // MCQ choices block — render interactive buttons instead of code.
+            if (lang === "choices") {
+              return <ChoiceBlock raw={codeString} onChoice={onChoice} />;
+            }
+            return <CodeBlock lang={lang} code={codeString} />;
+          }
+
+          // Inline code
+          return (
+            <code className="bg-secondary text-foreground rounded px-1.5 py-0.5 font-mono text-[0.82em] border border-border/50">
+              {children}
+            </code>
+          );
+        },
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────
 
 export default function MarkdownMessage({
@@ -319,151 +514,13 @@ export default function MarkdownMessage({
         </div>
       )}
 
-      {/* Markdown body */}
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          // ── Headings ──
-          h1: ({ children }) => (
-            <h1 className="text-[1.1rem] font-bold text-foreground mt-5 mb-3 pb-1 border-b border-border">
-              {children}
-            </h1>
-          ),
-          h2: ({ children }) => (
-            <h2 className="text-[1rem] font-semibold text-foreground mt-4 mb-2">
-              {children}
-            </h2>
-          ),
-          h3: ({ children }) => (
-            <h3 className="text-[0.9rem] font-semibold text-foreground mt-3 mb-1.5">
-              {children}
-            </h3>
-          ),
-          h4: ({ children }) => (
-            <h4 className="text-sm font-semibold text-foreground mt-2 mb-1">
-              {children}
-            </h4>
-          ),
-
-          // ── Paragraphs & text ──
-          p: ({ children }) => (
-            <p className="mb-3 last:mb-0 text-foreground">{children}</p>
-          ),
-          strong: ({ children }) => (
-            <strong className="font-semibold text-foreground">{children}</strong>
-          ),
-          em: ({ children }) => (
-            <em className="italic text-foreground">{children}</em>
-          ),
-          del: ({ children }) => (
-            <del className="line-through text-muted-foreground">{children}</del>
-          ),
-
-          // ── Lists ──
-          ul: ({ children }) => (
-            <ul className="mb-3 ml-5 space-y-1 list-disc list-outside marker:text-muted-foreground">
-              {children}
-            </ul>
-          ),
-          ol: ({ children }) => (
-            <ol className="mb-3 ml-5 space-y-1 list-decimal list-outside marker:text-muted-foreground">
-              {children}
-            </ol>
-          ),
-          li: ({ children }) => (
-            <li className="text-foreground pl-0.5">{children}</li>
-          ),
-
-          // ── Links ──
-          a: ({ href, children }) => (
-            <a
-              href={href}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-blue-400 underline underline-offset-2 hover:text-blue-300 transition-colors break-all"
-            >
-              {children}
-            </a>
-          ),
-
-          // ── Blockquote ──
-          blockquote: ({ children }) => (
-            <blockquote className="border-l-2 border-border pl-4 my-3 text-muted-foreground italic">
-              {children}
-            </blockquote>
-          ),
-
-          // ── Images ──
-          // Rewrite src to route through the gateway workspace file proxy.
-          // Full URLs (https://…) and data: URIs pass through unchanged.
-          img({ src, alt, ...rest }) {
-            const rawSrc = typeof src === "string" ? src : "";
-            const resolvedSrc = resolveMediaSrc(rawSrc, sessionId, mdFilePath);
-            // eslint-disable-next-line @next/next/no-img-element
-            return (
-              <img
-                src={resolvedSrc}
-                alt={alt ?? ""}
-                {...rest}
-                className="max-w-full max-h-96 rounded-lg my-3 border border-border/50 object-contain"
-                loading="lazy"
-              />
-            );
-          },
-
-          // ── Tables (GFM) ──
-          table: ({ children }) => (
-            <div className="overflow-x-auto my-4 rounded-lg border border-border/60">
-              <table className="w-full text-[12px] sm:text-[13px] border-collapse">{children}</table>
-            </div>
-          ),
-          thead: ({ children }) => (
-            <thead className="bg-secondary/60">{children}</thead>
-          ),
-          th: ({ children }) => (
-            <th className="px-4 py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide border-b border-border/60">
-              {children}
-            </th>
-          ),
-          td: ({ children }) => (
-            <td className="px-4 py-2 text-foreground border-b border-border/60 last:border-b-0">
-              {children}
-            </td>
-          ),
-
-          // ── HR ──
-          hr: () => <hr className="my-5 border-border" />,
-
-          // ── Code (inline + block) ──
-          pre: ({ children }) => <>{children}</>,
-          code({ className, children }) {
-            const match = /language-(\w+)/.exec(className || "");
-            const lang = match ? match[1].toLowerCase() : "";
-            const codeString = String(children).replace(/\n$/, "");
-
-            // Block code. react-markdown adds a `language-xxx` class only when a
-            // language is specified; a fenced block WITHOUT a language has no
-            // class, so also treat any multi-line code as a block — otherwise an
-            // unlabeled ``` block renders cramped as inline with literal newlines.
-            if (match || codeString.includes("\n")) {
-              // MCQ choices block — render interactive buttons instead of code.
-              if (lang === "choices") {
-                return <ChoiceBlock raw={codeString} onChoice={onChoice} />;
-              }
-              return <CodeBlock lang={lang} code={codeString} />;
-            }
-
-            // Inline code
-            return (
-              <code className="bg-secondary text-foreground rounded px-1.5 py-0.5 font-mono text-[0.82em] border border-border/50">
-                {children}
-              </code>
-            );
-          },
-        }}
-      >
-        {answerBody}
-      </ReactMarkdown>
+      {/* Markdown body — the one renderer, shared with GenerativeUINode. */}
+      <MarkdownBody
+        content={answerBody}
+        onChoice={onChoice}
+        sessionId={sessionId}
+        mdFilePath={mdFilePath}
+      />
 
       {/* Streaming cursor — only once text is actually streaming, so it doesn't
           float with no text during a tool-only phase (the ThinkingContainer

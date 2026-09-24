@@ -1403,3 +1403,144 @@ def test_w1_names_the_plan_inputs_s7d_added() -> None:
     w1 = _w1()
     for word in ("`key`", "`start`", "`after`", "`blocks`", "never blocks"):
         assert word in w1, word
+
+
+# ── S8 — documents and downloads (spec §14) ─────────────────────────────────
+
+
+def _files_section() -> str:
+    text = (AGENT_DIR / "instructions.md").read_text(encoding="utf-8")
+    assert "\n## Files\n" in text, "instructions.md lost its Files section (spec §14)"
+    start = text.index("\n## Files\n")
+    end = text.find("\n## ", start + 1)
+    return text[start : end if end != -1 else len(text)]
+
+
+def test_the_files_section_tells_the_model_how_a_member_gets_a_file() -> None:
+    """§14 item 5. Without it the model saves a report nowhere, or says it made
+    a PDF it cannot make. Each phrase is one rule the section carries."""
+    section = _files_section()
+    for phrase in (
+        "`write_artifact`",
+        "`outputs/`",
+        "Open, Download and Download PDF",
+        "`render_report`",
+        "Download PDF",
+        "Never say that you made a PDF",
+    ):
+        assert phrase in section, phrase
+
+
+def test_the_agent_may_still_write_an_artifact() -> None:
+    """The Files section names a tool the agent must hold."""
+    config = json.loads((AGENT_DIR / "config.json").read_text(encoding="utf-8"))
+    assert "write_artifact" in json.dumps(config)
+
+
+# ── S8 visual review — the report card speaks the Reports app's words ───────
+
+
+async def test_the_report_card_carries_labels_not_keys(monkeypatch) -> None:
+    """The card printed "load open_tasks" and a column called `name`. Every
+    tile and every column now carries a person's word, and the Unassigned
+    row says so."""
+    body = {
+        "report": {"name": "Weekly", "scope": "portfolio"},
+        "period_start": "2026-09-14",
+        "period_end": "2026-09-20",
+        "sections": {
+            "finished": {
+                "projects": [{"project_id": "p", "name": "Apollo", "completed": 4, "cancelled": 1}],
+                "total_completed": 4,
+                "total_cancelled": 1,
+            },
+            "load": {
+                "people": [
+                    {"assignee": None, "open_tasks": 2, "overdue": 0},
+                    {"assignee": "asha@x.test", "open_tasks": 12, "overdue": 1},
+                ],
+                "total_tasks": 14,
+            },
+            "mystery_section": {"total": 3, "rows": [{"some_key": "v"}]},
+        },
+    }
+    specs = drawn(monkeypatch)
+    fake_gateway(monkeypatch, lambda call: body)
+    await skill_projects.render_report(report_id=UUID)
+    card = specs[0]["props"]["data"]
+    labels = [s["label"] for s in card["stats"]]
+    assert labels[:3] == ["Finished", "Cancelled", "Open tasks"]
+    assert "Mystery section: Total" in labels
+    by_title = {t["title"]: t for t in card["tables"]}
+    assert by_title["What we finished"]["columns"] == ["Project", "Finished", "Cancelled"]
+    assert by_title["Open work"]["columns"] == ["Assignee", "Open", "Overdue"]
+    assert by_title["Open work"]["rows"][0]["cells"][0] == "Unassigned"
+    assert by_title["Mystery section"]["columns"] == ["Some key"]
+    for text in labels + [c for t in card["tables"] for c in t["columns"]] + list(by_title):
+        assert "_" not in text, text
+
+
+def test_the_report_card_titles_are_the_reports_apps_words() -> None:
+    """One owner for the words: `RenderedBody` in ReportsView.tsx."""
+    from skill_projects.views import REPORT_CARD_SECTIONS
+
+    tsx = (
+        REPO_ROOT / "workbench" / "control_plane" / "src" / "app" / "projects"
+        / "components" / "ReportsView.tsx"
+    ).read_text(encoding="utf-8")
+    for name, spec in REPORT_CARD_SECTIONS.items():
+        assert f'<Section title="{spec["title"]}">' in tsx, name
+
+
+def test_a_card_cell_keeps_a_zero() -> None:
+    """S8 fix round 4, P2: a count of 0 is not an empty cell."""
+    from skill_projects.views import _plain
+
+    assert _plain(0) == "0"
+    assert _plain(0.0) == "0.0"
+    assert _plain(None) == ""
+    assert _plain("a\nb") == "a b"
+
+
+async def test_a_zero_reaches_the_report_card(monkeypatch) -> None:
+    body = {
+        "report": {"name": "Weekly", "scope": "portfolio"},
+        "period_start": "2026-09-14",
+        "period_end": "2026-09-20",
+        "sections": {
+            "finished": {
+                "projects": [{"project_id": "p", "name": "Apollo", "completed": 4, "cancelled": 0}],
+                "total_completed": 4,
+                "total_cancelled": 0,
+            },
+        },
+    }
+    specs = drawn(monkeypatch)
+    fake_gateway(monkeypatch, lambda call: body)
+    await skill_projects.render_report(report_id=UUID)
+    card = specs[0]["props"]["data"]
+    assert {"label": "Cancelled", "value": 0} in card["stats"]
+    assert card["tables"][0]["rows"][0]["cells"] == ["Apollo", "4", "0"]
+
+
+@pytest.mark.parametrize("name", sorted(__import__("skill_projects.views", fromlist=["x"]).REPORT_CARD_SECTIONS))
+def test_every_report_card_section_labels_every_key(name: str) -> None:
+    """R7 (fix round 4): every section, not only finished and load. Putting a
+    raw key back as a label in any entry turns this red."""
+    from skill_projects.views import REPORT_CARD_SECTIONS, _card_section
+
+    spec = REPORT_CARD_SECTIONS[name]
+    section: dict[str, Any] = {key: 7 for key, _ in spec["stats"]}
+    if spec.get("rows"):
+        section[spec["rows"]] = [{key: "x" for key, _ in spec["columns"]}]
+    stats, table = _card_section(name, section)
+
+    assert spec["title"] != name and "_" not in spec["title"]
+    assert [s["label"] for s in stats] == [label for _, label in spec["stats"]]
+    for key, label in [*spec["stats"], *spec.get("columns", [])]:
+        assert label != key, f"{name}: {key} is labelled with its raw key"
+        assert "_" not in label, f"{name}: {label}"
+    if spec.get("rows"):
+        assert table is not None
+        assert table["title"] == spec["title"]
+        assert table["columns"] == [label for _, label in spec["columns"]]

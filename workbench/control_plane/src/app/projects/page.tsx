@@ -71,6 +71,15 @@ import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { TriageRail } from "./components/TriageRail";
 import { AssistantRail } from "./components/AssistantRail";
 import SidePanelEditor from "@/components/SidePanelEditor";
+import {
+  getState as getSidePanelState,
+  subscribe as subscribeSidePanel,
+} from "@/lib/sidePanelStore";
+import {
+  BOARD_MIN_REM,
+  SidePanelFitContext,
+  sidePanelFits,
+} from "@/lib/sidePanelFit";
 import { PROJECTS_CHANGED_EVENT } from "@/components/projects/ProjectToolCards";
 import { invalidate } from "@/lib/dataCache";
 import { useFrontendTool } from "@/hooks/useFrontendTool";
@@ -3100,6 +3109,44 @@ function ProjectsWorkspace() {
     [visibleRoots],
   );
 
+  // WS-27bm S8 visual review — may a document open in the side panel beside
+  // the board? The row holds the tree, the panel, the board and the dock, and
+  // the board keeps BOARD_MIN_REM (`lib/sidePanelFit.ts`). Measured, not
+  // assumed: the tree, the dock and the root font size all move with the
+  // member's density. Hooks run before the loading return below.
+  const rowRef = useRef<HTMLDivElement>(null);
+  const navRef = useRef<HTMLElement>(null);
+  const dockRef = useRef<HTMLElement>(null);
+  const [panelFits, setPanelFits] = useState(true);
+  useEffect(() => {
+    const row = rowRef.current;
+    if (!row || typeof ResizeObserver === "undefined") return;
+    const measure = () => {
+      const dock = dockRef.current;
+      const remPx =
+        parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+      setPanelFits(
+        sidePanelFits({
+          rowWidth: row.clientWidth,
+          navWidth: navRef.current?.offsetWidth ?? 0,
+          dockWidth: dock && !dock.hidden ? dock.offsetWidth : 0,
+          panelWidth: getSidePanelState().width,
+          boardMinPx: BOARD_MIN_REM * remPx,
+        }),
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(row);
+    if (navRef.current) observer.observe(navRef.current);
+    if (dockRef.current) observer.observe(dockRef.current);
+    const unsubscribe = subscribeSidePanel(measure);
+    return () => {
+      observer.disconnect();
+      unsubscribe();
+    };
+  }, [loading, railOpen, chatDocked, app]);
+
   if (loading) return renderState("loading", LOADING_COPY, "page");
 
   // ── The parts both layouts render ────────────────────────────────────────
@@ -4030,9 +4077,10 @@ function ProjectsWorkspace() {
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <SidePanelFitContext.Provider value={panelFits}>
+      <div ref={rowRef} className="flex min-h-0 flex-1 overflow-hidden">
         {railOpen ? (
-          <nav className="w-60 shrink-0 overflow-y-auto border-r border-border bg-card p-2">
+          <nav ref={navRef} className="w-60 shrink-0 overflow-y-auto border-r border-border bg-card p-2">
             <ProjectNav
               roots={visibleRoots}
               selectedId={selected?.id ?? null}
@@ -4074,7 +4122,10 @@ function ProjectsWorkspace() {
             as on the chat page: its resize handle and border assume that. */}
         {CHAT_LIVE ? <SidePanelEditor hideWhenEmpty /> : null}
 
-        <main className="flex min-w-0 flex-1 flex-col">
+        {/* `overflow-hidden`: the board never draws over its neighbours. A
+            narrow board clips; it does not spill its tabs over the chat
+            (WS-27bm S8 visual review). */}
+        <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <header className="shrink-0 border-b border-border">
             {/* Title row — what you are looking at, and nothing else. */}
             <div className="flex min-w-0 items-baseline gap-2 px-3 pt-2">
@@ -4153,6 +4204,7 @@ function ProjectsWorkspace() {
             streaming reply keeps streaming. */}
         {dockState === "absent" ? null : (
           <aside
+            ref={dockRef}
             aria-label="Assistant"
             hidden={dockState === "hidden"}
             className="flex w-[26rem] shrink-0 flex-col overflow-hidden border-l border-border"
@@ -4169,6 +4221,7 @@ function ProjectsWorkspace() {
         )}
 
       </div>
+      </SidePanelFitContext.Provider>
 
       {/* WS-27ab — the `full` stop. A scrim plus the same panel, at the same
           `max-w-3xl` reading width `/tasks`' maximise-out-of-the-pane uses.

@@ -159,9 +159,37 @@ export function soloRoom(sessionId: string, email: string): RoomState {
  * banner, no share affordance shouting at a person working alone.
  */
 export function isShared(room: RoomState | null | undefined): boolean {
-  if (!room) return false;
-  if (room.isShared) return true;
-  return room.participants.filter((p) => p.subject !== room.you.email).length > 0;
+  // A malformed payload (an array, a missing `you`) is solo, never a crash:
+  // this runs on every render of the chat header (S8 fix round 5).
+  if (!isRoomState(room)) return false;
+  if (room.isShared === true) return true;
+  return room.participants.some((p) => p?.subject !== room.you.email);
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+/**
+ * Whether a value has the shape every room surface reads. `fetchRoom` refuses
+ * anything else, so `useRoom` falls back to a room of one instead of handing
+ * `RoomHeader` a payload it would crash on (for example `[]` from a proxy
+ * that answered an unknown path with an empty array).
+ */
+export function isRoomState(v: unknown): v is RoomState {
+  if (!isObject(v)) return false;
+  const you = v.you;
+  const cap = v.cap;
+  return (
+    isObject(you) &&
+    typeof you.email === "string" &&
+    Array.isArray(v.participants) &&
+    Array.isArray(v.agents) &&
+    Array.isArray(v.presence) &&
+    isObject(v.settings) &&
+    isObject(cap) &&
+    Array.isArray(cap.capped) &&
+    Array.isArray(cap.inactive)
+  );
 }
 
 /** People only — group and `org` rows are subjects, not faces. */
@@ -191,11 +219,15 @@ async function json<T>(res: Response): Promise<T> {
 }
 
 export async function fetchRoom(sessionId: string): Promise<RoomState> {
-  return json<RoomState>(
+  const body = await json<unknown>(
     await fetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}/room`, {
       cache: "no-store",
     })
   );
+  // A payload of the wrong shape is refused here, so the caller's fallback
+  // (a room of one) renders instead of a crash further down.
+  if (!isRoomState(body)) throw new Error("The room answer was malformed.");
+  return body;
 }
 
 export async function addParticipant(

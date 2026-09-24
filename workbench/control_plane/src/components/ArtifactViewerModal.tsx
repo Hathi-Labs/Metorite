@@ -22,7 +22,14 @@ import SandboxedHtml from "@/components/SandboxedHtml";
 import SandboxedReact from "@/components/SandboxedReact";
 import { iconsUsedIn } from "@/lib/iconSvg";
 import { useShikiTheme } from "@/lib/theme/surfaces";
-import { classifyArtifact, extOf, isRenderable } from "@/lib/artifactKind";
+import {
+  canDownloadPdf,
+  classifyArtifact,
+  extOf,
+  isRenderable,
+  pdfNameFor,
+  workspaceFileUrl,
+} from "@/lib/artifactKind";
 import type { FileEntry } from "./ArtifactSidebar";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -384,7 +391,14 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
   }, [onClose]);
 
   const downloadUrl = externalDownloadUrl
-    ?? `/api/agent/workspace/${sessionId}/file?path=${encodeURIComponent(entry.path)}`;
+    ?? workspaceFileUrl(sessionId, entry.path);
+  // WS-27bm S8: a session's Markdown or HTML file also downloads as a PDF.
+  // A file from the global artifacts browser (`externalDownloadUrl`) has no
+  // session route to convert it, so it keeps the raw download only.
+  const pdfUrl =
+    !externalDownloadUrl && canDownloadPdf(kind)
+      ? workspaceFileUrl(sessionId, entry.path, { pdf: true })
+      : null;
   const deletable =
     !readOnly && !externalDownloadUrl && (
       entry.path.startsWith("inputs/") ||
@@ -466,13 +480,16 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
       {/* Modal — full-width on mobile, constrained on desktop. pb-safe protects against iOS rounded corners. */}
       <div className="relative flex flex-col w-full max-w-4xl max-h-[90vh] sm:rounded-lg border-0 sm:border border-border bg-background shadow-2xl overflow-hidden sm:mx-4">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-border px-4 py-3 shrink-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-sm font-semibold text-foreground truncate">{entry.name}</span>
+        {/* On a phone the name and the close button take the first row and the
+            actions wrap to a second one. At 390 wide the one-row header cut
+            the name to two letters (S8 visual review). */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-3 shrink-0">
+          <div className="order-1 flex min-w-0 flex-1 basis-40 items-center gap-2">
+            <span className="min-w-0 truncate text-sm font-semibold text-foreground" title={entry.name}>{entry.name}</span>
             <span className="text-xs text-muted-foreground truncate hidden sm:block">{entry.path}</span>
-            <span className="text-xs text-muted-foreground/70">· {formatBytes(entry.size)}</span>
+            <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">· {formatBytes(entry.size)}</span>
           </div>
-          <div className="flex items-center gap-2 shrink-0 ml-3">
+          <div className="order-3 flex w-full flex-wrap items-center gap-2 sm:order-2 sm:w-auto sm:shrink-0">
             {editing ? (
               <>
                 {(isMarkdown || renderable) && (
@@ -480,8 +497,8 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                     onClick={handleTogglePreview}
                     className={`rounded px-2 py-1 text-xs transition-colors ${
                       showPreview
-                        ? "text-amber-400 bg-amber-900/40 hover:bg-amber-900/60"
-                        : "text-purple-400 bg-secondary hover:bg-purple-900/40 hover:text-purple-300"
+                        ? "bg-primary/10 text-primary"
+                        : "bg-secondary text-muted-foreground hover:text-foreground"
                     }`}
                     title={showPreview ? "Hide preview" : "Show live preview"}
                   >
@@ -491,7 +508,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                 <button
                   onClick={handleSave}
                   disabled={saving}
-                  className="rounded px-2 py-1 text-xs text-emerald-400 bg-secondary hover:bg-emerald-900/60 hover:text-emerald-300 transition-colors disabled:opacity-50"
+                  className="rounded px-2 py-1 text-xs text-success bg-secondary hover:bg-success/10 transition-colors disabled:opacity-50"
                 >
                   {saving ? "Saving…" : "Save"}
                 </button>
@@ -521,10 +538,19 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                 >
                   Download
                 </a>
+                {pdfUrl && (
+                  <a
+                    href={pdfUrl}
+                    download={pdfNameFor(entry.name)}
+                    className="rounded px-2 py-1 text-xs text-muted-foreground bg-secondary hover:bg-secondary hover:text-foreground transition-colors"
+                  >
+                    Download PDF
+                  </a>
+                )}
                 {editable && (
                   <button
                     onClick={handleStartEdit}
-                    className="rounded px-2 py-1 text-xs text-blue-400 bg-secondary hover:bg-blue-900/60 hover:text-blue-300 transition-colors"
+                    className="rounded px-2 py-1 text-xs text-primary bg-secondary hover:bg-primary/10 transition-colors"
                     title="Edit file"
                   >
                     Edit
@@ -533,7 +559,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                 {deletable && (
                   <button
                     onClick={handleDelete}
-                    className="rounded px-2 py-1 text-xs text-red-400 bg-secondary hover:bg-red-900/60 hover:text-red-300 transition-colors"
+                    className="rounded px-2 py-1 text-xs text-destructive bg-secondary hover:bg-destructive/10 transition-colors"
                     title="Delete file"
                   >
                     Delete
@@ -541,10 +567,10 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                 )}
               </>
             )}
-            <Button variant="ghost" size="none" radius="keep" layout="" onClick={onClose} title="Close" className="rounded p-1 text-lg leading-none">
-              ×
-            </Button>
           </div>
+          <Button variant="ghost" size="none" radius="keep" layout="" onClick={onClose} title="Close" aria-label="Close" className="order-2 shrink-0 rounded p-1 text-lg leading-none sm:order-3">
+            ×
+          </Button>
         </div>
 
         {/* Body — pb-safe keeps content above iOS home indicator */}
@@ -571,13 +597,13 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
                   <div className="text-[10px] text-muted-foreground mb-1.5 font-medium uppercase tracking-wide">
                     Rendered Preview
                   </div>
-                  <div className="flex-1 rounded border border-border bg-card/60 p-4 overflow-auto prose prose-invert max-w-none
+                  <div className="flex-1 rounded border border-border bg-card/60 p-4 overflow-auto cc-prose prose max-w-none
                     prose-headings:font-semibold prose-headings:text-foreground
                     prose-h1:text-xl prose-h2:text-lg prose-h3:text-base
                     prose-p:text-foreground prose-p:leading-7 prose-p:text-sm
-                    prose-a:text-blue-400 prose-a:no-underline hover:prose-a:underline
+                    prose-a:text-primary prose-a:no-underline hover:prose-a:underline
                     prose-strong:text-foreground prose-em:text-foreground
-                    prose-code:text-sky-300 prose-code:bg-secondary prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:font-mono prose-code:before:content-none prose-code:after:content-none
+                    prose-code:text-foreground prose-code:bg-secondary prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-code:font-mono prose-code:before:content-none prose-code:after:content-none
                     prose-pre:bg-card prose-pre:border prose-pre:border-border prose-pre:text-foreground prose-pre:text-xs
                     prose-blockquote:border-border prose-blockquote:text-muted-foreground
                     prose-hr:border-border
@@ -678,13 +704,13 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
           )}
 
           {state.status === "markdown" && (
-            <div className="prose prose-invert max-w-none
+            <div className="cc-prose prose max-w-none
               prose-headings:font-semibold prose-headings:text-foreground
               prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg
               prose-p:text-foreground prose-p:leading-7
-              prose-a:text-blue-400 prose-a:no-underline hover:prose-a:underline
+              prose-a:text-primary prose-a:no-underline hover:prose-a:underline
               prose-strong:text-foreground prose-em:text-foreground
-              prose-code:text-sky-300 prose-code:bg-secondary prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-sm prose-code:font-mono prose-code:before:content-none prose-code:after:content-none
+              prose-code:text-foreground prose-code:bg-secondary prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-sm prose-code:font-mono prose-code:before:content-none prose-code:after:content-none
               prose-pre:bg-card prose-pre:border prose-pre:border-border prose-pre:text-foreground prose-pre:text-sm
               prose-blockquote:border-border prose-blockquote:text-muted-foreground
               prose-hr:border-border
@@ -752,7 +778,7 @@ export default function ArtifactViewerModal({ sessionId, entry, onClose, onDelet
 
           {state.status === "docx" && (
             <div
-              className="prose prose-sm prose-invert max-w-none dark:prose-invert overflow-x-auto"
+              className="cc-prose prose prose-sm max-w-none overflow-x-auto"
               dangerouslySetInnerHTML={{ __html: state.html }}
             />
           )}

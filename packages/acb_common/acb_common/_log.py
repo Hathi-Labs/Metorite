@@ -14,8 +14,10 @@ for run X" possible (E2 observability). Bind at the run boundary, clear in
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+from collections.abc import Iterator
 
 import structlog
 
@@ -80,6 +82,14 @@ def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
 # tests/unit/test_observability.py::test_inherit_and_run_context_keys_match.
 _RUN_CONTEXT_KEYS = (
     "run_id", "thread_id", "agent", "user", "source", "instance",
+    # 📌 Usage attribution. `app` is the product app the agent belongs to, as
+    # its `config.json` declares it, so a bill can say which app spent the
+    # credits. `source` says which SURFACE started the run (chat, a workflow),
+    # and one app is reached from several surfaces, so the two are not the
+    # same fact. `member_verified` is "1" only when `user` came from the
+    # signed-in session and not from the request body. Only a verified member
+    # may be SIGNED for the Router (H-73).
+    "app", "member_verified",
 )
 
 
@@ -91,6 +101,8 @@ def bind_run_context(
     user: str | None = None,
     source: str | None = None,
     instance: str | None = None,
+    app: str | None = None,
+    member_verified: bool = False,
 ) -> None:
     """Bind run-correlation fields into structlog contextvars.
 
@@ -118,11 +130,50 @@ def bind_run_context(
             ("user", user),
             ("source", source),
             ("instance", instance),
+            ("app", app),
         )
         if v
     }
+    # 🔴 **The flag belongs to the USER bound beside it, and to no other.**
+    # A first version bound it only when True, so binding a new user left a
+    # parent's "1" in place. A nested run that rebinds `user` to a request
+    # body's claim then inherited its parent's verification, and the stamp
+    # signed an address the body chose (H-73). Found by review. So binding a
+    # user now always settles the flag: set for a verified user, CLEARED for
+    # any other. A call that binds no user leaves both alone, which is right
+    # for a child acting for the same person as its parent.
+    if user:
+        if member_verified:
+            # A string, because every other field is one and a log line that
+            # prints `True` beside `"chat"` is a second vocabulary for a flag.
+            fields["member_verified"] = "1"
+        else:
+            structlog.contextvars.unbind_contextvars("member_verified")
     if fields:
         structlog.contextvars.bind_contextvars(**fields)
+
+
+@contextlib.contextmanager
+def run_context_scope() -> Iterator[None]:
+    """Snapshot this task's run fields, and put them back EXACTLY on exit.
+
+    🔴 **Not :func:`clear_run_context`, and a nested run is why.** A run can
+    start inside another run: a sub-agent dispatch awaits ``run_agent`` on its
+    parent's task. Clearing on the way out would wipe the PARENT's member and
+    app, so every model call the parent made after the child finished would
+    bill nobody. Restoring the snapshot leaves the parent exactly as it was.
+    """
+    before = {
+        k: v
+        for k, v in structlog.contextvars.get_contextvars().items()
+        if k in _RUN_CONTEXT_KEYS
+    }
+    try:
+        yield
+    finally:
+        structlog.contextvars.unbind_contextvars(*_RUN_CONTEXT_KEYS)
+        if before:
+            structlog.contextvars.bind_contextvars(**before)
 
 
 def clear_run_context() -> None:

@@ -56,7 +56,10 @@ COST_TTL_SECONDS = 60 * 60 * 24 * 45   # keep ~45 days of daily cost rollups
 # partition with no change at the emitting call site — completing decision D1's
 # (run_id, member, agent, instance) stamp on the live feed. A shared run binds
 # no instance, so the field is simply absent, exactly as before.
-_INHERIT = ("agent", "user", "thread_id", "run_id", "source", "instance")
+_INHERIT = (
+    "agent", "user", "thread_id", "run_id", "source", "instance",
+    "app", "member_verified",
+)
 
 
 # ── Shared async client (created lazily on the running loop) ─────────────────

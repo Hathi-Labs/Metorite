@@ -63,6 +63,7 @@ import {
   toggleSection,
   withPeriod,
 } from "../lib/reportBuilder";
+import { ReportFileButtons } from "./ReportFileButtons";
 
 /** Hours as a person reads them. Mirrors `AnalyticsPanels`, deliberately. */
 function duration(hours: number | null | undefined): string {
@@ -730,8 +731,12 @@ export default function ReportsView({
             <p className="text-[11px] text-muted-foreground">Rendering…</p>
           ) : body ? (
             <div className="space-y-3">
-              {selectedRow && (
-                <div className="flex justify-end">
+              {/* WS-27bm S8: the report as a file, beside Edit. Rendered
+                  again on the click, so the file carries the numbers of that
+                  moment. */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <ReportFileButtons reportId={selected} />
+                {selectedRow && (
                   <Button
                     variant="ghost"
                     size="sm"
@@ -740,8 +745,8 @@ export default function ReportsView({
                   >
                     Edit
                   </Button>
-                </div>
-              )}
+                )}
+              </div>
               <RenderedBody body={body} />
             </div>
           ) : null}

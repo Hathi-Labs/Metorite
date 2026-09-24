@@ -1890,6 +1890,51 @@ def _payload_user(event_payload: Any) -> str:
     )
 
 
+def _run_member(event_payload: Any, session_user: str | None = None) -> tuple[str, bool]:
+    """Who this run is for, and whether the SESSION says so. H-73.
+
+    Returns ``(member, verified)``.
+
+    🔴 **`user_email` is the request body's claim.** `run_agent_stream` used to
+    bind it as the run's user, and the Router bills and caps on that user. So
+    whoever wrote the body chose whose budget paid. A route that holds a
+    signed-in session now passes ``session_user``, and that value wins.
+
+    ⚠️ **A KEYWORD, never a payload key, and the event webhook is why.** Several
+    routes hand a caller's body to the executor whole — the event route spreads
+    ``**event.payload`` into it. A reserved payload key would be one any caller
+    could write. No request body can set a keyword argument.
+
+    ⚠️ **The claim is still returned, unverified.** A run started by an
+    automation has no session, and its body names the person it acts for.
+    That is good enough to REPORT and not good enough to ENFORCE, so it is
+    recorded and never signed.
+    """
+    verified = str(session_user or "").strip()
+    if verified:
+        return verified, True
+    if not isinstance(event_payload, dict):
+        return "", False
+    claimed = event_payload.get("user_email") or event_payload.get("user_id") or ""
+    return str(claimed).strip(), False
+
+
+def _bind_run_app(config: Any) -> None:
+    """Add the app this agent belongs to. Never raises.
+
+    The app comes from ``config.json``, which is loaded after the run has
+    already bound its other fields. So it is a second, additive bind, the same
+    shape as :func:`_bind_run_instance`.
+    """
+    try:
+        app = str((config or {}).get("app") or "").strip()
+        if app:
+            from acb_common import bind_run_context
+            bind_run_context(app=app)
+    except Exception:
+        pass
+
+
 def _bind_run_identity(event_payload: Any, agent_name: str = "") -> Any:
     """Open this run's acting-user scope; hand back what closes it.
 
@@ -1932,6 +1977,7 @@ async def run_agent(
     thread_id: str | None = None,
     model: str | None = None,
     organization_id: str | None = None,
+    session_user: str | None = None,
 ) -> dict[str, Any]:
     """Dynamically load and execute a named agent.
 
@@ -1962,11 +2008,17 @@ async def run_agent(
     """
     _identity = _bind_run_identity(event_payload, agent_name)
     try:
-        return await _run_agent_inner(
-            agent_name, event_payload,
-            run_id=run_id, thread_id=thread_id, model=model,
-            organization_id=organization_id,
-        )
+        # 🔴 **The batch path bound no run context at all**, so a model call
+        # made here reached the Router with no member, no app and no run, and
+        # billed nobody by name. Scoped so a NESTED run restores its parent.
+        from acb_common import run_context_scope
+        with run_context_scope():
+            return await _run_agent_inner(
+                agent_name, event_payload,
+                run_id=run_id, thread_id=thread_id, model=model,
+                organization_id=organization_id,
+                session_user=session_user,
+            )
     finally:
         _unbind_run_identity(_identity)
 
@@ -1980,6 +2032,8 @@ async def _run_agent_inner(
     model: str | None = None,
     # HONOURED as of slice 6a — see the tenant-binding block below.
     organization_id: str | None = None,
+    #: The signed-in member, from the route's session. See `_run_member`.
+    session_user: str | None = None,
 ) -> dict[str, Any]:
     """The batch run itself. Call :func:`run_agent`, not this — this one assumes
     the acting-user scope is already open.
@@ -1996,6 +2050,24 @@ async def _run_agent_inner(
     settings = get_settings()
     run_id = run_id or str(uuid.uuid4())
     thread_id = thread_id or f"{agent_name}:{run_id}"
+
+    # ── Run correlation for the batch path (usage attribution) ─────────────
+    # The streaming path binds the same fields. `run_agent` opened the scope
+    # that restores them, so nothing here needs a `finally`.
+    try:
+        from acb_common import bind_run_context
+        _batch_user, _batch_verified = _run_member(event_payload, session_user)
+        bind_run_context(
+            run_id=run_id, thread_id=thread_id, agent=agent_name,
+            user=_batch_user or None,
+            source=(
+                str(event_payload.get("source") or "").strip() or None
+                if isinstance(event_payload, dict) else None
+            ),
+            member_verified=_batch_verified,
+        )
+    except Exception:
+        pass
 
     # ── Tenant binding for this batch run's writes (WS-29 acb_graph slice 6a) ──
     # The batch path now HONOURS the ``organization_id`` its callers pass, exactly
@@ -2098,6 +2170,7 @@ async def _run_agent_inner(
                     or event_payload.get("user_id") or ""
                 ) if isinstance(event_payload, dict) else "",
             )
+            _bind_run_app(loaded.config)
             _effective_agent_dir = _resolve_effective_agent_dir(
                 loaded.agent_dir, loaded.config,
                 session_override=_session_workspace_override(
@@ -2494,6 +2567,8 @@ async def run_agent_stream(
     model: str | None = None,
     think_mode: str = "auto",
     organization_id: str | None = None,
+    #: The signed-in member, from the route's session. See `_run_member`.
+    session_user: str | None = None,
 ) -> AsyncIterator[str]:
     """Load a named agent and yield AG-UI SSE events while it runs.
 
@@ -2542,17 +2617,16 @@ async def run_agent_stream(
     _corr_user = ""
     try:
         from acb_common import bind_run_context
+        # H-73: the session's member wins over the body's claim.
+        _corr_user, _corr_verified = _run_member(event_payload, session_user)
         if isinstance(event_payload, dict):
-            _corr_user = str(
-                event_payload.get("user_email")
-                or event_payload.get("user_id") or ""
-            )
             # Originating surface (chat / email / tasks / webhook / …) so the
             # live activity feed can attribute this run to the app that fired it.
             _corr_source = str(event_payload.get("source") or "").strip() or "chat"
         bind_run_context(
             run_id=run_id, thread_id=thread_id,
             agent=agent_name, user=_corr_user or None, source=_corr_source,
+            member_verified=_corr_verified,
         )
     except Exception:
         pass
@@ -2754,6 +2828,7 @@ async def run_agent_stream(
             # the presence snapshot published at start (which predates the
             # load, so it has no instance) is patched to match.
             _bind_run_instance(_agent_instance, run_id)
+            _bind_run_app(loaded.config)
             _effective_ws = _resolve_effective_agent_dir(
                 loaded.agent_dir, loaded.config,
                 session_override=_session_ws,
