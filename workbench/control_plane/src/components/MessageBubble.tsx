@@ -21,6 +21,8 @@ import { openDoc, openGenUI } from "@/lib/sidePanelStore";
 import { useSidePanelFits } from "@/lib/sidePanelFit";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
 import { capabilityLabel, type RoomParticipant } from "@/lib/rooms";
+import { EntityIndexContext } from "@/components/ChatEntityPill";
+import { buildEntityIndex } from "@/lib/entityIndex";
 
 /** The only part of a room participant a message bubble needs: a face. */
 export type BubbleParticipant = Pick<
@@ -179,6 +181,11 @@ function MessageBubble({
       return true;
     });
   }, [message.toolEvents]);
+
+  // The names this turn's tools printed (WS-27bm S9). The answer builds its
+  // own copy in MarkdownMessage; a generative-UI `markdown` node reads this
+  // one through the context, so its «names» resolve the same way.
+  const entityIndex = useMemo(() => buildEntityIndex(dedupedToolEvents), [dedupedToolEvents]);
 
   // Dismissed tool/artifact cards (persisted) — filter them out of every card
   // surface so closing a card sticks across reloads.
@@ -447,6 +454,7 @@ function MessageBubble({
         segments={message.segments}
         onChoice={onChoice}
         sessionId={sessionId}
+        entityPills
       />
       {/* Inline artifact cards — dismissable (persisted), keyed by sha/path. */}
       {(() => {
@@ -485,6 +493,7 @@ function MessageBubble({
           view lives in the side panel); specs carrying a request_id route
           interactions through the blocking HITL resume path. */}
       {genUiEvents.length > 0 && (
+        <EntityIndexContext.Provider value={entityIndex}>
         <div className="mt-3 space-y-2">
           {genUiEvents.map((spec, i) => {
             const rec = (spec && typeof spec === "object"
@@ -521,6 +530,7 @@ function MessageBubble({
             return <GenerativeUINode key={i} spec={spec} onAction={act} />;
           })}
         </div>
+        </EntityIndexContext.Provider>
       )}
       {/* Inline email-assistant cards (editable draft, rule disable/delete).
           Inert unless the message contains email-assistant tool calls, so this

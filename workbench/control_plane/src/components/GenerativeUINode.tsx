@@ -141,7 +141,9 @@ function Node({
     case "markdown":
       return (
         <div className="min-w-0 text-[13px] leading-relaxed text-foreground">
-          <MarkdownBody content={s(props.text)} />
+          {/* Pills on (WS-27bm S9): the names resolve against the message's
+              tools through `EntityIndexContext`, or stay neutral chips. */}
+          <MarkdownBody content={s(props.text)} entityPills />
         </div>
       );
 

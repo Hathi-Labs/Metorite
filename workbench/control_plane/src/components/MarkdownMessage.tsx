@@ -8,14 +8,26 @@
  *  • Syntax-highlighted code blocks (token colours, `lib/codeTheme.ts`)
  *  • Terminal blocks with macOS-style chrome (red/yellow/green dots)
  *  • One-click copy button on every code block
- *  • Clickable links (open in new tab)
+ *  • Links: an in-app path opens in this tab, any other URL in a new tab
+ *  • Entity pills (opt-in, WS-27bm S9): «names» from the tools as pills
  *  • Collapsible tool-call accordion blocks (mirrors VS Code's "Used tool: …")
  *  • Streaming cursor (blinking ▌) while the response is in-flight
  */
 
-import { useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import ChatEntityPill from "@/components/ChatEntityPill";
+import { ControlLink } from "@/components/ControlLink";
+import { isInAppPath } from "@/components/ui/EntityPill";
+import { buildEntityIndex, type EntityIndex } from "@/lib/entityIndex";
+import remarkEntityPills, {
+  PILL_ATTR,
+  PILL_NUMBER_ATTR,
+  PILL_TEXT_ATTR,
+  spaceBeforeBold,
+} from "@/lib/remarkEntityPills";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { CODE_THEME } from "@/lib/codeTheme";
 import Icon from "@/components/Icon";
@@ -68,6 +80,9 @@ interface MarkdownMessageProps {
   sessionId?: string;
   /** Optional file path context for resolving relative image src in markdown (e.g. the .md file path). */
   mdFilePath?: string;
+  /** Draw the «names» the tools printed as pills, resolved against
+   *  `toolEvents` (WS-27bm S9). The chat turns it on. A document does not. */
+  entityPills?: boolean;
 }
 
 // ─── Media path resolver (shared with ArtifactViewerModal) ────────────────────
@@ -257,6 +272,38 @@ function ChoiceBlock({
   );
 }
 
+// ─── Links ──────────────────────────────────────────────────────────────────
+//
+// An in-app path (`/projects?task=…`) navigates in THIS tab: it is a page of
+// the app the member is already in. It is a real anchor (`ControlLink`), so a
+// modified click still opens a tab. Every other URL opens in a new tab, with
+// `noopener`. A `mailto:` opens the mail client and needs no tab. Colour is the
+// `primary` token, never a palette blue (WS-27bm S9).
+
+export const LINK_CLASS =
+  "text-primary underline underline-offset-2 hover:opacity-80 transition-opacity break-all";
+
+function InAppLink({ href, children }: { href: string; children?: ReactNode }) {
+  const router = useRouter();
+  return (
+    <ControlLink href={href} onActivate={() => router.push(href)} className={LINK_CLASS}>
+      {children}
+    </ControlLink>
+  );
+}
+
+function MarkdownLink({ href, children }: { href?: string; children?: ReactNode }) {
+  if (href && isInAppPath(href)) return <InAppLink href={href}>{children}</InAppLink>;
+  if (href?.toLowerCase().startsWith("mailto:")) {
+    return <a href={href} className={LINK_CLASS}>{children}</a>;
+  }
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer" className={LINK_CLASS}>
+      {children}
+    </a>
+  );
+}
+
 // ─── The Markdown body ─────────────────────────────────────────────────────
 //
 // The ONE Markdown renderer for chat content: GFM, the token-styled
@@ -264,22 +311,49 @@ function ChoiceBlock({
 // answer with it, and `GenerativeUINode` draws its `markdown` node with it
 // (WS-27bm S8 visual review: that node used bare ReactMarkdown, so its lists
 // had no bullets and its tables no cells).
+//
+// `entityPills` is opt-in (WS-27bm S9). With it on, `remarkEntityPills` turns
+// every «name» and bare email into a pill, and a missing space before a bold
+// after a full stop is put back. The pills resolve against `entityIndex`, or
+// against the nearest `EntityIndexContext` when no index is passed.
 
 export function MarkdownBody({
   content,
   onChoice,
   sessionId,
   mdFilePath,
+  entityPills = false,
+  entityIndex,
 }: {
   content: string;
   onChoice?: (choice: string) => void;
   sessionId?: string;
   mdFilePath?: string;
+  entityPills?: boolean;
+  entityIndex?: EntityIndex;
 }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={entityPills ? [remarkGfm, remarkEntityPills] : [remarkGfm]}
       components={{
+        // ── Entity pills (the plugin's `span[data-entity-pill]`) ──
+        // `node` is react-markdown's own prop, and must not reach the DOM.
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        span: ({ node: _node, children, ...rest }) => {
+          const attrs = rest as Record<string, unknown>;
+          if (entityPills && attrs[PILL_ATTR] !== undefined) {
+            const number = attrs[PILL_NUMBER_ATTR];
+            return (
+              <ChatEntityPill
+                text={String(attrs[PILL_TEXT_ATTR] ?? "")}
+                number={typeof number === "string" ? number : undefined}
+                index={entityIndex}
+              />
+            );
+          }
+          return <span {...rest}>{children}</span>;
+        },
+
         // ── Headings ──
         h1: ({ children }) => (
           <h1 className="text-[1.1rem] font-bold text-foreground mt-5 mb-3 pb-1 border-b border-border">
@@ -332,16 +406,7 @@ export function MarkdownBody({
         ),
 
         // ── Links ──
-        a: ({ href, children }) => (
-          <a
-            href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-blue-400 underline underline-offset-2 hover:text-blue-300 transition-colors break-all"
-          >
-            {children}
-          </a>
-        ),
+        a: ({ href, children }) => <MarkdownLink href={href}>{children}</MarkdownLink>,
 
         // ── Blockquote ──
         blockquote: ({ children }) => (
@@ -445,7 +510,7 @@ export function MarkdownBody({
         },
       }}
     >
-      {content}
+      {entityPills ? spaceBeforeBold(content) : content}
     </ReactMarkdown>
   );
 }
@@ -463,7 +528,13 @@ export default function MarkdownMessage({
   onChoice,
   sessionId,
   mdFilePath,
+  entityPills = false,
 }: MarkdownMessageProps) {
+  // The names this message's tools printed, for the pills (WS-27bm S9).
+  const entityIndex = useMemo(
+    () => (entityPills ? buildEntityIndex(toolEvents) : undefined),
+    [entityPills, toolEvents],
+  );
   // ── Segment-native rendering (Phase 3c — VS Code parity) ────────────────────
   // Every assistant TEXT segment is answer BODY, rendered inline in
   // chronological order. Assistant text a model emits *before* a tool call
@@ -520,6 +591,8 @@ export default function MarkdownMessage({
         onChoice={onChoice}
         sessionId={sessionId}
         mdFilePath={mdFilePath}
+        entityPills={entityPills}
+        entityIndex={entityIndex}
       />
 
       {/* Streaming cursor — only once text is actually streaming, so it doesn't
