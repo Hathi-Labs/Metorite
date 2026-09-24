@@ -146,12 +146,22 @@ function Node({
       );
 
     case "badge": {
+      // The hue is the tint and the dot. The words are foreground ink:
+      // `--warning` on a light card measures 1.57:1 (a known shortfall in
+      // `theme/contrast.test.ts`), so "At risk" in warning text read as faint
+      // yellow on pale yellow (S8 fix round 4).
       const hue = TONE_HUE[s(props.tone, "neutral")];
-      const toneCls = hue
-        ? `border-transparent ${accentForHue(hue).chip}`
-        : "border-border text-muted-foreground bg-secondary/50";
+      if (!hue) {
+        return (
+          <span className="inline-block text-[10px] font-medium px-1.5 py-0.5 rounded border border-border text-muted-foreground bg-secondary/50">
+            {s(props.text)}
+          </span>
+        );
+      }
+      const accent = accentForHue(hue);
       return (
-        <span className={`inline-block text-[10px] font-medium px-1.5 py-0.5 rounded border ${toneCls}`}>
+        <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded border border-transparent text-foreground ${accent.soft}`}>
+          <span aria-hidden className={`size-1.5 shrink-0 rounded-full ${accent.dot}`} />
           {s(props.text)}
         </span>
       );

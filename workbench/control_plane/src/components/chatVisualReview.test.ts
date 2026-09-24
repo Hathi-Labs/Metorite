@@ -17,6 +17,8 @@ import GenerativeUINode, { TONE_HUE } from "@/components/GenerativeUINode";
 import { displayableState } from "@/components/GenerativeUIPanel";
 import { barColor } from "@/components/genUITemplates";
 import { ACCENT_HUES } from "@/lib/statusAccent";
+import { AA_LARGE_TEXT, AA_NORMAL_TEXT, contrast } from "@/lib/theme/contrast";
+import { THEME } from "@/lib/theme/themes";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
@@ -174,7 +176,24 @@ describe("the generative-UI primitives", () => {
     const html = renderToStaticMarkup(
       createElement(GenerativeUINode, { spec: { type: "badge", props: { text: "At risk", tone: "warning" } } }),
     );
-    expect(html).toContain("bg-warning/10 text-warning");
+    // Fix round 4: the words are foreground ink, the hue is the tint and dot.
+    expect(html).toContain("text-foreground bg-warning/10");
+    expect(html).toContain("bg-warning\"");
+    expect(html).not.toContain("text-warning");
+  });
+
+  it("does not draw badge words in a status colour a light card cannot carry", () => {
+    // Why: the manifest's own numbers. Warning ink on a light card fails even
+    // the large-text threshold, so it must not carry a badge's words.
+    const light = THEME.colors.light;
+    expect(contrast(light.warning, light.card)!).toBeLessThan(AA_LARGE_TEXT);
+    expect(contrast(light.foreground, light.card)!).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+    for (const tone of Object.keys(TONE_HUE)) {
+      const html = renderToStaticMarkup(
+        createElement(GenerativeUINode, { spec: { type: "badge", props: { text: "x", tone } } }),
+      );
+      expect(html, tone).toContain("text-foreground");
+    }
   });
 });
 
