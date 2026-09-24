@@ -254,7 +254,7 @@ draw one template each. W4 and W5 stay instructions over the tools.
 1. The member states a goal and a deadline.
 2. The agent reads the space (`projects_tree`), the vocabulary, and the
    people (`people_for`).
-3. The agent proposes phases, tasks, owners and dates as a `planCard`
+3. The agent proposes tasks, owners, dates and dependencies as a `planCard`
    (`emit_generative_ui`, `hitl: true`, inline — the rail has no panel host).
    Each task has a verb-plus-object title, an owner, an effort estimate and
    a date. A task that lacks one of the four is not proposed.
@@ -690,7 +690,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S7a · Capacity** — ✅ **BUILT 2026-09-23** | `GET /projects/analytics/capacity` · the Analytics app's Capacity panel · the report section `capacity` · the chat tool `team_capacity` (§13.3) | AGENT-SAFE |
 | **S7b · Fit** — ✅ **BUILT 2026-09-24** | `GET /projects/tasks/{id}/candidates` and its draft form · `GET /projects/analytics/rebalance` · "Suggested" in the assignee picker · the chat tools `fit_for_task` and `rebalance` (§13.4) | AGENT-SAFE |
 | **S7c · Conflicts** — ✅ **BUILT 2026-09-24** | `GET /projects/analytics/conflicts` with seven kinds · the Conflicts panel · the report section `conflicts` · the chat tool `find_conflicts` · the dependency rule moved to the server with one fixture for both sides (§13.5, §10.5) | AGENT-SAFE |
-| **S7d · Plan with capacity** | `propose_plan` gains start dates, phases and dependencies, and shows each owner's fit on the plan card (§13.6) | AGENT-SAFE |
+| **S7d · Plan with capacity** | `propose_plan` gains start dates and dependencies, and shows each owner's fit and hours across the plan on the card, through `POST /projects/plan/preview` (§13.6, §10.6). No phases | AGENT-SAFE |
 | **S7e · On-the-fly analysis** | The read tool `task_dataset` and the rule for numbers the chat computes itself (§13.7) | AGENT-SAFE |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-09-30 |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
@@ -830,6 +830,39 @@ Each slice is one pull request. Each one is useful alone.
 14. The status header, the §10 row, the board row and the INDEX line say that
     S7c is built (R4).
 
+### 10.6 Acceptance — S7d
+
+**Done when:**
+1. `propose_plan` accepts `key`, `start` and `after`. It refuses each rule 7
+   case before any card, and a test proves each case makes zero calls that are
+   not GET.
+2. A recording fake shows the rule 8 order, exactly one `_confirm`, and no
+   call that is not GET outside the routes the manifest gives the tool.
+3. Every link is on the confirm card. A card over the limit refuses.
+4. When the fake refuses the fifth `POST /projects/tasks`, the receipt lists
+   the created ids, names the failed row and counts the rows not tried. No
+   delete or archive call runs.
+5. Every `due_at` and `start_date` that the tool posts equals the submitted
+   value, also for a pair that conflicts. The card carries the warning
+   sentence (rule 3).
+6. The preview route. Without the HR grant, the body says `hr_visible: false`
+   and carries no fit or hours keys, and a test proves they are absent. With
+   the grant, an owner with no skill match shows "no match", not an absent
+   fit. Two plan rows for one owner mark the second when the hours run out.
+   An R8 test shows that the hours equal `person_capacity` plus the plan rows,
+   and that work outside the viewer's grant has no effect.
+7. A source test asserts that the preview imports `dependency_conflict` and
+   `rank_candidates`, and never calls `score_skills`.
+8. A vitest over a pure lib function for the PlanCard: the submit carries
+   `start`, `after` and the three scores, the fit and the hours are read-only,
+   and a marked row shows its mark.
+9. MANIFEST, `READ_ONLY_POSTS` and COMPOSITE (with `link_tasks` added) are
+   updated, and `test_projects_chat_coverage.py` passes.
+10. `instructions.md` W1 no longer asks for phases, and a test fails if the
+    word comes back into W1.
+11. The status header, the §10 row, the board row and the INDEX line say that
+    S7d is built (R4).
+
 ---
 
 ## 11. Verification
@@ -874,6 +907,18 @@ In `workbench/control_plane`, run `npx tsc --noEmit` and
 `npx vitest run src/app/projects/lib/timeline.test.ts src/app/projects/components/TimelineView.test.ts src/app/projects/lib/conflicts.test.ts src/lib/reportEmail.test.ts`.
 The timeline's copy of the rule must not change. The slice creates `test_projects_analytics_conflicts.py`, `gateway/conflicts.py`,
 `lib/conflicts.ts`, `lib/conflicts.test.ts` and the fixture file.
+
+For S7d, with the same database settings:
+
+```
+uv run pytest tests/unit/test_projects_agent_writes.py tests/unit/test_projects_agent.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_candidates.py tests/unit/test_projects_analytics_capacity.py tests/unit/test_projects_analytics_conflicts.py tests/unit/test_projects_relations.py tests/unit/test_projects_plan_preview.py
+```
+
+In `workbench/control_plane`, run `npx tsc --noEmit` and
+`npx vitest run src/components/genUITemplates.test.ts src/app/projects/lib/planCard.test.ts`.
+Then look at the plan card in light mode, at compact density, under a changed
+accent, and beside the board. The slice creates `test_projects_plan_preview.py`
+and `planCard.test.ts`.
 
 `test_projects_report_sections_lockstep.py` is the lockstep test of §10.3
 item 6. It is a pytest that reads the two TypeScript files as text, so one test
@@ -1252,16 +1297,69 @@ local day. The route checks every visible blocker, and reads the UTC day.
 
 ### 13.6 S7d — Plan with capacity
 
-`propose_plan` gains three inputs and one check:
-- A start date on each task.
-- Phases, created as parent tasks with the phase's tasks as their subtasks.
+`propose_plan` gains two inputs and one check:
+- A start date on each task, optional.
 - Dependencies, written as `blocks` links after the tasks exist, under the
   same one card.
-- For each owner, the fit from §13.4 and the hours from §13.3, printed on the
-  plan card row. The card marks a row whose owner lacks the hours, and the
-  member edits it before confirming.
+- For each named owner, the fit from §13.4 and the hours from §13.3, printed
+  on the plan card row. The card marks a row whose owner lacks the skills or
+  the hours.
 
 The plan still creates everything under one card, in one batch.
+
+**No phases (owner, 2026-09-24).** The first draft of this section created
+phases as parent tasks. The owner declined them. The Projects app already has
+stages, which are the workflow steps a task moves through (Backlog, To do, In
+progress, Done). For a team of this size, start dates and dependencies carry
+the order of a plan, and the Timeline draws it. A plan big enough to need
+grouping uses sub-projects, which exist already. A phase would also add a
+parent task that needs an owner and that the analytics would count as work.
+
+**Rules for the build.** The S7d audit (2026-09-24) found these decisions. The
+owner took rules 1, 2 and 3 on 2026-09-24.
+
+1. **Fit for the named owner** (owner). Each row shows the fit of the owner
+   the plan names: the matched skills, the spare hours and the warnings. If
+   the owner matches no skill, the row says so. It does not fall back to the
+   top 3 of §13.4.
+2. **Hours across the plan** (owner). For each owner, the route adds the
+   owner's plan rows to their existing visible work, in due-date order, and
+   walks them with `at_risk_tasks`. So five rows that each fit alone, and
+   together do not, mark the rows where the hours run out.
+3. **A mark warns and never blocks** (owner), as D-PM-12's arrow does. The
+   member can still create the plan. The confirm card repeats every mark,
+   after the server computes the marks again for the owners the member
+   edited.
+4. **No HR grant, no fit.** A planner without `admin:members:read` sees no
+   fit, no hours and no mark. The card says in one line that an admin can see
+   capacity (§13.2 rule 3).
+5. **One read: `POST /projects/plan/preview`.** It takes the rows and returns,
+   for each row, the fit and the hours across the plan, and the dependency
+   warnings from `gateway/conflicts.dependency_conflict`. It writes nothing,
+   so it goes into `READ_ONLY_POSTS`. One call serves the whole plan, which
+   avoids one full-pool read per row, and the skill never carries its own copy
+   of the dependency rule.
+6. **Stable row keys.** Each row carries a `key`, and `after` lists the keys
+   of the rows that block it. If the member drops a row, its links drop too,
+   and the confirm card lists the dropped links.
+7. **Refuse before the card, with zero writes,** for a start date after the
+   due date, an unknown key in `after`, a row that blocks itself, or a
+   `blocks` cycle (a pure topological check). The server's
+   `assert_no_block_cycle` stays as the fence behind it.
+8. **The write order.** The project node, then the tasks with `start_date`,
+   then the assignees, then the links. `MAX_BATCH` (50) counts the tasks. If
+   the confirm card body would pass the card's 4000-character limit, the tool
+   refuses, because a cut card is not consent.
+9. **A partial failure stops and says what exists.** At the first refusal the
+   tool stops. The receipt lists every task it created with its `full_id`,
+   names the row that failed, and counts the rows it did not try. It archives
+   nothing by itself, because that would be a class C act with no card.
+10. **The same checks as `create_task`.** Owners pass `_unknown_addresses`
+    (H-162). Impact, urgency and effort go back and forth through the submit,
+    so the sort score after the submit is the score the card showed.
+11. **Lockstep.** The planCard catalog line changes together with the
+    component (`genUITemplates.test.ts`). The receipt in `ProjectToolCards.tsx`
+    and step 3 of W1 in `instructions.md` change in the same slice.
 
 ### 13.7 S7e — On-the-fly analysis
 
@@ -1269,7 +1367,7 @@ The plan still creates everything under one card, in one batch.
 500 tasks in the viewer's scope. The columns are number, title, project, status
 category, assignees, estimate, start, due, completed, created and blockers. The
 agent computes an uncommon figure from it, for example cycle time by tag or
-the share of work each phase holds.
+the share of work each stage holds.
 
 **The rule for a number the chat computes.** The answer says that the chat
 computed it, and from how many rows. If the table was truncated, the chat does

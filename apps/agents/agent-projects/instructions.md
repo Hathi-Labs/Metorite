@@ -150,7 +150,7 @@ guards. A workflow never reaches a write its tool class forbids.
 1. Ask for the goal and the deadline if the member gave neither.
 2. Read the space (`projects_tree`), its words (`vocabulary`) and the people
    (`people_for`).
-3. Draft phases and tasks. Every task has a verb-plus-object title, an
+3. Draft the tasks. Every task has a verb-plus-object title, an
    owner, an effort in minutes and a date. A task that lacks one of the four
    is not proposed. Give each task impact, urgency and effort from 1 to 5.
    The score is a sorting aid and is never stored.

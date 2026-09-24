@@ -286,6 +286,61 @@ _ACCESS_REQUEST_UPSERT_SQL = """
                                     access_request.display_name)
 """
 
+#: Which organization an address is asking to join, by its email DOMAIN.
+#:
+#: ⚠️ **`organization` is the one table with NO row-level security** — it is the
+#: tenant registry itself, so this read works on an UNBOUND session. That is
+#: what breaks the chicken-and-egg: the knock has no tenant yet, and it cannot
+#: get one from a table whose policy needs one.
+#:
+#: `domain IS NOT NULL` matters. Several organizations legitimately have no
+#: domain set, and `lower(NULL) = lower('x')` is NULL rather than true — but
+#: stating it keeps the intent readable and survives a future `DEFAULT ''`.
+#:
+#: ⚠️ It returns at most TWO rows on purpose. The caller refuses to route when
+#: more than one organization claims a domain: guessing between two tenants is
+#: how one customer's colleague lands in another customer's queue, and a
+#: duplicate domain is a data defect somebody must fix, not a tie to break.
+_ORG_FOR_DOMAIN_SQL = """
+    SELECT id FROM organization
+     WHERE domain IS NOT NULL AND lower(domain) = :domain
+     LIMIT 2
+"""
+
+
+async def _organization_for_email(email: str) -> str | None:
+    """The organization whose domain matches this address, or ``None``.
+
+    ``None`` means "no organization claims this domain", which is NOT an error:
+    it is the answer for somebody who is not a colleague of any existing
+    customer. Owner decision, 2026-09-24 — those people belong on the
+    self-serve path that creates their own organization, and filing them into
+    a customer's queue would both mislead the admin and leak that the address
+    knocked.
+    """
+    domain = email.rpartition("@")[2].strip().lower()
+    if not domain:
+        return None
+    try:
+        from sqlalchemy import text  # noqa: PLC0415
+
+        factory = _get_session_factory()
+        async with factory() as session:
+            rows = (await session.execute(
+                text(_ORG_FOR_DOMAIN_SQL), {"domain": domain},
+            )).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "access_request_org_lookup_failed",
+            email=email, error=str(exc)[:200],
+        )
+        return None
+    if len(rows) != 1:
+        # 0 = nobody claims it. 2 = two tenants claim it, and picking one is
+        # the leak described above.
+        return None
+    return str(rows[0][0])
+
 
 async def _record_signin_request(email: str, display_name: str = "") -> None:
     """File an unprovisioned sign-in in ``access_request``. Best-effort.
@@ -306,17 +361,79 @@ async def _record_signin_request(email: str, display_name: str = "") -> None:
     ``display_name`` is accepted and stored but the resolver has none to give —
     ``UserContext`` carries an email only. The column exists so an approval
     path (or a future IdP claim) can fill it; the UI falls back to the address.
+
+    ⚠️ **IT RAN GUC-UNBOUND UNTIL 2026-09-24, AND THAT MEANT IT NEVER WROTE
+    ANYTHING** (H-118). Measured on production: 20 failures in seven days,
+    including the owner's own two addresses on 2026-09-23.
+
+    `access_request` was swept into the tenancy retrofit like every other
+    table. It carries
+    ``organization_id uuid NOT NULL DEFAULT (current_setting('app.tenant_id',
+    true))::uuid`` and ``FORCE ROW LEVEL SECURITY`` keyed on the same GUC. On
+    an unbound session ``current_setting`` is ``''``, so the cast raised
+    ``invalid input syntax for type uuid: ""`` and the best-effort ``except``
+    swallowed it. **The queue could not record the one kind of person it
+    exists to record.**
+
+    Two bugs, and the second only shows after the first is fixed: even a
+    successful insert would have been INVISIBLE, because the policy hides any
+    row whose ``organization_id`` is not the reader's tenant.
+
+    **Both close by binding the tenant instead of loosening the table.** The
+    organization is resolved from the email domain first (see
+    :func:`_organization_for_email`), then the upsert runs inside
+    ``tenant_session(org_id)`` — the same ONE GUC seam (R5) the RBAC bridge
+    above uses, and for the same reason. The ``DEFAULT`` then resolves to the
+    right tenant, the ``WITH CHECK`` passes, and the admin of that
+    organization sees the row in their Requests tab.
+
+    📌 **No migration, and that is deliberate.** Making ``organization_id``
+    nullable would have made the column mean two things and would have needed
+    the RLS policy widened to match — a hole in the wall D15 rests on, cut to
+    solve a problem that was never about the schema.
     """
+    # ⚠️ INSIDE the guard, not before it. `_organization_for_email` catches its
+    # own failures today, so putting this outside a `try` looked safe — but
+    # that is safety by coincidence, and this function's contract is "never
+    # raises, never changes the caller's answer". A bug in the lookup would
+    # otherwise propagate into `resolve_access` and turn every unprovisioned
+    # sign-in into a 500. Caught by
+    # `test_a_registry_read_that_explodes_files_nothing_and_never_raises`,
+    # which was written against the contract rather than against the code.
+    try:
+        org_id = await _organization_for_email(email)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning(
+            "access_request_org_lookup_failed",
+            email=email, error=str(exc)[:200],
+        )
+        return
+    if org_id is None:
+        # Not a colleague of any existing customer. Owner decision 2026-09-24:
+        # these people take the self-serve path that creates their OWN
+        # organization, so there is no queue for this knock to join. Logged at
+        # info because it is an ordinary outcome, not a failure — and named
+        # distinctly so it can never be read as the H-118 defect returning.
+        _log.info(
+            "access_request_no_matching_org",
+            email=email,
+            detail=(
+                "no organization claims this email domain — the caller belongs "
+                "on the self-serve signup path, not in a customer's queue"
+            ),
+        )
+        return
     try:
         from sqlalchemy import text  # noqa: PLC0415
 
-        factory = _get_session_factory()
-        async with factory() as session:
+        # tenant_session applies SET LOCAL app.tenant_id and commits on exit.
+        # SET LOCAL, never SET: the engine pools connections, and a session
+        # -scoped bind would follow the connection to its next borrower.
+        async with tenant_session(org_id) as session:
             await session.execute(
                 text(_ACCESS_REQUEST_UPSERT_SQL),
                 {"email": email, "name": display_name},
             )
-            await session.commit()
     except Exception as exc:  # noqa: BLE001
         _log.warning(
             "access_request_record_failed", email=email, error=str(exc)[:200],
