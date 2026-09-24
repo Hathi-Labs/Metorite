@@ -8,6 +8,11 @@ dependencies = [
     "tenacity>=9.0",
     "cryptography>=42.0",
     "acb-common",
+    # WS-31 CP-13c: `acb_llm.decide` reaches the Console through
+    # `acb_auth.console_resolve`, the one Console HTTP client. Declared HERE,
+    # or the import is green in the root venv and broken in an image whose
+    # closure lacks acb-auth. acb_auth does not import acb_llm, so no cycle.
+    "acb-auth",
 ]
 
 [build-system]

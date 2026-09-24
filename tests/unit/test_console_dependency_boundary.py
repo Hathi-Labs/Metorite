@@ -302,6 +302,28 @@ _THE_LIFESPAN_CALLER = "apps/services/gateway/gateway/main.py"
 #: message already records for ``v1_compat``. ``resolve_for_signin`` — the seat
 #: allocator this fence exists for — is not reachable from it.
 _THE_IN_PRODUCT_AI_CALLER = "packages/acb_llm/acb_llm/routed.py"
+
+#: ⚠️ **The EIGHTH entry — ``acb_llm/decide.py``, WS-31 CP-13c, 2026-09-24 —
+#: and the argument for it, because the paragraph above is this list's own
+#: rule.**
+#:
+#: It calls ``decide_on_console`` and nothing else. That function allocates no
+#: seat and names no person to the registry. It spends AI credits on the
+#: ``decide`` door, the same resource and the same credential pick as the fifth
+#: entry's chat hop. The ``X-CC-*`` values it forwards are attribution, and on
+#: the deployment arm ``X-CC-Member`` selects the tenant, so the CALLER of the
+#: facade must pass a server-derived member (R11). The facade takes no member
+#: from a request itself.
+#:
+#: **Why the facade and not a gateway route.** ``acb_llm.decide`` is the ONE
+#: tenant seam for typed decisions (§6A.14 CP-13c), and every app caller goes
+#: through it. ``console_resolve`` is the ONE Console HTTP client, so a second
+#: client in ``acb_llm`` would be the defect this module's header forbids.
+#:
+#: ⚠️ The entry is NARROWED by
+#: ``test_the_decide_facade_touches_only_the_decide_client`` below, the same
+#: pairing the lifespan entry has.
+_THE_DECIDE_CALLER = "packages/acb_llm/acb_llm/decide.py"
 _ALLOWED_CALLERS = (
     _THE_IN_PRODUCT_AI_CALLER,
     _THE_ONE_CALLER,
@@ -310,7 +332,41 @@ _ALLOWED_CALLERS = (
     _THE_INVITE_CALLER,
     _THE_ROUTER_CALLER,
     _THE_LIFESPAN_CALLER,
+    _THE_DECIDE_CALLER,
 )
+
+#: The ONLY names ``acb_llm/decide.py`` may read from ``console_resolve``.
+_DECIDE_ALLOWED_NAMES = frozenset({"decide_on_console", "ConsoleRouterUnavailable"})
+
+
+def test_the_decide_facade_touches_only_the_decide_client() -> None:
+    """``acb_llm/decide.py`` is on the list for TWO names, and this pins them.
+
+    The list admits the FILE. This admits only the decide client and its
+    outage exception, so a later edit cannot call ``resolve_for_signin`` or a
+    seat write from the facade.
+    """
+    tree = _tree(_REPO / _THE_DECIDE_CALLER)
+    used = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "console_resolve"
+    }
+    imported = {
+        a.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "acb_auth.console_resolve"
+        for a in node.names
+    }
+    assert used or imported, "the facade no longer reaches console_resolve"
+    assert (used | imported) <= _DECIDE_ALLOWED_NAMES, (
+        f"acb_llm/decide.py reads {sorted((used | imported) - _DECIDE_ALLOWED_NAMES)} "
+        "from console_resolve. It may read only the decide client and its "
+        "outage exception."
+    )
 
 
 def _imports_console_resolve(path: Path) -> bool:
@@ -329,7 +385,7 @@ def _imports_console_resolve(path: Path) -> bool:
 
 
 def test_resolve_is_reachable_only_from_the_signin_path() -> None:
-    """``console_resolve`` has exactly FIVE callers, and all are named here.
+    """``console_resolve`` has exactly SEVEN callers, and all are named here.
 
     A structural fence is preferred to an example one (R7): the failure is a
     second call site added later, which no runtime assertion sees until a
@@ -351,9 +407,13 @@ def test_resolve_is_reachable_only_from_the_signin_path() -> None:
     ``cc_live_`` credential and the route makes no tenant claim at all. The
     argument is written beside the name above.
 
+    ⚠️ FIVE → SIX by the lifespan bootstrap (2026-09-15), and SIX → SEVEN by
+    WS-31 CP-13c (2026-09-24): ``acb_llm/decide.py`` (``decide_on_console``,
+    the ``decide`` facade). Both arguments are written beside the names above.
+
     What stays forbidden is unchanged: wiring any of them behind
     ``resolve_access`` (six callers, one a room fan-out) = farmable seat burn.
-    A SIXTH is the drift.
+    An EIGHTH is the drift.
 
     ⚠️ It is deliberately paired with a frontend fence. This one alone is
     satisfied by a BFF that calls ``POST /signin/resolve`` from anywhere;
@@ -376,7 +436,7 @@ def test_resolve_is_reachable_only_from_the_signin_path() -> None:
     )
     assert callers == sorted(_ALLOWED_CALLERS), (
         f"console_resolve callers drifted: {callers}\n\n"
-        "It allocates a SEAT (`resolve_for_signin`). Exactly five sites may "
+        "It allocates a SEAT (`resolve_for_signin`). Exactly seven sites may "
         "call it — the completion of a sign-in, the self-serve signup provision, "
         "the customer seat-admin write, the member-invite mirror and the CP-11 "
         "AI Router hop (which allocates no seat and names no person). The first "

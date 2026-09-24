@@ -6,8 +6,10 @@ path/env/package mapping is in D41.1.)*
 
 🆕 **CP-13 MINTED 2026-09-23 (D75): the `decide` task.** TypeSafe's Jev serves
 fast typed decisions through a new `POST /v1/decide` door. The Operator Console
-comes first, and the app layer follows. It is SPEC ONLY. **§6A.14** is the
-contract.
+comes first, and the app layer follows. CP-13a and CP-13b are BUILT and on
+main. CP-13c, the tenant client and the `acb_llm.decide` facade, is BUILT on
+branch `cp13c-decide-client`, dark behind `DECIDE_ENABLED`. CP-13d to CP-13g
+are SPEC ONLY. **§6A.14** is the contract.
 
 **Status:** ◐ **CP-0 · CP-1 · CP-2 · CP-2a · CP-2b · CP-3 · CP-4 BUILT · 🆕 **CP-10 MINTED 2026-08-26 (D56) — the operator
 model-management plane; CP-5 is re-scoped as its removal half · 🆕 **CP-11 MINTED
@@ -1505,7 +1507,7 @@ Seven slices, in order:
 |---|---|---|
 | CP-13a | The task, the tier, the handler seam and `POST /v1/decide` | 🟢 AGENT-SAFE |
 | CP-13b | ✅ BUILT 2026-09-23. The Operator Console learns the task, and "Try a decision" | 🟢 AGENT-SAFE. The live key is §8 gate 9 |
-| CP-13c | The tenant client on the per-box deployment key, and the one facade, `acb_llm.decide` | 🟢 AGENT-SAFE. Needs H-152's tenant slice. Ships dark behind `DECIDE_ENABLED`, an owner-only flag |
+| CP-13c | ✅ BUILT 2026-09-24. The tenant client on the per-box deployment key, and the one facade, `acb_llm.decide` | 🟢 AGENT-SAFE. Needs H-152's tenant slice. Ships dark behind `DECIDE_ENABLED`, an owner-only flag |
 | CP-13d | A `decide` tool for every MAF agent, the main chat included | 🟢 AGENT-SAFE to build. 🔴 a real tenant is §8 gate 9 |
 | CP-13e | Email triage adopts it, shadow first | 🔴 real tenant content is §8 gate 9 |
 | CP-13f | The inline gates: commitment, meeting copilot, draft consult | 🔴 same |
@@ -9391,20 +9393,24 @@ nothing.
 **Verification:** `uv run pytest tests/unit/test_customer_console_credit_price.py`
 against a real Postgres (R8).
 
-### 6A.14 The `decide` task — System One decisions through the Router (CP-13, D75) — CP-13a BUILT 2026-09-23 · CP-13b BUILT 2026-09-23 · CP-13c to CP-13g SPEC ONLY
+### 6A.14 The `decide` task — System One decisions through the Router (CP-13, D75) — CP-13a BUILT 2026-09-23 · CP-13b BUILT 2026-09-23 · CP-13c BUILT 2026-09-24 · CP-13d to CP-13g SPEC ONLY
 
-✅ **CP-13a is BUILT, on branch `cp13a-decide`.** Migration `033` seeds
+✅ **CP-13a is BUILT and on main.** Migration `033` seeds
 the task and the hidden tier. `handlers.py` holds the handler table, and
 `POST /v1/decide` serves on `ServingCaller`. The fence is
 `tests/unit/test_customer_console_decide.py`. The door ships dark, because
 nothing binds `tier-decide` and nobody has installed a key.
 
-✅ **CP-13b is BUILT, on branch `cp13b-console`.** The seven UI vocabularies
+✅ **CP-13b is BUILT and on main.** The seven UI vocabularies
 know `decide`, `/providers` carries a TypeSafe guide, and `/tiers` carries
 "Try a decision" on the `tier-decide` card. The "As built" note under CP-13b
 names the route and its fences.
 
-**CP-13c to CP-13g are not built.** Owner directive, 2026-09-23:
+✅ **CP-13c is BUILT, on branch `cp13c-decide-client`.** The tenant client
+`decide_on_console` and the facade `acb_llm.decide` ship dark behind
+`DECIDE_ENABLED`. The "As built" note under CP-13c names the fences.
+
+**CP-13d to CP-13g are not built.** Owner directive, 2026-09-23:
 
 > *"Let's go with Jev. Build out the operator console for it first, and then we
 > will figure out how to make changes in the app to [use] this in the best
@@ -9803,14 +9809,13 @@ The tenant gateway reaches the Router for chat only today. A search for
 `decide` needs its own client.
 
 - **`decide_on_console`** in `acb_auth/console_resolve.py`, beside
-  `chat_completion_on_console` (`:2139`). **It presents the per-box
-  DEPLOYMENT key and sends `X-CC-Member`.** It does not gate on
-  `router_is_wired()` (`:2096`), because that function requires the one
-  `CUSTOMER_CONSOLE_ORG_KEY`, and the one key is H-152's defect.
-  ⚠️ **CP-13c depends on H-152's tenant slice.** #403 built the Console arm
-  only, and the tenant client still presents the organization key. If
-  H-152's tenant slice has not merged, build that client change first, or
-  build it in this slice and delete H-152 in the same PR.
+  `chat_completion_on_console`. **It uses the chat client's credential path
+  exactly.** H-152's tenant slice (#406) made `router_is_wired()` accept
+  either credential. So the client gates on `router_is_wired()`, takes
+  `kind, key = router_credential()` and sends `_attribution_headers()`. A
+  box on the per-box deployment key sends that key and `X-CC-Member`. The
+  client refuses a deployment key with no member locally, and sends no
+  request.
 - **One tenant facade, `acb_llm.decide(...)`**. Every app caller goes
   through it. It takes typed question objects and returns typed answers. It
   never returns a raw dict. **This is the ONE seam** (CLAUDE.md §4). A
@@ -9828,6 +9833,43 @@ The tenant gateway reaches the Router for chat only today. A search for
   covers the chat tool (CP-13d) and the app slices. So until the
   owner answers residency (§9 item 8), no agent sets it on a live box.
 
+**As built (CP-13c, 2026-09-24).**
+
+- `decide_on_console` POSTs our wire body `{tier: "tier-decide", state,
+  questions}` to `{base}/v1/decide`. It has no retry, because the Console
+  meters each call. Its timeout is 10 s, not the 120 s of a completion. The
+  vendor states 70 to 500 ms, and the caller has a fallback path.
+- The outage line is the chat client's line, with no 501 carve-out. A
+  decision never streams, so every 5xx is an outage. A 401, 408 or 429 is an
+  outage too.
+- `packages/acb_llm/acb_llm/decide.py` holds `decide()`, three question
+  types (`BooleanQuestion`, `ChoiceQuestion`, `ScoreQuestion`) and three
+  answer types (`BooleanAnswer`, `ChoiceAnswer`, `ScoreAnswer`). It returns a
+  read-only `Decision`, and never a raw dict.
+- **The mapping of each answer.**
+  - The switch off gives `DecideUnavailable("disabled")` before any import
+    or I/O.
+  - An unwired box, a deployment key with no member, a transport error, a
+    5xx, 401, 408 or 429 gives `DecideUnavailable`. The caller takes its old
+    path.
+  - A 402 gives `DecideUnavailable("insufficient_credits")`, and a 403 gives
+    `DecideUnavailable("forbidden")`. A feature degrades and does not crash.
+  - A 400 or 422 gives `DecideRequestInvalid` with the Console's `detail`.
+    It is a caller bug, and a silent fallback would hide it. ⚠️ An unbound
+    `tier-decide` also answers 400 `tier_unknown`, so it is loud too.
+  - Any other status, a 404 for example, gives `DecideUnavailable`.
+- The facade copies none of clause 13's limits. The Console is the ONE
+  validator.
+- `packages/acb_llm/pyproject.toml` now declares `acb-auth`. Without it, the
+  root venv passes the import and an image breaks on it. `acb_auth` does
+  not import `acb_llm`, so there is no cycle.
+- `test_console_dependency_boundary.py` now names SEVEN importers of
+  `console_resolve`. `acb_llm/decide.py` is the seventh, with its argument
+  beside the name. `test_the_decide_facade_touches_only_the_decide_client`
+  narrows it to `decide_on_console` and `ConsoleRouterUnavailable`.
+- Fences: `tests/unit/test_acb_llm_decide.py` (hermetic, because no SQL runs
+  on this path) and `tests/unit/test_console_dependency_boundary.py`.
+
 #### CP-13d · The main chat gets a `decide` tool — not a sub-agent
 
 The owner asked for "one of the sub agents that is called to decision making
@@ -9842,9 +9884,20 @@ not an agent.**
   registered in `_collect_injectable_platform_tools`
   (`orchestrator/_tool_injection.py:495-650`) and in
   `_CORE_STANDARD_TOOL_NAMES` (`:41-65`). It needs entries in
-  `acb_skills/tool_annotations.py`, `manifest.py` and `addendum.py`, as every
-  platform tool does. Every MAF agent then gets it, the orchestrator
-  included.
+  `acb_skills/tool_annotations.py` and `addendum.py`, as every platform tool
+  does. It also joins the core family in `acb_skills/skill_families.py`,
+  which `test_skills_registry.py::test_core_family_is_exactly_the_floor`
+  fences. `manifest.py` needs no change. Every MAF agent then gets it, the
+  orchestrator included.
+- **The identity seam.** The tool calls `acb_llm.decide`, and it reads the
+  member from `acb_skills.memory_tools._get_memory_user_id()`, with
+  `member_proven=False`. It reads `agent` and `run_id` from
+  `acb_common.get_run_context()`. `orchestrator.executor._bind_run_identity`
+  (`executor.py:1893-1915`) binds both for each run. On a deployment-key box
+  with an empty member, the tool returns a fixed "unavailable" text.
+- ⚠️ **R11 caveat.** On the deployment arm, `X-CC-Member` selects the
+  tenant. So a reviewer must confirm that each run's `user_email` comes from
+  the server, and not from request input, before the tool relies on it.
 - **What the tool is for.** The model asks it a question it would otherwise
   answer by guessing. "Which of these 12 projects does this belong to?" "Is
   this message urgent?" The tool returns the pick and the confidence, and the
@@ -9853,10 +9906,15 @@ not an agent.**
   tool choice picks the agent today (`agents.py:310-405`). A `decide` router
   in front of it is a different change, and it waits for evidence.
 - `agent_architecture.md` §8 records this as the fourth delegation mode.
-- ⚠️ **Two fences change.** `test_tool_schema_diet.py:224` requires
+- ⚠️ **Four fences change.** `test_tool_schema_diet.py:223` requires
   `CORE_SCHEMA_CEILINGS` to equal `_CORE_STANDARD_TOOL_NAMES`, so `decide`
-  needs a ceiling there. `test_core_tool_floor.py` is the floor fence, and
-  it must hold `decide`.
+  needs a ceiling there. The same file pins each tool's parameters in
+  `CALL_CONTRACTS`, so `decide` needs a contract there too.
+  `test_core_tool_floor.py` is the floor fence, and it must hold `decide`.
+  `test_skills_registry.py` holds the core family.
+- ⚠️ **The schema ratchet is tight.** `CORE_SCHEMA_TOTAL_CEILING` is 9000
+  tokens, and the core floor measured 8744 on 2026-09-24. That leaves 256
+  tokens for the `decide` schema, or the build must trim another tool.
 - 🔴 **The tool sends whatever the model puts in `state`.** That is tenant
   content, so the residency gate covers this slice on a real tenant, as it
   covers CP-13e to CP-13g.
@@ -9973,7 +10031,7 @@ needs the key and not the residency answer.
 | 9 | ✅ The response never names the model | `test_customer_console_decide.py` — no `jev` in the body |
 | 10 | ✅ The litellm family serves as it does today | `test_customer_console_tasks.py` — `atranscription` still serves `tier-stt` |
 | 11 | ✅ The seven UI vocabularies know `decide` | `vitest` in `workbench/operator_console` — `src/lib/vocabulary.test.ts`, one case for each map. The verb and task pair is in the same file, and the Try panel is in `src/lib/decide.test.ts` |
-| 12 | The facade raises `DecideUnavailable` with the switch off, and makes no call | `tests/unit/test_acb_llm_decide.py` (new) |
+| 12 | ✅ The facade raises `DecideUnavailable` with the switch off, and makes no call | `tests/unit/test_acb_llm_decide.py::test_switch_off_raises_disabled_and_makes_NO_call`, and the same file for each status mapping |
 | 13 | The chat tool is in the core floor for every MAF agent | `test_core_tool_floor.py` and `test_tool_schema_diet.py` — both hold `decide` |
 | 14 | ✅ The door takes the deployment key, and it needs `X-CC-Member` on that arm | `test_customer_console_decide.py` — a `cc_depl_` call without the header is refused |
 | 15 | ✅ The new door is a named metering exemption | `test_customer_console_payments.py` — `METERING_EXEMPTION` holds 11 edges (add_credit and release_hold) |
