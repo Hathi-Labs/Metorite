@@ -291,3 +291,123 @@ def test_devanagari_draws_in_a_devanagari_font() -> None:
     with fitz.open(stream=html_to_pdf("<p>नमस्ते दुनिया</p>"), filetype="pdf") as doc:
         fonts = [f[3] for f in doc[0].get_fonts()]
     assert any("Devanagari" in name for name in fonts), fonts
+
+
+# ── Fix round 3 ─────────────────────────────────────────────────────────────
+
+
+def _slow_child(seconds: float):
+    return lambda kind: [sys.executable, "-c", f"import time; time.sleep({seconds})"]
+
+
+def test_r3_a_flood_holds_no_pool_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P1: a queued render waited on a thread-pool thread, so 36 slow renders
+    delayed an unrelated ``to_thread`` by 38 s. The slot is an ``await`` now,
+    so the probe runs at once, and a render with no slot answers 503 busy."""
+    monkeypatch.setattr(pdf_render, "_worker_argv", _slow_child(3))
+    monkeypatch.setattr(pdf_render, "SLOT_WAIT_S", 0.5)
+    monkeypatch.setattr(pdf_render, "RENDER_TIMEOUT_S", 8.0)
+
+    async def scenario() -> tuple[float, list[int]]:
+        renders = [
+            asyncio.ensure_future(render_pdf("html", "<p>x</p>")) for _ in range(40)
+        ]
+        await asyncio.sleep(0.2)
+        start = time.monotonic()
+        await asyncio.to_thread(lambda: None)
+        probe = time.monotonic() - start
+        done = await asyncio.gather(*renders, return_exceptions=True)
+        return probe, [getattr(r, "status", 0) for r in done]
+
+    started = time.monotonic()
+    probe, statuses = asyncio.run(scenario())
+    assert probe < 1.0, probe
+    assert statuses.count(503) >= 30, statuses
+    assert time.monotonic() - started < 20
+
+
+def test_r3_a_cancelled_render_kills_its_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A client that goes away takes its layout with it."""
+    monkeypatch.setattr(pdf_render, "_worker_argv", _slow_child(30))
+    spawned: list = []
+    real = asyncio.create_subprocess_exec
+
+    async def recording(*args, **kwargs):
+        proc = await real(*args, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", recording)
+
+    async def scenario() -> None:
+        task = asyncio.ensure_future(render_pdf("html", "<p>x</p>"))
+        await asyncio.sleep(1.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    start = time.monotonic()
+    asyncio.run(scenario())
+    assert spawned and spawned[0].returncode is not None
+    assert time.monotonic() - start < 10
+
+
+def test_r3_no_break_spaces_count_as_one_word() -> None:
+    """P1: Python's whitespace class matches U+00A0, and MuPDF does not break there."""
+    for body in ("<p>" + "a\u00a0" * 300_000 + "</p>", "<p>" + "a&nbsp;" * 140_000 + "</p>"):
+        clean = sanitize_html(body)
+        with pytest.raises(PdfRenderError) as err:
+            check_word_lengths(clean)
+        assert err.value.status == 422
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["a\u00a0" * 300_000, "<p>" + "a&nbsp;" * 140_000 + "</p>"],
+    ids=["nbsp-chars", "nbsp-entities"],
+)
+def test_r3_the_nbsp_attacks_are_a_fast_422(body: str) -> None:
+    start = time.monotonic()
+    with pytest.raises(PdfRenderError) as err:
+        asyncio.run(render_pdf("html", body))
+    assert err.value.status == 422
+    assert time.monotonic() - start < 10
+
+
+def test_r3_a_long_japanese_paragraph_renders() -> None:
+    """P2: CJK breaks between any two characters, so 2,480 characters with no
+    space is prose. Round 1 refused it."""
+    sentence = "日本語の段落はスペースを使わずに書かれることが多いです。"
+    text = sentence * (2480 // len(sentence) + 1)
+    check_word_lengths(f"<p>{text}</p>")
+    pdf = asyncio.run(render_pdf("html", f"<p>{text}</p>"))
+    assert pdf.startswith(b"%PDF")
+
+
+def test_r3_characters_mupdf_breaks_at_do_not_join_a_word() -> None:
+    long_run = "​".join(["x" * 1500] * 3)
+    check_word_lengths(f"<p>{long_run}</p>")
+    with pytest.raises(PdfRenderError):
+        check_word_lengths("<p>" + "ภ" * 2001 + "</p>")  # Thai: measured, no break
+
+
+def test_r3_the_child_gets_no_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hardening: the child parses untrusted HTML, so it inherits only
+    CHILD_ENV_KEYS, never the gateway's keys."""
+    monkeypatch.setenv("GATEWAY_INTERNAL_TOKEN", "s3cret-token-value")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@h/db")
+    monkeypatch.setattr(
+        pdf_render,
+        "_worker_argv",
+        lambda kind: [
+            sys.executable,
+            "-c",
+            "import os,sys; sys.stdout.buffer.write(b'%PDF ' + ' '.join(sorted(os.environ)).encode())",
+        ],
+    )
+    out = asyncio.run(render_pdf("html", "<p>x</p>")).decode()
+    names = set(out.split()[1:])
+    assert "GATEWAY_INTERNAL_TOKEN" not in names
+    assert "DATABASE_URL" not in names
+    assert "s3cret" not in out
+    assert names <= set(pdf_render.CHILD_ENV_KEYS) | {"__CF_USER_TEXT_ENCODING"}

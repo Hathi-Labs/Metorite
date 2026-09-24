@@ -1543,10 +1543,18 @@ The audit of 2026-09-24 read these facts from the code.
    code. 199,000 nested `<div>` overflowed its stack and killed the gateway,
    and one word of 900,000 letters held the GIL for more than two minutes.
    So `render_pdf` lays out in a child process. The parent kills the child
-   after 20 seconds, and at most four children run at one time.
+   after 20 seconds, and at most four children run at one time. A render
+   waits at most 2 seconds for a slot, with an `await` that holds no
+   thread, and then gets 503 (fix round 3). A cancelled request kills its
+   child. The child inherits only `CHILD_ENV_KEYS`, never the gateway's
+   keys.
 7. **Two bounds apply before layout.** The sanitizer refuses nesting deeper
-   than 64 elements. A run of more than 2,000 characters with no space is
-   also refused. Both get 422, and both bind Markdown too.
+   than 64 elements. A run of more than 2,000 characters that MuPDF cannot
+   break is also refused. Both get 422, and both bind Markdown too. The
+   break characters were measured (fix round 3). MuPDF breaks at a space,
+   a hyphen, the other Unicode spaces except U+00A0, and between two CJK,
+   kana or Hangul characters. It does not break at U+00A0 or inside Thai, so
+   those count toward a run.
 8. **Every failure has a status.** A size refusal is 413. A document that
    MuPDF cannot read, or a child that crashes, is 422. A timeout is 503. No
    MuPDF error reaches the member as a 500.
@@ -1602,7 +1610,9 @@ The audit of 2026-09-24 read these facts from the code.
   character, so copy, search and a screen reader get wrong text. No font in
   the tree or in `pymupdf` fixes that mapping.
 - A word longer than 2,000 characters is refused, not broken. A long hash or
-  a base64 block in a document therefore gets 422.
+  a base64 block in a document therefore gets 422. So does a Thai paragraph
+  of more than 2,000 characters with no space, because MuPDF does not break
+  inside Thai and its layout time grows as the square of the run.
 
 ### 14.7 The visual review (fix round 2)
 

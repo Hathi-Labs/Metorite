@@ -39,11 +39,13 @@ from __future__ import annotations
 
 import html as _html
 import io
+import os
 import re
 import subprocess
 import sys
-import threading
+import weakref
 from html.parser import HTMLParser
+from typing import Any
 from urllib.parse import quote
 
 #: The largest source a caller may convert, in bytes. A report is a few KB and a
@@ -160,7 +162,24 @@ _INLINE_TAG = re.compile(
     r"</?(?:a|b|strong|em|i|u|s|del|sup|sub|small|code|span)\b[^>]*>"
 )
 _ANY_TAG = re.compile(r"<[^>]*>")
-_LONG_WORD = re.compile(r"\S{" + str(MAX_WORD_CHARS + 1) + ",}")
+#: The characters MuPDF's line breaker breaks at, measured on pymupdf
+#: 1.28.0 (fix round 3). A run of 120,000 characters took under 0.2 s with
+#: each of these, and 6 s with U+00A0 (NO-BREAK SPACE) or with Thai, which
+#: are therefore NOT here. Python's ``\s`` matches U+00A0, so the round 1
+#: check (``\S{2001,}``) let ``"a\u00a0" * 300000`` through to a layout of
+#: more than a minute.
+#:
+#: CJK ideographs, kana, Hangul and the full-width forms break between any
+#: two characters. 200,000 of them take 0.4 s, so a Japanese paragraph with
+#: no space is prose, not an attack, and it must not count as one word.
+_BREAKS = (
+    " \t\n\r\f\v"
+    "\\-\u00ad"
+    "\u2000-\u200b\u2028\u2029\u202f\u205f\u2060\u3000\ufeff"
+    "\u2e80-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef"
+    "\U00020000-\U0003ffff"
+)
+_LONG_WORD = re.compile("[^" + _BREAKS + "]{" + str(MAX_WORD_CHARS + 1) + ",}")
 
 
 class PdfRenderError(ValueError):
@@ -265,7 +284,7 @@ def sanitize_html(source: str) -> str:
 
 
 def check_word_lengths(clean: str) -> None:
-    """Refuse a run of text longer than :data:`MAX_WORD_CHARS` with no space.
+    """Refuse a run longer than :data:`MAX_WORD_CHARS` that MuPDF cannot break.
 
     It reads the SANITIZED HTML, which is what MuPDF lays out. An inline tag
     joins the text on both sides into one word, and any other tag breaks it.
@@ -381,7 +400,36 @@ def source_to_pdf(kind: str, source: str) -> bytes:
 # RENDER_TIMEOUT_S. A child that dies is a refusal, not an outage.
 
 _EXIT_REFUSED = 2
-_render_slots = threading.BoundedSemaphore(MAX_CONCURRENT_RENDERS)
+
+#: How long a render waits for a free slot before it answers 503. The wait is
+#: an ``await``: it holds no thread, so a flood of renders cannot starve the
+#: default executor that the gateway's other 52 ``to_thread`` sites share
+#: (fix round 3, P1: 36 queued renders once delayed an unrelated
+#: ``to_thread`` by 38 s).
+SLOT_WAIT_S = 2.0
+
+#: The only variables the child inherits. The gateway's environment holds
+#: database URLs, provider keys and the internal bearer, and a child that
+#: parses untrusted HTML must not hold them (fix round 3, hardening).
+CHILD_ENV_KEYS = (
+    "PATH", "SYSTEMROOT", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR",
+    "LANG", "LC_ALL", "PYTHONPATH", "VIRTUAL_ENV",
+)
+
+# One semaphore per event loop. An asyncio primitive binds to the first loop
+# that waits on it, and the tests run many loops.
+_slots: weakref.WeakKeyDictionary[Any, Any] = weakref.WeakKeyDictionary()
+
+
+def _slot_semaphore() -> Any:
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+    sem = _slots.get(loop)
+    if sem is None:
+        sem = asyncio.Semaphore(MAX_CONCURRENT_RENDERS)
+        _slots[loop] = sem
+    return sem
 
 
 def _worker_argv(kind: str) -> list[str]:
@@ -389,48 +437,108 @@ def _worker_argv(kind: str) -> list[str]:
     return [sys.executable, "-m", "gateway.pdf_render", kind]
 
 
-def _run_child(kind: str, source: str, timeout: float) -> bytes:
-    with _render_slots:
-        try:
-            done = subprocess.run(  # our own module, no shell
-                _worker_argv(kind),
-                input=source.encode("utf-8"),
-                capture_output=True,
-                timeout=timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            # `run` has already killed the child.
-            raise PdfRenderError(
-                f"The PDF took longer than {int(timeout)} seconds to lay out. "
-                "Try a shorter document.",
-                status=503,
-            ) from exc
-        except OSError as exc:
-            raise PdfRenderError(
-                "The PDF renderer could not start. Try again.", status=503
-            ) from exc
-    if done.returncode == 0 and done.stdout.startswith(b"%PDF"):
-        return done.stdout
-    if done.returncode == _EXIT_REFUSED:
-        status, _, message = done.stderr.decode("utf-8", "replace").partition("|")
+def _child_env() -> dict[str, str]:
+    env = {k: os.environ[k] for k in CHILD_ENV_KEYS if k in os.environ}
+    # The child writes bytes to stdout. No encoding setting is needed, and
+    # none is inherited.
+    return env
+
+
+def _outcome(returncode: int | None, stdout: bytes, stderr: bytes) -> bytes:
+    if returncode == 0 and stdout.startswith(b"%PDF"):
+        return stdout
+    if returncode == _EXIT_REFUSED:
+        status, _, message = stderr.decode("utf-8", "replace").partition("|")
         if status.isdigit():
             raise PdfRenderError(message.strip(), status=int(status))
     raise PdfRenderError("The document could not be laid out as a PDF.")
+
+
+def _timed_out(timeout: float) -> PdfRenderError:
+    return PdfRenderError(
+        f"The PDF took longer than {int(timeout)} seconds to lay out. "
+        "Try a shorter document.",
+        status=503,
+    )
+
+
+def _run_child_blocking(kind: str, source: str, timeout: float) -> bytes:
+    """The fallback for an event loop that cannot spawn a subprocess (the
+    Windows selector loop). It runs in a thread, but only once a slot is held,
+    so at most MAX_CONCURRENT_RENDERS threads ever wait here."""
+    try:
+        done = subprocess.run(  # our own module, no shell
+            _worker_argv(kind),
+            input=source.encode("utf-8"),
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+            env=_child_env(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _timed_out(timeout) from exc
+    except OSError as exc:
+        raise PdfRenderError("The PDF renderer could not start. Try again.", status=503) from exc
+    return _outcome(done.returncode, done.stdout, done.stderr)
+
+
+async def _run_child(kind: str, source: str, timeout: float) -> bytes:
+    """Lay out in a child process with no pool thread waiting on it.
+
+    The child is killed and reaped on a timeout, and also when the caller is
+    cancelled (a client that went away), so no layout outlives its request.
+    """
+    import asyncio
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *_worker_argv(kind),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=_child_env(),
+        )
+    except NotImplementedError:
+        return await asyncio.to_thread(_run_child_blocking, kind, source, timeout)
+    except OSError as exc:
+        raise PdfRenderError("The PDF renderer could not start. Try again.", status=503) from exc
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(source.encode("utf-8")), timeout
+        )
+    except TimeoutError as exc:
+        raise _timed_out(timeout) from exc
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+    return _outcome(proc.returncode, stdout, stderr)
 
 
 async def render_pdf(kind: str, source: str) -> bytes:
     """The one way a route makes a PDF: in a child process, with a timeout.
 
     The size check runs here first, so an oversize body never starts a child.
-    Every failure is a :class:`PdfRenderError` with an HTTP status.
+    The slot is taken with an ``await`` and a short bound, so a busy renderer
+    answers 503 at once and holds no thread. Every failure is a
+    :class:`PdfRenderError` with an HTTP status.
     """
     import asyncio
 
     if kind not in ("markdown", "html"):
         raise PdfRenderError(f"A {kind} file cannot become a PDF.", status=415)
     _check_size(source)
-    return await asyncio.to_thread(_run_child, kind, source, RENDER_TIMEOUT_S)
+    sem = _slot_semaphore()
+    try:
+        await asyncio.wait_for(sem.acquire(), SLOT_WAIT_S)
+    except TimeoutError as exc:
+        raise PdfRenderError(
+            "The PDF renderer is busy. Try again in a moment.", status=503
+        ) from exc
+    try:
+        return await _run_child(kind, source, RENDER_TIMEOUT_S)
+    finally:
+        sem.release()
 
 
 def _worker_main(kind: str) -> int:
