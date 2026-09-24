@@ -308,6 +308,37 @@ _ORG_FOR_DOMAIN_SQL = """
 """
 
 
+#: Mail domains NOBODY owns, so a match on one means nothing.
+#:
+#: ⚠️ **The hole this closes.** ``organization.domain`` is a plain text column.
+#: Nothing verifies that the organization setting it owns that domain, which is
+#: fine for a company's own domain and catastrophic for a public one: an
+#: organization that claimed ``gmail.com`` would receive the knock of every
+#: Gmail user who ever signed in, learning their addresses.
+#:
+#: **This is the guard, and it is not the verification.** The industry answer —
+#: Atlassian's approved domains, Slack's workspace domains — is to PROVE
+#: ownership with a DNS record before a domain routes at all. That is the right
+#: shape and it is not built. Until it is, refusing the domains nobody can own
+#: removes the case where the damage is unbounded, and leaves the case where a
+#: customer claims a rival's domain — bounded, visible, and a support problem
+#: rather than a silent leak.
+#:
+#: Owner decision, 2026-09-24: invite stays the main way in, and a domain is
+#: opt-in per organization. So this list bites rarely, and when it bites it is
+#: on a configuration that was never going to be correct.
+_PUBLIC_MAIL_DOMAINS: frozenset[str] = frozenset({
+    "gmail.com", "googlemail.com",
+    "outlook.com", "hotmail.com", "live.com", "msn.com",
+    "yahoo.com", "yahoo.co.in", "yahoo.co.uk", "ymail.com",
+    "icloud.com", "me.com", "mac.com",
+    "aol.com", "gmx.com", "gmx.net", "mail.com",
+    "proton.me", "protonmail.com", "pm.me",
+    "zoho.com", "yandex.com", "fastmail.com", "hey.com",
+    "rediffmail.com",
+})
+
+
 async def _organization_for_email(email: str) -> str | None:
     """The organization whose domain matches this address, or ``None``.
 
@@ -317,9 +348,19 @@ async def _organization_for_email(email: str) -> str | None:
     self-serve path that creates their own organization, and filing them into
     a customer's queue would both mislead the admin and leak that the address
     knocked.
+
+    ⚠️ A **public** mail domain never routes, whatever the database says. See
+    :data:`_PUBLIC_MAIL_DOMAINS`. The check happens BEFORE the query, so a row
+    claiming ``gmail.com`` cannot route even once.
     """
     domain = email.rpartition("@")[2].strip().lower()
     if not domain:
+        return None
+    if domain in _PUBLIC_MAIL_DOMAINS:
+        # Not logged per knock: on a deployment where colleagues sign in with
+        # personal addresses this would be every sign-in, and a line that
+        # fires constantly is one nobody reads. The outcome is identical to
+        # "no organization claims this domain", which the caller already logs.
         return None
     try:
         from sqlalchemy import text  # noqa: PLC0415
