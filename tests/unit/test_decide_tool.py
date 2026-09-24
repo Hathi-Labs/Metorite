@@ -398,3 +398,36 @@ async def test_an_import_failure_is_logged_not_silent(monkeypatch):
     records = [c for c in caps if c.get("event") == "decide_tool.import_failed"]
     assert records and records[0]["log_level"] == "warning"
     assert all(SECRET_CONTEXT not in repr(c) for c in caps)
+
+
+# ── CP-13h: the score line names the level and the position (review P1-1) ───
+
+
+async def test_a_fractional_score_names_the_level_and_the_position(monkeypatch):
+    """`score` is a position, and the probabilities are keyed by level. The
+    old formatter looked the position up in that map and never matched."""
+    _facade(
+        monkeypatch,
+        answer=ScoreAnswer(
+            score=1.3,
+            probabilities=MappingProxyType({"calm": 0.0, "frustrated": 0.7, "angry": 0.3}),
+            confidence=0.55,
+            level="frustrated",
+        ),
+    )
+    out = await decide("How frustrated?", "ctx", kind="score", options="calm\nfrustrated\nangry")
+    assert out == "frustrated (position 1.3, confidence 0.55)"
+
+
+async def test_a_missing_confidence_reads_the_level_probability(monkeypatch):
+    _facade(
+        monkeypatch,
+        answer=ScoreAnswer(
+            score=2,
+            probabilities=MappingProxyType({"low": 0.1, "high": 0.9}),
+            confidence=None,
+            level="high",
+        ),
+    )
+    out = await decide("How severe?", "ctx", kind="score", options="low\nhigh")
+    assert out == "high (position 2, confidence 0.90)"

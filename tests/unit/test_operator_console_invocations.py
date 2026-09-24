@@ -59,3 +59,23 @@ def test_native_prefix_equals_the_consoles() -> None:
 
 def test_native_tasks_equal_the_consoles() -> None:
     assert _string_array("NATIVE_TASKS") == set(catalog.NATIVE_TASKS)
+
+
+def test_native_provider_map_equals_the_handler_table() -> None:
+    """CP-13h review P1-2. The declare form picks a native verb from the
+    model prefix through ``NATIVE_PROVIDER``. The Console refuses a pair
+    whose verb calls another vendor, and it reads the map from
+    ``handlers.NATIVE_HANDLERS``. The two must agree, or the form offers a
+    pair the Console refuses, or hides one it accepts."""
+    from customer_console import handlers
+
+    match = re.search(
+        r"export const NATIVE_PROVIDER\b[^=]*=\s*\{(?P<body>[^}]*)\}", _source()
+    )
+    assert match, f"could not find the NATIVE_PROVIDER map in {_TS.name}"
+    found = dict(re.findall(r'(\w+):\s*"([^"]+)"', match.group("body")))
+    assert found, f"NATIVE_PROVIDER parsed as empty from {_TS.name}"
+    expected = {
+        verb: handlers.native_provider_of(verb) for verb in handlers.NATIVE_HANDLERS
+    }
+    assert found == expected

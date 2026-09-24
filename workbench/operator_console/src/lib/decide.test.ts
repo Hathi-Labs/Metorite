@@ -82,6 +82,10 @@ describe("the answer", () => {
       "fyi (confidence 81%)",
     );
     expect(answerText({ type: "score", score: "high", confidence: null })).toBe("high");
+    // CP-13h: the level, then the fractional position.
+    expect(
+      answerText({ type: "score", score: 1.3, level: "frustrated", confidence: 0.55 }),
+    ).toBe("frustrated (position 1.3, confidence 55%)");
     expect(answerText(undefined)).toBe("no readable answer");
   });
 

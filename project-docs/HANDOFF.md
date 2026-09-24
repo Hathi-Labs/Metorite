@@ -392,19 +392,21 @@ line — never reclaim a number by deleting the other entry.
 - **Added:** 2026-09-23 · the Jev planning session · **rewritten 2026-09-24**
   when CP-13d was built
 
-### H-166 · Open the TypeSafe account, install the key, and answer residency · [OWNER]
-- **Check:** on `/providers`, look for a live `typesafe` credential. None
+### H-166 · Open the AI/ML API account, install the key, and answer residency · [OWNER]
+- **Check:** on `/providers`, look for a live `aimlapi` credential. None
   means this is open. Then read `work_plan.md` D19.6. If it still says
   India-only with no AI sub-processor clause, the residency answer is open.
 - **Why:** three acts gate CP-13 on a real tenant (§6.1 WS-31 (i)).
-  1. **Open the account and accept the terms.** An external commercial
-     account is an owner act. Ask TypeSafe for its DPA, its region, and
-     zero retention. The vendor gives zero retention to enterprise customers
-     on request.
-  2. **Install the key** on `/providers`, with provider `typesafe` (§6.0 B1).
-  3. **Answer residency.** D19.6 promises India-only data at launch, and the
-     vendor states no region. Choose one: amend D19.6 for AI sub-processors,
-     get a region in writing, or keep `decide` off real tenant content.
+  1. **Open an AI/ML API account** (TypeSafe has paused direct signups, D75
+     clause 8). An external commercial account is an owner act. Ask AI/ML
+     API and TypeSafe for their DPA, their region, and zero retention.
+  2. **Install the key** on `/providers`, with provider `aimlapi` (§6.0 B1).
+     Then follow the AI/ML API guide on that page. It binds
+     `aimlapi/typesafe/jev` with the verb `native_aimlapi` (§6A.14 CP-13h).
+  3. **Answer residency.** D19.6 promises India-only data at launch, and
+     neither vendor states a region. Choose one: amend D19.6 for AI
+     sub-processors, get a region in writing from BOTH, or keep `decide`
+     off real tenant content.
   4. **Acknowledge the D61.1 amendment**, or reject it. D61.1 says every
      Router door copies an OpenAI shape, and no such shape exists for a
      decision. `work_plan.md` D75 clause 3 holds the proposal.
@@ -412,7 +414,8 @@ line — never reclaim a number by deleting the other entry.
 - ⚠️ **Shadow mode sends tenant content too.** Without answer 3, nothing
   runs on Fracktal's data: not the chat tool, not an app slice, and not
   shadow mode.
-- ⚠️ **Add TypeSafe to the sub-processor list** when WS-37 writes one (H-36).
+- ⚠️ **Add AI/ML API AND TypeSafe to the sub-processor list** when WS-37
+  writes one (H-36). A reseller call passes through both.
 - **Authority:** `specs/customer_console.md` §8 gate 9 and §9 item 8 ·
   `work_plan.md` §6.1 WS-31 (i)
 - **Added:** 2026-09-23 · the Jev planning session
