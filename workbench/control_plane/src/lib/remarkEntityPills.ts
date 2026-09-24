@@ -142,9 +142,42 @@ export function splitText(value: string): MdNode[] {
   }
   if (last < value.length) out.push({ type: "text", value: value.slice(last) });
   // A stray guillemet — an unclosed mark, an empty pair — never shows.
-  return out
-    .map((n) => (n.type === "text" ? { ...n, value: (n.value ?? "").replace(/[«»]/g, "") } : n))
-    .filter((n) => n.type !== "text" || n.value !== "");
+  return glueTrailingPunctuation(
+    out
+      .map((n) => (n.type === "text" ? { ...n, value: (n.value ?? "").replace(/[«»]/g, "") } : n))
+      .filter((n) => n.type !== "text" || n.value !== ""),
+  );
+}
+
+/** The class of the span that keeps a pill and its punctuation together. */
+export const PILL_GROUP_CLASS = "whitespace-nowrap";
+
+/**
+ * Keep a pill and the punctuation right after it on one line (S9 visual
+ * review). Without this, a wrap can put the pill at the end of one line and
+ * its comma at the start of the next. The group adds no space: the comma
+ * follows the pill's closing tag directly.
+ */
+function glueTrailingPunctuation(nodes: MdNode[]): MdNode[] {
+  const out: MdNode[] = [];
+  for (let k = 0; k < nodes.length; k++) {
+    const node = nodes[k];
+    const next = nodes[k + 1];
+    const punct = next?.type === "text" ? (next.value ?? "").match(/^[,.;:!?)\]]+/) : null;
+    if (node.type !== "entityPill" || !punct) {
+      out.push(node);
+      continue;
+    }
+    out.push({
+      type: "entityPillGroup",
+      data: { hName: "span", hProperties: { className: PILL_GROUP_CLASS } },
+      children: [node, { type: "text", value: punct[0] }],
+    });
+    const rest = (next!.value ?? "").slice(punct[0].length);
+    if (rest) out.push({ type: "text", value: rest });
+    k += 1;
+  }
+  return out;
 }
 
 function walk(node: MdNode, insideLink: boolean): void {

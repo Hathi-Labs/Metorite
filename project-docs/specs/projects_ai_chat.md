@@ -1799,6 +1799,18 @@ The skill output does not change. The cards read the «» in the tool output
 8. **The marks stay in the chat answer** (fix round 1). The model never
    writes them into a tool argument, because nothing removes them there.
    Fence: `test_the_marks_stay_out_of_every_tool_argument`.
+9. **A linked pill reads as ink, not as a blue word** (visual review). Its
+   label is foreground ink on a `bg-primary/10` tint. Its icon and its `#n`
+   take `text-primary`. A hover makes the tint stronger and underlines the label. Fence:
+   `src/components/ui/EntityPill.test.ts`.
+10. **No space before the punctuation after a pill** (visual review). The
+    markup holds none. The gap that the review saw was the right padding of
+    the pill, so a pill now takes `px-1`. The plugin keeps a pill and its
+    punctuation on one line. Fence: `src/components/markdownPills.test.ts`.
+11. **A person pill takes a name from any read in the message** (visual
+    review). The index reads `- «Name» · assignee «email»` at any indent and
+    `«Name» («email»)`. An address printed as its own name is no name. Fence:
+    `src/lib/entityIndex.test.ts`.
 
 ### 15.4 Acceptance — S9
 

@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import remarkEntityPills, {
   PILL_ATTR,
   PILL_NUMBER_ATTR,
+  PILL_GROUP_CLASS,
   PILL_TEXT_ATTR,
   spaceBeforeBold,
   splitText,
@@ -21,8 +22,12 @@ function run(children: MdNode[]): MdNode[] {
   return tree.children![0].children!;
 }
 
+/** Pills at this level, and inside a pill-and-punctuation group. */
+const flat = (nodes: MdNode[]): MdNode[] =>
+  nodes.flatMap((n) => (n.type === "entityPillGroup" ? n.children! : [n]));
+
 const pills = (nodes: MdNode[]) =>
-  nodes
+  flat(nodes)
     .filter((n) => n.type === "entityPill")
     .map((n) => ({
       text: n.data!.hProperties![PILL_TEXT_ATTR],
@@ -30,7 +35,7 @@ const pills = (nodes: MdNode[]) =>
     }));
 
 const texts = (nodes: MdNode[]) =>
-  nodes.filter((n) => n.type === "text").map((n) => n.value).join("|");
+  flat(nodes).filter((n) => n.type === "text").map((n) => n.value).join("|");
 
 describe("splitText", () => {
   it("turns a fenced name into a pill, with no marks left", () => {
@@ -50,6 +55,15 @@ describe("splitText", () => {
     const out = splitText("assigned to vjvarada@hathilabs.com.");
     expect(pills(out)).toEqual([{ text: "vjvarada@hathilabs.com", number: undefined }]);
     expect(texts(out)).toBe("assigned to |.");
+  });
+
+  it("keeps the punctuation after a pill with the pill, and adds no space", () => {
+    const out = splitText("In «Hathi Labs», the task");
+    const group = out.find((n) => n.type === "entityPillGroup")!;
+    expect(group.data!.hProperties).toEqual({ className: PILL_GROUP_CLASS });
+    expect(group.children!.map((n) => n.type)).toEqual(["entityPill", "text"]);
+    expect(group.children![1].value).toBe(",");
+    expect(out[out.length - 1]).toEqual({ type: "text", value: " the task" });
   });
 
   it("drops a stray mark", () => {

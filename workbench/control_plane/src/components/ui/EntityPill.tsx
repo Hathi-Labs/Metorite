@@ -132,18 +132,47 @@ export interface EntityPillProps {
   email?: string;
 }
 
-const SHAPE = "max-w-64 px-1.5 py-px text-xs leading-snug align-middle font-normal";
+/**
+ * `px-1`, not Badge's `px-1.5` (S9 visual review). A pill sits inside running
+ * text, so its padding reads as a space: "Hathi Labs , the task". The DOM
+ * holds no space there (`markdownPills.test.ts`), and the plugin keeps the
+ * punctuation after a pill on the same line as the pill.
+ */
+const SHAPE = "max-w-64 px-1 py-px text-xs leading-snug align-middle font-normal";
 
-function PillBody({ kind, label, number, dot, statusName, email }: EntityPillProps) {
+/**
+ * A linked pill's ink (S9 visual review). The label is foreground ink, so a
+ * row of links does not turn the paragraph blue under a saturated accent.
+ * The icon and the `#n` keep the primary colour, and with the tint they mark
+ * the pill as a link. A hover makes the tint stronger and underlines the
+ * label. Exported for its test.
+ */
+export const LINKED_TONE = "group bg-primary/10 text-foreground hover:bg-primary/20";
+export const LINKED_ACCENT = "text-primary";
+export const LINKED_LABEL = "group-hover:underline underline-offset-2";
+
+function PillBody({
+  kind,
+  label,
+  number,
+  dot,
+  statusName,
+  email,
+  linked = false,
+}: EntityPillProps & { linked?: boolean }) {
   const icon = ENTITY_ICONS[kind];
   return (
     <>
       {kind === "person" && (
         <PersonAvatar email={email || label} displayName={label} size={14} title="" />
       )}
-      {icon && <Icon name={icon} size={12} className="shrink-0" aria-hidden />}
-      {number && <span className="shrink-0 text-muted-foreground">{number}</span>}
-      <span className="min-w-0 truncate">{label}</span>
+      {icon && (
+        <Icon name={icon} size={12} className={`shrink-0 ${linked ? LINKED_ACCENT : ""}`} aria-hidden />
+      )}
+      {number && (
+        <span className={`shrink-0 ${linked ? LINKED_ACCENT : "text-muted-foreground"}`}>{number}</span>
+      )}
+      <span className={`min-w-0 truncate ${linked ? LINKED_LABEL : ""}`}>{label}</span>
       {dot && (
         <>
           <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot.dot}`} aria-hidden />
@@ -162,7 +191,7 @@ function tooltip({ kind, label, number, statusName, email }: EntityPillProps): s
 
 function toneOf(props: EntityPillProps, linked: boolean): string {
   if (props.kind === "tag") return `border ${categoricalAccent(props.label).chip}`;
-  return badgeTone(linked ? "primary" : "neutral");
+  return linked ? LINKED_TONE : badgeTone("neutral");
 }
 
 /** The linked pill. Its own component, so only a link asks for the router. */
@@ -176,7 +205,7 @@ function LinkedPill(props: EntityPillProps & { href: string }) {
       title={tooltip(props)}
       className={`${BADGE_BASE} ${toneOf(props, true)} ${SHAPE} no-underline`}
     >
-      <PillBody {...props} />
+      <PillBody {...props} linked />
     </ControlLink>
   );
 }

@@ -55,6 +55,17 @@ describe("MarkdownBody with pills on", () => {
   it("puts the space back after a full stop", () => {
     expect(body("today.**Early stages** are done")).toContain("today. <strong");
   });
+
+  it("puts no space between a pill and the punctuation after it (S9 visual review)", () => {
+    const html = body("In «Hathi Labs», the task «Board drag and drop». Due: «Zed»: soon");
+    // Each pill's closing tag is followed by its punctuation at once.
+    expect(html).toMatch(/<\/a>,<\/span> the task/);
+    expect(html).toMatch(/<\/a>\.<\/span> Due/);
+    expect(html).toMatch(/<\/span>:<\/span> soon/);
+    expect(html).not.toMatch(/<\/(?:a|span)>\s+[,.;:!?]/);
+    // And the two stay on one line.
+    expect(html).toContain('<span class="whitespace-nowrap"><a ');
+  });
 });
 
 describe("MarkdownBody with pills off", () => {

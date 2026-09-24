@@ -92,8 +92,11 @@ function statusOf(meta: string): { status?: string; category?: string } {
 function addPerson(index: EntityIndex, email: string, name = ""): void {
   const key = email.trim().toLowerCase();
   if (!isEmail(key)) return;
+  // A "name" that is itself an address is no name: a capacity row prints the
+  // address twice when the directory does not know the person.
+  const label = isEmail(name.trim()) ? "" : name.trim();
   const known = index.people.get(key);
-  if (!known) index.people.set(key, name.trim());
+  if (!known) index.people.set(key, label);
 }
 
 function addTask(index: EntityIndex, task: TaskEntity): void {
@@ -164,9 +167,14 @@ function readResult(index: EntityIndex, result: string): void {
       if (g) index.tags.set(nameKey(g[1]), g[1]);
     }
 
-    // `people_for`: `- «Name» · assignee «email»` and `- «email» · «Name»`.
-    const picker = line.match(/^- «([^»]+)» · assignee «([^»]+)»/);
+    // A name for an address, in the three shapes the reads print (S9 round 2):
+    // - `- «Name» · assignee «email»`: `people_for`, `team_capacity`,
+    //   `rebalance` and `fit_for_task`, at any indent;
+    // - `- «email» · «Name»`: `people_for` with `emails=`;
+    // - `«Name» («email»)`: the holders of an at-risk task in capacity.
+    const picker = line.match(/^\s*- «([^»]+)» · assignee «([^»]+)»/);
     if (picker) addPerson(index, picker[2], picker[1]);
+    for (const m of line.matchAll(/«([^»]+)» \(«([^»]+)»\)/g)) addPerson(index, m[2], m[1]);
     const named = line.match(/^- «([^»]+)» · «([^»]+)»\s*$/);
     if (named && isEmail(named[1]) && !isEmail(named[2])) addPerson(index, named[1], named[2]);
 

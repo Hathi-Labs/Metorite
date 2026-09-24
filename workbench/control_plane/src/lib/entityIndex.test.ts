@@ -96,6 +96,27 @@ describe("resolveEntity", () => {
     });
   });
 
+  it("finds a name for an address anywhere in the message's tools (S9 round 2)", () => {
+    const tools = buildEntityIndex([
+      // A task row names the address only.
+      { status: "done", result: TASKS_RESULT },
+      {
+        status: "done",
+        result: [
+          "Capacity (2 people):",
+          "- «Vijay Varada» · assignee «vjvarada@hathilabs.com» · in this scope: open 3",
+          "- «sam@x.io» · assignee «sam@x.io» · not in the directory · in this scope: open 1",
+          "At risk (1 of 1):",
+          "- «Ship it» · due 2026-10-01 · short 4h · held by «Hal Jordan» («hal@x.io»)",
+        ].join("\n"),
+      },
+    ]);
+    expect(resolveEntity(tools, "vjvarada@hathilabs.com")).toMatchObject({ label: "Vijay Varada" });
+    expect(resolveEntity(tools, "hal@x.io")).toMatchObject({ label: "Hal Jordan" });
+    // An address printed as its own "name" is no name: the local part shows.
+    expect(resolveEntity(tools, "sam@x.io")).toMatchObject({ label: "sam" });
+  });
+
   it("resolves a status and a tag from the vocabulary read", () => {
     const vocab = buildEntityIndex([
       {

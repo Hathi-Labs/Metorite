@@ -33,7 +33,13 @@ vi.mock("@/components/ControlLink", () => ({
   },
 }));
 
-import EntityPill, { ENTITY_ICONS, isInAppPath, pillLinkName } from "./EntityPill";
+import EntityPill, {
+  ENTITY_ICONS,
+  LINKED_LABEL,
+  LINKED_TONE,
+  isInAppPath,
+  pillLinkName,
+} from "./EntityPill";
 
 const TASK = "/projects?task=0f8fad5b-d9cb-469f-a165-70867728950e";
 const PROJECT = "/projects?project=5b0c7a52-3f4e-4d2a-9c1e-0a1b2c3d4e5f";
@@ -59,6 +65,28 @@ describe("a pill that links", () => {
     const html = render({ kind: "project", label: "Projects/Tasks App", href: PROJECT });
     expect(html).toContain(`href="${PROJECT}"`);
     expect(html).toContain("lucide-folder-kanban");
+  });
+
+  it("draws its label in foreground ink, and its icon and #n in primary (S9 visual review)", () => {
+    const html = render({ kind: "task", label: "Board", number: "#3", href: TASK });
+    expect(html).toContain(LINKED_TONE);
+    expect(LINKED_TONE).toContain("text-foreground");
+    expect(LINKED_TONE).not.toMatch(/(?<!hover:)text-primary/);
+    expect(html).toMatch(/lucide-list-checks shrink-0 text-primary/);
+    expect(html).toContain('<span class="shrink-0 text-primary">#3</span>');
+  });
+
+  it("shows a clear hover: a stronger tint and an underlined label", () => {
+    expect(LINKED_TONE).toContain("hover:bg-primary/20");
+    const html = render({ kind: "project", label: "Apps", href: PROJECT });
+    expect(html).toContain(`<span class="min-w-0 truncate ${LINKED_LABEL}">Apps</span>`);
+    expect(LINKED_LABEL).toContain("group-hover:underline");
+  });
+
+  it("keeps an unlinked pill muted, with no underline on hover", () => {
+    const html = render({ kind: "task", label: "Board", number: "#3" });
+    expect(html).not.toContain("group-hover:underline");
+    expect(html).toContain('<span class="shrink-0 text-muted-foreground">#3</span>');
   });
 
   it("navigates in this tab on a plain click", () => {
