@@ -545,6 +545,17 @@ caller cannot see. It uses `Visibility.project_clause`, as
   `test_projects_chat_coverage.py` passes.
 - The list hides a report on a hidden project from a caller who cannot see
   it, and shows it to a caller with a grant. A real-DB test proves both.
+- A portfolio report, with a NULL `project_id`, stays in the list for every
+  caller. The same real-DB test proves it for the outsider and the viewer.
+- `template` is not a key of `_DEFAULTS`. A config with no template stores no
+  `template` key. `test_no_template_adds_no_key` proves it.
+- The server computes `mine`. It compares `created_by` with `actor(user)` and
+  ignores case. The client does not compute it.
+  `test_mine_is_true_only_for_the_author` proves it.
+- The client holds no copy of the template map. It reads the catalogue from
+  `GET /projects/reports/templates`. This item is advisory, and no test fences
+  it. To check it, search `src/` for a template key outside the test files.
+  The search must find nothing.
 
 ### R3 — Four new sections · AGENT-SAFE
 

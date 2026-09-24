@@ -1,5 +1,6 @@
 {
   "name": "app-builder",
+  "app": "agents",
   "description": "App Workshop builder \u2014 turns chat into small internal web apps (Custom Apps). Works inside the app's own workspace, keeps index.html always valid, and uses the injected window.cc platform APIs instead of external services.",
   "version": "0.1.0",
   "runtime": "maf",

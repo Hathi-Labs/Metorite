@@ -81,7 +81,9 @@ from gateway.routes.projects.filters import attach_assignees
 from gateway.routes.projects.notifications import EXCERPT_CHARS, notify
 from gateway.routes.projects.tasks import (
     _TRACKED_TASK_FIELDS,
+    DeleteResponse,
     MoveTask,
+    delete_task_in,
     move_task_in,
 )
 from gateway.routes.tasks.priority import important_from_importance
@@ -224,6 +226,12 @@ class OrganizeIn(BaseModel):
     project_id: str | None = None
     assignee: OrganizeAssignee | None = None
     subtasks: list[str] | None = None
+    #: S6g — the promote answers Clarify collects when a PERSONAL task is
+    #: filed into a company project: the destination's required custom fields
+    #: (migration 192), passed to the ONE move seam the way `MoveTask` takes
+    #: them. Without them a promote from Clarify was refused after the card
+    #: had already moved the row.
+    custom_fields: dict | None = None
 
 
 #: A clarify `kind` → the overlay disposition it states. The vocabulary
@@ -1624,6 +1632,78 @@ async def led_projects_for(
     return list(led.values())
 
 
+async def in_my_tree(db: Any, email: str, task: Any) -> bool:
+    """Whether ``task`` lives in MY personal tree: my root or one of my Areas.
+
+    Both carry ``personal_owner`` (an Area inherits it), so the project's own
+    column answers without a walk. A team project has none.
+    """
+    # The privacy guard's own read (`core.assert_move_keeps_privacy`), with
+    # both ends the task's project.
+    rows = (await db.execute(
+        text(
+            "SELECT id, personal_owner FROM pm_projects "
+            "WHERE id IN (CAST(:old AS uuid), CAST(:new AS uuid))"
+        ),
+        {"old": str(task.project_id), "new": str(task.project_id)},
+    )).fetchall()
+    owner = next((r.personal_owner for r in rows if str(r.id) == str(task.project_id)), None)
+    return bool(owner) and str(owner).strip().lower() == email
+
+
+@router.delete("/my/tasks/{task_id}")
+async def purge_my_task(
+    task_id: str, user: UserContext = Depends(get_current_user),
+) -> DeleteResponse:
+    """Delete a task for good — ONLY one in my personal tree (WS-39 S6g).
+
+    My Tasks' delete is a soft TRASH on my overlay, and the purge that
+    finalises it used to be ``DELETE /projects/tasks/{id}``. That route admits
+    anybody who can see the task, so a member who deleted a task a colleague
+    had assigned from a board removed it for the whole team once the Undo
+    window closed. The rule: **My Tasks never hard-deletes a task that is not
+    in my personal tree.** A board task leaves my lists through the overlay
+    (TRASH) and stays on the board.
+
+    The client refuses the purge before any request (``canPurge``). This route
+    is the second fence: it answers 409 for a task outside my tree, and the
+    check and the delete share one transaction.
+    """
+    email = actor(user).lower()
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        task = await load_visible_task(db, vis, task_id)
+        if not await in_my_tree(db, email, task):
+            raise HTTPException(
+                status_code=409,
+                detail="This task is on a team board. My Tasks can only remove "
+                       "it from your lists, never delete it for the team.",
+            )
+        # S6g repair (P2-a). A task in my tree that somebody else is also on
+        # is theirs too. The assign guard should keep a colleague out of my
+        # tree, but a row from before that guard, or a gap in it, must not
+        # let my purge delete their work.
+        others = [
+            r.assignee for r in (await db.execute(
+                text(
+                    "SELECT assignee FROM pm_task_assignees "
+                    "WHERE task_id = CAST(:tid AS uuid)"
+                ),
+                {"tid": task_id},
+            )).fetchall()
+            if (r.assignee or "").strip().lower() != email
+        ]
+        if others:
+            raise HTTPException(
+                status_code=409,
+                detail="Somebody else is assigned to this task. My Tasks can "
+                       "only remove it from your lists.",
+            )
+        result = await delete_task_in(db, task)
+    await emit("pm.task.deleted", {"task_id": task_id})
+    return result
+
+
 @router.get("/my/tasks/{task_id}")
 async def my_task(
     task_id: str, user: UserContext = Depends(get_current_user),
@@ -2031,8 +2111,13 @@ async def _organize(
     who = None
     if delegated and payload.assignee is not None:
         who = (payload.assignee.email or payload.assignee.name).strip().lower()
+    dest = project_id if project_id and project_id != str(task.project_id) else None
     move = MoveTask(
-        project_id=project_id if project_id and project_id != str(task.project_id) else None,
+        project_id=dest,
+        # S6g — the promote answers ride the same MoveTask the route builds,
+        # so the required-field guard judges them inside this transaction.
+        # They mean something only when the task changes project.
+        custom_fields=payload.custom_fields if dest else None,
         assignees=[who] if who else None,
     )
     if move.project_id or move.assignees is not None:
@@ -2132,8 +2217,13 @@ async def organize_my_task(
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
         title = str(getattr(task, "title", "") or "")
+        before = str(getattr(task, "project_id", "") or "")
         disposition = await _organize(db, vis, email, task, payload)
         result = await _read_my_task(db, email, task_id)
+    # S6g — a decision that changed the project IS a move, and says so the
+    # way `POST /tasks/{id}/move` does. Automations bound to "Task moved"
+    # (`workflows/catalog.py`) never heard a promote from Clarify before.
+    moved = str(result.get("project_id") or "") != before
 
     # Teach the clarification memory from the COMMITTED decision — the block
     # above has committed. Fire-and-forget and best-effort, so it never slows
@@ -2151,6 +2241,8 @@ async def organize_my_task(
         context=payload.context,
     )
     await emit("pm.task.updated", {"task_id": task_id})
+    if moved:
+        await emit("pm.task.moved", {"task_id": task_id})
     return result
 
 

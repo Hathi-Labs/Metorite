@@ -72,6 +72,7 @@ import {
   withPeriod,
   yourReports,
 } from "../lib/reportBuilder";
+import { ReportFileButtons } from "./ReportFileButtons";
 
 /** Hours as a person reads them. Mirrors `AnalyticsPanels`, deliberately. */
 function duration(hours: number | null | undefined): string {
@@ -919,26 +920,32 @@ export default function ReportsView({
             <p className="text-[11px] text-muted-foreground">Rendering…</p>
           ) : body ? (
             <div className="space-y-3">
-              {selectedRow && (
-                <div className="flex justify-end gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon="LayoutGrid"
-                    onClick={() => setSelected(null)}
-                  >
-                    Home
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    icon="Pencil"
-                    onClick={() => setPane({ kind: "edit", row: selectedRow })}
-                  >
-                    Edit
-                  </Button>
-                </div>
-              )}
+              {/* WS-27bm S8: the report as a file, beside Edit. Rendered
+                  again on the click, so the file carries the numbers of that
+                  moment. WS-27bn R2: Home returns to the Reports home. */}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <ReportFileButtons reportId={selected} />
+                {selectedRow && (
+                  <div className="ml-auto flex gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon="LayoutGrid"
+                      onClick={() => setSelected(null)}
+                    >
+                      Home
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon="Pencil"
+                      onClick={() => setPane({ kind: "edit", row: selectedRow })}
+                    >
+                      Edit
+                    </Button>
+                  </div>
+                )}
+              </div>
               <RenderedBody body={body} />
             </div>
           ) : null}

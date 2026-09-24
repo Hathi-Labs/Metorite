@@ -115,3 +115,51 @@ export function activityLabel(activity: string): string {
   if (activity === UNATTRIBUTED) return "Not attributed";
   return activity;
 }
+
+// ── By app (usage slice 3) ──────────────────────────────────────────────────
+
+/** One agent inside an app. */
+export interface AgentSpendRow {
+  agent: string;
+  calls: number;
+  credits: string;
+}
+
+/** One app, and the agents that spent inside it. `GET /my/usage/apps`. */
+export interface AppSpendRow {
+  app: string;
+  calls: number;
+  credits: string;
+  agents: AgentSpendRow[];
+}
+
+/**
+ * An app slug in the words the sidebar uses.
+ *
+ * 🔴 **The sidebar is the ONE source for an app's name.** The agents stamp the
+ * navigation's own slug (`config.json`, usage slice 1), so the label is looked
+ * up from the same `PANES` the sidebar draws. A second map would disagree the
+ * first time a pane is renamed.
+ *
+ * ⚠️ **Unknown slugs pass through**, as `activityLabel` does. A Custom App
+ * arrives as `app:<name>` and is shown by its own name, never as "Other".
+ */
+export function appLabel(
+  app: string,
+  panes: readonly { href: string; label: string }[],
+): string {
+  if (app === UNATTRIBUTED) return "Not attributed";
+  if (app.startsWith("app:")) return app.slice(4);
+  return panes.find((p) => p.href === `/${app}`)?.label ?? app;
+}
+
+/**
+ * An agent's slug read aloud: `projects-assistant` becomes
+ * `Projects assistant`. Only the first letter is raised, so a product name
+ * inside the slug keeps the case the agent gave it.
+ */
+export function agentLabel(agent: string): string {
+  if (agent === UNATTRIBUTED) return "Not attributed";
+  const words = agent.replace(/[-_]+/g, " ").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : agent;
+}

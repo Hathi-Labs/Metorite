@@ -7,6 +7,7 @@ import {
   type DayTemplate,
 } from "@/app/tasks/lib/api";
 import { MyTask } from "@/app/tasks/lib/types";
+import { useRemoval } from "@/app/tasks/lib/useRemoval";
 import {
   sameDay,
   blocksForDay,
@@ -101,6 +102,7 @@ export function TimeGrid({
   const hours = Array.from({ length: dayEnd - dayStart }, (_, i) => dayStart + i);
   const gridHeight = hours.length * HOUR_PX;
   // Live resize (transient end while dragging the handle) + drop-target column.
+  const removal = useRemoval();
   const [resizing, setResizing] = useState<{ id: string; endMs: number } | null>(null);
   const resizingRef = useRef(false); // suppress the native block-drag while resizing
   const [dragOverKey, setDragOverKey] = useState<string | null>(null);
@@ -819,8 +821,9 @@ export function TimeGrid({
             },
             {
               kind: "item",
-              label: "Delete task…",
-              icon: themedIcon("Trash2"),
+              // S6g, P0 — a board task leaves my lists, and says so.
+              label: removal.canPurge(it) ? "Delete task…" : "Remove from my lists…",
+              icon: themedIcon(removal.canPurge(it) ? "Trash2" : "UserX"),
               danger: true,
               onSelect: () => onDelete(it.id),
             },

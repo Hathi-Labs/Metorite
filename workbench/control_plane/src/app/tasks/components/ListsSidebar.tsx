@@ -8,6 +8,7 @@ import Modal from "@/components/ui/Modal";
 import { useToast } from "@/components/ui/Toast";
 import { categoricalAccent } from "@/lib/categorical";
 import type { LensArea } from "../lib/api";
+import { inboxCount } from "../lib/inbox";
 import { itemsInArea, useTaskStore, viewCounts } from "../lib/taskStore";
 import { MyTask, ViewKey } from "../lib/types";
 
@@ -66,7 +67,6 @@ export function ListsSidebar({
   const openSettings = useTaskStore((s) => s.openSettings);
   const loadArchive = useTaskStore((s) => s.loadArchive);
   const loadDone = useTaskStore((s) => s.loadDone);
-  const sourceFilter = useTaskStore((s) => s.sourceFilter);
   const selectedAreaId = useTaskStore((s) => s.selectedAreaId);
   const selectView: typeof selectViewRaw = (v) => {
     selectViewRaw(v);
@@ -76,23 +76,17 @@ export function ListsSidebar({
     if (v === "done") void loadDone();
     onNavigate?.();
   };
-  // Counts must honor the All / Mine / ClickUp source toggle, otherwise the
-  // badges stay frozen at the "All" totals while the list below re-filters.
-  // The same holds for a selected Area (S6b): the organised lists narrow to
-  // it, so their badges narrow with them. ⚠️ NOT the Inbox: a capture lands
-  // in the personal ROOT, before any Area, so an Area scope would empty the
-  // Inbox and hide the badge. The Inbox is pre-organisation and never scoped.
+  // A selected Area (S6b) narrows the organised lists, so their badges narrow
+  // with them. ⚠️ NOT the Inbox: a capture lands in the personal ROOT, before
+  // any Area, so an Area scope would empty the Inbox and hide the badge.
+  // S6g — the Inbox badge is `inboxCount`, the same number the Inbox header
+  // says: my captures and the untriaged board rows, one rule (`inbox.ts`).
   const fromProjectIds = useTaskStore((s) => s.fromProjectIds);
   const counts = useMemo(() => {
-    const scoped = viewCounts(itemsInArea(items, selectedAreaId), sourceFilter);
-    if (selectedAreaId) scoped.inbox = viewCounts(items, sourceFilter).inbox;
-    // S6e — the "From Projects" group is in the Inbox, so the badge counts
-    // it: a task somebody put on my plate is something to process.
-    scoped.inbox += [...fromProjectIds].filter((id) =>
-      items.some((i) => i.id === id && !i.archivedAt),
-    ).length;
+    const scoped = viewCounts(itemsInArea(items, selectedAreaId));
+    scoped.inbox = inboxCount(items, fromProjectIds);
     return scoped;
-  }, [items, sourceFilter, selectedAreaId, fromProjectIds]);
+  }, [items, selectedAreaId, fromProjectIds]);
 
   return (
     <nav className="flex h-full flex-col gap-1 overflow-y-auto p-3 text-sm">

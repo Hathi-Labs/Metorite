@@ -449,6 +449,54 @@ select optgroup {
   outline-offset: 2px;
 }
 
+/* ── Prose that follows the theme ───────────────────────────────────────
+   `@tailwindcss/typography` ships one grey palette for light and
+   `prose-invert` for dark. This app is dark by default and turns light
+   with the `.light` class, so neither fits. `prose-invert` hard-coded
+   dark text colours and left a document unreadable in light mode
+   (WS-27bm S8 visual review). `.cc-prose` points every prose colour at a
+   token, so one class reads in both modes and under any accent. Use
+   `cc-prose prose`, never `prose-invert`. Fence:
+   src/lib/proseTokens.test.ts. */
+.cc-prose {
+  --tw-prose-body: var(--foreground);
+  --tw-prose-headings: var(--foreground);
+  --tw-prose-lead: var(--muted-foreground);
+  --tw-prose-links: var(--primary);
+  --tw-prose-bold: var(--foreground);
+  --tw-prose-counters: var(--muted-foreground);
+  --tw-prose-bullets: var(--muted-foreground);
+  --tw-prose-hr: var(--border);
+  --tw-prose-quotes: var(--muted-foreground);
+  --tw-prose-quote-borders: var(--border);
+  --tw-prose-captions: var(--muted-foreground);
+  --tw-prose-kbd: var(--foreground);
+  --tw-prose-code: var(--foreground);
+  --tw-prose-pre-code: var(--foreground);
+  --tw-prose-pre-bg: var(--muted);
+  --tw-prose-th-borders: var(--border);
+  --tw-prose-td-borders: var(--border);
+}
+
+/* Inline code in prose looks like inline code in the chat
+   (`MarkdownBody`'s `code`): a token-filled pill, no quote marks. The
+   typography plugin draws a backtick before and after every inline code
+   with `::before` / `::after` content, and that content survived
+   `.cc-prose` (S8 fix round 5). Fenced code keeps the plain `pre` box. */
+.cc-prose :where(code)::before,
+.cc-prose :where(code)::after {
+  content: none;
+}
+.cc-prose :where(:not(pre) > code) {
+  background: var(--secondary);
+  color: var(--foreground);
+  border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  border-radius: calc(var(--radius) - 4px);
+  padding: 0.125rem 0.375rem;
+  font-weight: 400;
+  font-size: 0.82em;
+}
+
 /* Material-style state layer: an overlay of the control's own text colour, so
    it works on any variant without knowing that variant's background. Themes
    leaving --control-state-layer at 0 render nothing and fall back to the

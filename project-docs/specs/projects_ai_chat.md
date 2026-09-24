@@ -7,7 +7,8 @@ built 2026-09-23. S6 (navigation and the frontend-tool dispatcher) built
 2026-09-23. The visual review ran 2026-09-23 (§4.2). S7, the team
 intelligence slices, was designed 2026-09-23 (§13). S7a (capacity) was built
 2026-09-23. S7b (fit and rebalancing), S7c (conflicts) and S7d (plan with
-capacity, no phases) were built 2026-09-24. S7e is not built.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+capacity, no phases) were built 2026-09-24. S8 (documents and downloads
+from the chat, §14) was built 2026-09-24. S7e is not built.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -691,6 +692,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S7b · Fit** — ✅ **BUILT 2026-09-24** | `GET /projects/tasks/{id}/candidates` and its draft form · `GET /projects/analytics/rebalance` · "Suggested" in the assignee picker · the chat tools `fit_for_task` and `rebalance` (§13.4) | AGENT-SAFE |
 | **S7c · Conflicts** — ✅ **BUILT 2026-09-24** | `GET /projects/analytics/conflicts` with seven kinds · the Conflicts panel · the report section `conflicts` · the chat tool `find_conflicts` · the dependency rule moved to the server with one fixture for both sides (§13.5, §10.5) | AGENT-SAFE |
 | **S7d · Plan with capacity** — ✅ **BUILT 2026-09-24** | `propose_plan` gains start dates and dependencies, and shows each owner's fit and hours across the plan on the card, through `POST /projects/plan/preview` (§13.6, §10.6). No phases | AGENT-SAFE |
+| **S8 · Documents and downloads** — ✅ **BUILT 2026-09-24** | A written document opens beside the board, as in `/chat` · the panel follows the session · Download PDF for a Markdown or HTML file · Download and Download PDF for a saved report, in the Reports app and on the chat's report card · the Files section of the instructions (§14) | AGENT-SAFE |
 | **S7e · On-the-fly analysis** | The read tool `task_dataset` and the rule for numbers the chat computes itself (§13.7) | AGENT-SAFE |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-09-30 |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
@@ -919,6 +921,19 @@ In `workbench/control_plane`, run `npx tsc --noEmit` and
 Then look at the plan card in light mode, at compact density, under a changed
 accent, and beside the board. The slice creates `test_projects_plan_preview.py`
 and `planCard.test.ts`.
+
+For S8, with the same database settings:
+
+```
+uv run pytest tests/unit/test_pdf_render.py tests/unit/test_documents_pdf_route.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_agent.py tests/unit/test_genui_catalog_lockstep.py tests/unit/test_projects_reports.py tests/unit/test_projects_report_sections_lockstep.py tests/unit/test_projects_reportable_reports.py
+```
+
+In `workbench/control_plane`, run `npx tsc --noEmit` and
+`npx vitest run src/lib/autoOpenArtifact.test.ts src/lib/artifactKind.test.ts src/lib/reportEmail.test.ts src/app/projects/lib/reportFiles.test.ts src/app/api/documents/pdf/pdf.test.ts`.
+Then look at the report card in the rail, and at the Reports app, in light
+mode, at compact density and under a changed accent. The slice creates the
+two pytest files, the three new vitest files, `gateway/pdf_render.py`,
+`routes/documents.py` and `lib/autoOpenArtifact.ts`.
 
 `test_projects_report_sections_lockstep.py` is the lockstep test of §10.3
 item 6. It is a pytest that reads the two TypeScript files as text, so one test
@@ -1434,3 +1449,226 @@ candidate for a server read and a report section, and the chat says so.
   card.
 - It does not fix the outlook's capacity figure, which reads only the typed
   `capacity_hours_per_week`. That is H-169.
+
+---
+
+## 14. Documents and downloads from the chat (S8)
+
+**Owner request, 2026-09-24.** The Projects chat must show a document, and
+let the member view and download a Markdown file. It must also let the member
+download a report as a PDF.
+
+**Status: BUILT 2026-09-24.**
+
+### 14.1 The answer
+
+A member gets a file from the Projects chat in two ways.
+
+1. **A document the assistant writes.** The agent writes Markdown or HTML
+   with `write_artifact` into `outputs/`. The file opens beside the board, as
+   it does in `/chat`. Its card has Open, Download and Download PDF.
+2. **A saved report.** `render_report` draws the report card. The card has
+   Download (Markdown) and Download PDF. The Reports app has the same two
+   buttons.
+
+No path adds a second formatter or a second PDF renderer. Each is one seam.
+
+### 14.2 What was already there
+
+The audit of 2026-09-24 read these facts from the code.
+
+- `write_artifact` writes `outputs/<path>` and emits `artifact_created`.
+  The gateway serves the file at `GET /agent/workspace/{sid}/file`.
+- The rail draws `ArtifactCard` through the shared `MessageBubble`. Open
+  goes to the side panel on a desktop, and to `ArtifactViewerModal` on a
+  phone. So Markdown view and download worked before S8.
+- `/chat` opened a written document in the side panel by itself, and pruned
+  the panel to the active session. The rail did neither.
+- No PDF generator existed. `pymupdf` was already a gateway dependency.
+- A report was JSON only. `lib/reportEmail.ts` formatted a render for email
+  and for nothing else. The report card ignored its `reportId`.
+
+### 14.3 What S8 builds
+
+1. **One auto-open rule.** `src/lib/autoOpenArtifact.ts` holds the rule that
+   `/chat` held inline. `/chat` and the rail both call it. A Markdown file, an
+   HTML file or a React artifact under `outputs/` opens live. Nothing opens on
+   a phone, because a phone has no side panel. The card stays the way in.
+2. **The panel follows the session.** The rail calls `syncPanelToSession`
+   when its session changes, as `/chat` does. A tab from another conversation
+   never renders beside the board.
+3. **One PDF seam.** `gateway/pdf_render.py` lays out HTML as an A4 PDF with
+   `fitz.Story`. Markdown goes through `markdown-it-py` with raw HTML off.
+   `markdown-it-py` was already in `uv.lock` through `rich`. S8 makes it a
+   direct gateway dependency.
+4. **A workspace file as a PDF.** `GET /agent/workspace/{sid}/file` takes
+   `format=pdf`. The route makes the same workspace, blocked-path and
+   containment checks as a raw read. It converts `md`, `markdown`, `mdx`,
+   `html` and `htm`, and it answers any other type with 415. The answer is an
+   attachment with a `.pdf` name. The Next proxy passes `format` through.
+   `ArtifactCard`, `DocumentPane` and `ArtifactViewerModal` show Download PDF
+   for Markdown and HTML only. `artifactKind.ts` builds both links.
+5. **A saved report as a file.** `reportEmail.ts` now builds one layout and
+   draws it three ways: the email's text, its HTML, and the Markdown file.
+   `reportDocument` gives the file every row, where the email keeps ten. The
+   email output is the same, with one exception. An overdue section with no
+   rows no longer draws an empty `<ul>`. The PDF is the same HTML, posted as
+   `text/html` to `POST /documents/pdf`. `app/projects/lib/reportFiles.ts`
+   owns the download path, and `ReportFileButtons` draws it in the Reports
+   app and in the chat's report card. The card draws no button without a real
+   report id.
+6. **The instructions.** `instructions.md` has a Files section. It tells the
+   model to write a document into `outputs/` with a clear name. It tells the
+   model to point at the card's buttons. The model must never claim a PDF
+   that it did not make.
+
+### 14.4 Rules
+
+1. **The numbers come from the render route only.** A file renders the
+   report again on the click. Nothing in the path computes a figure.
+2. **One formatter.** `lib/reportEmail.ts` formats a report for the email and
+   for both files. The gateway formats nothing. It lays out the HTML that
+   the browser sends.
+3. **The PDF endpoint cannot fetch.** `pdf_render.sanitize_html` keeps an
+   allowlist of text tags and drops every tag and attribute that can name a
+   resource. The renderer gets no archive. A test serves an image on a local
+   port and proves that a render never requests it.
+4. **Caps.** A source above 1,000,000 bytes gets 413. A layout past 300 pages
+   gets 413. `POST /documents/pdf` and its Next proxy check the declared
+   length and the bytes as they arrive.
+5. **Identity.** Both routes sit under the app-wide `require_authenticated`.
+   `POST /documents/pdf` also refuses an anonymous context itself. Neither
+   route reads a table or writes one (R5).
+6. **MuPDF never runs in the gateway process** (fix round 1). MuPDF is C
+   code. 199,000 nested `<div>` overflowed its stack and killed the gateway,
+   and one word of 900,000 letters held the GIL for more than two minutes.
+   So `render_pdf` lays out in a child process. The parent kills the child
+   after 13 seconds (fix round 5). The slowest legitimate render measured
+   was a 286-page table report, at 4.35 s, and 13 s is three times that.
+   At most four children run at one time, and never
+   more than the CPU count, so two on the production box (fix round 4).
+   One member, and one organization, has at most one render in flight.
+   A second one gets 429 at once. The keys are the authenticated email
+   and the tenant the request bound. A request with no bound tenant
+   shares one key. A render
+   waits at most 2 seconds for a slot, with an `await` that holds no
+   thread, and then gets 503 (fix round 3). A cancelled request kills its
+   child. The child inherits only `CHILD_ENV_KEYS`, never the gateway's
+   keys.
+7. **Two bounds apply before layout.** The sanitizer refuses nesting deeper
+   than 64 elements. A run of more than 2,000 characters that MuPDF cannot
+   break is also refused. Both get 422, and both bind Markdown too. The
+   break characters were measured (fix rounds 3 to 5). **The default is
+   "does not break".** A character breaks a run only if it is assigned and
+   it is in the measured set: a space, a hyphen, the Unicode spaces except
+   U+00A0 and U+3000, and most kana, ideographs, Hangul syllables and
+   full-width Latin. Everything else counts toward a run, so an unassigned
+   or private-use code point is refused. `_CJK_NO_BREAK` in `pdf_render.py`
+   lists the measured exceptions inside the kept ranges.
+8. **Every failure has a status.** A size refusal is 413. A document that
+   MuPDF cannot read, or a child that crashes, is 422. A second render for
+   the same member is 429. A timeout or a full renderer is 503. No MuPDF
+   error reaches the member as a 500.
+
+### 14.5 Acceptance — S8
+
+**Done when:**
+
+1. `/chat` and the rail call `autoOpenArtifact`, and `/chat` keeps no
+   extension list. A vitest shows that Markdown opens, a PNG does not, and a
+   phone opens nothing.
+2. The rail calls `syncPanelToSession(activeId)` in an effect on `activeId`.
+   A vitest reads the source and fails without it.
+3. `pdf_render` returns bytes that start with `%PDF`. A render never
+   requests a URL in the HTML. The size cap, the page cap and an unknown type
+   each refuse.
+4. `?format=pdf` returns an attachment for Markdown and HTML, and 415 for a
+   PNG. An anonymous caller gets 401. A traversal or a blocked path gets no
+   PDF.
+5. `POST /documents/pdf` returns a PDF for `text/html`, 415 for another
+   type, 413 over the cap and 401 without an identity.
+6. `reportDocument` writes Markdown from a render fixture, carries every
+   row, and draws the email's own HTML. The tests of the email pass with no
+   change.
+7. The report card's buttons use the card's `reportId`, and a card without a
+   real id draws none. A vitest drives the Markdown and the PDF path.
+8. `instructions.md` has the Files section, and a test fails if it goes.
+9. The status header, the §10 row, the board row and the INDEX line say that
+   S8 is built (R4).
+10. Rules 6 to 8 each have a bounded test. Deep nesting and a long word get
+    422 through `render_pdf`. A child that aborts gets 422, and a child that
+    hangs is killed at the timeout with 503. A MuPDF error gets 422. The
+    tests run the hostile input in a child or stop it in Python, so the suite
+    cannot crash.
+11. Deleting the route's own size cap fails a test, because the test
+    replaces the renderer with a trap.
+12. Two golden tests pin the email HTML byte for byte. The strings came from
+    the formatter on `main` before S8.
+13. The PDF extensions in `artifactKind.ts` equal the gateway's
+    `SOURCE_KINDS`, and a vitest reads the Python file to prove it.
+
+### 14.6 What S8 does not do
+
+- It adds no Files tree to the rail. The card and the side panel are the way
+  in.
+- It does not change how the app emails or schedules a report.
+- It flips no flag. The rail stays behind `NEXT_PUBLIC_PROJECTS_CHAT`.
+- A Markdown image does not reach the PDF. The sanitizer drops every `<img>`
+  on purpose, because an image is a fetch.
+- **Known limit: Devanagari text cannot be copied out of the PDF.** MuPDF
+  draws it in its built-in Noto Serif Devanagari, and the page shows the
+  shaped text correctly. But the PDF maps a conjunct glyph to the wrong
+  character, so copy, search and a screen reader get wrong text. No font in
+  the tree or in `pymupdf` fixes that mapping.
+- A word longer than 2,000 characters is refused, not broken. A long hash or
+  a base64 block in a document therefore gets 422. So does a Thai paragraph
+  of more than 2,000 characters with no space, because MuPDF does not break
+  inside Thai and its layout time grows as the square of the run.
+
+### 14.7 The visual review (fix round 2)
+
+A Playwright review on 2026-09-24 looked at the rail, the side panel, the
+viewer and the Reports app in four contexts. It found eight defects. The fixes
+set four rules.
+
+1. **The board keeps 32rem.** `src/lib/sidePanelFit.ts` decides whether a
+   document may open in the side panel beside the board. If the row cannot
+   hold the tree, the panel, 32rem of board and the dock, the document opens
+   in the full-screen viewer. Nothing opens by itself then. The page's
+   `<main>` clips, so the board never draws over the chat.
+2. **Prose follows the theme.** `.cc-prose` in `globals.css` points every
+   prose colour at a token. `prose-invert` is gone from the tree.
+3. **One Markdown renderer.** `MarkdownBody` in `MarkdownMessage.tsx` draws
+   the chat's answer and the generative-UI `markdown` node.
+4. **The primitives use the status vocabulary.** A badge, a callout and an
+   icon take their hue from `statusAccent.ts`, and a button is the `Button`
+   primitive.
+
+The report card takes its section titles from the Reports app
+(`REPORT_CARD_SECTIONS` in `skill_projects/views.py`). A test reads
+`ReportsView.tsx` and fails if a title is not there. The fences are
+`src/components/chatVisualReview.test.ts`, `sidePanelFit.test.ts`,
+`scrollCue.test.ts` and `test_projects_agent.py`.
+
+**These changes reach `/chat` too, on purpose.** `MarkdownBody` is the chat's
+one Markdown renderer, so its table cells and its task-list icons changed in
+`/chat` and in the Projects rail. A task-list item is an icon with
+`role="img"` and a label. `sidePanelFitWiring.test.ts` renders
+`MessageBubble` under each value of `SidePanelFitContext`, and drives the
+rail's `artifactHandler`, so both places are proven to act on the fit.
+
+The re-check found four more defects (fix round 4). A chat table cell may
+break a long word, so the table fits the rail. Code blocks take their
+colours from `lib/codeTheme.ts`, which uses tokens only. Code in `.cc-prose`
+is foreground ink. A badge draws its words in foreground ink and its hue as
+a tint and a dot, because `--warning` ink measures 1.57:1 on a light card.
+
+Fix round 5 replaced `wrap-anywhere` on table cells with `break-words`, which
+keeps each word whole. A table wider than its box scrolls, and the bar shows.
+Inline code in `.cc-prose` has no quote marks, and it looks like inline code in
+the chat. A real browser run on 2026-09-24 measured the rail at compact density,
+`/chat` at 1440 and a phone at 390. No word broke inside itself, and each wide
+table and long code line scrolled with a 10px bar. **A capture rig must show
+scrollbars.** Playwright's headless Chromium starts with `--hide-scrollbars`,
+so a capture shows no bar even where the box scrolls. Pass
+`ignoreDefaultArgs: ["--hide-scrollbars"]` before you judge a scroll box.

@@ -305,6 +305,11 @@ describe("choosing a template fills the builder", () => {
 
   it("a coming-soon template cannot open the builder", () => {
     expect(builderStateFromTemplate(FOCUS_SWITCHING)).toBeNull();
+    // The flag alone refuses it: a coming-soon template that names sections
+    // still cannot open the builder.
+    expect(
+      builderStateFromTemplate({ ...WEEKLY_DELIVERY, available: false })
+    ).toBeNull();
     // A live flag with no sections is refused too: it names nothing to save.
     expect(
       builderStateFromTemplate({ ...WEEKLY_DELIVERY, sections: [] })

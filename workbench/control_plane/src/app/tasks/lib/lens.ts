@@ -358,6 +358,10 @@ const MY_ROUTES: Readonly<Record<string, string>> = {
   // (`routes/projects/personal.py`).
   led: "my/led",
   lanes: "my/tasks/{task_id}/lanes",
+  // S6g, P0 — the purge that refuses a task outside my personal tree (409).
+  // The same path as `task`, with DELETE. Never `tasks/{id}`, which admits
+  // anybody who can see the task and so deletes a team task for everyone.
+  purge: "my/tasks/{task_id}",
 };
 
 const at = (template: string, id: string): string =>
@@ -735,9 +739,13 @@ export async function lensRestoreItem(id: string): Promise<MyTask> {
   return lensGetItem(id);
 }
 
-/** Finalise the delete. Hard, shared, and not undoable. */
+/**
+ * Finalise the delete. Hard and not undoable, so ONLY for a task in my
+ * personal tree (S6g, P0, `removal.ts`). The store refuses a board task before
+ * this is called, and the route answers 409 for one as the second fence.
+ */
 export async function lensPurgeItem(id: string): Promise<void> {
-  await projectsCall<Raw>(`tasks/${id}`, { method: "DELETE" });
+  await projectsCall<Raw>(at(MY_ROUTES.purge, id), { method: "DELETE" });
 }
 
 /**

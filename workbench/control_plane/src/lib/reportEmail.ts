@@ -149,6 +149,225 @@ function duration(hours: number | null | undefined): string {
 export const MAX_EMAIL_ROWS = 10;
 
 /**
+ * One section of a report, as words. Built ONCE by {@link reportLayout} and
+ * drawn three ways: the email's text and HTML ({@link reportEmail}) and the
+ * downloaded Markdown and PDF ({@link reportDocument}).
+ *
+ * ⚠️ **This is the one formatter (WS-27bm S8).** The Reports download and the
+ * chat's report card write their files from this layout, so a file and an
+ * email of one render cannot disagree. The gateway's PDF route lays out the
+ * HTML it is given and formats nothing.
+ */
+export interface ReportPart {
+  /** The headline. `lead` is bold when `strong`, and `extra` follows it. */
+  head: { lead: string; strong?: boolean; extra?: string };
+  /** One line per row. Member strings are raw here and escaped per renderer. */
+  items: string[];
+  /** Lines after the rows: a cut list admitted, an HR note. */
+  notes: string[];
+}
+
+export interface ReportLayout {
+  title: string;
+  period: string;
+  scope: string;
+  parts: ReportPart[];
+}
+
+/**
+ * The words of one rendered report, in order. It formats and never computes:
+ * every number is the render route's.
+ *
+ * `maxRows` caps each list. An email carries {@link MAX_EMAIL_ROWS}. A
+ * download passes `Infinity`, because a file is the whole of the report.
+ */
+export function reportLayout(
+  rendered: RenderedReport,
+  maxRows: number = MAX_EMAIL_ROWS,
+): ReportLayout {
+  const { report, sections } = rendered;
+  const parts: ReportPart[] = [];
+
+  const fin = sections.finished;
+  if (fin) {
+    const rows = fin.projects.slice(0, maxRows);
+    const notes: string[] = [];
+    // ⚠️ Said out loud when the list is cut. A truncated list that does not
+    // admit it reads as the whole of the work.
+    if (rows.length && fin.projects.length > rows.length) {
+      notes.push(`…and ${fin.projects.length - rows.length} more projects`);
+    }
+    parts.push({
+      head: {
+        lead: `Finished: ${fin.total_completed}`,
+        strong: true,
+        extra: fin.total_cancelled ? `${fin.total_cancelled} cancelled` : undefined,
+      },
+      items: rows.map(
+        (p) =>
+          `${p.name}: ${p.completed}` +
+          (p.cancelled ? ` (${p.cancelled} cancelled)` : ""),
+      ),
+      notes,
+    });
+  }
+
+  const thr = sections.throughput;
+  if (thr) {
+    // The denominator travels with the median. A median over four tasks and a
+    // median over four hundred are not the same claim.
+    parts.push({
+      head: {
+        lead:
+          `Median time to finish: ${duration(thr.median_hours)}` +
+          ` (over ${thr.measured} measured)`,
+      },
+      items: [],
+      notes: [],
+    });
+  }
+
+  const stuck = sections.stuck;
+  if (stuck && stuck.overdue_total > 0) {
+    parts.push({
+      head: { lead: `Overdue: ${stuck.overdue_total}`, strong: true },
+      items: stuck.overdue
+        .slice(0, maxRows)
+        .map((o) => `${o.name}: ${o.overdue}`),
+      notes: [],
+    });
+  }
+
+  const load = sections.load;
+  if (load) {
+    parts.push({
+      head: { lead: `Open work: ${load.total_tasks}` },
+      items: load.people
+        .slice(0, maxRows)
+        .map(
+          (p) =>
+            `${p.assignee ?? "Unassigned"}: ${p.open_tasks}` +
+            (p.overdue ? ` (${p.overdue} overdue)` : ""),
+        ),
+      notes: [],
+    });
+  }
+
+  const cap = sections.capacity;
+  if (cap) {
+    parts.push({
+      head: {
+        lead: `Who has the hours (next ${cap.horizon_days} days): ${cap.total_tasks} open`,
+      },
+      items: cap.people.slice(0, maxRows).map((p) => {
+        const who =
+          p.kind === "unassigned" || !p.assignee
+            ? "Unassigned"
+            : p.name || p.assignee;
+        // ⚠️ The spare figure is the server's, verbatim, and it is printed
+        // ONLY when the server said the hours mean something. A missing figure
+        // is "no hours", never "0h" — zero reads as free.
+        const hoursPart =
+          p.hours_basis && typeof p.spare_hours_horizon === "number"
+            ? `, ${p.spare_hours_horizon}h spare`
+            : p.hours_basis === false
+              ? ", no hours"
+              : "";
+        return `${who}: ${p.open_tasks} open${hoursPart}`;
+      }),
+      notes: cap.hr_visible ? [] : ["Hours need HR read access."],
+    });
+  }
+
+  const conf = sections.conflicts;
+  if (conf) {
+    // ⚠️ The sentence is the server's, verbatim, and it carries task titles
+    // a member typed. Every renderer escapes it like any other member string.
+    parts.push({
+      head: { lead: `Where the plan conflicts: ${conf.total}` },
+      items: conf.rows
+        .slice(0, maxRows)
+        .map((r) => `${r.severity === "high" ? "High" : "Medium"}: ${r.sentence}`),
+      notes: conf.hr_visible ? [] : ["Four kinds need HR read access."],
+    });
+  }
+
+  return {
+    title: report.name,
+    period: periodLabel(rendered.period_start, rendered.period_end),
+    scope:
+      report.scope === "portfolio" ? "Every space you can see" : "This project",
+    parts,
+  };
+}
+
+function textOf(layout: ReportLayout): string {
+  const lines: string[] = [layout.title, layout.period, layout.scope, ""];
+  for (const part of layout.parts) {
+    lines.push(
+      part.head.lead + (part.head.extra ? ` (${part.head.extra})` : ""),
+    );
+    for (const item of part.items) lines.push(`  ${item}`);
+    for (const note of part.notes) lines.push(`  ${note}`);
+    lines.push("");
+  }
+  return lines.join("\n").trimEnd();
+}
+
+function htmlOf(layout: ReportLayout): string {
+  const blocks: string[] = [
+    `<h2>${escapeHtml(layout.title)}</h2>`,
+    `<p>${escapeHtml(layout.period)} · ${escapeHtml(layout.scope)}</p>`,
+  ];
+  for (const part of layout.parts) {
+    const lead = escapeHtml(part.head.lead);
+    blocks.push(
+      `<p>${part.head.strong ? `<strong>${lead}</strong>` : lead}` +
+        (part.head.extra ? ` · ${escapeHtml(part.head.extra)}` : "") +
+        `</p>`,
+    );
+    if (part.items.length) {
+      blocks.push(
+        `<ul>${part.items.map((i) => `<li>${escapeHtml(i)}</li>`).join("")}</ul>`,
+      );
+    }
+    for (const note of part.notes) blocks.push(`<p>${escapeHtml(note)}</p>`);
+  }
+  // ⚠️ No style attribute, no colour, no table. See the module header.
+  return `<div>${blocks.join("")}</div>`;
+}
+
+/**
+ * A member string made inert in Markdown. A project named `*Q3*` must print
+ * its asterisks, not turn italic, and a `[link](…)` in a title must not become
+ * a link in the file.
+ */
+export function escapeMarkdown(value: string): string {
+  return value.replace(/([\\`*_[\]<>#|])/g, "\\$1");
+}
+
+function markdownOf(layout: ReportLayout): string {
+  const out: string[] = [
+    `# ${escapeMarkdown(layout.title)}`,
+    "",
+    `${escapeMarkdown(layout.period)} · ${escapeMarkdown(layout.scope)}`,
+  ];
+  for (const part of layout.parts) {
+    const lead = escapeMarkdown(part.head.lead);
+    out.push(
+      "",
+      (part.head.strong ? `**${lead}**` : lead) +
+        (part.head.extra ? ` · ${escapeMarkdown(part.head.extra)}` : ""),
+    );
+    if (part.items.length) {
+      out.push("", ...part.items.map((i) => `- ${escapeMarkdown(i)}`));
+    }
+    for (const note of part.notes) out.push("", escapeMarkdown(note));
+  }
+  return `${out.join("\n")}\n`;
+}
+
+/**
  * Subject, text and HTML for one rendered report.
  *
  * ⚠️ **The subject names the PERIOD, not the send date.** Two sends of one
@@ -159,173 +378,40 @@ export const MAX_EMAIL_ROWS = 10;
 export function reportEmail(
   rendered: RenderedReport,
 ): { subject: string; text: string; html: string } {
-  const { report, sections } = rendered;
-  const period = periodLabel(rendered.period_start, rendered.period_end);
-  const subject = `${report.name} — ${period}`;
-
-  const scope =
-    report.scope === "portfolio" ? "Every space you can see" : "This project";
-
-  const lines: string[] = [`${report.name}`, period, scope, ""];
-  const blocks: string[] = [
-    `<h2>${escapeHtml(report.name)}</h2>`,
-    `<p>${escapeHtml(period)} · ${escapeHtml(scope)}</p>`,
-  ];
-
-  const fin = sections.finished;
-  if (fin) {
-    lines.push(
-      `Finished: ${fin.total_completed}` +
-        (fin.total_cancelled ? ` (${fin.total_cancelled} cancelled)` : ""),
-    );
-    blocks.push(
-      `<p><strong>Finished: ${fin.total_completed}</strong>` +
-        (fin.total_cancelled
-          ? ` · ${fin.total_cancelled} cancelled`
-          : "") +
-        `</p>`,
-    );
-    const rows = fin.projects.slice(0, MAX_EMAIL_ROWS);
-    if (rows.length) {
-      const li = rows.map(
-        (p) =>
-          `<li>${escapeHtml(p.name)}: ${p.completed}` +
-          (p.cancelled ? ` (${p.cancelled} cancelled)` : "") +
-          `</li>`,
-      );
-      blocks.push(`<ul>${li.join("")}</ul>`);
-      for (const p of rows) {
-        lines.push(
-          `  ${p.name}: ${p.completed}` +
-            (p.cancelled ? ` (${p.cancelled} cancelled)` : ""),
-        );
-      }
-      // ⚠️ Said out loud when the list is cut. A truncated list that does not
-      // admit it reads as the whole of the work.
-      if (fin.projects.length > rows.length) {
-        const more = `  …and ${fin.projects.length - rows.length} more projects`;
-        lines.push(more);
-        blocks.push(`<p>${escapeHtml(more.trim())}</p>`);
-      }
-    }
-    lines.push("");
-  }
-
-  const thr = sections.throughput;
-  if (thr) {
-    const text = `Median time to finish: ${duration(thr.median_hours)}`;
-    // The denominator travels with the median. A median over four tasks and a
-    // median over four hundred are not the same claim.
-    const over = ` (over ${thr.measured} measured)`;
-    lines.push(text + over, "");
-    blocks.push(`<p>${escapeHtml(text + over)}</p>`);
-  }
-
-  const stuck = sections.stuck;
-  if (stuck && stuck.overdue_total > 0) {
-    lines.push(`Overdue: ${stuck.overdue_total}`);
-    blocks.push(`<p><strong>Overdue: ${stuck.overdue_total}</strong></p>`);
-    const rows = stuck.overdue.slice(0, MAX_EMAIL_ROWS);
-    blocks.push(
-      `<ul>${rows
-        .map((o) => `<li>${escapeHtml(o.name)}: ${o.overdue}</li>`)
-        .join("")}</ul>`,
-    );
-    for (const o of rows) lines.push(`  ${o.name}: ${o.overdue}`);
-    lines.push("");
-  }
-
-  const load = sections.load;
-  if (load) {
-    lines.push(`Open work: ${load.total_tasks}`);
-    blocks.push(`<p>Open work: ${load.total_tasks}</p>`);
-    const busiest = load.people.slice(0, MAX_EMAIL_ROWS);
-    if (busiest.length) {
-      blocks.push(
-        `<ul>${busiest
-          .map(
-            (p) =>
-              `<li>${escapeHtml(p.assignee ?? "Unassigned")}: ` +
-              `${p.open_tasks}` +
-              (p.overdue ? ` (${p.overdue} overdue)` : "") +
-              `</li>`,
-          )
-          .join("")}</ul>`,
-      );
-      for (const p of busiest) {
-        lines.push(
-          `  ${p.assignee ?? "Unassigned"}: ${p.open_tasks}` +
-            (p.overdue ? ` (${p.overdue} overdue)` : ""),
-        );
-      }
-    }
-    lines.push("");
-  }
-
-  const cap = sections.capacity;
-  if (cap) {
-    const head = `Who has the hours (next ${cap.horizon_days} days): ${cap.total_tasks} open`;
-    lines.push(head);
-    blocks.push(`<p>${escapeHtml(head)}</p>`);
-    const described = cap.people.slice(0, MAX_EMAIL_ROWS).map((p) => {
-      const who =
-        p.kind === "unassigned" || !p.assignee
-          ? "Unassigned"
-          : p.name || p.assignee;
-      // ⚠️ The spare figure is the server's, verbatim, and it is printed
-      // ONLY when the server said the hours mean something. A missing figure
-      // is "no hours", never "0h" — zero reads as free.
-      const hoursPart =
-        p.hours_basis && typeof p.spare_hours_horizon === "number"
-          ? `, ${p.spare_hours_horizon}h spare`
-          : p.hours_basis === false
-            ? ", no hours"
-            : "";
-      return `${who}: ${p.open_tasks} open${hoursPart}`;
-    });
-    if (described.length) {
-      blocks.push(
-        `<ul>${described.map((d) => `<li>${escapeHtml(d)}</li>`).join("")}</ul>`,
-      );
-      for (const d of described) lines.push(`  ${d}`);
-    }
-    if (!cap.hr_visible) {
-      const note = "Hours need HR read access.";
-      lines.push(`  ${note}`);
-      blocks.push(`<p>${escapeHtml(note)}</p>`);
-    }
-    lines.push("");
-  }
-
-  const conf = sections.conflicts;
-  if (conf) {
-    const head = `Where the plan conflicts: ${conf.total}`;
-    lines.push(head);
-    blocks.push(`<p>${escapeHtml(head)}</p>`);
-    // ⚠️ The sentence is the server's, verbatim, and it carries task titles
-    // a member typed. It is escaped like every other member string here.
-    const said = conf.rows
-      .slice(0, MAX_EMAIL_ROWS)
-      .map((r) => `${r.severity === "high" ? "High" : "Medium"}: ${r.sentence}`);
-    if (said.length) {
-      blocks.push(
-        `<ul>${said.map((d) => `<li>${escapeHtml(d)}</li>`).join("")}</ul>`,
-      );
-      for (const d of said) lines.push(`  ${d}`);
-    }
-    if (!conf.hr_visible) {
-      const note = "Four kinds need HR read access.";
-      lines.push(`  ${note}`);
-      blocks.push(`<p>${escapeHtml(note)}</p>`);
-    }
-    lines.push("");
-  }
-
+  const layout = reportLayout(rendered, MAX_EMAIL_ROWS);
   return {
-    subject,
-    text: lines.join("\n").trimEnd(),
-    // ⚠️ No style attribute, no colour, no table. See the module header.
-    html: `<div>${blocks.join("")}</div>`,
+    subject: `${layout.title} — ${layout.period}`,
+    text: textOf(layout),
+    html: htmlOf(layout),
+  };
+}
+
+/** A file name no file system refuses: no slash, colon, quote or control. */
+function fileSafe(value: string): string {
+  const cleaned = value.replace(/[\\/:*?"<>|\x00-\x1f]+/g, "-").trim();
+  return cleaned.slice(0, 120) || "report";
+}
+
+/**
+ * One rendered report as a FILE (WS-27bm S8, spec `projects_ai_chat.md` §14):
+ * the Markdown a member downloads, the HTML the gateway lays out as a PDF, and
+ * the base name both files share.
+ *
+ * The same layout as the email, with every row: a file is the whole report,
+ * and a cut list in a file is one nobody admits to.
+ */
+export function reportDocument(rendered: RenderedReport): {
+  basename: string;
+  markdown: string;
+  html: string;
+} {
+  const layout = reportLayout(rendered, Infinity);
+  return {
+    basename: fileSafe(
+      `${layout.title} ${rendered.period_start} to ${rendered.period_end}`,
+    ),
+    markdown: markdownOf(layout),
+    html: htmlOf(layout),
   };
 }
 

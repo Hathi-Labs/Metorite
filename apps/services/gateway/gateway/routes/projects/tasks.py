@@ -786,6 +786,69 @@ async def move_task(
     return result
 
 
+async def delete_task_in(db: Any, doomed: Any) -> DeleteResponse:
+    """The body of ``DELETE /tasks/{id}``, inside a caller's transaction.
+
+    Split out on 2026-09-24 (WS-39 S6g) so My Tasks' purge
+    (``DELETE /projects/my/tasks/{id}``) can refuse a task outside the
+    member's personal tree and delete in the SAME transaction as that check.
+    ``doomed`` is the row ``load_visible_task`` returned. The caller emits.
+    """
+    task_id = str(doomed.id)
+    promoted = await count_where(db, "pm_tasks", "parent_task_id", task_id)
+    # WS-27ae / P-27 — read BEFORE the delete, because afterwards the FK has
+    # already SET NULL and nothing connects these rows to the task that used
+    # to own them. Their `parent_task_id` changed without any statement in
+    # this module writing them, so without the bump a promoted subtask is an
+    # edit no delta client can ever see.
+    children = [
+        str(r.id) for r in (await db.execute(
+            text(
+                "SELECT id FROM pm_tasks "
+                "WHERE parent_task_id = CAST(:tid AS uuid)"
+            ),
+            {"tid": task_id},
+        )).fetchall()
+    ]
+    activities = await count_where(db, "pm_activities", "task_id", task_id)
+    assignees = (await db.execute(
+        text(
+            "SELECT count(*) FROM pm_task_assignees "
+            "WHERE task_id = CAST(:tid AS uuid)"
+        ),
+        {"tid": task_id},
+    )).scalar() or 0
+    links = (await db.execute(
+        text(
+            "SELECT count(*) FROM pm_task_links "
+            "WHERE source_task_id = CAST(:tid AS uuid) "
+            "   OR target_task_id = CAST(:tid AS uuid)"
+        ),
+        {"tid": task_id},
+    )).scalar() or 0
+
+    await db.execute(
+        text("DELETE FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
+        {"tid": task_id},
+    )
+    # The tombstone itself is written by migration 168's AFTER DELETE
+    # trigger, NOT here — `pm_projects` CASCADEs to `pm_tasks`, so a
+    # statement in this function would have recorded the one deletion path
+    # that has an endpoint and silently missed the one that takes hundreds
+    # of tasks at once. What this function still owes is the bump on the
+    # rows the delete CHANGED but did not remove.
+    await touch_task(db, getattr(doomed, "parent_task_id", None), *children)
+    return DeleteResponse(
+        deleted=task_id,
+        cascaded={
+            "activities": int(activities),
+            "assignees": int(assignees),
+            "links": int(links),
+            "subtasks_promoted": int(promoted),
+        },
+    )
+
+
 @router.delete("/tasks/{task_id}")
 async def delete_task(
     task_id: str, user: UserContext = Depends(get_current_user),
@@ -797,64 +860,17 @@ async def delete_task(
     its opposite, and is named accordingly. Reporting it as "deleted" would be
     the exact class of lie the N8 purge shipped: a count that reassures in the
     wrong direction.
+
+    The work is :func:`delete_task_in`. This route opens the session, loads
+    the task through the caller's visibility and emits the event.
     """
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         doomed = await load_visible_task(db, vis, task_id)
-        promoted = await count_where(db, "pm_tasks", "parent_task_id", task_id)
-        # WS-27ae / P-27 — read BEFORE the delete, because afterwards the FK has
-        # already SET NULL and nothing connects these rows to the task that used
-        # to own them. Their `parent_task_id` changed without any statement in
-        # this module writing them, so without the bump a promoted subtask is an
-        # edit no delta client can ever see.
-        children = [
-            str(r.id) for r in (await db.execute(
-                text(
-                    "SELECT id FROM pm_tasks "
-                    "WHERE parent_task_id = CAST(:tid AS uuid)"
-                ),
-                {"tid": task_id},
-            )).fetchall()
-        ]
-        activities = await count_where(db, "pm_activities", "task_id", task_id)
-        assignees = (await db.execute(
-            text(
-                "SELECT count(*) FROM pm_task_assignees "
-                "WHERE task_id = CAST(:tid AS uuid)"
-            ),
-            {"tid": task_id},
-        )).scalar() or 0
-        links = (await db.execute(
-            text(
-                "SELECT count(*) FROM pm_task_links "
-                "WHERE source_task_id = CAST(:tid AS uuid) "
-                "   OR target_task_id = CAST(:tid AS uuid)"
-            ),
-            {"tid": task_id},
-        )).scalar() or 0
-
-        await db.execute(
-            text("DELETE FROM pm_tasks WHERE id = CAST(:tid AS uuid)"),
-            {"tid": task_id},
-        )
-        # The tombstone itself is written by migration 168's AFTER DELETE
-        # trigger, NOT here — `pm_projects` CASCADEs to `pm_tasks`, so a
-        # statement in this function would have recorded the one deletion path
-        # that has an endpoint and silently missed the one that takes hundreds
-        # of tasks at once. What this function still owes is the bump on the
-        # rows the delete CHANGED but did not remove.
-        await touch_task(db, getattr(doomed, "parent_task_id", None), *children)
+        result = await delete_task_in(db, doomed)
 
     await emit("pm.task.deleted", {"task_id": task_id})
-    return DeleteResponse(
-        deleted=task_id,
-        cascaded={
-            "activities": int(activities),
-            "assignees": int(assignees),
-            "links": int(links),
-            "subtasks_promoted": int(promoted),
-        },
-    )
+    return result
 
 
 # ── Archive (WS-27w item 1) ─────────────────────────────────────────────────

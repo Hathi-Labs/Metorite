@@ -11,10 +11,14 @@
  *
  * ## What happens on Move
  *
- * `promotePlan` turns the answers into ONE `apiMoveTask` request. The store
- * sends it, reads the task back through the lens, and swaps the row in. The
- * card's project label changes in place because it is the same row with a new
- * `project_id` (D53.4). Nothing moves before the server answers.
+ * `promotePlan` turns the answers into ONE `apiMoveTask` request. The card
+ * closes, and the store waits `PROMOTE_UNDO_MS` before it sends the request
+ * (S6g). The toast reads "Moving to {project}… Undo", and Undo cancels it
+ * before anything reaches the server. After the send there is no Undo,
+ * because D62 refuses a move back into my tree, and the toast offers "Open
+ * board". The store reads the task back through the lens and swaps the row
+ * in. The card's origin chip changes in place because it is the same row with
+ * a new `project_id` (D53.4). Nothing moves before the server answers.
  *
  * A promote that handed the task to a colleague takes it OUT of my list: the
  * read-back answers 404, the store drops the row, and the toast says where it
@@ -25,11 +29,10 @@
  *
  * D62 (into somebody's personal tree), the assign guard (a colleague on a
  * task with no project) and a blank required field all come back as the
- * gateway's own sentence. It renders IN the card, as the Projects flow does,
- * and goes through the toast seam (`reportSyncFailure`) so a member who
- * closed the card still hears it. A structured 422 also carries the field
- * DEFINITIONS it named, and the card draws those as inputs. Nothing
- * optimistic, nothing to undo.
+ * gateway's own sentence, through the toast seam (`reportSyncFailure`). The
+ * card has closed by then (S6g), so the toast is where the member hears it.
+ * The card already asked for every required field the preview named, so a
+ * refusal for a blank field is rare. Nothing optimistic, nothing to undo.
  *
  * ⚠️ Hosts render this OUTSIDE their clickable root. The Modal portals to
  * `document.body`, but React events bubble the REACT tree, so a dialog
@@ -37,17 +40,12 @@
  * in it. `TaskCard` and `InboxCard` both host it beside the root, not in it.
  */
 
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { MoveTasksDialog, type PromoteAnswers } from "@/app/projects/components/MoveTasksDialog";
-import { projectsApi, refusedFields } from "@/app/projects/lib/api";
-import { taskDeepLink } from "@/app/projects/lib/card";
-import type { FieldDef } from "@/app/projects/lib/customFields";
-import type { ProjectNode } from "@/app/projects/lib/tree";
-import { useToast } from "@/components/ui/Toast";
 
-import { promotePlan, promoteToast } from "../lib/promote";
+import { useCompanyTree } from "../lib/companyTree";
+import { promotePlan } from "../lib/promote";
 import { useTaskStore } from "../lib/taskStore";
 import type { MyTask } from "../lib/types";
 
@@ -66,49 +64,29 @@ function ownerIds(item: MyTask): string[] {
 export function PromoteDialog({
   item,
   onClose,
+  initialDestination,
 }: {
   item: MyTask;
   onClose: () => void;
+  /** S6g — the capture door opens the card on the `#Project` it named. */
+  initialDestination?: string | null;
 }) {
   const promoteItem = useTaskStore((s) => s.promoteItem);
+  const schedulePromote = useTaskStore((s) => s.schedulePromote);
   const reportSyncFailure = useTaskStore((s) => s.reportSyncFailure);
-  const toast = useToast();
-  const router = useRouter();
+  const backend = useTaskStore((s) => s.backend);
 
-  const [roots, setRoots] = useState<ProjectNode[]>([]);
-  const [treeError, setTreeError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  // The destination picker wants the TREE, folders and all — the same list
+  // Clarify's Where step and the capture chip read (`useCompanyTree`). Read
+  // again on open, so a project made since the page loaded is offered.
+  const { roots, error: treeError } = useCompanyTree(backend === "live", true);
   const [error, setError] = useState<string | null>(null);
-  // The fields a 422 named, drawn as inputs on the next attempt.
-  const [refused, setRefused] = useState<FieldDef[]>([]);
   // Seeded ONCE, when the dialog opens. The owners the member started from
-  // are the baseline "unchanged" is judged against; re-deriving them on
-  // every render would move the baseline under the member's edits.
+  // are the baseline "unchanged" is judged against.
   const [initialAssignees] = useState(() => ownerIds(item));
 
-  // The destination picker wants the TREE, folders and all, so the member
-  // sees the same shape they know from /projects. The store's flat list is
-  // for the card label, not for choosing.
-  useEffect(() => {
-    let live = true;
-    projectsApi
-      .tree()
-      .then((res) => {
-        if (live) setRoots(res.rows as ProjectNode[]);
-      })
-      .catch((err) => {
-        if (live) setTreeError(String((err as Error).message));
-      });
-    return () => {
-      live = false;
-    };
-  }, []);
-
-  async function confirm(
-    destinationId: string,
-    dropped: string[] | null,
-    answers?: PromoteAnswers,
-  ) {
+  function confirm(destinationId: string, dropped: string[] | null, answers?: PromoteAnswers) {
+    // The ONE builder both doors use (`promote.test.ts` holds Clarify to it).
     const plan = promotePlan({
       destinationId,
       fields: answers?.fields ?? [],
@@ -117,55 +95,54 @@ export function PromoteDialog({
       initialAssignees: answers?.initialAssignees ?? [],
     });
     if (!plan.ok) {
-      // The dialog holds the button while a field is blank, so this is the
+      // The card holds the button while a field is blank, so this is the
       // belt to that brace: never send what the server will refuse.
       setError(`Fill in ${plan.missing.join(", ")} first.`);
       return;
     }
-    setBusy(true);
-    setError(null);
-    try {
-      const outcome = await promoteItem(item.id, plan.request);
-      // Read AFTER the move: `promoteItem` re-reads the company list when
-      // the destination is new to it, and the render's `projects` is older.
-      const projectId = outcome.left ? outcome.projectId : outcome.item.projectId;
-      const name =
-        useTaskStore.getState().projects.find((p) => p.id === projectId)?.outcome ??
-        "the project";
-      onClose();
-      toast.show({
-        key: `tasks-promote:${item.id}`,
-        variant: "success",
-        ...promoteToast(outcome, name, dropped),
-        action: {
-          label: "Open board",
-          // The id survives the move (D53.4: same row), so the deep link
-          // holds whether or not the task is still in my list.
-          onClick: () => router.push(taskDeepLink({ id: item.id })),
-        },
-      });
-    } catch (err) {
-      const message =
-        err instanceof Error && err.message ? err.message : "Couldn't move the task.";
-      setError(message);
-      setRefused(refusedFields(err) as FieldDef[]);
-      reportSyncFailure(`Couldn't move it: ${message}`);
-    } finally {
-      setBusy(false);
-    }
+    const name = nodeName(roots, destinationId) ?? "the project";
+    onClose();
+    // S6g — the deferred commit. Nothing is sent for `PROMOTE_UNDO_MS`, and
+    // the toast's Undo cancels it. After the send there is no Undo (D62).
+    schedulePromote({
+      id: item.id,
+      projectName: name,
+      dropped,
+      commit: () =>
+        promoteItem(item.id, plan.request).catch((err: unknown) => {
+          const message =
+            err instanceof Error && err.message ? err.message : "Couldn't move the task.";
+          reportSyncFailure(`Couldn't move it: ${message}`);
+          throw err;
+        }),
+    });
   }
 
   return (
     <MoveTasksDialog
       taskIds={[item.id]}
       roots={roots}
-      busy={busy}
       error={error ?? treeError}
-      promote={{ initialAssignees, due: item.dueAt ?? null, refusedFields: refused }}
+      initialDestination={initialDestination ?? null}
+      promote={{ initialAssignees, due: item.dueAt ?? null }}
       onClose={onClose}
       onConfirm={(destinationId, _statusMap, dropped, answers) =>
-        void confirm(destinationId, dropped, answers)
+        confirm(destinationId, dropped, answers)
       }
     />
   );
+}
+
+/** A node's name anywhere in the tree. */
+function nodeName(
+  roots: readonly { id: string; name: string; children?: unknown[] }[],
+  id: string,
+): string | null {
+  for (const node of roots) {
+    if (node.id === id) return node.name;
+    const kids = (node.children ?? []) as { id: string; name: string; children?: unknown[] }[];
+    const hit = nodeName(kids, id);
+    if (hit) return hit;
+  }
+  return null;
 }
