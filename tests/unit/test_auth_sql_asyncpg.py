@@ -175,6 +175,16 @@ def _cases() -> list[tuple[str, str, dict]]:
             A._ACCESS_REQUEST_UPSERT_SQL,
             {"email": WHO, "name": "Nobody"},
         ),
+        # H-118 — the domain → organization lookup that decides WHICH tenant a
+        # knock joins. In production it runs on an UNBOUND session, because the
+        # knock has no tenant yet; that is legal only because `organization` is
+        # the one table carrying no row-level security. A domain nobody claims
+        # is the ordinary answer, so the zero-row path is what this exercises.
+        (
+            "access._ORG_FOR_DOMAIN_SQL",
+            A._ORG_FOR_DOMAIN_SQL,
+            {"domain": "no-such-domain.invalid"},
+        ),
         (
             "access._MIRROR_ORG_BY_SLUG_SQL",
             A._MIRROR_ORG_BY_SLUG_SQL,

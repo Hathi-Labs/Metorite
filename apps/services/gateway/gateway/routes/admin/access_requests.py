@@ -51,6 +51,7 @@ from typing import Any
 
 from acb_auth import UserContext, is_company_email, require_permission
 from acb_auth.access import mirror_identity_membership, mirror_membership_status
+from acb_auth.console_resolve import invite_member_on_console
 from fastapi import Depends, HTTPException
 from gateway.routes.admin._common import (
     _iso,
@@ -498,6 +499,51 @@ async def approve_access_request(
         await mirror_membership_status(
             email=member["email"], org_id=org_id, status=member["status"],
         )
+
+        # ⚠️ CP-2f (WS-31, D50.2) — THE CONSOLE MIRROR, MISSING UNTIL
+        # 2026-09-24. A DIFFERENT plane and a different database from the two
+        # H6 shadows above, and the one that decides whether this person can
+        # ever hold a seat.
+        #
+        # `invite_member_on_console` had exactly ONE caller: the invite door in
+        # `members.py`. So the two provisioning doors disagreed — the failure
+        # this package keeps repeating. `remove_member`'s own docstring records
+        # the same shape for the self-lockout check, and the D63 seal hit it
+        # again on 2026-09-23.
+        #
+        # What the gap cost, in CP-2f's own words: the colleague was "invisible
+        # to `GET /me/members`, a 404 at the seat-assign door, and — with
+        # sign-in resolve ARMED — `store.deployment_visible_orgs` returned
+        # nothing for them, so their first sign-in answered 'zero
+        # organizations' and the self-serve funnel offered to create them an
+        # org OF THEIR OWN." An approval, correctly performed, produced a
+        # second tenant.
+        #
+        # Posture copied from the invite door deliberately: POST-COMMIT,
+        # best-effort, own session (an HTTP hop, not a transaction), actor =
+        # the AUTHENTICATED admin (R11), no organization named (the Console
+        # derives it from placement ∩ membership) and no role named (the
+        # registry's vocabulary is not the tenant's — D12).
+        try:
+            cc_status, cc_body = await invite_member_on_console(
+                actor_email=admin.email or "",
+                member_email=member["email"],
+                display_name=member.get("display_name") or "",
+            )
+            if cc_status >= 400:
+                # A silent refusal is the exact failure CP-2f exists to close,
+                # so the verdict is logged even though it cannot fail an
+                # approval that has already committed.
+                _log.warning(
+                    "access_request_console_refused",
+                    email=member["email"], status=cc_status,
+                    body=str(cc_body)[:200],
+                )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "access_request_console_mirror_failed",
+                email=member["email"], error=str(exc)[:200],
+            )
 
     # Their refusal is cached for up to 60s; without this they would be
     # approved and still bounced, which reads as the approval not working.

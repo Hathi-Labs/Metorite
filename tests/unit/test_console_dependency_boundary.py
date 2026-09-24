@@ -287,6 +287,32 @@ _THE_ROUTER_CALLER = "apps/services/gateway/gateway/routes/v1_compat.py"
 #: ``resolve_for_signin`` from startup, which is precisely the drift the list
 #: exists to catch.
 _THE_LIFESPAN_CALLER = "apps/services/gateway/gateway/main.py"
+#: ⚠️ **The SEVENTH entry — the APPROVE door, 2026-09-24 — and the argument,
+#: because this list's own rule is that a new entry states one.**
+#:
+#: It imports exactly ONE name, ``invite_member_on_console``, and it is the
+#: SAME name and the same call the invite door at ``_THE_INVITE_CALLER``
+#: already makes. Both are provisioning doors for the same act: a person
+#: becomes a member of this organization.
+#:
+#: **It allocates NO seat.** ``invite_member_on_console`` writes an
+#: ``org_membership`` row with ``status='invited'`` and makes the colleague
+#: *seat-assignable*; the admin still assigns the seat by hand at the capped
+#: ``seat_admin`` door. Nothing here reaches ``resolve_for_signin``, which is
+#: the function this whole list exists to ration, and
+#: ``test_only_the_signin_path_may_allocate_a_seat`` still refuses it by name.
+#:
+#: **Why it had to be added rather than avoided.** Until 2026-09-24 the two
+#: provisioning doors disagreed: invite mirrored, approve did not. CP-2f's own
+#: docstring says what that cost — the approved colleague was "invisible to
+#: ``GET /me/members``, a 404 at the seat-assign door", and their first sign-in
+#: "offered to create them an org OF THEIR OWN". An approval, correctly
+#: performed, produced a person the owner could not give a seat to.
+#:
+#: 📌 It is a **session-email-only** route like the first four: the actor is
+#: ``admin.email`` from the authenticated context (R11), and the member is a
+#: row already in ``access_request``, never a caller-supplied body field.
+_THE_APPROVE_CALLER = "apps/services/gateway/gateway/routes/admin/access_requests.py"
 _ALLOWED_CALLERS = (
     _THE_ONE_CALLER,
     _THE_SIGNUP_CALLER,
@@ -294,6 +320,7 @@ _ALLOWED_CALLERS = (
     _THE_INVITE_CALLER,
     _THE_ROUTER_CALLER,
     _THE_LIFESPAN_CALLER,
+    _THE_APPROVE_CALLER,
 )
 
 
