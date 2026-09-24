@@ -1,6 +1,9 @@
 # Projects · the reporting system — WS-27bn
 
-**Status: ACTIVE, SPEC ONLY. Nothing in this file is built.** Written
+**Status: ACTIVE. R1 BUILT 2026-09-24** (the builder, `render_body` and
+`POST /projects/reports/preview`). R2 to R9 and Phases 2 and 3 are not built.
+
+Written
 2026-09-24 and verified against the code on 2026-09-24. The owner answered
 the open questions on 2026-09-24, and §9 records the answers. Each anchor carries a
 file name and a line number. Check them again at dispatch, because this tree
@@ -121,6 +124,9 @@ defect.
 - `delivery_armed()` (`:120`) reads `PROJECT_REPORT_EMAIL_ENABLED`.
 - The routes: list, create, get, patch, delete (`:273` to `:369`), render
   (`:383`), recipients (`:649` to `:730`) and schedule (`:748`).
+- **Since R1:** `render_body` (`:387`) holds the section loop. Render
+  (`:606`) and preview (`:642`) both call it. Recipients start at `:728` and
+  schedule is at `:827`.
 - **A render resolves visibility from the caller.** A send renders once for
   each recipient, with that recipient's own visibility (H-111). So a report
   never shows a person more than they can open in the app.
@@ -143,6 +149,9 @@ flag that applies, and a reason for each.
   node.
 - `lib/api.ts:1153` to `:1163`. The client can list, create, render and delete
   a report. It has no call for patch, recipients or schedule.
+- **Since R1:** `ReportsView.tsx` has the builder (`ReportBuilder`) and a
+  "New report" control. `lib/api.ts` has `patchReport` and `previewReport`.
+  `lib/reportBuilder.ts` holds the builder's choices as pure functions.
 - `src/lib/reportEmail.ts`. It builds an email body with no colour.
   `sendReportEmail` throws while the flag is off.
 - Analytics and Reports are `live` in `lib/projectApps.ts`.
@@ -284,11 +293,19 @@ The builder is one sentence of chips, with a live preview beside it:
   admin grant and no lead role sees "Me" in the people group, and nobody else.
 - **The period chip** offers today, this week, last week, the last 4 weeks and
   a custom range. A forward template (T8) offers the next 2, 4 or 6 weeks.
+- **In R1, the period chip offers three periods only**, because the config
+  holds only `weeks` and `skip_current_week`:
+  - "Last week" is `weeks` 1 with `skip_current_week` true.
+  - "This week" is `weeks` 1 with `skip_current_week` false.
+  - "The last 4 weeks" is `weeks` 4 with `skip_current_week` true.
+
+  Today, a custom range and the forward periods need new config fields. A
+  later slice adds those fields and those periods.
 - **"More"** opens the section list, so a member can add or remove a section.
-  Order stays fixed by `SECTIONS` (`reports.py:80` to `:89` gives the reason).
+  Order stays fixed by `SECTIONS` (`reports.py:77` to `:89` gives the reason).
 - **The preview renders from the server** on each change, with a short delay.
-  It uses `/render` with an unsaved config. No figure is computed in the
-  browser (§9.12.7).
+  It uses `POST /projects/reports/preview` with an unsaved config. The
+  browser computes no figure (§9.12.7).
 - **No schedule control in Phase 1.** A report renders when a member opens
   it. Phase 2 adds the schedule chip: "and send it to [person] every
   [weekday at 09:00]".
@@ -423,9 +440,15 @@ period, sections and name. Add `patch` to `lib/api.ts`. Add an unsaved-config
 render: `POST /projects/reports/preview` takes a config and returns the render
 body. It writes nothing, so it goes into `READ_ONLY_POSTS`.
 
+**The chat manifest row.** In R1 the preview row is class X. Its reason
+says that the chat reaches the preview in R8. R8 maps the row to
+`render_report` and changes its class to A. R1 must not map it to
+`render_report`. That tool does not call the route yet, so
+`test_projects_agent.py` fails.
+
 **Files:** `components/ReportsView.tsx` · `lib/api.ts` ·
-`routes/projects/reports.py` · the chat manifest, which maps the new route or
-excludes it (D-PM-37).
+`lib/reportBuilder.ts` · `routes/projects/reports.py` · the chat manifest
+(D-PM-37).
 
 **Done when:**
 - A member creates a report with a chosen scope, period and sections, and the
@@ -434,6 +457,11 @@ excludes it (D-PM-37).
 - The preview renders a config that is not saved, and writes no row.
 - A config with a section outside `SECTIONS` gets 422.
 - `test_projects_chat_coverage.py` passes.
+- **One render function.** The render route and the preview call one server
+  function, `render_body`. It takes a config and a user. A real-DB test
+  calls both on one config and one caller, and gets equal sections and an
+  equal period. A second render path is a defect (CLAUDE.md §4). The chat,
+  the schedule and a workflow step call the same function later (§8a).
 
 ### R2 — Templates and the home screen · AGENT-SAFE
 
@@ -557,7 +585,7 @@ Until H-152 closes, those customers see the refusal.
 |---|---|---|
 | `report_list` | `GET /projects/reports` | A — exists |
 | `report_save` | `POST` and `PATCH /projects/reports` | B — exists. It gains `template` and `subject`. |
-| `render_report` | `GET /projects/reports/{id}/render`, or the preview of R1 | A — exists. It gains a template name and a subject, so "the morning report for Design" works without a saved report. |
+| `render_report` | `GET /projects/reports/{id}/render`, or the preview of R1 | A — exists. It gains a template name and a subject, so "the morning report for Design" works without a saved report. R8 maps `POST /projects/reports/preview` to this tool and changes that row from class X to class A. |
 | `summarize_report` | the R6 route | B — it spends credits, so a card shows the cost first |
 | `send_report` | the R9 route | C — a guarded act, behind a confirm card |
 
@@ -566,7 +594,7 @@ Until H-152 closes, those customers see the refusal.
   member cannot open.
 - `send_report` changes D-PM-37's map. Today the manifest excludes every
   delivery route with `_DELIVERY_REASON`, "the chat renders a report, it
-  never sends one" (`skill_projects/manifest.py:77`). The owner changed this
+  never sends one" (`skill_projects/manifest.py:79`). The owner changed this
   on 2026-09-24: the chat may email a report to one person on request. The
   recipient, recipients-list and schedule routes stay class X. Only the R9
   route becomes class C. Update `projects_ai_chat.md` in the same PR.
@@ -647,11 +675,10 @@ once, even when two workers claim the same report.
 Each step calls the one render function and the R9 send path, as the
 workflow's owner. A step passes `may_report_on` for that owner.
 
-**The seam that makes this cheap:** Phase 1 keeps the render in one server
-function that takes a config and a user. The route, the chat, the schedule
-and a workflow all call it. A second render path is a defect (CLAUDE.md §4).
-R1's preview route is the first proof that the render does not need a saved
-row.
+**The seam that makes this cheap:** R1's done-when holds the rule. The render
+lives in one server function, `render_body`, and the route, the chat, the
+schedule and a workflow all call it. R1's preview route is the first proof
+that the render does not need a saved row.
 
 ---
 
@@ -693,8 +720,14 @@ uv run pytest tests/unit/test_projects_reports.py \
   tests/unit/test_projects_analytics_rebalance.py \
   tests/unit/test_projects_analytics_conflicts.py \
   tests/unit/test_projects_chat_coverage.py \
+  tests/unit/test_projects_agent.py \
+  tests/unit/test_projects_report_builder.py \
   tests/unit/test_tenant_coverage.py -q
 ```
+
+`test_projects_agent.py` holds the class-A reach fence. A manifest row that
+names a built tool which never calls the route fails there.
+`test_projects_report_builder.py` is R1's file.
 
 Client, in `workbench/control_plane`:
 

@@ -280,11 +280,12 @@ def test_every_open_work_predicate_carries_the_clause():
     for name in ("analytics.py", "reports.py"):
         src = (base / name).read_text(encoding="utf-8")
         # Each assignment runs to the closing paren of its parenthesised
-        # f-string chain, which is the first line that is exactly 8 spaces
-        # and a `)`.
-        for match in re.finditer(r"^        open_where = \(\n", src, re.M):
+        # f-string chain: the first line with the assignment's own indent
+        # and a `)`. WS-27bn R1 moved the report's predicate into the
+        # module-level `render_body`, so the scan reads the indent.
+        for match in re.finditer(r"^( +)open_where = \(\n", src, re.M):
             tail = src[match.end():]
-            body = tail[: tail.index("\n        )\n")]
+            body = tail[: tail.index(f"\n{match.group(1)})\n")]
             if "reportable_with_ancestors_clause" not in body:
                 line = src[: match.start()].count("\n") + 1
                 missing.append(f"{name}:{line}")
@@ -320,7 +321,7 @@ def test_the_scan_can_actually_find_something():
     root = Path(__file__).resolve().parents[2]
     base = root / "apps/services/gateway/gateway/routes/projects"
     found = sum(
-        len(re.findall(r"^        open_where = \(\n",
+        len(re.findall(r"^( +)open_where = \(\n",
                        (base / name).read_text(encoding="utf-8"), re.M))
         for name in ("analytics.py", "reports.py")
     )

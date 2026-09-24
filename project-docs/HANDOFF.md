@@ -95,6 +95,33 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-182 · The report list shows reports on projects the reader cannot open · [AGENT]
+- **Check:** `grep -n "SELECT \* FROM pm_reports ORDER BY created_at DESC" apps/services/gateway/gateway/routes/projects/reports.py`
+  → a hit means this is open.
+- **Why:** `list_reports` filters rows by tenant (RLS) only. A report scoped
+  to a project that the reader cannot see still shows its name and its scope
+  in the list. `get_report` and `render_report` refuse that same row with 404,
+  so the list tells a reader more than the rest of the API does.
+- **Do:** Filter the list by `vis.project_clause("project_id")` and keep the
+  portfolio rows (`project_id IS NULL`). Add a real-DB test for a restricted
+  reader. The test must show that the list hides a node report on a hidden
+  project and keeps a portfolio report.
+- **Authority:** `specs/projects_reports.md` §7 rule 1 · the WS-27bn R1 audit
+- **Added:** 2026-09-24 · the WS-27bn R1 build
+
+### H-183 · The report schedule PATCH fails on a real database · [AGENT]
+- **Check:** `grep -n '"updated_at": text("now()")' apps/services/gateway/gateway/routes/projects/reports.py`
+  → a hit means this is open.
+- **Why:** `PATCH /projects/reports/{id}/schedule` sends `updated_at` to
+  `update_row`, and `update_row` also adds `updated_at = now()`. Postgres
+  refuses two assignments to one column, so each call gets 500. The WS-27bn R1
+  real-DB test found the same defect in `PATCH /projects/reports/{id}`, and
+  R1 repaired that route only. The schedule is out of R1's scope.
+- **Do:** Remove the `updated_at` key from the schedule route's values. Add a
+  real-DB test that calls the route and reads the row back.
+- **Authority:** `specs/projects_reports.md` §3.1 · CLAUDE.md §3 rule 6 (R8)
+- **Added:** 2026-09-24 · the WS-27bn R1 build
+
 ### H-179 · Prove a real Projects chat holds a tool conversation on DeepSeek V4 · [AGENT]
 - **Check:** on the box, count `usage_event` rows where `agent` is
   `projects-assistant` and `tier` is a chat tier. Then read the gateway log for

@@ -3,7 +3,7 @@
 Spec: ``project-docs/specs/projects_ai_chat.md`` §10.3 item 6 and §13.3
 rule 4 (WS-27bm S7a).
 
-A report section is named in five places, in two languages:
+A report section is named in six places, in two languages:
 
 1. ``gateway/routes/projects/reports.py`` ``SECTIONS`` — what a definition
    may ask for, and the render's switch.
@@ -12,11 +12,13 @@ A report section is named in five places, in two languages:
 3. ``skill_projects/writes.py`` ``REPORT_SECTIONS`` — what the chat may save.
 4. ``ReportsView.tsx`` ``RenderedBody`` — how the Reports app draws it.
 5. ``src/lib/reportEmail.ts`` — how the delivered email says it.
+6. ``app/projects/lib/reportBuilder.ts`` ``REPORT_SECTIONS`` — what the
+   builder offers (WS-27bn R1). Held equal in name AND order, below.
 
 A section added to the route and left out of one of the others renders as
 NOTHING there, with no error: a TypeScript interface is a claim about the
 server, and the chat falls back to a generic printer. So one test reads all
-five and fails on the first that lacks a name.
+six and fails on the first that lacks a name.
 
 ⚠️ **The TypeScript half is read as TEXT.** There is no shared runtime, and a
 mirror constant in each file would be two more lists to keep in step. The
@@ -161,3 +163,29 @@ def test_the_report_section_reads_the_routes_own_body() -> None:
     )
     assert "from gateway.routes.projects.analytics_conflicts import conflicts_body" in source
     assert "await conflicts_body(" in source
+
+
+# ── WS-27bn R1: the builder's section list (a sixth place) ───────────────────
+
+REPORT_BUILDER = CONTROL_PLANE / "app" / "projects" / "lib" / "reportBuilder.ts"
+
+
+def _ts_list(name: str) -> list[str]:
+    """The string keys of one exported TypeScript array in reportBuilder.ts."""
+    source = REPORT_BUILDER.read_text(encoding="utf-8")
+    start = source.index(f"export const {name}")
+    body = source[start: source.index("];", start)]
+    if "key:" in body:
+        return re.findall(r'key: "([a-z_]+)"', body)
+    return re.findall(r'"([a-z_]+)"', body.split("= [", 1)[1])
+
+
+def test_the_builder_offers_every_section_in_the_routes_order() -> None:
+    """The builder draws its checkboxes from this list. A section left out is
+    a section a member cannot choose, and a wrong order reorders the chips
+    against the render."""
+    assert _ts_list("REPORT_SECTIONS") == list(reports.SECTIONS)
+
+
+def test_the_builder_starts_from_the_routes_defaults() -> None:
+    assert _ts_list("DEFAULT_REPORT_SECTIONS") == list(reports.DEFAULT_SECTIONS)
