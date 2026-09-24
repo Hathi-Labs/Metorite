@@ -201,6 +201,42 @@ describe("schedulePromote / undoPromote", () => {
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
+  // S6g repair P1-a: a later gesture on the same task CANCELS the promote.
+  // Without it, a trashed private capture was published when the window closed.
+  for (const [name, act] of [
+    ["delete", () => useTaskStore.getState().deleteItems(["t1"])],
+    ["quick-dispose", () => useTaskStore.getState().quickDispose("t1", "TRASH")],
+    ["bulk-dispose", () => useTaskStore.getState().bulkDispose(["t1"], "SOMEDAY")],
+    ["archive", () => useTaskStore.getState().archiveItem("t1", true)],
+  ] as const) {
+    it(`a ${name} inside the window cancels the promote, never sends it`, () => {
+      const commit = vi.fn().mockResolvedValue({ left: false, item: task("t1") });
+      useTaskStore.getState().schedulePromote({ id: "t1", projectName: "Printer v3", commit });
+      act();
+      vi.advanceTimersByTime(PROMOTE_UNDO_MS * 2);
+      expect(commit).not.toHaveBeenCalled();
+      expect(useTaskStore.getState().pendingPromote).toBeNull();
+    });
+  }
+
+  it("a gesture on ANOTHER task leaves the promote waiting", () => {
+    useTaskStore.setState({ items: [task("t1"), task("t2")] });
+    const commit = vi.fn().mockResolvedValue({ left: false, item: task("t1") });
+    useTaskStore.getState().schedulePromote({ id: "t1", projectName: "Printer v3", commit });
+    useTaskStore.getState().quickDispose("t2", "SOMEDAY");
+    vi.advanceTimersByTime(PROMOTE_UNDO_MS);
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it("the row leaving the list cancels the promote", () => {
+    const commit = vi.fn();
+    useTaskStore.getState().schedulePromote({ id: "t1", projectName: "Printer v3", commit });
+    useTaskStore.setState({ items: [] });
+    vi.advanceTimersByTime(PROMOTE_UNDO_MS * 2);
+    expect(commit).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().pendingPromote).toBeNull();
+  });
+
   it("a second promote sends the first at once", () => {
     const first = vi.fn().mockResolvedValue({ left: false, item: task("t1") });
     const second = vi.fn().mockResolvedValue({ left: false, item: task("t2") });

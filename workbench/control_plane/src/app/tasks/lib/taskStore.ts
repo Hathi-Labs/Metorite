@@ -711,6 +711,14 @@ interface TaskState {
   }) => void;
   /** Cancel the pending promote. True when nothing was sent. */
   undoPromote: () => boolean;
+  /**
+   * S6g repair (P1-a). Cancel — never flush — the pending promote when a
+   * later gesture targets the same task: a delete, a dispose, a clarify, an
+   * archive. Without this a trashed private capture was published to a board
+   * when the 5 s window closed. Also runs when the row leaves `items`.
+   * True when a promote was cancelled.
+   */
+  cancelPromoteFor: (ids: readonly string[]) => boolean;
   /** The promote waiting to be sent, for the toast. */
   pendingPromote: { id: string; projectName: string; key: string; sending: boolean } | null;
   /** The last promote's outcome, for the toast. `PromoteToast` clears it. */
@@ -1193,6 +1201,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         set({ promoteNotice: { key, failed: true } });
       });
     }, PROMOTE_UNDO_MS);
+  },
+
+  cancelPromoteFor: (ids) => {
+    const pending = get().pendingPromote;
+    if (!pending || pending.sending || !ids.includes(pending.id)) return false;
+    return get().undoPromote();
   },
 
   undoPromote: () => {
@@ -1717,6 +1731,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   clarify: (id, decision, weight, opts) => {
+    // A fresh decision on the same task replaces a waiting promote. The
+    // promote's own commit passes `promoted`, and by then nothing is pending.
+    if (!opts?.promoted) get().cancelPromoteFor([id]);
     flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
     // The confirmed matrix flags overlay the decision. Applied locally to the
     // clarified row and (live) patched after organize, independent of the GTD
@@ -1925,6 +1942,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }),
 
   quickDispose: (id, disposition) => {
+    get().cancelPromoteFor([id]);
     flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
     set((s) => ({
       items: s.items.map((i) => (i.id === id ? disposeOne(i, disposition) : i)),
@@ -1945,6 +1963,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   bulkDispose: (ids, disposition) => {
+    get().cancelPromoteFor(ids);
     flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
     set((s) => {
       const set_ = new Set(ids);
@@ -1973,6 +1992,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   archiveItem: (id, archived) => {
+    get().cancelPromoteFor([id]);
     const nowIso = new Date().toISOString();
     set((s) => ({
       items: s.items.map((i) =>
@@ -2020,6 +2040,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   bulkArchive: (ids, archived) => {
+    get().cancelPromoteFor(ids);
     const nowIso = new Date().toISOString();
     const set_ = new Set(ids);
     const affected = get().items.filter(
@@ -2453,6 +2474,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   deleteItems: (ids) => {
+    get().cancelPromoteFor(ids);
     const remove = new Set(ids);
     const targets = get().items.filter((i) => remove.has(i.id));
     if (!targets.length) return;
@@ -2979,6 +3001,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   openSettings: () => set({ settingsModalOpen: true }),
   closeSettings: () => set({ settingsModalOpen: false }),
 }));
+
+// S6g repair (P1-a) — a pending promote whose row left the list (deleted
+// elsewhere, re-read away) is cancelled, never sent.
+useTaskStore.subscribe((s, prev) => {
+  const pending = s.pendingPromote;
+  if (!pending || pending.sending || s.items === prev.items) return;
+  if (!s.items.some((i) => i.id === pending.id)) s.cancelPromoteFor([pending.id]);
+});
 
 // ── Derived selectors (pure; keep view logic in one place) ──────────────────
 
