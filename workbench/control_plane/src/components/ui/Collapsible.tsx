@@ -46,6 +46,15 @@ export interface CollapsibleSectionProps {
   onOpenChange?: (open: boolean) => void;
   /** Passed to the rendered `<section>` — the grid placement lives here. */
   className?: string;
+  /**
+   * Keep the content in the page while it is folded (WS-27bn R2b).
+   *
+   * ⚠️ Base UI's panel UNMOUNTS a closed panel by default. A report's table
+   * sits folded under its chart, and an unmounted table is gone from the
+   * page: find-in-page cannot reach it, and a render test cannot see it.
+   * With this on, the folded content stays in the markup and is hidden.
+   */
+  keepMounted?: boolean;
   children: React.ReactNode;
 }
 
@@ -57,6 +66,7 @@ export function CollapsibleSection({
   open,
   onOpenChange,
   className,
+  keepMounted = false,
   children,
 }: CollapsibleSectionProps) {
   return (
@@ -104,7 +114,7 @@ export function CollapsibleSection({
         />
       </Base.Trigger>
       </h3>
-      <Base.Panel className="overflow-hidden">
+      <Base.Panel className="overflow-hidden" keepMounted={keepMounted}>
         <div className="pt-1.5">{children}</div>
       </Base.Panel>
     </Base.Root>

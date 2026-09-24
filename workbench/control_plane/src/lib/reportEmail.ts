@@ -58,7 +58,12 @@ export interface RenderedReport {
       total_completed: number;
       total_cancelled: number;
     };
-    throughput?: { median_hours: number | null; measured: number };
+    throughput?: {
+      median_hours: number | null;
+      measured: number;
+      /** The weekly counts. Each week draws one text bar (WS-27bn R2b). */
+      series?: { week_start: string; completed: number }[];
+    };
     load?: {
       people: { assignee: string | null; open_tasks: number; overdue: number }[];
       total_tasks: number;
@@ -76,6 +81,9 @@ export interface RenderedReport {
         hours_basis?: boolean;
         spare_hours_horizon?: number | null;
         hours_note?: string | null;
+        /** WS-27bn R2b: the text bar, "committed of working h". */
+        committed_hours_horizon?: number;
+        working_hours_horizon?: number | null;
       }[];
       total_tasks: number;
       hr_visible: boolean;
@@ -148,6 +156,36 @@ function duration(hours: number | null | undefined): string {
 /** How many project lines a message carries before it stops being readable. */
 export const MAX_EMAIL_ROWS = 10;
 
+/** How many cells a text bar has. */
+export const TEXT_BAR_WIDTH = 10;
+
+/**
+ * WS-27bn R2b — a bar an email can carry: full blocks (U+2588) for `value`,
+ * light shade (U+2591) for the rest of `of`.
+ *
+ * ⚠️ **It draws two server figures and computes neither.** The only
+ * arithmetic is the cell count, the email's version of a bar width. The
+ * figures print beside the bar, so the bar is never the only carrier: a
+ * client that drops the glyphs, or a PDF font without them, still says
+ * "4 of 17".
+ *
+ * A value above `of` fills the bar and stops. A value above zero shows one
+ * cell at least, because an empty bar reads as nothing. With `of` at zero
+ * or below, the bar is all light shade.
+ */
+export function textBar(value: number, of: number, width = TEXT_BAR_WIDTH): string {
+  if (!Number.isFinite(value) || !Number.isFinite(of) || of <= 0 || value <= 0) {
+    return "\u2591".repeat(width);
+  }
+  const cells = Math.min(width, Math.max(1, Math.round((value / of) * width)));
+  return "\u2588".repeat(cells) + "\u2591".repeat(width - cells);
+}
+
+/** A person-readable figure: "12.5", never "12.500000001". */
+function figure(value: number): string {
+  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(1)));
+}
+
 /**
  * One section of a report, as words. Built ONCE by {@link reportLayout} and
  * drawn three ways: the email's text and HTML ({@link reportEmail}) and the
@@ -206,7 +244,9 @@ export function reportLayout(
       items: rows.map(
         (p) =>
           `${p.name}: ${p.completed}` +
-          (p.cancelled ? ` (${p.cancelled} cancelled)` : ""),
+          (p.cancelled ? ` (${p.cancelled} cancelled)` : "") +
+          ` · ${textBar(p.completed, fin.total_completed)}` +
+          ` ${p.completed} of ${fin.total_completed}`,
       ),
       notes,
     });
@@ -222,7 +262,16 @@ export function reportLayout(
           `Median time to finish: ${duration(thr.median_hours)}` +
           ` (over ${thr.measured} measured)`,
       },
-      items: [],
+      // One bar a week, scaled to the busiest week, with no "of": a week's
+      // count is not a share of anything.
+      items: (() => {
+        const weeks = thr.series ?? [];
+        const peak = Math.max(0, ...weeks.map((w) => w.completed));
+        return weeks.map(
+          (w) =>
+            `Week of ${day(w.week_start)}: ${textBar(w.completed, peak)} ${w.completed}`,
+        );
+      })(),
       notes: [],
     });
   }
@@ -233,7 +282,11 @@ export function reportLayout(
       head: { lead: `Overdue: ${stuck.overdue_total}`, strong: true },
       items: stuck.overdue
         .slice(0, maxRows)
-        .map((o) => `${o.name}: ${o.overdue}`),
+        .map(
+          (o) =>
+            `${o.name}: ${o.overdue} · ${textBar(o.overdue, stuck.overdue_total)}` +
+            ` ${o.overdue} of ${stuck.overdue_total}`,
+        ),
       notes: [],
     });
   }
@@ -244,10 +297,15 @@ export function reportLayout(
       head: { lead: `Open work: ${load.total_tasks}` },
       items: load.people
         .slice(0, maxRows)
+        // ⚠️ The bar is "overdue of open_tasks", never "of total_tasks". The
+        // rows per person add up to more than the total, because a task with
+        // two assignees is on both plates.
         .map(
           (p) =>
             `${p.assignee ?? "Unassigned"}: ${p.open_tasks}` +
-            (p.overdue ? ` (${p.overdue} overdue)` : ""),
+            (p.overdue ? ` (${p.overdue} overdue)` : "") +
+            ` · ${textBar(p.overdue, p.open_tasks)}` +
+            ` ${p.overdue} of ${p.open_tasks} overdue`,
         ),
       notes: [],
     });
@@ -273,7 +331,16 @@ export function reportLayout(
             : p.hours_basis === false
               ? ", no hours"
               : "";
-        return `${who}: ${p.open_tasks} open${hoursPart}`;
+        // The bar only with the HR half and `hours_basis`, as on screen. The
+        // text states both figures, because a bar clips above 100 percent.
+        const barPart =
+          p.hours_basis &&
+          typeof p.committed_hours_horizon === "number" &&
+          typeof p.working_hours_horizon === "number"
+            ? ` · ${textBar(p.committed_hours_horizon, p.working_hours_horizon)}` +
+              ` ${figure(p.committed_hours_horizon)} of ${figure(p.working_hours_horizon)} h committed`
+            : "";
+        return `${who}: ${p.open_tasks} open${hoursPart}${barPart}`;
       }),
       notes: cap.hr_visible ? [] : ["Hours need HR read access."],
     });

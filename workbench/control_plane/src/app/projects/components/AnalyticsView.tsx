@@ -44,6 +44,7 @@ import {
   FinishedPanel,
   LoadPanel,
   OutlookPanel,
+  Stat,
   StuckPanel,
   ThroughputPanel,
 } from "./AnalyticsPanels";
@@ -88,44 +89,6 @@ function columns(summary: NodeSummary): string[] {
   const known = COLUMN_ORDER.filter((c) => seen.has(c));
   const extra = [...seen].filter((c) => !COLUMN_ORDER.includes(c as never)).sort();
   return [...known, ...extra];
-}
-
-/**
- * One figure, and never a blank.
- *
- * ⚠️ `value` is TYPED as a number and is not guaranteed to be one. `api.call`
- * parses JSON and casts it, so a roll-up that omits `projects` or `tasks`
- * arrives as `undefined` — and `{undefined}` renders NOTHING. Measured
- * 2026-09-03: two of the five tiles were a heading over empty space.
- *
- * A tile whose whole purpose is one figure, showing no figure, is worse than a
- * tile that is absent. It reads as a number that FAILED, not as a number that
- * is zero, and the reader cannot tell which. Zero is "0". An unavailable
- * figure is an explicit dash that says so.
- */
-function Stat({
-  label,
-  value,
-  tone,
-  className = "",
-}: {
-  label: string;
-  value?: number;
-  tone?: string;
-  className?: string;
-}) {
-  const known = typeof value === "number" && Number.isFinite(value);
-  return (
-    <div className={`rounded-lg border border-border bg-card px-3 py-2 ${className}`}>
-      <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
-      <p
-        className={`text-lg font-semibold ${known ? (tone ?? "text-foreground") : "text-muted-foreground"}`}
-        title={known ? undefined : `${label} did not come back from the server`}
-      >
-        {known ? value : "—"}
-      </p>
-    </div>
-  );
 }
 
 export default function AnalyticsView({

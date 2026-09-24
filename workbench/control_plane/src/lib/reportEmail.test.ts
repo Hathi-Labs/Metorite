@@ -14,11 +14,13 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_EMAIL_ROWS,
   type RenderedReport,
+  TEXT_BAR_WIDTH,
   isReportEmailEnabled,
   periodLabel,
   reportDocument,
   reportEmail,
   sendReportEmail,
+  textBar,
 } from "./reportEmail";
 
 const rendered: RenderedReport = {
@@ -372,19 +374,19 @@ describe("reportDocument", () => {
         "",
         "**Finished: 17** · 1 cancelled",
         "",
-        "- Mobile App: 12 (1 cancelled)",
-        "- Billing: 5",
+        "- Mobile App: 12 (1 cancelled) · ███████░░░ 12 of 17",
+        "- Billing: 5 · ███░░░░░░░ 5 of 17",
         "",
         "Median time to finish: 27 hours (over 15 measured)",
         "",
         "**Overdue: 4**",
         "",
-        "- Mobile App: 4",
+        "- Mobile App: 4 · ██████████ 4 of 4",
         "",
         "Open work: 15",
         "",
-        "- Unassigned: 9 (2 overdue)",
-        "- ana@example.test: 6",
+        "- Unassigned: 9 (2 overdue) · ██░░░░░░░░ 2 of 9 overdue",
+        "- ana@example.test: 6 · ░░░░░░░░░░ 0 of 6 overdue",
         "",
       ].join("\n"),
     );
@@ -415,7 +417,7 @@ describe("reportDocument", () => {
       },
     };
     const file = reportDocument(long);
-    expect(file.markdown).toContain(`- Project ${MAX_EMAIL_ROWS + 3}: 1`);
+    expect(file.markdown).toContain(`- Project ${MAX_EMAIL_ROWS + 3}: 1 ·`);
     expect(file.markdown).not.toContain("more projects");
     expect(reportEmail(long).text).toContain("and 4 more projects");
   });
@@ -453,6 +455,9 @@ describe("reportDocument", () => {
 // running it, so a one-byte change to a separator, a tag or an escape fails
 // here. The contains-tests above could not see one (the verifier changed
 // " · " to " : " and "<p>" to "<P>", and every test stayed green).
+//
+// WS-27bn R2b changed them ON PURPOSE: each row now carries its text bar
+// and the two figures the bar draws. Nothing else in either string moved.
 const GOLDEN_A: RenderedReport = {
   report: { name: "Weekly delivery", scope: "portfolio" },
   period_start: "2026-09-07",
@@ -516,12 +521,12 @@ describe("reportEmail · the exact HTML", () => {
       "<div><h2>Weekly delivery</h2>",
       "<p>7 – 13 Sep 2026 · Every space you can see</p>",
       "<p><strong>Finished: 17</strong> · 1 cancelled</p>",
-      "<ul><li>Mobile App: 12 (1 cancelled)</li><li>Billing: 5</li></ul>",
+      "<ul><li>Mobile App: 12 (1 cancelled) · ███████░░░ 12 of 17</li><li>Billing: 5 · ███░░░░░░░ 5 of 17</li></ul>",
       "<p>Median time to finish: 27 hours (over 15 measured)</p>",
       "<p><strong>Overdue: 4</strong></p>",
-      "<ul><li>Mobile App: 4</li></ul>",
+      "<ul><li>Mobile App: 4 · ██████████ 4 of 4</li></ul>",
       "<p>Open work: 15</p>",
-      "<ul><li>Unassigned: 9 (2 overdue)</li><li>ana@example.test: 6</li></ul>",
+      "<ul><li>Unassigned: 9 (2 overdue) · ██░░░░░░░░ 2 of 9 overdue</li><li>ana@example.test: 6 · ░░░░░░░░░░ 0 of 6 overdue</li></ul>",
       "</div>",
       ].join(""),
     );
@@ -533,7 +538,11 @@ describe("reportEmail · the exact HTML", () => {
       "<div><h2>R&amp;D &lt;core&gt;</h2>",
       "<p>29 Dec 2025 – 4 Jan 2026 · This project</p>",
       "<p><strong>Finished: 66</strong></p>",
-      "<ul><li>P0: 0</li><li>P1: 1</li><li>P2: 2</li><li>P3: 3</li><li>P4: 4</li><li>P5: 5</li><li>P6: 6</li><li>P7: 7</li><li>P8: 8</li><li>P9: 9</li></ul>",
+      "<ul>" +
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+          .map((i) => `<li>P${i}: ${i} · ${i === 0 ? "░░░░░░░░░░" : "█░░░░░░░░░"} ${i} of 66</li>`)
+          .join("") +
+        "</ul>",
       "<p>…and 2 more projects</p>",
       "<p>Who has the hours (next 14 days): 6 open</p>",
       "<ul><li>Ana: 3 open, 12.5h spare</li><li>bo@example.test: 2 open, no hours</li><li>Unassigned: 1 open</li></ul>",
@@ -544,5 +553,114 @@ describe("reportEmail · the exact HTML", () => {
       "</div>",
       ].join(""),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WS-27bn R2b — the text bars (spec projects_reports.md §8 R2b)
+// ---------------------------------------------------------------------------
+
+const FULL = "\u2588";
+const LIGHT = "\u2591";
+const cells = (full: number) =>
+  FULL.repeat(full) + LIGHT.repeat(TEXT_BAR_WIDTH - full);
+
+describe("textBar", () => {
+  it("draws full blocks for the value and light shade for the rest", () => {
+    expect(textBar(5, 10)).toBe(cells(5));
+    expect(textBar(10, 10)).toBe(cells(10));
+    expect(textBar(0, 10)).toBe(cells(0));
+  });
+
+  it("stops at full above 100 percent, and the figures say the rest", () => {
+    expect(textBar(46, 40)).toBe(cells(10));
+  });
+
+  it("shows one cell for a small value, so it never reads as nothing", () => {
+    expect(textBar(1, 1000)).toBe(cells(1));
+  });
+
+  it("draws an all-light bar when there is nothing to be a share of", () => {
+    expect(textBar(3, 0)).toBe(cells(0));
+    expect(textBar(Number.NaN, 5)).toBe(cells(0));
+  });
+});
+
+describe("reportEmail · the text bars", () => {
+  it("finished: each project, completed of total_completed", () => {
+    expect(built.text).toContain(`Mobile App: 12 (1 cancelled) · ${cells(7)} 12 of 17`);
+  });
+
+  it("stuck: each project, overdue of overdue_total", () => {
+    expect(built.text).toContain(`Mobile App: 4 · ${cells(10)} 4 of 4`);
+  });
+
+  it("load: each person, overdue of open_tasks, never of total_tasks", () => {
+    expect(built.text).toContain(`Unassigned: 9 (2 overdue) · ${cells(2)} 2 of 9 overdue`);
+    expect(built.text).not.toMatch(/2 of 15/);
+  });
+
+  it("throughput: one bar a week, scaled to the peak week, with no 'of'", () => {
+    const { text } = reportEmail({
+      ...rendered,
+      sections: {
+        throughput: {
+          median_hours: 27,
+          measured: 15,
+          series: [
+            { week_start: "2026-09-07", completed: 4 },
+            { week_start: "2026-09-14", completed: 8 },
+            { week_start: "2026-09-21", completed: 0 },
+          ],
+        },
+      },
+    });
+    expect(text).toContain(`Week of 7 Sep 2026: ${cells(5)} 4`);
+    expect(text).toContain(`Week of 14 Sep 2026: ${cells(10)} 8`);
+    expect(text).toContain(`Week of 21 Sep 2026: ${cells(0)} 0`);
+    expect(text).not.toMatch(/Week of [^\n]* of /);
+  });
+
+  it("capacity: committed of working h, with the HR half and hours_basis only", () => {
+    const { text } = reportEmail({
+      ...rendered,
+      sections: {
+        capacity: {
+          people: [
+            {
+              assignee: "ana@example.test",
+              name: "Ana",
+              kind: "person",
+              open_tasks: 3,
+              hours_basis: true,
+              spare_hours_horizon: 0,
+              committed_hours_horizon: 46,
+              working_hours_horizon: 40,
+            },
+            {
+              assignee: "bo@example.test",
+              name: "Bo",
+              kind: "person",
+              open_tasks: 2,
+              hours_basis: false,
+              committed_hours_horizon: 5,
+              working_hours_horizon: 40,
+            },
+          ],
+          total_tasks: 5,
+          hr_visible: true,
+          horizon_days: 14,
+        },
+      },
+    });
+    expect(text).toContain(`Ana: 3 open, 0h spare · ${cells(10)} 46 of 40 h committed`);
+    expect(text).toContain("Bo: 2 open, no hours");
+    expect(text).not.toContain("5 of 40");
+  });
+
+  it("carries no colour with the bars in it", () => {
+    expect(built.html).toContain(FULL);
+    expect(built.html).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+    expect(built.html).not.toMatch(/style=/);
   });
 });

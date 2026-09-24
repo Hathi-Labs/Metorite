@@ -374,9 +374,13 @@ export interface CapacityReport {
     week: CapacityWindow & { used_for: string };
     horizon: CapacityWindow & { days: number; used_for: string };
   };
-  task_scope: string;
-  hours_scope: string;
-  partial: boolean;
+  /**
+   * WS-27bn R2b: these three are absent in a REPORT's capacity section, and
+   * `CapacityPanel` reads none of them.
+   */
+  task_scope?: string;
+  hours_scope?: string;
+  partial?: boolean;
   /** Counted over TASKS, as Load counts it. The rows sum past it. */
   total_tasks: number;
   people_total: number;
@@ -423,7 +427,9 @@ export interface ConflictRow {
 export interface ConflictsReport {
   project_id: string | null;
   scope: "portfolio" | "node";
-  include_subtree: boolean;
+  /** WS-27bn R2b: optional, with `partial`, `kinds` and `truncated` below.
+   *  A REPORT's conflicts section carries none of the four. */
+  include_subtree?: boolean;
   horizon_days: number;
   hr_visible: boolean;
   /** Bounds the dated kinds. The kinds in `ignored_by` read no window. */
@@ -433,13 +439,13 @@ export interface ConflictsReport {
     days: number;
     ignored_by: ConflictKind[];
   };
-  partial: boolean;
+  partial?: boolean;
   /** The kinds THIS caller may see. */
-  kinds: ConflictKind[];
+  kinds?: ConflictKind[];
   /** Every row, before the cap. */
   total: number;
   by_kind: Partial<Record<ConflictKind, number>>;
-  truncated: boolean;
+  truncated?: boolean;
   rows: ConflictRow[];
 }
 
@@ -459,14 +465,19 @@ export interface StuckReport {
    * which accepts either shape. The same class of defect has now landed
    * three times in this one panel.
    */
-  stale: { band: string; n: number }[] | Record<string, number>;
-  blocked: {
+  stale?: { band: string; n: number }[] | Record<string, number>;
+  /**
+   * WS-27bn R2b. Optional, because a REPORT's `stuck` section carries only
+   * the overdue half. `StuckPanel` then draws no band chart and no blocked
+   * list, and it never says "No open work" about work it was not sent.
+   */
+  blocked?: {
     id: string;
     title: string;
     task_number: number | null;
     due_at: string | null;
   }[];
-  blocked_total: number;
+  blocked_total?: number;
   /**
    * ⚠️ Overdue BY PROJECT, which is what §9.12.7(a) asks for.
    *
@@ -489,9 +500,12 @@ export interface LoadRow {
    * Seven ROLLING days, which is why it is not called `this_week`. A calendar
    * week shrinks as the week runs, and it needs a timezone a subtree may not
    * share. See the route's docstring.
+   *
+   * WS-27bn R2b: optional, so a report body from a server before R2b still
+   * draws. `LoadPanel` drops an absent bucket and says nothing about it.
    */
-  due_next_7d: number;
-  later: number;
+  due_next_7d?: number;
+  later?: number;
   /**
    * ⚠️ **ESTIMATED effort, never logged effort.** Nothing in this product
    * records hours worked — `pm_tasks` has `estimate_mins` and no actual.
@@ -536,7 +550,8 @@ export interface LoadReport {
    * derive this by adding the rows.
    */
   total_tasks: number;
-  people_total: number;
+  /** Absent in a REPORT's section (WS-27bn R2b). The panel then omits it. */
+  people_total?: number;
   people: LoadRow[];
   /**
    * ⚠️ Optional because the SERVER sends it always, and a client must still
@@ -551,15 +566,21 @@ export interface LoadReport {
 export interface ThroughputWeek {
   /** ISO Monday, in UTC. A date, never an instant. */
   week_start: string;
+  /**
+   * WS-27bn R2b. Every figure below `week_start` is optional, because a
+   * REPORT's throughput section sends the weekly count only, and its summary
+   * has no `completed`. Absent is "not sent", never zero. `ThroughputPanel`
+   * hides a figure it was not sent.
+   */
   completed: number;
-  cancelled: number;
+  cancelled?: number;
   /** Completions that HAD a recorded start. The median's denominator. */
-  measured: number;
+  measured?: number;
   /** Completions with no `in_progress` ever recorded. Not a zero — absent. */
-  no_start: number;
+  no_start?: number;
   /** `null` when nothing measurable finished. ⚠️ Never render null as 0. */
-  median_hours: number | null;
-  p90_hours: number | null;
+  median_hours?: number | null;
+  p90_hours?: number | null;
 }
 
 export interface ThroughputReport {
@@ -569,7 +590,7 @@ export interface ThroughputReport {
   series: ThroughputWeek[];
   /** The last bucket is the current week, and the week is not over. */
   current_week_partial: boolean;
-  summary: Omit<ThroughputWeek, "week_start">;
+  summary: Partial<Omit<ThroughputWeek, "week_start">>;
 }
 
 export interface FinishedProject {
@@ -577,7 +598,8 @@ export interface FinishedProject {
   name: string;
   completed: number;
   cancelled: number;
-  median_hours: number | null;
+  /** WS-27bn R2b: a report passes it through, so it may be absent in a deploy window. */
+  median_hours?: number | null;
 }
 
 export interface FinishedReport {
@@ -601,7 +623,8 @@ export interface FinishedReport {
   projects: FinishedProject[];
   total_completed: number;
   total_cancelled: number;
-  median_hours: number | null;
+  /** Absent in a REPORT's section, which the panel does not read anyway. */
+  median_hours?: number | null;
 }
 
 /**
@@ -700,6 +723,11 @@ export interface RenderedReportBody {
         name: string;
         completed: number;
         cancelled: number;
+        /**
+         * WS-27bn R2b: passed through from `finished_sql`. Optional, so a
+         * body from a server before R2b still draws.
+         */
+        median_hours?: number | null;
       }[];
       total_completed: number;
       total_cancelled: number;
@@ -708,9 +736,20 @@ export interface RenderedReportBody {
       series: { week_start: string; completed: number }[];
       median_hours: number | null;
       measured: number;
+      /** WS-27bn R2b: passed through from `_CYCLE_MEASURES`. */
+      p90_hours?: number | null;
+      no_start?: number;
+      cancelled?: number;
     };
     load?: {
-      people: { assignee: string | null; open_tasks: number; overdue: number }[];
+      people: {
+        assignee: string | null;
+        open_tasks: number;
+        overdue: number;
+        /** WS-27bn R2b: passed through from `load_sql`. */
+        due_next_7d?: number;
+        later?: number;
+      }[];
       total_tasks: number;
     };
     /** WS-27bm S7a. Opt-in: present only when the report asked for it. */

@@ -1481,7 +1481,11 @@ async def test_the_report_card_carries_labels_not_keys(monkeypatch) -> None:
 
 
 def test_the_report_card_titles_are_the_reports_apps_words() -> None:
-    """One owner for the words: `RenderedBody` in ReportsView.tsx."""
+    """One owner for the words: `RenderedBody` in ReportsView.tsx.
+
+    WS-27bn R2b moved each section's heading into its Analytics panel. The
+    report's own words now name the table folded under the panel.
+    """
     from skill_projects.views import REPORT_CARD_SECTIONS
 
     tsx = (
@@ -1489,7 +1493,7 @@ def test_the_report_card_titles_are_the_reports_apps_words() -> None:
         / "components" / "ReportsView.tsx"
     ).read_text(encoding="utf-8")
     for name, spec in REPORT_CARD_SECTIONS.items():
-        assert f'<Section title="{spec["title"]}">' in tsx, name
+        assert f'<Table title="{spec["title"]}"' in tsx, name
 
 
 def test_a_card_cell_keeps_a_zero() -> None:

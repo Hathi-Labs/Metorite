@@ -43,6 +43,7 @@ from fastapi import Depends, HTTPException
 from gateway.routes.projects.analytics import (
     MAX_PEOPLE,
     MAX_WEEKS,
+    _hours,
     cycle_summary_sql,
     finished_period_sql,
     finished_sql,
@@ -653,6 +654,10 @@ async def render_body(
                         "name": r.name,
                         "completed": int(r.completed),
                         "cancelled": int(r.cancelled),
+                        # WS-27bn R2b. Passed through from `finished_sql`,
+                        # which already selects it. The panel's tooltip
+                        # reads it. No query and no arithmetic is added.
+                        "median_hours": _hours(r.median_hours),
                     }
                     for r in rows
                 ],
@@ -682,11 +687,14 @@ async def render_body(
                     }
                     for w in series
                 ],
-                "median_hours": (
-                    None if totals.median_hours is None
-                    else round(float(totals.median_hours), 2)
-                ),
+                "median_hours": _hours(totals.median_hours),
                 "measured": int(totals.measured or 0),
+                # WS-27bn R2b. Passed through from `_CYCLE_MEASURES`, which
+                # the summary row already selects. The panel draws them
+                # beside the median, as the Analytics panel does.
+                "p90_hours": _hours(totals.p90_hours),
+                "no_start": int(totals.no_start or 0),
+                "cancelled": int(totals.cancelled or 0),
             }
         elif name == "load":
             people = (
@@ -704,6 +712,11 @@ async def render_body(
                         "assignee": p.who or None,
                         "open_tasks": int(p.open_tasks),
                         "overdue": int(p.overdue),
+                        # WS-27bn R2b. The other two buckets `load_sql`
+                        # already selects, so the panel draws the stacked
+                        # bar the Analytics app draws.
+                        "due_next_7d": int(p.due_next_7d),
+                        "later": int(p.later),
                     }
                     for p in people[:MAX_PEOPLE]
                 ],

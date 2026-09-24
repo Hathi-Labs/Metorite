@@ -2,8 +2,10 @@
 
 **Status: ACTIVE. R1 BUILT 2026-09-24** (the builder, `render_body` and
 `POST /projects/reports/preview`). **R2 BUILT 2026-09-24** (the template
-catalogue, `config.template`, the gallery and "Your reports"). R3 to R9 and
-Phases 2 and 3 are not built. R2b (the visual report body) is next, then R3.
+catalogue, `config.template`, the gallery and "Your reports"). **R2b BUILT
+2026-09-24** (the visual report body: each section draws its Analytics panel,
+with its table folded under it). R3 to R9 and Phases 2 and 3 are not built.
+R3 is next.
 
 Written
 2026-09-24 and verified against the code on 2026-09-24. The owner answered
@@ -561,7 +563,13 @@ caller cannot see. It uses `Visibility.project_clause`, as
   it. To check it, search `src/` for a template key outside the test files.
   The search must find nothing.
 
-### R2b — The visual report body · AGENT-SAFE
+### R2b — The visual report body · AGENT-SAFE · BUILT 2026-09-24
+
+**As built.** `lib/reportPanels.ts` maps each section to its panel.
+`reportVisuals.test.ts` is the fence, and
+`test_projects_report_visuals.py` proves the pass-through on a real
+database. Each folded table carries the section's old heading as its
+label, because the chat's report card borrows those words.
 
 **Owner directive, 2026-09-24:** the reports must have as many good visual
 elements as possible, such as progress bars and charts. A reader must see the

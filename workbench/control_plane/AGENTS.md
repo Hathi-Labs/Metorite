@@ -103,6 +103,10 @@ Five rules on top of the three above. Each one exists because it was broken:
    layout and draws it as the email, as a Markdown file and as the HTML the
    gateway lays out as a PDF. `app/projects/lib/reportFiles.ts` is the one
    download path. Fences: `reportEmail.test.ts` and `reportFiles.test.ts`.
+   **A report section draws with its Analytics panel** (WS-27bn R2b).
+   `app/projects/lib/reportPanels.ts` maps a section to the panel's props
+   and computes nothing. `Stat` in `AnalyticsPanels.tsx` is the one tile.
+   Fence: `app/projects/components/reportVisuals.test.ts`.
    **`src/lib/autoOpenArtifact.ts` is the one rule** for a file a chat agent
    writes: `/chat` and the Projects rail both call it. Fence:
    `autoOpenArtifact.test.ts`.

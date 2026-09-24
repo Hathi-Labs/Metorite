@@ -30,6 +30,8 @@
  * (*"what are these numbers here?"*) and `countTooltips.test.ts` fails the
  * build for a bare one.
  */
+import { useId } from "react";
+
 import {
   type AccentHue,
   accentForHue,
@@ -50,6 +52,7 @@ import type {
 import { asList, bandCount, staleBands } from "../lib/analyticsRead";
 import {
   capacityRows,
+  committedBar,
   hoursLine,
   rowLabel,
   rowWarnings,
@@ -132,8 +135,8 @@ function period(from: string, to: string): string {
 }
 
 /** Hours, as something a person reads without converting it. */
-function duration(hours: number | null): string {
-  if (hours === null) return "—";
+function duration(hours: number | null | undefined): string {
+  if (hours === null || hours === undefined) return "—";
   if (hours < 1) return "under an hour";
   if (hours < 48) return `${Math.round(hours)}h`;
   return `${Math.round(hours / 24)}d`;
@@ -149,14 +152,71 @@ function Panel({
   hint: string;
   children: React.ReactNode;
 }) {
+  // WS-27bn R2b. The title names the region, so a screen reader announces
+  // "What we finished, region" and not an anonymous section. `useId` keeps
+  // two panels of one kind on one page from sharing an id.
+  const titleId = useId();
   return (
-    <section className="rounded-lg border border-border bg-card p-3">
+    <section
+      className="rounded-lg border border-border bg-card p-3"
+      aria-labelledby={titleId}
+    >
       <header className="mb-3">
-        <h3 className="text-xs font-semibold text-foreground">{title}</h3>
+        <h3 id={titleId} className="text-xs font-semibold text-foreground">
+          {title}
+        </h3>
         <p className="mt-0.5 text-[11px] text-muted-foreground">{hint}</p>
       </header>
       {children}
     </section>
+  );
+}
+
+/**
+ * One figure in a tile, and never a blank. THE tile (WS-27bn R2b).
+ *
+ * `AnalyticsView`, `NodeDashboard` and the report's summary row each held a
+ * copy until R2b. This is the `NodeDashboard` copy, which already took a
+ * `title`, and one more prop: `display`, for a figure that is words, such as
+ * a median that reads "3d" or "not measured".
+ *
+ * ⚠️ `value` is typed as a number and is not guaranteed to be one. `api.call`
+ * parses JSON and casts it, so a roll-up that omits a count arrives as
+ * `undefined`, and `{undefined}` renders NOTHING. Measured 2026-09-03: two of
+ * the five tiles were a heading over empty space. A tile with no figure reads
+ * as a number that FAILED, not as a zero, so an unavailable figure is an
+ * explicit dash that says so.
+ */
+export function Stat({
+  label,
+  value,
+  display,
+  tone,
+  title,
+  className = "",
+}: {
+  label: string;
+  value?: number;
+  /** The figure as words. It wins over `value` when both are given. */
+  display?: string;
+  tone?: string;
+  /** What this figure counts. The dash below still wins when it is absent. */
+  title?: string;
+  className?: string;
+}) {
+  const known =
+    typeof display === "string" ||
+    (typeof value === "number" && Number.isFinite(value));
+  return (
+    <div className={`rounded-lg border border-border bg-card px-3 py-2 ${className}`}>
+      <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
+      <p
+        className={`text-lg font-semibold ${known ? (tone ?? "text-foreground") : "text-muted-foreground"}`}
+        title={known ? title : `${label} did not come back from the server`}
+      >
+        {known ? (display ?? value) : "—"}
+      </p>
+    </div>
   );
 }
 
@@ -166,26 +226,47 @@ function Panel({
  * ⚠️ A zero-width segment is DROPPED rather than rendered at 0%. A 0%-wide
  * div still draws its border in some engines, which puts a hairline of the
  * wrong colour on the bar and reads as a real value.
+ *
+ * WS-27bn R2b. An ABSENT segment is dropped too: a report body from an older
+ * server may lack a bucket, and "undefined" is not a width. The bar carries
+ * its figures as an accessible name, so a screen reader gets the values and
+ * not only a picture. `emptyTitle` exists because "Nothing in this scope"
+ * is wrong for a person with zero working hours and committed work.
  */
 function Bar({
   segments,
   total,
+  emptyTitle = "Nothing in this scope yet",
 }: {
-  segments: { key: string; value: number; dot: string; label: string }[];
+  segments: { key: string; value: number | undefined; dot: string; label: string }[];
   total: number;
+  emptyTitle?: string;
 }) {
-  if (total <= 0) {
+  if (!(total > 0)) {
     return (
       <div
         className="h-2 w-full rounded-full bg-muted"
-        title="Nothing in this scope yet"
+        role="img"
+        aria-label={emptyTitle}
+        title={emptyTitle}
       />
     );
   }
+  const drawn = segments.filter(
+    (s): s is typeof s & { value: number } =>
+      typeof s.value === "number" && s.value > 0
+  );
   return (
-    <div className="flex h-2 w-full overflow-hidden rounded-full bg-muted">
-      {segments
-        .filter((s) => s.value > 0)
+    <div
+      className="flex h-2 w-full overflow-hidden rounded-full bg-muted"
+      role="img"
+      aria-label={
+        drawn.length > 0
+          ? drawn.map((s) => `${s.label}: ${s.value} of ${total}`).join(", ")
+          : `None of ${total}`
+      }
+    >
+      {drawn
         .map((s) => (
           <div
             key={s.key}
@@ -200,6 +281,11 @@ function Bar({
 
 /** (a) Where is work stuck? */
 export function StuckPanel({ data }: { data: StuckReport }) {
+  // ⚠️ WS-27bn R2b. A REPORT's `stuck` section has no ageing bands, because
+  // they wait for R3. Without `stale` the panel draws no band chart, no band
+  // legend, and never "No open work in this scope". It was not sent the
+  // open work, so it cannot say there is none.
+  const hasBands = data?.stale !== undefined && data?.stale !== null;
   // ⚠️ The server sends `stale` as a LIST of {band, n}. This read asked
   // `b.key in data.stale`, which on an array tests INDICES — always false —
   // so the histogram drew an empty bar and no legend at all. `staleBands`
@@ -212,8 +298,14 @@ export function StuckPanel({ data }: { data: StuckReport }) {
   return (
     <Panel
       title="Where work is stuck"
-      hint="Open tasks by how long they have sat without a change, what is blocked, and what is past due."
+      hint={
+        hasBands
+          ? "Open tasks by how long they have sat without a change, what is blocked, and what is past due."
+          : "Open tasks past their due date, by project."
+      }
     >
+      {hasBands && (
+      <>
       {/* ⚠️ A ONE-BAND BAR IS NOT A CHART. Photographed 2026-09-17: every
           open task sat in `< 7d`, so this drew a featureless grey slab that
           reads as a loading skeleton — the reader learns nothing and cannot
@@ -265,8 +357,16 @@ export function StuckPanel({ data }: { data: StuckReport }) {
           </li>
         ))}
       </ul>
+      </>
+      )}
 
-      {data.blocked_total > 0 && asList(data.blocked).length > 0 && (
+      {!hasBands && !(Array.isArray(data.overdue) && data.overdue.length > 0) && (
+        <p className="text-[11px] text-muted-foreground">
+          Nothing is past its due date in this scope.
+        </p>
+      )}
+
+      {(data.blocked_total ?? 0) > 0 && asList(data.blocked).length > 0 && (
         <div className="mt-3 border-t border-border pt-2">
           <p className="mb-1 text-[11px] text-muted-foreground">
             {/* ⚠️ "N of M", never a bare N. The list is capped at 20, and a
@@ -295,7 +395,7 @@ export function StuckPanel({ data }: { data: StuckReport }) {
           number, and a `.length` on one is undefined rather than an error —
           which is how the section went missing without anybody noticing. */}
       {Array.isArray(data.overdue) && data.overdue.length > 0 && (
-        <div className="mt-3 border-t border-border pt-2">
+        <div className={hasBands ? "mt-3 border-t border-border pt-2" : ""}>
           <p
             className="mb-1 text-[11px] text-muted-foreground"
             title={`${data.overdue_total} open tasks are past their due date, across ${data.overdue.length} project${data.overdue.length === 1 ? "" : "s"}`}
@@ -388,7 +488,19 @@ export function LoadPanel({ data }: { data: LoadReport }) {
                   })()}
                   <span
                     className={`${personEffort(row) ? "" : "ml-auto "}shrink-0 font-medium tabular-nums`}
-                    title={`${row.open_tasks} open tasks: ${row.overdue} overdue, ${row.due_next_7d} due in the next 7 days, ${row.later} later or undated`}
+                    title={
+                      // WS-27bn R2b: a bucket the server did not send is
+                      // left out, never printed as "undefined".
+                      [
+                        `${row.open_tasks} open tasks: ${row.overdue} overdue`,
+                        ...(typeof row.due_next_7d === "number"
+                          ? [`${row.due_next_7d} due in the next 7 days`]
+                          : []),
+                        ...(typeof row.later === "number"
+                          ? [`${row.later} later or undated`]
+                          : []),
+                      ].join(", ")
+                    }
                   >
                     {row.open_tasks}
                   </span>
@@ -429,9 +541,10 @@ export function LoadPanel({ data }: { data: LoadReport }) {
             title="Counted over tasks. A task assigned to two people appears in both of their bars, so the bars add up to more than this number."
           >
             {data.total_tasks} open{" "}
-            {data.total_tasks === 1 ? "task" : "tasks"} across{" "}
-            {data.people_total}{" "}
-            {data.people_total === 1 ? "person" : "people"}
+            {data.total_tasks === 1 ? "task" : "tasks"}
+            {/* WS-27bn R2b: a report does not send `people_total`. */}
+            {typeof data.people_total === "number" &&
+              ` across ${data.people_total} ${data.people_total === 1 ? "person" : "people"}`}
           </p>
           <EffortLine data={data} />
         </>
@@ -469,6 +582,7 @@ export function CapacityPanel({ data }: { data: CapacityReport }) {
         <ul className="space-y-2">
           {rows.map((row) => {
             const line = hoursLine(row, horizonDays);
+            const committed = committedBar(row, horizonDays);
             const warnings = rowWarnings(row, data?.windows?.horizon?.starts_on);
             const skills = skillLine(row);
             const pill = row.pill;
@@ -514,6 +628,34 @@ export function CapacityPanel({ data }: { data: CapacityReport }) {
                     {row.open_tasks}
                   </span>
                 </div>
+                {/* WS-27bn R2b. Committed hours of working hours in the
+                    horizon, with the HR half and `hours_basis` only. The
+                    text states both figures, because a bar clips above
+                    100 percent. `committedBar` decides, and counts nothing. */}
+                {committed && (
+                  <div className="mt-1 flex items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <Bar
+                        total={committed.of}
+                        emptyTitle={committed.emptyTitle}
+                        segments={[
+                          {
+                            key: "committed",
+                            value: committed.value,
+                            dot: accentForHue(committed.hue).dot,
+                            label: "Committed hours",
+                          },
+                        ]}
+                      />
+                    </div>
+                    <span
+                      className="shrink-0 text-[10px] tabular-nums text-muted-foreground"
+                      title={committed.title}
+                    >
+                      {committed.text}
+                    </span>
+                  </div>
+                )}
                 {(skills || warnings.length > 0) && (
                   <p
                     className="mt-0.5 truncate text-[10px] text-muted-foreground"
@@ -770,9 +912,13 @@ export function ThroughputPanel({ data }: { data: ThroughputReport }) {
               title={
                 `Week of ${w.week_start}: ${w.completed} finished` +
                 (w.cancelled ? `, ${w.cancelled} cancelled` : "") +
-                (w.median_hours !== null
+                // WS-27bn R2b: a report's week carries no median at all, and
+                // an absent figure is said as nothing, not as "NaNd".
+                (typeof w.median_hours === "number"
                   ? `, median ${duration(w.median_hours)}`
-                  : ", no measurable cycle time") +
+                  : w.median_hours === null
+                    ? ", no measurable cycle time"
+                    : "") +
                 (partial ? " — this week is not over yet" : "")
               }
             >
@@ -801,7 +947,11 @@ export function ThroughputPanel({ data }: { data: ThroughputReport }) {
         </span>
       </div>
 
+      {/* WS-27bn R2b. Each cell shows only when the server sent its
+          figure. A report's summary has no `completed`, because its
+          Finished section already says it. */}
       <dl className="mt-3 grid grid-cols-3 gap-2 border-t border-border pt-2 text-[11px]">
+        {typeof summary.completed === "number" && (
         <div>
           <dt className="text-muted-foreground">Finished</dt>
           <dd
@@ -811,6 +961,8 @@ export function ThroughputPanel({ data }: { data: ThroughputReport }) {
             {summary.completed}
           </dd>
         </div>
+        )}
+        {summary.median_hours !== undefined && (
         <div>
           <dt className="text-muted-foreground">Median</dt>
           <dd
@@ -824,6 +976,8 @@ export function ThroughputPanel({ data }: { data: ThroughputReport }) {
             {duration(summary.median_hours)}
           </dd>
         </div>
+        )}
+        {summary.p90_hours !== undefined && (
         <div>
           <dt className="text-muted-foreground">Slowest 10%</dt>
           <dd
@@ -837,11 +991,12 @@ export function ThroughputPanel({ data }: { data: ThroughputReport }) {
             {duration(summary.p90_hours)}
           </dd>
         </div>
+        )}
       </dl>
 
-      {(summary.no_start > 0 || summary.cancelled > 0) && (
+      {((summary.no_start ?? 0) > 0 || (summary.cancelled ?? 0) > 0) && (
         <p className="mt-2 text-[11px] text-muted-foreground">
-          {summary.no_start > 0 && (
+          {(summary.no_start ?? 0) > 0 && (
             // ⚠️ Said out loud, because it is the median's denominator. A
             // reader who does not know these were excluded reads the median
             // as covering everything.
@@ -851,8 +1006,8 @@ export function ThroughputPanel({ data }: { data: ThroughputReport }) {
               {summary.no_start} without a recorded start
             </span>
           )}
-          {summary.no_start > 0 && summary.cancelled > 0 && " · "}
-          {summary.cancelled > 0 && (
+          {(summary.no_start ?? 0) > 0 && (summary.cancelled ?? 0) > 0 && " · "}
+          {(summary.cancelled ?? 0) > 0 && (
             <span
               className={dropped.text}
               // Cancellations are never throughput. Shown so they are not
@@ -896,9 +1051,13 @@ export function FinishedPanel({ data }: { data: FinishedReport }) {
                     title={
                       `${p.completed} finished in ${p.name}` +
                       (p.cancelled ? `, ${p.cancelled} cancelled` : "") +
-                      (p.median_hours !== null
+                      // WS-27bn R2b: absent is not null. `undefined !== null`
+                      // printed "median NaNd" for a report body.
+                      (typeof p.median_hours === "number"
                         ? `, median ${duration(p.median_hours)}`
-                        : ", no measurable cycle time")
+                        : p.median_hours === null
+                          ? ", no measurable cycle time"
+                          : "")
                     }
                   >
                     {p.completed}
