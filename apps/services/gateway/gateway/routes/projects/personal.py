@@ -224,6 +224,16 @@ class OrganizeIn(BaseModel):
     project_id: str | None = None
     assignee: OrganizeAssignee | None = None
     subtasks: list[str] | None = None
+    #: S6g — the promote answers Clarify collects when a PERSONAL task is
+    #: filed into a company project: the destination's required custom fields
+    #: (migration 192), passed to the ONE move seam the way `MoveTask` takes
+    #: them. Without them a promote from Clarify was refused after the card
+    #: had already moved the row.
+    custom_fields: dict | None = None
+    #: S6g — who owns the task on the board after the move, as the promote
+    #: dialog's assignee editor answers it. `None` leaves the owners alone. A
+    #: delegate decision names its own assignee and wins over this list.
+    assignees: list[str] | None = None
 
 
 #: A clarify `kind` → the overlay disposition it states. The vocabulary
@@ -2023,9 +2033,26 @@ async def _organize(
     who = None
     if delegated and payload.assignee is not None:
         who = (payload.assignee.email or payload.assignee.name).strip().lower()
+    if not delegated and payload.assignees is not None and email not in {
+        (a or "").strip().lower() for a in payload.assignees
+    }:
+        # S6g. A decision that is not a delegate keeps the task MINE. An
+        # owner list without me hands the task off, and the read-back below
+        # would 404 inside this transaction and roll the decision back. Say
+        # which door does a hand-off instead.
+        raise HTTPException(
+            status_code=422,
+            detail="Keep yourself as an assignee, or choose Delegate to hand "
+                   "the task to somebody else.",
+        )
+    dest = project_id if project_id and project_id != str(task.project_id) else None
     move = MoveTask(
-        project_id=project_id if project_id and project_id != str(task.project_id) else None,
-        assignees=[who] if who else None,
+        project_id=dest,
+        # S6g — the promote answers ride the same MoveTask the route builds,
+        # so the required-field guard judges them inside this transaction.
+        # They mean something only when the task changes project.
+        custom_fields=payload.custom_fields if dest else None,
+        assignees=[who] if who else payload.assignees,
     )
     if move.project_id or move.assignees is not None:
         await move_task_in(db, vis, task, move, by=email)
@@ -2124,8 +2151,13 @@ async def organize_my_task(
         vis = await resolve_visibility(db, user)
         task = await load_visible_task(db, vis, task_id)
         title = str(getattr(task, "title", "") or "")
+        before = str(getattr(task, "project_id", "") or "")
         disposition = await _organize(db, vis, email, task, payload)
         result = await _read_my_task(db, email, task_id)
+    # S6g — a decision that changed the project IS a move, and says so the
+    # way `POST /tasks/{id}/move` does. Automations bound to "Task moved"
+    # (`workflows/catalog.py`) never heard a promote from Clarify before.
+    moved = str(result.get("project_id") or "") != before
 
     # Teach the clarification memory from the COMMITTED decision — the block
     # above has committed. Fire-and-forget and best-effort, so it never slows
@@ -2143,6 +2175,8 @@ async def organize_my_task(
         context=payload.context,
     )
     await emit("pm.task.updated", {"task_id": task_id})
+    if moved:
+        await emit("pm.task.moved", {"task_id": task_id})
     return result
 
 
