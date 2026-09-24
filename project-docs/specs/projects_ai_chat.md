@@ -1651,3 +1651,9 @@ one Markdown renderer, so its table cells and its task-list icons changed in
 `role="img"` and a label. `sidePanelFitWiring.test.ts` renders
 `MessageBubble` under each value of `SidePanelFitContext`, and drives the
 rail's `artifactHandler`, so both places are proven to act on the fit.
+
+The re-check found four more defects (fix round 4). A chat table cell may
+break a long word, so the table fits the rail. Code blocks take their
+colours from `lib/codeTheme.ts`, which uses tokens only. Code in `.cc-prose`
+is foreground ink. A badge draws its words in foreground ink and its hue as
+a tint and a dot, because `--warning` ink measures 1.57:1 on a light card.
