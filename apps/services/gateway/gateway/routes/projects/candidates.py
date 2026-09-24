@@ -269,6 +269,80 @@ def availability_day(due_on: date | None, today: date) -> date:
     return max(due_on, today)
 
 
+#: A warning, with the conflict kind it is (WS-27bm S7c, §13.5 rule 7).
+Warning = tuple[str, str]
+
+
+def away_warning(
+    helper: dict[str, Any], due_on: date | None, *, today: date,
+) -> Warning | None:
+    """``absent_on_due``: away on the day the task needs them, or None.
+
+    Needs a due date. For an overdue task the day is TODAY
+    (:func:`availability_day`), and a partial absence counts.
+    """
+    from gateway.work_schedule import absent_on
+
+    if due_on is None:
+        return None
+    day = availability_day(due_on, today)
+    span = absent_on(day, helper.get("spans") or [])
+    if span is None:
+        return None
+    when = (
+        f"on the due date {due_on.isoformat()}" if day == due_on
+        else "today, and the task is already overdue"
+    )
+    return (
+        "absent_on_due",
+        f"Away ({span['kind']}) {when}, until {span['ends_on'].isoformat()}",
+    )
+
+
+def leaving_warning(helper: dict[str, Any], due_on: date | None) -> Warning | None:
+    """``leaving``: an end date before the due date, or None."""
+    if due_on is None:
+        return None
+    end = helper.get("end_date")
+    if end is None or not end < due_on:
+        return None
+    return (
+        "leaving",
+        f"Engagement ends {end.isoformat()}, before the due date {due_on.isoformat()}",
+    )
+
+
+def concurrency_warning(helper: dict[str, Any]) -> Warning | None:
+    """``over_concurrency``: more tasks in progress than the ceiling, or None."""
+    ceiling = helper.get("max_concurrent_tasks")
+    busy = int(helper.get("in_progress") or 0)
+    if ceiling is None or not busy > int(ceiling):
+        return None
+    return (
+        "over_concurrency",
+        f"{busy} tasks in progress, over the limit of {int(ceiling)}",
+    )
+
+
+def warning_kinds(
+    helper: dict[str, Any], due_on: date | None, *, today: date | None = None,
+) -> list[Warning]:
+    """The three warnings of §13.4 rule 5, each with its conflict kind.
+
+    ⚠️ **One set of predicates for two routes** (§13.5 rule 7). The candidates
+    route prints the text, and the conflicts route prints the kind and the
+    same text. So "away on the due date" cannot mean one thing in the picker
+    and another in the Conflicts panel.
+    """
+    today = today or date.today()
+    found = (
+        away_warning(helper, due_on, today=today),
+        leaving_warning(helper, due_on),
+        concurrency_warning(helper),
+    )
+    return [w for w in found if w is not None]
+
+
 def candidate_warnings(
     helper: dict[str, Any], due_on: date | None, *, today: date | None = None,
 ) -> list[str]:
@@ -278,33 +352,10 @@ def candidate_warnings(
     progress than ``max_concurrent_tasks``. The first two need a due date;
     without one there is no date to be away on or to leave before. For an
     overdue task, "away" is checked TODAY (:func:`availability_day`).
-    """
-    from gateway.work_schedule import absent_on
 
-    today = today or date.today()
-    out: list[str] = []
-    if due_on is not None:
-        day = availability_day(due_on, today)
-        span = absent_on(day, helper.get("spans") or [])
-        if span is not None:
-            when = (
-                f"on the due date {due_on.isoformat()}" if day == due_on
-                else "today, and the task is already overdue"
-            )
-            out.append(
-                f"Away ({span['kind']}) {when}, until {span['ends_on'].isoformat()}"
-            )
-        end = helper.get("end_date")
-        if end is not None and end < due_on:
-            out.append(
-                f"Engagement ends {end.isoformat()}, before the due date"
-                f" {due_on.isoformat()}"
-            )
-    ceiling = helper.get("max_concurrent_tasks")
-    busy = int(helper.get("in_progress") or 0)
-    if ceiling is not None and busy > int(ceiling):
-        out.append(f"{busy} tasks in progress, over the limit of {int(ceiling)}")
-    return out
+    The strings are :func:`warning_kinds`' text, byte for byte.
+    """
+    return [text for _, text in warning_kinds(helper, due_on, today=today)]
 
 
 def _away_on(day: date, spans: list[dict[str, Any]]) -> dict[str, Any] | None:

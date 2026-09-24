@@ -41,7 +41,8 @@ import {
   MOCK_PROJECTS,
   type ConnectedProvider,
 } from "./mockData";
-import { isCalendarItem, isTickled } from "./utils";
+import { browserTimeZone, isCalendarItem, isTickled } from "./utils";
+import { clarifyChangesSharedTask, clarifyQueue, isClarifiable } from "./clarify";
 import { type SyncState, canPush } from "./syncState";
 import {
   DEFAULT_FILTERS,
@@ -448,6 +449,15 @@ interface UndoSnapshot {
    *  Undo re-patches their scheduled_start/end + flexible from the snapshot
    *  rows, so a mis-drag on the calendar is always one tap from safe. */
   scheduleRevertIds?: string[];
+  /** Board rows ("From Projects") whose triage this change stated. Undo puts
+   *  them back into the group and CLEARS the stated disposition (`null`),
+   *  because the value before it was derived, and writing the derived value
+   *  back would state a triage the member never made. */
+  untriagedIds?: string[];
+  /** Set when the change also wrote the SHARED task (a move, a reassign or a
+   *  due date). Undo cannot reverse that from here, so the toast offers to
+   *  open the task instead, and `undoLastChange` refuses. */
+  sharedChangeTaskId?: string;
 }
 
 /** Friendly past-tense label for a one-tap disposition (undo toast). */
@@ -579,6 +589,11 @@ interface TaskState {
   // — the connect flow could only end in 400 "Unknown provider".
   /** count of items processed out of the inbox this session (momentum). */
   processedThisSession: number;
+  /** The ids decided in this session, by Clarify or a quick dispose. The
+   *  Clarify walk never returns to one, whatever a stale re-read of
+   *  `fromProjectIds` says (review of PR #440, P1). Undo takes its ids back
+   *  out. */
+  clarifiedThisSession: ReadonlySet<string>;
   /** one-level undo for the most recent dispose/clarify — the safety net that
    *  makes rapid triage feel safe (GTD: the system must be trusted). */
   undoSnapshot: UndoSnapshot | null;
@@ -609,6 +624,10 @@ interface TaskState {
     /** the confirmed prioritization flags (from the clarify card's Weight
      *  toggles). Applied as a local overlay alongside the GTD decision. */
     weight?: { important: boolean; leveraged: boolean; deepWork: boolean },
+    /** `reclarify: true` is an in-place edit from ItemDetail or the
+     *  Re-clarify modal. It never walks the inbox, moves `selectedItemId`
+     *  or counts as processed — even on a row still in "From Projects". */
+    opts?: { reclarify?: boolean },
   ) => void;
   /** Skip the current item (leave it in the inbox to process later) and move on. */
   skipToNextInbox: () => void;
@@ -788,6 +807,11 @@ interface TaskState {
    *  hydrate through `fetchMyRoot`. Null before a first capture.
    *  `isPersonalTask` reads it to keep Areas off a team task's Where picker. */
   personalRootId: string | null;
+  /** Read `personalRootId` again when it is still null. A member's first
+   *  capture creates the root, and a failed `fetchMyRoot` leaves it null
+   *  too. Clarify reads the id, so a null that lingers after the root exists
+   *  misreads every capture (audit 2026-09-24, repair P1). */
+  refreshPersonalRoot: () => Promise<void>;
   /** Mint one. Resolves with the row, or `undefined` when refused (the
    *  reason is on `syncFailure`). */
   createArea: (name: string) => Promise<LensArea | undefined>;
@@ -960,6 +984,15 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   localHierarchy: null,
   areas: [],
   personalRootId: null,
+  refreshPersonalRoot: async () => {
+    if (get().backend !== "live" || get().personalRootId !== null) return;
+    try {
+      const root = await fetchMyRoot();
+      if (root?.id) set({ personalRootId: root.id });
+    } catch {
+      /* the next capture or hydrate tries again */
+    }
+  },
   selectedAreaId: null,
   fromProjectIds: new Set(),
   ledProjects: [],
@@ -1003,6 +1036,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   quickCaptureMode: "single",
   clarifyModalOpen: false,
   processedThisSession: 0,
+  clarifiedThisSession: new Set(),
   undoSnapshot: null,
   pendingDeleteIds: null,
   selectMode: false,
@@ -1083,6 +1117,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
             selectedItemId:
               s.selectedItemId === item.id ? server.id : s.selectedItemId,
           }));
+          // A first capture creates my root. Learn its id now.
+          void get().refreshPersonalRoot();
           // Background duplicate check (capture stays frictionless): the AI
           // compares the new capture against open items. Confident duplicate
           // → auto-remove with an undoable notice; similar → ask the user.
@@ -1215,7 +1251,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }));
     if (get().backend === "live") {
       sync(
-        apiCaptureBatch(lines).then((serverItems) =>
+        apiCaptureBatch(lines).then((serverItems) => {
+          // A first capture creates my root. Learn its id now.
+          void get().refreshPersonalRoot();
           set((s) => {
             const byIndex = new Map(
               newItems.map((tmp, idx) => [tmp.id, serverItems[idx]]),
@@ -1226,8 +1264,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
                 (x) => byIndex.get(x)?.id ?? x,
               ),
             };
-          }),
-        ),
+          });
+        }),
       );
     }
   },
@@ -1359,7 +1397,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     set((s) => ({ items: s.items.map((i) => (i.id === id ? server : i)) }));
   },
 
-  clarify: (id, decision, weight) => {
+  clarify: (id, decision, weight, opts) => {
     flushPendingPurge(get().undoSnapshot, get().backend);
     // The confirmed matrix flags overlay the decision. Applied locally to the
     // clarified row and (live) patched after organize, independent of the GTD
@@ -1375,6 +1413,16 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         label: clarifyLabel(decision),
         changedIds: [id],
       };
+      // A "From Projects" row: undo clears the stated triage and puts it back
+      // in the group — unless the decision also changed the shared task.
+      const before = s.items.find((i) => i.id === id);
+      if (s.fromProjectIds.has(id)) {
+        if (before && clarifyChangesSharedTask(before, decision)) {
+          snapshot.sharedChangeTaskId = id;
+        } else {
+          snapshot.untriagedIds = [id];
+        }
+      }
       let projects = s.projects;
       let items: GtdItem[];
       if (decision.kind === "project") {
@@ -1429,21 +1477,36 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       // Re-clarify (the item wasn't in the inbox) is an in-place edit — don't
       // walk the inbox, bump the session counter, or close the reclarify modal
       // out from under the wizard's own close handler.
-      const wasInbox =
-        s.items.find((i) => i.id === id)?.disposition === "INBOX";
-      if (!wasInbox) {
+      //
+      // ⚠️ An untriaged "From Projects" row (S6e) is a FIRST clarify, not a
+      // re-clarify. Its disposition is derived (NEXT, SOMEDAY or WAITING), so
+      // a test on INBOX alone read it as an edit and the walk never advanced.
+      const wasInbox = isClarifiable(
+        s.items.find((i) => i.id === id) ?? { id, disposition: "" },
+        s.fromProjectIds,
+        s.clarifiedThisSession,
+      );
+      // An explicit Re-clarify is an edit whatever the row's state, so the
+      // caller says so rather than the store guessing from the disposition.
+      if (!wasInbox || opts?.reclarify) {
         return { items, projects, undoSnapshot: snapshot };
       }
-      // advance to the OLDEST remaining inbox item — GTD processes FIFO
-      const remaining = items.filter((i) => i.disposition === "INBOX");
-      const nextInbox = remaining.length
-        ? remaining.reduce((a, b) =>
-            new Date(b.createdAt) < new Date(a.createdAt) ? b : a,
-          )
-        : undefined;
+      // Live: `markTriaged` below drops the id and re-reads the server's set
+      // after the write lands. Demo: nothing re-reads, so drop it here.
+      let fromProjectIds = s.fromProjectIds;
+      if (s.backend !== "live" && fromProjectIds.has(id)) {
+        const next = new Set(fromProjectIds);
+        next.delete(id);
+        fromProjectIds = next;
+      }
+      const clarifiedThisSession = new Set(s.clarifiedThisSession).add(id);
+      // advance to the OLDEST remaining item of the walk — GTD processes FIFO
+      const nextInbox = clarifyQueue(items, s.fromProjectIds, clarifiedThisSession)[0];
       return {
         items,
         projects,
+        fromProjectIds,
+        clarifiedThisSession,
         selectedItemId: nextInbox?.id ?? null,
         processedThisSession: s.processedThisSession + 1,
         undoSnapshot: snapshot,
@@ -1530,9 +1593,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   /** LIVE member refresh for one workspace (delegate-picker freshness). */
   skipToNextInbox: () =>
     set((s) => {
-      const inbox = s.items
-        .filter((i) => i.disposition === "INBOX")
-        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      // The same walk Clarify advances through: captures and untriaged
+      // "From Projects" rows together, oldest first.
+      const inbox = clarifyQueue(s.items, s.fromProjectIds, s.clarifiedThisSession);
       if (inbox.length <= 1) return s; // nothing else to move to
       const idx = inbox.findIndex((i) => i.id === s.selectedItemId);
       const next = inbox[(idx + 1) % inbox.length];
@@ -1544,6 +1607,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     set((s) => ({
       items: s.items.map((i) => (i.id === id ? disposeOne(i, disposition) : i)),
       processedThisSession: s.processedThisSession + 1,
+      clarifiedThisSession: new Set(s.clarifiedThisSession).add(id),
       undoSnapshot: {
         items: s.items,
         projects: s.projects,
@@ -1570,6 +1634,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           set_.has(i.id) ? disposeOne(i, disposition) : i,
         ),
         processedThisSession: s.processedThisSession + affected,
+        clarifiedThisSession: new Set([...s.clarifiedThisSession, ...ids]),
         undoSnapshot: {
           items: s.items,
           projects: s.projects,
@@ -1804,6 +1869,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   markTriaged: (ids, write) => {
+    // A refused write leaves the item undecided, so it rejoins the walk.
+    void write.catch(() =>
+      set((s) => {
+        const clarifiedThisSession = new Set(s.clarifiedThisSession);
+        for (const id of ids) clarifiedThisSession.delete(id);
+        return { clarifiedThisSession };
+      }),
+    );
     const current = get().fromProjectIds;
     const dropped = ids.filter((id) => current.has(id));
     if (dropped.length === 0) return;
@@ -2221,7 +2294,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       if (patch.context !== undefined) body.context = patch.context;
       if (patch.energy !== undefined) body.energy = patch.energy;
       if (patch.timeEstimateMins !== undefined)
-        body.time_estimate_mins = patch.timeEstimateMins;
+        // D77: the task's ONE estimate. 0 was this app's "clear", and on a
+        // shared column a clear is null — never "zero minutes of work".
+        body.time_estimate_mins = patch.timeEstimateMins || null;
       if (patch.dueAt !== undefined) body.due_at = patch.dueAt;
       if (patch.expectedBy !== undefined) body.expected_by = patch.expectedBy;
       if (patch.scheduledStart !== undefined)
@@ -2348,15 +2423,28 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   undoLastChange: () => {
     const snap = get().undoSnapshot;
     if (!snap) return;
+    // The change wrote the shared task too. Restoring my overlay alone would
+    // show a state the board does not have, so there is no undo here.
+    if (snap.sharedChangeTaskId) return;
     const { items, projects, processed, selectedItemId, changedIds,
       deletedItems, softDeletedIds, archivedIds, archivedTo,
-      scheduleRevertIds } = snap;
-    set({
-      items,
-      projects,
-      processedThisSession: processed,
-      selectedItemId,
-      undoSnapshot: null,
+      scheduleRevertIds, untriagedIds } = snap;
+    set((s) => {
+      // An undone decision is undecided again: it rejoins the walk.
+      const clarifiedThisSession = new Set(s.clarifiedThisSession);
+      for (const id of changedIds ?? []) clarifiedThisSession.delete(id);
+      return {
+        items,
+        projects,
+        processedThisSession: processed,
+        selectedItemId,
+        undoSnapshot: null,
+        clarifiedThisSession,
+        // The board row is untriaged again: back into "From Projects".
+        fromProjectIds: untriagedIds?.length
+          ? new Set([...s.fromProjectIds, ...untriagedIds])
+          : s.fromProjectIds,
+      };
     });
     if (get().backend !== "live") return;
     if (softDeletedIds?.length) {
@@ -2408,6 +2496,17 @@ export const useTaskStore = create<TaskState>((set, get) => ({
               : Promise.resolve();
           }),
         ),
+      );
+    } else if (untriagedIds?.length) {
+      // CLEAR the stated disposition. The value before the clarify was
+      // derived off the lane, and writing it back would state a triage.
+      // Re-read the group only after the write lands (the S6e order).
+      sync(
+        Promise.all(
+          untriagedIds.map((id) =>
+            apiPatchItem(id, { disposition: null }).catch(() => {}),
+          ),
+        ).then(() => get().loadFromProjects()),
       );
     } else if (changedIds?.length) {
       // Revert the server rows to their pre-change disposition (the local
@@ -2477,6 +2576,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       // usable before they arrive.
       const settings = await fetchTaskSettings().catch(() => get().settings);
       set({ settings });
+      // F5 — the gateway reads "today" for the start-date rule in the zone
+      // stored here. Store this browser's zone when it differs, as
+      // `CalendarView` does, so the inbox and `isTickled` agree on the date.
+      const zone = browserTimeZone();
+      if (zone && zone !== settings.timezone) void get().updateSettings({ timezone: zone });
       // ⚠️ The auto-sync-on-open fire was REMOVED 2026-08-25 (D52, WS-39 S1
       // repair round 1). It ran `syncNow()` whenever any `task_accounts` row
       // survived — which, after the retirement, is the ONLY state it could be

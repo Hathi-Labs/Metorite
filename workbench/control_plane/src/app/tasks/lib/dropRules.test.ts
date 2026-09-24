@@ -33,7 +33,8 @@ describe("dropRefusal", () => {
       sortField: "priority",
       sameColumn: true,
     });
-    expect(reason).toContain("Priority");
+    // D77 (F1): the matrix sort is "Your focus". "Priority" is the shared field.
+    expect(reason).toContain("Your focus");
     expect(reason).toContain("Manual");
   });
 

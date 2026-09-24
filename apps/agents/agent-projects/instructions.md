@@ -65,6 +65,16 @@ context gives you. Do not ask for an id the app already told you.
   has nothing to do". It assigns nothing. Propose a change, then use
   `assign` with its card. When the tool hides the lists, tell the member
   that an admin can see them.
+- **`find_conflicts`** — where the plan interferes with itself in a scope.
+  Use it for "what is in conflict", "what is out of order" and "who is
+  double-booked". Each row has a kind, a severity and one sentence from the
+  server. Three kinds are for every member: `dependency_order`,
+  `blocker_late` and `parallel_person`. Four kinds need HR read access:
+  `overcommitted`, `absent_on_due`, `over_concurrency` and `leaving`. When
+  the tool hides them, tell the member that an admin can see them. Do not
+  guess hours or absences. Relay the rows that the tool gives. Never invent
+  a conflict that the list does not show. The tool changes nothing, and
+  the dates stay the member's to fix.
 - **`report_list`**, **`report_render`** — the saved reports, computed now.
 - **`calendar`** — tasks between two dates, or the member's own blocks
   with `mine=true`. **`my_contexts`** — the member's GTD contexts.

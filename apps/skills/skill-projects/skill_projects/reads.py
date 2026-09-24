@@ -535,7 +535,6 @@ OVERLAY_FACTS = (
     "context",
     "energy",
     "next_action",
-    "time_estimate_mins",
     "defer_until",
     "scheduled_start",
     "scheduled_end",
@@ -1106,6 +1105,74 @@ async def rebalance(project_id: str = "", horizon_days: int = 14) -> str:
     return "\n".join(out)
 
 
+# ── Team intelligence — S7c, conflicts ───────────────────────────────────────
+
+#: What the chat says when the route withheld the four HR kinds (§13.5 rule 9).
+CONFLICTS_HR_HIDDEN = (
+    "Overcommitment, absence on a due date, work over a person's ceiling and a "
+    "leaving date are hidden: this member does not hold admin:members:read. An "
+    "admin can see them. Do not guess anybody's hours or absences."
+)
+
+
+def _conflict_lines(row: dict[str, Any]) -> list[str]:
+    """One conflict: its kind and severity, the route's sentence, the tasks."""
+    who = ", ".join(
+        data(p.get("name") or p.get("email")) for p in row.get("people") or []
+        if isinstance(p, dict)
+    )
+    head = f"- {row.get('kind')} ({row.get('severity')}) · {data(row.get('sentence'))}"
+    if who:
+        head += f" · people {who}"
+    out = [head]
+    out.extend(f"  full_id: {tid}" for tid in row.get("task_ids") or [])
+    return out
+
+
+@_annotate(read_only=True, idempotent=True)
+async def find_conflicts(project_id: str = "", horizon_days: int = 14) -> str:
+    """Where the plan interferes with itself in a scope, as one list. Seven
+    kinds: dependency_order (a task starts or is due before a task that
+    blocks it is due), blocker_late (a blocker is overdue and its work is
+    open), parallel_person (one person holds 3 or more tasks on one day in 2
+    or more top-level projects), and, for a member with HR read access,
+    overcommitted, absent_on_due, over_concurrency and leaving. Each row has
+    a severity and one sentence from the server. The horizon (default 14
+    days, 1 to 90) bounds the dated kinds. Leave project_id empty for the
+    portfolio. Relay the rows. Never invent a conflict the list does not
+    carry."""
+    days = max(1, min(90, int(horizon_days or 14)))
+    payload = await get(
+        "/projects/analytics/conflicts", _scope_params(project_id, horizon_days=days)
+    )
+    payload = payload or {}
+    window = payload.get("window") or {}
+    by_kind = payload.get("by_kind") or {}
+    total = payload.get("total", 0)
+    out = [
+        legend(),
+        f"Conflicts in {_scope_title(payload)}: {total}",
+        f"  horizon: {window.get('starts_on')} to {window.get('ends_on')}"
+        f" ({window.get('days', days)} days, for the dated kinds; the dependency"
+        " kinds ignore it)",
+    ]
+    if by_kind:
+        out.append("  by kind: " + ", ".join(f"{k} {n}" for k, n in by_kind.items()))
+    if payload.get("hr_visible") is False:
+        out.append(f"  {CONFLICTS_HR_HIDDEN}")
+    elif payload.get("partial"):
+        out.append("  (this counts only the work this member may open)")
+    rows = payload.get("rows") or []
+    if not rows:
+        out.append("  No conflict of these kinds. Do not invent one.")
+    for row in rows:
+        if isinstance(row, dict):
+            out.extend(_conflict_lines(row))
+    if payload.get("truncated"):
+        out.append(f"(capped: {len(rows)} of {total} rows are listed)")
+    return "\n".join(out)
+
+
 # ── Reports ──────────────────────────────────────────────────────────────────
 
 
@@ -1162,6 +1229,9 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     # and prints as "unassigned". Nested HR blocks are skipped per row.
     "capacity": ("people", "name", ("total_tasks", "people_total", "hr_visible", "horizon_days")),
     "stuck":("overdue", "name", ("overdue_total", "blocked_total")),
+    # S7c. The row label is the kind. The sentence carries titles, so it is
+    # fenced like every other piece of member text below.
+    "conflicts": ("rows", "kind", ("total", "hr_visible", "horizon_days")),
 }
 
 
@@ -1184,7 +1254,7 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
         # or the model reads a former colleague's work as nobody's.
         label = row.get(label_key) or row.get("assignee")
         facts = ", ".join(
-            f"{k} {v}"
+            f"{k} {data(v) if k == 'sentence' else v}"
             for k, v in row.items()
             if k not in (label_key, "id", "project_id") and not isinstance(v, (dict, list))
         )

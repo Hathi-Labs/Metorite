@@ -204,30 +204,40 @@ line — never reclaim a number by deleting the other entry.
   · R6
 - **Added:** 2026-09-23 · the CP-13a deploy check
 
-### H-165 · Build CP-13a to CP-13d: the `decide` task, its door, the Console pages and the chat tool · [AGENT]
-- **Check:** CP-13a and CP-13b are BUILT (2026-09-23, branches
-  `cp13a-decide` and `cp13b-console`).
-  `rg -n 'decide/try' apps/services/customer_console/customer_console/operator_roles.py`
-  → no hit means CP-13b has not reached `main` yet.
-  `rg -n 'def decide' packages/acb_llm/` → no hit means CP-13c has not
-  landed.
-- **Why:** owner decision 2026-09-23 (D75). The owner chose TypeSafe's Jev for
-  fast typed decisions, and asked for the Operator Console first.
-- **Do this in order:** CP-13a, then CP-13b, then CP-13c, then CP-13d. Build
-  against a test key and made-up data. Ship `DECIDE_ENABLED` OFF.
-- ⚠️ **Do not seed a binding or a price in the migration.** An operator makes
-  the binding on `/tiers`. The owner sets the price (H-42).
-- ⚠️ **Three fences break by design.** Update them in the same PR. §6A.14
-  CP-13a names them, and CP-13d names two more.
-- ⚠️ **CP-13c needs H-152's tenant slice.** The client presents the per-box
-  deployment key, and never the one organization key.
+### H-165 · CP-13 is built through CP-13d. Stop the gateway taking the member from the body, so `decide` serves a shared box · [AGENT]
+- **Check:** `rg -n 'member=None' packages/acb_skills/acb_skills/decide_tools.py`
+  → a hit means the `decide` tool still sends no member, and this is open.
+  CP-13a to CP-13d are BUILT (2026-09-23 and 2026-09-24).
+- **Why:** the R11 finding in `specs/customer_console.md` §6A.14 CP-13d. The
+  executor binds each run's member from `event_payload["user_email"]`.
+  `POST /agent/run/stream`, `POST /agent/run` and `POST /agent/run/async` pass
+  the caller's payload unchanged, and the webhook door spreads the sender's
+  payload. On the deployment arm `X-CC-Member` selects the tenant. So the tool
+  sends no member, and a deployment-key box gets the unavailable text.
+- **Do this:** make the three `/agent/run*` doors drop `user_email` and
+  `user_id` from the body, and stamp the session's member instead. For
+  the webhook door, find which senders name a member, and keep only a member
+  the server can prove. Then let the tool send `_get_memory_user_id()` when it
+  is an email. Add a fence for each door.
+- ⚠️ **The same gap reaches three other consumers.** The memory tools and the
+  integration filter read the member that the payload names. And
+  `acb_llm/routed.py::_attribution` sends the run-context `user`, which the
+  executor binds from the same payload, as `member` on every routed
+  completion. On the deployment arm that selects the tenant. So `member=None`
+  on the tool does not close the gap alone. Fix it at the doors, never in
+  each consumer.
+- **Severity: a defence-in-depth P2** (the reviewer, 2026-09-24). Only a
+  holder of the internal bearer or the webhook HMAC secret can reach it, and
+  both can already assert any identity (`acb_auth/deps.py`, branch 1b). The
+  browser path, the Control Plane chat proxy, cannot name a member.
+- **What else is left of CP-13.** The owner acts in H-166. CP-13e to CP-13g are
+  the app slices, and each one needs its own audit first (§6A.14).
 - 🔴 **Do not set `DECIDE_ENABLED` on a live box.** It is owner-only, and
   the §3a window does not open it (H-166).
-- ⚠️ **CP-13a took migration `033`** (`033_decide_task.sql`). Check it
-  again at merge (R1).
-- **Authority:** `specs/customer_console.md` §6A.14 · `work_plan.md` §3 D75 ·
-  board WS-31
-- **Added:** 2026-09-23 · the Jev planning session
+- **Authority:** `specs/customer_console.md` §6A.14 CP-13d ·
+  `specs/user_management_contract.md` R11 · `work_plan.md` §3 D75 · board WS-31
+- **Added:** 2026-09-23 · the Jev planning session · **rewritten 2026-09-24**
+  when CP-13d was built
 
 ### H-166 · Open the TypeSafe account, install the key, and answer residency · [OWNER]
 - **Check:** on `/providers`, look for a live `typesafe` credential. None
@@ -3037,6 +3047,12 @@ line — never reclaim a number by deleting the other entry.
   nothing, by design.
 - ⚠️ **The per-org billing pages still read the org key**, so retiring that
   variable entirely is a separate move. `seats.py` records which reads stay.
+- ⚠️ **Orchestrator agent completions never send `X-CC-Member`.**
+  `orchestrator/agents.py:437` stamps only `X-CC-Agent` and `X-CC-Source`,
+  and nothing calls `member_proof.sign_member`. So on a box with
+  `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY` set and no org key,
+  `chat_completion_on_console` refuses every agent completion. The CP-13c
+  audit found this on 2026-09-24.
 - **Fences:** `tests/unit/test_router_deployment_arm.py` (12) ·
   `tests/unit/test_console_router_client.py` (5 new).
 - **Authority:** owner directive, 2026-09-22 — *"you are automatically

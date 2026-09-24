@@ -133,6 +133,8 @@ export interface GtdItem {
   /** "@computer" | "@calls" | … (matches a GtdContext.name) */
   context?: string;
   energy?: Energy;
+  /** D77 — the task's ONE estimate, `pm_tasks.estimate_mins`: the number the
+   *  Projects board, People capacity and analytics read. Shared, not mine. */
   timeEstimateMins?: number;
   isTwoMinute?: boolean;
   /** Prioritization matrix inputs. `urgent` is NOT stored — derive it from
@@ -245,6 +247,14 @@ export interface GtdItem {
   clarifiedAt?: string;
   /** GTD tickler — hidden from the active inbox until this date, then resurfaces */
   deferUntil?: string;
+  /** D77 — the work's shared START date, `pm_tasks.start_date` (a DATE,
+   *  "YYYY-MM-DD"). The inbox hides the task until the later of this and my
+   *  own `deferUntil`. */
+  startDate?: string;
+  /** D77 — the task's shared tags, `pm_tasks.tags`. The team's labels, beside
+   *  my own `context`: tags say what the work IS, a context says how I batch
+   *  my time. */
+  tags?: string[];
 }
 
 /** Where a clarified item should be stored (dual-source model, §5.1). */

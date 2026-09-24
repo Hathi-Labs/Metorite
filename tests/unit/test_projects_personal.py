@@ -1061,7 +1061,11 @@ async def test_every_writable_overlay_field_can_be_read_back(
     remembered. This one derives the list from the model itself, so the next
     field is covered before anybody writes a test for it.
     """
-    writable = set(pm_personal.PersonalIn.model_fields)
+    # D77's retired column is on the model only to be REFUSED by name
+    # (`RETIRED_OVERLAY_KEYS`), so it is the one sanctioned exception.
+    writable = set(pm_personal.PersonalIn.model_fields) - set(
+        pm_personal.RETIRED_OVERLAY_KEYS
+    )
     project, todo, _ = _team_project(db)
     task = db.seed_task(project.id, todo.id)
     _assign(db, task.id, "alice@fracktal.in")

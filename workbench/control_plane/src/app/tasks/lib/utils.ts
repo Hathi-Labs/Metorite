@@ -109,9 +109,62 @@ export function snoozeOptions(nowMs = Date.now()): { label: string; iso: string 
   ];
 }
 
-/** True if a deferred item is still tickled (resurface date in the future). */
-export function isTickled(item: { deferUntil?: string }, nowMs = Date.now()): boolean {
-  return !!item.deferUntil && new Date(item.deferUntil).getTime() > nowMs;
+/** The calendar date ("YYYY-MM-DD") of an instant in an IANA zone, or in
+ *  this browser's own zone when none is given. F5: the gateway computes the
+ *  same date from the zone the member stores (`personal.local_date`). */
+export function localDate(nowMs: number, timeZone?: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(nowMs));
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+/** The member's own IANA zone, as this browser knows it. Stored in
+ *  `user_settings.timezone` so the gateway reads "today" the same way. */
+export function browserTimeZone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** True if a deferred item is still tickled (resurface date in the future).
+ *
+ *  D77 — the work's shared START date tickles it too, the same way the
+ *  gateway's `DEFERRED_CLAUSE` does: the task waits for the later of my own
+ *  `deferUntil` and the team's `startDate`. `startDate` is a DATE, so it
+ *  opens on that day in the member's zone — a task starting today is in
+ *  today's list. F5: the gateway binds the same member date as `:today`.
+ *  `timeZone` is for tests; the app uses the browser's own zone. */
+export function isTickled(
+  item: { deferUntil?: string; startDate?: string },
+  nowMs = Date.now(),
+  timeZone?: string,
+): boolean {
+  if (item.deferUntil && new Date(item.deferUntil).getTime() > nowMs) return true;
+  if (item.startDate) {
+    const start = item.startDate.slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(start) && start > localDate(nowMs, timeZone)) return true;
+  }
+  return false;
+}
+
+/** When a tickled item comes back: the LATER of my defer and the shared
+ *  start date (D77), as an ISO instant. `undefined` when neither is set. */
+export function resurfacesAt(item: { deferUntil?: string; startDate?: string }): string | undefined {
+  const times: number[] = [];
+  if (item.deferUntil) times.push(new Date(item.deferUntil).getTime());
+  if (item.startDate) {
+    const [y, m, d] = item.startDate.slice(0, 10).split("-").map(Number);
+    if (y && m && d) times.push(new Date(y, m - 1, d).getTime());
+  }
+  const valid = times.filter((t) => !Number.isNaN(t));
+  return valid.length ? new Date(Math.max(...valid)).toISOString() : undefined;
 }
 
 /** A short "where it already lives" label for a duplicate/similar match — the

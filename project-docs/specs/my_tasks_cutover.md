@@ -9,8 +9,9 @@ this spec and `work_plan.md` §2 disagree, the board wins.
 
 ---
 
-**Built so far.** S5, S6a to S6e and S8a are built and serving. S7 ran on
-2026-09-23. S8 PR 1 is built on 2026-09-23 and waits for its merge window.
+**Built so far.** S5, S6a to S6e and S8a are built and serving. S6f is built
+on 2026-09-23 (D77, §4.10). S7 ran on
+2026-09-23. S8 PR 1 merged on 2026-09-24 as `6e028aa6` (#411).
 
 ## 0. One paragraph
 
@@ -306,6 +307,113 @@ Fences: `app/tasks/lib/statusCategory.test.ts` (the grouping, the lane
 resolution and the settings modal source) and `naming.test.ts` (no member
 string says ClickUp).
 
+### 4.10 One set of fields across My Tasks and Projects (D77)
+
+Owner directive, verbatim, 2026-09-23, in six fragments:
+
+> "I don't want to unnecessarily duplicate fields or have related fields in the
+> Projects app and My Tasks app."
+
+> "The My Tasks app might have specific fields for related context, from a
+> more task-management perspective (personal and individual)"
+
+> "but it should derive all the data or reuse all the field data from the
+> Projects app itself."
+
+> "For example, deadlines, priority" … "should be derived from the Projects
+> app."
+
+> "If you think that the Projects app fields are actually lacking and the My
+> Tasks app has certain fields that are richer in nature,"
+
+> "they should be included in the Projects app itself."
+
+**The rule.** A fact about the WORK has one home: `pm_tasks`, or a side table
+of it. Both apps read and write that home. My Tasks keeps an overlay only for
+how one member holds the work. It never keeps a second copy of a work fact.
+
+⚠️ **This AMENDS D53.8 for one field, by owner directive.** The overlay held
+its own `time_estimate_mins`. It now reads the shared column. `work_plan.md`
+§3 D77 records the decision.
+
+⚠️ **D77 does not change priority. D76 owns it.** The member's `important`
+stays on the overlay, and the shared `importance` only seeds it while it is
+unstated. `task_manager_app.md` §13.4b owns that rule.
+
+**The audit, measured on `main` at `74653868`.** Six pairs held one fact
+twice, and each pair could disagree.
+
+| # | Pair | What went wrong |
+|---|---|---|
+| 1 | `importance` vs the matrix cell | A task Projects called Urgent read `Low Priority · Eliminate?`. D76 answers this pair, with its seed |
+| 2 | `estimate_mins` vs the overlay's `time_estimate_mins` | A My Tasks estimate never reached People capacity or analytics |
+| 3 | the status vs the stated `disposition` | A teammate reopened a task, and it stayed DONE in my list. Projects closed it, and my NEXT stayed |
+| 4 | the assignees vs the stored `waiting_on` | Projects reassigned it, and my Waiting-For and the Nudge named the old person |
+| 5 | `start_date` vs `defer_until` | The start date was shared and My Tasks did not show it |
+| 6 | `tags` vs `context` | The tags were shared and My Tasks lists did not show them |
+
+Projects also lacked four editors that My Tasks had. The description was
+read-only in the Projects body. The estimate had no editor. The start date was
+not in the detail body. The watch toggle was in the Projects header only.
+
+**Each field, decided.**
+
+| Field | Decision | How |
+|---|---|---|
+| Priority | **Shared** | `pm_tasks.importance`, in D76's words (`IMPORTANCE_OPTIONS`). The shared body edits it. The My Tasks list column, the card chip, and a Priority sort, group and filter show it. My Tasks never writes it |
+| Important | **Mine**, D76 | The member's own answer on the overlay. High and Highest seed it while it is unstated. D77 does not change it. Every My Tasks control over the member's matrix says "Your focus", the name D76 gives the private row in Projects |
+| Estimate | **Shared** | `pm_tasks.estimate_mins`. My Tasks' Estimate writes it. The planner reads it. Migration 216 copies the overlay values once |
+| Deadline | **Shared**, already `due_at` | A delegation never replaces a deadline the task has. The promised date is `expected_by` |
+| Start date | **Shared** | `start_date`, in the body of both apps. My inbox hides the task until the later of it and my own `defer_until`. "Today" is the member's own date, from `user_settings.timezone`, on the server and in the client |
+| Completion | **Derived** | `effective_disposition`: a closed lane reads DONE. A stated DONE on an open lane reads NEXT, and `is_triaged` stays true. Nothing is written |
+| Waiting on | **Derived from the assignees** | The task's assignees minus me, first by `assigned_at`. The Nudge goes to the same people |
+| Tags vs context | **Both kept** | Tags are the team's labels for the work. A context is how I batch MY time, and no work fact holds it |
+| Description vs next action | **Both kept** | The body edits the description in both apps. The next action stays mine |
+| Watchers | **Shared** | The watch toggle is in the shared body |
+| Energy, two-minute, defer, block, flexible, hard date, actuals, rank, clarified, kept mine | **Mine**, unchanged | Each keeps its D53.5, D53.7 or D53.8 reason |
+
+**One word, one meaning.** In My Tasks, "Priority" means only the shared
+`importance`. Every control over the member's private matrix says "Your
+focus". That covers the list column, the sort, the group, the filter, the
+matrix view and the clarify card. A separate Priority sort, group and filter read the
+shared `orgPriority`, so a member can rank their list by the company's
+priority. The default sort stays the matrix rank, now named "Your focus".
+
+The internal keys (`priority`, `priorities`) stay on the matrix, so a saved
+sort or filter keeps its meaning. The matrix cells keep D76's names,
+"Low Priority" among them. `focusWording.test.ts` is the fence.
+
+**Promoted into Projects.** The Estimate editor, the description editor, the
+start date and the watch toggle, all in the shared `TaskBody`. Also **Time
+spent**, a read-only cell beside Estimate. It is the sum of every member's
+actuals (`actual_end - actual_start`), bound to the task the caller can see.
+
+**Three choices the directive did not settle, each an agent default:**
+
+1. **The stored `waiting_on` is not ignored.** It is the label when it names
+   the same address. It is the whole answer when no other person holds the
+   task. A task in my own tree cannot carry a colleague (D62). So a chase
+   there is an outside person, and the overlay is the only place that fact is.
+2. **A stated TRASH stays TRASH on a closed lane.** Trash is my removal from
+   my list, and a closed lane does not undo it.
+3. **An actionable disposition on a closed task reopens it for the board.**
+   Without this the lane wins, and "mark not done" snaps back to DONE. The
+   gateway does it once, in `reopen_if_closed`. The PATCH, the bulk
+   `personal` action and organize call it. The checkbox, Focus mode and Undo
+   reach the bulk action. The task moves to the first `todo` lane of its own
+   set. The move goes through `apply_status_transition`, so the timeline
+   records the reopen.
+
+   Only INBOX, NEXT and WAITING count (`OPEN_DISPOSITIONS`). Each says that
+   somebody still has to do the work. SOMEDAY, REFERENCE and PROJECT do not
+   reopen: filing a finished task is about my list, not about the team's
+   work. The stated value is kept, and the closed lane still reads DONE.
+   A defer writes SOMEDAY, so a defer never reopens either, and the defer
+   card's "your inbox only" stays true.
+
+   Changed 2026-09-24 (F4). The first build reopened on every disposition but DONE and TRASH. An Undo of a
+   delete restores a closed task as DONE, so it never reopens it.
+
 ## 5. The slices
 
 Each slice is one PR, merged and watched to a serving SHA (CLAUDE.md §4).
@@ -596,6 +704,109 @@ scope did not settle.
 PASS. `test_projects_personal_s6e.py`, 12 tests. The vitest fences:
 `itemDetail.test.ts` (10), `fromProjects.test.ts` (4), `lens.test.ts` (56),
 `selectionParity.test.ts` (13).
+
+### S6f — one set of fields across My Tasks and Projects · AGENT-SAFE · BUILT 2026-09-23
+
+**Scope.** §4.10, decision D77. Branch `my-tasks-fields`, stacked on
+`my-tasks-s8b` (#411). It merged `origin/main` for D75 and the Nudge, and
+again for D76 (#429).
+
+⚠️ **Reworked 2026-09-24 for D76.** The first build derived `important` from
+`importance`, and the Important switch wrote the shared Priority. D76 is the
+owner's decision and it says the opposite, so the rework took D76 whole. The
+decision number moved from D76 to D77, and the migration moved from 215 to
+216, because main took both first.
+
+**Gateway.**
+
+1. `effective_disposition` in `personal.py` is the one rule. The inbox, the
+   planner (`planning._pm_row`) and the AI seam (`item_lens._pm_item`) call it.
+   `_PM_ALIVE` now prunes TRASH only, because a stated DONE can be reopened.
+2. `_MY_TASKS_SQL` selects `other_assignees`. `waiting_on_for` turns it into
+   the waiting-on person, and the Nudge uses the same rule.
+3. `DEFERRED_CLAUSE` adds `start_date <= CAST(:today AS date)` to the defer
+   clause. `member_today` computes `:today` from the member's
+   `user_settings.timezone` (F5, 2026-09-24). The first build used the
+   database's `current_date`, which is UTC, while the client read the local
+   date. My Tasks now stores the browser's zone on open, as the Calendar
+   does. The parity fixture has explicit-today rows that both sides run
+   with one instant and one zone. The bind is a `date`, because asyncpg
+   refuses text for a date parameter.
+4. `validate_overlay` refuses `time_estimate_mins` with a 422, and
+   `_upsert_personal` refuses it with a ValueError. Neither refuses
+   `important`, because it is the member's own answer (D76). Organize and
+   email capture write `pm_tasks.estimate_mins`.
+5. A delegation keeps a deadline the task already has.
+6. `GET /projects/tasks/{id}` carries `time_spent_mins`. It is a field on a
+   route that exists, so the D-PM-37 manifest does not change.
+7. **Migration 216** copies each overlay estimate into an empty
+   `estimate_mins`. The assignee's value wins, then the first assignee, then
+   the earliest `updated_at`. It writes no priority. The ledger guard makes a
+   replay a no-op, and a test holds the guard to the file's own name.
+8. `skill-task-gtd` and `skill-projects` follow the split. The chat tool
+   `set_my_overlay` refuses DONE and points at `complete`. Its card says
+   "your overlay only", so a shared completion behind that card would move
+   the board without asking. `complete` asks.
+
+**Client.**
+
+1. `lens.ts` maps `estimate_mins`, `start_date` and `tags`. `important`
+   stays the overlay's, and `orgPriority` carries the shared Priority (D76).
+   `TASK_KEYS` gains the estimate and the start date. `OVERLAY_KEYS` loses
+   `time_estimate_mins` and keeps `important`.
+2. The client writes no lane for a reopen. The gateway's
+   `reopen_if_closed` covers every door (§4.10 choice 3).
+3. The Important switch writes the member's overlay, as D76 says. No My
+   Tasks path writes the shared Priority.
+4. The list's Priority column and the card draw the shared Priority
+   (`orgPriority`) and the tags. They use the Projects chips
+   (`importanceChip`, `taskMeta`) and D76's words. Every control over the
+   member's matrix says "Your focus". That covers the column, the sort, the
+   group, the filter, the view and the clarify card. A Priority sort, group and filter
+   read `orgPriority` (§4.10, "One word, one meaning").
+   ⚠️ **The column key `priority` changed meaning.** It named the matrix
+   column. It now names the shared Priority column, and the matrix column is
+   the new key `focus`. A member who saved "show Priority" now sees the
+   shared field under that name. This was accepted on 2026-09-24 (F6),
+   because the header reads "Priority" and shows Priority.
+5. `TaskBody` gains Start, Estimate, Time spent, Watch and a Description
+   editor. The My Tasks strip loses Estimate and Notes under the lens. The
+   Projects header loses its watch toggle.
+6. The inbox tickles a task until its start date (`isTickled`, `resurfacesAt`).
+7. **Energy is off by default in the list.** The rig measured the new Priority
+   track at 1440 with both rails open. It pushed Due date off the edge.
+
+**Verified.**
+
+The repair round (F1 to F7) was verified on 2026-09-24, on a fresh
+database built from this branch's own ladder (`acb_tenant_verify_f`, 214
+files). The database was dropped afterwards.
+
+- `tests/live/live_ws39_s6f.py`: **17/17 PASS**. It checks reopen, close,
+  reassign, the estimate in the planner and in capacity, and the start date.
+  Check 5 proves that the Priority reaches the planner beside my
+  `important`, never as it. Check 6c proves that the start date is judged
+  on the member's own date (F5). Check 7 proves that the upsert refuses the
+  retired estimate and takes my `important`. Check 8b proves that the
+  backfill leaves the Priority alone. Check 11c proves that Someday on a
+  finished task leaves the lane done (F4). It also checks the backfill run
+  twice, the ledger replay, time spent, the reopen and tenancy.
+- `test_projects_personal_s6f.py`: 59 tests. The pytest run over every file
+  that imports a changed module, with `test_priority_seed.py`: 3508 pass. One
+  fails, and it passes alone: `test_h3_rls_promotion_rehearsal.py`, which
+  depends on the order of the run.
+- `npx tsc --noEmit` clean. `npx vitest run`: 3520 pass in 186 files, with
+  D76's `priorityVocabulary.test.ts` and `priority.test.ts`. The fences are
+  `sharedFields.test.ts` and `focusWording.test.ts`. `lens.test.ts` and
+  `itemDetail.test.ts` carry the D77 cases, and `itemDetail.test.ts` holds
+  D76's "Your focus" row to its name.
+- The live scripts for S6a (13/13), S6d (33/33), S6e (10/10), S8a (7/7) and
+  S8c (8/8) pass. S6d reads the capture's estimate off `pm_tasks` now.
+- The visual pass: one task in My Tasks and in Projects, light, compact and
+  dark at 1440, and 390. The captures are in
+  `workbench/control_plane/ux-shots/s6f/`. They are from the first build. The
+  rework renamed the member's cell column to "Your focus", and nobody has
+  shot it again.
 
 ### S7 — the cutover · dev-phase window, reported by evidence · RUN 2026-09-23
 
@@ -913,6 +1124,9 @@ the owner.
 | My Tasks and Projects share one task panel composition | the S6e source fence |
 | the rename prologues are guarded and not swept | `test_gtd_rename_upgrade.py` |
 | the drop is inert until armed and accounted for | `test_gtd_backfill.py` |
+| a work fact has one home, and My Tasks reads it (D77) | `test_projects_personal_s6f.py`, `live_ws39_s6f.py`, `sharedFields.test.ts` |
+| the strip draws no work fact, and the body draws them all (D77) | `itemDetail.test.ts` |
+| the lens never writes `time_estimate_mins`, and My Tasks never writes the shared Priority (D77, D76) | `lens.test.ts`, `sharedFields.test.ts`, `test_projects_personal_s6f.py` |
 | the ladder replays clean | `pr-check.yml` migrations job |
 
 ## 8. What this spec closes, and where

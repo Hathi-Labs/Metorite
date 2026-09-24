@@ -316,12 +316,16 @@ export async function apiPatchItem(
   patch: {
     title?: string;
     notes?: string;
-    disposition?: Disposition;
+    /** `null` CLEARS my stated disposition, so the derived one shows again. */
+    disposition?: Disposition | null;
     defer_until?: string;
     next_action?: string;
     context?: string;
     energy?: string;
-    time_estimate_mins?: number;
+    /** D77 — the task's ONE estimate (`pm_tasks.estimate_mins`); null clears. */
+    time_estimate_mins?: number | null;
+    /** D77 — the work's shared start date, "YYYY-MM-DD"; null clears. */
+    start_date?: string | null;
     due_at?: string;
     scheduled_start?: string;
     scheduled_end?: string;

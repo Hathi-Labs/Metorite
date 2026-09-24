@@ -59,6 +59,7 @@ from gateway.routes.projects.personal import (
     _reject_impossible_block,
     _reject_waiting_without_since,
     _upsert_personal,
+    reopen_if_closed,
     validate_overlay,
 )
 from gateway.routes.projects.tags import apply_task_tags, normalise_tag
@@ -390,6 +391,9 @@ async def _act_on_one(
         await _reject_impossible_block(db, task_id, email, values)
         await _reject_waiting_without_since(db, task_id, email, values)
         values["clarified_at"] = now()
+        # D77 — un-checking a closed task (the card, Focus mode, Undo all
+        # arrive here) reopens it for the board, through the one reopen.
+        await reopen_if_closed(db, task, email, values.get("disposition"))
         await _upsert_personal(db, task_id, email, values)
         return "applied", "personal"
 

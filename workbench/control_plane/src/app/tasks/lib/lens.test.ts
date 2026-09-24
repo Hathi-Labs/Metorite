@@ -26,6 +26,8 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  OVERLAY_KEYS,
+  TASK_KEYS,
   UNMAPPED,
   lensAddSubtasks,
   lensBulkArchive,
@@ -54,6 +56,7 @@ import {
   lensPatchItem,
   lensPlan,
   lensRenameArea,
+  lensRestoreItem,
   lensSetStage,
   lensStageAttachment,
   lensStageOptions,
@@ -114,9 +117,12 @@ const ROW = {
   created_at: "2026-09-01T08:00:00+00:00",
   updated_at: "2026-09-01T09:00:00+00:00",
   archived_at: null,
-  // ⚠️ the shared Priority integer — must NOT become `important`
+  // ⚠️ the shared Priority integer — must NOT become `important`.
+  // D77 — and the ONE estimate.
   importance: 3,
   estimate_mins: 480,
+  start_date: "2026-09-05",
+  tags: ["ops", "quote"],
   disposition: "NEXT",
   is_triaged: true,
   is_mine: true,
@@ -126,7 +132,6 @@ const ROW = {
   next_action: "Open the editor",
   context: "@computer",
   energy: "high",
-  time_estimate_mins: 45,
   is_two_minute: false,
   defer_until: null,
   scheduled_start: "2026-09-02T09:00:00+00:00",
@@ -226,10 +231,27 @@ describe("mapLensItem", () => {
   it("does NOT read `important` from the shared Priority integer", () => {
     // D53.8's confusable pair. `pm_tasks.importance` is the team's Priority;
     // `important` is my private Eisenhower flag. Mapping one to the other
-    // publishes triage nobody asked to share.
+    // publishes triage nobody asked to share. D76 lets the Priority SEED an
+    // unstated flag in `priority.ts`, never here, and D77 keeps that.
     expect(item.important).toBe(true);
     expect(ROW.importance).toBe(3);
-    expect(item.important).not.toBe(ROW.importance);
+    expect(item.orgPriority).toBe(3);
+    expect(mapLensItem({ ...ROW, importance: 0 }).important).toBe(true);
+    expect(mapLensItem({ ...ROW, important: null }).important).toBeUndefined();
+  });
+
+  it("reads the ONE estimate off the task, never the overlay (D77)", () => {
+    expect(item.timeEstimateMins).toBe(480);
+    expect(
+      mapLensItem({ ...ROW, estimate_mins: null, time_estimate_mins: 45 })
+        .timeEstimateMins,
+    ).toBeUndefined();
+  });
+
+  it("carries the shared start date and tags (D77)", () => {
+    expect(item.startDate).toBe("2026-09-05");
+    expect(item.tags).toEqual(["ops", "quote"]);
+    expect(mapLensItem({ ...ROW, tags: undefined }).tags).toEqual([]);
   });
 
   it("keeps `never stated` distinct from `false`", () => {
@@ -321,6 +343,31 @@ describe("splitPatch", () => {
     expect(splitPatch({ clear_assignee: true }).assignees).toEqual([]);
   });
 
+  it("sends the estimate and start date to the TASK, and Important to ME (D77)", () => {
+    const split = splitPatch({
+      time_estimate_mins: 30,
+      start_date: "2026-10-01",
+      important: true,
+      leveraged: true,
+    });
+    expect(split.task).toEqual({
+      estimate_mins: 30,
+      start_date: "2026-10-01",
+    });
+    expect(split.personal).toEqual({ important: true, leveraged: true });
+  });
+
+  it("never writes the retired overlay estimate, nor the shared Priority (D77)", () => {
+    // The fence the gateway's 422 mirrors: the estimate is not an overlay
+    // key. `important` IS one, because it is the member's own answer (D76),
+    // and no My Tasks write reaches the shared Priority.
+    expect(OVERLAY_KEYS).toContain("important");
+    expect(OVERLAY_KEYS).not.toContain("time_estimate_mins");
+    expect(Object.values(TASK_KEYS)).toContain("estimate_mins");
+    expect(Object.values(TASK_KEYS)).not.toContain("importance");
+    expect(splitPatch({ time_estimate_mins: 45 }).personal).toEqual({});
+  });
+
   it("ignores undefined, so a spread patch does not clear fields", () => {
     expect(splitPatch({ title: undefined, context: "@home" })).toEqual({
       task: {},
@@ -366,6 +413,32 @@ describe("the lens talks to /api/projects, never /api/tasks", () => {
         restore();
       }
     }
+  });
+
+  it("leaves the reopen to the gateway: one overlay write, no lane write (D77)", async () => {
+    // `personal.reopen_if_closed` reopens a closed task on every overlay
+    // door, the bulk one the checkbox takes included. A second, client-side
+    // reopen would be a second rule.
+    const { calls, restore } = stub([{}, ROW]);
+    try {
+      await lensPatchItem("task-1", { disposition: "NEXT" });
+    } finally {
+      restore();
+    }
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      "PATCH /api/projects/tasks/task-1/personal",
+      "GET /api/projects/my/tasks/task-1",
+    ]);
+  });
+
+  it("restores a deleted closed task as DONE, so Undo never reopens it (D77)", async () => {
+    const { calls, restore } = stub([{ ...ROW, status_category: "done" }, {}, ROW]);
+    try {
+      await lensRestoreItem("task-1");
+    } finally {
+      restore();
+    }
+    expect(calls[1]).toMatchObject({ method: "PATCH", body: { disposition: "DONE" } });
   });
 
   it("completes through /complete so the board moves too (§13.5 #4)", async () => {

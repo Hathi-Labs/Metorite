@@ -1146,10 +1146,14 @@ disappears.
 
 | `GtdItem` field | Home | Why there |
 |---|---|---|
-| `disposition`, `nextAction`, `context`, `energy`, `timeEstimateMins`, `isTwoMinute`, `deferUntil` | `pm_task_personal` (147) | per-member triage |
+| `disposition`, `nextAction`, `context`, `energy`, `isTwoMinute`, `deferUntil` | `pm_task_personal` (147) | per-member triage. **Amended by D77:** the lane wins over a stated `disposition` (a closed lane reads DONE, a reopened task reads NEXT) |
+| `timeEstimateMins` | `pm_tasks.estimate_mins` — **amended by D77** (was `pm_task_personal` 147) | one estimate, the one People capacity reads. Migration 216 copies the overlay values once |
+| `orgPriority` | `pm_tasks.importance` — read only | the shared Priority, in D76's words. Projects edits it. My Tasks shows it in a list column and a card chip, and seeds `important` from it (§13.4b) |
+| `startDate`, `tags` | `pm_tasks` — **added by D77** | the team's start date and labels. The inbox hides a task until its start date |
 | `scheduledStart/End`, `flexible`, `isHardDate`, `actualStart/End` | `pm_task_personal` (187, D53.7) | each assignee blocks their own time |
 | `important`, `leveraged`, `deepWork`, `keptMine`, `sortKey` | `pm_task_personal` (188) | a judgement about the judge's own week |
-| `waitingOn`, `delegatedAt`, `expectedBy`, `lastNudgedAt` | `pm_task_personal` (188) | "I am waiting on Priya" is true for the delegator, false for the doer — of one row |
+| `waitingOn` | **derived from `pm_task_assignees` — amended by D77** | the assignees minus me. The stored record is a label, or the answer when no other person holds the task |
+| `delegatedAt`, `expectedBy`, `lastNudgedAt` | `pm_task_personal` (188) | "I am waiting on Priya" is true for the delegator, false for the doer — of one row |
 | `clarifiedAt` | `pm_task_personal` (147) — **existed all along** | written on every triage since 147, projected by nothing until 188's slice |
 | `title`, `notes`, `dueAt`, `completedAt`, `projectId`, `parentItemId`, `archivedAt` | `pm_tasks` | facts about the WORK, shared by everyone assigned |
 | `assignee`, `assignees`, `isMine` | `pm_task_assignees` | — |
@@ -1157,6 +1161,12 @@ disappears.
 | `provider`, `accountId`, `providerUrl`, `providerStatus`, `syncState` | **nothing — D52** | there is no connector; do not map these |
 | `origin` | ⚠️ **undecided**, per-task | `pm_tasks.source` is the nearest existing fact; settle before the mapper touches email-captured tasks |
 | `horizonId` | ⚠️ **WS-21 owns Horizons** | DO-NOT-DISPATCH stands |
+
+⚠️ **Amended by D77 (2026-09-23), by owner directive, for the estimate, the
+start date, the tags, completion and waiting-on.** The table above shows
+where each now lives. `my_tasks_cutover.md` §4.10 holds the reason. D77 does
+not touch `important`. The paragraph below still holds, and §13.4b adds
+D76's seed to it.
 
 ⚠️ **`important` is not `importance`.** `GtdItem.important` is the Eisenhower boolean
 on the overlay. `pm_tasks.importance` is an INTEGER the Projects UI labels

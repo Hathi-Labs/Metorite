@@ -336,13 +336,18 @@ def _lane_miss(name: str, lanes: list[dict[str, Any]]) -> str:
             f"{', '.join(s['name'] for s in lanes) or '(none)'}")
 
 
-#: Shared facts about the WORK → `PATCH /projects/tasks/{id}`.
+#: Shared facts about the WORK → `PATCH /projects/tasks/{id}`. D77 moved
+#: the estimate here (`pm_tasks.estimate_mins`, the one People capacity
+#: reads) and added the shared start date. The shared Priority is not
+#: written from here: `important` is the member's own (D76).
 _TASK_KEYS: dict[str, str] = {"title": "title", "notes": "description",
-                              "due_at": "due_at"}
+                              "due_at": "due_at",
+                              "time_estimate_mins": "estimate_mins",
+                              "start_date": "start_date"}
 
 #: My practice → `PATCH /projects/tasks/{id}/personal`.
 _OVERLAY_KEYS: frozenset[str] = frozenset({
-    "disposition", "next_action", "context", "energy", "time_estimate_mins",
+    "disposition", "next_action", "context", "energy",
     "is_two_minute", "defer_until",
     "scheduled_start", "scheduled_end", "flexible", "is_hard_date",
     "actual_start", "actual_end",
@@ -851,7 +856,8 @@ async def gtd_update(item_id: str, title: str = "", notes: str = "",
         defer_until: ISO date to hide it until (tickler); "clear" un-snoozes.
         context: "@computer" | "@calls" | … (empty = unchanged).
         energy: low | medium | high (empty = unchanged).
-        time_estimate_mins: Estimated minutes (0 = unchanged).
+        time_estimate_mins: Estimated minutes (0 = unchanged). The task's
+            ONE estimate, shared with the board (D77).
         due_at: ISO date/datetime deadline; "clear" removes it.
         important: "true"/"false" — significant downside if it slips
             (empty = unchanged).
@@ -961,7 +967,9 @@ async def gtd_detail(item_id: str) -> str:
     if flags:
         lines.append("  flags: " + ", ".join(flags))
     for label, key in (("energy", "energy"),
-                       ("estimate mins", "time_estimate_mins"),
+                       ("priority", "importance"),
+                       ("estimate mins", "estimate_mins"),
+                       ("starts", "start_date"),
                        ("stage", "workflow_stage"),
                        ("scheduled", "scheduled_start"),
                        ("notes", "description")):

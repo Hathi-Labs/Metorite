@@ -35,6 +35,7 @@ import {
   type LoadReport,
   type OutlookReport,
   type CapacityReport,
+  type ConflictsReport,
   type ThroughputReport,
   type FinishedReport,
   type ViewRow,
@@ -722,6 +723,8 @@ function ProjectsWorkspace() {
   // WS-27bm S7a. The Analytics app's own read — the node dashboards do not
   // draw it, so it is not fetched for them.
   const [capacity, setCapacity] = useState<CapacityReport | null>(null);
+  // WS-27bm S7c. The Analytics app's own read too, drawn beside Capacity.
+  const [conflicts, setConflicts] = useState<ConflictsReport | null>(null);
   const [throughput, setThroughput] = useState<ThroughputReport | null>(null);
   const [finished, setFinished] = useState<FinishedReport | null>(null);
   const toast = useToast();
@@ -1382,6 +1385,13 @@ function ProjectsWorkspace() {
     projectsApi.capacity().then(
       (r) => !cancelled && setCapacity(r),
       () => !cancelled && setCapacity(null)
+    );
+    // S7c — the same effect, because the same app draws it. A rejected read
+    // stays null and renders nothing, as the others do.
+    setConflicts(null);
+    projectsApi.conflicts().then(
+      (r) => !cancelled && setConflicts(r),
+      () => !cancelled && setConflicts(null)
     );
     return () => {
       cancelled = true;
@@ -3350,6 +3360,7 @@ function ProjectsWorkspace() {
           finished={finished}
           outlook={outlook}
           capacity={capacity}
+          conflicts={conflicts}
           onOpen={(id) => {
             const row = flatten(visibleRoots).find((e) => e.node.id === id);
             if (row) {

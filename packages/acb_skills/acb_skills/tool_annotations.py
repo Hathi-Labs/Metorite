@@ -71,6 +71,9 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "query_history":         {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     "github_search":         {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": True},
     "github_repo_search":    {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": True},
+    # WS-31 CP-13d: a typed decision from a third-party model through the
+    # Console Router. It changes nothing, and it reaches outside Metorite.
+    "decide":                {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": True},
 }
 
 

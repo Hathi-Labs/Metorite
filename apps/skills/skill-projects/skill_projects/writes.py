@@ -690,10 +690,28 @@ async def complete(task_id: str) -> str:
     return "\n".join(["Done:", *_task_line(merged, "done")])
 
 
+#: What a defer writes on the gateway (`personal.defer_task`).
+_DEFER_DISPOSITION = "SOMEDAY"
+
+
+def _defer_scope(task: dict[str, Any]) -> str:
+    """The defer card's scope, chosen the way `_overlay_card` chooses its own.
+
+    F2: the card must not promise "your inbox only" when the write would
+    move the board. A defer writes SOMEDAY, and under D77 choice 3 SOMEDAY
+    does not reopen a finished task, so today this answers "your inbox only"
+    every time. It reads `completed_at` and `_REOPENING` anyway, so the card
+    stays honest if the reopen rule ever changes.
+    """
+    if task.get("completed_at") and _DEFER_DISPOSITION in _REOPENING:
+        return "reopens the task on the board, then hides it from your inbox"
+    return "your inbox only"
+
+
 @_annotate(read_only=False, destructive=False, idempotent=True)
 async def defer(task_id: str, until: str) -> str:
     """Hide a task from the member's own inbox until a date (YYYY-MM-DD).
-    Mine only: the team's board does not change."""
+    Mine only: the team's board does not change, even on a finished task."""
     when = str(until or "").strip()
     if len(when) != 10:
         return "until is a date, YYYY-MM-DD."
@@ -701,7 +719,9 @@ async def defer(task_id: str, until: str) -> str:
     if not await _confirm(
         title=f"Defer until {when}?",
         detail=_ref(task),
-        context=_fields_block({"task": _ref(task), "until": when, "scope": "your inbox only"}),
+        context=_fields_block({
+            "task": _ref(task), "until": when, "scope": _defer_scope(task),
+        }),
     ):
         return CANCELLED
     await post(f"/projects/tasks/{tid}/defer", {"until": when})
@@ -814,9 +834,9 @@ async def update_project(
 # ── Reports ──────────────────────────────────────────────────────────────────
 
 #: The route's `reports.SECTIONS`, held equal by
-#: `tests/unit/test_projects_report_sections_lockstep.py`. `capacity` is
-#: opt-in: a report carries it only when the member asks for it.
-REPORT_SECTIONS = ("finished", "throughput", "load", "capacity", "stuck")
+#: `tests/unit/test_projects_report_sections_lockstep.py`. `capacity` and
+#: `conflicts` are opt-in: a report carries one only when the member asks.
+REPORT_SECTIONS = ("finished", "throughput", "load", "capacity", "stuck", "conflicts")
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False)
@@ -826,7 +846,8 @@ async def report_save(
     """Save a report definition, or change one (pass report_id). A report
     stores the question: scope (project_id, or empty for the portfolio),
     sections (comma-separated from finished, throughput, load, capacity,
-    stuck; capacity is never there unless asked for) and weeks. Render it
+    stuck, conflicts; capacity and conflicts are never there unless asked
+    for) and weeks. Render it
     with report_render. Delivery and schedules stay in the Reports app."""
     label = str(name or "").strip()
     asked = [s.strip().lower() for s in _split(sections)]
@@ -1591,6 +1612,56 @@ async def create_personal_task(
     return "\n".join(["Captured (private, yours):", *_task_line(row)])
 
 
+#: The dispositions that reopen a finished task on the board when stated
+#: (D77 choice 3, `personal.OPEN_DISPOSITIONS`): only the actionable ones.
+#: SOMEDAY, REFERENCE and PROJECT file a finished task without reopening it.
+_REOPENING = frozenset({"INBOX", "NEXT", "WAITING"})
+
+#: DONE is refused by `set_my_overlay`, not routed. Its card is about the
+#: member's own triage (manifest class B on /personal); a shared completion
+#: behind that card would move the board without asking about the board.
+#: `complete` has its own card and asks.
+_DONE_REFUSAL = (
+    "DONE is not your own triage any more: a task is done when its shared "
+    "lane is done (D77). Use complete to finish it for everyone."
+)
+
+
+def _overlay_disposition(disposition: str) -> tuple[str | None, str | None]:
+    """``(state, refusal)`` for the disposition argument. Both None when the
+    caller passed none."""
+    if not disposition.strip():
+        return None, None
+    state = disposition.strip().upper()
+    if state not in DISPOSITIONS:
+        return None, f"disposition is one of {', '.join(DISPOSITIONS)}."
+    if state == "DONE":
+        return None, _DONE_REFUSAL
+    return state, None
+
+
+def _overlay_card(
+    payload: dict[str, Any], task: dict[str, Any], unread: str,
+) -> dict[str, Any]:
+    """What the confirmation card says the write will do.
+
+    ⚠️ D77: an actionable disposition (INBOX, NEXT, WAITING) on a FINISHED
+    task reopens it for everybody (`personal.reopen_if_closed`), so "your
+    overlay only" would be false. SOMEDAY, REFERENCE and PROJECT do not.
+    The task read this tool already made carries `completed_at`, which
+    `apply_status_transition` keeps equal to "the lane is closed".
+    """
+    reopens = bool(task.get("completed_at")) and payload.get("disposition") in _REOPENING
+    scope = (
+        "reopens the task on the board, then sets your overlay"
+        if reopens else "your overlay only"
+    )
+    card: dict[str, Any] = {**payload, "scope": scope}
+    if unread:
+        card["current triage"] = unread
+    return card
+
+
 @_annotate(read_only=False, destructive=False, idempotent=True)
 async def set_my_overlay(
     task_id: str,
@@ -1602,12 +1673,14 @@ async def set_my_overlay(
     two_minute: str = "",
     clear: str = "",
 ) -> str:
-    """Set the member's OWN triage of a task, which the team's board never
-    sees: disposition (INBOX, NEXT, WAITING, SOMEDAY, PROJECT, REFERENCE,
-    DONE, TRASH), context (@office), energy (low, medium, high),
-    next_action, estimate_mins, two_minute (yes or no). clear empties
-    fields: context, energy, next_action, estimate. A DONE disposition does
-    not complete the shared task; complete does. defer sets a date."""
+    """Set the member's OWN triage of a task: disposition (INBOX, NEXT,
+    WAITING, SOMEDAY, PROJECT, REFERENCE, TRASH), context (@office), energy
+    (low, medium, high), two_minute (yes or no). clear empties fields:
+    context, energy, next_action. DONE is refused here: completion is the
+    task's shared lane (D77), so finish a task with complete. INBOX,
+    NEXT or WAITING on a finished task reopens it for the board. defer sets a
+    date. The estimate is the TASK's, shared with the board since D77: set
+    it with update_task, not here."""
     tid, task = await _task(task_id)
     unread = ""
     try:
@@ -1621,10 +1694,10 @@ async def set_my_overlay(
         unread = "not readable here — the task is not in your lens, so the card cannot show it"
     payload: dict[str, Any] = {}
     before: dict[str, Any] = {}
-    if disposition.strip():
-        state = disposition.strip().upper()
-        if state not in DISPOSITIONS:
-            return f"disposition is one of {', '.join(DISPOSITIONS)}."
+    state, refusal = _overlay_disposition(disposition)
+    if refusal:
+        return refusal
+    if state:
         payload["disposition"] = state
         before["disposition"] = mine.get("disposition")
     if context.strip():
@@ -1639,27 +1712,27 @@ async def set_my_overlay(
     if next_action.strip():
         payload["next_action"] = next_action.strip()
         before["next_action"] = mine.get("next_action")
-    est = _int_or_none(estimate_mins)
-    if est is not None:
-        payload["time_estimate_mins"] = est
-        before["time_estimate_mins"] = mine.get("time_estimate_mins")
+    if _int_or_none(estimate_mins) is not None:
+        # D77: one estimate, on the task. Refused by name rather than
+        # dropped, so the model learns where it goes.
+        return ("The estimate is the task's own since D77, shared with the "
+                "board and People capacity. Set it with update_task "
+                "(estimate_mins).")
     flag = _yes_no(two_minute, "two_minute")
     if flag is not None:
         payload["is_two_minute"] = flag
         before["is_two_minute"] = mine.get("is_two_minute")
     cleared: dict[str, Any] = {}
     for field in _split(clear):
-        key = {"estimate": "time_estimate_mins"}.get(field.lower(), field.lower())
-        if key not in ("context", "energy", "next_action", "time_estimate_mins"):
-            return f"clear takes context, energy, next_action or estimate, not {data(field)}."
+        key = field.lower()
+        if key not in ("context", "energy", "next_action"):
+            return f"clear takes context, energy or next_action, not {data(field)}."
         cleared[key] = None
         before[key] = mine.get(key)
     payload = {**cleared, **payload}
     if not payload:
         return "Nothing to change. Pass at least one field."
-    card: dict[str, Any] = {**payload, "scope": "your overlay only"}
-    if unread:
-        card["current triage"] = unread
+    card = _overlay_card(payload, task, unread)
     if not await _confirm(
         title="Update your triage of this task?",
         detail=_ref(task),

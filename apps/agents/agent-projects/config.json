@@ -68,6 +68,7 @@
     "team_capacity",
     "fit_for_task",
     "rebalance",
+    "find_conflicts",
     "add_subtasks",
     "assign",
     "comment",

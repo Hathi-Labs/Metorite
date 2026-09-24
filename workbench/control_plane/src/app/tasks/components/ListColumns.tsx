@@ -9,6 +9,9 @@ import { ACTION_MODE_META, actionMode, type ActionMode } from "../lib/priority";
 import { MODE_ICON } from "../lib/priorityIcons";
 import { contextAccent } from "../lib/contextColors";
 import type { ColumnDef } from "../lib/columns";
+import { TaskMeta } from "@/components/TaskMeta";
+import { importanceChip } from "@/app/projects/lib/card";
+import { taskMeta } from "@/lib/taskCard";
 
 // The desktop columnar cells for the Next-Actions list. Each renders the SAME
 // visual that signal has as a card pill — just placed in its own aligned grid
@@ -145,10 +148,25 @@ function CellBody({
   urgentWindowHours?: number;
 }) {
   switch (col.key) {
-    case "priority":
+    case "priority": {
+      // D77 — the task's SHARED Priority, drawn with the Projects card's own
+      // chip so "Highest" looks the same in both apps. Unset draws nothing.
+      // Display only: My Tasks never writes the shared Priority (D76).
+      const chip = importanceChip({ importance: item.orgPriority ?? null });
+      return chip ? <TaskMeta chips={[chip]} /> : null;
+    }
+    case "focus":
+      // The member's own matrix cell: their Important (seeded by the shared
+      // Priority while unstated, D76) × urgent from the due date × their
+      // leveraged flag. The Projects panel calls this row "Your focus".
       return (
         <PriorityBadge item={item} urgentWindowHours={urgentWindowHours} />
       );
+    case "tags": {
+      // D77 — the shared tags, as the card's tag pills.
+      const chips = taskMeta({ tags: (item.tags ?? []).map((name) => ({ name })) });
+      return chips.length ? <TaskMeta chips={chips} className="min-w-0" /> : null;
+    }
     case "mode":
       // The suggestion of what to DO with this task — from the shared
       // actionMode() logic (same as the "Action mode" group-by lens). Shown on
