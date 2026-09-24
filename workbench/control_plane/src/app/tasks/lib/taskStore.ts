@@ -22,7 +22,7 @@ import {
 } from "./promote";
 import type { InboxSource } from "./inbox";
 import { type RemovalScope, canPurge, purgeable } from "./removal";
-import type { CaptureDestination } from "./quickAdd";
+import { type CaptureDestination, parseProjectToken } from "./quickAdd";
 import {
   allSelected,
   clickSelect,
@@ -731,7 +731,28 @@ interface TaskState {
     title: string,
     dest: CaptureDestination,
     attachments?: import("./types").TaskAttachment[],
+    dates?: import("./api").CaptureDates,
   ) => Promise<{ needsFields?: { taskId: string; destinationId: string } }>;
+  /**
+   * S6g — ONE capture line, for every capture box (the Inbox's and the mobile
+   * sheet's). A destination from the chip wins. Otherwise a `#Name` token
+   * (`parseProjectToken`) names one and leaves the title. With a destination
+   * the line goes through `captureTo`. A project that needs fields opens the
+   * one promote dialog (`promoteDialog`). Answers the destination it used.
+   */
+  captureLine: (
+    raw: string,
+    opts: {
+      targets: readonly CaptureDestination[];
+      dest?: CaptureDestination | null;
+      attachments?: import("./types").TaskAttachment[];
+      dates?: import("./api").CaptureDates;
+    },
+  ) => CaptureDestination | null;
+  /** S6g — the ONE promote dialog, hosted once (`PromoteHost`). */
+  promoteDialog: { id: string; destination?: string } | null;
+  openPromote: (id: string, destination?: string) => void;
+  closePromote: () => void;
   /** Skip the current item (leave it in the inbox to process later) and move on. */
   skipToNextInbox: () => void;
   /** One-tap disposition (hover / keyboard triage) — no full decision tree. */
@@ -1222,12 +1243,39 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     });
   },
 
-  captureTo: async (title, dest, attachments) => {
+  promoteDialog: null,
+  openPromote: (id, destination) => set({ promoteDialog: { id, destination } }),
+  closePromote: () => set({ promoteDialog: null }),
+
+  captureLine: (raw, { targets, dest, attachments, dates }) => {
+    const line = raw.trim();
+    if (!line) return null;
+    const parsed = parseProjectToken(line, targets);
+    const to = dest ?? parsed.match ?? null;
+    const title = dest ? line : parsed.match ? parsed.title : line;
+    if (to && title) {
+      void get()
+        .captureTo(title, to, attachments, dates)
+        .then((res) => {
+          // The project has required fields the capture does not carry.
+          // Open the promote dialog on it, prefilled, rather than send a
+          // refusal.
+          if (res.needsFields) {
+            get().openPromote(res.needsFields.taskId, res.needsFields.destinationId);
+          }
+        });
+      return to;
+    }
+    get().capture(line, attachments, dates);
+    return null;
+  },
+
+  captureTo: async (title, dest, attachments, dates) => {
     const t = title.trim();
     if (!t) return {};
     if (get().backend !== "live") {
       // The demo backend has no board. Capture, and file the row locally.
-      get().capture(t, attachments);
+      get().capture(t, attachments, dates);
       const id = get().lastCaptureIds[0];
       if (id) {
         set((s) => ({
@@ -1240,7 +1288,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     // capture in my Inbox, never nothing.
     let server: MyTask;
     try {
-      server = await apiCapture(t, undefined, attachments);
+      server = await apiCapture(t, undefined, attachments, dates);
     } catch (err) {
       get().reportSyncFailure(
         err instanceof Error && err.message ? `Couldn't capture it: ${err.message}` : "Couldn't capture it.",

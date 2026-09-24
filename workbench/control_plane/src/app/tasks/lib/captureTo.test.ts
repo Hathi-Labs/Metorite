@@ -253,7 +253,7 @@ describe("captureTo", () => {
     const out = await useTaskStore.getState().captureTo(parsed.title, parsed.match!);
 
     expect(out).toEqual({});
-    expect(apiCapture).toHaveBeenCalledWith("Fix the jam", undefined, undefined);
+    expect(apiCapture).toHaveBeenCalledWith("Fix the jam", undefined, undefined, undefined);
     // Waiting: nothing sent yet.
     expect(apiMoveTask).not.toHaveBeenCalled();
     expect(useTaskStore.getState().pendingPromote?.projectName).toBe("Printer v3");
@@ -280,9 +280,10 @@ describe("captureTo", () => {
     expect(out).toEqual({ needsFields: { taskId: "new-2", destinationId: "p1" } });
     expect(apiMoveTask).not.toHaveBeenCalled();
     expect(useTaskStore.getState().pendingPromote).toBeNull();
-    // The Inbox opens the dialog, prefilled on the destination.
-    expect(read("components/InboxView.tsx")).toMatch(
-      /setPromote\(\{ id: res\.needsFields\.taskId, destination: res\.needsFields\.destinationId \}\)/,
+    // `captureLine` opens the one promote dialog, prefilled on the destination.
+    const store = readFileSync(resolve(__dirname, "taskStore.ts"), "utf-8");
+    expect(store).toMatch(
+      /get\(\)\.openPromote\(res\.needsFields\.taskId, res\.needsFields\.destinationId\)/,
     );
   });
 

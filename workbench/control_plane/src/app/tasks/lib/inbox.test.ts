@@ -202,7 +202,7 @@ describe("the keyboard (S6g)", () => {
 
   it("m moves a capture, o opens a board row, and each refuses the other kind", () => {
     expect(view).toMatch(
-      /case "m":\s*\/\/[^\n]*\n\s*if \(curKind !== "personal" \|\| !promoteAllowed\(cur\)\) break;[\s\S]*?setPromote\(\{ id: cur\.id \}\)/,
+      /case "m":\s*\/\/[^\n]*\n\s*if \(curKind !== "personal" \|\| !promoteAllowed\(cur\)\) break;[\s\S]*?openPromote\(cur\.id\)/,
     );
     expect(view).toMatch(
       /case "o":\s*\/\/[^\n]*\n\s*if \(curKind !== "board"\) break;[\s\S]*?router\.push\(taskDeepLink\(cur\)\)/,

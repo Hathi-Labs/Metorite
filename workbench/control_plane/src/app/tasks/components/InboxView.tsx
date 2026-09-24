@@ -43,7 +43,6 @@ import {
 import {
   type CaptureDestination,
   openHashQuery,
-  parseProjectToken,
   stripOpenHash,
 } from "../lib/quickAdd";
 import { captureDestinations, destinations, useCompanyTree } from "../lib/companyTree";
@@ -54,7 +53,6 @@ import { AttachmentComposer } from "./AttachmentComposer";
 import type { TaskAttachment } from "../lib/types";
 import { ClarifyModal } from "./ClarifyModal";
 import { CaptureProjectChip } from "./CaptureProjectChip";
-import { PromoteDialog } from "./PromoteDialog";
 
 const AGING_MS = 3 * 24 * 3600 * 1000; // GTD: empty regularly — flag stale items
 
@@ -108,8 +106,9 @@ export function InboxView() {
   const items = useTaskStore((s) => s.items);
   const loading = useTaskStore((s) => s.loading);
   const backend = useTaskStore((s) => s.backend);
-  const capture = useTaskStore((s) => s.capture);
-  const captureTo = useTaskStore((s) => s.captureTo);
+  const captureLine = useTaskStore((s) => s.captureLine);
+  const openPromote = useTaskStore((s) => s.openPromote);
+  const promote = useTaskStore((s) => s.promoteDialog);
   const openClarify = useTaskStore((s) => s.openClarify);
   const openQuickCapture = useTaskStore((s) => s.openQuickCapture);
   const lastCaptureIds = useTaskStore((s) => s.lastCaptureIds);
@@ -198,10 +197,10 @@ export function InboxView() {
   const [showTickler, setShowTickler] = useState(false);
   const [cursorId, setCursorId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
-  // S6g — the ONE promote dialog, hosted here so the card, the table, the
-  // `m` key and the capture door open the same one.
-  const [promote, setPromote] = useState<{ id: string; destination?: string } | null>(null);
-  const promoteItem = promote ? items.find((i) => i.id === promote.id) : undefined;
+  // S6g — the ONE promote dialog is the store's (`PromoteHost`), so the card,
+  // the table, `m`, this capture box and the mobile sheet open the same one.
+  const setPromote = (p: { id: string; destination?: string }) =>
+    openPromote(p.id, p.destination);
   // Selection and its shift-anchor as ONE value: they are only meaningful
   // together, and holding them apart meant the keyboard's `x` could write a
   // selection from fresh state and an anchor from stale state.
@@ -367,7 +366,7 @@ export function InboxView() {
           // Move to project — a capture only. A board row is on a board.
           if (curKind !== "personal" || !promoteAllowed(cur)) break;
           e.preventDefault();
-          setPromote({ id: cur.id });
+          openPromote(cur.id);
           break;
         case "o":
           // Open on board — a board row only. A capture has no board.
@@ -393,6 +392,7 @@ export function InboxView() {
     clarifyModalOpen,
     quickCaptureOpen,
     promote,
+    openPromote,
     kindOf,
     router,
     openClarify,
@@ -404,22 +404,13 @@ export function InboxView() {
   const submit = () => {
     const raw = value.trim();
     if (!raw) return;
-    // S6g — a destination from the chip, or from a `#Name` token in the line.
-    const parsed = parseProjectToken(raw, captureTargets);
-    const dest = captureDest ?? parsed.match ?? null;
-    const title = captureDest ? raw : parsed.match ? parsed.title : raw;
-    const atts = pendingAtts.length ? pendingAtts : undefined;
-    if (dest && title) {
-      void captureTo(title, dest, atts).then((res) => {
-        if (res.needsFields) {
-          // The project has required fields the capture does not carry. Open
-          // the promote dialog on it, prefilled, rather than send a refusal.
-          setPromote({ id: res.needsFields.taskId, destination: res.needsFields.destinationId });
-        }
-      });
-    } else {
-      capture(raw, atts);
-    }
+    // S6g — the ONE capture-line flow: the chip's destination, or a `#Name`
+    // token, through `captureTo`. The mobile sheet calls the same action.
+    captureLine(raw, {
+      targets: captureTargets,
+      dest: captureDest,
+      attachments: pendingAtts.length ? pendingAtts : undefined,
+    });
     setValue("");
     setPendingAtts([]);
     setChipOpen(false);
@@ -874,17 +865,6 @@ export function InboxView() {
           shows in every view — the inbox no longer renders its own. */}
 
       <ClarifyModal />
-      {/* S6g — the one promote dialog, for the card, the table, `m` and the
-          capture door. Rendered outside every row: a dialog inside a row's
-          clickable root opened the row on every click in it (S6c repair). */}
-      {promote && promoteItem && (
-        <PromoteDialog
-          key={`${promote.id}:${promote.destination ?? ""}`}
-          item={promoteItem}
-          initialDestination={promote.destination ?? null}
-          onClose={() => setPromote(null)}
-        />
-      )}
     </div>
   );
 }
