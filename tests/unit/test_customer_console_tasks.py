@@ -293,6 +293,63 @@ class TestTheMigrationIsR6Safe:
         assert "tier-stt" not in binding_block
 
 
+class TestTheReplayDoesNotReviveARemovedModel:
+    """🔴 Measured on production, 2026-09-24.
+
+    The owner unbound `tier-stt` and removed Groq Whisper on `/models`. The
+    next deploy replayed 010, which declared a capability for EVERY binding in
+    `tier_binding`, and the superseded 2026-01-01 row brought the model back.
+    Once per deploy, for ever.
+    """
+
+    def _replay_010(self, conn):
+        sql = (LADDER / "010_tasks_units_capabilities.sql").read_text(encoding="utf-8")
+        conn.exec_driver_sql(sql)
+
+    def test_an_unbound_and_removed_model_stays_removed(self, conn):
+        # Unbind: a tombstone supersedes the seeded binding (H-178).
+        conn.execute(text(
+            "INSERT INTO tier_binding (tier, model, task, effective_from) "
+            "VALUES ('tier-stt', NULL, 'transcribe', now())"))
+        # Remove, as `DELETE /catalog/capabilities` does.
+        conn.execute(text("DELETE FROM model_capability WHERE model = :m"), {"m": WHISPER})
+
+        self._replay_010(conn)
+
+        back = conn.execute(text(
+            "SELECT count(*) FROM model_capability WHERE model = :m"), {"m": WHISPER}).scalar()
+        assert back == 0, "the replay re-declared a model the operator removed"
+
+    def test_a_removed_chat_model_behind_a_superseded_binding_stays_removed(self, conn):
+        old = f"test/{uuid.uuid4().hex[:8]}"
+        new = f"test/{uuid.uuid4().hex[:8]}"
+        tier = f"tier-t{uuid.uuid4().hex[:6]}"
+        conn.execute(text(
+            "INSERT INTO tier_binding (tier, model, task, effective_from) VALUES "
+            "(:t, :old, 'chat', now() - interval '2 days'), "
+            "(:t, :new, 'chat', now() - interval '1 day')"),
+            {"t": tier, "old": old, "new": new})
+        self._replay_010(conn)
+        declared = {r[0] for r in conn.execute(text(
+            "SELECT model FROM model_capability WHERE model IN (:a, :b)"),
+            {"a": old, "b": new})}
+        # The in-force model is declared, and the superseded one is not.
+        assert declared == {new}
+
+    def test_a_fresh_install_still_declares_the_seeded_stt_model(self, conn):
+        """The filter must not cost a new database its one STT capability."""
+        n = conn.execute(text(
+            "SELECT count(*) FROM tier_binding WHERE tier = 'tier-stt' "
+            "AND task = 'transcribe' AND model IS NULL")).scalar()
+        if n:
+            pytest.skip("this database has unbound tier-stt, not a fresh install")
+        conn.execute(text("DELETE FROM model_capability WHERE model = :m"), {"m": WHISPER})
+        self._replay_010(conn)
+        assert conn.execute(text(
+            "SELECT invocation FROM model_capability WHERE model = :m AND task = 'transcribe'"),
+            {"m": WHISPER}).scalar() == "atranscription"
+
+
 # ── The transcribe endpoint (H-46, §6A.10a) ─────────────────────────────────
 #
 # 🔴 **These fences DRIVE the route.** Every claim below about a `usage_event`
