@@ -8638,6 +8638,12 @@ class OrgBreakdownView(BaseModel):
     windowDays: int
     apps: list[OpAppRow]
     members: list[OpMemberRow]
+    #: How many apps and people spent in the window, BEFORE the page cut.
+    #: 🔴 The lists stop at `SPEND_PAGE_SIZE`, and a list that stops without
+    #: saying so reads as complete. The operator console prints "100 of N"
+    #: when these exceed the rows shown, as the fleet board does (H-76).
+    appsTotal: int = 0
+    membersTotal: int = 0
 
 
 # ── The tier a customer picks (WS-31 slice 3) ───────────────────────────────
@@ -9043,6 +9049,10 @@ def admin_usage_breakdown(
             )
             for m in members
         ],
+        # The cost reads are NOT paged, so their key counts are the true
+        # totals, and no extra query is needed to learn them.
+        appsTotal=len(cost_app),
+        membersTotal=len(cost_member),
     )
 
 

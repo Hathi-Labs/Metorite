@@ -1241,9 +1241,11 @@ def usage_by_app(
     reads this function's SQL and fails if it does. The operator's cost comes
     from :func:`usage_cost_by`, joined on by the operator route.
 
-    ⚠️ **Nothing is dropped.** A call with no app or no agent is reported
-    under :data:`UNATTRIBUTED_ACTIVITY`, so the apps always add up to the
-    organization's total, and a gap in attribution is visible as a row.
+    ⚠️ **Nothing is dropped for want of a name.** A call with no app or no
+    agent is reported under :data:`UNATTRIBUTED_ACTIVITY`, so a gap in
+    attribution is visible as a row. The list IS cut at
+    :data:`SPEND_PAGE_SIZE` apps, like every sibling read, and the operator
+    route reports the true count beside it.
     """
     rows = conn.execute(
         text(

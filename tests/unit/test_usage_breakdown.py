@@ -260,6 +260,16 @@ class TestTheRoutes:
         people = {m["member"]: m for m in body["members"]}
         assert Decimal(people["dana@acme.com"]["costUsd"]) == Decimal("0.02")
         assert "realisedMargin" in apps["projects"]
+        # The true counts beside the (possibly cut) lists, so a page that
+        # stops at SPEND_PAGE_SIZE can say "100 of N" (review, H-76 class).
+        assert (body["appsTotal"], body["membersTotal"]) == (2, 2)
+
+    def test_a_signed_in_VIEWER_may_read_it(self):
+        """🔴 The first version had no matrix row, so every real operator got
+        403. The route tests used the shared token, which skips the matrix."""
+        from customer_console import operator_roles
+
+        operator_roles.check_route("viewer", "GET", "/admin/usage/breakdown")
 
     def test_a_CUSTOMER_KEY_cannot_open_the_operator_breakdown(self, served):
         """Our cost, behind the operator door and nothing else."""
