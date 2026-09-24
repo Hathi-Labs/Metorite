@@ -1714,9 +1714,9 @@ line — never reclaim a number by deleting the other entry.
   `get_run_context()`, so none of the call sites changed.
 - 🔴 **Two mistakes worth keeping, because both were caught by a fence and
   not by me.** The first payload sent `{"tier": ...}` and spread the caller's
-  `**extra`. `CompletionRequest` is `extra="forbid"` and its field is
-  `model`, so EVERY routed call would have been a 422 — and the suite stayed
-  green because it stubbed the client. The second left tool-calling on the
+  `**extra`. `CompletionRequest` forbids extras, and its field is called
+  `model`. So EVERY routed call would have been a 422. The suite stayed green,
+  because it stubbed the client. The second left tool-calling on the
   direct path, on the belief that the Router had no `tools` field. It has,
   with `tool_choice` beside it. A test that validates against the REAL
   pydantic model caught both, and it is the fence to keep.
