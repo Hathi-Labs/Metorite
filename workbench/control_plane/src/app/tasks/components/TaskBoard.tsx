@@ -1,5 +1,6 @@
 "use client";
 
+import { CATEGORY_LABEL } from "@/lib/statusCategory";
 import { DropGap } from "@/components/DropGap";
 import { QuickAdd } from "@/components/QuickAdd";
 import { useFlash } from "@/components/useFlash";
@@ -14,7 +15,6 @@ import { applySort, byManualOrder } from "../lib/ordering";
 import { quickAddPrefill } from "../lib/quickAdd";
 import { categoryAccent } from "../lib/stageColors";
 import {
-  CATEGORY_LABEL,
   NEXT_CATEGORIES,
   type NextCategory,
   isNextCategory,

@@ -23,14 +23,15 @@ import { describe, expect, it } from "vitest";
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
 
-const TOP_BAR_OPEN = 'className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-card px-2"';
+// Both apps render the shared `AppTopBar` since 2026-09-24.
+const TOP_BAR_OPEN = "<AppTopBar";
 
-/** The desktop top bar: from its opening `div` to the end marker given. */
+/** The desktop top bar: from its opening tag to the end marker given. */
 function topBar(source: string, end: string): string {
-  // The desktop layout is the LAST `h-10` bar with this exact class string.
-  // Projects' phone layout opens with an `h-10` bar too, but a different one.
+  // The desktop layout is the LAST `<AppTopBar` in the file. Projects' phone
+  // layout renders one too, earlier, with `compact`.
   const start = source.lastIndexOf(TOP_BAR_OPEN);
-  expect(start, "the desktop top bar's class string moved").toBeGreaterThan(-1);
+  expect(start, "the desktop top bar moved").toBeGreaterThan(-1);
   const stop = source.indexOf(end, start);
   expect(stop, `the top bar's end marker "${end}" moved`).toBeGreaterThan(start);
   return source.slice(start, stop);

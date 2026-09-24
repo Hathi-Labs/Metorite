@@ -52,8 +52,9 @@
  */
 
 import Badge from "@/components/ui/Badge";
-import Button from "@/components/ui/Button";
+import { useToast } from "@/components/ui/Toast";
 import { StatusChip } from "@/components/StatusChip";
+import { EditableTaskTitle, TaskHeaderRow } from "@/components/TaskPanelHeader";
 import { useEffect, useState } from "react";
 
 import { lensMyOverlay } from "@/app/tasks/lib/lens";
@@ -64,15 +65,10 @@ import {
   type StatusRow,
   type TagRow,
   type TaskRow,
+  projectsApi,
 } from "../lib/api";
 import { taskDeepLink, taskRef } from "../lib/card";
-import {
-  PANEL_MODE_HINTS,
-  PANEL_MODE_ICONS,
-  PANEL_WIDTH_CLASS,
-  type PanelMode,
-  panelEscape,
-} from "../lib/panelMode";
+import { PANEL_WIDTH_CLASS, type PanelMode, panelEscape } from "../lib/panelMode";
 import { TaskBody, resolveStatus } from "./TaskBody";
 
 interface Props {
@@ -148,8 +144,7 @@ export function TaskPanel({
    */
   const twoColumn = mode === "full";
 
-  // WS-27w item 6 — the copy-deep-link affordance's "it worked" flash.
-  const [copied, setCopied] = useState(false);
+  const toast = useToast();
   // S6e — the way back (§4.8 point 4): what I filed this task as in My
   // Tasks. Null with the lens off, and null when I hold no overlay row.
   const [mine, setMine] = useState<MyOverlay>(null);
@@ -191,21 +186,19 @@ export function TaskPanel({
   }, [task.id]);
 
   /**
-   * Copy a URL that reopens this panel — `/projects?task=<id>`, the deep-link
-   * shape the page already reads (WS-28b). The icon flips to a check briefly,
-   * because a copy with no acknowledgement gets clicked three times.
+   * The title, renamed in place — the way My Tasks does it, and through the
+   * write the board's own inline rename uses (`patchTask` with `title`). No
+   * new endpoint. A failure says so and leaves the old title on screen.
    */
-  async function copyDeepLink() {
+  async function rename(title: string) {
     try {
-      await navigator.clipboard.writeText(
-        taskDeepLink(task, window.location.origin),
-      );
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      onChanged(await projectsApi.patchTask(task.id, { title }));
     } catch {
-      // Clipboard can be unavailable (permissions, insecure context). The
-      // link is not lost — opening the task by deep link shows it in the
-      // address bar — so this fails quietly.
+      toast.show({
+        key: `projects:task-title:${task.id}`,
+        variant: "error",
+        title: "Couldn't rename the task",
+      });
     }
   }
 
@@ -230,63 +223,28 @@ export function TaskPanel({
       }}
     >
       <header className="shrink-0 border-b border-border bg-card px-3 py-3">
-        <div className="mb-1.5 flex items-start justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-0.5">
-            <p className="truncate text-xs text-muted-foreground">
-              {taskRef(task) ?? "Task"}
-            </p>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              icon={copied ? "Check" : "Link"}
-              aria-label="Copy a link to this task"
-              title="Copy a link that opens this task"
-              onClick={() => void copyDeepLink()}
-            />
-          </div>
-          <div className="flex shrink-0 items-center gap-0.5">
-            {/* ONE toggle: the side panel, or the same panel as a full card.
-                ⚠️ This was a three-stop segmented control (peek · side · full)
-                until 2026-09-23. The owner cut it: *"a sidebar which can also
-                open as a full card. The switcher where we change the width of
-                the sidebar is not needed."* `/tasks` answers the same need
-                with the same one control, and now so does this.
-                Hidden entirely where the page did not pass `onMode` (the
-                phone, where the panel is always the whole screen).
-                ⚠️ Glyph and label both come from the constants now — they
-                were hardcoded here, which left `PANEL_MODE_ICONS` with no
-                reader and free to drift, and it had.
-                ⚠️ NO `aria-pressed`. The label already names the ACTION
-                ("Open as a full card"), so a pressed state made a screen
-                reader announce the same fact twice, once as a verb and once
-                as a state. This is a button that does a thing, not a switch
-                that holds one. */}
-            {onMode ? (
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                className="mr-1"
-                icon={PANEL_MODE_ICONS[mode]}
-                aria-label={PANEL_MODE_HINTS[mode]}
-                title={PANEL_MODE_HINTS[mode]}
-                onClick={() => onMode(mode === "full" ? "side" : "full")}
-              />
-            ) : null}
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              icon="X"
-              aria-label="Close task"
-              title="Close this task"
-              onClick={onClose}
-            />
-          </div>
-        </div>
+        {/* The shared header (`components/TaskPanelHeader.tsx`), the one My
+            Tasks' ItemDetail renders: the reference and its copy-link, this
+            app's chips, then expand, then close. The expand is ONE toggle,
+            the side panel or the same panel as a full card (owner,
+            2026-09-23), hidden where the page passed no `onMode` (the phone,
+            where the panel is always the whole screen). */}
+        <TaskHeaderRow
+          taskRef={taskRef(task) ?? "Task"}
+          linkFor={() => taskDeepLink(task, window.location.origin)}
+          expand={
+            onMode
+              ? {
+                  expanded: mode === "full",
+                  onToggle: () => onMode(mode === "full" ? "side" : "full"),
+                }
+              : undefined
+          }
+          onClose={onClose}
+        />
         {/* Wraps rather than truncates: the title is the one thing on the
-            panel nobody can afford to have cut off. */}
-        <h2 className="text-base font-semibold leading-snug text-foreground">
-          {task.title}
-        </h2>
+            panel nobody can afford to have cut off. Click it to rename. */}
+        <EditableTaskTitle value={task.title} onSave={(t) => void rename(t)} />
         {/* The chip row. The status is drawn through the shared `StatusChip`,
             in the accent `accentForStatus` resolves; the Details block in the
             body carries the CONTROL that changes it. */}

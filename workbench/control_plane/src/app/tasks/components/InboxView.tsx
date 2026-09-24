@@ -449,7 +449,7 @@ export function InboxView() {
       {/* Mobile heading — the hero is hidden on mobile, so orient the user. */}
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2.5 sm:hidden">
         <AppIcon name="Inbox" className="h-4 w-4 shrink-0 text-primary" />
-        <h1 className="text-sm font-bold text-foreground">Inbox</h1>
+        <h2 className="text-sm font-medium text-foreground">Inbox</h2>
         <span className="text-[11px] text-muted-foreground">Capture now, clarify later</span>
       </div>
 
@@ -466,7 +466,7 @@ export function InboxView() {
         <div className="flex flex-wrap items-center gap-2.5 px-4 py-2.5">
           <div className="flex shrink-0 items-center gap-2">
             <AppIcon name="Inbox" className="h-4 w-4 text-primary" />
-            <h1 className="text-base font-bold text-foreground">Inbox</h1>
+            <h2 className="text-sm font-medium text-foreground">Inbox</h2>
           </div>
           {/* `overflow-hidden`: the chip's list is portalled (AnchoredPanel),
               so nothing inside needs to spill, and at 768 the chip used to. */}
