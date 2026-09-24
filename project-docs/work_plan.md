@@ -4129,8 +4129,9 @@ and each pair could disagree:
 
 | Field | Home | Rule |
 |---|---|---|
-| Priority | shared `importance` | D76's vocabulary. Projects edits it. My Tasks shows it in a Priority column and a card chip |
+| Priority | shared `importance` | D76's vocabulary. Projects edits it. My Tasks shows it in a Priority column, a card chip, and a Priority sort, group and filter |
 | Important | mine | The member's own answer. D76's rule seeds it. D77 does not change it |
+| The word "Priority" | one meaning | In My Tasks it names only the shared `importance`. Every control over the member's matrix says "Your focus", D76's name for the private row. The default sort is still the matrix rank |
 | Estimate | shared `estimate_mins` | Migration 216 copies the overlay values once |
 | Deadline | shared `due_at` | A delegation never replaces a deadline the task has |
 | Start date | shared `start_date` | My inbox hides the task until the later of it and my defer |

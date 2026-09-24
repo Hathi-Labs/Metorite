@@ -360,8 +360,8 @@ not in the detail body. The watch toggle was in the Projects header only.
 
 | Field | Decision | How |
 |---|---|---|
-| Priority | **Shared** | `pm_tasks.importance`, in D76's words (`IMPORTANCE_OPTIONS`). The shared body edits it. The My Tasks list column and card chip show it, and My Tasks never writes it |
-| Important | **Mine**, D76 | The member's own answer on the overlay. High and Highest seed it while it is unstated. D77 does not change it. The list column for the member's cell is "Your focus", the name D76 gives the private row in Projects |
+| Priority | **Shared** | `pm_tasks.importance`, in D76's words (`IMPORTANCE_OPTIONS`). The shared body edits it. The My Tasks list column, the card chip, and a Priority sort, group and filter show it. My Tasks never writes it |
+| Important | **Mine**, D76 | The member's own answer on the overlay. High and Highest seed it while it is unstated. D77 does not change it. Every My Tasks control over the member's matrix says "Your focus", the name D76 gives the private row in Projects |
 | Estimate | **Shared** | `pm_tasks.estimate_mins`. My Tasks' Estimate writes it. The planner reads it. Migration 216 copies the overlay values once |
 | Deadline | **Shared**, already `due_at` | A delegation never replaces a deadline the task has. The promised date is `expected_by` |
 | Start date | **Shared** | `start_date`, in the body of both apps. My inbox hides the task until the later of it and my own `defer_until` |
@@ -371,6 +371,17 @@ not in the detail body. The watch toggle was in the Projects header only.
 | Description vs next action | **Both kept** | The body edits the description in both apps. The next action stays mine |
 | Watchers | **Shared** | The watch toggle is in the shared body |
 | Energy, two-minute, defer, block, flexible, hard date, actuals, rank, clarified, kept mine | **Mine**, unchanged | Each keeps its D53.5, D53.7 or D53.8 reason |
+
+**One word, one meaning.** In My Tasks, "Priority" means only the shared
+`importance`. Every control over the member's private matrix says "Your
+focus". That covers the list column, the sort, the group, the filter, the
+matrix view and the clarify card. A separate Priority sort, group and filter read the
+shared `orgPriority`, so a member can rank their list by the company's
+priority. The default sort stays the matrix rank, now named "Your focus".
+
+The internal keys (`priority`, `priorities`) stay on the matrix, so a saved
+sort or filter keeps its meaning. The matrix cells keep D76's names,
+"Low Priority" among them. `focusWording.test.ts` is the fence.
 
 **Promoted into Projects.** The Estimate editor, the description editor, the
 start date and the watch toggle, all in the shared `TaskBody`. Also **Time
@@ -735,9 +746,15 @@ decision number moved from D76 to D77, and the migration moved from 215 to
    Tasks path writes the shared Priority.
 4. The list's Priority column and the card draw the shared Priority
    (`orgPriority`) and the tags. They use the Projects chips
-   (`importanceChip`, `taskMeta`) and D76's words. The member's own cell column is "Your
-   focus", the name D76 gives the private row in Projects. The cells, the
-   sort, the group and the filter keep D76's "Priority" wording.
+   (`importanceChip`, `taskMeta`) and D76's words. Every control over the
+   member's matrix says "Your focus". That covers the column, the sort, the
+   group, the filter, the view and the clarify card. A Priority sort, group and filter
+   read `orgPriority` (§4.10, "One word, one meaning").
+   ⚠️ **The column key `priority` changed meaning.** It named the matrix
+   column. It now names the shared Priority column, and the matrix column is
+   the new key `focus`. A member who saved "show Priority" now sees the
+   shared field under that name. This was accepted on 2026-09-24 (F6),
+   because the header reads "Priority" and shows Priority.
 5. `TaskBody` gains Start, Estimate, Time spent, Watch and a Description
    editor. The My Tasks strip loses Estimate and Notes under the lens. The
    Projects header loses its watch toggle.
