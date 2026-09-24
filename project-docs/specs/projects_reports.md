@@ -391,6 +391,9 @@ uses `src/lib/statusAccent.ts`. Severity uses the destructive and warning
 tokens, as the Conflicts panel does (`projects_ai_chat.md` §13.5, as built).
 An email carries no colour (§9.12.8).
 
+**Pictures first.** Each section shows a chart, a progress bar or a tile
+first, and its table second. Slice R2b sets the rules.
+
 ---
 
 ## 7. Data and privacy rules
@@ -557,6 +560,65 @@ caller cannot see. It uses `Visibility.project_clause`, as
   it. To check it, search `src/` for a template key outside the test files.
   The search must find nothing.
 
+### R2b — The visual report body · AGENT-SAFE
+
+**Owner directive, 2026-09-24:** the reports must have as many good visual
+elements as possible, such as progress bars and charts. A reader must see the
+state of the organization, a project or a person at a glance.
+
+**What:** a rendered report draws each section as a picture first and a table
+second. The pictures reuse the panels that the Analytics app already draws,
+so a report and the Analytics app look the same.
+
+1. **Summary tiles** above the sections. One figure on each tile: tasks
+   finished, open tasks, overdue tasks, and the median cycle time. A tile
+   shows only a figure that the render body already carries.
+2. **One visual for each section**, from `AnalyticsPanels.tsx`:
+   - `finished`: a bar for each project.
+   - `throughput`: weekly completions as bars, and the cycle-time median and
+     p90.
+   - `load`: a stacked bar for each person, split into overdue, due in the
+     next 7 days and later.
+   - `capacity`: a progress bar for each person, committed hours against
+     working hours, with the pill beside it.
+   - `stuck`: the untouched bands as bars, and the overdue count for each
+     project.
+   - `conflicts`: the rows grouped by kind, with the severity dot.
+3. **The table stays** under each visual, in a disclosure. A chart is not a
+   licence to hide the numbers.
+4. **The email body** draws a text bar for each figure, for example
+   `load  ████████░░  8 of 10`. It carries no colour (§9.12.8).
+
+**Rules for the build:**
+- **One chart seam.** A report section and an Analytics panel draw the same
+  data with the same component. If a panel cannot take the section's shape,
+  change the panel so that it takes both. Do not copy it. A second chart
+  component for the same data is a defect (CLAUDE.md §4).
+- **No new server figure in R2b.** The visuals use the render body that
+  exists. A tile or bar that needs a new figure waits for the slice that adds
+  it.
+- **Colour follows the one look.** Series colour comes from the `--cat-*`
+  ramp through `src/lib/categorical.ts`. Status comes from
+  `src/lib/statusAccent.ts`. Each colour has a text label beside it, so no
+  reader depends on colour alone.
+- **Each bar states its value in text**, and each chart carries an
+  accessible name.
+
+**Done when:**
+- Each of the six sections renders its visual in the in-app report, and the
+  table under it.
+- A test renders `RenderedBody` with each section. It asserts the visual and
+  the table are both present, and that the figures in them agree.
+- A test proves that the report and the Analytics panel use one component for
+  each section. A source check fails if `ReportsView.tsx` defines its own bar
+  or chart for a section that `AnalyticsPanels.tsx` draws.
+- `reportEmail.test.ts` shows a text bar for each figure, and no colour.
+- The visual review passes in light mode, compact density, a changed accent,
+  and at 390 px.
+
+**From R2b on, a section ships with its visual.** R3 and every later slice add
+the visual for each new section in the same PR.
+
 ### R3 — Four new sections · AGENT-SAFE
 
 Each section is one server read and one entry in the five lockstep lists
@@ -574,6 +636,10 @@ goes into `DEFAULT_SECTIONS`.
 **Done when:**
 - Each section renders in the app, in the email body with no colour, and in
   the chat card.
+- Each section draws its visual, under the R2b rules. `pulse` draws one card
+  for each person: a load bar, the pill, the top focus tasks and a "needs
+  help" mark. `outlook` draws a range bar from the planned finish to the
+  forecast finish, so the slip is visible.
 - `pulse` gives the same pill as the capacity route for the same person and
   window. One test pins this, so the two cannot drift.
 - A person on leave today shows "on leave" and no `idle` pill.
@@ -715,9 +781,10 @@ item 6) and the chat's `send_report` both call it.
 
 ### Order
 
-**Phase 1, on request:** R1 → R2 → R3 → R5 → R4 → R6 → R8 → R9.
+**Phase 1, on request:** R1 → R2 → R2b → R3 → R5 → R4 → R6 → R8 → R9.
 
 - R1 and R2 give a member control of what exists.
+- R2b draws each section as a chart or a progress bar.
 - R3 makes the morning report real.
 - R5 adds the person and team scope and the permission rule.
 - R4 gives a report a memory, and R6 adds the AI summary.
