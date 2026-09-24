@@ -18,7 +18,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { EditableTaskTitle, TaskHeaderRow, titleToSave } from "./TaskPanelHeader";
+import { EditableTaskTitle, TaskHeaderRow, titleKeyDown, titleToSave } from "./TaskPanelHeader";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
@@ -89,6 +89,37 @@ describe("the title", () => {
     expect(titleToSave("  New name  ", "Old")).toBe("New name");
     expect(titleToSave("   ", "Old")).toBeNull();
     expect(titleToSave("Old ", "Old")).toBeNull();
+  });
+});
+
+describe("the title editor's keys", () => {
+  const press = (key: string, shiftKey = false) => {
+    const calls: string[] = [];
+    titleKeyDown(
+      {
+        key,
+        shiftKey,
+        preventDefault: () => calls.push("preventDefault"),
+        stopPropagation: () => calls.push("stopPropagation"),
+      },
+      { save: () => calls.push("save"), cancel: () => calls.push("cancel") },
+    );
+    return calls;
+  };
+
+  it("Escape cancels AND stops, so the panel does not close with it", () => {
+    expect(press("Escape")).toEqual(["stopPropagation", "cancel"]);
+  });
+
+  it("Enter saves, Shift+Enter is a new line, other keys do nothing", () => {
+    expect(press("Enter")).toEqual(["preventDefault", "save"]);
+    expect(press("Enter", true)).toEqual([]);
+    expect(press("a")).toEqual([]);
+  });
+
+  it("the textarea routes its keys through titleKeyDown", () => {
+    const src = code(read("components/TaskPanelHeader.tsx"));
+    expect(src).toMatch(/onKeyDown=\{\(e\) =>\s*titleKeyDown\(e, \{/);
   });
 });
 

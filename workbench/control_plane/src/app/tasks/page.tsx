@@ -220,6 +220,19 @@ export default function TasksPage() {
     // (`projects/page.tsx`). Desktop docks the same detail beside the list.
     return (
       <div className="flex h-full w-full flex-col overflow-hidden bg-background">
+        {/* The phone bar, as Projects draws it (`AppTopBar compact`). It
+            holds the page's one h1 here too. Capture and the lists live in
+            the shell's bottom bar, so this carries only search and the bell. */}
+        <AppTopBar
+          compact
+          title="My Tasks"
+          tools={
+            <>
+              <AppSearchButton onOpen={openSearch} />
+              <NotificationBell onOpenTask={openHit} />
+            </>
+          }
+        />
         {isInbox ? (
           <InboxView />
         ) : isEngage ? (

@@ -4035,7 +4035,7 @@ function ProjectsWorkspace() {
         {workArea}
 
         {taskPanel ? (
-          // The panel's own `max-w-md` is a docked-column width; on a phone the
+          // The panel's own `max-w-sm` (384px) is a docked-column width; on a phone the
           // surface IS the screen, so the cap is lifted here rather than in the
           // panel, which knows nothing about the shell. `z-[60]` clears the
           // bottom nav (z-50); the panel closes from its own ✕.

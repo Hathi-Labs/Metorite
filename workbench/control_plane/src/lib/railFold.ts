@@ -50,15 +50,25 @@ function currentBand(): RailBand {
   return window.matchMedia(RAIL_WIDE_QUERY).matches ? "wide" : "narrow";
 }
 
+/**
+ * The state the FIRST render uses, on the server and on the client alike.
+ *
+ * ⚠️ It must not read the window. The server has no window and renders
+ * "wide", with the rail. A client initializer that read `matchMedia` below
+ * 1024px rendered "narrow", without it: a hydration mismatch on every tablet
+ * and phone load. So both start wide, and the mount effect folds the rail.
+ * Fence: `railFold.test.ts`.
+ */
+export const RAIL_INITIAL: RailState = railStart("wide");
+
 /** The rail's open state, following the width band. */
 export function useRailFold(): { open: boolean; toggle: () => void } {
-  const [state, setState] = useState<RailState>(() => railStart(currentBand()));
+  const [state, setState] = useState<RailState>(RAIL_INITIAL);
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.matchMedia) return;
     const mql = window.matchMedia(RAIL_WIDE_QUERY);
-    const onChange = () =>
-      setState((s) => railOnBand(s, mql.matches ? "wide" : "narrow"));
+    const onChange = () => setState((s) => railOnBand(s, currentBand()));
     onChange();
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);

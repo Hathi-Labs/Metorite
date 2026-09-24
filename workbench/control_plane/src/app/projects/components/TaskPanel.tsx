@@ -36,7 +36,7 @@
  *
  * ⚠️ **The SURFACE decides the column count, never the viewport.** `mode`
  * is this panel's OWN width stop: at `full` (max-w-3xl, 768px) the body's
- * sections pair up, and at Peek (320px) and Side (448px) they do not.
+ * sections pair up, and at Peek (320px) and Side (`max-w-sm`, 384px) they do not.
  * `/tasks`' detail takes the same decision through its `focused` flag.
  *
  * ## Peek → side → full (WS-27ab item 1)

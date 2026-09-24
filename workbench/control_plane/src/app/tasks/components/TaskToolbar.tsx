@@ -190,6 +190,7 @@ export function TaskToolbar({ items }: { items: MyTask[] }) {
             value={filters.query}
             onChange={(e) => setFilters({ query: e.target.value })}
             aria-label="Search tasks"
+            placeholder="Search tasks…"
             onKeyDown={(e) => {
               if (e.key === "Escape") setOpened(false);
             }}

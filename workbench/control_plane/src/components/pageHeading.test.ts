@@ -137,6 +137,25 @@ describe("the heading comes from a component", () => {
     expect(bar.match(/<h1[\s>]/g) ?? []).toHaveLength(2);
   });
 
+  it.each(["app/tasks/page.tsx", "app/projects/page.tsx"])(
+    "%s renders exactly one app bar, so one h1, in its phone AND its desktop layout",
+    (rel) => {
+      const src = stripComments(fs.readFileSync(path.join(SRC, rel), "utf8")).replace(/\r\n/g, "\n");
+      // The phone layout is the `if (isMobile) { … }` block; the desktop
+      // layout is everything after it. Both pages are shaped this way.
+      const start = src.indexOf("  if (isMobile) {\n");
+      expect(start, "the phone branch moved").toBeGreaterThan(-1);
+      const end = src.indexOf("\n  }\n", start);
+      expect(end).toBeGreaterThan(start);
+      const phone = src.slice(start, end);
+      const desktop = src.slice(end);
+      expect(phone.match(/<AppTopBar\b/g) ?? []).toHaveLength(1);
+      expect(phone).toMatch(/<AppTopBar\s+compact\b/);
+      expect(desktop.match(/<AppTopBar\b/g) ?? []).toHaveLength(1);
+      expect(desktop).not.toMatch(/<AppTopBar\s+compact\b/);
+    },
+  );
+
   it("the People app writes no heading of its own", () => {
     const offenders = filesWithARawHeading().filter((f) =>
       f.startsWith("app/people"),

@@ -174,22 +174,39 @@ export function EditableTaskTitle({
       aria-label="Task title"
       onChange={(e) => setDraft(e.target.value)}
       onBlur={save}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" && !e.shiftKey) {
-          e.preventDefault();
-          save();
-        }
-        if (e.key === "Escape") {
-          // The panel closes on Escape too. Stop here, so one key does one
-          // thing: it undoes the edit and leaves the panel open.
-          e.stopPropagation();
-          setDraft(value);
-          setEditing(false);
-        }
-      }}
+      onKeyDown={(e) =>
+        titleKeyDown(e, {
+          save,
+          cancel: () => {
+            setDraft(value);
+            setEditing(false);
+          },
+        })
+      }
       className="w-full resize-none rounded-md border border-primary/40 bg-background px-2 py-1 text-base font-semibold leading-snug text-foreground focus:outline-none"
     />
   );
+}
+
+/**
+ * A key in the title editor. Enter saves and Shift+Enter is a new line.
+ * Escape cancels the edit.
+ *
+ * ⚠️ Escape STOPS here. The panel closes on Escape too (`panelEscape`), so
+ * without the stop one key would undo the edit AND close the panel. Fence:
+ * `TaskPanelHeader.test.ts`.
+ */
+export function titleKeyDown(
+  e: Pick<KeyboardEvent, "key" | "shiftKey" | "preventDefault" | "stopPropagation">,
+  on: { save: () => void; cancel: () => void },
+): void {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    on.save();
+  } else if (e.key === "Escape") {
+    e.stopPropagation();
+    on.cancel();
+  }
 }
 
 /**

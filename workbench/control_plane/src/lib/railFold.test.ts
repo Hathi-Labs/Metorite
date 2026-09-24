@@ -5,7 +5,13 @@
 
 import { describe, expect, it } from "vitest";
 
-import { RAIL_WIDE_QUERY, railOnBand, railStart, railToggle } from "./railFold";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { RAIL_INITIAL, RAIL_WIDE_QUERY, railOnBand, railStart, railToggle } from "./railFold";
+
+const HERE = fileURLToPath(new URL(".", import.meta.url));
 
 describe("the rail folds itself on tablet widths", () => {
   it("starts folded below lg and open at or above it", () => {
@@ -34,5 +40,24 @@ describe("the rail folds itself on tablet widths", () => {
     // And back up: a rail the member folded on a desktop comes back open
     // after a trip through the tablet band.
     expect(railOnBand(railOnBand(closed, "narrow"), "wide").open).toBe(true);
+  });
+});
+
+describe("the first render does not read the window (no hydration mismatch)", () => {
+  it("the initial state is the wide default, whatever the band", () => {
+    expect(RAIL_INITIAL).toEqual({ open: true, band: "wide" });
+  });
+
+  it("useState takes RAIL_INITIAL, and no initializer reads matchMedia", () => {
+    const src = readFileSync(join(HERE, "railFold.ts"), "utf8");
+    const hook = src.slice(src.indexOf("export function useRailFold"));
+    expect(hook).toMatch(/useState<RailState>\(RAIL_INITIAL\)/);
+    // A lazy initializer, or any window read outside the mount effect.
+    const beforeEffect = hook.slice(0, hook.indexOf("useEffect("));
+    expect(beforeEffect).not.toMatch(/matchMedia|currentBand|window/);
+    const initial = src.slice(src.indexOf("export const RAIL_INITIAL"));
+    expect(initial.slice(0, initial.indexOf(";"))).toBe(
+      'export const RAIL_INITIAL: RailState = railStart("wide")',
+    );
   });
 });
