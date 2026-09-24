@@ -210,8 +210,6 @@ interface SyncFields {
   assignee?: Person;
   /** S6g — the destination's required fields, from `promotePlan`. */
   customFields?: Record<string, unknown>;
-  /** S6g — the owners after the move, from `promotePlan`. Absent = unchanged. */
-  assignees?: string[];
 }
 
 /** The outcome of clarifying an inbox item — the GTD decision tree (F2). */
@@ -219,7 +217,7 @@ export type ClarifyDecision =
   | { kind: "trash" }
   | { kind: "reference" }
   | { kind: "do-now" } // 2-minute rule → done
-  | ({ kind: "someday" } & Pick<SyncFields, "dest" | "projectId" | "status" | "customFields" | "assignees">)
+  | ({ kind: "someday" } & Pick<SyncFields, "dest" | "projectId" | "status" | "customFields">)
   | ({ kind: "delegate"; person: Person; nextAction: string } & Pick<
       SyncFields,
       "dest" | "projectId" | "status" | "dueAt" | "customFields"
@@ -334,7 +332,6 @@ function decisionToOrganizeBody(d: ClarifyDecision): OrganizeBody {
   // S6g — the promote answers, built by `promotePlan` in Clarify.
   if ("customFields" in d && d.customFields && Object.keys(d.customFields).length)
     body.custom_fields = d.customFields;
-  if ("assignees" in d && d.assignees) body.assignees = d.assignees;
   if (d.kind === "project") body.outcome = d.outcome;
   if (d.kind === "delegate")
     body.assignee = {

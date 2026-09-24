@@ -557,8 +557,6 @@ export interface OrganizeBody {
   subtasks?: string[];
   /** S6g — the destination's required custom fields, for a promote. */
   custom_fields?: Record<string, unknown>;
-  /** S6g — the owners after a promote. Absent leaves them alone. */
-  assignees?: string[];
 }
 
 export async function apiOrganize(id: string, body: OrganizeBody): Promise<MyTask> {

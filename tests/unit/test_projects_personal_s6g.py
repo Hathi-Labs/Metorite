@@ -107,10 +107,9 @@ def test_organize_in_carries_the_promote_answers() -> None:
     """The model is the contract the client's `OrganizeBody` writes to."""
     body = pm_personal.OrganizeIn(
         kind="next", next_action="Fix it", project_id="p",
-        custom_fields={"customer_po": "PO-1"}, assignees=["alice@fracktal.in"],
+        custom_fields={"customer_po": "PO-1"},
     )
     assert body.custom_fields == {"customer_po": "PO-1"}
-    assert body.assignees == ["alice@fracktal.in"]
     assert pm_personal.OrganizeIn(kind="next", next_action="x").custom_fields is None
 
 
@@ -197,42 +196,16 @@ async def test_custom_fields_without_a_move_are_ignored(
     assert not _row(db, task["id"]).get("custom_fields")
 
 
-async def test_an_owner_list_without_me_is_refused_unless_it_is_a_delegate(
-    db: FakeProjectsDB, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    board = _board_with_required_field(db, monkeypatch)
-    task = await _captured(db)
-    with pytest.raises(HTTPException) as caught:
-        await pm_personal.organize_my_task(
-            task["id"],
-            pm_personal.OrganizeIn(
-                kind="next", next_action="Fix", project_id=str(board.id),
-                custom_fields={"customer_po": "PO-1"}, assignees=["bob@fracktal.in"],
-            ),
-            user=ALICE,
-        )
-    assert caught.value.status_code == 422
-    assert "Delegate" in str(caught.value.detail)
-    assert _overlay(db, task["id"])["disposition"] == "INBOX"
-
-
-async def test_assignees_travel_with_the_move(
-    db: FakeProjectsDB, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    board = _board_with_required_field(db, monkeypatch)
-    task = await _captured(db)
-    await pm_personal.organize_my_task(
-        task["id"],
-        pm_personal.OrganizeIn(
-            kind="next", next_action="Fix", project_id=str(board.id),
-            custom_fields={"customer_po": "PO-1"},
-            assignees=["alice@fracktal.in", "bob@fracktal.in"],
-        ),
-        user=ALICE,
-    )
-    owners = {a["assignee"] for a in db.rows("pm_task_assignees")
-              if str(a["task_id"]) == task["id"]}
-    assert owners == {"alice@fracktal.in", "bob@fracktal.in"}
+def test_organize_takes_no_owner_list() -> None:
+    """S6g repair (P2-d). No client sent `assignees`, and `_organize` passed
+    it to the move even when the project did not change. The field is gone.
+    A delegate still names its one person, through `assignee`."""
+    assert "assignees" not in pm_personal.OrganizeIn.model_fields
+    import inspect
+    src = inspect.getsource(pm_personal._organize)
+    assert "payload.assignees" not in src
+    # The promote answers count only when the task changes project.
+    assert "custom_fields=payload.custom_fields if dest else None" in src
 
 
 # ── The purge: My Tasks never hard-deletes a team task (S6g P0) ──────────────
@@ -268,3 +241,41 @@ async def test_the_projects_delete_route_shares_the_one_body() -> None:
     import inspect
     assert "delete_task_in(db, doomed)" in inspect.getsource(pm_tasks.delete_task)
     assert "delete_task_in(db, task)" in inspect.getsource(pm_personal.purge_my_task)
+
+
+async def test_purge_refuses_a_task_in_my_tree_that_somebody_else_is_on(
+    db: FakeProjectsDB, events: list,
+) -> None:
+    """S6g repair (P2-a). A colleague on a task makes it theirs too."""
+    task = await _captured(db, "Ours, somehow")
+    db.seed("pm_task_assignees", task_id=task["id"], assignee="bob@fracktal.in",
+            assigned_by="alice@fracktal.in")
+    events.clear()
+    with pytest.raises(HTTPException) as caught:
+        await pm_personal.purge_my_task(task["id"], user=ALICE)
+    assert caught.value.status_code == 409
+    assert "Somebody else" in str(caught.value.detail)
+    assert [t for t in db.rows("pm_tasks") if str(t["id"]) == task["id"]]
+    assert not events
+
+
+async def test_bulk_assignees_add_runs_the_assign_guard_per_task(
+    db: FakeProjectsDB, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S6g repair (P2-a). The bulk path skipped `assert_assignable_here`. A
+    colleague added to a task in my tree now fails for THAT task, and a team
+    task in the same selection still takes the colleague."""
+    mine = await _captured(db, "Private")
+    board = _board_with_required_field(db, monkeypatch)
+    lane = next(s for s in db.rows("pm_task_statuses") if str(s["project_id"]) == str(board.id))
+    team = db.seed_task(board.id, lane["id"], title="Team work")
+    out = await pm_bulk.bulk_edit(
+        pm_bulk.BulkIn(task_ids=[mine["id"], str(team.id)], assignees_add=["bob@fracktal.in"]),
+        user=ALICE,
+    )
+    failed = {f["task_id"]: f["reason"] for f in out["failed"]}
+    assert mine["id"] in failed and "personal project" in failed[mine["id"]]
+    on_mine = {a["assignee"] for a in db.rows("pm_task_assignees") if str(a["task_id"]) == mine["id"]}
+    on_team = {a["assignee"] for a in db.rows("pm_task_assignees") if str(a["task_id"]) == str(team.id)}
+    assert "bob@fracktal.in" not in on_mine
+    assert "bob@fracktal.in" in on_team

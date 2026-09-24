@@ -17,10 +17,10 @@ claims a hermetic fake cannot judge:
   * without the answer, the decision is refused with the field's name, and
     the refusal rolls back EVERYTHING the decision wrote: the move, the
     overlay, the activity row. Nothing moves;
-  * an owner list that leaves me out is refused before anything is written;
-  * an owner list that keeps me adds the colleague in the same transaction;
-  * the purge (`DELETE /projects/my/tasks/{id}`) refuses a board task and
-    deletes nothing, and still deletes a task in my tree (the S6g P0 rule).
+  * the purge ROUTE (`DELETE /projects/my/tasks/{id}`) refuses a board
+    task, and a task in my tree that somebody else is on, with 409, and still
+    deletes a task that is only mine (the S6g P0 rule);
+  * bulk `assignees_add` refuses a colleague on my private task, per task.
 
 The script imports the module's own helpers. It does not restate their SQL.
 
@@ -42,16 +42,18 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 from fastapi import HTTPException
+from gateway.routes.projects import bulk as pm_bulk
+from gateway.routes.projects import personal as pm_personal
 from gateway.routes.projects.core import (
     Visibility,
     load_default_status,
 )
-from gateway.routes.projects.tasks import delete_task_in
 from gateway.routes.projects.personal import (
     OrganizeIn,
-    in_my_tree,
     _organize,
     _read_my_task,
     create_personal_task,
@@ -190,50 +192,77 @@ async def main() -> None:
         check("2e the move left its trace on the timeline",
               await moves(db, task.id) == 1, f"moves={await moves(db, task.id)}")
 
-        # ── 3. an owner list without me is refused before any write ─────────
-        other = await capture(db, root, "Hand it over")
-        try:
-            async with db.begin_nested():
-                await _organize(db, vis, WHO, await task_row(db, other.id), OrganizeIn(
-                    kind="next", next_action="Hand it over", project_id=str(board),
-                    custom_fields={"customer_po": "PO-1"}, assignees=[OTHER],
-                ))
-            check("3 an owner list without me is refused", False, "ACCEPTED")
-        except HTTPException as exc:
-            row = await task_row(db, other.id)
-            check("3 an owner list without me is refused, and nothing moves",
-                  exc.status_code == 422 and "Delegate" in str(exc.detail)
-                  and str(row.project_id) == str(root.id)
-                  and await owners(db, other.id) == {WHO},
-                  f"status={exc.status_code} project={row.project_id}")
+        # ── 3. the purge ROUTE, on the real join (P0 + repair P2-e) ─────────
+        #     `purge_my_task` itself: `load_visible_task`, the tree check,
+        #     the other-assignee check, `delete_task_in` and the emit. It opens
+        #     its own tenant session, so point that at this transaction, and
+        #     collect the events rather than reaching the bus.
+        @asynccontextmanager
+        async def _session(organization_id=None):
+            yield db
 
-        # ── 4. an owner list that keeps me adds the colleague, atomically ───
-        both = await capture(db, root, "Pair on it")
-        await _organize(db, vis, WHO, await task_row(db, both.id), OrganizeIn(
-            kind="next", next_action="Pair on it", project_id=str(board),
-            custom_fields={"customer_po": "PO-2"}, assignees=[WHO, OTHER],
-        ))
-        row = await task_row(db, both.id)
-        check("4 assignees travel with the move, in one transaction",
-              str(row.project_id) == str(board)
-              and await owners(db, both.id) == {WHO, OTHER},
-              f"owners={await owners(db, both.id)}")
+        async def _vis(db_, user_):
+            return vis
 
-        # ── 5. the purge rule (P0): the route's two halves, in one tx ────────
-        #     `purge_my_task` = `in_my_tree`, then `delete_task_in`. Run as the
-        #     route runs them, against the real join.
-        on_board = await task_row(db, both.id)
-        refused = not await in_my_tree(db, WHO, on_board)
-        still = await task_row(db, both.id)
-        check("5 a board task is not mine to purge, and nothing is deleted",
-              refused and still is not None, f"refused={refused}")
+        emitted: list[tuple[str, dict]] = []
+
+        async def _emit(kind, payload):
+            emitted.append((kind, payload))
+
+        pm_personal._tenant_session = _session
+        pm_personal.resolve_visibility = _vis
+        pm_personal.emit = _emit
+        me = SimpleNamespace(email=WHO)
+
+        async def purge(task_id) -> int:
+            try:
+                async with db.begin_nested():
+                    await pm_personal.purge_my_task(str(task_id), user=me)
+                return 200
+            except HTTPException as exc:
+                return exc.status_code
+
+        on_board = await task_row(db, task.id)
+        status = await purge(on_board.id)
+        check("3 the purge route refuses a board task with 409, and deletes nothing",
+              status == 409 and await task_row(db, task.id) is not None
+              and not emitted, f"status={status} emitted={emitted}")
+
+        shared = await capture(db, root, "Somebody else is on this")
+        await db.execute(text(
+            "INSERT INTO pm_task_assignees (task_id, assignee, assigned_by) "
+            "VALUES (:t, :a, :b)"), {"t": shared.id, "a": OTHER, "b": WHO})
+        status = await purge(shared.id)
+        check("3b a task in my tree with another assignee is refused with 409",
+              status == 409 and await task_row(db, shared.id) is not None,
+              f"status={status}")
+
         loose = await capture(db, root, "A stray thought")
-        mine = await task_row(db, loose.id)
-        allowed = await in_my_tree(db, WHO, mine)
-        if allowed:
-            await delete_task_in(db, mine)
-        check("5b a task in my root is mine to purge, and the purge deletes it",
-              allowed and await task_row(db, loose.id) is None, f"allowed={allowed}")
+        status = await purge(loose.id)
+        check("3c a task in my root purges, and the route says so",
+              status == 200 and await task_row(db, loose.id) is None
+              and ("pm.task.deleted", {"task_id": str(loose.id)}) in emitted
+              and not [e for e in emitted if e[0] == "pm.task.deleted"
+                       and e[1]["task_id"] != str(loose.id)],
+              f"status={status} emitted={emitted}")
+
+        # ── 4. bulk assignees_add runs the assign guard per task (P2-a) ─────
+        private = await capture(db, root, "Private work")
+        pm_bulk._tenant_session = _session
+        pm_bulk.resolve_visibility = _vis
+        pm_bulk.emit = _emit
+        async with db.begin_nested():
+            out = await pm_bulk.bulk_edit(
+                pm_bulk.BulkIn(task_ids=[str(private.id), str(task.id)],
+                               assignees_add=[OTHER]),
+                user=me,
+            )
+        failed = {f["task_id"] for f in out["failed"]}
+        check("4 bulk add refuses a colleague on my private task, and still adds on the board",
+              str(private.id) in failed
+              and OTHER not in await owners(db, private.id)
+              and OTHER in await owners(db, task.id),
+              f"failed={failed} owners={await owners(db, task.id)}")
 
         await outer.rollback()
     await eng.dispose()

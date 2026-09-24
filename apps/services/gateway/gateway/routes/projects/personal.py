@@ -232,10 +232,6 @@ class OrganizeIn(BaseModel):
     #: them. Without them a promote from Clarify was refused after the card
     #: had already moved the row.
     custom_fields: dict | None = None
-    #: S6g — who owns the task on the board after the move, as the promote
-    #: dialog's assignee editor answers it. `None` leaves the owners alone. A
-    #: delegate decision names its own assignee and wins over this list.
-    assignees: list[str] | None = None
 
 
 #: A clarify `kind` → the overlay disposition it states. The vocabulary
@@ -1683,6 +1679,26 @@ async def purge_my_task(
                 detail="This task is on a team board. My Tasks can only remove "
                        "it from your lists, never delete it for the team.",
             )
+        # S6g repair (P2-a). A task in my tree that somebody else is also on
+        # is theirs too. The assign guard should keep a colleague out of my
+        # tree, but a row from before that guard, or a gap in it, must not
+        # let my purge delete their work.
+        others = [
+            r.assignee for r in (await db.execute(
+                text(
+                    "SELECT assignee FROM pm_task_assignees "
+                    "WHERE task_id = CAST(:tid AS uuid)"
+                ),
+                {"tid": task_id},
+            )).fetchall()
+            if (r.assignee or "").strip().lower() != email
+        ]
+        if others:
+            raise HTTPException(
+                status_code=409,
+                detail="Somebody else is assigned to this task. My Tasks can "
+                       "only remove it from your lists.",
+            )
         result = await delete_task_in(db, task)
     await emit("pm.task.deleted", {"task_id": task_id})
     return result
@@ -2095,18 +2111,6 @@ async def _organize(
     who = None
     if delegated and payload.assignee is not None:
         who = (payload.assignee.email or payload.assignee.name).strip().lower()
-    if not delegated and payload.assignees is not None and email not in {
-        (a or "").strip().lower() for a in payload.assignees
-    }:
-        # S6g. A decision that is not a delegate keeps the task MINE. An
-        # owner list without me hands the task off, and the read-back below
-        # would 404 inside this transaction and roll the decision back. Say
-        # which door does a hand-off instead.
-        raise HTTPException(
-            status_code=422,
-            detail="Keep yourself as an assignee, or choose Delegate to hand "
-                   "the task to somebody else.",
-        )
     dest = project_id if project_id and project_id != str(task.project_id) else None
     move = MoveTask(
         project_id=dest,
@@ -2114,7 +2118,7 @@ async def _organize(
         # so the required-field guard judges them inside this transaction.
         # They mean something only when the task changes project.
         custom_fields=payload.custom_fields if dest else None,
-        assignees=[who] if who else payload.assignees,
+        assignees=[who] if who else None,
     )
     if move.project_id or move.assignees is not None:
         await move_task_in(db, vis, task, move, by=email)

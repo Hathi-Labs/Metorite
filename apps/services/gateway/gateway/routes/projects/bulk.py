@@ -42,6 +42,7 @@ from gateway.routes.projects.automation import (
 from gateway.routes.projects.core import (
     _tenant_session,
     actor,
+    assert_assignable_here,
     archive_note,
     clean_payload,
     emit,
@@ -540,6 +541,20 @@ async def bulk_edit(
                 else:
                     failed.append({"task_id": task_id, "reason": detail})
                 continue
+
+            if add_people:
+                # S6g repair (P2-a). The single-task routes refuse a colleague
+                # on a task in somebody's personal tree (`assert_assignable_here`,
+                # owner directive 2026-08-26). The bulk path skipped the guard.
+                # Per task, BEFORE any write: one private task in a selection
+                # fails alone, and the rest of the selection still applies.
+                try:
+                    await assert_assignable_here(
+                        db, str(task.project_id), {p.lower() for p in add_people},
+                    )
+                except HTTPException as exc:
+                    failed.append({"task_id": task_id, "reason": str(exc.detail)})
+                    continue
 
             try:
                 outcome, newly = await _apply_to_one(
