@@ -139,6 +139,34 @@ const PLACEMENT: Record<ModalPlacement, string> = {
 };
 
 /**
+ * Which layer the dialog paints on.
+ *
+ * - `dialog` (the default) is `z-50`, DESIGN_SYSTEM.md §4a's layer. Two
+ *   Modals at one layer stack by mount order.
+ * - `alert` is for a CONFIRMATION, and it paints above EVERY overlay in the
+ *   app. A confirmation interrupts whatever raised it, so it must be on top.
+ *
+ * ⚠️ `alert` exists because not every overlay is a Modal yet. Measured
+ * 2026-09-24: hand-rolled `fixed` overlays sit at `z-[55]` up to `z-[95]`.
+ * My Tasks' TaskFocusModal is `z-[80]`, so a delete confirmed from it opened
+ * BEHIND it at `z-50`. Focus went to a confirm button nobody could see, and
+ * Enter deleted the task with no visible prompt.
+ *
+ * `dialog` stays at `z-50` on purpose. A portalled `AnchoredPanel` (`z-[60]`)
+ * inside a dialog must paint above it. Raising every Modal would put those
+ * pickers under the scrim.
+ *
+ * Fence: `ConfirmDialog.test.ts` computes the highest `fixed` overlay layer
+ * in the tree, and fails if `alert` is not above it.
+ */
+export type ModalLayer = "dialog" | "alert";
+
+export const LAYERS: Record<ModalLayer, string> = {
+  dialog: "z-50",
+  alert: "z-[100]",
+};
+
+/**
  * Does the call site already say how tall the popup may be?
  *
  * The base class string used to carry `max-h-full` unconditionally, which made
@@ -207,6 +235,8 @@ export type ModalProps = {
   icon?: string;
   size?: ModalSize;
   placement?: ModalPlacement;
+  /** The paint layer. `alert` for a confirmation — see `LAYERS`. */
+  layer?: ModalLayer;
   /**
    * Whether the default header draws a close button. A dialog with no header
    * (no `title`) has nowhere to put one; Escape and outside press still close
@@ -273,6 +303,7 @@ export default function Modal({
   icon,
   size = "lg",
   placement = "center",
+  layer = "dialog",
   showClose = true,
   closeLabel = "Close",
   initialFocus,
@@ -347,12 +378,12 @@ export default function Modal({
           // black is not a theme token and passes every colour rule in
           // `conformance.test.ts` only because `PALETTE_CLASS` lists the
           // numbered ramps and not `black`/`white`.
-          className="fixed inset-0 z-50 bg-background/80"
+          className={`fixed inset-0 ${LAYERS[layer]} bg-background/80`}
         />
         {/* `Dialog.Viewport`, not a hand-written positioning div: it is
             `role="presentation"`, hidden while unmounted, and drops its own
             pointer events when closed. A raw div does none of that. */}
-        <Dialog.Viewport className={`fixed inset-0 z-50 flex ${PLACEMENT[placement]}`}>
+        <Dialog.Viewport className={`fixed inset-0 ${LAYERS[layer]} flex ${PLACEMENT[placement]}`}>
           <Dialog.Popup
             aria-label={title ? undefined : label}
             // Base UI does not set this. It is a hint for assistive tech that

@@ -725,16 +725,30 @@ export async function lensTrashItem(id: string): Promise<void> {
   });
 }
 
-/** Undo the soft delete — back to the inbox to be triaged again. */
-export async function lensRestoreItem(id: string): Promise<MyTask> {
+/**
+ * Undo the soft delete: the overlay gets back the disposition it had BEFORE
+ * the trash.
+ *
+ * `prior` is that disposition, from the undo snapshot. `null` means the row
+ * was untriaged, so the overlay is CLEARED rather than stating a triage the
+ * member never made (the same rule the board-task undo follows). Absent, it
+ * falls back to INBOX, to be triaged again. Until 2026-09-24 every restore
+ * wrote INBOX, so a Next or Waiting task came back in the Inbox after a
+ * reload, although the screen showed it where it was.
+ */
+export async function lensRestoreItem(
+  id: string,
+  prior?: MyTask["disposition"] | null,
+): Promise<MyTask> {
   // D77 — an open disposition on a closed task REOPENS it for the board
   // (`personal.reopen_if_closed`). Undoing a delete must not do that, so a
   // task whose lane is closed comes back as DONE, which is what it was.
   const current = await lensGetItem(id);
   const closed = ["done", "cancelled"].includes(current.statusCategory ?? "");
+  const disposition = closed ? "DONE" : prior === undefined ? "INBOX" : prior;
   await projectsCall<Raw>(`tasks/${id}/personal`, {
     method: "PATCH",
-    body: JSON.stringify({ disposition: closed ? "DONE" : "INBOX" }),
+    body: JSON.stringify({ disposition }),
   });
   return lensGetItem(id);
 }

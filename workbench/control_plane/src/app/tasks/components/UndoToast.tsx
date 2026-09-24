@@ -5,6 +5,7 @@ import Icon from "@/components/Icon";
 import { isTypingTarget, isUndoShortcut } from "@/lib/keyboard";
 import { useEffect } from "react";
 import { useTaskStore } from "../lib/taskStore";
+import { UNDO_WINDOW_SECONDS } from "../lib/removal";
 
 /**
  * The global one-level undo toast for the task manager.
@@ -30,7 +31,9 @@ export function UndoToast() {
   // permanent / propagates upstream.
   useEffect(() => {
     if (!undoSnapshot) return;
-    const t = setTimeout(() => dismissUndo(), 7000);
+    // The delete dialog quotes this number (`removalCopy`), so it is ONE
+    // constant and the promise cannot drift from the timer.
+    const t = setTimeout(() => dismissUndo(), UNDO_WINDOW_SECONDS * 1000);
     return () => clearTimeout(t);
   }, [undoSnapshot, dismissUndo]);
 

@@ -472,6 +472,34 @@ describe("the lens talks to /api/projects, never /api/tasks", () => {
     expect(calls[1]).toMatchObject({ method: "PATCH", body: { disposition: "DONE" } });
   });
 
+  it("restores an open task to the disposition it had before the trash", async () => {
+    for (const [prior, sent] of [
+      ["NEXT", "NEXT"],
+      [null, null],
+      [undefined, "INBOX"],
+    ] as const) {
+      const { calls, restore } = stub([ROW, {}, ROW]);
+      try {
+        await lensRestoreItem("task-1", prior);
+      } finally {
+        restore();
+      }
+      expect(calls[1], String(prior)).toMatchObject({
+        method: "PATCH",
+        body: { disposition: sent },
+      });
+      expect(calls[1].url).toContain("/tasks/task-1/personal");
+    }
+    // A closed task still comes back DONE, whatever it said before (D77).
+    const { calls, restore } = stub([{ ...ROW, status_category: "done" }, {}, ROW]);
+    try {
+      await lensRestoreItem("task-1", "NEXT");
+    } finally {
+      restore();
+    }
+    expect(calls[1]).toMatchObject({ body: { disposition: "DONE" } });
+  });
+
   it("completes through /complete so the board moves too (§13.5 #4)", async () => {
     // `disposition: "DONE"` on the overlay alone would mark it done in MY list
     // and leave it open on the company board — the drift one store exists to

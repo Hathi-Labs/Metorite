@@ -14,7 +14,7 @@ import { captureDestinations, destinations, useCompanyTree } from "../lib/compan
 import { parseProjectToken } from "../lib/quickAdd";
 
 // Ubiquitous capture (C2) + Mind Sweep (C3/C4). A global palette openable from
-// any Tasks view via a hotkey (C / ⌘K) or a button. Single mode = rapid-fire
+// any Tasks view via a hotkey (C) or a button. Single mode = rapid-fire
 // quick add; Sweep mode = multi-line brain dump (one item per line) with the
 // GTD Incompletion Trigger List as memory-joggers. Capture stays PURE — no
 // clarify here (GTD keeps the two stages separate).

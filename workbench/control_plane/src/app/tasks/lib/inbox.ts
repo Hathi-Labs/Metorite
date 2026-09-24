@@ -19,6 +19,7 @@
  */
 
 import { isPersonalTask } from "./clarify";
+import { DELETE_LABEL, REMOVE_LABEL } from "./removal";
 import type { MyTask } from "./types";
 import { isTickled } from "./utils";
 
@@ -131,7 +132,7 @@ export interface InboxRowAction {
  * context menu and the keyboard cannot drift (`inbox.test.ts`).
  *
  * - personal: **Move to project** (when `promoteAllowed`), **Delete**;
- * - board: **Not mine** (my overlay says TRASH, the board task stays),
+ * - board: **Remove from my lists** (my overlay says TRASH, the board task stays),
  *   **Open on board**. A board row has no Delete.
  */
 export function inboxRowActions(input: {
@@ -157,8 +158,8 @@ export function inboxRowActions(input: {
         : []),
       {
         id: "remove" as const,
-        label: "Delete",
-        title: "Delete (t)",
+        label: DELETE_LABEL,
+        title: `${DELETE_LABEL} (t)`,
         icon: "Trash2",
         run: input.remove,
       },
@@ -166,9 +167,11 @@ export function inboxRowActions(input: {
   }
   return [
     {
+      // One name per act (`removal.ts`). The id keeps its old spelling so the
+      // card, the table and the menu stay unedited. The label is the act's name.
       id: "notMine",
-      label: "Not mine",
-      title: "Not mine — take it off my lists. The board keeps it (t)",
+      label: REMOVE_LABEL,
+      title: `${REMOVE_LABEL}. The board keeps it (t)`,
       icon: "UserX",
       run: input.notMine,
     },

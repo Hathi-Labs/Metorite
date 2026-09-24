@@ -48,6 +48,7 @@ import {
 } from "../lib/quickAdd";
 import { captureDestinations, destinations, useCompanyTree } from "../lib/companyTree";
 import { promoteAllowed } from "../lib/promote";
+import { DELETE_LABEL, MIXED_LABEL, REMOVE_LABEL } from "../lib/removal";
 import { InboxCard } from "./InboxCard";
 import { InboxTable } from "./InboxTable";
 import { AttachmentComposer } from "./AttachmentComposer";
@@ -268,11 +269,13 @@ export function InboxView() {
     if (selectedBoard.length) bulkDispose(selectedBoard, "TRASH");
     clearSelection();
   };
+  // One name per act (`removal.ts`): "Delete" for my own task, "Remove from
+  // my lists" for a board task. It read "Not mine" here until 2026-09-24.
   const removeLabel = selectedBoard.length
     ? selectedMine.length
-      ? "Remove"
-      : "Not mine"
-    : "Delete";
+      ? MIXED_LABEL
+      : REMOVE_LABEL
+    : DELETE_LABEL;
 
   // ── keyboard navigation + triage over the visible list ──
   //
@@ -450,20 +453,24 @@ export function InboxView() {
         <span className="text-[11px] text-muted-foreground">Capture now, clarify later</span>
       </div>
 
-      {/* Capture header — desktop only, ONE compact full-width row (mobile
-          captures via the bottom-nav button): title · capture box · attach ·
-          mind sweep · shortcuts. The old centered hero cost three stacked
-          rows before the list started; full width also matches Next Actions
-          and lets long captures breathe. */}
+      {/* Capture header — desktop only (mobile captures via the bottom-nav
+          button): title · capture box · attach · mind sweep · shortcuts.
+          ⚠️ The row WRAPS, the way Projects' action row does. Below `xl` the
+          capture box takes a full-width row of its own under the title and
+          the tools. On one row at 768px the box shrank to zero width, because
+          the attachments, Mind sweep and the shortcuts button do not shrink.
+          `xl` and not `lg`: at a 1024px window the sidebar leaves the pane
+          about 780px, and one row there left the text field under 280px.
+          Fence: `inboxCaptureRow.test.ts`. */}
       <div className="hidden shrink-0 border-b border-border bg-card sm:block">
-        <div className="flex items-center gap-2.5 px-4 py-2.5">
+        <div className="flex flex-wrap items-center gap-2.5 px-4 py-2.5">
           <div className="flex shrink-0 items-center gap-2">
             <AppIcon name="Inbox" className="h-4 w-4 text-primary" />
             <h1 className="text-base font-bold text-foreground">Inbox</h1>
           </div>
           {/* `overflow-hidden`: the chip's list is portalled (AnchoredPanel),
               so nothing inside needs to spill, and at 768 the chip used to. */}
-          <div className="tech-transition flex min-w-0 flex-1 items-center gap-2 overflow-hidden rounded-lg border border-border bg-background px-3 py-1.5 focus-within:border-primary/50">
+          <div className="tech-transition order-last flex min-w-0 flex-1 basis-full items-center gap-2 overflow-hidden rounded-lg border border-border bg-background px-3 py-1.5 focus-within:border-primary/50 xl:order-none xl:basis-0">
             <AppIcon name="Plus" className="h-4 w-4 shrink-0 text-muted-foreground" />
             <input
               value={value}
@@ -498,7 +505,9 @@ export function InboxView() {
           </div>
           {/* Context attachments: photo/file/link kept WITH the capture —
               icon triggers inline; pending chips appear above the icons. */}
-          <div className="max-w-[320px] shrink-0">
+          {/* `ml-auto` below `xl` puts the tools at the right end of the
+              title row. At `xl` the capture box fills that space instead. */}
+          <div className="ml-auto max-w-[320px] shrink-0 xl:ml-0">
             <AttachmentComposer compact attachments={pendingAtts} onChange={setPendingAtts} />
           </div>
           <button
@@ -513,7 +522,7 @@ export function InboxView() {
           <button
             type="button"
             onClick={() => setShowShortcuts((v) => !v)}
-            title="Keyboard shortcuts (press C to capture from anywhere)"
+            title="Keyboard shortcuts (press C to capture, ⌘K to search)"
             aria-pressed={showShortcuts}
             className="tech-transition inline-flex shrink-0 items-center rounded-md border border-border p-1.5 text-muted-foreground hover:border-primary/40 hover:text-foreground"
           >
@@ -523,6 +532,8 @@ export function InboxView() {
         {showShortcuts && (
           <div className="flex flex-wrap gap-x-3 gap-y-1 border-t border-border px-4 py-2 text-[10px] text-muted-foreground">
             <Sc k="C">capture</Sc>
+            {/* One key, one meaning, in both task apps: ⌘K is search. */}
+            <Sc k="⌘K">search</Sc>
             {/* WS-27ad — was "j / k". The arrows are the one movement idiom
                 across both task apps now; a vim walk on this screen only was a
                 shortcut nobody could carry anywhere else. */}
@@ -530,7 +541,7 @@ export function InboxView() {
             <Sc k="↵">clarify</Sc>
             <Sc k="e">edit</Sc>
             <Sc k="x">select</Sc>
-            <Sc k="t">delete · not mine</Sc>
+            <Sc k="t">delete · remove from my lists</Sc>
             <Sc k="m">move to project</Sc>
             <Sc k="o">open on board</Sc>
             <Sc k="s">someday</Sc>

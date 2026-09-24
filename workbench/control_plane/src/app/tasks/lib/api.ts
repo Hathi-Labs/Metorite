@@ -584,8 +584,11 @@ export async function apiDeleteItem(id: string): Promise<void> {
 }
 
 /** Undo a soft delete — returns the restored task, exactly as it was. */
-export async function apiRestoreItem(id: string): Promise<MyTask> {
-  return lensRestoreItem(id);
+export async function apiRestoreItem(
+  id: string,
+  prior?: MyTask["disposition"] | null,
+): Promise<MyTask> {
+  return lensRestoreItem(id, prior);
 }
 
 /** Finalize a soft delete. Idempotent — a row that's already gone is a no-op. */

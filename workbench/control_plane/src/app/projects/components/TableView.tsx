@@ -27,12 +27,12 @@
 import { ControlLink } from "@/components/ControlLink";
 import Icon from "@/components/Icon";
 import { StatusChip } from "@/components/StatusChip";
-import { AvatarStack } from "@/components/TaskMeta";
+import { AvatarStack, PriorityChip } from "@/components/TaskMeta";
 import { Input } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
 import { useToast } from "@/components/ui/Toast";
 import { Checkbox } from "@/components/ui/Checkbox";
-import { TASK_SOURCES, type TaskSource, durationLabel } from "@/lib/taskCard";
+import { TASK_SOURCES, type TaskSource, durationLabel, priorityChip } from "@/lib/taskCard";
 import { useMemo, useRef, useState } from "react";
 
 import { accentForStatus } from "../lib/accent";
@@ -52,7 +52,6 @@ import { dueInstantForDay, quickAddPrefill } from "../lib/quickAdd";
 import {
   MATRIX_FLAG_OPTIONS,
   type MatrixFlags,
-  cellLabel,
   flagsOf,
   flagsPatch,
   taskCell,
@@ -375,7 +374,8 @@ export function TableView({
         return task.start_date ? task.start_date.slice(0, 10) : "—";
       case "importance":
         // D78 — the matrix level. Computed, so it moves with the due date.
-        return cellLabel(taskCell(task));
+        // THE priority chip, as My Tasks' Priority column draws it.
+        return <PriorityChip chip={priorityChip(taskCell(task))} />;
       case "subtasks": {
         const counts = task.subtasks;
         return counts && counts.total > 0 ? `${counts.done}/${counts.total}` : "—";
