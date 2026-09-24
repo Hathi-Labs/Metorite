@@ -964,7 +964,11 @@ line and its Undo.
   S6e (10/10) and S6f (17/17) pass on the same database.
 - `test_projects_personal_s6g.py`: 7 tests.
 - `npx tsc --noEmit` is clean. `npx vitest run` is green.
-- The captures are in `workbench/control_plane/ux-shots/s6g/`.
+- The captures are in `workbench/control_plane/ux-shots/s6g/`. The visual
+  pass found one defect, and this slice fixed it. The Move dialog mounts
+  `PromoteFields` before a destination is picked. The idle preview answered a
+  new empty list on each render, and the report effect looped. The idle answer
+  is now two constants, and `captureTo.test.ts` holds it.
 
 ### S7 — the cutover · dev-phase window, reported by evidence · RUN 2026-09-23
 

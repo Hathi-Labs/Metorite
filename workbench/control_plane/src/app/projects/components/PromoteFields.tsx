@@ -87,6 +87,9 @@ export function wireOf(
   return out;
 }
 
+const IDLE_DEFS: FieldDef[] = [];
+const IDLE_DRAFT: Record<string, unknown> = {};
+
 /**
  * The server's preview of one move, and the required definitions it names.
  *
@@ -160,8 +163,11 @@ export function useMovePreview(
 
   // With no destination the hook answers "nothing yet", whatever an older
   // destination left in state. A host that clears its pick sees no mapping.
+  // ⚠️ The idle answer is made of CONSTANTS. A fresh `[]` or `{}` per render
+  // is a new dependency every render, and the host's effect that reports
+  // them looped ("Maximum update depth", found by the S6g visual pass).
   if (!destinationId) {
-    return { plan: null, planning: false, planError: null, requiredDefs: [], draft: {}, setDraft };
+    return { plan: null, planning: false, planError: null, requiredDefs: IDLE_DEFS, draft: IDLE_DRAFT, setDraft };
   }
   return { plan, planning, planError, requiredDefs, draft, setDraft };
 }

@@ -415,6 +415,15 @@ describe("one promote path (S6g)", () => {
     expect(clarify).toMatch(/const promoteReady = !promoting \|\| !!promoteState\?\.ready;/);
   });
 
+  it("the idle preview answers constants, so the report effect cannot loop", () => {
+    // Found by the S6g visual pass: the Move dialog mounts `PromoteFields`
+    // before a destination is picked, and a fresh `[]` per render looped the
+    // report effect into "Maximum update depth exceeded".
+    const src = read("../projects/components/PromoteFields.tsx");
+    expect(src).toMatch(/requiredDefs: IDLE_DEFS, draft: IDLE_DRAFT/);
+    expect(src).toMatch(/const IDLE_DEFS: FieldDef\[\] = \[\];/);
+  });
+
   it("Clarify's company list is the dialog's tree, folders disabled", () => {
     expect(clarify).toMatch(/useCompanyTree\(backend === "live"\)/);
     expect(clarify).toMatch(/tree=\{tree\}/);
