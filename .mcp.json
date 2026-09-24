@@ -8,10 +8,6 @@
         "--mcp"
       ]
     },
-    "higgsfield": {
-      "type": "http",
-      "url": "https://mcp.higgsfield.ai/mcp"
-    },
     "supabase": {
       "type": "http",
       "url": "https://mcp.supabase.com/mcp"

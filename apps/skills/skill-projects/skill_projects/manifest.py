@@ -84,6 +84,11 @@ _DELIVERY_REASON = (
 _PREVIEW_REASON = (
     "The report builder's preview. The chat reaches it in WS-27bn R8, through render_report."
 )
+#: WS-27bn R2. The template gallery is the Reports app's. The chat reaches
+#: the templates in R8, when render_report takes a template name.
+_TEMPLATES_REASON = (
+    "The template gallery is the Reports app's. The chat reaches templates in WS-27bn R8."
+)
 #: Writing who can see a project is a membership-shaped act. Owner question
 #: 2 in the spec §12.
 _GRANT_REASON = "A grant write is membership-shaped. Spec §12 question 2 holds it for the owner."
@@ -323,6 +328,9 @@ MANIFEST: tuple[Route, ...] = (
     # in READ_ONLY_POSTS. Its class is the tool's: propose_plan is class B.
     Route("POST", "/projects/plan/preview", "propose_plan", "B"),
     Route("GET", "/projects/reports", "report_list", "A"),
+    # WS-27bn R2 - the template gallery. It must sit ABOVE the
+    # {report_id} row, because route_for takes the first match.
+    Route("GET", "/projects/reports/templates", "", "X", _TEMPLATES_REASON),
     Route("POST", "/projects/reports", "report_save", "B"),
     Route("GET", "/projects/reports/{report_id}", "report_render", "A"),
     Route("PATCH", "/projects/reports/{report_id}", "report_save", "B"),

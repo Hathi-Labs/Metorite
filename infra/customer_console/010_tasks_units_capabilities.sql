@@ -224,12 +224,25 @@ FROM tier_binding tb
 -- NULL, so a replay against a database that holds one fails outright. On a
 -- fresh install there are no tombstones and this filter changes nothing.
 WHERE tb.task = 'transcribe' AND tb.model IS NOT NULL
+-- 🔴 **IN FORCE ONLY (2026-09-24).** This file replays on EVERY deploy, and
+-- `tier_binding` keeps every superseded row for the audit trail. Read without
+-- this filter, the 2026-01-01 `tier-stt` row re-declared Groq Whisper after
+-- the owner unbound the tier and removed the model, once per deploy. A row
+-- is in force when it carries the newest date that has passed for its tier
+-- and task, the same rule `GET /catalog/models` reads. A removal is refused
+-- while a binding is in force, so this can never revive a removed model.
+  AND tb.effective_from = (
+      SELECT max(x.effective_from) FROM tier_binding x
+      WHERE x.tier = tb.tier AND x.task = tb.task AND x.effective_from <= now())
 ON CONFLICT (model, task) DO NOTHING;
 
 -- Every other seeded binding is a chat model, and chat streams.
 INSERT INTO model_capability (model, task, invocation, streams)
 SELECT DISTINCT tb.model, 'chat', 'acompletion', TRUE
 FROM tier_binding tb
--- ⚠️ The tombstone filter, for the reason above (H-178).
+-- ⚠️ The tombstone filter and the in-force filter, for the reasons above.
 WHERE tb.task = 'chat' AND tb.model IS NOT NULL
+  AND tb.effective_from = (
+      SELECT max(x.effective_from) FROM tier_binding x
+      WHERE x.tier = tb.tier AND x.task = tb.task AND x.effective_from <= now())
 ON CONFLICT (model, task) DO NOTHING;

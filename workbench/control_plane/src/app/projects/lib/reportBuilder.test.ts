@@ -9,14 +9,23 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { peek, put } from "@/lib/dataCache";
 
-import { type ProjectRow, type ReportRow, isReadOnlyPost, projectsApi, projectsKey } from "./api";
+import {
+  type ProjectRow,
+  type ReportRow,
+  type ReportTemplate,
+  isReadOnlyPost,
+  projectsApi,
+  projectsKey,
+} from "./api";
 import {
   DEFAULT_REPORT_SECTIONS,
   PERIODS,
   REPORT_SECTIONS,
   SAVED_PERIOD,
   WHOLE_ORGANIZATION,
+  YOUR_REPORTS_LIMIT,
   builderStateFrom,
+  builderStateFromTemplate,
   configFor,
   createPayload,
   newBuilderState,
@@ -25,8 +34,10 @@ import {
   periodOptions,
   saveRefusal,
   scopeOptions,
+  templateLabel,
   toggleSection,
   withPeriod,
+  yourReports,
 } from "./reportBuilder";
 
 const TREE: ProjectRow[] = [
@@ -238,5 +249,154 @@ describe("a preview drops no cached read, and a write does", () => {
     put(key, { rows: [], total: 0 });
     await projectsApi.patchReport("r-1", patchPayload(newBuilderState()));
     expect(peek(key)).toBeUndefined();
+  });
+});
+
+// ── WS-27bn R2: templates and "Your reports" (§8 R2) ─────────────────────────
+
+/** Shaped as `GET /projects/reports/templates` answers. A fixture, not a mirror. */
+const WEEKLY_DELIVERY: ReportTemplate = {
+  key: "weekly_delivery",
+  name: "Weekly delivery",
+  question: "What did we finish last week, and how fast?",
+  scope_kinds: ["project", "org"],
+  available: true,
+  sections: ["finished", "throughput", "load", "stuck"],
+  weeks: 1,
+  skip_current_week: true,
+};
+
+const FOCUS_SWITCHING: ReportTemplate = {
+  key: "focus_switching",
+  name: "Focus and switching",
+  question: "Who is spread over too many projects?",
+  scope_kinds: ["team", "org"],
+  available: false,
+  waits_for: "A filter on the kind of conflict",
+};
+
+describe("choosing a template fills the builder", () => {
+  it("T4 presets the four sections, last week, and its key", () => {
+    const state = builderStateFromTemplate(WEEKLY_DELIVERY);
+    expect(state).not.toBeNull();
+    expect(state!.sections).toEqual(["finished", "throughput", "load", "stuck"]);
+    expect(state!.weeks).toBe(1);
+    expect(state!.skipCurrentWeek).toBe(true);
+    expect(periodKey(state!)).toBe("last_week");
+    expect(state!.template).toBe("weekly_delivery");
+    expect(state!.name).toBe("Weekly delivery");
+    expect(state!.projectId).toBeNull();
+  });
+
+  it("the member can still change each chip, and the key stays", () => {
+    let state = builderStateFromTemplate(WEEKLY_DELIVERY)!;
+    state = { ...state, sections: toggleSection(state.sections, "throughput") };
+    state = { ...state, sections: toggleSection(state.sections, "capacity") };
+    state = withPeriod(state, "last_4_weeks");
+    state = { ...state, projectId: "proj-1", includeSubtree: false };
+    expect(configFor(state)).toEqual({
+      weeks: 4,
+      skip_current_week: true,
+      include_subtree: false,
+      sections: ["finished", "load", "capacity", "stuck"],
+      template: "weekly_delivery",
+    });
+  });
+
+  it("a coming-soon template cannot open the builder", () => {
+    expect(builderStateFromTemplate(FOCUS_SWITCHING)).toBeNull();
+    // The flag alone refuses it: a coming-soon template that names sections
+    // still cannot open the builder.
+    expect(
+      builderStateFromTemplate({ ...WEEKLY_DELIVERY, available: false })
+    ).toBeNull();
+    // A live flag with no sections is refused too: it names nothing to save.
+    expect(
+      builderStateFromTemplate({ ...WEEKLY_DELIVERY, sections: [] })
+    ).toBeNull();
+  });
+});
+
+describe("config.template round-trips through an edit", () => {
+  const row: ReportRow = {
+    id: "r-2",
+    project_id: null,
+    scope: "portfolio",
+    name: "Weekly",
+    config: {
+      weeks: 1,
+      skip_current_week: true,
+      include_subtree: true,
+      sections: ["finished", "throughput", "load", "stuck"],
+      template: "weekly_delivery",
+    },
+    created_by: "a@example.test",
+    created_at: "2026-09-24T00:00:00Z",
+    mine: true,
+  };
+
+  it("an edit that changes only the sections keeps the template", () => {
+    const state = builderStateFrom(row);
+    expect(state.template).toBe("weekly_delivery");
+    const edited = { ...state, sections: toggleSection(state.sections, "stuck") };
+    expect(patchPayload(edited).config).toEqual({
+      weeks: 1,
+      skip_current_week: true,
+      include_subtree: true,
+      sections: ["finished", "throughput", "load"],
+      template: "weekly_delivery",
+    });
+  });
+
+  it("no template sends no key, exactly as in R1", () => {
+    const config = configFor(newBuilderState());
+    expect("template" in config).toBe(false);
+    expect("template" in createPayload(newBuilderState()).config).toBe(false);
+  });
+
+  it("a card names the template, or says Custom", () => {
+    expect(templateLabel(row, [WEEKLY_DELIVERY])).toBe("Weekly delivery");
+    const custom = { ...row, config: { ...row.config, template: undefined } };
+    expect(templateLabel(custom, [WEEKLY_DELIVERY])).toBe("Custom");
+  });
+});
+
+describe("Your reports", () => {
+  function report(id: string, mine: boolean | undefined, created_at: string): ReportRow {
+    return {
+      id,
+      project_id: null,
+      scope: "portfolio",
+      name: id,
+      config: configFor(newBuilderState()),
+      created_by: "x@example.test",
+      created_at,
+      mine,
+    };
+  }
+
+  it("lists only the rows the server marks mine, newest first", () => {
+    const rows = [
+      report("old-mine", true, "2026-09-01T00:00:00Z"),
+      report("theirs", false, "2026-09-20T00:00:00Z"),
+      report("new-mine", true, "2026-09-10T00:00:00Z"),
+      report("unmarked", undefined, "2026-09-22T00:00:00Z"),
+    ];
+    expect(yourReports(rows).map((r) => r.id)).toEqual(["new-mine", "old-mine"]);
+  });
+
+  it("shows at most six", () => {
+    const rows = Array.from({ length: 9 }, (_, i) =>
+      report(`r${i}`, true, `2026-09-${String(10 + i).padStart(2, "0")}T00:00:00Z`)
+    );
+    expect(YOUR_REPORTS_LIMIT).toBe(6);
+    expect(yourReports(rows).map((r) => r.id)).toEqual([
+      "r8",
+      "r7",
+      "r6",
+      "r5",
+      "r4",
+      "r3",
+    ]);
   });
 });

@@ -41,6 +41,7 @@ import { serializeReasoning } from "@/lib/chatStream";
 import { useAgentEvents } from "@/lib/agentEvents";
 import { buildFrontendToolsAddendum, runFrontendToolEvent } from "@/hooks/useFrontendTool";
 import { isInterruptedReply } from "@/lib/chatInterrupted";
+import { missingAgentIntegrations, missingIntegrationsText } from "@/lib/missingIntegrations";
 
 // Unified model fallback — shown while /api/models/all is loading.
 // Always includes the tiers (always accessible) and Gemini models (default provider).
@@ -1078,7 +1079,9 @@ export default function AgentChat({
       .catch(() => {});
   }, [messages, currentAgentName]);
 
-  const missingMandatory = statuses.filter((s) => s.mandatory && !s.configured);
+  // Only what this agent itself requires. The gateway's platform-level github
+  // prerequisite is not the agent's, and it raised a false banner in every chat.
+  const missingMandatory = missingAgentIntegrations(statuses);
 
   // ── Smart follow-up suggestions (LLM-generated, contextual) ───────
   const [smartSuggestions, setSmartSuggestions] = useState<string[]>([]);
@@ -1581,8 +1584,8 @@ export default function AgentChat({
       {!bannerDismissed && missingMandatory.length > 0 && (
         <div className="shrink-0 border-b border-warning/20 bg-warning/5 px-4 py-2 flex items-center gap-2 text-[11px]">
           <span className="text-warning">⚡</span>
-          <span className="text-warning/80">{missingMandatory.length} integration{missingMandatory.length > 1 ? "s" : ""} not configured</span>
-          <button onClick={() => setBannerDismissed(true)} className="ml-auto w-5 h-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-secondary tech-transition">✕</button>
+          <span className="text-warning/80">{missingIntegrationsText(missingMandatory)}</span>
+          <button onClick={() => setBannerDismissed(true)} aria-label="Dismiss" className="ml-auto w-5 h-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-secondary tech-transition">✕</button>
         </div>
       )}
 
