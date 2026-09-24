@@ -1,5 +1,6 @@
 {
   "name": "apis-config",
+  "app": "integrations",
   "description": "API Configuration Assistant — discovers APIs, generates credential schemas, and guides setup. Ask me to add any API service by name.",
   "version": "0.1.0",
   "runtime": "maf",

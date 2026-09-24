@@ -1,5 +1,6 @@
 {
   "name": "WhatsApp Assistant",
+  "app": "whatsapp",
   "description": "AI copilot for a WhatsApp Business inbox — briefs, triages, summarizes groups, transcribes voice notes, and drafts replies and follow-up nudges. Drafts only; never sends.",
   "version": "0.1.0",
   "author": "Metorite",
