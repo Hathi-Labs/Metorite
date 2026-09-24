@@ -137,8 +137,13 @@ export interface EntityPillProps {
  * text, so its padding reads as a space: "Hathi Labs , the task". The DOM
  * holds no space there (`markdownPills.test.ts`), and the plugin keeps the
  * punctuation after a pill on the same line as the pill.
+ *
+ * `text-[0.9em]`, not `text-xs` (visual re-check). A pill sits in running
+ * text, so it sizes from that text, as inline code does in `MarkdownBody`
+ * (`0.82em`). In rem it followed the density scale while the chat body,
+ * sized in px, did not, so at compact density the pills shrank alone.
  */
-const SHAPE = "max-w-64 px-1 py-px text-xs leading-snug align-middle font-normal";
+const SHAPE = "max-w-64 px-1 py-px text-[0.9em] leading-snug align-middle font-normal";
 
 /**
  * A linked pill's ink (S9 visual review). The label is foreground ink, so a

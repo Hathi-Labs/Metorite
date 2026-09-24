@@ -136,6 +136,18 @@ describe("a pill that does not link", () => {
     expect(html).toContain("max-w-64");
     expect(html).toContain(`title="${long}"`);
   });
+
+  it("sizes its text from the prose around it, not from rem (visual re-check)", () => {
+    for (const props of [
+      { kind: "project" as const, label: "A" },
+      { kind: "project" as const, label: "A", href: PROJECT },
+    ]) {
+      const html = render(props);
+      expect(html).toContain("text-[0.9em]");
+      expect(html).not.toMatch(/\btext-xs\b/);
+      expect(html).toContain("leading-snug");
+    }
+  });
 });
 
 describe("the kind is never only a hue", () => {

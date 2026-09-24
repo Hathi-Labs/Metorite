@@ -152,30 +152,52 @@ export function splitText(value: string): MdNode[] {
 /** The class of the span that keeps a pill and its punctuation together. */
 export const PILL_GROUP_CLASS = "whitespace-nowrap";
 
+/** Punctuation that closes onto a pill: `«X»,` `«X».` `«X»)` `«X»”`. */
+const TRAILING = /^[,.;:!?)\]"'”’]+/;
+/** An opener right before a pill: `(«X»` `[«X»` `“«X»`. Visual re-check. */
+const LEADING = /[(["'“‘]+$/;
+
 /**
- * Keep a pill and the punctuation right after it on one line (S9 visual
+ * Keep a pill and the punctuation that touches it on one line (S9 visual
  * review). Without this, a wrap can put the pill at the end of one line and
- * its comma at the start of the next. The group adds no space: the comma
- * follows the pill's closing tag directly.
+ * its comma at the start of the next, or leave "Scope (" alone at the end of
+ * a line. The group adds no space: each mark touches the pill's tag.
  */
 function glueTrailingPunctuation(nodes: MdNode[]): MdNode[] {
   const out: MdNode[] = [];
   for (let k = 0; k < nodes.length; k++) {
     const node = nodes[k];
-    const next = nodes[k + 1];
-    const punct = next?.type === "text" ? (next.value ?? "").match(/^[,.;:!?)\]]+/) : null;
-    if (node.type !== "entityPill" || !punct) {
+    if (node.type !== "entityPill") {
       out.push(node);
       continue;
     }
+    const prev = out[out.length - 1];
+    const next = nodes[k + 1];
+    const lead = prev?.type === "text" ? (prev.value ?? "").match(LEADING) : null;
+    const trail = next?.type === "text" ? (next.value ?? "").match(TRAILING) : null;
+    if (!lead && !trail) {
+      out.push(node);
+      continue;
+    }
+    const children: MdNode[] = [];
+    if (lead) {
+      const before = (prev!.value ?? "").slice(0, -lead[0].length);
+      if (before) prev!.value = before;
+      else out.pop();
+      children.push({ type: "text", value: lead[0] });
+    }
+    children.push(node);
+    if (trail) children.push({ type: "text", value: trail[0] });
     out.push({
       type: "entityPillGroup",
       data: { hName: "span", hProperties: { className: PILL_GROUP_CLASS } },
-      children: [node, { type: "text", value: punct[0] }],
+      children,
     });
-    const rest = (next!.value ?? "").slice(punct[0].length);
-    if (rest) out.push({ type: "text", value: rest });
-    k += 1;
+    if (trail) {
+      const rest = (next!.value ?? "").slice(trail[0].length);
+      if (rest) out.push({ type: "text", value: rest });
+      k += 1;
+    }
   }
   return out;
 }

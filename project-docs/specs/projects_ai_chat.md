@@ -1815,6 +1815,13 @@ The skill output does not change. The cards read the «» in the tool output
     markup holds none. The gap that the review saw was the right padding of
     the pill, so a pill now takes `px-1`. The plugin keeps a pill and its
     punctuation on one line. Fence: `src/components/markdownPills.test.ts`.
+    The group also takes an opening bracket or quote that touches the pill,
+    so "Scope (" does not end a line alone (visual re-check). Fence:
+    `src/lib/remarkEntityPills.test.ts`.
+    The pill text is `0.9em` of the text around it, as inline code is
+    `0.82em`. At compact density it no longer shrinks more than the prose.
+    A measured line with a pill is as tall as a line without one. Fence:
+    `src/components/ui/EntityPill.test.ts`.
 11. **A person pill takes a name from any read in the message** (visual
     review). The index reads `- «Name» · assignee «email»` at any indent and
     `«Name» («email»)`. An address printed as its own name is no name. Fence:

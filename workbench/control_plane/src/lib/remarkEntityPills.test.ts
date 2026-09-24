@@ -67,6 +67,18 @@ describe("splitText", () => {
     expect(out[out.length - 1]).toEqual({ type: "text", value: " the task" });
   });
 
+  it("keeps an opening bracket or quote with the pill (visual re-check)", () => {
+    const out = splitText("Scope («Projects/Tasks App») and “«Board»”");
+    const groups = out.filter((n) => n.type === "entityPillGroup");
+    expect(groups.map((g) => g.children!.map((n) => n.value ?? n.type))).toEqual([
+      ["(", "entityPill", ")"],
+      ["“", "entityPill", "”"],
+    ]);
+    expect(out[0]).toEqual({ type: "text", value: "Scope " });
+    // An opener with a space after it is not touching the pill.
+    expect(splitText("a ( «X» b").some((n) => n.type === "entityPillGroup")).toBe(false);
+  });
+
   it("drops a stray mark", () => {
     expect(texts(splitText("an «unclosed name"))).toBe("an unclosed name");
   });
