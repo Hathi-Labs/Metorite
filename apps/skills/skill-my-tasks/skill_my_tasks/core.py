@@ -94,7 +94,7 @@ _DATA_LEGEND = (
 _NO_CONNECTOR = (
     "No external tool is connected, and none can be (D52). Metorite is the "
     "system of record for tasks, so every task is already here and the store "
-    "is never stale. Use gtd_list_projects for the member's Areas and the "
+    "is never stale. Use my_tasks_list_projects for the member's Areas and the "
     "company's projects."
 )
 
@@ -440,7 +440,7 @@ def _ordered(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # ── Capture ──────────────────────────────────────────────────────────────────
 
 @_annotate_risk(idempotent=False)
-async def gtd_capture(title: str, notes: str = "") -> str:
+async def my_tasks_capture(title: str, notes: str = "") -> str:
     """Capture one thought/task into the inbox (capture ≠ clarify).
 
     Args:
@@ -462,14 +462,14 @@ async def gtd_capture(title: str, notes: str = "") -> str:
                 and c.get("match_id") != item["id"]):
             msg += (f"\nWARNING: looks {c['verdict'].upper()} to existing "
                     f"\"{c.get('match_title')}\" — ask the user whether it's "
-                    "the same item; if yes, remove one via gtd_update/organize.")
+                    "the same item; if yes, remove one via my_tasks_update/organize.")
     except Exception:
         pass
     return msg
 
 
 @_annotate_risk(idempotent=False)
-async def gtd_capture_many(lines: str) -> str:
+async def my_tasks_capture_many(lines: str) -> str:
     """Capture a brain-dump into the inbox. Freeform text is fine — a pasted
     paragraph is atomized into individual items by the AI (deterministic
     fallback), and each is checked against existing open items: confident
@@ -533,7 +533,7 @@ _VIEW_QUERY: dict[str, dict[str, str]] = {
 
 
 @_annotate_risk(read_only=True, idempotent=True)
-async def gtd_list(view: str = "inbox", query: str = "",
+async def my_tasks_list(view: str = "inbox", query: str = "",
                    context: str = "") -> str:
     """List tasks for a view.
 
@@ -571,7 +571,7 @@ async def gtd_list(view: str = "inbox", query: str = "",
 
 
 @_annotate_risk(read_only=True, idempotent=True)
-async def gtd_list_projects() -> str:
+async def my_tasks_list_projects() -> str:
     """List where a task can live: the member's own AREAS (private categories
     under their personal project) and the COMPANY's projects (shared with the
     team). Use an Area id to file private work, a project id to delegate or
@@ -592,14 +592,14 @@ async def gtd_list_projects() -> str:
 
 
 @_annotate_risk(read_only=True, idempotent=True)
-async def gtd_accounts() -> str:
+async def my_tasks_accounts() -> str:
     """Connected PM-tool workspaces. There are none, and there cannot be (D52):
     answers with a short note and calls nothing."""
     return _NO_CONNECTOR
 
 
 @_annotate_risk(read_only=True, idempotent=True)
-async def gtd_sync(account_id: str = "", full: bool = False) -> str:
+async def my_tasks_sync(account_id: str = "", full: bool = False) -> str:
     """Pull tasks from a connected PM tool. There is none (D52), so this is a
     no-op that says so and calls nothing. Kept as a tool so an agent that
     still calls it gets an honest answer rather than a tool-not-found error.
@@ -608,7 +608,7 @@ async def gtd_sync(account_id: str = "", full: bool = False) -> str:
 
 
 @_annotate_risk(read_only=True, idempotent=True)
-async def gtd_inbox_insights() -> str:
+async def my_tasks_inbox_insights() -> str:
     """Whole-inbox health: counts per bucket, oldest capture, stale
     waiting-fors, projects missing a next action. Use before processing."""
     d = await _request("GET", "/tasks/insights")
@@ -623,7 +623,7 @@ async def gtd_inbox_insights() -> str:
 
 
 @_annotate_risk(read_only=True, idempotent=True)
-async def gtd_people(query: str = "") -> str:
+async def my_tasks_people(query: str = "") -> str:
     """Search the company's people — roles, skills, capacity, availability
     (the org-knowledge layer). Use to pick WHO should own a delegated task.
 
@@ -663,19 +663,19 @@ async def gtd_people(query: str = "") -> str:
 # ── Clarify / organize ───────────────────────────────────────────────────────
 
 @_annotate_risk(read_only=True, idempotent=True)
-async def gtd_clarify(item_id: str) -> str:
+async def my_tasks_clarify(item_id: str) -> str:
     """Get the structured clarify proposal for one inbox item — disposition,
     next action, matched project, destination, default stage, confidence.
 
     Args:
-        item_id: The item's full UUID (from gtd_list).
+        item_id: The item's full UUID (from my_tasks_list).
     """
     p = await _request("POST", f"/tasks/items/{item_id}/clarify")
     return json.dumps(p, indent=1)
 
 
 @_annotate_risk(idempotent=True)
-async def gtd_organize(
+async def my_tasks_organize(
     item_id: str,
     kind: str,
     next_action: str = "",
@@ -702,7 +702,7 @@ async def gtd_organize(
         energy: low | medium | high.
         due_at: ISO date/datetime for a deadline or the calendar day.
         account_id: Ignored. There is no connected workspace (D52).
-        project_id: Project UUID to file under (from gtd_list_projects). A
+        project_id: Project UUID to file under (from my_tasks_list_projects). A
             delegate decision needs a COMPANY project — a colleague cannot be
             assigned inside your private tree.
         status: A lane NAME in the destination project, e.g. "Backlog". It is
@@ -774,7 +774,7 @@ def _fmt_project_plan(plan: dict[str, Any]) -> str:
 
 
 @_annotate_risk(idempotent=True)
-async def gtd_plan_project(
+async def my_tasks_plan_project(
     name: str,
     description: str = "",
     apply: bool = False,
@@ -809,7 +809,7 @@ async def gtd_plan_project(
         "name": name, "description": description or None, "target": target})
     summary = _fmt_project_plan(plan)
     if not apply:
-        return ("Proposed plan (review with the user, then call gtd_plan_project "
+        return ("Proposed plan (review with the user, then call my_tasks_plan_project "
                 "with apply=true to create it):\n\n" + summary)
     if target != "local":
         # D52: there is no provider to target any more. Refuse loudly rather
@@ -839,7 +839,7 @@ def _flag(v: str) -> bool | None:
 
 
 @_annotate_risk(idempotent=True)
-async def gtd_update(item_id: str, title: str = "", notes: str = "",
+async def my_tasks_update(item_id: str, title: str = "", notes: str = "",
                      defer_until: str = "", context: str = "",
                      energy: str = "", time_estimate_mins: int = 0,
                      due_at: str = "", important: str = "",
@@ -901,7 +901,7 @@ async def gtd_update(item_id: str, title: str = "", notes: str = "",
 # ── Manage existing tasks (the app's action surface, over chat) ──────────────
 
 @_annotate_risk(idempotent=True)
-async def gtd_complete(item_id: str, undo: bool = False) -> str:
+async def my_tasks_complete(item_id: str, undo: bool = False) -> str:
     """Mark a task DONE — or reopen it with undo=True. Done moves the task's
     SHARED status into its project's done lane, so the team's board and your
     list agree at the same instant. Reopen puts it back in the project's
@@ -929,10 +929,10 @@ async def gtd_complete(item_id: str, undo: bool = False) -> str:
 
 
 @_annotate_risk(idempotent=True)
-async def gtd_move(item_id: str, to: str) -> str:
+async def my_tasks_move(item_id: str, to: str) -> str:
     """Move a task between GTD buckets — reactivate a someday, park a next
-    action, trash a dead item. (For DONE use gtd_complete; for delegating use
-    gtd_delegate.) A bucket is YOUR view of the task: the team's board does
+    action, trash a dead item. (For DONE use my_tasks_complete; for delegating use
+    my_tasks_delegate.) A bucket is YOUR view of the task: the team's board does
     not move. Trash is recoverable from the app.
 
     Args:
@@ -949,7 +949,7 @@ async def gtd_move(item_id: str, to: str) -> str:
 
 
 @_annotate_risk(read_only=True, idempotent=True)
-async def gtd_detail(item_id: str) -> str:
+async def my_tasks_detail(item_id: str) -> str:
     """Full detail for one task: every field (context, energy, estimate,
     priority flags, deep-work, stage, assignees, schedule), the latest
     comments, the attachment count, and the stages its project uses.
@@ -981,7 +981,7 @@ async def gtd_detail(item_id: str) -> str:
             a.get("name", "?") if isinstance(a, dict) else str(a)
             for a in assignees))
     if i.get("subtask_count"):
-        lines.append(f"  subtasks: {i['subtask_count']} (gtd_subtasks to list)")
+        lines.append(f"  subtasks: {i['subtask_count']} (my_tasks_subtasks to list)")
     if i.get("project_id"):
         try:
             lanes = await _statuses(str(i["project_id"]))
@@ -1014,7 +1014,7 @@ async def gtd_detail(item_id: str) -> str:
 
 
 @_annotate_risk(idempotent=True)
-async def gtd_set_stage(item_id: str, stage: str) -> str:
+async def my_tasks_set_stage(item_id: str, stage: str) -> str:
     """Change a task's board stage / status — one of ITS project's lanes, by
     name (§4.6). If the name doesn't match, the valid options come back so you
     can retry.
@@ -1037,7 +1037,7 @@ async def gtd_set_stage(item_id: str, stage: str) -> str:
 
 
 @_annotate_risk(idempotent=False, open_world=True)
-async def gtd_delegate(
+async def my_tasks_delegate(
     item_id: str,
     assignee_name: str,
     assignee_email: str = "",
@@ -1049,11 +1049,11 @@ async def gtd_delegate(
     next_action: str = "",
 ) -> str:
     """Delegate/reassign an EXISTING task to a teammate (pick them with
-    gtd_people; confirm with the user first). Three facts in one action: they
+    my_tasks_people; confirm with the user first). Three facts in one action: they
     are the assignee (shared), you are waiting on them (yours), and the
     waiting started now. A task in YOUR private tree must move to a company
     project first, so the teammate can see it — pass project_id (from
-    gtd_list_projects) and the move and the assignment happen in one
+    my_tasks_list_projects) and the move and the assignment happen in one
     transaction.
 
     Args:
@@ -1118,7 +1118,7 @@ async def gtd_delegate(
 
 
 @_annotate_risk(read_only=True, idempotent=True)
-async def gtd_subtasks(item_id: str) -> str:
+async def my_tasks_subtasks(item_id: str) -> str:
     """List a task's subtasks (checklist steps), in order.
 
     Args:
@@ -1140,7 +1140,7 @@ async def gtd_subtasks(item_id: str) -> str:
 
 
 @_annotate_risk(idempotent=False)
-async def gtd_add_subtasks(item_id: str, titles: str) -> str:
+async def my_tasks_add_subtasks(item_id: str, titles: str) -> str:
     """Break a task into steps — add subtasks under it. Each is an ordinary
     task in the parent's project, assigned to you, created in the order given.
 
@@ -1170,7 +1170,7 @@ async def gtd_add_subtasks(item_id: str, titles: str) -> str:
 
 
 @_annotate_risk(idempotent=True)
-async def gtd_archive(item_id: str, restore: bool = False) -> str:
+async def my_tasks_archive(item_id: str, restore: bool = False) -> str:
     """Archive a task (hide it from every active view, yours AND the team's
     board) or un-archive it with restore=True. An open task is refused: the
     board archives closed work only. Confirm with the user first.
@@ -1187,10 +1187,10 @@ async def gtd_archive(item_id: str, restore: bool = False) -> str:
 # ── Calendar / timeboxing ─────────────────────────────────────────────────────
 
 @_annotate_risk(idempotent=True)
-async def gtd_schedule(item_id: str, start: str, end: str = "") -> str:
+async def my_tasks_schedule(item_id: str, start: str, end: str = "") -> str:
     """Timebox a task onto the calendar — set WHEN the user will do it. Your
     own block: two people assigned one task each block their own time.
-    Reversible with gtd_unschedule.
+    Reversible with my_tasks_unschedule.
 
     Args:
         item_id: The item's full UUID.
@@ -1214,7 +1214,7 @@ async def gtd_schedule(item_id: str, start: str, end: str = "") -> str:
 
 
 @_annotate_risk(idempotent=True)
-async def gtd_unschedule(item_id: str) -> str:
+async def my_tasks_unschedule(item_id: str) -> str:
     """Remove a task's calendar time-block (it stays a next action).
 
     Args:
@@ -1225,7 +1225,7 @@ async def gtd_unschedule(item_id: str) -> str:
 
 
 @_annotate_risk(idempotent=True)
-async def gtd_list_schedule(from_iso: str, to_iso: str) -> str:
+async def my_tasks_list_schedule(from_iso: str, to_iso: str) -> str:
     """List what's timeboxed on the calendar in a datetime window — so you can
     plan around existing blocks and never double-book. The window is
     half-open, [from, to). Done blocks are listed too, marked ✓: they still
@@ -1300,7 +1300,7 @@ def _fmt_plan(plan: dict[str, Any], applied: bool) -> str:
 
 
 @_annotate_risk(idempotent=True)
-async def gtd_plan_day(apply: bool = False, energy_note: str = "") -> str:
+async def my_tasks_plan_day(apply: bool = False, energy_note: str = "") -> str:
     """Rebuild the user's day with AI. Reshuffles what's ALREADY on today's
     calendar (not-done, movable blocks) into the time that's left, SWEEPS IN any
     unfinished tasks left over from PRIOR days, trims whatever no longer fits back
@@ -1334,12 +1334,12 @@ async def gtd_plan_day(apply: bool = False, energy_note: str = "") -> str:
 
 
 @_annotate_risk(idempotent=True)
-async def gtd_replan_day(apply: bool = False) -> str:
+async def my_tasks_replan_day(apply: bool = False) -> str:
     """Fit what's left — when the user fell behind, take today's not-done movable
     blocks (INCLUDING ones whose time already slipped past earlier today) and
     repack them into the time that's actually left, around fixed meetings and
     what's done, trimming whatever no longer fits back onto their list. Adds NO
-    new work (that's gtd_plan_day / Rebuild). Reversible. Propose first, apply
+    new work (that's my_tasks_plan_day / Rebuild). Reversible. Propose first, apply
     after the user agrees; apply=True commits the proposal you last showed.
 
     Args:
@@ -1352,12 +1352,12 @@ async def gtd_replan_day(apply: bool = False) -> str:
 
 
 @_annotate_risk(idempotent=True)
-async def gtd_rollover(apply: bool = False) -> str:
+async def my_tasks_rollover(apply: bool = False) -> str:
     """Return overdue-but-incomplete time-blocks to the user's UNSCHEDULED list
     (clears their schedule) so they can re-plan them, rather than auto-cramming
     them onto a day. Reversible. Propose first, apply after the user agrees;
     apply=True commits the proposal you last showed. To then place them, use
-    gtd_plan_day (Rebuild), which pulls from the unscheduled list.
+    my_tasks_plan_day (Rebuild), which pulls from the unscheduled list.
 
     Args:
         apply: False = propose only (default); True = commit the proposal you
@@ -1369,7 +1369,7 @@ async def gtd_rollover(apply: bool = False) -> str:
 
 
 @_annotate_risk(idempotent=True)
-async def gtd_day_digest() -> str:
+async def my_tasks_day_digest() -> str:
     """A quick snapshot of the user's day — what's scheduled, how much is
     unscheduled, what's overdue, the ★ One Thing, and estimate accuracy. Use it
     to open a morning check-in or answer "how's my day looking?" (read-only)."""
@@ -1397,11 +1397,11 @@ async def gtd_day_digest() -> str:
     if d.get("overdue_count"):
         lines.append(
             f"⚠ {d['overdue_count']} overdue block(s) — offer to roll them over "
-            "(gtd_rollover).")
+            "(my_tasks_rollover).")
     if d.get("unscheduled_count"):
         lines.append(
             f"{d['unscheduled_count']} unscheduled next action(s) — offer to "
-            "plan the day (gtd_plan_day).")
+            "plan the day (my_tasks_plan_day).")
     op = d.get("estimate_over_pct")
     if op is not None and abs(op) >= 5:
         lines.append(
@@ -1410,7 +1410,7 @@ async def gtd_day_digest() -> str:
 
 
 @_annotate_risk(idempotent=True)
-async def gtd_estimate_stats() -> str:
+async def my_tasks_estimate_stats() -> str:
     """How accurate the user's time estimates are (planned vs actual over recent
     timed blocks) — answers "am I good at estimating?" (read-only)."""
     # `lens.ts::lensEstimateStats`. The old `/tasks/calendar/estimate-stats`
@@ -1428,7 +1428,7 @@ async def gtd_estimate_stats() -> str:
 
 
 @_annotate_risk(idempotent=True)
-async def gtd_set_one_thing(item_id: str = "", date: str = "") -> str:
+async def my_tasks_set_one_thing(item_id: str = "", date: str = "") -> str:
     """Set (or clear) the user's ★ One Thing — the single most important task for
     a day. The planner then protects it (first, in a peak-energy window, never
     dropped). Empty item_id clears it.

@@ -2,7 +2,7 @@
 
 import Icon, { themedIcon } from "@/components/Icon";
 import { useState } from "react";
-import { GtdItem } from "@/app/tasks/lib/types";
+import { MyTask } from "@/app/tasks/lib/types";
 import { durationLabel } from "@/app/tasks/lib/utils";
 import { priorityRank } from "@/app/tasks/lib/priority";
 import {
@@ -31,7 +31,7 @@ export function UnscheduledRail({
   onReschedulePopup,
   onDelete,
 }: {
-  tasks: GtdItem[];
+  tasks: MyTask[];
   capacityMins: number;
   capacityTarget: number;
   /** of the booked minutes, how many sit on leveraged/important work (80/20). */
@@ -40,13 +40,13 @@ export function UnscheduledRail({
   onToggleOneThing: (id: string) => void;
   /** approaching deadlines — rendered as a badge + sort boost ON the normal
    *  cards (one list, no duplication; every card drags + timeboxes alike). */
-  dueSoon: { item: GtdItem; days: number }[];
+  dueSoon: { item: MyTask; days: number }[];
   urgentWindowHours: number;
   doneStats: { count: number; mins: number };
   onPlan: () => void;
   onOpen: (id: string) => void;
   /** context menu: timebox into the first free slot (no dragging needed). */
-  onTimebox: (t: GtdItem) => void;
+  onTimebox: (t: MyTask) => void;
   /** context menu: exact date/time via the global Schedule popup. */
   onReschedulePopup: (id: string) => void;
   /** context menu: confirm-first delete flow. */
@@ -54,7 +54,7 @@ export function UnscheduledRail({
 }) {
   const over = capacityMins > capacityTarget;
   // Right-click menu on a card (the rail is desktop-only, so no long-press).
-  const [ctx, setCtx] = useState<{ x: number; y: number; item: GtdItem } | null>(
+  const [ctx, setCtx] = useState<{ x: number; y: number; item: MyTask } | null>(
     null,
   );
   const leveragePct =

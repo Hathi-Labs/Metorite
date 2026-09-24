@@ -12,7 +12,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { GtdItem, ViewKey } from "../lib/types";
+import { MyTask, ViewKey } from "../lib/types";
 import { useTaskStore } from "../lib/taskStore";
 import { TaskCard } from "./TaskCard";
 import {
@@ -64,7 +64,7 @@ export function TaskListGrouped({
   view,
   groupBy = "",
 }: {
-  items: GtdItem[];
+  items: MyTask[];
   view: ViewKey;
   /** The grouping axis. "" (default) groups by STATUS (drag-reorderable stages).
    *  A lens ("priority" | "mode" | "energy" | "context") groups by that signal —
@@ -133,7 +133,7 @@ export function TaskListGrouped({
   // A task whose category is not a Next group (backlog, triage, cancelled)
   // answers null and is not drawn under any header.
   const groupOf = useCallback(
-    (i: GtdItem): string | null =>
+    (i: MyTask): string | null =>
       statusGrouped ? nextCategoryOf(i) : UNSET,
     [statusGrouped],
   );
@@ -147,7 +147,7 @@ export function TaskListGrouped({
   }, [isLens, view, lensGroups, statusGrouped]);
 
   const byGroup = useMemo(() => {
-    const m = new Map<string, GtdItem[]>();
+    const m = new Map<string, MyTask[]>();
     for (const g of groups) m.set(g.key, []);
     if (isLens && view === "next") {
       // The lens slicer already bucketed the items; just sort within each group.
@@ -452,7 +452,7 @@ function DraggableRow({
   onDragOverGap,
   onDropGap,
 }: {
-  item: GtdItem;
+  item: MyTask;
   manual: boolean;
   selected: boolean;
   /** `shift` extends the selection from the anchor (`@/lib/selection`). */
@@ -582,7 +582,7 @@ function RowContent({
   grid,
   showStage,
 }: {
-  item: GtdItem;
+  item: MyTask;
   columns: ColumnDef[];
   grid: string;
   showStage: boolean;
@@ -641,11 +641,11 @@ function RowContent({
 // The lazily-loaded child subtasks of an expanded parent row. Each is the next
 // physical action for finishing the parent; clicking opens it, and the leading
 // dot toggles completion (a one-tap "did this step").
-function SubtaskRows({ parent }: { parent: GtdItem }) {
+function SubtaskRows({ parent }: { parent: MyTask }) {
   const loadSubtasks = useTaskStore((s) => s.loadSubtasks);
   const openFocus = useTaskStore((s) => s.openFocus);
   const quickDispose = useTaskStore((s) => s.quickDispose);
-  const [children, setChildren] = useState<GtdItem[] | null>(null);
+  const [children, setChildren] = useState<MyTask[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;

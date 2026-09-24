@@ -9,7 +9,7 @@ import { useToast } from "@/components/ui/Toast";
 import { categoricalAccent } from "@/lib/categorical";
 import type { LensArea } from "../lib/api";
 import { itemsInArea, useTaskStore, viewCounts } from "../lib/taskStore";
-import { GtdItem, ViewKey } from "../lib/types";
+import { MyTask, ViewKey } from "../lib/types";
 
 type NavRow = {
   view: ViewKey;
@@ -239,7 +239,7 @@ function NavButton({
 // the gateway did, because "deleted" over an archive would be a lie.
 
 /** Live work in one Area, from the loaded rows — the same rule the badges use. */
-function openInArea(items: GtdItem[], areaId: string): number {
+function openInArea(items: MyTask[], areaId: string): number {
   return itemsInArea(items, areaId).filter(
     (i) => !i.archivedAt && i.disposition !== "DONE",
   ).length;
@@ -249,7 +249,7 @@ function AreasSection({
   items,
   onNavigate,
 }: {
-  items: GtdItem[];
+  items: MyTask[];
   onNavigate?: () => void;
 }) {
   const areas = useTaskStore((s) => s.areas);

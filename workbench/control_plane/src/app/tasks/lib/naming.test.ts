@@ -10,8 +10,8 @@
  * looks at the text a member can see: JSX text nodes and string literals that
  * sit in `title=`, `aria-label=`, `placeholder=`, `label=` and toast calls.
  *
- * Comments and identifiers are out of scope on purpose. `GtdItem` is a type,
- * `gtd_list` is a tool name the skill owns (S9 renames those), and a code
+ * Comments and identifiers are out of scope on purpose. `MyTask` is a type,
+ * `my_tasks_list` is a tool name the skill owns (S9 renamed both), and a code
  * comment is not member-visible. Product copy is what the owner renamed.
  *
  * Spec: `project-docs/specs/my_tasks_cutover.md` §5 S5.

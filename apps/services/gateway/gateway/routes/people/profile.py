@@ -18,7 +18,7 @@ already lived at ``/tasks/people`` under ``admin:members:manage``, and adding
 verbs here that forwarded nowhere would have minted a hollow path. What changed
 is the *audience*. A person editing their own timezone is not an admin, and
 routing them through ``feature:tasks`` would hand every colleague the personal
-GTD task manager to change their own phone number — the exact reason the People
+My Tasks app to change their own phone number — the exact reason the People
 Center got its own feature slug in the first place.
 
 **There is still only one write IMPLEMENTATION.** This module authorizes and

@@ -10,9 +10,9 @@
  *   1. manages the task-manager session list (shared @/lib/sessions store,
  *      scoped to agentName="task-manager" — the SAME conversations the main
  *      chat app sees),
- *   2. feeds the agent the live GTD context (connected workspaces, current
+ *   2. feeds the agent the live My Tasks context (connected workspaces, current
  *      view, open item, inbox pressure) via buildTaskAssistantPersona,
- *   3. wires the GTD quick actions into the composer (user reviews & sends).
+ *   3. wires the My Tasks quick actions into the composer (user reviews & sends).
  */
 
 import Icon from "@/components/Icon";
@@ -125,7 +125,7 @@ export function AssistantRail({ onClose }: { onClose?: () => void } = {}) {
     [activeId],
   );
 
-  // Live GTD context — refreshed whenever the store or selection changes, so
+  // Live My Tasks context — refreshed whenever the store or selection changes, so
   // "clarify this" / "process my inbox" need no ids from the user.
   const settings = useTaskStore((s) => s.settings);
   const taskContextStr = useMemo(
@@ -247,7 +247,7 @@ export function AssistantRail({ onClose }: { onClose?: () => void } = {}) {
         </div>
       )}
 
-      {/* GTD quick actions — drop the prompt into the composer (the user
+      {/* My Tasks quick actions — drop the prompt into the composer (the user
           reviews & sends; same pattern as the email app's "Fix" flow).
           Shown only while the conversation is empty. */}
       {showQuickActions && (

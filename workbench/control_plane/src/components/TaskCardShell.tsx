@@ -23,7 +23,7 @@
  * and shadow, not by a second fill.
  *
  * WHAT goes inside stays each app's business — /projects feeds it
- * `lib/card.ts` facts and honours its own `shown_fields`, /tasks feeds it GTD
+ * `lib/card.ts` facts and honours its own `shown_fields`, /tasks feeds it My Tasks
  * badges. Only the shell and its visual grammar are shared.
  */
 

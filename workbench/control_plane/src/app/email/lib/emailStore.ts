@@ -359,7 +359,7 @@ interface EmailState {
   openCompose: (defaults?: { to: string; subject: string; replyToBody?: string; quote?: string; replyToMessageId?: string; messageId?: string }) => void;
   closeCompose: () => void;
   hydrateEmail: (email: Email) => void;
-  /** "Captured to Tasks" toast state (email → GTD inbox). */
+  /** "Captured to Tasks" toast state (email → My Tasks inbox). */
   taskCaptureNotice: {
     title: string;
     created: boolean;

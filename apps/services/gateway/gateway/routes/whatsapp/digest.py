@@ -39,7 +39,7 @@ class CommitmentWatchItem(BaseModel):
     chat_id: str
     text: str
     due_hint: str | None = None
-    has_task: bool = False               # True once captured to a GTD item
+    has_task: bool = False               # True once captured to a task
 
 
 class WaitingOnItem(BaseModel):

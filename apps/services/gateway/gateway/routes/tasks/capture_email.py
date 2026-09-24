@@ -33,7 +33,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.tasks.core import (
-    GtdItemModel,
+    MyTaskModel,
     _parse_jsonb,
     _row_to_item,
     _tenant_session,
@@ -59,7 +59,7 @@ class CaptureFromEmailRequest(BaseModel):
 
 
 class CaptureFromEmailResponse(BaseModel):
-    item: GtdItemModel
+    item: MyTaskModel
     created: bool                    # False = this email was already captured
     used_llm: bool = False
     # Surfaced so the UI toast can say what kind of task it created.
@@ -107,7 +107,7 @@ class CaptureDraftModel(BaseModel):
 
 
 class CapturePreviewResponse(BaseModel):
-    already_captured: GtdItemModel | None = None   # exact-email idempotent hit
+    already_captured: MyTaskModel | None = None   # exact-email idempotent hit
     draft: CaptureDraftModel                        # programmatic default
     similar: list[SimilarTaskModel] = []
     # Echoed so /enhance and /create don't re-resolve the email.
@@ -636,9 +636,9 @@ async def capture_from_email(
         # People power the delegate suggestion (org-knowledge layer, §6.1).
         from gateway.routes.tasks.ai import _user_contexts
         from gateway.routes.tasks.people import fetch_people_for_clarify
-        from gateway.routes.tasks.settings import gtd_models
+        from gateway.routes.tasks.settings import task_models
         people = await fetch_people_for_clarify(db)
-        models = await gtd_models(db, uid)
+        models = await task_models(db, uid)
 
         draft = await _llm_capture(
             subject=email.subject or "", from_name=from_name,
@@ -810,9 +810,9 @@ async def enhance_capture_from_email(
 
         from gateway.routes.tasks.ai import _user_contexts
         from gateway.routes.tasks.people import fetch_people_for_clarify
-        from gateway.routes.tasks.settings import gtd_models
+        from gateway.routes.tasks.settings import task_models
         people = await fetch_people_for_clarify(db)
-        models = await gtd_models(db, uid)
+        models = await task_models(db, uid)
 
         drafted = await _llm_capture(
             subject=email.subject or "", from_name=from_name,
@@ -915,7 +915,7 @@ class DetectCommitmentResponse(BaseModel):
     is_commitment: bool
     draft: CaptureDraftModel | None = None
     similar: list[SimilarTaskModel] = []
-    already_captured: GtdItemModel | None = None
+    already_captured: MyTaskModel | None = None
     used_llm: bool = False
 
 
@@ -1204,9 +1204,9 @@ async def detect_commitment_from_reply(
 
         from gateway.routes.tasks.ai import _user_contexts
         from gateway.routes.tasks.people import fetch_people_for_clarify
-        from gateway.routes.tasks.settings import gtd_models
+        from gateway.routes.tasks.settings import task_models
         people = await fetch_people_for_clarify(db)
-        models = await gtd_models(db, uid)
+        models = await task_models(db, uid)
 
         detected = await _llm_detect_commitment(
             subject=req.subject, owner_name=owner_name, owner_addrs=owner_addrs,

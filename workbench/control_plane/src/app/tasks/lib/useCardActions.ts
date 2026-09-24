@@ -1,7 +1,7 @@
 "use client";
 
 import { useTaskStore } from "./taskStore";
-import { GtdItem } from "./types";
+import { MyTask } from "./types";
 import { promoteAllowed } from "./promote";
 import {
   CATEGORY_LABEL,
@@ -21,7 +21,7 @@ import {
 // The pill still shows the task's own lane NAME (`workflowStage`), so
 // "Building" in one project and "In progress" in another both sit under
 // In progress.
-export function useCardActions(item: GtdItem) {
+export function useCardActions(item: MyTask) {
   const openSchedule = useTaskStore((s) => s.openSchedule);
   const openEliminate = useTaskStore((s) => s.openEliminate);
   const quickDispose = useTaskStore((s) => s.quickDispose);

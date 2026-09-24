@@ -2,7 +2,7 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
-import { GtdItem } from "@/app/tasks/lib/types";
+import { MyTask } from "@/app/tasks/lib/types";
 import {
   startOfDay,
   blocksForDay,
@@ -27,11 +27,11 @@ export function NowNextBar({
   onFillGap,
 }: {
   now: Date;
-  items: GtdItem[];
+  items: MyTask[];
   onOpen: (id: string) => void;
-  onComplete: (item: GtdItem) => void;
+  onComplete: (item: MyTask) => void;
   /** enter the Focus room for the current block (stamps actualStart). */
-  onStart: (item: GtdItem) => void;
+  onStart: (item: MyTask) => void;
   /** open right now with nothing scheduled → the Gap Filler (§4.5). */
   onFillGap: () => void;
 }) {

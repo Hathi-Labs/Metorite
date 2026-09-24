@@ -18,7 +18,7 @@ import {
   apiSetDayState,
 } from "@/app/tasks/lib/api";
 import { useTaskStore } from "@/app/tasks/lib/taskStore";
-import { GtdItem } from "@/app/tasks/lib/types";
+import { MyTask } from "@/app/tasks/lib/types";
 import {
   DEFAULT_BLOCK_MINS,
   startOfDay,
@@ -233,7 +233,7 @@ export function CalendarView() {
   // Without `at`, the task lands in the day's FIRST FREE SLOT (from now, when
   // the day is today). An already-scheduled item keeps its block length and
   // its own old block never counts as "busy".
-  const schedule = (item: GtdItem, day: Date, at?: Date, label = "Scheduled") => {
+  const schedule = (item: MyTask, day: Date, at?: Date, label = "Scheduled") => {
     const blockMins =
       item.scheduledStart && item.scheduledEnd
         ? Math.max(
@@ -268,9 +268,9 @@ export function CalendarView() {
   };
   // "Move to next free slot" — the one-gesture fix for an overdue block (and
   // the menu's home for the old Timebox-into-first-slot behavior).
-  const moveToNextFree = (item: GtdItem) =>
+  const moveToNextFree = (item: MyTask) =>
     schedule(item, startOfDay(new Date()), undefined, "Moved to next free slot");
-  const unschedule = (item: GtdItem) =>
+  const unschedule = (item: MyTask) =>
     applySchedule("Removed from calendar", [
       { id: item.id, patch: { scheduledStart: "", scheduledEnd: "" } },
     ]);
@@ -293,12 +293,12 @@ export function CalendarView() {
 
   // Focus timer: stamp when you actually START a block (clears any prior end so
   // it re-times cleanly). Actual work-time = actualEnd − actualStart.
-  const startFocus = (item: GtdItem) =>
+  const startFocus = (item: MyTask) =>
     updateItem(item.id, { actualStart: new Date().toISOString(), actualEnd: "" });
 
   // Complete/uncomplete a block. Finishing a STARTED (timed) session stamps
   // actualEnd = now so planned-vs-actual is captured; reopening clears it.
-  const completeBlock = (item: GtdItem) => {
+  const completeBlock = (item: MyTask) => {
     const toDone = item.disposition !== "DONE";
     if (toDone) {
       if (item.actualStart && !item.actualEnd)

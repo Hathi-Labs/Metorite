@@ -418,7 +418,7 @@ async def remove_member(
 
     The row is kept because ~every user-scoped table in the schema references
     people by email (`apps.owner_email`, `app_audit.user_email`, chat sessions,
-    GTD items). Hard-deleting the identity would orphan all of it; what
+    tasks). Hard-deleting the identity would orphan all of it; what
     actually matters for access is that the member resolves to nothing, which
     the `removed` status guarantees.
     """

@@ -1,4 +1,4 @@
-"""agent-task-manager — the GTD Task Manager agent.
+"""agent-task-manager — the My Tasks agent.
 
 The agent behind the /tasks app (spec: project-docs/specs/
 task_manager_app.md §3.1): captures thoughts, clarifies the inbox through
@@ -6,7 +6,7 @@ the GTD decision tree, organizes them, and answers status/progress/workload
 questions.
 
 Tool surface:
-  skill-task-gtd     — the task tools over the gateway's lens routes
+  skill-my-tasks     — the task tools over the gateway's lens routes
                        (``/projects/my/*``, ``/projects/tasks/*``), plus the
                        ``/tasks/*`` doors that pick their store at call time
                        (``item_source()`` for the AI and plan routes,
@@ -22,7 +22,7 @@ are answered from Metorite's own store.
 **Re-pointed in S8a (2026-09-23, my_tasks_cutover.md §5).** **D53** makes
 ``pm_tasks``/``pm_task_personal`` the one task store. The skill reads and
 writes it through the same routes the browser uses. Nothing here touches
-``gtd_*`` any more.
+the retired task store any more.
 
 Exports:
     build_agents() -> list[GitHubCopilotAgent]   (Dynamic Agent Loader entry point)
@@ -45,7 +45,7 @@ INSTRUCTIONS = _INSTRUCTIONS_FILE.read_text(encoding="utf-8") if _INSTRUCTIONS_F
 
 # ---------------------------------------------------------------------------
 # Tools
-#   skill-task-gtd — capture/clarify/organize/list over the gateway's lens
+#   skill-my-tasks — capture/clarify/organize/list over the gateway's lens
 #                    routes (S8a). The connector registry is empty (D52), so
 #                    there is no outward path at all — every read is
 #                    Metorite's one task store.
@@ -54,52 +54,52 @@ INSTRUCTIONS = _INSTRUCTIONS_FILE.read_text(encoding="utf-8") if _INSTRUCTIONS_F
 _TOOLS: list = []
 
 try:
-    from skill_task_gtd import (
-        gtd_accounts,
-        gtd_add_subtasks,
-        gtd_archive,
-        gtd_capture,
-        gtd_capture_many,
-        gtd_clarify,
-        gtd_complete,
-        gtd_day_digest,
-        gtd_delegate,
-        gtd_detail,
-        gtd_estimate_stats,
-        gtd_inbox_insights,
-        gtd_list,
-        gtd_list_projects,
-        gtd_list_schedule,
-        gtd_move,
-        gtd_organize,
-        gtd_people,
-        gtd_plan_day,
-        gtd_plan_project,
-        gtd_replan_day,
-        gtd_rollover,
-        gtd_schedule,
-        gtd_set_one_thing,
-        gtd_set_stage,
-        gtd_subtasks,
-        gtd_sync,
-        gtd_unschedule,
-        gtd_update,
+    from skill_my_tasks import (
+        my_tasks_accounts,
+        my_tasks_add_subtasks,
+        my_tasks_archive,
+        my_tasks_capture,
+        my_tasks_capture_many,
+        my_tasks_clarify,
+        my_tasks_complete,
+        my_tasks_day_digest,
+        my_tasks_delegate,
+        my_tasks_detail,
+        my_tasks_estimate_stats,
+        my_tasks_inbox_insights,
+        my_tasks_list,
+        my_tasks_list_projects,
+        my_tasks_list_schedule,
+        my_tasks_move,
+        my_tasks_organize,
+        my_tasks_people,
+        my_tasks_plan_day,
+        my_tasks_plan_project,
+        my_tasks_replan_day,
+        my_tasks_rollover,
+        my_tasks_schedule,
+        my_tasks_set_one_thing,
+        my_tasks_set_stage,
+        my_tasks_subtasks,
+        my_tasks_sync,
+        my_tasks_unschedule,
+        my_tasks_update,
     )
     _TOOLS += [
-        gtd_capture, gtd_capture_many, gtd_list, gtd_list_projects,
-        gtd_accounts, gtd_people, gtd_inbox_insights, gtd_clarify,
-        gtd_organize, gtd_update, gtd_sync, gtd_plan_project,
-        gtd_schedule, gtd_unschedule, gtd_list_schedule,
+        my_tasks_capture, my_tasks_capture_many, my_tasks_list, my_tasks_list_projects,
+        my_tasks_accounts, my_tasks_people, my_tasks_inbox_insights, my_tasks_clarify,
+        my_tasks_organize, my_tasks_update, my_tasks_sync, my_tasks_plan_project,
+        my_tasks_schedule, my_tasks_unschedule, my_tasks_list_schedule,
         # Manage existing tasks — the app's full action surface over chat
         # (complete/reopen, buckets, stage, delegate, subtasks, archive, detail)
-        gtd_complete, gtd_move, gtd_detail, gtd_set_stage, gtd_delegate,
-        gtd_subtasks, gtd_add_subtasks, gtd_archive,
+        my_tasks_complete, my_tasks_move, my_tasks_detail, my_tasks_set_stage, my_tasks_delegate,
+        my_tasks_subtasks, my_tasks_add_subtasks, my_tasks_archive,
         # AI day-management (planner over chat) — calendar_ai_review.md §4.2/4.4
-        gtd_plan_day, gtd_replan_day, gtd_rollover, gtd_day_digest,
-        gtd_estimate_stats, gtd_set_one_thing,
+        my_tasks_plan_day, my_tasks_replan_day, my_tasks_rollover, my_tasks_day_digest,
+        my_tasks_estimate_stats, my_tasks_set_one_thing,
     ]
 except ImportError:
-    # skill-task-gtd not installed yet — agent still boots.
+    # skill-my-tasks not installed yet — agent still boots.
     pass
 
 

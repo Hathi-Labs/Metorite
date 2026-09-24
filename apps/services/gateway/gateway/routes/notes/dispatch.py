@@ -68,7 +68,7 @@ def cross_owner_refusal(owner_email: str | None, actor: str) -> str | None:
     """Why ``actor`` may not dispatch on behalf of ``owner_email``, or None.
 
     Dispatch acts AS the meeting's owner: it sends from their mailbox, files
-    tasks into their GTD list and writes documents attributed to them. Every
+    tasks into their My Tasks list and writes documents attributed to them. Every
     route into ``_dispatch`` used to load the action item or the meeting by id
     alone, so any member could make a colleague's mailbox send an LLM-drafted
     email to a real customer, with the audit row naming the colleague.

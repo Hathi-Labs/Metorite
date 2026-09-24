@@ -10,7 +10,7 @@
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useEffect, useMemo, useState } from "react";
-import { GtdItem } from "@/app/tasks/lib/types";
+import { MyTask } from "@/app/tasks/lib/types";
 import { priorityRank } from "@/app/tasks/lib/priority";
 import { durationLabel } from "@/app/tasks/lib/utils";
 import { DEFAULT_BLOCK_MINS } from "@/app/tasks/lib/scheduling";
@@ -34,10 +34,10 @@ export function StartupRitual({
   onPlan,
   onClose,
 }: {
-  items: GtdItem[];
+  items: MyTask[];
   urgentWindowHours: number;
   /** yesterday's (or older) scheduled-but-unfinished blocks. */
-  carryForward: GtdItem[];
+  carryForward: MyTask[];
   /** move the carry-forwards back to the unscheduled list (instant). */
   onRollover: () => void;
   /** hand off to the AI planner (PlanDayPanel), One Thing already committed. */

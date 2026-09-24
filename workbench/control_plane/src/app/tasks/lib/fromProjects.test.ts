@@ -24,13 +24,13 @@ vi.mock("./api", async (importOriginal) => {
 
 import { apiBulkDispose, apiOrganize, fetchUntriaged } from "./api";
 import { useTaskStore } from "./taskStore";
-import type { GtdItem } from "./types";
+import type { MyTask } from "./types";
 
 const flush = async () => {
   for (let i = 0; i < 6; i += 1) await new Promise((r) => setTimeout(r, 0));
 };
 
-const T1: GtdItem = {
+const T1: MyTask = {
   id: "t1",
   source: "LOCAL",
   title: "Draft the quote",
@@ -60,7 +60,7 @@ describe("From Projects — triage drops the id, and the re-read waits for the w
   afterEach(() => vi.restoreAllMocks());
 
   it("a quick dispose drops the id at once and re-reads only after the PATCH resolves", async () => {
-    let release: (v: GtdItem[]) => void = () => {};
+    let release: (v: MyTask[]) => void = () => {};
     vi.mocked(apiBulkDispose).mockReturnValue(
       new Promise((resolve) => {
         release = resolve;
@@ -94,7 +94,7 @@ describe("From Projects — triage drops the id, and the re-read waits for the w
   });
 
   it("a clarify decision is a triage, and its re-read follows organize", async () => {
-    let release: (v: GtdItem) => void = () => {};
+    let release: (v: MyTask) => void = () => {};
     vi.mocked(apiOrganize).mockReturnValue(
       new Promise((resolve) => {
         release = resolve;

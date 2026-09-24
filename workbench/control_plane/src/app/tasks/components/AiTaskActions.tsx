@@ -4,7 +4,7 @@ import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useState } from "react";
 import { useTaskStore } from "../lib/taskStore";
-import type { GtdItem } from "../lib/types";
+import type { MyTask } from "../lib/types";
 import type { EnrichFields } from "../lib/api";
 import { durationLabel } from "../lib/utils";
 
@@ -15,7 +15,7 @@ import { durationLabel } from "../lib/utils";
 //   • Fill missing details — the assistant proposes values for ONLY the empty
 //     fields (context / energy / time / due / assignee); the user reviews the
 //     pre-checked list and applies. Never overwrites a field that's already set.
-export function AiTaskActions({ item }: { item: GtdItem }) {
+export function AiTaskActions({ item }: { item: MyTask }) {
   const backend = useTaskStore((s) => s.backend);
   const openReclarify = useTaskStore((s) => s.openReclarify);
   const enrichItem = useTaskStore((s) => s.enrichItem);

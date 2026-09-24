@@ -45,7 +45,7 @@ export function roleFor(name: string): Role {
   if (/(orchestr)/.test(n)) return "orchestrator";
   if (/(cod|dev|apis|engineer|build)/.test(n)) return "coder";
   if (/(sales|biz|deal|crm|zoho)/.test(n)) return "sales";
-  if (/(plan|strateg|project|gtd|task)/.test(n)) return "planner";
+  if (/(plan|strateg|project|task)/.test(n)) return "planner";
   if (/(triage|email|inbox|mail)/.test(n)) return "triage";
   if (/(reconcil|audit|ledger|finance)/.test(n)) return "reconciler";
   return "default";

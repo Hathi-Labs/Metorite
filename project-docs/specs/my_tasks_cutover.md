@@ -1115,7 +1115,7 @@ After the deploy, `\dt gtd_*` must return nothing, and the ledger must hold
 3. The ladder replays three times clean in `pr-check.yml`.
 4. This closes H-151 and H-29.
 
-### S9 — identifier hygiene · AGENT-SAFE
+### S9 — identifier hygiene · AGENT-SAFE · BUILT 2026-09-23
 
 **Scope.** The code names that follow the schema:
 
@@ -1131,6 +1131,64 @@ After the deploy, `\dt gtd_*` must return nothing, and the ledger must hold
 1. `rg -il "gtd" workbench/control_plane/src apps/skills apps/agents tests`
    returns only files that describe the method.
 2. `npx tsc --noEmit && npx vitest run` green. The named pytest files green.
+
+**Build record (2026-09-23, UTC).** Branch `my-tasks-s9`, PR #436. It was
+built on `my-tasks-s8d`, then rebuilt on `main` after #427 and #434 merged.
+No route path, JSON field or database object moved.
+The screens a member sees are the same, with one exception in item 4.
+
+1. **The rename map.**
+
+   | Old | New | Where |
+   |---|---|---|
+   | `skill-task-gtd`, package `skill_task_gtd` | `skill-my-tasks`, `skill_my_tasks` | the skill, `pyproject.toml`, `uv.lock`, the agent |
+   | 29 tools `gtd_<name>` | `my_tasks_<name>` | skill, agent, persona, `TaskToolCards.tsx`, tests |
+   | `gtd_models`, `gtd_toggles`, `gtd_calendar_prefs` | `task_models`, `task_toggles`, `calendar_prefs` | `routes/tasks/settings.py` and five callers |
+   | `GtdItemModel` | `MyTaskModel` | `routes/tasks/core.py`, `capture_email.py` |
+   | `GtdItem`, `GtdProject`, `GtdContext` | `MyTask`, `MyTasksProject`, `TaskContext` | 62 client files |
+   | `gtdMetaChips`, `GTD_TRIGGERS` | `taskMetaChips`, `CAPTURE_TRIGGERS` | the client |
+   | `test_tasks_gtd.py` | `test_my_tasks.py` | `tests/unit` |
+   | `test_gtd_quality_trajectory.py` | `test_my_tasks_quality_trajectory.py` | `evals/trajectories` |
+
+2. **Kept on purpose.** `test_gtd_backfill.py`, `test_gtd_rename_upgrade.py`
+   and `test_gtd_retirement_plan.py` keep their names. Each is about the
+   `gtd_*` tables and the migrations that moved them. The migrations keep
+   their names too. Prose keeps "GTD" where it names the method, such as
+   contexts, dispositions and the decision tree.
+3. **Stored tool names.** A saved chat message keeps the tool name it was
+   saved with. So `TaskToolCards.tsx` holds `LEGACY_TOOL_NAMES`, which maps
+   each old name to its new name before the card router reads it.
+   `TaskToolCards.test.ts` pins the map to the skill's `__all__`.
+   The other readers of a stored name need no map:
+   - The gateway never stores a tool name, and `pm_activities` and the rows
+     of the approval queue do not either. The code search found none.
+   - The Mem0 partition `agent:task-manager` holds prose. A memory that says
+     `gtd_list` is text, not a call.
+   - A resumed chat can show the model an old call in its history. The model
+     then sees the new tool list and calls the new name. No code path
+     replays an old call.
+   - The observability office matched `/task|gtd|todo/`. An old event name
+     in that feed now falls to the default icon. That cost is cosmetic.
+4. **One visible change.** The live "running tool" line in the chat
+   capitalises the raw tool name. It read "Gtd Capture" and now reads
+   "My Tasks Capture".
+5. **The survivors of the fence.** `test_no_gtd_table_names.py` now refuses
+   every bare `gtd_` token in `apps`, `packages`, `scripts` and `workbench`.
+   Four survivors are left, and each has its reason:
+   - `data/gtd_attachments`, the upload folder on the box. Moving the folder
+     is a separate deploy act. `GTD_ATTACHMENTS_DIR`, its environment
+     variable, stays for the same reason.
+   - the migration files in `infra/postgres/`, outside the walk.
+   - the three migration-history tests above, outside the walk.
+   - `TaskToolCards.tsx`, the alias map. The fence skips it for tokens, and
+     a second test checks that it spells only the 29 old tool names.
+6. **The client fence.** `test_the_client_carries_no_gtd_identifier` runs
+   the check `rg -l "GtdItem|Gtd[A-Z]|gtd_" workbench/control_plane/src`
+   and accepts only the alias map. `naming.test.ts` stays green.
+7. **Not renamed.** The agent's `config.json` description, its `gtd` tag and
+   the description in `routes/agent.py` stay. A member can read them in the
+   agent list, and they name the method. The `tasks_lens` key of `/version`
+   stays too. S8 PR 1 said S9 may drop it, but S9 moves no JSON field.
 
 ### S7 run record (2026-09-23, UTC)
 

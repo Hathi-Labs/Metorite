@@ -1,7 +1,7 @@
 [project]
 name = "agent-task-manager"
 version = "0.1.0"
-description = "Task management MAF agent (GTD over the native task store)"
+description = "Task management MAF agent (My Tasks over the one task store)"
 requires-python = ">=3.12"
 dependencies = [
     "agent-framework-github-copilot",

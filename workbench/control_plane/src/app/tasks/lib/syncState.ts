@@ -1,7 +1,7 @@
 /**
  * The sync-state decision table for a /tasks item (BO-1b).
  *
- * A GTD row's `syncState` answers three questions the UI keeps asking, and
+ * A My Tasks row's `syncState` answers three questions the UI keeps asking, and
  * before this module each of them was a `=== "pending"` comparison written out
  * at the call site. That was survivable while there were three states; the
  * Action Broker's `awaiting_approval` is the fourth, and every un-migrated

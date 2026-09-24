@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { GtdItem } from "./types";
+import type { MyTask } from "./types";
 import {
   STALE_WAITING_DAYS,
   daysWaiting,
@@ -10,9 +10,9 @@ import {
   waitingLine,
 } from "./waiting";
 
-// Minimal GtdItem factory — only the waiting fields matter to this math.
-const item = (over: Partial<GtdItem>): GtdItem =>
-  ({ id: "x", title: "t", disposition: "WAITING", isMine: false, ...over }) as GtdItem;
+// Minimal MyTask factory — only the waiting fields matter to this math.
+const item = (over: Partial<MyTask>): MyTask =>
+  ({ id: "x", title: "t", disposition: "WAITING", isMine: false, ...over }) as MyTask;
 
 const DAY = 86_400_000;
 const HOUR = 3_600_000;

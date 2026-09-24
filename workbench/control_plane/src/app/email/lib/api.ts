@@ -136,7 +136,7 @@ function mapEmail(raw: Record<string, unknown>): Email {
 
 // ── Email Accounts ───────────────────────────────────────────────────────
 
-/** Capture an email into the GTD task inbox (AI drafts the task title +
+/** Capture an email into the My Tasks inbox (AI drafts the task title +
  *  context server-side; idempotent per email — re-capturing returns the
  *  existing open item). Goes through the tasks proxy, not /api/email. */
 export async function captureEmailToTask(

@@ -37,7 +37,7 @@ import {
   fetchLocalHierarchy,
 } from "./api";
 import { itemsInArea, useTaskStore } from "./taskStore";
-import type { GtdItem } from "./types";
+import type { MyTask } from "./types";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -283,7 +283,7 @@ describe("the Areas slice", () => {
 });
 
 describe("itemsInArea", () => {
-  const item = (id: string, projectId?: string): GtdItem => ({
+  const item = (id: string, projectId?: string): MyTask => ({
     id,
     source: "LOCAL",
     title: id,

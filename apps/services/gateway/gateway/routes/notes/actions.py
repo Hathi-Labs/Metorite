@@ -119,7 +119,7 @@ async def approve_action(
     action_id: str,
     user: UserContext = Depends(get_current_user),
 ) -> ApproveResponse:
-    """Promote a draft action item into a real GTD task.
+    """Promote a draft action item into a real task.
 
     Owner only. Two distinct harms, both closed by the loader: approving
     somebody else's item flips THEIR triage state to ``created``, and the

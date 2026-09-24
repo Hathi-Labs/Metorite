@@ -2964,10 +2964,10 @@ line — never reclaim a number by deleting the other entry.
 
 ### H-151 · The `gtd_` name is off every table. Verify on production, then delete · [AGENT]
 - **Check:** `uv run pytest tests/unit/test_no_gtd_table_names.py` passes on
-  `main`, and `\dt gtd_*` on the box returns nothing. Both mean this is done.
-  Delete this entry then, and not before.
-- **S8 PR 2 closes this** (branch `my-tasks-s8d`). Slice 3 renamed the three
-  survivors in the migrations that create them. `gtd_attachments` is
+  `main` with S9 merged, and `\dt gtd_*` on the box returns nothing. Both
+  mean this is done. Delete this entry then, and not before.
+- **S8 PR 2 closes the table half** (branch `my-tasks-s8d`, #434). Slice 3
+  renamed the three survivors in the migrations that create them. `gtd_attachments` is
   `attachments` (52). `gtd_horizons` and `gtd_reviews` are
   `my_tasks_horizons` and `my_tasks_reviews` (48). Migration 217 drops the
   rest of the store, and H-29 tracks that drop.
@@ -2984,10 +2984,13 @@ line — never reclaim a number by deleting the other entry.
   (`tests/unit/_sql_match.py` answers that). And an assertion over a whole
   migration file reads the prologue's own warning comment as the defect, so
   measure the executable block.
-- **The agent tool names are NOT part of this.** `gtd_people(query)` and its
-  family in `skill_task_gtd` are tools, not tables. The slice 1 sweep renamed
-  one and that was reverted. Renaming the tool family is a separate decision,
-  and it should move all of them at once or none.
+- **S9 closes the code half when it merges** (branch `my-tasks-s9`, PR
+  #436, which targets `main`). It moved all 29 agent tools at once, from `gtd_*` to
+  `my_tasks_*`, and the skill is `skill-my-tasks`. The settings helpers and
+  the types of the client moved too. After both PRs merge, the fence allows
+  only the upload folder `data/gtd_attachments` and the tool-name alias map in
+  `TaskToolCards.tsx`. The map exists for stored chat history.
+  `my_tasks_cutover.md` §5 S9 has the rename map.
 - **One JSON field moved in slice 3.** The WhatsApp commitment list returned
   `gtd_item_id`, and it now returns `task_id`. Its one reader, the WhatsApp
   agent, moved in the same PR. No route path moved.
@@ -2995,7 +2998,8 @@ line — never reclaim a number by deleting the other entry.
   Calendar client paths.
 - **Authority:** owner directive, 2026-09-21 — *"I really don't want GTD
   anymore... update the naming convention for all of the table names"*
-- **Added:** 2026-09-21 · the People rename session. **Updated:** 2026-09-23.
+- **Added:** 2026-09-21 · the People rename session. **Updated:** 2026-09-23
+  (S8 PR 2, then S9).
 
 ### H-152 · A SELF-SERVE customer can never be served AI · [AGENT]
 - **Check:** `rg -n "CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY" /opt/acb/app/.env`

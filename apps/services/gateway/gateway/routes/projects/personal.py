@@ -1624,7 +1624,7 @@ async def my_task(
 
     Spec: ``task_manager_app.md`` §13.5 · **D53** · ticket WS-39 S3a-client.
 
-    **Why this exists.** A `GtdItem` edit is not one write any more. Changing a
+    **Why this exists.** A `MyTask` edit is not one write any more. Changing a
     title touches ``pm_tasks``; changing a disposition touches
     ``pm_task_personal``; both at once is two requests to two routes that each
     answer with their own half. The client needs the WHOLE task back — that is

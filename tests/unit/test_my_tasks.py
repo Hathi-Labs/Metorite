@@ -1,4 +1,4 @@
-"""Unit tests for the /tasks GTD backend (offline — no DB, no HTTP).
+"""Unit tests for the My Tasks backend (`/tasks` routes) (offline — no DB, no HTTP).
 
 Covers the pure logic layers that survive the retired store:
   - ai.propose: the clarify heuristic (disposition branches, project
@@ -736,7 +736,7 @@ def test_propose_attaches_capability_owner_without_forcing_delegate():
 
 
 # ---------------------------------------------------------------------------
-# Sync pull (§9.3 #1): provider list_tasks + the GTD lens on pulled tasks
+# Sync pull (§9.3 #1): provider list_tasks + the My Tasks lens on pulled tasks
 # ---------------------------------------------------------------------------
 
 
@@ -853,8 +853,8 @@ def test_email_capture_routes_delegations_to_the_pm_tool():
 
 
 def test_item_model_carries_origin():
-    from gateway.routes.tasks.core import GtdItemModel
-    assert "origin" in GtdItemModel.model_fields
+    from gateway.routes.tasks.core import MyTaskModel
+    assert "origin" in MyTaskModel.model_fields
 
 
 # ── BO-1b: a broker-QUEUED push never reports as synced ──────────────────────
@@ -895,21 +895,21 @@ def _push_row(**kw):
     return SimpleNamespace(**base)
 
 
-def test_gtd_item_model_projects_awaiting_approval_unchanged():
+def test_my_task_model_projects_awaiting_approval_unchanged():
     """No migration and no model change: `sync_state` is a bare `str`, so the
     third value passes through the API as-is."""
-    from gateway.routes.tasks.core import GtdItemModel
+    from gateway.routes.tasks.core import MyTaskModel
 
-    field = GtdItemModel.model_fields["sync_state"]
+    field = MyTaskModel.model_fields["sync_state"]
     assert field.annotation is str
-    assert GtdItemModel(
+    assert MyTaskModel(
         id="i", title="t", sync_state="awaiting_approval",
         created_at="2026-08-11T00:00:00Z", updated_at="2026-08-11T00:00:00Z",
     ).sync_state == "awaiting_approval"
 
 
 def test_agent_item_format_shows_email_origin():
-    from skill_task_gtd.core import _fmt_item
+    from skill_my_tasks.core import _fmt_item
 
     line = _fmt_item({"id": "x" * 12, "title": "Approve the quote",
                       "disposition": "NEXT", "source": "LOCAL",
@@ -928,7 +928,7 @@ def test_agent_item_format_distinguishes_the_two_waiting_states():
     carry is `defer_until` and the project's lane name, and both are printed,
     so a snoozed task reads as snoozed rather than missing and the agent can
     name the lane the task is in."""
-    from skill_task_gtd.core import _fmt_item
+    from skill_my_tasks.core import _fmt_item
 
     line = _fmt_item({"id": "a" * 12, "title": "t", "disposition": "SOMEDAY",
                       "defer_until": "2026-10-03T00:00:00+00:00",
@@ -1083,10 +1083,10 @@ def test_expected_by_round_trips_from_row_to_item_model():
     has to survive the row→model hop as an ISO string."""
     from datetime import UTC, datetime
 
-    from gateway.routes.tasks.core import GtdItemModel, _row_to_item
+    from gateway.routes.tasks.core import MyTaskModel, _row_to_item
 
-    assert "expected_by" in GtdItemModel.model_fields
-    assert "last_nudged_at" in GtdItemModel.model_fields
+    assert "expected_by" in MyTaskModel.model_fields
+    assert "last_nudged_at" in MyTaskModel.model_fields
 
     delegated = datetime(2026, 7, 20, 9, 0, tzinfo=UTC)
     expected = datetime(2026, 7, 27, 9, 0, tzinfo=UTC)

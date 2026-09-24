@@ -129,7 +129,7 @@ export interface ActionItem {
   kind: "task" | "email" | "document";
   /** Extraction hints (owner_hint, email_to) used at dispatch time. */
   payload: { owner_hint?: string; email_to?: string };
-  /** Where a dispatch landed: gtd id, `sent:<id>`, `draft:<id>`, `artifact:<agent>/<path>`. */
+  /** Where a dispatch landed: task id, `sent:<id>`, `draft:<id>`, `artifact:<agent>/<path>`. */
   dispatch_ref: string | null;
   /** Why the last dispatch failed (item stays draft so it can be retried). */
   dispatch_error: string | null;

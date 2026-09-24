@@ -26,7 +26,7 @@ import {
   groupItems,
   DEFAULT_FILTERS,
 } from "./ordering";
-import type { GtdItem } from "./types";
+import type { MyTask } from "./types";
 
 const read = (rel: string) =>
   readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
@@ -34,7 +34,7 @@ const read = (rel: string) =>
 const TOOLBAR = read("../components/TaskToolbar.tsx");
 const ITEM_LIST = read("../components/ItemList.tsx");
 
-function task(id: string, orgPriority?: number, extra: Partial<GtdItem> = {}): GtdItem {
+function task(id: string, orgPriority?: number, extra: Partial<MyTask> = {}): MyTask {
   return {
     id,
     source: "LOCAL",

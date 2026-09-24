@@ -1,6 +1,6 @@
 // Waiting-For math — the pure predicates behind the "who / what / since-when"
 // list (spec: project-docs/specs/task_manager_app.md §1 line 46, §6).
-// No React, no store: just Date arithmetic over an already-loaded GtdItem, so
+// No React, no store: just Date arithmetic over an already-loaded MyTask, so
 // the view and its unit tests read the same rules. Same shape as
 // lib/ordering.ts and lib/scheduling.ts.
 //
@@ -18,7 +18,7 @@
 // of `dueAt`. That is what keeps the badge from going stale: the common case
 // has nothing to go stale, and the uncommon case is a fact somebody asserted.
 
-import { GtdItem } from "./types";
+import { MyTask } from "./types";
 
 /** Days of silence after which a waiting-for is "stale".
  *
@@ -45,7 +45,7 @@ function elapsed(iso: string | undefined, nowMs: number): number | null {
  *  Floors, so it reads "3d" for anything from 3d 0h to 3d 23h. Negative
  *  elapsed (a delegation dated in the future) clamps to 0. */
 export function daysWaiting(
-  item: Pick<GtdItem, "delegatedAt">,
+  item: Pick<MyTask, "delegatedAt">,
   nowMs: number = Date.now(),
 ): number | null {
   const ms = elapsed(item.delegatedAt, nowMs);
@@ -66,7 +66,7 @@ export function daysWaiting(
  *      copied, so nothing can go stale when that deadline moves.
  *  Neither present ⇒ false: there is no date to be late against. */
 export function isWaitingOverdue(
-  item: Pick<GtdItem, "expectedBy" | "dueAt">,
+  item: Pick<MyTask, "expectedBy" | "dueAt">,
   nowMs: number = Date.now(),
 ): boolean {
   const line = item.expectedBy || item.dueAt;
@@ -79,7 +79,7 @@ export function isWaitingOverdue(
  *  one it is ("promised by …" reads differently from "due …") instead of
  *  showing a bare date that means two things. Null when there is no line. */
 export function waitingLine(
-  item: Pick<GtdItem, "expectedBy" | "dueAt">,
+  item: Pick<MyTask, "expectedBy" | "dueAt">,
 ): { iso: string; kind: "promised" | "due" } | null {
   if (item.expectedBy) return { iso: item.expectedBy, kind: "promised" };
   if (item.dueAt) return { iso: item.dueAt, kind: "due" };
@@ -91,7 +91,7 @@ export function waitingLine(
  *  the server's `delegated_at < now() - interval '5 days'`: at exactly five
  *  days it is not yet stale. */
 export function isStaleWaiting(
-  item: Pick<GtdItem, "delegatedAt">,
+  item: Pick<MyTask, "delegatedAt">,
   nowMs: number = Date.now(),
 ): boolean {
   const ms = elapsed(item.delegatedAt, nowMs);
@@ -103,7 +103,7 @@ export interface WaitingGroup {
   key: string;
   /** who we're waiting on ("Unassigned" when the record has no person). */
   label: string;
-  items: GtdItem[];
+  items: MyTask[];
   overdueCount: number;
 }
 
@@ -115,7 +115,7 @@ const UNASSIGNED = "Unassigned";
  *  of rotting); groups are ordered by overdue count, then by size, then name,
  *  so the person you most need to chase is at the top. Pure + deterministic. */
 export function groupByWaitingOn(
-  items: GtdItem[],
+  items: MyTask[],
   nowMs: number = Date.now(),
 ): WaitingGroup[] {
   const byKey = new Map<string, WaitingGroup>();
