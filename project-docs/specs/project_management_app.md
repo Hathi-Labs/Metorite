@@ -1811,7 +1811,16 @@ reasonably have gone the other way:
 
 Completing from a row calls `POST /tasks/{id}/complete`, which moves the **shared** status
 — the checkbox carries a title saying so. Triage buttons call
-`PATCH /tasks/{id}/personal` and cannot touch a shared field. One repair the surface forced:
+`PATCH /tasks/{id}/personal`.
+
+⚠️ **Amended by D77 (2026-09-23, narrowed 2026-09-24).** A triage button CAN
+move the shared lane in one case. INBOX, NEXT or WAITING on a closed task
+reopens it: the gateway moves it to the first `todo` lane through
+`reopen_if_closed`. SOMEDAY, REFERENCE, PROJECT, TRASH and a defer never
+move the lane. No other shared field changes. `my_tasks_cutover.md` §4.10
+choice 3 owns the rule.
+
+One repair the surface forced:
 `TaskPanel` previously read the *selected project's* statuses, which is wrong for a task
 opened from My work — it may belong to any project the member is assigned into — so the
 panel's statuses are now resolved from the task's own root project.

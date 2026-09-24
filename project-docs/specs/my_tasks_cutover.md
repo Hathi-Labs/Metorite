@@ -11,7 +11,7 @@ this spec and `work_plan.md` §2 disagree, the board wins.
 
 **Built so far.** S5, S6a to S6e and S8a are built and serving. S6f is built
 on 2026-09-23 (D77, §4.10). S7 ran on
-2026-09-23. S8 PR 1 is built on 2026-09-23 and waits for its merge window.
+2026-09-23. S8 PR 1 merged on 2026-09-24 as `6e028aa6` (#411).
 
 ## 0. One paragraph
 
