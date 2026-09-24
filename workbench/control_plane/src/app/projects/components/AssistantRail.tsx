@@ -42,7 +42,7 @@ import {
 } from "../lib/assistantPersona";
 import { SelectButton } from "@/components/ui/SelectButton";
 import { useViewMode } from "@/components/ViewModeProvider";
-import { autoOpenArtifact, syncPanelToSession } from "@/lib/autoOpenArtifact";
+import { artifactHandler, syncPanelToSession } from "@/lib/autoOpenArtifact";
 import { useSidePanelFits } from "@/lib/sidePanelFit";
 import {
   EVERYTHING,
@@ -247,10 +247,8 @@ export function AssistantRail({
   // (`lib/sidePanelFit.ts`), nothing opens by itself either.
   const { isMobile } = useViewMode();
   const panelFits = useSidePanelFits();
-  const handleArtifact = useCallback(
-    (entry: { path: string }) => {
-      autoOpenArtifact(entry.path, { sessionId: activeId, isMobile, panelFits });
-    },
+  const handleArtifact = useMemo(
+    () => artifactHandler({ sessionId: activeId, isMobile, panelFits }),
     [activeId, isMobile, panelFits],
   );
 

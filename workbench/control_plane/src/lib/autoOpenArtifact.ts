@@ -70,6 +70,18 @@ export function autoOpenArtifact(
 }
 
 /**
+ * The `onArtifact` handler a chat surface hands to `AgentChat`. The Projects
+ * rail builds it from `useSidePanelFits()`, so a narrow row opens nothing by
+ * itself. A factory so a test drives it without rendering the rail.
+ */
+export function artifactHandler(
+  ctx: { sessionId: string | null | undefined; isMobile: boolean; panelFits: boolean },
+  deps: AutoOpenDeps = DEFAULT_DEPS,
+): (entry: { path: string }) => boolean {
+  return (entry) => autoOpenArtifact(entry.path, ctx, deps);
+}
+
+/**
  * Keep the side panel on the ACTIVE session's files only. Both chats call it
  * when their session changes, so a tab from another conversation, or from
  * `/chat`, never renders in this one's panel.

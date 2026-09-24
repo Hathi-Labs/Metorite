@@ -1644,3 +1644,10 @@ The report card takes its section titles from the Reports app
 `ReportsView.tsx` and fails if a title is not there. The fences are
 `src/components/chatVisualReview.test.ts`, `sidePanelFit.test.ts`,
 `scrollCue.test.ts` and `test_projects_agent.py`.
+
+**These changes reach `/chat` too, on purpose.** `MarkdownBody` is the chat's
+one Markdown renderer, so its table cells and its task-list icons changed in
+`/chat` and in the Projects rail. A task-list item is an icon with
+`role="img"` and a label. `sidePanelFitWiring.test.ts` renders
+`MessageBubble` under each value of `SidePanelFitContext`, and drives the
+rail's `artifactHandler`, so both places are proven to act on the fit.

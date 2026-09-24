@@ -81,7 +81,7 @@ describe("the Projects page wiring", () => {
   it("the chat's card falls back to the viewer when the panel does not fit", () => {
     expect(read("components/MessageBubble.tsx")).toMatch(/onOpenInSidePanel=\{\s*panelFits\s*\?/);
     expect(read("app/projects/components/AssistantRail.tsx")).toContain(
-      "autoOpenArtifact(entry.path, { sessionId: activeId, isMobile, panelFits })",
+      "artifactHandler({ sessionId: activeId, isMobile, panelFits })",
     );
   });
 });
@@ -204,6 +204,7 @@ describe("the minor findings", () => {
     );
     expect(html).not.toContain('type="checkbox"');
     expect(html).toContain('aria-label="Not done"');
+    expect(html).toMatch(/role="img"[^>]*aria-label="Not done"|aria-label="Not done"[^>]*role="img"/);
     expect(html).toContain('aria-label="Done"');
   });
 

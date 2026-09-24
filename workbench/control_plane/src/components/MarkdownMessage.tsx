@@ -396,6 +396,7 @@ export function MarkdownBody({
               name={checked ? "SquareCheck" : "Square"}
               size={14}
               className={`mr-1 inline-block align-text-bottom ${checked ? "text-primary" : "text-muted-foreground"}`}
+              role="img"
               aria-label={checked ? "Done" : "Not done"}
             />
           ) : null,

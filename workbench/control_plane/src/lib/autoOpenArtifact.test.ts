@@ -131,7 +131,7 @@ describe("the two chats", () => {
   });
 
   it("the Projects rail hands written files to the shared rule", () => {
-    expect(rail).toContain("autoOpenArtifact(entry.path, { sessionId: activeId, isMobile, panelFits })");
+    expect(rail).toContain("artifactHandler({ sessionId: activeId, isMobile, panelFits })");
     expect(rail).toContain("onArtifact={handleArtifact}");
   });
 
