@@ -87,3 +87,28 @@ export function parseProjectRows(result: string): ProjectNodeRow[] {
   }
   return rows;
 }
+
+/**
+ * The status categories the gateway knows (`routes/projects/core.py`
+ * STATUS_CATEGORIES). `reads.py::_task_line` prints the category as a bare
+ * fact right after `status «Name»`, because the model needs it to read a
+ * custom status name. A member does not: the card showed "status To do · todo".
+ */
+export const STATUS_CATEGORIES = [
+  "backlog", "todo", "in_progress", "done", "cancelled", "triage",
+] as const;
+
+/**
+ * A task row's facts as a member reads them: no guillemets, and no bare
+ * category after the status it restates. `projectToolRows.test.ts` is the fence.
+ */
+export function taskMetaForPeople(meta: string): string {
+  // Match on the RAW meta, while the status name is still fenced: a name may
+  // itself hold " · " (data() keeps it), so a split before this would cut it.
+  const cats = STATUS_CATEGORIES.join("|");
+  const cleaned = meta.replace(
+    new RegExp(`^(status «[^»]*») · (?:${cats})(?= · |$)`),
+    "$1",
+  );
+  return cleaned.replace(/[«»]/g, "");
+}
