@@ -711,3 +711,40 @@ export function isClarifiable(
 ): boolean {
   return item.disposition === "INBOX" || fromProjectIds.has(item.id);
 }
+
+// ── Owner on a board task (review of PR #440, P1) ───────────────────────────
+
+/**
+ * Who the Clarify form starts on as the owner.
+ *
+ * ⚠️ On a board task a delegate is a REASSIGN. The organize request puts the
+ * colleague on the shared task and takes me, and any co-assignee, off it.
+ * The form used to start on "Delegate" whenever the assistant proposed a
+ * person, so one Enter reassigned a colleague's board task. A board task now
+ * starts on "Me", and only the member's own click picks Delegate. A personal
+ * capture keeps the proposal, because a delegate there first needs a company
+ * project the member picks (`lensDelegateBlock`).
+ *
+ * `personal` is `isPersonalTask`. When that answer is unsure (a null root),
+ * it reads false, so this fails closed to "Me".
+ */
+export function initialOwner(input: {
+  personal: boolean;
+  hasSuggestedAssignee: boolean;
+}): "me" | "delegate" {
+  return input.personal && input.hasSuggestedAssignee ? "delegate" : "me";
+}
+
+/**
+ * Whether a delegate decision may be applied. On a board task it may only
+ * when the member picked Delegate in this session, by a click. Enter, a late
+ * server proposal or a note re-run never picks it for them.
+ */
+export function delegateAllowed(input: {
+  personal: boolean;
+  delegating: boolean;
+  pickedThisSession: boolean;
+}): boolean {
+  if (!input.delegating || input.personal) return true;
+  return input.pickedThisSession;
+}

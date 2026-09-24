@@ -53,6 +53,8 @@ import { ClarifyPanel } from "../components/ClarifyPanel";
 import { WherePicker } from "../components/WherePicker";
 import {
   clarifyQueue,
+  delegateAllowed,
+  initialOwner,
   initialWhere,
   isClarifiable,
   isPersonalTask,
@@ -312,5 +314,38 @@ describe("personalRootId is learned once a capture creates the root", () => {
     for (let i = 0; i < 6; i += 1) await new Promise((r) => setTimeout(r, 0));
     expect(fetchMyRoot).toHaveBeenCalledTimes(1);
     expect(useTaskStore.getState().personalRootId).toBe("root-new");
+  });
+});
+
+describe("owner on a board task — no one-key reassign", () => {
+  beforeEach(() => seed({ people: [{ name: "Dana Rao", email: "dana@example.com" }] }));
+
+  it("a board row whose title reads as a delegate opens with owner = Me", () => {
+    // "Ask Dana to …" is the heuristic's high-confidence WAITING proposal.
+    const row = { ...FROM_BOARD, title: "Ask Dana to review the pricing page copy" };
+    const p = proposeClarification(row, [{ name: "Dana Rao", email: "dana@example.com" }], [BOARD]);
+    expect(p.suggestedAssignee?.name).toBe("Dana Rao");
+    expect(p.confidence).toBe("high");
+    expect(initialOwner({ personal: false, hasSuggestedAssignee: true })).toBe("me");
+    const html = renderToStaticMarkup(
+      createElement(ClarifyPanel, { item: row, reclarify: true }),
+    );
+    // Re-clarify opens the form: Me is the pressed owner, Delegate is not.
+    expect(html).toMatch(/border-primary bg-primary\/10 text-primary"><svg[^]*?<\/svg> Me<\/button>/);
+    expect(html).not.toContain("reassigns the task on its board");
+    // The recommendation does not claim Accept hands it to Dana.
+    expect(html).not.toContain("→ Dana Rao");
+  });
+
+  it("a personal capture keeps the proposed delegate", () => {
+    expect(initialOwner({ personal: true, hasSuggestedAssignee: true })).toBe("delegate");
+    expect(initialOwner({ personal: true, hasSuggestedAssignee: false })).toBe("me");
+  });
+
+  it("a board-task delegate applies only when the member picked it this session", () => {
+    expect(delegateAllowed({ personal: false, delegating: true, pickedThisSession: false })).toBe(false);
+    expect(delegateAllowed({ personal: false, delegating: true, pickedThisSession: true })).toBe(true);
+    expect(delegateAllowed({ personal: true, delegating: true, pickedThisSession: false })).toBe(true);
+    expect(delegateAllowed({ personal: false, delegating: false, pickedThisSession: false })).toBe(true);
   });
 });

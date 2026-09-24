@@ -8,6 +8,8 @@ import { useTaskStore, type ClarifyDecision } from "../lib/taskStore";
 import {
   proposeClarification,
   defaultStatus,
+  delegateAllowed,
+  initialOwner,
   initialWhere,
   isPersonalTask,
   lensDelegateBlock,
@@ -200,7 +202,14 @@ export function ClarifyPanel({
   const [adjustOpen, setAdjustOpen] = useState(reclarify);
   const [sort, setSort] = useState<Sort>(sortOf(proposal.disposition));
   const [size, setSize] = useState<Size>(sizeOf(proposal.disposition, proposal.complexity));
-  const [owner, setOwner] = useState<Owner>(proposal.suggestedAssignee ? "delegate" : "me");
+  // ⚠️ On a board task Delegate is a reassign, so the form never starts
+  // there. `lib/clarify.ts::initialOwner`, fenced by `clarifyWhere.test.ts`.
+  const [owner, setOwner] = useState<Owner>(() =>
+    initialOwner({ personal: personalTask, hasSuggestedAssignee: !!proposal.suggestedAssignee }),
+  );
+  // True once the member clicked Delegate in this session. A board-task
+  // delegate applies only then (`delegateAllowed`).
+  const [delegatePicked, setDelegatePicked] = useState(false);
   const [when, setWhen] = useState<When>("anytime");
 
   const [nextAction, setNextAction] = useState(proposal.nextAction);
@@ -256,7 +265,7 @@ export function ClarifyPanel({
       setProposal(sp);
       setSort(sortOf(sp.disposition));
       setSize(sizeOf(sp.disposition, sp.complexity));
-      setOwner(sp.suggestedAssignee ? "delegate" : "me");
+      setOwner(initialOwner({ personal: personalTask, hasSuggestedAssignee: !!sp.suggestedAssignee }));
       setNextAction(sp.nextAction);
       setOutcome(sp.outcome ?? `${item.title} — done`);
       setContext(sp.context ?? "@computer");
@@ -304,7 +313,7 @@ export function ClarifyPanel({
       }
     },
     // Setters are stable; only these are read.
-    [item.title, item.projectId, providers, areaIds],
+    [item.title, item.projectId, providers, areaIds, personalTask],
   );
 
   useEffect(() => {
@@ -478,6 +487,17 @@ export function ClarifyPanel({
 
   const apply = useCallback(async (pick?: { projectId: string }) => {
     const projectId = pick ? pick.projectId : pickedProjectId;
+    // Every path in — Enter, Accept, Organize it, File it here — stops here
+    // when a board-task delegate was not the member's own pick.
+    if (
+      !delegateAllowed({
+        personal: personalTask,
+        delegating: sort === "actionable" && owner === "delegate",
+        pickedThisSession: delegatePicked,
+      })
+    ) {
+      return;
+    }
     // Size=project with no existing project picked but a Where target chosen:
     // create the new list/local-project under that space/folder first.
     if (sort === "actionable" && size === "project" && !projectId) {
@@ -511,7 +531,7 @@ export function ClarifyPanel({
   }, [sort, size, pickedProjectId, newListName, nextAction, item.id, item.title,
       targetSpaceId, targetFolderId,
       createLocalProject, buildDecision, clarify, onDone, important, leveraged,
-      deepWork]);
+      deepWork, personalTask, owner, delegatePicked]);
 
   // Delegating to a connected tool needs a destination list so the teammate
   // can see it there — otherwise the task can't be pushed and would strand
@@ -545,10 +565,18 @@ export function ClarifyPanel({
   // outcome, so there is no space or folder to choose first and the decision
   // is complete the moment the outcome and the first action are.
   const projectDecisionReady = !!buildDecision();
+  // A board-task delegate needs the member's own click this session.
+  const delegateOk = delegateAllowed({
+    personal: personalTask,
+    delegating: sort === "actionable" && owner === "delegate",
+    pickedThisSession: delegatePicked,
+  });
   const canApply =
     sort !== "actionable"
       ? true
-      : needsProjectForDelegate
+      : !delegateOk
+        ? false
+        : needsProjectForDelegate
         ? false
         : size === "project"
           ? projectDecisionReady
@@ -880,7 +908,9 @@ export function ClarifyPanel({
                 {SIZE_META[sizeOf(proposal.disposition, proposal.complexity)].label}
               </span>
             )}
-            {proposal.suggestedAssignee && (
+            {/* On a board task Accept keeps it mine, so the proposal's person
+                is not what Accept does. The member picks Delegate to act on it. */}
+            {proposal.suggestedAssignee && personalTask && (
               <span className="text-muted-foreground">→ {proposal.suggestedAssignee.name}</span>
             )}
           </div>
@@ -1076,7 +1106,10 @@ export function ClarifyPanel({
                     </button>
                     <button
                       type="button"
-                      onClick={() => setOwner("delegate")}
+                      onClick={() => {
+                        setOwner("delegate");
+                        setDelegatePicked(true);
+                      }}
                       className={[
                         "tech-transition inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs",
                         owner === "delegate" ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-secondary",
@@ -1085,6 +1118,15 @@ export function ClarifyPanel({
                       <AppIcon name="UserPlus" className="h-3.5 w-3.5" /> Delegate →
                     </button>
                   </div>
+                  {owner === "delegate" && !personalTask && (
+                    <p className="mt-1.5 flex items-start gap-1 text-[11px] font-medium text-warning">
+                      <AppIcon name="AlertTriangle" className="mt-0.5 h-3 w-3 shrink-0" />
+                      <span>
+                        This reassigns the task on its board. It takes you, and anyone else
+                        assigned to it, off the task.
+                      </span>
+                    </p>
+                  )}
                   {owner === "delegate" && (
                     <div className="mt-2">
                       <PeoplePicker people={peopleForDelegate} value={assignee} onChange={setAssignee} />
