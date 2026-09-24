@@ -22,10 +22,13 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 import orchestrator._tool_injection as ti
+import pytest
 from acb_skills import skill_families as sf
+
+from tests.unit._decide_flag import (
+    decide_tool_on,  # noqa: F401 — module-scoped autouse, the flag ON
+)
 
 
 @pytest.fixture(autouse=True)
@@ -180,7 +183,7 @@ def test_build_catalog_measures_marginal_addendum_plus_schemas():
     # dynamic apps: unmeasurable statically.
     assert by_slug["apps"]["token_cost"] == 0
     # total: unscoped addendum + every static schema (the WS-12 baseline).
-    n_non_core = len(sf.all_registered_tool_names()) - 19
+    n_non_core = len(sf.all_registered_tool_names()) - 20  # 20 with decide (CP-13d)
     assert cat["total_injected_tokens"] == (
         100 + 40 * n_non_core + schemas(sf.all_registered_tool_names())
     )
