@@ -98,7 +98,10 @@ describe("one task panel composition (S6e)", () => {
   });
 
   it("the move dialog draws the body's assignee chips, not a copy", () => {
-    const dialog = code(read("projects/components/MoveTasksDialog.tsx"));
+    // S6g — the dialog's promote questions are `PromoteFields`, which
+    // Clarify draws too. The chips live there now.
+    expect(code(read("projects/components/MoveTasksDialog.tsx"))).toContain("<PromoteFields");
+    const dialog = code(read("projects/components/PromoteFields.tsx"));
     expect(dialog).toContain("<AssigneeChips");
     // The copied block's own tell: classifying an address to pick a tone.
     expect(dialog).not.toMatch(/classify\(who\)/);

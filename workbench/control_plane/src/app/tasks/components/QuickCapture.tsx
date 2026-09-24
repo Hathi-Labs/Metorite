@@ -10,6 +10,8 @@ import { CAPTURE_TRIGGERS } from "../lib/mockData";
 import { AttachmentComposer } from "./AttachmentComposer";
 import type { TaskAttachment } from "../lib/types";
 import { useVisualViewport } from "../lib/useVisualViewport";
+import { captureDestinations, destinations, useCompanyTree } from "../lib/companyTree";
+import { parseProjectToken } from "../lib/quickAdd";
 
 // Ubiquitous capture (C2) + Mind Sweep (C3/C4). A global palette openable from
 // any Tasks view via a hotkey (C / ⌘K) or a button. Single mode = rapid-fire
@@ -42,8 +44,15 @@ export function QuickCapture() {
 function QuickCapturePanel() {
   const storeMode = useTaskStore((s) => s.quickCaptureMode);
   const close = useTaskStore((s) => s.closeQuickCapture);
-  const capture = useTaskStore((s) => s.capture);
+  const captureLine = useTaskStore((s) => s.captureLine);
   const captureMany = useTaskStore((s) => s.captureMany);
+  // S6g — `#Name` files straight onto a project, the way the Inbox box does,
+  // through the store's one capture-line flow (`captureLine`).
+  const areas = useTaskStore((s) => s.areas);
+  const projects = useTaskStore((s) => s.projects);
+  const liveBackend = useTaskStore((s) => s.backend) === "live";
+  const { roots } = useCompanyTree(liveBackend);
+  const targets = captureDestinations({ areas, tree: destinations(roots), projects });
 
   const vp = useVisualViewport();
   const [mode, setMode] = useState<"single" | "sweep">(storeMode);
@@ -102,7 +111,11 @@ function QuickCapturePanel() {
         ? { deferUntil: dateIso }
         : { dueAt: dateIso, isHardDate: true }
       : undefined;
-    capture(t, pendingAtts.length ? pendingAtts : undefined, dates);
+    captureLine(t, {
+      targets,
+      attachments: pendingAtts.length ? pendingAtts : undefined,
+      dates,
+    });
     setValue("");
     setPendingAtts([]);
     setDateIso("");
@@ -249,7 +262,7 @@ function QuickCapturePanel() {
                   }
                 }}
                 autoFocus
-                placeholder="Capture to inbox…"
+                placeholder="Capture to inbox… (# for a project)"
                 aria-label="Capture to inbox"
                 className="flex-1 bg-transparent text-base text-foreground placeholder:text-muted-foreground focus:outline-none"
               />
@@ -276,6 +289,16 @@ function QuickCapturePanel() {
                 )}
               </button>
             </div>
+            {(() => {
+              // S6g — say where a `#` token files it, before Enter.
+              const hit = parseProjectToken(value, targets).match;
+              return hit ? (
+                <p className="mt-1.5 flex items-center gap-1 px-1 text-[11px] text-primary">
+                  <AppIcon name={hit.kind === "area" ? "Lock" : "FolderKanban"} className="h-3 w-3" />
+                  Goes to {hit.name}
+                </p>
+              ) : null;
+            })()}
             <AttachmentComposer attachments={pendingAtts} onChange={setPendingAtts} compact />
             <CaptureWhen
               iso={dateIso}

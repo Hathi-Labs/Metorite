@@ -2,16 +2,18 @@
 
 import AppIcon, { themedIcon } from "@/components/Icon";
 import type { ThemedIcon } from "@/components/Icon";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { taskDeepLink } from "@/app/projects/lib/card";
+import { type InboxKind, inboxRowActions } from "../lib/inbox";
 import { useTaskStore } from "../lib/taskStore";
 import { proposeClarification, type ClarifyDisposition } from "../lib/clarify";
 import { MyTask, MyTasksProject, Person } from "../lib/types";
 import type { ConnectedProvider } from "../lib/mockData";
 import { detectDateHint, originEmailHref, relativeTime, snoozeOptions } from "../lib/utils";
 import { AttachmentChips } from "./AttachmentComposer";
-import { SourceBadge } from "./SourceBadge";
 import { ContextMenu, type CtxItem } from "./ContextMenu";
-import { PromoteDialog } from "./PromoteDialog";
+import { InboxOrigin } from "./InboxOrigin";
 import { useCardActions } from "../lib/useCardActions";
 
 // The assistant's at-a-glance read of a capture — shown on the card so you see
@@ -31,6 +33,10 @@ const shortText = (s: string, n = 22) => (s.length > n ? s.slice(0, n - 1) + "�
 
 export interface InboxCardProps {
   item: MyTask;
+  /** S6g — a capture in my tree, or a row on a company board (`inbox.ts`). */
+  kind: InboxKind;
+  /** S6g — open the one promote dialog (the Inbox hosts it). Personal rows. */
+  onMove: () => void;
   cursor: boolean;
   selected: boolean;
   selectionMode: boolean;
@@ -43,6 +49,8 @@ export interface InboxCardProps {
 
 export function InboxCard({
   item,
+  kind,
+  onMove,
   cursor,
   selected,
   selectionMode,
@@ -63,6 +71,20 @@ export function InboxCard({
   // S6c — the one rule for the promote door (`promoteAllowed`), read the way
   // TaskCard and ItemDetail read it, so the three cannot disagree.
   const { canPromote } = useCardActions(item);
+  const router = useRouter();
+  const personal = kind === "personal";
+  const actions = inboxRowActions({
+    kind,
+    canPromote,
+    move: onMove,
+    // ⚠️ "Not mine" is a TRASH on MY overlay, through the one-tap dispose
+    // path (`lensBulkDispose`, action `personal`). Never `requestDelete`:
+    // the delete path PURGES when its undo window closes, and on a board
+    // task that is a hard DELETE of the team's task (S6g audit).
+    notMine: () => quickDispose(item.id, "TRASH"),
+    remove: () => requestDelete([item.id]),
+    openBoard: () => router.push(taskDeepLink(item)),
+  });
 
   const hint = useMemo(
     () => buildHint(item, people, projects, providers),
@@ -73,9 +95,6 @@ export function InboxCard({
   const [draftTitle, setDraftTitle] = useState(item.title);
   const [draftNote, setDraftNote] = useState(item.notes ?? "");
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
-  // S6c — an inbox capture can go straight to a board (H-59: "a Tasks inbox
-  // item can be upgraded into the Projects app"). Lens only, like the card.
-  const [promoting, setPromoting] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
   // Keep the keyboard cursor row visible as you navigate with j/k.
@@ -143,16 +162,16 @@ export function InboxCard({
       icon: themedIcon("CalendarClock"),
       onSelect: () => openSchedule(item.id),
     },
-    ...(canPromote
-      ? [
-          {
+    ...actions.map((a) =>
+      a.id === "remove" || a.id === "notMine"
+        ? null
+        : {
             kind: "item" as const,
-            label: "Move to project…",
-            icon: themedIcon("FolderInput"),
-            onSelect: () => setPromoting(true),
+            label: a.label,
+            icon: themedIcon(a.icon),
+            onSelect: a.run,
           },
-        ]
-      : []),
+    ).filter((x): x is NonNullable<typeof x> => x !== null),
     { kind: "sep" },
     {
       kind: "item",
@@ -167,13 +186,15 @@ export function InboxCard({
       onSelect: () => quickDispose(item.id, "REFERENCE"),
     },
     { kind: "sep" },
-    {
-      kind: "item",
-      label: "Delete",
-      icon: themedIcon("Trash2"),
-      danger: true,
-      onSelect: () => requestDelete([item.id]),
-    },
+    ...actions
+      .filter((a) => a.id === "remove" || a.id === "notMine")
+      .map((a) => ({
+        kind: "item" as const,
+        label: a.label,
+        icon: themedIcon(a.icon),
+        danger: a.id === "remove",
+        onSelect: a.run,
+      })),
   ];
   const openMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -228,7 +249,9 @@ export function InboxCard({
         )}
       </button>
 
-      <div className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-primary/60" />
+      <div
+        className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${personal ? "bg-primary/60" : "bg-muted-foreground/50"}`}
+      />
 
       <div className="min-w-0 flex-1 cursor-pointer">
         <p className="text-sm leading-snug text-foreground">{item.title}</p>
@@ -263,11 +286,13 @@ export function InboxCard({
           </p>
         )}
         <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+          {/* S6g — where it comes from. It wraps under the title on a
+              phone rather than pushing the actions off the row. */}
+          <InboxOrigin item={item} kind={kind} />
           <span className="inline-flex items-center gap-1">
             <AppIcon name="Clock" className="h-3 w-3" />
-            captured {relativeTime(item.createdAt)}
+            {personal ? "captured" : "assigned"} {relativeTime(item.createdAt)}
           </span>
-          <SourceBadge source={item.source} provider={item.provider} size="xs" />
           {dateHint && (
             <button
               type="button"
@@ -287,7 +312,10 @@ export function InboxCard({
 
       {/* Secondary quick-actions (desktop hover; on touch, tap card → Clarify) */}
       <div className="hidden shrink-0 items-center gap-0.5 tech-transition reveal-on-hover sm:flex">
-        <CardAction label="Edit" icon={themedIcon("Pencil")} onClick={onEditStart} />
+        {/* A board task's title is the team's. Edit it on the board. */}
+        {personal && (
+          <CardAction label="Edit" icon={themedIcon("Pencil")} onClick={onEditStart} />
+        )}
         <div className="relative">
           <CardAction
             label="Snooze"
@@ -322,20 +350,31 @@ export function InboxCard({
         />
       </div>
 
-      {/* Trash — always visible (not hover-gated), on touch and desktop, so
-          removing a capture is never buried. */}
-      <button
-        type="button"
-        title="Delete"
-        aria-label="Delete"
-        onClick={(e) => {
-          e.stopPropagation();
-          requestDelete([item.id]);
-        }}
-        className="tech-transition mt-0.5 shrink-0 rounded-md p-1.5 text-muted-foreground/70 hover:bg-destructive/10 hover:text-destructive"
-      >
-        <AppIcon name="Trash2" className="h-4 w-4" />
-      </button>
+      {/* S6g — the kind's own actions, ALWAYS visible (never hover-gated),
+          on touch and desktop. A personal row: Move to project, Delete. A
+          board row: Not mine, Open on board. */}
+      <div className="mt-0.5 flex shrink-0 items-center gap-0.5">
+        {actions.map((a) => (
+          <button
+            key={a.id}
+            type="button"
+            title={a.title}
+            aria-label={a.label}
+            onClick={(e) => {
+              e.stopPropagation();
+              a.run();
+            }}
+            className={[
+              "tech-transition shrink-0 rounded-md p-1.5",
+              a.id === "remove"
+                ? "text-muted-foreground/70 hover:bg-destructive/10 hover:text-destructive"
+                : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+            ].join(" ")}
+          >
+            <AppIcon name={a.icon} className="h-4 w-4" />
+          </button>
+        ))}
+      </div>
 
       {menu && (
         <ContextMenu
@@ -346,15 +385,8 @@ export function InboxCard({
         />
       )}
     </div>
-    {/* OUTSIDE the clickable root, on purpose. The Modal portals to
-        `document.body`, but React events bubble the REACT tree, not the
-        DOM: a dialog rendered inside the root above called `openClarify`
-        on every click in it, and the root's `onKeyDown` swallowed every
-        Space typed into a required field. `TaskCard` hosts its dialog the
-        same way. Review found it (S6c repair round). */}
-    {promoting && (
-      <PromoteDialog item={item} onClose={() => setPromoting(false)} />
-    )}
+    {/* S6g — the promote dialog is hosted by the Inbox, outside every
+        row, so the card, the table and the `m` key open ONE dialog. */}
     </>
   );
 }
@@ -500,3 +532,4 @@ function CardAction({
     </button>
   );
 }
+

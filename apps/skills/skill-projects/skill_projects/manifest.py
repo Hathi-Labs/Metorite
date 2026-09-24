@@ -221,6 +221,10 @@ MANIFEST: tuple[Route, ...] = (
     # `my_work` may pass the flag ("what landed on my plate").
     Route("GET", "/projects/my/inbox", "my_work", "A"),
     Route("GET", "/projects/my/tasks/{task_id}", "my_task", "A"),
+    # WS-39 S6g — My Tasks' purge: the hard delete that finalises a soft
+    # delete, and only for a task in the caller's personal tree. A delete is
+    # never a chat act, for the reason `DELETE /projects/tasks/{id}` gives.
+    Route("DELETE", "/projects/my/tasks/{task_id}", "", "X", _DELETE_REASON),
     Route(
         "GET",
         "/projects/my/tasks/{task_id}/lanes",
