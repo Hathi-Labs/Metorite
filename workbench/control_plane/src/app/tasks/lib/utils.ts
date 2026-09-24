@@ -111,7 +111,7 @@ export function snoozeOptions(nowMs = Date.now()): { label: string; iso: string 
 
 /** True if a deferred item is still tickled (resurface date in the future).
  *
- *  D76 — the work's shared START date tickles it too, the same way the
+ *  D77 — the work's shared START date tickles it too, the same way the
  *  gateway's `DEFERRED_CLAUSE` does: the task waits for the later of my own
  *  `deferUntil` and the team's `startDate`. `startDate` is a DATE, so it
  *  opens at the start of that LOCAL day — a task starting today is in
@@ -129,7 +129,7 @@ export function isTickled(
 }
 
 /** When a tickled item comes back: the LATER of my defer and the shared
- *  start date (D76), as an ISO instant. `undefined` when neither is set. */
+ *  start date (D77), as an ISO instant. `undefined` when neither is set. */
 export function resurfacesAt(item: { deferUntil?: string; startDate?: string }): string | undefined {
   const times: number[] = [];
   if (item.deferUntil) times.push(new Date(item.deferUntil).getTime());

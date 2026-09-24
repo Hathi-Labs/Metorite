@@ -167,7 +167,7 @@ export function mapLensItem(raw: Raw): GtdItem {
     nextAction: text(raw.next_action),
     context: text(raw.context),
     energy: (raw.energy ?? undefined) as GtdItem["energy"],
-    // D76 (amends D53.8): the task's ONE estimate, `pm_tasks.estimate_mins`
+    // D77 (amends D53.8): the task's ONE estimate, `pm_tasks.estimate_mins`
     // — the number the board, People capacity and analytics read. The
     // overlay's `time_estimate_mins` is retired and no longer on the wire.
     timeEstimateMins: num(raw.estimate_mins),
@@ -221,7 +221,7 @@ export function mapLensItem(raw: Raw): GtdItem {
     completedAt: text(raw.completed_at),
     clarifiedAt: text(raw.clarified_at),
     deferUntil: text(raw.defer_until),
-    // D76 — two shared facts My Tasks did not show: when the work starts,
+    // D77 — two shared facts My Tasks did not show: when the work starts,
     // and the team's tags.
     startDate: text(raw.start_date)?.slice(0, 10),
     tags: Array.isArray(raw.tags) ? (raw.tags as unknown[]).map(String) : [],
@@ -659,7 +659,7 @@ export async function lensPatchItem(
   // consequence. The rest of the patch still applies.
   const completes = split.personal.disposition === "DONE";
   if (completes) delete split.personal.disposition;
-  // D76 — the reverse ("mark not done", "back to Next" on a closed task) is
+  // D77 — the reverse ("mark not done", "back to Next" on a closed task) is
   // the GATEWAY's: every overlay door reopens a closed task when it is given
   // an open disposition (`personal.reopen_if_closed`), so the bulk path the
   // checkbox takes gets it too. One rule, one place — nothing here.
@@ -731,7 +731,7 @@ export async function lensTrashItem(id: string): Promise<void> {
 
 /** Undo the soft delete — back to the inbox to be triaged again. */
 export async function lensRestoreItem(id: string): Promise<GtdItem> {
-  // D76 — an open disposition on a closed task REOPENS it for the board
+  // D77 — an open disposition on a closed task REOPENS it for the board
   // (`personal.reopen_if_closed`). Undoing a delete must not do that, so a
   // task whose lane is closed comes back as DONE, which is what it was.
   const current = await lensGetItem(id);
@@ -788,7 +788,7 @@ export async function lensDelegateItem(
     method: "PUT",
     body: JSON.stringify({ assignees: [who] }),
   });
-  // ⚠️ D76: only an EXPLICIT date the member typed. No caller passes one
+  // ⚠️ D77: only an EXPLICIT date the member typed. No caller passes one
   // today (the Delegate dialog collects none), and none may default it to
   // the delegator's own date — the deadline is the team's.
   if (body.due_at) {

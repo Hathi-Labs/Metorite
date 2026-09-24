@@ -2189,11 +2189,11 @@ by D15/D16) — read their banners before citing either.
     publish one member's private triage to the whole task, and change what the
     Projects Priority column means. Two facts, two homes; `importance` is left
     alone.
-    ⚠️ **AMENDED by D76 (2026-09-23), by owner directive.** The owner asked for
-    one field per work fact. The matrix's Important now DERIVES from the shared
-    Priority (`importance >= 2`), and the overlay's `important` and
-    `time_estimate_mins` are retired. The threshold is the owner's decision in
-    D76, not an invented one. The rest of D53.8 stands.
+    ⚠️ **AMENDED by D77 (2026-09-23), by owner directive.** The owner asked for
+    one field per work fact. The overlay's `time_estimate_mins` is retired, and
+    `pm_tasks.estimate_mins` is the one estimate. `important` stays on the
+    overlay: D76 lets the shared Priority seed it and never writes it. The rest
+    of D53.8 stands.
     ⚠️ **Waiting-For collapses to four columns rather than porting
     `gtd_waiting`.** That table allows many rows per item with a `resolved`
     flag — a delegation HISTORY — but **every reader in the tree filters

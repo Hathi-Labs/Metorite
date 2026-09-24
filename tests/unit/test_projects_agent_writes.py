@@ -1010,18 +1010,18 @@ async def test_the_overlay_card_shows_the_members_own_before_values(monkeypatch)
 
 
 async def test_the_overlay_refuses_done_and_points_at_complete(monkeypatch) -> None:
-    """D76: completion is the shared lane. A DONE behind a card that says
+    """D77: completion is the shared lane. A DONE behind a card that says
     "your overlay only" would be a no-op, and routing it to /complete there
     would move the board without asking about the board."""
     asked = approve(monkeypatch)
     calls = fake_gateway(monkeypatch, responder)
     out = await skill_projects.set_my_overlay(UUID, disposition="done")
-    assert "complete" in out and "D76" in out
+    assert "complete" in out and "D77" in out
     assert asked == [] and writes(calls) == []
 
 
 async def test_the_overlay_card_says_when_it_reopens_the_board(monkeypatch) -> None:
-    """D76: an open disposition on a FINISHED task reopens it for everybody
+    """D77: an open disposition on a FINISHED task reopens it for everybody
     (`personal.reopen_if_closed`). The card must not say "your overlay only"."""
     def finished(call: dict) -> Any:
         if call["path"] == f"/projects/tasks/{UUID}":

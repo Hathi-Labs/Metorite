@@ -321,9 +321,9 @@ export async function apiPatchItem(
     next_action?: string;
     context?: string;
     energy?: string;
-    /** D76 — the task's ONE estimate (`pm_tasks.estimate_mins`); null clears. */
+    /** D77 — the task's ONE estimate (`pm_tasks.estimate_mins`); null clears. */
     time_estimate_mins?: number | null;
-    /** D76 — the work's shared start date, "YYYY-MM-DD"; null clears. */
+    /** D77 — the work's shared start date, "YYYY-MM-DD"; null clears. */
     start_date?: string | null;
     due_at?: string;
     scheduled_start?: string;

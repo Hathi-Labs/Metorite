@@ -102,7 +102,7 @@ SELECT t.id::text                AS id,
 #: the difference matters, because a SQL copy of `derive_disposition` is a mirror
 #: and mirrors go stale and then lie.
 #:
-#: ⚠️ D76 narrowed the prune to TRASH alone. A stated DONE is no longer
+#: ⚠️ D77 narrowed the prune to TRASH alone. A stated DONE is no longer
 #: final: a teammate can reopen the task, and `effective_disposition` then
 #: reads it as NEXT. Only the lane can settle DONE, and SQL cannot see the
 #: rule, so the stated DONE row is kept and ruled on in Python.
@@ -152,7 +152,7 @@ _PM_BUSY_WHERE = (
 )
 
 #: The learned-estimate signal, over the overlay. Same shape as the `gtd_items`
-#: query it mirrors, against the columns migration 187 moved. D76: the plan
+#: query it mirrors, against the columns migration 187 moved. D77: the plan
 #: falls back to the SHARED estimate, `pm_tasks.estimate_mins`, when no block
 #: was drawn — the overlay's `time_estimate_mins` is no longer read.
 _PM_RATIO_SQL = """
@@ -182,7 +182,7 @@ def _pm_row(row: Any) -> SimpleNamespace:
     """A `pm_*` row, wearing the names the planner already reads.
 
     The one substantive translation is `disposition`: the EFFECTIVE one
-    (`effective_disposition`, D76) — the same rule `/projects/my/inbox`
+    (`effective_disposition`, D77) — the same rule `/projects/my/inbox`
     applies, called rather than restated. Everything else is a passthrough,
     so the packer below cannot tell which store it is working on, which is
     exactly the property that keeps the two from drifting.

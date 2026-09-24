@@ -18,7 +18,7 @@
  * `TaskBody`: status, priority, assignees, due and start dates, the
  * estimate and time spent, the watch toggle, description, tags, custom
  * fields, links and subtasks, files, and the discussion with its composer.
- * D76 moved the watch toggle out of this header into the body, so My Tasks
+ * D77 moved the watch toggle out of this header into the body, so My Tasks
  * can watch a task too. `ItemDetail` in My Tasks hosts the same
  * body under its own header and its overlay strip, so a member meets the
  * same fields in the same order in both apps. Neither host writes a field

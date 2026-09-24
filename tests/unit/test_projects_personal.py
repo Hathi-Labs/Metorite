@@ -854,10 +854,6 @@ async def test_two_assignees_hold_different_matrix_flags(
     the judge's own time, not a property of the work. A column on `pm_tasks`
     would make one of them overwrite the other with no notice, which is exactly
     what D53.7 was recorded to prevent for the block.
-
-    ⚠️ D76 (2026-09-23) took `important` off this list: the IMPORTANT axis
-    is now the shared Priority, so it is one answer for both. `leveraged`
-    and `deep_work` stay per-member, which is what this test still pins.
     """
     project, todo, _ = _team_project(db)
     task = db.seed_task(project.id, todo.id)
@@ -865,21 +861,21 @@ async def test_two_assignees_hold_different_matrix_flags(
 
     await pm_personal.set_personal(
         str(task.id),
-        pm_personal.PersonalIn(leveraged=True, deep_work=True),
+        pm_personal.PersonalIn(important=True, leveraged=True, deep_work=True),
         user=ALICE,
     )
     await pm_personal.set_personal(
         str(task.id),
-        pm_personal.PersonalIn(leveraged=False, deep_work=False),
+        pm_personal.PersonalIn(important=False, leveraged=False, deep_work=False),
         user=BOB,
     )
 
     alice = await pm_personal.my_inbox(user=ALICE, page=page())
     bob = await pm_personal.my_inbox(user=BOB, page=page())
 
-    assert alice.rows[0]["leveraged"] is True
+    assert alice.rows[0]["important"] is True
     assert alice.rows[0]["deep_work"] is True
-    assert bob.rows[0]["leveraged"] is False
+    assert bob.rows[0]["important"] is False
     assert bob.rows[0]["deep_work"] is False
     # One task, two overlays, no third row anywhere.
     assert len(db.rows("pm_tasks")) == 1
@@ -906,15 +902,15 @@ async def test_matrix_flags_are_tri_state_not_booleans(
         str(task.id), pm_personal.PersonalIn(disposition="NEXT"), user=ALICE,
     )
     rows = (await pm_personal.my_inbox(user=ALICE, page=page())).rows
-    assert rows[0]["leveraged"] is None, "never stated must not read as False"
-    assert rows[0]["deep_work"] is None
+    assert rows[0]["important"] is None, "never stated must not read as False"
+    assert rows[0]["leveraged"] is None
     assert rows[0]["kept_mine"] is None
 
     await pm_personal.set_personal(
-        str(task.id), pm_personal.PersonalIn(leveraged=False), user=ALICE,
+        str(task.id), pm_personal.PersonalIn(important=False), user=ALICE,
     )
     rows = (await pm_personal.my_inbox(user=ALICE, page=page())).rows
-    assert rows[0]["leveraged"] is False, "an explicit no must survive as False"
+    assert rows[0]["important"] is False, "an explicit no must survive as False"
 
 
 async def test_waiting_for_round_trips_through_the_overlay(
@@ -1065,8 +1061,8 @@ async def test_every_writable_overlay_field_can_be_read_back(
     remembered. This one derives the list from the model itself, so the next
     field is covered before anybody writes a test for it.
     """
-    # D76's two retired columns are on the model only to be REFUSED by name
-    # (`RETIRED_OVERLAY_KEYS`), so they are the one sanctioned exception.
+    # D77's retired column is on the model only to be REFUSED by name
+    # (`RETIRED_OVERLAY_KEYS`), so it is the one sanctioned exception.
     writable = set(pm_personal.PersonalIn.model_fields) - set(
         pm_personal.RETIRED_OVERLAY_KEYS
     )
@@ -1118,7 +1114,7 @@ async def test_the_inbox_and_the_calendar_project_the_same_task_shape(
         str(task.id),
         pm_personal.PersonalIn(
             disposition="NEXT",
-            leveraged=True,
+            important=True,
             deep_work=True,
             scheduled_start="2026-09-01T09:00:00+00:00",
             scheduled_end="2026-09-01T11:00:00+00:00",
@@ -1144,7 +1140,7 @@ async def test_the_inbox_and_the_calendar_project_the_same_task_shape(
         f"calendar={sorted(set(window[0]) - set(inbox[0]) - set(single))} "
         f"single={sorted(set(single) - set(inbox[0]) - set(window[0]))}"
     )
-    for field in ("leveraged", "deep_work", "scheduled_start", "clarified_at"):
+    for field in ("important", "deep_work", "scheduled_start", "clarified_at"):
         assert inbox[0][field] == window[0][field] == single[field], (
             f"`{field}` disagrees between the readers of one overlay"
         )

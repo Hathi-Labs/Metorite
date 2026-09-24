@@ -1863,9 +1863,9 @@ class FakeProjectsDB:
                 p_next_action=mine.get("next_action"),
                 p_context=mine.get("context"),
                 p_energy=mine.get("energy"),
-                # D76: no `p_time_estimate_mins` and no `p_important` — the
-                # SQL stopped selecting them, and a mirror that kept them
-                # would answer a retired column as if it were read.
+                # D77: no `p_time_estimate_mins` — the SQL stopped selecting
+                # it, and a mirror that kept it would answer a retired column
+                # as if it were read.
                 p_is_two_minute=bool(mine.get("is_two_minute", False)),
                 p_defer_until=mine.get("defer_until"),
                 # The scheduled block (187, WS-39 S3a). ⚠️ Projected here
@@ -1885,6 +1885,7 @@ class FakeProjectsDB:
                 # missing test, it is a PASSING one — `getattr(row, "p_x", None)`
                 # answers None just as happily for "the member never set it" as
                 # for "this fake has never heard of it".
+                p_important=mine.get("important"),
                 p_leveraged=mine.get("leveraged"),
                 p_deep_work=mine.get("deep_work"),
                 p_kept_mine=mine.get("kept_mine"),
@@ -1909,7 +1910,7 @@ class FakeProjectsDB:
                 ),
                 assignee_count=len(assignees),
                 is_mine=who in assignees,
-                # D76 — the ARRAY subquery: everybody else on the task, in
+                # D77 — the ARRAY subquery: everybody else on the task, in
                 # assignment order (`assigned_at`, then the address).
                 other_assignees=(
                     self._others_on(task["id"], who)
@@ -1919,7 +1920,7 @@ class FakeProjectsDB:
         return out
 
     def _others_on(self, task_id: str, who: str) -> list[str]:
-        """D76 — the ARRAY subquery: everybody else on the task, in
+        """D77 — the ARRAY subquery: everybody else on the task, in
         assignment order (`assigned_at`, then the address)."""
         return [
             str(a.get("assignee")) for a in sorted(
@@ -2341,7 +2342,7 @@ class FakeProjectsDB:
 
 def _not_yet(statement: str, mine: dict, task: dict) -> bool:
     """The tickler, mirrored off the statement: my own `defer_until` in the
-    future, or — D76, `DEFERRED_CLAUSE` — the work's shared `start_date`
+    future, or — D77, `DEFERRED_CLAUSE` — the work's shared `start_date`
     after today (a DATE, compared with today's date)."""
     if "p.defer_until IS NULL OR p.defer_until <= now()" in statement:
         deferred = mine.get("defer_until")

@@ -689,8 +689,15 @@ PASS. `test_projects_personal_s6e.py`, 12 tests. The vitest fences:
 
 ### S6f — one set of fields across My Tasks and Projects · AGENT-SAFE · BUILT 2026-09-23
 
-**Scope.** §4.10, decision D76. Branch `my-tasks-fields`, stacked on
-`my-tasks-s8b` (#411). It merged `origin/main` once, for D75 and the Nudge.
+**Scope.** §4.10, decision D77. Branch `my-tasks-fields`, stacked on
+`my-tasks-s8b` (#411). It merged `origin/main` for D75 and the Nudge, and
+again for D76 (#429).
+
+⚠️ **Reworked 2026-09-24 for D76.** The first build derived `important` from
+`importance`, and the Important switch wrote the shared Priority. D76 is the
+owner's decision and it says the opposite, so the rework took D76 whole. The
+decision number moved from D76 to D77, and the migration moved from 215 to
+216, because main took both first.
 
 **Gateway.**
 
@@ -700,17 +707,17 @@ PASS. `test_projects_personal_s6e.py`, 12 tests. The vitest fences:
 2. `_MY_TASKS_SQL` selects `other_assignees`. `waiting_on_for` turns it into
    the waiting-on person, and the Nudge uses the same rule.
 3. `DEFERRED_CLAUSE` adds `start_date <= current_date` to the defer clause.
-4. `validate_overlay` refuses `important` and `time_estimate_mins` with a 422.
-   `_upsert_personal` refuses them with a ValueError. Organize and email
-   capture write `pm_tasks.estimate_mins`.
+4. `validate_overlay` refuses `time_estimate_mins` with a 422, and
+   `_upsert_personal` refuses it with a ValueError. Neither refuses
+   `important`, because it is the member's own answer (D76). Organize and
+   email capture write `pm_tasks.estimate_mins`.
 5. A delegation keeps a deadline the task already has.
 6. `GET /projects/tasks/{id}` carries `time_spent_mins`. It is a field on a
    route that exists, so the D-PM-37 manifest does not change.
-7. **Migration 215** copies each overlay estimate into an empty
+7. **Migration 216** copies each overlay estimate into an empty
    `estimate_mins`. The assignee's value wins, then the first assignee, then
-   the earliest `updated_at`. It also carries the `important` flags. Where
-   the chosen flag is true, an unset, Low or Normal Priority becomes High.
-   It never lowers a Priority. The ledger guard makes a replay a no-op.
+   the earliest `updated_at`. It writes no priority. The ledger guard makes a
+   replay a no-op, and a test holds the guard to the file's own name.
 8. `skill-task-gtd` and `skill-projects` follow the split. The chat tool
    `set_my_overlay` refuses DONE and points at `complete`. Its card says
    "your overlay only", so a shared completion behind that card would move
@@ -718,15 +725,19 @@ PASS. `test_projects_personal_s6e.py`, 12 tests. The vitest fences:
 
 **Client.**
 
-1. `lens.ts` maps `importance`, `estimate_mins`, `start_date` and `tags`.
-   `important` derives from `importance`. `TASK_KEYS` gains the estimate,
-   Priority and start date. `OVERLAY_KEYS` loses the two retired keys.
+1. `lens.ts` maps `estimate_mins`, `start_date` and `tags`. `important`
+   stays the overlay's, and `orgPriority` carries the shared Priority (D76).
+   `TASK_KEYS` gains the estimate and the start date. `OVERLAY_KEYS` loses
+   `time_estimate_mins` and keeps `important`.
 2. The client writes no lane for a reopen. The gateway's
    `reopen_if_closed` covers every door (§4.10 choice 3).
-3. The Important switch writes Priority (`importanceForImportant`).
-4. The Focus matrix, its column, group, filter, sort and view say "Focus".
-   The list's Priority column and the card draw the shared Priority and the
-   tags with the Projects chips (`importanceChip`, `taskMeta`).
+3. The Important switch writes the member's overlay, as D76 says. No My
+   Tasks path writes the shared Priority.
+4. The list's Priority column and the card draw the shared Priority
+   (`orgPriority`) and the tags. They use the Projects chips
+   (`importanceChip`, `taskMeta`) and D76's words. The member's own cell column is "Your
+   focus", the name D76 gives the private row in Projects. The cells, the
+   sort, the group and the filter keep D76's "Priority" wording.
 5. `TaskBody` gains Start, Estimate, Time spent, Watch and a Description
    editor. The My Tasks strip loses Estimate and Notes under the lens. The
    Projects header loses its watch toggle.
@@ -736,21 +747,32 @@ PASS. `test_projects_personal_s6e.py`, 12 tests. The vitest fences:
 
 **Verified.**
 
-- `tests/live/live_ws39_s6f.py` on the dev database: **12/12 PASS**. It
-  checks reopen, close, reassign, the estimate and Priority in the planner,
-  and the estimate in capacity. It also checks the start date, the retired
-  columns, the backfill run twice, the ledger replay, time spent and tenancy.
-- `test_projects_personal_s6f.py`: 29 tests. The pytest run over every file
-  that imports a changed module: 2383 pass. One fails, and it fails at the
-  base too: `test_h3_rls_promotion_rehearsal.py`, order-dependent.
-- `npx tsc --noEmit` clean. `npx vitest run`: 3381 pass in 178 files. The new
-  fence is `sharedFields.test.ts`. `lens.test.ts` and `itemDetail.test.ts`
-  gained the D76 cases.
-- The live scripts for S6a, S6c, S6d, S6e, S8a and S8c pass. S6d reads the
-  capture's estimate off `pm_tasks` now.
+The rework was verified again on 2026-09-24, on a fresh database built from
+this branch's own ladder (`acb_tenant_s6f_rework`, 214 files applied).
+
+- `tests/live/live_ws39_s6f.py`: **15/15 PASS**. It checks reopen, close,
+  reassign, the estimate in the planner and in capacity, and the start date.
+  Check 5 proves that the Priority reaches the planner beside my
+  `important`, never as it. Check 7 proves that the upsert refuses the
+  retired estimate and takes my `important`. Check 8b proves that the
+  backfill leaves the Priority alone. It also checks the backfill run twice,
+  the ledger replay, time spent, the reopen and tenancy.
+- `test_projects_personal_s6f.py`: 49 tests. The pytest run over every file
+  that imports a changed module, with `test_priority_seed.py`: 3495 pass. One
+  fails, and it passes alone: `test_h3_rls_promotion_rehearsal.py`, which
+  depends on the order of the run.
+- `npx tsc --noEmit` clean. `npx vitest run`: 3504 pass in 185 files, with
+  D76's `priorityVocabulary.test.ts` and `priority.test.ts`. The new fence is
+  `sharedFields.test.ts`. `lens.test.ts` and `itemDetail.test.ts` carry the
+  D77 cases, and `itemDetail.test.ts` holds D76's "Your focus" row to its
+  name.
+- The live scripts for S6a (13/13), S6d (33/33), S6e (10/10), S8a (7/7) and
+  S8c (8/8) pass. S6d reads the capture's estimate off `pm_tasks` now.
 - The visual pass: one task in My Tasks and in Projects, light, compact and
   dark at 1440, and 390. The captures are in
-  `workbench/control_plane/ux-shots/s6f/`.
+  `workbench/control_plane/ux-shots/s6f/`. They are from the first build. The
+  rework renamed the member's cell column to "Your focus", and nobody has
+  shot it again.
 
 ### S7 — the cutover · dev-phase window, reported by evidence · RUN 2026-09-23
 
@@ -1068,9 +1090,9 @@ the owner.
 | My Tasks and Projects share one task panel composition | the S6e source fence |
 | the rename prologues are guarded and not swept | `test_gtd_rename_upgrade.py` |
 | the drop is inert until armed and accounted for | `test_gtd_backfill.py` |
-| a work fact has one home, and My Tasks reads it (D76) | `test_projects_personal_s6f.py`, `live_ws39_s6f.py`, `sharedFields.test.ts` |
-| the strip draws no work fact, and the body draws them all (D76) | `itemDetail.test.ts` |
-| the lens never writes `important` or `time_estimate_mins` (D76) | `lens.test.ts`, `test_projects_personal_s6f.py` |
+| a work fact has one home, and My Tasks reads it (D77) | `test_projects_personal_s6f.py`, `live_ws39_s6f.py`, `sharedFields.test.ts` |
+| the strip draws no work fact, and the body draws them all (D77) | `itemDetail.test.ts` |
+| the lens never writes `time_estimate_mins`, and My Tasks never writes the shared Priority (D77, D76) | `lens.test.ts`, `sharedFields.test.ts`, `test_projects_personal_s6f.py` |
 | the ladder replays clean | `pr-check.yml` migrations job |
 
 ## 8. What this spec closes, and where

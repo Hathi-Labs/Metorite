@@ -227,7 +227,7 @@ async def test_next_with_subtasks_writes_the_overlay_and_the_children(
     assert overlay["next_action"] == "Book the venue"
     assert overlay["context"] == "@computer"
     assert overlay["energy"] == "high"
-    # D76: the clarify card's Estimate is the task's ONE estimate — the
+    # D77: the clarify card's Estimate is the task's ONE estimate — the
     # column People capacity reads — and the overlay no longer holds one.
     shared = next(t for t in db.rows("pm_tasks") if str(t["id"]) == task["id"])
     assert shared["estimate_mins"] == 45
@@ -652,7 +652,7 @@ async def test_the_planner_never_packs_a_waiting_task(monkeypatch) -> None:
     assert [r.id for r in await lens.carry_forward(
         _DB(), "alice@fracktal.in", datetime.now(UTC))] == ["next"]
     # And the SQL half prunes with the stated column before Python rules.
-    # D76: a stated DONE is kept in the prune too, because a teammate may
+    # D77: a stated DONE is kept in the prune too, because a teammate may
     # have reopened the task and `effective_disposition` then reads NEXT.
     assert "p.disposition IN ('NEXT', 'DONE')" in pm_planning._PM_CANDIDATE_WHERE
 

@@ -436,7 +436,7 @@ export function TaskDetail({
                 )}
               </MetaEdit>
 
-              {/* Estimate — D76: the task's ONE estimate, a work fact. Under
+              {/* Estimate — D77: the task's ONE estimate, a work fact. Under
                   the lens the shared body draws and edits it; here only on
                   the demo backend. */}
               {!lens && (<>
@@ -772,7 +772,7 @@ export function TaskDetail({
             </section>
           )}
 
-          {/* Notes — the task's description, a work fact (D76). Under the
+          {/* Notes — the task's description, a work fact (D77). Under the
               lens the shared body's Description editor is the one writer. */}
           {!lens && (<>
           <section>

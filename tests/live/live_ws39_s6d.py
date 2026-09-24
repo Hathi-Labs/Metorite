@@ -150,7 +150,7 @@ async def main() -> None:
               row.personal_owner == ALICE and row.parent_project_id is None
               and row.mine == 1,
               f"owner={row.personal_owner} parent={row.parent_project_id} mine={row.mine}")
-        # D76 (S6f): the drafter's estimate is the TASK's one estimate, so
+        # D77 (S6f): the drafter's estimate is the TASK's one estimate, so
         # it lands on `pm_tasks.estimate_mins`, not the overlay.
         check("1.3 source is 'email' and the overlay carries the routing",
               row.source == "email" and row.disposition == "NEXT"

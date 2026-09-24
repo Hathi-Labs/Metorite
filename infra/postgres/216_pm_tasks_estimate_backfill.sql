@@ -1,12 +1,9 @@
--- 215_pm_tasks_estimate_backfill.sql — one estimate per task (D76, WS-39 S6f)
+-- 216_pm_tasks_estimate_backfill.sql — one estimate per task (D77, WS-39 S6f)
 --
 -- What: copy each member's overlay estimate (`pm_task_personal.
 --       time_estimate_mins`) into the task's SHARED estimate
---       (`pm_tasks.estimate_mins`), where the task has none. And carry each
---       Focus-matrix "important" flag (`pm_task_personal.important = true`)
---       into the shared Priority (`pm_tasks.importance = 2`, High), where the
---       task's Priority is unset or below High.
--- Why:  D76 (owner directive 2026-09-23). A fact about the WORK has one home.
+--       (`pm_tasks.estimate_mins`), where the task has none. Nothing else.
+-- Why:  D77 (owner directive 2026-09-23). A fact about the WORK has one home.
 --       Before this, My Tasks wrote its estimate to the overlay and People
 --       capacity, analytics and the Projects board read `pm_tasks`. So an
 --       estimate typed in My Tasks never reached capacity. From S6f on, both
@@ -31,16 +28,24 @@
 -- 4. **Tenant-correct.** The overlay row and the task must belong to one
 --    organization. They always do (161's triggers stamp both from the
 --    project), and the join says so rather than trusting it.
--- 5. **Important raises, never lowers.** D76 derives Important from
---    `importance >= 2`, so an overlay flag with no copy would silently read
---    as "not important" the day this ships. The flag chosen by rule 2 (the
---    assignee's first) sets High on a task that is unset or Low/Normal. A
---    task already High or Urgent is left alone, and a `false` flag changes
---    nothing: it never lowers a Priority somebody set on the board. On a
---    task in a member's own tree there is one member, so the flag is theirs.
--- 6. **`updated_at` is left alone.** A deploy-time copy is not an edit a
+-- 5. **`updated_at` is left alone.** A deploy-time copy is not an edit a
 --    person made, and bumping it would reorder every "recently updated" list
 --    and wake every open board's delta read for no change they can see.
+--
+-- ## What this file does NOT touch: priority
+--
+-- The overlay's `important` is the member's own answer, and it stays where
+-- it is (D76). The shared `importance` only SEEDS it on read, and the seed
+-- writes nothing. So no flag is copied into `importance` here. An earlier
+-- draft of this file did that, under a withdrawn draft of D77. That draft
+-- never merged, so production never ran it. A developer's scratch database
+-- can hold its ledger line under the old name `215_pm_tasks_estimate_
+-- backfill.sql`. Nothing reads that line, and this file runs once there too.
+--
+-- ## Why 216
+--
+-- This file was built as 215. Main took 215 first (`215_projects_sealed.sql`,
+-- #428), so this file moved to 216 before its merge (R1).
 --
 -- ## Idempotent, and a replay is a no-op
 --
@@ -56,8 +61,8 @@ DO $$
 BEGIN
     IF to_regclass('public.schema_migrations') IS NOT NULL
        AND EXISTS (SELECT 1 FROM schema_migrations
-                    WHERE filename = '215_pm_tasks_estimate_backfill.sql') THEN
-        RAISE NOTICE '215: estimate backfill already applied — skipped';
+                    WHERE filename = '216_pm_tasks_estimate_backfill.sql') THEN
+        RAISE NOTICE '216: estimate backfill already applied — skipped';
         RETURN;
     END IF;
 
@@ -87,32 +92,5 @@ BEGIN
       FROM pick
      WHERE t.id = pick.task_id
        AND t.estimate_mins IS NULL;
-
-    WITH flag AS (
-        SELECT DISTINCT ON (p.task_id)
-               p.task_id,
-               p.important
-          FROM pm_task_personal p
-          JOIN pm_tasks t
-            ON t.id = p.task_id
-           AND t.organization_id = p.organization_id
-          LEFT JOIN pm_task_assignees a
-            ON a.task_id = p.task_id
-           AND lower(a.assignee) = lower(p.member_email)
-         WHERE p.important IS NOT NULL
-           AND (t.importance IS NULL OR t.importance < 2)
-         ORDER BY p.task_id,
-                  (a.task_id IS NULL),
-                  a.assigned_at NULLS LAST,
-                  a.assignee NULLS LAST,
-                  p.updated_at,
-                  p.member_email
-    )
-    UPDATE pm_tasks t
-       SET importance = 2
-      FROM flag
-     WHERE t.id = flag.task_id
-       AND flag.important
-       AND (t.importance IS NULL OR t.importance < 2);
 END
 $$;

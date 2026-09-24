@@ -1592,7 +1592,7 @@ async def create_personal_task(
 
 
 #: The dispositions that reopen a finished task on the board when stated
-#: (D76, `personal.OPEN_DISPOSITIONS`): every one but DONE and TRASH.
+#: (D77, `personal.OPEN_DISPOSITIONS`): every one but DONE and TRASH.
 _REOPENING = frozenset(d for d in DISPOSITIONS if d not in ("DONE", "TRASH"))
 
 #: DONE is refused by `set_my_overlay`, not routed. Its card is about the
@@ -1601,7 +1601,7 @@ _REOPENING = frozenset(d for d in DISPOSITIONS if d not in ("DONE", "TRASH"))
 #: `complete` has its own card and asks.
 _DONE_REFUSAL = (
     "DONE is not your own triage any more: a task is done when its shared "
-    "lane is done (D76). Use complete to finish it for everyone."
+    "lane is done (D77). Use complete to finish it for everyone."
 )
 
 
@@ -1623,7 +1623,7 @@ def _overlay_card(
 ) -> dict[str, Any]:
     """What the confirmation card says the write will do.
 
-    ⚠️ D76: an open disposition on a FINISHED task reopens it for everybody
+    ⚠️ D77: an open disposition on a FINISHED task reopens it for everybody
     (`personal.reopen_if_closed`), so "your overlay only" would be false.
     The task read this tool already made carries `completed_at`, which
     `apply_status_transition` keeps equal to "the lane is closed".
@@ -1654,9 +1654,9 @@ async def set_my_overlay(
     WAITING, SOMEDAY, PROJECT, REFERENCE, TRASH), context (@office), energy
     (low, medium, high), two_minute (yes or no). clear empties fields:
     context, energy, next_action. DONE is refused here: completion is the
-    task's shared lane (D76), so finish a task with complete. An open
+    task's shared lane (D77), so finish a task with complete. An open
     disposition on a finished task reopens it for the board. defer sets a
-    date. The estimate is the TASK's, shared with the board since D76: set
+    date. The estimate is the TASK's, shared with the board since D77: set
     it with update_task, not here."""
     tid, task = await _task(task_id)
     unread = ""
@@ -1690,9 +1690,9 @@ async def set_my_overlay(
         payload["next_action"] = next_action.strip()
         before["next_action"] = mine.get("next_action")
     if _int_or_none(estimate_mins) is not None:
-        # D76: one estimate, on the task. Refused by name rather than
+        # D77: one estimate, on the task. Refused by name rather than
         # dropped, so the model learns where it goes.
-        return ("The estimate is the task's own since D76, shared with the "
+        return ("The estimate is the task's own since D77, shared with the "
                 "board and People capacity. Set it with update_task "
                 "(estimate_mins).")
     flag = _yes_no(two_minute, "two_minute")

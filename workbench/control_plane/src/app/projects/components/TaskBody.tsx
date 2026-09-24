@@ -27,7 +27,7 @@
  * no second copy to drift (the note in `TaskPanel.tsx`'s header records the
  * attempt that had one).
  *
- * ## One home per work fact (D76, WS-39 S6f, 2026-09-23)
+ * ## One home per work fact (D77, WS-39 S6f, 2026-09-23)
  *
  * Everything a task IS lives in this body, so both apps read and write it
  * here: Priority, the estimate, the start and due dates, the description,
@@ -124,7 +124,7 @@ export interface TaskBodyProps {
 }
 
 /**
- * The estimate presets, in minutes (D76). The same steps My Tasks' Estimate
+ * The estimate presets, in minutes (D77). The same steps My Tasks' Estimate
  * offered, plus a working day, so neither app loses a value it could set.
  * A stored value off the list is kept as its own option, never snapped.
  */
@@ -339,13 +339,13 @@ export function TaskBody({
   // The names of the files currently going up (S5) — what is IN FLIGHT.
   const [uploading, setUploading] = useState<string[]>([]);
   const filePicker = useRef<HTMLInputElement | null>(null);
-  // D76 — the description is edited HERE, in both apps. A draft, so typing
+  // D77 — the description is edited HERE, in both apps. A draft, so typing
   // does not PATCH per keystroke; saved on blur when it changed.
   const [description, setDescription] = useState(task.description ?? "");
-  // D76 — whether I watch this task. Null until the read lands, so the
+  // D77 — whether I watch this task. Null until the read lands, so the
   // control never renders a state it is only guessing at.
   const [watching, setWatching] = useState<boolean | null>(null);
-  // D76 — every member's timed work on the task, summed by the gateway
+  // D77 — every member's timed work on the task, summed by the gateway
   // (`GET /projects/tasks/{id}` → `time_spent_mins`). Null until read.
   const [spent, setSpent] = useState<number | null>(null);
   const assignees = task.assignees ?? [];
@@ -776,7 +776,7 @@ export function TaskBody({
                 />
               </FieldCell>
 
-              {/* D76 — when the work starts, shared. A DATE, so the value is
+              {/* D77 — when the work starts, shared. A DATE, so the value is
                   the day itself, never routed through `new Date()` (the
                   `start_date` note on `TaskRow`). My Tasks hides the task
                   until this day. */}
@@ -791,7 +791,7 @@ export function TaskBody({
                 />
               </FieldCell>
 
-              {/* D76 — the ONE estimate: the number People capacity and the
+              {/* D77 — the ONE estimate: the number People capacity and the
                   analytics read, and the one My Tasks plans a day with. */}
               <FieldCell label="Estimate" icon="Timer">
                 <SelectButton
@@ -806,7 +806,7 @@ export function TaskBody({
                 />
               </FieldCell>
 
-              {/* D76 — read-only: every member's timed blocks, summed. One
+              {/* D77 — read-only: every member's timed blocks, summed. One
                   member's actuals are theirs; the total is the work's. */}
               <FieldCell label="Time spent" icon="Hourglass">
                 <span className="text-sm text-foreground">
@@ -818,7 +818,7 @@ export function TaskBody({
                 </span>
               </FieldCell>
 
-              {/* D76 — watching is the member's own notification choice on
+              {/* D77 — watching is the member's own notification choice on
                   the SHARED task, so it lives in the body both apps host.
                   Hidden until the state is known. */}
               {watching !== null ? (
@@ -842,7 +842,7 @@ export function TaskBody({
             </div>
           </CollapsibleSection>
 
-          {/* D76 — the description is EDITED here, in both apps. It was
+          {/* D77 — the description is EDITED here, in both apps. It was
               read-only in Projects, and My Tasks' Notes was the only writer.
               Prose gets the whole width at every stop (#408 stacked the
               sections, so there is no grid to escape). */}

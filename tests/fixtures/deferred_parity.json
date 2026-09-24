@@ -1,5 +1,5 @@
 {
-  "_doc": "D76 (WS-39 S6f) — is a task hidden from my inbox for now? Hidden until the LATER of my own defer_until and the task's shared start_date. Offsets are in days from now: defer_days moves an instant, start_days moves a DATE (0 is today, which is shown). Readers: tests/unit/test_projects_personal_s6f.py (personal.not_yet), tests/live/live_ws39_s6f.py (personal.DEFERRED_CLAUSE on Postgres), workbench/control_plane/src/app/tasks/lib/sharedFields.test.ts (utils.ts isTickled).",
+  "_doc": "D77 (WS-39 S6f) — is a task hidden from my inbox for now? Hidden until the LATER of my own defer_until and the task's shared start_date. Offsets are in days from now: defer_days moves an instant, start_days moves a DATE (0 is today, which is shown). Readers: tests/unit/test_projects_personal_s6f.py (personal.not_yet), tests/live/live_ws39_s6f.py (personal.DEFERRED_CLAUSE on Postgres), workbench/control_plane/src/app/tasks/lib/sharedFields.test.ts (utils.ts isTickled).",
   "cases": [
     { "name": "neither", "defer_days": null, "start_days": null, "hidden": false },
     { "name": "defer only, past", "defer_days": -3, "start_days": null, "hidden": false },

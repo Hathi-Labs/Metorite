@@ -247,11 +247,11 @@ export interface GtdItem {
   clarifiedAt?: string;
   /** GTD tickler — hidden from the active inbox until this date, then resurfaces */
   deferUntil?: string;
-  /** D76 — the work's shared START date, `pm_tasks.start_date` (a DATE,
+  /** D77 — the work's shared START date, `pm_tasks.start_date` (a DATE,
    *  "YYYY-MM-DD"). The inbox hides the task until the later of this and my
    *  own `deferUntil`. */
   startDate?: string;
-  /** D76 — the task's shared tags, `pm_tasks.tags`. The team's labels, beside
+  /** D77 — the task's shared tags, `pm_tasks.tags`. The team's labels, beside
    *  my own `context`: tags say what the work IS, a context says how I batch
    *  my time. */
   tags?: string[];
