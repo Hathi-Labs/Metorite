@@ -153,7 +153,7 @@ _PM_BUSY_WHERE = (
     " AND p.scheduled_start < :win_end AND p.scheduled_end > :win_start"
 )
 
-#: The learned-estimate signal, over the overlay. Same shape as the `gtd_items`
+#: The learned-estimate signal, over the overlay. Same shape as the old-store
 #: query it mirrors, against the columns migration 187 moved. D77: the plan
 #: falls back to the SHARED estimate, `pm_tasks.estimate_mins`, when no block
 #: was drawn — the overlay's `time_estimate_mins` is no longer read.
@@ -264,7 +264,7 @@ class _LensSource(TaskSource):
     async def apply_blocks(self, db, uid, place, clear):
         """Commit a reviewed plan onto MY overlay rows.
 
-        Two differences from the `gtd_items` version, both consequences of the
+        Two differences from the old-store version, both consequences of the
         block being per-member (D53.7) rather than a column on the task:
 
         * it is an UPSERT, not an UPDATE. A member can be handed a task they

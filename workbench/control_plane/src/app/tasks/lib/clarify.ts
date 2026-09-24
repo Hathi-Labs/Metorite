@@ -4,7 +4,7 @@
 // returns the same shape from the `task-manager` agent. The human always
 // reviews/edits before it's applied (GTD: AI proposes, you decide).
 
-import { Energy, GtdItem, GtdProject, Person, Target } from "./types";
+import { Energy, MyTask, MyTasksProject, Person, Target } from "./types";
 
 /** The disposition the assistant recommends (superset of the GTD outcomes). */
 export type ClarifyDisposition =
@@ -219,8 +219,8 @@ function tokenize(s: string): string[] {
  *  even across many projects — instead of forcing you to hunt a long list.
  *  Only suggests when at least two meaningful words overlap. */
 export function suggestProject(
-  item: GtdItem,
-  projects: GtdProject[],
+  item: MyTask,
+  projects: MyTasksProject[],
 ): { projectId?: string; score: number } {
   const words = new Set([...tokenize(item.title), ...tokenize(item.notes ?? "")]);
   if (!words.size) return { score: 0 };
@@ -294,7 +294,7 @@ const LEVERAGED_HINTS = [
  *  — leveraged especially stays rare (it's the scarce flag). The LLM clarify
  *  path overrides this with a richer read; this keeps the offline heuristic and
  *  the "AI proposes" contract coherent. */
-function readWeight(item: GtdItem): {
+function readWeight(item: MyTask): {
   important: boolean;
   leveraged: boolean;
   weightReason: string;
@@ -325,7 +325,7 @@ function looksMultiStep(title: string): boolean {
   return parts.filter((p) => STEP_VERB.test(p)).length >= 2;
 }
 
-function coreProposal(item: GtdItem, people: Person[]): ClarifyProposal {
+function coreProposal(item: MyTask, people: Person[]): ClarifyProposal {
   const t = item.title.toLowerCase();
 
   // Non-actionable first.
@@ -427,9 +427,9 @@ function coreProposal(item: GtdItem, people: Person[]): ClarifyProposal {
  *  existing **project** by keyword, then picks the storage **target** to follow
  *  that project (delegated/collaborative → the team tool; solo → Local, §5.1). */
 export function proposeClarification(
-  item: GtdItem,
+  item: MyTask,
   people: Person[] = [],
-  projects: GtdProject[] = [],
+  projects: MyTasksProject[] = [],
 ): ClarifyProposal {
   const core = coreProposal(item, people);
 
@@ -786,4 +786,42 @@ export function clarifyChangesSharedTask(
   if (decision.projectId && decision.projectId !== item.projectId) return true;
   if (decision.dueAt && decision.dueAt !== item.dueAt) return true;
   return false;
+}
+
+/**
+ * The clarify card's starting Important and Leveraged (D78, review 2026-09-24).
+ *
+ * Both are the task's SHARED answer. A task a PM already judged keeps that
+ * judgement: the proposal fills Important only while nobody has judged it
+ * (`important` undefined, which is `importance` NULL). A proposal may turn
+ * Leveraged on, and it never turns off a Leveraged the task already has.
+ */
+export function seedWeight(
+  item: { important?: boolean; leveraged?: boolean },
+  proposal: { important?: boolean; leveraged?: boolean },
+): { important: boolean; leveraged: boolean } {
+  return {
+    important:
+      item.important !== undefined ? item.important : Boolean(proposal.important),
+    leveraged: Boolean(item.leveraged) || Boolean(proposal.leveraged),
+  };
+}
+
+/**
+ * The write the clarify card's flags turn into (D78, review 2026-09-24).
+ *
+ * Deep work is the member's own and always goes. Important and Leveraged go
+ * only when the member changed them from the task's current answer, so
+ * confirming a clarify card never rewrites a shared flag nobody touched.
+ */
+export function weightPatch(
+  before: { important?: boolean; leveraged?: boolean } | undefined,
+  weight: { important: boolean; leveraged: boolean; deepWork: boolean },
+): Record<string, boolean> {
+  const out: Record<string, boolean> = { deep_work: weight.deepWork };
+  if (weight.important !== Boolean(before?.important) || before?.important === undefined) {
+    out.important = weight.important;
+  }
+  if (weight.leveraged !== Boolean(before?.leveraged)) out.leveraged = weight.leveraged;
+  return out;
 }

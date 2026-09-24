@@ -429,7 +429,12 @@ export function TableView({
           label={`Priority flags of ${task.title}`}
           widthClass="w-full"
           value={flagsOf(task)}
-          onChange={(next) => void saveCell(task, flagsPatch(next as MatrixFlags))}
+          onChange={(next) => {
+            // Only what changed, so a stored 3 is not rewritten as 2.
+            const patch = flagsPatch(next as MatrixFlags, task);
+            if (Object.keys(patch).length) void saveCell(task, patch);
+            else closeEditor();
+          }}
           options={MATRIX_FLAG_OPTIONS.map((option) => ({
             value: option.value,
             label: option.label,

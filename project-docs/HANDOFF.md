@@ -95,6 +95,29 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-175 · Set the Hathi Labs tenant org's DOMAIN, or its people cannot ask to join · [OWNER]
+- **Check:** ask the TENANT database, and not the Console:
+  `SELECT slug, domain FROM organization ORDER BY created_at;`
+  A row whose `domain` is NULL means nobody with that company's addresses can
+  reach its Requests tab, and this entry is open.
+- **Measured 2026-09-24:** `default` (Fracktal Works) carries
+  `domain = 'fracktal.in'`. `hathi-labs-llp` carries **NULL**.
+- **Why it matters now.** H-118 shipped the same day. A knock is filed against
+  the organization whose `domain` matches the caller's email domain, and it is
+  filed nowhere when no organization claims that domain (owner decision,
+  2026-09-24). So today an `@hathilabs.com` colleague who signs in reaches the
+  self-serve path that creates them their OWN organization, in place of the
+  Requests tab of the organization they work for.
+- ⚠️ **This is a one-field write to a LIVE organization**, which is why it is
+  owner-gated and not done. It also decides who may ask to join that tenant,
+  so it is a security-relevant routing key and not bookkeeping.
+- **The act:** set `organization.domain` to the company's real mail domain, on
+  the TENANT database, for every organization that must accept knocks.
+  📌 Two organizations must never claim ONE domain. The resolver refuses to
+  guess between them and files nothing, which is safe and also silent.
+- **Authority:** D15 · `colleague_onboarding.md` §6 · H-109 (the two planes)
+- **Added:** 2026-09-24 · the H-118 session
+
 ### H-174 · `--warning` is the same bright yellow in both colour modes, so warning TEXT is unreadable on white · [AGENT]
 - **Check:** `grep -n "\-\-warning:" workbench/control_plane/src/app/globals.css`.
   Two lines with the same value, one in `:root` and one in `.light`, means
@@ -1429,43 +1452,26 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `work_plan.md` §3 D63 · §6 (member/role writes) · D53.7/D53.8
 - **Added:** 2026-08-26 · WS-39 personal-tree session *(minted as H-35; renumbered to H-49 the same session — `test_handoff_ids_are_unique` caught the collision with the WS-36 restore-spec entry. Ids are never reused.)*
 
-### H-29 · WS-39 S3b/S3c: RUN the `gtd_*` backfill, then the drop · [OWNER]
-- **Check:** `SELECT count(*) FROM gtd_items WHERE migrated_task_id IS NULL;` on the
-  box → non-zero means S3b has not run (or has stragglers). `\dt gtd_items` → still
-  present means S3c has not run. ⚠️ Both columns exist only once migration **189** has
-  applied; if `migrated_task_id` is missing, the deploy has not carried 189 yet and
-  that is the real finding.
-- **Why:** ✅ **BUILT 2026-08-26 — the code half is DONE.** Migrations **189**
-  (backfill) and **190** (drop) are merged and R8-verified two-org on real Postgres
-  (`tests/live/live_ws39_s3b.sql`, 37 checks; `live_ws39_s3c.sql`, 22). What remains
-  is exactly the part §6 (f) reserves: **running them.**
-  📌 **They ship INERT.** 189 defines `gtd_backfill_to_pm()` and never calls it;
-  190 refuses unless armed AND every row carries `migrated_task_id`. Deploying them
-  moves nothing and drops nothing, so there is no rush and no hazard in them sitting
-  applied.
-  **The order, in full, is `docs/TASKS_LENS.md` → "The cutover runbook".** Short form:
-  slice 5 lands → `SELECT * FROM gtd_backfill_plan;` → `gtd_backfill_to_pm(false)`
-  → `gtd_backfill_to_pm(true)` → flip BOTH flags → **re-run** `gtd_backfill_to_pm(true)`
-  to sweep the window → wait days → `INSERT INTO gtd_retirement_arm` → next deploy drops.
-  ⚠️ **Do not arm until the Tasks UI slice has landed** — stronger than the earlier
-  "after slice 5", and D62/191 are why: the backfill creates **Areas** from a member's
-  old `gtd_projects`, and until the Tasks app can rename or delete one, members have
-  structure in their data they cannot edit. SQL cannot see an env var or an
-  unported route; arming is your assertion that both flags are on and nothing still
-  writes `gtd_items`. `routes/tasks/ai.py` alone names `gtd_*` 33 times today.
-  ⚠️ **Rows reading `unmappable` block the drop, on purpose.** They have no
-  resolvable owner (including the literal `'anonymous'` that `_uid` writes for an
-  unauthenticated capture). Decide each deliberately — give the address an `app_user`,
-  or delete the row — rather than widening the guard. The failure being avoided is
-  not lost data; it is one member's private task published into another's lens.
-  ⚠️ **`user_settings` / `calendar_day_state` / `calendar_rollover_log` are NOT part of this** —
-  Calendar state, they survive (D53.6). Nor are the five `people*` tables, nor
-  `gtd_horizons` (WS-21), nor `gtd_reviews` (WS-18), nor the local project tree
-  (waits on slice 5). All pinned by name in `test_gtd_backfill.py`.
-- **Authority:** `work_plan.md` §6 (f) · D53.5 · `project_management_app.md` §12.8 ·
-  `docs/TASKS_LENS.md`
-- **Added:** 2026-08-24 · WS-39 S1 session *(re-cut 2026-08-26 when 189/190 landed:
-  this is now a RUN entry, not a BUILD one.)*
+### H-29 · WS-39 S3b/S3c/S8: verify the `gtd_*` drop on production · [AGENT]
+- **Check:** On the box, run `\dt gtd_*`. Then look in the ledger for
+  `217_gtd_task_store_drop.sql`. No table and one ledger row mean the drop is
+  done. Delete this entry then, and not before.
+- **S8 PR 2 closes this** (branch `my-tasks-s8d`). The run half is done. The
+  S3b backfill moved every row on 2026-09-23, and `gtd_backfill_plan` returned
+  zero rows. Migration 217 arms the guard in reviewed code and drops the
+  store. The arm is no longer a hand INSERT.
+- **What is left:** the merge, the deploy and the check above. First run the
+  pre-flight in `my_tasks_cutover.md` §5 S8. It needs today's backup and
+  migration 216 (the estimate backfill) in the ledger. Migration 217 checks the data by itself.
+- ⚠️ **Migration 217 fails closed.** An unmigrated row, an uncopied value or
+  a row in a tree table makes it RAISE, and the deploy stops. Do not widen the guard. Read `gtd_backfill_plan` and
+  decide each row.
+- ⚠️ **The survivors are NOT part of the drop.** `user_settings`, the two
+  Calendar tables and the five `people*` tables stay (D53.6).
+  `attachments`, `my_tasks_horizons` and `my_tasks_reviews` stay under their
+  new names. `test_gtd_backfill.py` pins each one.
+- **Authority:** `work_plan.md` §6 (f) · D53.5 · D73 · `my_tasks_cutover.md` §5 S8
+- **Added:** 2026-08-24 · WS-39 S1 session. **Re-cut** 2026-09-23 for S8 PR 2.
 
 ### H-27 · 33 browser tests are red, and CI gates only the half that is green · [AGENT]
 - **🟢 2026-09-22 — CI RUNS THE BROWSER SUITE.** `pr-check.yml` has an `e2e`
@@ -2548,49 +2554,6 @@ line — never reclaim a number by deleting the other entry.
   unapplied and mark the two tests expected-fail with that reason. Today they
   are neither, which is the worst of the three.
 
-### H-118 · 🔴 The access-request queue cannot record an unprovisioned person · [AGENT]
-- **Check:** `sudo journalctl -u acb-gateway --since today | grep -c
-  access_request_record_failed` on the box. Non-zero means this is open. Or ask
-  the app database for `access_request` rows — an empty table while people are
-  being onboarded is the same answer.
-- **Measured on production 2026-09-18, 13:02:47 UTC**, twice, for
-  `nithin@hathilabs.com` — a real person mid-onboarding:
-  `asyncpg.exceptions.InvalidTextRepresentationError: invalid input syntax for
-  type uuid: ""` on `INSERT INTO access_request`.
-- **The cause is structural, not a typo.** `access_request.organization_id` is
-  `uuid NOT NULL DEFAULT (current_setting('app.tenant_id', true))::uuid`. The
-  table is tenant-scoped. But `_record_signin_request` fires for somebody who
-  is **unprovisioned** — that is the whole point of the queue — so no tenant is
-  bound, `app.tenant_id` is empty, and the cast refuses it.
-  **The queue cannot record the one kind of person it exists to record.**
-- **What it costs.** Silently. `_record_signin_request` is best-effort by
-  design and never raises, so the sign-in still answers correctly and the owner
-  simply never learns that somebody asked for access. Nothing on screen is
-  wrong. The row is just never there.
-- **⚠️ Deciding the fix means deciding what an access request BELONGS to.**
-  A request from somebody in no organization is not a tenant's row. Two shapes,
-  and they are not equivalent:
-  1. The queue is a **platform** table, not a tenant one — drop the tenant
-     column and its RLS, and accept that the owner reads it unscoped.
-  2. The request is **addressed to** an organization (resolved from the email
-     domain, or from the invite it answers), and the column is filled
-     explicitly rather than defaulted from a GUC that is empty by construction.
-  Shape 2 keeps RLS and is the bigger change. Ask before building either.
-- **⚠️ `test_auth_sql_asyncpg.py` runs this exact statement and it PASSES.**
-  The fence did not catch it, and knowing why matters more than the row does:
-  the suite's transaction is not the production one, so `app.tenant_id` is
-  unset rather than empty, and `current_setting(…, true)` answers NULL there
-  instead of `''`. A fence that binds the right TYPES can still miss a defect
-  that lives in the SESSION STATE around the statement. That is a real limit of
-  the H-114 pattern and it should be written into the next suite.
-- **Authority:** `colleague_onboarding.md` §6 (N6a) ·
-  `acb_auth/access.py` `_record_signin_request` / `_ACCESS_REQUEST_UPSERT_SQL`
-- **Added:** 2026-09-18 · found in the post-deploy log check, not by a test.
-  *(Minted H-116. Renumbered to H-118 the same day: branch `operator-console`
-  had already taken 116 for a plan-guard defect, in a worktree with no pull
-  request open. That branch was written first, so this one moves — the rule
-  H-94's own note records.)*
-
 ### H-117 · An outage tells a member they belong to no organization · [AGENT]
 - **Check:** `rg -n "no_organization" apps/services/gateway/gateway/main.py` →
   the 403 arm answers on the presence of a user header alone.
@@ -2999,20 +2962,21 @@ line — never reclaim a number by deleting the other entry.
   migration 207
 - **Added:** 2026-09-21 · the every-app-by-default session
 
-### H-151 · The `gtd_` name is off eight tables. The task store is left · [AGENT]
-- **Check:** `rg -l "gtd_items|gtd_waiting|gtd_spaces|gtd_folders|gtd_contexts"
-  --glob '!infra/postgres/generated' apps packages` → any hit means this is open.
-- **What is done.** Slice 1, the People family, on 2026-09-21: `gtd_people` is
+### H-151 · The `gtd_` name is off every table. Verify on production, then delete · [AGENT]
+- **Check:** `uv run pytest tests/unit/test_no_gtd_table_names.py` passes on
+  `main` with S9 merged, and `\dt gtd_*` on the box returns nothing. Both
+  mean this is done. Delete this entry then, and not before.
+- **S8 PR 2 closes the table half** (branch `my-tasks-s8d`, #434). Slice 3
+  renamed the three survivors in the migrations that create them. `gtd_attachments` is
+  `attachments` (52). `gtd_horizons` and `gtd_reviews` are
+  `my_tasks_horizons` and `my_tasks_reviews` (48). Migration 217 drops the
+  rest of the store, and H-29 tracks that drop.
+- **What is done before it.** Slice 1, the People family, on 2026-09-21: `gtd_people` is
   `people`, and the four `gtd_person_*` tables are `people_*`. Slice 2, on
   2026-09-22: `gtd_day_state` is `calendar_day_state`, `gtd_rollover_log` is
   `calendar_rollover_log`, and `gtd_settings` is `user_settings`.
-  `tests/unit/test_gtd_rename_upgrade.py` is the one fence for all eight, and
+  `tests/unit/test_gtd_rename_upgrade.py` is the one fence for all eleven, and
   `people_center_app.md` §7.0 carries the mechanism.
-- **What is left: the task store** — `gtd_items`, `gtd_waiting`,
-  `gtd_projects`, `gtd_spaces`, `gtd_folders`, `gtd_contexts`,
-  `gtd_attachments`, `gtd_horizons`, `gtd_reviews`. ⚠️ **Do this AFTER H-29**,
-  which drops most of them. Renaming a table we are about to drop is work we
-  throw away, and it makes 190's drop list wrong in the meantime.
 - ⚠️ **Three traps, all measured.** A sweep rewrites the rename prologue
   itself into `ALTER TABLE new RENAME TO new`, a silent no-op — so sweep
   first, and add the prologue after. A short new name can be a PREFIX of its
@@ -3020,17 +2984,22 @@ line — never reclaim a number by deleting the other entry.
   (`tests/unit/_sql_match.py` answers that). And an assertion over a whole
   migration file reads the prologue's own warning comment as the defect, so
   measure the executable block.
-- **The agent tool names are NOT part of this.** `gtd_people(query)` and its
-  family in `skill_task_gtd` are tools, not tables. The slice 1 sweep renamed
-  one and that was reverted. Renaming the tool family is a separate decision,
-  and it should move all of them at once or none.
-- **The HTTP surface has not moved once**, across both slices. No route path
-  and no JSON field carries a table name, so no client call had to change.
-  `tests/unit/test_client_route_contract.py` is the fence that keeps it that
-  way, and it was proved to bite by moving a route and watching it fail.
+- **S9 closes the code half when it merges** (branch `my-tasks-s9`, PR
+  #436, which targets `main`). It moved all 29 agent tools at once, from `gtd_*` to
+  `my_tasks_*`, and the skill is `skill-my-tasks`. The settings helpers and
+  the types of the client moved too. After both PRs merge, the fence allows
+  only the upload folder `data/gtd_attachments` and the tool-name alias map in
+  `TaskToolCards.tsx`. The map exists for stored chat history.
+  `my_tasks_cutover.md` §5 S9 has the rename map.
+- **One JSON field moved in slice 3.** The WhatsApp commitment list returned
+  `gtd_item_id`, and it now returns `task_id`. Its one reader, the WhatsApp
+  agent, moved in the same PR. No route path moved.
+  `tests/unit/test_client_route_contract.py` still fences the Tasks and
+  Calendar client paths.
 - **Authority:** owner directive, 2026-09-21 — *"I really don't want GTD
   anymore... update the naming convention for all of the table names"*
-- **Added:** 2026-09-21 · the People rename session. **Updated:** 2026-09-22.
+- **Added:** 2026-09-21 · the People rename session. **Updated:** 2026-09-23
+  (S8 PR 2, then S9).
 
 ### H-152 · A SELF-SERVE customer can never be served AI · [AGENT]
 - **Check:** `rg -n "CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY" /opt/acb/app/.env`

@@ -360,7 +360,7 @@ def test_the_planner_reads_the_shared_estimate_and_the_shared_matrix() -> None:
 def test_the_chat_writes_important_to_the_shared_priority() -> None:
     """D78 amends D76. The chat skill splits a write the way the client
     does, and Important and Leveraged now go to the TASK."""
-    from skill_task_gtd import core as skill_core
+    from skill_my_tasks import core as skill_core
 
     assert skill_core._TASK_KEYS["importance"] == "importance"
     assert skill_core._TASK_KEYS["leveraged"] == "leveraged"

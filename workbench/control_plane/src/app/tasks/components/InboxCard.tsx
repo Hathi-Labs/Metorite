@@ -5,7 +5,7 @@ import type { ThemedIcon } from "@/components/Icon";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTaskStore } from "../lib/taskStore";
 import { proposeClarification, type ClarifyDisposition } from "../lib/clarify";
-import { GtdItem, GtdProject, Person } from "../lib/types";
+import { MyTask, MyTasksProject, Person } from "../lib/types";
 import type { ConnectedProvider } from "../lib/mockData";
 import { detectDateHint, originEmailHref, relativeTime, snoozeOptions } from "../lib/utils";
 import { AttachmentChips } from "./AttachmentComposer";
@@ -30,7 +30,7 @@ const DISP_HINT: Record<ClarifyDisposition, { label: string; Icon: ThemedIcon }>
 const shortText = (s: string, n = 22) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
 
 export interface InboxCardProps {
-  item: GtdItem;
+  item: MyTask;
   cursor: boolean;
   selected: boolean;
   selectionMode: boolean;
@@ -361,9 +361,9 @@ export function InboxCard({
 
 /** Build the compact "what this will become" hint for a capture. */
 function buildHint(
-  item: GtdItem,
+  item: MyTask,
   people: Person[],
-  projects: GtdProject[],
+  projects: MyTasksProject[],
   providers: ConnectedProvider[],
 ) {
   const p = proposeClarification(item, people, projects);

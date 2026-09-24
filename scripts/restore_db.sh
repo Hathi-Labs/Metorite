@@ -15,7 +15,7 @@
 #   scripts/restore_db.sh                             # newest -> scratch DB
 #   scripts/restore_db.sh --from 2026-08-03T151500Z   # a specific backup
 #   scripts/restore_db.sh --db litellm_proxy          # a different database
-#   scripts/restore_db.sh --table gtd_task            # one table only
+#   scripts/restore_db.sh --table pm_tasks            # one table only
 #   scripts/restore_db.sh --target acb --force        # DESTRUCTIVE, see below
 #
 # Env: BACKUP_DIR (default /opt/acb/backups), PG_CONTAINER (default acb-postgres)
@@ -98,7 +98,7 @@ if [ "$LIST" = "1" ]; then
   for d in "$BACKUP_DIR"/[0-9]*Z; do
     [ -d "$d" ] || continue
     printf "  %s  (%s)\n" "$(basename "$d")" "$(du -sh "$d" | cut -f1)"
-    grep -E '^(app_commit|migration_files|app_user|email_message|gtd_task):' \
+    grep -E '^(app_commit|migration_files|app_user|email_messages|pm_tasks):' \
       "$d/MANIFEST.txt" 2>/dev/null | sed 's/^/      /'
   done
   exit 0
@@ -172,7 +172,7 @@ cat <<EOF
       $INSPECT_CMD
 
     Copy rows back into live (example):
-      INSERT INTO gtd_task SELECT * FROM ${SCRATCH}.public.gtd_task WHERE ...
+      INSERT INTO pm_tasks SELECT * FROM ${SCRATCH}.public.pm_tasks WHERE ...
       -- cross-database SELECT needs postgres_fdw or dblink; the usual route is
       -- pg_dump -t <table> the scratch DB and psql it into live.
 

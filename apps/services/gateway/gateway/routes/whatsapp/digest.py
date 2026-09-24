@@ -39,7 +39,7 @@ class CommitmentWatchItem(BaseModel):
     chat_id: str
     text: str
     due_hint: str | None = None
-    has_task: bool = False               # True once captured to a GTD item
+    has_task: bool = False               # True once captured to a task
 
 
 class WaitingOnItem(BaseModel):
@@ -140,7 +140,7 @@ async def digest(
         # Commitment watch: our open promises, task-linked or not.
         watch_rows = (await db.execute(
             text(f"""SELECT k.chat_id, k.text, k.due_hint,
-                            (coalesce(k.task_id, k.gtd_item_id) IS NOT NULL)
+                            (k.task_id IS NOT NULL)
                                 AS has_task
                      FROM wa_commitments k
                      WHERE k.direction = 'ours' AND k.status = 'open'

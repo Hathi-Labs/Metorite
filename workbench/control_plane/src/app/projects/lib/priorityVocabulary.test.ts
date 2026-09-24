@@ -113,9 +113,10 @@ describe("every Projects surface derives the level from lib/matrix.ts", () => {
     expect(read("components/TableView.tsx")).toMatch(/cellLabel\(taskCell\(task\)\)/);
   });
 
-  it("builds the table editor and the bulk bar from MATRIX_FLAG_OPTIONS", () => {
+  it("builds the table editor and the bulk bar from lib/matrix.ts", () => {
     expect(read("components/TableView.tsx")).toMatch(/MATRIX_FLAG_OPTIONS/);
-    expect(read("components/BulkBar.tsx")).toMatch(/MATRIX_FLAG_OPTIONS/);
+    // The bulk bar sets ONE flag per action (review 2026-09-24).
+    expect(read("components/BulkBar.tsx")).toMatch(/BULK_FLAG_OPTIONS/);
   });
 
   it("gives the card chip the level label for the task", () => {

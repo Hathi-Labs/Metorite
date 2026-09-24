@@ -1,6 +1,6 @@
 "use client";
 
-import { GtdItem } from "@/app/tasks/lib/types";
+import { MyTask } from "@/app/tasks/lib/types";
 import {
   addDays,
   sameDay,
@@ -21,7 +21,7 @@ export function MonthGrid({
   onOpen,
 }: {
   anchor: Date;
-  items: GtdItem[];
+  items: MyTask[];
   onPickDay: (d: Date) => void;
   onOpen: (id: string) => void;
 }) {

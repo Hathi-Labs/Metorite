@@ -16,7 +16,7 @@
 //     Delegate/Schedule are SUGGESTIONS layered on My Next Actions, never a
 //     forced move — dismissible via keptMine.
 
-import { GtdItem } from "./types";
+import { MyTask } from "./types";
 
 /**
  * The stored `pm_tasks.importance` at which a task is Important. D78.
@@ -57,7 +57,7 @@ const HOUR_MS = 60 * 60 * 1000;
 /** Is this task urgent right now? Overdue OR due within `windowHours`. A task
  *  with no due date is never urgent. `now` is injectable for tests/determinism. */
 export function isUrgent(
-  item: Pick<GtdItem, "dueAt">,
+  item: Pick<MyTask, "dueAt">,
   windowHours = DEFAULT_URGENT_WINDOW_HOURS,
   now: number = Date.now(),
 ): boolean {
@@ -71,7 +71,7 @@ export function isUrgent(
  *  already overdue) — used to *surface* a task that silently crossed into
  *  urgent so the auto-derivation doesn't work against the user. */
 export function isNewlyUrgent(
-  item: Pick<GtdItem, "dueAt">,
+  item: Pick<MyTask, "dueAt">,
   windowHours = DEFAULT_URGENT_WINDOW_HOURS,
   now: number = Date.now(),
 ): boolean {
@@ -164,7 +164,7 @@ export interface PriorityInputs {
 
 /** Resolve a task's three matrix inputs (urgent derived from dueAt). */
 export function priorityInputs(
-  item: Pick<GtdItem, "dueAt" | "important" | "leveraged">,
+  item: Pick<MyTask, "dueAt" | "important" | "leveraged">,
   windowHours = DEFAULT_URGENT_WINDOW_HOURS,
   now: number = Date.now(),
 ): PriorityInputs {
@@ -193,7 +193,7 @@ export function cellForInputs({ important, urgent, leveraged }: PriorityInputs):
 
 /** The priority cell for a task (inputs resolved + formula applied). */
 export function priorityCell(
-  item: Pick<GtdItem, "dueAt" | "important" | "leveraged">,
+  item: Pick<MyTask, "dueAt" | "important" | "leveraged">,
   windowHours = DEFAULT_URGENT_WINDOW_HOURS,
   now: number = Date.now(),
 ): PriorityCell {
@@ -202,7 +202,7 @@ export function priorityCell(
 
 /** The action mode for a task (do / delegate / schedule / drop). */
 export function actionMode(
-  item: Pick<GtdItem, "dueAt" | "important" | "leveraged">,
+  item: Pick<MyTask, "dueAt" | "important" | "leveraged">,
   windowHours = DEFAULT_URGENT_WINDOW_HOURS,
   now: number = Date.now(),
 ): ActionMode {
@@ -225,7 +225,7 @@ export const ACTION_MODE_META: Record<
 
 /** The matrix rank (1 = highest). Lower sorts first. */
 export function priorityRank(
-  item: Pick<GtdItem, "dueAt" | "important" | "leveraged">,
+  item: Pick<MyTask, "dueAt" | "important" | "leveraged">,
   windowHours = DEFAULT_URGENT_WINDOW_HOURS,
   now: number = Date.now(),
 ): number {
@@ -236,7 +236,7 @@ export function priorityRank(
  *  *guessing* (via urgency) about it. Drives the "needs triage" affordance so
  *  the user can tell judged tasks from defaulted ones. */
 export function isUntagged(
-  item: Pick<GtdItem, "important" | "leveraged">,
+  item: Pick<MyTask, "important" | "leveraged">,
 ): boolean {
   return !item.important && !item.leveraged;
 }
@@ -290,7 +290,7 @@ export const SUGGESTION_BADGE: Record<
  * a SUGGESTION — a competing badge on the card — never a status change. */
 export function modeSuggestion(
   item: Pick<
-    GtdItem,
+    MyTask,
     | "dueAt"
     | "important"
     | "leveraged"

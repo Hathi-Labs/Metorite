@@ -126,6 +126,13 @@ export interface TaskBodyProps {
    * region. My Tasks' overlay strip. Projects passes nothing.
    */
   above?: React.ReactNode;
+  /**
+   * D78 — the Urgent window for the Priority level, in hours. My Tasks passes
+   * the member's own setting, so the level in this body agrees with the list
+   * beside it. Projects leaves it out and gets the 48-hour default, which is
+   * also what the gateway's Priority sort uses.
+   */
+  urgentWindowHours?: number;
 }
 
 /**
@@ -285,6 +292,7 @@ export function TaskBody({
   onPeopleSeen,
   twoColumn = false,
   above,
+  urgentWindowHours,
 }: TaskBodyProps) {
   const toast = useToast();
 
@@ -706,10 +714,16 @@ export function TaskBody({
               <FieldCell
                 label="Priority"
                 icon="Flag"
-                trailing={<PriorityBadge item={matrixOf(task)} />}
+                trailing={
+                  <PriorityBadge
+                    item={matrixOf(task)}
+                    urgentWindowHours={urgentWindowHours}
+                  />
+                }
               >
                 <WeightToggles
                   item={matrixOf(task)}
+                  urgentWindowHours={urgentWindowHours}
                   size="sm"
                   showDeepWork={false}
                   onChange={(flags) => {

@@ -6,7 +6,7 @@
 --
 -- Batched UPDATE. Re-runnable and interruptible — each statement is idempotent, so a run that aborts can simply be run again. This is the slow phase; expect it to be the long pole on any table with real volume.
 --
--- Tables in this phase: 143
+-- Tables in this phase: 137
 --
 -- ⚠️ NOT COVERED BY THIS FILE — `organization_id` already means something
 -- else on these tables, so scoping them by that name would corrupt a
@@ -200,22 +200,13 @@ UPDATE email_thread_status SET organization_id = (SELECT id FROM organization WH
 UPDATE email_voice_profiles SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
-UPDATE gtd_attachments SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
-UPDATE gtd_contexts SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+UPDATE attachments SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE calendar_day_state SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
-UPDATE gtd_folders SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
-UPDATE gtd_horizons SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
-UPDATE gtd_items SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+UPDATE my_tasks_horizons SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE people SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
@@ -233,22 +224,13 @@ UPDATE people_resumes SET organization_id = (SELECT id FROM organization WHERE s
 UPDATE people_skills SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
-UPDATE gtd_projects SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
-UPDATE gtd_reviews SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+UPDATE my_tasks_reviews SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE calendar_rollover_log SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE user_settings SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
-UPDATE gtd_spaces SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
- WHERE organization_id IS NULL;
-
-UPDATE gtd_waiting SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
 UPDATE live_session SET organization_id = (SELECT id FROM organization WHERE slug = 'default')

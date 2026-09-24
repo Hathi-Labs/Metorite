@@ -74,30 +74,18 @@ RETIRED = ["items", "hierarchy", "accounts", "sync", "providers",
            "broker_handlers", "scheduler"]
 
 
-def _skill_tool_names() -> frozenset[str]:
-    """The 29 chat tool names. S9 renames them all at once, and
-    `TaskToolCards.tsx` keys on the names, so they stay until then."""
-    init = SKILLS / "skill-task-gtd" / "skill_task_gtd" / "__init__.py"
-    tree = ast.parse(init.read_text(encoding="utf-8"))
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and any(
-                getattr(t, "id", None) == "__all__" for t in node.targets):
-            return frozenset(ast.literal_eval(node.value))
-    raise AssertionError("skill_task_gtd.__all__ not found")
-
-
 #: The `gtd_` tokens a string constant may still carry, each with its reason.
-#: A table here must be one that S8 PR 2's migration renames or drops.
-ALLOWED: dict[str, str] = {
-    "gtd_attachments": (
-        "the file registry both apps write. It survives, and S8 PR 2 renames "
-        "it to `attachments` in the guarded prologue of migration 52"),
-    "gtd_item_id": (
-        "the EXPAND half of `wa_commitments.gtd_item_id` -> `task_id` (211). "
-        "The digest reads `coalesce(task_id, gtd_item_id)` until S8 PR 2 "
-        "drops the column"),
-    **{name: "a chat tool name. S9 renames all 29 at once"
-       for name in _skill_tool_names()},
+#: S8 PR 2 (migration 217) removed the last two tables, and S9 renamed the 29
+#: chat tools from `gtd_*` to `my_tasks_*`. So nothing is left here, and a
+#: string that says `gtd_` anywhere in these trees is a defect.
+#: `test_no_gtd_table_names.py` is the repo-wide fence.
+ALLOWED: dict[str, str] = {}
+
+#: Strings that carry a `gtd_` token and name no table, each with its reason.
+ALLOWED_LITERALS: dict[str, str] = {
+    "data/gtd_attachments": (
+        "the upload DIRECTORY on the box (`routes/tasks/attachments.py`). Each "
+        "`attachments` row stores its own path, so the files do not move"),
 }
 
 
@@ -134,7 +122,10 @@ def _gtd_strings(path: Path) -> list[tuple[int, str]]:
             continue
         if id(node) in docs:
             continue
-        bad = sorted(t for t in set(re.findall(r"gtd_\w+", node.value))
+        value = node.value
+        for literal in ALLOWED_LITERALS:
+            value = value.replace(literal, "")
+        bad = sorted(t for t in set(re.findall(r"gtd_\w+", value))
                      if t not in ALLOWED)
         if bad:
             found.append((node.lineno, ", ".join(bad)))
@@ -146,7 +137,7 @@ def test_the_walk_covers_the_three_trees() -> None:
     assert len(files) > 40, len(files)
     assert ROUTES / "tasks" / "ai.py" in files
     assert ROUTES / "projects" / "item_lens.py" in files
-    assert SKILLS / "skill-task-gtd" / "skill_task_gtd" / "core.py" in files
+    assert SKILLS / "skill-my-tasks" / "skill_my_tasks" / "core.py" in files
     assert all(p.exists() for p in WHATSAPP), "a WhatsApp module moved"
 
 
@@ -167,8 +158,10 @@ def test_the_fence_can_see(tmp_path: Path) -> None:
     bad.write_text(
         '"""A docstring may say gtd_items."""\n'
         'SQL = "SELECT * FROM gtd_items"\n'
-        'OK = "SELECT * FROM gtd_attachments"\n', encoding="utf-8")
-    assert _gtd_strings(bad) == [(2, "gtd_items")]
+        'TOOL = "call gtd_capture"\n'
+        'OK = "call my_tasks_capture"\n', encoding="utf-8")
+    # S9 renamed the tools, so an old tool name is a defect too.
+    assert _gtd_strings(bad) == [(2, "gtd_items"), (3, "gtd_capture")]
 
 
 def test_the_allowed_tables_are_still_used() -> None:
@@ -176,7 +169,7 @@ def test_the_allowed_tables_are_still_used() -> None:
     used: set[str] = set()
     for path in _fenced_files():
         used |= set(re.findall(r"gtd_\w+", path.read_text(encoding="utf-8")))
-    tables = {k for k, v in ALLOWED.items() if not v.startswith("a chat tool")}
+    tables = set(ALLOWED)
     assert tables <= used, sorted(tables - used)
 
 
@@ -240,7 +233,7 @@ def _consumer_reads() -> set[str]:
     names |= set(re.findall(r'getattr\(row,\s*"([a-z_]+)"', src))
     names |= set(re.findall(r"\brow\.([a-z_]+)\b", src))
     # Not row attributes: pydantic model methods and the wire model's own
-    # fields read off an `item` that is a GtdItemModel, not a row.
+    # fields read off an `item` that is a MyTaskModel, not a row.
     return names - {"model_dump", "assignee_name"}
 
 

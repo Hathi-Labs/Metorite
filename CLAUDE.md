@@ -82,8 +82,8 @@ reference tied to code. Do not put product specs in `docs/`.
   `PATCH` of `project_id`+`visibility`. The per-member overlay
   (disposition/context/energy/defer) is `pm_task_personal`, keyed
   `(task_id, member_email)`, because two people assigned one task legitimately
-  disagree about its disposition. ⚠️ **`gtd_*` is retired** — it is the old Tasks
-  store, still on disk during expand/contract; do not build against it, and do not
+  disagree about its disposition. ⚠️ **`gtd_*` is retired.** It was the old
+  Tasks store, and migration 217 drops it (S8 PR 2). Do not build against it, and do not
   sweep the three tables that WERE `gtd_settings`, `gtd_day_state` and
   `gtd_rollover_log` with it. They belong to the Calendar and the member, not
   to the old task store, and they now carry their own names (below).
@@ -107,7 +107,11 @@ reference tied to code. Do not put product specs in `docs/`.
   the prologue into a silent no-op. ⚠️ **A short new name can be a PREFIX of its
   own family.** A fake that dispatches on `"FROM people" in sql` answers the
   absences query with directory rows, so use `tests/unit/_sql_match.py`.
-  Still to move: the task store, and H-29 drops most of it first.
+  **Slice 3, the task store** (S8 PR 2) — `gtd_attachments` is
+  **`attachments`**, and `gtd_horizons` and `gtd_reviews` are
+  **`my_tasks_horizons`** and **`my_tasks_reviews`**. Migration 217 drops the
+  rest. No `gtd_` table remains, and `tests/unit/test_no_gtd_table_names.py`
+  refuses a new one in the code. The chat tool names stay until S9.
   ⚠️ **ClickUp is gone** — no connector, no importer, no sync; Metorite
   is the PM system of record and root `AGENTS.md` constraint 8 is amended to say so.
 - **Pricing is FLAT: ₹500/user/month + AI credits**, one sellable seat

@@ -28,7 +28,7 @@ import {
   applySort,
   groupItems,
 } from "./ordering";
-import type { GtdItem } from "./types";
+import type { MyTask } from "./types";
 
 const TASKS = fileURLToPath(new URL("..", import.meta.url));
 
@@ -57,7 +57,7 @@ const read = (relPath: string) => code(join(TASKS, relPath));
 const TOOLBAR = read("components/TaskToolbar.tsx");
 const ITEM_LIST = read("components/ItemList.tsx");
 
-function task(id: string, extra: Partial<GtdItem> = {}): GtdItem {
+function task(id: string, extra: Partial<MyTask> = {}): MyTask {
   return {
     id,
     source: "LOCAL",

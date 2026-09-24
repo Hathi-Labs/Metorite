@@ -110,11 +110,6 @@ const PURGE_LABELS: Record<string, string> = {
   email_accounts: "connected mailbox",
   whatsapp_accounts: "connected WhatsApp number",
   task_accounts: "connected task workspace",
-  // The SYNCED half of the GTD store, which the connected task workspace
-  // cascades away. Worded as "synced" on both sides so the deleted and kept
-  // task counts in one sentence do not read as a contradiction.
-  synced_tasks: "synced task",
-  synced_projects: "synced project",
   private_chat_sessions: "private chat session",
   sign_in_requests: "sign-in request",
   audit_entries: "app audit entry",
@@ -123,11 +118,6 @@ const PURGE_LABELS: Record<string, string> = {
   shared_rooms: "shared room",
   apps: "app",
   workflows: "workflow",
-  // Kept: the LOCAL half. Named against `synced_*` above rather than left as
-  // a bare "task", so "2 synced tasks removed; 3 local tasks kept" reads as
-  // one coherent sentence instead of a contradiction.
-  tasks: "local task",
-  projects: "local project",
   meetings: "meeting",
 };
 

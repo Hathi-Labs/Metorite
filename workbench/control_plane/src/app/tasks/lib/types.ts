@@ -1,8 +1,8 @@
-// GTD Task Manager — canonical client types.
+// My Tasks — canonical client types.
 //
 // These mirror the canonical Postgres model in
-// `project-docs/specs/task_manager_app.md` §4 (gtd_items / gtd_projects /
-// gtd_contexts), trimmed to what the UI needs. The app is built UI-first
+// `project-docs/specs/task_manager_app.md` §4 (the item, project and
+// context tables), trimmed to what the UI needs. The app is built UI-first
 // against mock data (see mockData.ts); when the gateway `/tasks` API lands,
 // these types stay and only the data source swaps.
 
@@ -30,7 +30,7 @@ export type Disposition =
 export type Energy = "low" | "medium" | "high";
 
 /** A GTD context (the `@` list): grouped by what you need to act. */
-export interface GtdContext {
+export interface TaskContext {
   /** e.g. "@computer" */
   name: string;
   /** lucide-react icon name */
@@ -89,8 +89,8 @@ export interface ResumeIngestResult {
   person: OrgPerson;
 }
 
-/** A GTD project — a first-class outcome needing >1 action (§5.1). */
-export interface GtdProject {
+/** A project in My Tasks — a first-class outcome needing >1 action (§5.1). */
+export interface MyTasksProject {
   id: string;
   source: Source;
   provider?: ProviderKind;
@@ -114,8 +114,8 @@ export interface GtdProject {
   areaId?: string;
 }
 
-/** A GTD item — an inbox capture or a clarified action. */
-export interface GtdItem {
+/** A task in My Tasks — an inbox capture or a clarified action. */
+export interface MyTask {
   id: string;
   source: Source;
   provider?: ProviderKind;
@@ -130,7 +130,7 @@ export interface GtdItem {
   disposition: Disposition;
   /** the clarified physical next action (set once it leaves the inbox) */
   nextAction?: string;
-  /** "@computer" | "@calls" | … (matches a GtdContext.name) */
+  /** "@computer" | "@calls" | … (matches a TaskContext.name) */
   context?: string;
   energy?: Energy;
   /** D77 — the task's ONE estimate, `pm_tasks.estimate_mins`: the number the
@@ -191,7 +191,7 @@ export interface GtdItem {
   statusCategory?: string;
   /** manual (drag) rank within a group/column; unset → created-at ordering */
   sortKey?: number;
-  /** set → this item is a subtask of another gtd_item (its parent). */
+  /** set → this item is a subtask of another item (its parent). */
   parentItemId?: string;
   /** number of child subtasks (roll-up badge on the card/detail). */
   subtaskCount?: number;
@@ -272,7 +272,7 @@ export interface Target {
  * lives in `/people` — one surface each, rather than a second half-copy of both
  * behind a task manager.
  *
- * `GtdProject` itself survives: a task still belongs to a project and the cards
+ * `MyTasksProject` itself survives: a task still belongs to a project and the cards
  * still name it. What went is the *browsing* surface, which was the ClickUp
  * Space → Folder → List hierarchy — precisely what `/projects` now owns.
  */

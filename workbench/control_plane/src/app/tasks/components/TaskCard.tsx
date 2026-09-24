@@ -5,8 +5,8 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import { TaskCardShell, TaskCardTitle } from "@/components/TaskCardShell";
 import { AvatarStack, TaskMeta } from "@/components/TaskMeta";
 import { useState } from "react";
-import { GtdItem } from "../lib/types";
-import { gtdMetaChips } from "../lib/cardMeta";
+import { MyTask } from "../lib/types";
+import { taskMetaChips } from "../lib/cardMeta";
 import { useTaskStore } from "../lib/taskStore";
 import { useCardActions } from "../lib/useCardActions";
 import { contextAccent } from "../lib/contextColors";
@@ -43,7 +43,7 @@ export function TaskCard({
   onDragStart,
   onDragEnd,
 }: {
-  item: GtdItem;
+  item: MyTask;
   /** "board" = full card (default); "row" = denser one-line-ish list row. */
   variant?: "board" | "row";
   draggable?: boolean;
@@ -191,12 +191,12 @@ export function TaskCard({
         </span>
       )}
       {/* The shared facts — due/overdue, subtasks, attachments, estimate — in
-          the shared chip vocabulary (WS-27s): `gtdMetaChips` adapts GtdItem to
+          the shared chip vocabulary (WS-27s): `taskMetaChips` adapts MyTask to
           `taskMeta`'s descriptors and the one `TaskMeta` renderer draws them,
-          so a task reads identically here and on /projects. The GTD-only
+          so a task reads identically here and on /projects. The My-Tasks-only
           badges around it (context, deep, energy, source, priority) stay —
           one grammar for the shared facts, not an erased identity. */}
-      <TaskMeta chips={gtdMetaChips(item)} className="min-w-0 max-w-full" />
+      <TaskMeta chips={taskMetaChips(item)} className="min-w-0 max-w-full" />
       {item.origin?.kind === "email" && (
         <span
           className="inline-flex items-center gap-1 text-[10px] text-muted-foreground"
@@ -287,7 +287,7 @@ export function TaskCard({
     <>
       {/* WS-27ad: the box is `@/components/TaskCardShell`, the same one the
           /projects board draws — same radius, padding, `bg-card` surface,
-          border and shadow lift. What goes INSIDE stays this app's: the GTD
+          border and shadow lift. What goes INSIDE stays this app's: the My Tasks
           badges, the context menu and the priority pair are not concepts
           /projects has.
 

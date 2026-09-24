@@ -10,7 +10,7 @@
     "outputs_visibility": "instance"
   },
   "skill_repos": [
-    "skill-task-gtd"
+    "skill-my-tasks"
   ],
   "mcp_servers": {},
   "max_mutation_attempts": 1,

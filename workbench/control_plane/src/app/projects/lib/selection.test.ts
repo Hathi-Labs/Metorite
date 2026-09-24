@@ -143,25 +143,20 @@ describe("buildRequest", () => {
     expect(JSON.stringify(request)).not.toContain("status_id");
   });
 
-  it("sets both priority flags from one choice (D78)", () => {
-    expect(buildRequest(["a"], draft({ priority: "important" }))?.patch).toEqual({
+  it("sets or clears ONE priority flag per action (D78)", () => {
+    // Review 2026-09-24. A selection is mixed, so "Leveraged" must never
+    // write Important as well. The old "set both" choice cleared Important on
+    // every selected task that had it.
+    expect(buildRequest(["a"], draft({ priority: "important:on" }))?.patch).toEqual({
       importance: 2,
-      leveraged: false,
     });
-    expect(buildRequest(["a"], draft({ priority: "leveraged" }))?.patch).toEqual({
+    expect(buildRequest(["a"], draft({ priority: "important:off" }))?.patch).toEqual({
       importance: 0,
+    });
+    expect(buildRequest(["a"], draft({ priority: "leveraged:on" }))?.patch).toEqual({
       leveraged: true,
     });
-    expect(buildRequest(["a"], draft({ priority: "both" }))?.patch).toEqual({
-      importance: 2,
-      leveraged: true,
-    });
-  });
-
-  it("clears both flags on 'none', which is a real choice and not 'unset'", () => {
-    // The trap: 'none' and the untouched box must not read the same.
-    expect(buildRequest(["a"], draft({ priority: "none" }))?.patch).toEqual({
-      importance: 0,
+    expect(buildRequest(["a"], draft({ priority: "leveraged:off" }))?.patch).toEqual({
       leveraged: false,
     });
   });

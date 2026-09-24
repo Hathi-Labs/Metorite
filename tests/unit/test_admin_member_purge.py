@@ -123,18 +123,9 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     fake.seed_rows("agent_run", {"user_id": PRIYA})
     fake.seed_rows("apps", {"owner_email": PRIYA})
     fake.seed_rows("workflows", {"owner_email": PRIYA})
-    # ── the GTD store, both halves: 3 LOCAL items + 2 SYNCED, 1 LOCAL
-    #    project + 1 SYNCED. The SYNCED rows go with `task_accounts`; the
-    #    LOCAL ones are hers and survive.
-    fake.seed_rows("gtd_items",
-                   {"id": "i-1", "user_id": PRIYA},
-                   {"id": "i-2", "user_id": PRIYA},
-                   {"id": "i-3", "user_id": PRIYA},
-                   {"id": "i-s1", "user_id": PRIYA, "account_id": TASK_ACCOUNT},
-                   {"id": "i-s2", "user_id": PRIYA, "account_id": TASK_ACCOUNT})
-    fake.seed_rows("gtd_projects",
-                   {"id": "p-1", "user_id": PRIYA},
-                   {"id": "p-s1", "user_id": PRIYA, "account_id": TASK_ACCOUNT})
+    # ── her tasks, in the one store. Migration 217 (WS-39 S8) dropped the
+    #    retired task store, so the purge names no task table at all (D63).
+    fake.seed_rows("pm_tasks", {"id": "t-1", "created_by": PRIYA})
     fake.seed_rows("meeting", {"owner_email": PRIYA})
     return fake
 
@@ -409,48 +400,33 @@ async def test_what_they_authored_is_left_readable(db: _FakeDB) -> None:
 
     out = await purge_member(PRIYA, admin=OWNER)
 
-    for table, count in (("apps", 1), ("workflows", 1), ("gtd_items", 3),
-                         ("gtd_projects", 1), ("meeting", 1), ("agent_run", 1)):
+    for table, count in (("apps", 1), ("workflows", 1), ("pm_tasks", 1),
+                         ("meeting", 1), ("agent_run", 1)):
         assert len(db.rows[table]) == count, f"{table} was purged"
     assert out.kept["apps"] == 1
     assert out.kept["workflows"] == 1
-    assert out.kept["tasks"] == 3
-    assert out.kept["projects"] == 1
     assert out.kept["meetings"] == 1
     assert out.kept["agent_runs"] == 1
 
 
-async def test_the_synced_half_of_the_gtd_store_is_reported_as_destroyed(
-    db: _FakeDB,
-) -> None:
-    """The count that was a lie in the reassuring direction.
+def test_the_purge_names_no_task_table_and_deletes_no_pm_row() -> None:
+    """D63: a departed member's tasks are SEALED, never deleted.
 
-    `task_accounts` cascades BOTH `gtd_items` and `gtd_projects` (48_task_
-    manager_gtd.sql:73,93). The first version of this route counted
-    `gtd_items` on the KEEP side with no exclusion, so a member with 847
-    synced tasks got `kept: {"tasks": 847}` while all 847 went with the
-    credential — the response did not merely miss a destruction, it reported
-    it as a survival. `gtd_projects` appeared on neither list.
-
-    ⚠️ Mutation-checked: dropping ``AND account_id IS NULL`` from the KEEP
-    clause makes this fail (5 tasks reported kept, 3 actually there); removing
-    either delete-side row-spec makes it fail on the missing key.
+    The purge took the SYNCED half of the retired task store with the task
+    account, and kept the LOCAL half. Migration 217 (WS-39 S8 PR 2) dropped
+    that store, so the purge must name no `gtd_` table on either side. It must
+    also delete no `pm_` row, because the one store is the member's work.
     """
-    from gateway.routes.admin.members import purge_member
+    from gateway.routes.admin.members import (
+        _CREDENTIAL_CASCADES,
+        _PURGE_DELETES,
+        _PURGE_KEEPS,
+    )
 
-    out = await purge_member(PRIYA, admin=OWNER)
-
-    # Destroyed, and said so.
-    assert out.deleted["synced_tasks"] == 2
-    assert out.deleted["synced_projects"] == 1
-    # Kept, and only the rows that really are.
-    assert out.kept["tasks"] == 3
-    assert out.kept["projects"] == 1
-    assert sorted(r["id"] for r in db.rows["gtd_items"]) == ["i-1", "i-2", "i-3"]
-    assert [r["id"] for r in db.rows["gtd_projects"]] == ["p-1"]
-    # And the two halves add up to what she had, so neither is double-counted.
-    assert out.deleted["synced_tasks"] + out.kept["tasks"] == 5
-    assert out.deleted["synced_projects"] + out.kept["projects"] == 2
+    tables = {r.table for r in (*_PURGE_DELETES, *_PURGE_KEEPS)}
+    assert not {t for t in tables if t.startswith("gtd_")}, sorted(tables)
+    assert not {r.table for r in _PURGE_DELETES if r.table.startswith("pm_")}
+    assert _CREDENTIAL_CASCADES["task_accounts"] == ()
 
 
 async def test_the_response_says_what_happened_table_by_table(
@@ -485,8 +461,6 @@ async def test_the_response_says_what_happened_table_by_table(
         "app_tool_grants": 1,
         "email_accounts": 1,
         "whatsapp_accounts": 1,
-        "synced_tasks": 2,
-        "synced_projects": 1,
         "task_accounts": 1,
         "private_chat_sessions": 2,
         "sign_in_requests": 1,
@@ -499,8 +473,6 @@ async def test_the_response_says_what_happened_table_by_table(
         "shared_rooms": 1,
         "apps": 1,
         "workflows": 1,
-        "tasks": 3,
-        "projects": 1,
         "meetings": 1,
     }
 
@@ -558,15 +530,13 @@ def test_no_audit_table_appears_on_the_delete_side_at_all() -> None:
         "the two audit tables are not even reported as kept, so an admin "
         "cannot tell they survived"
     )
-    # And no table is on both sides except the three that are legitimately
-    # split — each by a column the schema forces on us, each asserted to be an
-    # exact complement below.
-    assert not (deleted_tables & kept_tables) - {
-        "chat_session", "gtd_items", "gtd_projects",
-    }, (
+    # And no table is on both sides except the one that is legitimately
+    # split, by a column the schema forces on us, asserted to be an exact
+    # complement below. (The retired task store was split too, until
+    # migration 217 dropped it.)
+    assert not (deleted_tables & kept_tables) - {"chat_session"}, (
         "a table is both deleted and kept; only chat_session (by visibility) "
-        "and the GTD store (by account_id, because task_accounts cascades the "
-        "SYNCED half) are legitimately split"
+        "is legitimately split"
     )
 
 
@@ -636,28 +606,6 @@ def test_the_two_halves_of_chat_session_partition_it() -> None:
 
     assert deleted.where == "lower(user_id) = :email AND visibility = 'private'"
     assert kept.where == "lower(user_id) = :email AND visibility <> 'private'"
-
-
-def test_the_two_halves_of_the_gtd_store_partition_it() -> None:
-    """The other two split tables, and the ones the FK forces apart.
-
-    `account_id IS NULL` is a LOCAL row the person authored here;
-    `IS NOT NULL` is a mirror of a provider task that `task_accounts`
-    cascades. The split is not a preference — the schema decides it — so the
-    clauses are pinned literally rather than left to the complement check
-    below to approve in the abstract.
-    """
-    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
-
-    for table in ("gtd_items", "gtd_projects"):
-        deleted = next(r for r in _PURGE_DELETES if r.table == table)
-        kept = next(r for r in _PURGE_KEEPS if r.table == table)
-        assert deleted.where == (
-            "lower(user_id) = :email AND account_id IS NOT NULL"
-        ), table
-        assert kept.where == "lower(user_id) = :email AND account_id IS NULL", (
-            table
-        )
 
 
 # ── The cross-table half: what the delete side cascades away ────────────────

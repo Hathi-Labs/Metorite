@@ -177,16 +177,26 @@ async def test_invite_drops_the_resolver_cache_and_records_the_audit_action(
 # ════════════════════════════════════════════════════════════════════════════
 
 class _FakeSession:
-    """Minimal async session for :func:`acb_auth.access.resolve_access`."""
+    """Minimal async session for :func:`acb_auth.access.resolve_access`.
 
-    def __init__(self, owner: _AccessWorld):
+    ``commits_on_exit`` models the difference between the two seams this file
+    now exercises. The plain session factory leaves committing to the caller.
+    ``tenant_session`` **commits on exit itself** — so a writer that uses it
+    correctly never calls ``commit()``, and a fake that demanded one would
+    fail the correct code and pass the H-118 shape that skipped the bind.
+    """
+
+    def __init__(self, owner: _AccessWorld, *, commits_on_exit: bool = False):
         self._owner = owner
+        self._commits_on_exit = commits_on_exit
 
     async def __aenter__(self) -> _FakeSession:
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
-        return None
+        # Mirrors the real seam: commit only when the body did not raise.
+        if self._commits_on_exit and exc[0] is None:
+            await self.commit()
 
     async def commit(self) -> None:
         self._owner.commits += 1
@@ -199,6 +209,17 @@ class _FakeSession:
             if self._owner.write_raises:
                 raise RuntimeError("access_request write exploded")
             return _Rows([], rowcount=1)
+        # H-118: which organization claims this email domain. This reads
+        # `organization`, the ONE table with no row-level security, so it
+        # answers on an UNBOUND session — which is the whole point, because a
+        # knock has no tenant yet and cannot get one from a table whose policy
+        # needs one.
+        if "FROM organization" in s:
+            # `_Rows.fetchall` does `tuple(r.values())`, so rows are DICTS
+            # here and become 1-tuples on the way out — the shape
+            # `_organization_for_email` reads with `rows[0][0]`.
+            hits = self._owner.domains.get(p["domain"], [])
+            return _Rows([{"id": o} for o in hits])
         if "FROM app_user u" in s or "FROM app_user WHERE" in s:
             row = self._owner.rows.get(p["email"])
             return _Rows([row] if row else [])
@@ -213,6 +234,15 @@ class _AccessWorld:
         self.writes: list[str] = []
         self.commits = 0
         self.write_raises = False
+        #: H-118 — domain → the organization ids claiming it. `fracktal.in`
+        #: is seeded because every knock in this file uses that domain, and
+        #: before the fix the queue wrote nothing at all for ANY domain.
+        #: A list, not a single id, so the two-claimants case is expressible.
+        self.domains: dict[str, list[str]] = {"fracktal.in": [ORG]}
+        #: Every tenant the writer bound, in order. The claim worth holding is
+        #: not "it wrote" but "it wrote GUC-BOUND to the RIGHT tenant" — an
+        #: unbound write is what H-118 was.
+        self.bound: list[str] = []
 
     def seed_member(self, email: str, *, status: str = "active") -> None:
         self.rows[email.lower()] = {
@@ -224,6 +254,19 @@ class _AccessWorld:
     def factory(self) -> Any:
         return lambda: _FakeSession(self)
 
+    def tenant_session(self, organization_id: str | None = None) -> Any:
+        """Stand-in for ``acb_common.db.tenant_session``.
+
+        ⚠️ Records the tenant it was asked to bind. H-118 was a write that ran
+        with NO tenant bound: the `NOT NULL DEFAULT current_setting(…)` cast
+        refused an empty GUC, and even a successful insert would have been
+        hidden by the RLS policy keyed on the same GUC. So "which tenant did
+        the writer bind" is the claim these tests have to hold, and a fake
+        that only counted writes could not see the defect at all.
+        """
+        self.bound.append(str(organization_id))
+        return _FakeSession(self, commits_on_exit=True)
+
 
 @pytest.fixture()
 def world(monkeypatch: pytest.MonkeyPatch) -> _AccessWorld:
@@ -231,6 +274,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _AccessWorld:
 
     w = _AccessWorld()
     monkeypatch.setattr(access_mod, "_get_session_factory", w.factory)
+    monkeypatch.setattr(access_mod, "tenant_session", w.tenant_session)
     monkeypatch.setattr(access_mod, "_tables_missing", False)
     access_mod.invalidate()
     yield w
@@ -1372,3 +1416,298 @@ async def test_an_unrecognised_member_status_fails_closed(db: _FakeDB) -> None:
     assert db.requests["future@fracktal.in"]["status"] == "pending"
     assert db.audit == []
     assert db.committed == 0
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 8. H-118 — the knock reaches a tenant, or it reaches nobody
+# ════════════════════════════════════════════════════════════════════════════
+#
+# ⚠️ **Measured on production, 2026-09-18 to 2026-09-23: 20 knocks recorded
+# NOTHING**, including the owner's own two addresses. `access_request` was
+# swept into the tenancy retrofit like every other table, so it carries
+# `organization_id NOT NULL DEFAULT (current_setting('app.tenant_id',
+# true))::uuid` and `FORCE ROW LEVEL SECURITY` keyed on the same GUC. The
+# writer ran UNBOUND, so `current_setting` was `''`, the cast raised, and the
+# best-effort `except` swallowed it.
+#
+# Two defects, and the second only appears once the first is fixed: an
+# unbound insert that somehow succeeded would still be INVISIBLE, because the
+# policy hides any row whose tenant is not the reader's.
+#
+# So the claim these hold is not "it wrote a row". It is **"it wrote a row
+# bound to the right tenant, or it wrote nothing at all."**
+
+
+async def test_the_knock_is_written_bound_to_the_matching_tenant(
+    world: _AccessWorld,
+) -> None:
+    """The whole of H-118, in one assertion pair.
+
+    `world.bound` is what a test written before the fix could not have
+    checked, because the writer never bound anything.
+    """
+    from acb_auth.access import resolve_access
+
+    await resolve_access("stranger@fracktal.in", record_request=True)
+
+    assert world.writes == ["stranger@fracktal.in"]
+    assert world.bound == [ORG], (
+        "the write must be GUC-bound to the organization claiming the domain "
+        "— unbound is what H-118 was, and it wrote nothing for 20 knocks"
+    )
+
+
+async def test_an_unclaimed_domain_files_nothing(
+    world: _AccessWorld,
+) -> None:
+    """Owner decision, 2026-09-24.
+
+    Somebody whose domain no organization claims is not a colleague of any
+    customer. They belong on the self-serve path that creates their OWN
+    organization. Filing them into a customer's queue would mislead that
+    admin, and would disclose that the address knocked at all.
+    """
+    from acb_auth.access import resolve_access
+
+    access = await resolve_access("nobody@unclaimed.example", record_request=True)
+
+    assert not access.is_active, "the refusal is unchanged either way"
+    assert world.writes == []
+    assert world.bound == []
+
+
+async def test_two_organizations_claiming_one_domain_files_nothing(
+    world: _AccessWorld,
+) -> None:
+    """⚠️ The leak this refuses to guess its way into.
+
+    A duplicate domain is a data defect somebody must fix. Breaking the tie
+    would put one customer's colleague into another customer's queue, which
+    is both a wrong answer and a disclosure. Refusing is the safe direction:
+    the knock is still refused, and the journal still says who knocked.
+    """
+    from acb_auth.access import resolve_access
+
+    world.domains["fracktal.in"] = [ORG, "other-org-id"]
+
+    await resolve_access("stranger@fracktal.in", record_request=True)
+
+    assert world.writes == []
+    assert world.bound == []
+
+
+async def test_the_domain_match_is_case_folded(
+    world: _AccessWorld,
+) -> None:
+    """R10 — every address comparison in this tree folds. An IdP that returns
+    `Stranger@Fracktal.IN` must reach the same organization."""
+    from acb_auth.access import resolve_access
+
+    await resolve_access("Stranger@Fracktal.IN", record_request=True)
+
+    assert world.bound == [ORG]
+
+
+async def test_a_registry_read_that_explodes_files_nothing_and_never_raises(
+    world: _AccessWorld,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The queue stays a convenience, and the refusal stays the security
+    answer. A registry read that fails must not turn "you have no access"
+    into a 500 — by this point the refusal is already decided."""
+    import acb_auth.access as access_mod
+    from acb_auth.access import resolve_access
+
+    async def boom(_email: str) -> str | None:
+        raise RuntimeError("registry unreachable")
+
+    # Patched at the seam, and with monkeypatch so the module is restored even
+    # if the assertion below fails. A hand-rolled try/finally here would leave
+    # the whole session's `access` module broken on a red test.
+    monkeypatch.setattr(access_mod, "_organization_for_email", boom)
+
+    access = await resolve_access("stranger@fracktal.in", record_request=True)
+
+    assert not access.is_active
+    assert world.writes == []
+    assert world.bound == []
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 9. CP-2f — BOTH provisioning doors reach the Console, not just the invite
+# ════════════════════════════════════════════════════════════════════════════
+#
+# ⚠️ **`invite_member_on_console` had exactly ONE caller until 2026-09-24**:
+# the invite door. Approving a sign-in request wrote the tenant `app_user` and
+# both H6 shadows, and never told the Customer Console.
+#
+# CP-2f's own docstring says what that costs, and it is not cosmetic: the
+# colleague is "invisible to `GET /me/members`, a 404 at the seat-assign door,
+# and — with sign-in resolve ARMED — `store.deployment_visible_orgs` returned
+# nothing for them, so their first sign-in answered 'zero organizations' and
+# the self-serve funnel offered to create them an org OF THEIR OWN."
+#
+# So an approval, correctly performed, produced a person the owner could not
+# give a seat to. That is the last step of the flow the owner described on
+# 2026-09-24 — "only when the administrator approves are they let in and
+# assigned a seat" — and it was the step that did not work.
+#
+# This is the same two-doors-disagree shape `remove_member`'s docstring records
+# for the self-lockout check, and the D63 seal hit again on 2026-09-23. Hence
+# a PARAMETRISED test: one door cannot grow the call without the other.
+
+
+class _ConsoleSpy:
+    """Records the Console member-mirror calls, and can refuse like the real one."""
+
+    def __init__(self, status: int = 200) -> None:
+        self.calls: list[dict[str, str]] = []
+        self.status = status
+        self.raises = False
+
+    async def __call__(
+        self, *, actor_email: str, member_email: str, display_name: str = "",
+    ) -> tuple[int, dict]:
+        self.calls.append({
+            "actor": actor_email,
+            "member": member_email,
+            "display_name": display_name,
+        })
+        if self.raises:
+            raise RuntimeError("console unreachable")
+        return self.status, {}
+
+
+@pytest.fixture()
+def console(monkeypatch: pytest.MonkeyPatch) -> _ConsoleSpy:
+    """Bound into BOTH doors, so neither can be tested in isolation from it."""
+    from gateway.routes.admin import access_requests, members
+
+    spy = _ConsoleSpy()
+    monkeypatch.setattr(members, "invite_member_on_console", spy)
+    monkeypatch.setattr(access_requests, "invite_member_on_console", spy)
+    return spy
+
+
+async def test_approving_a_request_mirrors_the_member_to_the_console(
+    db: _FakeDB, console: _ConsoleSpy,
+) -> None:
+    """The defect, stated as the behaviour it broke.
+
+    Without this call the approved colleague cannot be given a seat — the
+    seat-assign door answers 404 for somebody the registry has never heard of.
+    """
+    from gateway.routes.admin.access_requests import (
+        ApproveRequest,
+        approve_access_request,
+    )
+
+    db.seed_request("ishaan@fracktal.in", attempts=53)
+    await approve_access_request(
+        "ishaan@fracktal.in", ApproveRequest(), admin=FULL_ADMIN,
+    )
+
+    assert console.calls == [{
+        "actor": "admin@fracktal.in",
+        "member": "ishaan@fracktal.in",
+        "display_name": "",
+    }], "approve must tell the Console, or the person can never hold a seat"
+
+
+async def test_the_invite_door_still_mirrors_too(
+    db: _FakeDB, console: _ConsoleSpy,
+) -> None:
+    """The half that already worked, pinned so the fix cannot trade one door
+    for the other."""
+    from gateway.routes.admin.members import InviteRequest, invite_member
+
+    await invite_member(
+        InviteRequest(email="new@fracktal.in"), admin=FULL_ADMIN,
+    )
+
+    assert [c["member"] for c in console.calls] == ["new@fracktal.in"]
+
+
+async def test_the_console_actor_is_the_authenticated_admin(
+    db: _FakeDB, console: _ConsoleSpy,
+) -> None:
+    """R11 — the actor is the SESSION's admin and never a body field. A caller
+    -supplied actor is how one admin's authority gets borrowed by another."""
+    from gateway.routes.admin.access_requests import (
+        ApproveRequest,
+        approve_access_request,
+    )
+
+    db.seed_request("ishaan@fracktal.in")
+    await approve_access_request(
+        "ishaan@fracktal.in", ApproveRequest(), admin=FULL_ADMIN,
+    )
+
+    assert console.calls[0]["actor"] == FULL_ADMIN.email
+
+
+async def test_a_console_refusal_does_not_undo_an_approval(
+    db: _FakeDB, console: _ConsoleSpy,
+) -> None:
+    """Post-commit and best-effort, the same posture as the invite door.
+
+    The `app_user` write has already committed. A Console outage must not turn
+    an approval that happened into a 500 that says it did not.
+    """
+    from gateway.routes.admin.access_requests import (
+        ApproveRequest,
+        approve_access_request,
+    )
+
+    console.status = 503
+    db.seed_request("ishaan@fracktal.in")
+
+    out = await approve_access_request(
+        "ishaan@fracktal.in", ApproveRequest(), admin=FULL_ADMIN,
+    )
+
+    assert out.status == "active"
+    assert db.user_by_email("ishaan@fracktal.in")["status"] == "active"
+
+
+async def test_a_console_that_explodes_does_not_undo_an_approval(
+    db: _FakeDB, console: _ConsoleSpy,
+) -> None:
+    """Same contract, the raising shape rather than the 4xx shape."""
+    from gateway.routes.admin.access_requests import (
+        ApproveRequest,
+        approve_access_request,
+    )
+
+    console.raises = True
+    db.seed_request("ishaan@fracktal.in")
+
+    out = await approve_access_request(
+        "ishaan@fracktal.in", ApproveRequest(), admin=FULL_ADMIN,
+    )
+
+    assert out.status == "active"
+
+
+async def test_an_already_a_member_approval_mirrors_nothing(
+    db: _FakeDB, console: _ConsoleSpy,
+) -> None:
+    """The mirror rides `provisioned`, like the two H6 shadows beside it.
+
+    A request for somebody already active writes no `app_user` row, so there
+    is nothing to mirror — and a Console call here would claim a provisioning
+    that did not happen.
+    """
+    from gateway.routes.admin.access_requests import (
+        ApproveRequest,
+        approve_access_request,
+    )
+
+    db.seed_user("u-live", "live@fracktal.in", status="active")
+    db.seed_request("live@fracktal.in")
+
+    await approve_access_request(
+        "live@fracktal.in", ApproveRequest(), admin=FULL_ADMIN,
+    )
+
+    assert console.calls == []

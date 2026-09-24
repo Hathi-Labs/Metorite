@@ -1,7 +1,7 @@
 "use client";
 
 import Icon from "@/components/Icon";
-import { GtdItem } from "../lib/types";
+import { MyTask } from "../lib/types";
 import { useTaskStore } from "../lib/taskStore";
 import { proposeClarification, sortShapeSummary, type SortBucket } from "../lib/clarify";
 import { relativeTime } from "../lib/utils";
@@ -28,7 +28,7 @@ export function InboxTable({
   selectedIds,
   onSelectToggle,
 }: {
-  items: GtdItem[];
+  items: MyTask[];
   cursorId: string | null;
   /** Read-only: the table never mutates the caller's selection. */
   selectedIds: ReadonlySet<string>;

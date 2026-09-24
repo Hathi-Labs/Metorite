@@ -967,7 +967,7 @@ action_item_id, segment_ids}`. The notes text is the description.
    production takes the pm arm. S8 PR 1 deletes the gtd arm. The three
    callers need no change then.
 
-### S8 — the contract: code first, then schema · AGENT-SAFE · PR 1 BUILT 2026-09-23
+### S8 — the contract: code first, then schema · AGENT-SAFE · PR 1 BUILT 2026-09-23 · PR 2 BUILT 2026-09-23
 
 **Scope.** Two PRs, in order.
 
@@ -1019,6 +1019,95 @@ flip (§6 step 10).**
    also names `gtd_task` in its examples and in its row-count check. PR 2
    updates it in the same change.
 
+**PR 2 build record (2026-09-23).** Branch `my-tasks-s8d`, stacked on
+`my-tasks-fields` (#427).
+
+1. **Migration 217.** Main holds 215 (`sealed`) and 216 (the estimate
+   backfill, #427), so this one is 217. The file is one transaction, and its steps run in this order:
+   - (0) refuses when a `gtd_items` row holds a value in a column that the
+     backfill never copied. There are 16 such columns, from `origin` to
+     `horizon_id`. `flexible` is exempt. The RAISE names the column and the
+     row count.
+   - (c) copies `wa_commitments.gtd_item_id` into `task_id` through
+     `gtd_items.migrated_task_id`, then drops the old column. A value moves
+     only when its `pm_tasks` row exists.
+   - (c2) rewrites `action_item.dispatch_ref` for `kind = 'task'` rows the
+     same way. Migration 129 stored the gtd id there.
+   - (a) arms the guard and calls `gtd_retirement_drop()`. The guard drops
+     `gtd_items` and `gtd_waiting`, or it refuses.
+   - (b) refuses when `gtd_projects`, `gtd_spaces`, `gtd_folders` or
+     `gtd_contexts` holds a row, and names the table. Then it drops the four
+     in foreign-key order, and then the arm table, the view and both
+     functions. No step uses CASCADE.
+2. **The arm moved into the migration.** §6 step 11 made the arm a hand
+   INSERT on the box. Migration 217 now writes the arm row, so the act is
+   reviewed code. The data check did not move. The guard from migration 190
+   still counts the rows that have no `migrated_task_id`.
+3. ⚠️ **Migration 217 fails closed.** It RAISES in three cases: an
+   unmigrated row, an uncopied value, or a row in a tree table. The deploy then stops, and 217 changes nothing. This is the
+   intended behaviour. Do not widen a guard.
+   ⚠️ **The wider failure case, from the review.** `vps_apply.sh` applies the
+   migrations and then restarts the gateway. Any failure between those two
+   steps leaves the old code on the new schema. A refusal by 217 is one such
+   failure, and any later step of `vps_apply.sh` is another. Migrations 48
+   and 52 stay applied, so the old code names `gtd_attachments`, a table that
+   is gone. File uploads then fail until a deploy completes. The old WhatsApp
+   list also names the dropped `gtd_item_id` column.
+4. **Production passed all three checks by hand on 2026-09-23**, at about
+   19:00 UTC. The coordinator ran them read-only.
+   - Both `gtd_items` rows are migrated. Every column that the backfill
+     never copied holds its default. The one exception is `flexible = true`,
+     and the new store reads that as its default. A second check at about
+     19:30 UTC found `important = false` on both rows.
+   - `gtd_projects`, `gtd_spaces`, `gtd_folders`, `gtd_contexts` and
+     `gtd_waiting` hold 0 rows. `gtd_attachments` holds 2 rows, and they
+     survive as `attachments`.
+   - No `action_item.dispatch_ref` names a gtd id, and no
+     `wa_commitments.gtd_item_id` is set.
+   So production loses nothing. Migration 217 now makes the same checks on
+   every other box.
+5. **Three renames**, each in the migration that creates the table.
+   `gtd_attachments` is `attachments` (52). `gtd_horizons` and
+   `gtd_reviews` are `my_tasks_horizons` and `my_tasks_reviews` (48). The
+   sweep came first and the prologues second. No later migration alters or
+   indexes these tables by name. Migration 150 names the old name in
+   comments only.
+6. **Two guards for a lone re-run.** Migration 52 now guards its
+   `ALTER TABLE gtd_items`, because it re-runs after 217 drops that table.
+   Migration 217 drops an empty store that a lone re-run of 48 builds again.
+   `test_gtd_backfill.py` pins the text of 48, so an edit to 48 must also
+   touch 217.
+7. **Code.** Both `attachments.py` modules write and read `attachments`.
+   The WhatsApp list, the digest and the WhatsApp agent read `task_id`, and
+   the API field is `task_id`. The member purge names no task table, and it
+   still deletes no `pm_tasks` row (D63). `backup_db.sh` anchors on
+   `pm_tasks`. `restore_db.sh` lists the real anchors.
+8. **The generated tenancy files (H-104).** The ladder does not apply them,
+   but an operator applies them by hand. So the six dropped tables leave all
+   four files, and the three renamed tables take their new names.
+   Constraint, index and policy names keep the old spelling.
+   `gen_tenant_migration.discover_tables()` now reads the ladder in number
+   order and honours `DROP TABLE`.
+9. **Fences.** `test_no_gtd_table_names.py` reads the four code trees.
+   These are `apps`, `packages`, `scripts` and `workbench`. It refuses a
+   `gtd_` token that is not on its list. The list holds the 29 chat tool
+   names, three settings helpers and one example tool name. S9 owns all of
+   them. `test_gtd_backfill.py` fences the exact drop set of 217 and the
+   survivors. It also replays the ladder against a real Postgres.
+
+**Pre-flight for production.** Do both before the merge.
+1. Confirm that today's backup is on disk:
+   `ls -la /opt/acb/backups | tail -1`.
+2. Confirm that the ledger holds 216 (the estimate backfill):
+   `SELECT filename FROM schema_migrations WHERE filename LIKE '216_%';`.
+   PR 1 (#411) added no migration.
+
+The data checks are not a hand step. Migration 217 refuses by itself when a
+row would be lost.
+
+After the deploy, `\dt gtd_*` must return nothing, and the ledger must hold
+`217_gtd_task_store_drop.sql`.
+
 **Done when.**
 1. `rg -l "gtd_" apps packages --glob '!infra/postgres/generated'` returns
    nothing but the rename prologues.
@@ -1026,7 +1115,7 @@ flip (§6 step 10).**
 3. The ladder replays three times clean in `pr-check.yml`.
 4. This closes H-151 and H-29.
 
-### S9 — identifier hygiene · AGENT-SAFE
+### S9 — identifier hygiene · AGENT-SAFE · BUILT 2026-09-23
 
 **Scope.** The code names that follow the schema:
 
@@ -1042,6 +1131,64 @@ flip (§6 step 10).**
 1. `rg -il "gtd" workbench/control_plane/src apps/skills apps/agents tests`
    returns only files that describe the method.
 2. `npx tsc --noEmit && npx vitest run` green. The named pytest files green.
+
+**Build record (2026-09-23, UTC).** Branch `my-tasks-s9`, PR #436. It was
+built on `my-tasks-s8d`, then rebuilt on `main` after #427 and #434 merged.
+No route path, JSON field or database object moved.
+The screens a member sees are the same, with one exception in item 4.
+
+1. **The rename map.**
+
+   | Old | New | Where |
+   |---|---|---|
+   | `skill-task-gtd`, package `skill_task_gtd` | `skill-my-tasks`, `skill_my_tasks` | the skill, `pyproject.toml`, `uv.lock`, the agent |
+   | 29 tools `gtd_<name>` | `my_tasks_<name>` | skill, agent, persona, `TaskToolCards.tsx`, tests |
+   | `gtd_models`, `gtd_toggles`, `gtd_calendar_prefs` | `task_models`, `task_toggles`, `calendar_prefs` | `routes/tasks/settings.py` and five callers |
+   | `GtdItemModel` | `MyTaskModel` | `routes/tasks/core.py`, `capture_email.py` |
+   | `GtdItem`, `GtdProject`, `GtdContext` | `MyTask`, `MyTasksProject`, `TaskContext` | 62 client files |
+   | `gtdMetaChips`, `GTD_TRIGGERS` | `taskMetaChips`, `CAPTURE_TRIGGERS` | the client |
+   | `test_tasks_gtd.py` | `test_my_tasks.py` | `tests/unit` |
+   | `test_gtd_quality_trajectory.py` | `test_my_tasks_quality_trajectory.py` | `evals/trajectories` |
+
+2. **Kept on purpose.** `test_gtd_backfill.py`, `test_gtd_rename_upgrade.py`
+   and `test_gtd_retirement_plan.py` keep their names. Each is about the
+   `gtd_*` tables and the migrations that moved them. The migrations keep
+   their names too. Prose keeps "GTD" where it names the method, such as
+   contexts, dispositions and the decision tree.
+3. **Stored tool names.** A saved chat message keeps the tool name it was
+   saved with. So `TaskToolCards.tsx` holds `LEGACY_TOOL_NAMES`, which maps
+   each old name to its new name before the card router reads it.
+   `TaskToolCards.test.ts` pins the map to the skill's `__all__`.
+   The other readers of a stored name need no map:
+   - The gateway never stores a tool name, and `pm_activities` and the rows
+     of the approval queue do not either. The code search found none.
+   - The Mem0 partition `agent:task-manager` holds prose. A memory that says
+     `gtd_list` is text, not a call.
+   - A resumed chat can show the model an old call in its history. The model
+     then sees the new tool list and calls the new name. No code path
+     replays an old call.
+   - The observability office matched `/task|gtd|todo/`. An old event name
+     in that feed now falls to the default icon. That cost is cosmetic.
+4. **One visible change.** The live "running tool" line in the chat
+   capitalises the raw tool name. It read "Gtd Capture" and now reads
+   "My Tasks Capture".
+5. **The survivors of the fence.** `test_no_gtd_table_names.py` now refuses
+   every bare `gtd_` token in `apps`, `packages`, `scripts` and `workbench`.
+   Four survivors are left, and each has its reason:
+   - `data/gtd_attachments`, the upload folder on the box. Moving the folder
+     is a separate deploy act. `GTD_ATTACHMENTS_DIR`, its environment
+     variable, stays for the same reason.
+   - the migration files in `infra/postgres/`, outside the walk.
+   - the three migration-history tests above, outside the walk.
+   - `TaskToolCards.tsx`, the alias map. The fence skips it for tokens, and
+     a second test checks that it spells only the 29 old tool names.
+6. **The client fence.** `test_the_client_carries_no_gtd_identifier` runs
+   the check `rg -l "GtdItem|Gtd[A-Z]|gtd_" workbench/control_plane/src`
+   and accepts only the alias map. `naming.test.ts` stays green.
+7. **Not renamed.** The agent's `config.json` description, its `gtd` tag and
+   the description in `routes/agent.py` stay. A member can read them in the
+   agent list, and they name the method. The `tasks_lens` key of `/version`
+   stays too. S8 PR 1 said S9 may drop it, but S9 moves no JSON field.
 
 ### S7 run record (2026-09-23, UTC)
 
@@ -1090,9 +1237,9 @@ flip (§6 step 10).**
       |
 10. S8 PR 1 merges (the code stops naming gtd_*)
       |
-11. INSERT INTO gtd_retirement_arm (armed_by, note) VALUES (...)
+11. the S8 PR 2 pre-flight (§5 S8): backup, and 216 (the estimate backfill) in the ledger
       |
-12. S8 PR 2 merges. Its migration (214 or later) calls the guard, drops, renames.
+12. S8 PR 2 merges. Migration 217 arms, calls the guard, drops. 48 and 52 rename.
       |
 13. \dt gtd_*  ->  nothing
 ```
@@ -1105,9 +1252,11 @@ root project owns its statuses. The root insert in migration 189 did not set
 only after `SELECT filename FROM schema_migrations WHERE filename LIKE '212_%'`
 returns one row.
 
-Step 11 is a human act. During the dev-phase window (CLAUDE.md §3a) an agent
-does it and reports the row in the same message. On 2026-10-01 it returns to
-the owner.
+**Step 11 changed on 2026-09-23.** It was a hand INSERT into the arm table.
+Migration 217 now writes the arm row, so the arm is reviewed code. Step 11 is
+the pre-flight that S8 PR 2 lists. During the dev-phase window (CLAUDE.md
+§3a) an agent runs it and reports the three results in the same message. On
+2026-10-01 the pre-flight returns to the owner.
 
 ## 7. Fences, in one table
 
@@ -1124,6 +1273,8 @@ the owner.
 | My Tasks and Projects share one task panel composition | the S6e source fence |
 | the rename prologues are guarded and not swept | `test_gtd_rename_upgrade.py` |
 | the drop is inert until armed and accounted for | `test_gtd_backfill.py` |
+| 217 drops exactly the planned set, and refuses a row it would lose | `test_gtd_backfill.py`, `live_ws39_s8d.py` |
+| no code names a `gtd_` table | `test_no_gtd_table_names.py` |
 | a work fact has one home, and My Tasks reads it (D77) | `test_projects_personal_s6f.py`, `live_ws39_s6f.py`, `sharedFields.test.ts` |
 | the strip draws no work fact, and the body draws them all (D77) | `itemDetail.test.ts` |
 | the lens never writes `time_estimate_mins`, and My Tasks never writes the shared Priority (D77, D76) | `lens.test.ts`, `sharedFields.test.ts`, `test_projects_personal_s6f.py` |

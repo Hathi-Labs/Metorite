@@ -20,7 +20,7 @@ import React from "react";
 
 // Granular observability: map the tool an agent is CURRENTLY calling to a lucide icon
 // shown on the agent (top-right badge). Ordered rules — first match wins, most
-// specific first — so any tool name (read_email, gtd_add_task, web_search, git_push…)
+// specific first — so any tool name (read_email, my_tasks_capture, web_search, git_push…)
 // resolves to a sensible icon, falling back to a generic wrench.
 type IconType = ThemedIcon;
 const TOOL_ICON_RULES: Array<[RegExp, IconType]> = [
@@ -31,7 +31,7 @@ const TOOL_ICON_RULES: Array<[RegExp, IconType]> = [
   [/git|commit|push|pull|branch|\bpr\b|merge/, themedIcon("GitBranch")],
   [/diagram|draw|chart|render|image|figure/, themedIcon("PenTool")],
   [/artifact|share|export|upload|publish/, themedIcon("Share2")],
-  [/task|gtd|todo|ticket|reclarify/, themedIcon("ListTodo")],
+  [/task|todo|ticket|reclarify/, themedIcon("ListTodo")],
   [/calendar|schedule|meeting|event|remind/, themedIcon("Calendar")],
   [/ask|question|clarify|confirm/, themedIcon("MessageCircleQuestion")],
   [/sql|database|postgres|\bdb\b|record/, themedIcon("Database")],

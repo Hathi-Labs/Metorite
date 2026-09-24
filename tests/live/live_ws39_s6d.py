@@ -100,10 +100,14 @@ async def main() -> None:
             "SELECT indexname FROM pg_indexes WHERE tablename = 'pm_tasks' "
             "AND indexname LIKE 'idx_pm_tasks_origin_%'"))).fetchall()}
         check("0.4 four origin indexes, once each", len(idx) == 4, str(sorted(idx)))
-        await db.execute(text(
-            "SELECT coalesce(k.task_id, k.gtd_item_id) FROM wa_commitments k "
-            "LIMIT 0"))
-        check("0.5 coalesce(task_id, gtd_item_id) parses", True)
+        # S8 PR 2 (migration 217) ran the contract half: the old column is gone.
+        await db.execute(text("SELECT k.task_id FROM wa_commitments k LIMIT 0"))
+        legacy = (await db.execute(text(
+            "SELECT count(*) FROM information_schema.columns "
+            "WHERE table_name = 'wa_commitments' AND column_name = 'gtd_item_id'"
+        ))).scalar()
+        check("0.5 the digest reads task_id alone (217 dropped the old column)",
+              legacy == 0, f"legacy={legacy}")
 
         # ── seed: two members in one org, one in another ─────────────────
         org = (await db.execute(text(

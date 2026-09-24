@@ -17,10 +17,11 @@ import {
   whereVisibilityHint,
   type ClarifyDisposition,
   type ClarifyProposal,
+  seedWeight,
 } from "../lib/clarify";
 import { apiClarifyPropose, apiSuggestTitle } from "../lib/api";
 import type { ConnectedProvider } from "../lib/mockData";
-import { Energy, GtdItem, GtdProject, Person, Target } from "../lib/types";
+import { Energy, MyTask, MyTasksProject, Person, Target } from "../lib/types";
 import { durationLabel, formatStatus, initials, originEmailHref, snoozeOptions } from "../lib/utils";
 import { SourceBadge } from "./SourceBadge";
 import { AttachmentChips } from "./AttachmentComposer";
@@ -101,7 +102,7 @@ export function ClarifyPanel({
   reclarify = false,
   onDone,
 }: {
-  item: GtdItem;
+  item: MyTask;
   /** Re-clarifying an already-processed task: seed from its CURRENT state, ask
    *  the server to preserve a SYNCED task's ClickUp binding, and lock the
    *  destination picker so the two-way sync target can't be moved. */
@@ -218,8 +219,18 @@ export function ClarifyPanel({
   const [energy, setEnergy] = useState<Energy>(proposal.energy ?? "medium");
   // Prioritization flags — AI-prefilled, user confirms (urgent is derived from
   // the due date, so it isn't a toggle here).
-  const [important, setImportant] = useState<boolean>(!!proposal.important);
-  const [leveraged, setLeveraged] = useState<boolean>(!!proposal.leveraged);
+  //
+  // 🔴 D78: Important and Leveraged are the TASK's shared answer now, and a
+  // PM may already have given it. The proposal is a keyword guess from the
+  // title, so it may only fill a gap: `seedWeight` starts from the task's
+  // own answer. Before D78 a wrong guess landed on my private overlay. Now
+  // it would erase a teammate's judgement for everyone.
+  const [important, setImportant] = useState<boolean>(
+    seedWeight(item, proposal).important,
+  );
+  const [leveraged, setLeveraged] = useState<boolean>(
+    seedWeight(item, proposal).leveraged,
+  );
   const [deepWork, setDeepWork] = useState<boolean>(!!proposal.deepWork);
   const [assignee, setAssignee] = useState<Person | null>(proposal.suggestedAssignee ?? null);
   const [dueAt, setDueAt] = useState("");
@@ -270,8 +281,8 @@ export function ClarifyPanel({
       setOutcome(sp.outcome ?? `${item.title} — done`);
       setContext(sp.context ?? "@computer");
       setEnergy(sp.energy ?? "medium");
-      setImportant(!!sp.important);
-      setLeveraged(!!sp.leveraged);
+      setImportant(seedWeight(item, sp).important);
+      setLeveraged(seedWeight(item, sp).leveraged);
       setDeepWork(!!sp.deepWork);
       setAssignee(sp.suggestedAssignee ?? null);
       if (sp.target) setDest(sp.target);
@@ -1354,7 +1365,7 @@ function ProjectSuggestBanner({
   onFile,
   onDismiss,
 }: {
-  project: GtdProject;
+  project: MyTasksProject;
   assignee: Person | null;
   onFile: () => void;
   onDismiss: () => void;
@@ -1568,7 +1579,7 @@ function LockedWhere({
 }: {
   dest: Target;
   providers: ConnectedProvider[];
-  selectedProject?: GtdProject;
+  selectedProject?: MyTasksProject;
   statuses: string[];
   status?: string;
   setStatus: (s: string) => void;

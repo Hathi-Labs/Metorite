@@ -14,6 +14,8 @@ import {
   type MatrixFlags,
   flagsForCell,
   flagsOf,
+  bulkFlagPatch,
+  BULK_FLAG_OPTIONS,
   flagsPatch,
   matrixOf,
   taskCell,
@@ -138,5 +140,49 @@ describe("taskCell", () => {
         }
       }
     }
+  });
+});
+
+describe("an edit writes only what changed (review 2026-09-24)", () => {
+  it("keeps a stored 3 when the task stays Important", () => {
+    // A pre-D78 Highest task edited to add Leveraged. Rewriting 3 as 2 would
+    // move it in every filter and merge that still reads the number.
+    expect(flagsPatch("both", { importance: 3, leveraged: false })).toEqual({
+      leveraged: true,
+    });
+  });
+
+  it("sends nothing when nothing changed", () => {
+    expect(flagsPatch("important", { importance: 2, leveraged: false })).toEqual({});
+  });
+
+  it("clears Important alone when only Important changed", () => {
+    expect(flagsPatch("leveraged", { importance: 3, leveraged: true })).toEqual({
+      importance: 0,
+    });
+  });
+
+  it("judges an unjudged task when the choice is Not flagged", () => {
+    // NULL is "nobody judged". Choosing "Not flagged" is a judgement, but it
+    // does not change the level, so it writes nothing either.
+    expect(flagsPatch("", { importance: null, leveraged: false })).toEqual({});
+  });
+});
+
+describe("the bulk bar sets ONE flag per action (review 2026-09-24)", () => {
+  it("never writes the other flag", () => {
+    expect(bulkFlagPatch("important:on")).toEqual({ importance: 2 });
+    expect(bulkFlagPatch("important:off")).toEqual({ importance: 0 });
+    expect(bulkFlagPatch("leveraged:on")).toEqual({ leveraged: true });
+    expect(bulkFlagPatch("leveraged:off")).toEqual({ leveraged: false });
+  });
+
+  it("offers exactly the four actions", () => {
+    expect(BULK_FLAG_OPTIONS.map((o) => o.value)).toEqual([
+      "important:on",
+      "important:off",
+      "leveraged:on",
+      "leveraged:off",
+    ]);
   });
 });

@@ -76,12 +76,48 @@ export function flagsOf(task: Pick<TaskRow, "importance" | "leveraged">): Matrix
   return "";
 }
 
-/** A choice → the task PATCH. Both fields, always: a choice states both. */
-export function flagsPatch(flags: MatrixFlags): { importance: number; leveraged: boolean } {
-  return {
-    importance: importanceFor(flags === "important" || flags === "both"),
-    leveraged: flags === "leveraged" || flags === "both",
-  };
+/**
+ * A choice → the task PATCH.
+ *
+ * With no `current` (a new task), both fields go. With the task's current
+ * row, only what CHANGED goes, and an Important task that stays Important
+ * keeps its stored value: a 3 from before D78 stays 3, because filters,
+ * merge and the chat tools still read the number. Review, 2026-09-24.
+ */
+export function flagsPatch(
+  flags: MatrixFlags,
+  current?: Pick<TaskRow, "importance" | "leveraged">,
+): { importance?: number; leveraged?: boolean } {
+  const important = flags === "important" || flags === "both";
+  const leveraged = flags === "leveraged" || flags === "both";
+  if (!current) return { importance: importanceFor(important), leveraged };
+  const out: { importance?: number; leveraged?: boolean } = {};
+  if (important !== Boolean(importantFromImportance(current.importance))) {
+    out.importance = importanceFor(important);
+  }
+  if (leveraged !== Boolean(current.leveraged)) out.leveraged = leveraged;
+  return out;
+}
+
+/**
+ * The bulk bar's priority actions. Each sets ONE flag and leaves the other
+ * alone: a selection is mixed, and "Leveraged" must not clear Important on
+ * every task that had it (review, 2026-09-24).
+ */
+export type BulkFlagAction = "important:on" | "important:off" | "leveraged:on" | "leveraged:off";
+
+export const BULK_FLAG_OPTIONS: readonly { value: BulkFlagAction; label: string }[] = [
+  { value: "important:on", label: "Mark important" },
+  { value: "important:off", label: "Clear important" },
+  { value: "leveraged:on", label: "Mark leveraged" },
+  { value: "leveraged:off", label: "Clear leveraged" },
+];
+
+export function bulkFlagPatch(action: BulkFlagAction): { importance?: number; leveraged?: boolean } {
+  const on = action.endsWith(":on");
+  return action.startsWith("important")
+    ? { importance: importanceFor(on) }
+    : { leveraged: on };
 }
 
 /**

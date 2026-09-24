@@ -25,8 +25,11 @@
 -- A member's `important = false` on a High task is NOT carried. One answer
 -- per task is the decision, and the shared answer was already High.
 --
--- Both updates bump `updated_at`, because the delta sync (168) pages on it.
--- Without the bump, an open client would never fetch the carried value.
+-- Neither update touches `updated_at`, the same call 216 makes. A bump
+-- would make every flagged task look freshly edited to the Analytics ageing
+-- bands and to every "recently updated" sort. The cost: a page left open
+-- across the deploy shows the old flags until it reloads. The deploy
+-- restarts the app, so that page reloads soon anyway.
 --
 -- ## Replay
 --
@@ -51,7 +54,7 @@ BEGIN
     END IF;
 
     UPDATE pm_tasks t
-       SET importance = 2, updated_at = now()
+       SET importance = 2
      WHERE (t.importance IS NULL OR t.importance < 2)
        AND EXISTS (SELECT 1 FROM pm_task_personal p
                     WHERE p.task_id = t.id
@@ -59,7 +62,7 @@ BEGIN
                       AND p.important IS TRUE);
 
     UPDATE pm_tasks t
-       SET leveraged = true, updated_at = now()
+       SET leveraged = true
      WHERE t.leveraged IS NOT TRUE
        AND EXISTS (SELECT 1 FROM pm_task_personal p
                     WHERE p.task_id = t.id

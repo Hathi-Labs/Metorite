@@ -418,7 +418,7 @@ async def remove_member(
 
     The row is kept because ~every user-scoped table in the schema references
     people by email (`apps.owner_email`, `app_audit.user_email`, chat sessions,
-    GTD items). Hard-deleting the identity would orphan all of it; what
+    tasks). Hard-deleting the identity would orphan all of it; what
     actually matters for access is that the member resolves to nothing, which
     the `removed` status guarantees.
     """
@@ -482,7 +482,7 @@ async def remove_member(
 #
 # ⚠️ **"Delete the identity" cannot mean "erase the address everywhere."** The
 # email address IS the join key across ~50 tables — `apps.owner_email`,
-# `gtd_items.user_id`, `workflows.owner_email`, `app_audit.user_email` — so
+# `pm_tasks.created_by`, `workflows.owner_email`, `app_audit.user_email` — so
 # scrubbing it is not a redaction, it is a deletion of the rows it keys. That
 # is why nothing here is *anonymised*: an anonymised `owner_email` would not
 # hide a person, it would orphan their apps. What a purge deletes is the
@@ -553,13 +553,10 @@ _CREDENTIAL_CASCADES: dict[str, tuple[str, ...]] = {
         "wa_group_summaries", "wa_labels", "wa_media", "wa_message_embeddings",
         "wa_messages", "wa_saved_replies", "wa_sync_log", "wa_templates",
     ),
-    # The SYNCED half of the GTD store. ⚠️ The ONLY cascade children in this
-    # whole map that carry a `user_id` of their own — everything above is
-    # keyed by `account_id` alone and is mirror-of-a-credential, nothing else.
-    # That is why these two are the only ones split across both lists below
-    # and counted individually rather than summarised: the same table also
-    # holds LOCAL rows the purge must not take.
-    "task_accounts": ("gtd_items", "gtd_projects", "gtd_waiting"),
+    # Nothing, since migration 217 (WS-39 S8 PR 2, 2026-09-23). The account
+    # used to cascade the SYNCED half of the retired task store. That store
+    # is dropped, and no table left in the schema hangs off this one.
+    "task_accounts": (),
 }
 
 #: **Deleted.** Enumerated from `infra/postgres/` by grepping for every column
@@ -598,28 +595,6 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # Credentials.
     _PersonRows("email_accounts", "email_accounts", "lower(user_id) = :email"),
     _PersonRows("whatsapp_accounts", "wa_accounts", "lower(user_id) = :email"),
-    # ⚠️ The SYNCED half of the GTD store, deleted EXPLICITLY and BEFORE the
-    # account it hangs off, for one reason: it has to be **counted on this
-    # side**. `task_accounts` cascades both tables, so leaving them implicit
-    # meant the response reported the destroyed rows as *kept* — 847 synced
-    # tasks answered `kept: {"tasks": 847}` while all 847 went with the
-    # credential, and `gtd_projects` appeared on neither list at all. A count
-    # that is wrong in the reassuring direction is worse than no count.
-    #
-    # `account_id IS NOT NULL` is the SYNCED half by construction: every
-    # writer stamps `account_id` from an account the same person owns
-    # (the retired `tasks/sync.py` bound `uid` to `account.user_id`; the
-    # account routes were owner-scoped), so "their rows with an account" and "the rows this
-    # person's accounts cascade" are the same set. The complement below keeps
-    # the LOCAL rows and is asserted to be exactly that — a complement.
-    # ⚠️ S8 PR 1 (2026-09-23) keeps these two rows ON PURPOSE. The tables
-    # still exist until S8 PR 2's migration drops them, and a purge must not
-    # leave a person's rows behind in the meantime. PR 2 removes them here,
-    # in the same PR as the drop (`my_tasks_cutover.md` §5 S8).
-    _PersonRows("synced_tasks", "gtd_items",
-                "lower(user_id) = :email AND account_id IS NOT NULL"),
-    _PersonRows("synced_projects", "gtd_projects",
-                "lower(user_id) = :email AND account_id IS NOT NULL"),
     _PersonRows("task_accounts", "task_accounts", "lower(user_id) = :email"),
     # Their own private conversations. ⚠️ `visibility = 'private'` is
     # load-bearing and is the line the rejected "purge their content too"
@@ -650,8 +625,9 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
 #: "Kept" is a claim about rows that are still there when the transaction
 #: commits, not about rows this list did not name — and a table can be
 #: emptied by a cascade three entries up. `shared_rooms` carries
-#: `visibility <> 'private'` for that reason and the two GTD entries carry
-#: `account_id IS NULL` for the same one. It is a structural fence, not a
+#: `visibility <> 'private'` for that reason. (The two task-store entries
+#: carried `account_id IS NULL` for the same one, until migration 217 dropped
+#: that store. D63 still holds: a purge deletes no `pm_tasks` row.) It is a structural fence, not a
 #: convention: `test_no_keep_clause_survives_a_cascade_on_the_delete_side`
 #: re-derives the cascade graph from the migrations and fails on any KEEP
 #: clause inside the blast radius that is not the exact complement of a
@@ -664,14 +640,6 @@ _PURGE_KEEPS: tuple[_PersonRows, ...] = (
                 "lower(user_id) = :email AND visibility <> 'private'"),
     _PersonRows("apps", "apps", "lower(owner_email) = :email"),
     _PersonRows("workflows", "workflows", "lower(owner_email) = :email"),
-    # ⚠️ Kept until S8 PR 2 drops the tables (see the note above).
-    # LOCAL only — the SYNCED rows go with `task_accounts` and are counted on
-    # the delete side. Without `account_id IS NULL` this number is a lie in
-    # the reassuring direction.
-    _PersonRows("tasks", "gtd_items",
-                "lower(user_id) = :email AND account_id IS NULL"),
-    _PersonRows("projects", "gtd_projects",
-                "lower(user_id) = :email AND account_id IS NULL"),
     _PersonRows("meetings", "meeting", "lower(owner_email) = :email"),
 )
 

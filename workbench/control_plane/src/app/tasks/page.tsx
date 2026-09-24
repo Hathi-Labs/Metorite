@@ -29,7 +29,7 @@ import { SchedulePopup } from "./components/SchedulePopup";
 import { EliminatePopup } from "./components/EliminatePopup";
 import { DelegatePopup } from "./components/DelegatePopup";
 
-// Task Manager (GTD) — 4-panel shell, mirroring the email app's layout
+// My Tasks — 4-panel shell, mirroring the email app's layout
 // philosophy: Lists/Contexts · Item list (+ capture) · Item detail · Assistant.
 // UI-first: runs entirely on mock data (lib/mockData.ts); the gateway `/tasks`
 // API is wired later. See project-docs/specs/task_manager_app.md.
@@ -102,7 +102,7 @@ export default function TasksPage() {
     void hydrate();
   }, [hydrate]);
 
-  // Tell the mobile bottom bar which GTD section is active (for its highlight).
+  // Tell the mobile bottom bar which My Tasks section is active (for its highlight).
   useEffect(() => {
     window.dispatchEvent(
       new CustomEvent("cc-tasks-section", { detail: selectedView }),

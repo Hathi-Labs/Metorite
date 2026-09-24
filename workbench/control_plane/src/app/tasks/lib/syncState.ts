@@ -1,7 +1,7 @@
 /**
  * The sync-state decision table for a /tasks item (BO-1b).
  *
- * A GTD row's `syncState` answers three questions the UI keeps asking, and
+ * A My Tasks row's `syncState` answers three questions the UI keeps asking, and
  * before this module each of them was a `=== "pending"` comparison written out
  * at the call site. That was survivable while there were three states; the
  * Action Broker's `awaiting_approval` is the fourth, and every un-migrated
@@ -26,7 +26,7 @@
 import type { MetaChip } from "@/lib/taskCard";
 
 /**
- * Every value the gateway may put in `gtd_items.sync_state`.
+ * Every value the old task store's `sync_state` column could hold.
  *
  * `pending` and `awaiting_approval` are NOT synonyms and the difference is who
  * is being waited on: `pending` is staged for the MEMBER's own push (nothing

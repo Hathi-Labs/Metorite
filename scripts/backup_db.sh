@@ -177,14 +177,16 @@ say "Manifest"
   echo "databases:        $(echo "$DBS" | tr '\n' ' ')"
   echo ""
   echo "# anchor row counts (a restore that does not reproduce these is wrong)"
-  # The names must be REAL tables. Two of the original five were not
-  # (`email_message`, `gtd_task`; the tables are `email_messages` and
-  # `gtd_items`), so they printed "n/a" on every backup — and "n/a" reads as
+  # The names must be REAL tables. Two of the original five were not (the
+  # email one lacked its plural, and the task one named no table at all), so
+  # they printed "n/a" on every backup — and "n/a" reads as
   # benign. A restore could have lost the entire email mirror, the largest
   # dataset here, without contradicting a single anchor. A wrong anchor is
   # worse than no anchor: it occupies the slot where the check should be.
   # So an unresolvable name is now reported as MISSING, loudly.
-  for t in app_user email_messages gtd_items meeting agent_run; do
+  # The task anchor is `pm_tasks`, the one task store (D53). Migration 217
+  # dropped the retired store it used to name (WS-39 S8, 2026-09-23).
+  for t in app_user email_messages pm_tasks meeting agent_run; do
     if ! pg psql -U "$PG_USER" -d "$APP_DB" -tAc \
          "select to_regclass('public.$t')" 2>/dev/null | grep -q .; then
       printf "%-20s %s\n" "$t:" "MISSING — anchor names a table that does not exist"

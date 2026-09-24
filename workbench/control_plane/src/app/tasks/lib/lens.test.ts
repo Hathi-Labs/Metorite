@@ -9,7 +9,7 @@
  * There are two structural claims here and they are the reason the file is
  * worth more than its example cases:
  *
- *   1. **Every `GtdItem` field is accounted for.** The test reads `types.ts`
+ *   1. **Every `MyTask` field is accounted for.** The test reads `types.ts`
  *      itself and requires each field to be either produced by `mapLensItem`
  *      or named in `UNMAPPED` with a reason. §13.4a's warning is exact — "a
  *      field with no home does not fail loudly at the cutover, it writes a 200
@@ -156,25 +156,25 @@ afterEach(() => vi.restoreAllMocks());
 
 // ── 1. The structural fence ─────────────────────────────────────────────────
 
-describe("every GtdItem field has a home (§13.4a)", () => {
+describe("every MyTask field has a home (§13.4a)", () => {
   const types = readFileSync(
     fileURLToPath(new URL("./types.ts", import.meta.url)),
     "utf-8",
   );
 
-  /** Top-level field names of `interface GtdItem`, read from the source. */
-  function gtdItemFields(): string[] {
-    const start = types.indexOf("export interface GtdItem {");
+  /** Top-level field names of `interface MyTask`, read from the source. */
+  function myTaskFields(): string[] {
+    const start = types.indexOf("export interface MyTask {");
     expect(start).toBeGreaterThan(-1);
     const body = types.slice(start, types.indexOf("\n}", start));
-    // Two spaces of indent = a field of GtdItem itself. `origin`'s nested
+    // Two spaces of indent = a field of MyTask itself. `origin`'s nested
     // members sit at four and are deliberately not counted: `origin` is one
     // decision, not six.
     return [...body.matchAll(/^ {2}(\w+)\??:/gm)].map((m) => m[1]);
   }
 
   it("is mapped, or listed as deliberately unmapped with a reason", () => {
-    const fields = gtdItemFields();
+    const fields = myTaskFields();
     // Sanity: if the regex ever stops matching, an empty list would make this
     // whole file pass while checking nothing.
     expect(fields.length).toBeGreaterThan(30);
@@ -188,7 +188,7 @@ describe("every GtdItem field has a home (§13.4a)", () => {
 
   function errorFor(orphans: string[]): string {
     return (
-      `GtdItem field(s) ${orphans.join(", ")} are neither mapped by ` +
+      `MyTask field(s) ${orphans.join(", ")} are neither mapped by ` +
       "mapLensItem nor listed in UNMAPPED. A field with no pm_* home does " +
       "not fail at the cutover — it writes a 200 and disappears. Give it a " +
       "home in task_manager_app.md §13.4a, or add it to UNMAPPED with the " +
@@ -207,12 +207,12 @@ describe("every GtdItem field has a home (§13.4a)", () => {
     ).toEqual([]);
   });
 
-  it("names only real GtdItem fields in UNMAPPED", () => {
-    const fields = new Set(gtdItemFields());
+  it("names only real MyTask fields in UNMAPPED", () => {
+    const fields = new Set(myTaskFields());
     const ghosts = Object.keys(UNMAPPED).filter((f) => !fields.has(f));
     expect(
       ghosts,
-      `UNMAPPED names ${ghosts.join(", ")}, which GtdItem does not have — ` +
+      `UNMAPPED names ${ghosts.join(", ")}, which MyTask does not have — ` +
         "an excuse for a field that no longer exists is an excuse that will " +
         "cover the next one silently.",
     ).toEqual([]);
@@ -547,7 +547,7 @@ describe("api.ts reaches the one store only", () => {
   ].map((m) => m[2]);
 
   /**
-   * The `/tasks` routes S8 PR 1 deleted, or that only ever read `gtd_items`.
+   * The `/tasks` routes S8 PR 1 deleted, or that only ever read the old store.
    * The prefixes are matched on the literal part of each path, so an id or a
    * query string cannot hide one.
    */
@@ -951,7 +951,7 @@ describe("promotion — the lens reaching into the company board", () => {
       restore();
     }
     expect(calls[0].url).toContain("nodes");
-    // ⚠️ NOT `/projects` — under the old store that listed `gtd_projects`, one
+    // ⚠️ NOT `/projects` — under the old store that listed the local projects, one
     // member's private list. A promote destination can only be a real project.
     expect(calls[0].url).not.toMatch(/\/projects(\?|$)/);
   });

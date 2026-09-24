@@ -9,7 +9,7 @@ Both executors used to open every run with::
         os.environ["ACB_AGENT_USER_EMAIL"] = _mu     # never cleared
 
 and the four tool clients that call the gateway on an agent's behalf
-(email-assistant, crm, whatsapp-assistant, skill-task-gtd) each read that env
+(email-assistant, crm, whatsapp-assistant, skill-my-tasks) each read that env
 var as their fallback answer to "who am I acting for". Two things follow, and
 this file measured both against the real ``run_agent`` before fixing them:
 
@@ -413,7 +413,7 @@ FORMER_ENV_USERS = [
     "apps/agents/agent-email-assistant/agents.py",
     "apps/agents/agent-crm/agents.py",
     "apps/agents/agent-whatsapp-assistant/agents.py",
-    "apps/skills/skill-task-gtd/skill_task_gtd/core.py",
+    "apps/skills/skill-my-tasks/skill_my_tasks/core.py",
 ]
 
 

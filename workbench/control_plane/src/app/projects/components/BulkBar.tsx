@@ -28,7 +28,7 @@ import { TagPicker } from "./TagPicker";
 
 import type { StatusRow, TagRow } from "../lib/api";
 import { labelWith } from "../lib/grouping";
-import { MATRIX_FLAG_OPTIONS } from "../lib/matrix";
+import { BULK_FLAG_OPTIONS } from "../lib/matrix";
 import { type BulkDraft, EMPTY_DRAFT, buildRequest } from "../lib/selection";
 
 /**
@@ -43,14 +43,11 @@ const OFF_DEFAULT = "border-primary/50 bg-primary/10 text-primary";
 const AT_DEFAULT = "";
 
 /**
- * The priority picker's rows (D78): the matrix's two stated inputs, from
- * `MATRIX_FLAG_OPTIONS` so the table cell and this bar cannot disagree. The
- * empty row is the prompt "leave alone", so "Not flagged" becomes `none`.
+ * The priority picker's rows (D78). Each sets or clears ONE flag, because a
+ * selection is mixed and the bar cannot show one current state. The empty
+ * row is the prompt, and it leaves every task alone.
  */
-const PRIORITY = [
-  { value: "", label: "Priority…" },
-  ...MATRIX_FLAG_OPTIONS.map(({ value, label }) => ({ value: value || "none", label })),
-];
+const PRIORITY = [{ value: "", label: "Priority…" }, ...BULK_FLAG_OPTIONS];
 
 interface Props {
   count: number;

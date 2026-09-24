@@ -1,8 +1,8 @@
 /**
  * The task card's vocabulary — shared by /tasks and /projects (WS-27s).
  *
- * Two apps in this workspace draw a task. `/tasks` is the GTD surface over
- * `gtd_items`; `/projects` is the project-management surface over `pm_tasks`.
+ * Two apps in this workspace draw a task. `/tasks` is the My Tasks surface over
+ * the old task store; `/projects` is the project-management surface over `pm_tasks`.
  * They are different stores with different rules, and D-PM-6 has `/tasks`
  * retiring onto `pm_tasks` at WS-27h — so a member will use both, sometimes on
  * the same day, and a task should not look like a different KIND of thing
@@ -10,9 +10,9 @@
  *
  * **What is shared is the vocabulary, not the component.** Porting
  * `/tasks`'s `TaskCard` wholesale was the obvious move and the wrong one: it is
- * bound to `useTaskStore` and to `GtdItem`'s fields — `energy`, `deepWork`,
+ * bound to `useTaskStore` and to `MyTask`'s fields — `energy`, `deepWork`,
  * `disposition` — none of which `pm_tasks` has or should grow. It would also
- * die with `gtd_items` at WS-27h, taking the Projects board with it. So what
+ * die with the old task store at WS-27h, taking the Projects board with it. So what
  * moves here is the part that is genuinely the same on both sides: how a
  * duration reads, what counts as overdue, and which chips a task earns.
  *

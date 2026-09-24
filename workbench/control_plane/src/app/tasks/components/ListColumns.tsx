@@ -1,7 +1,7 @@
 "use client";
 
 import Icon from "@/components/Icon";
-import { GtdItem } from "../lib/types";
+import { MyTask } from "../lib/types";
 import { useTaskStore } from "../lib/taskStore";
 import { durationLabel, isOverdue, relativeTime } from "../lib/utils";
 import { PriorityBadge } from "./PriorityControls";
@@ -68,7 +68,7 @@ function ModePill({
   item,
   urgentWindowHours,
 }: {
-  item: GtdItem;
+  item: MyTask;
   urgentWindowHours?: number;
 }) {
   const openSchedule = useTaskStore((s) => s.openSchedule);
@@ -128,7 +128,7 @@ export function ColumnCell({
   urgentWindowHours,
 }: {
   col: ColumnDef;
-  item: GtdItem;
+  item: MyTask;
   urgentWindowHours?: number;
 }) {
   return (
@@ -144,7 +144,7 @@ function CellBody({
   urgentWindowHours,
 }: {
   col: ColumnDef;
-  item: GtdItem;
+  item: MyTask;
   urgentWindowHours?: number;
 }) {
   switch (col.key) {

@@ -27,7 +27,7 @@ import {
 } from "@/lib/selection";
 
 import type { TaskRow } from "./api";
-import { type MatrixFlags, flagsPatch } from "./matrix";
+import { type BulkFlagAction, bulkFlagPatch } from "./matrix";
 import { type Filters } from "./grouping";
 
 export { allSelected, clickSelect, prune, range, toggle };
@@ -65,9 +65,9 @@ export function visibleIds(groups: { tasks: TaskRow[] }[]): string[] {
 
 export interface BulkDraft {
   status: string;
-  /** D78 — the priority flags to set on every selected task. `""` leaves them
-   *  alone, `"none"` clears both, and the rest are `MatrixFlags`. */
-  priority: "" | "none" | Exclude<MatrixFlags, "">;
+  /** D78 — one priority flag to set or clear on every selected task. `""`
+   *  leaves both alone. Each action touches ONE flag (`BULK_FLAG_OPTIONS`). */
+  priority: "" | BulkFlagAction;
   assigneeAdd: string;
   assigneeRemove: string;
   tagAdd: string;
@@ -108,11 +108,9 @@ export function buildRequest(
 
   const patch: Record<string, unknown> = {};
   if (draft.status) patch.status = draft.status;
-  // D78 — `""` is "leave it alone". "Not flagged" is its own value, `"none"`,
-  // so an untouched box can never clear the flags of every selected task.
-  if (draft.priority !== "") {
-    Object.assign(patch, flagsPatch(draft.priority === "none" ? "" : draft.priority));
-  }
+  // D78 — `""` is "leave it alone". Each action writes ONE flag, so marking
+  // a mixed selection Leveraged never clears anybody's Important.
+  if (draft.priority !== "") Object.assign(patch, bulkFlagPatch(draft.priority));
 
   const request: BulkRequest = { task_ids: [...ids] };
   if (Object.keys(patch).length) request.patch = patch;

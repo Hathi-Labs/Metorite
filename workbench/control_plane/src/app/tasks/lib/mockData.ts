@@ -1,9 +1,9 @@
-// Mock GTD data for the UI-first build. Mirrors the demo-data pattern used by
+// Mock My Tasks data for the UI-first build. Mirrors the demo-data pattern used by
 // the email app (lib/mockData.ts): bundled sample data so the /tasks UI is
 // fully explorable with no backend. When the gateway `/tasks` API lands, the
 // store swaps these for live data; nothing else changes.
 
-import { GtdContext, GtdItem, GtdProject, Person, ProviderKind, Source } from "./types";
+import { TaskContext, MyTask, MyTasksProject, Person, ProviderKind, Source } from "./types";
 
 /** Where a clarified task can be stored — Local, or a connected PM tool.
  *  Stands in for the connected `task_accounts` (§4) until integrations land. */
@@ -41,7 +41,7 @@ export const MOCK_PEOPLE: Person[] = [
   { name: "Meera", email: "meera@fracktal.in", accent: "accent" },
 ];
 
-export const MOCK_CONTEXTS: GtdContext[] = [
+export const MOCK_CONTEXTS: TaskContext[] = [
   { name: "@computer", icon: "Monitor" },
   { name: "@calls", icon: "Phone" },
   { name: "@errands", icon: "Car" },
@@ -50,7 +50,7 @@ export const MOCK_CONTEXTS: GtdContext[] = [
   { name: "@agenda", icon: "Users" },
 ];
 
-export const MOCK_PROJECTS: GtdProject[] = [
+export const MOCK_PROJECTS: MyTasksProject[] = [
   {
     id: "p1",
     source: "SYNCED",
@@ -141,7 +141,7 @@ export const MOCK_PROJECTS: GtdProject[] = [
 const now = Date.now();
 const iso = (offsetHours: number) => new Date(now + offsetHours * 3600_000).toISOString();
 
-export const MOCK_ITEMS: GtdItem[] = [
+export const MOCK_ITEMS: MyTask[] = [
   // ── INBOX (unclarified captures) ─────────────────────────────────────────
   {
     id: "i0", source: "LOCAL", provider: "local",
@@ -298,7 +298,7 @@ export const MOCK_ITEMS: GtdItem[] = [
 
 /** A curated subset of David Allen's Incompletion Trigger List — memory-joggers
  *  shown during a mind sweep to help pull open loops out of your head. */
-export const GTD_TRIGGERS: string[] = [
+export const CAPTURE_TRIGGERS: string[] = [
   "Projects started, not finished",
   "Projects to start",
   "Promises to others",

@@ -16,7 +16,7 @@ import {
   isOverdue,
   relativeTime,
 } from "../lib/utils";
-import { Disposition, Energy, GtdItem, Person } from "../lib/types";
+import { Disposition, Energy, MyTask, Person } from "../lib/types";
 import { syncBadge } from "../lib/syncState";
 import { TaskMeta } from "@/components/TaskMeta";
 // S6e — the ONE task body, hosted here under the lens (my_tasks_cutover.md
@@ -192,7 +192,7 @@ function LensBody({
   focused,
   strip,
 }: {
-  item: GtdItem;
+  item: MyTask;
   focused?: boolean;
   strip: React.ReactNode;
 }) {
@@ -200,6 +200,8 @@ function LensBody({
   const items = useTaskStore((s) => s.items);
   const selectItem = useTaskStore((s) => s.selectItem);
   const refreshItem = useTaskStore((s) => s.refreshItem);
+  // D78: the body's Priority level uses my Urgent window, like my list.
+  const urgentWindowHours = useTaskStore((s) => s.settings.urgentWindowHours);
   // The overlay is `full` on a desktop and the whole screen on a phone; two
   // columns at 390px is two unreadable columns (measured by the S6e rig).
   const { isMobile } = useViewMode();
@@ -267,6 +269,7 @@ function LensBody({
       tags={tags}
       twoColumn={!!focused && !isMobile}
       above={strip}
+      urgentWindowHours={urgentWindowHours}
       onChanged={(fresh) => {
         setTask(fresh);
         void refreshItem(item.id);
@@ -292,7 +295,7 @@ export function TaskDetail({
   onMaximize,
   onClose,
 }: {
-  item: GtdItem;
+  item: MyTask;
   backend: string;
   /** true when rendered inside the full-page focus overlay (hides the
    *  expand button; wider content handled by the modal wrapper). */
@@ -981,7 +984,7 @@ export function TaskDetail({
 
 // ── Local subtasks — editable children (add / complete / open) ──────────────
 
-function LocalSubtasksSection({ item }: { item: GtdItem }) {
+function LocalSubtasksSection({ item }: { item: MyTask }) {
   const backend = useTaskStore((s) => s.backend);
   const loadSubtasks = useTaskStore((s) => s.loadSubtasks);
   const addSubtasks = useTaskStore((s) => s.addSubtasks);
@@ -989,7 +992,7 @@ function LocalSubtasksSection({ item }: { item: GtdItem }) {
   const openFocus = useTaskStore((s) => s.openFocus);
   // Loading starts true (this section is keyed by item.id at the call site, so
   // it remounts per task — no synchronous setState in the effect to reset it).
-  const [subs, setSubs] = useState<GtdItem[]>([]);
+  const [subs, setSubs] = useState<MyTask[]>([]);
   const [loading, setLoading] = useState(backend === "live");
   const [adding, setAdding] = useState("");
 
@@ -1011,7 +1014,7 @@ function LocalSubtasksSection({ item }: { item: GtdItem }) {
     setSubs(rows);
   };
 
-  const toggle = (sub: GtdItem) => {
+  const toggle = (sub: MyTask) => {
     const next = sub.disposition === "DONE" ? "NEXT" : "DONE";
     // Optimistic local flip; quickDispose persists the disposition change
     // (and back-syncs a synced child's completion to ClickUp).
@@ -1463,7 +1466,7 @@ function StatusPicker({
   item,
   onPick,
 }: {
-  item: GtdItem;
+  item: MyTask;
   onPick: (d: Disposition) => void;
 }) {
   const [open, setOpen] = useState(false);

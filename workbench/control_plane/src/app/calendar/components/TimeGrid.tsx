@@ -6,7 +6,7 @@ import {
   type EnergyWindow,
   type DayTemplate,
 } from "@/app/tasks/lib/api";
-import { GtdItem } from "@/app/tasks/lib/types";
+import { MyTask } from "@/app/tasks/lib/types";
 import {
   sameDay,
   blocksForDay,
@@ -60,7 +60,7 @@ export function TimeGrid({
   onDelete,
 }: {
   days: Date[];
-  items: GtdItem[];
+  items: MyTask[];
   now: Date;
   /** Grid extent — always the full day (0…24), Google-Calendar style. */
   dayStart: number;
@@ -81,20 +81,20 @@ export function TimeGrid({
   outcomeById: OutcomeById;
   onToggleOneThing: (id: string) => void;
   /** enter the full-screen Focus room for a block. */
-  onFocusMode: (item: GtdItem) => void;
+  onFocusMode: (item: MyTask) => void;
   onOpen: (id: string) => void;
-  onUnschedule: (item: GtdItem) => void;
-  onComplete: (item: GtdItem) => void;
+  onUnschedule: (item: MyTask) => void;
+  onComplete: (item: MyTask) => void;
   reschedule: (id: string, start: Date, end: Date, label?: string) => void;
   /** Tap an empty grid slot → schedule a task at that snapped time. */
   onPickSlot: (day: Date, at: Date) => void;
   /** Pin (false) / unpin (true) a block so the auto-mover skips / includes it. */
-  onSetFlexible: (item: GtdItem, flexible: boolean) => void;
+  onSetFlexible: (item: MyTask, flexible: boolean) => void;
   /** "Reschedule…" → the global Schedule popup (date/time picker + Unschedule). */
   onReschedulePopup: (id: string) => void;
   /** "Move to next free slot" — re-timebox into today's first opening (the
    *  one-gesture fix for an overdue block). */
-  onMoveToFree: (item: GtdItem) => void;
+  onMoveToFree: (item: MyTask) => void;
   /** "Delete task…" → the store's confirm-first delete flow. */
   onDelete: (id: string) => void;
 }) {
@@ -110,12 +110,12 @@ export function TimeGrid({
   const [ctx, setCtx] = useState<{
     x: number;
     y: number;
-    item: GtdItem;
+    item: MyTask;
     day: Date;
   } | null>(null);
   const lpTimer = useRef<number | null>(null);
   const lpFired = useRef(false);
-  const startLongPress = (e: React.PointerEvent, item: GtdItem, day: Date) => {
+  const startLongPress = (e: React.PointerEvent, item: MyTask, day: Date) => {
     if (e.pointerType === "mouse") return; // mouse has real right-click
     const { clientX, clientY } = e;
     lpFired.current = false;

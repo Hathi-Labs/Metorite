@@ -371,7 +371,7 @@ function MobileBottomNavInner({
   // external open control, so a tab could not raise it.
   const isProjectsPage = pathname?.startsWith("/projects") ?? false;
 
-  // Tasks: the bottom bar reflects which GTD section you're in. The page emits
+  // Tasks: the bottom bar reflects which My Tasks section you're in. The page emits
   // `cc-tasks-section` whenever the active view changes.
   const [tasksSection, setTasksSection] = useState("inbox");
   useEffect(() => {

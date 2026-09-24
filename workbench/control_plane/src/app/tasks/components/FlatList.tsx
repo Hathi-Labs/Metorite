@@ -24,7 +24,7 @@ import { useMemo, useState } from "react";
 
 import { viewQuickAdd } from "../lib/quickAdd";
 import { useTaskStore } from "../lib/taskStore";
-import { GtdItem, ViewKey } from "../lib/types";
+import { MyTask, ViewKey } from "../lib/types";
 import { TaskCard } from "./TaskCard";
 
 export function FlatList({
@@ -32,7 +32,7 @@ export function FlatList({
   view,
   showPriority = false,
 }: {
-  items: GtdItem[];
+  items: MyTask[];
   view: ViewKey;
   showPriority?: boolean;
 }) {
