@@ -19,6 +19,11 @@ export function UndoToast() {
   const undoSnapshot = useTaskStore((s) => s.undoSnapshot);
   const undoLastChange = useTaskStore((s) => s.undoLastChange);
   const dismissUndo = useTaskStore((s) => s.dismissUndo);
+  const openFocus = useTaskStore((s) => s.openFocus);
+  // A decision that also wrote the shared task (a move, a reassign or a due
+  // date) cannot be reversed from here. Offer the task instead of an Undo
+  // that would only take back half of it.
+  const sharedId = undoSnapshot?.sharedChangeTaskId;
 
   // Auto-dismiss after a few seconds (async → effect-safe). Dismiss also
   // finalizes a pending soft delete, so this is the point deletion becomes
@@ -50,7 +55,7 @@ export function UndoToast() {
    * it is the outstanding work, not a missing wire.
    */
   useEffect(() => {
-    if (!undoSnapshot) return;
+    if (!undoSnapshot || sharedId) return;
     const onKey = (e: KeyboardEvent) => {
       if (isTypingTarget(e.target as HTMLElement | null)) return;
       const bare = !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === "u" || e.key === "U");
@@ -61,7 +66,7 @@ export function UndoToast() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [undoSnapshot, undoLastChange]);
+  }, [undoSnapshot, undoLastChange, sharedId]);
 
   if (!undoSnapshot) return null;
 
@@ -70,6 +75,20 @@ export function UndoToast() {
       <span className="whitespace-nowrap text-sm text-foreground">
         {undoSnapshot.label}
       </span>
+      {sharedId ? (
+        <button
+          type="button"
+          onClick={() => {
+            dismissUndo();
+            openFocus(sharedId);
+          }}
+          title="This changed the task on its board. Open it to change it back."
+          className="tech-transition inline-flex items-center gap-1 whitespace-nowrap text-sm font-semibold text-primary hover:underline"
+        >
+          <Icon name="ExternalLink" className="h-3.5 w-3.5" />
+          Open task
+        </button>
+      ) : (
       <button
         type="button"
         onClick={undoLastChange}
@@ -81,6 +100,7 @@ export function UndoToast() {
           Ctrl+Z
         </kbd>
       </button>
+      )}
       <Button variant="text" size="none" radius="keep" layout="" type="button" onClick={dismissUndo} aria-label="Dismiss" className="rounded-md p-0.5">
         <Icon name="X" className="h-3.5 w-3.5" />
       </Button>
