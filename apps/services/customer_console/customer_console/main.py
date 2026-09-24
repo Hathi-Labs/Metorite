@@ -7564,8 +7564,16 @@ def _serving_prelude(
     org_id: str,
     caller: Any,
     client_ref: str | None,
+    structured_refusal: bool = False,
 ) -> tuple[list[ResolvedTier], dict[str, router_mod.Credential | None], dict[str, str]]:
     """Resolve the chain, load its keys and verbs, and stand the three walls.
+
+    ⚠️ ``structured_refusal`` shapes the unknown-tier 400 as
+    ``{"reason": "tier_unknown", "error": <sentence>}``. Only the decide door
+    sets it (CP-13c). Its tenant facade must tell "nobody bound the tier"
+    (fall back) from "the request is wrong" (a bug) without reading prose.
+    The image and speak doors keep today's plain-sentence detail, because
+    their wire shape does not change in this slice.
 
     🔴 **ONE prelude for the image, speak and decide doors.** The transcribe
     route wrote this shape first and the chat route wrote it before that. A
@@ -7592,9 +7600,14 @@ def _serving_prelude(
         try:
             chain = resolve_chain(conn, tier, task)
         except TierUnknown:
+            sentence = f"no binding for tier {tier!r} on task {task!r}; name a tier, not a model"
             unknown_tier = HTTPException(
                 status_code=400,
-                detail=(f"no binding for tier {tier!r} on task {task!r}; name a tier, not a model"),
+                detail=(
+                    {"reason": REFUSAL_TIER_UNKNOWN, "error": sentence}
+                    if structured_refusal
+                    else sentence
+                ),
             )
 
         if unknown_tier is None:
@@ -7938,6 +7951,12 @@ def audio_speech(req: SpeechRequest, caller: ServingCaller) -> Response:
 # tier and installs the key (CP-13b). The key is the owner's act (§6.0 B1).
 
 
+#: The ``reason`` code of a clause-13 refusal on the decide door. It is a
+#: wire code for the tenant facade, and NOT a ``usage_event`` refusal reason:
+#: clause 13 refuses before anything resolves, so it writes no row.
+DECIDE_INVALID_REQUEST = "invalid_request"
+
+
 @app.post("/v1/decide")
 def decide(req: DecideRequest, caller: ServingCaller) -> dict[str, Any]:
     """Answer typed questions about a state, gate the call, and meter tokens.
@@ -7972,8 +7991,13 @@ def decide(req: DecideRequest, caller: ServingCaller) -> dict[str, Any]:
     """
     rule = decide_refusal(req)
     if rule is not None:
-        # Refused BEFORE anything is resolved or spent (clause 13).
-        raise HTTPException(status_code=400, detail=rule)
+        # Refused BEFORE anything is resolved or spent (clause 13). The
+        # reason is a CODE, so the tenant facade never reads the sentence
+        # (CP-13c). The sentence rides beside it for a person.
+        raise HTTPException(
+            status_code=400,
+            detail={"reason": DECIDE_INVALID_REQUEST, "error": rule},
+        )
 
     org_id = caller.organization_id
     attempts, credentials, invocations = _serving_prelude(
@@ -7982,6 +8006,7 @@ def decide(req: DecideRequest, caller: ServingCaller) -> dict[str, Any]:
         org_id=org_id,
         caller=caller,
         client_ref=req.client_ref,
+        structured_refusal=True,
     )
     questions = questions_of(req)
     # H-85: minted BEFORE the call, so the handler's unreadable-body alarm

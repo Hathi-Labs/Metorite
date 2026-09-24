@@ -186,8 +186,9 @@ line — never reclaim a number by deleting the other entry.
   `cp13a-decide` and `cp13b-console`).
   `rg -n 'decide/try' apps/services/customer_console/customer_console/operator_roles.py`
   → no hit means CP-13b has not reached `main` yet.
-  `rg -n 'def decide' packages/acb_llm/` → no hit means CP-13c has not
-  landed.
+  CP-13c is BUILT (2026-09-24, branch `cp13c-decide-client`).
+  `rg -n 'async def decide' packages/acb_llm/acb_llm/decide.py` → no hit
+  means CP-13c has not reached `main` yet. CP-13d is the part still open.
 - **Why:** owner decision 2026-09-23 (D75). The owner chose TypeSafe's Jev for
   fast typed decisions, and asked for the Operator Console first.
 - **Do this in order:** CP-13a, then CP-13b, then CP-13c, then CP-13d. Build
@@ -196,8 +197,9 @@ line — never reclaim a number by deleting the other entry.
   the binding on `/tiers`. The owner sets the price (H-42).
 - ⚠️ **Three fences break by design.** Update them in the same PR. §6A.14
   CP-13a names them, and CP-13d names two more.
-- ⚠️ **CP-13c needs H-152's tenant slice.** The client presents the per-box
-  deployment key, and never the one organization key.
+- ✅ **CP-13c reuses H-152's tenant slice (#406).** The client takes its key
+  from `router_credential()`, so a shared box presents the per-box
+  deployment key.
 - 🔴 **Do not set `DECIDE_ENABLED` on a live box.** It is owner-only, and
   the §3a window does not open it (H-166).
 - ⚠️ **CP-13a took migration `033`** (`033_decide_task.sql`). Check it
@@ -3057,6 +3059,12 @@ line — never reclaim a number by deleting the other entry.
   nothing, by design.
 - ⚠️ **The per-org billing pages still read the org key**, so retiring that
   variable entirely is a separate move. `seats.py` records which reads stay.
+- ⚠️ **Orchestrator agent completions never send `X-CC-Member`.**
+  `orchestrator/agents.py:437` stamps only `X-CC-Agent` and `X-CC-Source`,
+  and nothing calls `member_proof.sign_member`. So on a box with
+  `CUSTOMER_CONSOLE_ROUTER_USES_DEPLOYMENT_KEY` set and no org key,
+  `chat_completion_on_console` refuses every agent completion. The CP-13c
+  audit found this on 2026-09-24.
 - **Fences:** `tests/unit/test_router_deployment_arm.py` (12) ·
   `tests/unit/test_console_router_client.py` (5 new).
 - **Authority:** owner directive, 2026-09-22 — *"you are automatically
