@@ -478,6 +478,25 @@ select optgroup {
   --tw-prose-td-borders: var(--border);
 }
 
+/* Inline code in prose looks like inline code in the chat
+   (`MarkdownBody`'s `code`): a token-filled pill, no quote marks. The
+   typography plugin draws a backtick before and after every inline code
+   with `::before` / `::after` content, and that content survived
+   `.cc-prose` (S8 fix round 5). Fenced code keeps the plain `pre` box. */
+.cc-prose :where(code)::before,
+.cc-prose :where(code)::after {
+  content: none;
+}
+.cc-prose :where(:not(pre) > code) {
+  background: var(--secondary);
+  color: var(--foreground);
+  border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  border-radius: calc(var(--radius) - 4px);
+  padding: 0.125rem 0.375rem;
+  font-weight: 400;
+  font-size: 0.82em;
+}
+
 /* Material-style state layer: an overlay of the control's own text colour, so
    it works on any variant without knowing that variant's background. Themes
    leaving --control-state-layer at 0 render nothing and fall back to the

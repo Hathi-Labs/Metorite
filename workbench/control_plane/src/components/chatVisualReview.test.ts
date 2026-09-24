@@ -74,6 +74,15 @@ describe("prose follows the theme", () => {
     expect(css).toContain("--tw-prose-pre-code: var(--foreground)");
   });
 
+  it("inline code in prose has no quote marks (fix round 5)", () => {
+    const css = read("app/globals.css");
+    expect(css).toMatch(
+      /\.cc-prose :where\(code\)::before,\s*\.cc-prose :where\(code\)::after \{\s*content: none;/,
+    );
+    const pill = css.slice(css.indexOf(".cc-prose :where(:not(pre) > code) {"));
+    expect(pill.slice(0, pill.indexOf("}"))).toContain("background: var(--secondary)");
+  });
+
   it("globals.css points the prose colours at tokens", () => {
     const css = read("app/globals.css");
     const block = css.slice(css.indexOf(".cc-prose {"), css.indexOf("}", css.indexOf(".cc-prose {")));
@@ -224,7 +233,7 @@ describe("narrow surfaces", () => {
     expect(src).toContain("order-3 flex w-full flex-wrap items-center gap-2 sm:order-2 sm:w-auto");
   });
 
-  it("a chat table fits its box, or scrolls with a visible bar (fix round 4)", () => {
+  it("a chat table keeps words whole and scrolls with a visible bar (fix round 5)", () => {
     const html = renderToStaticMarkup(
       createElement(GenerativeUINode, {
         spec: {
@@ -235,15 +244,16 @@ describe("narrow surfaces", () => {
     );
     // The box scrolls, shows a bar, and sizes its cells from itself.
     expect(html).toMatch(/class="@container [^"]*overflow-x-auto[^"]*scrollbar-thin/);
-    // Every body cell may break a long word, so the table can fit.
-    const cells = [...html.matchAll(/<td class="([^"]*)"/g)].map((m) => m[1]);
-    expect(cells.length).toBe(4);
+    const cells = [...html.matchAll(/<t[hd] class="([^"]*)"/g)].map((m) => m[1]);
+    expect(cells.length).toBe(6);
     for (const cls of cells) {
-      expect(cls).toContain("wrap-anywhere");
-      // Row lines on every cell, the last column included.
-      expect(cls).toContain("border-t");
-      expect(cls).not.toContain("last:border-b-0");
+      // Whole words: break-word keeps the min-content width, anywhere does not.
+      expect(cls).toContain("break-words");
+      expect(cls).not.toContain("wrap-anywhere");
     }
+    // Row lines on every body cell, the last column included.
+    for (const cls of cells.slice(2)) expect(cls).toContain("border-t");
+    expect(read("components/MarkdownMessage.tsx")).not.toMatch(/className="[^"]*wrap-anywhere/);
   });
 });
 

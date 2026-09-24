@@ -1662,3 +1662,13 @@ break a long word, so the table fits the rail. Code blocks take their
 colours from `lib/codeTheme.ts`, which uses tokens only. Code in `.cc-prose`
 is foreground ink. A badge draws its words in foreground ink and its hue as
 a tint and a dot, because `--warning` ink measures 1.57:1 on a light card.
+
+Fix round 5 replaced `wrap-anywhere` on table cells with `break-words`, which
+keeps each word whole. A table wider than its box scrolls, and the bar shows.
+Inline code in `.cc-prose` has no quote marks, and it looks like inline code in
+the chat. A real browser run on 2026-09-24 measured the rail at compact density,
+`/chat` at 1440 and a phone at 390. No word broke inside itself, and each wide
+table and long code line scrolled with a 10px bar. **A capture rig must show
+scrollbars.** Playwright's headless Chromium starts with `--hide-scrollbars`,
+so a capture shows no bar even where the box scrolls. Pass
+`ignoreDefaultArgs: ["--hide-scrollbars"]` before you judge a scroll box.

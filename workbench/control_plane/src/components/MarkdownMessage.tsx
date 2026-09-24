@@ -369,17 +369,18 @@ export function MarkdownBody({
         },
 
         // ── Tables (GFM) ──
-        // A table fits the width it is given: every cell may break a long
-        // word (`wrap-anywhere`), so its narrowest width is small. In the
-        // 26rem rail at compact density a column once held "Subramanian"
-        // whole, the table outgrew its box, and the owner column was clipped
-        // with no visible scroll (S8 fix round 4). The box still scrolls, with
-        // a visible thin bar, for a table that cannot fit. Cells size from
-        // the box itself (`@container`), not from the viewport, so the rail
-        // gets the tight padding at any screen width.
-        // Row lines are a TOP border on each body cell. The old bottom
-        // border with `last:border-b-0` dropped the line under the LAST
-        // COLUMN of every row, not under the last row.
+        // A table keeps its words whole and scrolls when it is wider than its
+        // box. Cells take `break-words` (overflow-wrap: break-word), which
+        // breaks a word only when the word alone is wider than the whole
+        // box, and does not shrink the table's minimum width. Round 4 used
+        // `wrap-anywhere`, which did shrink it, so every table in every chat
+        // broke headers and names mid-word ("FINISHE/D"). A table wider
+        // than its box scrolls inside `overflow-x-auto`, with the thin bar
+        // visible. Cells size from the box itself (`@container`), not from
+        // the viewport, so the rail gets the tight padding at any width.
+        // Row lines are a TOP border on each body cell, so the line runs
+        // under every column (round 4 fixed a `last:` rule that dropped the
+        // line under the last column).
         table: ({ children }) => (
           <div className="@container my-4 max-w-full overflow-x-auto scrollbar-thin rounded-lg border border-border/60" role="region" aria-label="Table" tabIndex={0}>
             <table className="w-full text-[12px] sm:text-[13px] border-collapse">{children}</table>
@@ -389,12 +390,12 @@ export function MarkdownBody({
           <thead className="bg-secondary/60">{children}</thead>
         ),
         th: ({ children }) => (
-          <th className="px-2.5 py-1.5 @md:px-4 @md:py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide wrap-anywhere">
+          <th className="px-2.5 py-1.5 @md:px-4 @md:py-2 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide break-words">
             {children}
           </th>
         ),
         td: ({ children }) => (
-          <td className="px-2.5 py-1.5 @md:px-4 @md:py-2 text-foreground border-t border-border/60 wrap-anywhere">
+          <td className="px-2.5 py-1.5 @md:px-4 @md:py-2 text-foreground border-t border-border/60 break-words">
             {children}
           </td>
         ),
