@@ -3306,24 +3306,6 @@ line — never reclaim a number by deleting the other entry.
   verification, 2026-09-24
 - **Added:** 2026-09-24 · the WS-27bn R2b session
 
-### H-185 · Three polish items in the outlook report section, for R3b · [AGENT]
-- **Check:** `grep -n "planned_finish" tests/unit/test_projects_agent.py`
-  → a hit that expects a value with `T00:00` means item 1 is still open.
-- **Why:** the R3a review and verification found these. None blocks.
-  1. The chat card prints the planned finish as a raw timestamp. The app
-     prints the date only. Cut the value to its first 10 characters in
-     `views.py` `_card_cell`, as `shortDate` does, and fix the test that
-     pins the raw form.
-  2. The chat text line in `reads.py` `_REPORT_SECTIONS["outlook"]` uses the
-     dotted keys as labels, for example "velocity.verdict". Give each one a
-     plain label. The card also shows "Slip days" twice.
-  3. `lib/outlook.ts` `slipRange` places the plan at `weeks_remaining` times
-     7 less `slip_days`. That is exact only while `project_forecast` returns
-     today plus whole weeks. Add a test that pins this link, or send the
-     plan offset from the server.
-- **Authority:** `specs/projects_reports.md` §8 R3a · the R3a review, 2026-09-25
-- **Added:** 2026-09-25 · the WS-27bn R3a session
-
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

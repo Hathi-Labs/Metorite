@@ -59,6 +59,7 @@ from gateway.routes.projects.analytics import (
 )
 from gateway.routes.projects.analytics_capacity import capacity_body
 from gateway.routes.projects.analytics_conflicts import conflicts_body
+from gateway.routes.projects.analytics_rebalance import rebalance_body
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -99,10 +100,12 @@ from sqlalchemy import text
 #: finished, throughput, outlook, load, capacity, pulse, stuck, hygiene,
 #: conflicts, rebalance. Each slice adds its own name in that place. R3a adds
 #: `outlook`, after the past and before the open work, because a forecast
-#: reads the rate that the two sections above it measured.
+#: reads the rate that the two sections above it measured. R3b adds
+#: `rebalance` LAST: it says what to do about the problems the sections
+#: above it found.
 SECTIONS: tuple[str, ...] = (
     "finished", "throughput", "outlook", "load", "capacity", "stuck",
-    "conflicts",
+    "conflicts", "rebalance",
 )
 
 #: The sections a definition with no `sections` key renders.
@@ -166,7 +169,7 @@ TEMPLATES: dict[str, dict[str, Any]] = {
             "team_pulse", "Team pulse",
             "How is each person on the team today, and who needs help?",
             ("team", "project", "org"),
-            "The pulse and rebalance sections, and a today period",
+            "The pulse section and a today period",
         ),
         _coming(
             "my_day", "My day",
@@ -792,6 +795,32 @@ async def render_body(
                 "horizon_days": found["horizon_days"],
                 "window": found["window"],
             }
+        elif name == "rebalance":
+            # WS-27bn R3b. The rebalance route's OWN body, imported, as
+            # `conflicts` does. The HR gate is the READER's grant: without
+            # `admin:members:read` the body has no `at_risk` and no
+            # `pickups` key, so a reader who may not see skills sees none.
+            #
+            # ⚠️ **No `config["weeks"]` here, on purpose.** Rebalancing
+            # reads its own 14-day horizon (`HORIZON_DAYS`), which is a
+            # window ahead of today. The report period is a window behind
+            # it, so passing the period would change which tasks are at
+            # risk, and the report and the route would disagree.
+            found = await rebalance_body(
+                db, vis,
+                hr_visible=can_read_hr_fields(user),
+                project_id=project_id,
+                include_subtree=bool(config["include_subtree"]),
+            )
+            # A copy of the body. `at_risk` stays as the route serves it,
+            # because the join already caps it at eight tasks.
+            section = dict(found)
+            if "pickups" in found:
+                # Capped like `load`. `pickups_total` counts every idle
+                # person with a match, so a reader sees what the cap cut.
+                section["pickups"] = found["pickups"][:MAX_PEOPLE]
+                section["pickups_total"] = len(found["pickups"])
+            sections[name] = section
         elif name == "stuck":
             # What is overdue, by project, and (WS-27bn R3a) how long open
             # work has sat untouched, in the route's four bands.
