@@ -43,7 +43,13 @@ export function taskMetaChips(item: MyTask, nowMs = Date.now()): MetaChip[] {
       completedAt: item.completedAt,
       attachmentCount: item.attachments?.length ?? 0,
       estimateMins: item.timeEstimateMins,
-      tags: (item.tags ?? []).map((name) => ({ name })),
+      // The registry colour rides on the lens row (`tag_colors`), keyed by
+      // lower(name). It goes through `resolveHue` inside `taskMeta`, the
+      // path the Projects card takes, so one tag is one colour in both apps.
+      tags: (item.tags ?? []).map((name) => ({
+        name,
+        color: item.tagColors?.[name.toLowerCase()],
+      })),
     },
     nowMs,
   );

@@ -22,10 +22,26 @@
 import Icon from "@/components/Icon";
 import Modal from "@/components/ui/Modal";
 
-import { shortcutSections } from "../lib/commands";
+import { type ShortcutRow, shortcutSections } from "../lib/commands";
 
-export function ShortcutsSheet({ onClose }: { onClose: () => void }) {
-  const sections = shortcutSections();
+/** One titled block of rows. Projects' sections, or another app's own. */
+export interface ShortcutSheetSection {
+  section: string;
+  rows: readonly ShortcutRow[];
+}
+
+/**
+ * The `?` sheet. Projects passes nothing and gets its registry. My Tasks
+ * passes its own sections (`app/tasks/lib/shortcuts.ts`), generated from
+ * its key map, so both apps draw ONE sheet (continuity P3).
+ */
+export function ShortcutsSheet({
+  onClose,
+  sections = shortcutSections(),
+}: {
+  onClose: () => void;
+  sections?: readonly ShortcutSheetSection[];
+}) {
 
   // WS-27ak — the hand-rolled overlay and its window-Escape listener are gone.
   //

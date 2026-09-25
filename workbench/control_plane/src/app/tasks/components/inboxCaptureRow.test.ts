@@ -18,10 +18,11 @@ const src = readFileSync(
   "utf8",
 ).replace(/\r\n/g, "\n");
 
-/** The desktop capture header, from its wrapper to the shortcut legend. */
+/** The desktop capture header, from its wrapper to the shortcuts button (the
+ *  inline legend became the `?` sheet in continuity P3). */
 const header = (() => {
   const start = src.indexOf('<div className="hidden shrink-0 border-b border-border bg-card sm:block">');
-  const stop = src.indexOf("{showShortcuts && (", start);
+  const stop = src.indexOf("onClick={openShortcutsSheet}", start);
   expect(start).toBeGreaterThan(-1);
   expect(stop).toBeGreaterThan(start);
   return src.slice(start, stop);

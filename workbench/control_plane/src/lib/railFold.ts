@@ -61,11 +61,29 @@ function currentBand(): RailBand {
  */
 export const RAIL_INITIAL: RailState = railStart("wide");
 
+/**
+ * The rail's classes, before and after the mount effect has run.
+ *
+ * `RAIL_INITIAL` is "wide", so the server and the first client render both
+ * draw the rail. Below `lg` that painted the rail open for one frame, and
+ * hydration then folded it: a flash on every tablet load (continuity P3).
+ * Until the effect has run, CSS decides instead: hidden below `lg`, shown at
+ * `lg` and up. The markup is the same on server and client, so there is no
+ * hydration mismatch. After mount the state decides, so the class is empty.
+ */
+export function railClass(settled: boolean): string {
+  return settled ? "" : "hidden lg:block";
+}
+
 /** The rail's open state, following the width band. */
-export function useRailFold(): { open: boolean; toggle: () => void } {
+export function useRailFold(): { open: boolean; settled: boolean; toggle: () => void } {
   const [state, setState] = useState<RailState>(RAIL_INITIAL);
+  // False on the server and on the first client render, true once the mount
+  // effect has read the width. `railClass` reads it.
+  const [settled, setSettled] = useState(false);
 
   useEffect(() => {
+    setSettled(true);
     if (typeof window === "undefined" || !window.matchMedia) return;
     const mql = window.matchMedia(RAIL_WIDE_QUERY);
     const onChange = () => setState((s) => railOnBand(s, currentBand()));
@@ -74,5 +92,5 @@ export function useRailFold(): { open: boolean; toggle: () => void } {
     return () => mql.removeEventListener("change", onChange);
   }, []);
 
-  return { open: state.open, toggle: () => setState(railToggle) };
+  return { open: state.open, settled, toggle: () => setState(railToggle) };
 }

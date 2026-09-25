@@ -1,6 +1,6 @@
 "use client";
 
-import Button from "@/components/ui/Button";
+import Modal from "@/components/ui/Modal";
 import Icon from "@/components/Icon";
 import { useTaskStore } from "../lib/taskStore";
 import { useRemoval } from "../lib/useRemoval";
@@ -23,29 +23,20 @@ export function EliminatePopup() {
     : undefined;
   if (!item) return null;
 
+  // The shared `Modal` (continuity P3). The `alert` layer, because the
+  // Eliminate nudge also opens this from inside the focused task
+  // (`TaskFocusModal`, z-[80]), and the dialog layer (z-50) would paint under
+  // it. The delete arm closes this first, then raises the ConfirmDialog.
   return (
-    <div
-      className="fixed inset-0 z-[95] flex items-center justify-center bg-black/50 p-4"
-      onClick={closeEliminate}
+    <Modal
+      open
+      onClose={closeEliminate}
+      title="Let this go?"
+      description={<span className="block truncate">{item.title}</span>}
+      icon="Archive"
+      size="sm"
+      layer="alert"
     >
-      <div
-        className="flex w-full max-w-sm flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-          <Icon name="Archive" className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <div className="min-w-0 flex-1">
-            <h2 className="truncate text-sm font-semibold text-foreground">
-              Let this go?
-            </h2>
-            <p className="truncate text-[11px] text-muted-foreground">
-              {item.title}
-            </p>
-          </div>
-          <Button variant="ghost" size="icon-xs" radius="keep" layout="" type="button" onClick={closeEliminate} aria-label="Close" className="rounded-md">
-            <Icon name="X" className="h-4 w-4" />
-          </Button>
-        </div>
 
         <div className="flex flex-col gap-2 px-4 py-3">
           <button
@@ -89,7 +80,6 @@ export function EliminatePopup() {
             </span>
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

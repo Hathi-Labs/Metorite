@@ -5,12 +5,12 @@ import { StatusChip } from "@/components/StatusChip";
 import { useState } from "react";
 import { MyTask } from "../lib/types";
 import { useCardActions } from "../lib/useCardActions";
-import { categoryAccent } from "../lib/stageColors";
+import { categoryAccent, laneAccent } from "../lib/stageColors";
 
 // The task's STATUS INDICATOR — the single status control shared by the card
 // (TaskCard) and the desktop list's Status column. The pill shows the task's
-// own LANE name and is coloured by its status CATEGORY (D73.9), the same
-// accent the group headers use. Click opens the three categories — To do, In
+// own LANE name and is coloured by the lane's stored colour, then its status
+// CATEGORY (D73.9), the order Projects uses. Click opens the three categories — To do, In
 // progress, Done. Picking one moves the task to the first lane of that
 // category in its own project; Done completes it (see useCardActions).
 // stopPropagation so it never opens the card/row.
@@ -23,7 +23,9 @@ export function StatusPill({ item }: { item: MyTask }) {
   const { categories, categoryLabel, currentCategory, laneName, setCategory } =
     useCardActions(item);
   const [open, setOpen] = useState(false);
-  const accent = categoryAccent(item.statusCategory ?? currentCategory);
+  // The lane's stored colour first, then its category: Projects' order
+  // (`laneAccent`). Only the COLOUR changed here. The menu below is as it was.
+  const accent = laneAccent(item, currentCategory);
   return (
     <div className="relative shrink-0" onClick={(e) => e.stopPropagation()}>
       <button
