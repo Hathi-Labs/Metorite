@@ -109,12 +109,11 @@
  *
  * ## Retirement note
  *
- * `app/tasks/components/UndoToast.tsx` is an app-local toast with its own
- * timer, its own markup and no live region — the `/tasks` half of the same
- * primitive. It is owed a retirement onto this one, an app ticket rather than
- * this slice, exactly as WS-27ak recorded for the email `Modal` and WS-27bd for
- * the email `ContextMenu`. Its call sites were left alone. Do not add a second
- * consumer to it.
+ * `app/tasks/components/UndoToast.tsx` was an app-local toast with its own
+ * timer, its own markup and no live region. Continuity P3 retired it onto
+ * this one: it now calls `show()` with an "Undo" action, a `timeout` and an
+ * `onClose`. `app/tasks/lib/undoToast.ts` holds the rule that the soft-delete
+ * purge runs exactly once, and `undoToast.test.ts` fences it.
  */
 
 import { Toast as BaseToast } from "@base-ui/react/toast";
@@ -130,7 +129,7 @@ import {
   loadingPatch,
   priorityFor,
   settlePatch,
-  timeoutFor,
+  showTimeout,
   toastIdFor,
 } from "@/lib/toast";
 
@@ -188,6 +187,20 @@ export interface ToastApi {
     title: string;
     description?: string;
     action?: ToastAction;
+    /**
+     * A success toast's own window, in ms (`showTimeout`). My Tasks' undo
+     * toast closes on `UNDO_WINDOW_SECONDS`, the number its delete dialog
+     * quotes. Ignored for an error, which stays until dismissed.
+     */
+    timeout?: number;
+    /**
+     * Runs once when this toast closes: its timer ran out, the reader
+     * dismissed it, or its action ran. The substrate closes the toast BEFORE
+     * it runs the action, so a caller that must tell "dismissed" from
+     * "action taken" defers its check (`app/tasks/lib/undoToast.ts`).
+     * NOT run when a later `show` with the same key replaces the toast.
+     */
+    onClose?: () => void;
   }): string;
   /** Close one keyed toast. Silent when that key is not on screen. */
   dismiss(key: string): void;
@@ -285,10 +298,10 @@ function ToastBridge({ children }: { children: React.ReactNode }) {
         );
       },
 
-      show({ key, variant = "success", title, description, action }) {
+      show({ key, variant = "success", title, description, action, timeout, onClose }) {
         return add({
           id: toastIdFor(key),
-          // `priorityFor`/`timeoutFor`, never a ternary here: whether a message
+          // `priorityFor`/`showTimeout`, never a ternary here: whether a message
           // interrupts a screen-reader user, and how long a failure stays on
           // screen, are decided in ONE place (`lib/toast.ts`) for the promise
           // form and this one alike. A second copy is how the two forms end up
@@ -298,9 +311,12 @@ function ToastBridge({ children }: { children: React.ReactNode }) {
             title,
             description,
             priority: priorityFor(variant),
-            timeout: timeoutFor(variant),
+            timeout: showTimeout(variant, timeout),
             action,
           }),
+          // Explicit, like every key `toOptions` sets: the store MERGES, so a
+          // replacing `show` without one must clear the old callback.
+          onClose,
         });
       },
 

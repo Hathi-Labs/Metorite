@@ -30,6 +30,7 @@ import {
   resolveAction,
   resolveMessage,
   settlePatch,
+  showTimeout,
   timeoutFor,
   toastIdFor,
 } from "./toast";
@@ -167,6 +168,16 @@ describe("timeouts", () => {
   it("a success goes away on its own", () => {
     expect(timeoutFor("success")).toBe(SUCCESS_TIMEOUT);
     expect(SUCCESS_TIMEOUT).toBeGreaterThan(0);
+  });
+
+  it("a show() may set a success's window, and only a success's", () => {
+    // My Tasks' undo closes on its own window (continuity P3).
+    expect(showTimeout("success", 7_000)).toBe(7_000);
+    expect(showTimeout("success")).toBe(SUCCESS_TIMEOUT);
+    expect(showTimeout("success", 0)).toBe(SUCCESS_TIMEOUT);
+    // A failure still stays until dismissed, whatever the caller asks.
+    expect(showTimeout("error", 7_000)).toBe(ERROR_TIMEOUT);
+    expect(showTimeout("loading", 7_000)).toBe(LOADING_TIMEOUT);
   });
 });
 
