@@ -308,9 +308,9 @@ export default function TasksPage() {
       />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
+        {/* `railClass`: before mount, CSS hides the rail below `lg`, so a
+            tablet load does not paint it open for a frame (`lib/railFold.ts`). */}
         {lists.open && (
-          // `railClass`: before mount, CSS hides the rail below `lg`, so a
-          // tablet load does not paint it open for a frame (`lib/railFold.ts`).
           <aside className={`w-60 shrink-0 border-r border-border bg-card ${railClass(lists.settled)}`}>
             <ListsSidebar
               onOpenAssistant={() => setAssistantOpen(true)}
