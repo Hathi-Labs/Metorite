@@ -429,6 +429,17 @@ async def _load_personal_project(db: Any, email: str) -> Any | None:
     )).fetchone()
 
 
+#: The four lanes a personal root starts with, in board order. One per
+#: category, and one of them is Done: every status set keeps a Done status
+#: (D79). `test_projects_done_guard.py` holds this seed to that rule.
+PERSONAL_SEED_STATUSES: tuple[tuple[str, str], ...] = (
+    ("Inbox", "backlog"),
+    ("Next", "todo"),
+    ("Doing", "in_progress"),
+    ("Done", "done"),
+)
+
+
 async def ensure_personal_project(db: Any, email: str) -> Any:
     """This member's personal project, created on first use.
 
@@ -469,12 +480,7 @@ async def ensure_personal_project(db: Any, email: str) -> Any:
     # Ordered, and the order is the whole answer: a capture lands in the FIRST
     # lane. There is no `is_default` on a status any more (2026-09-06) — see
     # `core.load_default_status` — and "Inbox" leads because it is first.
-    for position, (name, category) in enumerate((
-        ("Inbox", "backlog"),
-        ("Next", "todo"),
-        ("Doing", "in_progress"),
-        ("Done", "done"),
-    )):
+    for position, (name, category) in enumerate(PERSONAL_SEED_STATUSES):
         await insert_row(db, "pm_task_statuses", {
             "project_id": project_id, "name": name, "category": category,
             "position": (position + 1) * 10,
@@ -1761,12 +1767,23 @@ async def my_task(
         return await _read_my_task(db, email, task_id)
 
 
+#: The lanes of one status set, in board order. A constant, so the live test
+#: (`test_projects_done_guard.py`) runs the route's own statement (R8).
+MY_TASK_LANES_SQL = (
+    "SELECT id, name, category, position, color, is_default "
+    "  FROM pm_task_statuses WHERE project_id = CAST(:root AS uuid) "
+    " ORDER BY position, name"
+)
+
+
 @router.get("/my/tasks/{task_id}/lanes")
 async def my_task_lanes(
     task_id: str, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """The lanes one of MY tasks can be in — id, name, category, position
-    — behind the same membership check as the single read (WS-39 S6e repair).
+    and colour — behind the same membership check as the single read (WS-39
+    S6e repair). The colour lets the status menu draw each lane in the hue
+    its board draws it (D79).
 
     The shared task body draws a Status select. ``/nodes/{id}/statuses`` is
     behind the project grant, and a member who reaches a task by assignment
@@ -1786,17 +1803,13 @@ async def my_task_lanes(
         task = await _read_my_task(db, email, task_id)
         owner = await status_owner_id(db, str(task["project_id"]))
         rows = (await db.execute(
-            text(
-                "SELECT id, name, category, position, is_default "
-                "  FROM pm_task_statuses WHERE project_id = CAST(:root AS uuid) "
-                " ORDER BY position, name"
-            ),
-            {"root": owner},
+            text(MY_TASK_LANES_SQL), {"root": owner},
         )).fetchall()
     lanes = [
         {
             "id": str(r.id), "name": r.name, "category": r.category,
-            "position": r.position, "is_default": bool(getattr(r, "is_default", False)),
+            "position": r.position, "color": getattr(r, "color", None),
+            "is_default": bool(getattr(r, "is_default", False)),
         }
         for r in rows
     ]
@@ -1976,12 +1989,13 @@ async def complete_for_member(db: Any, task: Any, email: str) -> dict[str, Any]:
 
     from gateway.routes.projects.core import apply_status_transition
 
-    # The owner's chosen done lane, not whichever one sorts first. This read
-    # was its own SQL and never consulted `is_default`, so a root holding
-    # both "Done" and "Shipped" completed into whichever carried the lower
-    # position regardless of which the owner had marked. `load_default_status`
-    # is the one place that question is answered, and it raises the same 422
-    # when the project has no done status at all.
+    # The FIRST Done status by position (D79). There is no "chosen" Done
+    # status: `is_default` was retired on 2026-09-06, and the order the owner
+    # drags in the status editor is the whole control. Mark done never asks,
+    # so a set with "Shipped" above "Done" completes into "Shipped", and the
+    # client's receipt names it. `load_default_status` is the one place that
+    # question is answered. Every set keeps a Done status (D79), so its 422
+    # can only fire on a set that predates the guard.
     done = await load_default_status(
         db, await status_owner_id(db, str(task.project_id)), "done",
     )

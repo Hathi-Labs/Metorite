@@ -140,7 +140,10 @@ _LITERAL_EQ = re.compile(r"\b(?:\w+\.)?(\w+)\s*=\s*'([^']*)'")
 #: fires, and the ``<>`` silently matches every row. That is exactly the
 #: failure R8 warns about, and here it let a triage lane win the "where does a
 #: new task start" question in a suite that otherwise read entirely green.
-_NOT_EQ = re.compile(r"\b(?:\w+\.)?(\w+)\s*<>\s*:(\w+)\b")
+#: Also ``<col> <> CAST(:param AS uuid)`` (D79): `admin._other_lanes` reads
+#: every OTHER status of a set that way. The fake used to drop that predicate
+#: and keep the status itself among its "other" lanes.
+_NOT_EQ = re.compile(r"\b(?:\w+\.)?(\w+)\s*<>\s*(?:CAST\(\s*)?:(\w+)\b", re.I)
 #: ``(<a> = CAST(:p AS uuid) OR <b> = CAST(:p AS uuid))`` — a row addressed
 #: from EITHER end, which is how `pm_task_links` is deleted (the caller may be
 #: the source or the target). Read as the OR it is: the generic scanner ANDs the

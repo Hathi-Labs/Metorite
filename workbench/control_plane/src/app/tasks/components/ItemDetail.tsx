@@ -11,6 +11,7 @@ import { useRemoval } from "../lib/useRemoval";
 import {
   originEmailHref,
   DISPOSITION_LABEL,
+  myListLabel,
   durationLabel,
   formatStatus,
   initials,
@@ -568,7 +569,7 @@ export function TaskDetail({
                         const c = stageActions.categories.find(
                           (k) => stageActions.categoryLabel(k) === v,
                         );
-                        if (c) stageActions.setCategory(c);
+                        if (c) stageActions.setStage(c);
                         close();
                       }}
                     />
@@ -1427,7 +1428,7 @@ function PersonMenu({
   );
 }
 
-/** Status/disposition picker in the header — flips to a small menu. */
+/** My-list (disposition) picker in the header — flips to a small menu. */
 function StatusPicker({
   item,
   onPick,
@@ -1443,11 +1444,14 @@ function StatusPicker({
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={[
-          "tech-transition inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+          // Sentence case, not UPPERCASE: in capitals the chip read as a
+          // status label beside the real Status control (D79).
+          "tech-transition inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-semibold",
           DISP_TONE[item.disposition],
         ].join(" ")}
+        title="Your own list for this task. Its status is the Status field."
       >
-        {DISPOSITION_LABEL[item.disposition]}
+        {myListLabel(item.disposition)}
       </button>
       {open && (
         <>

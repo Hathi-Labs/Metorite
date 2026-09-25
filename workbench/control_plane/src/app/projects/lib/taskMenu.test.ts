@@ -409,6 +409,17 @@ describe("which lane the tick sends a task to", () => {
     expect(laneFor(LADDER, "open")?.id).toBe("s-todo");
   });
 
+  it("reopens into To do, not into a Backlog lane above it (D79)", () => {
+    // The gateway's rule (`personal.reopen_if_closed`): the first `todo`
+    // status. The first open lane by position was Backlog here, so the
+    // Projects tick and a reopen from My Tasks sent one task two places.
+    const withBacklog = [
+      ...LADDER,
+      status("s-backlog", "Backlog", { category: "backlog", position: 5 }),
+    ];
+    expect(laneFor(withBacklog, "open")?.id).toBe("s-todo");
+  });
+
   it("answers nothing when the project has no lane of that kind", () => {
     const openOnly = [status("a", "A"), status("b", "B", { position: 1 })];
     expect(laneFor(openOnly, "closed")).toBeUndefined();

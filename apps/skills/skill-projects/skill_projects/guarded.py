@@ -623,8 +623,8 @@ async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
     """Delete a lane, moving the tasks in it to move_to (a status NAME in
     the same set) first. The card leads with how many tasks move: the count
     the statuses read returns per lane, which is the count the route acts
-    on. The last lane, and the last lane that closes a task, cannot be
-    deleted, and the tool says so before any card."""
+    on. The last lane, the last Done lane (D79) and the last lane that
+    closes a task cannot be deleted, and the tool says so before any card."""
     if _many(status):
         return f"delete_status {ONE_ACT.replace('id', 'name')}"
     pid, node = await _node(project_id)
@@ -638,9 +638,17 @@ async def delete_status(project_id: str, status: str, move_to: str = "") -> str:
     row = _one_named(lanes, status, "status", "statuses")
     sid = uuid_of(str(row.get("id")), "status_id")
     survivors = [lane for lane in lanes if str(lane.get("id")) != sid]
-    # The route's two 409s (admin.py `delete_status`), said before the card.
+    # The route's three 409s (admin.py `delete_status`), said before the card.
     if not survivors:
         return f"{data(row.get('name'))} is the only status here. A project needs at least one."
+    # D79: every status set keeps a Done status, because Mark done needs one.
+    if str(row.get("category")) == "done" and not any(
+        str(lane.get("category")) == "done" for lane in survivors
+    ):
+        return (
+            f"{data(row.get('name'))} is the last Done status here. Every status set "
+            "keeps at least one Done status. Add another Done status first."
+        )
     if not any(str(lane.get("category")) in CLOSING for lane in survivors):
         return (
             f"{data(row.get('name'))} is the only lane that closes a task. Add another Done "

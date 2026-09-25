@@ -53,6 +53,7 @@ from gateway.routes.projects.core import (
     record_activity,
     record_field_change,
     remap_task_statuses,
+    require_done_status,
     require_organization,
     resolve_visibility,
     root_project_id,
@@ -1005,6 +1006,10 @@ async def move_node(
                 ),
                 {"id": project_id},
             )
+            # D79 — the node now owns a set, and every set keeps a Done
+            # status. `ON CONFLICT DO NOTHING` can keep an old row by name,
+            # so the copy alone does not promise one.
+            await require_done_status(db, project_id)
 
         values: dict[str, Any] = {"parent_project_id": new_parent}
         if payload.position is not None:

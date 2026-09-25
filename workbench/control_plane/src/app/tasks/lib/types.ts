@@ -186,6 +186,9 @@ export interface MyTask {
   assignees?: Person[];
   /** the item's stage/status in the connected PM tool (e.g. "Backlog", "To-do") */
   providerStatus?: string;
+  /** the task's exact status (`pm_tasks.status_id`). A status write names it,
+   *  and an Undo puts this one back (D79). */
+  statusId?: string;
   /** the NAME of the task's lane in its own project ("Building", "In progress") */
   workflowStage?: string;
   /** the CATEGORY of that lane (`pm_task_statuses.category`: todo,

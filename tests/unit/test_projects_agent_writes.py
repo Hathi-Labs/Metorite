@@ -1501,10 +1501,33 @@ async def test_delete_status_receipt_reads_the_routes_key(monkeypatch) -> None:
     assert "9 tasks moved" in out
 
 
-async def test_the_last_closing_lane_is_refused_before_the_card(monkeypatch) -> None:
+async def test_the_last_done_lane_is_refused_before_the_card(monkeypatch) -> None:
+    """D79: every status set keeps a Done status, the route's own 409."""
     asked = approve(monkeypatch)
     calls = fake_gateway(monkeypatch, responder)
     out = await skill_projects.delete_status(UUID, "done", move_to="to do")
+    assert "last Done status" in out
+    assert asked == [] and writes(calls) == []
+
+
+async def test_the_last_closing_lane_is_refused_before_the_card(monkeypatch) -> None:
+    """A set that predates D79, with no Done lane: its last Cancelled lane
+    is still the only lane that closes a task."""
+
+    def no_done(call: dict) -> Any:
+        if call["path"].endswith("/statuses"):
+            return {
+                "rows": [
+                    {"id": S1, "name": "To do", "category": "todo"},
+                    {"id": S3, "name": "Dropped", "category": "cancelled"},
+                ],
+                "counts": {}, "owner_id": UUID,
+            }
+        return responder(call)
+
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, no_done)
+    out = await skill_projects.delete_status(UUID, "dropped", move_to="to do")
     assert "only lane that closes" in out
     assert asked == [] and writes(calls) == []
 

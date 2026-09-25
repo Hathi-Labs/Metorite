@@ -72,7 +72,10 @@ export function TaskListGrouped({
    *  multi-select still work. */
   groupBy?: GroupBy | "";
 }) {
-  const setCategory = useTaskStore((s) => s.setCategory);
+  const setStage = useTaskStore((s) => s.setStage);
+  // D79 — a drop on a stage with two or more statuses asks which one. While
+  // it asks, the row draws under the header it was dropped on.
+  const stagePrompt = useTaskStore((s) => s.stagePrompt);
   const urgentWindowHours = useTaskStore((s) => s.settings.urgentWindowHours);
   const sort = useTaskStore((s) => s.sort);
   const reorderItem = useTaskStore((s) => s.reorderItem);
@@ -134,8 +137,12 @@ export function TaskListGrouped({
   // answers null and is not drawn under any header.
   const groupOf = useCallback(
     (i: MyTask): string | null =>
-      statusGrouped ? nextCategoryOf(i) : UNSET,
-    [statusGrouped],
+      !statusGrouped
+        ? UNSET
+        : stagePrompt?.taskId === i.id
+          ? stagePrompt.stage
+          : nextCategoryOf(i),
+    [statusGrouped, stagePrompt],
   );
 
   const groups = useMemo(() => {
@@ -177,7 +184,7 @@ export function TaskListGrouped({
   // shared machinery the Projects list runs (`@/lib/cursor`, `useFlash`).
   const [cursor, setCursor] = useState(-1);
   const [anchor, setAnchor] = useState<number | null>(null);
-  const { flash, attach, scrollTo } = useFlash();
+  const { flash, attach, scrollTo, element } = useFlash();
 
   // The cursor's world: the rows in render order, skipping collapsed groups.
   const rows = useMemo(() => {
@@ -241,17 +248,19 @@ export function TaskListGrouped({
     setDragId(null);
     if (!id || !manual) return;
     const dest = byManualOrder(byGroup.get(groupKey) ?? []);
-    // A drop across groups moves the task to that status CATEGORY: the first
-    // lane of it in the task's own project (`setCategory`, D73.9). The rank
-    // lands first, so the row sits where it was dropped.
+    // A drop across groups moves the task into that STAGE (`setStage`, D79):
+    // one status there writes at once, two or more ask, anchored to the row.
+    // The rank lands just before the status write, and not at all when the
+    // member backs out of the question.
     const dragged = items.find((i) => i.id === id);
     const from = dragged ? nextCategoryOf(dragged) : null;
+    const rank = () => reorderItem(id, dest, index);
     // The landed row scrolls into view and flashes (shared useFlash), so the
     // gesture visibly ends where the row now lives.
     flash(id);
-    reorderItem(id, dest, index);
     if (grouped && isNextCategory(groupKey) && groupKey !== from)
-      void setCategory(id, groupKey);
+      void setStage(id, groupKey, { anchor: () => element(id), onLanded: rank });
+    else rank();
   };
 
   const total = groups.length;

@@ -75,6 +75,7 @@ import { StatusSetControl } from "./StatusSetControl";
 import { accentForStatus } from "../lib/accent";
 import {
   emptyCategories,
+  lastDoneRefusal,
   placeNew,
   reorder,
 } from "../lib/statusOrder";
@@ -238,6 +239,14 @@ export function StatusManager({
 
   function recategorise(status: StatusRow, category: string) {
     if (category === status.category) return;
+    // D79: the last Done status stays in Done. Say why in plain words,
+    // before the write, rather than show the gateway's 409.
+    const refusal = lastDoneRefusal(rows, status.id, category);
+    if (refusal) {
+      setNotice(null);
+      setError(refusal);
+      return;
+    }
     // Moving stage moves the lane on the board too, or the column order stops
     // matching the lifecycle it is grouped by. Placed against the board WITHOUT
     // this row, since it is leaving where it currently sits — and through
@@ -301,9 +310,10 @@ export function StatusManager({
    *
    * `target` is required exactly when the lane holds tasks — the row's own
    * count decides, so the question is asked before the click rather than
-   * reported by a 409 after it. The server enforces the same rule and the two
-   * refusals it will not take at all (the last lane, and the last CLOSING
-   * lane) come back as its own sentence.
+   * reported by a 409 after it. The server enforces the same rule. Of the
+   * refusals it will not take at all, the last Done status (D79) is said
+   * here first by `lastDoneRefusal`. The last lane and the last CLOSING lane
+   * come back as the server's own sentence.
    */
   function remove(status: StatusRow, target?: string) {
     void run(
@@ -661,6 +671,19 @@ export function StatusManager({
                                 icon: themedIcon("Trash2"),
                                 danger: true,
                                 onSelect: () => {
+                                  // D79: the last Done status stays. The
+                                  // reason, before any question about its
+                                  // tasks, because no answer would help.
+                                  const refusal = lastDoneRefusal(
+                                    rows,
+                                    status.id,
+                                    "remove"
+                                  );
+                                  if (refusal) {
+                                    setNotice(null);
+                                    setError(refusal);
+                                    return;
+                                  }
                                   // With tasks in it the lane needs a
                                   // destination, so the row opens the
                                   // question instead of guessing.

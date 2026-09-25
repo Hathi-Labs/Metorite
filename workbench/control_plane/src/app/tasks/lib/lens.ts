@@ -210,6 +210,7 @@ export function mapLensItem(raw: Raw): MyTask {
     assignee: assignees[0],
     assignees,
 
+    statusId: text(raw.status_id),
     workflowStage: text(raw.workflow_stage),
     statusCategory: text(raw.status_category),
     statusColor: text(raw.status_color),

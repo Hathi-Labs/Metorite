@@ -25,8 +25,10 @@ import {
 // status CATEGORIES (D73.9): To do, In progress, Done. Each card keeps its own
 // lane name as its pill, so "Building" in one project and "In progress" in
 // another share the In progress column. Dragging a card into a column moves it
-// to the first lane of that category in its own project (`setCategory`), and
-// dropping on Done completes it. (@context is a card chip, not a column.)
+// into that stage of its own project (`setStage`, D79): with one status there
+// it writes at once, and with two or more the status menu asks which one.
+// Dropping on Done's first status completes the task. (@context is a card
+// chip, not a column.)
 // Fixed columns — empty ones still show.
 //
 // Cards render in manual (sortKey) order within a column and are drag-
@@ -64,7 +66,10 @@ export function TaskBoard({
   items: MyTask[];
   view: ViewKey;
 }) {
-  const setCategory = useTaskStore((s) => s.setCategory);
+  const setStage = useTaskStore((s) => s.setStage);
+  // D79 — a drop on a stage with two or more statuses asks which one. While
+  // it asks, the card draws in the column it was dropped on.
+  const stagePrompt = useTaskStore((s) => s.stagePrompt);
   const sort = useTaskStore((s) => s.sort);
   const reorderItem = useTaskStore((s) => s.reorderItem);
   const quickAddNext = useTaskStore((s) => s.quickAddNext);
@@ -94,13 +99,14 @@ export function TaskBoard({
   // shared machinery the Projects board runs (`@/lib/cursor`, `useFlash`).
   const [cursor, setCursor] = useState(-1);
   const [anchor, setAnchor] = useState<number | null>(null);
-  const { flash, attach, scrollTo } = useFlash();
+  const { flash, attach, scrollTo, element } = useFlash();
 
   // A task whose category is not a Next column (backlog, triage, cancelled)
   // answers null and is not drawn.
   const stageOf = useCallback(
-    (i: MyTask): NextCategory | null => nextCategoryOf(i),
-    [],
+    (i: MyTask): NextCategory | null =>
+      stagePrompt?.taskId === i.id ? stagePrompt.stage : nextCategoryOf(i),
+    [stagePrompt],
   );
 
   const columns = useMemo(
@@ -178,13 +184,17 @@ export function TaskBoard({
         })
       : null;
 
-  // A drop into another column moves the task to that status CATEGORY
-  // (D73.9): the first lane of it in the task's own project. The rank lands
-  // first, so the card sits where it was dropped.
-  const refile = (colKey: string, id: string) => {
+  // A drop into another column moves the task into that STAGE (D79). One
+  // status there: it writes at once. Two or more: it asks, anchored to the
+  // card, and the rank lands only if the member picks. `rank` is the drop's
+  // reorder, run just before the status write.
+  const refile = (colKey: string, id: string, rank?: () => void) => {
     const it = items.find((i) => i.id === id);
-    if (!it || !isNextCategory(colKey) || stageOf(it) === colKey) return;
-    void setCategory(id, colKey);
+    if (!it || !isNextCategory(colKey) || stageOf(it) === colKey) {
+      rank?.();
+      return;
+    }
+    void setStage(id, colKey, { anchor: () => element(id), onLanded: rank });
   };
 
   // Drop onto a specific gap (index) within a column — reorder + re-file.
@@ -198,8 +208,7 @@ export function TaskBoard({
     if (!id) return;
     const dest = byManualOrder(byColumn.get(colKey) ?? []);
     flash(id);
-    reorderItem(id, dest, index);
-    refile(colKey, id);
+    refile(colKey, id, () => reorderItem(id, dest, index));
   };
 
   // Drop anywhere in a column (not on a card gap): keep the old semantics —
@@ -218,8 +227,7 @@ export function TaskBoard({
       // append to the end of the column
       const dest = byManualOrder(byColumn.get(colKey) ?? []);
       flash(id);
-      reorderItem(id, dest, dest.length);
-      refile(colKey, id);
+      refile(colKey, id, () => reorderItem(id, dest, dest.length));
       return;
     }
     if (stageOf(item) === colKey) return; // refused — the overlay said why
