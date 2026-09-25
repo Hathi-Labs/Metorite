@@ -7,7 +7,7 @@ import { AppSearchButton, AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
-import { useRailFold } from "@/lib/railFold";
+import { railClass, useRailFold } from "@/lib/railFold";
 import { TASK_PANEL_WIDTH } from "@/lib/taskPanel";
 import { useTaskStore } from "./lib/taskStore";
 import { ListsSidebar } from "./components/ListsSidebar";
@@ -35,6 +35,8 @@ import { DeleteConfirmModal } from "./components/DeleteConfirmModal";
 import { SchedulePopup } from "./components/SchedulePopup";
 import { EliminatePopup } from "./components/EliminatePopup";
 import { DelegatePopup } from "./components/DelegatePopup";
+import { TasksShortcuts } from "./components/TasksShortcuts";
+import { tasksOverlayOpen } from "./lib/shortcuts";
 // ⌘K is search in both task apps, and it is ONE palette. My Tasks mounts the
 // Projects one with no commands (`paletteCommands`), so it searches tasks only.
 import { SearchPalette } from "../projects/components/SearchPalette";
@@ -210,6 +212,13 @@ export default function TasksPage() {
       onOpenTask={openHit}
     />
   );
+  // `?` and the `g <letter>` jumps, the ones Projects binds. Held off while
+  // any overlay owns the keyboard (`tasksOverlayOpen`, the twin of Projects'
+  // `overlayOpen`), so neither fires under an open dialog.
+  const overlayOpen = useTaskStore((s) =>
+    tasksOverlayOpen(s, { searching, maximised: Boolean(maximisedId) }),
+  );
+  const shortcuts = <TasksShortcuts blocked={overlayOpen} />;
 
   if (isMobile) {
     // Single-pane mobile flow. Section switching + capture live in the AppShell
@@ -255,6 +264,7 @@ export default function TasksPage() {
         <EliminatePopup />
         <DelegatePopup />
         {search}
+        {shortcuts}
       </div>
     );
   }
@@ -293,8 +303,10 @@ export default function TasksPage() {
       />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
+        {/* `railClass`: before mount, CSS hides the rail below `lg`, so a
+            tablet load does not paint it open for a frame (`lib/railFold.ts`). */}
         {lists.open && (
-          <aside className="w-60 shrink-0 border-r border-border bg-card">
+          <aside className={`w-60 shrink-0 border-r border-border bg-card ${railClass(lists.settled)}`}>
             <ListsSidebar
               onOpenAssistant={() => setAssistantOpen(true)}
               assistantActive={assistantOpen}
@@ -382,6 +394,7 @@ export default function TasksPage() {
       <EliminatePopup />
       <DelegatePopup />
       {search}
+      {shortcuts}
     </div>
   );
 }

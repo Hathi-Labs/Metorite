@@ -1899,6 +1899,15 @@ class FakeProjectsDB:
                 # warning as the aliases above: omitted, it answers None, and
                 # None is exactly what an un-staged task looks like.
                 workflow_stage=status.get("name"),
+                # The lane's stored colour, and each tag's registry colour
+                # (continuity P3). Mirrors the correlated subquery: the task's
+                # root and tenant, root-local over org-wide, NULL when no tag
+                # has a registry row.
+                status_color=status.get("color"),
+                tag_colors=(
+                    self._tag_colours(task)
+                    if "tag_colors" in statement else None
+                ),
                 # Non-archived children only, mirroring the correlated
                 # subquery — a mirror that counted every child would disagree
                 # with Postgres precisely when somebody archives a subtask,
@@ -1918,6 +1927,30 @@ class FakeProjectsDB:
                 ),
             ))
         return out
+
+    def _tag_colours(self, task: dict) -> dict[str, str] | None:
+        """The `tag_colors` subquery: lower(name) → the registry colour.
+
+        The task's root arm first, the tenant's org-wide arm second, so a
+        root-local row shadows an org-wide row of the same name. NULL (None)
+        when no tag on the task has a registry row, as `jsonb_object_agg`
+        answers over zero rows.
+        """
+        wanted = {str(t).lower() for t in (task.get("tags") or [])}
+        root = str(task.get("root_project_id") or "")
+        org = str(task.get("organization_id") or "")
+        local: dict[str, str] = {}
+        wide: dict[str, str] = {}
+        for g in self.rows("pm_tags"):
+            name = str(g.get("name") or "").lower()
+            if name not in wanted:
+                continue
+            if g.get("project_id") is not None and str(g.get("project_id")) == root:
+                local[name] = g.get("color")
+            elif g.get("project_id") is None and str(g.get("organization_id") or "") == org:
+                wide[name] = g.get("color")
+        out = {**wide, **local}
+        return out or None
 
     def _others_on(self, task_id: str, who: str) -> list[str]:
         """D77 — the ARRAY subquery: everybody else on the task, in

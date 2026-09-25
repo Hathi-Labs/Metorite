@@ -322,11 +322,12 @@ describe("both apps reach the shared modules", () => {
     ["projects", "components/TaskCardShell"],
     ["projects", "components/DropGap"],
     ["projects", "lib/boardDrop"],
-    // S4 — /tasks is deliberately absent: `ItemList.tsx` still holds the
-    // original local `NoMatchState`/`EmptyState` pair this was promoted FROM,
-    // and retiring them onto the shared box is a `/tasks` edit that another
-    // slice holds open. Add the row in the change that does it.
+    // S4, then continuity P3 — the empty state. `ItemList.tsx` held the
+    // local `NoMatchState`/`EmptyState` pair this box was promoted FROM. P3
+    // retired both onto it, and the Inbox's pair too. The copy stays My
+    // Tasks' own, in `app/tasks/lib/emptyState.ts`.
     ["projects", "components/EmptyState"],
+    ["tasks", "components/EmptyState"],
     // S6 — the chip vocabulary itself, not only its renderer. Each app reaches
     // it through its own adapter (`projects/lib/card.ts`,
     // `tasks/lib/cardMeta.ts`); an app that stopped importing it has grown a

@@ -27,9 +27,9 @@
  * edit at a surface that does not use it, and `TaskBoard`/`TaskList`/
  * `TableView` were held open by other slices.
  *
- * ⚠️ `/tasks`' own `NoMatchState`/`EmptyState` are NOT yet retired onto this —
- * that edit lands in `app/tasks/components/ItemList.tsx`, which another slice
- * holds open. Until it does, this is a shared home with one consumer.
+ * Both apps draw it now. Continuity P3 retired `/tasks`' own
+ * `NoMatchState`/`EmptyState` pair, and the Inbox's pair, onto this box. The
+ * copy stays in `app/tasks/lib/emptyState.ts`. Fence: `sharedTaskUi.test.ts`.
  */
 
 import { useId } from "react";

@@ -7,6 +7,8 @@ import { AvatarStack, TaskMeta } from "@/components/TaskMeta";
 import { useState } from "react";
 import { MyTask } from "../lib/types";
 import { taskMetaChips } from "../lib/cardMeta";
+import { cardMenuActs } from "../lib/cardMenu";
+import { TASK_ACT_LABEL, doneLabel } from "@/lib/taskMenuVocabulary";
 import { useTaskStore } from "../lib/taskStore";
 import { useCardActions } from "../lib/useCardActions";
 import { contextAccent } from "../lib/contextColors";
@@ -98,48 +100,66 @@ export function TaskCard({
   // S6c — the promote door. Local to the card: the dialog reads the tree on
   // open and nothing else needs to know it is up.
   const [promoting, setPromoting] = useState(false);
-  const menuItems: CtxItem[] = [
-    {
-      kind: "item",
-      label: "Schedule on calendar",
-      icon: themedIcon("CalendarClock"),
-      onSelect: actions.schedule,
+  // The ORDER and the shared LABELS come from `cardMenuActs`, which follows
+  // `@/lib/taskMenuVocabulary`, the list the Projects menu follows too. This
+  // switch only says what each act does here, and that is unchanged.
+  const menuItems: CtxItem[] = cardMenuActs({ canPromote: actions.canPromote }).flatMap(
+    (act): CtxItem[] => {
+      switch (act) {
+        case "sep":
+          return [{ kind: "sep" }];
+        case "markDone":
+          return [
+            {
+              kind: "item",
+              label: doneLabel(actions.isDone),
+              icon: themedIcon("Check"),
+              onSelect: actions.toggleDone,
+            },
+          ];
+        case "moveToProject":
+          return [
+            {
+              kind: "item",
+              label: TASK_ACT_LABEL.moveToProject,
+              icon: themedIcon("FolderInput"),
+              onSelect: () => setPromoting(true),
+            },
+          ];
+        case "status":
+          return [
+            { kind: "label", label: TASK_ACT_LABEL.status },
+            ...actions.categories.map(
+              (c): CtxItem => ({
+                kind: "item",
+                label: actions.categoryLabel(c),
+                checked: c === actions.currentCategory,
+                onSelect: () => actions.setCategory(c),
+              }),
+            ),
+          ];
+        case "schedule":
+          return [
+            {
+              kind: "item",
+              label: "Schedule on calendar",
+              icon: themedIcon("CalendarClock"),
+              onSelect: actions.schedule,
+            },
+          ];
+        case "eliminate":
+          return [
+            {
+              kind: "item",
+              label: "Eliminate…",
+              icon: themedIcon("Trash2"),
+              danger: true,
+              onSelect: actions.eliminate,
+            },
+          ];
+      }
     },
-    ...(actions.canPromote
-      ? [
-          {
-            kind: "item" as const,
-            label: "Move to project…",
-            icon: themedIcon("FolderInput"),
-            onSelect: () => setPromoting(true),
-          },
-        ]
-      : []),
-    { kind: "sep" },
-    { kind: "label", label: "Change status" },
-    ...actions.categories.map(
-      (c): CtxItem => ({
-        kind: "item",
-        label: actions.categoryLabel(c),
-        checked: c === actions.currentCategory,
-        onSelect: () => actions.setCategory(c),
-      }),
-    ),
-    { kind: "sep" },
-    {
-      kind: "item",
-      label: actions.isDone ? "Mark as not done" : "Mark as Done",
-      icon: themedIcon("Check"),
-      onSelect: actions.toggleDone,
-    },
-    {
-      kind: "item",
-      label: "Eliminate…",
-      icon: themedIcon("Trash2"),
-      danger: true,
-      onSelect: actions.eliminate,
-    },
-  ];
+  );
   const openMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();

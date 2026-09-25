@@ -300,7 +300,15 @@ const PROJECT_COMMANDS: Command[] = [
   },
 ];
 
-const HELP_COMMANDS: Command[] = [
+/**
+ * The `g <letter>` jumps between apps. Exported because My Tasks binds the
+ * SAME objects (continuity P3): a second list of letters is how `g t` comes
+ * to mean one thing here and another there.
+ */
+export const GO_COMMANDS: readonly Command[] = goCommands();
+
+/** `?`. Exported for the same reason as `GO_COMMANDS`. */
+export const HELP_COMMANDS: readonly Command[] = [
   {
     id: "help.shortcuts",
     label: "Keyboard shortcuts",
@@ -314,7 +322,7 @@ const HELP_COMMANDS: Command[] = [
 
 /** THE registry. Everything the palette, the keyboard and the sheet know. */
 export const COMMANDS: readonly Command[] = [
-  ...goCommands(),
+  ...GO_COMMANDS,
   ...viewCommands(),
   ...PANEL_COMMANDS,
   ...PROJECT_COMMANDS,
