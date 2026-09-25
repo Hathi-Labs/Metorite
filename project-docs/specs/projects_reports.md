@@ -774,16 +774,25 @@ here.
 
 **Open:** spec edit E2 must land before this slice starts.
 
-#### R3d — `pulse` and T1 · waits for an owner decision
+#### R3d — `pulse` and T1 · waits for spec edits E2 to E4
 
 **What:** the `pulse` section. It draws one card for each person: a load
 bar, the pill, the top focus tasks and a "needs help" mark. T1 `team_pulse`
 goes live.
 
+**Owner decisions (2026-09-25):**
+- **Private notes stay on the reader's own row.** A report shows the
+  `pm_task_personal` fields `waiting_on`, `expected_by` and `scheduled_start`
+  only on the row of the person who wrote them, and only to that person. The
+  cards of other people use shared task data only. D53.7 and D53.8 stay
+  intact.
+- **Before R5, an admin sees every card, and a reader who is not an admin
+  sees only their own card.** The report then says "This report hides N
+  other people". This rule is edit E5, and it is a strict subset of §7.1, so
+  it can never show more than R5 allows.
+
 **Open:**
-- The owner must decide if `pulse` may read the `pm_task_personal` fields
-  `waiting_on`, `expected_by` and `scheduled_start` of another member.
-- Spec edits E2 to E5 must land first.
+- Spec edits E2 to E4 must land first.
 - `test_the_template_fence_fires_on_a_missing_section` uses `pulse` as a
   fake missing name. R3d must give that self-test another name.
 
@@ -985,6 +994,8 @@ that the render does not need a saved row.
 | Q3 | Do we add time tracking? | No. |
 | Q4 | Who may use the AI summary? | Anybody with AI credits, and only when they ask for it (R6). |
 | Q5 | When does the morning report send? | Nothing sends by itself in Phase 1. Phase 2 uses 09:00 on weekdays, in the recipient's timezone, as its default. |
+| Q6 (2026-09-25) | May a report show one member's private notes (`waiting_on`, `expected_by`, `scheduled_start`) to another reader? | No. The notes show only on the reader's own row (R3d). |
+| Q7 (2026-09-25) | Before R5, who sees the cards for each person? | An admin sees every card. Any other reader sees only their own card, and a line counts the hidden people (R3d, edit E5). |
 
 **Answered before this spec:** whose view a sent report uses. The send renders
 once for each recipient with that recipient's visibility (H-111, 2026-09-17).
