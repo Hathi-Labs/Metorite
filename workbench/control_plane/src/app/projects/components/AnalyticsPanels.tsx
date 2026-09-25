@@ -72,12 +72,14 @@ import {
 import { effortDisplay, personEffort } from "../lib/effort";
 import {
   type OutlookLine,
+  type SlipRange,
   type Tone,
   capacityLine,
   forecastGap,
   headlineVerdict,
   isDrawableOutlook,
   peopleLine,
+  slipRange,
   velocityLine,
 } from "../lib/outlook";
 
@@ -281,10 +283,10 @@ function Bar({
 
 /** (a) Where is work stuck? */
 export function StuckPanel({ data }: { data: StuckReport }) {
-  // ⚠️ WS-27bn R2b. A REPORT's `stuck` section has no ageing bands, because
-  // they wait for R3. Without `stale` the panel draws no band chart, no band
-  // legend, and never "No open work in this scope". It was not sent the
-  // open work, so it cannot say there is none.
+  // ⚠️ WS-27bn R2b. A report body from a server before R3a has no ageing
+  // bands. Without `stale` the panel draws no band chart, no band legend,
+  // and never "No open work in this scope". It was not sent the open work,
+  // so it cannot say there is none. Since R3a a report sends the bands.
   const hasBands = data?.stale !== undefined && data?.stale !== null;
   // ⚠️ The server sends `stale` as a LIST of {band, n}. This read asked
   // `b.key in data.stale`, which on an array tests INDICES — always false —
@@ -299,9 +301,13 @@ export function StuckPanel({ data }: { data: StuckReport }) {
     <Panel
       title="Where work is stuck"
       hint={
-        hasBands
+        // WS-27bn R3a. A report sends the bands and no blocked list, so its
+        // hint does not name what the panel cannot show.
+        hasBands && typeof data.blocked_total === "number"
           ? "Open tasks by how long they have sat without a change, what is blocked, and what is past due."
-          : "Open tasks past their due date, by project."
+          : hasBands
+            ? "Open tasks by how long they have sat without a change, and what is past due."
+            : "Open tasks past their due date, by project."
       }
     >
       {hasBands && (
@@ -1130,6 +1136,67 @@ const TONE: Record<Tone, string> = {
   quiet: "text-muted-foreground",
 };
 
+/** The filled segment of the slip bar, in the verdict's own tone. */
+const TONE_DOT: Record<Tone, string> = {
+  good: statusAccent({ category: "done" }).dot,
+  bad: statusAccent({ category: "cancelled" }).dot,
+  warn: accentForHue("amber").dot,
+  quiet: "bg-muted-foreground/60",
+};
+
+/**
+ * WS-27bn R3a — the plan against the forecast, as one range.
+ *
+ * The track runs from today to the later date. The segment between the plan
+ * and the forecast is the slip, in the verdict's tone. `slipRange` places
+ * both ends, and the text below says both dates and the slip, because a bar
+ * alone does not say which end is which.
+ */
+function SlipBar({ range }: { range: SlipRange }) {
+  return (
+    <div className="mb-3">
+      <div
+        className="relative h-2 w-full rounded-full bg-muted"
+        role="img"
+        aria-label={range.title}
+        title={range.title}
+      >
+        <div
+          className={`absolute inset-y-0 rounded-full ${TONE_DOT[range.tone]}`}
+          style={{ left: `${range.start}%`, width: `${range.width}%` }}
+        />
+        <span
+          className="absolute -top-0.5 h-3 w-0.5 -translate-x-1/2 rounded-full bg-foreground"
+          style={{ left: `${range.plan}%` }}
+          aria-hidden
+        />
+        <span
+          className={`absolute -top-0.5 size-3 -translate-x-1/2 rounded-full border-2 border-card ${TONE_DOT[range.tone]}`}
+          style={{ left: `${range.forecast}%` }}
+          aria-hidden
+        />
+      </div>
+      <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+        <span className="flex items-center gap-1">
+          <span className="h-3 w-0.5 rounded-full bg-foreground" aria-hidden />
+          Plan {range.planLabel}
+          {range.planPassed && " (passed)"}
+        </span>
+        <span className="flex items-center gap-1">
+          <span
+            className={`size-2 rounded-full ${TONE_DOT[range.tone]}`}
+            aria-hidden
+          />
+          Forecast {range.forecastLabel}
+        </span>
+        <span className={`ml-auto font-medium ${TONE[range.tone]}`}>
+          {range.slip}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function Verdict({ label, line }: { label: string; line: OutlookLine }) {
   return (
     <div className="min-w-0">
@@ -1156,6 +1223,9 @@ export function OutlookPanel({ data }: { data: OutlookReport }) {
   // `isDrawableOutlook` carries the four times this has happened here.
   if (!isDrawableOutlook(data)) return null;
   const verdict = headlineVerdict(data);
+  // WS-27bn R3a. `null` when either date is absent, so the verdicts with no
+  // forecast date draw no bar. The headline above already says why.
+  const range = slipRange(data);
   const gap = forecastGap(data);
   const velocity = velocityLine(data.velocity);
   const capacity = capacityLine(data.capacity);
@@ -1179,6 +1249,8 @@ export function OutlookPanel({ data }: { data: OutlookReport }) {
           {verdict.detail}
         </p>
       </div>
+
+      {range && <SlipBar range={range} />}
 
       {/* ⚠️ The two forecasts disagreed by five months on screen and nothing
           said so. Both were calm coloured dates in the same size, and the

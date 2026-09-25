@@ -52,11 +52,13 @@ import {
 } from "../lib/api";
 import { capacityReportRows } from "../lib/capacity";
 import { conflictsReportRows } from "../lib/conflicts";
+import { headlineVerdict, shortDate } from "../lib/outlook";
 import {
   capacityPanelData,
   conflictsPanelData,
   finishedPanelData,
   loadPanelData,
+  outlookPanelData,
   reportTiles,
   stuckPanelData,
   throughputPanelData,
@@ -87,6 +89,7 @@ import {
   ConflictsPanel,
   FinishedPanel,
   LoadPanel,
+  OutlookPanel,
   Stat,
   StuckPanel,
   ThroughputPanel,
@@ -307,6 +310,37 @@ export function RenderedBody({
                 />
               ))}
             </ul>
+          </Table>
+        </div>
+      )}
+
+      {/* WS-27bn R3a. Opt-in. The outlook route's own body, for this scope.
+          The table says each figure the panel draws, in words. */}
+      {sections.outlook && (
+        <div className="space-y-1">
+          <OutlookPanel data={outlookPanelData(sections.outlook)} />
+          <Table title="Outlook">
+            <dl className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px]">
+              <dt className="text-muted-foreground">Forecast</dt>
+              <dd className="font-medium">
+                {headlineVerdict(sections.outlook).headline}
+              </dd>
+              <dt className="text-muted-foreground">Planned finish</dt>
+              <dd className="tabular-nums">
+                {shortDate(sections.outlook.plan?.planned_finish)}
+              </dd>
+              <dt className="text-muted-foreground">Forecast finish</dt>
+              <dd className="tabular-nums">
+                {shortDate(sections.outlook.velocity?.finish_date)}
+              </dd>
+              <dt className="text-muted-foreground">Open tasks</dt>
+              <dd
+                className="tabular-nums"
+                title="Open tasks in this scope that the forecast must clear."
+              >
+                {sections.outlook.velocity?.remaining_tasks ?? "—"}
+              </dd>
+            </dl>
           </Table>
         </div>
       )}

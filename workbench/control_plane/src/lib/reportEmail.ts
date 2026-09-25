@@ -64,6 +64,26 @@ export interface RenderedReport {
       /** The weekly counts. Each week draws one text bar (WS-27bn R2b). */
       series?: { week_start: string; completed: number }[];
     };
+    /**
+     * WS-27bn R3a. Opt-in. The outlook route's body for the report's scope.
+     * Every date is null when the verdict carries no forecast.
+     */
+    outlook?: {
+      velocity?: {
+        verdict?: string;
+        finish_date?: string | null;
+        remaining_tasks?: number;
+        finished_per_week?: number;
+        created_per_week?: number;
+        weeks_sampled?: number;
+      };
+      plan?: {
+        planned_finish?: string | null;
+        dated?: number;
+        tasks?: number;
+        slip_days?: number | null;
+      };
+    };
     load?: {
       people: { assignee: string | null; open_tasks: number; overdue: number }[];
       total_tasks: number;
@@ -152,6 +172,22 @@ function duration(hours: number | null | undefined): string {
   if (hours < 48) return `${Math.round(hours)} hours`;
   return `${Math.round(hours / 24)} days`;
 }
+
+/**
+ * WS-27bn R3a. A date from the outlook, which may be a full timestamp.
+ * `day` splits on "-", so it reads the calendar date only.
+ */
+function dateOnly(iso: string): string {
+  return day(iso.slice(0, 10));
+}
+
+/** The outlook's verdict, in words. The server decides it. */
+const OUTLOOK_VERDICT: Record<string, string> = {
+  converging: "converging",
+  not_converging: "not converging, because work arrives as fast as it finishes",
+  no_history: "too early to forecast",
+  nothing_left: "nothing open",
+};
 
 /** How many project lines a message carries before it stops being readable. */
 export const MAX_EMAIL_ROWS = 10;
@@ -272,6 +308,56 @@ export function reportLayout(
             `Week of ${day(w.week_start)}: ${textBar(w.completed, peak)} ${w.completed}`,
         );
       })(),
+      notes: [],
+    });
+  }
+
+  const out = sections.outlook;
+  if (out) {
+    // ⚠️ Words and the server's figures only. No date is computed here, and
+    // a verdict with no forecast date prints no date line at all.
+    const v = out.velocity ?? {};
+    const p = out.plan ?? {};
+    const items: string[] = [];
+    if (p.planned_finish) {
+      items.push(
+        `Planned finish: ${dateOnly(p.planned_finish)}` +
+          (typeof p.dated === "number" && typeof p.tasks === "number"
+            ? ` (${p.dated} of ${p.tasks} open tasks carry a due date)`
+            : ""),
+      );
+    }
+    if (v.finish_date) items.push(`Forecast finish: ${dateOnly(v.finish_date)}`);
+    if (typeof p.slip_days === "number") {
+      const n = Math.abs(p.slip_days);
+      items.push(
+        p.slip_days === 0
+          ? "On the plan date"
+          : `${n} ${n === 1 ? "day" : "days"} ${p.slip_days > 0 ? "late" : "early"}`,
+      );
+    }
+    if (
+      typeof v.finished_per_week === "number" &&
+      typeof v.created_per_week === "number"
+    ) {
+      items.push(
+        `Finishing ${figure(v.finished_per_week)} a week, adding` +
+          ` ${figure(v.created_per_week)} a week` +
+          (typeof v.weeks_sampled === "number"
+            ? `, over ${v.weeks_sampled} weeks`
+            : ""),
+      );
+    }
+    parts.push({
+      head: {
+        lead: `Outlook: ${OUTLOOK_VERDICT[v.verdict ?? ""] ?? "no forecast"}`,
+        strong: true,
+        extra:
+          typeof v.remaining_tasks === "number"
+            ? `${v.remaining_tasks} open`
+            : undefined,
+      },
+      items,
       notes: [],
     });
   }

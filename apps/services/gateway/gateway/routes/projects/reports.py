@@ -43,14 +43,17 @@ from fastapi import Depends, HTTPException
 from gateway.routes.projects.analytics import (
     MAX_PEOPLE,
     MAX_WEEKS,
+    STALE_BANDS,
     _hours,
     cycle_summary_sql,
     finished_period_sql,
     finished_sql,
     load_sql,
+    outlook_body,
     overdue_by_project_sql,
     scope_clause,
     scope_params,
+    stale_bands_sql,
     total_open_sql,
     weekly_sql,
 )
@@ -91,8 +94,15 @@ from sqlalchemy import text
 #: work and names who has the hours for it. `conflicts` (WS-27bm S7c) comes
 #: after `stuck`: both say what is wrong with the open work, and conflicts
 #: says what is wrong with the plan for it.
+#:
+#: WS-27bn R3 declares the whole order (`projects_reports.md` §8 R3):
+#: finished, throughput, outlook, load, capacity, pulse, stuck, hygiene,
+#: conflicts, rebalance. Each slice adds its own name in that place. R3a adds
+#: `outlook`, after the past and before the open work, because a forecast
+#: reads the rate that the two sections above it measured.
 SECTIONS: tuple[str, ...] = (
-    "finished", "throughput", "load", "capacity", "stuck", "conflicts",
+    "finished", "throughput", "outlook", "load", "capacity", "stuck",
+    "conflicts",
 )
 
 #: The sections a definition with no `sections` key renders.
@@ -146,8 +156,9 @@ def _coming(
 #: a scope or a period that does not exist yet, and `waits_for` names it in
 #: words a member reads on the gallery card (§8 names the slice). A
 #: preset that named a missing section would be a save the server refuses.
-#: Only `weekly_delivery` (T4) is live in R2. T11 waits for a filter on the
-#: conflict kind, because `conflicts_body` takes no kinds argument.
+#: `weekly_delivery` (T4) is live since R2, and `project_status` (T5) since
+#: R3a. T11 waits for a filter on the conflict kind, because `conflicts_body`
+#: takes no kinds argument.
 TEMPLATES: dict[str, dict[str, Any]] = {
     t["key"]: t
     for t in (
@@ -177,12 +188,15 @@ TEMPLATES: dict[str, dict[str, Any]] = {
             "sections": ["finished", "throughput", "load", "stuck"],
             "weeks": 1, "skip_current_week": True,
         },
-        _coming(
-            "project_status", "Project status",
-            "Will this project finish on time, and what blocks it?",
-            ("project",),
-            "The outlook section",
-        ),
+        {
+            # WS-27bn R3a. "This week" is the running week: one week, with
+            # the current week kept. The sections are in SECTIONS order.
+            "key": "project_status", "name": "Project status",
+            "question": "Will this project finish on time, and what blocks it?",
+            "scope_kinds": ["project"], "available": True,
+            "sections": ["finished", "outlook", "stuck", "conflicts"],
+            "weeks": 1, "skip_current_week": False,
+        },
         _coming(
             "one_on_one", "1:1 prep",
             "How is this person doing over a month?",
@@ -722,6 +736,21 @@ async def render_body(
                 ],
                 "total_tasks": total,
             }
+        elif name == "outlook":
+            # WS-27bn R3a. The outlook route's OWN body, imported, as
+            # `capacity` does. The panel and the report are one computation.
+            #
+            # ⚠️ **No `weeks=` here, on purpose.** The forecast reads
+            # FORECAST_WEEKS of history, whatever period the report names.
+            # `config["weeks"]` of 1 would clamp to 2 and change the forecast,
+            # so the report and the Analytics panel would disagree. The
+            # outlook covers the report's scope only. A forecast for each
+            # child project waits for the T10 slice.
+            sections[name] = await outlook_body(
+                db, vis,
+                project_id=project_id,
+                include_subtree=bool(config["include_subtree"]),
+            )
         elif name == "capacity":
             # WS-27bm S7a. The capacity route's OWN body, imported: the
             # panel and the report are one computation. The HR tier is the
@@ -764,12 +793,17 @@ async def render_body(
                 "window": found["window"],
             }
         elif name == "stuck":
-            # The one number a report needs from (a): what is overdue, by
-            # project. The ageing bands are a dashboard shape — four
-            # buckets asking to be looked at, not read aloud.
+            # What is overdue, by project, and (WS-27bn R3a) how long open
+            # work has sat untouched, in the route's four bands.
             #
-            # ⚠️ The builder is ANALYTICS', imported. A count written
+            # ⚠️ The builders are ANALYTICS', imported. A count written
             # here would be the second set of numbers §9.12.8 forbids.
+            # `open_where` above is the `stuck` route's predicate, so the
+            # bands equal `/analytics/stuck` for the same scope and reader.
+            band_sql, band_params = stale_bands_sql(open_where)
+            stale_row = (
+                await db.execute(text(band_sql), {**params, **band_params})
+            ).fetchone()
             overdue = (
                 await db.execute(
                     text(overdue_by_project_sql(open_where)), params,
@@ -785,6 +819,12 @@ async def render_body(
                     for o in overdue
                 ],
                 "overdue_total": sum(int(o.overdue) for o in overdue),
+                # The route's own shape: a list of {band, n}, in STALE_BANDS
+                # order. The panel then draws its band chart in a report.
+                "stale": [
+                    {"band": band, "n": int(getattr(stale_row, band, 0) or 0)}
+                    for band, _, _ in STALE_BANDS
+                ],
             }
 
     return {

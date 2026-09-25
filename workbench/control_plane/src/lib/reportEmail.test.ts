@@ -664,3 +664,47 @@ describe("reportEmail · the text bars", () => {
     expect(built.html).not.toMatch(/style=/);
   });
 });
+
+describe("reportEmail · outlook (WS-27bn R3a)", () => {
+  const withOutlook = (outlook: NonNullable<RenderedReport["sections"]["outlook"]>) =>
+    reportEmail({ ...rendered, sections: { outlook } });
+
+  it("says the plan, the forecast and the slip in words, with no colour", () => {
+    const got = withOutlook({
+      velocity: {
+        verdict: "converging",
+        finish_date: "2027-02-18",
+        remaining_tasks: 7701,
+        finished_per_week: 4.2,
+        created_per_week: 1.1,
+        weeks_sampled: 6,
+      },
+      plan: {
+        planned_finish: "2026-12-01T00:00:00+00:00",
+        dated: 30,
+        tasks: 31,
+        slip_days: 79,
+      },
+    });
+    expect(got.text).toContain("Outlook: converging (7701 open)");
+    expect(got.text).toContain("Planned finish: 1 Dec 2026 (30 of 31 open tasks carry a due date)");
+    expect(got.text).toContain("Forecast finish: 18 Feb 2027");
+    expect(got.text).toContain("79 days late");
+    expect(got.text).toContain("Finishing 4.2 a week, adding 1.1 a week, over 6 weeks");
+    expect(got.html).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+    expect(got.html).not.toMatch(/\b(rgb|hsl)a?\(|style=/);
+  });
+
+  it("prints no date and no broken word when the verdict has no forecast", () => {
+    for (const verdict of ["not_converging", "no_history", "nothing_left"]) {
+      const got = withOutlook({
+        velocity: { verdict, finish_date: null, remaining_tasks: 12 },
+        plan: { planned_finish: null, dated: 0, tasks: 12, slip_days: null },
+      });
+      for (const word of ["undefined", "NaN", "Forecast finish", "days late", "days early"]) {
+        expect(got.text, `${verdict}: ${word}`).not.toContain(word);
+      }
+      expect(got.text).toContain("Outlook: ");
+    }
+  });
+});

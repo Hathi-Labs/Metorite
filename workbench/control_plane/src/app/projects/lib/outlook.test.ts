@@ -16,6 +16,7 @@ import {
   isDrawableOutlook,
   peopleLine,
   shortDate,
+  slipRange,
   velocityLine,
 } from "./outlook";
 
@@ -419,5 +420,57 @@ describe("⚠️ reading a response this panel cannot trust", () => {
       velocity: { ...report().velocity },
     } as never);
     expect(v.headline).toContain("On track for");
+  });
+});
+
+describe("slipRange — the plan against the forecast (WS-27bn R3a)", () => {
+  it("places the plan and the forecast on a track from today", () => {
+    // Forecast in 10 weeks (70 days), 23 days after the plan, so the plan
+    // sits 47 days out. The forecast is the far end of the track.
+    const r = slipRange(report())!;
+    expect(r.forecast).toBe(100);
+    expect(r.plan).toBeCloseTo((47 / 70) * 100, 5);
+    expect(r.start).toBeCloseTo(r.plan, 5);
+    expect(r.width).toBeCloseTo(100 - r.plan, 5);
+    expect(r.slip).toBe("23 days late");
+    expect(r.planLabel).toBe("17 Feb 2027");
+    expect(r.forecastLabel).toBe("12 Mar 2027");
+    expect(r.tone).toBe("bad");
+    expect(r.planPassed).toBe(false);
+  });
+
+  it("an early forecast puts the plan at the far end, in a good tone", () => {
+    const r = slipRange(report({ plan: { ...report().plan, slip_days: -14 } }))!;
+    expect(r.plan).toBe(100);
+    expect(r.forecast).toBeCloseTo((70 / 84) * 100, 5);
+    expect(r.slip).toBe("14 days early");
+    expect(r.tone).toBe("good");
+  });
+
+  it("a plan date already past sits at today and says so", () => {
+    const r = slipRange(report({ plan: { ...report().plan, slip_days: 90 } }))!;
+    expect(r.plan).toBe(0);
+    expect(r.planPassed).toBe(true);
+    expect(r.slip).toBe("90 days late");
+  });
+
+  it("one day is a day, and zero is the plan date", () => {
+    expect(slipRange(report({ plan: { ...report().plan, slip_days: 1 } }))!.slip).toBe("1 day late");
+    const on = slipRange(report({ plan: { ...report().plan, slip_days: 0 } }))!;
+    expect(on.slip).toBe("on the plan date");
+    expect(on.width).toBeGreaterThanOrEqual(1);
+  });
+
+  it("draws nothing when either date is absent", () => {
+    for (const verdict of ["not_converging", "no_history", "nothing_left"] as const) {
+      const o = report({
+        velocity: { ...report().velocity, verdict, finish_date: null, weeks_remaining: null },
+        plan: { ...report().plan, slip_days: null },
+      });
+      expect(slipRange(o), verdict).toBeNull();
+    }
+    expect(slipRange(report({ plan: { ...report().plan, planned_finish: null, slip_days: null } }))).toBeNull();
+    expect(slipRange({} as never)).toBeNull();
+    expect(slipRange(null)).toBeNull();
   });
 });

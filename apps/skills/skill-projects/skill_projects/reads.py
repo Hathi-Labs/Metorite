@@ -1228,11 +1228,31 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     # S7a. The row label is the directory name; the unassigned row has none
     # and prints as "unassigned". Nested HR blocks are skipped per row.
     "capacity": ("people", "name", ("total_tasks", "people_total", "hr_visible", "horizon_days")),
+    # WS-27bn R3a. The outlook has no row list. Its figures are NESTED, so
+    # the scalar keys are dotted paths that `_report_section` reads with
+    # `_dig`. A generic fallback would print nothing for a nested dict.
+    "outlook": ("", "", (
+        "velocity.verdict", "plan.planned_finish", "velocity.finish_date",
+        "plan.slip_days", "velocity.remaining_tasks", "capacity.verdict",
+    )),
     "stuck":("overdue", "name", ("overdue_total", "blocked_total")),
     # S7c. The row label is the kind. The sentence carries titles, so it is
     # fenced like every other piece of member text below.
     "conflicts": ("rows", "kind", ("total", "hr_visible", "horizon_days")),
 }
+
+
+_MISSING = object()
+
+
+def _dig(section: dict[str, Any], key: str) -> Any:
+    """One figure of a section. A dotted key reads a nested dict (R3a)."""
+    value: Any = section
+    for part in key.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return _MISSING
+        value = value[part]
+    return value
 
 
 def _report_section(name: str, section: dict[str, Any]) -> list[str]:
@@ -1241,9 +1261,14 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
         name,
         ("rows", "name", tuple(k for k, v in section.items() if not isinstance(v, (dict, list)))),
     )
-    totals = ", ".join(f"{k} {section[k]}" for k in scalar_keys if k in section)
+    totals = ", ".join(
+        f"{k} {v}"
+        for k in scalar_keys
+        if (v := _dig(section, k)) is not _MISSING
+    )
     out = [f"{name}:" + (f" {totals}" if totals else "")]
-    rows = section.get(list_key) or []
+    rows = section.get(list_key) if list_key else None
+    rows = rows or []
     if not isinstance(rows, list):
         return out
     for row in rows[:25]:
