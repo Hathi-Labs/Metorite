@@ -28,6 +28,7 @@ import { TaskSettingsModal } from "./components/TaskSettingsModal";
 import { TaskFocusModal } from "./components/TaskFocusModal";
 import { ReclarifyModal } from "./components/ReclarifyModal";
 import { UndoToast } from "./components/UndoToast";
+import { StagePromptHost } from "./components/StagePromptHost";
 import { SyncFailureToast } from "./components/SyncFailureToast";
 import { PromoteToast } from "./components/PromoteToast";
 import { PromoteHost } from "./components/PromoteHost";
@@ -256,6 +257,7 @@ export default function TasksPage() {
         <TaskFocusModal />
         <ReclarifyModal />
         <UndoToast />
+        <StagePromptHost />
         <SyncFailureToast />
         <PromoteToast />
         <PromoteHost />
@@ -386,6 +388,7 @@ export default function TasksPage() {
       )}
       <ReclarifyModal />
       <UndoToast />
+      <StagePromptHost />
       <SyncFailureToast />
       <PromoteToast />
       <PromoteHost />

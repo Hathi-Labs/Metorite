@@ -132,6 +132,82 @@ export function closesTask(category: string): boolean {
   return CLOSING_CATEGORIES.has(category);
 }
 
+// ── Which status a stage resolves to (D79) ─────────────────────────────────
+//
+// "Stages group, statuses write." A stage (a category) is how both apps GROUP
+// work. A write always names one exact status id. When a gesture names only a
+// stage, one of the rules below chooses the status, and every app reads these
+// rules from here. `app/tasks/lib/statusCategory.test.ts` fails if the Tasks
+// app defines a first-by-position resolver of its own.
+
+/** The minimum a status row needs for the resolvers below. */
+export interface LaneLike {
+  id: string;
+  name: string;
+  category: string;
+  position: number;
+}
+
+/** The statuses of one stage, in board order: position, then name. */
+export function stageLanes<T extends LaneLike>(
+  rows: readonly T[],
+  category: string
+): T[] {
+  return rows
+    .filter((row) => row.category === category)
+    .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+}
+
+/**
+ * Where a card LANDS when it is dropped on a stage rather than on a status.
+ *
+ * **The first status of that stage, by position.** The first status in a
+ * group is where work starts (owner directive 2026-09-06, which retired
+ * `is_default`), and the gateway's `load_default_status` answers the same
+ * question the same way.
+ *
+ * Returns `null` when the set has no status in that stage. The caller then
+ * writes nothing rather than inventing a status.
+ *
+ * ⚠️ GENERIC on the row, so the caller gets its OWN type back. Projects'
+ * `accentForGroup` reads the returned lane's `color`.
+ */
+export function landingLane<T extends LaneLike>(
+  rows: readonly T[],
+  category: string
+): T | null {
+  return stageLanes(rows, category)[0] ?? null;
+}
+
+/**
+ * True when a stage holds two or more statuses, so a drag into it must ask
+ * which one (D79 rule 1). My Tasks asks. Projects' own board groups by stage
+ * too, and it keeps its first-status rule without a question.
+ */
+export function needsChoice(rows: readonly LaneLike[], category: string): boolean {
+  return stageLanes(rows, category).length >= 2;
+}
+
+/**
+ * The status a REOPEN writes: the first `todo` status, else the first status
+ * that is not triage. `null` when even that one closes a task, and the task
+ * then stays where it is.
+ *
+ * Mirrors `personal.reopen_if_closed` in the gateway, the rule for a member
+ * who reopens a task from My Tasks. The Projects Reopen tick reads this too
+ * (D79: one reopen rule). Fence: `lib/statusCategory.test.ts`.
+ */
+export function reopenLane<T extends LaneLike>(rows: readonly T[]): T | null {
+  const todo = landingLane(rows, "todo");
+  if (todo) return todo;
+  const first =
+    [...rows]
+      .filter((row) => row.category !== "triage")
+      .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name))[0] ??
+    null;
+  return first && !closesTask(first.category) ? first : null;
+}
+
 /** The label, falling back to the raw value rather than to nothing.
  *
  *  A category we do not know is a server that moved ahead of this file, and the

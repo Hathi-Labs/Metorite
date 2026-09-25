@@ -96,7 +96,11 @@ export function offersKey(event: {
   metaKey?: boolean;
   ctrlKey?: boolean;
   altKey?: boolean;
-  target?: { tagName?: string; isContentEditable?: boolean } | null;
+  target?: {
+    tagName?: string;
+    isContentEditable?: boolean;
+    getAttribute?: (name: string) => string | null;
+  } | null;
 }): boolean {
   if (!isSequenceKey(event)) return false;
   return !isTypingTarget(event.target ?? null);

@@ -697,6 +697,9 @@ export function TaskBody({
               >
                 <SelectButton
                   label="Status"
+                  // Above My Tasks' TaskFocusModal (`z-[80]`), which draws
+                  // this body. At the default layer the list opened under it.
+                  layer="top"
                   widthClass="w-full"
                   value={task.status_id}
                   disabled={busy}

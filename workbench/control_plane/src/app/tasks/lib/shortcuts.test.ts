@@ -58,6 +58,13 @@ describe("the keys My Tasks answers", () => {
     expect(offersKey({ key: "g", ctrlKey: true, target: BODY })).toBe(false);
   });
 
+  it("g never fires on a listbox option, where a letter is type-ahead (D79)", () => {
+    // The status menu's options are buttons with role="option". `g` then `t`
+    // typed there must find a status, not jump to another page.
+    const option = { tagName: "BUTTON", getAttribute: (n: string) => (n === "role" ? "option" : null) };
+    expect(offersKey({ key: "g", target: option })).toBe(false);
+  });
+
   it("the listener runs in the capture phase, so `g t` never reaches the Inbox's `t`", () => {
     const src = read("../components/TasksShortcuts.tsx");
     expect(src).toMatch(/addEventListener\("keydown", onKey, true\)/);

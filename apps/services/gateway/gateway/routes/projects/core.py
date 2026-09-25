@@ -2635,6 +2635,33 @@ async def load_default_status(
     )
 
 
+#: What a member reads when a write would leave a status set with no Done
+#: status (D79). One sentence for every door, so the settings screen, the
+#: status-set switch and a tree move all say the same thing.
+LAST_DONE_REFUSAL = (
+    "Every status set keeps at least one Done status, because Mark done needs "
+    "one to move a task into. Add another Done status first."
+)
+
+
+async def require_done_status(db: Any, owner_id: str) -> None:
+    """Refuse (409) when the set ``owner_id`` owns holds no Done status (D79).
+
+    For a write that makes a node OWN a set: the status-set switch and a
+    promotion to a space. The check runs AFTER the write, inside the same
+    transaction, so a refusal rolls the write back. It asks the question Mark
+    done asks, through :func:`load_default_status`, so the guard and
+    completion cannot disagree about what counts as a Done status.
+
+    A delete and a category change are refused BEFORE the write instead
+    (``admin.py``), because there the refusal can name the status.
+    """
+    try:
+        await load_default_status(db, owner_id, COMPLETED_CATEGORY)
+    except HTTPException:
+        raise HTTPException(status_code=409, detail=LAST_DONE_REFUSAL) from None
+
+
 async def require_status_in_project(db: Any, root_id: str, status_id: str) -> Any:
     """A status, checked to belong to this project's tree.
 

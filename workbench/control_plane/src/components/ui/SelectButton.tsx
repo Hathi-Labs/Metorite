@@ -48,7 +48,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
-import AnchoredPanel from "@/components/ui/AnchoredPanel";
+import AnchoredPanel, { type PanelLayer } from "@/components/ui/AnchoredPanel";
 import { domClickWalk, shouldDismiss } from "@/lib/outsideClick";
 
 /**
@@ -141,6 +141,12 @@ export interface SelectButtonProps {
    * handles one event instead of guessing at three.
    */
   onClose?: () => void;
+  /**
+   * The list's paint layer (`AnchoredPanel`). `top` for a control that can
+   * sit inside a hand-rolled overlay above `z-50`, such as the shared task
+   * body inside My Tasks' `TaskFocusModal` (`z-[80]`).
+   */
+  layer?: PanelLayer;
 }
 
 export function SelectButton({
@@ -154,6 +160,7 @@ export function SelectButton({
   disabled = false,
   autoOpen = false,
   onClose,
+  layer,
 }: SelectButtonProps) {
   const [open, setOpen] = useState(autoOpen);
   const root = useRef<HTMLDivElement | null>(null);
@@ -241,6 +248,7 @@ export function SelectButton({
       <AnchoredPanel
         anchor={trigger}
         open={open}
+        layer={layer}
         className="max-h-64 w-max p-1"
         panelProps={{ id: listId, role: "listbox", "aria-label": label }}
       >

@@ -210,6 +210,7 @@ export function mapLensItem(raw: Raw): MyTask {
     assignee: assignees[0],
     assignees,
 
+    statusId: text(raw.status_id),
     workflowStage: text(raw.workflow_stage),
     statusCategory: text(raw.status_category),
     statusColor: text(raw.status_color),
@@ -975,11 +976,22 @@ export interface LensMoveRequest {
  *   * the D62 guards refuse a move into somebody's personal tree, and an
  *     assignment to a colleague while the task is still in your own.
  */
-/** Put a task in one lane, by id (D73.9: the category drag resolves the lane). */
-export async function lensSetStatusId(taskId: string, statusId: string): Promise<void> {
+/**
+ * Put a task in one lane, by id (D79: a status write names one exact status).
+ *
+ * `ifMatch` is the row's `updated_at` as the caller last read it. The gateway
+ * answers 412 when the row changed since (D-PM-20), which is how an Undo
+ * refuses to overwrite a teammate's newer move.
+ */
+export async function lensSetStatusId(
+  taskId: string,
+  statusId: string,
+  opts?: { ifMatch?: string },
+): Promise<void> {
   await projectsCall<Raw>(`tasks/${taskId}`, {
     method: "PATCH",
     body: JSON.stringify({ status_id: statusId }),
+    ...(opts?.ifMatch ? { headers: { "If-Match": opts.ifMatch } } : {}),
   });
 }
 

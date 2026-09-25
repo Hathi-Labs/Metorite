@@ -256,40 +256,45 @@ export function emptyCategories(rows: readonly Placeable[]): string[] {
 }
 
 /**
- * Where a card LANDS when it is dropped on a stage rather than on a lane.
- *
- * Grouping by category draws one column per stage, so a drop names a stage and
- * not a status — and `pm_tasks.status_id` is NOT NULL. Something has to choose,
- * and the choice must be the same one every time or the board is a dice roll.
- *
- * **The first lane of that stage, by position.**
+ * Where a card LANDS when it is dropped on a stage rather than on a lane: the
+ * first lane of that stage, by position.
  *
  * ⚠️ **The spec says something else, and the spec is out of date.** §9.12.3
  * reads *"sets the task's status to that project's DEFAULT status in that
  * category — `is_default` is on the row"*. Owner directive 2026-09-06 retired
- * that flag: the first lane by position is where work starts, and the flag was
- * *"the answer nobody could see — on the dev database it sat on `backlog` for
- * every space, leaving three of four category columns with no answer at all."*
+ * that flag, and D79 (2026-09-25) records the rule for both apps.
  *
- * `is_default` is still on the wire and read by nothing, and it is dropped in a
- * later release under R6. Keying a NEW feature to it would revive a retired
- * mechanism and inherit the exact defect the directive describes.
- *
- * Returns `null` when the project has no lane in that stage — a column the
- * board should not have drawn. The caller patches nothing rather than inventing
- * a lane.
- *
- * ⚠️ GENERIC on the row, so the caller gets its OWN type back rather than the
- * three fields this module needs. `accentForGroup` reads the returned lane's
- * `color`, which a widened `Placeable` return would have thrown away — the
- * stage's colour comes from the lane it lands on.
+ * The rule moved to `@/lib/statusCategory` so My Tasks reads the SAME one
+ * (D79: one client resolver). Re-exported here so every Projects caller keeps
+ * its import.
  */
-export function landingLane<T extends Placeable>(
-  rows: readonly T[],
-  category: string
-): T | null {
-  const here = rows
-    .filter((row) => row.category === category)
-    .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
-  return here[0] ?? null;
+export { landingLane } from "@/lib/statusCategory";
+
+/**
+ * Why the editor refuses a change to the last Done status, or `null` when
+ * the change is allowed (D79).
+ *
+ * Every status set keeps at least one status in the Done category, because
+ * Mark done moves a task into the first one. So the last Done status cannot
+ * be removed, and cannot move to another stage. The gateway refuses both
+ * with a 409. The editor says so BEFORE the click, in the member's words,
+ * and never shows the raw error.
+ *
+ * `change` is `"remove"`, or the category the status would move to.
+ */
+export function lastDoneRefusal(
+  rows: readonly Placeable[],
+  statusId: string,
+  change: "remove" | string
+): string | null {
+  const row = rows.find((r) => r.id === statusId);
+  if (!row || row.category !== "done") return null;
+  if (change === "done") return null;
+  if (rows.some((r) => r.id !== statusId && r.category === "done")) return null;
+  const act = change === "remove" ? "remove it" : "move it to another stage";
+  return (
+    `“${row.name}” is the last Done status, so you cannot ${act}. Every ` +
+    "status set keeps one, because Mark done moves a task into it. Add " +
+    "another Done status first."
+  );
 }

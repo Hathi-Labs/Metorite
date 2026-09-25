@@ -51,6 +51,7 @@
  * that does not make you read four lane names to finish a task.
  */
 
+import { reopenLane } from "@/lib/statusCategory";
 import { TASK_ACT_LABEL, doneLabel } from "@/lib/taskMenuVocabulary";
 
 import type { StatusRow, TaskRow } from "./api";
@@ -141,8 +142,12 @@ export function laneFor(
   statuses: readonly StatusRow[],
   end: "closed" | "open",
 ): StatusRow | undefined {
+  // D79: one reopen rule, the gateway's (`personal.reopen_if_closed`): the
+  // first To do status, else the first status that is not triage and does
+  // not close. It used to be the first open status of ANY stage, so a
+  // Backlog lane above To do took a reopened task out of everyone's list.
+  if (end === "open") return reopenLane(statuses) ?? undefined;
   const byPosition = [...statuses].sort((a, b) => a.position - b.position);
-  if (end === "open") return byPosition.find((s) => !isResolved(s.category));
   for (const wanted of ["done", "cancelled"]) {
     const hit = byPosition.find((s) => s.category === wanted);
     if (hit) return hit;
