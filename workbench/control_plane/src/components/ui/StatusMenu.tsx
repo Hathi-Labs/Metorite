@@ -11,7 +11,10 @@
  * * My Tasks: the status pill, the card's right-click "Change status", and
  *   the drag prompt (a card dropped on a stage that holds two or more
  *   statuses asks here, filtered to that stage).
- * * Both apps: the Status control in the shared task body (`TaskBody`).
+ *
+ * The shared task body (`TaskBody`) still draws its Status control as a flat
+ * `SelectButton` list, on the `top` layer. Moving it onto this menu is a
+ * follow-up.
  *
  * ## How it looks
  *
@@ -138,6 +141,17 @@ export function statusDot(status: StatusOption): string {
   // `accentForStatus`'s order in Projects: the stored colour, then the
   // stage. The name is not read, so a lane reads one hue in both apps.
   return statusAccent({ color: status.color, category: status.category }).dot;
+}
+
+/**
+ * How tall the panel will be, in px, capped at 320. `AnchoredPanel` decides
+ * above or below from this, and a flipped panel sits this far above its
+ * anchor. A flat 320 flipped a three-row drag prompt far above the card it
+ * asks about, over the toolbar. Rows are about 26px at default density, and
+ * the header about 40px.
+ */
+export function menuHeight(rowCount: number, hasHeader: boolean): number {
+  return Math.min(320, 12 + (hasHeader ? 40 : 0) + rowCount * 26);
 }
 
 /** How long typed letters stay one query. */
@@ -273,8 +287,8 @@ export function StatusMenu({
       anchor={anchor}
       open={open}
       layer="top"
-      maxHeight={320}
-      className="max-h-80 w-max min-w-[12rem] max-w-[18rem] p-1"
+      maxHeight={menuHeight(rows.length, Boolean(projectName || prompt))}
+      className="w-max min-w-[12rem] max-w-[18rem] p-1"
       panelProps={{
         role: "listbox",
         "aria-label": stageLabel ? `${stageLabel} statuses` : "Status",

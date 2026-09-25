@@ -251,16 +251,25 @@ async def patch_status(
         return row_to_dict(row, StatusModel)
 
 
+#: The WHOLE status set, locked (D79). Two admins who each delete one of the
+#: last two Done statuses would otherwise both see "another Done stays" and
+#: leave none. The target row is locked too, and every writer locks in id
+#: order: locking "all except self" lets two such writers each hold their own
+#: row and wait for the other's, which Postgres ends as a deadlock (a 500).
+_LOCK_STATUS_SET_SQL = (
+    "SELECT id, category FROM pm_task_statuses "
+    " WHERE project_id = CAST(:owner AS uuid) "
+    " ORDER BY id FOR UPDATE"
+)
+
+
 async def _other_lanes(db: Any, existing: Any) -> list[Any]:
-    """Every other status in the set ``existing`` belongs to."""
-    return list((await db.execute(
-        text(
-            "SELECT id, category FROM pm_task_statuses "
-            " WHERE project_id = CAST(:owner AS uuid) "
-            "   AND id <> CAST(:sid AS uuid)"
-        ),
-        {"owner": str(existing.project_id), "sid": str(existing.id)},
-    )).fetchall())
+    """Every other status in the set ``existing`` belongs to, with the whole
+    set locked until the transaction ends. Filtered here, not in SQL."""
+    rows = (await db.execute(
+        text(_LOCK_STATUS_SET_SQL), {"owner": str(existing.project_id)},
+    )).fetchall()
+    return [r for r in rows if str(r.id) != str(existing.id)]
 
 
 def _has_done(lanes: list[Any]) -> bool:

@@ -12,6 +12,7 @@ import {
   type MenuRow,
   type StatusOption,
   initialFocus,
+  menuHeight,
   menuRows,
   statusDot,
   stepFocus,
@@ -108,5 +109,16 @@ describe("the colour dot — the one status vocabulary", () => {
     expect(statusDot(s("x", "Doing", "in_progress", 0))).not.toBe(
       statusDot(s("y", "Review", "in_progress", 0, "violet")),
     );
+  });
+});
+
+describe("menuHeight — the panel hangs by its real height (D79)", () => {
+  it("a short drag prompt measures short, so it opens beside its card", () => {
+    const prompt = menuRows(ENGINEERING, "in_progress");
+    expect(menuHeight(prompt.length, true)).toBeLessThan(160);
+  });
+
+  it("never grows past 320", () => {
+    expect(menuHeight(40, true)).toBe(320);
   });
 });

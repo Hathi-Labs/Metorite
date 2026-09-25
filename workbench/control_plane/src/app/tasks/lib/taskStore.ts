@@ -148,12 +148,13 @@ function disposeLive(
   get: Getter,
   ids: string[],
   disposition: Disposition,
-): Promise<void> {
+): Promise<MyTask[]> {
   return apiBulkDispose(ids, disposition).then(
     (rows) => {
-      if (!rows.length) return;
+      if (!rows.length) return rows;
       const byId = new Map(rows.map((r) => [r.id, r]));
       set((s) => ({ items: s.items.map((i) => byId.get(i.id) ?? i) }));
+      return rows;
     },
     async (err: unknown) => {
       if (err instanceof LensPartialFailure) {
@@ -166,6 +167,7 @@ function disposeLive(
           ? err.message
           : `Couldn't file ${ids.length === 1 ? "the item" : "the selection"}.`,
       );
+      return [] as MyTask[];
     },
   );
 }
@@ -538,11 +540,98 @@ interface UndoSnapshot {
    *  due date). Undo cannot reverse that from here, so the toast offers to
    *  open the task instead, and `undoLastChange` refuses. */
   sharedChangeTaskId?: string;
-  /** D79 — ids whose STATUS this change may have moved (a status pick, a
-   *  drag, Mark done, a reopen). Undo PATCHes the snapshot row's exact
-   *  `statusId` back FIRST, then anything else. Without it an undo of Mark
-   *  done reopened into the first To do status, not the one it left. */
-  statusRevertIds?: string[];
+  /** D79 — this change MOVED a task's status (a status pick, a drag, Mark
+   *  done, a reopen). `plan` resolves to what the SERVER had before our
+   *  write and what our write set, or null when the status did not move.
+   *  Undo puts the prior status back FIRST, and only while the task is
+   *  still in the status our write set. See `revertStatus`. */
+  statusRevert?: { id: string; plan: Promise<StatusRevert | null> };
+}
+
+/** D79 — one status write, as Undo needs it. */
+export interface StatusRevert {
+  /** The status id the server had before our write. */
+  prior: string;
+  /** Its name, for "Could not restore In review". */
+  priorName?: string;
+  /** The status id our write set. Undo reverts only while it still holds. */
+  set: string;
+}
+
+/** The plan from the server row before our write, and the status after it. */
+export function statusRevertPlan(
+  before: Pick<MyTask, "statusId" | "workflowStage"> | null | undefined,
+  after: string | null | undefined,
+): StatusRevert | null {
+  if (!before?.statusId || !after || before.statusId === after) return null;
+  return { prior: before.statusId, priorName: before.workflowStage, set: after };
+}
+
+/** The dispositions the gateway reopens a closed task for (D77 choice 3,
+ *  `personal.OPEN_DISPOSITIONS`). */
+const REOPENING: ReadonlySet<Disposition> = new Set<Disposition>(["INBOX", "NEXT", "WAITING"]);
+
+/**
+ * Can this one-tap disposition move the task's SHARED status? DONE completes
+ * an open task, and an open disposition reopens a closed one. Someday,
+ * Reference and Trash never touch the status, so their Undo must never
+ * write one: the local row may be as old as the last hydrate, and a status
+ * written back from it would silently revert a teammate's move (D79).
+ */
+export function dispositionMovesStatus(
+  item: Pick<MyTask, "statusCategory"> | undefined,
+  disposition: Disposition,
+): boolean {
+  const closed = closesTask(item?.statusCategory ?? "");
+  if (disposition === "DONE") return !closed;
+  return REOPENING.has(disposition) && closed;
+}
+
+/** What Undo says when the status moved again after our write. */
+export const STATUS_MOVED_SINCE =
+  "Someone changed the status since, so it was not undone.";
+
+const errText = (err: unknown): string =>
+  err instanceof Error && err.message ? err.message : String(err);
+
+/**
+ * Put back the status our write replaced (D79), before any overlay write.
+ *
+ * It reads the task first and reverts only while the task is still in the
+ * status OUR write set. The PATCH carries that read's `updated_at` as
+ * If-Match, so a move that lands between the read and the write answers
+ * 412 and is kept. Any failure is said through the toast, and the row is
+ * re-read so the screen matches the server. Resolves true when the other
+ * undo writes for this task may go ahead.
+ */
+async function revertStatus(
+  get: Getter,
+  revert: UndoSnapshot["statusRevert"],
+): Promise<boolean> {
+  if (!revert) return true;
+  const plan = await revert.plan.catch(() => null);
+  if (!plan) return true;
+  const { id } = revert;
+  const restore = plan.priorName ?? "the earlier status";
+  const refuse = async (message: string): Promise<boolean> => {
+    get().reportSyncFailure(message);
+    await get().refreshItem(id);
+    return false;
+  };
+  let now: MyTask;
+  try {
+    now = await lensGetItem(id);
+  } catch (err) {
+    return refuse(`Could not restore ${restore}: ${errText(err)}`);
+  }
+  if (now.statusId !== plan.set) return refuse(STATUS_MOVED_SINCE);
+  try {
+    await lensSetStatusId(id, plan.prior, { ifMatch: now.updatedAt || undefined });
+  } catch (err) {
+    if (err instanceof ProjectsApiError && err.status === 412) return refuse(STATUS_MOVED_SINCE);
+    return refuse(`Could not restore ${restore}: ${errText(err)}`);
+  }
+  return true;
 }
 
 /** D79 — a drag that landed on a stage with two or more statuses, waiting
@@ -2073,8 +2162,27 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   quickDispose: (id, disposition) => {
     get().cancelPromoteFor([id]);
     flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
+    // D79 — only a gesture that can move the status reads the server's
+    // status first, and only that one's Undo may write a status back.
+    const live = get().backend === "live";
+    const moves =
+      live && dispositionMovesStatus(get().items.find((i) => i.id === id), disposition);
+    const priorRead = moves ? lensGetItem(id).catch(() => null) : null;
+    const write = live
+      ? (priorRead ?? Promise.resolve(null)).then(() =>
+          disposeLive(set, get, [id], disposition),
+        )
+      : null;
+    const statusRevert =
+      priorRead && write
+        ? {
+            id,
+            plan: Promise.all([priorRead, write]).then(([before, rows]) =>
+              statusRevertPlan(before, rows.find((r) => r.id === id)?.statusId),
+            ),
+          }
+        : undefined;
     set((s) => {
-      const before = s.items.find((i) => i.id === id);
       return {
         items: s.items.map((i) => (i.id === id ? disposeOne(i, disposition) : i)),
         processedThisSession: s.processedThisSession + 1,
@@ -2086,10 +2194,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           selectedItemId: s.selectedItemId,
           label: DISPOSE_LABEL[disposition] ?? "Filed",
           changedIds: [id],
-          // D79 — a quick move can move the STATUS too: DONE completes, and
-          // an open disposition reopens a closed task. Undo puts the exact
-          // status back before it touches my list.
-          statusRevertIds: before?.statusId ? [id] : undefined,
+          // D79 — DONE completes, and an open disposition reopens a closed
+          // task. Only then does Undo put the server's prior status back.
+          statusRevert,
           // A "From Projects" row was untriaged: undo CLEARS the stated
           // disposition and puts it back in the group, as Clarify's undo
           // does. Writing the displayed value back stated a triage.
@@ -2097,8 +2204,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         },
       };
     });
-    if (get().backend === "live") {
-      const write = disposeLive(set, get, [id], disposition);
+    if (write) {
       get().markTriaged([id], write);
       if (disposition === "DONE") {
         const snap = get().undoSnapshot;
@@ -2438,6 +2544,14 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     get().cancelPromoteFor([id]);
     flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
     const closes = closesTask(lane.category);
+    // D79 — Undo needs the status the SERVER had, not the local row, which
+    // is as old as the last hydrate. Read it, then write.
+    const priorRead = live ? lensGetItem(id).catch(() => null) : null;
+    const write = priorRead ? priorRead.then(() => lensSetStatusId(id, lane.id)) : null;
+    const plan =
+      priorRead && write
+        ? Promise.all([priorRead, write]).then(([before]) => statusRevertPlan(before, lane.id))
+        : null;
     set((s) => ({
       items: s.items.map((i) =>
         i.id === id
@@ -2465,13 +2579,13 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         processed: s.processedThisSession,
         selectedItemId: s.selectedItemId,
         label: moveReceipt(lane, receiptPlace(item, s)),
-        statusRevertIds: live && item.statusId ? [id] : undefined,
+        statusRevert: plan ? { id, plan } : undefined,
       },
     }));
-    if (!live) return;
+    if (!write) return;
     const snap = get().undoSnapshot;
     try {
-      await lensSetStatusId(id, lane.id);
+      await write;
     } catch (err) {
       await refetchAfterFailure(set);
       // Only this write's snapshot: a newer change keeps its own Undo.
@@ -2483,6 +2597,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   },
 
   setStage: async (id, stage, opts) => {
+    // A newer gesture on the same task replaces an open question. Left open,
+    // a late Enter on it would overwrite the status this gesture writes.
+    if (get().stagePrompt?.taskId === id) set({ stagePrompt: null });
     const item = get().items.find((i) => i.id === id);
     if (!item) return "none";
     // Already there: compare the LANE's category, not the group. A task in a
@@ -2988,7 +3105,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     if (snap.sharedChangeTaskId) return;
     const { items, projects, processed, selectedItemId, changedIds,
       deletedItems, softDeletedIds, removedIds, archivedIds, archivedTo,
-      scheduleRevertIds, untriagedIds, statusRevertIds } = snap;
+      scheduleRevertIds, untriagedIds, statusRevert } = snap;
     set((s) => {
       // An undone decision is undecided again: it rejoins the walk.
       const clarifiedThisSession = new Set(s.clarifiedThisSession);
@@ -3011,13 +3128,15 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     // below waits for it. Written the other way round, a NEXT on a closed
     // task reopened it into the first To do status (`reopen_if_closed`),
     // and the status write then had to undo that move.
+    //
+    // When the status is NOT put back (someone moved it since, or the write
+    // failed), my list is left alone for that task too. An open disposition
+    // would reopen whatever closed status the task is in now.
     const before = new Map(items.map((i) => [i.id, i]));
-    const statusFirst: Promise<unknown> = Promise.all(
-      (statusRevertIds ?? []).map((id) => {
-        const prior = before.get(id)?.statusId;
-        return prior ? lensSetStatusId(id, prior).catch(() => {}) : undefined;
-      }),
-    );
+    const blocked = new Set<string>();
+    const statusFirst: Promise<unknown> = revertStatus(get, statusRevert).then((ok) => {
+      if (!ok && statusRevert) blocked.add(statusRevert.id);
+    });
     const after = (write: () => Promise<unknown>) => sync(statusFirst.then(write));
     if (removedIds?.length) {
       // S6g — a board task removed from my lists comes back as my overlay
@@ -3103,7 +3222,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       after(() =>
         Promise.all(
           untriagedIds.map((id) =>
-            apiPatchItem(id, { disposition: null }).catch(() => {}),
+            blocked.has(id)
+              ? undefined
+              : apiPatchItem(id, { disposition: null }).catch(() => {}),
           ),
         ).then(() => get().loadFromProjects()),
       );
@@ -3115,7 +3236,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         Promise.all(
           changedIds.map((id) => {
             const p = before.get(id);
-            return p
+            return p && !blocked.has(id)
               ? apiPatchItem(id, {
                   disposition: p.isTriaged === false ? null : p.disposition,
                 }).catch(() => {})
@@ -3123,11 +3244,9 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           }),
         ),
       );
-    } else if (statusRevertIds?.length) {
+    } else if (statusRevert) {
       // A status write alone (a pick, a drag): only the status goes back.
-      after(async () => {
-        for (const id of statusRevertIds) await get().refreshItem(id);
-      });
+      after(() => get().refreshItem(statusRevert.id));
     }
   },
 

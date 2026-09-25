@@ -23,7 +23,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./api")>();
@@ -49,7 +49,14 @@ import { type LensLane, lensGetItem, lensSetStatusId } from "./lens";
 import { landingLane } from "@/lib/statusCategory";
 
 import { nextCategoryOf, noLaneMessage } from "./statusCategory";
-import { itemsForView, useTaskStore, viewCounts } from "./taskStore";
+import { ProjectsApiError } from "@/app/projects/lib/api";
+import {
+  STATUS_MOVED_SINCE,
+  dispositionMovesStatus,
+  itemsForView,
+  useTaskStore,
+  viewCounts,
+} from "./taskStore";
 import type { MyTask } from "./types";
 
 /** Let every queued promise settle. */
@@ -223,6 +230,24 @@ describe("setStage — resolve, then PATCH the lane id, or ask (D79)", () => {
     expect(useTaskStore.getState().items[0]).toEqual(t);
   });
 
+  it("a newer drag of the same task closes its open question", async () => {
+    const t = task({});
+    vi.mocked(fetchMyTaskLanes).mockResolvedValue(WORKSHOP);
+    useTaskStore.setState({ backend: "live", items: [t], syncFailure: null });
+    await useTaskStore.getState().setStage("t1", "in_progress");
+    expect(useTaskStore.getState().stagePrompt?.taskId).toBe("t1");
+    // Dragged on to Done before answering: the old question must not stay,
+    // or a late Enter on it overwrites the status this drag writes.
+    const real = useTaskStore.getState().quickDispose;
+    useTaskStore.setState({ quickDispose: vi.fn() });
+    try {
+      await useTaskStore.getState().setStage("t1", "done");
+      expect(useTaskStore.getState().stagePrompt).toBeNull();
+    } finally {
+      useTaskStore.setState({ quickDispose: real });
+    }
+  });
+
   it("writes at once when the stage holds one status", async () => {
     const t = task({ statusId: "w-build", statusCategory: "in_progress" });
     vi.mocked(fetchMyTaskLanes).mockResolvedValue(WORKSHOP);
@@ -304,9 +329,48 @@ describe("setStatus — one exact status, inside the same stage too (D79)", () =
 
 // ── Undo restores the exact prior status (D79) ─────────────────────────────
 
+/**
+ * A fake of the ONE task on the server. My Tasks has no poll and no push, so
+ * the local row can be older than this. `If-Match` is checked as the gateway
+ * does (D-PM-20): a stale token answers 412.
+ */
+const server = { statusId: "w-test", workflowStage: "Testing", updatedAt: "v1", n: 1 };
+const serverRow = (over: Partial<MyTask> = {}): MyTask =>
+  task({
+    statusId: server.statusId,
+    workflowStage: server.workflowStage,
+    updatedAt: server.updatedAt,
+    ...over,
+  });
+/** A write by somebody else, or by us: the status moves and the row version bumps. */
+const serverMoves = (statusId: string, name = statusId) => {
+  server.statusId = statusId;
+  server.workflowStage = name;
+  server.n += 1;
+  server.updatedAt = `v${server.n}`;
+};
+
 describe("undo puts the exact status back, then the overlay", () => {
+  beforeEach(() => {
+    Object.assign(server, { statusId: "w-test", workflowStage: "Testing", updatedAt: "v1", n: 1 });
+    vi.mocked(lensGetItem).mockImplementation(async () => serverRow());
+    vi.mocked(lensSetStatusId).mockImplementation(async (_id, sid, opts) => {
+      if (opts?.ifMatch && opts.ifMatch !== server.updatedAt) {
+        throw new ProjectsApiError("This row changed since you loaded it.", 412);
+      }
+      serverMoves(sid, WORKSHOP.find((l) => l.id === sid)?.name);
+    });
+    vi.mocked(apiBulkDispose).mockImplementation(async (_ids, disposition) => {
+      if (disposition === "DONE") serverMoves("w-done", "Shipped");
+      return [serverRow({ disposition })];
+    });
+  });
+
   afterEach(() => {
     vi.clearAllMocks();
+    vi.mocked(lensGetItem).mockReset();
+    vi.mocked(lensSetStatusId).mockReset().mockImplementation(async () => undefined);
+    vi.mocked(apiBulkDispose).mockReset().mockImplementation(async () => []);
     useTaskStore.setState({
       items: [], syncFailure: null, undoSnapshot: null, fromProjectIds: new Set(),
     });
@@ -314,7 +378,6 @@ describe("undo puts the exact status back, then the overlay", () => {
 
   it("undo of Mark done sends an In review task back to In review", async () => {
     const t = task({ statusId: "w-test", statusCategory: "in_progress", workflowStage: "Testing" });
-    vi.mocked(apiBulkDispose).mockResolvedValue([]);
     vi.mocked(fetchMyTaskLanes).mockResolvedValue(WORKSHOP);
     useTaskStore.setState({ backend: "live", items: [t], syncFailure: null });
     useTaskStore.getState().quickDispose("t1", "DONE");
@@ -322,16 +385,88 @@ describe("undo puts the exact status back, then the overlay", () => {
     // Hold the status write open: the overlay write must WAIT for it, or a
     // NEXT on the still-closed task reopens it into the first To do status.
     let release: () => void = () => {};
+    const real = vi.mocked(lensSetStatusId).getMockImplementation()!;
     vi.mocked(lensSetStatusId).mockImplementationOnce(
-      () => new Promise<void>((resolve) => { release = resolve; }),
+      (...args) =>
+        new Promise<void>((resolve) => {
+          release = () => void real(...args).then(resolve);
+        }),
     );
     useTaskStore.getState().undoLastChange();
     await flush();
-    expect(lensSetStatusId).toHaveBeenCalledWith("t1", "w-test");
+    expect(lensSetStatusId).toHaveBeenCalledWith("t1", "w-test", { ifMatch: "v2" });
     expect(apiPatchItem).not.toHaveBeenCalled();
     release();
     await flush();
+    expect(server.statusId).toBe("w-test");
     expect(apiPatchItem).toHaveBeenCalledWith("t1", { disposition: "NEXT" });
+  });
+
+  it("Someday on a task with a STALE local status writes no status on undo", async () => {
+    // The member hydrated while the task was Queued. A teammate has since
+    // moved it to Testing in Projects. Someday never moves a status, so its
+    // Undo must not write the stale Queued back over the teammate's move.
+    const stale = task({ statusId: "w-queue", statusCategory: "todo", workflowStage: "Queued" });
+    useTaskStore.setState({ backend: "live", items: [stale], syncFailure: null });
+    useTaskStore.getState().quickDispose("t1", "SOMEDAY");
+    await flush();
+    useTaskStore.getState().undoLastChange();
+    await flush();
+    expect(lensSetStatusId).not.toHaveBeenCalled();
+    expect(server.statusId).toBe("w-test");
+    expect(apiPatchItem).toHaveBeenCalledWith("t1", { disposition: "NEXT" });
+  });
+
+  it("does not overwrite a status somebody set after our write", async () => {
+    const t = task({ statusId: "w-test", statusCategory: "in_progress" });
+    useTaskStore.setState({ backend: "live", items: [t], syncFailure: null });
+    useTaskStore.getState().quickDispose("t1", "DONE");
+    await flush();
+    serverMoves("w-build", "Building"); // a teammate, after our Mark done
+    useTaskStore.getState().undoLastChange();
+    await flush();
+    expect(lensSetStatusId).not.toHaveBeenCalled();
+    expect(server.statusId).toBe("w-build");
+    // My list is left alone too: NEXT would reopen a closed status.
+    expect(apiPatchItem).not.toHaveBeenCalled();
+    expect(useTaskStore.getState().syncFailure?.message).toBe(STATUS_MOVED_SINCE);
+  });
+
+  it("keeps a move that lands between the undo's read and its write (412)", async () => {
+    const t = task({ statusId: "w-test", statusCategory: "in_progress" });
+    useTaskStore.setState({ backend: "live", items: [t], syncFailure: null });
+    useTaskStore.getState().quickDispose("t1", "DONE");
+    await flush();
+    // The undo reads the row; before its PATCH lands, a teammate writes it.
+    vi.mocked(lensGetItem).mockImplementationOnce(async () => {
+      const row = serverRow();
+      server.n += 1;
+      server.updatedAt = `v${server.n}`;
+      return row;
+    });
+    useTaskStore.getState().undoLastChange();
+    await flush();
+    expect(server.statusId).toBe("w-done");
+    expect(useTaskStore.getState().syncFailure?.message).toBe(STATUS_MOVED_SINCE);
+  });
+
+  it("says why when the prior status cannot be restored, and re-reads", async () => {
+    const t = task({ statusId: "w-test", statusCategory: "in_progress" });
+    useTaskStore.setState({ backend: "live", items: [t], syncFailure: null });
+    useTaskStore.getState().quickDispose("t1", "DONE");
+    await flush();
+    vi.mocked(lensSetStatusId).mockRejectedValueOnce(
+      new ProjectsApiError("that status was deleted", 422),
+    );
+    const reads = vi.mocked(lensGetItem).mock.calls.length;
+    useTaskStore.getState().undoLastChange();
+    await flush();
+    expect(useTaskStore.getState().syncFailure?.message).toBe(
+      "Could not restore Testing: that status was deleted",
+    );
+    // The undo's own read, then the re-read that makes the screen match.
+    expect(vi.mocked(lensGetItem).mock.calls.length).toBe(reads + 2);
+    expect(useTaskStore.getState().items[0].statusId).toBe("w-done");
   });
 
   it("undo of a quick move on an untriaged board task CLEARS my overlay", async () => {
@@ -339,7 +474,6 @@ describe("undo puts the exact status back, then the overlay", () => {
       id: "b1", statusId: "w-test", isTriaged: false, disposition: "NEXT",
       projectId: "workshop", projectName: "Workshop",
     });
-    vi.mocked(apiBulkDispose).mockResolvedValue([]);
     useTaskStore.setState({
       backend: "live", items: [t], syncFailure: null, fromProjectIds: new Set(["b1"]),
     });
@@ -354,7 +488,6 @@ describe("undo puts the exact status back, then the overlay", () => {
 
   it("Mark done names the Done status it chose when there are two", async () => {
     const t = task({ statusId: "w-queue" });
-    vi.mocked(apiBulkDispose).mockResolvedValue([]);
     vi.mocked(fetchMyTaskLanes).mockResolvedValue([
       ...WORKSHOP, lane("w-done2", "workshop", "Delivered", "done", 50),
     ]);
@@ -362,6 +495,23 @@ describe("undo puts the exact status back, then the overlay", () => {
     useTaskStore.getState().quickDispose("t1", "DONE");
     await flush();
     expect(useTaskStore.getState().undoSnapshot?.label).toBe("Done · Shipped in Workshop");
+  });
+});
+
+describe("which quick moves may write a status back (D79)", () => {
+  it("DONE on an open task, and an open disposition on a closed one", () => {
+    expect(dispositionMovesStatus({ statusCategory: "in_progress" }, "DONE")).toBe(true);
+    expect(dispositionMovesStatus({ statusCategory: "done" }, "NEXT")).toBe(true);
+    expect(dispositionMovesStatus({ statusCategory: "cancelled" }, "WAITING")).toBe(true);
+  });
+
+  it("never Someday, Reference or Trash, and never NEXT on an open task", () => {
+    for (const d of ["SOMEDAY", "REFERENCE", "TRASH"] as const) {
+      expect(dispositionMovesStatus({ statusCategory: "done" }, d), d).toBe(false);
+      expect(dispositionMovesStatus({ statusCategory: "todo" }, d), d).toBe(false);
+    }
+    expect(dispositionMovesStatus({ statusCategory: "todo" }, "NEXT")).toBe(false);
+    expect(dispositionMovesStatus({ statusCategory: "done" }, "DONE")).toBe(false);
   });
 });
 
