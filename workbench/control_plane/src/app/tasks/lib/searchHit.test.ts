@@ -135,9 +135,10 @@ describe("My Tasks binds ⌘K to search", () => {
     expect(src.match(/\{search\}/g) ?? []).toHaveLength(2);
   });
 
-  it("the shortcut legend says ⌘K searches", () => {
-    const inbox = read("app/tasks/components/InboxView.tsx");
-    expect(inbox).toMatch(/<Sc k="⌘K">search<\/Sc>/);
+  it("the shortcuts sheet says ⌘K searches", () => {
+    // Continuity P3: the inline legend became the `?` sheet (`shortcuts.ts`).
+    const sheet = read("app/tasks/lib/shortcuts.ts");
+    expect(sheet).toMatch(/\{ keys: "⌘ K", label: "Search", icon: "Search" \}/);
     expect(read("app/tasks/components/QuickCapture.tsx")).not.toMatch(/⌘K/);
   });
 

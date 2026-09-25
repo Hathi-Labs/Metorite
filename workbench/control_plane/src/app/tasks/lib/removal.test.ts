@@ -109,8 +109,10 @@ describe("the confirmation says what really happens", () => {
   it("the promised window IS the toast's timer", () => {
     // The dialog quotes a number. If the toast used its own, the promise
     // could drift from what Undo really allows.
-    const toast = read("components/UndoToast.tsx");
-    expect(toast).toMatch(/setTimeout\(\(\) => dismissUndo\(\), UNDO_WINDOW_SECONDS \* 1000\)/);
+    // Since continuity P3 the shared toast owns the timer, and the undo
+    // hands it this constant (`lib/undoToast.ts`, fenced in its own test).
+    const toast = read("lib/undoToast.ts");
+    expect(toast).toMatch(/timeout: UNDO_WINDOW_SECONDS \* 1000,/);
   });
 
   it("a board task: removed from my lists, the board keeps it, never 'delete'", () => {

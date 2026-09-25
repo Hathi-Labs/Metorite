@@ -48,7 +48,7 @@ vi.mock("./api", async (importOriginal) => {
 });
 
 import { apiCapture, apiOrganize, apiPatchItem, fetchMyRoot, fetchUntriaged } from "./api";
-import { UndoToast } from "../components/UndoToast";
+import { syncUndoToast } from "./undoToast";
 import { ClarifyModal } from "../components/ClarifyModal";
 import { ClarifyPanel } from "../components/ClarifyPanel";
 import { WherePicker } from "../components/WherePicker";
@@ -397,6 +397,32 @@ describe("the walk never revisits a decided row", () => {
   });
 });
 
+/**
+ * What the undo toast offers for the store's snapshot now. Since continuity
+ * P3 `UndoToast` draws through the shared `useToast`, so it renders nothing
+ * itself: the words are the spec `syncUndoToast` hands `show()`.
+ */
+function undoToastSays(): { action?: string; title: string } | undefined {
+  let said: { action?: string; title: string } | undefined;
+  syncUndoToast(
+    useTaskStore.getState().undoSnapshot,
+    {
+      show: (spec) => {
+        said = { action: spec.action?.label, title: spec.title };
+      },
+      dismiss: () => undefined,
+    },
+    {
+      current: () => null,
+      undo: () => undefined,
+      dismiss: () => undefined,
+      openTask: () => undefined,
+    },
+    () => undefined,
+  );
+  return said;
+}
+
 describe("undo on a board-row clarify", () => {
   const flush = async () => {
     for (let i = 0; i < 8; i += 1) await new Promise((r) => setTimeout(r, 0));
@@ -418,7 +444,7 @@ describe("undo on a board-row clarify", () => {
     await flush();
     expect(st().fromProjectIds.has(FROM_BOARD.id)).toBe(false);
     // The toast offers Undo.
-    expect(renderToStaticMarkup(createElement(UndoToast))).toContain("Undo");
+    expect(undoToastSays()?.action).toBe("Undo");
 
     vi.mocked(fetchUntriaged).mockResolvedValue([FROM_BOARD]);
     st().undoLastChange();
@@ -441,9 +467,7 @@ describe("undo on a board-row clarify", () => {
     } as never);
     await flush();
     expect(st().undoSnapshot?.sharedChangeTaskId).toBe(FROM_BOARD.id);
-    const html = renderToStaticMarkup(createElement(UndoToast));
-    expect(html).toContain("Open task");
-    expect(html).not.toContain("Undo");
+    expect(undoToastSays()?.action).toBe("Open task");
     // And the store refuses a keyboard undo too.
     st().undoLastChange();
     expect(apiPatchItem).not.toHaveBeenCalled();
