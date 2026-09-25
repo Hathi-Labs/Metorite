@@ -849,10 +849,11 @@ async def update_project(
 
 #: The route's `reports.SECTIONS`, held equal by
 #: `tests/unit/test_projects_report_sections_lockstep.py`. `outlook`,
-#: `capacity` and `conflicts` are opt-in: a report carries one only when the
-#: member asks.
+#: `capacity`, `conflicts` and `rebalance` are opt-in: a report carries one
+#: only when the member asks.
 REPORT_SECTIONS = (
     "finished", "throughput", "outlook", "load", "capacity", "stuck", "conflicts",
+    "rebalance",
 )
 
 
@@ -863,8 +864,8 @@ async def report_save(
     """Save a report definition, or change one (pass report_id). A report
     stores the question: scope (project_id, or empty for the portfolio),
     sections (comma-separated from finished, throughput, outlook, load,
-    capacity, stuck, conflicts; outlook, capacity and conflicts are never
-    there unless asked for) and weeks. Render it
+    capacity, stuck, conflicts, rebalance; outlook, capacity, conflicts and
+    rebalance are never there unless asked for) and weeks. Render it
     with report_render. Delivery and schedules stay in the Reports app."""
     label = str(name or "").strip()
     asked = [s.strip().lower() for s in _split(sections)]

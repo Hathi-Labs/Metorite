@@ -167,6 +167,7 @@ describe("sections", () => {
       "capacity",
       "stuck",
       "conflicts",
+      "rebalance",
     ]);
   });
 

@@ -5,8 +5,10 @@
 catalogue, `config.template`, the gallery and "Your reports"). **R2b BUILT
 2026-09-24** (the visual report body: each section draws its Analytics panel,
 with its table folded under it). **R3a BUILT 2026-09-25** (the `outlook`
-section, the ageing bands in `stuck`, and T5 live). R3b to R3d, R4 to R9 and
-Phases 2 and 3 are not built, and R3b is next.
+section, the ageing bands in `stuck`, and T5 live).
+
+**R3b BUILT 2026-09-25** (the `rebalance` section and `RebalancePanel`, read
+only). R3c is next. R3d, R4, R4b, R5 to R9 and Phases 2 and 3 are not built.
 
 Written
 2026-09-24 and verified against the code on 2026-09-24. The owner answered
@@ -117,7 +119,7 @@ defect.
 | Work that nobody touched, blocked work, overdue work | `GET /projects/analytics/stuck` · `analytics.py:151` | `stuck` (the bands since R3a) |
 | Hours, absences, spare hours, the pill | `GET /projects/analytics/capacity` · `analytics_capacity.py:201` | `capacity` (opt-in) |
 | Order, overlap and people conflicts | `GET /projects/analytics/conflicts` · `analytics_conflicts.py:173` | `conflicts` (opt-in) |
-| Helpers for at-risk work, work for idle people | `GET /projects/analytics/rebalance` · `analytics_rebalance.py:103` | none |
+| Helpers for at-risk work, work for idle people | `GET /projects/analytics/rebalance` · `analytics_rebalance.py:103`, body `rebalance_body` · `:127` | `rebalance` (opt-in, R3b) |
 | The forecast | `GET /projects/analytics/outlook` · `analytics.py:1431`, body `outlook_body` · `:1474` | `outlook` (opt-in, R3a) |
 | Who fits one task | `GET /projects/tasks/{id}/candidates` · `candidates.py` | none |
 
@@ -380,10 +382,11 @@ comes after.
    status. The groups are needs help, behind, overloaded, at risk, on track,
    has room and on leave. For a project report, one row for each child project. A row opens to
    show its tasks.
-4. **Suggestions.** Each rebalance row carries an **Assign** control. It opens
-   the confirm card that the task panel and the chat already use. A
-   **Dismiss** control hides that suggestion for this report until the facts
-   change.
+4. **Suggestions.** Each rebalance row will carry an **Assign** control, a
+   **Dismiss** control and a link to its task. Slice R4b builds all three.
+   No shared confirm card exists today, so R4b must make one first. Dismiss
+   hides a suggestion until the facts change, so it needs the stored runs of
+   R4. R3b shows the rows and nothing to act on.
 5. **The change mark.** With R4 on, each figure carries an arrow and the value
    of the last run.
 6. **Email this report** (R9). It opens a picker of people in the directory,
@@ -457,6 +460,9 @@ on their team.
    `admin:members:read` (§7 rule 2). A lead without that grant sees the task
    half of their team. The capacity section tells the lead that an admin can
    see the hours.
+7. **Rebalance rows need the HR grant, and only the admin row holds it.** So
+   rule 3 holds for `rebalance` with no row filter until R5. R5 must look at
+   it again when it gives a lead the rows of their team.
 
 ⚠️ **The `load` section is older than this rule.** It lists open work for each
 person, and today any member who can see the tasks can read it. Slice R5
@@ -761,11 +767,53 @@ equals `/analytics/stuck`. `reportVisuals.test.ts` draws seven panels, and
 section calls `outlook_body`, so the fix reaches the report with no change
 here.
 
-#### R3b — `rebalance` · AGENT-SAFE · next
+#### R3b — `rebalance` · AGENT-SAFE · BUILT 2026-09-25
 
-**What:** the `rebalance` section and a `RebalancePanel` for it.
+**What:**
+- `render_body` awaits `rebalance_body` (`analytics_rebalance.py`), as the
+  route does. The HR tier is the reader's grant, `can_read_hr_fields`. The
+  section keeps the route's own 14-day horizon, not `config.weeks`.
+- The section is a copy of the body. `at_risk` stays as the join serves it,
+  capped at eight tasks. The render cuts `pickups` to `MAX_PEOPLE` (20),
+  and `pickups_total` counts every idle person with a match.
+- `rebalance` is opt-in and comes last in `SECTIONS`. No template goes live.
+  T1 now waits for the pulse section and a today period only.
+- `RebalancePanel` in `AnalyticsPanels.tsx` draws each task at risk, with its
+  holder and up to three helpers. The idle people follow, then a line that
+  names what the caps cut. `lib/rebalance.ts` holds the words.
+- The email and the download print one line for each task and one line for
+  each idle person. They carry no colour and no bar.
+- The chat card shows the at-risk count, the idle count and one row for each
+  task. `_dig` reads a numeric path part as a list index. The chat text uses
+  plain labels and never prints a task id.
 
-**Done when:** a shared task counts once in `rebalance`.
+**Non-goals:** Assign, Dismiss and task links (slice R4b). The panel in the
+Analytics app. A live template. A row filter under E5 or §7.1.
+
+**HR gate:** without `admin:members:read`, the body has no `at_risk` and no
+`pickups` key. The panel, the email and the card then show one line:
+"Rebalancing needs HR read access. An admin can see it." §7.1 rule 7
+records why R3b adds no row filter.
+
+**Done when:**
+- (a) On a real database, the section equals `rebalance_body` for one scope
+  and one reader, apart from the pickups cap.
+- (b) A reader without `admin:members:read` gets `hr_visible: false` and no
+  lists. The panel, the email and the card show the HR line and no zero.
+- (c) `pickups` holds 20 rows at most, and `pickups_total` counts them all.
+- (d) `rebalance` is opt-in and last. `test_projects_report_sections_r3.py`
+  passes with no change.
+- (e) `reportVisuals.test.ts` draws eight panels, and fence (b) names
+  `RebalancePanel`.
+- (f) The lockstep test and the card title test pass with the new name.
+- (g) Three tests close H-185. The card cuts a timestamp to its date. The
+  outlook uses plain chat labels and says "Slip days" once. A test pins the
+  forecast as today plus whole weeks.
+- A task that two people hold counts once in `at_risk` and in
+  `at_risk_total`.
+
+**As built:** `test_projects_report_sections_r3b.py` seeds one task with two
+holders and 23 idle people on a real database. It proves (a) to (d) and (g).
 
 #### R3c — `hygiene` and T13 · waits for spec edit E2
 
@@ -821,6 +869,25 @@ report: completed, slipped due date, reassigned, blocked, created.
 
 **Done when:** a second run shows an arrow and the last value on each figure.
 `changes` lists each event type with a link to its task.
+
+### R4b — Act on a suggestion · AGENT-SAFE
+
+**What:** the controls of §6.4 item 4 on each rebalance row. **Assign** asks
+the member to confirm, then sets the helper as an assignee. **Dismiss** hides
+the suggestion for this report until the facts change. Each task title links
+to its task.
+
+**Rules:**
+- No shared confirm card exists today. R4b builds one, and the chat and the
+  task panel use it too.
+- Dismiss stores its state beside the stored runs of R4, so R4b comes after
+  R4.
+- Assign goes through the ordinary assignees route. It adds no second write
+  path.
+
+**Done when:** an Assign on a row changes the task's assignees only after the
+member confirms. A dismissed suggestion stays hidden on the next run of the
+report, and it comes back when the facts change.
 
 ### R5 — Person and team scope · AGENT-SAFE
 
@@ -937,13 +1004,14 @@ item 6) and the chat's `send_report` both call it.
 ### Order
 
 **Phase 1, on request:** R1 → R2 → R2b → R3 (R3a → R3b → R3c → R3d) → R5 →
-R4 → R6 → R8 → R9.
+R4 → R4b → R6 → R8 → R9.
 
 - R1 and R2 give a member control of what exists.
 - R2b draws each section as a chart or a progress bar.
 - R3 makes the morning report real.
 - R5 adds the person and team scope and the permission rule.
-- R4 gives a report a memory, and R6 adds the AI summary.
+- R4 gives a report a memory, and R4b lets a member act on a suggestion.
+- R6 adds the AI summary.
 - R8 and R9 let the chat and the member send a report to one person.
 
 ---

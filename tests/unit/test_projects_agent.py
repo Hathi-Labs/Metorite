@@ -1577,13 +1577,16 @@ def test_the_outlook_card_reads_its_nested_figures() -> None:
     stats, table = _card_section("outlook", section)
     assert stats == [{"label": "Tasks left", "value": 41}]
     assert table is not None and table["title"] == "Outlook"
-    assert table["rows"][0]["cells"] == [
-        "Not converging", "2026-11-02T00:00:00+00:00", "", "",
-    ]
+    # H-185 item 1: the card prints a timestamp as its date, as the app does.
+    # H-185 item 2: "Slip days" is a tile, and the table does not repeat it.
+    assert table["rows"][0]["cells"] == ["Not converging", "2026-11-02", ""]
+    assert table["columns"] == ["Forecast", "Planned finish", "Forecast finish"]
     lines = _report_section("outlook", section)
-    assert lines[0].startswith("outlook: velocity.verdict not_converging")
-    assert "plan.planned_finish 2026-11-02" in lines[0]
-    assert "velocity.remaining_tasks 41" in lines[0]
+    # H-185 item 2: plain labels, never a dotted key.
+    assert lines[0].startswith("outlook: forecast not_converging")
+    assert "planned finish 2026-11-02" in lines[0]
+    assert "tasks left 41" in lines[0]
+    assert "velocity." not in lines[0] and "plan." not in lines[0]
 
 
 # ── S9 — entity pills in the chat (spec §15) ────────────────────────────────

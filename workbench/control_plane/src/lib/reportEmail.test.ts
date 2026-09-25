@@ -19,6 +19,7 @@ import {
   periodLabel,
   reportDocument,
   reportEmail,
+  reportLayout,
   sendReportEmail,
   textBar,
 } from "./reportEmail";
@@ -355,6 +356,62 @@ describe("reportEmail · conflicts", () => {
       },
     };
     expect(reportEmail(hidden).text).toContain("Four kinds need HR read access.");
+  });
+});
+
+// WS-27bn R3b — the opt-in rebalance section.
+describe("reportEmail · rebalance", () => {
+  const withRebalance: RenderedReport = {
+    ...rendered,
+    sections: {
+      rebalance: {
+        hr_visible: true,
+        at_risk: [
+          {
+            title: "Weld <the> gantry",
+            due_on: "2026-09-27",
+            holder: { name: "Hal", email: "hal@example.test" },
+            candidates: [{ name: "Ivy" }, { name: "Bo" }],
+          },
+        ],
+        at_risk_total: 1,
+        pickups: [{ name: "Ivy", tasks: [{ title: "Weld a jig" }, { title: "Frame" }] }],
+        pickups_total: 3,
+        idle_total: 3,
+      },
+    },
+  };
+
+  it("prints one line per task and one per pickup, in words", () => {
+    const { text } = reportEmail(withRebalance);
+    expect(text).toContain("Who could help: 1 at risk (3 idle)");
+    expect(text).toContain(
+      "Weld <the> gantry — held by Hal, due 27 Sep 2026: helpers Ivy, Bo",
+    );
+    expect(text).toContain("Ivy could take: Weld a jig, Frame");
+    expect(text).toContain("…and 2 more people who could take work");
+  });
+
+  it("carries no colour and no bar, and escapes a title", () => {
+    const { text, html } = reportEmail(withRebalance);
+    expect(html).not.toMatch(/style=|#[0-9a-f]{3,6}\b|rgb\(|hsl\(/i);
+    expect(text).not.toMatch(/[\u2588\u2591]/);
+    expect(html).toContain("Weld &lt;the&gt; gantry");
+  });
+
+  it("says one line, and no zero rows, without the grant", () => {
+    const hidden: RenderedReport = {
+      ...rendered,
+      sections: { rebalance: { hr_visible: false } },
+    };
+    const { text } = reportEmail(hidden);
+    expect(text).toContain("Rebalancing needs HR read access. An admin can see it.");
+    expect(text).not.toContain("Who could help");
+    expect(text).not.toContain("could take");
+    const layout = reportLayout(hidden);
+    const part = layout.parts[layout.parts.length - 1];
+    expect(part.items).toEqual([]);
+    expect(part.notes).toEqual([]);
   });
 });
 

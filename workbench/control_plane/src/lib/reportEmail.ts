@@ -123,6 +123,23 @@ export interface RenderedReport {
       hr_visible: boolean;
       horizon_days: number;
     };
+    /**
+     * WS-27bn R3b. Opt-in. Without `admin:members:read` the two lists are
+     * ABSENT, and the email says so in one line.
+     */
+    rebalance?: {
+      hr_visible: boolean;
+      at_risk?: {
+        title: string;
+        due_on: string | null;
+        holder?: { name?: string; email?: string };
+        candidates?: { name?: string }[];
+      }[];
+      at_risk_total?: number;
+      pickups?: { name: string; tasks?: { title?: string }[] }[];
+      pickups_total?: number;
+      idle_total?: number;
+    };
   };
 }
 
@@ -442,6 +459,57 @@ export function reportLayout(
         .slice(0, maxRows)
         .map((r) => `${r.severity === "high" ? "High" : "Medium"}: ${r.sentence}`),
       notes: conf.hr_visible ? [] : ["Four kinds need HR read access."],
+    });
+  }
+
+  const reb = sections.rebalance;
+  if (reb && reb.hr_visible === false) {
+    // ⚠️ One line and no rows. A helper names who holds which skill, and a
+    // zero here would read as "nobody is at risk".
+    parts.push({
+      head: { lead: "Rebalancing needs HR read access. An admin can see it." },
+      items: [],
+      notes: [],
+    });
+  } else if (reb) {
+    // Words and the server's names only. No colour and no bar: a helper is
+    // not a share of anything.
+    const tasks = (reb.at_risk ?? []).slice(0, maxRows);
+    const people = (reb.pickups ?? []).slice(0, maxRows);
+    const notes: string[] = [];
+    if (typeof reb.at_risk_total === "number" && reb.at_risk_total > tasks.length) {
+      notes.push(`…and ${reb.at_risk_total - tasks.length} more tasks at risk`);
+    }
+    if (typeof reb.pickups_total === "number" && reb.pickups_total > people.length) {
+      notes.push(`…and ${reb.pickups_total - people.length} more people who could take work`);
+    }
+    parts.push({
+      head: {
+        lead: `Who could help: ${reb.at_risk_total ?? tasks.length} at risk`,
+        strong: true,
+        extra:
+          typeof reb.idle_total === "number" ? `${reb.idle_total} idle` : undefined,
+      },
+      items: [
+        ...tasks.map((t) => {
+          const helpers = (t.candidates ?? [])
+            .slice(0, 3)
+            .map((c) => c.name)
+            .filter(Boolean)
+            .join(", ");
+          return (
+            `${t.title} — held by ${t.holder?.name || t.holder?.email || "somebody"}` +
+            `, due ${t.due_on ? day(t.due_on.slice(0, 10)) : "with no date"}` +
+            `: helpers ${helpers || "none"}`
+          );
+        }),
+        ...people.map(
+          (p) =>
+            `${p.name} could take: ` +
+            (p.tasks ?? []).map((t) => t.title).filter(Boolean).join(", "),
+        ),
+      ],
+      notes,
     });
   }
 
