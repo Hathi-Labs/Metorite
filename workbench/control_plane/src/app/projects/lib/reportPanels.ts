@@ -25,6 +25,7 @@ import type {
   LoadReport,
   OutlookReport,
   PreviewReportBody,
+  RebalanceReport,
   RenderedReportBody,
   StuckReport,
   ThroughputReport,
@@ -176,6 +177,19 @@ export function conflictsPanelData(
     by_kind: section.by_kind ?? {},
     rows: asList<ConflictsReport["rows"][number]>(section.rows),
   };
+}
+
+/**
+ * `rebalance` as `RebalancePanel` takes it (WS-27bn R3b).
+ *
+ * The section IS the rebalance route's body, with `pickups` capped, so this
+ * copies it. It takes no frame: the scope is the section's own. Without the
+ * HR grant the two lists are absent, and they stay absent here.
+ */
+export function rebalancePanelData(
+  section: NonNullable<Sections["rebalance"]>
+): RebalanceReport {
+  return { ...section };
 }
 
 /** One summary tile: one figure from one section. */

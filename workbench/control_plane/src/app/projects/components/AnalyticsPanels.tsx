@@ -46,6 +46,7 @@ import type {
   FinishedReport,
   LoadReport,
   OutlookReport,
+  RebalanceReport,
   StuckReport,
   ThroughputReport,
 } from "../lib/api";
@@ -82,6 +83,15 @@ import {
   slipRange,
   velocityLine,
 } from "../lib/outlook";
+import {
+  REBALANCE_HR_HINT,
+  helpersLine,
+  holderLine,
+  pickupLine,
+  rebalanceCapNote,
+  rebalancePickups,
+  rebalanceTasks,
+} from "../lib/rebalance";
 
 /**
  * The ageing bands, in the order the server sends them.
@@ -793,6 +803,129 @@ export function ConflictsPanel({ data }: { data: ConflictsReport }) {
             {span}
           </p>
         )
+      )}
+    </Panel>
+  );
+}
+
+/**
+ * WS-27bn R3b — who could help whom, in a report.
+ *
+ * ⚠️ **Draws the route and counts nothing** (`projects_reports.md` §8 R3b).
+ * Every task, helper and count is the rebalance route's, and `lib/rebalance.ts`
+ * holds only the words. An at-risk task and an idle person wear the People
+ * dashboard's pill hues (`PILL_HUE`), each with its words beside it.
+ *
+ * ⚠️ **HR tier.** Without `admin:members:read` the server sends neither list,
+ * and the panel says so in one line instead of drawing "nobody at risk".
+ *
+ * ⚠️ **Read only, and a report panel only.** No Assign, no Dismiss and no
+ * task link (slice R4b). The Analytics app does not mount it yet.
+ */
+export function RebalancePanel({ data }: { data: RebalanceReport }) {
+  const tasks = rebalanceTasks(data);
+  const pickups = rebalancePickups(data);
+  const cap = rebalanceCapNote(data, tasks.length, pickups.length);
+  const risk = accentForHue(PILL_HUE.at_risk);
+  const idle = accentForHue(PILL_HUE.idle);
+  const hidden = data?.hr_visible === false;
+
+  return (
+    <Panel
+      title="Who could help"
+      hint="Tasks at risk of missing their due date, the people whose skills fit them, and idle people with work they could take. Nothing is reassigned."
+    >
+      {hidden ? (
+        <p className="text-[11px] text-muted-foreground">{REBALANCE_HR_HINT}</p>
+      ) : tasks.length === 0 && pickups.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">
+          No task at risk and nobody idle in this scope.
+        </p>
+      ) : (
+        <>
+          {typeof data?.at_risk_total === "number" &&
+            typeof data?.idle_total === "number" && (
+              <p
+                className="mb-2 text-[11px] text-muted-foreground"
+                title="Counted by the server over every task and person, before any cap."
+              >
+                {data.at_risk_total} at risk · {data.idle_total} idle
+              </p>
+            )}
+          {tasks.length > 0 && (
+            <ul className="space-y-2">
+              {tasks.map((task) => {
+                const helpers = helpersLine(task);
+                return (
+                  <li key={task.task_id}>
+                    <div className="flex min-w-0 items-baseline gap-2 text-[11px]">
+                      <span
+                        className={`size-1.5 shrink-0 rounded-full ${risk.dot}`}
+                        aria-hidden
+                      />
+                      <span
+                        // `pr-px`: the Load panel's italic-clip lesson.
+                        className="min-w-0 truncate pr-px font-medium text-foreground"
+                        title={task.title}
+                      >
+                        {task.title}
+                      </span>
+                      <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                        {PILL_LABEL.at_risk}
+                      </span>
+                    </div>
+                    <p
+                      className="mt-0.5 truncate text-[10px] text-muted-foreground"
+                      title={holderLine(task)}
+                    >
+                      {holderLine(task)}
+                    </p>
+                    <p
+                      className="truncate text-[10px] text-muted-foreground"
+                      title={
+                        helpers
+                          ? `Up to three people whose skills fit this task: ${helpers}`
+                          : "Nobody in scope fits this task."
+                      }
+                    >
+                      {helpers ? `Could help: ${helpers}` : "Nobody fits this task."}
+                    </p>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {pickups.length > 0 && (
+            <ul className={`space-y-1.5 ${tasks.length ? "mt-3 border-t border-border pt-2" : ""}`}>
+              {pickups.map((person) => (
+                <li key={person.email}>
+                  <div className="flex min-w-0 items-baseline gap-2 text-[11px]">
+                    <span
+                      className={`size-1.5 shrink-0 rounded-full ${idle.dot}`}
+                      aria-hidden
+                    />
+                    <span
+                      className="min-w-0 truncate pr-px font-medium text-foreground"
+                      title={person.name}
+                    >
+                      {person.name}
+                    </span>
+                    <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                      {PILL_LABEL.idle}
+                    </span>
+                  </div>
+                  <p
+                    className="mt-0.5 line-clamp-2 text-[10px] text-muted-foreground"
+                    title={`Work in scope that fits ${person.name}'s skills: ${pickupLine(person)}`}
+                  >
+                    Could take: {pickupLine(person)}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+          {cap && <p className="mt-2 text-[10px] text-muted-foreground">{cap}</p>}
+        </>
       )}
     </Panel>
   );

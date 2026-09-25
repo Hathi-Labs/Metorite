@@ -39,12 +39,13 @@ export const REPORT_SECTIONS: readonly { key: string; label: string }[] = [
   { key: "capacity", label: "Who has the hours" },
   { key: "stuck", label: "Overdue" },
   { key: "conflicts", label: "Where the plan conflicts" },
+  { key: "rebalance", label: "Who could help" },
 ];
 
 /**
  * The sections a new report starts with: the server's `DEFAULT_SECTIONS`.
- * The same lockstep test pins it. `outlook`, `capacity` and `conflicts` are
- * opt-in.
+ * The same lockstep test pins it. `outlook`, `capacity`, `conflicts` and
+ * `rebalance` are opt-in.
  */
 export const DEFAULT_REPORT_SECTIONS: readonly string[] = [
   "finished",

@@ -4,14 +4,15 @@
  * Spec: `project-docs/specs/projects_reports.md` §8 R2b, "Done when". This
  * file is the fence the spec names, in three parts:
  *
- *   (a) RENDER. `RenderedBody` draws each of the seven sections as its
+ *   (a) RENDER. `RenderedBody` draws each of the eight sections as its
  *       Analytics panel, with its table folded under it (WS-27bn R3a adds
- *       `outlook`, and the ageing bands in `stuck`). A sentinel figure
+ *       `outlook`, and the ageing bands in `stuck`. R3b adds `rebalance`,
+ *       and its HR hint). A sentinel figure
  *       per section appears in the panel AND in the table ("agree"). A body
  *       in the report's own shape carries no "undefined", no "NaN" and no
  *       "No open work in this scope" unless every band is zero
  *       ("degrade"). A tile hides when its section is not in the report.
- *   (b) SOURCE. `ReportsView.tsx` imports the seven panels from
+ *   (b) SOURCE. `ReportsView.tsx` imports the eight panels from
  *       `./AnalyticsPanels` and renders each one. It holds no inline width
  *       or height style and no function named for a bar or a chart. A
  *       self-test proves a hand-drawn bar fires the fence.
@@ -36,6 +37,7 @@ import {
   finishedPanelData,
   loadPanelData,
   outlookPanelData,
+  rebalancePanelData,
   reportTiles,
   stuckPanelData,
   throughputPanelData,
@@ -122,6 +124,61 @@ const NOT_CONVERGING: NonNullable<Sections["outlook"]> = {
   plan: { ...OUTLOOK.plan, planned_finish: null, dated: 0, slip_days: null },
 };
 
+/** The rebalance route's body, as a report copies it (WS-27bn R3b). */
+const REBALANCE: NonNullable<Sections["rebalance"]> = {
+  project_id: null,
+  scope: "portfolio",
+  include_subtree: true,
+  horizon_days: 14,
+  hr_visible: true,
+  window: { starts_on: "2026-09-24", ends_on: "2026-10-07", days: 14 },
+  hours_scope: "all_visible_work",
+  partial: false,
+  at_risk: [
+    {
+      task_id: "t9",
+      title: "Weld the gantry 7801",
+      project_name: "Rig",
+      due_on: "2026-09-27",
+      shortfall_hours: 12,
+      holder: { person_id: "p-hal", name: "Hal", email: "hal@example.test" },
+      holders: [{ person_id: "p-hal", name: "Hal", email: "hal@example.test" }],
+      candidates: [
+        { person_id: "p-ivy", name: "Ivy", email: "ivy@example.test", skill_points: 3,
+          matched_skills: ["weld"], spare_hours: 20, away: null, rank: 60 },
+        { person_id: "p-bo", name: "Bo", email: "bo@example.test", skill_points: 2,
+          matched_skills: ["weld"], spare_hours: 10, away: null, rank: 20 },
+      ],
+      hours_basis: true,
+    },
+  ],
+  at_risk_total: 11,
+  pickups: [
+    {
+      person_id: "p-ivy",
+      name: "Ivy",
+      email: "ivy@example.test",
+      tasks: [
+        { task_id: "t10", title: "Weld a jig", project_name: "Rig",
+          kind: "unassigned", skill_points: 3, matched_skills: ["weld"] },
+      ],
+    },
+  ],
+  pickups_total: 25,
+  idle_total: 26,
+  truncated: true,
+};
+
+/** The same scope for a reader without `admin:members:read`: no lists. */
+const REBALANCE_HIDDEN: NonNullable<Sections["rebalance"]> = {
+  project_id: null,
+  scope: "portfolio",
+  include_subtree: true,
+  horizon_days: 14,
+  hr_visible: false,
+  window: { starts_on: "2026-09-24", ends_on: "2026-10-07", days: 14 },
+};
+
 /**
  * Every section, in the shape `render_body` sends since R3a. Each carries one
  * SENTINEL figure (71xx to 77xx) that nothing else in the body repeats.
@@ -202,6 +259,7 @@ const SECTIONS: Required<Sections> = {
     horizon_days: 14,
     window: { starts_on: "2026-09-24", ends_on: "2026-10-07", days: 14, ignored_by: [] },
   },
+  rebalance: REBALANCE,
 };
 
 const SENTINEL: Record<keyof Sections, string> = {
@@ -212,6 +270,7 @@ const SENTINEL: Record<keyof Sections, string> = {
   load: "7401",
   capacity: "7501",
   conflicts: "7601",
+  rebalance: "7801",
 };
 
 function body(sections: Sections): RenderedReportBody {
@@ -255,19 +314,47 @@ const PANEL_TITLE: Record<keyof Sections, string> = {
   load: "Who is overloaded",
   capacity: "Who has the hours",
   conflicts: "Where the plan conflicts",
+  rebalance: "Who could help",
 };
 
 // ── (a) The render ───────────────────────────────────────────────────────────
 
 describe("RenderedBody draws each section as its panel, then its table", () => {
-  it("draws all seven panels and seven tables in one report", () => {
+  it("draws all eight panels and eight tables in one report", () => {
     const html = draw(SECTIONS);
     for (const title of Object.values(PANEL_TITLE)) {
       expect(html, title).toContain(title);
     }
-    expect(html.split(", as a table<").length).toBe(8);
+    expect(html.split(", as a table<").length).toBe(9);
     // The panel names its region, so a screen reader announces the title.
-    expect(html.match(/<section[^>]*aria-labelledby=/g)?.length).toBe(7);
+    expect(html.match(/<section[^>]*aria-labelledby=/g)?.length).toBe(8);
+  });
+
+  it("rebalance draws each task with its holder and helpers, then pickups, then the caps", () => {
+    const { panel, table } = panelAndTable(draw({ rebalance: REBALANCE }));
+    expect(panel).toContain("Held by Hal · due 27 Sep 2026");
+    expect(panel).toContain("Could help: Ivy, Bo");
+    expect(panel).toContain("Could take: Weld a jig");
+    expect(panel).toContain("11 at risk · 26 idle");
+    expect(panel).toContain("Showing 1 of 11 tasks at risk.");
+    expect(panel).toContain("Showing 1 of 25 people who could take work.");
+    // The task comes before the pickup, in the panel and in the table.
+    expect(panel.indexOf("Weld the gantry")).toBeLessThan(panel.indexOf("Could take:"));
+    expect(table).toContain("helpers Ivy, Bo");
+    expect(table).toContain("could take: Weld a jig");
+    // Read only: no Assign, no Dismiss, no link.
+    for (const word of ["Assign", "Dismiss", "<a "]) expect(panel + table).not.toContain(word);
+  });
+
+  it("rebalance without the HR grant shows the hint and no zero rows", () => {
+    const html = draw({ rebalance: REBALANCE_HIDDEN });
+    const { panel, table } = panelAndTable(html);
+    const hint = "Rebalancing needs HR read access. An admin can see it.";
+    expect(panel).toContain(hint);
+    expect(table).toContain(hint);
+    for (const word of ["0 at risk", "Could help", "Could take", "Nobody", "undefined"]) {
+      expect(html, word).not.toContain(word);
+    }
   });
 
   it("stuck draws its band chart in a report, from the server's bands", () => {
@@ -353,6 +440,7 @@ describe("degrade: a report-shaped body prints no broken words", () => {
     ["with nothing overdue", { stuck: { overdue: [], overdue_total: 0 } }],
     ["with no median", { throughput: { series: [], median_hours: null, measured: 0 } }],
     ["with no forecast date", { outlook: NOT_CONVERGING }],
+    ["without the HR grant", { rebalance: REBALANCE_HIDDEN }],
   ] as [string, Sections][]) {
     it(`prints none of them ${label}`, () => {
       const html = draw(sections);
@@ -528,6 +616,7 @@ const PANELS = [
   "CapacityPanel",
   "StuckPanel",
   "ConflictsPanel",
+  "RebalancePanel",
 ];
 
 /** Everything that would make `RenderedBody` a second chart component. */
@@ -546,13 +635,13 @@ function handDrawnChart(source: string): string[] {
 describe("ReportsView draws with the Analytics panels, and draws nothing itself", () => {
   const source = readFileSync(join(__dirname, "ReportsView.tsx"), "utf-8");
 
-  it("imports the seven panels from ./AnalyticsPanels", () => {
+  it("imports the eight panels from ./AnalyticsPanels", () => {
     const block = source.match(/import\s*\{([^}]*)\}\s*from\s*"\.\/AnalyticsPanels"/);
     expect(block, "no import from ./AnalyticsPanels").not.toBeNull();
     for (const panel of PANELS) expect(block![1]).toMatch(new RegExp(`\\b${panel}\\b`));
   });
 
-  it("renders each of the seven", () => {
+  it("renders each of the eight", () => {
     for (const panel of PANELS) expect(source).toContain(`<${panel}`);
   });
 
@@ -639,6 +728,15 @@ describe("lib/reportPanels maps each section and computes nothing", () => {
     expect(got.by_kind).toEqual({ blocker_late: 3 });
     expect(got.rows[0].sentence).toContain("7601");
     expect(got.truncated).toBeUndefined();
+  });
+
+  it("rebalance: the section is the route's body, copied, lists absent stay absent", () => {
+    const got = rebalancePanelData(REBALANCE);
+    expect(got).toEqual(REBALANCE);
+    expect(got).not.toBe(REBALANCE);
+    const hidden = rebalancePanelData(REBALANCE_HIDDEN);
+    expect("at_risk" in hidden).toBe(false);
+    expect("pickups" in hidden).toBe(false);
   });
 
   describe("the browser counts nothing", () => {

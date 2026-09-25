@@ -356,6 +356,9 @@ export function peopleLine(o: OutlookReport): OutlookLine {
  * (`analytics.py` `project_forecast`), and `slip_days` is the forecast
  * minus the plan (`slip_days`). So the plan sits `weeks_remaining` × 7 −
  * `slip_days` days from today, and no date is parsed in the browser.
+ * `test_h185_3_the_forecast_is_today_plus_whole_weeks` in
+ * `tests/unit/test_projects_report_sections_r3b.py` pins that link, so a
+ * forecast that stops being whole weeks fails there first.
  *
  * Returns `null` when either date is absent. The verdicts `not_converging`,
  * `no_history` and `nothing_left` carry no forecast date, and a bar with one
