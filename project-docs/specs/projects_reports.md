@@ -4,8 +4,9 @@
 `POST /projects/reports/preview`). **R2 BUILT 2026-09-24** (the template
 catalogue, `config.template`, the gallery and "Your reports"). **R2b BUILT
 2026-09-24** (the visual report body: each section draws its Analytics panel,
-with its table folded under it). R3 to R9 and Phases 2 and 3 are not built.
-R3 is next.
+with its table folded under it). **R3a BUILT 2026-09-25** (the `outlook`
+section, the ageing bands in `stuck`, and T5 live). R3b to R3d, R4 to R9 and
+Phases 2 and 3 are not built, and R3b is next.
 
 Written
 2026-09-24 and verified against the code on 2026-09-24. The owner answered
@@ -113,26 +114,26 @@ defect.
 | What we finished | `GET /projects/analytics/finished` · `analytics.py` | `finished` |
 | Cycle time and weekly completions | `GET /projects/analytics/throughput` · `analytics.py` | `throughput` |
 | Open work for each person | `GET /projects/analytics/load` · `analytics.py:517` | `load` |
-| Work that nobody touched, blocked work, overdue work | `GET /projects/analytics/stuck` · `analytics.py:151` | `stuck` |
+| Work that nobody touched, blocked work, overdue work | `GET /projects/analytics/stuck` · `analytics.py:151` | `stuck` (the bands since R3a) |
 | Hours, absences, spare hours, the pill | `GET /projects/analytics/capacity` · `analytics_capacity.py:201` | `capacity` (opt-in) |
 | Order, overlap and people conflicts | `GET /projects/analytics/conflicts` · `analytics_conflicts.py:173` | `conflicts` (opt-in) |
 | Helpers for at-risk work, work for idle people | `GET /projects/analytics/rebalance` · `analytics_rebalance.py:103` | none |
-| The forecast | `GET /projects/analytics/outlook` · `analytics.py:1431` | none |
+| The forecast | `GET /projects/analytics/outlook` · `analytics.py:1431`, body `outlook_body` · `:1474` | `outlook` (opt-in, R3a) |
 | Who fits one task | `GET /projects/tasks/{id}/candidates` · `candidates.py` | none |
 
 **The report routes** are in `routes/projects/reports.py`:
-- `SECTIONS` (`:93`) is the vocabulary, in a fixed order. `DEFAULT_SECTIONS`
-  (`:104`) is the four that a definition with no `sections` key renders.
-- `_DEFAULTS` (`:110`): one week, the current week skipped, the subtree
+- `SECTIONS` (`:103`) is the vocabulary, in a fixed order. `DEFAULT_SECTIONS`
+  (`:115`) is the four that a definition with no `sections` key renders.
+- `_DEFAULTS` (`:121`): one week, the current week skipped, the subtree
   included.
-- `TEMPLATES` (`:150`) is the template catalogue of §4 (R2).
-- `SCHEDULES` (`:239`) holds only `"weekly"`.
-- `delivery_armed()` (`:242`) reads `PROJECT_REPORT_EMAIL_ENABLED`.
-- The routes: list is at `:425` and templates at `:459`. Create is at
-  `:476`. Get, patch and delete are at `:510` to `:554`. Render is at `:787`
-  and preview at `:823`. Recipients are at `:909` to `:990`, and schedule is
-  at `:1008`.
-- `render_body` (`:568`) holds the section loop. Render and preview both
+- `TEMPLATES` (`:162`) is the template catalogue of §4 (R2).
+- `SCHEDULES` (`:254`) holds only `"weekly"`.
+- `delivery_armed()` (`:257`) reads `PROJECT_REPORT_EMAIL_ENABLED`.
+- The routes: list is at `:440` and templates at `:474`. Create is at
+  `:491`. Get, patch and delete are at `:525` to `:569`. Render is at `:840`
+  and preview at `:876`. Recipients are at `:962` to `:1043`, and schedule is
+  at `:1061`.
+- `render_body` (`:583`) holds the section loop. Render and preview both
   call it.
 - **A render resolves visibility from the caller.** A send renders once for
   each recipient, with that recipient's own visibility (H-111). So a report
@@ -149,17 +150,17 @@ flag that applies, and a reason for each.
 ### 3.2 The client
 
 - `components/ReportsView.tsx`. It lists saved reports and draws a render with
-  `RenderedBody` (`:153`). The create control is "New report" (`:828`).
+  `RenderedBody` (`:201`). The create control is "New report" (`:946`).
 - `components/AnalyticsView.tsx` and `components/NodeDashboard.tsx`. They draw
   the same panels from `AnalyticsPanels.tsx`, for the portfolio and for one
   node.
-- `lib/api.ts:1226` to `:1264`. The client can list, create, patch, preview,
+- `lib/api.ts:1275` to `:1313`. The client can list, create, patch, preview,
   render and delete a report, and read the templates. It has no call for
   recipients or schedule.
-- **Since R1:** `ReportsView.tsx` has the builder (`ReportBuilder`, `:368`).
+- **Since R1:** `ReportsView.tsx` has the builder (`ReportBuilder`, `:486`).
   `lib/reportBuilder.ts` holds the builder's choices as pure functions.
-- **Since R2:** `ReportsView.tsx` has the home screen (`ReportsHome`, `:640`)
-  and the template card (`TemplateCard`, `:583`).
+- **Since R2:** `ReportsView.tsx` has the home screen (`ReportsHome`, `:758`)
+  and the template card (`TemplateCard`, `:701`).
 - `src/lib/reportEmail.ts`. It builds an email body with no colour.
   `sendReportEmail` throws while the flag is off.
 - Analytics and Reports are `live` in `lib/projectApps.ts`.
@@ -167,8 +168,10 @@ flag that applies, and a reason for each.
 ### 3.3 The chat
 
 `apps/skills/skill-projects/skill_projects/views.py` has `render_report`
-(`:299`) and `status_report` (`:366`). The chat saves a report through
-`writes.py` `REPORT_SECTIONS`. It can never send one.
+(`:433`) and `status_report` (`:491`). Its `REPORT_CARD_SECTIONS` (`:316`)
+names the words of the chat card. The chat prints a section through
+`reads.py` `_REPORT_SECTIONS` (`:1224`), and saves a report through
+`writes.py` `REPORT_SECTIONS` (`:854`). It can never send one.
 
 ### 3.4 The gaps
 
@@ -179,7 +182,8 @@ flag that applies, and a reason for each.
    (H-111).
 4. **No memory.** A render computes again and stores nothing. A report cannot
    say what changed since the last time you read it.
-5. **Three reads have no section:** rebalance, outlook and fit.
+5. **Two reads have no section:** rebalance and fit. Outlook became a
+   section in R3a.
 6. **No "needs help" signal.** The pills say who is behind or overloaded. No
    read joins blocked work, stale work and overdue waiting-on items for one
    person.
@@ -224,7 +228,7 @@ the default period. A member picks a template, then changes any of it. The
 saved report keeps the template key in `config.template`, so the home screen
 can group reports and the chat can name them.
 
-**Status key:** ✅ live since R2 · ◐ it waits for a section, a scope, a period
+**Status key:** ✅ live (T4 since R2, T5 since R3a) · ◐ it waits for a section, a scope, a period
 or a filter that §8 adds. The gallery shows a ◐ template as "coming soon".
 
 | # | Key | Template | The question | Scope | Period | Sections | Status |
@@ -233,7 +237,7 @@ or a filter that §8 adds. The gallery shows a ◐ template as "coming soon".
 | T2 | `my_day` | **My day** | What do I work on today, and what waits on me? | me | today | `pulse` for one person, `waiting` | ◐ |
 | T3 | `what_changed` | **What changed** | What happened since I last read this? | any | since the last run | `changes` | ◐ |
 | T4 | `weekly_delivery` | **Weekly delivery** | What did we finish last week, and how fast? | project · org | last week | `finished`, `throughput`, `load`, `stuck` | ✅ (the default today) |
-| T5 | `project_status` | **Project status** | Will this project finish on time, and what blocks it? | project | this week | `outlook`, `stuck`, `conflicts`, `finished` | ◐ |
+| T5 | `project_status` | **Project status** | Will this project finish on time, and what blocks it? | project | this week | `finished`, `outlook`, `stuck`, `conflicts` | ✅ (since R3a) |
 | T6 | `one_on_one` | **1:1 prep** | How is this person doing over a month? | person | last 4 weeks | `finished`, `throughput`, `pulse`, `waiting` | ◐ (§7.1 limits who may open it) |
 | T7 | `exceptions` | **Exceptions** | What is wrong right now, and nothing else? | any | today | `stuck`, `conflicts`, `hygiene` (only the high rows) | ◐ |
 | T8 | `capacity_outlook` | **Capacity outlook** | Do we have the people for the next weeks? | team · org | next 2 to 6 weeks | `capacity` (it carries absences), `outlook` | ◐ |
@@ -250,8 +254,8 @@ conflict, and not only `parallel_person`.
 **Templates live on the server,** as a `TEMPLATES` map in `reports.py` next to
 `SECTIONS`. `GET /projects/reports/templates` serves it in catalogue order.
 The builder, the chat and the email read the one map, and the client holds no
-copy. `test_projects_report_sections_lockstep.py` already holds six lists of
-section names together, and it holds the template map too.
+copy. `test_projects_report_sections_lockstep.py` holds seven lists of
+section names together (§8 R3), and it holds the template map too.
 
 **The keys are append-only.** A saved report keeps its key in
 `config.template`, and the server checks each config again when it reads a
@@ -607,7 +611,7 @@ value for the same scope and period (R8).
 - `stuck`: `StuckPanel`, overdue work for each project. The report body has
   no untouched bands, so the panel draws no band chart and no band legend for
   a report. It must not say "No open work in this scope". The bands wait for
-  R3.
+  R3. (R3a added them.)
 - `conflicts`: `ConflictsPanel`, the rows with the kind label and the
   severity dot, and the count line for each kind.
 
@@ -685,32 +689,117 @@ Each bar prints two server figures and computes neither:
 the visual for each new section in the same PR. R3 also adds the untouched
 bands to `stuck`.
 
-### R3 — Four new sections · AGENT-SAFE
+### R3 — Four new sections, in four slices · AGENT-SAFE
 
-Each section is one server read and one entry in the five lockstep lists
-(`reports.py` `SECTIONS`, `RenderedBody`, `reportEmail.ts`, the chat's
-`_REPORT_SECTIONS`, `writes.py` `REPORT_SECTIONS`). Each is opt-in, and none
-goes into `DEFAULT_SECTIONS`.
+Each section is one server read, one visual and one entry in each lockstep
+list. Each is opt-in, and none goes into `DEFAULT_SECTIONS`. The
+spec-auditor split R3 into four slices on 2026-09-24. Each slice is one PR.
 
-| Section | What it returns | It calls |
-|---|---|---|
-| `pulse` | One row for each person in scope: pill, flags, reasons, `needs_help`, `help_reasons`, on leave, today's focus (up to 5 tasks), stale count, blocked count, waiting count | `person_capacity`, `classify`, the `stuck` predicates, `pm_task_personal` |
-| `rebalance` | The rebalance route's body, capped like `load` | `analytics_rebalance.py` |
-| `outlook` | The forecast for the scope, and for each child project on a portfolio | `analytics.py` `outlook` |
-| `hygiene` | Open tasks with no assignee, no due date or no estimate, and tasks in progress with no activity. Counts, and up to 20 rows of each kind. | new SQL over `load_open_where` |
+**The lockstep list.** A section name lives in seven places, plus the chat
+card map. A slice adds its name to each of them in the same PR:
+
+1. `reports.py` `SECTIONS` (`:103`).
+2. `skill_projects/reads.py` `_REPORT_SECTIONS` (`:1224`). This is the
+   chat's list, not `views.py`.
+3. `skill_projects/writes.py` `REPORT_SECTIONS` (`:854`).
+4. `ReportsView.tsx` `RenderedBody` (`:201`).
+5. `src/lib/reportEmail.ts`.
+6. `lib/reportBuilder.ts` `REPORT_SECTIONS` (`:34`).
+7. `lib/api.ts` `RenderedReportBody` (`:713`).
+
+The chat card map is `skill_projects/views.py` `REPORT_CARD_SECTIONS`
+(`:316`). `test_projects_report_sections_lockstep.py` holds the seven lists.
+`test_projects_agent.py` holds each card title to `ReportsView.tsx`.
+
+**The declared order of `SECTIONS`:** `finished`, `throughput`, `outlook`,
+`load`, `capacity`, `pulse`, `stuck`, `hygiene`, `conflicts`, `rebalance`.
+Each slice adds its name in that place. A report renders its sections in
+this order, whatever order a member chose.
+
+| Section | What it returns | It calls | Slice |
+|---|---|---|---|
+| `outlook` | The forecast for the report's scope | `analytics.py` `outlook_body` | R3a |
+| `rebalance` | The rebalance route's body, capped like `load` | `analytics_rebalance.py` | R3b |
+| `hygiene` | Open tasks with no assignee, no due date or no estimate, and tasks in progress with no activity. Counts, and up to 20 rows of each kind. | new SQL over `load_open_where` | R3c |
+| `pulse` | One row for each person in scope: pill, flags, reasons, `needs_help`, `help_reasons`, on leave, today's focus (up to 5 tasks), stale count, blocked count, waiting count | `person_capacity`, `classify`, the `stuck` predicates, `pm_task_personal` | R3d |
+
+**Done when, for each slice:**
+- The section renders in the app, in the email body with no colour, and in
+  the chat card.
+- The section draws its visual, under the R2b rules.
+- Each new query runs against a real database (R8).
+- The visual review passes in light mode, compact density, a changed accent
+  and at 390 px.
+
+#### R3a — `outlook`, the ageing bands, and T5 · BUILT 2026-09-25
+
+**What:**
+- `outlook_body` (`analytics.py:1474`) holds the body of
+  `GET /projects/analytics/outlook`. The route and the report section both
+  call it, so the two are one computation.
+- The `outlook` section covers the report's scope only. It reads
+  `FORECAST_WEEKS` of history, not `config.weeks`. The route clamps a
+  `weeks` of 1 to 2, so the report period would change the forecast. A
+  forecast for each child project moves to the T10 slice.
+- `OutlookPanel` draws a range bar from the planned finish to the forecast
+  finish, with the slip in text. With no forecast date, it draws no bar and
+  shows the verdict line. The Analytics app and the node dashboard draw the
+  same panel.
+- `stuck` carries the route's ageing bands as `stale: [{band, n}]`. The
+  render's open-work predicate is the `stuck` route's, and the bands come
+  from `stale_bands_sql`. The panel draws its band chart in a report.
+- T5 `project_status` is live. Its sections are `finished`, `outlook`,
+  `stuck` and `conflicts`, for one week with the current week kept.
+
+**As built:** `test_projects_report_sections_r3.py` proves one computation on
+a real database. The section and the route body are equal for one scope and
+one caller. A report with `weeks` 1 samples `FORECAST_WEEKS`. Each band
+equals `/analytics/stuck`. `reportVisuals.test.ts` draws seven panels, and
+`outlook.test.ts` places the bar.
+
+**H-169 stays open.** The outlook's capacity figure ignores absences. The
+section calls `outlook_body`, so the fix reaches the report with no change
+here.
+
+#### R3b — `rebalance` · AGENT-SAFE · next
+
+**What:** the `rebalance` section and a `RebalancePanel` for it.
+
+**Done when:** a shared task counts once in `rebalance`.
+
+#### R3c — `hygiene` and T13 · waits for spec edit E2
+
+**What:** the `hygiene` section and a `HygienePanel` for it. T13
+`data_hygiene` goes live.
+
+**Open:** spec edit E2 must land before this slice starts.
+
+#### R3d — `pulse` and T1 · waits for spec edits E2 to E4
+
+**What:** the `pulse` section. It draws one card for each person: a load
+bar, the pill, the top focus tasks and a "needs help" mark. T1 `team_pulse`
+goes live.
+
+**Owner decisions (2026-09-25):**
+- **Private notes stay on the reader's own row.** A report shows the
+  `pm_task_personal` fields `waiting_on`, `expected_by` and `scheduled_start`
+  only on the row of the person who wrote them, and only to that person. The
+  cards of other people use shared task data only. D53.7 and D53.8 stay
+  intact.
+- **Before R5, an admin sees every card, and a reader who is not an admin
+  sees only their own card.** The report then says "This report hides N
+  other people". This rule is edit E5, and it is a strict subset of §7.1, so
+  it can never show more than R5 allows.
+
+**Open:**
+- Spec edits E2 to E4 must land first.
+- `test_the_template_fence_fires_on_a_missing_section` uses `pulse` as a
+  fake missing name. R3d must give that self-test another name.
 
 **Done when:**
-- Each section renders in the app, in the email body with no colour, and in
-  the chat card.
-- Each section draws its visual, under the R2b rules. `pulse` draws one card
-  for each person: a load bar, the pill, the top focus tasks and a "needs
-  help" mark. `outlook` draws a range bar from the planned finish to the
-  forecast finish, so the slip is visible.
 - `pulse` gives the same pill as the capacity route for the same person and
   window. One test pins this, so the two cannot drift.
 - A person on leave today shows "on leave" and no `idle` pill.
-- A shared task counts once in `rebalance`.
-- Each new query runs against a real database (R8).
 
 ⚠️ `waiting` for T2 and T6 is the `pulse` waiting rows for one person. It is
 not a fifth section.
@@ -847,7 +936,8 @@ item 6) and the chat's `send_report` both call it.
 
 ### Order
 
-**Phase 1, on request:** R1 → R2 → R2b → R3 → R5 → R4 → R6 → R8 → R9.
+**Phase 1, on request:** R1 → R2 → R2b → R3 (R3a → R3b → R3c → R3d) → R5 →
+R4 → R6 → R8 → R9.
 
 - R1 and R2 give a member control of what exists.
 - R2b draws each section as a chart or a progress bar.
@@ -904,6 +994,8 @@ that the render does not need a saved row.
 | Q3 | Do we add time tracking? | No. |
 | Q4 | Who may use the AI summary? | Anybody with AI credits, and only when they ask for it (R6). |
 | Q5 | When does the morning report send? | Nothing sends by itself in Phase 1. Phase 2 uses 09:00 on weekdays, in the recipient's timezone, as its default. |
+| Q6 (2026-09-25) | May a report show one member's private notes (`waiting_on`, `expected_by`, `scheduled_start`) to another reader? | No. The notes show only on the reader's own row (R3d). |
+| Q7 (2026-09-25) | Before R5, who sees the cards for each person? | An admin sees every card. Any other reader sees only their own card, and a line counts the hidden people (R3d, edit E5). |
 
 **Answered before this spec:** whose view a sent report uses. The send renders
 once for each recipient with that recipient's visibility (H-111, 2026-09-17).
@@ -936,6 +1028,9 @@ uv run pytest tests/unit/test_projects_reports.py \
   tests/unit/test_projects_agent.py \
   tests/unit/test_projects_report_builder.py \
   tests/unit/test_projects_report_templates.py \
+  tests/unit/test_projects_report_visuals.py \
+  tests/unit/test_projects_report_sections_r3.py \
+  tests/unit/test_projects_analytics_outlook.py \
   tests/unit/test_tenant_coverage.py -q
 ```
 
@@ -943,6 +1038,7 @@ uv run pytest tests/unit/test_projects_reports.py \
 names a built tool which never calls the route fails there.
 `test_projects_report_builder.py` is R1's file.
 `test_projects_report_templates.py` is R2's file.
+`test_projects_report_sections_r3.py` is R3a's file.
 
 Client, in `workbench/control_plane`:
 

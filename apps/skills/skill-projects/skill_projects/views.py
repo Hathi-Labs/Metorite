@@ -31,7 +31,9 @@ from typing import Any
 
 from skill_projects.client import data, get, uuid_of
 from skill_projects.reads import (
+    _MISSING,
     _day,
+    _dig,
     _report_section,
     _status_names,
     _task_line,
@@ -307,6 +309,10 @@ async def render_tasks(
 #:
 #: Each entry: ``title``, ``stats`` as ``(key, label)`` pairs, ``rows`` as the
 #: key of the row list, and ``columns`` as ``(key, label)`` pairs.
+#:
+#: WS-27bn R3a. A key may be a dotted path into a nested dict, such as
+#: ``plan.slip_days``. An entry with ``fields`` and no ``rows`` draws the
+#: section itself as a table of one row, because the outlook has no list.
 REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
     "finished": {
         "title": "What we finished",
@@ -317,6 +323,16 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
     "throughput": {
         "title": "How long it took",
         "stats": [("median_hours", "Median hours"), ("measured", "Measured")],
+    },
+    "outlook": {
+        "title": "Outlook",
+        "stats": [("plan.slip_days", "Slip days"), ("velocity.remaining_tasks", "Tasks left")],
+        "fields": [
+            ("velocity.verdict", "Forecast"),
+            ("plan.planned_finish", "Planned finish"),
+            ("velocity.finish_date", "Forecast finish"),
+            ("plan.slip_days", "Slip days"),
+        ],
     },
     "stuck": {
         "title": "Overdue",
@@ -356,7 +372,12 @@ def _human(key: str) -> str:
 
 
 def _card_cell(key: str, row: dict[str, Any]) -> str:
-    value = row.get(key)
+    value = _dig(row, key)
+    if value is _MISSING:
+        value = None
+    if key.endswith("verdict") and isinstance(value, str):
+        # A server word such as ``not_converging`` reads as "Not converging".
+        return _human(value)
     if key in ("assignee", "name") and not value:
         # The Unassigned row carries no person. Say so, as the Reports app does.
         return _plain(row.get("assignee") or "Unassigned")
@@ -369,12 +390,19 @@ def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, An
     title = spec["title"] if spec else _human(name)
     if spec:
         stats = [
-            {"label": label, "value": section[key]}
+            {"label": label, "value": value}
             for key, label in spec["stats"]
-            if isinstance(section.get(key), int | float) and not isinstance(section.get(key), bool)
+            if isinstance(value := _dig(section, key), int | float)
+            and not isinstance(value, bool)
         ]
-        rows = section.get(spec["rows"]) if spec.get("rows") else None
-        columns = spec.get("columns") or []
+        if spec.get("fields"):
+            # WS-27bn R3a. The section is its own one row. A generic
+            # fallback skips a nested dict, and would print nothing here.
+            rows = [section]
+            columns = spec["fields"]
+        else:
+            rows = section.get(spec["rows"]) if spec.get("rows") else None
+            columns = spec.get("columns") or []
     else:
         stats = [
             {"label": f"{title}: {_human(key)}", "value": section[key]}

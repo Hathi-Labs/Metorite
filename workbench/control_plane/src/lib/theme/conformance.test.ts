@@ -776,7 +776,9 @@ describe("selects and file pickers go through the primitives", () => {
    * first file converted and is the worked example. `FilterBar.tsx` left this
    * list at WS-27at: consolidating its row put all three of its selects
    * (status, group-by, lanes) through the primitive, and added a fourth for
-   * "Assigned to" that was never a raw one.
+   * "Assigned to" that was never a raw one. `app/tasks/components/TaskToolbar.tsx`
+   * left it on 2026-09-24: its four (assignee, group-by, sort, and the local
+   * `Select` wrapper) moved onto `SelectButton`, the pieces `FilterBar` uses.
    */
   const SELECT_DEBT: Record<string, number> = {
     "app/artifacts/page.tsx": 3,
@@ -806,8 +808,6 @@ describe("selects and file pickers go through the primitives", () => {
     "app/settings/organization/OrganizationAdmin.tsx": 2,
     "app/tasks/components/EngageView.tsx": 2,
     "app/tasks/components/TaskSettingsModal.tsx": 1,
-    // 3 raw, plus one `<Select>` the widened regex now sees.
-    "app/tasks/components/TaskToolbar.tsx": 4,
     "app/calendar/components/CalendarSettings.tsx": 3,
     "app/calendar/components/PlanDayPanel.tsx": 1,
     "app/whatsapp/calls/page.tsx": 1,

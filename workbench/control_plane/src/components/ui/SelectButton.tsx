@@ -69,6 +69,17 @@ export function arrowFor(value: string, defaultValue: string): string {
   return value === defaultValue ? "ChevronsUpDown" : "ChevronDown";
 }
 
+/**
+ * The tint a filter-row control wears when it is NOT at its default.
+ *
+ * The house active pair (`AGENTS.md` rule 6), tinted rather than filled,
+ * because a select still has to read as a field you can open. The CALLER
+ * applies it through `className`, because only the caller knows whether a
+ * sibling flag also counts as off-default. One spelling for both filter rows,
+ * Projects' `FilterBar` and My Tasks' `TaskToolbar`.
+ */
+export const OFF_DEFAULT = "border-primary/50 bg-primary/10 text-primary";
+
 export interface SelectOption {
   value: string;
   label: string;

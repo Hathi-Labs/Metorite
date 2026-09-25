@@ -22,7 +22,7 @@
  *
  * ⚠️ **The SURFACE decides the column count, never the viewport.** `twoColumn`
  * is the host's own width stop (`full` in Projects), so a 4K monitor does
- * not split a 448px docked column. The sections do not MOVE between the two
+ * not split a 384px (`max-w-sm`) docked column. The sections do not MOVE between the two
  * shapes: they pair inside the containers they already live in, so there is
  * no second copy to drift (the note in `TaskPanel.tsx`'s header records the
  * attempt that had one).

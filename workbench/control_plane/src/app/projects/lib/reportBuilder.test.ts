@@ -162,6 +162,7 @@ describe("sections", () => {
     expect(REPORT_SECTIONS.map((s) => s.key)).toEqual([
       "finished",
       "throughput",
+      "outlook",
       "load",
       "capacity",
       "stuck",
@@ -286,6 +287,23 @@ describe("choosing a template fills the builder", () => {
     expect(state!.template).toBe("weekly_delivery");
     expect(state!.name).toBe("Weekly delivery");
     expect(state!.projectId).toBeNull();
+  });
+
+  it("T5 presets its sections in the server's order, and this week", () => {
+    // WS-27bn R3a. A fixture shaped as the catalogue answers, not a mirror.
+    const state = builderStateFromTemplate({
+      key: "project_status",
+      name: "Project status",
+      question: "Will this project finish on time, and what blocks it?",
+      scope_kinds: ["project"],
+      available: true,
+      sections: ["finished", "outlook", "stuck", "conflicts"],
+      weeks: 1,
+      skip_current_week: false,
+    });
+    expect(state!.sections).toEqual(["finished", "outlook", "stuck", "conflicts"]);
+    expect(periodKey(state!)).toBe("this_week");
+    expect(state!.template).toBe("project_status");
   });
 
   it("the member can still change each chip, and the key stays", () => {

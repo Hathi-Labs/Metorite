@@ -741,6 +741,11 @@ export interface RenderedReportBody {
       no_start?: number;
       cancelled?: number;
     };
+    /**
+     * WS-27bn R3a. Opt-in. The outlook route's own body, for the report's
+     * scope, over the route's own weeks of history (not the report period).
+     */
+    outlook?: OutlookReport;
     load?: {
       people: {
         assignee: string | null;
@@ -764,6 +769,11 @@ export interface RenderedReportBody {
     stuck?: {
       overdue: { project_id: string; name: string; overdue: number }[];
       overdue_total: number;
+      /**
+       * WS-27bn R3a. The route's ageing bands, as `{band, n}`. Optional, so
+       * a body from a server before R3a still draws.
+       */
+      stale?: { band: string; n: number }[];
     };
     /** WS-27bm S7c. Opt-in: present only when the report asked for it. */
     conflicts?: {

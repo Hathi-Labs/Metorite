@@ -1472,60 +1472,89 @@ async def outlook(
     guesses.** Verdicts are `no_history`, `no_estimates`, `no_capacity`,
     `not_converging`, `nothing_left`. A missing figure is a finding; an
     invented one gets quoted in a meeting.
+
+    The body is :func:`outlook_body`, which the report section ``outlook``
+    also calls (WS-27bn R3a). The panel and the report are one computation.
     """
-    weeks = max(2, min(26, int(weeks)))
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
-        scope_sql = await scope_clause(db, vis, project_id, include_subtree)
-
-        # The one `open` definition this whole module shares. Two panels on
-        # one screen must not disagree about what is still to do.
-        open_where = (
-            f"{scope_sql}"
-            f" AND t.archived_at IS NULL"
-            f" AND ({task_visibility_clause(vis, 't')})"
-            f" AND ({triage_exclusion_clause('t')})"
-            # D-PM-32(b). An outlook is a forecast, and forecasting the
-            # delivery of work that was stopped is the clearest case of all.
-            f" AND ({reportable_with_ancestors_clause('t')})"
-            f" AND s.category <> ALL(CAST(:closed AS text[]))"
+        return await outlook_body(
+            db, vis,
+            project_id=project_id,
+            include_subtree=include_subtree,
+            weeks=weeks,
         )
-        params: dict[str, Any] = {
-            **vis.params,
-            **scope_params(project_id),
-            "closed": sorted(CLOSING_CATEGORIES),
-            "reportable_states": sorted(REPORTABLE_STATUSES),
-        }
-        period = {
-            **vis.params,
-            **scope_params(project_id),
-            "weeks": weeks,
-            "closing": sorted(CLOSING_CATEGORIES),
-            "done_cat": COMPLETED_CATEGORY,
-            "started_cat": STARTED_CATEGORY,
-        }
 
-        rows = (await db.execute(
-            text(velocity_sql(f"{scope_sql} AND ({task_visibility_clause(vis, 't')})")),
-            period,
-        )).fetchall()
 
-        remaining = int((await db.execute(
-            text(total_open_sql(open_where)), params,
-        )).scalar() or 0)
+async def outlook_body(
+    db: Any,
+    vis: Any,
+    *,
+    project_id: str | None,
+    include_subtree: bool,
+    weeks: int = FORECAST_WEEKS,
+) -> dict[str, Any]:
+    """The outlook answer, on a session and a visibility the caller resolved.
 
-        left = (await db.execute(
-            text(effort_sql(open_where)), params,
-        )).one()
+    WS-27bn R3a. Shared by the route and by the report section ``outlook``,
+    so a report and the panel it came from are one computation.
 
-        planned = (await db.execute(
-            text(planned_finish_sql(open_where)), params,
-        )).one()
+    ⚠️ **``weeks`` is the history the forecast reads, not a report period.**
+    A report passes nothing here and gets :data:`FORECAST_WEEKS`. Passing a
+    report's ``config.weeks`` of 1 would clamp to 2 below and change the
+    forecast, so the report and the panel would disagree.
+    """
+    weeks = max(2, min(26, int(weeks)))
+    scope_sql = await scope_clause(db, vis, project_id, include_subtree)
 
-        cap = (await db.execute(
-            text(team_capacity_sql(open_where)),
-            {**params, "horizon_days": LEAVING_HORIZON_DAYS},
-        )).one()
+    # The one `open` definition this whole module shares. Two panels on
+    # one screen must not disagree about what is still to do.
+    open_where = (
+        f"{scope_sql}"
+        f" AND t.archived_at IS NULL"
+        f" AND ({task_visibility_clause(vis, 't')})"
+        f" AND ({triage_exclusion_clause('t')})"
+        # D-PM-32(b). An outlook is a forecast, and forecasting the
+        # delivery of work that was stopped is the clearest case of all.
+        f" AND ({reportable_with_ancestors_clause('t')})"
+        f" AND s.category <> ALL(CAST(:closed AS text[]))"
+    )
+    params: dict[str, Any] = {
+        **vis.params,
+        **scope_params(project_id),
+        "closed": sorted(CLOSING_CATEGORIES),
+        "reportable_states": sorted(REPORTABLE_STATUSES),
+    }
+    period = {
+        **vis.params,
+        **scope_params(project_id),
+        "weeks": weeks,
+        "closing": sorted(CLOSING_CATEGORIES),
+        "done_cat": COMPLETED_CATEGORY,
+        "started_cat": STARTED_CATEGORY,
+    }
+
+    rows = (await db.execute(
+        text(velocity_sql(f"{scope_sql} AND ({task_visibility_clause(vis, 't')})")),
+        period,
+    )).fetchall()
+
+    remaining = int((await db.execute(
+        text(total_open_sql(open_where)), params,
+    )).scalar() or 0)
+
+    left = (await db.execute(
+        text(effort_sql(open_where)), params,
+    )).one()
+
+    planned = (await db.execute(
+        text(planned_finish_sql(open_where)), params,
+    )).one()
+
+    cap = (await db.execute(
+        text(team_capacity_sql(open_where)),
+        {**params, "horizon_days": LEAVING_HORIZON_DAYS},
+    )).one()
 
     velocity = project_forecast(
         remaining_tasks=remaining,

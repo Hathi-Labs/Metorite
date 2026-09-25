@@ -1,10 +1,10 @@
 "use client";
 
+import { CATEGORY_LABEL } from "@/lib/statusCategory";
 import { useTaskStore } from "./taskStore";
 import { MyTask } from "./types";
 import { promoteAllowed } from "./promote";
 import {
-  CATEGORY_LABEL,
   NEXT_CATEGORIES,
   type NextCategory,
   nextCategoryOf,

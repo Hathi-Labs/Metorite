@@ -3,6 +3,7 @@
 import Badge from "@/components/ui/Badge";
 import { Checkbox } from "@/components/ui/Checkbox";
 import Button from "@/components/ui/Button";
+import { type ModeOption, ModeSwitch } from "@/components/ModeSwitch";
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
 import { categoricalAccent } from "@/lib/categorical";
 import { allSelected } from "@/lib/selection";
@@ -40,6 +41,13 @@ function readMode(): "list" | "board" {
     return "list";
   }
 }
+/** List and Board, for the shared view switcher Projects draws its canvases
+ *  with (`components/ModeSwitch.tsx`). The glyphs are Projects' own. */
+const MODE_OPTIONS: readonly ModeOption<"list" | "board">[] = [
+  { id: "list", icon: "List" },
+  { id: "board", icon: "Kanban" },
+];
+
 function setModePersist(m: "list" | "board") {
   try { window.localStorage.setItem(MODE_KEY, m); } catch { /* private mode */ }
   modeListeners.forEach((cb) => cb());
@@ -50,7 +58,7 @@ const VIEW_META: Record<
   { title: string; icon: ThemedIcon; hint: string }
 > = {
   inbox: { title: "Inbox", icon: themedIcon("Inbox"), hint: "Capture, then clarify each item to zero." },
-  next: { title: "My Next Actions", icon: themedIcon("ListChecks"), hint: "Tasks assigned to you, grouped by status and sorted by priority — the very next physical step for each." },
+  next: { title: "My Next Actions", icon: themedIcon("ListChecks"), hint: "Tasks assigned to you, grouped by stage and sorted by priority — the very next physical step for each." },
   // D78: one priority system, the matrix, in both apps.
   priority: { title: "Priority", icon: themedIcon("Target"), hint: "Your open work by priority level — Critical first, Low Priority last." },
   engage: { title: "Engage · Now", icon: themedIcon("Zap"), hint: "What you can pick up right now, matched to your energy." },
@@ -223,7 +231,9 @@ export function ItemList() {
             row instead of crushing the title into a two-line break. */}
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
           <Icon className="h-4 w-4 shrink-0 text-primary" />
-          <h1 className="whitespace-nowrap text-base font-bold text-foreground">
+          {/* An h2: the app bar holds the page's one h1. The view heading
+              is Projects' scale, `text-sm font-medium`. */}
+          <h2 className="whitespace-nowrap text-sm font-medium text-foreground">
             {meta.title}
             {context && (
               <span className="ml-2 font-mono text-sm font-normal text-primary/80">
@@ -247,40 +257,15 @@ export function ItemList() {
                 <AppIcon name="X" className="h-3 w-3" />
               </button>
             )}
-          </h1>
-          {/* List ⇄ Board view mode toggle (Jira-style). Sticky per browser. */}
+          </h2>
+          {/* List ⇄ Board — the shared view switcher. Sticky per browser. */}
           {boardable && (
-            <div className="ml-auto flex items-center gap-0.5 rounded-md border border-border bg-background p-0.5">
-              <button
-                type="button"
-                onClick={() => setModePersist("list")}
-                aria-pressed={mode === "list"}
-                title="List view"
-                className={[
-                  "tech-transition inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium",
-                  mode === "list"
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                ].join(" ")}
-              >
-                <AppIcon name="LayoutList" className="h-3 w-3" />
-                List
-              </button>
-              <button
-                type="button"
-                onClick={() => setModePersist("board")}
-                aria-pressed={mode === "board"}
-                title="Board view"
-                className={[
-                  "tech-transition inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium",
-                  mode === "board"
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                ].join(" ")}
-              >
-                <AppIcon name="Columns3" className="h-3 w-3" />
-                Board
-              </button>
+            <div className="ml-auto">
+              <ModeSwitch
+                modes={MODE_OPTIONS}
+                mode={mode === "board" ? "board" : "list"}
+                onPick={setModePersist}
+              />
             </div>
           )}
           {hasSynced && contextlessCount > 0 && (

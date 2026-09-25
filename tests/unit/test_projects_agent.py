@@ -1583,20 +1583,56 @@ def test_every_report_card_section_labels_every_key(name: str) -> None:
     from skill_projects.views import REPORT_CARD_SECTIONS, _card_section
 
     spec = REPORT_CARD_SECTIONS[name]
-    section: dict[str, Any] = {key: 7 for key, _ in spec["stats"]}
+
+    def put(into: dict[str, Any], key: str, value: Any) -> None:
+        # WS-27bn R3a. A dotted key is a path into a nested dict.
+        *path, last = key.split(".")
+        for part in path:
+            into = into.setdefault(part, {})
+        into[last] = value
+
+    section: dict[str, Any] = {}
+    for key, _ in spec["stats"]:
+        put(section, key, 7)
     if spec.get("rows"):
         section[spec["rows"]] = [{key: "x" for key, _ in spec["columns"]}]
     stats, table = _card_section(name, section)
 
     assert spec["title"] != name and "_" not in spec["title"]
     assert [s["label"] for s in stats] == [label for _, label in spec["stats"]]
-    for key, label in [*spec["stats"], *spec.get("columns", [])]:
+    columns = spec.get("columns") or spec.get("fields") or []
+    for key, label in [*spec["stats"], *columns]:
         assert label != key, f"{name}: {key} is labelled with its raw key"
         assert "_" not in label, f"{name}: {label}"
-    if spec.get("rows"):
+    if spec.get("rows") or spec.get("fields"):
         assert table is not None
         assert table["title"] == spec["title"]
-        assert table["columns"] == [label for _, label in spec["columns"]]
+        assert table["columns"] == [label for _, label in columns]
+
+
+def test_the_outlook_card_reads_its_nested_figures() -> None:
+    """WS-27bn R3a. The outlook's figures sit in nested dicts. The generic
+    fallback skips a nested dict, so without a real entry the card and the
+    chat lines would say nothing about the forecast."""
+    from skill_projects.reads import _report_section
+    from skill_projects.views import _card_section
+
+    section = {
+        "velocity": {"verdict": "not_converging", "finish_date": None,
+                     "remaining_tasks": 41},
+        "plan": {"planned_finish": "2026-11-02T00:00:00+00:00", "slip_days": None},
+        "capacity": {"verdict": "no_estimates"},
+    }
+    stats, table = _card_section("outlook", section)
+    assert stats == [{"label": "Tasks left", "value": 41}]
+    assert table is not None and table["title"] == "Outlook"
+    assert table["rows"][0]["cells"] == [
+        "Not converging", "2026-11-02T00:00:00+00:00", "", "",
+    ]
+    lines = _report_section("outlook", section)
+    assert lines[0].startswith("outlook: velocity.verdict not_converging")
+    assert "plan.planned_finish 2026-11-02" in lines[0]
+    assert "velocity.remaining_tasks 41" in lines[0]
 
 
 # ── S9 — entity pills in the chat (spec §15) ────────────────────────────────
