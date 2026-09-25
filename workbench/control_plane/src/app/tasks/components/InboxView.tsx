@@ -57,6 +57,7 @@ import { InboxTable } from "./InboxTable";
 import { AttachmentComposer } from "./AttachmentComposer";
 import type { TaskAttachment } from "../lib/types";
 import { ClarifyModal } from "./ClarifyModal";
+import { openShortcutsSheet } from "./TasksShortcuts";
 import { CaptureProjectChip } from "./CaptureProjectChip";
 
 const AGING_MS = 3 * 24 * 3600 * 1000; // GTD: empty regularly — flag stale items
@@ -211,7 +212,6 @@ export function InboxView() {
   // selection from fresh state and an anchor from stale state.
   const [selection, setSelection] = useState<SelectionState>(NO_SELECTION);
   const selectedIds = selection.selected;
-  const [showShortcuts, setShowShortcuts] = useState(false);
   // Inline editor for the dup-notice "rename existing" affordance: seeded with
   // the new capture's (usually clearer) title.
   const [dupRenaming, setDupRenaming] = useState(false);
@@ -522,38 +522,19 @@ export function InboxView() {
             <AppIcon name="Wind" className="h-3.5 w-3.5" />
             <span className="hidden lg:inline">Mind sweep</span>
           </button>
+          {/* A pointer to the `?` sheet, which replaced the inline legend
+              (continuity P3). The sheet is printed from the key map in
+              `lib/shortcuts.ts`, so it cannot drift from the handlers. */}
           <button
             type="button"
-            onClick={() => setShowShortcuts((v) => !v)}
-            title="Keyboard shortcuts (press C to capture, ⌘K to search)"
-            aria-pressed={showShortcuts}
+            onClick={openShortcutsSheet}
+            title="Keyboard shortcuts (?)"
+            aria-label="Keyboard shortcuts"
             className="tech-transition inline-flex shrink-0 items-center rounded-md border border-border p-1.5 text-muted-foreground hover:border-primary/40 hover:text-foreground"
           >
             <AppIcon name="Keyboard" className="h-3.5 w-3.5" />
           </button>
         </div>
-        {showShortcuts && (
-          <div className="flex flex-wrap gap-x-3 gap-y-1 border-t border-border px-4 py-2 text-[10px] text-muted-foreground">
-            <Sc k="C">capture</Sc>
-            {/* One key, one meaning, in both task apps: ⌘K is search. */}
-            <Sc k="⌘K">search</Sc>
-            {/* WS-27ad — was "j / k". The arrows are the one movement idiom
-                across both task apps now; a vim walk on this screen only was a
-                shortcut nobody could carry anywhere else. */}
-            <Sc k="↑ / ↓">move</Sc>
-            <Sc k="↵">clarify</Sc>
-            <Sc k="e">edit</Sc>
-            <Sc k="x">select</Sc>
-            <Sc k="t">delete · remove from my lists</Sc>
-            <Sc k="m">move to project</Sc>
-            <Sc k="o">open on board</Sc>
-            <Sc k="s">someday</Sc>
-            <Sc k="r">reference</Sc>
-            <Sc k="2">do now</Sc>
-            <Sc k="u">undo</Sc>
-            <Sc k="esc">clear</Sc>
-          </div>
-        )}
       </div>
 
       {/* Capture undo — kept out of the hero so it shows on mobile too */}
@@ -954,16 +935,5 @@ function BulkBtn({
       <Icon className="h-3.5 w-3.5" />
       {children}
     </button>
-  );
-}
-
-function Sc({ k, children }: { k: string; children: React.ReactNode }) {
-  return (
-    <span className="inline-flex items-center gap-1">
-      <kbd className="rounded border border-border px-1 py-0.5 font-mono text-[9px] text-foreground">
-        {k}
-      </kbd>
-      {children}
-    </span>
   );
 }

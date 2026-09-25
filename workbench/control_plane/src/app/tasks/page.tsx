@@ -7,7 +7,7 @@ import { AppSearchButton, AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { useMobileDrawer } from "@/components/AppShell";
-import { useRailFold } from "@/lib/railFold";
+import { railClass, useRailFold } from "@/lib/railFold";
 import { TASK_PANEL_WIDTH } from "@/lib/taskPanel";
 import { useTaskStore } from "./lib/taskStore";
 import { ListsSidebar } from "./components/ListsSidebar";
@@ -35,6 +35,7 @@ import { DeleteConfirmModal } from "./components/DeleteConfirmModal";
 import { SchedulePopup } from "./components/SchedulePopup";
 import { EliminatePopup } from "./components/EliminatePopup";
 import { DelegatePopup } from "./components/DelegatePopup";
+import { TasksShortcuts } from "./components/TasksShortcuts";
 // ⌘K is search in both task apps, and it is ONE palette. My Tasks mounts the
 // Projects one with no commands (`paletteCommands`), so it searches tasks only.
 import { SearchPalette } from "../projects/components/SearchPalette";
@@ -210,6 +211,19 @@ export default function TasksPage() {
       onOpenTask={openHit}
     />
   );
+  // `?` and the `g <letter>` jumps, the ones Projects binds. Held off while
+  // another surface owns the keyboard, or the focused task covers the sheet.
+  const shortcuts = (
+    <TasksShortcuts
+      blocked={
+        quickCaptureOpen ||
+        clarifyModalOpen ||
+        searching ||
+        Boolean(focusedItemId) ||
+        Boolean(maximisedId)
+      }
+    />
+  );
 
   if (isMobile) {
     // Single-pane mobile flow. Section switching + capture live in the AppShell
@@ -255,6 +269,7 @@ export default function TasksPage() {
         <EliminatePopup />
         <DelegatePopup />
         {search}
+        {shortcuts}
       </div>
     );
   }
@@ -294,7 +309,9 @@ export default function TasksPage() {
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {lists.open && (
-          <aside className="w-60 shrink-0 border-r border-border bg-card">
+          // `railClass`: before mount, CSS hides the rail below `lg`, so a
+          // tablet load does not paint it open for a frame (`lib/railFold.ts`).
+          <aside className={`w-60 shrink-0 border-r border-border bg-card ${railClass(lists.settled)}`}>
             <ListsSidebar
               onOpenAssistant={() => setAssistantOpen(true)}
               assistantActive={assistantOpen}
@@ -382,6 +399,7 @@ export default function TasksPage() {
       <EliminatePopup />
       <DelegatePopup />
       {search}
+      {shortcuts}
     </div>
   );
 }

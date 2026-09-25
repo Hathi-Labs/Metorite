@@ -9,9 +9,40 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { RAIL_INITIAL, RAIL_WIDE_QUERY, railOnBand, railStart, railToggle } from "./railFold";
+import {
+  RAIL_INITIAL,
+  RAIL_WIDE_QUERY,
+  railClass,
+  railOnBand,
+  railStart,
+  railToggle,
+} from "./railFold";
 
 const HERE = fileURLToPath(new URL(".", import.meta.url));
+
+describe("the rail does not flash open on a tablet load (continuity P3)", () => {
+  it("before mount, CSS hides the rail below lg and shows it at lg", () => {
+    expect(railClass(false)).toBe("hidden lg:block");
+  });
+
+  it("after mount the state decides, so CSS adds nothing", () => {
+    expect(railClass(true)).toBe("");
+  });
+
+  it("the hook starts unsettled and settles only in the mount effect", () => {
+    const src = readFileSync(join(HERE, "railFold.ts"), "utf8");
+    const hook = src.slice(src.indexOf("export function useRailFold"));
+    expect(hook).toMatch(/useState\(false\)/);
+    const effect = hook.slice(hook.indexOf("useEffect("));
+    expect(effect).toMatch(/setSettled\(true\)/);
+    expect(hook.slice(0, hook.indexOf("useEffect("))).not.toMatch(/setSettled\(true\)/);
+  });
+
+  it("the My Tasks rail wears railClass(lists.settled)", () => {
+    const page = readFileSync(join(HERE, "../app/tasks/page.tsx"), "utf8");
+    expect(page).toMatch(/<aside className=\{`[^`]*\$\{railClass\(lists\.settled\)\}`\}/);
+  });
+});
 
 describe("the rail folds itself on tablet widths", () => {
   it("starts folded below lg and open at or above it", () => {
