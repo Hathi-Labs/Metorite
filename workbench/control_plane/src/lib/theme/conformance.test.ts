@@ -1125,6 +1125,14 @@ describe("the headless substrate is wrapped, not imported", () => {
     ).toEqual([]);
   });
 
+  it("My Tasks settings keeps its safe-area padding on Modal", () => {
+    // The hand-rolled sheet carried `pb-safe`. Lost in the move, the last
+    // row sat under the phone's home indicator (PR #475 review).
+    expect(read("app/tasks/components/TaskSettingsModal.tsx")).toMatch(
+      /className="[^"]*\bpb-safe\b[^"]*"/,
+    );
+  });
+
   it("a My Tasks dialog the focused task can raise paints on the alert layer", () => {
     // `TaskFocusModal` is still a hand-rolled overlay at z-[80] (its pickers
     // are portalled, and a Base UI modal blocks them). The task detail inside

@@ -337,8 +337,10 @@ function ToastViewport() {
           screen is not a dead zone over the board underneath; each toast turns
           them back on for itself. `flex-col-reverse` because the store keeps
           toasts newest-first and this viewport is anchored to the bottom — the
-          newest belongs nearest the corner it grew from. */}
-      <BaseToast.Viewport className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-[min(24rem,calc(100vw-2rem))] flex-col-reverse gap-2 outline-none">
+          newest belongs nearest the corner it grew from.
+          `toast-viewport-bottom` (globals.css): above the phone bottom nav,
+          and 1rem from the edge from `sm` up, as before. */}
+      <BaseToast.Viewport className="toast-viewport-bottom pointer-events-none fixed right-4 z-50 flex w-[min(24rem,calc(100vw-2rem))] flex-col-reverse gap-2 outline-none">
         {toasts.map((toast) => {
           const variant = (toast.type ?? "loading") as ToastVariant;
           const action = toast.data?.action;

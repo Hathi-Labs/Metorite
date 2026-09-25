@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 
 import { useToast } from "@/components/ui/Toast";
+import { useViewMode } from "@/components/ViewModeProvider";
 import { isTypingTarget, isUndoShortcut } from "@/lib/keyboard";
 
 import { useTaskStore } from "../lib/taskStore";
@@ -28,15 +29,25 @@ export function UndoToast() {
   // an Undo that would only take back half of it.
   const sharedId = undoSnapshot?.sharedChangeTaskId;
 
+  // A phone has no keyboard, so the toast names only its button there.
+  const { isMobile } = useViewMode();
+
   useEffect(() => {
-    syncUndoToast(undoSnapshot, toast, {
+    const store = {
       // Read at the moment the toast closes, never the render's copy.
       current: () => useTaskStore.getState().undoSnapshot,
       undo: undoLastChange,
       dismiss: dismissUndo,
       openTask: openFocus,
-    });
-  }, [undoSnapshot, toast, undoLastChange, dismissUndo, openFocus]);
+    };
+    syncUndoToast(undoSnapshot, toast, store, { keys: !isMobile });
+    // Unmount (a route change) unbinds `u` and Ctrl+Z, but the toast lives on
+    // in the app-wide viewport. Re-say it in place without the key hint. The
+    // Undo button still works: the store is app-wide.
+    return () => {
+      syncUndoToast(useTaskStore.getState().undoSnapshot, toast, store, { keys: false });
+    };
+  }, [undoSnapshot, toast, undoLastChange, dismissUndo, openFocus, isMobile]);
 
   /**
    * Keyboard: Ctrl/Cmd+Z, or the bare `u` this app has always used.

@@ -102,6 +102,45 @@ export function offersKey(event: {
   return !isTypingTarget(event.target ?? null);
 }
 
+/** The store fields that say another surface owns the keyboard. */
+export interface TasksOverlayState {
+  quickCaptureOpen: boolean;
+  clarifyModalOpen: boolean;
+  settingsModalOpen: boolean;
+  focusedItemId: string | null;
+  reclarifyItemId: string | null;
+  scheduleItemId: string | null;
+  eliminateItemId: string | null;
+  delegateItemId: string | null;
+  pendingDeleteIds: string[] | null;
+}
+
+/**
+ * Is an overlay open, so `?` and `g` must stay silent? The My Tasks twin of
+ * Projects' `overlayOpen`: every store-driven dialog, plus the page's own
+ * search palette and maximised task. A dialog that a component opens from
+ * its own state (the task detail's DelegateDialog, the PromoteDialog) is not
+ * in the store. `TasksShortcuts` catches those by an open modal in the DOM.
+ */
+export function tasksOverlayOpen(
+  s: TasksOverlayState,
+  page: { searching: boolean; maximised: boolean },
+): boolean {
+  return (
+    page.searching ||
+    page.maximised ||
+    s.quickCaptureOpen ||
+    s.clarifyModalOpen ||
+    s.settingsModalOpen ||
+    Boolean(s.focusedItemId) ||
+    Boolean(s.reclarifyItemId) ||
+    Boolean(s.scheduleItemId) ||
+    Boolean(s.eliminateItemId) ||
+    Boolean(s.delegateItemId) ||
+    Boolean(s.pendingDeleteIds?.length)
+  );
+}
+
 /**
  * While the sheet is open, does this key reach the page? Only Escape (the
  * dialog closes on it) and Tab (the dialog traps focus with it). Every other

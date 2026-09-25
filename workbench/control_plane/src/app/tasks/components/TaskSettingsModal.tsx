@@ -111,7 +111,9 @@ function SettingsPanel() {
       icon="Settings2"
       size="xl"
       placement="top"
-      className="max-h-[85vh]"
+      // `pb-safe`: the last row stays clear of the phone's home indicator,
+      // as it did before the move onto `Modal`.
+      className="max-h-[85vh] pb-safe"
     >
 
         <div className="flex flex-col gap-5 overflow-y-auto p-4">

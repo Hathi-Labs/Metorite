@@ -27,7 +27,7 @@ interface Snap extends UndoSnapshotLike {
   soft?: boolean;
 }
 
-function harness() {
+function harness(opts: { productionDefer?: boolean; keys?: boolean } = {}) {
   const up = new Map<string, Spec>();
   const queue: (() => void)[] = [];
   const log = { purges: [] as string[], undone: 0, opened: [] as string[] };
@@ -58,7 +58,12 @@ function harness() {
     },
     openTask: (id: string) => log.opened.push(id),
   };
-  const sync = () => syncUndoToast(snapshot, toast, store, (fn) => queue.push(fn));
+  // `productionDefer` passes NO defer, so the shipped default runs.
+  const sync = () =>
+    syncUndoToast(snapshot, toast, store, {
+      keys: opts.keys,
+      ...(opts.productionDefer ? {} : { defer: (fn: () => void) => queue.push(fn) }),
+    });
   const flush = () => {
     while (queue.length) queue.shift()!();
   };
@@ -163,6 +168,55 @@ describe("the purge runs exactly once", () => {
     expect(h.snapshot?.label).toBe("second");
     h.timeout();
     expect(h.log.purges).toEqual(["first", "second"]);
+  });
+});
+
+describe("the shipped default defer (no queue injected)", () => {
+  // Every test above injects a queue. This one runs the production default.
+  // If that default became synchronous, `onClose` would check the snapshot
+  // BEFORE the Undo action ran, find it still there, and purge the delete.
+  it("an Undo click does not purge", async () => {
+    const h = harness({ productionDefer: true });
+    h.change(DELETE());
+    h.clickAction();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(h.log.undone).toBe(1);
+    expect(h.log.purges).toEqual([]);
+  });
+
+  it("a timeout still purges, once, after the microtask", async () => {
+    const h = harness({ productionDefer: true });
+    h.change(DELETE());
+    h.timeout();
+    expect(h.log.purges).toEqual([]);
+    await Promise.resolve();
+    expect(h.log.purges).toEqual(["Deleted 1 task"]);
+  });
+});
+
+describe("the key hint is said only where the keys work", () => {
+  it("with keys bound, the toast names U and Ctrl+Z", () => {
+    const h = harness();
+    h.change(DELETE());
+    expect(h.up.get(UNDO_TOAST_KEY)?.description).toMatch(/Press U or Ctrl\+Z/);
+  });
+
+  it("on a phone, or after the page unmounts, it names only the button", () => {
+    const h = harness({ keys: false });
+    h.change(DELETE());
+    expect(h.up.get(UNDO_TOAST_KEY)?.description).toBeUndefined();
+    expect(h.up.get(UNDO_TOAST_KEY)?.action?.label).toBe("Undo");
+  });
+
+  it("UndoToast passes keys: !isMobile, and drops the hint on unmount", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL("../components/UndoToast.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(src).toMatch(/\{ keys: !isMobile \}/);
+    const cleanup = src.slice(src.indexOf("return () => {"));
+    expect(cleanup).toMatch(/^return \(\) => \{\s*syncUndoToast\([\s\S]*?\{ keys: false \}\);/);
   });
 });
 

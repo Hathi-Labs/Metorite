@@ -13,7 +13,9 @@ import { GO_COMMANDS, sequenceLabel } from "@/app/projects/lib/commands";
 import {
   INBOX_KEYS,
   TASKS_GLOBAL_KEYS,
+  type TasksOverlayState,
   keyPassesOpenSheet,
+  tasksOverlayOpen,
   offersKey,
   stepTasksKey,
   tasksShortcutSections,
@@ -68,6 +70,54 @@ describe("the keys My Tasks answers", () => {
     for (const key of ["t", "Enter", "ArrowDown", "x", "?"]) {
       expect(keyPassesOpenSheet(key), key).toBe(false);
     }
+  });
+});
+
+describe("? and g stay silent under any open overlay", () => {
+  const CLOSED: TasksOverlayState = {
+    quickCaptureOpen: false,
+    clarifyModalOpen: false,
+    settingsModalOpen: false,
+    focusedItemId: null,
+    reclarifyItemId: null,
+    scheduleItemId: null,
+    eliminateItemId: null,
+    delegateItemId: null,
+    pendingDeleteIds: null,
+  };
+  const PAGE = { searching: false, maximised: false };
+
+  it("nothing open: the keys work", () => {
+    expect(tasksOverlayOpen(CLOSED, PAGE)).toBe(false);
+    expect(tasksOverlayOpen({ ...CLOSED, pendingDeleteIds: [] }, PAGE)).toBe(false);
+  });
+
+  it.each<[string, Partial<TasksOverlayState>]>([
+    ["SchedulePopup", { scheduleItemId: "t1" }],
+    ["EliminatePopup", { eliminateItemId: "t1" }],
+    ["DelegatePopup", { delegateItemId: "t1" }],
+    ["DeleteConfirmModal", { pendingDeleteIds: ["t1"] }],
+    ["TaskSettingsModal", { settingsModalOpen: true }],
+    ["ReclarifyModal", { reclarifyItemId: "t1" }],
+    ["QuickCapture", { quickCaptureOpen: true }],
+    ["ClarifyModal", { clarifyModalOpen: true }],
+    ["TaskFocusModal", { focusedItemId: "t1" }],
+  ])("%s open: blocked", (_name, patch) => {
+    expect(tasksOverlayOpen({ ...CLOSED, ...patch }, PAGE)).toBe(true);
+  });
+
+  it("the page's own search and maximised task block too", () => {
+    expect(tasksOverlayOpen(CLOSED, { searching: true, maximised: false })).toBe(true);
+    expect(tasksOverlayOpen(CLOSED, { searching: false, maximised: true })).toBe(true);
+  });
+
+  it("the page wires it, and a component-owned dialog is caught by the DOM", () => {
+    expect(read("../page.tsx")).toMatch(/<TasksShortcuts blocked=\{overlayOpen\} \/>/);
+    expect(read("../page.tsx")).toMatch(/tasksOverlayOpen\(s, \{ searching, maximised/);
+    // DelegateDialog opened from the docked detail is in no store field.
+    expect(read("../components/TasksShortcuts.tsx")).toMatch(
+      /document\.querySelector\('\[role="dialog"\]\[aria-modal="true"\]'\)\) return;/,
+    );
   });
 });
 

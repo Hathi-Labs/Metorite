@@ -418,7 +418,7 @@ function undoToastSays(): { action?: string; title: string } | undefined {
       dismiss: () => undefined,
       openTask: () => undefined,
     },
-    () => undefined,
+    { defer: () => undefined },
   );
   return said;
 }

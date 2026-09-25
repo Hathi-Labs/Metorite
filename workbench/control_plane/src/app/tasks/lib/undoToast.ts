@@ -88,8 +88,18 @@ export function syncUndoToast<S extends UndoSnapshotLike>(
   snap: S | null,
   toast: UndoToastApi,
   store: UndoToastStore<S>,
-  defer: Defer = microtask,
+  opts: {
+    /**
+     * The `u` / Ctrl+Z keys are bound where this toast is read. False on a
+     * phone (no keyboard), and after the page that binds them unmounts (a
+     * route change): the toast then names only its button.
+     */
+    keys?: boolean;
+    /** Injected by tests. Production is a microtask, see the header. */
+    defer?: Defer;
+  } = {},
 ): void {
+  const { keys = true, defer = microtask } = opts;
   if (!snap) {
     // Undone (the `u` key, ⌘Z) or dismissed. `onClose` runs and finds the
     // snapshot gone, so nothing is purged here.
@@ -103,7 +113,9 @@ export function syncUndoToast<S extends UndoSnapshotLike>(
     title: snap.label,
     description: shared
       ? "This changed the task on its board. Open it to change it back."
-      : "Press U or Ctrl+Z to undo.",
+      : keys
+        ? "Press U or Ctrl+Z to undo."
+        : undefined,
     action: shared
       ? {
           label: "Open task",

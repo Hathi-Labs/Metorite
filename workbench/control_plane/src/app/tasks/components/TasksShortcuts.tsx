@@ -65,6 +65,10 @@ export function TasksShortcuts({ blocked }: { blocked: boolean }) {
         return;
       }
       if (live.current.blocked) return;
+      // A dialog a component opened from its own state (the task detail's
+      // DelegateDialog, a PromoteDialog) is not in the store. Every open
+      // `Modal` popup is `aria-modal`, so the DOM is the catch-all.
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       // Named fields, never `{...event}`: a DOM event's `key` and modifier
       // flags are prototype getters, and a spread copies none of them.
       const offered = offersKey({
