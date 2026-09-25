@@ -192,6 +192,10 @@ export interface MyTask {
    *  in_progress, done, backlog, triage, cancelled). Next Actions groups by
    *  it (D73.9); `lib/statusCategory.ts` owns the rule. */
   statusCategory?: string;
+  /** the lane's stored colour NAME (`pm_task_statuses.color`). It outranks
+   *  the category, the order Projects draws a lane in (`lib/accent.ts`), so
+   *  a custom-coloured lane is one colour in both apps. */
+  statusColor?: string;
   /** manual (drag) rank within a group/column; unset → created-at ordering */
   sortKey?: number;
   /** set → this item is a subtask of another item (its parent). */
@@ -255,6 +259,10 @@ export interface MyTask {
    *  my own `context`: tags say what the work IS, a context says how I batch
    *  my time. */
   tags?: string[];
+  /** Each tag's registry colour, keyed by the LOWER-CASED tag name (the
+   *  task's root vocabulary, root-local over org-wide). A tag with no
+   *  registry row is absent and draws grey, as it does in Projects. */
+  tagColors?: Record<string, string>;
 }
 
 /** Where a clarified item should be stored (dual-source model, §5.1). */

@@ -1249,6 +1249,23 @@ SELECT t.*,
        p.last_nudged_at     AS p_last_nudged_at,
        p.clarified_at       AS p_clarified_at,
        s.name               AS workflow_stage,
+       -- The lane's own colour, so My Tasks draws a custom-coloured lane in
+       -- the colour its Projects board draws it (AGENTS.md rule 5).
+       s.color              AS status_color,
+       -- Each tag's registry colour, keyed by lower(name). The task's root
+       -- vocabulary: root-local rows shadow org-wide rows, the rule
+       -- `tags.load_registry_rows` applies. Both arms are anchored to the
+       -- task's own root and tenant, so no second tenant's vocabulary joins.
+       (SELECT jsonb_object_agg(k.lname, k.color)
+          FROM (SELECT DISTINCT ON (lower(g.name))
+                       lower(g.name) AS lname, g.color
+                  FROM pm_tags g
+                 WHERE lower(g.name) IN (SELECT lower(x) FROM unnest(t.tags) x)
+                   AND (g.project_id = t.root_project_id
+                        OR (g.project_id IS NULL
+                            AND g.organization_id = t.organization_id))
+                 ORDER BY lower(g.name), (g.project_id IS NULL)) k)
+                            AS tag_colors,
        proj.name            AS project_name,
        (SELECT count(*) FROM pm_tasks c
          WHERE c.parent_task_id = t.id AND c.archived_at IS NULL)
@@ -1323,6 +1340,12 @@ def _project_task(row: Any) -> tuple[dict[str, Any], str]:
     # such field. Owner directive 2026-09-03 — Tasks sees the mapped status.
     task["status_category"] = getattr(row, "status_category", None)
     task["subtask_count"] = int(getattr(row, "subtask_count", 0) or 0)
+    # The lane's stored colour and each tag's registry colour. My Tasks
+    # passes both through `statusAccent`, the path Projects draws them by.
+    # Without them a custom-coloured lane drew two colours in two apps, and
+    # every My Tasks tag drew grey.
+    task["status_color"] = getattr(row, "status_color", None)
+    task["tag_colors"] = from_jsonb(getattr(row, "tag_colors", None)) or {}
     # S6e — the project's NAME beside its id. A member reached by assignment
     # alone may hold no grant on the project, so `/projects/nodes` cannot be
     # relied on to name it for them. The join is already here.
