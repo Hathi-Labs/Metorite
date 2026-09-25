@@ -12,6 +12,8 @@ import {
   KeyboardEvent,
 } from "react";
 import FilterPills from "@/components/FilterPills";
+import { EmptyState } from "@/components/EmptyState";
+import { SkeletonRows } from "@/components/ui/Skeleton";
 import { taskDeepLink } from "@/app/projects/lib/card";
 import { clampCursor, stepCursor } from "@/lib/cursor";
 import {
@@ -48,6 +50,7 @@ import {
 } from "../lib/quickAdd";
 import { captureDestinations, destinations, useCompanyTree } from "../lib/companyTree";
 import { promoteAllowed } from "../lib/promote";
+import { inboxEmptyCopy } from "../lib/emptyState";
 import { DELETE_LABEL, MIXED_LABEL, REMOVE_LABEL } from "../lib/removal";
 import { InboxCard } from "./InboxCard";
 import { InboxTable } from "./InboxTable";
@@ -808,32 +811,14 @@ export function InboxView() {
       <div className="flex-1 overflow-y-auto">
         <div className="w-full px-4 py-4 sm:py-3">
           {loading ? (
-            <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-              <AppIcon name="Loader2" className="h-6 w-6 animate-spin text-muted-foreground/60" />
-              <p className="text-xs text-muted-foreground">Loading your inbox…</p>
-            </div>
+            // The shared skeleton, as Projects draws a load.
+            <SkeletonRows count={6} />
           ) : showTickler ? (
             <TicklerList items={tickler} onUndefer={undeferItem} />
-          ) : !hasRows ? (
-            /* Inbox zero only when BOTH kinds are empty (S6g). */
-            <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-              <AppIcon name="CheckCircle2" className="h-9 w-9 text-success/70" />
-              <p className="text-sm font-medium text-foreground">
-                Inbox zero. Mind like water.
-              </p>
-              <p className="text-xs text-muted-foreground">
-                {processed > 0
-                  ? `You processed ${processed} item${processed === 1 ? "" : "s"} this session. 🎉`
-                  : "Nothing left to process. Capture the next thing above."}
-              </p>
-            </div>
-          ) : visible.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-              <AppIcon name="SearchX" className="h-8 w-8 text-muted-foreground/50" />
-              <p className="text-sm text-muted-foreground">
-                Nothing in the inbox matches this filter.
-              </p>
-            </div>
+          ) : !hasRows || visible.length === 0 ? (
+            /* Inbox zero only when BOTH kinds are empty (S6g). The shared
+               box, with this app's copy (`lib/emptyState.ts`). */
+            <InboxEmptyState empty={!hasRows} processed={processed} />
           ) : (
             <>
               {(search || dateFilter !== "all" || sourceFilter !== "all") && (
@@ -879,6 +864,21 @@ export function InboxView() {
 
       <ClarifyModal />
     </div>
+  );
+}
+
+/** Inbox zero, or "the filter hid everything": the shared box, this app's
+ *  copy. The inbox filter row has no Clear control, so there is no action. */
+function InboxEmptyState({ empty, processed }: { empty: boolean; processed: number }) {
+  const copy = inboxEmptyCopy({ empty, processed });
+  return (
+    <EmptyState
+      icon={copy.icon}
+      message={copy.message}
+      hint={copy.hint}
+      tone={copy.tone}
+      className="py-16"
+    />
   );
 }
 

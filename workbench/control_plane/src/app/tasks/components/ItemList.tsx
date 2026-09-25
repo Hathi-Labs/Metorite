@@ -5,6 +5,8 @@ import { Checkbox } from "@/components/ui/Checkbox";
 import Button from "@/components/ui/Button";
 import { type ModeOption, ModeSwitch } from "@/components/ModeSwitch";
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
+import { EmptyState } from "@/components/EmptyState";
+import { SkeletonRows } from "@/components/ui/Skeleton";
 import { categoricalAccent } from "@/lib/categorical";
 import { allSelected } from "@/lib/selection";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
@@ -13,6 +15,7 @@ import { useTaskStore, itemsForView, itemsInArea } from "../lib/taskStore";
 import { isUntagged } from "../lib/priority";
 import { ViewKey } from "../lib/types";
 import { isWaitingOverdue } from "../lib/waiting";
+import { tasksEmptyCopy } from "../lib/emptyState";
 import { applyFilters, applySort, type GroupBy } from "../lib/ordering";
 import { FlatList } from "./FlatList";
 import { TaskBoard } from "./TaskBoard";
@@ -393,16 +396,11 @@ export function ItemList() {
       )}
 
       {loading ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
-          <AppIcon name="Loader2" className="h-6 w-6 animate-spin text-muted-foreground/60" />
-          <p className="text-xs text-muted-foreground">Loading…</p>
-        </div>
+        // The shared skeleton, the loading shape Projects draws. A spinner
+        // says "wait" and shows nothing to wait at.
+        <SkeletonRows count={6} className="p-4" />
       ) : visible.length === 0 ? (
-        inView.length > 0 ? (
-          <NoMatchState />
-        ) : (
-          <EmptyState view={view} />
-        )
+        <ListEmptyState view={view} filtered={inView.length > 0} />
       ) : isWaitingView ? (
         // "Who owes me what, since when" — the one view whose organising axis
         // is a PERSON rather than a stage (spec §1 line 46, §6).
@@ -430,24 +428,6 @@ export function ItemList() {
         // /tasks surfaces where the arrow keys did nothing.
         <FlatList items={visible} view={view} showPriority={view === "priority"} />
       )}
-    </div>
-  );
-}
-
-/** Shown when the view has items but the toolbar filters hid them all — a
- *  different message from the true-empty state so the user knows to clear. */
-function NoMatchState() {
-  const clearFilters = useTaskStore((s) => s.clearFilters);
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
-      <p className="text-sm text-muted-foreground">No tasks match your filters.</p>
-      <button
-        type="button"
-        onClick={clearFilters}
-        className="tech-transition rounded-md border border-border px-2.5 py-1 text-xs font-medium text-foreground hover:bg-secondary"
-      >
-        Clear filters
-      </button>
     </div>
   );
 }
@@ -488,19 +468,22 @@ function ContextBackfillButton({ count }: { count: number }) {
   );
 }
 
-function EmptyState({ view }: { view: ViewKey }) {
-  const msg =
-    view === "inbox"
-      ? "Inbox zero. Mind like water."
-      : view === "waiting"
-        ? "Nothing on your Waiting-For list."
-        : view === "next"
-          ? "No next actions assigned to you."
-          : "Nothing here yet.";
+/** An empty list, drawn by the shared box Projects draws. The copy is this
+ *  app's (`lib/emptyState.ts`). The filtered state offers Clear filters. */
+function ListEmptyState({ view, filtered }: { view: ViewKey; filtered: boolean }) {
+  const clearFilters = useTaskStore((s) => s.clearFilters);
+  const copy = tasksEmptyCopy(view, filtered);
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
-      <AppIcon name="CheckCircle2" className="h-8 w-8 text-success/70" />
-      <p className="text-sm text-muted-foreground">{msg}</p>
-    </div>
+    <EmptyState
+      icon={copy.icon}
+      message={copy.message}
+      hint={copy.hint}
+      tone={copy.tone}
+      action={
+        copy.filtered
+          ? { label: "Clear filters", icon: "X", onClick: clearFilters }
+          : undefined
+      }
+    />
   );
 }
