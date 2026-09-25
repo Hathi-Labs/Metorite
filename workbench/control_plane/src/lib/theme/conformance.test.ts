@@ -1079,6 +1079,14 @@ describe("the headless substrate is wrapped, not imported", () => {
    * somebody switches off (this file's own header, "Ratchet, not a wall").
    * Retiring another overlay onto `Modal` is how this list grows.
    */
+  /** The My Tasks dialogs the task detail raises from inside TaskFocusModal. */
+  const MY_TASKS_ALERT_LAYER = [
+    "app/tasks/components/SchedulePopup.tsx",
+    "app/tasks/components/EliminatePopup.tsx",
+    "app/tasks/components/DelegatePopup.tsx",
+    "app/tasks/components/DelegateDialog.tsx",
+  ];
+
   const CONVERTED = [
     "app/projects/components/ShortcutsSheet.tsx",
     "app/projects/components/SearchPalette.tsx",
@@ -1088,6 +1096,10 @@ describe("the headless substrate is wrapped, not imported", () => {
     // 2026-09-24 — the one delete confirmation, for Projects and My Tasks. It
     // replaced `window.confirm` and a hand-rolled `fixed inset-0` overlay.
     "components/ui/ConfirmDialog.tsx",
+    // Continuity P3 (2026-09-25) — five My Tasks dialogs with a scrim, a
+    // panel and buttons, and no portalled picker inside.
+    ...MY_TASKS_ALERT_LAYER,
+    "app/tasks/components/TaskSettingsModal.tsx",
   ];
 
   it("the converted /projects dialogs do not grow an overlay back by hand", () => {
@@ -1111,6 +1123,17 @@ describe("the headless substrate is wrapped, not imported", () => {
       "These no longer import `Modal`, so the scan above fences nothing for " +
         "them. Either they regressed, or this list is stale.",
     ).toEqual([]);
+  });
+
+  it("a My Tasks dialog the focused task can raise paints on the alert layer", () => {
+    // `TaskFocusModal` is still a hand-rolled overlay at z-[80] (its pickers
+    // are portalled, and a Base UI modal blocks them). The task detail inside
+    // it raises these four. On the dialog layer (z-50) they would open BEHIND
+    // it: focused, trapped and invisible. Retire this when TaskFocusModal
+    // moves onto `Modal`.
+    const low = MY_TASKS_ALERT_LAYER.filter((f) => !/layer="alert"/.test(read(f)));
+    expect(low, "These open under TaskFocusModal. Give them layer=\"alert\".").toEqual([]);
+    expect(read("app/tasks/components/TaskFocusModal.tsx")).toMatch(/fixed inset-0 z-\[80\]/);
   });
 
   // ── The Toast primitive (WS-27ak item 3) ─────────────────────────────────

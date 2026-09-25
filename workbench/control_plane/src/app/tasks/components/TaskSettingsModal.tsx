@@ -1,6 +1,6 @@
 "use client";
 
-import Button from "@/components/ui/Button";
+import Modal from "@/components/ui/Modal";
 import Icon from "@/components/Icon";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTaskStore } from "../lib/taskStore";
@@ -100,25 +100,19 @@ function SettingsPanel() {
   }, []);
    
 
+  // The shared `Modal` (continuity P3), on the default dialog layer: the
+  // sidebar raises this, never the focused task. The model pickers are
+  // native selects, not portalled pickers, so they work inside the dialog.
   return (
-    <div
-      className="chat-fade-in fixed inset-0 z-[80] flex items-end justify-center bg-black/50 p-0 sm:items-start sm:p-4 sm:pt-[8vh]"
-      onClick={close}
+    <Modal
+      open
+      onClose={close}
+      title="My Tasks settings"
+      icon="Settings2"
+      size="xl"
+      placement="top"
+      className="max-h-[85vh]"
     >
-      <div
-        className="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-t-2xl border-t border-border bg-card shadow-2xl pb-safe sm:max-h-[85vh] sm:rounded-2xl sm:border sm:pb-0"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* header */}
-        <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-          <Icon name="Settings2" className="h-4 w-4 text-primary" />
-          <h2 className="text-sm font-semibold text-foreground">
-            My Tasks settings
-          </h2>
-          <Button variant="ghost" size="icon-sm" radius="keep" layout="" type="button" onClick={close} aria-label="Close" className="ml-auto rounded-md">
-            <Icon name="X" className="h-4 w-4" />
-          </Button>
-        </div>
 
         <div className="flex flex-col gap-5 overflow-y-auto p-4">
           {backend !== "live" && (
@@ -253,8 +247,7 @@ function SettingsPanel() {
             </p>
           </section>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
