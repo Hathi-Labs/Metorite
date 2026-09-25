@@ -214,7 +214,7 @@ export function ItemList() {
   // toolbar, filters and bulk-select chrome still wrap it — but the swap is a
   // TRADE, not a free addition, and the rows pay for it:
   //   - a WaitingRow is not a TaskCard, so it has no ContextMenu — the
-  //     per-row task actions (Schedule / Change stage / Mark as Done /
+  //     per-row task actions (Schedule / Change status / Mark done /
   //     Eliminate, wired via useCardActions in TaskCard) are gone here;
   //   - so are the card's chips: stage pill, project, due date, attachments,
   //     subtask count, energy.

@@ -51,6 +51,8 @@
  * that does not make you read four lane names to finish a task.
  */
 
+import { TASK_ACT_LABEL, doneLabel } from "@/lib/taskMenuVocabulary";
+
 import type { StatusRow, TaskRow } from "./api";
 import { isResolved } from "./relations";
 
@@ -321,14 +323,16 @@ export const isArchived = (ctx: TaskMenuContext): boolean =>
 export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
   {
     id: "task.open",
-    label: () => "Open",
+    // Every shared label comes from `@/lib/taskMenuVocabulary`, the one list
+    // both task apps read. This registry's ORDER must follow that list too.
+    label: () => TASK_ACT_LABEL.open,
     icon: "PanelRight",
     group: 0,
     run: (actions, ctx) => actions.open(ctx.task),
   },
   {
     id: "task.copyLink",
-    label: () => "Copy link",
+    label: () => TASK_ACT_LABEL.copyLink,
     icon: "Link2",
     group: 0,
     run: (actions, ctx) => actions.copyLink(ctx.task),
@@ -336,7 +340,7 @@ export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
   {
     id: "task.markDone",
     // The button is a toggle, so the label has to say which way it will go.
-    label: (ctx) => (isDone(ctx) ? "Reopen" : "Mark done"),
+    label: (ctx) => doneLabel(isDone(ctx)),
     icon: "Check",
     group: 0,
     quick: 0,
@@ -360,7 +364,7 @@ export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
   // which is independent — it follows the pointer, not the menu's reading.
   {
     id: "task.rename",
-    label: () => "Rename",
+    label: () => TASK_ACT_LABEL.rename,
     icon: "Pencil",
     group: 1,
     quick: 2,
@@ -369,7 +373,7 @@ export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
   },
   {
     id: "task.addSubtask",
-    label: () => "Add subtask",
+    label: () => TASK_ACT_LABEL.addSubtask,
     icon: "ListPlus",
     group: 1,
     quick: 1,
@@ -379,7 +383,7 @@ export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
   {
     id: "task.select",
     // Says what the click will DO, not what the row currently is.
-    label: (ctx) => (ctx.selected ? "Remove from selection" : "Select"),
+    label: (ctx) => (ctx.selected ? "Remove from selection" : TASK_ACT_LABEL.select),
     icon: "CheckSquare",
     group: 2,
     // On the strip too, and LAST (owner, 2026-09-20). It is the way INTO
@@ -398,7 +402,7 @@ export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
   },
   {
     id: "task.moveToProject",
-    label: () => "Move to project…",
+    label: () => TASK_ACT_LABEL.moveToProject,
     icon: "FolderInput",
     // Beside Select rather than with Open: both act on WHERE the task lives
     // in the tree, and the status block below is about the task's state.
@@ -408,7 +412,7 @@ export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
   },
   {
     id: "task.mergeInto",
-    label: () => "Merge into…",
+    label: () => TASK_ACT_LABEL.mergeInto,
     icon: "Merge",
     // Beside Move: both are about a task's PLACE rather than its state, and
     // both open a card instead of acting. The status block below is the
@@ -419,9 +423,9 @@ export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
   },
   {
     id: "task.status",
-    label: () => "Change status",
+    label: () => TASK_ACT_LABEL.status,
     group: 3,
-    heading: "Change status",
+    heading: TASK_ACT_LABEL.status,
     when: (ctx) => ctx.statuses.length > 0,
     // The tick marks where the task IS, so the block reads as a choice rather
     // than a list of commands — /tasks' "Change stage" group, same grammar.
@@ -435,7 +439,7 @@ export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
   },
   {
     id: "task.archive",
-    label: () => "Archive",
+    label: () => TASK_ACT_LABEL.archive,
     icon: "Archive",
     // Group 4: the lifecycle verbs sit below the status block, because they
     // are about whether the task is on the board at all rather than where on
@@ -454,7 +458,7 @@ export const TASK_MENU_ACTIONS: readonly TaskMenuAction[] = [
   },
   {
     id: "task.delete",
-    label: () => "Delete",
+    label: () => TASK_ACT_LABEL.delete,
     icon: "Trash2",
     group: 5,
     when: (ctx) => Boolean(ctx.canDelete),
