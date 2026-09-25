@@ -2469,11 +2469,13 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       },
     }));
     if (!live) return;
+    const snap = get().undoSnapshot;
     try {
       await lensSetStatusId(id, lane.id);
     } catch (err) {
       await refetchAfterFailure(set);
-      set({ undoSnapshot: null });
+      // Only this write's snapshot: a newer change keeps its own Undo.
+      if (get().undoSnapshot === snap) set({ undoSnapshot: null });
       get().reportSyncFailure(err instanceof Error ? err.message : String(err));
       return;
     }

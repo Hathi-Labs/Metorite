@@ -243,7 +243,10 @@ export function StatusMenu({
       giveBack();
       return;
     }
-    if (event.key === "Enter" || event.key === " ") {
+    // Space picks only outside a type-ahead query: "in r" must reach
+    // "In review", not pick "In progress" at the space.
+    const typing = Date.now() - typed.current.at < TYPE_AHEAD_MS;
+    if (event.key === "Enter" || (event.key === " " && !typing)) {
       claim();
       const row = rows[focused];
       if (row?.kind === "status") onPick(row.status.id);
