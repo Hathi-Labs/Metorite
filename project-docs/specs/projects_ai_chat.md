@@ -10,7 +10,8 @@ intelligence slices, was designed 2026-09-23 (§13). S7a (capacity) was built
 capacity, no phases) were built 2026-09-24. S8 (documents and downloads
 from the chat, §14) was built 2026-09-24. S9 (entity pills in the chat, §15)
 was built 2026-09-24. S7e (on-the-fly analysis, §13.7) was built 2026-09-24.
-S10 (chat follow-ups, §16) was built 2026-09-25.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
+S10 (chat follow-ups, §16) was built 2026-09-25. S11 (the Forecast reads the
+schedule, §17) was built 2026-09-26.** §10 says which slice each part belongs to. §4.4 lists what the chat reuses, file by file.
 
 The design was verified against the tree on 2026-09-22. Every "already
 there" claim was re-derived from the code, not from a write-up. Each anchor
@@ -698,6 +699,7 @@ Each slice is one pull request. Each one is useful alone.
 | **S9 · Entity pills** — ✅ **BUILT 2026-09-24** | A task, a project, a person, a status and a tag in a chat answer draw as a pill. A task or a project opens in this tab. A pill links only on exactly one match in the same message's tool results. The link colour, the made-up stat delta, the missing space before bold and the date that wrapped (§15) | AGENT-SAFE |
 | **S7e · On-the-fly analysis** — ✅ **BUILT 2026-09-24** | `GET /projects/analytics/dataset` and the read tool `task_dataset`: a capped table, or the server's groups over the full set. The rule for numbers the chat computes itself (§13.7, §10.7) | AGENT-SAFE |
 | **S10 · Chat follow-ups** — ✅ **BUILT 2026-09-25** | The checkpoint names its agent · the plan card edits after · a lost project write gives a receipt · the Throughput pin, if S7e is on main (§16) | AGENT-SAFE |
+| **S11 · Outlook schedules** — ✅ **BUILT 2026-09-26** | The outlook's capacity reads each person's schedule. Absences apply only for an admin viewer. The report section passes the reader's grant. The panel says when it does not count leave (§17) | AGENT-SAFE |
 | **Flip** | `NEXT_PUBLIC_PROJECTS_CHAT` on the box | `enforcement-flip`, granted until 2026-09-30 |
 | **Delete** | `delete_project`, `delete_task` from class X to C | Blocked on WS-40 |
 
@@ -1712,7 +1714,7 @@ gives 422. S7e has no HR column on a row. Hours, skills and absences stay in
 - It does not auto-assign. Every assignment is the class B `assign` with its
   card.
 - It does not fix the outlook's capacity figure, which reads only the typed
-  `capacity_hours_per_week`. That is H-169.
+  `capacity_hours_per_week`. That was H-169, and S11 fixes it (§17).
 
 ---
 
@@ -2295,8 +2297,7 @@ each one has its own fence.
 ### 16.4 What S10 does not do
 
 - **H-169.** The owner answered the HR question on 2026-09-25, and the fix
-  now waits for its own slice. HANDOFF H-169 carries the answer and the two
-  rules that are still open.
+  now waits for its own slice. S11 (§17) is that slice.
 - It does not put a literal tool name in the `agents.py` description.
 - It does not measure the token size of a `task_dataset` table.
 - It does not change the main agent of a room, or the route that sets it.
@@ -2305,3 +2306,148 @@ each one has its own fence.
   Another way: the run stream names its agent, and the translator sends it.
   The strict xfail in `test_rooms.py` fails when either lands, so remove its
   mark in that change.
+
+---
+
+## 17. The Forecast reads the schedule (S11)
+
+**Status: BUILT 2026-09-26.** The spec-auditor cleared the scope on
+2026-09-25 (GO-NARROWED, against origin/main `b0814b2d`). S11 closes
+HANDOFF H-169.
+
+### 17.1 The answer
+
+The Forecast panel divides the hours left by the team's weekly hours. Until
+S11, those hours were the typed `people.capacity_hours_per_week` only. Now
+each holder's hours come from their working schedule, the one arithmetic
+of `work_schedule.py`.
+
+**The owner's answer, 2026-09-25.** The Forecast uses each person's working
+schedule for every viewer. Absences reduce the hours only for a viewer with
+`admin:members:read`. A viewer without that grant sees a forecast that
+ignores leave, and the panel says so.
+
+**The visible name is "Forecast". The key stays `outlook`.** Owner
+direction, 2026-09-26. Members read "Outlook" as the Microsoft mail
+product. So every member-facing string now says "Forecast". The route
+`/projects/analytics/outlook`, the report section key `outlook`,
+`outlook_body`, the file names, the API types and the chat tool name
+`analytics_outlook` keep their names. A rename of a key breaks saved
+reports and the chat manifest, and a member never sees a key.
+
+### 17.2 What exists
+
+- `analytics.py` `team_capacity_sql` summed `capacity_hours_per_week` and
+  counted `working_hours`, but it never read the schedule.
+- `capacity_forecast` divides the hours left by one team rate:
+  `weeks_left = ceil(hours_left / hours_per_week)`.
+- `outlook` and `outlook_body` return the Forecast. The report section
+  `outlook` in `reports.py` `render_body` calls `outlook_body`.
+- `work_schedule.py` has `load_policy`, `person_schedule` and
+  `working_hours_between`. `capacity.py` has `horizon_window` and
+  `absences_for`.
+- `routes/tasks/core.py` `can_read_hr_fields` decides the HR tier.
+  `analytics_capacity.py` takes `hr_visible` as an argument, and S11 copies
+  that precedent.
+
+### 17.3 Rules
+
+1. **The schedule wins.** Each holder's hours come from
+   `person_schedule(load_policy(db), row)`. The typed
+   `capacity_hours_per_week` never enters the forecast (D-PC-18, S7a).
+   `capacity_disagreement` still reports a typed figure that differs.
+2. **Every directory row has a schedule.** The org policy applies first,
+   then `DEFAULT_POLICY`. A holder with no `people` row adds zero hours. The
+   code never falls back to the typed figure.
+3. **One weekly rate, from a fixed forward window.** Sum
+   `working_hours_between(schedule, today, end, spans)` over the holders.
+   Divide by `OUTLOOK_RATE_WEEKS` = 12. `end` is the last day of
+   `horizon_window(today, 83)`, so the window holds 84 days. Call
+   `working_hours_between` directly, not `person_capacity`. Its horizon is
+   inclusive and adds one day, which is a divisor trap. `capacity_forecast`
+   does not change.
+4. **Absences follow the viewer's grant.** `outlook_body` takes
+   `hr_visible: bool` as a keyword with no default. When it is true, the
+   body reads `absences_for` and passes the spans. When it is false, the body
+   passes `None` and runs no `people_absences` statement.
+5. **Who decides `hr_visible`.** The route passes
+   `can_read_hr_fields(user)`. The report section passes
+   `can_read_hr_fields(user)` for the reader of the render. A send renders
+   for each recipient, so the recipient's grant applies. The chat calls the
+   route.
+6. **The same people.** The rate sums exactly the holders CTE of
+   `team_capacity_sql`. That is open, visible and reportable work in scope,
+   with no agents. S11 changes the columns only, never the holders CTE.
+7. **No figure for one person leaves the route.** The payload carries team
+   totals only.
+8. **The payload says what it counted.**
+   - It adds `hr_visible`, `people.in_directory`, `people.absences_applied`
+     and `capacity.window` (`starts_on`, `ends_on`, `weeks`).
+   - It drops `people.with_stated_capacity` and `people.with_schedule_only`.
+   - `people.hours_per_week` equals `capacity.hours_per_week`. Both round to
+     one decimal.
+9. **This narrows §13.2 rule 3 for the Forecast only.** The owner decided
+   this on 2026-09-25. `working_hours` is directory tier
+   (`people_center_app.md` §3.4a), and absences stay HR tier.
+   `projects_reports.md` §7 rule 2 carries the same note.
+10. **The panel says when it does not count leave.** When
+    `absences_applied` is false, the capacity line adds this text: "This
+    forecast does not count leave. An admin sees it with leave." The text
+    says "working hours" and never "stated hours".
+
+### 17.4 Acceptance — S11
+
+1. A holder with typed capacity 10 and the default policy gives
+   `capacity.hours_per_week` 40.0.
+2. A holder with no `people` row adds 0. If no holder has a row, the verdict
+   is `no_capacity`.
+3. With no absence, the admin figure and the member figure are equal.
+4. For 5 days of 8 hours, with one full working week away inside the
+   window, an admin gets 36.7 and a member gets 40.0.
+5. When `hr_visible` is false, no statement reads `people_absences`. A fake
+   database records each statement.
+6. A signature test shows that `outlook_body` has no default for
+   `hr_visible`.
+7. The report section equals the route for an admin and for a member. The
+   R8 test `test_the_outlook_section_equals_the_outlook_route` holds both.
+8. A person who holds only work that the viewer cannot see adds no hours
+   (R8).
+9. No payload key names a person or an absence. A key walk checks it.
+10. `outlook.test.ts`: the leave sentence shows when `absences_applied` is
+    false and not when it is true. No string in `outlook.ts` says "stated".
+11. The H-169 Check finds no hit, and the same change deletes the H-169
+    entry.
+12. Every member-facing "Outlook" in the Projects app says "Forecast". The
+    keys in §17.1 keep their names.
+
+### 17.5 What S11 does not do
+
+- It does not subtract hours that a holder gives to other projects.
+- It has no `end_date` cutoff. A holder whose engagement ends inside the
+  window still adds the full window.
+- It does not change `leaving_within_90d`. HANDOFF H-188 asks the owner if
+  a member may see that count.
+- It does not change the velocity forecast or `capacity_forecast`.
+- It adds no migration.
+- It does not rename the three "coming" report templates in `reports.py`
+  that name "the outlook section". The reports session owns that file.
+
+### 17.6 Verification
+
+```bash
+# R8: the scratch Postgres. A TENANT_LADDER skip is not a pass.
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_projects_analytics_outlook.py \
+  tests/unit/test_projects_report_sections_r3.py \
+  tests/unit/test_projects_report_sections_lockstep.py \
+  tests/unit/test_projects_analytics_capacity.py \
+  tests/unit/test_people_schedule.py tests/unit/test_people_absences.py \
+  tests/unit/test_projects_agent.py tests/unit/test_tenant_coverage.py -q -rs
+uv run ruff check apps/services/gateway/gateway/routes/projects/analytics.py
+uv run mypy apps/services/gateway/gateway/routes/projects/analytics.py
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run
+```
+
+Five mutations each turn a test red: absences for every viewer, the typed
+figure as a fallback, an inclusive 85-day window, a changed holders CTE,
+and no leave sentence.

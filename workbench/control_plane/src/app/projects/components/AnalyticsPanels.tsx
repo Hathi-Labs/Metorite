@@ -1458,7 +1458,8 @@ export function OutlookPanel({ data }: { data: OutlookReport }) {
   const range = slipRange(data);
   const gap = forecastGap(data);
   const velocity = velocityLine(data.velocity);
-  const capacity = capacityLine(data.capacity);
+  // WS-27bm S11. A reader without the HR grant is told leave is not counted.
+  const capacity = capacityLine(data.capacity, data.people?.absences_applied);
   const people = peopleLine(data);
 
   return (

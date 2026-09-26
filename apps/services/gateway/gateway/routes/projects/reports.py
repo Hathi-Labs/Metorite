@@ -754,8 +754,13 @@ async def render_body(
             # so the report and the Analytics panel would disagree. The
             # outlook covers the report's scope only. A forecast for each
             # child project waits for the T10 slice.
+            #
+            # WS-27bm S11. Leave reduces the hours only for a READER who
+            # holds `admin:members:read`, as in `capacity` below
+            # (`projects_ai_chat.md` §17.3 rule 5).
             sections[name] = await outlook_body(
                 db, vis,
+                hr_visible=can_read_hr_fields(user),
                 project_id=project_id,
                 include_subtree=bool(config["include_subtree"]),
             )
