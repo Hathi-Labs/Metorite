@@ -55,6 +55,13 @@ export interface CollapsibleSectionProps {
    * With this on, the folded content stays in the markup and is hidden.
    */
   keepMounted?: boolean;
+  /**
+   * The trigger's accessible name, when the label alone repeats (WS-27bm
+   * S10). A list of sections that all read "Waits on" is a list of equal
+   * buttons to a screen reader. Start the name with the visible label, so
+   * a voice user who says what they see still reaches it (WCAG 2.5.3).
+   */
+  ariaLabel?: string;
   children: React.ReactNode;
 }
 
@@ -67,6 +74,7 @@ export function CollapsibleSection({
   onOpenChange,
   className,
   keepMounted = false,
+  ariaLabel,
   children,
 }: CollapsibleSectionProps) {
   return (
@@ -96,6 +104,7 @@ export function CollapsibleSection({
           in the app, not this primitive. */}
       <h3 className="text-[11px] font-semibold tracking-wide">
       <Base.Trigger
+        aria-label={ariaLabel}
         className="cc-control group flex w-full items-center gap-1.5 rounded px-0 py-1 text-left text-muted-foreground hover:text-foreground"
       >
         {icon ? <Icon name={icon} className="h-3 w-3 shrink-0" /> : null}

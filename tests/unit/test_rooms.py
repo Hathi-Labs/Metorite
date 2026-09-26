@@ -81,7 +81,7 @@ def _seed_user(email: str, *, status: str = "active") -> None:
     _exec(
         "INSERT INTO app_user (email, display_name, role, status, organization_id) "
         "SELECT :e, :e, 'employee', :st, id FROM organization LIMIT 1 "
-        "ON CONFLICT (email) DO UPDATE SET status = :st",
+        "ON CONFLICT (lower(email)) DO UPDATE SET status = :st",
         e=email, st=status,
     )
 
@@ -404,6 +404,81 @@ def test_an_agent_turn_is_attributed_to_the_agent(clean) -> None:
     )
     assert rows[0].author_kind == "agent"
     assert rows[0].author_email == "agent-sales-assistant"
+
+
+@_needs_db
+def test_a_checkpoint_author_wins_over_the_room_agent(clean) -> None:
+    """The chat translator's checkpoint names the agent that ran (WS-27bm S10).
+
+    `lib/assistantCheckpoint.ts` sends ``author_email`` on each checkpoint.
+    It must beat the room's agent, and a later write with no author (the
+    browser re-POSTing its list) must keep it.
+    """
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    sid = _seed_session(_ALICE)
+    _upsert_messages(
+        sid,
+        [MessageRecord(
+            id="c1", role="assistant", content="partial", timestamp=1002,
+            author_kind="agent", author_email="projects-assistant",
+        )],
+        actor_email=_ALICE, agent_name="orchestrator",
+    )
+    _upsert_messages(
+        sid,
+        [MessageRecord(id="c1", role="assistant", content="final", timestamp=1003)],
+        actor_email=_ALICE, agent_name="orchestrator",
+    )
+
+    rows = _exec(
+        "SELECT author_email, author_kind, content FROM chat_message "
+        "WHERE session_id = :i AND id = 'c1'", i=sid,
+    )
+    assert rows[0].author_kind == "agent"
+    assert rows[0].author_email == "projects-assistant"
+    assert rows[0].content == "final"
+
+
+def _addressed_turn(sid: str) -> None:
+    """An ``@sales`` turn: the checkpoint claims no author (S10 fix round 1),
+    and then the gateway's fold writes with the addressed agent."""
+    from gateway.routes.chat import MessageRecord, _upsert_messages
+
+    # The translator's checkpoint. The route passes the room's agent.
+    _upsert_messages(
+        sid,
+        [MessageRecord(id="c2", role="assistant", content="partial", timestamp=1004)],
+        actor_email=_ALICE, agent_name="orchestrator",
+    )
+    # chat_fold.persist_final_assistant_message, with `_address_agent`'s answer.
+    _upsert_messages(
+        sid,
+        [MessageRecord(id="c2", role="assistant", content="final", timestamp=1005)],
+        actor_email=_ALICE, agent_name="sales-assistant",
+    )
+
+
+@_needs_db
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Open gap (projects_ai_chat.md §16.4): the first stamp wins, and the "
+        "checkpoint lands before the fold that knows the addressed agent. "
+        "Only a server change closes it. Remove this mark in that change."
+    ),
+)
+def test_an_addressed_turn_is_stamped_with_the_agent_that_ran(clean) -> None:
+    """The property an ``@name`` turn needs, and does not have yet. Today the
+    row keeps the room's agent, because the checkpoint writes first. The
+    client-side half (no author on an ``@`` turn) is fenced in
+    ``assistantCheckpoint.test.ts``."""
+    sid = _seed_session(_ALICE)
+    _addressed_turn(sid)
+    rows = _exec(
+        "SELECT author_email FROM chat_message WHERE session_id = :i AND id = 'c2'", i=sid,
+    )
+    assert rows[0].author_email == "sales-assistant"
 
 
 # ---------------------------------------------------------------------------
