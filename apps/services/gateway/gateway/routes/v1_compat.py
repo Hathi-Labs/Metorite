@@ -493,6 +493,28 @@ def _router_should_serve(body: dict[str, Any]) -> bool:
     return True
 
 
+def _router_outbound(body: dict[str, Any]) -> dict[str, Any]:
+    """The body both Router hops send. ONE builder, so they cannot drift.
+
+    * **The messages are repaired** for spec violations the Copilot SDK emits.
+      That branches on no provider, so it is safe before the Console chooses.
+    * **The model is NAMED the way the Router knows it**, and only that.
+      `acb_llm.routed.router_tier` maps a legacy id (`tier2`) or a picker wire
+      id (`tier3-opus`) to its slate name. It never resolves a tier to a model:
+      the Router reads its own `tier_binding` chain, and a bare model id is
+      refused there on purpose (D32.7).
+    """
+    from acb_llm.routed import router_tier
+
+    outbound = dict(body)
+    outbound["messages"] = _sanitize_messages_for_provider(
+        body.get("messages", []), ""
+    )
+    if isinstance(body.get("model"), str):
+        outbound["model"] = router_tier(body["model"])
+    return outbound
+
+
 async def _serve_via_router_stream(
     request: Request, body: dict[str, Any]
 ) -> Any:
@@ -515,10 +537,7 @@ async def _serve_via_router_stream(
         stream_completion_on_console,
     )
 
-    outbound = dict(body)
-    outbound["messages"] = _sanitize_messages_for_provider(
-        body.get("messages", []), ""
-    )
+    outbound = _router_outbound(body)
 
     # One call, one answer: the helper reads headers and verifies an HMAC,
     # and two calls could in principle disagree.
@@ -606,10 +625,7 @@ async def _serve_via_router(
     # violations the Copilot SDK emits (null content beside tool_calls), which
     # most providers reject. It branches on no provider — the parameter is
     # unused — so it is safe before the Console has chosen one.
-    outbound = dict(body)
-    outbound["messages"] = _sanitize_messages_for_provider(
-        body.get("messages", []), ""
-    )
+    outbound = _router_outbound(body)
 
     # One call, one answer: the helper reads headers and verifies an HMAC,
     # and two calls could in principle disagree.
