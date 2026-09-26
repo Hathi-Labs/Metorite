@@ -1462,16 +1462,73 @@ _REPORT_SECTIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     # S7c. The row label is the kind. The sentence carries titles, so it is
     # fenced like every other piece of member text below.
     "conflicts": ("rows", "kind", ("total", "hr_visible", "horizon_days")),
+    # WS-27bn R3b. One row per at-risk task. The holder, the helpers and the
+    # pickups are nested, so the row prints its flat facts only. Without the
+    # HR grant the section has no list, and `_REPORT_HINTS` says why.
+    "rebalance": ("at_risk", "title", (
+        "at_risk_total", "idle_total", "pickups_total", "hr_visible", "horizon_days",
+    )),
 }
+
+#: A plain label for a figure whose key is not plain words (H-185 item 2).
+#: A key with no entry prints as itself, as before. A ``section:key`` entry
+#: labels the key in that section only, so an older section keeps its words.
+_REPORT_LABELS: dict[str, str] = {
+    "velocity.verdict": "forecast",
+    "plan.planned_finish": "planned finish",
+    "velocity.finish_date": "forecast finish",
+    "plan.slip_days": "slip days",
+    "velocity.remaining_tasks": "tasks left",
+    "capacity.verdict": "capacity",
+    "at_risk_total": "tasks at risk",
+    "idle_total": "idle people",
+    "pickups_total": "people who could take work",
+    "rebalance:hr_visible": "HR access",
+    "rebalance:horizon_days": "horizon days",
+}
+
+#: The facts one row prints, as ``(path, plain label, fenced)``, for a
+#: section whose rows nest what matters (WS-27bn R3b). A section with no
+#: entry prints each flat key of the row, as before. A fenced value is a name
+#: somebody typed, so it prints as data. A date is not fenced.
+_REPORT_ROW_FACTS: dict[str, tuple[tuple[str, str, bool], ...]] = {
+    "rebalance": (
+        ("project_name", "project", True),
+        ("due_on", "due", False),
+        ("shortfall_hours", "hours short", False),
+        ("holder.name", "held by", True),
+        ("candidates.0.name", "first helper", True),
+    ),
+}
+
+#: The line a section prints when the reader lacks the HR grant, in the
+#: Reports app's words. The section then carries no rows to print.
+_REPORT_HINTS: dict[str, str] = {
+    "rebalance": "Rebalancing needs HR read access. An admin can see it.",
+}
+
+#: Row keys the chat never prints as a fact. An id is not a fact a member
+#: reads, and the model must not quote it back.
+_ROW_KEYS_UNPRINTED: tuple[str, ...] = ("id", "project_id", "task_id")
 
 
 _MISSING = object()
 
 
 def _dig(section: dict[str, Any], key: str) -> Any:
-    """One figure of a section. A dotted key reads a nested dict (R3a)."""
+    """One figure of a section. A dotted key reads a nested dict (R3a).
+
+    WS-27bn R3b. A numeric part reads a list index, so
+    ``candidates.0.name`` is the first helper's name.
+    """
     value: Any = section
     for part in key.split("."):
+        if isinstance(value, list) and part.isdigit():
+            index = int(part)
+            if index >= len(value):
+                return _MISSING
+            value = value[index]
+            continue
         if not isinstance(value, dict) or part not in value:
             return _MISSING
         value = value[part]
@@ -1485,11 +1542,13 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
         ("rows", "name", tuple(k for k, v in section.items() if not isinstance(v, (dict, list)))),
     )
     totals = ", ".join(
-        f"{k} {v}"
+        f"{_REPORT_LABELS.get(f'{name}:{k}', _REPORT_LABELS.get(k, k))} {v}"
         for k in scalar_keys
         if (v := _dig(section, k)) is not _MISSING
     )
     out = [f"{name}:" + (f" {totals}" if totals else "")]
+    if section.get("hr_visible") is False and name in _REPORT_HINTS:
+        out.append(f"  {_REPORT_HINTS[name]}")
     rows = section.get(list_key) if list_key else None
     rows = rows or []
     if not isinstance(rows, list):
@@ -1501,11 +1560,19 @@ def _report_section(name: str, section: dict[str, Any]) -> list[str]:
         # address. "unassigned" is only the row whose assignee is empty,
         # or the model reads a former colleague's work as nobody's.
         label = row.get(label_key) or row.get("assignee")
-        facts = ", ".join(
-            f"{k} {data(v) if k == 'sentence' else v}"
-            for k, v in row.items()
-            if k not in (label_key, "id", "project_id") and not isinstance(v, (dict, list))
-        )
+        if name in _REPORT_ROW_FACTS:
+            facts = ", ".join(
+                f"{plain} {data(v) if fenced else v}"
+                for path, plain, fenced in _REPORT_ROW_FACTS[name]
+                if (v := _dig(row, path)) is not _MISSING and v is not None
+            )
+        else:
+            facts = ", ".join(
+                f"{k} {data(v) if k == 'sentence' else v}"
+                for k, v in row.items()
+                if k not in (label_key, *_ROW_KEYS_UNPRINTED)
+                and not isinstance(v, (dict, list))
+            )
         shown = _day(label) if label_key == "week_start" else data(label or "unassigned")
         out.append(f"- {shown} · {facts}")
     if len(rows) > 25:

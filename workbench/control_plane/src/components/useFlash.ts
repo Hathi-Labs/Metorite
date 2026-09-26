@@ -36,6 +36,8 @@ export interface Flash {
   attach: (id: string) => (el: HTMLElement | null) => void;
   /** Scroll to a registered element without flashing — the cursor's need. */
   scrollTo: (id: string) => void;
+  /** The element registered under `id` now, or null — what a menu hangs from. */
+  element: (id: string) => HTMLElement | null;
 }
 
 export function useFlash(): Flash {
@@ -87,5 +89,7 @@ export function useFlash(): Flash {
     els.current.get(id)?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, []);
 
-  return { flash, attach, scrollTo };
+  const element = useCallback((id: string) => els.current.get(id) ?? null, []);
+
+  return { flash, attach, scrollTo, element };
 }

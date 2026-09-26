@@ -179,6 +179,20 @@ export function timeoutFor(variant: ToastVariant): number {
   return LOADING_TIMEOUT;
 }
 
+/**
+ * A `show()` call's timeout: the caller's own window, for a SUCCESS only.
+ *
+ * My Tasks' undo toast needs this (continuity P3). Its window is
+ * `UNDO_WINDOW_SECONDS`, which the delete dialog quotes, so the toast must
+ * close on that number and not on `SUCCESS_TIMEOUT`. An error keeps
+ * `ERROR_TIMEOUT` whatever the caller asks: a failure nobody saw was never
+ * reported. A loading toast has no clock at all.
+ */
+export function showTimeout(variant: ToastVariant, override?: number): number {
+  if (variant === "success" && override !== undefined && override > 0) return override;
+  return timeoutFor(variant);
+}
+
 /** Trim, reject the useless, truncate the enormous. `null` = not readable. */
 function usable(text: unknown): string | null {
   if (typeof text !== "string") return null;

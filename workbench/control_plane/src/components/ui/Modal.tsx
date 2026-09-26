@@ -152,6 +152,13 @@ const PLACEMENT: Record<ModalPlacement, string> = {
  * BEHIND it at `z-50`. Focus went to a confirm button nobody could see, and
  * Enter deleted the task with no visible prompt.
  *
+ * Continuity P3 gave `alert` a second, temporary user: a My Tasks dialog
+ * the task detail raises from INSIDE `TaskFocusModal` (Schedule, Eliminate,
+ * Delegate). Those dialogs interrupt the focused task the way a confirmation
+ * does. On `dialog` they opened under its `z-[80]`. Fence:
+ * `conformance.test.ts`, "a My Tasks dialog the focused task can raise". It
+ * retires when `TaskFocusModal` moves onto this primitive.
+ *
  * `dialog` stays at `z-50` on purpose. A portalled `AnchoredPanel` (`z-[60]`)
  * inside a dialog must paint above it. Raising every Modal would put those
  * pickers under the scrim.

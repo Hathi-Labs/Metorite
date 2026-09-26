@@ -449,6 +449,79 @@ export interface ConflictsReport {
   rows: ConflictRow[];
 }
 
+/**
+ * WS-27bm S7b — one helper for one at-risk task, as the rebalance route
+ * ranks them. HR tier: it names skills. `spare_hours` is absent when the
+ * ranks used no hours (`hours_note` on the task says why).
+ */
+export interface RebalanceCandidate {
+  person_id: string | null;
+  name: string;
+  email: string;
+  skill_points: number;
+  matched_skills: string[];
+  spare_hours?: number;
+  away?: { kind: string; until: string } | null;
+  rank: number;
+}
+
+/** One at-risk task in scope, once, with up to three helpers. */
+export interface RebalanceTask {
+  task_id: string;
+  title: string;
+  project_name: string | null;
+  due_on: string | null;
+  shortfall_hours: number | null;
+  holder: { person_id: string | null; name: string; email: string };
+  /** Every holder. A task two people hold is one entry (§13.4 rule 4). */
+  holders?: { person_id: string | null; name: string; email: string }[];
+  candidates: RebalanceCandidate[];
+  hours_basis: boolean;
+  hours_note?: string;
+}
+
+/** One idle person, with the work in scope that fits their skills. */
+export interface RebalancePickup {
+  person_id: string | null;
+  name: string;
+  email: string;
+  tasks: {
+    task_id: string;
+    title: string;
+    project_name: string | null;
+    kind: "unassigned" | "at_risk_help";
+    skill_points: number;
+    matched_skills: string[];
+    holder?: string | null;
+  }[];
+}
+
+/**
+ * WS-27bn R3b — the rebalance route's body, as a report section carries it.
+ *
+ * ⚠️ **Without `admin:members:read` there is no `at_risk` and no `pickups`
+ * key.** Absent is "not for this reader", never "nobody". `hr_visible` says
+ * which answer arrived, and the panel says so in one line.
+ */
+export interface RebalanceReport {
+  project_id: string | null;
+  scope: "portfolio" | "node";
+  include_subtree?: boolean;
+  horizon_days: number;
+  hr_visible: boolean;
+  window: { starts_on: string; ends_on: string; days: number };
+  hours_scope?: string;
+  partial?: boolean;
+  /** The join caps it at eight tasks. `at_risk_total` counts them all. */
+  at_risk?: RebalanceTask[];
+  at_risk_total?: number;
+  /** A report caps it at twenty people. `pickups_total` counts them all. */
+  pickups?: RebalancePickup[];
+  pickups_total?: number;
+  idle_total?: number;
+  truncated?: boolean;
+}
+
 export interface StuckReport {
   project_id: string | null;
   scope: "portfolio" | "node";
@@ -784,6 +857,11 @@ export interface RenderedReportBody {
       horizon_days: number;
       window: ConflictsReport["window"];
     };
+    /**
+     * WS-27bn R3b. Opt-in. The rebalance route's own body, with `pickups`
+     * capped at twenty and `pickups_total` beside it.
+     */
+    rebalance?: RebalanceReport;
   };
 }
 

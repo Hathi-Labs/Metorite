@@ -11,6 +11,10 @@ import {
   categoryLabel,
   closesTask,
   groupByCategory,
+  landingLane,
+  needsChoice,
+  reopenLane,
+  stageLanes,
 } from "./statusCategory";
 
 /**
@@ -213,5 +217,97 @@ describe("groupByCategory", () => {
     const rows = [row("B", "todo", 2), row("A", "todo", 1)];
     groupByCategory(rows);
     expect(rows.map((r) => r.name)).toEqual(["B", "A"]);
+  });
+});
+
+// ── D79: stages group, statuses write ──────────────────────────────────────
+
+const lane = (id: string, category: string, position: number, name = id) => ({
+  id,
+  name,
+  category,
+  position,
+});
+
+/** A set with two In progress statuses and two Done statuses, out of order. */
+const RELAUNCH = [
+  lane("shipped", "done", 35, "Shipped"),
+  lane("review", "in_progress", 30, "In review"),
+  lane("todo", "todo", 20, "To do"),
+  lane("doing", "in_progress", 25, "Doing"),
+  lane("backlog", "backlog", 10, "Backlog"),
+  lane("done", "done", 40, "Done"),
+];
+
+describe("which status a stage resolves to (D79)", () => {
+  it("lists a stage's statuses in board order: position, then name", () => {
+    expect(stageLanes(RELAUNCH, "in_progress").map((r) => r.id)).toEqual([
+      "doing",
+      "review",
+    ]);
+    const tied = [lane("b", "todo", 1, "B"), lane("a", "todo", 1, "A")];
+    expect(stageLanes(tied, "todo").map((r) => r.id)).toEqual(["a", "b"]);
+  });
+
+  it("lands on the FIRST status of the stage, and on nothing for an empty one", () => {
+    expect(landingLane(RELAUNCH, "done")?.id).toBe("shipped");
+    expect(landingLane(RELAUNCH, "cancelled")).toBeNull();
+  });
+
+  it("asks only when a stage holds two or more statuses", () => {
+    expect(needsChoice(RELAUNCH, "in_progress")).toBe(true);
+    expect(needsChoice(RELAUNCH, "done")).toBe(true);
+    expect(needsChoice(RELAUNCH, "todo")).toBe(false);
+    expect(needsChoice(RELAUNCH, "cancelled")).toBe(false);
+  });
+});
+
+/**
+ * One reopen rule (D79). The gateway's is `personal.reopen_if_closed`: the
+ * first `todo` status of the set, else `load_default_status(db, owner)`,
+ * which is the first status that is not triage, and the task stays where it
+ * is when that one closes too. These cases are that rule. The source fence
+ * below fails if the gateway changes its shape without this file.
+ */
+describe("one reopen rule, the gateway's (D79)", () => {
+  it("reopens into the first To do status, past a Backlog status above it", () => {
+    expect(reopenLane(RELAUNCH)?.id).toBe("todo");
+  });
+
+  it("falls back to the first status that is not triage", () => {
+    const noTodo = [
+      lane("triage", "triage", 1),
+      lane("doing", "in_progress", 5),
+      lane("done", "done", 9),
+    ];
+    expect(reopenLane(noTodo)?.id).toBe("doing");
+  });
+
+  it("answers null when that first status closes too", () => {
+    const closedFirst = [lane("done", "done", 1), lane("doing", "in_progress", 5)];
+    expect(reopenLane(closedFirst)).toBeNull();
+  });
+
+  it("matches the shape of the gateway's reopen", () => {
+    const personal = readFileSync(
+      fileURLToPath(
+        new URL(
+          "../../../../apps/services/gateway/gateway/routes/projects/personal.py",
+          import.meta.url
+        )
+      ),
+      "utf8"
+    );
+    const body = personal.slice(
+      personal.indexOf("async def reopen_if_closed"),
+      personal.indexOf("OVERLAY_KEYS", personal.indexOf("async def reopen_if_closed"))
+    );
+    expect(body).toContain('lane = await load_default_status(db, owner, "todo")');
+    expect(body).toContain("lane = await load_default_status(db, owner)");
+    expect(body).toMatch(/in CLOSING_CATEGORIES:\s*\n\s*return None/);
+    const core = readFileSync(CORE_PY, "utf8");
+    const pick = core.slice(core.indexOf("async def load_default_status"));
+    expect(pick).toContain('clauses.append("category <> :triage")');
+    expect(pick).toContain('" ORDER BY position, name LIMIT 1"');
   });
 });

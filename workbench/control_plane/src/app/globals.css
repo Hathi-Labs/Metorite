@@ -566,6 +566,18 @@ select optgroup {
 .pb-nav {
   padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px));
 }
+/* The shared toast viewport's bottom edge. On a phone it sits ABOVE the fixed
+   bottom nav (the same 3.5rem + safe-area clearance as .pb-nav, plus a gap),
+   or every toast covers the nav for its whole life. From `sm` up there is no
+   bottom nav, so it keeps the 1rem it always had. Fence: toastViewport.test.ts. */
+.toast-viewport-bottom {
+  bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 0.5rem);
+}
+@media (min-width: 640px) {
+  .toast-viewport-bottom {
+    bottom: 1rem;
+  }
+}
 
 /* ── Signature rich-text editor (Tiptap / ProseMirror) ───────────────────
    Scoped under .sig-rich (the SignatureEditor body). Covers the pieces the

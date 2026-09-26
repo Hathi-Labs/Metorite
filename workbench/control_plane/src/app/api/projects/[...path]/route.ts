@@ -46,6 +46,12 @@ async function forward(
         ...(method === "GET" || method === "DELETE"
           ? {}
           : { "Content-Type": "application/json" }),
+        // D-PM-20's write precondition. The gateway answers 412 when the row
+        // moved since the caller read it. Dropped here, the check could never
+        // fire from the browser (D79: an Undo must not overwrite a newer move).
+        ...(req.headers.get("if-match")
+          ? { "If-Match": req.headers.get("if-match") as string }
+          : {}),
       },
       signal: AbortSignal.timeout(30_000),
     };

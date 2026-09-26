@@ -1,7 +1,10 @@
 import { create } from "zustand";
 import { dropIndexFor } from "@/lib/boardDrop";
+import type { PanelAnchor } from "@/components/ui/AnchoredPanel";
+import { closesTask, landingLane, stageLanes } from "@/lib/statusCategory";
 import {
   LensPartialFailure,
+  type LensLane,
   type LensLedProject,
   type LensMoveRequest,
   lensGetItem,
@@ -9,9 +12,10 @@ import {
 } from "./lens";
 import {
   type NextCategory,
-  laneForCategory,
+  nextCategoryOf,
   noLaneMessage,
 } from "./statusCategory";
+import { type ReceiptPlace, doneReceipt, moveReceipt } from "./statusReceipt";
 import { ProjectsApiError, projectsApi } from "@/app/projects/lib/api";
 import {
   type DeferredCommit,
@@ -51,7 +55,13 @@ import {
   type ConnectedProvider,
 } from "./mockData";
 import { browserTimeZone, isCalendarItem, isTickled } from "./utils";
-import { clarifyChangesSharedTask, clarifyQueue, isClarifiable, weightPatch } from "./clarify";
+import {
+  clarifyChangesSharedTask,
+  clarifyQueue,
+  isClarifiable,
+  isPersonalTask,
+  weightPatch,
+} from "./clarify";
 import { type SyncState, canPush } from "./syncState";
 import {
   DEFAULT_FILTERS,
@@ -138,12 +148,13 @@ function disposeLive(
   get: Getter,
   ids: string[],
   disposition: Disposition,
-): Promise<void> {
+): Promise<MyTask[]> {
   return apiBulkDispose(ids, disposition).then(
     (rows) => {
-      if (!rows.length) return;
+      if (!rows.length) return rows;
       const byId = new Map(rows.map((r) => [r.id, r]));
       set((s) => ({ items: s.items.map((i) => byId.get(i.id) ?? i) }));
+      return rows;
     },
     async (err: unknown) => {
       if (err instanceof LensPartialFailure) {
@@ -156,8 +167,36 @@ function disposeLive(
           ? err.message
           : `Couldn't file ${ids.length === 1 ? "the item" : "the selection"}.`,
       );
+      return [] as MyTask[];
     },
   );
+}
+
+/**
+ * D79 rule 2 — Mark done never asks, and its receipt names the Done status
+ * it chose when the set holds more than one. The dispose answers first, then
+ * this reads the lanes and retitles the SAME undo snapshot. A newer change in
+ * between keeps its own title.
+ */
+async function nameTheDoneStatus(
+  set: Setter,
+  get: Getter,
+  id: string,
+  snap: UndoSnapshot | null,
+): Promise<void> {
+  if (!snap) return;
+  const item = snap.items.find((i) => i.id === id);
+  if (!item) return;
+  let lanes: readonly LensLane[];
+  try {
+    lanes = await fetchMyTaskLanes(id);
+  } catch {
+    return;
+  }
+  const label = doneReceipt(stageLanes(lanes, "done"), receiptPlace(item, get()));
+  if (label !== snap.label && get().undoSnapshot === snap) {
+    set({ undoSnapshot: { ...snap, label } });
+  }
 }
 
 /** Finalize any soft delete still pending in a snapshot — purge the rows (and
@@ -501,7 +540,141 @@ interface UndoSnapshot {
    *  due date). Undo cannot reverse that from here, so the toast offers to
    *  open the task instead, and `undoLastChange` refuses. */
   sharedChangeTaskId?: string;
+  /** D79 — this change MOVED a task's status (a status pick, a drag, Mark
+   *  done, a reopen). `plan` resolves to what the SERVER had before our
+   *  write and what our write set, or null when the status did not move.
+   *  Undo puts the prior status back FIRST, and only while the task is
+   *  still in the status our write set. See `revertStatus`. */
+  statusRevert?: { id: string; plan: Promise<StatusRevert | null> };
 }
+
+/** D79 — one status write, as Undo needs it. */
+export interface StatusRevert {
+  /** The status id the server had before our write. */
+  prior: string;
+  /** Its name, for "Could not restore In review". */
+  priorName?: string;
+  /** The status id our write set. Undo reverts only while it still holds. */
+  set: string;
+}
+
+/** The plan from the server row before our write, and the status after it. */
+export function statusRevertPlan(
+  before: Pick<MyTask, "statusId" | "workflowStage"> | null | undefined,
+  after: string | null | undefined,
+): StatusRevert | null {
+  if (!before?.statusId || !after || before.statusId === after) return null;
+  return { prior: before.statusId, priorName: before.workflowStage, set: after };
+}
+
+/** The dispositions the gateway reopens a closed task for (D77 choice 3,
+ *  `personal.OPEN_DISPOSITIONS`). */
+const REOPENING: ReadonlySet<Disposition> = new Set<Disposition>(["INBOX", "NEXT", "WAITING"]);
+
+/**
+ * Can this one-tap disposition move the task's SHARED status? DONE completes
+ * an open task, and an open disposition reopens a closed one. Someday,
+ * Reference and Trash never touch the status, so their Undo must never
+ * write one: the local row may be as old as the last hydrate, and a status
+ * written back from it would silently revert a teammate's move (D79).
+ */
+export function dispositionMovesStatus(
+  item: Pick<MyTask, "statusCategory"> | undefined,
+  disposition: Disposition,
+): boolean {
+  const closed = closesTask(item?.statusCategory ?? "");
+  if (disposition === "DONE") return !closed;
+  return REOPENING.has(disposition) && closed;
+}
+
+/** What Undo says when the status moved again after our write. */
+export const STATUS_MOVED_SINCE =
+  "Someone changed the status since, so it was not undone.";
+
+const errText = (err: unknown): string =>
+  err instanceof Error && err.message ? err.message : String(err);
+
+/**
+ * Put back the status our write replaced (D79), before any overlay write.
+ *
+ * It reads the task first and reverts only while the task is still in the
+ * status OUR write set. The PATCH carries that read's `updated_at` as
+ * If-Match, so a move that lands between the read and the write answers
+ * 412 and is kept. Any failure is said through the toast, and the row is
+ * re-read so the screen matches the server. Resolves true when the other
+ * undo writes for this task may go ahead.
+ */
+async function revertStatus(
+  get: Getter,
+  revert: UndoSnapshot["statusRevert"],
+): Promise<boolean> {
+  if (!revert) return true;
+  const plan = await revert.plan.catch(() => null);
+  if (!plan) return true;
+  const { id } = revert;
+  const restore = plan.priorName ?? "the earlier status";
+  const refuse = async (message: string): Promise<boolean> => {
+    get().reportSyncFailure(message);
+    await get().refreshItem(id);
+    return false;
+  };
+  let now: MyTask;
+  try {
+    now = await lensGetItem(id);
+  } catch (err) {
+    return refuse(`Could not restore ${restore}: ${errText(err)}`);
+  }
+  if (now.statusId !== plan.set) return refuse(STATUS_MOVED_SINCE);
+  try {
+    await lensSetStatusId(id, plan.prior, { ifMatch: now.updatedAt || undefined });
+  } catch (err) {
+    if (err instanceof ProjectsApiError && err.status === 412) return refuse(STATUS_MOVED_SINCE);
+    return refuse(`Could not restore ${restore}: ${errText(err)}`);
+  }
+  return true;
+}
+
+/** D79 — a drag that landed on a stage with two or more statuses, waiting
+ *  for the member to pick one. The card draws in `stage` meanwhile. */
+export interface StagePrompt {
+  taskId: string;
+  stage: NextCategory;
+  /** Every status of the task's set, from `my/tasks/{id}/lanes`. */
+  lanes: readonly LensLane[];
+  projectName?: string;
+  /** Where the menu hangs: the card, looked up when it draws. */
+  anchor?: () => PanelAnchor | null;
+  /** The drag's rank, run only if the member picks. */
+  onLanded?: () => void;
+}
+
+/** Where a task lives, for a receipt (`statusReceipt.ts`). */
+function receiptPlace(
+  item: Pick<MyTask, "projectId" | "projectName">,
+  s: { personalRootId: string | null; areas: { id: string }[] },
+): ReceiptPlace {
+  return {
+    projectName: item.projectName,
+    personal: isPersonalTask(item, s.personalRootId, s.areas.map((a) => a.id)),
+  };
+}
+
+/** The demo backend has no statuses. One per stage stands in, keyed by the
+ *  stage itself, so the status menu and the drag work the same way. */
+export const DEMO_LANES: readonly LensLane[] = (
+  [
+    ["todo", "To do", 10],
+    ["in_progress", "In progress", 20],
+    ["done", "Done", 30],
+  ] as const
+).map(([category, name, position]) => ({
+  id: category,
+  project_id: "",
+  name,
+  color: "",
+  position,
+  category,
+}));
 
 /** Friendly past-tense label for a one-tap disposition (undo toast). */
 const DISPOSE_LABEL: Partial<Record<Disposition, string>> = {
@@ -981,13 +1154,39 @@ interface TaskState {
    *  board. A no-op on the demo backend. */
   refreshItem: (id: string) => Promise<void>;
   /**
-   * D73.9 — move a Next Action into a status CATEGORY group. Done completes
-   * the task (`/complete`, §13.5a decision 1). Any other category resolves
-   * to the first lane by position with that category in the task's OWN
-   * project (`my/tasks/{id}/lanes`) and PATCHes its `status_id`. A project
-   * with no such lane moves nothing and says so through the toast seam.
+   * D79 — put a task in ONE exact status of its own status set, and say so
+   * in a receipt with Undo (`statusReceipt.ts`). `lanes` saves a second read
+   * when the caller already holds them. Undo restores the prior status id.
    */
-  setCategory: (id: string, category: NextCategory) => Promise<void>;
+  setStatus: (
+    id: string,
+    statusId: string,
+    opts?: { lanes?: readonly LensLane[] },
+  ) => Promise<void>;
+  /**
+   * D79 — move a task into a STAGE (a status category) of Next Actions.
+   * With one status in that stage it writes at once. With two or more it
+   * ASKS: `stagePrompt` holds the question, the card shows in the new
+   * column, and `StagePromptHost` draws the status menu at `anchor`.
+   * `noAsk` takes the first status without asking (quick-add). Done with
+   * one Done status is Mark done. `onLanded` runs just before the write,
+   * and never when the member backs out (the drag's rank).
+   */
+  setStage: (
+    id: string,
+    stage: NextCategory,
+    opts?: {
+      anchor?: () => PanelAnchor | null;
+      onLanded?: () => void;
+      noAsk?: boolean;
+    },
+  ) => Promise<"written" | "asked" | "none">;
+  /** The open drag prompt, or null. See `setStage`. */
+  stagePrompt: StagePrompt | null;
+  /** The member picked a status in the drag prompt. */
+  confirmStagePrompt: (statusId: string) => void;
+  /** Escape or a click outside: the card goes back, and nothing is written. */
+  cancelStagePrompt: () => void;
   /** People view: lazy roster load + create/edit + résumé ingestion. */
   loadPeople: (opts?: { q?: string; includeInactive?: boolean }) => Promise<void>;
   savePerson: (id: string | null, body: OrgPersonWrite) => Promise<OrgPerson>;
@@ -1388,6 +1587,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   processedThisSession: 0,
   clarifiedThisSession: new Set(),
   undoSnapshot: null,
+  stagePrompt: null,
   pendingDeleteIds: null,
   selectMode: false,
   selectedIds: new Set<string>(),
@@ -1667,11 +1867,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
           set((s) => ({
             items: s.items.map((i) => (i.id === item.id ? final : i)),
           }));
-          // D73.9: a quick-add in the In progress group lands in that
-          // category's first lane of my root, the way a drag does.
+          // D79: a quick-add in the In progress group lands in the FIRST
+          // In progress status of my root, with no question, and the
+          // receipt names it.
           const want = prefill.statusCategory;
           if (want === "in_progress" && final.statusCategory !== want)
-            await get().setCategory(final.id, want);
+            await get().setStage(final.id, want, { noAsk: true });
         }),
       );
     }
@@ -1961,21 +2162,54 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   quickDispose: (id, disposition) => {
     get().cancelPromoteFor([id]);
     flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
-    set((s) => ({
-      items: s.items.map((i) => (i.id === id ? disposeOne(i, disposition) : i)),
-      processedThisSession: s.processedThisSession + 1,
-      clarifiedThisSession: new Set(s.clarifiedThisSession).add(id),
-      undoSnapshot: {
-        items: s.items,
-        projects: s.projects,
-        processed: s.processedThisSession,
-        selectedItemId: s.selectedItemId,
-        label: DISPOSE_LABEL[disposition] ?? "Filed",
-        changedIds: [id],
-      },
-    }));
-    if (get().backend === "live") {
-      get().markTriaged([id], disposeLive(set, get, [id], disposition));
+    // D79 — only a gesture that can move the status reads the server's
+    // status first, and only that one's Undo may write a status back.
+    const live = get().backend === "live";
+    const moves =
+      live && dispositionMovesStatus(get().items.find((i) => i.id === id), disposition);
+    const priorRead = moves ? lensGetItem(id).catch(() => null) : null;
+    const write = live
+      ? (priorRead ?? Promise.resolve(null)).then(() =>
+          disposeLive(set, get, [id], disposition),
+        )
+      : null;
+    const statusRevert =
+      priorRead && write
+        ? {
+            id,
+            plan: Promise.all([priorRead, write]).then(([before, rows]) =>
+              statusRevertPlan(before, rows.find((r) => r.id === id)?.statusId),
+            ),
+          }
+        : undefined;
+    set((s) => {
+      return {
+        items: s.items.map((i) => (i.id === id ? disposeOne(i, disposition) : i)),
+        processedThisSession: s.processedThisSession + 1,
+        clarifiedThisSession: new Set(s.clarifiedThisSession).add(id),
+        undoSnapshot: {
+          items: s.items,
+          projects: s.projects,
+          processed: s.processedThisSession,
+          selectedItemId: s.selectedItemId,
+          label: DISPOSE_LABEL[disposition] ?? "Filed",
+          changedIds: [id],
+          // D79 — DONE completes, and an open disposition reopens a closed
+          // task. Only then does Undo put the server's prior status back.
+          statusRevert,
+          // A "From Projects" row was untriaged: undo CLEARS the stated
+          // disposition and puts it back in the group, as Clarify's undo
+          // does. Writing the displayed value back stated a triage.
+          untriagedIds: s.fromProjectIds.has(id) ? [id] : undefined,
+        },
+      };
+    });
+    if (write) {
+      get().markTriaged([id], write);
+      if (disposition === "DONE") {
+        const snap = get().undoSnapshot;
+        void write.then(() => nameTheDoneStatus(set, get, id, snap));
+      }
     }
   },
 
@@ -2279,53 +2513,140 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 
-  setCategory: async (id, category) => {
+  setStatus: async (id, statusId, opts) => {
     const item = get().items.find((i) => i.id === id);
-    if (!item) return;
-    // Compare the LANE's category, not the group: a task in a `backlog` or
-    // `triage` lane sits under To do (§4.9 point 5), and moving it to To do
-    // still has a lane to change.
-    const isDone = item.disposition === "DONE";
-    if (category === "done" ? isDone : !isDone && item.statusCategory === category) return;
-    if (category === "done") {
-      // Completion is SHARED: the lens completes through `/complete`, so the
-      // board moves too. `quickDispose` keeps the undo snapshot.
+    if (!item || item.statusId === statusId) return;
+    const live = get().backend === "live";
+    let lanes = opts?.lanes;
+    if (!lanes) {
+      try {
+        lanes = live ? await fetchMyTaskLanes(id) : DEMO_LANES;
+      } catch (err) {
+        get().reportSyncFailure(err instanceof Error ? err.message : String(err));
+        return;
+      }
+    }
+    const lane = lanes.find((l) => l.id === statusId);
+    if (!lane) {
+      get().reportSyncFailure("That status is not in this task's project any more.");
+      return;
+    }
+    // The demo backend keys a status by its stage, and a demo task has no
+    // status id. Compare the stage there instead.
+    if (!live && nextCategoryOf(item) === lane.category) return;
+    // The FIRST Done status is Mark done (D79 rule 2): it goes through
+    // `/complete`, so my list says DONE and a mail thread closes too, and
+    // its receipt names the status only when there was a choice.
+    if (lane.id === landingLane(lanes, "done")?.id && item.disposition !== "DONE") {
       get().quickDispose(id, "DONE");
       return;
     }
-    const wasDone = item.disposition === "DONE";
-    if (get().backend !== "live") {
-      // The demo backend has no lanes. Move the card between groups only.
-      set((s) => ({
-        items: s.items.map((i) =>
-          i.id === id
-            ? { ...i, statusCategory: category, disposition: wasDone ? "NEXT" : i.disposition }
-            : i,
-        ),
-      }));
-      return;
-    }
-    let lane;
+    get().cancelPromoteFor([id]);
+    flushPendingPurge(get().undoSnapshot, get().backend, removalScope(get()));
+    const closes = closesTask(lane.category);
+    // D79 — Undo needs the status the SERVER had, not the local row, which
+    // is as old as the last hydrate. Read it, then write.
+    const priorRead = live ? lensGetItem(id).catch(() => null) : null;
+    const write = priorRead ? priorRead.then(() => lensSetStatusId(id, lane.id)) : null;
+    const plan =
+      priorRead && write
+        ? Promise.all([priorRead, write]).then(([before]) => statusRevertPlan(before, lane.id))
+        : null;
+    set((s) => ({
+      items: s.items.map((i) =>
+        i.id === id
+          ? {
+              ...i,
+              statusId: live ? lane.id : i.statusId,
+              workflowStage: lane.name,
+              statusCategory: lane.category,
+              statusColor: lane.color || undefined,
+              // The lane decides completion (D77): a closing lane reads
+              // DONE, and leaving one reads NEXT again.
+              disposition: closes
+                ? i.disposition === "TRASH"
+                  ? i.disposition
+                  : "DONE"
+                : i.disposition === "DONE"
+                  ? "NEXT"
+                  : i.disposition,
+            }
+          : i,
+      ),
+      undoSnapshot: {
+        items: s.items,
+        projects: s.projects,
+        processed: s.processedThisSession,
+        selectedItemId: s.selectedItemId,
+        label: moveReceipt(lane, receiptPlace(item, s)),
+        statusRevert: plan ? { id, plan } : undefined,
+      },
+    }));
+    if (!write) return;
+    const snap = get().undoSnapshot;
     try {
-      lane = laneForCategory(await fetchMyTaskLanes(id), category);
+      await write;
     } catch (err) {
+      await refetchAfterFailure(set);
+      // Only this write's snapshot: a newer change keeps its own Undo.
+      if (get().undoSnapshot === snap) set({ undoSnapshot: null });
       get().reportSyncFailure(err instanceof Error ? err.message : String(err));
       return;
     }
-    if (!lane) {
-      get().reportSyncFailure(noLaneMessage(category, item.projectName));
-      return;
-    }
-    try {
-      await lensSetStatusId(id, lane.id);
-    } catch (err) {
-      get().reportSyncFailure(err instanceof Error ? err.message : String(err));
-      return;
-    }
-    // A done task reopens: the lane moved, and my overlay says NEXT again.
-    if (wasDone) get().quickDispose(id, "NEXT");
     await get().refreshItem(id);
   },
+
+  setStage: async (id, stage, opts) => {
+    // A newer gesture on the same task replaces an open question. Left open,
+    // a late Enter on it would overwrite the status this gesture writes.
+    if (get().stagePrompt?.taskId === id) set({ stagePrompt: null });
+    const item = get().items.find((i) => i.id === id);
+    if (!item) return "none";
+    // Already there: compare the LANE's category, not the group. A task in a
+    // `backlog` lane sits under To do (§4.9 point 5), and moving it to To do
+    // still has a status to change.
+    const done = item.disposition === "DONE";
+    if (stage === "done" ? done : !done && item.statusCategory === stage) return "none";
+    const live = get().backend === "live";
+    let lanes: readonly LensLane[];
+    try {
+      lanes = live ? await fetchMyTaskLanes(id) : DEMO_LANES;
+    } catch (err) {
+      get().reportSyncFailure(err instanceof Error ? err.message : String(err));
+      return "none";
+    }
+    const here = stageLanes(lanes, stage);
+    if (here.length === 0) {
+      get().reportSyncFailure(noLaneMessage(stage, item.projectName));
+      return "none";
+    }
+    if (here.length > 1 && !opts?.noAsk) {
+      set({
+        stagePrompt: {
+          taskId: id,
+          stage,
+          lanes,
+          projectName: item.projectName,
+          anchor: opts?.anchor,
+          onLanded: opts?.onLanded,
+        },
+      });
+      return "asked";
+    }
+    opts?.onLanded?.();
+    await get().setStatus(id, here[0].id, { lanes });
+    return "written";
+  },
+
+  confirmStagePrompt: (statusId) => {
+    const prompt = get().stagePrompt;
+    if (!prompt) return;
+    set({ stagePrompt: null });
+    prompt.onLanded?.();
+    void get().setStatus(prompt.taskId, statusId, { lanes: prompt.lanes });
+  },
+
+  cancelStagePrompt: () => set({ stagePrompt: null }),
 
   loadPeople: async (opts) => {
     if (get().backend !== "live") return;
@@ -2784,7 +3105,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     if (snap.sharedChangeTaskId) return;
     const { items, projects, processed, selectedItemId, changedIds,
       deletedItems, softDeletedIds, removedIds, archivedIds, archivedTo,
-      scheduleRevertIds, untriagedIds } = snap;
+      scheduleRevertIds, untriagedIds, statusRevert } = snap;
     set((s) => {
       // An undone decision is undecided again: it rejoins the walk.
       const clarifiedThisSession = new Set(s.clarifiedThisSession);
@@ -2803,6 +3124,20 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       };
     });
     if (get().backend !== "live") return;
+    // D79 — the exact prior STATUS goes back first, and every overlay write
+    // below waits for it. Written the other way round, a NEXT on a closed
+    // task reopened it into the first To do status (`reopen_if_closed`),
+    // and the status write then had to undo that move.
+    //
+    // When the status is NOT put back (someone moved it since, or the write
+    // failed), my list is left alone for that task too. An open disposition
+    // would reopen whatever closed status the task is in now.
+    const before = new Map(items.map((i) => [i.id, i]));
+    const blocked = new Set<string>();
+    const statusFirst: Promise<unknown> = revertStatus(get, statusRevert).then((ok) => {
+      if (!ok && statusRevert) blocked.add(statusRevert.id);
+    });
+    const after = (write: () => Promise<unknown>) => sync(statusFirst.then(write));
     if (removedIds?.length) {
       // S6g — a board task removed from my lists comes back as my overlay
       // said before. An unstated disposition (an untriaged row) is CLEARED,
@@ -2884,27 +3219,34 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       // CLEAR the stated disposition. The value before the clarify was
       // derived off the lane, and writing it back would state a triage.
       // Re-read the group only after the write lands (the S6e order).
-      sync(
+      after(() =>
         Promise.all(
           untriagedIds.map((id) =>
-            apiPatchItem(id, { disposition: null }).catch(() => {}),
+            blocked.has(id)
+              ? undefined
+              : apiPatchItem(id, { disposition: null }).catch(() => {}),
           ),
         ).then(() => get().loadFromProjects()),
       );
     } else if (changedIds?.length) {
       // Revert the server rows to their pre-change disposition (the local
-      // state is already fully restored from the snapshot).
-      const prev = new Map(items.map((i) => [i.id, i]));
-      sync(
+      // state is already fully restored from the snapshot). An untriaged
+      // row is CLEARED (null): its shown value was derived, never stated.
+      after(() =>
         Promise.all(
           changedIds.map((id) => {
-            const p = prev.get(id);
-            return p
-              ? apiPatchItem(id, { disposition: p.disposition }).catch(() => {})
+            const p = before.get(id);
+            return p && !blocked.has(id)
+              ? apiPatchItem(id, {
+                  disposition: p.isTriaged === false ? null : p.disposition,
+                }).catch(() => {})
               : Promise.resolve();
           }),
         ),
       );
+    } else if (statusRevert) {
+      // A status write alone (a pick, a drag): only the status goes back.
+      after(() => get().refreshItem(statusRevert.id));
     }
   },
 

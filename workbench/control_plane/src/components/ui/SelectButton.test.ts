@@ -52,3 +52,16 @@ describe("arrowFor", () => {
     }
   });
 });
+
+describe("the task body's Status list paints above the focused task", () => {
+  it("passes layer=top, over My Tasks' TaskFocusModal at z-[80]", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const body = readFileSync(
+      fileURLToPath(new URL("../../app/projects/components/TaskBody.tsx", import.meta.url)),
+      "utf-8",
+    );
+    const status = body.match(/<SelectButton\s+label="Status"[\s\S]*?\/>/)?.[0] ?? "";
+    expect(status).toContain('layer="top"');
+  });
+});

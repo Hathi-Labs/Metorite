@@ -54,11 +54,19 @@ import { capacityReportRows } from "../lib/capacity";
 import { conflictsReportRows } from "../lib/conflicts";
 import { headlineVerdict, shortDate } from "../lib/outlook";
 import {
+  REBALANCE_HR_HINT,
+  helpersLine,
+  pickupLine,
+  rebalancePickups,
+  rebalanceTasks,
+} from "../lib/rebalance";
+import {
   capacityPanelData,
   conflictsPanelData,
   finishedPanelData,
   loadPanelData,
   outlookPanelData,
+  rebalancePanelData,
   reportTiles,
   stuckPanelData,
   throughputPanelData,
@@ -90,6 +98,7 @@ import {
   FinishedPanel,
   LoadPanel,
   OutlookPanel,
+  RebalancePanel,
   Stat,
   StuckPanel,
   ThroughputPanel,
@@ -455,6 +464,44 @@ export function RenderedBody({
                 </li>
               ))}
             </ul>
+          </Table>
+        </div>
+      )}
+
+      {/* WS-27bn R3b. Opt-in, and read only. The rebalance route's own body.
+          Without the HR grant it has no lists, and the table says why. */}
+      {sections.rebalance && (
+        <div className="space-y-1">
+          <RebalancePanel data={rebalancePanelData(sections.rebalance)} />
+          <Table title="Who could help" count={rebalanceTasks(sections.rebalance).length}>
+            {sections.rebalance.hr_visible === false ? (
+              <p className="text-[11px] text-muted-foreground">
+                {REBALANCE_HR_HINT}
+              </p>
+            ) : (
+              <ul className="space-y-1">
+                {rebalanceTasks(sections.rebalance).map((t) => (
+                  <li key={t.task_id} className="text-[11px]" title={t.title}>
+                    <span className="font-medium text-foreground">{t.title}</span>
+                    <span className="text-muted-foreground">
+                      {" "}
+                      · held by {t.holder?.name || t.holder?.email} ·{" "}
+                      {t.due_on ? `due ${shortDate(t.due_on)}` : "no due date"} ·
+                      helpers {helpersLine(t) ?? "none"}
+                    </span>
+                  </li>
+                ))}
+                {rebalancePickups(sections.rebalance).map((p) => (
+                  <li key={p.email} className="text-[11px]" title={p.name}>
+                    <span className="font-medium text-foreground">{p.name}</span>
+                    <span className="text-muted-foreground">
+                      {" "}
+                      could take: {pickupLine(p)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </Table>
         </div>
       )}

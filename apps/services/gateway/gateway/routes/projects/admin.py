@@ -25,7 +25,9 @@ from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
+    COMPLETED_CATEGORY,
     EPIC_TYPE_NAME,
+    LAST_DONE_REFUSAL,
     SETTINGS_WRITE,
     STATUS_CATEGORIES,
     TRIAGE_CATEGORY,
@@ -44,6 +46,7 @@ from gateway.routes.projects.core import (
     require_known_tenant,
     require_org_vocabulary_edit,
     remap_task_statuses,
+    require_done_status,
     require_known_tenant,
     require_org_vocabulary_write,
     require_row,
@@ -234,8 +237,48 @@ async def patch_status(
         await load_visible_project(db, vis, str(existing.project_id))
         if not values:
             return row_to_dict(existing, StatusModel)
+        # D79: the last Done status cannot leave the Done category. Asked
+        # BEFORE the write, so the refusal names the status and changes nothing.
+        leaving_done = (
+            str(existing.category) == COMPLETED_CATEGORY
+            and values.get("category") not in (None, COMPLETED_CATEGORY)
+        )
+        if leaving_done and not _has_done(await _other_lanes(db, existing)):
+            raise HTTPException(
+                status_code=409, detail=_last_done_detail(existing.name),
+            )
         row = await update_row(db, "pm_task_statuses", status_id, values)
         return row_to_dict(row, StatusModel)
+
+
+#: The WHOLE status set, locked (D79). Two admins who each delete one of the
+#: last two Done statuses would otherwise both see "another Done stays" and
+#: leave none. The target row is locked too, and every writer locks in id
+#: order: locking "all except self" lets two such writers each hold their own
+#: row and wait for the other's, which Postgres ends as a deadlock (a 500).
+_LOCK_STATUS_SET_SQL = (
+    "SELECT id, category FROM pm_task_statuses "
+    " WHERE project_id = CAST(:owner AS uuid) "
+    " ORDER BY id FOR UPDATE"
+)
+
+
+async def _other_lanes(db: Any, existing: Any) -> list[Any]:
+    """Every other status in the set ``existing`` belongs to, with the whole
+    set locked until the transaction ends. Filtered here, not in SQL."""
+    rows = (await db.execute(
+        text(_LOCK_STATUS_SET_SQL), {"owner": str(existing.project_id)},
+    )).fetchall()
+    return [r for r in rows if str(r.id) != str(existing.id)]
+
+
+def _has_done(lanes: list[Any]) -> bool:
+    """True when one of ``lanes`` is in the Done category (D79)."""
+    return any(str(r.category) == COMPLETED_CATEGORY for r in lanes)
+
+
+def _last_done_detail(name: str) -> str:
+    return f"'{name}' is the last Done status here. {LAST_DONE_REFUSAL}"
 
 
 @router.delete("/statuses/{status_id}")
@@ -258,10 +301,14 @@ async def delete_status(
     Two lanes cannot be deleted at all, whatever ``move_to`` says:
 
     * **the last one** — every task needs a status and the column is NOT NULL;
+    * **the last DONE one** (D79) — Mark done moves a task into the first
+      Done status, so a set without one cannot complete anything by the
+      one gesture every surface offers;
     * **the last CLOSING one** — with no `done` and no `cancelled` lane left,
       nothing in this project could ever complete and every roll-up under it
       would read 0% forever. That failure is silent and permanent, which is
-      exactly the kind this refuses rather than warns about.
+      exactly the kind this refuses rather than warns about. Since D79 it can
+      only fire on a set that already had no Done status.
     """
     assert_can_manage_settings(user)
     async with _tenant_session() as db:
@@ -272,14 +319,7 @@ async def delete_status(
         # The rows themselves, counted here rather than by the database. A
         # status set is a handful of lanes — the aggregate saved nothing and
         # cost a `FILTER` clause that only Postgres understands.
-        survivors = (await db.execute(
-            text(
-                "SELECT id, category FROM pm_task_statuses "
-                " WHERE project_id = CAST(:owner AS uuid) "
-                "   AND id <> CAST(:sid AS uuid)"
-            ),
-            {"owner": str(existing.project_id), "sid": status_id},
-        )).fetchall()
+        survivors = await _other_lanes(db, existing)
         if not survivors:
             raise HTTPException(
                 status_code=409,
@@ -287,6 +327,12 @@ async def delete_status(
                     f"'{existing.name}' is the only status here. A project "
                     "needs at least one, because every task must be in one."
                 ),
+            )
+        # D79 — it binds on every set: the last Done status stays, because
+        # Mark done moves a task into it. A Cancelled lane is not enough.
+        if str(existing.category) == COMPLETED_CATEGORY and not _has_done(survivors):
+            raise HTTPException(
+                status_code=409, detail=_last_done_detail(existing.name),
             )
         if not any(str(r.category) in CLOSING_CATEGORIES for r in survivors):
             raise HTTPException(
@@ -749,6 +795,10 @@ async def set_status_set(
                 ),
                 {"ids": stale},
             )
+
+        # D79. A dormant set is reused as it was left, and it may hold no
+        # Done status. Checked after the write, so a refusal rolls it back.
+        await require_done_status(db, owner)
 
         await record_activity(
             db, activity_type="system", created_by=actor(user),

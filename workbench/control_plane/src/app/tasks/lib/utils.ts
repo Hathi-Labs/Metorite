@@ -61,6 +61,16 @@ export const DISPOSITION_LABEL: Record<Disposition, string> = {
   TRASH: "Trash",
 };
 
+/**
+ * The task detail's header chip (D79). The chip is MY list for this task, not
+ * the task's status: the status is the Status control in the body, and it is
+ * shared with the board. "My list: Next action" says which is which, where a
+ * bare "NEXT ACTION" beside a Status of "In review" read as a second status.
+ */
+export function myListLabel(disposition: Disposition): string {
+  return `My list: ${DISPOSITION_LABEL[disposition]}`;
+}
+
 export const ENERGY_LABEL: Record<Energy, string> = {
   low: "Low energy",
   medium: "Medium energy",

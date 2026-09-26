@@ -33,3 +33,23 @@ export function stageAccent(
 export function categoryAccent(category: string | null | undefined): StageAccent {
   return statusAccent({ category: category ?? "todo" });
 }
+
+/**
+ * The accent for ONE task's own lane: the pill on a card and the Status
+ * column. The lane's stored colour first, then its category, the order
+ * Projects' `accentForStatus` uses. So a lane an owner coloured violet is
+ * violet in both apps (AGENTS.md rule 5). Before this, the pill read the
+ * category only, and a custom-coloured lane drew two colours.
+ *
+ * ⚠️ Only for a single lane. A Next Actions GROUP spans lanes from many
+ * projects, so it keeps `categoryAccent`: no one stored colour speaks for it.
+ */
+export function laneAccent(
+  lane: { statusColor?: string | null; statusCategory?: string | null },
+  fallbackCategory?: string | null,
+): StageAccent {
+  return statusAccent({
+    color: lane.statusColor,
+    category: lane.statusCategory ?? fallbackCategory ?? "todo",
+  });
+}

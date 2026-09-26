@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import re
 from typing import Any
 
 from skill_projects.client import data, get, uuid_of
@@ -331,7 +332,6 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
             ("velocity.verdict", "Forecast"),
             ("plan.planned_finish", "Planned finish"),
             ("velocity.finish_date", "Forecast finish"),
-            ("plan.slip_days", "Slip days"),
         ],
     },
     "stuck": {
@@ -362,7 +362,27 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
         "rows": "rows",
         "columns": [("severity", "Severity"), ("sentence", "Conflict")],
     },
+    # WS-27bn R3b. One row per at-risk task, with its first helper. The
+    # idle people print as a count only: a pickup row names skills.
+    "rebalance": {
+        "title": "Who could help",
+        "stats": [("at_risk_total", "At risk"), ("idle_total", "Idle people")],
+        "rows": "at_risk",
+        "columns": [
+            ("title", "Task"),
+            ("holder.name", "Held by"),
+            ("due_on", "Due"),
+            ("candidates.0.name", "Could help"),
+        ],
+        # Without the HR grant the section has no rows. The card says why,
+        # in the Reports app's words, and draws no zero.
+        "hr_hint": "Rebalancing needs HR read access. An admin can see it.",
+    },
 }
+
+#: A value that is an ISO timestamp. The card prints its date only, as the
+#: Reports app's `shortDate` does (H-185 item 1).
+_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T")
 
 
 def _human(key: str) -> str:
@@ -381,6 +401,8 @@ def _card_cell(key: str, row: dict[str, Any]) -> str:
     if key in ("assignee", "name") and not value:
         # The Unassigned row carries no person. Say so, as the Reports app does.
         return _plain(row.get("assignee") or "Unassigned")
+    if isinstance(value, str) and _TIMESTAMP.match(value):
+        return value[:10]
     return _plain(value)
 
 
@@ -416,6 +438,13 @@ def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, An
                 (k, _human(k)) for k in rows[0] if not isinstance(rows[0][k], dict | list)
             ][:6]
     table = None
+    if spec and spec.get("hr_hint") and section.get("hr_visible") is False:
+        # WS-27bn R3b. No rows to draw, and no zero to show. One line says why.
+        return stats, {
+            "title": title,
+            "columns": ["Note"],
+            "rows": [{"cells": [spec["hr_hint"]]}],
+        }
     if isinstance(rows, list) and rows and isinstance(rows[0], dict) and columns:
         table = {
             "title": title,
