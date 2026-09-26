@@ -52,6 +52,7 @@ import { nextCategoryOf, noLaneMessage } from "./statusCategory";
 import { ProjectsApiError } from "@/app/projects/lib/api";
 import {
   STATUS_MOVED_SINCE,
+  STAYS_CLOSED,
   dispositionMovesStatus,
   itemsForView,
   useTaskStore,
@@ -524,7 +525,56 @@ describe("undo puts the exact status back, then the overlay", () => {
     expect(server.statusId).toBe("w-done");
     // WAITING back on my list would reopen the task a second time.
     expect(apiPatchItem).not.toHaveBeenCalledWith("t1", { disposition: "WAITING" });
-    expect(useTaskStore.getState().syncFailure).toBeNull();
+    expect(useTaskStore.getState().syncFailure?.message).toBe(STAYS_CLOSED);
+  });
+
+  /** The server row, with the category of whichever status it is in. */
+  const WITH_DROP = [...WORKSHOP, lane("w-drop", "workshop", "Dropped", "cancelled", 50)];
+  const closedOnServer = (statusId: string, name: string) => {
+    Object.assign(server, { statusId, workflowStage: name });
+    const category = () => WITH_DROP.find((l) => l.id === server.statusId)?.category;
+    vi.mocked(lensGetItem).mockImplementation(async () =>
+      serverRow({ statusCategory: category() }),
+    );
+    // `/complete` moves the task into the FIRST Done status, from wherever.
+    vi.mocked(apiBulkDispose).mockImplementation(async (_ids, disposition) => {
+      if (disposition === "DONE") serverMoves("w-done", "Shipped");
+      return [serverRow({ disposition, statusCategory: category() })];
+    });
+    const stale = task({
+      statusId: "w-build", statusCategory: "in_progress", workflowStage: "Building",
+      disposition: "NEXT",
+    });
+    useTaskStore.setState({ backend: "live", items: [stale], syncFailure: null });
+  };
+
+  it("undo of Mark done on a task a teammate already finished keeps it finished", async () => {
+    // Review of #480: the server row is in the FIRST Done status, so Mark
+    // done moves nothing and there is no status to put back. NEXT written
+    // back from the stale local row would reopen the teammate's close.
+    closedOnServer("w-done", "Shipped");
+    useTaskStore.getState().quickDispose("t1", "DONE");
+    await flush();
+    useTaskStore.getState().undoLastChange();
+    await flush();
+    expect(apiPatchItem).not.toHaveBeenCalledWith("t1", { disposition: "NEXT" });
+    expect(server.statusId).toBe("w-done");
+    expect(useTaskStore.getState().syncFailure?.message).toBe(STAYS_CLOSED);
+  });
+
+  it("undo of Mark done on a Cancelled task puts Cancelled back", async () => {
+    // Review of #480: `/complete` moved it from Dropped (Cancelled) into the
+    // first Done status. Undo puts Dropped back, and does not reopen it.
+    closedOnServer("w-drop", "Dropped");
+    useTaskStore.getState().quickDispose("t1", "DONE");
+    await flush();
+    expect(server.statusId).toBe("w-done");
+    useTaskStore.getState().undoLastChange();
+    await flush();
+    expect(lensSetStatusId).toHaveBeenCalledWith("t1", "w-drop", { ifMatch: "v2" });
+    expect(server.statusId).toBe("w-drop");
+    expect(apiPatchItem).not.toHaveBeenCalledWith("t1", { disposition: "NEXT" });
+    expect(useTaskStore.getState().syncFailure?.message).toBe(STAYS_CLOSED);
   });
 });
 

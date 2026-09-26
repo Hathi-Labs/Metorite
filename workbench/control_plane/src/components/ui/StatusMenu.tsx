@@ -305,13 +305,16 @@ export function StatusMenu({
   };
 
   const stageLabel = onlyCategory ? CATEGORY_LABEL[onlyCategory] ?? onlyCategory : null;
+  // Every card mounts a closed menu. Only an open one reads the root font
+  // size, so a closed menu costs no style recalculation per render.
+  const remPx = open ? rootRemPx() : 16;
 
   return (
     <AnchoredPanel
       anchor={anchor}
       open={open}
       layer="top"
-      maxHeight={menuHeight(rows.length, Boolean(projectName || prompt), rootRemPx())}
+      maxHeight={menuHeight(rows.length, Boolean(projectName || prompt), remPx)}
       className="w-max min-w-[12rem] max-w-[18rem] p-1"
       panelProps={{
         role: "listbox",

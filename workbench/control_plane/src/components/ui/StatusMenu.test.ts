@@ -148,10 +148,13 @@ describe("menuHeight — the panel hangs by its real height (D79)", () => {
     expect(rootRemPx(undefined)).toBe(16);
   });
 
-  it("the menu passes the root font size to its height", () => {
+  it("the menu passes the root font size to its height, read only while open", () => {
     const src = readFileSync(fileURLToPath(new URL("./StatusMenu.tsx", import.meta.url)), "utf8");
+    // A closed menu mounts on every card, so it must not read a style.
+    expect(src).toContain("const remPx = open ? rootRemPx() : 16;");
+    expect(src.match(/rootRemPx\(\)/g)).toHaveLength(1);
     expect(src).toContain(
-      "maxHeight={menuHeight(rows.length, Boolean(projectName || prompt), rootRemPx())}",
+      "maxHeight={menuHeight(rows.length, Boolean(projectName || prompt), remPx)}",
     );
   });
 });
