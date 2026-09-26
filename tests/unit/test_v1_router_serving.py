@@ -272,6 +272,38 @@ async def test_the_tier_reaches_the_console_unresolved(monkeypatch, spy):
     assert payload["model"] == "tier-balanced"
 
 
+@pytest.mark.parametrize(
+    ("sent", "routed"),
+    [
+        ("tier1-local-qwen3", "tier-fast"),
+        ("tier2-sonnet", "tier-balanced"),
+        ("tier3-opus", "tier-powerful"),
+        ("tier2", "tier-balanced"),
+        ("tier-powerful", "tier-powerful"),
+    ],
+)
+@pytest.mark.parametrize("stream", [False, True])
+async def test_a_picker_or_legacy_id_reaches_the_Router_by_its_slate_name(
+    monkeypatch, spy, sent, routed, stream
+):
+    """🔴 Production, 2026-09-24: `tier3-opus` from the chat picker reached the
+    Router as itself and was refused `tier_unknown`. Both hops share one body
+    builder, so both are checked."""
+    _configure(monkeypatch, flag="1")
+    body = dict(TIER_BODY, model=sent)
+    outbound = v1_compat._router_outbound(body)
+    assert outbound["model"] == routed
+    assert body["model"] == sent, "the caller's body must not be mutated"
+    if not stream:
+        await v1_compat._handle_chat_completions(FakeRequest(body))
+        assert spy.router_calls[0][0]["model"] == routed
+
+
+def test_both_hops_build_their_body_in_one_place():
+    src = pathlib.Path(v1_compat.__file__).read_text(encoding="utf-8")
+    assert src.count("_router_outbound(body)") == 2
+
+
 async def test_the_attribution_headers_are_forwarded(monkeypatch, spy):
     """§6B.5 hazard 4. An unattributed `usage_event` can never become a
     per-member cap (CP-7) or a usage statement (SC-4f)."""

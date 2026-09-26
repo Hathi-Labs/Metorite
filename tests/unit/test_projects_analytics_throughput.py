@@ -52,12 +52,12 @@ from tests.unit._tenant_ladder import apply_ladder
 
 _TENANT_URL = os.environ.get("TENANT_LADDER_DATABASE_URL", "").strip()
 
-pytestmark = pytest.mark.skipif(
-    not _TENANT_URL,
-    reason=(
-        "TENANT_LADDER_DATABASE_URL unset — R8 requires a REAL Postgres. A "
-        "skip here is not a pass; CI must set it."
-    ),
+#: ⚠️ The skip lives on the ``db`` fixture, not on the module (WS-27bm S10).
+#: The scope pins at the end of this file are hermetic, and a module-wide
+#: skip would hide them on every run without a database.
+_NO_DB = (
+    "TENANT_LADDER_DATABASE_URL unset — R8 requires a REAL Postgres. A "
+    "skip here is not a pass; CI must set it."
 )
 
 #: The Monday that opens the current week, in UTC, as a `timestamptz`.
@@ -79,6 +79,8 @@ def _at(*, weeks_ago: int = 0, hours: int = 1) -> str:
 
 @pytest.fixture(scope="module")
 def db():
+    if not _TENANT_URL:
+        pytest.skip(_NO_DB)
     eng = create_engine(_TENANT_URL, future=True)
     with eng.begin() as conn:
         apply_ladder(conn)
@@ -509,3 +511,85 @@ class TestArchivedWorkStillCounts:
         series, summary = _run(db, scope)
         assert summary.completed == 1
         assert _week(series, 2).completed == 1
+
+
+class TestTheRoutePinsItsScope:
+    """WS-27bm S10 (``projects_ai_chat.md`` §16.2 rule 10). Hermetic.
+
+    The R8 claims above run a hand-built scope, so they cannot see which
+    predicate the ROUTE hands to its two queries. The chat's dataset read
+    (S7e) answers over ``history_where`` so its cycle times describe the
+    tasks Throughput describes. If ``throughput`` stopped passing that
+    predicate, the two reads would drift and every test above would pass.
+    """
+
+    def test_throughput_passes_history_where_into_both_queries(self, monkeypatch):
+        import asyncio
+        from contextlib import asynccontextmanager
+        from types import SimpleNamespace
+
+        from gateway.routes.projects import analytics
+
+        seen: dict[str, list[str]] = {"weekly": [], "cycle": [], "history": []}
+
+        @asynccontextmanager
+        async def _session(*_a, **_k):
+            class _Db:
+                async def execute(self, _sql, _params):
+                    return SimpleNamespace(
+                        fetchall=lambda: [],
+                        one=lambda: SimpleNamespace(
+                            completed=0, cancelled=0, measured=0, no_start=0,
+                            median_hours=None, p90_hours=None,
+                        ),
+                    )
+            yield _Db()
+
+        async def _vis(_db, _user):
+            return SimpleNamespace(params={"vis_org": "o"}, unrestricted=True)
+
+        async def _scope(_db, _vis, _pid, _sub):
+            return "SCOPE"
+
+        def _history(scope_sql, vis):
+            seen["history"].append(scope_sql)
+            return f"HISTORY({scope_sql})"
+
+        def _weekly(where):
+            seen["weekly"].append(where)
+            return "SELECT 1"
+
+        def _cycle(where, **_k):
+            seen["cycle"].append(where)
+            return "SELECT 1"
+
+        monkeypatch.setattr(analytics, "_tenant_session", _session)
+        monkeypatch.setattr(analytics, "resolve_visibility", _vis)
+        monkeypatch.setattr(analytics, "scope_clause", _scope)
+        monkeypatch.setattr(analytics, "history_where", _history)
+        monkeypatch.setattr(analytics, "weekly_sql", _weekly)
+        monkeypatch.setattr(analytics, "cycle_summary_sql", _cycle)
+
+        out = asyncio.run(analytics.throughput(
+            project_id=None, include_subtree=True, weeks=4, user=SimpleNamespace(),
+        ))
+        assert seen == {
+            "weekly": ["HISTORY(SCOPE)"],
+            "cycle": ["HISTORY(SCOPE)"],
+            "history": ["SCOPE"],
+        }
+        assert out["summary"]["completed"] == 0
+
+    def test_history_where_is_the_scope_the_grants_and_no_triage(self):
+        """The exact predicate. No archive arm and no status arm, on purpose."""
+        from types import SimpleNamespace
+
+        from gateway.routes.projects.analytics import history_where
+
+        vis = SimpleNamespace(unrestricted=True)
+        assert history_where("t.project_id = CAST(:pid AS uuid)", vis) == (
+            "t.project_id = CAST(:pid AS uuid)"
+            " AND (t.organization_id = CAST(:vis_org AS uuid))"
+            " AND (NOT EXISTS (SELECT 1 FROM pm_task_statuses s_triage"
+            " WHERE s_triage.id = t.status_id AND s_triage.category = 'triage'))"
+        )

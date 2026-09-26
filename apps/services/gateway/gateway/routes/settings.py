@@ -567,6 +567,10 @@ class LLMConfig(BaseModel):
     tiers: list[TierInfo]
     providers: list[ProviderInfo]
     litellm_ui_url: str = ""  # no separate proxy — empty string
+    #: True while the Console Router serves chat. The chat picker reads it,
+    #: because the Router serves TIERS and refuses a bare model id (D32.7),
+    #: so a raw model in the picker is a guaranteed 400.
+    router_serving: bool = False
 
 
 class TierUpdateRequest(BaseModel):
@@ -628,7 +632,22 @@ async def get_llm_config(_user: UserContext = Depends(get_current_user)) -> LLMC
         tiers=tiers,
         providers=providers,
         litellm_ui_url="",  # no separate proxy
+        router_serving=_router_serving(),
     )
+
+
+def _router_serving() -> bool:
+    """The flag AND the wiring, read through `acb_llm.routed.routing_is_on`.
+
+    ⚠️ Not `console_resolve` directly: that module allocates seats, and
+    `test_console_dependency_boundary.py` fences its callers to a fixed list.
+    """
+    try:
+        from acb_llm.routed import routing_is_on
+
+        return routing_is_on()
+    except Exception:  # a settings read must never break the page
+        return False
 
 
 # ---------------------------------------------------------------------------

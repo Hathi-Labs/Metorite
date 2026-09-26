@@ -667,15 +667,40 @@ def _stopped(
         )
     else:
         out.append(f"stopped: {what} was refused. {exc}")
-    out.append(
-        f"not tried: {tasks_left} task{'s' if tasks_left != 1 else ''} · "
-        f"{owners[0]} of {owners[1]} owners assigned · {links[0]} of {links[1]} links written"
-    )
+    out.append(_not_tried(tasks_left, owners, links))
     out.append(
         "Nothing was archived. Archive the project to remove what exists, "
         "or finish the plan by hand."
     )
     return "\n".join(out)
+
+
+def _not_tried(tasks_left: int, owners: tuple[int, int], links: tuple[int, int]) -> str:
+    return (
+        f"not tried: {tasks_left} task{'s' if tasks_left != 1 else ''} · "
+        f"{owners[0]} of {owners[1]} owners assigned · {links[0]} of {links[1]} links written"
+    )
+
+
+def _project_stopped(label: str, exc: Exception, *, tasks: int, links: int) -> str:
+    """The receipt when the FIRST write, the project node, fails (WS-27bm S10,
+    §16.2 rule 9). No other write runs, so every task, owner and link is not
+    tried. A refusal made nothing. A broken connection may have made the
+    project, so the member reads the tree before a retry."""
+    left = _not_tried(tasks, (0, tasks), (0, links))
+    if isinstance(exc, httpx.TransportError):
+        return "\n".join([
+            f"stopped: the project {data(label)} lost its connection to the gateway "
+            f"({type(exc).__name__}). That write may or may not have landed.",
+            left,
+            "Read the project tree before you try again, or the retry can make "
+            "a second project.",
+        ])
+    return "\n".join([
+        f"stopped: the project {data(label)} was refused. {exc}",
+        left,
+        "Nothing was created.",
+    ])
 
 
 async def _soft_owners(rows: list[dict[str, Any]]) -> tuple[dict[str, str], dict[str, str]]:
@@ -851,13 +876,17 @@ async def _write_plan(
     titles: dict[str, str],
 ) -> str:
     """Rule 8's order: the project node, the tasks with their start dates,
-    the owners, then the links. At the first refusal it stops (rule 9)."""
+    the owners, then the links. At the first refusal it stops (rule 9), and
+    the project node is a write like any other (S10)."""
     payload: dict[str, Any] = {"name": label, "kind": "project"}
     if parent_id:
         payload["parent_project_id"] = parent_id
     if about:
         payload["description"] = about
-    node = await post("/projects/nodes", payload)
+    try:
+        node = await post("/projects/nodes", payload)
+    except _WRITE_FAILED as exc:
+        return _project_stopped(label, exc, tasks=len(final), links=len(links))
     pid = uuid_of(str(node.get("id")), "project_id")
     out = [f"Created project {data(node.get('name'))} under {parent_label}.\n  project_id: {pid}"]
     created: list[tuple[dict[str, Any], dict[str, Any]]] = []
