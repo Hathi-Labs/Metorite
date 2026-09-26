@@ -231,13 +231,17 @@ class TestInstallThenBuildThenRestart:
         assert all(ln.rstrip().endswith("|| exit 1") for ln in gates)
 
     def test_the_build_is_bounded(self) -> None:
-        lines = _executable_lines(_APPLY)
-        assert any("timeout -k" in ln and "npm run build" in ln for ln in lines)
-        assert not any(
-            ln.strip().startswith("NODE_OPTIONS=") and "npm run build" in ln
-            and "timeout" not in ln
-            for ln in lines
-        ), "an unbounded build is how the 41-minute orphan happened"
+        body = _APPLY.read_text(encoding="utf-8")
+        runner = body[body.index("run_tethered_build() {"):]
+        runner = runner[: runner.index("\n}\n")]
+        assert 'timeout -k 60 "$NEXT_BUILD_TIMEOUT_S" "$@" &' in runner, (
+            "an unbounded build is how the 41-minute orphan happened"
+        )
+        fn = body[body.index("build_next_staged() {"):]
+        fn = fn[: fn.index("\n}\n")]
+        code = "\n".join(ln for ln in fn.splitlines() if not ln.strip().startswith("#"))
+        assert "run_tethered_build env NEXT_DIST_DIR=" in code
+        assert code.count("npm run build") == 1, "one build, and it runs through the runner"
 
     def test_the_reclaim_measures_node_modules(self) -> None:
         body = _APPLY.read_text(encoding="utf-8")
@@ -257,11 +261,54 @@ class TestNoOrphanBuild:
         lock = _first(lines, 'deploy_lock_acquire "${DEPLOY_LOCK_MODE:-wait}"')
         assert lock < tether < fetch
 
+    def test_the_session_is_found_BEFORE_the_lock_wait(self) -> None:
+        """A round cancelled during the wait leaves the apply under init, and
+        a search after the wait then finds no sshd and starts no watcher."""
+        lines = _executable_lines(_APPLY)
+        anchor = _first(lines, 'DEPLOY_SESSION_ANCHOR="$(session_anchor)"')
+        lock = _first(lines, 'deploy_lock_acquire "${DEPLOY_LOCK_MODE:-wait}"')
+        assert anchor < lock
+
+    def test_the_watcher_kills_only_the_build_group(self) -> None:
+        """P2 of the PR #484 review: a kill of the WHOLE apply can stop a
+        migration halfway or leave no `.next`. So no kill names the apply."""
+        body = _APPLY.read_text(encoding="utf-8")
+        fn = body[body.index("tether_to_session() {"):]
+        fn = fn[: fn.index("\n}\n")]
+        kills = [ln.strip() for ln in fn.splitlines() if ln.strip().startswith("kill ")]
+        assert kills, "the watcher kills nothing"
+        assert all('-- "-$bpg"' in k for k in kills), kills
+        assert "apply_pid" not in " ".join(kills)
+
     def test_the_watcher_never_holds_the_lock(self) -> None:
         body = _APPLY.read_text(encoding="utf-8")
         fn = body[body.index("tether_to_session() {"):]
         fn = fn[: fn.index("\n}\n")]
         assert "exec 8<&-" in fn
+
+
+class TestReapplyTheSameSha:
+    """A skip is right for a second path. It is wrong when an operator edits
+    `.env` and asks for the same sha again (PR #484 review, P3)."""
+
+    _WF = _ROOT / ".github/workflows/deploy.yml"
+
+    def test_a_CI_rerun_or_the_force_input_forces_the_apply(self) -> None:
+        wf = self._WF.read_text(encoding="utf-8")
+        assert "DEPLOY_FORCE: ${{ (github.run_attempt > 1 || inputs.force) && '1' || '0' }}" in wf
+        assert "\"DEPLOY_FORCE=${DEPLOY_FORCE:-0} bash -s\" < /tmp/deploy_remote.sh" in wf
+        assert "      force:\n" in wf, "the workflow_dispatch input is missing"
+
+    def test_MODE_from_the_environment_is_honoured(self) -> None:
+        """The give-up message said `sudo MODE=force bash vps_pull.sh`, and a
+        hard `MODE="apply"` made that advice a no-op."""
+        lines = _executable_lines(_PULL)
+        assert any(ln.strip() == 'MODE="${MODE:-apply}"' for ln in lines)
+        assert not any(ln.strip() == 'MODE="apply"' for ln in lines)
+        body = _PULL.read_text(encoding="utf-8")
+        drop = body[body.index("exec runuser"):]
+        drop = drop[: drop.index('bash "$0" "$@"')]
+        assert 'MODE="$MODE"' in drop, "the root drop loses MODE"
 
 
 # ── Behavioural: Linux only ──────────────────────────────────────────────────
@@ -526,59 +573,144 @@ class TestTheSkipNeedsACompleteApply:
         assert self._skip(tmp_path, app, sha)
 
 
+def _tethered(tmp: pathlib.Path, helpers: pathlib.Path, session_pid: int, body: str,
+              **extra: str) -> subprocess.Popen:
+    """A stand-in apply: the real helpers, a watcher on `session_pid`, then
+    `body`. It prints to files under `tmp`, so the test reads what ran."""
+    return subprocess.Popen(
+        ["bash", "-c", f'set -e; . "{helpers}"; DEPLOY_SESSION_ANCHOR={session_pid}; '
+                       f"tether_to_session; {body}"],
+        env=_env(
+            tmp,
+            DEPLOY_TETHER="1",
+            DEPLOY_TETHER_POLL="0.2",
+            DEPLOY_TETHER_GRACE="1",
+            **extra,
+        ),
+    )
+
+
+def _stop(*procs: subprocess.Popen) -> None:
+    for p in procs:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+
+
 @linux_only
 class TestAnEndedSessionEndsTheBuild:
     def test_the_build_dies_when_the_session_does(self, tmp_path: pathlib.Path) -> None:
         """A stand-in for sshd, an apply tethered to it, and a long "build"
-        under the apply. Kill the stand-in: the build and the apply must go.
-        This is the 41-minute orphan of 2026-09-25, in miniature."""
+        that starts a grandchild of its own. Kill the stand-in: the build AND
+        the grandchild must go, the apply must fail, and nothing may swap.
+        This is the 41-minute orphan of 2026-09-25, in miniature.
+
+        The build and its child IGNORE TERM, and the child inherits that. So
+        only the KILL can stop them, and it must reach the same GROUP that
+        got the TERM (review item 3)."""
         session = subprocess.Popen(["sleep", "300"])
         helpers = _helpers(tmp_path, tmp_path)
-        child_file = tmp_path / "build.pid"
-        apply = subprocess.Popen(
-            [
-                "bash", "-c",
-                f'. "{helpers}"; tether_to_session; '
-                f'sleep 300 & echo $! > "{child_file}"; wait',
-            ],
-            env=_env(
-                tmp_path,
-                DEPLOY_TETHER="1",
-                DEPLOY_TETHER_ANCHOR=str(session.pid),
-                DEPLOY_TETHER_POLL="0.2",
-                DEPLOY_TETHER_GRACE="1",
-            ),
+        pids = tmp_path / "build.pids"
+        swapped = tmp_path / "swapped"
+        build = f'bash -c \'trap "" TERM; sleep 300 & echo "$$ $!" > "{pids}"; wait\''
+        apply = _tethered(
+            tmp_path, helpers, session.pid,
+            f'run_tethered_build {build} || exit 7; : > "{swapped}"',
         )
         try:
-            assert _wait_for(lambda: child_file.exists() and child_file.read_text().strip())
-            build = int(child_file.read_text().strip())
-            assert _alive(build)
+            assert _wait_for(lambda: pids.exists() and len(pids.read_text().split()) == 2)
+            builder, grandchild = (int(x) for x in pids.read_text().split())
+            assert _alive(builder) and _alive(grandchild)
             session.kill()
             session.wait()
-            assert _wait_for(lambda: apply.poll() is not None, 15), "the apply outlived its session"
-            assert _wait_for(lambda: not _alive(build), 15), "the build outlived its session"
+            assert _wait_for(lambda: apply.poll() is not None, 15), "the apply outlived its build"
+            assert apply.returncode == 7, "a killed build must fail the apply"
+            assert not swapped.exists(), "a killed build must not swap"
+            assert _wait_for(lambda: not _alive(builder), 15), "the build outlived its session"
+            assert _wait_for(lambda: not _alive(grandchild), 15), (
+                "the build's child outlived its session. Kill the GROUP, and "
+                "KILL the same group that got TERM"
+            )
         finally:
-            for p in (session, apply):
-                if p.poll() is None:
-                    p.kill()
-                    p.wait()
+            _stop(session, apply)
+
+    def test_a_session_end_during_a_migration_lets_the_migration_finish(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """P2 of the PR #484 review. The session ends while a stand-in
+        migration runs. The migration must finish and write its ledger row,
+        and the next step (a stand-in for the gateway restart) must run too.
+        The build that follows must not start, and the apply must fail."""
+        session = subprocess.Popen(["sleep", "300"])
+        helpers = _helpers(tmp_path, tmp_path)
+        started = tmp_path / "migration.started"
+        ledger = tmp_path / "ledger"
+        built = tmp_path / "built"
+        restarted = tmp_path / "restarted"
+        apply = _tethered(
+            tmp_path, helpers, session.pid,
+            f': > "{started}"; sleep 3; echo 999 > "{ledger}"; : > "{restarted}"; '
+            f'run_tethered_build touch "{built}" || exit 7; echo APPLIED',
+        )
+        try:
+            assert _wait_for(started.exists)
+            session.kill()
+            session.wait()
+            assert _wait_for(lambda: apply.poll() is not None, 20)
+            assert ledger.exists() and ledger.read_text().strip() == "999", (
+                "the watcher interrupted the migration"
+            )
+            assert restarted.exists(), "the step after the migration did not run"
+            assert not built.exists(), "a build started after the session ended"
+            assert apply.returncode == 7
+        finally:
+            _stop(session, apply)
 
     def test_a_live_session_leaves_the_apply_alone(self, tmp_path: pathlib.Path) -> None:
         session = subprocess.Popen(["sleep", "300"])
         helpers = _helpers(tmp_path, tmp_path)
         try:
             res = subprocess.run(
-                ["bash", "-c", f'. "{helpers}"; tether_to_session; sleep 1; echo DONE'],
+                ["bash", "-c",
+                 f'. "{helpers}"; DEPLOY_SESSION_ANCHOR={session.pid}; tether_to_session; '
+                 f'run_tethered_build sleep 1 && echo DONE'],
                 env=_env(
                     tmp_path,
                     DEPLOY_TETHER="1",
-                    DEPLOY_TETHER_ANCHOR=str(session.pid),
                     DEPLOY_TETHER_POLL="0.2",
                 ),
                 capture_output=True, text=True, timeout=30,
             )
-            assert "DONE" in res.stdout
+            assert "DONE" in res.stdout, res.stdout + res.stderr
             assert "tethered to deploy session" in res.stdout
+            assert not (tmp_path / "acb-deploy.lock.build").exists(), "the build pid file is left"
         finally:
+            _stop(session)
+
+    def test_a_session_that_ends_during_the_lock_wait_applies_nothing(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        """The REAL vps_apply.sh waits for the lock. Its session ends during
+        the wait, then the lock frees. The apply must stop before the fetch."""
+        app = tmp_path / "app"
+        app.mkdir()
+        session = subprocess.Popen(["sleep", "300"])
+        holder = _hold_lock(tmp_path, _helpers(tmp_path, app), seconds=3)
+        apply = subprocess.Popen(
+            ["bash", str(_APPLY)],
+            env=_env(
+                tmp_path, APP_DIR=str(app), DEPLOY_LOCK_WAIT="30",
+                DEPLOY_TETHER="1", DEPLOY_TETHER_ANCHOR=str(session.pid),
+            ),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        try:
+            time.sleep(1)
             session.kill()
             session.wait()
+            out, _ = apply.communicate(timeout=30)
+        finally:
+            _stop(session, holder, apply)
+        assert apply.returncode == 1, out
+        assert "ended while this apply waited" in out, out
+        assert "Pulling latest" not in out, "it went past the lock"

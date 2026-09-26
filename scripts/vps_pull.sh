@@ -40,12 +40,20 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/opt/acb/app}"
 RELEASE_REF="${RELEASE_REF:-release}"
 STATE_DIR="${STATE_DIR:-/var/lib/acb}"
-MODE="apply"
+# MODE comes from the argument, or else from the environment. The give-up
+# message below has told operators to run `sudo MODE=force bash vps_pull.sh`
+# since WS-25, and until 2026-09-26 this line overwrote MODE with "apply", so
+# that advice never worked.
+MODE="${MODE:-apply}"
 case "${1:-}" in
   --force) MODE="force" ;;
   --check) MODE="check" ;;
   "")      ;;
   *)       echo "unknown argument: $1" >&2; exit 2 ;;
+esac
+case "$MODE" in
+  apply|force|check) ;;
+  *) echo "unknown MODE: $MODE (expected apply, force or check)" >&2; exit 2 ;;
 esac
 
 say()  { printf "\n==> %s\n" "$*"; }
@@ -70,7 +78,7 @@ if [ "$(id -u)" = "0" ]; then
     echo "running as root — running again as $OWNER, the owner of $APP_DIR (H-89)"
     exec runuser -u "$OWNER" -- env \
       HOME="$OWNER_HOME" PATH="$OWNER_HOME/.local/bin:$PATH" \
-      APP_DIR="$APP_DIR" RELEASE_REF="$RELEASE_REF" STATE_DIR="$STATE_DIR" \
+      APP_DIR="$APP_DIR" RELEASE_REF="$RELEASE_REF" STATE_DIR="$STATE_DIR" MODE="$MODE" \
       MAX_FAILS="${MAX_FAILS:-3}" \
       bash "$0" "$@"
   fi
@@ -85,6 +93,11 @@ fi
 # tick is the retry.
 #
 # ⚠️ The path must match `vps_apply.sh`'s helper block exactly.
+#
+# ⚠️ `/tmp/acb-vps-pull.lock` is the OLD lock, and nothing takes it now. It
+# guarded the pull path against itself only, and the CI path never took it.
+# The file can stay on the box. Do not delete it from here, because a pull
+# that runs the old copy of this script still opens it.
 # `test_deploy_serialize.py` runs both against one lock file and fails if they
 # do not exclude each other.
 DEPLOY_LOCK="${DEPLOY_LOCK:-$(dirname "$APP_DIR")/acb-deploy.lock}"
@@ -201,7 +214,7 @@ MAX_FAILS="${MAX_FAILS:-3}"
 if [ "$FAIL_SHA" = "$TARGET" ] && [ "$FAIL_N" -ge "$MAX_FAILS" ] && [ "$MODE" != "force" ]; then
   warn "apply has failed $FAIL_N times at ${TARGET:0:12} — NOT retrying"
   warn "each attempt restarts the gateway before it fails, so retrying is an outage"
-  warn "fix the cause, then: sudo MODE=force bash $0   (or clear $STATE_DIR/last-fail-*)"
+  warn "fix the cause, then: sudo bash $0 --force   (or sudo MODE=force bash $0, or clear $STATE_DIR/last-fail-*)"
   # Non-zero so `systemctl --failed` keeps showing it. A box that has given up
   # must not look healthy — that is the failure WS-25 exists to end.
   exit 11

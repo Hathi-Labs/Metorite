@@ -3370,6 +3370,21 @@ line — never reclaim a number by deleting the other entry.
   verification, 2026-09-24
 - **Added:** 2026-09-24 · the WS-27bn R2b session
 
+### H-187 · Make the apply reset to the ref that the caller names, not to origin/main · [AGENT]
+- **Check:** `grep -n "git fetch origin main\|git reset --hard origin/main" scripts/vps_apply.sh`
+  → a hit means this is still open.
+- **Why:** `vps_pull.sh` applies the `release` ref and passes
+  `DEPLOY_REF=<release sha>`. `vps_apply.sh` ignores `DEPLOY_REF` and resets
+  to `origin/main`. So the pull path applies the tip of main, and CI gating
+  on `release` does not hold. A commit that failed CI can reach the box
+  through the pull path when it is the tip of main.
+  - The fix must keep the skip check on the sha that the apply resets to.
+  - It must also keep the CI path on main, because CI passes no DEPLOY_REF.
+- **Authority:** `specs/deploy_delivery_path.md` · `scripts/vps_pull.sh`
+  header, "Why it polls `release` and NOT `main`"
+- **Added:** 2026-09-26 · the deploy-serialize review of PR #484. Kept out of
+  that PR on purpose, because it changes what the pull path deploys.
+
 # DONE — deleted, not archived
 
 Nothing lives here. When an entry's Check passes, **delete the block**. Git

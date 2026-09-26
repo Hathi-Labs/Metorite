@@ -456,16 +456,25 @@ class TestTheBuildTreeIsReclaimed:
             "nothing reclaims a root-owned `.next` before building into it")
 
     def test_every_staged_build_reclaims_FIRST(self):
-        """The repair is worthless after the build has already failed."""
+        """The repair is worthless after the build has already failed. It runs
+        ONCE per app, in `npm_install_here`, before the install. Each staged
+        build must follow an install of the same app (PR #484 review, P3)."""
         body = _APPLY.read_text(encoding="utf-8")
+        inst = body[body.index("npm_install_here() {"):]
+        inst = inst[: inst.index("\n}\n")]
+        assert "reclaim_build_tree" in inst, "the install does not reclaim the tree"
+        assert inst.index("reclaim_build_tree") < inst.index("npm ci"), (
+            "the reclaim must run BEFORE the install writes into the tree")
         fn = body[body.index("build_next_staged() {"):]
         fn = fn[: fn.index("\n}\n")]
-        assert "reclaim_build_tree" in fn, (
-            "`build_next_staged` does not reclaim the tree")
-        # Before the first drop_dir, or a root-owned staging dir defeats it.
-        assert fn.index("reclaim_build_tree") < fn.index("drop_dir"), (
-            "the reclaim must run BEFORE anything tries to remove or write "
-            "the build directories")
+        assert "reclaim_build_tree" not in fn, "a second scan per app costs ~3 s"
+        lines = [ln.strip() for ln in body.splitlines()
+                 if ln.strip() and not ln.strip().startswith("#")]
+        calls = [i for i, ln in enumerate(lines) if ln.startswith("build_next_staged ")]
+        assert calls, "no staged build"
+        for i in calls:
+            assert lines[i - 1].startswith("npm_install_here "), (
+                f"`{lines[i]}` does not follow an install, so nothing reclaimed its tree")
 
     def test_it_covers_all_three_build_directories(self):
         body = _APPLY.read_text(encoding="utf-8")

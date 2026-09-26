@@ -76,6 +76,7 @@ DEPLOY_LOCK="${DEPLOY_LOCK:-$(dirname "$APP_DIR")/acb-deploy.lock}"
 DEPLOY_MARKER="${DEPLOY_MARKER:-$(dirname "$APP_DIR")/acb-deploy.applied}"
 DEPLOY_LOCK_WAIT="${DEPLOY_LOCK_WAIT:-900}"
 NEXT_BUILD_TIMEOUT_S="${NEXT_BUILD_TIMEOUT_S:-1200}"
+DEPLOY_BUILD_PIDFILE="${DEPLOY_BUILD_PIDFILE:-$DEPLOY_LOCK.build}"
 
 # Give a file this script created to the checkout's owner. A root-run apply
 # must not leave a lock or a marker the app user cannot replace.
@@ -159,21 +160,6 @@ require_next_bin() {
   return 1
 }
 
-# Every pid below $1, from one `ps` snapshot.
-descendants_of() {
-  ps -eo pid=,ppid= 2>/dev/null | awk -v root="$1" '
-    { parent[$1] = $2 }
-    END {
-      for (p in parent) {
-        q = p; n = 0
-        while ((q in parent) && q > 1 && n++ < 64) {
-          q = parent[q]
-          if (q == root) { print p; break }
-        }
-      }
-    }'
-}
-
 # The nearest sshd ancestor: the session this apply lives in, if any.
 session_anchor() {
   if [ -n "${DEPLOY_TETHER_ANCHOR:-}" ]; then echo "$DEPLOY_TETHER_ANCHOR"; return 0; fi
@@ -187,19 +173,38 @@ session_anchor() {
   return 0
 }
 
+# True when this apply had a session and that session is gone.
+deploy_session_ended() {
+  [ -n "${DEPLOY_SESSION_ANCHOR:-}" ] && [ ! -d "/proc/$DEPLOY_SESSION_ANCHOR" ]
+}
+
 # 🔴 **AN ENDED SSH SESSION DOES NOT END THE APPLY.** `ssh 'bash -s'` has no
 # tty, so nothing sends SIGHUP when the runner's `timeout` kills ssh or a round
 # is cancelled. Worse, the rest of this script is already in the pipe buffer,
 # so bash finishes the build and then SWAPS AND RESTARTS with nobody watching.
 # Measured 2026-09-25: `next build` ran for 41 minutes after its round ended.
 #
-# So a CI apply watches its own sshd session. When the session goes, the
-# watcher stops this shell and every process under it, TERM and then KILL.
+# 🔴 **THE WATCHER KILLS THE BUILD, AND ONLY THE BUILD.** The first version
+# killed the whole apply, and a review showed that was worse than the orphan.
+# 197 of the 219 migration files run in autocommit. A kill in the middle of one
+# leaves half a file committed and no ledger row, and each replay then fails.
+# A kill between the two `mv` calls of the swap leaves no `.next` at all. So
+# migrations, the backup, the unit sync, the swap and the restarts always run
+# to their end.
+#
+# The shape: `run_tethered_build` runs the build under `timeout`, which puts
+# the build in its OWN process group, and writes that group id to
+# DEPLOY_BUILD_PIDFILE. When the session goes, the watcher sends TERM and then
+# KILL to that SAME group, so a child that lost its parent still dies.
+# `run_tethered_build` also refuses to START a build after the session has
+# gone. The apply then stops at the build with a non-zero exit, and the running
+# `.next` keeps serving, because a failed build never swaps.
+#
 # The pull path runs under systemd with no sshd ancestor, and systemd already
 # kills its whole cgroup on a timeout, so it gets no watcher.
 tether_to_session() {
   [ "${DEPLOY_TETHER:-1}" = "1" ] || return 0
-  anchor="$(session_anchor)"
+  anchor="${DEPLOY_SESSION_ANCHOR:-}"
   [ -n "$anchor" ] || return 0
   apply_pid="$$"
   (
@@ -208,18 +213,45 @@ tether_to_session() {
       [ -d "/proc/$apply_pid" ] || exit 0
       sleep "${DEPLOY_TETHER_POLL:-5}"
     done
-    [ -d "/proc/$apply_pid" ] || exit 0
-    me="$BASHPID"
-    logger -t acb-deploy "deploy session $anchor ended: stopping apply $apply_pid and its children" 2>/dev/null || true
-    for sig in TERM KILL; do
-      # shellcheck disable=SC2046 # word splitting of the pid list is the point
-      kill -"$sig" $(descendants_of "$apply_pid" | grep -vx "$me") "$apply_pid" 2>/dev/null || true
-      [ "$sig" = "TERM" ] && sleep "${DEPLOY_TETHER_GRACE:-20}"
+    logger -t acb-deploy "deploy session $anchor ended: apply $apply_pid finishes its current step, and its build is stopped" 2>/dev/null || true
+    while [ -d "/proc/$apply_pid" ]; do
+      bpg=""
+      read -r bpg < "$DEPLOY_BUILD_PIDFILE" 2>/dev/null || true
+      if [ -n "$bpg" ] && [ -d "/proc/$bpg" ]; then
+        kill -TERM -- "-$bpg" 2>/dev/null || true
+        sleep "${DEPLOY_TETHER_GRACE:-20}"
+        kill -KILL -- "-$bpg" 2>/dev/null || true
+      fi
+      sleep "${DEPLOY_TETHER_POLL:-5}"
     done
   ) </dev/null >/dev/null 2>&1 &
-  echo "    tethered to deploy session pid $anchor: if it ends, this apply and its build stop too"
+  echo "    tethered to deploy session pid $anchor: if it ends, the build stops and nothing else does"
+}
+
+# Run "$@" as the one step the watcher may kill. GNU `timeout` makes its own
+# process group, so the group id is the pid of `timeout`. `wait` returns the
+# build's status, and a killed build is a failed build.
+run_tethered_build() {
+  if deploy_session_ended; then
+    echo "    !! the deploy session $DEPLOY_SESSION_ANCHOR ended — not starting a build that nobody watches"
+    return 1
+  fi
+  timeout -k 60 "$NEXT_BUILD_TIMEOUT_S" "$@" &
+  tb_pid=$!
+  echo "$tb_pid" > "$DEPLOY_BUILD_PIDFILE" 2>/dev/null || true
+  tb_rc=0
+  wait "$tb_pid" || tb_rc=$?
+  rm -f "$DEPLOY_BUILD_PIDFILE" 2>/dev/null || true
+  return "$tb_rc"
 }
 # <<< deploy-serialize helpers
+
+# Find the session BEFORE the lock wait. A round cancelled during the wait
+# leaves this shell under init, and then no sshd is left to find.
+DEPLOY_SESSION_ANCHOR=""
+if [ "${DEPLOY_TETHER:-1}" = "1" ]; then
+  DEPLOY_SESSION_ANCHOR="$(session_anchor)"
+fi
 
 echo "==> Taking the deploy lock ($DEPLOY_LOCK)"
 if [ "${DEPLOY_LOCK_HELD:-0}" = "1" ]; then
@@ -237,6 +269,11 @@ else
     exit 1
   fi
   echo "    lock taken"
+fi
+if deploy_session_ended; then
+  echo "    !! the deploy session $DEPLOY_SESSION_ANCHOR ended while this apply waited."
+  echo "       This round did NOTHING: no fetch, no migration, no build, no restart."
+  exit 1
 fi
 tether_to_session
 
@@ -1011,9 +1048,11 @@ reclaim_build_tree() {
   echo "    $name: build tree ownership — reclaimed $total path(s) not owned by $user (H-89)"
 }
 
+# ⚠️ No `reclaim_build_tree` here. `npm_install_here` runs it once, before the
+# install, for this same app, and both call sites install first. The scan
+# costs about 3 s per app, so a second scan per build bought nothing.
 build_next_staged() {
   name="$1"
-  reclaim_build_tree "$name"
   drop_dir .next.staging
   drop_dir .next.previous
   # 🔴 **THE PREVIOUS BUILD'S GENERATED TYPES CAN DEADLOCK THE NEXT ONE.**
@@ -1046,10 +1085,13 @@ build_next_staged() {
   # running build keeps serving. `-k 60` escalates to SIGKILL, because a
   # bound that can be ignored is not a bound. The orphan of 2026-09-25 ran
   # for 41 minutes with nothing to stop it.
+  #
+  # `run_tethered_build` adds the `timeout`, and it is the ONLY step that an
+  # ended CI session may kill. See `tether_to_session`.
   build_rc=0
-  NEXT_DIST_DIR=".next.staging" \
+  run_tethered_build env NEXT_DIST_DIR=".next.staging" \
     NODE_OPTIONS="--max-old-space-size=$NEXT_BUILD_HEAP_MB" \
-    timeout -k 60 "$NEXT_BUILD_TIMEOUT_S" npm run build || build_rc=$?
+    npm run build || build_rc=$?
   if [ "$build_rc" != "0" ]; then
     if [ "$build_rc" = "124" ] || [ "$build_rc" = "137" ]; then
       echo "    !! $name: build TIMED OUT after ${NEXT_BUILD_TIMEOUT_S}s and was killed"
