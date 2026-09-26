@@ -43,6 +43,7 @@ import {
   stuckPanelData,
   throughputPanelData,
 } from "../lib/reportPanels";
+import { rebalancePickups, rebalanceTasks } from "../lib/rebalance";
 import {
   CapacityPanel,
   OutlookPanel,
@@ -410,6 +411,28 @@ describe("RenderedBody draws each section as its panel, then its table", () => {
     expect(table).toContain("could take: Weld a jig");
     // Read only: no Assign, no Dismiss, no link.
     for (const word of ["Assign", "Dismiss", "<a "]) expect(panel + table).not.toContain(word);
+  });
+
+  it("rebalance counts the tasks and the pickups in its table title (H-186 item 2)", () => {
+    // One task and three people, so a count of tasks alone reads 1, not 4.
+    const pickup = REBALANCE.pickups![0];
+    const data = {
+      ...REBALANCE,
+      pickups: [
+        pickup,
+        { ...pickup, person_id: "p-bo", name: "Bo", email: "bo@example.test" },
+        { ...pickup, person_id: "p-cy", name: "Cy", email: "cy@example.test" },
+      ],
+    };
+    const tasks = rebalanceTasks(data).length;
+    const pickups = rebalancePickups(data).length;
+    expect([tasks, pickups]).toEqual([1, 3]);
+    const html = draw({ rebalance: data });
+    const count = html.match(
+      /Who could help, as a table<\/span><span[^>]*>· (?:<!-- -->)?(\d+)<\/span>/
+    );
+    expect(count, "the table title carries no count").not.toBeNull();
+    expect(Number(count![1])).toBe(tasks + pickups);
   });
 
   it("rebalance without the HR grant shows the hint and no zero rows", () => {

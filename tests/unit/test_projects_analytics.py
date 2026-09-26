@@ -24,8 +24,10 @@ wrong column name hides. What this file pins is the SHAPE the SQL must keep.
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
+from gateway.routes.projects import analytics
 from gateway.routes.projects.analytics import MAX_NAMED, STALE_BANDS
 
 REPO = Path(__file__).resolve().parents[2]
@@ -176,6 +178,10 @@ class TestScope:
         for body in bodies_with_no_route:
             assert f"async def {body}(" in SOURCE, body
             assert f"await {body}(" not in SOURCE, f"{body} has a route now"
+        # The +1 belongs to hygiene_body, so a stray call elsewhere cannot
+        # borrow it.
+        body = inspect.getsource(analytics.hygiene_body)
+        assert "await scope_clause(" in body
         assert SOURCE.count("await scope_clause(db, vis, project_id") == (
             endpoints + len(bodies_with_no_route)
         )

@@ -74,17 +74,24 @@ def _hygiene_sql() -> str:
     ])
 
 
+def _assert_no_private_overlay(*sources: str) -> None:
+    """The fence. D53: no hygiene SQL may name the private overlay."""
+    for source in sources:
+        assert "pm_task_personal" not in source, source
+
+
 def test_the_sql_never_names_the_private_overlay() -> None:
     """(e), the source half. D53: a private estimate is not the shared one."""
-    assert "pm_task_personal" not in _hygiene_sql()
-    for _, predicate in ana.HYGIENE_KINDS:
-        assert "pm_task_personal" not in predicate
+    _assert_no_private_overlay(
+        _hygiene_sql(), *(predicate for _, predicate in ana.HYGIENE_KINDS)
+    )
 
 
 def test_the_fence_would_fire_on_the_private_overlay() -> None:
-    """The fence's own fence: a predicate that joins the overlay is caught."""
+    """The fence's own fence: the same helper catches a join to the overlay."""
     bad = "t.estimate_mins IS NULL AND NOT EXISTS (SELECT 1 FROM pm_task_personal)"
-    assert "pm_task_personal" in bad
+    with pytest.raises(AssertionError):
+        _assert_no_private_overlay(ana.hygiene_counts_sql("TRUE"), bad)
 
 
 def test_the_stale_interval_goes_through_make_interval() -> None:
@@ -180,7 +187,11 @@ def test_the_hygiene_card_shows_four_counts_and_one_row_per_task() -> None:
     assert table is not None
     assert table["title"] == REPORT_CARD_SECTIONS["hygiene"]["title"] == "Data hygiene"
     assert table["columns"] == ["Missing", "Task", "Project", "Last change"]
-    assert table["rows"] == [{"cells": ["No due date", "Order steel", "Rig", "2026-09-20"]}]
+    # by_kind counts 23 undated tasks and one is sent, so 22 print as a count.
+    assert table["rows"] == [
+        {"cells": ["No due date", "Order steel", "Rig", "2026-09-20"]},
+        {"cells": ["No due date", "…and 22 more", "", ""]},
+    ]
 
 
 def test_the_chat_text_prints_plain_labels_and_no_id() -> None:
@@ -209,6 +220,79 @@ def test_h186_1_a_title_that_starts_like_a_timestamp_prints_whole() -> None:
     assert _card_cell("title", {"title": title}) == title
     row = {"updated_at": "2026-10-01T09:30:00+00:00"}
     assert _card_cell("updated_at", row) == "2026-10-01"
+
+
+def test_only_a_date_key_gets_the_date_cut() -> None:
+    """A title with a real time in it prints whole. A date key prints its date."""
+    from skill_projects.views import _card_cell
+
+    title = "2026-10-01T09:30 kickoff"
+    assert _card_cell("title", {"title": title}) == title
+    assert _card_cell("name", {"name": title}) == title
+    stamp = "2026-10-01T09:30:00+00:00"
+    for key in ("due_at", "updated_at", "due_on", "finish_date"):
+        assert _card_cell(key, {key: stamp}) == "2026-10-01", key
+    row = {"plan": {"planned_finish": stamp}, "velocity": {"finish_date": stamp}}
+    assert _card_cell("plan.planned_finish", row) == "2026-10-01"
+    assert _card_cell("velocity.finish_date", row) == "2026-10-01"
+
+
+def _many_kinds() -> dict[str, Any]:
+    """20 rows of each of two kinds, sent first, then three stale ones.
+
+    The server names up to 20 of each kind, so a cap of 25 over all the
+    rows stopped inside the second kind and hid the stale tasks.
+    """
+    def row(kind: str, n: int) -> dict[str, Any]:
+        return {
+            "kind": kind, "id": f"id-{kind}-{n}", "title": f"{kind} task {n}",
+            "task_number": n, "project_id": "p1", "project_name": "Rig",
+            "due_at": None, "updated_at": "2026-09-01T08:00:00+00:00",
+        }
+
+    rows = [row("no_assignee", n) for n in range(20)]
+    rows += [row("no_due_date", n) for n in range(20)]
+    rows += [row("stale_in_progress", n) for n in range(3)]
+    return {
+        "open_total": 40, "stale_days": 14,
+        "by_kind": {"no_assignee": 22, "no_due_date": 20, "no_estimate": 0,
+                    "stale_in_progress": 3},
+        "rows": rows,
+    }
+
+
+def test_the_card_caps_hygiene_rows_per_kind() -> None:
+    """20 rows of one kind no longer push the stale tasks off the card."""
+    from skill_projects.views import _card_section
+
+    _, table = _card_section("hygiene", _many_kinds())
+    assert table is not None
+    cells = [r["cells"] for r in table["rows"]]
+    tasks = [c[1] for c in cells]
+    assert "stale_in_progress task 0" in tasks
+    assert [c[1] for c in cells if c[0] == "No assignee"] == [
+        *(f"no_assignee task {n}" for n in range(5)), "…and 17 more",
+    ]
+    assert [c[1] for c in cells if c[0] == "No due date"] == [
+        *(f"no_due_date task {n}" for n in range(5)), "…and 15 more",
+    ]
+    assert [c[1] for c in cells if c[0] == "Stale in progress"] == [
+        f"stale_in_progress task {n}" for n in range(3)
+    ]
+    assert all(len(c) == len(table["columns"]) for c in cells)
+
+
+def test_the_chat_text_caps_hygiene_rows_per_kind() -> None:
+    from skill_projects.reads import _report_section
+
+    lines = _report_section("hygiene", _many_kinds())
+    text_out = "\n".join(lines)
+    assert "«stale_in_progress task 0»" in text_out
+    assert "«no_assignee task 4»" in text_out
+    assert "«no_assignee task 5»" not in text_out
+    assert "  (and 17 more: no assignee)" in lines
+    assert "  (and 15 more: no due date)" in lines
+    assert "more rows" not in text_out
 
 
 def _holderless() -> dict[str, Any]:

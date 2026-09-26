@@ -889,6 +889,8 @@ mutation of each of (b), (d), (e) and (f) turns its test red.
 `hygiene_body` has no route yet, so `test_projects_analytics.py` names it
 as the one body with no route. `reportVisuals.test.ts` draws nine panels,
 and `hygiene.test.ts` holds the email words equal to the panel words.
+The chat card and the chat text show five hygiene rows of each kind, then a count of the rest.
+The card cuts a timestamp to its date only in a date column, so a title prints whole.
 
 #### R3d — `pulse` and T1 · waits for spec edits E2 to E4
 

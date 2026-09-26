@@ -35,6 +35,7 @@ from skill_projects.reads import (
     _MISSING,
     _day,
     _dig,
+    _hygiene_groups,
     _report_section,
     _status_names,
     _task_line,
@@ -404,6 +405,15 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
 #: "2026-10-01T-minus checklist" is not a timestamp, and prints whole.
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}")
 
+#: WS-27bn R3c. The endings of a key that holds a date. Only such a key gets
+#: the date cut, so a title "2026-10-01T09:30 kickoff" prints whole.
+_DATE_KEY_ENDINGS = ("_at", "_on", "_date", "_finish")
+
+
+def _is_date_key(key: str) -> bool:
+    """``updated_at``, ``due_on``, ``plan.planned_finish``: yes. ``title``: no."""
+    return key.rsplit(".", 1)[-1].endswith(_DATE_KEY_ENDINGS)
+
 
 def _human(key: str) -> str:
     """A key the table does not name: ``open_tasks`` → ``Open tasks``."""
@@ -431,7 +441,7 @@ def _card_cell(key: str, row: dict[str, Any]) -> str:
         # WS-27bn R3c. A server word such as ``no_due_date`` reads as
         # "No due date".
         return _human(value)
-    if isinstance(value, str) and _TIMESTAMP.match(value):
+    if isinstance(value, str) and _is_date_key(key) and _TIMESTAMP.match(value):
         return value[:10]
     return _plain(value)
 
@@ -474,6 +484,22 @@ def _card_section(name: str, section: dict[str, Any]) -> tuple[list[dict[str, An
             "title": title,
             "columns": ["Note"],
             "rows": [{"cells": [spec["hr_hint"]]}],
+        }
+    if name == "hygiene" and isinstance(rows, list) and rows and columns:
+        # WS-27bn R3c. Five rows of each kind, then a count of the rest. The
+        # rows come sorted by kind, so one cap of 25 hid the later kinds.
+        cells: list[dict[str, Any]] = []
+        for kind, shown, more in _hygiene_groups(section, rows):
+            cells.extend(
+                {"cells": [_card_cell(key, r) for key, _ in columns]} for r in shown
+            )
+            if more > 0:
+                blank = [""] * (len(columns) - 2)
+                cells.append({"cells": [_human(kind), f"…and {more} more", *blank]})
+        return stats, {
+            "title": title,
+            "columns": [label for _, label in columns],
+            "rows": cells,
         }
     if isinstance(rows, list) and rows and isinstance(rows[0], dict) and columns:
         table = {
