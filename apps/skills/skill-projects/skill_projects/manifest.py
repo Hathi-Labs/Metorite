@@ -324,6 +324,9 @@ MANIFEST: tuple[Route, ...] = (
     Route("GET", "/projects/analytics/rebalance", "rebalance", "A"),
     # S7c — conflicts (analytics_conflicts.py). The HR kinds are the route's.
     Route("GET", "/projects/analytics/conflicts", "find_conflicts", "A"),
+    # S7e — on-the-fly analysis (analytics_dataset.py). The server groups;
+    # the per-person values are the route's HR tier.
+    Route("GET", "/projects/analytics/dataset", "task_dataset", "A"),
     # S7d — the plan preview (plan_preview.py). It writes nothing, so it is
     # in READ_ONLY_POSTS. Its class is the tool's: propose_plan is class B.
     Route("POST", "/projects/plan/preview", "propose_plan", "B"),
