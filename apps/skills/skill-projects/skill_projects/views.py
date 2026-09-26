@@ -327,7 +327,7 @@ REPORT_CARD_SECTIONS: dict[str, dict[str, Any]] = {
         "stats": [("median_hours", "Median hours"), ("measured", "Measured")],
     },
     "outlook": {
-        "title": "Outlook",
+        "title": "Forecast",
         "stats": [("plan.slip_days", "Slip days"), ("velocity.remaining_tasks", "Tasks left")],
         "fields": [
             ("velocity.verdict", "Forecast"),
@@ -649,7 +649,7 @@ async def status_report(project_id: str = "") -> str:
     if plan.get("planned_finish"):
         md += [
             "",
-            "## Outlook",
+            "## Forecast",
             "",
             f"Planned finish {_day(plan.get('planned_finish'))} over {plan.get('dated', 0)} dated "
             f"of {plan.get('tasks', 0)} tasks; slip {plan.get('slip_days', 0)} days.",

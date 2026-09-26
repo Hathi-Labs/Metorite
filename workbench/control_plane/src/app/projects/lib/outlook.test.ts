@@ -18,6 +18,7 @@ import {
   shortDate,
   slipRange,
   velocityLine,
+  LEAVE_NOT_COUNTED,
 } from "./outlook";
 
 function report(over: Partial<OutlookReport> = {}): OutlookReport {
@@ -51,9 +52,9 @@ function report(over: Partial<OutlookReport> = {}): OutlookReport {
     },
     people: {
       holding_open_work: 5,
-      with_stated_capacity: 5,
-      with_schedule_only: 0,
+      in_directory: 5,
       hours_per_week: 60,
+      absences_applied: true,
       leaving_within_90d: 0,
     },
     ...over,
@@ -175,6 +176,40 @@ describe("capacityLine", () => {
     expect(line.detail).toContain("every open task");
     expect(line.tone).toBe("good");
   });
+
+  // WS-27bm S11, projects_ai_chat.md §17.3 rule 10 and §17.4 item 10.
+  it("⚠️ says leave is not counted when absences_applied is false", () => {
+    const line = capacityLine(report().capacity, false);
+    expect(line.detail).toContain(
+      "This forecast does not count leave. An admin sees it with leave.",
+    );
+    expect(line.detail).toContain(LEAVE_NOT_COUNTED.trim());
+  });
+
+  it("says nothing about leave when absences_applied is true", () => {
+    const line = capacityLine(report().capacity, true);
+    expect(line.detail).not.toContain("leave");
+  });
+
+  it("says nothing about leave when an older server sends no flag", () => {
+    expect(capacityLine(report().capacity).detail).not.toContain("leave");
+  });
+
+  it("names working hours, never stated hours", () => {
+    expect(capacityLine(report().capacity).detail).toContain("working hours");
+  });
+});
+
+describe("S11 — no string in outlook.ts says stated", () => {
+  it("the hours are the schedule's, so the word is gone", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const src = readFileSync(
+      fileURLToPath(new URL("./outlook.ts", import.meta.url)),
+      "utf-8",
+    );
+    expect(src.toLowerCase()).not.toContain("stated");
+  });
 });
 
 describe("peopleLine", () => {
@@ -189,7 +224,7 @@ describe("peopleLine", () => {
   it("says how much of the team's capacity is actually known", () => {
     const line = peopleLine(
       report({
-        people: { ...report().people, holding_open_work: 7, with_stated_capacity: 2 },
+        people: { ...report().people, holding_open_work: 7, in_directory: 2 },
       })
     );
     expect(line.headline).toBe("7 people");
@@ -208,9 +243,9 @@ describe("peopleLine", () => {
 
   it("stays quiet when nobody's hours are on file", () => {
     const line = peopleLine(
-      report({ people: { ...report().people, with_stated_capacity: 0 } })
+      report({ people: { ...report().people, in_directory: 0 } })
     );
-    expect(line.detail).toContain("capacity is unknown");
+    expect(line.detail).toContain("working hours are unknown");
     expect(line.tone).toBe("quiet");
   });
 });

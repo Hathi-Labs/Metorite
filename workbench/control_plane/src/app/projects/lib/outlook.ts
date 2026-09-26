@@ -197,7 +197,7 @@ export function forecastGap(o: OutlookReport): OutlookLine | null {
     return {
       headline: wk(gap),
       detail:
-        `The plan needs ${wk(b)} of the team's stated hours. The team's actual rate needs ${wk(a)}.` +
+        `The plan needs ${wk(b)} of the team's working hours. The team's actual rate needs ${wk(a)}.` +
         (cover < 80
           ? ` Only ${cover}% of open tasks are sized, so the shorter figure may simply be missing work.`
           : " Either capacity is going elsewhere, or the estimates are optimistic."),
@@ -259,21 +259,40 @@ export function velocityLine(v: VelocityForecast): OutlookLine {
   }
 }
 
-/** The capacity forecast as a sentence. */
-export function capacityLine(c: CapacityForecast): OutlookLine {
+/**
+ * WS-27bm S11 (`projects_ai_chat.md` §17.3 rule 10). A reader without
+ * `admin:members:read` gets hours that ignore leave, so the panel says so.
+ * The sentence is exported so the test pins the exact words.
+ */
+export const LEAVE_NOT_COUNTED =
+  " This forecast does not count leave. An admin sees it with leave.";
+
+/**
+ * The capacity forecast as a sentence.
+ *
+ * `absencesApplied` is `people.absences_applied`. Only an explicit `false`
+ * adds the leave sentence. An older server sends nothing, and the panel
+ * then makes no claim about leave either way.
+ */
+export function capacityLine(
+  c: CapacityForecast,
+  absencesApplied?: boolean,
+): OutlookLine {
   if (!c?.verdict) {
     return { headline: "—", detail: "Not returned.", tone: "quiet" };
   }
   const cover = Math.round((c.estimate_coverage ?? 0) * 100);
+  const leave = absencesApplied === false ? LEAVE_NOT_COUNTED : "";
   switch (c.verdict) {
     case "ok":
       return {
         headline: shortDate(c.finish_date),
         detail:
-          `${c.hours_left}h of estimated work left against ${c.hours_per_week}h a week` +
+          `${c.hours_left}h of estimated work left against ${c.hours_per_week} working hours a week` +
           (cover < 100
             ? `, sized over ${cover}% of open tasks — so the real figure is higher.`
-            : ", across every open task."),
+            : ", across every open task.") +
+          leave,
         tone: cover < 50 ? "warn" : "good",
       };
     case "no_estimates":
@@ -292,8 +311,8 @@ export function capacityLine(c: CapacityForecast): OutlookLine {
         // ⚠️ Assuming forty hours would put a confident date on a number the
         // product never asked anybody for.
         detail:
-          "Nobody holding open work has stated weekly hours, so this cannot" +
-          " be divided into a date.",
+          "Nobody holding open work is in the people directory, so nobody has" +
+          " working hours and this cannot be divided into a date.",
         tone: "quiet",
       };
     case "nothing_left":
@@ -326,13 +345,15 @@ export function peopleLine(o: OutlookReport): OutlookLine {
       tone: "warn",
     };
   }
-  const known = p.with_stated_capacity ?? 0;
+  // WS-27bm S11. Hours come from each holder's working schedule, and only a
+  // holder with a directory row has one.
+  const known = p.in_directory ?? 0;
   const detail =
     known === 0
-      ? "None of them has stated weekly hours, so capacity is unknown."
+      ? "None of them is in the people directory, so their working hours are unknown."
       : known < n
-        ? `${known} of ${n} have stated weekly hours, totalling ${p.hours_per_week}h a week.`
-        : `${p.hours_per_week}h a week between them.`;
+        ? `${known} of ${n} are in the people directory, with ${p.hours_per_week} working hours a week between them.`
+        : `${p.hours_per_week} working hours a week between them.`;
   const risk =
     p.leaving_within_90d > 0
       ? ` ⚠️ ${p.leaving_within_90d} ${p.leaving_within_90d === 1 ? "engagement ends" : "engagements end"} within 90 days.`
