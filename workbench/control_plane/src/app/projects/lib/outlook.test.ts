@@ -340,6 +340,17 @@ describe("forecastGap — the disagreement IS the finding", () => {
     expect(g?.tone).toBe("warn");
   });
 
+  it("rounds the gap to one decimal", () => {
+    // 16.8 − 8.1 printed as "8.700000000000001 weeks" (visual review, 2026-09-26).
+    const g = forecastGap(
+      report({
+        velocity: { ...report().velocity, weeks_remaining: 16.8 },
+        capacity: { ...report().capacity, weeks_remaining: 8.1 },
+      })
+    );
+    expect(g?.headline).toBe("8.7 weeks");
+  });
+
   it("blames thin coverage when that is the likelier cause", () => {
     const g = forecastGap(
       report({

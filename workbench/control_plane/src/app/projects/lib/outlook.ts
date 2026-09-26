@@ -184,7 +184,9 @@ export function forecastGap(o: OutlookReport): OutlookLine | null {
   ) {
     return null;
   }
-  const gap = a - b;
+  // Both figures carry one decimal, so the raw difference can print as
+  // "8.700000000000001 weeks" (visual review, 2026-09-26). Round to one.
+  const gap = Math.round((a - b) * 10) / 10;
   // Under a month apart is two methods agreeing, not a finding.
   if (Math.abs(gap) < 4) return null;
 
