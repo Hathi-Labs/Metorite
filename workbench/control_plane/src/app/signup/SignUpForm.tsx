@@ -1,6 +1,6 @@
 "use client";
 
-import { signIn, useSession } from "next-auth/react";
+import { signIn, signOut, useSession } from "next-auth/react";
 import { useState } from "react";
 
 import type { ConfiguredProvider } from "@/authPosture";
@@ -259,6 +259,22 @@ export default function SignUpForm({
     <div className="flex min-h-screen items-center justify-center bg-background p-10">
       <div className="w-full max-w-md">
         <Stepper email={session?.user?.email ?? null} />
+        {/* 🔴 The only way off a wrong address was to find a sign-out
+            somewhere else. Measured 2026-09-26: the owner was signed in with
+            the address that already owns Hathi Labs LLP, meant to create a
+            second organization with another one, and had no control here to
+            change it. Sign out and land back on this page. */}
+        {session?.user?.email && (
+          <div className="-mt-4 mb-4 text-center">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => signOut({ callbackUrl: "/signup" })}
+            >
+              Use a different email
+            </Button>
+          </div>
+        )}
         <div className="rounded-lg border border-border bg-card p-8">
         <h1 className="text-center text-xl font-semibold">
           Create a new organization

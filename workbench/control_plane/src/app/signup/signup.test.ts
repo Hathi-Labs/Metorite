@@ -266,3 +266,12 @@ describe("the form ASKS how many people, instead of silently meaning one", () =>
     expect(form).toMatch(/const MAX_TEAM_SIZE = 10;/);
   });
 });
+
+describe("a signed-in visitor can change the address", () => {
+  // 🔴 Measured 2026-09-26: the owner was signed in with an address that
+  // already owned an organization, and this page offered no way to change it.
+  it("offers a sign-out that returns to this page", () => {
+    expect(form).toContain("Use a different email");
+    expect(form).toMatch(/signOut\(\{\s*callbackUrl:\s*"\/signup"\s*\}\)/);
+  });
+});
