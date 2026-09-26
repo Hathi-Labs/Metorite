@@ -803,7 +803,7 @@ describe("reportEmail · outlook (WS-27bn R3a)", () => {
         slip_days: 79,
       },
     });
-    expect(got.text).toContain("Outlook: converging (7701 open)");
+    expect(got.text).toContain("Forecast: converging (7701 open)");
     expect(got.text).toContain("Planned finish: 1 Dec 2026 (30 of 31 open tasks carry a due date)");
     expect(got.text).toContain("Forecast finish: 18 Feb 2027");
     expect(got.text).toContain("79 days late");
@@ -821,7 +821,7 @@ describe("reportEmail · outlook (WS-27bn R3a)", () => {
       for (const word of ["undefined", "NaN", "Forecast finish", "days late", "days early"]) {
         expect(got.text, `${verdict}: ${word}`).not.toContain(word);
       }
-      expect(got.text).toContain("Outlook: ");
+      expect(got.text).toContain("Forecast: ");
     }
   });
 });

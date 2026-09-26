@@ -4520,6 +4520,10 @@ database (R8). No metric is computed client-side. Charts use the categorical
 ramp through `src/lib/categorical.ts`, never a raw palette class.
 **Gate:** AGENT-SAFE.
 
+**The Forecast's capacity rules live in `projects_ai_chat.md` §17** (S11,
+2026-09-26). Members see the name "Forecast". The route and the key stay
+`outlook`.
+
 #### 9.12.8 Reporting — analytics, rendered and sent (owner decision, 2026-08-31)
 
 **The owner drew the line: analytics is what you look at, a report is what gets

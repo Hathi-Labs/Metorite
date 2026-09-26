@@ -263,7 +263,10 @@ export interface VelocityForecast {
 }
 
 export interface CapacityForecast {
-  /** Stated weekly hours of the people holding open work here. */
+  /**
+   * Weekly working hours of the people holding open work here, from each
+   * person's schedule over `window` (WS-27bm S11). Never the typed figure.
+   */
   hours_per_week: number;
   hours_left: number;
   /** 0–1. Share of open tasks carrying an estimate. */
@@ -271,12 +274,16 @@ export interface CapacityForecast {
   weeks_remaining: number | null;
   finish_date: string | null;
   verdict: "ok" | "no_estimates" | "no_capacity" | "nothing_left";
+  /** The forward window the weekly rate read. Optional: an older server omits it. */
+  window?: { starts_on: string; ends_on: string; weeks: number };
 }
 
 export interface OutlookReport {
   project_id: string | null;
   scope: "portfolio" | "node";
   weeks: number;
+  /** The reader holds `admin:members:read` (WS-27bm S11). */
+  hr_visible?: boolean;
   /** What WILL happen, at the rate this team actually goes. */
   velocity: VelocityForecast;
   /** What the plan would NEED, if the estimates are right. */
@@ -291,9 +298,12 @@ export interface OutlookReport {
   };
   people: {
     holding_open_work: number;
-    with_stated_capacity: number;
-    with_schedule_only: number;
+    /** How many of the holders have a directory row. Only they add hours. */
+    in_directory: number;
+    /** Equal to `capacity.hours_per_week`, rounded the same way. */
     hours_per_week: number;
+    /** False: leave did not reduce the hours, because the reader is not an admin. */
+    absences_applied: boolean;
     /** An engagement ending inside the window — a risk no velocity can see. */
     leaving_within_90d: number;
   };

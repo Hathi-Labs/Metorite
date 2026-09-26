@@ -9,6 +9,7 @@ import {
   listOrganizations,
   billingSummary,
   provisionOrg,
+  setSeatCount,
   ConsoleUnconfigured,
   exchangeSession,
   type FetchLike,
@@ -129,6 +130,23 @@ describe("provisionOrg forwards to /orgs/provision and relays verbatim", () => {
     const r = await provisionOrg(body, { env: readConsoleEnv(ENV), fetchImpl });
     expect(r.status).toBe(status);
     expect(r.body).toBe(consoleBody);
+  });
+});
+
+describe("setSeatCount forwards to /billing/seats/count (2026-09-26)", () => {
+  const body = { org_slug: "acme", plan_slug: "core", seats: 10, reason: "pilot" };
+
+  it("POSTs the target count, and relays a below-in-use 409 unchanged", async () => {
+    const detail = JSON.stringify({
+      detail: "3 seats are in use, so the count cannot go below 3. Release a seat first.",
+    });
+    const { calls, fetchImpl } = captureFetch({ status: 409, body: detail });
+    const r = await setSeatCount(body, { env: readConsoleEnv(ENV), fetchImpl });
+    expect(calls[0].url).toBe("https://console.internal/billing/seats/count");
+    expect(calls[0].init.method).toBe("POST");
+    expect(calls[0].init.body).toBe(JSON.stringify(body));
+    expect(r.status).toBe(409);
+    expect(r.body).toBe(detail);
   });
 });
 

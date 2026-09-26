@@ -388,7 +388,7 @@ export function reportLayout(
     }
     parts.push({
       head: {
-        lead: `Outlook: ${OUTLOOK_VERDICT[v.verdict ?? ""] ?? "no forecast"}`,
+        lead: `Forecast: ${OUTLOOK_VERDICT[v.verdict ?? ""] ?? "no forecast"}`,
         strong: true,
         extra:
           typeof v.remaining_tasks === "number"

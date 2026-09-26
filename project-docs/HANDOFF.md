@@ -705,8 +705,35 @@ line — never reclaim a number by deleting the other entry.
   connects. If every failure still prints "THE APPLY DID NOT REACH ITS
   FINAL LINE", this is open — that sentence is false when the apply never
   started.
+- 📌 **2026-09-26 — a third shape of the same sentence.** After the
+  deploy-serialize PR, a CI round can connect, wait 900s for the box's
+  deploy lock, and stop with nothing applied. The apply log then says
+  `another deploy holds the lock since <time>, pid <pid>`, and the workflow
+  still prints "THE APPLY DID NOT REACH ITS FINAL LINE". The fix for this
+  entry must separate that case too. The round applied nothing, and the
+  box's own pull held the lock to deliver the release.
 
 ### H-89 · Something on the box writes into the checkout as root · [OWNER]
+- 🟢 **2026-09-26 — the deploy-serialize PR removes the writer. Do not delete
+  this entry until the box proves it.**
+  - **What it changes.** `acb-pull.service` runs as `User=acb`, not root.
+    `vps_pull.sh` also runs itself again as the checkout owner when root
+    starts it. That covers the runbook's `sudo` and the first tick after the
+    merge. Both deploy paths take one `flock` on `/opt/acb/acb-deploy.lock`.
+  - **Measured on the box before the merge.** 50220 root-owned paths sat
+    under `workbench/control_plane/node_modules`. `.next` was `root:root`.
+    `/etc/sudoers.d/acb` grants `acb ALL=(ALL) NOPASSWD:ALL`, so every
+    `sudo systemctl` in the apply works as `acb`.
+  - **What to measure.** `reclaim_build_tree` now covers `node_modules` too,
+    and it prints a total on every build. The first deploy after the merge
+    reclaims the old root files. From the second deploy, every line must
+    read `reclaimed 0 path(s)`:
+
+        sudo journalctl -u acb-pull --since "1 day ago" | grep "build tree ownership"
+
+  - **The decision this entry asked the owner for** is in that PR. It
+    changes a systemd unit on production, and the merge is the owner's
+    decision.
 - **📌 2026-09-21 — MEASURED, and one part of it is still unexplained.**
   H-137's gate turned a deploy red for the first time. The cause was this
   entry. `.next` was `root:root` with 3803 paths under it in the control
@@ -1424,6 +1451,20 @@ line — never reclaim a number by deleting the other entry.
   Any hit means this is still real:
 
       journalctl -u acb-workbench --since "7 days ago" | grep -c "next: not found"
+- 🟢 **2026-09-26 — the deploy-serialize PR closes the race. Keep this entry
+  until seven days of journal read zero.**
+  - **The cause was the OTHER deploy path.** Root's pull ran `npm ci` while
+    the CI path restarted the unit, and the reverse. Run 36166015861 is the
+    build half of the same race: `Cannot find module 'next/server.js'`.
+  - **What it changes.** Both paths take one lock for the whole apply, so no
+    install runs during another path's build or restart. Inside one apply
+    the order is install, build, swap, restart. `require_next_bin` checks
+    `node_modules/.bin/next` before the workbench and Console restarts, and
+    stops the apply when it is missing. The running process keeps serving.
+  - ⚠️ **One gap remains.** `acb-workbench.service` has
+    `Requires=acb-gateway.service`, so the gateway restart also restarts the
+    workbench, BEFORE the install. The apply now prints a warning there when
+    `next` is missing, and it does not stop.
 - 🔴 **MEASURED 2026-09-23, and it turned a deploy RED across all three
   rounds.** PR #406's run 35855523275 ended `WORKBENCH FAILED TO START`. The
   box was healthy the whole time and the next deploy started it fine.
@@ -2637,6 +2678,12 @@ line — never reclaim a number by deleting the other entry.
   sender. **Any member may add any member**, because the send renders once per
   recipient with that recipient's own visibility, so adding somebody can never
   show them more than they could already see.
+- **⚠️ The HR grant is part of "that recipient's own" view** (S11, 2026-09-26).
+  `render_body` passes `can_read_hr_fields(user)` to the Forecast (`outlook`)
+  section, so leave lowers its hours only for an admin reader. The job must
+  render with each recipient as `user`. If it renders once as the author, a
+  non-admin recipient gets the leave-applied rate
+  (`projects_ai_chat.md` §17.3 rule 5).
 - **What exists.** §9.12.8 slices 1 and 2 are merged. A definition saves
   (`pm_reports`, migration 204), renders in the app (the Reports pane), and
   renders to an email body with no colour (`src/lib/reportEmail.ts`).
@@ -2960,6 +3007,15 @@ line — never reclaim a number by deleting the other entry.
   root-owned paths inside `node_modules`. The ownership repair at the top of
   `vps_apply.sh` deliberately prunes that directory. **H-89** owns it. Until it
   closes, some deploys go red — correctly, and visibly.
+- 🟢 **2026-09-26 — part two is in the deploy-serialize PR.** The pull path
+  runs as `acb`, so no root-owned path reaches `node_modules` again, and both
+  paths take one lock. This PR keeps the success gate. The final line
+  `==> Deployment complete` now also prints when the apply SKIPS, because a
+  complete apply of that same sha already finished. The apply writes the
+  marker file `/opt/acb/acb-deploy.applied` only just before that line.
+  ⚠️ A CI round that waits 900s for the lock and does not get it prints
+  `another deploy holds the lock since …` and exits 1 with nothing changed.
+  That round is red on purpose, and the next round then usually skips.
 - **Authority:** `.github/workflows/deploy.yml` · `scripts/vps_apply.sh` · H-89
 - **Added:** 2026-09-20 · credit and usage review session
 
@@ -3209,33 +3265,22 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_ai_chat.md` §5.4, §12 · `org_access_control.md` §8d
 - **Added:** 2026-09-22 · the Projects chat design session. Minted as H-152 to H-154, renumbered the same day because main took H-152 first
 
-### H-169 · The outlook's capacity reads only the typed hours, and ignores absences · [AGENT]
-- **Check:** `grep -n "hours_per_week=float(cap.stated_hours" apps/services/gateway/gateway/routes/projects/analytics.py`
-  → a hit means this is open. The old pattern ended in `)`, and the line
-  now reads `float(cap.stated_hours or 0)`. So the old Check found nothing
-  and read the defect as closed (fixed 2026-09-25, WS-27bm S10).
-- **Why:** `/projects/analytics/outlook` forecasts a finish date from
-  `people.capacity_hours_per_week` only. The docstring names `working_hours`
-  as the fallback, but the code only counts it. Absences are not subtracted.
-  The People dashboard and S7a's capacity route use `work_schedule.py`, so the
-  two surfaces can disagree about one person's hours.
-- **Do:** Compute the outlook's hours through `person_schedule` and
-  `working_hours_between`, as `routes/people/dashboard.py` does. Keep the typed
-  figure as the override that `capacity_disagreement` already reports.
-- **The owner's answer, 2026-09-25.** The Outlook uses each person's working
-  schedule for every viewer. Absences reduce the hours only for a viewer
-  with `admin:members:read`, as on Capacity. A viewer without that grant
-  sees a forecast that ignores leave.
-- **Two rules are still open for the build.** (1) The schedule wins over the
-  typed figure. That is the S7a precedent, so write it down in the spec
-  before the code. (2) Decide how dated hours become a weekly rate. The
-  schedule gives hours between two dates, and the forecast divides by hours
-  each week.
-- **The fix also changes the WS-27bn reports `outlook` section.** That
-  section calls `outlook_body` (`routes/projects/reports.py`), so the report
-  and the Analytics panel change together. Run the reports tests too.
-- **Authority:** `specs/projects_ai_chat.md` §13.8 · `people_center_app.md` §5.7
-- **Added:** 2026-09-23 · the Projects chat team-intelligence design
+### H-188 · The Forecast shows an end-date count to viewers without `admin:members:read` · [OWNER]
+- **Check:** `grep -n '"leaving_within_90d": int(cap.leaving_soon' apps/services/gateway/gateway/routes/projects/analytics.py`
+  → a hit means every viewer still gets the count. It stays open until the
+  owner answers.
+- **Why:** `people.leaving_within_90d` counts the holders whose engagement
+  ends in the next 90 days. End dates are HR tier (`projects_ai_chat.md`
+  §13.2 rule 3). The Forecast shows the count to every viewer, so a member
+  in a small team can learn that a colleague leaves. S11 (§17.5) did not
+  change it, because the owner's 2026-09-25 answer covered hours and leave
+  only.
+- **Do:** Decide one of two answers. (1) The count stays for every viewer,
+  because it names nobody. Then delete this entry. (2) The count shows only
+  with `admin:members:read`. Then gate it on `hr_visible` in `outlook_body`,
+  and add a test.
+- **Authority:** `specs/projects_ai_chat.md` §17.5 · `people_center_app.md` §4.2
+- **Added:** 2026-09-26 · WS-27bm S11
 
 ### H-168 · The gateway refuses the LLM key on `/v1/embeddings` · [AGENT]
 - **Check:** `grep -n '"/v1/embeddings"' apps/services/gateway/gateway/main.py`
@@ -3319,6 +3364,21 @@ line — never reclaim a number by deleting the other entry.
 - **Authority:** `specs/projects_reports.md` §8 R2b · the R2b review and
   verification, 2026-09-24
 - **Added:** 2026-09-24 · the WS-27bn R2b session
+
+### H-187 · Make the apply reset to the ref that the caller names, not to origin/main · [AGENT]
+- **Check:** `grep -n "git fetch origin main\|git reset --hard origin/main" scripts/vps_apply.sh`
+  → a hit means this is still open.
+- **Why:** `vps_pull.sh` applies the `release` ref and passes
+  `DEPLOY_REF=<release sha>`. `vps_apply.sh` ignores `DEPLOY_REF` and resets
+  to `origin/main`. So the pull path applies the tip of main, and CI gating
+  on `release` does not hold. A commit that failed CI can reach the box
+  through the pull path when it is the tip of main.
+  - The fix must keep the skip check on the sha that the apply resets to.
+  - It must also keep the CI path on main, because CI passes no DEPLOY_REF.
+- **Authority:** `specs/deploy_delivery_path.md` · `scripts/vps_pull.sh`
+  header, "Why it polls `release` and NOT `main`"
+- **Added:** 2026-09-26 · the deploy-serialize review of PR #484. Kept out of
+  that PR on purpose, because it changes what the pull path deploys.
 
 # DONE — deleted, not archived
 

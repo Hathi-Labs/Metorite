@@ -35,7 +35,7 @@ This spec extends them and does not reopen them.
   conflicts reads that this spec puts into reports.
 - `people_center_app.md` §4.2. It owns the HR-tier gate.
 - HANDOFF **H-111**. It owns the send job and the owner's email flag.
-- HANDOFF **H-169**. It owns the outlook's capacity figure.
+- `projects_ai_chat.md` §17 (S11). It owns the outlook's capacity figure.
 
 ---
 
@@ -418,6 +418,12 @@ first, and its table second. Slice R2b sets the rules.
    `admin:members:read`. Without it, a section returns its task half and
    `hr_visible: false`, as S7 does. The UI says that an admin can see
    capacity. It does not guess.
+   **One exception, for the `outlook` section only** (the owner, 2026-09-25,
+   `projects_ai_chat.md` §17.3 rule 9). Its hours come from each holder's
+   working schedule for every reader, because `working_hours` is directory
+   tier. Absences stay HR tier. They reduce the hours only for a reader with
+   `admin:members:read`, and the section says `absences_applied: false`
+   for every other reader.
 3. **One render for each recipient.** A send renders with the recipient's
    visibility (H-111). This rule already exists and binds R9 and R7.
 4. **A person scope is not a licence.** A report about one person shows only
@@ -766,9 +772,11 @@ one caller. A report with `weeks` 1 samples `FORECAST_WEEKS`. Each band
 equals `/analytics/stuck`. `reportVisuals.test.ts` draws seven panels, and
 `outlook.test.ts` places the bar.
 
-**H-169 stays open.** The outlook's capacity figure ignores absences. The
-section calls `outlook_body`, so the fix reaches the report with no change
-here.
+**H-169 is closed by `projects_ai_chat.md` §17 (S11).** The section calls
+`outlook_body`, and it does need the reader's grant. `render_body` passes
+`hr_visible=can_read_hr_fields(user)`, as the `capacity` section does. So
+absences reduce the report's hours only for a reader with
+`admin:members:read`.
 
 #### R3b — `rebalance` · AGENT-SAFE · BUILT 2026-09-25
 

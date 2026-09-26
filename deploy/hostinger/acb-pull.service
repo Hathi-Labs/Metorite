@@ -22,11 +22,31 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 
-# Root: the checkout is owned by `acb` and the apply restarts services.
-# vps_pull.sh names this itself — without root, git refuses every command with
-# "detected dubious ownership" and the timer fails in a way that reads like a
-# network problem.
-User=root
+# 🔴 **`acb`, NOT root (H-89, 2026-09-26).** This line read `User=root`, and
+# that made this unit THE root writer H-89 hunted for a month. Every `npm ci`
+# and `next build` on this path left root-owned files in the checkout, and the
+# CI path, which connects as `acb`, then failed on them with EACCES. On
+# 2026-09-26, 50220 paths under the workbench's `node_modules` were root-owned.
+#
+# Why `acb` is enough, measured on the box on 2026-09-26:
+#   • `acb` owns /opt/acb and the checkout, so git needs no safe.directory;
+#   • `acb` fetches origin already, because the CI path does exactly that;
+#   • /etc/sudoers.d/acb grants `acb ALL=(ALL) NOPASSWD:ALL`, so every
+#     `sudo systemctl …` in vps_apply.sh works as it does on the CI path;
+#   • `acb` is in the `docker` group, which systemd applies through initgroups.
+# So the pull path now runs as the SAME user as the CI path. One user writes
+# the checkout, and a root-owned path in it is a defect with a name.
+User=acb
+Group=acb
+
+# vps_pull.sh keeps its markers in /var/lib/acb. The directory was root-owned.
+# StateDirectory= creates it for User= and, when the owner is wrong, chowns it
+# recursively at start, so the first acb run can still write `last-pull-sha`.
+StateDirectory=acb
+
+# The unit's default PATH has no ~/.local/bin, so `command -v uv` fails and
+# vps_apply.sh downloads uv again on every run. Same PATH as acb-gateway.
+Environment=PATH=/home/acb/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Invoked through bash on purpose, matching acb-health-watchdog.service: a
 # checkout that loses the executable bit (Windows contributors, archive exports)
