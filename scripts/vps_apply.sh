@@ -43,6 +43,203 @@ set -e
 APP_DIR="${APP_DIR:-/opt/acb/app}"
 cd "$APP_DIR"
 
+# ── ONE DEPLOY AT A TIME ON THIS BOX (H-89, H-164) ──────────────────────────
+#
+# 🔴 **TWO DELIVERY PATHS SHARE ONE CHECKOUT, AND NOTHING MADE THEM TAKE
+# TURNS.** The workflow runs this file over ssh as the app user. The box's own
+# `acb-pull.timer` runs it every five minutes. Measured 2026-09-21 to
+# 2026-09-26, three failure shapes, all from the overlap:
+#
+#   • EACCES on `.next.staging/trace`: root's pull left paths the app-user
+#     build could not write. Run 36177499439 failed all three rounds.
+#   • `Cannot find module 'next/server.js'` and `next: not found`: one path's
+#     `npm ci` removed `node_modules/next` while the other built or started.
+#   • an orphan `next build` ran for 41 minutes after its CI round ended.
+#
+# So every apply takes ONE exclusive lock, for the whole apply: fetch,
+# install, build, swap, restart. The CI path WAITS for it, with a bound. The
+# pull path does NOT wait: `vps_pull.sh` takes the same lock itself, exits 0
+# when it is busy, and sets DEPLOY_LOCK_HELD=1 so this file does not take it
+# twice.
+#
+# ⚠️ The lock lives beside the checkout, NOT in /tmp or /run/lock. Those are
+# sticky world-writable directories, and `fs.protected_regular=2` on the box
+# refuses an O_CREAT open of a file another user owns there — root included.
+# The file is opened READ-ONLY, because flock(2) ignores the open mode, so a
+# lock file root created stays usable by the app user and the other way round.
+#
+# `tests/unit/test_deploy_serialize.py` sources the block between the two
+# marker lines below and runs it against a real lock file. Keep it free of
+# side effects: definitions and defaults only.
+# >>> deploy-serialize helpers
+DEPLOY_LOCK="${DEPLOY_LOCK:-$(dirname "$APP_DIR")/acb-deploy.lock}"
+DEPLOY_MARKER="${DEPLOY_MARKER:-$(dirname "$APP_DIR")/acb-deploy.applied}"
+DEPLOY_LOCK_WAIT="${DEPLOY_LOCK_WAIT:-900}"
+NEXT_BUILD_TIMEOUT_S="${NEXT_BUILD_TIMEOUT_S:-1200}"
+
+# Give a file this script created to the checkout's owner. A root-run apply
+# must not leave a lock or a marker the app user cannot replace.
+deploy_give_to_owner() {
+  [ "$(id -u)" = "0" ] || return 0
+  chown "$(stat -c '%U:%G' "$APP_DIR")" "$@" 2>/dev/null || true
+}
+
+# "since <time>, pid <pid>" for whoever holds the lock now.
+deploy_lock_holder() {
+  hpid="" hsince="" hwho=""
+  read -r hpid hsince hwho < "$DEPLOY_LOCK.holder" 2>/dev/null || true
+  # /proc, not `kill -0`: the app user cannot signal a root process, and
+  # EPERM would read as "dead".
+  if [ -n "$hpid" ] && [ -d "/proc/$hpid" ]; then
+    echo "since $hsince, pid $hpid ($hwho)"
+  else
+    echo "since an unknown time, pid unknown (the holder left no record)"
+  fi
+}
+
+# Take the lock on fd 8. $1 = wait | nowait.
+#   0  the lock is held, until this process and its children exit
+#   75 nowait, and another deploy holds it
+#   1  wait, and it stayed busy for DEPLOY_LOCK_WAIT seconds
+deploy_lock_acquire() {
+  if [ ! -e "$DEPLOY_LOCK" ]; then
+    ( umask 022; : >> "$DEPLOY_LOCK" ) 2>/dev/null || true
+    deploy_give_to_owner "$DEPLOY_LOCK"
+  fi
+  if ! exec 8<"$DEPLOY_LOCK"; then
+    echo "    !! cannot open the deploy lock $DEPLOY_LOCK"
+    return 1
+  fi
+  if ! flock -n 8; then
+    [ "$1" = "nowait" ] && return 75
+    echo "    waiting up to ${DEPLOY_LOCK_WAIT}s: another deploy holds the lock $(deploy_lock_holder)"
+    flock -w "$DEPLOY_LOCK_WAIT" 8 || return 1
+  fi
+  printf '%s %s %s\n' "$$" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$(id -un)" \
+    > "$DEPLOY_LOCK.holder.$$" 2>/dev/null \
+    && mv -f "$DEPLOY_LOCK.holder.$$" "$DEPLOY_LOCK.holder" 2>/dev/null \
+    && deploy_give_to_owner "$DEPLOY_LOCK.holder"
+  return 0
+}
+
+# True when a COMPLETE apply of $1 already finished and nothing has moved
+# since: HEAD is there, the marker names it, and both builds are in place.
+deploy_already_applied() {
+  [ -n "$1" ] || return 1
+  [ "$(git -C "$APP_DIR" rev-parse HEAD 2>/dev/null)" = "$1" ] || return 1
+  msha="" mwhen=""
+  read -r msha mwhen < "$DEPLOY_MARKER" 2>/dev/null || return 1
+  [ "$msha" = "$1" ] || return 1
+  [ -f "$APP_DIR/workbench/control_plane/.next/BUILD_ID" ] || return 1
+  [ -x "$APP_DIR/workbench/control_plane/node_modules/.bin/next" ] || return 1
+  DEPLOY_APPLIED_AT="$mwhen"
+  return 0
+}
+
+# Written ONLY on the success path, just before the final line. It records
+# "a complete apply of this sha finished", which is the claim the skip needs.
+record_applied_sha() {
+  printf '%s %s\n' "$1" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    > "$DEPLOY_MARKER.tmp.$$" 2>/dev/null \
+    && mv -f "$DEPLOY_MARKER.tmp.$$" "$DEPLOY_MARKER" 2>/dev/null \
+    && deploy_give_to_owner "$DEPLOY_MARKER" \
+    && return 0
+  echo "    ~ could not write $DEPLOY_MARKER — the next apply rebuilds this sha instead of skipping it"
+  return 0
+}
+
+# 🔴 H-164: `next start` without `next` is a unit that dies on restart. Check
+# the binary BEFORE a restart, and refuse the restart when it is missing, so
+# the process that is running now keeps serving.
+require_next_bin() {
+  [ -x "$1/node_modules/.bin/next" ] && return 0
+  echo "    !! $2: $1/node_modules/.bin/next is MISSING — refusing to restart $2 (H-164)."
+  echo "       A restart now runs \`next start\` with no \`next\` and the unit dies"
+  echo "       with 'next: not found'. The running process keeps serving."
+  return 1
+}
+
+# Every pid below $1, from one `ps` snapshot.
+descendants_of() {
+  ps -eo pid=,ppid= 2>/dev/null | awk -v root="$1" '
+    { parent[$1] = $2 }
+    END {
+      for (p in parent) {
+        q = p; n = 0
+        while ((q in parent) && q > 1 && n++ < 64) {
+          q = parent[q]
+          if (q == root) { print p; break }
+        }
+      }
+    }'
+}
+
+# The nearest sshd ancestor: the session this apply lives in, if any.
+session_anchor() {
+  if [ -n "${DEPLOY_TETHER_ANCHOR:-}" ]; then echo "$DEPLOY_TETHER_ANCHOR"; return 0; fi
+  p="$$"
+  while [ -n "$p" ] && [ "$p" -gt 1 ]; do
+    case "$(ps -o comm= -p "$p" 2>/dev/null)" in
+      sshd*) echo "$p"; return 0 ;;
+    esac
+    p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"
+  done
+  return 0
+}
+
+# 🔴 **AN ENDED SSH SESSION DOES NOT END THE APPLY.** `ssh 'bash -s'` has no
+# tty, so nothing sends SIGHUP when the runner's `timeout` kills ssh or a round
+# is cancelled. Worse, the rest of this script is already in the pipe buffer,
+# so bash finishes the build and then SWAPS AND RESTARTS with nobody watching.
+# Measured 2026-09-25: `next build` ran for 41 minutes after its round ended.
+#
+# So a CI apply watches its own sshd session. When the session goes, the
+# watcher stops this shell and every process under it, TERM and then KILL.
+# The pull path runs under systemd with no sshd ancestor, and systemd already
+# kills its whole cgroup on a timeout, so it gets no watcher.
+tether_to_session() {
+  [ "${DEPLOY_TETHER:-1}" = "1" ] || return 0
+  anchor="$(session_anchor)"
+  [ -n "$anchor" ] || return 0
+  apply_pid="$$"
+  (
+    exec 8<&-   # never hold the deploy lock after the apply has gone
+    while [ -d "/proc/$anchor" ]; do
+      [ -d "/proc/$apply_pid" ] || exit 0
+      sleep "${DEPLOY_TETHER_POLL:-5}"
+    done
+    [ -d "/proc/$apply_pid" ] || exit 0
+    me="$BASHPID"
+    logger -t acb-deploy "deploy session $anchor ended: stopping apply $apply_pid and its children" 2>/dev/null || true
+    for sig in TERM KILL; do
+      # shellcheck disable=SC2046 # word splitting of the pid list is the point
+      kill -"$sig" $(descendants_of "$apply_pid" | grep -vx "$me") "$apply_pid" 2>/dev/null || true
+      [ "$sig" = "TERM" ] && sleep "${DEPLOY_TETHER_GRACE:-20}"
+    done
+  ) </dev/null >/dev/null 2>&1 &
+  echo "    tethered to deploy session pid $anchor: if it ends, this apply and its build stop too"
+}
+# <<< deploy-serialize helpers
+
+echo "==> Taking the deploy lock ($DEPLOY_LOCK)"
+if [ "${DEPLOY_LOCK_HELD:-0}" = "1" ]; then
+  echo "    held by the caller (vps_pull.sh)"
+else
+  lock_rc=0
+  deploy_lock_acquire "${DEPLOY_LOCK_MODE:-wait}" || lock_rc=$?
+  if [ "$lock_rc" = "75" ]; then
+    echo "    another deploy holds the lock $(deploy_lock_holder) — nothing to do"
+    exit 0
+  elif [ "$lock_rc" != "0" ]; then
+    echo "    !! another deploy holds the lock $(deploy_lock_holder)."
+    echo "       Waited ${DEPLOY_LOCK_WAIT}s and it is still busy. This round did NOTHING:"
+    echo "       no fetch, no build, no restart. Retry when the holder finishes."
+    exit 1
+  fi
+  echo "    lock taken"
+fi
+tether_to_session
+
 echo "==> Pulling latest from origin/main"
 
 # 🔴 **REPAIR THE CHECKOUT'S OWNERSHIP FIRST (H-89).** Same bug as the `.venv`
@@ -90,6 +287,20 @@ fi
 # git reset --hard would otherwise wipe agents registered via the UI.
 cp apps/services/gateway/agents.json /tmp/acb-agents.json.bak 2>/dev/null || true
 git fetch origin main
+DEPLOY_TARGET_SHA="$(git rev-parse origin/main)"
+
+# 🟢 **THE SECOND PATH NO LONGER REBUILDS WHAT THE FIRST JUST SHIPPED.**
+# Measured 2026-09-26: a CI build at 06:34, and root's pull rebuilt the SAME
+# commit at 06:47. The pull gate reads its own marker only, so a CI deploy
+# never counted. Now both paths write one marker, and both check it here,
+# INSIDE the lock. A skip prints the final line on purpose: a complete apply
+# of this exact sha has finished, which is what deploy.yml's gate asks.
+# DEPLOY_FORCE=1 (`vps_pull.sh --force`) always re-applies, for an .env edit.
+if [ "${DEPLOY_FORCE:-0}" != "1" ] && deploy_already_applied "$DEPLOY_TARGET_SHA"; then
+  echo "    already at ${DEPLOY_TARGET_SHA:0:12}, skipping — a complete apply of it finished at ${DEPLOY_APPLIED_AT:-?}"
+  echo "==> Deployment complete"
+  exit 0
+fi
 git reset --hard origin/main
 if [ -s /tmp/acb-agents.json.bak ]; then
   cp /tmp/acb-agents.json.bak apps/services/gateway/agents.json
@@ -585,6 +796,13 @@ echo "==> Restarting gateway (systemd)"
 sudo cp "$APP_DIR/deploy/hostinger/acb-gateway.service" /etc/systemd/system/acb-gateway.service
 sudo systemctl daemon-reload
 sudo systemctl enable acb-gateway >/dev/null 2>&1 || true
+# ⚠️ acb-workbench.service carries `Requires=acb-gateway.service`, so this
+# restart ALSO restarts the workbench. Say so when that will fail (H-164). It
+# does not stop the apply: the install below is what repairs `next`.
+if ! [ -x "$APP_DIR/workbench/control_plane/node_modules/.bin/next" ]; then
+  echo "    !! the workbench has no node_modules/.bin/next. This restart takes the"
+  echo "       workbench down with it, until the install and build below repair it."
+fi
 sudo systemctl restart acb-gateway
 sleep 3
 systemctl is-active --quiet acb-gateway || { echo "GATEWAY FAILED TO START"; exit 1; }
@@ -735,6 +953,8 @@ drop_dir() {
 # attempt after it speaks.
 npm_install_here() {
   name="$1"
+  # Measure first. With both paths as the app user this count is 0 (H-89).
+  reclaim_build_tree "$name"
   npm ci --prefer-offline 2>/dev/null && return 0
   echo "    ~ $name: npm ci failed — reclaiming the build tree and retrying"
   if ! sudo chown -R "$(id -un):$(id -gn)" node_modules 2>&1; then
@@ -764,15 +984,23 @@ npm_install_here() {
 #
 # So the repair happens HERE: at the one moment it matters, scoped to the one
 # app about to be built, and only when something is actually mis-owned.
+#
+# 📏 **The printed total is H-89's measurement.** `node_modules` is in the
+# list since the deploy lock landed, because that is where 50220 root-owned
+# paths sat on 2026-09-26. With the pull path running as the app user, every
+# line this prints should read `reclaimed 0`. A non-zero total names a root
+# writer that is still there.
 reclaim_build_tree() {
   name="$1"
   owner="$(stat -c '%U:%G' .)"
   user="${owner%%:*}"
-  for t in .next .next.staging .next.previous; do
+  total=0
+  for t in node_modules .next .next.staging .next.previous; do
     [ -e "$t" ] || continue
     # `find ! -user` first, so the common case costs a traversal and no write.
     n="$(sudo find "$t" ! -user "$user" -print 2>/dev/null | wc -l)"
     [ "$n" -gt 0 ] || continue
+    total=$((total + n))
     if sudo chown -R "$owner" "$t" 2>&1; then
       echo "    ~ $name: reclaimed $n path(s) under $t (H-89)"
     else
@@ -780,6 +1008,7 @@ reclaim_build_tree() {
       echo "       with EACCES, and that is H-89 rather than a code fault."
     fi
   done
+  echo "    $name: build tree ownership — reclaimed $total path(s) not owned by $user (H-89)"
 }
 
 build_next_staged() {
@@ -812,9 +1041,22 @@ build_next_staged() {
   # while the build fails, which is the property this function exists for.
   drop_dir .next/types
   drop_dir .next/dev/types
-  # A non-zero exit here propagates under `set -e` with `.next` untouched.
+  # A failed build returns 1 with `.next` untouched, and `set -e` ends the
+  # apply there. `timeout` bounds it: a build that hangs is killed, and the
+  # running build keeps serving. `-k 60` escalates to SIGKILL, because a
+  # bound that can be ignored is not a bound. The orphan of 2026-09-25 ran
+  # for 41 minutes with nothing to stop it.
+  build_rc=0
   NEXT_DIST_DIR=".next.staging" \
-    NODE_OPTIONS="--max-old-space-size=$NEXT_BUILD_HEAP_MB" npm run build
+    NODE_OPTIONS="--max-old-space-size=$NEXT_BUILD_HEAP_MB" \
+    timeout -k 60 "$NEXT_BUILD_TIMEOUT_S" npm run build || build_rc=$?
+  if [ "$build_rc" != "0" ]; then
+    if [ "$build_rc" = "124" ] || [ "$build_rc" = "137" ]; then
+      echo "    !! $name: build TIMED OUT after ${NEXT_BUILD_TIMEOUT_S}s and was killed"
+    fi
+    echo "    ! $name: build failed (exit $build_rc) — keeping the running build"
+    return 1
+  fi
   # BUILD_ID is the file `next start` looks for and fails on. Checking it
   # rather than only the exit code is the difference between "the build
   # command returned 0" and "there is a build here" — this repo has been
@@ -841,6 +1083,8 @@ sudo cp "$APP_DIR/deploy/hostinger/acb-workbench.service" /etc/systemd/system/ac
 sudo systemctl daemon-reload
 # See the gateway note above — enable so the workbench survives reboots.
 sudo systemctl enable acb-workbench >/dev/null 2>&1 || true
+# Install, build, swap — and only THEN restart, and only with `next` present.
+require_next_bin "$APP_DIR/workbench/control_plane" "acb-workbench" || exit 1
 sudo systemctl restart acb-workbench
 sleep 3
 systemctl is-active --quiet acb-workbench || { echo "WORKBENCH FAILED TO START"; exit 1; }
@@ -880,6 +1124,7 @@ if systemctl is-enabled --quiet "$OC_UNIT" 2>/dev/null; then
     # exists. See `build_next_staged` above.
     build_next_staged "operator console"
   fi
+  require_next_bin "$OC_DIR" "$OC_UNIT" || exit 1
   sudo systemctl restart "$OC_UNIT"
   sleep 3
   if ! systemctl is-active --quiet "$OC_UNIT"; then
@@ -1048,4 +1293,6 @@ uv run python scripts/check_infra.py || {
 # healthy app on the right SHA answers yes to every other check.
 # ⚠️ Do not reword it, and do not move it. It must stay the LAST echo here.
 # `test_deploy_pipeline.py::TestTheApplyMustReachItsEnd` fences both sides.
+# The marker goes first, so it can only record an apply that got this far.
+record_applied_sha "$(git -C "$APP_DIR" rev-parse HEAD)"
 echo "==> Deployment complete"
