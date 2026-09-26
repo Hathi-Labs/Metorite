@@ -38,9 +38,12 @@ from gateway.routes.projects.filters import (
     MAX_MULTI,
     MIN_QUERY,
     STATUS_CATEGORIES,
+    SUBTASK_MODES,
     VIEW_FILTER_KEYS,
+    VIEW_USER_STATE_KEYS,
     build_task_filters,
     normalise_view_config,
+    normalise_view_user_state,
     split_csv,
 )
 
@@ -569,3 +572,84 @@ class TestWatchingFilter:
         ).read_text(encoding="utf-8")
         assert "watching: bool = False" in source
         assert "viewer=actor(user) if watching else None" in source
+
+
+# ── D-PM-38 — the subtasks setting, and the top-level clause ─────────────────
+
+GROUPING_TS = (
+    REPO / "workbench/control_plane/src/app/projects/lib/grouping.ts"
+)
+
+
+def _ts_string_list(name: str) -> set[str]:
+    """The string members of ``export const <name> = [ … ]`` in grouping.ts."""
+    source = GROUPING_TS.read_text(encoding="utf-8")
+    match = re.search(
+        rf"export const {name} = \[(.*?)\] as const;", source, re.S,
+    )
+    assert match is not None, f"{name} is missing from grouping.ts"
+    return set(re.findall(r'"([a-z_]+)"', match.group(1)))
+
+
+class TestTopLevel:
+    def test_top_level_narrows_to_tasks_with_no_parent(self):
+        # `hidden` is applied in SQL, where paging happens. A client that
+        # dropped subtasks after LIMIT would draw short pages.
+        assert "t.parent_task_id IS NULL" in sql(top_level=True)
+
+    def test_without_it_subtasks_stay_in_the_set(self):
+        assert "parent_task_id IS NULL" not in sql()
+        assert "parent_task_id IS NULL" not in sql(top_level=False)
+
+    def test_it_is_not_a_saved_filter(self):
+        # The view stores the `subtasks` MODE. The client turns `hidden` into
+        # this flag, so a stored `top_level` would be a second way to say it.
+        assert "top_level" not in VIEW_FILTER_KEYS
+        assert normalise_view_config(
+            {"filters": {"top_level": True}},
+        )["filters"] == {}
+
+    def test_every_list_surface_declares_it(self):
+        # FastAPI drops an undeclared query parameter without a word, so a
+        # surface that forgot it would show subtasks while the list hid them.
+        from gateway.routes.projects import router
+
+        for path in (
+            "/projects/tasks", "/projects/calendar", "/projects/export/tasks.csv",
+        ):
+            route = next(r for r in router.routes if r.path == path)
+            names = {p.name for p in route.dependant.query_params}
+            assert "top_level" in names, path
+
+
+class TestSubtasksSetting:
+    def test_the_three_modes_round_trip_through_a_view(self):
+        for mode in SUBTASK_MODES:
+            assert normalise_view_config({"subtasks": mode})["subtasks"] == mode
+
+    def test_the_three_modes_round_trip_through_a_members_overlay(self):
+        for mode in SUBTASK_MODES:
+            assert normalise_view_user_state({"subtasks": mode}) == {
+                "subtasks": mode,
+            }
+
+    def test_a_bad_value_is_dropped_not_coerced(self):
+        for junk in ("flat", "", None, True, 3, ["nested"]):
+            assert "subtasks" not in normalise_view_config({"subtasks": junk})
+            assert "subtasks" not in normalise_view_user_state({"subtasks": junk})
+
+    def test_absent_stays_absent_so_the_surface_picks_its_default(self):
+        # The list defaults to nested and the board to separate. A default
+        # written here would freeze one of them into every stored view.
+        assert "subtasks" not in normalise_view_config({"group_by": "status"})
+        assert normalise_view_user_state({}) == {}
+
+    def test_it_is_presentation_not_a_filter(self):
+        assert "subtasks" in VIEW_USER_STATE_KEYS
+        assert "subtasks" not in VIEW_FILTER_KEYS
+
+    def test_the_client_and_the_server_agree_on_the_modes(self):
+        assert _ts_string_list("SUBTASK_MODES") == set(SUBTASK_MODES)
+
+    def test_the_client_and_the_server_agree_on_the_overlay_keys(self):
+        assert _ts_string_list("VIEW_USER_STATE_KEYS") == set(VIEW_USER_STATE_KEYS)

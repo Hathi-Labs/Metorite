@@ -53,6 +53,7 @@ from gateway.routes.projects.core import (
     task_visibility_clause,
     triage_exclusion_clause,
 )
+from gateway.routes.projects.filters import attach_parent_context
 from sqlalchemy import text
 
 #: Days since a task last changed, banded. DISJOINT and ascending.
@@ -276,7 +277,8 @@ async def stuck(
 
         blocked_rows = (await db.execute(
             text(
-                f"SELECT t.id, t.title, t.task_number, t.due_at, t.project_id"
+                f"SELECT t.id, t.title, t.task_number, t.due_at, t.project_id,"
+                f"       t.parent_task_id"
                 f"  FROM pm_tasks t"
                 f"  JOIN pm_task_statuses s ON s.id = t.status_id"
                 f" WHERE {open_where} AND {blocker_join}"
@@ -293,25 +295,34 @@ async def stuck(
             text(overdue_by_project_sql(open_where)), params,
         )).fetchall()
 
+        blocked = [
+            {
+                "id": str(row.id),
+                "title": row.title,
+                "task_number": row.task_number,
+                "due_at": row.due_at.isoformat() if row.due_at else None,
+                # WS-27bm S4: the status report flags the PROJECT a
+                # blocked task lives in. Without this the flag was
+                # unreachable, and a fake that invented the key hid it.
+                "project_id": str(row.project_id),
+                "parent_task_id": (
+                    str(row.parent_task_id)
+                    if getattr(row, "parent_task_id", None) else None
+                ),
+            }
+            for row in blocked_rows
+        ]
+        # D-PM-38 — a blocked subtask names its parent, under the reader's
+        # grants.
+        await attach_parent_context(db, vis, blocked)
+
         return {
             "project_id": project_id,
             "scope": "portfolio" if project_id is None else "node",
             "include_subtree": include_subtree,
             "stale": stale,
             "blocked_total": blocked_total,
-            "blocked": [
-                {
-                    "id": str(row.id),
-                    "title": row.title,
-                    "task_number": row.task_number,
-                    "due_at": row.due_at.isoformat() if row.due_at else None,
-                    # WS-27bm S4: the status report flags the PROJECT a
-                    # blocked task lives in. Without this the flag was
-                    # unreachable, and a fake that invented the key hid it.
-                    "project_id": str(row.project_id),
-                }
-                for row in blocked_rows
-            ],
+            "blocked": blocked,
             # ⚠️ BY PROJECT, which is what §9.12.7(a) asks for — "Overdue by
             # project". This answered a bare integer until 2026-09-17, and the
             # panel that consumed it declared a LIST. `number.length` is
@@ -1688,6 +1699,7 @@ def hygiene_rows_sql(open_where: str) -> str:
             f"        row_number() OVER (ORDER BY {order}) AS rn,"
             f"        '{kind}' AS kind,"
             f"        t.id, t.title, t.task_number, t.project_id,"
+            f"        t.parent_task_id,"
             f"        p.name AS project_name, t.due_at, t.updated_at"
             f"   FROM pm_tasks t"
             f"   JOIN pm_task_statuses s ON s.id = t.status_id"
@@ -1697,8 +1709,8 @@ def hygiene_rows_sql(open_where: str) -> str:
             f"  LIMIT :max_named)"
         )
     return (
-        "SELECT kind, id, title, task_number, project_id, project_name,"
-        "       due_at, updated_at"
+        "SELECT kind, id, title, task_number, project_id, parent_task_id,"
+        "       project_name, due_at, updated_at"
         "  FROM (" + " UNION ALL ".join(arms) + ") h"
         " ORDER BY position, rn"
     )
@@ -1746,6 +1758,27 @@ async def hygiene_body(
         text(hygiene_rows_sql(open_where)),
         {**params, "max_named": MAX_NAMED},
     )).fetchall()
+    named = [
+        {
+            "kind": r.kind,
+            "id": str(r.id),
+            "title": r.title,
+            "task_number": (
+                int(r.task_number) if r.task_number is not None else None
+            ),
+            "project_id": str(r.project_id),
+            "project_name": r.project_name,
+            "due_at": r.due_at.isoformat() if r.due_at else None,
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            "parent_task_id": (
+                str(r.parent_task_id)
+                if getattr(r, "parent_task_id", None) else None
+            ),
+        }
+        for r in rows
+    ]
+    # D-PM-38 — the same "↳ Parent" every flat row carries.
+    await attach_parent_context(db, vis, named)
 
     return {
         "open_total": open_total,
@@ -1753,19 +1786,5 @@ async def hygiene_body(
         "by_kind": {
             kind: int(getattr(counts, kind, 0) or 0) for kind, _ in HYGIENE_KINDS
         },
-        "rows": [
-            {
-                "kind": r.kind,
-                "id": str(r.id),
-                "title": r.title,
-                "task_number": (
-                    int(r.task_number) if r.task_number is not None else None
-                ),
-                "project_id": str(r.project_id),
-                "project_name": r.project_name,
-                "due_at": r.due_at.isoformat() if r.due_at else None,
-                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
-            }
-            for r in rows
-        ],
+        "rows": named,
     }

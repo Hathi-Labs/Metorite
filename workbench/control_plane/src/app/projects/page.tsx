@@ -2762,8 +2762,10 @@ function ProjectsWorkspace() {
    * Delete one task for good.
    *
    * ⚠️ **The subtask sentence is not decoration.** Deleting a parent PROMOTES
-   * its children — `parent_task_id` SET NULLs — so they survive at the top
-   * level. Somebody who expects a cascade would otherwise delete a parent to
+   * its children ONE level, to the deleted task's own parent (D-PM-38,
+   * `core.lift_subtasks_to_grandparent`). Before 2026-09-26 the FK's SET NULL
+   * made them top-level, so "moved up a level" was false for a subtask of a
+   * subtask. Somebody who expects a cascade would otherwise delete a parent to
    * be rid of a subtree and find the subtree still there, or, worse, hesitate
    * to delete anything because they cannot tell which it does. The words
    * are `deleteTaskCopy`'s, drawn by the shared `ConfirmDialog`.

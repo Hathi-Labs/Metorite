@@ -48,6 +48,7 @@ from gateway.routes.projects.core import (
     ListResponse,
     Page,
     TaskModel,
+    Visibility,
     _bindable,
     _placeholder,
     _tenant_session,
@@ -70,10 +71,11 @@ from gateway.routes.projects.core import (
     router,
     row_to_dict,
     status_owner_id,
+    task_visibility_clause,
     touch_task,
     update_row,
 )
-from gateway.routes.projects.filters import attach_assignees
+from gateway.routes.projects.filters import attach_assignees, attach_parent_context
 
 # `notifications` imports only `core` and `watchers`, so this direction adds no
 # cycle — the same note `notifications` itself carries about `watchers`, and the
@@ -1210,6 +1212,40 @@ async def my_tasks_binds(
     }
 
 
+#: D-PM-38 — which children the roll-up counts. The same two rules the Projects
+#: chip applies (`filters._SUBTASK_COUNTS_SQL`): the child is not archived, and
+#: the member can see it. Until 2026-09-26 this counted every child, so a
+#: subtask in a project the member holds no grant on still showed in the count.
+#:
+#: The grant closure is the MEMBER'S OWN (`my_tasks_binds` binds `:vis_email`,
+#: `:vis_groups` and `:vis_org`), for the reason `MY_TASKS_FROM` gives:
+#: `data:org:read` widens the board, not a member's private list. The clause is
+#: `core.task_visibility_clause` itself, never a copy, on the alias `c`.
+_CHILD_VISIBLE = task_visibility_clause(
+    Visibility(unrestricted=False, email="", groups=()), "c",
+)
+_CLOSED_LITERAL = ", ".join(f"'{c}'" for c in sorted(CLOSING_CATEGORIES))
+
+async def attach_my_parents(
+    db: Any, binds: dict[str, Any], items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """D-PM-38 — "↳ Parent" on each My Tasks row, under the member's grants.
+
+    My Tasks shows every subtask once, as its own row, so each one names its
+    parent. The visibility is built from the binds ``my_tasks_binds``
+    assembled, which are the member's own grants and never request input. A
+    parent the member cannot see comes back as ``{hidden: True}``, with no
+    title.
+    """
+    vis = Visibility(
+        unrestricted=False,
+        email=str(binds.get("vis_email") or ""),
+        groups=tuple(binds.get("vis_groups") or ()),
+        organization_id=binds.get("vis_org"),
+    )
+    return await attach_parent_context(db, vis, items)
+
+
 #: My work: everything assigned to me, plus everything in my personal project.
 #:
 #: The second arm matters — a task I captured and then unassigned is still mine
@@ -1274,8 +1310,18 @@ SELECT t.*,
                             AS tag_colors,
        proj.name            AS project_name,
        (SELECT count(*) FROM pm_tasks c
-         WHERE c.parent_task_id = t.id AND c.archived_at IS NULL)
+         WHERE c.parent_task_id = t.id AND c.archived_at IS NULL
+           AND """ + _CHILD_VISIBLE + """)
                             AS subtask_count,
+       -- D-PM-38: the "done" half of the chip, so My Tasks can draw
+       -- "done/total" as Projects does. Done means the status CATEGORY is
+       -- closed, the rule `relations.subtask_progress` applies.
+       (SELECT count(*) FROM pm_tasks c
+          JOIN pm_task_statuses cs ON cs.id = c.status_id
+         WHERE c.parent_task_id = t.id AND c.archived_at IS NULL
+           AND cs.category IN (""" + _CLOSED_LITERAL + """)
+           AND """ + _CHILD_VISIBLE + """)
+                            AS subtask_done,
        (SELECT count(*) FROM pm_task_assignees a2 WHERE a2.task_id = t.id)
                             AS assignee_count,
        EXISTS (SELECT 1 FROM pm_task_assignees a3
@@ -1346,6 +1392,7 @@ def _project_task(row: Any) -> tuple[dict[str, Any], str]:
     # such field. Owner directive 2026-09-03 — Tasks sees the mapped status.
     task["status_category"] = getattr(row, "status_category", None)
     task["subtask_count"] = int(getattr(row, "subtask_count", 0) or 0)
+    task["subtask_done"] = int(getattr(row, "subtask_done", 0) or 0)
     # The lane's stored colour and each tag's registry colour. My Tasks
     # passes both through `statusAccent`, the path Projects draws them by.
     # Without them a custom-coloured lane drew two colours in two apps, and
@@ -1523,6 +1570,7 @@ async def my_inbox(
         # so this is one extra query for the page rather than N for the rows —
         # and paying it for rows the filters just dropped is waste.
         await attach_assignees(db, items)
+        await attach_my_parents(db, params, items)
         if untriaged:
             await _attach_assigned_by(db, email, items)
 
@@ -1656,6 +1704,7 @@ async def led_projects_for(
             continue
         mine.append(task)
     await attach_assignees(db, mine)
+    await attach_my_parents(db, params, mine)
     for task in mine:
         led[str(task["project_id"])]["my_tasks"].append(task)
     return list(led.values())
@@ -1824,13 +1873,13 @@ async def _read_my_task(db: Any, email: str, task_id: str) -> dict[str, Any]:
     # Reachable when archived: the client reads a task back after archiving
     # it, and a 404 there would look like the task was destroyed rather than
     # filed.
-    row = (await db.execute(
-        text(sql), await my_tasks_binds(db, email, archived=True, tid=task_id),
-    )).fetchone()
+    binds = await my_tasks_binds(db, email, archived=True, tid=task_id)
+    row = (await db.execute(text(sql), binds)).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="No such task")
     task, _ = _project_task(row)
     await attach_assignees(db, [task])
+    await attach_my_parents(db, binds, [task])
     return task
 
 
@@ -1917,6 +1966,7 @@ async def my_calendar(
                 continue
             items.append(task)
         await attach_assignees(db, items)
+        await attach_my_parents(db, params, items)
 
     items.sort(key=lambda t: t["scheduled_start"] or "")
     # Deliberately unpaged: a window is already the bound, and a paged calendar

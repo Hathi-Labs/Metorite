@@ -18,7 +18,7 @@
  * owns the fetch, so the sort state lives there and arrives as a prop.
  *
  * Sub-tasks nest indented under their parent when both are on the page
- * (`lib/table.treeRows`); collapse state is local. The keyboard walks a CELL
+ * (`@/lib/taskTree` `treeRows`); collapse state is local. The keyboard walks a CELL
  * cursor (`lib/tableCursor`) — arrows move the ring, Enter edits (or opens
  * the panel where a cell has no editor), Esc cancels back to cursor mode.
  * Every group ends in the WS-27y quick-add, pre-filled with the group's value.
@@ -62,9 +62,9 @@ import {
   customKeyOf,
   nextSort,
   tableColumns,
-  treeRows,
 } from "../lib/table";
 import { NO_CELL, clampCell, stepCell } from "../lib/tableCursor";
+import { treeRows } from "@/lib/taskTree";
 import { QuickAdd } from "./QuickAdd";
 import { useFlash } from "./useFlash";
 

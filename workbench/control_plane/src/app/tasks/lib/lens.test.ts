@@ -61,6 +61,7 @@ import {
   lensStageAttachment,
   lensStageOptions,
   mapLensItem,
+  parentFact,
   splitPatch,
 } from "./lens";
 
@@ -1198,5 +1199,25 @@ describe("continuity with Projects (S6e)", () => {
     expect(keys).not.toContain("important");
     expect(keys).not.toContain("leveraged");
     expect(keys).not.toContain("dueAt");
+  });
+});
+
+describe("D-PM-38 — the parent and the done count, off the wire", () => {
+  it("maps a visible parent and the subtask_done count", () => {
+    const item = mapLensItem({
+      id: "t", title: "x", subtask_count: 3, subtask_done: 2,
+      parent: { id: "p", ref: "#4", title: "Parent", archived: false },
+    });
+    expect(item.subtaskDone).toBe(2);
+    expect(item.parent).toEqual({ id: "p", ref: "#4", title: "Parent", archived: false });
+  });
+
+  it("keeps ONLY hidden:true for a hidden parent, whatever else arrives", () => {
+    expect(parentFact({ hidden: true, title: "Acquire Initech" })).toEqual({ hidden: true });
+  });
+
+  it("maps no parent to null", () => {
+    expect(mapLensItem({ id: "t", title: "x" }).parent).toBeNull();
+    expect(mapLensItem({ id: "t", title: "x" }).subtaskDone).toBe(0);
   });
 });

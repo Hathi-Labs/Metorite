@@ -22,11 +22,13 @@ import { describe, expect, it } from "vitest";
 import { accentForHue } from "./statusAccent";
 import {
   MAX_TAG_CHIPS,
+  PARENT_CRUMB_MAX,
   avatarStack,
   chipKind,
   durationLabel,
   initials,
   isOverdue,
+  parentCrumb,
   relativeTime,
   taskMeta,
 } from "./taskCard";
@@ -389,5 +391,62 @@ describe("avatarStack", () => {
     // are people. Both take the explicit branch.
     expect(avatarStack(["a", "b"], 0)).toEqual({ shown: [], extra: 2 });
     expect(avatarStack(["a", "b"], -1)).toEqual({ shown: [], extra: 2 });
+  });
+});
+
+// ── parentCrumb (D-PM-38) ───────────────────────────────────────────────────
+
+describe("parentCrumb — the '↳ Parent' line a subtask carries", () => {
+  it("names a visible parent by reference and title", () => {
+    expect(parentCrumb({ id: "p", ref: "#12", title: "Ship v2" })).toEqual({
+      label: "↳ #12 Ship v2",
+      title: "Subtask of #12 Ship v2",
+    });
+  });
+
+  it("says only 'Subtask' for a hidden parent, and invents no title", () => {
+    const crumb = parentCrumb({ hidden: true });
+    expect(crumb?.label).toBe("↳ Subtask");
+    expect(crumb?.title).not.toMatch(/#|Ship/);
+    // A hidden fact that somehow carried a title still does not show it.
+    expect(
+      parentCrumb({ hidden: true, title: "Acquire Initech" } as never)?.label,
+    ).toBe("↳ Subtask");
+  });
+
+  it("adds '(archived)' after the name, outside the clip", () => {
+    const crumb = parentCrumb({
+      ref: "#3",
+      title: "A very long parent title that keeps going",
+      archived: true,
+    });
+    expect(crumb?.label.endsWith(" (archived)")).toBe(true);
+    expect(crumb?.title).toBe(
+      "Subtask of #3 A very long parent title that keeps going (archived)",
+    );
+  });
+
+  it("clips a long name at PARENT_CRUMB_MAX and keeps it whole in the title", () => {
+    const title = "Replace the firmware update pipeline end to end";
+    const crumb = parentCrumb({ ref: "#120", title });
+    const shown = crumb!.label.slice("↳ ".length);
+    expect(shown.length).toBe(PARENT_CRUMB_MAX);
+    expect(shown.endsWith("…")).toBe(true);
+    expect(crumb?.title).toBe(`Subtask of #120 ${title}`);
+  });
+
+  it("does not clip a name that fits", () => {
+    expect(parentCrumb({ ref: "#1", title: "Short" })?.label).toBe("↳ #1 Short");
+  });
+
+  it("is null for a top-level task", () => {
+    expect(parentCrumb(null)).toBeNull();
+    expect(parentCrumb(undefined)).toBeNull();
+  });
+
+  it("falls back to words, never to an empty crumb", () => {
+    expect(parentCrumb({ id: "p", ref: null, title: "" })?.label).toBe(
+      "↳ Parent task",
+    );
   });
 });

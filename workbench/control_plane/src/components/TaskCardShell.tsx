@@ -29,6 +29,10 @@
 
 import type React from "react";
 
+import type { ParentFact } from "@/lib/taskCard";
+
+import { ParentCrumb } from "./TaskMeta";
+
 export function TaskCardShell({
   children,
   selected = false,
@@ -42,6 +46,7 @@ export function TaskCardShell({
   onDragStart,
   onDragEnd,
   ariaLabel,
+  parent,
 }: {
   children: React.ReactNode;
   /** Multi-selected — a primary border plus a ring, so it reads at a glance. */
@@ -64,6 +69,13 @@ export function TaskCardShell({
   onDragStart?: (event: React.DragEvent) => void;
   onDragEnd?: (event: React.DragEvent) => void;
   ariaLabel?: string;
+  /**
+   * D-PM-38 — the parent, when this card is a subtask. The shell draws the
+   * "↳ Parent" line above everything else, so the crumb sits over the title
+   * on every card. It is a prop and not a `shown_fields` chip because a
+   * member must not be able to hide it, like the Archived badge.
+   */
+  parent?: ParentFact | null;
 }) {
   return (
     // A div with role=button rather than a real <button>: both apps put their
@@ -99,6 +111,7 @@ export function TaskCardShell({
         className,
       ].join(" ")}
     >
+      <ParentCrumb parent={parent} />
       {children}
     </div>
   );

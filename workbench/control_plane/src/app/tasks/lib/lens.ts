@@ -59,6 +59,7 @@
  */
 
 import { projectsCall } from "@/app/projects/lib/api";
+import type { ParentFact } from "@/lib/taskCard";
 
 import type { OrganizeBody, ProviderTaskDetail } from "./api";
 import { importanceFor, importantFromImportance } from "./priority";
@@ -115,6 +116,23 @@ const tri = (v: unknown): boolean | undefined =>
 
 const num = (v: unknown): number | undefined =>
   v === null || v === undefined ? undefined : Number(v);
+
+/**
+ * D-PM-38 — the gateway's `parent` → a `ParentFact`. A hidden parent keeps
+ * ONLY `hidden: true`: the wire never carries its title, and a mapper that
+ * copied other keys through would make room for one.
+ */
+export const parentFact = (v: unknown): ParentFact | null => {
+  if (!v || typeof v !== "object") return null;
+  const p = v as Raw;
+  if (p.hidden === true) return { hidden: true };
+  return {
+    id: text(p.id),
+    ref: text(p.ref) ?? null,
+    title: text(p.title) ?? null,
+    archived: p.archived === true,
+  };
+};
 
 /**
  * `pm_task_assignees.assignee` is a bare email (D-PM-4), not a `{name, email}`
@@ -217,6 +235,8 @@ export function mapLensItem(raw: Raw): MyTask {
     sortKey: num(raw.sort_key),
     parentItemId: text(raw.parent_task_id),
     subtaskCount: raw.subtask_count == null ? 0 : Number(raw.subtask_count),
+    subtaskDone: raw.subtask_done == null ? 0 : Number(raw.subtask_done),
+    parent: parentFact(raw.parent),
     archivedAt: text(raw.archived_at),
 
     dueAt: text(raw.due_at),

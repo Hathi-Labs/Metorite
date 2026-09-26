@@ -6,6 +6,8 @@
 // against mock data (see mockData.ts); when the gateway `/tasks` API lands,
 // these types stay and only the data source swaps.
 
+import type { ParentFact } from "@/lib/taskCard";
+
 import type { SyncState } from "./syncState";
 
 /** Where a task/project lives and who is the source of truth. */
@@ -203,8 +205,15 @@ export interface MyTask {
   sortKey?: number;
   /** set → this item is a subtask of another item (its parent). */
   parentItemId?: string;
-  /** number of child subtasks (roll-up badge on the card/detail). */
+  /** number of child subtasks (roll-up badge on the card/detail). Counts only
+   *  children the member can see and that are not archived (D-PM-38). */
   subtaskCount?: number;
+  /** how many of those children are finished — the "done" of "done/total"
+   *  (D-PM-38). Finished means the status category is done or cancelled. */
+  subtaskDone?: number;
+  /** D-PM-38 — the parent, when this is a subtask: `{id, ref, title,
+   *  archived}`, or `{hidden: true}` when the member cannot see it. */
+  parent?: ParentFact | null;
   /** when set, the task is archived (hidden from active views) */
   archivedAt?: string;
   /** sync lifecycle: 'local' (ours) · 'pending' (staged for the member's own

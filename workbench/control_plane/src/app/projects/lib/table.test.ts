@@ -1,10 +1,9 @@
 /**
  * WS-27x — the spreadsheet layout's row and column model.
  *
- * The three claims that decide whether the table is trustworthy: the columns
- * a shown-field set produces (and their canonical order), the sub-task
- * indentation model over `parent_task_id` (a filtered-out parent must not
- * swallow its children), and the header-sort mapping onto the sort keys the
+ * The claims that decide whether the table is trustworthy: the columns
+ * a shown-field set produces (and their canonical order), and the header-sort
+ * mapping onto the sort keys the
  * gateway actually accepts — an unknown key there is a 422, not a fallback.
  */
 
@@ -24,7 +23,6 @@ import {
   LIST_GATED_COLUMNS,
   listColumns,
   tableColumns,
-  treeRows,
 } from "./table";
 
 const def = (field_key: string, over: Partial<FieldDef> = {}): FieldDef => ({
@@ -165,75 +163,6 @@ describe("the priority cell's editor (D78)", () => {
     const values = MATRIX_FLAG_OPTIONS.map((o) => o.value);
     expect(values).toContain(flagsOf({ importance: 2, leveraged: true }));
     expect(values).toContain(flagsOf({ importance: null, leveraged: null }));
-  });
-});
-
-// ── the indentation model ───────────────────────────────────────────────────
-
-const t = (id: string, parent?: string | null) => ({
-  id,
-  parent_task_id: parent ?? null,
-});
-
-const NONE: ReadonlySet<string> = new Set();
-
-describe("treeRows — sub-tasks indent under an on-page parent", () => {
-  it("nests children directly under their parent, depth-first", () => {
-    const rows = treeRows([t("a"), t("b"), t("a1", "a"), t("a1x", "a1")], NONE);
-    expect(rows.map((r) => [r.task.id, r.depth])).toEqual([
-      ["a", 0],
-      ["a1", 1],
-      ["a1x", 2],
-      ["b", 0],
-    ]);
-  });
-
-  it("counts direct children so the caret knows when to draw", () => {
-    const rows = treeRows([t("a"), t("a1", "a"), t("a2", "a")], NONE);
-    expect(rows[0].childCount).toBe(2);
-    expect(rows[1].childCount).toBe(0);
-  });
-
-  it("keeps the incoming order within each level — the caller sorted it", () => {
-    const rows = treeRows([t("b"), t("a"), t("b2", "b"), t("b1", "b")], NONE);
-    expect(rows.map((r) => r.task.id)).toEqual(["b", "b2", "b1", "a"]);
-  });
-
-  it("surfaces a sub-task whose parent is not on the page, flat", () => {
-    // The filter said "show this task"; hiding it because its parent did not
-    // qualify would make a filtered table lose rows silently.
-    const rows = treeRows([t("orphan", "elsewhere"), t("a")], NONE);
-    expect(rows.map((r) => [r.task.id, r.depth])).toEqual([
-      ["orphan", 0],
-      ["a", 0],
-    ]);
-  });
-
-  it("hides a collapsed parent's whole subtree, grandchildren included", () => {
-    const rows = treeRows(
-      [t("a"), t("a1", "a"), t("a1x", "a1"), t("b")],
-      new Set(["a"])
-    );
-    expect(rows.map((r) => r.task.id)).toEqual(["a", "b"]);
-  });
-
-  it("collapsing a mid-level node keeps its siblings", () => {
-    const rows = treeRows(
-      [t("a"), t("a1", "a"), t("a2", "a"), t("a1x", "a1")],
-      new Set(["a1"])
-    );
-    expect(rows.map((r) => r.task.id)).toEqual(["a", "a1", "a2"]);
-  });
-
-  it("loses no rows to a parent cycle, and does not hang", () => {
-    // Impossible server-side (`assert_no_task_cycle`); a stale page must
-    // degrade to missing indentation, never to a hung tab or vanished work.
-    const rows = treeRows([t("x", "y"), t("y", "x")], NONE);
-    expect(rows.map((r) => r.task.id).sort()).toEqual(["x", "y"]);
-  });
-
-  it("treats a self-parented row as a root rather than recursing", () => {
-    expect(treeRows([t("a", "a")], NONE).map((r) => r.depth)).toEqual([0]);
   });
 });
 

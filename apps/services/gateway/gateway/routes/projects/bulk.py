@@ -46,6 +46,7 @@ from gateway.routes.projects.core import (
     assert_assignable_here,
     clean_payload,
     emit,
+    lift_subtasks_to_grandparent,
     load_visible_task,
     now,
     record_activity,
@@ -414,13 +415,11 @@ async def _act_on_one(
     if action == "delete":
         # The tombstone is migration 168's AFTER DELETE trigger, not a
         # statement here — see `tasks.delete_task`, which explains why. The
-        # subtasks are PROMOTED by the FK's SET NULL, never destroyed.
-        children = [
-            str(r.id) for r in (await db.execute(
-                text("SELECT id FROM pm_tasks WHERE parent_task_id = CAST(:t AS uuid)"),
-                {"t": task_id},
-            )).fetchall()
-        ]
+        # subtasks are PROMOTED, never destroyed: D-PM-38 moves them up ONE
+        # level, to this task's own parent, through the one helper the single
+        # delete uses. It reads the parent from the database, because an
+        # earlier delete in this same selection may have changed it.
+        children = await lift_subtasks_to_grandparent(db, task_id)
         await db.execute(
             text("DELETE FROM pm_tasks WHERE id = CAST(:t AS uuid)"), {"t": task_id},
         )

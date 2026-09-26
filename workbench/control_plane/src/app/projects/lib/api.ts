@@ -1,5 +1,6 @@
 import { describeFailure, detailText, readJsonBody } from "@/lib/apiError";
 import { cacheKey, invalidate } from "@/lib/dataCache";
+import type { ParentFact } from "@/lib/taskCard";
 
 import type { Rule as RecurrenceRule } from "./recurrence";
 
@@ -539,6 +540,13 @@ export interface HygieneRow {
   project_name: string;
   due_at: string | null;
   updated_at: string | null;
+  parent_task_id?: string | null;
+  /**
+   * D-PM-38 — the parent of a subtask, under the reader's grants: its
+   * `{id, ref, title, archived}`, or `{hidden: true}` when the reader cannot
+   * see it, or `null` for a top-level task. `ParentCrumb` draws it.
+   */
+  parent?: ParentFact | null;
 }
 
 /**
@@ -583,6 +591,9 @@ export interface StuckReport {
     title: string;
     task_number: number | null;
     due_at: string | null;
+    parent_task_id?: string | null;
+    /** D-PM-38 — see `TaskRow.parent`. */
+    parent?: ParentFact | null;
   }[];
   blocked_total?: number;
   /**
@@ -989,6 +1000,12 @@ export interface TaskRow {
    */
   subtasks?: { done: number; total: number };
   blocked_by_count?: number;
+  /**
+   * D-PM-38 — the parent of a subtask, under the reader's grants: its
+   * `{id, ref, title, archived}`, or `{hidden: true}` when the reader cannot
+   * see it, or `null` for a top-level task. `ParentCrumb` draws it.
+   */
+  parent?: ParentFact | null;
   /**
    * D77 — minutes every member has timed on this task (their overlay
    * actuals, summed). Only the single read (`GET /tasks/{id}`) carries it;
@@ -1793,8 +1810,9 @@ export const projectsApi = {
   /**
    * Delete a task for good, and say what went with it.
    *
-   * ⚠️ Subtasks are PROMOTED, not destroyed — `parent_task_id` SET NULLs — so
-   * `subtasks_promoted` is not a cascade count but its opposite. Reporting it
+   * ⚠️ Subtasks are PROMOTED, not destroyed. D-PM-38 moves them up ONE level,
+   * to this task's own parent, so `subtasks_promoted` is not a cascade count
+   * but its opposite. Reporting it
    * as deleted would reassure in the wrong direction.
    */
   deleteTask: (taskId: string) =>

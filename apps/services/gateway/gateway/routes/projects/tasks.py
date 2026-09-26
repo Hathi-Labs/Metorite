@@ -45,6 +45,7 @@ from gateway.routes.projects.core import (
     emit,
     from_jsonb,
     insert_row,
+    lift_subtasks_to_grandparent,
     load_default_status,
     load_visible_project,
     load_visible_task,
@@ -75,6 +76,7 @@ from gateway.routes.projects.custom_fields import (
 )
 from gateway.routes.projects.filters import (
     attach_assignees,
+    attach_parent_context,
     attach_relation_counts,
     build_task_filters,
 )
@@ -202,6 +204,10 @@ async def list_tasks(
     # then saw no positioned neighbour and materialised the WHOLE group on
     # every drop — up to `MAX_POSITIONS` rows written, none of them read.
     view_id: str | None = None,
+    # D-PM-38. A view whose `subtasks` mode is `hidden` sends this, so the
+    # rows AND the total leave subtasks out. Applied in SQL for the reason
+    # every filter is: paging happens there.
+    top_level: bool = False,
 ) -> ListResponse:
     """The one task-list endpoint every surface reads through.
 
@@ -261,6 +267,7 @@ async def list_tasks(
             tags=tags, tags_all=tags_all, include_archived=include_archived,
             archived_only=archived_only,
             watching=watching, viewer=actor(user) if watching else None,
+            top_level=top_level,
         )
         clauses.extend(extra_clauses)
         params.update(extra_params)
@@ -301,7 +308,9 @@ async def list_tasks(
         # card is N+1 across an imported workspace of hundreds.
         page_rows = [row_to_dict(r, TaskModel) for r in rows]
         await attach_assignees(db, page_rows)
-        await attach_relation_counts(db, page_rows)
+        await attach_relation_counts(db, page_rows, vis)
+        # D-PM-38 — "↳ Parent" on every flat row, under the reader's grants.
+        await attach_parent_context(db, vis, page_rows)
         return ListResponse(rows=page_rows, total=int(total))
 
 
@@ -795,21 +804,16 @@ async def delete_task_in(db: Any, doomed: Any) -> DeleteResponse:
     ``doomed`` is the row ``load_visible_task`` returned. The caller emits.
     """
     task_id = str(doomed.id)
-    promoted = await count_where(db, "pm_tasks", "parent_task_id", task_id)
-    # WS-27ae / P-27 — read BEFORE the delete, because afterwards the FK has
-    # already SET NULL and nothing connects these rows to the task that used
-    # to own them. Their `parent_task_id` changed without any statement in
-    # this module writing them, so without the bump a promoted subtask is an
-    # edit no delta client can ever see.
-    children = [
-        str(r.id) for r in (await db.execute(
-            text(
-                "SELECT id FROM pm_tasks "
-                "WHERE parent_task_id = CAST(:tid AS uuid)"
-            ),
-            {"tid": task_id},
-        )).fetchall()
-    ]
+    # D-PM-38 (B10) — the subtasks move UP ONE LEVEL, to this task's own
+    # parent, before the row goes. The FK's SET NULL would make them
+    # top-level, which is two levels for a subtask of a subtask. In the same
+    # transaction as the delete, so a failure leaves both as they were.
+    #
+    # WS-27ae / P-27 — the moved ids come back from the UPDATE, because their
+    # `parent_task_id` changed and `updated_at` did not. Without the bump
+    # below, a promoted subtask is an edit no delta client can ever see.
+    children = await lift_subtasks_to_grandparent(db, task_id)
+    promoted = len(children)
     activities = await count_where(db, "pm_activities", "task_id", task_id)
     assignees = (await db.execute(
         text(
@@ -855,9 +859,11 @@ async def delete_task(
 ) -> DeleteResponse:
     """Delete a task, and say what went with it.
 
-    Subtasks are **promoted, not destroyed** — ``parent_task_id`` SET NULLs
-    (§3.5) — so the reported ``subtasks_promoted`` count is not a cascade but
-    its opposite, and is named accordingly. Reporting it as "deleted" would be
+    Subtasks are **promoted, not destroyed**. D-PM-38 moves them up ONE
+    level, to this task's own parent, before the delete. The FK's SET NULL
+    alone would make a subtask of a subtask top-level. So the reported
+    ``subtasks_promoted`` count is not a cascade but its opposite, and is
+    named accordingly. Reporting it as "deleted" would be
     the exact class of lie the N8 purge shipped: a count that reassures in the
     wrong direction.
 
