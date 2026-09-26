@@ -75,10 +75,16 @@ class Recorder:
         #: answer. A test swaps in a board task or a wider status set.
         self.lanes: dict[str, Any] = LANES
         self.task: dict[str, Any] | None = None
+        #: The task an overlay write leaves behind, the way the gateway's
+        #: `reopen_if_closed` moves a closed task. None: the write moves nothing.
+        self.task_after_overlay: dict[str, Any] | None = None
 
     async def __call__(self, method: str, path: str, **kw: Any) -> Any:
         self.calls.append((method, path))
         self.kwargs.append(kw)
+        if (method == "PATCH" and path.endswith("/personal")
+                and self.task_after_overlay is not None):
+            self.task = self.task_after_overlay
         return self.answer(method, path, kw)
 
     def answer(self, method: str, path: str, kw: dict[str, Any]) -> Any:
@@ -192,7 +198,7 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
     ("my_tasks_complete", {"item_id": TID},
      [("POST", f"{T}/complete"), ("GET", MY), *SHOW]),
     ("my_tasks_complete", {"item_id": TID, "undo": True},
-     [("PATCH", f"{T}/personal"), ("GET", MY), *SHOW]),
+     [("GET", MY), ("PATCH", f"{T}/personal"), ("GET", MY), *SHOW]),
     ("my_tasks_move", {"item_id": TID, "to": "someday"},
      [("PATCH", f"{T}/personal"), ("GET", MY), *SHOW]),
     ("my_tasks_detail", {"item_id": TID},
@@ -628,7 +634,10 @@ def test_an_ambiguous_stage_lists_the_statuses_and_writes_nothing(board: Recorde
     out = run(core.my_tasks_delegate(item_id=TID, assignee_name="Bob",
                                      assignee_email="bob@x", status="In_Progress"))
     assert out.startswith("Delegated to Bob")
+    # The delegation WAS written. Only the status was not.
+    assert out.endswith("Ask the member which one. The status was not set.")
     assert "In progress in Website relaunch has 2 statuses" in out
+    assert "Nothing was written" not in out
     assert ("PATCH", T) not in board.calls
 
 
@@ -666,18 +675,28 @@ def test_an_unknown_name_or_an_empty_stage_lists_every_status(board: Recorder):
 def test_undo_writes_next_only_and_the_gateway_reopens(board: Recorder):
     """D79 rule 6: ONE reopen rule, in `personal.reopen_if_closed`. The skill
     writes the NEXT disposition and no status of its own."""
-    board.task = {**BOARD_TASK, "status_id": "bt", "workflow_stage": "Ready",
-                  "status_category": "todo"}
+    board.task = {**BOARD_TASK, "status_id": "bd", "workflow_stage": "Shipped",
+                  "status_category": "done"}
+    board.task_after_overlay = {**BOARD_TASK, "status_id": "bt",
+                                "workflow_stage": "Ready", "status_category": "todo"}
     out = run(core.my_tasks_complete(item_id=TID, undo=True))
     assert _patches(board, f"{T}/personal") == [{"disposition": "NEXT"}]
     assert _patches(board, T) == []
     assert out.startswith("Reopened · Moved to Ready · Website relaunch → ")
 
 
+def test_undo_on_an_open_task_says_nothing_moved(board: Recorder):
+    """Review of #480: an open task gets no reopen, so the reply must not
+    claim a move. Building before, Building after."""
+    out = run(core.my_tasks_complete(item_id=TID, undo=True))
+    assert out.startswith("Back on your Next list · the status stays Building → ")
+    assert "Reopened" not in out
+
+
 def test_undo_says_so_when_the_status_stays_closed(board: Recorder):
     board.task = {**BOARD_TASK, "workflow_stage": "Shipped", "status_category": "done"}
     out = run(core.my_tasks_complete(item_id=TID, undo=True))
-    assert out.startswith("Reopened in your list. The status stays Shipped")
+    assert out.startswith("Back on your Next list. The status stays Shipped")
 
 
 def test_done_names_the_status_and_the_project(board: Recorder):
@@ -703,7 +722,9 @@ def test_a_status_miss_after_a_committed_organize_is_reported_not_raised(gw: Rec
     out = run(core.my_tasks_organize(item_id=TID, kind="next", next_action="Call",
                                 status="Blocked"))
     assert out.startswith("Organized →")
-    assert "'Blocked' is not a status of this task's project" in out
+    assert ("'Blocked' is not a status of this task's project, so the status "
+            "was not set") in out
+    assert "nothing was written" not in out
     assert "Triage (Triage), To do (To do), Done (Done)" in out
     assert ("PATCH", T) not in gw.calls
     gw.calls.clear()

@@ -300,9 +300,12 @@ def test_the_guard_locks_the_whole_set_target_included() -> None:
     """Two admins deleting the last two Done statuses at once must not both
     pass. The read locks every row of the set, the target too, in id order.
     "All except self" would let each writer hold its own row and wait for the
-    other's, which Postgres ends as a deadlock."""
+    other's, which Postgres ends as a deadlock.
+
+    NO KEY UPDATE, not UPDATE: a task's foreign-key check takes FOR KEY
+    SHARE on its status row, and FOR UPDATE blocks it (review of #480)."""
     sql = " ".join(pm_admin._LOCK_STATUS_SET_SQL.split())
-    assert sql.endswith("ORDER BY id FOR UPDATE")
+    assert sql.endswith("ORDER BY id FOR NO KEY UPDATE")
     assert "<>" not in sql
 
 
@@ -395,6 +398,102 @@ async def test_live_a_set_switch_holds_both_sets_until_it_ends(ladder) -> None:
                 await cleanup.execute(
                     text("DELETE FROM organization WHERE id = :o"), {"o": org},
                 )
+        await eng.dispose()
+
+
+@live
+async def test_live_a_task_status_write_passes_a_locked_set(ladder) -> None:
+    """R8, review of #480: the set lock must not block a task's foreign-key
+    check, or a set writer and a task edit deadlock.
+
+    The shape, on two connections:
+
+    1. an edit updates task t, and holds its row;
+    2. a set writer locks set A (a switch, or a delete's Done guard);
+    3. the edit writes t's status into A. Its FK check takes FOR KEY SHARE
+       on the status row. FOR UPDATE on the set blocks that, FOR NO KEY
+       UPDATE does not;
+    4. the set writer updates t, as ``remap_task_statuses`` does, and waits
+       for the edit.
+
+    With FOR UPDATE, 3 waits on 2 and 4 waits on 1, and Postgres aborts one
+    of them with a deadlock. ``lock_timeout`` keeps a broken lock from
+    hanging the run.
+    """
+    import asyncio
+
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    eng = create_async_engine(
+        _TENANT_URL.replace("+psycopg", "+asyncpg"), poolclass=NullPool,
+    )
+    async with eng.begin() as seed:
+        project, ids = await _real_set(
+            seed, ("To do", "todo", 10, "gray"), ("Doing", "in_progress", 20, "blue"),
+            ("Done", "done", 40, "green"),
+        )
+        task = str((await seed.execute(text(
+            "INSERT INTO pm_tasks (project_id, root_project_id, status_id, title, "
+            "  task_number, created_by, organization_id) "
+            "SELECT id, id, CAST(:s AS uuid), 'Wire the jig', 1, 'd79@example.test', "
+            "       organization_id FROM pm_projects WHERE id = CAST(:p AS uuid) "
+            "RETURNING id"),
+            {"s": ids["To do"], "p": project},
+        )).scalar_one())
+    try:
+        async with eng.connect() as edit, eng.connect() as writer:
+            for conn in (edit, writer):
+                await conn.begin()
+                await conn.execute(text("SET LOCAL lock_timeout = '4s'"))
+            move = text("UPDATE pm_tasks SET status_id = CAST(:s AS uuid) "
+                        " WHERE id = CAST(:t AS uuid)")
+            await edit.execute(
+                text("UPDATE pm_tasks SET title = 'Edited' WHERE id = CAST(:t AS uuid)"),
+                {"t": task},
+            )
+            await pm_admin._lock_status_sets(writer, [project])
+
+            async def edit_side() -> None:
+                await edit.execute(move, {"s": ids["Doing"], "t": task})
+                await edit.commit()
+
+            async def writer_side() -> None:
+                await asyncio.sleep(0.3)
+                await writer.execute(move, {"s": ids["Done"], "t": task})
+                await writer.commit()
+
+            # Both sides finish before anything is judged. A side that lost a
+            # deadlock leaves the OTHER one holding its locks, and a raise
+            # straight out of here would leave the cleanup waiting on them.
+            outcome = await asyncio.gather(
+                edit_side(), writer_side(), return_exceptions=True,
+            )
+            for conn in (edit, writer):
+                if conn.in_transaction():
+                    await conn.rollback()
+            errors = [o for o in outcome if isinstance(o, BaseException)]
+            assert not errors, f"a task write and a set lock collided: {errors[0]!r}"
+        async with eng.connect() as read:
+            row = (await read.execute(
+                text("SELECT title, status_id FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
+                {"t": task},
+            )).one()
+        assert (row.title, str(row.status_id)) == ("Edited", ids["Done"])
+    finally:
+        async with eng.begin() as cleanup:
+            org = (await cleanup.execute(
+                text("SELECT organization_id FROM pm_projects WHERE id = :p"),
+                {"p": project},
+            )).scalar_one()
+            await cleanup.execute(text("DELETE FROM pm_tasks WHERE project_id = :p"),
+                                  {"p": project})
+            await cleanup.execute(
+                text("DELETE FROM pm_task_statuses WHERE project_id = :p"), {"p": project},
+            )
+            await cleanup.execute(text("DELETE FROM pm_projects WHERE id = :p"), {"p": project})
+            await cleanup.execute(text("DELETE FROM organization WHERE id = :o"), {"o": org})
         await eng.dispose()
 
 

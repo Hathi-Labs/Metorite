@@ -392,39 +392,47 @@ def _lane_list(lanes: list[dict[str, Any]]) -> str:
 
 def _not_written(
     value: str, stage: str | None, choices: list[dict[str, Any]],
-    lanes: list[dict[str, Any]], project: str | None,
+    lanes: list[dict[str, Any]], project: str | None, *, committed: bool = False,
 ) -> str:
-    """Why nothing was written, in words the model can act on."""
+    """Why the status was not set, in words the model can act on.
+
+    ``committed`` is True after organize or delegate: their decision WAS
+    written, so the reply says the status was not set, never that nothing
+    was written."""
     where = f" in {project}" if project else ""
     if stage and len(choices) >= 2:
         label = CATEGORY_LABEL[stage]
+        tail = "The status was not set." if committed else "Nothing was written."
         return (f"{label}{where} has {len(choices)} statuses: "
                 f"{', '.join(s['name'] for s in choices)}. Ask the member which "
-                "one. Nothing was written.")
+                f"one. {tail}")
+    so = "so the status was not set" if committed else "so nothing was written"
     owner = project or "This task's project"
     if stage:
-        return (f"{owner} has no {CATEGORY_LABEL[stage]} status, so nothing was "
-                f"written. Its statuses: {_lane_list(lanes)}")
+        return (f"{owner} has no {CATEGORY_LABEL[stage]} status, {so}. "
+                f"Its statuses: {_lane_list(lanes)}")
     place = project or "this task's project"
-    return (f"{value.strip()!r} is not a status of {place}, so nothing was "
-            f"written. Its statuses: {_lane_list(lanes)}")
+    return (f"{value.strip()!r} is not a status of {place}, {so}. "
+            f"Its statuses: {_lane_list(lanes)}")
 
 
 async def _set_stage(
     item: dict[str, Any], value: str, mine: set[str] | None,
+    *, committed: bool = False,
 ) -> tuple[bool, str]:
     """Put a task in one exact status (D79). Returns ``(written, message)``.
 
     The message is the receipt when a status was written, and the reason when
-    nothing was. A caller whose earlier writes are already committed reports
-    the message, and never raises over it.
+    nothing was. A caller whose earlier writes are already committed passes
+    ``committed=True``, reports the message, and never raises over it.
     """
     item_id = str(item.get("id") or "")
     lanes = await _lanes(item_id)
     hit, stage, choices = _resolve_status(lanes, value)
     project = _project_of(item, mine)
     if hit is None:
-        return False, _not_written(value, stage, choices, lanes, project)
+        return False, _not_written(
+            value, stage, choices, lanes, project, committed=committed)
     await _patch_task(item_id, {"status_id": hit["id"]})
     return True, _moved(hit["name"], project)
 
@@ -858,7 +866,7 @@ async def _status_tail(
         return ""
     if not item.get("project_id"):
         return f" · status {status!r} not set: the task has no project"
-    written, msg = await _set_stage(item, status, mine)
+    written, msg = await _set_stage(item, status, mine, committed=True)
     if written:
         item.update(await _my_task(str(item.get("id") or "")))
     return f" · {msg}"
@@ -1039,6 +1047,7 @@ async def my_tasks_complete(item_id: str, undo: bool = False) -> str:
         item_id: The item's full UUID.
         undo: True reopens a completed task (back to NEXT).
     """
+    before: dict[str, Any] = {}
     if not undo:
         await _request("POST", f"{_TASKS}/{item_id}/complete")
     else:
@@ -1048,6 +1057,10 @@ async def my_tasks_complete(item_id: str, undo: bool = False) -> str:
         # leaves it where it is when that status closes too. So the skill
         # writes the disposition and nothing else. A status write of its own
         # here would be a second copy of the rule.
+        #
+        # The status BEFORE the write, so the reply says whether the gateway
+        # moved it. A task that was already open gets no reopen.
+        before = await _my_task(item_id)
         await _patch_personal(item_id, {"disposition": "NEXT"})
     item = await _my_task(item_id)
     mine = await _my_project_ids()
@@ -1058,11 +1071,20 @@ async def my_tasks_complete(item_id: str, undo: bool = False) -> str:
         head = "Done ✓" + (f" · {status}" if status else "") + (
             f" in {project}" if project and status else "")
     elif str(item.get("status_category") or "") in _CLOSING:
-        head = (f"Reopened in your list. The status stays {status or 'closed'}: "
+        head = (f"Back on your Next list. The status stays {status or 'closed'}: "
                 "this project has no open status to reopen into")
+    elif _status_key(before) == _status_key(item):
+        # Nothing moved: the task was open already.
+        head = "Back on your Next list" + (
+            f" · the status stays {status}" if status else "")
     else:
         head = ("Reopened · " + _moved(status, project)) if status else "Reopened"
     return f"{head} → {_fmt_item(item, mine)}"
+
+
+def _status_key(item: dict[str, Any]) -> str:
+    """Which status a task row is in: its id, else its name."""
+    return str(item.get("status_id") or item.get("workflow_stage") or "")
 
 
 @_annotate_risk(idempotent=True)
