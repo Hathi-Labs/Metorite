@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   PLAN_EDIT_COLS,
   PLAN_READ_ONLY,
+  afterCount,
   afterLabel,
   afterOptions,
   blankRow,
@@ -18,6 +19,7 @@ import {
   planIncomplete,
   planRowsFrom,
   planSubmit,
+  waitsOnName,
   withAfter,
 } from "./planCard";
 
@@ -174,5 +176,18 @@ describe("planSubmit with an edited after", () => {
     const out2 = planSubmit({}, "Steps", dropped);
     expect(out2.tasks.find((t) => t.key === "t3")?.after).toEqual(["t2"]);
     expect(out2.tasks.find((t) => t.key === "t2")?.after).toEqual([]);
+  });
+});
+
+describe("the Waits on count and name (fix round 1)", () => {
+  it("counts only keys of rows still on the card", () => {
+    const row = { ...CHAIN[2], after: ["t1", "t2", "gone"] };
+    expect(afterCount(row, CHAIN)).toBe(2);
+    expect(afterCount(row, CHAIN.filter((r) => r.key !== "t1"))).toBe(1);
+  });
+
+  it("names the control after its row, and starts with the visible label", () => {
+    expect(waitsOnName(CHAIN[1])).toBe("Waits on (for Weld)");
+    expect(waitsOnName({ ...CHAIN[1], title: "  " })).toBe("Waits on (for Untitled task)");
   });
 });

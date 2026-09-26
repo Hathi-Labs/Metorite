@@ -43,7 +43,7 @@ import {
   unfoldTrailingAnswer,
   groupReasoningBlocks,
 } from "@/lib/chatStream";
-import { assistantCheckpointRow, checkpointIsEmpty } from "@/lib/assistantCheckpoint";
+import { assistantCheckpointRow, checkpointAgent, checkpointIsEmpty } from "@/lib/assistantCheckpoint";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -109,7 +109,7 @@ async function persistAssistantMessage(
   };
   if (checkpointIsEmpty(checkpoint)) return;
   try {
-    // The row shape, with the agent that ran as its author (WS-27bm S10),
+    // The row shape, with the named agent as its author (WS-27bm S10),
     // lives in lib/assistantCheckpoint.ts.
     const payload = [assistantCheckpointRow(checkpoint)];
     // Write directly to the gateway's chat message store so messages survive
@@ -140,8 +140,9 @@ async function translateAndPersistStream(
   controller: ReadableStreamDefaultController<Uint8Array>,
   threadId: string,
   assistantMessageId?: string,
-  /** The agent that runs this turn. The reconnect path does not know it, so
-   *  it passes nothing and the server stamps the room's agent (WS-27bm S10). */
+  /** The agent the request named. The reconnect path and an `@name` turn do
+   *  not know which agent runs, so they pass nothing, and the server stamps
+   *  the room's agent (WS-27bm S10). */
   agentName?: string,
 ): Promise<string> {
   // Stable per-STREAM persistence id: when the frontend didn't supply one,
@@ -719,7 +720,9 @@ export async function POST(req: NextRequest): Promise<Response> {
       async start(controller) {
         await translateAndPersistStream(
           streamRes.body!, controller, threadId ?? "", assistantMessageId,
-          resolvedAgentName,
+          // An `@name` turn in a room may run another agent, so it claims
+          // no author (WS-27bm S10 fix round 1).
+          checkpointAgent(resolvedAgentName, message),
         );
       },
     });

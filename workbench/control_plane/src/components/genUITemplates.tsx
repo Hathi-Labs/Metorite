@@ -30,6 +30,7 @@ import { hasMoreToTheRight } from "@/lib/scrollCue";
 import {
   PLAN_EDIT_COLS,
   type PlanRow,
+  afterCount,
   afterLabel,
   afterOptions,
   blankRow,
@@ -38,6 +39,7 @@ import {
   planIncomplete,
   planRowsFrom,
   planSubmit,
+  waitsOnName,
   withAfter,
 } from "@/app/projects/lib/planCard";
 import { Checkbox } from "@/components/ui/Checkbox";
@@ -1326,9 +1328,14 @@ function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
               {/* WS-27bm S10: what this row waits on is an input. The list
                   leaves out every row that waits on this one, so a tick
                   cannot make a cycle. The server still refuses one. */}
+              {options.length === 0 && rows.length > 1 && (
+                <div className="mt-1.5 text-[11px] text-muted-foreground" style={PLAN_WRAP}>
+                  Waits on: none. Every other task waits on this one.
+                </div>
+              )}
               {options.length > 0 && (
-                <CollapsibleSection label="Waits on" count={r.after.length} defaultOpen={false}
-                  className="mt-1.5">
+                <CollapsibleSection label="Waits on" count={afterCount(r, rows)} defaultOpen={false}
+                  ariaLabel={waitsOnName(r)} className="mt-1.5">
                   <div className="flex flex-col gap-1">
                     {options.map((o) => (
                       <label key={o.key} className="flex min-w-0 items-center gap-2 text-xs text-foreground">

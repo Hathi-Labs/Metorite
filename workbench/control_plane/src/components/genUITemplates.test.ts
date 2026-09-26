@@ -107,7 +107,28 @@ describe("the plan card's Waits on control", () => {
   it("draws on each row that has another row to wait on", () => {
     const html = plan([row("t1"), row("t2", ["t1"]), row("t3", ["t2"])]);
     // t1 has no option (both others wait on it). t2 and t3 each have one.
-    expect(html.match(/Waits on/g) ?? []).toHaveLength(2);
+    expect(html.match(/aria-label="Waits on \(for /g) ?? []).toHaveLength(2);
+  });
+
+  it("names each control after its row (fix round 1, a11y)", () => {
+    const html = plan([row("t1"), row("t2", ["t1"]), row("t3", ["t2"])]);
+    expect(html).toContain('aria-label="Waits on (for t2)"');
+    expect(html).toContain('aria-label="Waits on (for t3)"');
+    expect(html).not.toContain('aria-label="Waits on (for t1)"');
+  });
+
+  it("counts only the rows that are still on the card", () => {
+    // t9 was dropped from the card, and its key is still in t2's after.
+    const html = plan([row("t1"), row("t2", ["t1", "t9"])]);
+    const t2 = html.split('aria-label="Waits on (for t2)"')[1].split("</button>")[0];
+    expect(t2).toContain("· 1</span>");
+    expect(t2).not.toContain("· 2</span>");
+  });
+
+  it("tells a row with no option why, and does not hide it", () => {
+    const html = plan([row("t1"), row("t2", ["t1"])]);
+    expect(html).toContain("Waits on: none. Every other task waits on this one.");
+    expect(html.match(/Waits on: none/g) ?? []).toHaveLength(1);
   });
 
   it("is absent from a plan of one task", () => {

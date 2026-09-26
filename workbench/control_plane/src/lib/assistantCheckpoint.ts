@@ -9,10 +9,16 @@
  * (`routes/chat.py`) stamps the ROOM's agent, and the COALESCE in its upsert
  * keeps that first stamp for ever. A Projects turn in a room whose agent is
  * the orchestrator then reloads as the orchestrator's, and loses its pills.
- * With `author_email` set to the agent that ran, the first stamp is correct.
+ * So the live path sends the agent the request NAMED.
  *
- * The reconnect path does not know which agent ran, so it sends no author.
- * The server then falls back to the room's agent, as before.
+ * ⚠️ The named agent is not always the agent that runs. In a room, a message
+ * that starts with `@name` can go to another agent (`_address_agent`,
+ * `routes/agent.py`). This side cannot see which one, so such a turn sends
+ * NO author (`isRoomAddress`), and the reconnect path sends none either.
+ * The server then stamps the room's agent, as before S10. That stamp is
+ * still wrong for an addressed turn: the first stamp wins, and the gateway's
+ * fold, which knows the addressed agent, writes after the first checkpoint.
+ * Only a server change closes that (spec §16.4).
  *
  * Pure: no fetch, no Next.js.
  */
@@ -33,6 +39,23 @@ export interface AssistantCheckpoint {
   agentName?: string;
   /** The clock, for tests. Defaults to `Date.now()`. */
   now?: number;
+}
+
+/**
+ * The gateway's room-address rule, `_MENTION_RE` in `routes/agent.py`,
+ * copied because this side cannot import Python. `assistantCheckpoint.test.ts`
+ * reads the Python source and fails when the two differ.
+ */
+export const ROOM_ADDRESS_RE = /^\s*@([A-Za-z0-9][A-Za-z0-9._-]*)\s*/;
+
+/** True when the message can address another agent in a room. */
+export function isRoomAddress(message: string): boolean {
+  return ROOM_ADDRESS_RE.test(message);
+}
+
+/** The author the live checkpoint may claim: none for an addressed turn. */
+export function checkpointAgent(requested: string, message: string): string | undefined {
+  return isRoomAddress(message) ? undefined : requested;
 }
 
 /** True when the turn holds nothing worth a row. */

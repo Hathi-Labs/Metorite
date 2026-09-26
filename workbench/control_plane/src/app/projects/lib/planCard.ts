@@ -204,3 +204,15 @@ export function withAfter(row: PlanRow, rows: PlanRow[], key: string, on: boolea
   const order = rows.map((r) => r.key);
   return [...next].sort((a, b) => order.indexOf(a) - order.indexOf(b));
 }
+
+/** How many rows `row` waits on. A key of a dropped row does not count. */
+export function afterCount(row: PlanRow, rows: PlanRow[]): number {
+  const keys = new Set(rows.map((r) => r.key));
+  return row.after.filter((k) => keys.has(k)).length;
+}
+
+/** The "Waits on" control's accessible name. The visible label stays
+ *  "Waits on", so the name starts with it (WCAG 2.5.3). */
+export function waitsOnName(row: PlanRow): string {
+  return `Waits on (for ${row.title.trim() || "Untitled task"})`;
+}

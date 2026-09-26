@@ -2177,7 +2177,7 @@ each one has its own fence.
    `_attribute` (`routes/chat.py`) stamped the room's agent, and the
    COALESCE in `_MESSAGE_UPSERT_SQL` kept that first stamp. A Projects turn
    in a room of another agent then reloaded without its pills. The live path
-   now sends the agent that ran.
+   now sends the agent that the request named. An `@name` turn sends none.
 2. **The plan card edits `after`.** Each row of the plan card has a "Waits
    on" control. The member ticks the rows that must finish first. The list
    leaves out every row that waits on this one, so the card cannot make a
@@ -2192,11 +2192,14 @@ each one has its own fence.
 
 ### 16.2 Rules
 
-1. **The live path sends the agent.** `translateAndPersistStream` takes the
-   agent name. Each checkpoint row carries `author_kind: "agent"` and
-   `author_email` set to `resolvedAgentName`.
-2. **The reconnect path sends no author.** It does not know which agent ran.
-   The server then stamps the room's agent, as before.
+1. **The live path sends the named agent.** `translateAndPersistStream`
+   takes `checkpointAgent(resolvedAgentName, message)`. Each checkpoint row
+   carries `author_kind: "agent"` and `author_email` set to that name.
+2. **The reconnect path and an `@name` turn send no author.** Neither knows
+   which agent runs. In a room, `_address_agent` (`routes/agent.py`) can send
+   an `@name` turn to another agent. `isRoomAddress` copies the gateway's
+   `_MENTION_RE`, and a test fails when the two differ. The server then
+   stamps the room's agent, as before S10 (fix round 1).
 3. **The row shape lives in `src/lib/assistantCheckpoint.ts`.** A route file
    may export only route names, so a test cannot reach a function there.
    `persistAssistantMessage` calls `assistantCheckpointRow` and builds no row
@@ -2207,10 +2210,13 @@ each one has its own fence.
 5. **`after` is an input.** `PLAN_READ_ONLY` no longer holds `after`. The
    control is a `CollapsibleSection` with one `Checkbox` for each other row,
    labelled with its title. Both come from `components/ui`. S10 adds no new
-   primitive and no raw input.
+   primitive and no raw input. `CollapsibleSection` gains one prop,
+   `ariaLabel`. Each control is named `Waits on (for <title>)`, and its count
+   leaves out the key of a dropped row (`afterCount`, fix round 1).
 6. **The card cannot make a cycle.** `afterOptions(row, rows)` leaves out the
    row itself and every row that waits on it, directly or through other
-   rows. A row with no option shows no control.
+   rows. A row with no option shows the line "Waits on: none. Every other
+   task waits on this one." in place of the control.
 7. **The server stays the fence for §13.6 rule 7.** `_submitted_rows` and
    `_plan_rows` refuse an unknown key, a self-block and a cycle before
    `_confirm`, with zero writes. S10 adds no refusal text in TypeScript.
@@ -2229,7 +2235,13 @@ each one has its own fence.
     fake visibility.
 11. **No migration, no flag and no new route.**
 
-**As built, 2026-09-25.** Three facts that the rules do not say.
+**As built, 2026-09-25.** Four facts that the rules do not say.
+- **An `@name` turn can still reload under the wrong author.** With no
+  author, the first checkpoint stamps the room's agent. The gateway's fold
+  knows the addressed agent, but it writes after that first checkpoint, and
+  the COALESCE keeps the first stamp. `test_rooms.py` holds the gap as a
+  strict xfail, `test_an_addressed_turn_is_stamped_with_the_agent_that_ran`.
+  The fix is a server change (§16.4).
 - **`test_rooms.py` needed a fixture repair to run at all.** Its `_seed_user`
   wrote `ON CONFLICT (email)`, and `app_user` has only a unique index on
   `lower(email)`. So every R8 test in the file failed in its fixture against
@@ -2247,8 +2259,10 @@ each one has its own fence.
 
 1. `src/lib/assistantCheckpoint.test.ts` passes. It checks the row with an
    agent and without one, and scans `route.ts`. The live call passes
-   `resolvedAgentName`, the reconnect call does not, and both checkpoints
-   pass the agent (rules 1 to 3).
+   `resolvedAgentName` through `checkpointAgent`, the reconnect call does
+   not, and both checkpoints pass the agent. An `@name` message claims no
+   author, and `ROOM_ADDRESS_RE` equals the gateway's `_MENTION_RE` (rules 1
+   to 3).
 2. The R8 test `test_a_checkpoint_author_wins_over_the_room_agent` in
    `tests/unit/test_rooms.py` passes. A checkpoint with `author_email`
    `projects-assistant` in a room whose agent is `orchestrator` stores
@@ -2259,7 +2273,9 @@ each one has its own fence.
    nor t3. The options of t3 hold t1 and t2. `planSubmit` sends the edited
    `after` and strips the key of a dropped row (rules 5 and 6).
 5. `genUITemplates.test.ts` passes. It draws the control on each row that
-   has an option, and draws none on a plan of one task.
+   has an option, and draws none on a plan of one task. Each control's name
+   holds its row's title. The count leaves out a dropped row's key. A row
+   with no option shows the "Waits on: none" line.
 6. `test_projects_agent_writes.py` passes (rules 7 and 9).
    - An edited `after` puts the link on the confirm card and posts it.
    - A cycle and a self-block each give the refusal, with no write and no
@@ -2282,3 +2298,8 @@ each one has its own fence.
 - It does not put a literal tool name in the `agents.py` description.
 - It does not measure the token size of a `task_dataset` table.
 - It does not change the main agent of a room, or the route that sets it.
+- **It does not stamp an `@name` turn with the agent that ran.** That needs
+  a server change. One way: the fold overwrites the author of an agent turn.
+  Another way: the run stream names its agent, and the translator sends it.
+  The strict xfail in `test_rooms.py` fails when either lands, so remove its
+  mark in that change.
