@@ -2220,9 +2220,11 @@ each one has its own fence.
 7. **The server stays the fence for §13.6 rule 7.** `_submitted_rows` and
    `_plan_rows` refuse an unknown key, a self-block and a cycle before
    `_confirm`, with zero writes. S10 adds no refusal text in TypeScript.
-8. **Lockstep.** The `planCard` catalog summary in `genUITemplates.tsx` and
-   the `planCard` bullet in `write_artifact.py` change together. Both now say
-   that the member edits `after`.
+8. **Lockstep.** The `planCard` catalog summary in `genUITemplates.tsx` says
+   that the member edits `after`. The `planCard` bullet in `write_artifact.py`
+   already lists `after?:[key]`, so it does not change. A longer bullet put
+   the `emit_generative_ui` schema past its ceiling in
+   `test_tool_schema_diet.py`.
 9. **The project write stops the batch.** On a `GatewayRefusal` the receipt
    says `stopped: the project «X» was refused.`, the reason, and `Nothing was
    created.` On an `httpx.TransportError` it says that the write may or may
