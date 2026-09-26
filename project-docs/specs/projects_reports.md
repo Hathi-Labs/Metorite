@@ -13,7 +13,7 @@ T13 live). R3d is next. R3d, R4, R4b, R5 to R9 and Phases 2 and 3 are not
 built.
 
 Written
-2026-09-24 and verified against the code on 2026-09-24. The owner answered
+2026-09-24. The R3 lockstep anchors were verified against the code on 2026-09-26. The owner answered
 the open questions on 2026-09-24, and §9 records the answers. Each anchor carries a
 file name and a line number. Check them again at dispatch, because this tree
 moves every day.
@@ -417,7 +417,9 @@ first, and its table second. Slice R2b sets the rules.
 2. **The HR tier is gated.** Hours, absences, skills and fit need
    `admin:members:read`. Without it, a section returns its task half and
    `hr_visible: false`, as S7 does. The UI says that an admin can see
-   capacity. It does not guess.
+   capacity. It does not guess. The reader's own card in `pulse` is the one
+   exception. `people_center_app.md` §4.2 opens the HR half of a person to
+   that person (R3d, edit E4).
 3. **One render for each recipient.** A send renders with the recipient's
    visibility (H-111). This rule already exists and binds R9 and R7.
 4. **A person scope is not a licence.** A report about one person shows only
@@ -707,17 +709,17 @@ spec-auditor split R3 into four slices on 2026-09-24. Each slice is one PR.
 **The lockstep list.** A section name lives in seven places, plus the chat
 card map. A slice adds its name to each of them in the same PR:
 
-1. `reports.py` `SECTIONS` (`:106`).
-2. `skill_projects/reads.py` `_REPORT_SECTIONS` (`:1224`). This is the
+1. `reports.py` `SECTIONS` (`:108`).
+2. `skill_projects/reads.py` `_REPORT_SECTIONS` (`:1447`). This is the
    chat's list, not `views.py`.
 3. `skill_projects/writes.py` `REPORT_SECTIONS` (`:854`).
-4. `ReportsView.tsx` `RenderedBody` (`:210`).
+4. `ReportsView.tsx` `RenderedBody` (`:219`).
 5. `src/lib/reportEmail.ts`.
 6. `lib/reportBuilder.ts` `REPORT_SECTIONS` (`:34`).
-7. `lib/api.ts` `RenderedReportBody` (`:786`).
+7. `lib/api.ts` `RenderedReportBody` (`:820`).
 
 The chat card map is `skill_projects/views.py` `REPORT_CARD_SECTIONS`
-(`:317`). `test_projects_report_sections_lockstep.py` holds the seven lists.
+(`:318`). `test_projects_report_sections_lockstep.py` holds the seven lists.
 `test_projects_agent.py` holds each card title to `ReportsView.tsx`.
 
 **The declared order of `SECTIONS`:** `finished`, `throughput`, `outlook`,
@@ -892,11 +894,11 @@ and `hygiene.test.ts` holds the email words equal to the panel words.
 The chat card and the chat text show five hygiene rows of each kind, then a count of the rest.
 The card cuts a timestamp to its date only in a date column, so a title prints whole.
 
-#### R3d — `pulse` and T1 · waits for spec edits E2 to E4
+#### R3d — `pulse` and T1 · AGENT-SAFE
 
 **What:** the `pulse` section. It draws one card for each person: a load
-bar, the pill, the top focus tasks and a "needs help" mark. T1 `team_pulse`
-goes live.
+bar, the status, the top focus tasks and a "Needs help" mark. T1
+`team_pulse` goes live.
 
 **Owner decisions (2026-09-25):**
 - **Private notes stay on the reader's own row.** A report shows the
@@ -909,18 +911,128 @@ goes live.
   other people". This rule is edit E5, and it is a strict subset of §7.1, so
   it can never show more than R5 allows.
 
-**Open:**
-- Spec edits E2 to E4 must land first.
-- `test_the_template_fence_fires_on_a_missing_section` uses `pulse` as a
-  fake missing name. R3d must give that self-test another name.
+**The body.** `pulse_body` in a new module, `analytics_pulse.py`, returns the
+section. It takes the reader, the scope and one `today`. It passes that
+`today` to `capacity_body`, and its own queries use the same UTC day. The
+render awaits `pulse_body`, as it awaits `hygiene_body`.
+
+**Edit E3, the rows.** The rows are the `kind == "person"` rows of
+`capacity_body`. So only a person who holds open work in the scope gets a
+card. An agent and the unassigned row get no card. The `pill` of a card is
+the `pill` of its capacity row, so the two cannot disagree.
+
+**The fields of a row:**
+- `status` is `on_leave` when `absent_on(today)` finds a full absence.
+  Otherwise `status` is the pill. A partial absence keeps the pill.
+- `blocked_count` counts the open tasks of the person with an open blocker.
+  It calls `blocked_clause()`. R3d moves that predicate out of the `stuck`
+  route into `analytics.py`, and the route calls it too.
+- `stale_count` counts the tasks in progress of the person with no change for
+  `STALE_DAYS`. It reads the `stale_in_progress` predicate of
+  `HYGIENE_KINDS`, so pulse and hygiene have one rule.
+- `focus` holds up to five tasks: tasks in progress, and tasks due today or
+  tomorrow. `focus_total` counts them all.
+- `has_room` is true when the row has the `idle` flag and `status` is not
+  `on_leave`. The `idle` flag applies `IDLE_FRACTION`. So R3d adds no second
+  threshold.
+- `needs_help` is true when `help_reasons` is not empty. The reasons are
+  `blocked`, `stale` and `waiting_overdue`.
+
+**Behind two runs in a row.** This reason needs the stored runs of R4. The section
+carries `help_note`, which says that the report does not check it yet.
+
+**Edit E4, the HR split.** The HR half of a row needs `admin:members:read`,
+or the row must be the reader's own row. This is the self door of
+`people_center_app.md` §4.2. Any other row carries only the task half:
+`open_tasks`, `overdue`, `blocked_count`, `stale_count` and `focus`.
+
+**A row with no HR half** has no `pill`, no `status`, no `has_room` and no
+hours key. Each key is absent, never null. Its `help_reasons` use only
+`blocked` and `stale`. Before R5, only an admin sees the row of another
+person. So this rule binds first in R5.
+
+**Private notes stay on the reader's own row (owner Q6).** The section reads
+`pm_task_personal` for the reader's own address only. A waiting item counts
+when `waiting_on` is not null and `expected_by` is before today. A task with a
+`scheduled_start` of today joins `focus` on the reader's own row. Every other
+row has no `waiting_count` and no `waiting` key. This rule holds for an admin
+too.
+
+**Edit E5, who sees which card (owner Q7).** A reader with
+`admin:members:read` sees every card, up to `MAX_PEOPLE` (20). Any other
+reader sees only their own card. `hidden_people` counts the cards that the
+reader cannot see. `people_total` counts every person row before the filter
+and the cap. The filter runs in `pulse_body`, before the body leaves the
+server.
+
+**The hidden line.** When `hidden_people` is more than zero, the panel, the
+email and the chat card show "This report hides N other people". E5 binds
+the `pulse` section only. R5 applies §7.1 rule 3 to the other sections.
+
+**T1 goes live.** `team_pulse` gets the sections `pulse`, `conflicts` and
+`rebalance`, with `weeks` 1 and `skip_current_week` false. Its scopes are
+`project` and `org`, and R5 adds `team`. The three sections ignore the
+period. `pulse` reads today, and the other two read their own horizons.
+
+**The visual.** `PulsePanel` in `AnalyticsPanels.tsx` draws one card for each
+row, in a report only. A card shows the name or the address, a load bar and
+the status. Up to three focus tasks follow, then the "Needs help" mark with
+its reasons.
+
+**The load bar** uses the private `Bar`. With `hours_basis`, it shows committed
+hours of working hours this week. Without it, the bar shows `overdue` of
+`open_tasks`.
+
+**Colour.** The status takes `PILL_HUE` through `accentForHue`, with
+`PILL_LABEL` beside it. `on_leave` takes the `gray` hue and the words "On
+leave". The email and the download print one line for each card, with no
+colour. The chat card shows one row for each card.
+
+**The lockstep.** `pulse` goes between `capacity` and `stuck` in `SECTIONS`,
+and in each of the seven lists. The self-test
+`test_the_template_fence_fires_on_a_missing_section` uses the fake name
+`not_a_section`.
+
+**Non-goals:** a `/analytics/pulse` route, a panel in the Analytics app, a
+summary tile, T2 and T6. "Behind two runs in a row" waits for R4.
 
 **Done when:**
-- `pulse` gives the same pill as the capacity route for the same person and
-  window. One test pins this, so the two cannot drift.
-- A person on leave today shows "on leave" and no `idle` pill.
+- (a) On a real database, each card of an admin reader has the `pill` of
+  `capacity_body` for the same person, scope, reader and `today`.
+- (b) A person with a full absence today has `status` `on_leave` and
+  `has_room` false. The panel draws "On leave" and not "Idle". A partial
+  absence keeps the pill.
+- (c) Member Bea has a task in scope with `waiting_on` set and
+  `expected_by` yesterday. Bea also scheduled a second task today. An admin
+  render has no `waiting` key on the card of Bea. That second task is not in
+  the `focus` of Bea. The render for Bea shows both.
+- (d) A reader with no grant renders an org report with three holders. The
+  body has one row, the reader's own, with `hidden_people` 2 and
+  `people_total` 3. The panel, the email and the chat card print the line.
+- (e) An admin render has `hidden_people` 0. A reader who holds no work in
+  the scope gets no row, and `hidden_people` equals `people_total`.
+- (f) A unit test calls the row builder with no grant, for a row that is not
+  the reader's own. The row has no key of `HR_KEYS`, no `status` and no
+  `has_room`.
+- (g) A source test finds `link_type = 'blocks'` once in `analytics.py`, in
+  `blocked_clause`. The `stuck` route and `pulse_body` call it. A task that
+  a closed task blocks is not in `blocked_count`.
+- (h) A task in progress with `updated_at` 15 days old is in `stale_count`.
+  A task with 13 days is not. A source test proves that pulse names no day
+  number of its own.
+- (i) Each reason fires alone: `blocked`, `stale` and `waiting_overdue`. A
+  person with none has `needs_help` false. The body carries `help_note`.
+- (j) Seven focus tasks give five rows and `focus_total` 7. A task due in
+  three days, and not in progress, is not in `focus`.
+- (k) T1 is live. The live list in the lockstep, R3b and R3c tests is
+  `team_pulse`, `weekly_delivery`, `project_status`, `data_hygiene`.
+- (l) The lockstep test and the card title test pass with the new name.
+- (m) `reportVisuals.test.ts` draws ten panels, and fence (b) names
+  `PulsePanel`.
+- The visual review passes in light mode, compact density, a changed accent
+  and at 390 px.
 
-⚠️ `waiting` for T2 and T6 is the `pulse` waiting rows for one person. It is
-not a fifth section.
+The `waiting` rows of `pulse` for one person serve T2 and T6. They are not a fifth section.
 
 ### R4 — Stored runs and "what changed" · AGENT-SAFE
 
