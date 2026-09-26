@@ -483,12 +483,21 @@ def normalise_view_config(config: Any) -> dict[str, Any]:
 #: set would make one saved view mean two different task sets for two people,
 #: which is precisely what a *shared* view may not do. What a member is allowed
 #: to disagree about is how their own screen is arranged.
+#:
+#: ⚠️ **One exception, on purpose: `subtasks` (D-PM-38, spec §12.9).** It is
+#: the one key here that can FOLD ROWS. `hidden` makes the client send
+#: `top_level`, so two members of one shared view can see different rows. The
+#: approved design remembers the setting for each member, so this is not a
+#: leak of the rule above but a named exception to it. It only ever hides
+#: subtasks, never adds a task, and a hidden subtask still counts in its
+#: parent's chip, so the parent still says it has children. No other key may
+#: follow it without a decision of its own.
 VIEW_USER_STATE_KEYS: frozenset[str] = frozenset({
     "group_by", "sub_group_by", "collapsed_lanes", "show_empty_lanes",
     "shown_fields",
-    # D-PM-38. How MY screen draws a subtask. Presentation, like `group_by`:
-    # hiding subtasks narrows the rows, but every row stays in the view's set,
-    # so two members still look at one set of tasks.
+    # D-PM-38 — the exception named above. `hidden` folds subtask rows for
+    # this member only. ⚠️ S3: the delta feed does not take `top_level` yet,
+    # and must before a board with Hidden syncs.
     "subtasks",
 })
 

@@ -1821,6 +1821,29 @@ class FakeProjectsDB:
         # disagreed in Postgres.
         only_task = str(args.get("tid")) if "AND t.id = CAST(:tid AS uuid)" in statement else None
 
+        # D-PM-38 — the roll-up counts only children the MEMBER can see
+        # (`personal._CHILD_VISIBLE`, alias `c`). Honoured only when the
+        # statement carries the clause on that alias, the `_select`
+        # convention: a query that drops it counts every child here too, and
+        # the My Tasks count test goes red.
+        counts_visible = "c.project_id IN (" in statement
+        child_closure = self.visible_project_ids(
+            str(args.get("vis_email") or ""),
+            list(args.get("vis_groups") or []),
+            organization_id=args.get("vis_org"),
+        ) if counts_visible else set()
+        child_me = str(args.get("vis_email") or "").lower()
+
+        def child_visible(c: dict) -> bool:
+            if not counts_visible:
+                return True
+            if str(c.get("organization_id")) != str(args.get("vis_org")):
+                return False
+            return str(c.get("project_id")) in child_closure or (
+                "a.task_id = c.id" in statement
+                and child_me in self._assignees_of(c.get("id"))
+            )
+
         out: list[Any] = []
         for task in self.rows("pm_tasks"):
             if task.get("archived_at") is not None and not with_archived:
@@ -1943,6 +1966,7 @@ class FakeProjectsDB:
                     1 for c in self.rows("pm_tasks")
                     if str(c.get("parent_task_id") or "") == str(task["id"])
                     and c.get("archived_at") is None
+                    and child_visible(c)
                 ),
                 # D-PM-38 — the closed children, the chip's "done" half. Only
                 # when the statement selects it, so a query that drops the
@@ -1955,6 +1979,7 @@ class FakeProjectsDB:
                         and statuses.get(str(c.get("status_id")), {}).get(
                             "category",
                         ) in ("done", "cancelled")
+                        and child_visible(c)
                     )
                     if "AS subtask_done" in statement else None
                 ),
