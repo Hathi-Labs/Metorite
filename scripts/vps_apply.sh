@@ -217,7 +217,10 @@ tether_to_session() {
     while [ -d "/proc/$apply_pid" ]; do
       bpg=""
       read -r bpg < "$DEPLOY_BUILD_PIDFILE" 2>/dev/null || true
-      if [ -n "$bpg" ] && [ -d "/proc/$bpg" ]; then
+      # Signal the group only while its leader is still OUR `timeout`. A pid
+      # the kernel reused must never lose its group to a stale file.
+      if [ -n "$bpg" ] && [ -d "/proc/$bpg" ] \
+        && [ "$(cat "/proc/$bpg/comm" 2>/dev/null)" = "timeout" ]; then
         kill -TERM -- "-$bpg" 2>/dev/null || true
         sleep "${DEPLOY_TETHER_GRACE:-20}"
         kill -KILL -- "-$bpg" 2>/dev/null || true
@@ -270,6 +273,10 @@ else
   fi
   echo "    lock taken"
 fi
+# A pidfile left by an apply that died inside its build (a reboot, a stop, a
+# unit timeout) names a group that no longer exists. Clear it under the lock,
+# before a tether can read it.
+rm -f "$DEPLOY_BUILD_PIDFILE" 2>/dev/null || true
 if deploy_session_ended; then
   echo "    !! the deploy session $DEPLOY_SESSION_ANCHOR ended while this apply waited."
   echo "       This round did NOTHING: no fetch, no migration, no build, no restart."
