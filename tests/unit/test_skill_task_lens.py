@@ -32,11 +32,14 @@ import contextlib
 import inspect
 import re
 import textwrap
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 core = pytest.importorskip("skill_my_tasks.core", reason="skill-my-tasks not installed")
+
+_REPO = Path(__file__).resolve().parents[2]
 
 ME = "alice@fracktal.in"
 TID = "11111111-1111-4111-8111-111111111111"
@@ -53,9 +56,9 @@ TASK: dict[str, Any] = {
 }
 #: Lanes in position order. Triage first, as an intake pen can be.
 LANES = {"rows": [
-    {"id": "t0", "name": "Triage", "category": "triage"},
-    {"id": "s1", "name": "To do", "category": "todo"},
-    {"id": "s2", "name": "Done", "category": "done"},
+    {"id": "t0", "name": "Triage", "category": "triage", "position": 0},
+    {"id": "s1", "name": "To do", "category": "todo", "position": 1},
+    {"id": "s2", "name": "Done", "category": "done", "position": 2},
 ]}
 
 
@@ -68,6 +71,10 @@ class Recorder:
         self.kwargs: list[dict[str, Any]] = []
         self.inbox_pages: list[dict[str, Any]] | None = None
         self.no_root = False
+        #: What `/projects/my/tasks/{id}/lanes` and `/projects/my/tasks/{id}`
+        #: answer. A test swaps in a board task or a wider status set.
+        self.lanes: dict[str, Any] = LANES
+        self.task: dict[str, Any] | None = None
 
     async def __call__(self, method: str, path: str, **kw: Any) -> Any:
         self.calls.append((method, path))
@@ -102,8 +109,12 @@ class Recorder:
         if path == "/projects/my/calendar":
             return {"rows": [{**TASK, "scheduled_start": "2026-09-24T09:00:00+05:30",
                               "scheduled_end": "2026-09-24T09:30:00+05:30"}], "total": 1}
+        if path.startswith("/projects/my/tasks") and path.endswith("/lanes"):
+            return self.lanes
         if path.startswith("/projects/my/tasks"):
-            return dict(TASK)
+            # TASK itself unless a test swapped one in, so a test that
+            # monkeypatches TASK is read live.
+            return dict(TASK if self.task is None else self.task)
         return {}
 
     @staticmethod
@@ -112,7 +123,10 @@ class Recorder:
         if path == "/projects/nodes":
             return {"rows": [{"id": PID, "name": "Alpha", "kind": "project"}], "total": 1}
         if path.endswith("/statuses"):
-            return LANES
+            # The grant-gated read. A member who reaches a board task by
+            # assignment alone holds no grant, so it answers 404 (D79). No
+            # tool may depend on it.
+            raise RuntimeError(f"Tasks GET {path} failed (404): Not found")
         if path == "/projects/tasks" and method == "GET":
             return {"rows": [{"id": CID, "title": "step", "completed_at": None}], "total": 1}
         if path == "/projects/tasks" and method == "POST":
@@ -142,7 +156,7 @@ def run(coro):
 
 MY = f"/projects/my/tasks/{TID}"
 T = f"/projects/tasks/{TID}"
-LANES_OF = f"/projects/nodes/{ROOT}/statuses"
+LANES_OF = f"{MY}/lanes"
 #: `_show`: a read-back is marked against my personal tree (root + Areas).
 SHOW = [("GET", "/projects/my/project"), ("GET", "/projects/my/areas")]
 
@@ -165,7 +179,7 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
      [("POST", f"{MY}/organize"), *SHOW]),
     ("my_tasks_organize",
      {"item_id": TID, "kind": "next", "next_action": "Call", "status": "done"},
-     [("POST", f"{MY}/organize"), ("GET", LANES_OF), ("PATCH", T), ("GET", MY), *SHOW]),
+     [("POST", f"{MY}/organize"), *SHOW, ("GET", LANES_OF), ("PATCH", T), ("GET", MY)]),
     ("my_tasks_plan_project", {"name": "Launch"}, [("POST", "/tasks/plan")]),
     ("my_tasks_plan_project", {"name": "Launch", "apply": True},
      [("POST", "/tasks/plan"), ("POST", "/tasks/plan/apply")]),
@@ -178,15 +192,14 @@ CASES: list[tuple[str, dict[str, Any], list[tuple[str, str]]]] = [
     ("my_tasks_complete", {"item_id": TID},
      [("POST", f"{T}/complete"), ("GET", MY), *SHOW]),
     ("my_tasks_complete", {"item_id": TID, "undo": True},
-     [("GET", MY), ("GET", LANES_OF), ("PATCH", T), ("PATCH", f"{T}/personal"),
-      ("GET", MY), *SHOW]),
+     [("PATCH", f"{T}/personal"), ("GET", MY), *SHOW]),
     ("my_tasks_move", {"item_id": TID, "to": "someday"},
      [("PATCH", f"{T}/personal"), ("GET", MY), *SHOW]),
     ("my_tasks_detail", {"item_id": TID},
      [("GET", MY), *SHOW, ("GET", LANES_OF), ("GET", f"{T}/timeline"),
       ("GET", f"{T}/attachments")]),
     ("my_tasks_set_stage", {"item_id": TID, "stage": "done"},
-     [("GET", MY), ("GET", LANES_OF), ("PATCH", T), ("GET", MY), *SHOW]),
+     [("GET", MY), *SHOW, ("GET", LANES_OF), ("PATCH", T), ("GET", MY)]),
     ("my_tasks_delegate", {"item_id": TID, "assignee_name": "Bob", "assignee_email": "bob@x"},
      [("PUT", f"{T}/assignees"), ("PATCH", f"{T}/personal"), ("GET", MY), *SHOW]),
     ("my_tasks_delegate",
@@ -551,49 +564,153 @@ def test_complete_is_the_shared_done_lane_not_an_overlay_write(gw: Recorder):
     assert gw.calls[0] == ("POST", f"{T}/complete")
 
 
-def test_reopen_returns_the_task_to_the_first_open_lane_then_next(gw: Recorder):
-    """The rule `load_default_status` applies: the first lane by POSITION
-    whose category is neither closing nor triage. `is_default` reads nothing
-    (retired 2026-09-06). Triage sits first here and is skipped."""
-    run(core.my_tasks_complete(item_id=TID, undo=True))
-    patches = [kw["json"] for (m, _p), kw in zip(gw.calls, gw.kwargs, strict=True)
-               if m == "PATCH"]
-    assert patches == [{"status_id": "s1"}, {"disposition": "NEXT"}]
+def _patches(gw: Recorder, path: str) -> list[dict[str, Any]]:
+    """The body of every PATCH to `path`, in order."""
+    return [kw["json"] for (m, p), kw in zip(gw.calls, gw.kwargs, strict=True)
+            if m == "PATCH" and p == path]
 
 
-def test_open_lane_skips_closing_and_triage_lanes():
-    lanes = [{"id": "a", "name": "Done", "category": "done"},
-             {"id": "b", "name": "Cancelled", "category": "cancelled"},
-             {"id": "c", "name": "Intake", "category": "triage"},
-             {"id": "d", "name": "Doing", "category": "in_progress"},
-             {"id": "e", "name": "To do", "category": "todo"}]
-    assert core._open_lane(lanes)["id"] == "d"
-    assert core._open_lane(lanes[:3]) is None
+# ── D79: stages group, statuses write ───────────────────────────────────────
+#
+# `work_plan.md` §3 D79, `my_tasks_cutover.md` §4.9. A status write names one
+# exact status. A stage word writes only when its stage holds ONE status. The
+# skill never picks the first of several for the member.
+
+#: A board task: on a team project, reached by ASSIGNMENT only. The member
+#: holds no grant on PID, so `/nodes/{PID}/statuses` answers 404.
+BOARD_TASK: dict[str, Any] = {
+    **TASK, "project_id": PID, "project_name": "Website relaunch",
+    "created_by": "bob@fracktal.in", "status_id": "b1",
+    "workflow_stage": "Building", "status_category": "in_progress",
+}
+#: Its set: TWO In progress statuses, and position order that differs from
+#: the order the route happens to answer in.
+BOARD_LANES = {"rows": [
+    {"id": "b2", "name": "In review", "category": "in_progress", "position": 3},
+    {"id": "b0", "name": "Backlog", "category": "backlog", "position": 0},
+    {"id": "b1", "name": "Building", "category": "in_progress", "position": 2},
+    {"id": "bt", "name": "Ready", "category": "todo", "position": 1},
+    {"id": "bd", "name": "Shipped", "category": "done", "position": 4},
+]}
 
 
-def test_set_stage_resolves_a_name_and_lists_the_lanes_on_a_miss(gw: Recorder):
+@pytest.fixture
+def board(gw: Recorder) -> Recorder:
+    gw.task = dict(BOARD_TASK)
+    gw.lanes = BOARD_LANES
+    return gw
+
+
+def test_a_board_task_reached_by_assignment_only_takes_a_status(board: Recorder):
+    """The lanes come from `/my/tasks/{id}/lanes`, behind membership. The
+    grant-gated `/nodes/{id}/statuses` 404s for this member (the Recorder
+    raises on it), and every status tool used to fail here."""
+    out = run(core.my_tasks_set_stage(item_id=TID, stage="In review"))
+    assert _patches(board, T) == [{"status_id": "b2"}]
+    assert out.startswith("Moved to In review · Website relaunch")
+    assert not any(p.endswith("/statuses") for _m, p in board.calls)
+    board.calls.clear()
+    board.kwargs.clear()
+    out = run(core.my_tasks_organize(item_id=TID, kind="next", next_action="Call",
+                                     status="Ready"))
+    assert _patches(board, T) == [{"status_id": "bt"}]
+    assert "· Moved to Ready · Website relaunch" in out
+    out = run(core.my_tasks_detail(item_id=TID))
+    assert "Building (In progress) ← current" in out
+
+
+def test_an_ambiguous_stage_lists_the_statuses_and_writes_nothing(board: Recorder):
+    out = run(core.my_tasks_set_stage(item_id=TID, stage="in progress"))
+    assert out == ("In progress in Website relaunch has 2 statuses: Building, "
+                   "In review. Ask the member which one. Nothing was written.")
+    assert ("PATCH", T) not in board.calls
+    board.calls.clear()
+    out = run(core.my_tasks_delegate(item_id=TID, assignee_name="Bob",
+                                     assignee_email="bob@x", status="In_Progress"))
+    assert out.startswith("Delegated to Bob")
+    assert "In progress in Website relaunch has 2 statuses" in out
+    assert ("PATCH", T) not in board.calls
+
+
+def test_a_stage_with_one_status_is_written(board: Recorder):
+    out = run(core.my_tasks_set_stage(item_id=TID, stage="to do"))
+    assert _patches(board, T) == [{"status_id": "bt"}]
+    assert out.startswith("Moved to Ready · Website relaunch")
+
+
+def test_an_exact_status_name_is_written_in_any_case(board: Recorder):
+    """"in review" names a status, so the two-status stage does not ask."""
+    out = run(core.my_tasks_set_stage(item_id=TID, stage="in REVIEW"))
+    assert _patches(board, T) == [{"status_id": "b2"}]
+    assert out.startswith("Moved to In review · Website relaunch")
+
+
+def test_a_personal_task_receipt_names_no_project(gw: Recorder):
+    """`statusReceipt.ts`: "Moved to Doing" for a task in my own tree."""
     out = run(core.my_tasks_set_stage(item_id=TID, stage="DONE"))
-    assert "Stage → Done" in out
-    assert gw.kwargs[2]["json"] == {"status_id": "s2"}
-    gw.calls.clear()
+    assert _patches(gw, T) == [{"status_id": "s2"}]
+    assert out.startswith("Moved to Done → ")
+
+
+def test_an_unknown_name_or_an_empty_stage_lists_every_status(board: Recorder):
     out = run(core.my_tasks_set_stage(item_id=TID, stage="Blocked"))
-    assert "Triage, To do, Done" in out
-    assert ("PATCH", T) not in gw.calls
+    assert out == ("'Blocked' is not a status of Website relaunch, so nothing was "
+                   "written. Its statuses: Backlog (Backlog), Ready (To do), "
+                   "Building (In progress), In review (In progress), "
+                   "Shipped (Done)")
+    out = run(core.my_tasks_set_stage(item_id=TID, stage="cancelled"))
+    assert out.startswith("Website relaunch has no Cancelled status, so nothing")
+    assert ("PATCH", T) not in board.calls
 
 
-def test_a_lane_miss_after_a_committed_organize_is_reported_not_raised(gw: Recorder):
-    """The decision is already committed when the lane name is resolved. A
+def test_undo_writes_next_only_and_the_gateway_reopens(board: Recorder):
+    """D79 rule 6: ONE reopen rule, in `personal.reopen_if_closed`. The skill
+    writes the NEXT disposition and no status of its own."""
+    board.task = {**BOARD_TASK, "status_id": "bt", "workflow_stage": "Ready",
+                  "status_category": "todo"}
+    out = run(core.my_tasks_complete(item_id=TID, undo=True))
+    assert _patches(board, f"{T}/personal") == [{"disposition": "NEXT"}]
+    assert _patches(board, T) == []
+    assert out.startswith("Reopened · Moved to Ready · Website relaunch → ")
+
+
+def test_undo_says_so_when_the_status_stays_closed(board: Recorder):
+    board.task = {**BOARD_TASK, "workflow_stage": "Shipped", "status_category": "done"}
+    out = run(core.my_tasks_complete(item_id=TID, undo=True))
+    assert out.startswith("Reopened in your list. The status stays Shipped")
+
+
+def test_done_names_the_status_and_the_project(board: Recorder):
+    board.task = {**BOARD_TASK, "workflow_stage": "Shipped", "status_category": "done"}
+    out = run(core.my_tasks_complete(item_id=TID))
+    assert out.startswith("Done ✓ · Shipped in Website relaunch → ")
+
+
+def test_the_stage_labels_match_the_client():
+    """`CATEGORY_LABEL` mirrors `lib/statusCategory.ts`. A label renamed on
+    one side would make the skill say a stage the screen does not show."""
+    src = (_REPO / "workbench/control_plane/src/lib/statusCategory.ts").read_text(
+        encoding="utf-8")
+    block = re.search(r"CATEGORY_LABEL[^=]*=\s*\{(.*?)\};", src, re.S)
+    assert block, "CATEGORY_LABEL not found in statusCategory.ts"
+    client = dict(re.findall(r'(\w+):\s*"([^"]+)"', block.group(1)))
+    assert client == core.CATEGORY_LABEL
+
+
+def test_a_status_miss_after_a_committed_organize_is_reported_not_raised(gw: Recorder):
+    """The decision is already committed when the status is resolved. A
     raise here would report a failure for a write that happened."""
     out = run(core.my_tasks_organize(item_id=TID, kind="next", next_action="Call",
                                 status="Blocked"))
     assert out.startswith("Organized →")
-    assert "stage 'Blocked' not set" in out and "Triage, To do, Done" in out
+    assert "'Blocked' is not a status of this task's project" in out
+    assert "Triage (Triage), To do (To do), Done (Done)" in out
     assert ("PATCH", T) not in gw.calls
     gw.calls.clear()
     out = run(core.my_tasks_delegate(item_id=TID, assignee_name="Bob", assignee_email="bob@x",
                                 status="Blocked"))
     assert out.startswith("Delegated to Bob")
-    assert "stage 'Blocked' not set" in out
+    assert "'Blocked' is not a status" in out
     assert ("PATCH", T) not in gw.calls
 
 
@@ -700,4 +817,4 @@ def test_detail_fences_comments_always(gw: Recorder):
     out = run(core.my_tasks_detail(item_id=TID))
     assert out.startswith(core._UNTRUSTED_NOTE)
     assert "comment (bob@fracktal.in): «hi»" in out
-    assert "its project's stages: Triage, To do, Done" in out
+    assert "its statuses: Triage (Triage), To do (To do), Done (Done)" in out
