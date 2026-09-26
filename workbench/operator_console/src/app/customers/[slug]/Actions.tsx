@@ -13,6 +13,7 @@ import {
   type CatalogPlan,
   type MemberRow,
   type KeyRow,
+  type SeatRow,
 } from "@/lib/format";
 
 // The management ACTIONS for one customer. Every action POSTs to a server-side
@@ -67,8 +68,11 @@ export default function Actions({
   membersError,
   keys,
   keysError,
+  seats = [],
 }: {
   slug: string;
+  /** Purchased and assigned seats per plan, from the org row. */
+  seats?: SeatRow[];
   status: string;
   subscriptionStatus: string | null;
   plans: CatalogPlan[];
@@ -97,6 +101,7 @@ export default function Actions({
         {canActivate(subscriptionStatus) && (
           <ActivatePanel slug={slug} plans={plans} />
         )}
+        <SeatCountPanel slug={slug} plans={plans} seats={seats} />
         <SeatsPanel slug={slug} plans={plans} />
         <CreditsPanel slug={slug} />
         <LifecyclePanel slug={slug} status={status} />
@@ -336,6 +341,105 @@ function ActivatePanel({ slug, plans }: { slug: string; plans: CatalogPlan[] }) 
         disabled={busy || !plan}
       >
         {busy ? "Activating…" : "Activate"}
+      </button>
+      <ResultLine result={result} />
+    </form>
+  );
+}
+
+/**
+ * Set how many seats the organization holds (owner request, 2026-09-26).
+ *
+ * The Seats panel below assigns a seat to a PERSON. Until this panel, nothing
+ * changed the COUNT except "Activate subscription", which records a payment.
+ * The Console writes the difference as a signed grant, refuses a count below
+ * the seats in use, and requires a reason for the audit trail.
+ */
+function SeatCountPanel({
+  slug,
+  plans,
+  seats,
+}: {
+  slug: string;
+  plans: CatalogPlan[];
+  seats: SeatRow[];
+}) {
+  const [plan, setPlan] = useState(plans[0]?.slug ?? "core");
+  const line = seats.find((s) => s.plan_slug === plan);
+  const [count, setCount] = useState(line ? String(line.purchased) : "");
+  const [reason, setReason] = useState("");
+  const [result, setResult] = useState<Result>(null);
+  const [busy, setBusy] = useState(false);
+
+  const n = Number(count);
+  const valid = count.trim() !== "" && Number.isInteger(n) && n >= 0;
+  const belowInUse = valid && line !== undefined && n < line.assigned;
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    const r = await post("/api/operator/seats/count", {
+      org_slug: slug,
+      plan_slug: plan,
+      seats: n,
+      reason: reason.trim(),
+    });
+    setResult(r);
+    setBusy(false);
+    if (r?.ok) reload();
+  }
+
+  return (
+    <form className="panel" onSubmit={submit}>
+      <h2 style={{ marginTop: 0 }}>Seat count</h2>
+      <p className="muted">
+        Set how many seats this organization holds. No payment is recorded,
+        so the reason is kept in the audit log. The count cannot go below
+        the seats in use.
+      </p>
+      <label>Plan</label>
+      <PlanPicker
+        plans={plans}
+        value={plan}
+        onChange={(p) => {
+          setPlan(p);
+          const l = seats.find((s) => s.plan_slug === p);
+          setCount(l ? String(l.purchased) : "");
+        }}
+      />
+      <p className="muted small">
+        {line
+          ? `Now: ${line.purchased} seats, ${line.assigned} in use.`
+          : "Now: no seats on this plan."}
+      </p>
+      <label>Seats</label>
+      <input
+        inputMode="numeric"
+        value={count}
+        placeholder="e.g. 10"
+        onChange={(e) => setCount(e.target.value)}
+      />
+      <label>Reason</label>
+      <input
+        value={reason}
+        placeholder="e.g. pilot extended to 10 people"
+        onChange={(e) => setReason(e.target.value)}
+      />
+      <p className="muted small">Needs an admin.</p>
+      <button
+        type="submit"
+        title={
+          !valid
+            ? "Type a whole number of seats."
+            : belowInUse
+              ? `${line?.assigned} seats are in use. Release a seat first.`
+              : reason.trim().length < 3
+                ? "Say why the count changes. It goes in the audit log."
+                : "Set the seat count. The change is logged, never edited."
+        }
+        disabled={busy || !valid || belowInUse || reason.trim().length < 3}
+      >
+        {busy ? "Saving…" : "Set seat count"}
       </button>
       <ResultLine result={result} />
     </form>
