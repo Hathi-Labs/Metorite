@@ -1392,6 +1392,26 @@ _MEMBERSHIP_SQL = """
      LIMIT 1
 """
 
+#: The RLS-EXEMPT read of the same fact, the one sign-in already trusts
+#: (:data:`_IDENTITY_LEG_SQL`).
+#:
+#: 🔴 **Measured on production, 2026-09-26.** `app_user` is FORCE-RLS'd and
+#: this pre-flight runs UNBOUND, so :data:`_MEMBERSHIP_SQL` sees ZERO rows for
+#: a member of any organization. `vjvarada@hathilabs.com` owns Hathi Labs LLP,
+#: the pre-flight answered "not a member", and the write then failed on RLS.
+#: The person was told "sign-in is temporarily unavailable", nine times.
+_MEMBERSHIP_IDENTITY_SQL = """
+    SELECT o.slug         AS slug,
+           o.display_name AS display_name
+      FROM user_identity ui
+      JOIN org_membership m ON m.user_id = ui.id
+      JOIN organization o   ON o.id = m.organization_id
+     WHERE lower(ui.email) = :email
+       AND m.status = 'active'
+     ORDER BY o.slug
+     LIMIT 1
+"""
+
 
 async def membership_of(email: str | None) -> tuple[str, str] | None:
     """Return ``(org_slug, org_display_name)`` for the org this email belongs to.
@@ -1425,11 +1445,21 @@ async def membership_of(email: str | None) -> tuple[str, str] | None:
 
         factory = _get_session_factory()
         async with factory() as session:
-            row = (
-                await session.execute(
-                    text(_MEMBERSHIP_SQL), {"email": email.lower().strip()}
-                )
-            ).mappings().first()
+            key = email.lower().strip()
+            # The identity leg FIRST: it is the read that can see across
+            # tenants. `app_user` stays as the fallback for a member the
+            # identity mirror has not reached yet.
+            row = None
+            for sql in (_MEMBERSHIP_IDENTITY_SQL, _MEMBERSHIP_SQL):
+                try:
+                    row = (
+                        await session.execute(text(sql), {"email": key})
+                    ).mappings().first()
+                except Exception:  # a missing shadow table
+                    await session.rollback()
+                    continue
+                if row is not None:
+                    break
     except Exception:
         return None
     if row is None:

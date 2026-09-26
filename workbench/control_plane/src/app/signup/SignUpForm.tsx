@@ -1,6 +1,6 @@
 "use client";
 
-import { signIn, useSession } from "next-auth/react";
+import { signIn, signOut, useSession } from "next-auth/react";
 import { useState } from "react";
 
 import type { ConfiguredProvider } from "@/authPosture";
@@ -102,6 +102,17 @@ const RESERVED = new Set<string>(RESERVED_LABELS);
  * here had no way to know their email was already verified or what happens
  * after the button.
  */
+/** The AlreadyMember refusal, with the address and the organization named. */
+export function alreadyMemberMessage(email: string | null, orgName: string | null): string {
+  const who = email ? `The email ${email}` : "This email address";
+  const where = orgName ? `the organization ${orgName}` : "another organization";
+  return (
+    `${who} is already linked to ${where}. One email address can belong to ` +
+    "only one organization. To create a new organization, use a different " +
+    "email. To use the existing one, sign in."
+  );
+}
+
 function Stepper({ email }: { email: string | null }) {
   const steps: { label: string; sub: string | null; state: "done" | "current" | "next" }[] = [
     { label: "Verify your email", sub: email, state: "done" },
@@ -226,9 +237,8 @@ export default function SignUpForm({
         return;
       }
 
-      const data: { admit?: boolean; code?: string | null } = await res
-        .json()
-        .catch(() => ({}));
+      const data: { admit?: boolean; code?: string | null; org_name?: string | null } =
+        await res.json().catch(() => ({}));
 
       if (res.ok && data.admit) {
         // Owner on both planes; the tenant `app_user` admits them into the app
@@ -243,6 +253,14 @@ export default function SignUpForm({
       // A 200 outcome refusal or a 4xx/5xx shape error — both carry a `code`,
       // rendered through the ONE errorCopy seam (SignupDisabled / AlreadyMember
       // / SlugTaken and the reused ConsoleUnavailable).
+      // 🔴 Owner request, 2026-09-26: say WHICH address and WHICH organization.
+      // The generic line left the owner retrying an address that already owned
+      // Hathi Labs LLP. `org_name` is the caller's OWN organization, read from
+      // their session email server-side, so naming it discloses nothing.
+      if (data.code === "AlreadyMember") {
+        setError(alreadyMemberMessage(session?.user?.email ?? null, data.org_name ?? null));
+        return;
+      }
       setError(
         signInErrorMessage(
           typeof data.code === "string" ? data.code : "ConsoleUnavailable",
@@ -259,6 +277,22 @@ export default function SignUpForm({
     <div className="flex min-h-screen items-center justify-center bg-background p-10">
       <div className="w-full max-w-md">
         <Stepper email={session?.user?.email ?? null} />
+        {/* 🔴 The only way off a wrong address was to find a sign-out
+            somewhere else. Measured 2026-09-26: the owner was signed in with
+            the address that already owns Hathi Labs LLP, meant to create a
+            second organization with another one, and had no control here to
+            change it. Sign out and land back on this page. */}
+        {session?.user?.email && (
+          <div className="-mt-4 mb-4 text-center">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => signOut({ callbackUrl: "/signup" })}
+            >
+              Use a different email
+            </Button>
+          </div>
+        )}
         <div className="rounded-lg border border-border bg-card p-8">
         <h1 className="text-center text-xl font-semibold">
           Create a new organization
