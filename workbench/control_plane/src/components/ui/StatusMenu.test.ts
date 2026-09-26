@@ -6,6 +6,9 @@
  * them: the grouping under stages, the disabled row for an empty stage, the
  * drag prompt's one-stage filter, and focus that skips the headings.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -14,6 +17,7 @@ import {
   initialFocus,
   menuHeight,
   menuRows,
+  rootRemPx,
   statusDot,
   stepFocus,
   typeAhead,
@@ -120,5 +124,37 @@ describe("menuHeight — the panel hangs by its real height (D79)", () => {
 
   it("never grows past 320", () => {
     expect(menuHeight(40, true)).toBe(320);
+  });
+
+  it("grows with the density, so a short menu does not scroll at a roomier one", () => {
+    // Density scales the root font size (`--ui-scale`), and every row with
+    // it. The px estimate stayed at 26 a row, and at 20px a row is 32.5.
+    const rows = menuRows(ENGINEERING, "in_progress").length;
+    const roomy = menuHeight(rows, true, 20);
+    expect(roomy).toBe(Math.ceil((0.75 + 2.5 + rows * 1.625) * 20));
+    expect(roomy).toBeGreaterThan(menuHeight(rows, true, 16));
+    expect(menuHeight(rows, true, 12)).toBeLessThan(menuHeight(rows, true, 16));
+  });
+
+  it("caps at 20rem at every density, the max-h-80 the panel carried", () => {
+    expect(menuHeight(40, true, 20)).toBe(400);
+    expect(menuHeight(40, true, 12)).toBe(240);
+  });
+
+  it("reads the root font size, and 16 where it cannot", () => {
+    const doc = { documentElement: {} as HTMLElement };
+    expect(rootRemPx(doc, () => ({ fontSize: "20px" }))).toBe(20);
+    expect(rootRemPx(doc, () => ({ fontSize: "" }))).toBe(16);
+    expect(rootRemPx(undefined)).toBe(16);
+  });
+
+  it("the menu passes the root font size to its height, read only while open", () => {
+    const src = readFileSync(fileURLToPath(new URL("./StatusMenu.tsx", import.meta.url)), "utf8");
+    // A closed menu mounts on every card, so it must not read a style.
+    expect(src).toContain("const remPx = open ? rootRemPx() : 16;");
+    expect(src.match(/rootRemPx\(\)/g)).toHaveLength(1);
+    expect(src).toContain(
+      "maxHeight={menuHeight(rows.length, Boolean(projectName || prompt), remPx)}",
+    );
   });
 });

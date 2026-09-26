@@ -256,11 +256,41 @@ async def patch_status(
 #: leave none. The target row is locked too, and every writer locks in id
 #: order: locking "all except self" lets two such writers each hold their own
 #: row and wait for the other's, which Postgres ends as a deadlock (a 500).
+#:
+#: ⚠️ **FOR NO KEY UPDATE, not FOR UPDATE** (review of #480). Every task
+#: write that sets `pm_tasks.status_id` checks the foreign key with FOR KEY
+#: SHARE on the status row. FOR UPDATE conflicts with that, and FOR NO KEY
+#: UPDATE does not. With FOR UPDATE, a task edit that held its task row and
+#: then wrote a status into a locked set waited on the set writer, while the
+#: set writer's task remap waited on that task: a deadlock, and a 500. NO KEY
+#: UPDATE still conflicts with itself, so two set writers still queue. A
+#: DELETE of a status row still takes FOR UPDATE on that one row itself.
+#: Fence: `test_projects_done_guard.py::test_live_a_task_status_write_passes_a_locked_set`.
 _LOCK_STATUS_SET_SQL = (
     "SELECT id, category FROM pm_task_statuses "
     " WHERE project_id = CAST(:owner AS uuid) "
-    " ORDER BY id FOR UPDATE"
+    " ORDER BY id FOR NO KEY UPDATE"
 )
+
+
+async def _lock_status_sets(db: Any, owners: list[str | None]) -> None:
+    """Lock each status set in ``owners`` whole, before any write (D79).
+
+    For a writer that touches more than one row of a set, or more than one
+    set. ``set_status_set`` upserts and deletes rows in no set order, so
+    without this it could hold one row a concurrent ``delete_status`` wants
+    while that delete holds the next, and Postgres aborts one of them with a
+    deadlock (a 500). Every writer takes :data:`_LOCK_STATUS_SET_SQL` first,
+    so the second one waits instead. Two sets lock in id order, which gives
+    two such writers one order to queue in.
+
+    In inherit mode one of the two sets is the PARENT's. The lock is NO KEY
+    UPDATE, so a task write into the parent set does not wait for the switch:
+    its foreign-key check takes FOR KEY SHARE, and the two do not conflict.
+    Only a second set writer on the parent set waits.
+    """
+    for owner in sorted({str(o) for o in owners if o}):
+        await db.execute(text(_LOCK_STATUS_SET_SQL), {"owner": owner})
 
 
 async def _other_lanes(db: Any, existing: Any) -> list[Any]:
@@ -703,6 +733,15 @@ async def set_status_set(
                 status_code=422,
                 detail="That set has no statuses in it, so nothing could move.",
             )
+
+        # D79: lock every set this switch touches, before its first write.
+        # The set the tasks leave (the current owner), and the set they land
+        # in: the parent's for inherit, this node's own for own. A source it
+        # only copies from is read, never written, so it stays unlocked.
+        await _lock_status_sets(db, [
+            await status_owner_id(db, project_id),
+            source if mode == "inherit" else project_id,
+        ])
 
         if mode == "inherit":
             await db.execute(

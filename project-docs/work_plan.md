@@ -4300,20 +4300,30 @@ through `admin.py` or `tree.py`. A constraint trigger would also fire when
 somebody deletes a project and its statuses together, and it would then need
 its own exception.
 
-**Still to do.** The assistant's task tools (`apps/skills/skill-my-tasks`)
-still move a task by stage. A second PR moves them to an exact status.
+**The assistant follows the same rule (2026-09-26).** The task tools in
+`apps/skills/skill-my-tasks` write one exact status. They read the task's
+statuses from `GET /projects/my/tasks/{id}/lanes`, which checks membership.
+The old read was behind the project grant, so it failed on a board task that
+the member gets by assignment only. A stage word writes only when its stage
+holds one status. With two or more, the tool writes nothing and lists them,
+and the model asks the member. An undo of Done writes NEXT only, and the
+gateway reopens the task.
 
 **Fences:**
 
+- `tests/unit/test_skill_task_lens.py`: the assistant's status tools, the
+  ask rule, and the undo that writes NEXT only.
 - `tests/unit/test_projects_done_guard.py`: the Done guard, the seeds, and
-  the SQL on a real Postgres.
+  the SQL on a real Postgres. A status-set switch locks every set it
+  touches before its first write.
 - `lib/statusCategory.test.ts`: the resolver, and the reopen rule against
   the gateway source.
 - `app/tasks/lib/statusCategory.test.ts`: one client resolver, the ask rule
   and the undo order.
 - `app/tasks/lib/statusReceipt.test.ts`: a status write names the status
   and the project.
-- `components/ui/StatusMenu.test.ts`: the menu's grouping and keyboard.
+- `components/ui/StatusMenu.test.ts`: the menu's grouping and keyboard,
+  and a height that follows the member's density.
 
 ---
 
