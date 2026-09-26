@@ -626,6 +626,22 @@ if [ "$(id -u)" = "0" ] && [ -d "$APP_DIR/.venv" ]; then
   echo "    venv normalised to $VENV_OWNER — root ran this apply"
 fi
 
+# ── The Copilot CLI, fetched BEFORE any service starts (H-181) ────────────
+# 🔴 github-copilot-sdk 1.x does NOT ship the CLI in the wheel. Without this
+# step the FIRST CopilotClient() downloads ~150 MB with a blocking urlopen
+# inside the gateway's event loop, so /health and every request stall, and an
+# unreachable GitHub fails every Copilot agent. It is cached per version under
+# the service user's ~/.cache, so a second deploy is a no-op.
+# ⚠️ As the SERVICE user, because the cache lives in that user's home. And it
+# FAILS the deploy, because a box with no CLI is broken, not degraded.
+echo "==> Fetching the Copilot CLI for the installed SDK"
+SVC_USER="${VENV_OWNER%%:*}"
+if [ "$(id -un)" = "$SVC_USER" ]; then
+  uv run --no-sync python -m copilot download-runtime
+else
+  sudo -u "$SVC_USER" -H bash -c "cd '$APP_DIR' && '$(command -v uv)' run --no-sync python -m copilot download-runtime"
+fi
+
 # ── [TRIAL] Free local diarization (sherpa-onnx) ──────────────────
 # Adds free CPU-only speaker separation for Whisper transcripts.
 # Fully reversible: set LOCAL_DIAR=0 below (or NOTES_LOCAL_DIARIZATION=0

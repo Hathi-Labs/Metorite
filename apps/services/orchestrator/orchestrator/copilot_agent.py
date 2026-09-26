@@ -684,8 +684,19 @@ class MetoriteCopilotAgent(GitHubCopilotAgent):
             # are per-TURN headers on this turn's model calls (H-181). They
             # carry the run bound on this task, which also covers a session
             # the CLI kept from an earlier run.
+            #
+            # 🔴 ONLY toward our own gateway (review of PR #490). Without a
+            # BYOK provider the session talks to api.githubcopilot.com, and
+            # these headers hold the member's email and a signed proof. That
+            # third party must never receive either.
+            routes_to_gateway = bool(
+                opts.get("provider") or self._default_options.get("provider")
+            )
             await copilot_session.send(
-                prompt, request_headers=attribution_headers() or None,
+                prompt,
+                request_headers=(
+                    attribution_headers() or None if routes_to_gateway else None
+                ),
             )
 
             # ── Stream stall detection ───────────────────────────────

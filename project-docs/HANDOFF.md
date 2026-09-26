@@ -118,6 +118,16 @@ line — never reclaim a number by deleting the other entry.
   because the stream open answers 422 `extra_forbidden`. Fix that 422 and this
   bug appears on the stream path at once. Do both in one slice.
 
+### H-189 · The out-of-workspace write veto never fires for a real write · [AGENT]
+- **Check:** in `apps/services/orchestrator/orchestrator/permission_policy.py`,
+  find the key that `decide` reads for a write's target. `path` alone means
+  this is open.
+- **Found 2026-09-26, by the SDK upgrade (H-181).** `decide` reads `path`, and
+  an SDK write request carries `file_name`. The 0.1.32 SDK did the same. So a
+  Copilot agent can write outside its workspace, and the veto never runs.
+- ⚠️ **The fix changes what production denies.** Build it as its own slice,
+  with a test that sends the SDK's real write request shape.
+
 ### H-181 · Prove the upgraded Copilot path on the live Router · [AGENT]
 - **Check:** run one `task-manager` chat on the box. Then read its
   `usage_event` rows. → A row with an empty member, app or run means this is
@@ -133,10 +143,19 @@ line — never reclaim a number by deleting the other entry.
   `tests/unit/test_usage_attribution.py` is the fence.
 - **Done when:** all four agents and the orchestrator hold a tool conversation
   through the live Router on DeepSeek V4. A stubbed test does not count.
-- ⚠️ **The 1.x SDK wheel does not bundle the CLI.** The SDK downloads CLI
-  1.0.79 from GitHub releases on first use. Make sure the box can reach
-  GitHub, or run `python -m copilot download-runtime` as the service user
-  during the deploy.
+- ⚠️ **The 1.x SDK wheel does not bundle the CLI.** `vps_apply.sh` now runs
+  `python -m copilot download-runtime` as the service user after `uv sync`,
+  and a failure fails the deploy. Measured 2026-09-26: the box reaches GitHub
+  releases as `acb`.
+- ⚠️ **A signed member proof lives 300 s, and a Copilot session reuses it.**
+  After 300 s in one long turn, `_member_for` reads the member as unproven,
+  so the member's cap stops applying for the rest of that turn. Billing still
+  names the member. The per-request seam is `CopilotClient(request_handler=)`.
+- ⚠️ **Memberless runs will be refused under the deployment key (H-152).**
+  The 2.0 wrapper now routes batch runs and sub-agents through gateway `/v1`.
+  A run with no member, such as the workflow node in `workflows/service.py`
+  or `mutation_runner.py`, gets a 400 once the box serves on the deployment
+  key. Give each one a member, or an org, before that flip.
 - ⚠️ **Rebuild two images.** `Dockerfile.copilot-sandbox` and
   `Dockerfile.mutation` now pin the SDK and download the CLI at build time.
 - ⚠️ **An upgrade does NOT fix H-179.** Version 1.14.4 still reads only

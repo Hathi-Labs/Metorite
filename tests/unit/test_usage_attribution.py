@@ -547,11 +547,11 @@ class TestTheCopilotPathCarriesTheRun:
         h = self._headers(rpc.sent("session.resume")[0])
         assert (h["X-CC-Member"], h["X-CC-Run"]) == ("ravi@acme.com", "run-9")
 
-    def test_each_TURN_carries_the_run_as_request_headers(self):
-        """The per-turn stamp on ``session.send``. It covers a CLI session
-        that outlived the run that created it."""
+    def _send_one_turn(self, *, provider: bool):
         client, rpc = _wire_client()
         agent = _copilot_agent(client)
+        if not provider:
+            agent._default_options.pop("provider", None)
 
         async def go():
             with run_context_scope():
@@ -577,9 +577,21 @@ class TestTheCopilotPathCarriesTheRun:
         asyncio.run(go())
         sent = rpc.sent("session.send")
         assert sent, "the turn was never sent"
-        h = sent[0]["requestHeaders"]
+        return sent[0]
+
+    def test_each_TURN_carries_the_run_as_request_headers(self):
+        """The per-turn stamp on ``session.send``. It covers a CLI session
+        that outlived the run that created it."""
+        h = self._send_one_turn(provider=True)["requestHeaders"]
         assert (h["X-CC-Member"], h["X-CC-Module"], h["X-CC-Run"]) == (
             "dana@acme.com", "tasks", "run-3")
+
+    def test_a_NATIVE_session_sends_github_no_member(self):
+        """🔴 Review of PR #490: with no BYOK provider the session talks to
+        api.githubcopilot.com. The member's email and signed proof must not
+        go there."""
+        turn = self._send_one_turn(provider=False)
+        assert not turn.get("requestHeaders"), turn.get("requestHeaders")
 
     def test_the_BATCH_and_SUB_AGENT_path_is_stamped_too(self):
         """The batch run and a delegated sub-agent keep the WRAPPER's own
